@@ -136,6 +136,10 @@ pub struct Net {
     /// The same bytes by message kind (inside batches too), per sender: (messages, bytes). Batch
     /// framing and the per-datagram overhead are their own kinds, so the kinds sum to `wire_from`.
     pub kinds_from: BTreeMap<(MemberId, &'static str), (u64, u64)>,
+    /// Measurement only (`--by-kind`): each sender's entries by kind, split by part ([`entry_parts`]).
+    pub parts_from: BTreeMap<(MemberId, &'static str), [u64; 6]>,
+    /// The rest of each sender's bytes: message, run and batch framing, and messages other than entries.
+    pub framing_from: BTreeMap<MemberId, u64>,
     /// Measurement only (the R18 below-20 item): bytes the shaper and the counters leave out of each
     /// message, as if the wire omitted fields its receiver could rebuild. Bits: 1 an entry's prev id,
     /// 2 an ack's head ids, 4 an entry's signature, 8 the signature of every entry in a batch but the
@@ -216,6 +220,46 @@ pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
     }
 }
 
+/// Measurement only (`--by-kind`): the entries of `m` by part, as (entry kind, [entries, header
+/// (member, seq, stamp), prev id, ack head ids, payload, signatures]) in bytes on the wire; returns the
+/// rest of `m`'s bytes (message, run and batch framing; all of a message that carries no entry).
+pub fn entry_parts(m: &Msg, out: &mut Vec<(&'static str, [u64; 6])>) -> u64 {
+    let one = |e: &SignedEntry, prev: bool, heads: bool, sig: u64| -> [u64; 6] {
+        // The explicit form's entry bytes: a lone message less its tag and signature.
+        let full = encode_msg(&Msg::Entry(e.clone())).len() as u64 - 1 - 64;
+        let nh = match &e.payload {
+            Payload::Ack { heads, .. } => heads.len() as u64,
+            _ => 0,
+        };
+        [1, 16, prev as u64 * 32, heads as u64 * 32 * nh, full - 16 - 32 - 32 * nh, sig]
+    };
+    let total = encode_msg(m).len() as u64;
+    let mut inner = 0;
+    let mut push = |e: &SignedEntry, p: [u64; 6], inner: &mut u64| {
+        *inner += p[1..].iter().sum::<u64>();
+        out.push((kind(&Msg::Entry(e.clone())), p));
+    };
+    match m {
+        Msg::Entry(e) => push(e, one(e, true, true, 64), &mut inner),
+        Msg::Run { lean, heads, signed, entries } => {
+            let n = entries.len();
+            for (i, e) in entries.iter().enumerate() {
+                let sig = ((e.payload.signs_itself() && !(*signed && i + 1 == n)) || (*signed && i + 1 == n)) as u64 * 64;
+                push(e, one(e, i == 0 && !lean, !heads, sig), &mut inner);
+            }
+        }
+        Msg::Batch(v) => {
+            for x in v {
+                let before = out.len();
+                entry_parts(x, out);
+                inner += out[before..].iter().map(|(_, p)| p[1..].iter().sum::<u64>()).sum::<u64>();
+            }
+        }
+        _ => {}
+    }
+    total - inner
+}
+
 pub fn kind(m: &Msg) -> &'static str {
     match m {
         Msg::Run { entries, .. } if entries.len() > 1 => "run2+",
@@ -258,6 +302,8 @@ impl Net {
             cap_dropped: 0,
             wire_from: BTreeMap::new(),
             kinds_from: BTreeMap::new(),
+            parts_from: BTreeMap::new(),
+            framing_from: BTreeMap::new(),
             what_if: 0,
             // The test IO sends one datagram per message unless a run opts into R18's batching (the
             // scenario suite reproduces protocol situations under the spike's transport; R18 runs,
@@ -341,6 +387,17 @@ impl Net {
                     count("(batch framing)", bytes.len() as u64 - inner);
                 }
                 _ => count(kind(m), bytes.len() as u64 - saved),
+            }
+            if self.what_if == 0 {
+                let mut v = Vec::new();
+                let rest = entry_parts(m, &mut v);
+                *self.framing_from.entry(from).or_default() += rest;
+                for (k, p) in v {
+                    let c = self.parts_from.entry((from, k)).or_default();
+                    for i in 0..6 {
+                        c[i] += p[i];
+                    }
+                }
             }
         }
         // Bandwidth cap: the datagram leaves the bottleneck queue at `depart` (or is tail-dropped).
