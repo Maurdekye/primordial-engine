@@ -446,14 +446,16 @@ pub struct Node {
     equivocate: Option<(u64, u32)>,
     equivocate_split: Option<(u64, BTreeSet<u32>)>,
     /// Version A's id and the members it is kept from.
-    split_hide: Option<(pe_session::session::EntryId, BTreeSet<u32>)>,
+    /// Version A's signature (the sender holds every run entry's own in memory) and the group it is hidden from.
+    split_hide: Option<(pe_session::sign::Sig, BTreeSet<u32>)>,
     watch: Option<u32>,
     trace: Option<(u64, u64)>,
     /// The traced frames' hashes as last logged, and (rollbacks, resimulated frames) then.
     traced: BTreeMap<u64, u64>,
     trace_rb: (u64, u64),
-    /// The watched member's touches seen, by seq: (id, stamp, this replica's conf when first seen).
-    watched: BTreeMap<u32, Vec<(pe_session::session::EntryId, u64, u64)>>,
+    /// The watched member's touches seen, by seq: (version key, stamp, this replica's conf when first seen).
+    /// The key is the content (`version_key`): a lean or run entry's id and signature aren't on the wire.
+    watched: BTreeMap<u32, Vec<(u64, u64, u64)>>,
     sim_events_seen: usize,
     plan: BTreeMap<u64, Vec<Payload>>,
     authored: u64,
@@ -475,13 +477,10 @@ impl Node {
         let scene = s.scene_kind().expect("validated session");
         // View-change membership (the default), not the static one: M1 must survive a member
         // dropping out, which takes suspicion, votes and a new epoch.
-        let mut core = SessionCore::new(WorldSim::new(WORLD, o.me, &ids, scene, s.sim_config(), s.key_ring(o.key.clone())));
-        // Implicit ids (lean Msg::Run) stay off in pe-app until its wire allowlist, the watch log and the
-        // scripted split equivocation handle lean entries (which carry no prev / head ids, so their
-        // id is not the entry's): every entry goes explicit, as before.
-        core.sim.lean_wire = false;
-        // Option 2's runs too (its wire refuses Msg::Run): every entry explicit, signed on itself.
-        core.sim.run_wire = false;
+        let core = SessionCore::new(WorldSim::new(WORLD, o.me, &ids, scene, s.sim_config(), s.key_ring(o.key.clone())));
+        // The core's defaults: implicit ids (lean runs) and signed-once runs (the R18 below-20 item, options
+        // 1 and 2). The wire takes Msg::Run, the watch log keys versions by content and the scripted split
+        // hides version A by signature (@item:primordial-engine/pe-app-lean-wire-accept-msg-lean-key-versions-by).
         let keys = ids.iter().map(|&m| (m, s.key_of(m).expect("validated key"))).collect();
         // Background touches: deterministic in (seed, member), on non-hand objects.
         let mut plan: BTreeMap<u64, Vec<Payload>> = BTreeMap::new();
@@ -709,8 +708,10 @@ impl Node {
         match i {
             // The core verifies entry signatures; the datagram already authenticated `sender`.
             Item::Msg(m) => {
-                if let Msg::Entry(se) = &m {
-                    self.watch_entry(se);
+                match &m {
+                    Msg::Entry(se) => self.watch_entry(se),
+                    Msg::Run { entries, .. } => entries.iter().for_each(|se| self.watch_entry(se)),
+                    _ => {}
                 }
                 self.core.receive(sender, m, local)
             }
@@ -881,10 +882,21 @@ impl Node {
             }
         }
         // A split equivocation keeps version A from its group (see `NodeOpts::equivocate_split`).
+        // By signature: the sender holds every entry's own, inside runs too. A run holding A is split, its other
+        // entries sent explicit (each signed on itself), so no lean copy of A reaches the group.
         if let Some((a, group)) = &self.split_hide {
             for m in group {
                 if let Some(items) = per.get_mut(m) {
-                    items.retain(|it| !matches!(it, Item::Msg(Msg::Entry(e)) if e.id() == *a));
+                    *items = std::mem::take(items)
+                        .into_iter()
+                        .flat_map(|it| match it {
+                            Item::Msg(Msg::Entry(e)) if e.sig == *a => vec![],
+                            Item::Msg(Msg::Run { entries, .. }) if entries.iter().any(|e| e.sig == *a) => {
+                                entries.into_iter().filter(|e| e.sig != *a).map(|e| Item::Msg(Msg::Entry(e))).collect()
+                            }
+                            x => vec![x],
+                        })
+                        .collect();
                 }
             }
         }
@@ -1081,7 +1093,7 @@ impl Node {
         for &m in &group {
             self.push_control(m, Item::Msg(Msg::Entry(b.clone())));
         }
-        self.split_hide = Some((a.id(), group));
+        self.split_hide = Some((a.sig, group));
     }
 
     /// The frame trace (see `NodeOpts::trace`), after a tick.
@@ -1112,12 +1124,13 @@ impl Node {
         self.note(line);
     }
 
-    /// The watched member's touch `se` arrived (see `NodeOpts::watch`).
+    /// The watched member's touch `se` arrived (see `NodeOpts::watch`). Raw from the wire: inside a run its
+    /// prev (and with `lean` its first prev) is left out, so its id isn't the entry's; versions are keyed by content.
     fn watch_entry(&mut self, se: &pe_session::session::SignedEntry) {
         if self.watch != Some(se.member) || !matches!(se.payload, Payload::Touch { .. }) {
             return;
         }
-        let id = se.id();
+        let id = version_key(se);
         let v = self.watched.entry(se.seq).or_default();
         if v.iter().any(|x| x.0 == id) {
             return;
@@ -1126,7 +1139,7 @@ impl Node {
         if v.len() > 1 || self.split_hide.is_none() && self.equivocate_split.is_none() {
             let n = v.len();
             let (seq, stamp, conf, frame) = (se.seq, se.stamp, self.core.sim.conf, self.core.sim.frame);
-            let short: String = id.0[..8].iter().map(|x| format!("{x:02x}")).collect();
+            let short = format!("{id:016x}");
             self.note(format!("SEEN member {} touch seq {seq} version {n} ({short}), stamped {stamp}, at my conf {conf}, frame {frame}", se.member));
         }
     }
@@ -1298,7 +1311,7 @@ impl Node {
         }
         if self.written.is_none() && self.done_at.is_some_and(|d| now >= d + LINGER_US) {
             // Which version of a watched member's forked seq counts in the final log.
-            let in_log: BTreeSet<pe_session::session::EntryId> = final_log(&self.core.sim).iter().map(|(e, _)| e.id()).collect();
+            let in_log: BTreeSet<u64> = final_log(&self.core.sim).iter().map(|(e, _)| version_key(e)).collect();
             let forks: Vec<String> = self
                 .watched
                 .iter()
@@ -1670,4 +1683,12 @@ mod tests {
         assert_eq!(r.received, 7);
         assert_eq!(r.lost, 2);
     }
+}
+
+/// The watch log's version key: an entry's content without its prev link (which a lean or run entry doesn't carry
+/// on the wire), FNV-1a over its member, seq, stamp, payload and carried state. Two versions of a seq differ in it
+/// unless they differ only in prev.
+fn version_key(e: &pe_session::session::Entry) -> u64 {
+    let s = format!("{:?}", (e.member, e.seq, e.stamp, &e.payload, &e.carried));
+    s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
