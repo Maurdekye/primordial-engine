@@ -783,6 +783,14 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
         let left_one = r1.members.len() == 2 && r1.members.contains(&1);
         println!("RESULT {label}: S-4 transition -> {}", if left_one { "one fed member left by request" } else { "FAIL" });
     }
+    // (spike diagnostics, PE_PB_DEBUG) Each member's view-change, leave and carry-over events.
+    if std::env::var("PE_PB_DEBUG").is_ok() {
+        for &m in &ids {
+            for e in sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("VIEW CHANGE") || e.contains("leave") || e.contains("carry-over:") || e.contains("S-4")).take(10) {
+                println!("  m{m}: {e}");
+            }
+        }
+    }
     let finals: Vec<MemberId> = ids.iter().copied().filter(|&m| m != 2 && !thin.contains(&m)).collect();
     verdict(&sim, &finals, label, panic_at);
 }
@@ -1431,8 +1439,11 @@ pub fn cutfix(case: &str) {
     match case {
         "same" | "shrink" | "shrink-same" | "shrink-late" => println!("RESULT {label}: the gap {}", if bites { "BITES" } else { "does not bite here" }),
         _ => {
-            let used = survivors.iter().all(|&m| sim.replica(m, 1).sim.cut_records.get(&2).is_some_and(|rec| rec.voters.iter().any(|v| v.0 == 3 && !v.3 && v.1.is_some() && v.2 > 0)));
-            println!("RESULT {label}: 3's evidence in 2's cut at every replica: {}", if used { "yes" } else { "NO -> FAIL" });
+            // Carry-over: 3's evidence counts in epoch 0's vouch whether or not 3 had left by the time a replica finalized
+            // 2's cut (the left-member rule it replaced counted it only once 3 had left); reported, not required.
+            let used = survivors.iter().all(|&m| sim.replica(m, 1).sim.cut_records.get(&2).is_some_and(|rec| rec.voters.iter().any(|v| v.0 == 3 && v.1.is_some() && v.2 > 0)));
+            let left: Vec<(MemberId, bool)> = survivors.iter().map(|&m| (m, sim.replica(m, 1).sim.cut_records.get(&2).is_some_and(|rec| rec.voters.iter().any(|v| v.0 == 3 && !v.3)))).collect();
+            println!("RESULT {label}: 3's evidence in 2's cut at every replica: {} (3 had left when the cut was finalized, per replica: {left:?})", if used { "yes" } else { "NO -> FAIL" });
             if case == "move" {
                 let moved: Vec<(MemberId, Option<(u32, u32)>)> = survivors.iter().map(|&m| (m, sim.replica(m, 1).sim.cut_records.get(&2).map(|r| (r.cut, r.without_left)))).collect();
                 let all = moved.iter().all(|(_, c)| c.is_some_and(|(a, b)| a > b));
@@ -1455,8 +1466,9 @@ pub fn cutfix(case: &str) {
 ///   cut.
 /// - Member 2 casts no view-change entries from 4.4 s to 6.5 s, so B_4 comes from 1's and 3's votes, and 3's vote reaches
 ///   the others 1 s late, so the kick decides near 6 s.
-/// Expected: in one level (PE_ONE_LEVEL=1, the build before Q2) replica 1 counts 4's entries from 4 s once alpha arrives,
-/// and they are void at 4's cut (BITES, or a panic). With two levels it counts none of them before the cut; ALL EQUAL.
+/// Expected: with the old final term (PE_OLD_FINAL=1: the build before Q2's rulings) replica 1 counts 4's entries from
+/// 4 s once alpha arrives, and they are void at 4's cut (BITES, or a panic). With the ruled final term (every member's
+/// acks to its B or its end of the epoch, named heads capped at B) the cut covers them; ALL EQUAL.
 ///
 /// "q1corner" (Q1's liveness corner, ruled m0813b922e026): the same session without the filters, and member 3 crashes as
 /// it enters epoch 1. Epoch 1 = {1, 2, 3} then has a member that never references the others' first acks of epoch 1,
@@ -1464,8 +1476,8 @@ pub fn cutfix(case: &str) {
 pub fn premise1(case: &str) {
     let ids: Vec<MemberId> = (1..=4).collect();
     let corner = case == "q1corner";
-    let one = std::env::var("PE_ONE_LEVEL").is_ok();
-    let label = if corner { "q1corner".to_string() } else { format!("premise1 ({})", if one { "one level, PE_ONE_LEVEL" } else { "two levels" }) };
+    let old = std::env::var("PE_OLD_FINAL").is_ok();
+    let label = if corner { "q1corner".to_string() } else { format!("premise1 ({})", if old { "the old final term, PE_OLD_FINAL" } else { "the ruled final term" }) };
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
     let plans = |m: MemberId| {
         let step = if m == 4 { 6 } else { 30 };
