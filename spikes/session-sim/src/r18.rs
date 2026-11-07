@@ -417,6 +417,11 @@ pub fn capped(o: &Opts) {
                     if !vcs.is_empty() {
                         println!("RESULT     view changes at member 1: {}", vcs.join("; "));
                     }
+                    // (spike diagnostics, on stderr so the committed logs keep their lines) each decision's round at
+                    // member 1, and gap 1's round fallbacks per member.
+                    let rounds: Vec<String> = r1.vc_log.iter().map(|d| format!("epoch {} round {}", d.0, d.2)).collect();
+                    let fb: Vec<String> = ids.iter().map(|&m| sim.replica(m, 1).sim.stats.round_fallbacks.to_string()).collect();
+                    eprintln!("DIAG view changes at member 1 {rounds:?}; round fallbacks per member {}", fb.join(" / "));
                     if o.crash.is_some() {
                         println!(
                             "RESULT     removal votes cast per member (silence): {}",

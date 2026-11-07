@@ -1468,7 +1468,7 @@ fn main() {
         Some("premise1") => partb::premise1("premise1"),
         Some("q1corner") => partb::premise1("q1corner"),
         Some("window1") => partb::window1(),
-        Some("holdings") => partb::holdings(),
+        Some("fedcatch") => partb::fedcatch(),
         Some("partbrand") => partb::partbrand(&args),
         Some("pbchurn") => partb::pbchurn(&args),
         Some("fork9") => p24r::fork9(),
