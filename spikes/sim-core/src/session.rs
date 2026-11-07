@@ -2284,8 +2284,9 @@ pub struct WorldSim {
     /// out at (the echo's start, or one it passed and I came to hold). While my echo is ahead of my held head, or after
     /// a conflict, my acks name no new head past it.
     echo_verified: BTreeMap<MemberId, u32>,
-    /// The feed exit's background catch-up: per author, the start of my last catch-up request while fed, and when (ms).
-    catchup_asked: BTreeMap<MemberId, (u32, u64)>,
+    /// The feed exit's catch-up (while fed, and in the echo phase): per author, the start of my last request, when (ms),
+    /// and its attempt at that start.
+    catchup_asked: BTreeMap<MemberId, (u32, u64, u32)>,
     /// Part B (TLP-27): per author, the checkpoint state after the newest entry of its chain I validated: the
     /// newest checkpoint's block and id.
     ckpt: BTreeMap<MemberId, (u64, EntryId)>,
@@ -6409,6 +6410,10 @@ impl WorldSim {
     pub fn take_fetches(&mut self, now_ms: u64) -> Vec<(MemberId, Msg)> {
         let mut out = Vec::new();
         for (to, author, from, upto) in std::mem::take(&mut self.wants) {
+            // The feed exit (b): the catch-up's own range goes out once at a time, not to every holder.
+            if self.catchup_covers(author, from) {
+                continue;
+            }
             // Review R3-9: the same range is re-asked with exponential backoff, 60 ms doubling up to
             // 2 s, so a congested link is not flooded with repeats of requests whose replies are
             // still queued (a fixed 60 ms was shorter than a congested round trip).
