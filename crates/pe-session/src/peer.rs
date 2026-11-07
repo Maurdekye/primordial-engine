@@ -349,7 +349,7 @@ impl SessionCore {
         Some(frame_local.min(self.next_ack_us))
     }
 
-    /// Whether a payload other than a hand pose can be authored now.
+    /// Whether a payload other than a hand pose or an admin entry can be authored now.
     pub fn ready(&self) -> bool {
         self.started && self.sim.caught_up() && self.sim.frame == self.sim.now
     }
@@ -709,16 +709,21 @@ impl SessionCore {
                     }
                 }
             }
+            // Admin entries are authored while this replica is paused or behind, as hand poses are
+            // (design 12.4, "Admin entries while paused"): each is judged in the view change on its
+            // signature, its epoch and the roles of the sequence before it (`AdminRun`), never on the
+            // sim's state, and its stamp (the present, as a vote's) only orders it. An admin can then
+            // kick the member a pause is waiting on, the pause the user's ruling ends by a kick.
+            Payload::Kick { target, rejoin, .. } => self.sim.kick_with(target, rejoin),
+            Payload::Ban { key, on, perma, .. } => self.sim.ban(key, on, perma),
+            Payload::SetRole { member, role, .. } => self.sim.set_role(member, role),
+            Payload::DefineRole { role, perms, .. } => self.sim.define_role(role, perms),
             p => {
                 if !self.ready() {
                     return Err(AuthorError::NotReady);
                 }
                 match p {
                     Payload::Touch { obj, .. } => self.sim.author(p, Some(obj)),
-                    Payload::Kick { target, rejoin, .. } => self.sim.kick_with(target, rejoin),
-                    Payload::Ban { key, on, perma, .. } => self.sim.ban(key, on, perma),
-                    Payload::SetRole { member, role, .. } => self.sim.set_role(member, role),
-                    Payload::DefineRole { role, perms, .. } => self.sim.define_role(role, perms),
                     p => self.sim.author(p, None),
                 }
             }
@@ -974,6 +979,39 @@ mod tests {
     /// Two cores wired back to back with no loss: they start, exchange acks, confirm frames, and a
     /// touch by member 1 reaches member 2 with equal history.
     #[test]
+    /// Admin entries are authored while the replica is paused (design 12.4, "Admin entries while
+    /// paused"); a touch is not. Member 2 never reaches member 1, so 1's confirmation stalls and its
+    /// sim pauses at the speculation limit.
+    #[test]
+    fn admin_entries_are_authored_while_paused() {
+        let scene = SceneKind::Pile { side: 2, layers: 2 };
+        let mut a = core(1, &[1, 2], scene);
+        a.start(0);
+        let mut paused_at = None;
+        for ms in 0..20_000u64 {
+            a.tick(ms * 1000);
+            let _ = a.outbox();
+            if a.started() && !a.ready() && a.sim.caught_up() {
+                paused_at = Some(ms);
+                break;
+            }
+        }
+        let ms = paused_at.expect("1 pauses with no word from 2");
+        assert!(a.sim.is_member(2), "2 is still a member at {ms} ms");
+        let touch = a.author(Payload::Touch { obj: 1, impulse: [0.0, 5.0, 0.0], grab: false }, 0);
+        assert!(matches!(touch, Err(AuthorError::NotReady)), "a touch waits: {touch:?}");
+        let present = a.sim.frame.max(a.sim.now);
+        for p in [
+            Payload::DefineRole { epoch: 0, role: 7, perms: 0 },
+            Payload::SetRole { epoch: 0, member: 2, role: 7 },
+            Payload::Ban { epoch: 0, key: crate::ownership::test_key(9), on: true, perma: false },
+            Payload::Kick { epoch: 0, target: 2, rejoin: crate::session::Rejoin::Free },
+        ] {
+            let e = a.author(p.clone(), 0).unwrap_or_else(|e| panic!("{p:?} while paused: {e:?}"));
+            assert_eq!(e.stamp, present, "stamped at the present, as a vote");
+        }
+    }
+
     fn two_cores_confirm_and_agree() {
         let scene = SceneKind::Pile { side: 2, layers: 2 };
         let (mut a, mut b) = (core(1, &[1, 2], scene), core(2, &[1, 2], scene));
