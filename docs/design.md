@@ -3127,6 +3127,22 @@ entries that the view change commits (10.8).
   * An admin may kick anyone by one signed entry; the view change only commits it, in order (D80).
     Kicking an admin is a permission of its own: by default only admins hold it, and a session may give
     it to other roles (V1, 08:31Z).
+  * **Admin entries while paused** (coordinator decision 2026-11-07; found by @engine-architect in
+    cutfix-shrink). A pause that only a kick ends (trust survey #4; Part B beyond its tolerance, user
+    2026-11-01 17:26Z, msg m91230d5adacb, Q1 (b)) pauses the admin's own replica too. So kicks, bans,
+    role definitions and role grants are authored while their author's replica is paused or behind its
+    clock, as hand poses and votes are. Touches and every other payload still need a caught-up replica.
+    * **Why it is safe:** none of the four reads the sim. Each is judged in the view change, in commit
+      order, on its signature, its epoch (never later than the deciding replica's) and the roles left by
+      the entries before it (the admin sequence, `AdminRun`), and it applies at the decision, not at a
+      frame. Role grants and definitions are ordered with the other membership changes the same way
+      (Roles, below), so they are as safe as kicks and bans.
+    * **Its stamp** is the present, `max(frame, now)`, as a vote's: at or past its author's horizon. It
+      only orders the entry among the admin entries (stamp, member, seq).
+    * **Its epoch** is the author's latest decided epoch. A replica that is behind on decisions signs an
+      older one, which is still judged; only a later epoch than the decider's is refused.
+    * [V `admin_entries_are_authored_while_paused`: a replica paused with no word from its peer authors
+      all four, stamped at the present, and its touch is refused NotReady; V d80-pausedkick, below.]
   * There is always at least one admin: the last cannot give the role up without handing it on (22:11Z).
   * When no admin is left, by leaving, a kick, a crash or a timeout, the session closes (22:13Z). Closing
     removes every other player, tells everyone that the session has closed, and allows no further change
