@@ -5521,6 +5521,19 @@ impl WorldSim {
         for m in members {
             self.extend_chain(m, out);
         }
+        // F2: rule 2 is decided by an entry's own epoch (`part_b_entry`), which I couldn't read for an entry of this epoch
+        // that I simulated before deciding it. Re-simulate from the earliest such entry: its verdict waited for the epoch,
+        // so it lies above my confirmed frame (cutfix-move: member 6 confirmed member 1's touch at frame 421 simulated
+        // without rule 2 and diverged from every other replica). One below my confirmed frame would change a confirmed
+        // frame, so it is a hard failure (@coordinator-opus m63b968ceb600), not a log line.
+        if self.cfg.localize {
+            let first = self.eff.iter().filter(|(id, _)| self.entries.get(id).is_some_and(|e| self.entry_epoch(e.member, e.seq) == self.epoch)).map(|(_, &f)| f).min();
+            match first {
+                Some(f) if f >= self.conf => self.mark_dirty(f),
+                Some(f) => panic!("F2: m{} entered epoch {} with an entry of it acting at frame {f}, below its confirmed frame {}", self.me, self.epoch, self.conf),
+                None => {}
+            }
+        }
         for x in removed {
             self.adopt_cut(x);
         }

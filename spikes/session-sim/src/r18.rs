@@ -142,6 +142,8 @@ pub fn capped(o: &Opts) {
         // from the gesture's start to the end of the run, to compare with the same cell uncapped.
         let mut lag_sum = vec![0u64; n];
         let mut lag_n = 0u64;
+        // The same samples kept, for a P95 (@coordinator-opus m6ffc48c88e9e).
+        let mut lag_samples: Vec<Vec<u64>> = vec![Vec::new(); n];
         // When each frame became confirmed at each member (wall clock, us), for the hand entries'
         // confirmation latency below.
         let mut conf_at: Vec<Vec<u64>> = vec![Vec::new(); n];
@@ -204,6 +206,7 @@ pub fn capped(o: &Opts) {
                 lag_max[i] = lag_max[i].max(l);
                 if now >= w0 {
                     lag_sum[i] += l;
+                    lag_samples[i].push(l);
                 }
                 while (conf_at[i].len() as u64) < r.conf.min(r.now + 1) {
                     conf_at[i].push(now);
@@ -311,6 +314,20 @@ pub fn capped(o: &Opts) {
             })
             .collect();
         println!("RESULT     hand entries' confirmation latency, frames (max / mean): {}", lat.join(", "));
+        // The same entries' P95 (@coordinator-opus m6ffc48c88e9e), on its own line so the line above stays comparable.
+        let p95s: Vec<String> = conf_at
+            .iter()
+            .zip(&ids)
+            .map(|(c, m)| {
+                let mut l: Vec<f64> = stamps.iter().filter(|&&s| (s as usize) < c.len()).map(|&s| (c[s as usize] as f64 - (100_000 + s * dt_us) as f64) / dt_us as f64).collect();
+                if l.is_empty() {
+                    return format!("m{m} -");
+                }
+                l.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                format!("m{m} {:.1}", l[(l.len() * 95).div_ceil(100) - 1])
+            })
+            .collect();
+        println!("RESULT     hand entries' confirmation latency P95, frames: {}", p95s.join(", "));
         if o.by_kind {
             // Where each member's offered bytes went during the gesture (kbit/s, messages/s, mean bytes).
             for &m in &ids {
@@ -326,6 +343,18 @@ pub fn capped(o: &Opts) {
         println!(
             "RESULT     mean confirmation lag per member from the gesture's start, frames: {}",
             join(lag_sum.iter().map(|s| format!("{:.1}", *s as f64 / lag_n.max(1) as f64)).collect())
+        );
+        println!(
+            "RESULT     P95 confirmation lag per member from the gesture's start, frames: {}",
+            join(
+                lag_samples
+                    .iter_mut()
+                    .map(|v| {
+                        v.sort_unstable();
+                        if v.is_empty() { "-".to_string() } else { v[(v.len() * 95).div_ceil(100) - 1].to_string() }
+                    })
+                    .collect()
+            )
         );
         println!(
             "RESULT     member 1's own hand against its target, over {} gesture frames: mean {:.2} mm, max {:.2} mm",
