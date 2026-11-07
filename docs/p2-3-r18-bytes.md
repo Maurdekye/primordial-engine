@@ -107,6 +107,10 @@ Now pe-app runs the core's defaults (lean, signed-once runs):
   and sends a run holding A to the other group as its remaining entries, each explicit.
 - [V] m1-loopback ALL EQUAL, and m1-equivocate late, split and split-held ALL EQUAL. In split-held, member 4 sees
   version B first and A only through the delayed relays; every honest member counts A.
+- Lean changes the held split's timings, not its outcome (@shader-reviewer, f87f58b). Member 4's lean copy of A's
+  successor fails to verify against its version B, so the fork proof waits one explicit-fetch round trip: 8.248 s
+  instead of 8.126 s, and the split lasts about 15 frames instead of 8. The committed held-split timings
+  (spikes/out/m1/equivocation-split-held-loopback-windows) are the explicit wire's; the lean run is beside them.
 
 Single gesture, batched + adaptive, member 1 (explicit = pe-session before option 1, set by `PE_LEAN=0`;
 what-if 3 = the earlier byte charge):
