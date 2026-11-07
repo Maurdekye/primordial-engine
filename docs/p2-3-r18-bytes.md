@@ -205,18 +205,23 @@ is in `_teams/1827/opt2-triage.md`. In short:
 **R18 cells, option 2 against main** (batched + adaptive; stalled frames per member / back in real time after
 the gesture; main measured at b57ec86 in its own worktree and target dir; option 2 at b02d3e2):
 
-| Cell | Main (option 1) | Option 2 | Spike (`spikes/out/r18`) |
-|---|---|---|---|
-| 32, 48, 64, 256 kbit/s; 32 two gestures and after 5 min | 0 / at once | 0 / at once | 0 / at once |
-| 16 kbit/s | 1,527 / 1,541, never | 458 / 462, 6.5 s | at once |
-| 16, two gestures (40 s gap) | 2,651 / 2,665, 37.5 s | 458 / 462, 6.5 s | |
-| 16, second gesture after 310 s | 2,288 / 2,297, 37.5 s | 882 / 892, 6.5 s | |
-| 12 kbit/s | 1,530 / 1,539, never | 1,046 / 1,048, 16.3 s | 21.7 s |
-| 12, two gestures | 3,689 / 3,703, never | 1,489 / 1,494, 16.3 s | |
-| step 64 -> 16 | 1,497 / 1,512, never | 318 / 330, 4.8 s | 61 ms |
-| 8 kbit/s | 1,537 / 1,539, never (DIFFER) | 1,530 / 1,533, never (DIFFER) | never |
-| four members sharing 64 | 1,430 / 161 / 161 / 163, 1,197 ms | 1,423 / 160 / 160 / 160, 1,248 ms | at once |
-| slow member on 8 kbit/s (others at 256) | 163 / 166 / 940, 1,402 ms | 159 / 162 / 932, 1,400 ms | |
+| Cell | Main (option 1) | Option 2 | Spike before Part A (06c41d7~1) | Spike with Part A (`spikes/out/r18`) |
+|---|---|---|---|---|
+| 32, 48, 64, 256 kbit/s; 32 two gestures and after 5 min | 0 / at once | 0 / at once | 0 / at once | 0 / at once |
+| 16 kbit/s | 1,527 / 1,541, never | 458 / 462, 6.5 s | 449 / 452, 7.3 s | 0 / 0, at once |
+| 16, two gestures (40 s gap) | 2,651 / 2,665, 37.5 s | 458 / 462, 6.5 s | 449 / 452, 7.3 s | 0 / 0, at once |
+| 16, second gesture after 310 s | 2,288 / 2,297, 37.5 s | 882 / 892, 6.5 s | 887 / 892, 7.3 s | 0 / 0, at once |
+| 12 kbit/s | 1,530 / 1,539, never | 1,046 / 1,048, 16.3 s | 874 / 873, 13.6 s | 0 / 0, at once |
+| 12, two gestures | 3,689 / 3,703, never | 1,489 / 1,494, 16.3 s | 874 / 873, 13.6 s | 0 / 0, at once |
+| step 64 -> 16 | 1,497 / 1,512, never | 318 / 330, 4.8 s | 285 / 287, 5.1 s | 0 / 0, 129 ms |
+| 8 kbit/s | 1,537 / 1,539, never (DIFFER) | 1,530 / 1,533, never (DIFFER) | 1,519 / 1,521, never (DIFFER) | 224 / 209, 3.3 s |
+| four members sharing 64 | 1,430 / 161 / 161 / 163, 1,197 ms | 1,423 / 160 / 160 / 160, 1,248 ms | 1,408 / 156 / 157 / 157, 1,442 ms | 0 x 4, at once |
+| slow member on 8 kbit/s (others at 256) | 163 / 166 / 940, 1,402 ms | 159 / 162 / 932, 1,400 ms | 204 / 207 / 924, 2,378 ms | 618 / 618 / 621, 10.5 s |
+
+- **The spike columns (corrected 2026-11-07).** This column used to read 16k at once, 12k 21.7 s and the step 61 ms,
+  read while thin links Part A was landing, so it mixed eras. Both spike columns are now the committed logs: before
+  Part A (06c41d7~1) and with it (main). **Option 2 matches the spike before Part A cell for cell; the gap to today's
+  spike is Part A**, which is spike-only so far (see "Where the gap to the spike is" below).
 
 - **Stale main cells corrected (bisected 2026-11-02).**
   - Main's committed `capped-slow-member` and `capped-4members-shared64` logs dated from option 1's landing
@@ -228,6 +233,35 @@ the gesture; main measured at b57ec86 in its own worktree and target dir; option
   - pe-session now matches the spike's non-adaptive slow-member cell under #4 (design 10.9, review PL-1).
 - **8 kbit/s** still never recovers, and its end state DIFFERs between members, as on main: the unconfirmed tail
   of a run that never catches up.
+
+**Where the gap to the spike is: bytes per entry by part** [V] (2026-11-07, main acbb39d + instrumentation,
+`--by-kind`; logs `spikes/out/r18-pe/bytes/parts-*.log`). Batched + adaptive, the counting window; bytes per entry
+on the wire; framing is message, run and batch framing plus messages that carry no entry; the datagram overhead is
+52 B per datagram, spread over its entries:
+
+| Cell, member | Side | Entries/s | Header | Prev | Head ids | Payload | Signatures | Framing | Datagram | Total B |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 16 kbit/s, m1 (sweeper) | pe-session | 28.4 | 16 | 0 | 0 | 40.2 | 53.5 | 2.5 | 43.5 | 155.7 |
+| | spike (Part A) | 31.7 | 16 | 8 | 3.2 | 29.0 | 0 | 2.3 | 37.2 | 95.7 |
+| 16 kbit/s, m2 | pe-session | 17.5 | 16 | 0 | 0 | 23.6 | 64.0 | 5.2 | 56.9 | 165.7 |
+| | spike (Part A) | 23.2 | 16 | 8 | 8.0 | 39.0 | 0 | 1.3 | 53.2 | 125.5 |
+| step 64 -> 16, m1 | pe-session | 39.9 | 16 | 0 | 0 | 32.5 | 49.5 | 2.3 | 40.2 | 140.6 |
+| | spike (Part A) | 50.8 | 16 | 8 | 2.9 | 27.2 | 0 | 2.5 | 33.5 | 90.2 |
+| step 64 -> 16, m2 | pe-session | 21.9 | 16 | 0 | 0 | 24.5 | 64.0 | 5.5 | 55.9 | 165.9 |
+| | spike (Part A) | 27.3 | 16 | 8 | 8.0 | 39.0 | 0 | 1.6 | 54.6 | 127.2 |
+
+- **Signatures** are the largest difference, 50-64 B an entry. pe-session leaves out the prev id and the ack head
+  ids, which the spike sends (8 B and 8 B a head). Charged as free (`--what-if 4`, measurement only), 16 kbit/s comes
+  back after 2.4 s (176 / 173 stalled) and the step after 2.1 s (96 / 89), against 6.5 s and 4.8 s. That's real
+  headroom, but it does not reach the spike with Part A.
+- **Part A is the rest**, in the same logs:
+  - **Delta-coded hand packs.** A hand entry's payload is 23 B in the spike, 51 B in pe-session (8 whole i32
+    targets).
+  - **Levels 6-8 and their climb rule.** At 16 kbit/s pe-session sits at level 5 (stride 8) for 27.0 s; the spike
+    before Part A did too (26.9 s); the spike with Part A spends 24.0 s at level 1 and visits 6-8.
+- **So the gap this item was opened for is closed** against the spike it was measured against (before Part A). The
+  Part A port to pe-session belongs to @item:primordial-engine/localize-congestion-to-the-thin-link-player-othe; the
+  per-entry savings are a backlogged item (signatures, with pe-app's lean wire and the unread polka ids).
 
 **The hole rule's timer and repair under loss (condition (c))** (ballpit, 60 ± 10 ms links, member 2):
 

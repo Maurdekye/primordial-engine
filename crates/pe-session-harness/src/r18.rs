@@ -258,6 +258,30 @@ pub fn capped(o: &Opts) {
                     .map(|(k, (n, b))| format!("{k} {:.1} kbit/s ({:.1}/s x {} B)", *b as f64 * 8.0 / 1000.0 / secs, *n as f64 / secs, b / (*n).max(1)))
                     .collect();
                 println!("RESULT     member {m}'s offered bytes by kind: {}", parts.join(", "));
+                // Entries by kind and part (measurement only): entries/s, then mean bytes per entry:
+                // header (member, seq, stamp), prev id, ack head ids, payload, signatures.
+                let mut tot = [0u64; 6];
+                let mut pk: Vec<String> = Vec::new();
+                for ((_, k), p) in sim.net.parts_from.iter().filter(|((f, _), _)| *f == m) {
+                    for i in 0..6 {
+                        tot[i] += p[i];
+                    }
+                    let n = p[0].max(1) as f64;
+                    pk.push(format!(
+                        "{k} {:.1}/s x {:.1} B (header {:.1}, prev {:.1}, head ids {:.1}, payload {:.1}, sigs {:.1})",
+                        p[0] as f64 / secs, p[1..].iter().sum::<u64>() as f64 / n, p[1] as f64 / n, p[2] as f64 / n, p[3] as f64 / n, p[4] as f64 / n, p[5] as f64 / n
+                    ));
+                }
+                let fr = sim.net.framing_from.get(&m).copied().unwrap_or(0);
+                let dg = sim.net.kinds_from.get(&(m, "(datagram overhead)")).copied().unwrap_or((0, 0));
+                let n = tot[0].max(1) as f64;
+                println!("RESULT     member {m}'s entries by part: {}", pk.join("; "));
+                println!(
+                    "RESULT     member {m}'s entries: {:.1}/s; per entry, B: header {:.1}, prev {:.1}, head ids {:.1}, payload {:.1}, sigs {:.1}, framing and other messages {:.1}, datagram overhead {:.1} ({:.1} datagrams/s); total {:.1}",
+                    tot[0] as f64 / secs, tot[1] as f64 / n, tot[2] as f64 / n, tot[3] as f64 / n, tot[4] as f64 / n, tot[5] as f64 / n,
+                    fr as f64 / n, dg.1 as f64 / n, dg.0 as f64 / secs,
+                    (tot[1..].iter().sum::<u64>() + fr + dg.1) as f64 / n
+                );
                 let st = sim.replica(m, 1).sim.stats;
                 println!(
                     "RESULT     member {m}'s lean entries received: {}, explicit form asked for: {}; waited: {} (mean {:.1}, max {} frames); fetch requests sent (whole run): {}",
