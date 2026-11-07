@@ -1051,6 +1051,9 @@ pub fn cutfix(case: &str) {
     let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 41);
     net.batching = true;
     let case_s = case.to_string();
+    // Diagnostics (the stuck-kick trace, me6b738e13923): PE_SHRINK_UNTIL_MS moves the end of the shrink cells' delay
+    // window (7 s by default).
+    let shrink_until: u64 = std::env::var("PE_SHRINK_UNTIL_MS").ok().and_then(|v| v.parse::<u64>().ok()).map_or(7_000_000, |ms| ms * 1000);
     net.filter = Some(Box::new(move |t, _w, from, to, m| {
         let vc = matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. }));
         match case_s.as_str() {
@@ -1063,7 +1066,7 @@ pub fn cutfix(case: &str) {
             // by repair fetches from 1-4).
             "shrink" | "shrink-same" => {
                 // (Dropped for good, 5 and 6 could never follow 7's chain: their conf stopped and 7's kick never decided.)
-                if (to == 5 || to == 6) && (4_000_000..7_000_000).contains(&t) && matches!(m, Msg::Entry(e) if e.member == 7) {
+                if (to == 5 || to == 6) && (4_000_000..shrink_until).contains(&t) && matches!(m, Msg::Entry(e) if e.member == 7) {
                     Fate::Delay(4_000_000)
                 } else {
                     Fate::Deliver
@@ -1091,10 +1094,22 @@ pub fn cutfix(case: &str) {
     }
     let mut removed: BTreeMap<MemberId, u64> = BTreeMap::new();
     let mut asked = false;
+    // PE_KICK_TRACE=x: every 250 ms from 8.5 s, each live replica's view of the kick of x (`kick_trace`).
+    let kick_trace: Option<MemberId> = std::env::var("PE_KICK_TRACE").ok().and_then(|v| v.parse().ok());
     let panic_at = run_to_end(&mut sim, |s| {
         for &x in &gone {
             if !removed.contains_key(&x) && !s.replica(1, 1).sim.members.contains(&x) {
                 removed.insert(x, s.net.now_us);
+            }
+        }
+        if let Some(x) = kick_trace {
+            if s.net.now_us >= 8_500_000 && s.net.now_us % 250_000 == 0 {
+                for &m in &ids {
+                    let r = &s.replica(m, 1).sim;
+                    if r.members.contains(&m) {
+                        println!("KICK t={} ms m{m} conf {} frame {}: {}", s.net.now_us / 1000, r.conf, r.frame, r.kick_trace(x));
+                    }
+                }
             }
         }
         // "left", "move": member 3 asks to leave as soon as it has applied the kick (sent first, D-5).
