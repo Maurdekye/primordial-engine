@@ -83,8 +83,28 @@ impl WorldSim {
         self.my_last = e.id();
         let se = self.keys.sign(self.world_id, e.clone());
         self.sigs.insert(self.my_last, se.sig);
-        let _ = self.insert_entry(e.clone());
+        let out = self.insert_entry(e.clone());
+        // D80 (fix KICKVOTE): every own entry this insert authored (the kicker's own vote, or say a proposal that my own vote completes)
+        // goes out right behind `e`; anything else it returns was dropped before and still is.
+        if self.fixes_off & fix::KICKVOTE == 0 {
+            let id = e.id();
+            for x in out {
+                if x.member == self.me && x.id() != id && !self.unsent_own.iter().any(|u| u.id() == x.id()) {
+                    self.unsent_own.push(x);
+                }
+            }
+        }
         e
+    }
+
+    /// Own entries authored while inserting another own entry, signed, in chain order, below `seq`
+    /// only if given (D80, fix KICKVOTE). The rest stay queued.
+    pub(crate) fn take_unsent_own(&mut self, below: Option<u32>) -> Vec<SignedEntry> {
+        let q = std::mem::take(&mut self.unsent_own);
+        let (mut take, keep): (Vec<Entry>, Vec<Entry>) = q.into_iter().partition(|e| below.is_none_or(|s| e.seq < s));
+        self.unsent_own = keep;
+        take.sort_by_key(|e| e.seq);
+        take.into_iter().map(|e| self.signed(e)).collect()
     }
 
     /// `e` with the signature this replica holds for it (every entry it holds came signed, or is

@@ -587,6 +587,10 @@ pub struct WorldSim {
     /// D73(a): this member's own hand poses waiting for their pack, by (frame, hand): applied at their
     /// frames on this replica only (`step_frame`). Set by `SessionCore`.
     pub own_pending: BTreeMap<(u64, u32), [i32; 3]>,
+    /// D80 (fix KICKVOTE): any own entry authored while inserting another own entry (the kicker's own
+    /// vote, cast as it records its kick, or say a proposal that one's own vote completes), in chain order, for `SessionCore` to send right behind the
+    /// entry that produced them ([`Self::take_unsent_own`]).
+    pub(crate) unsent_own: Vec<Entry>,
     /// D73(a): while a pack is pending, its first frame: this member's acks declare a horizon below
     /// it, so nothing it confirms can miss the pack.
     pub hold_horizon_below: Option<u64>,
@@ -906,6 +910,7 @@ impl WorldSim {
             my_seq: 0,
             horizon_lag: 0,
             own_pending: BTreeMap::new(),
+            unsent_own: Vec::new(),
             hold_horizon_below: None,
             last_check_sent: None,
             lie_in_votes: false,
