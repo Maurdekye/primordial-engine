@@ -1,4 +1,4 @@
-PROVENANCE commit 657dfb909cbe, sources eccd69bf6be6c3bb, binary b1087720ff8e4767
+PROVENANCE commit c85fea7d7b1f, sources a46e57369344c9d6, binary 7bd5693cfafc9064
 RESULT r18 capped: 500-ball pit, 4 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 1 is on a slow link: 8 kbit/s to and from every peer
@@ -6,7 +6,7 @@ RESULT   transport | wire kbit/s per member | max queue ms per member | cap drop
 RESULT   batched+adaptive |  69.0 /  94.5 /  97.2 /  94.5 | 1212 /  482 /  482 /  482 |   65 |   0 /   0 /   0 /   0 | 1669 /  64 /  64 /  64 | 112 (own entries moved: 0) | 10.1/s,  54 | never | m2 22276348398b573a / m3 22276348398b573a / m4 22276348398b573a replay 22276348398b573a EQUAL
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 61.0 / 56.4 (40 of 45 unconfirmed), m2 54.4 / 53.6, m3 54.4 / 53.7, m4 54.4 / 53.7
 RESULT     hand entries' confirmation latency P95, frames: m1 61.0, m2 54.3, m3 54.4, m4 54.3
-RESULT     mean confirmation lag per member from the gesture's start, frames: 831.8 / 33.2 / 33.5 / 33.3
+RESULT     mean confirmation lag per member from the gesture's start, frames: 831.8 / 33.2 / 33.5 / 33.2
 RESULT     P95 confirmation lag per member from the gesture's start, frames: 1585 / 54 / 54 / 54
 RESULT     member 1's own hand against its target, over 221 gesture frames: mean 709.14 mm, max 1986.18 mm
 RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 15/0/0  164/8/0  164/8/0  164/8/0

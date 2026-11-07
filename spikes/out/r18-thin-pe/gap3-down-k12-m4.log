@@ -1,12 +1,12 @@
-PROVENANCE commit 874e2a168816, sources 54dca850a4bd142c, binary 54e97e960bca8125
+PROVENANCE commit c85fea7d7b1f, sources c9a063e954feee5c, binary 38c7727ab5456715
 RESULT r18 capped: 500-ball pit, 4 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 110 s
 RESULT r18 capped: member 3 is on a slow link: 12 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
 RESULT   batched+adaptive |  80.6 /  62.0 /  67.1 /  55.2 |  494 /  496 /  499 /  490 |   66 | 462 / 462 / 458 / 462 | 570 / 570 / 571 / 570 | 54 (own entries moved: 0) | 11.5/s,  11 | 7463 ms | m1 aed1dec6d70f6098 / m2 aed1dec6d70f6098 / m3 aed1dec6d70f6098 / m4 aed1dec6d70f6098 replay aed1dec6d70f6098 EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 570.9 / 162.8, m2 570.9 / 164.1, m3 571.6 / 182.5, m4 570.9 / 164.2
-RESULT     second gesture (40 s after the first): level at its start 5; max queue ms per member 126 / 0 / 0 / 0; stalled frames during it 0 / 0 / 0 / 0; back to real time after it 62 ms; hand entries' latency (max / mean) m1 29.4 / 21.5, m2 29.5 / 21.5, m3 29.0 / 22.0, m4 29.5 / 21.6
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 570.8 / 162.7, m2 570.7 / 164.1, m3 571.5 / 182.5, m4 570.7 / 164.1
+RESULT     second gesture (40 s after the first): level at its start 5; max queue ms per member 123 / 0 / 0 / 0; stalled frames during it 0 / 0 / 0 / 0; back to real time after it 62 ms; hand entries' latency (max / mean) m1 29.4 / 21.5, m2 29.5 / 21.5, m3 28.9 / 22.0, m4 29.5 / 21.6
 RESULT     gesture 3 (40 s after the one before): level at its start 5; max queue ms per member 78 / 0 / 0 / 0; stalled frames during it 0 / 0 / 0 / 0; back to real time after it 0 ms; hand entries' latency (max / mean) m1 27.7 / 20.1, m2 27.6 / 20.6, m3 27.7 / 20.9, m4 27.6 / 20.6; member 1's own hand during it: mean 50.11 mm, max 676.71 mm over 221 frames
-RESULT     mean confirmation lag per member from the gesture's start, frames: 39.3 / 39.3 / 39.5 / 39.3
+RESULT     mean confirmation lag per member from the gesture's start, frames: 39.3 / 39.3 / 39.4 / 39.3
 RESULT     member 1's own hand against its target, over 591 gesture frames: mean 123.01 mm, max 801.85 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2418, 100, 100, 100, 100, 96321, 2003, 3475, 5285] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2418, 100, 100, 100, 100, 96327, 2003, 3472, 5282] ms
 RESULT     controller on member 3, the slow member: time at each level: [2868, 100, 100, 100, 98040, 5100, 400, 400, 2793] ms

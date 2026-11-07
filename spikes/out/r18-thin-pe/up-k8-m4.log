@@ -1,10 +1,10 @@
-PROVENANCE commit 874e2a168816, sources 54dca850a4bd142c, binary 54e97e960bca8125
+PROVENANCE commit c85fea7d7b1f, sources c9a063e954feee5c, binary 38c7727ab5456715
 RESULT r18 capped: 500-ball pit, 4 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: member 1 is on a slow link: 8 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive |  63.9 /  57.8 /  55.4 /  62.3 |  498 /  491 /  497 /  477 |  104 | 1534 / 155 / 156 / 155 | 1654 / 275 / 276 / 275 | 11 (own entries moved: 0) |  6.0/s,  95 | never | m1 4ff5cf2cb44b1353 / m2 0c6af26222a4714d / m3 0c6af26222a4714d / m4 0c6af26222a4714d replay 4ff5cf2cb44b1353 DIFFER
+RESULT   batched+adaptive |  63.9 /  57.8 /  55.4 /  62.3 |  498 /  485 /  499 /  477 |  105 | 1534 / 155 / 156 / 156 | 1654 / 275 / 276 / 275 | 11 (own entries moved: 0) |  6.0/s,  95 | never | m1 4ff5cf2cb44b1353 / m2 0c6af26222a4714d / m3 0c6af26222a4714d / m4 0c6af26222a4714d replay 4ff5cf2cb44b1353 DIFFER
 RESULT     confirmed prefixes (end state DIFFER): each live replica's confirmed frames against a replay of its own log: m1 140 EQUAL, m2 1776 EQUAL, m3 1776 EQUAL, m4 1776 EQUAL; the 140 frames all have confirmed, across replicas: EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 25.2 / 10.6 (19 of 39 unconfirmed), m2 276.1 / 124.6, m3 276.1 / 124.6, m4 276.0 / 124.6
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 25.2 / 10.6 (19 of 39 unconfirmed), m2 276.1 / 124.6, m3 276.1 / 124.6, m4 276.1 / 124.6
 RESULT     mean confirmation lag per member from the gesture's start, frames: 816.8 / 36.0 / 36.1 / 36.1
 RESULT     member 1's own hand against its target, over 140 gesture frames: mean 258.59 mm, max 725.79 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2318, 100, 100, 100, 100, 721, 533, 4019, 21911] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2318, 100, 100, 100, 100, 721, 533, 4023, 21907] ms
