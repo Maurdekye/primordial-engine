@@ -76,6 +76,48 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
         .collect();
     let bad: u64 = ids.iter().map(|&m| sim.replica(m, 1).sim.stats.checks_bad).sum();
     let equal = ds.iter().all(|(_, _, d, r)| d == r);
+    // Diagnostics: for each replica that differs from the replay over its own confirmed frames, the first frame that
+    // differs and how that replica and the replay treat the entries acting near it.
+    for &(m, f, d, r) in &ds {
+        if d == r {
+            continue;
+        }
+        let me = &sim.replica(m, 1).sim;
+        let Some(g) = (0..f).find(|g| me.hashes.get(g) != rs.hashes.get(g)) else { continue };
+        let acts: Vec<String> = final_log(first)
+            .iter()
+            .filter(|(_, eff)| eff + 2 >= g && *eff <= g + 2)
+            .map(|(e, eff)| {
+                let id = e.id();
+                format!(
+                    "m{} s{} stamp {} eff {} | m{m}: eff {:?} verdict {:?} outcome {:?} rule2 {:?} | replay {:?} rule2 {:?}",
+                    e.member,
+                    e.seq,
+                    e.stamp,
+                    eff,
+                    me.effective_frame(id),
+                    me.verdicts.get(&id),
+                    me.outcomes.get(&id),
+                    me.rule2.get(&id),
+                    rs.outcomes.get(&id),
+                    rs.rule2.get(&id)
+                )
+            })
+            .collect();
+        println!("  m{m} first differs from the replay at frame {g} (its conf {}): acting near it {:?}", me.conf, acts);
+        // And what this replica has acting near g that the final log doesn't count there.
+        let fin: BTreeMap<EntryId, u64> = final_log(first).iter().map(|(e, eff)| (e.id(), *eff)).collect();
+        let extra: Vec<String> = me
+            .all_entries()
+            .into_iter()
+            .filter_map(|e| {
+                let id = e.id();
+                let eff = me.effective_frame(id)?;
+                (eff + 2 >= g && eff <= g + 2 && fin.get(&id) != Some(&eff)).then(|| format!("m{} s{} stamp {} eff {} verdict {:?} | final {:?}", e.member, e.seq, e.stamp, eff, me.verdicts.get(&id), fin.get(&id)))
+            })
+            .collect();
+        println!("  m{m} near frame {g}, acting there but not so in the final log: {extra:?}");
+    }
     for &m in ids {
         let r = &sim.replica(m, 1).sim;
         println!(
@@ -89,6 +131,58 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
         if equal && bad == 0 { "ALL EQUAL, NO FALSE CHECKS" } else { "FAIL" }
     );
     equal && bad == 0
+}
+
+/// Confirmation lag with no view change (@design-reviewer m7ebc9e6128aa, @coordinator-opus m6ffc48c88e9e): every 6
+/// frames from 4 s, each listed member's present frame minus its confirmed frame, leaving out the 3 s after each view
+/// change member 1 decides. Mean and P95 per member.
+struct LagSampler {
+    members: Vec<MemberId>,
+    samples: BTreeMap<MemberId, Vec<u64>>,
+    epoch: u32,
+    quiet_from: u64,
+}
+
+impl LagSampler {
+    fn new(members: &[MemberId]) -> Self {
+        LagSampler { members: members.to_vec(), samples: BTreeMap::new(), epoch: 0, quiet_from: 0 }
+    }
+
+    fn sample(&mut self, s: &Sim) {
+        let now = s.net.now_us;
+        let e = s.replica(1, 1).sim.epoch;
+        if e != self.epoch {
+            self.epoch = e;
+            self.quiet_from = now + 3_000_000;
+        }
+        if now < 4_000_000 || now < self.quiet_from || now % 100_000 != 0 {
+            return;
+        }
+        for &m in &self.members {
+            let r = &s.replica(m, 1).sim;
+            if r.members.contains(&m) {
+                self.samples.entry(m).or_default().push(r.now.saturating_sub(r.conf));
+            }
+        }
+    }
+
+    fn report(&self, label: &str) {
+        let v: Vec<String> = self
+            .members
+            .iter()
+            .map(|m| {
+                let mut x = self.samples.get(m).cloned().unwrap_or_default();
+                if x.is_empty() {
+                    return format!("m{m} -");
+                }
+                x.sort_unstable();
+                let mean = x.iter().sum::<u64>() as f64 / x.len() as f64;
+                let p95 = x[(x.len() * 95).div_ceil(100) - 1];
+                format!("m{m} {mean:.1} / {p95}")
+            })
+            .collect();
+        println!("RESULT {label}: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): {}", v.join(", "));
+    }
 }
 
 /// Revision 22, S-4: at 3 players with member 3 fed (8 kbit/s each way), member 2 drops under the floor (0.5 kbit/s each
@@ -327,7 +421,10 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
     let mut fed_at_kick: Vec<bool> = Vec::new();
     let mut fed_at_decide: Vec<bool> = Vec::new();
     let mut acks_before: BTreeMap<MemberId, u64> = BTreeMap::new();
+    let full: Vec<MemberId> = ids.iter().copied().filter(|m| !thin.contains(m) && !withhold.contains(m)).collect();
+    let mut lag = LagSampler::new(&full);
     let panic_at = run_to_end(&mut sim, |s| {
+        lag.sample(s);
         // Rev 22 cadence trace: each fed-candidate's R18 level, ack interval, acks in the last second, uplink offered
         // (mean over its links) and deepest uplink queue, once a second.
         if s.net.now_us % 1_000_000 == 0 && s.net.now_us > 0 {
@@ -360,6 +457,7 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
             fed_at_decide = thin.iter().map(|&f| s.is_fed(1, f)).collect();
         }
     });
+    lag.report(label);
     // What fills a fed member's uplink: bytes by kind it offered from 4 s on, per link (n − 1 links).
     let secs = (sim.end_us.saturating_sub(4_000_000)) as f64 / 1e6;
     for &f in thin {
@@ -597,7 +695,9 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
     // then.
     let mut shrunk: Option<(u64, Vec<MemberId>, Vec<u64>)> = None;
     let full: Vec<MemberId> = ids.iter().copied().filter(|m| !thin.contains(m)).collect();
+    let mut lag = LagSampler::new(&full);
     let panic_at = run_to_end(&mut sim, |s| {
+        lag.sample(s);
         // The dip: the fed members' links at `bps` from `from` to `to`, then back.
         if let Some((from, to, bps)) = dip {
             if s.net.now_us == from || s.net.now_us == to {
@@ -616,6 +716,7 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
             shrunk = Some((s.net.now_us, s.replica(1, 1).sim.members.iter().copied().collect(), paused));
         }
     });
+    lag.report(label);
     let leaves: Vec<String> = ids.iter().flat_map(|&m| sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("leaves by request")).cloned().collect::<Vec<_>>()).collect();
     println!("RESULT {label}: leave requests: {}", if leaves.is_empty() { "none".to_string() } else { format!("{leaves:?}") });
     match &shrunk {
@@ -876,42 +977,64 @@ pub fn join_fed(case: &str) {
     verdict(&sim, &finals, &label, panic_at);
 }
 
-/// Revision 21 (a)'s cut with a membership change on top of it (@coordinator-opus m6426247221b1): one n = 7 fixture, two
-/// cells. Everyone acts (a touch every 30 frames, member 2 every 6), and member 1 kicks at frame 360.
+/// Revision 21 (a)'s cut with a membership change on top of it (@coordinator-opus m6426247221b1, me443fa9be2b8): one
+/// n = 7 fixture. Everyone acts (a touch every 30 frames, the cell's often-acting member every 6), and member 1 kicks.
 /// - "left": member 1 kicks 2, and member 3 asks to leave once it has applied the kick, before 2's cut is final. The
 ///   view-change entries to member 7 run 3 s late from 5.5 s to 9.5 s, so 7 reaches the new epochs late and 2's cut
 ///   waits for it. Expected: 2's cut is final with 3's evidence (its acks up to its own cut), the same at every replica;
 ///   nothing counted past either cut; ALL EQUAL.
+/// - "move": "left" with 2's entries reaching 6 and 7 6 s late from 5 s to 8 s (from anyone, so repairs too), so 1, 3,
+///   4 and 5 are the fast four and 3's evidence decides 2's cut: expected cut > the cut without 3 at every replica.
 /// - "same": member 1 kicks 2 and 3 at once, so one change removes both. Member 2's entries reach 5 late (250 ms) and 6
 ///   and 7 later (750 ms), so 3's references to 2's chain run ahead of most survivors', and 3 gives 2's cut no evidence
 ///   (the open gap). It bites if an entry of 2 counted past its cut, or a replica rolls back below its confirmed frame.
+/// - "shrink" (gap 2, mdb972350db64): member 7 acts often, and its entries sent from 4 s to 7 s reach 5 and 6 4 s late
+///   (from anyone). Member 1 kicks 2 and 3 (two of 7's fast referencers) at frame 360 and 7 at frame 540. The aim: 7's
+///   epoch-0 entries counted with 2's and 3's references, and its cut, computed with its last epoch's members (1, 4, 5,
+///   6), falling below them. As run, 5 and 6 catch up by repair once the window ends, before 7's removal, and the gap
+///   doesn't bite; with the window past the kick (to 9.5 s or 10 s) 7 is never removed in the run, since its removal
+///   needs 5 and 6, the survivors whose evidence would have lowered the cut.
+/// - "shrink-same": the same with 2 and 7 removed in one change (hole 1): 2 gives 7's cut no evidence today.
 pub fn cutfix(case: &str) {
     let ids: Vec<MemberId> = (1..=7).collect();
     let label = format!("cutfix-{case}");
-    let same = case == "same";
-    // "same": a kick is listed only once a quorum has frozen its target's chain, and commit order holds the later kick
-    // back, so the first proposal took one kick and the next change the other. So the round-0 proposer of epoch 0 is one
-    // of the two kicked members (the first session seed that makes it so), and both stay out of view changes: round 0
-    // times out, and round 1's proposer holds both kicks' votes.
-    let seed = if same {
+    let left = case == "left" || case == "move";
+    let shrink = case == "shrink" || case == "shrink-same";
+    // The member acting often, whose cut the cell is about.
+    let busy: MemberId = if shrink { 7 } else { 2 };
+    let (gone, withhold): (Vec<MemberId>, Vec<MemberId>) = match case {
+        "same" => (vec![2, 3], vec![2, 3]),
+        "shrink" => (vec![2, 3, 7], vec![]),
+        "shrink-same" => (vec![2, 7], vec![2, 7]),
+        _ => (vec![2, 3], vec![]),
+    };
+    // A kick is listed only once a quorum has frozen its target's chain, and commit order holds the later kick back, so
+    // to remove two members in one change the round-0 proposer of epoch 0 is one of them (the first session seed that
+    // makes it so) and both stay out of view changes: round 0 times out, and round 1's proposer holds both kicks' votes.
+    let seed = if withhold.is_empty() {
+        SimConfig::default().seed
+    } else {
         (0u64..1000)
             .find(|&s| {
                 let mut p = Peer::new(1, 0);
                 p.join(1, &ids, SCENE, SimConfig { localize: true, seed: s, ..SimConfig::default() }, 100_000, BTreeMap::new());
-                matches!(p.worlds[&1].sim.proposer_of(0, 0), Some(2) | Some(3))
+                p.worlds[&1].sim.proposer_of(0, 0).is_some_and(|m| withhold.contains(&m))
             })
-            .expect("a seed whose first proposer is 2 or 3")
-    } else {
-        SimConfig::default().seed
+            .expect("a seed whose first proposer is a withholding member")
     };
     let cfg = SimConfig { localize: true, seed, ..SimConfig::default() };
+    let kicks: Vec<(u64, MemberId)> = match case {
+        "same" => vec![(360, 2), (360, 3)],
+        "shrink" => vec![(360, 2), (360, 3), (540, 7)],
+        "shrink-same" => vec![(360, 2), (360, 7)],
+        _ => vec![(360, 2)],
+    };
     let plans = |m: MemberId| {
-        let step = if m == 2 { 6 } else { 30 };
+        let step = if m == busy { 6 } else { 30 };
         let mut v: Vec<(u64, Action)> = (120..1600).step_by(step).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
         if m == 1 {
-            v.push((360, Action::Kick { target: 2 }));
-            if same {
-                v.push((360, Action::Kick { target: 3 }));
+            for &(f, target) in &kicks {
+                v.push((f, Action::Kick { target }));
             }
             v.sort_by_key(|x| x.0);
         }
@@ -927,30 +1050,45 @@ pub fn cutfix(case: &str) {
         .collect();
     let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 41);
     net.batching = true;
-    if same {
-        net.filter = Some(Box::new(|_t, _w, from, to, _m| match (from, to) {
-            (2, 5) => Fate::Delay(250_000),
-            (2, 6) | (2, 7) => Fate::Delay(750_000),
-            _ => Fate::Deliver,
-        }));
-    } else {
-        net.filter = Some(Box::new(|t, _w, _from, to, m| {
-            let vc = matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. }));
-            if to == 7 && vc && (5_500_000..9_500_000).contains(&t) {
-                Fate::Delay(3_000_000)
-            } else {
-                Fate::Deliver
+    let case_s = case.to_string();
+    net.filter = Some(Box::new(move |t, _w, from, to, m| {
+        let vc = matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. }));
+        match case_s.as_str() {
+            "same" => match (from, to) {
+                (2, 5) => Fate::Delay(250_000),
+                (2, 6) | (2, 7) => Fate::Delay(750_000),
+                _ => Fate::Deliver,
+            },
+            // 7's entries never reach 5 and 6 from 4 s on, whoever relays them (a delay on 7's own link alone was undone
+            // by repair fetches from 1-4).
+            "shrink" | "shrink-same" => {
+                // (Dropped for good, 5 and 6 could never follow 7's chain: their conf stopped and 7's kick never decided.)
+                if (to == 5 || to == 6) && (4_000_000..7_000_000).contains(&t) && matches!(m, Msg::Entry(e) if e.member == 7) {
+                    Fate::Delay(4_000_000)
+                } else {
+                    Fate::Deliver
+                }
             }
-        }));
-    }
+            c => {
+                if to == 7 && vc && (5_500_000..9_500_000).contains(&t) {
+                    Fate::Delay(3_000_000)
+                } else if c == "move" && (to == 6 || to == 7) && (5_000_000..8_000_000).contains(&t) && matches!(m, Msg::Entry(e) if e.member == 2) {
+                    // 2's entries reach 6 and 7 6 s late, from anyone: their references to 2's chain stop near 5 s until
+                    // after their first ack of epoch 1, so 1, 3, 4 and 5 are the fast four and 3's evidence decides.
+                    Fate::Delay(6_000_000)
+                } else {
+                    Fate::Deliver
+                }
+            }
+        }
+    }));
     let mut sim = Sim::new(net, ps, 20_000_000);
-    if same {
-        for m in [2, 3] {
+    if !withhold.is_empty() {
+        for &m in &withhold {
             sim_mut(&mut sim, m).withhold_vc = true;
         }
-        println!("RESULT {label}: session seed {seed}: epoch 0's round-0 proposer is m{:?}; 2 and 3 out of view changes", sim.replica(1, 1).sim.proposer_of(0, 0));
+        println!("RESULT {label}: session seed {seed}: epoch 0's round-0 proposer is m{:?}; {withhold:?} out of view changes", sim.replica(1, 1).sim.proposer_of(0, 0));
     }
-    let gone: Vec<MemberId> = vec![2, 3];
     let mut removed: BTreeMap<MemberId, u64> = BTreeMap::new();
     let mut asked = false;
     let panic_at = run_to_end(&mut sim, |s| {
@@ -959,8 +1097,8 @@ pub fn cutfix(case: &str) {
                 removed.insert(x, s.net.now_us);
             }
         }
-        // "left": member 3 asks to leave as soon as it has applied the kick (sent first, D-5).
-        if !same && !asked && !s.replica(3, 1).sim.members.contains(&2) {
+        // "left", "move": member 3 asks to leave as soon as it has applied the kick (sent first, D-5).
+        if left && !asked && !s.replica(3, 1).sim.members.contains(&2) {
             asked = true;
             if let Some(e) = sim_mut(s, 3).request_leave() {
                 for to in [1, 4, 5, 6, 7] {
@@ -969,7 +1107,7 @@ pub fn cutfix(case: &str) {
             }
         }
     });
-    let survivors: Vec<MemberId> = vec![1, 4, 5, 6, 7];
+    let survivors: Vec<MemberId> = ids.iter().copied().filter(|m| !gone.contains(m)).collect();
     let r1 = &sim.replica(1, 1).sim;
     let epoch_of = |x: MemberId| r1.decided_changes().position(|c| c.remove.iter().any(|r| r.member == x)).map(|i| i + 1);
     println!(
@@ -1003,11 +1141,17 @@ pub fn cutfix(case: &str) {
     if panic_at.is_some() {
         bites = true;
     }
-    if same {
-        println!("RESULT {label}: the same-change gap {}", if bites { "BITES" } else { "does not bite here" });
-    } else {
-        let used = survivors.iter().all(|&m| sim.replica(m, 1).sim.cut_records.get(&2).is_some_and(|rec| rec.voters.iter().any(|v| v.0 == 3 && !v.3 && v.1.is_some() && v.2 > 0)));
-        println!("RESULT {label}: 3's evidence in 2's cut at every replica: {}", if used { "yes" } else { "NO -> FAIL" });
+    match case {
+        "same" | "shrink" | "shrink-same" => println!("RESULT {label}: the gap {}", if bites { "BITES" } else { "does not bite here" }),
+        _ => {
+            let used = survivors.iter().all(|&m| sim.replica(m, 1).sim.cut_records.get(&2).is_some_and(|rec| rec.voters.iter().any(|v| v.0 == 3 && !v.3 && v.1.is_some() && v.2 > 0)));
+            println!("RESULT {label}: 3's evidence in 2's cut at every replica: {}", if used { "yes" } else { "NO -> FAIL" });
+            if case == "move" {
+                let moved: Vec<(MemberId, Option<(u32, u32)>)> = survivors.iter().map(|&m| (m, sim.replica(m, 1).sim.cut_records.get(&2).map(|r| (r.cut, r.without_left)))).collect();
+                let all = moved.iter().all(|(_, c)| c.is_some_and(|(a, b)| a > b));
+                println!("RESULT {label}: 2's cut and the cut without 3 per replica {moved:?} -> {}", if all { "3's evidence moves the cut" } else { "NOT MOVED -> FAIL" });
+            }
+        }
     }
     verdict(&sim, &survivors, &label, panic_at);
 }
