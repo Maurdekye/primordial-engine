@@ -1,0 +1,19 @@
+row          what-if others stalled per member, 46..54 ms       mean  back s 46..54 ms
+k8-m2        base       121    172    171    172    172          162  1.1 2.4 2.4 2.4 2.4
+k8-m2        sigs free    219    219    219    220     75          190  3.2 3.2 3.3 3.6 1.5
+up-k8-m4     base       154    155    155    156    157          155  - - - - -  (not all EQUAL)
+up-k8-m4     sigs free    159    159    160    160    161          160  - - - - -  (not all EQUAL)
+up-k12-m4    base       215    635    648    152    164          363  4.8 10.0 10.1 - 2.7  (not all EQUAL)
+up-k12-m4    sigs free    552    273    138    194    602          352  9.1 4.0 2.1 3.1 9.6
+down-k8-m3   base       819   1126    160   1530   1530         1033  13.3 18.5 1.4 - -  (not all EQUAL)
+down-k8-m3   sigs free     28    581    226    443    528          361  0.5 9.5 4.1 7.5 8.9
+down-k12-m4  base       118    387    462    316    197          296  1.6 6.4 7.5 4.7 2.7
+down-k12-m4  sigs free    125    103    367    480    504          316  2.5 2.1 6.4 7.7 8.0
+down-k16-m4  base        84    241    124    342     98          178  1.5 3.7 2.0 5.3 1.6
+down-k16-m4  sigs free    167      0      9     39     23           48  2.7 0.0 0.4 1.1 0.0
+down-k12-m8  base       179    168   1530   1529    169          715  1.9 1.6 - - 1.9  (not all EQUAL)
+down-k12-m8  sigs free    179   1467    218   1513   1513          978  2.1 23.9 3.7 - -  (not all EQUAL)
+down-k16-m8  base      1525    213   1447   1525   1525         1247  - 3.1 23.3 - -
+down-k16-m8  sigs free    110   1008    572    273    200          433  2.1 16.5 10.1 5.3 4.3
+down-k24-m8  base       403    200    258    534    199          319  6.9 4.8 4.3 8.5 4.3
+down-k24-m8  sigs free    188      0     13      0      0           40  3.6 0.5 0.9 0.0 0.0
