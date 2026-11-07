@@ -2872,10 +2872,10 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
         * With a thin member fed at 4 and 8 players, the others' mean lag is 29.5-35.6 frames (P95 53-61).
         * At 3 players with an 8 kbit/s watcher it is 36.2-37.2 (P95 52-69).
       * **Part B's standing cost with nobody thin** (base-m4, base-m8), from rule 1's echo-stability (one more ack
-        round on every entry):
+        round on every entry). It awaits the user's confirmation: nothing the user confirmed covers it at 4 or more
+        players. The "about 45-63 frames instead of 13" they were told is for 3 players in fed mode.
         * the full members' mean confirmation lag is 20.0-20.2 frames, against 13.7-13.9 under Part A;
-        * their max is 54, against 19. This is inside what the user was told for 4 or more players: confirmation lag
-          of about 45-63 frames instead of 13;
+        * their max is 54, against 19;
         * the return after a gesture takes 926-929 ms, against 0. This is the same cost, read through r18's 20-frame
           threshold.
 
