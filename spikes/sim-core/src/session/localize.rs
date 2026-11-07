@@ -1373,3 +1373,117 @@ impl WorldSim {
         s0.checked_sub(1)
     }
 }
+
+#[cfg(test)]
+mod holdings {
+    //! Ruling 2's holdings test (@coordinator-opus m0de2cc2c987b, m9d93b4a24a48): the final term must not depend on how
+    //! much of the removed member's chain a replica holds. The cell form (partb `holdings`) never got the kick decided
+    //! at the replica holding less, so the two replicas are built here from the state the final term reads.
+    use super::super::{SceneKind, SimConfig};
+    use super::*;
+
+    const X: MemberId = 4;
+    const B: u32 = 20;
+    const FED: MemberId = 5;
+
+    /// An entry of `m`'s chain at `seq`, stamped 10 frames per seq (x's seq 20 lies in checkpoint block 6, seq 25 in 7).
+    fn entry(m: MemberId, seq: u32) -> Entry {
+        Entry { member: m, seq, prev: 0, stamp: 10 * seq as u64, payload: Payload::Touch { obj: m, impulse: [0.0; 3], grab: false }, carried: None, link: 0 }
+    }
+
+    fn hold(w: &mut WorldSim, m: MemberId, upto: u32) {
+        for s in 1..=upto {
+            let e = entry(m, s);
+            let id = e.id();
+            w.by_author.insert((m, s), id);
+            w.entries.insert(id, e);
+        }
+        w.contiguous.insert(m, upto);
+    }
+
+    fn ckpts(w: &mut WorldSim, m: MemberId, upto: u32) {
+        let mut newest = (0, 0);
+        for s in 1..=upto {
+            let e = entry(m, s);
+            let blk = e.stamp / CKPT_FRAMES;
+            if !w.ckpt_by_block.contains_key(&(m, blk)) {
+                w.ckpt_by_block.insert((m, blk), (s, e.id(), e.rest_hash()));
+                newest = (blk, e.id());
+            }
+        }
+        w.ckpt.insert(m, newest);
+    }
+
+    /// Member 1's replica of a 5-member session after epoch 0's change removed x = 4 by a kick: x's chain held to
+    /// `held` (B or past it), and every input the final term and epoch 0's finality read.
+    /// - Voters 1 and 2 froze x's chain at 17 and 20 (B = 20, the larger); their acks of epoch 0 name it that far.
+    /// - Member 3, a non-voter, has an ack naming x's seq 15 and then one naming seq 22, past B.
+    /// - Member 5, fed, has an echo naming x's checkpoint block 4 and then one naming block 7, past B's block (6). A
+    ///   replica holding x only to B can't resolve block 7: its matched echo stays at block 4.
+    /// - Each survivor's acks of epoch 0 end at seq 19; its first ack of epoch 1 is seq 20, and every other survivor's
+    ///   ack 21 names its seq 21 (epoch 0 is final).
+    fn replica(held: u32) -> WorldSim {
+        let all = [1, 2, 3, 4, 5];
+        let survivors = [1, 2, 3, FED];
+        let mut w = WorldSim::new(1, 1, &all, SceneKind::Empty, SimConfig { localize: true, ..SimConfig::default() });
+        w.epoch = 1;
+        w.members = survivors.iter().copied().collect();
+        w.removed_in.insert(X, 1);
+        w.removed_kind.insert(X, RemovalKind::Kick);
+        w.bound.insert(X, B);
+        hold(&mut w, X, held);
+        ckpts(&mut w, X, held);
+        let xid = |s: u32| entry(X, s).id();
+        for (y, named) in [(1, vec![(10, 17)]), (2, vec![(10, 20)]), (3, vec![(9, 15), (10, 22)])] {
+            let h = w.ack_head_hist.entry((y, X)).or_default();
+            for (aseq, s) in named {
+                h.insert(aseq, (s, xid(s)));
+            }
+        }
+        for (voter, frozen) in [(1, 17), (2, 20)] {
+            w.vote_hist.entry((X, voter)).or_default().push((0, 11, frozen));
+        }
+        w.echo_named.insert((FED, X), [(9, 4), (10, 7)].into_iter().collect());
+        // The echoes as matched at receipt (the old final term's reading): block 7 only where its checkpoint is held.
+        let er = w.echo_refs.entry((FED, X)).or_default();
+        for (aseq, blk) in [(9u32, 4u64), (10, 7)] {
+            if let Some(&(s, id, _)) = w.ckpt_by_block.get(&(X, blk)) {
+                er.insert(s, (id, aseq));
+            }
+        }
+        for &y in &survivors {
+            hold(&mut w, y, 21);
+            w.ack_epoch_from.entry(y).or_default().insert(1, 20);
+            for &z in survivors.iter().filter(|&&z| z != y) {
+                let yid = entry(y, 21).id();
+                w.ack_head_hist.entry((z, y)).or_default().insert(21, (21, yid));
+            }
+        }
+        w
+    }
+
+    #[test]
+    fn the_final_term_is_the_same_at_every_holding() {
+        let (mut a, mut b) = (replica(B), replica(B + 5));
+        let ctx = a.ctx(0).expect("epoch 0's membership");
+        assert_eq!(ctx.members, vec![1, 2, 3, 4, 5]);
+        assert!(a.epoch_final(&ctx) && b.epoch_final(&ctx), "epoch 0 is final at both");
+        // The scenario bites the matched reading: member 3's ack past B and member 5's echo past B's block resolve only
+        // at the replica holding more of x's chain.
+        assert_eq!((a.refs_between(3, X, 1, 19), b.refs_between(3, X, 1, 19)), (15, 22));
+        assert_ne!(a.refs_between(FED, X, 1, 19), b.refs_between(FED, X, 1, 19));
+        // The ruled final term: named heads and echo blocks capped at B, unmatched.
+        for y in [1, 2, 3, FED] {
+            assert_eq!(a.final_ref(y, X, 0), b.final_ref(y, X, 0), "member {y}'s final reference");
+        }
+        assert_eq!((a.final_ref(1, X, 0), a.final_ref(2, X, 0), a.final_ref(3, X, 0), a.final_ref(FED, X, 0)), (17, 20, 20, 20));
+        assert_eq!(a.echo_block_seq(X, 7, B), B, "a block past B's block counts as B");
+        assert_eq!(a.vouch_final(X, &ctx), b.vouch_final(X, &ctx));
+        assert_eq!(a.carry_cut(X), Some((B, 0)));
+        assert_eq!(b.carry_cut(X), Some((B, 0)), "identical cuts");
+        // Matched against held entries over the same acks (the reading before ruling 2), the cuts would differ: the
+        // third highest of (17, 20, 15, 13) against (17, 20, 22, 23).
+        let all_acks: BTreeMap<MemberId, u32> = ctx.members.iter().map(|&y| (y, u32::MAX)).collect();
+        assert_eq!((a.vouch_in(X, &ctx, &all_acks), b.vouch_in(X, &ctx, &all_acks)), (15, 20));
+    }
+}

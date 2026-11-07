@@ -793,8 +793,30 @@ pub enum QuorumRule {
     Bft,
 }
 
-/// `(t, q)` for `m` members not excluded by proof: unproven faulty members tolerated, and the
-/// quorum size. Any two quorums then share an honest member while at most t of the m are faulty.
+/// (spike: PE_NO_ROUND_FALLBACK=1) No round fallback timeout, as before gap 1 (to measure it).
+fn no_round_fallback() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_NO_ROUND_FALLBACK").is_ok())
+}
+
+/// (spike: PE_FALLBACK_ALONE=1) The round fallback also ends a round no other member has entries in yet (to measure it).
+fn fallback_alone() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_FALLBACK_ALONE").is_ok())
+}
+
+/// (spike: PE_NO_SELF_OUT=1) What recording my own entries produces is dropped again, as before (to measure it).
+fn no_self_out() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_NO_SELF_OUT").is_ok())
+}
+
+/// (spike diagnostics: PE_VC_TRACE=<member>) The member whose recorded view-change entries are traced.
+fn vc_trace() -> Option<MemberId> {
+    static V: std::sync::OnceLock<Option<MemberId>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_VC_TRACE").ok().and_then(|v| v.parse().ok()))
+}
+
 /// (spike: PE_JUDGE_BY_NOW=1) An arriving entry waits for its verdict by the receiver's membership now, as before F2
 /// on arrival.
 fn judge_by_now() -> bool {
@@ -802,6 +824,8 @@ fn judge_by_now() -> bool {
     *V.get_or_init(|| std::env::var("PE_JUDGE_BY_NOW").is_ok())
 }
 
+/// `(t, q)` for `m` members not excluded by proof: unproven faulty members tolerated, and the
+/// quorum size. Any two quorums then share an honest member while at most t of the m are faulty.
 pub fn quorum(rule: QuorumRule, m: usize) -> (usize, usize) {
     let t = match rule {
         QuorumRule::Majority => 0,
@@ -1013,6 +1037,20 @@ pub enum Msg {
     /// Only from the chain's own author. Never logged. Rev 22 delta (proposal): `fed`, the sender is fed itself, and
     /// `echo`, its own last echo of the recipient's chain (a block), from which the recipient sends its checkpoints.
     Ckpts { member: MemberId, after: Option<u64>, list: Vec<(u64, u32, u64)>, fed: bool, echo: Option<u64> },
+    /// Gap 1 (ruled m0813b922e026): a fed member asks for the epoch certificates after `epoch`, having seen an entry of
+    /// an epoch it hasn't decided. Never logged.
+    CertReq { epoch: u32 },
+    /// Gap 1: epoch certificates for a fed member that missed decisions (it holds no log to follow them by), each with
+    /// the admin entries and removal votes its change lists, by value. Never logged.
+    Certs { packs: Vec<CertPack> },
+}
+
+/// Gap 1: an epoch certificate and the entries its change lists that a decision needs held (VCR-8, and with Part B the
+/// removal votes): its admin entries and removal votes, and its exclusions' proofs (in the certificate).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CertPack {
+    pub cert: EpochCert,
+    pub entries: Vec<Entry>,
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -1235,6 +1273,23 @@ impl Wr {
                     for &x in &b.pos { self.i32(x) }
                     for &x in &b.rot { self.i16(x) }
                     for &x in &b.lin { self.i16(x) }
+                }
+            }
+            Msg::CertReq { epoch } => { self.u8(12); self.u32(*epoch) }
+            Msg::Certs { packs } => {
+                self.u8(13);
+                self.u32(packs.len() as u32);
+                for p in packs {
+                    let c = &p.cert;
+                    self.u32(c.world); self.u32(c.epoch); self.change(&c.change); self.u32(c.round);
+                    self.u32(c.members.len() as u32);
+                    for m in &c.members { self.u32(*m) }
+                    self.u32(c.precommits.len() as u32);
+                    for (m, s) in &c.precommits { self.u32(*m); self.u64(*s) }
+                    self.u32(c.proofs.len() as u32);
+                    for e in &c.proofs { self.entry(e) }
+                    self.u32(p.entries.len() as u32);
+                    for e in &p.entries { self.entry(e) }
                 }
             }
         }
@@ -1515,6 +1570,30 @@ impl Rd<'_> {
                     bodies.push(FeedBody { obj, pos, rot, lin });
                 }
                 Msg::Feed { frame, fed, bodies }
+            }
+            12 => Msg::CertReq { epoch: self.u32()? },
+            13 => {
+                let n = self.u32()? as usize;
+                let mut packs = Vec::with_capacity(n.min(64));
+                for _ in 0..n {
+                    let (world, epoch) = (self.u32()?, self.u32()?);
+                    let change = self.change()?;
+                    let round = self.u32()?;
+                    let k = self.u32()? as usize;
+                    let mut members = Vec::with_capacity(k.min(256));
+                    for _ in 0..k { members.push(self.u32()?) }
+                    let k = self.u32()? as usize;
+                    let mut precommits = Vec::with_capacity(k.min(256));
+                    for _ in 0..k { precommits.push((self.u32()?, self.u64()?)) }
+                    let k = self.u32()? as usize;
+                    let mut proofs = Vec::with_capacity(k.min(64));
+                    for _ in 0..k { proofs.push(self.entry()?) }
+                    let k = self.u32()? as usize;
+                    let mut entries = Vec::with_capacity(k.min(256));
+                    for _ in 0..k { entries.push(self.entry()?) }
+                    packs.push(CertPack { cert: EpochCert { world, epoch, change, round, members, precommits, proofs }, entries });
+                }
+                Msg::Certs { packs }
             }
             _ => return None,
         })
@@ -1842,6 +1921,12 @@ pub struct Stats {
     pub view_changes: u64,
     pub resets: u64,
     pub max_round: u32,
+    /// Gap 1: epoch certificates a fed member applied by value, and ones it refused (a signature or the member list
+    /// didn't check against the members it held).
+    pub certs_applied: u64,
+    pub certs_refused: u64,
+    /// Gap 1: rounds this replica ended with no proposal and fewer than q precommits (the round fallback).
+    pub round_fallbacks: u64,
     /// D80: kicks and role entries the decided changes applied, and those they refused.
     pub admin_applied: u64,
     pub admin_refused: u64,
@@ -2048,6 +2133,9 @@ struct Vc {
     step: Step,
     /// Clock frame at which the current round began (the propose timeout runs from it).
     round_at: u64,
+    /// Gap 1's round fallback: clock frame at which this replica first held another member's prevote or precommit
+    /// of the current round or a later one (None until then).
+    joined_at: Option<u64>,
     proposed: bool,
     /// (value, round) this replica is locked on, and the latest value it saw a quorum prevote.
     locked: Option<(u64, u32)>,
@@ -2188,8 +2276,8 @@ pub struct WorldSim {
     /// Ruling 2: each fed member's echoes as its acks carry them, unresolved: (fed member, chain) -> ack seq -> the
     /// checkpoint block echoed (mine too). The final term reads them without matching them to held entries.
     echo_named: BTreeMap<(MemberId, MemberId), BTreeMap<u32, u64>>,
-    /// A fed member's newest echo not yet checked (I don't hold every checkpoint it names yet).
-    /// Each fed member's echoes not yet checked, by the seq of the ack that carried each (every one is checked: keeping
+    /// Each fed member's echoes not yet checked (I don't hold every checkpoint they name yet), by the seq of the ack that
+    /// carried each (every one is checked: keeping
     /// only the newest left a replica that caught up in a burst without the older ones, so the final term's references
     /// differed between replicas; leave-s4-rejoin's spectator cut member 2 at 58, the members at 96).
     echo_pending: BTreeMap<MemberId, BTreeMap<u32, (Vec<(MemberId, u64)>, u64)>>,
@@ -2296,6 +2384,13 @@ pub struct WorldSim {
     removed_in: BTreeMap<MemberId, u32>,
     /// How each removed member was removed (ruling 1: Q1's finality leaves out only members removed on suspicion).
     removed_kind: BTreeMap<MemberId, localize::RemovalKind>,
+    /// Gap 1, the feeder's side: the frame I last pushed certificates to a fed member lagging in an epoch.
+    cert_pushed: BTreeMap<(MemberId, u32), u64>,
+    /// Gap 1, the fed side: the frame I last asked for the certificates after an epoch, and the asks to send.
+    cert_asked: BTreeMap<u32, u64>,
+    cert_wants: Vec<(MemberId, u32)>,
+    /// Entries recording my own entries produced, to send (`publish`).
+    self_out: Vec<Entry>,
     /// F2: removed members whose Part B cut isn't final yet (`finalize_cuts`).
     pb_pending: BTreeSet<MemberId>,
     /// Diagnostics: the last second of my present traced (PE_CONF_TRACE).
@@ -2561,6 +2656,10 @@ impl WorldSim {
             ack_epoch_from: BTreeMap::new(),
             removed_in: BTreeMap::new(),
             removed_kind: BTreeMap::new(),
+            cert_pushed: BTreeMap::new(),
+            cert_asked: BTreeMap::new(),
+            cert_wants: Vec::new(),
+            self_out: Vec::new(),
             pb_pending: BTreeSet::new(),
             dbg_conf_at: u64::MAX,
             rx_bytes: BTreeMap::new(),
@@ -2861,8 +2960,25 @@ impl WorldSim {
         self.my_ckpt = ckpt_step(self.my_ckpt, &e);
         self.my_seq += 1;
         self.my_last = e.id();
-        let _ = self.insert(e.clone());
+        // What recording my own entry produces is sent too (`take_self_out`): recording my own kick casts my vote on its
+        // target (D80, `record_vc`), and dropped here that vote was never sent. Others fetched it on a hole in my chain;
+        // a fed member only once a decision listing it needed it held (VCR-8 with Part B): in kickliar-fed2 member 4
+        // held its precommits at frame 394 and member 1's kick vote only at 413.
+        let out = self.insert(e.clone());
+        if !no_self_out() {
+            self.self_out.extend(out);
+        }
         e
+    }
+
+    /// Entries that recording my own entries produced (my vote on the target of my own kick), to send.
+    pub fn take_self_out(&mut self) -> Vec<Entry> {
+        if vc_trace() == Some(self.me) {
+            for e in &self.self_out {
+                eprintln!("SELFOUT m{} now {} frame {}: m{} s{} stamp {}: {:?}", self.me, self.now, self.frame, e.member, e.seq, e.stamp, std::mem::discriminant(&e.payload));
+            }
+        }
+        std::mem::take(&mut self.self_out)
     }
 
     /// Author an entry at the current frame. With `carry`, the entry carries the touched object's
@@ -3082,7 +3198,12 @@ impl WorldSim {
                 _ => None,
             };
             match ep {
-                Some(ep) if ep > self.epoch => self.vc_later.entry(ep).or_default().push(id),
+                Some(ep) if ep > self.epoch => {
+                    self.vc_later.entry(ep).or_default().push(id);
+                    // Gap 1: an entry of an epoch I haven't decided: ask its author for the certificates I lack, at most
+                    // every 30 frames per epoch, rather than wait for my feeder to notice.
+                    self.want_certs(member);
+                }
                 Some(ep) if ep == self.epoch => self.record_vc(member, id, &mut out),
                 _ => {}
             }
@@ -3987,6 +4108,17 @@ impl WorldSim {
             return;
         }
         let e = self.entries[&id].clone();
+        // (spike diagnostics) PE_VC_TRACE=<member>: each view-change entry that member records, when.
+        if vc_trace() == Some(self.me) {
+            let kind = match &e.payload {
+                Payload::Vote { target, .. } => format!("vote on {target}"),
+                Payload::Propose { round, .. } => format!("propose r{round}"),
+                Payload::Prevote { round, value, .. } => format!("prevote r{round} {}", if *value == 0 { "nil" } else { "value" }),
+                Payload::Precommit { round, value, .. } => format!("precommit r{round} {}", if *value == 0 { "nil" } else { "value" }),
+                _ => "other".to_string(),
+            };
+            eprintln!("VC m{} now {} frame {} epoch {}: from m{m} s{} stamp {}: {kind}", self.me, self.now, self.frame, self.epoch, e.seq, e.stamp);
+        }
         match e.payload {
             Payload::Vote { target, frozen, kick, .. } => {
                 if (target == m && kick == 0) || !self.members.contains(&target) || self.votes.get(&target).is_some_and(|v| v.contains_key(&m)) {
@@ -5091,6 +5223,7 @@ impl WorldSim {
         self.vc.round = r;
         self.vc.step = Step::Propose;
         self.vc.round_at = self.now;
+        self.vc.joined_at = None;
         self.vc.proposed = false;
         self.stats.max_round = self.stats.max_round.max(r);
     }
@@ -5348,6 +5481,35 @@ impl WorldSim {
             self.precommit(0, out);
         }
         if self.vc.precommit_timer.get(&r).is_some_and(|&a| self.now >= a + to) {
+            self.start_round(r + 1);
+            return;
+        }
+        // Gap 1 (m0813b922e026, m97fecece8a41): a round with no proposal and fewer than q precommits arms no timer that
+        // ends it (a member holding fewer than q prevotes never precommits nil), so it never ended: a fed member that
+        // lost the round's entries waited in it for good. Such a round ends three timeouts after it started. A round
+        // change is always safe (a lock carries over); only liveness depends on it.
+        // (To be ruled) the three timeouts run from the moment this replica first holds another member's prevote or
+        // precommit of this round or a later one: a member alone in its view change (the others not busy yet) gains
+        // nothing by moving on alone, and each nil round it churns costs an entry on its link (r18 n = 8 fed: member
+        // 1, on 8 kbit/s, alone from frame 369 to about 700, churned 3 rounds; the others held its votes 68 frames
+        // later and decided 14 frames later; lag 48.4 / 59 -> 51.3 / 81 frames). PE_FALLBACK_ALONE=1: from the round's
+        // start, as ruled.
+        if self.vc.joined_at.is_none() {
+            let me = self.me;
+            if [&self.vc.prevotes, &self.vc.precommits].iter().any(|v| v.range(r..).any(|(_, ms)| ms.keys().any(|m| *m != me && any_base.contains(m)))) {
+                self.vc.joined_at = Some(self.now);
+            }
+        }
+        let from = if fallback_alone() { Some(self.vc.round_at) } else { self.vc.joined_at };
+        if from.is_some_and(|a| self.now >= a + 3 * to)
+            && !self.vc.proposals.contains_key(&r)
+            && !self.vc.precommit_timer.contains_key(&r)
+            && !no_round_fallback()
+        {
+            self.stats.round_fallbacks += 1;
+            if vc_trace() == Some(self.me) {
+                eprintln!("VC m{} t={} epoch {} round {r} ended with no proposal and fewer than q precommits", self.me, self.now, self.epoch);
+            }
             self.start_round(r + 1);
         }
         let _ = t_any;
@@ -5844,6 +6006,102 @@ impl WorldSim {
         Some(EpochCert { world: self.world_id, epoch, change: c.clone(), round: *round, members: self.members_at(epoch)?, precommits: sigs.clone(), proofs })
     }
 
+    /// Gap 1, the fed side: ask `from` for the certificates after my epoch (rate-limited per epoch).
+    fn want_certs(&mut self, from: MemberId) {
+        if self.fed.is_none() || from == self.me {
+            return;
+        }
+        let now = self.now;
+        if self.cert_asked.get(&self.epoch).is_some_and(|&at| now < at + 30) {
+            return;
+        }
+        self.cert_asked.insert(self.epoch, now);
+        self.cert_wants.push((from, self.epoch));
+    }
+
+    /// Gap 1: the certificates for epochs `from + 1 ..= mine`, each with the admin entries and removal votes its change
+    /// lists, by value; None if I am not past `from` or don't hold one of them.
+    pub fn certs_after(&self, from: u32) -> Option<Msg> {
+        if from >= self.epoch {
+            return None;
+        }
+        let mut packs = Vec::new();
+        for e in from + 1..=self.epoch {
+            let cert = self.epoch_cert(e)?;
+            let mut entries = Vec::new();
+            for (id, _) in &cert.change.admin {
+                entries.push(self.entries.get(id)?.clone());
+            }
+            for r in &cert.change.remove {
+                for id in &r.votes {
+                    entries.push(self.entries.get(id)?.clone());
+                }
+            }
+            packs.push(CertPack { cert, entries });
+        }
+        Some(Msg::Certs { packs })
+    }
+
+    /// Gap 1: a fed member's request for the certificates after `epoch`.
+    pub fn on_cert_req(&self, epoch: u32) -> Option<Msg> {
+        self.certs_after(epoch)
+    }
+
+    /// Gap 1, the feeder's side: the certificates fed member `f` lacks, if its newest ack I hold declares an older epoch
+    /// than mine; at most every 60 frames per epoch of f's, while it lags.
+    pub fn cert_push(&mut self, f: MemberId) -> Option<Msg> {
+        let fe = self.ack_epoch_from.get(&f).and_then(|a| a.keys().next_back()).copied().unwrap_or(0).max(self.admitted_epoch.get(&f).copied().unwrap_or(0));
+        if fe >= self.epoch || !self.members.contains(&f) {
+            return None;
+        }
+        let now = self.now;
+        if self.cert_pushed.get(&(f, fe)).is_some_and(|&at| now < at + 60) {
+            return None;
+        }
+        self.cert_pushed.insert((f, fe), now);
+        self.certs_after(fe)
+    }
+
+    /// Gap 1, the fed side: follow decisions I missed by value. A certificate for my current epoch is checked by its
+    /// precommit signatures against the members I hold (`epoch_cert_ok`); its entries (the admin entries and removal
+    /// votes the change lists) and proofs are taken by value, and its signers' precommits stand for the precommit
+    /// entries I never received. The decision then runs as if they had arrived (`try_decide`). Returns entries to send.
+    pub fn on_certs(&mut self, packs: Vec<CertPack>) -> Vec<Entry> {
+        let mut out = Vec::new();
+        if self.fed.is_none() {
+            return out;
+        }
+        let mut packs = packs;
+        packs.sort_by_key(|p| p.cert.epoch);
+        for p in packs {
+            let c = &p.cert;
+            if c.world != self.world_id || c.change.epoch != self.epoch {
+                continue;
+            }
+            let prev: Vec<MemberId> = self.members.iter().copied().collect();
+            if !epoch_cert_ok(self.cfg.quorum, &prev, c) {
+                self.stats.certs_refused += 1;
+                continue;
+            }
+            let value = c.change.value();
+            let (round, world, epoch) = (c.round, c.world, c.change.epoch);
+            let signers: Vec<MemberId> = c.precommits.iter().filter(|(m, s)| *s == vc_sig(world, *m, epoch, round, value)).map(|(m, _)| *m).collect();
+            let change = c.change.clone();
+            for e in p.cert.proofs.iter().cloned().chain(p.entries) {
+                out.extend(self.insert(e));
+            }
+            self.vc.changes.entry(value).or_insert(change);
+            let pcs = self.vc.precommits.entry(round).or_default();
+            for m in signers {
+                pcs.entry(m).or_insert(value);
+            }
+            self.stats.certs_applied += 1;
+            self.ev(format!("gap 1: epoch {}'s certificate (round {round}) applied by value", epoch + 1));
+            self.try_decide(&mut out);
+        }
+        out
+    }
+
     /// This world's certificates for epochs 1..=`epoch`: what a fact signed in `epoch` carries so
     /// any world can check it from this world's genesis (P2-5).
     pub fn epoch_certs_upto(&self, epoch: u32) -> Option<Vec<EpochCert>> {
@@ -6117,6 +6375,9 @@ impl WorldSim {
         }
         for (to, value) in std::mem::take(&mut self.value_wants) {
             out.push((to, Msg::FetchValue { value }));
+        }
+        for (to, epoch) in std::mem::take(&mut self.cert_wants) {
+            out.push((to, Msg::CertReq { epoch }));
         }
         let mut asked_now = BTreeSet::new();
         for (to, id, back) in std::mem::take(&mut self.entry_wants) {
