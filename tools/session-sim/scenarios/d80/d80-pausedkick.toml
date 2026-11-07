@@ -41,3 +41,36 @@ members = [1, 2, 3]
 roles = [[3, 7]]
 conf_min = 450
 label = "d80-pausedkick: member 2 agrees"
+
+[[report]]
+kind = "check_world"
+frames = 450
+label = "d80-pausedkick"
+skip_evicted_at = 1
+
+[[report]]
+kind = "admin"
+honest = [1, 2, 3]
+label = "d80-pausedkick"
+outcomes = true
+roles = true
+bans = true
+
+# The full run, with the reports above.
+[[part]]
+
+# The same session cut at 5.9 s, before the kick: every honest replica is paused (confirmation stuck,
+# its sim at the speculation limit) while admin 1's three earlier entries were authored.
+[[part]]
+end_ms = 5900
+world.1.plan.1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 270, define_role = { role = 7, perms = 0 } },
+    { at = 285, set_role = { member = 3, role = 7 } },
+    { at = 300, ban = { key = 9, perma = false } },
+]
+report = [
+    { kind = "confs", honest = [1, 2, 3], label = "d80-pausedkick at 5.9 s" },
+    { kind = "admin", honest = [1, 2, 3], label = "d80-pausedkick at 5.9 s", outcomes = true, roles = true, bans = true },
+    { kind = "check_world", frames = 100, label = "d80-pausedkick at 5.9 s" },
+]
