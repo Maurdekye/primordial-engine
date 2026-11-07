@@ -20,3 +20,4 @@ scripts/matrix.local.sh
 scripts/publish_terms.local
 scripts/publish_history_terms.local
 scripts/publish_replacements.local
+scripts/publish_allow.local
