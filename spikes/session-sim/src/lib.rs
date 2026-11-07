@@ -185,7 +185,7 @@ pub struct Net {
 pub fn entry_parts(m: &Msg, out: &mut Vec<(&'static str, [u64; 6])>) -> u64 {
     let total = encode_msg(m).len() as u64;
     match m {
-        Msg::Entry(e) => {
+        Msg::Entry(e) | Msg::Live(e) => {
             let nh = match &e.payload {
                 Payload::Ack { heads, .. } => heads.len() as u64,
                 _ => 0,
@@ -209,7 +209,7 @@ pub fn entry_parts(m: &Msg, out: &mut Vec<(&'static str, [u64; 6])>) -> u64 {
 
 pub fn kind(m: &Msg) -> &'static str {
     match m {
-        Msg::Entry(e) => match e.payload {
+        Msg::Entry(e) | Msg::Live(e) => match e.payload {
             Payload::Touch { .. } => "entry/touch",
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
@@ -280,10 +280,12 @@ impl Net {
 
     pub fn send(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
         let bytes = encode_msg(m);
+        // (spike, measurement only: PE_WHATIF_LIVE=1 with PE_NO_LIVE=1 charges every link elision would leave out as free)
+        let charged = bytes.len() as u64 - whatif_live_saving(from, m);
         {
             let now = self.now_us;
             let q = self.recent.entry((from, to)).or_default();
-            q.push_back((now, bytes.len() as u64 + dgram_overhead()));
+            q.push_back((now, charged + dgram_overhead()));
             while q.front().is_some_and(|&(t, _)| t + 1_000_000 < now) {
                 q.pop_front();
             }
@@ -304,7 +306,7 @@ impl Net {
                 Msg::Batch(v) if v.len() > 1 => {
                     let mut fate = Fate::Deliver;
                     for x in v {
-                        match (f(self.now_us, world, from, to, x), &fate) {
+                        match (f(self.now_us, world, from, to, &explicit_view(x)), &fate) {
                             (Fate::Drop, _) => fate = Fate::Drop,
                             (Fate::Delay(d), Fate::Deliver) => fate = Fate::Delay(d),
                             (Fate::Delay(d), Fate::Delay(e)) if d > *e => fate = Fate::Delay(d),
@@ -313,7 +315,7 @@ impl Net {
                     }
                     fate
                 }
-                _ => f(self.now_us, world, from, to, m),
+                _ => f(self.now_us, world, from, to, &explicit_view(m)),
             };
             match fate {
                 Fate::Deliver => {}
@@ -356,7 +358,7 @@ impl Net {
             }
         }
         // Bandwidth cap: the datagram leaves the bottleneck queue at `depart` (or is tail-dropped).
-        let depart = match self.shape(from, to, bytes.len() as u64) {
+        let depart = match self.shape(from, to, charged) {
             Some(d) => d,
             None => {
                 self.dropped += 1;
@@ -565,7 +567,7 @@ impl Net {
     /// Send now, or queue for this tick's batch to that peer.
     pub fn post(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
         if self.tracing {
-            if let Msg::Entry(e) = m {
+            if let Msg::Entry(e) | Msg::Live(e) = m {
                 let filtered = self.fed.contains(&(world, to));
                 self.post_log.push((self.now_us, from, to, e.member, e.seq, kind(m), filtered));
             }
@@ -575,7 +577,7 @@ impl Net {
         // decided change is applied only once each admin entry it lists is held (VCR-8), so without them a fed member
         // never applied a change listing a SetRole and stayed in that epoch for good (e1-same-promote under
         // carry-over: no ack of it declared a later epoch, so the n = 3 epoch after it could vouch nothing).
-        if let Msg::Entry(e) = m {
+        if let Msg::Entry(e) | Msg::Live(e) = m {
             let view_change = matches!(
                 e.payload,
                 Payload::Vote { .. }
@@ -612,7 +614,7 @@ impl Net {
                 let (hi, lo) = self.client_q.entry((from, to)).or_default();
                 for m in v {
                     let protocol = match &m {
-                        Msg::Entry(e) => is_protocol(&e.payload),
+                        Msg::Entry(e) | Msg::Live(e) => is_protocol(&e.payload),
                         _ => true,
                     };
                     if protocol { hi.push_back((w, m)) } else { lo.push_back((w, m)) }
@@ -953,11 +955,80 @@ impl Peer {
 }
 
 fn broadcast(net: &mut Net, w: WorldId, from: MemberId, members: &[MemberId], m: &Msg) {
+    let live = match m {
+        Msg::Entry(e) if goes_live(from, e) => Some(Msg::Live(e.clone())),
+        _ => None,
+    };
     for &to in members {
         if to != from {
-            net.post(w, from, to, m);
+            // A fed member gets no live checkpoint (it holds no state after prev); `post` filters it as the entry.
+            net.post(w, from, to, live.as_ref().unwrap_or(m));
         }
     }
+}
+
+/// Link elision (the R18 controller-cliff item): whether `from` sends its own entry `e` live, without its checkpoint
+/// link ([`Msg::Live`]). Only a checkpoint with a link, only its author's broadcast (never a fetch reply, relay or proof),
+/// and not the entries a receiver takes by value at arrival (the view change's and admin entries) or a carried state
+/// (the transfer accept reads the id at arrival). (spike: PE_NO_LIVE=1 sends every link, for A/B.)
+pub fn goes_live(from: MemberId, e: &Entry) -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    e.member == from
+        && e.link != 0
+        && e.carried.is_none()
+        && !matches!(
+            e.payload,
+            Payload::Vote { .. }
+                | Payload::Propose { .. }
+                | Payload::Prevote { .. }
+                | Payload::Precommit { .. }
+                | Payload::Kick { .. }
+                | Payload::SetRole { .. }
+                | Payload::DefineRole { .. }
+                | Payload::Ownership { .. }
+        )
+        && !*OFF.get_or_init(|| std::env::var("PE_NO_LIVE").is_ok_and(|v| v == "1"))
+}
+
+/// Measurement only (PE_WHATIF_LIVE=1, with PE_NO_LIVE=1): the bytes link elision would leave out of `m` from `from`, so
+/// the shaper and the controllers see elision's bytes on the explicit wire, with no live entries held behind holes.
+pub fn whatif_live_saving(from: MemberId, m: &Msg) -> u64 {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var("PE_WHATIF_LIVE").is_ok_and(|v| v == "1")) {
+        return 0;
+    }
+    fn walk(from: MemberId, m: &Msg) -> u64 {
+        match m {
+            Msg::Entry(e) if e.member == from && e.link != 0 && e.carried.is_none() && !matches!(
+                e.payload,
+                Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. }
+                    | Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. }
+            ) => 8,
+            Msg::Batch(v) => v.iter().map(|x| walk(from, x)).sum(),
+            _ => 0,
+        }
+    }
+    walk(from, m)
+}
+
+/// `m` with every live entry as the explicit one (its link is held in memory on the sending side), for fault filters
+/// written for `Msg::Entry`.
+pub fn explicit_view(m: &Msg) -> std::borrow::Cow<'_, Msg> {
+    fn has_live(m: &Msg) -> bool {
+        match m {
+            Msg::Live(_) => true,
+            Msg::Batch(v) => v.iter().any(has_live),
+            _ => false,
+        }
+    }
+    fn conv(m: &Msg) -> Msg {
+        match m {
+            Msg::Live(e) => Msg::Entry(e.clone()),
+            Msg::Batch(v) => Msg::Batch(v.iter().map(conv).collect()),
+            x => x.clone(),
+        }
+    }
+    if has_live(m) { std::borrow::Cow::Owned(conv(m)) } else { std::borrow::Cow::Borrowed(m) }
 }
 
 fn flatten(m: Msg, out: &mut Vec<Msg>) {
@@ -1494,7 +1565,7 @@ impl Sim {
         let mut due = Vec::new();
         for (to, w, from, m) in self.net.due() {
             // Rule 4 (D): each datagram's size, as it arrives directly from its sender.
-            let bytes = encode_msg(&m).len() as u64 + dgram_overhead();
+            let bytes = encode_msg(&m).len() as u64 + dgram_overhead() - whatif_live_saving(from, &m);
             let pi = self.peer_index(to);
             if !self.peers[pi].crashed {
                 if let Some(r) = self.peers[pi].worlds.get_mut(&w) {
@@ -1528,6 +1599,17 @@ impl Sim {
                             r.pending_accept.push((id, author, obj));
                         }
                     }
+                    for v in out {
+                        broadcast(&mut self.net, w, to, &members, &Msg::Entry(v));
+                    }
+                    for (dest, f) in r.sim.take_fetches(now / 1000) {
+                        if dest != to {
+                            self.net.post(w, to, dest, &f);
+                        }
+                    }
+                }
+                Msg::Live(e) => {
+                    let out = r.sim.insert_live(from, e);
                     for v in out {
                         broadcast(&mut self.net, w, to, &members, &Msg::Entry(v));
                     }

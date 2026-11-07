@@ -1,0 +1,68 @@
+#### r18-thin: elision (v3, a60906e) against main's wire (PE_NO_LIVE=1)
+WORSE 12
+down-k12-m3              stalled 0->111 back 0.0->529.0 later 0->0 EQUAL->EQUAL lag 18.0->22.2 wire1 44.8->44.3
+down-k12-m4              stalled 260->323 back 930.0->1063.0 later 0->0 EQUAL->EQUAL lag 23.9->26.1 wire1 76.6->70.3
+down-k16-m8              stalled 1098->1486 back 1602.0->4130.0 later 0->0 EQUAL->EQUAL lag 31.7->40.1 wire1 209.0->210.1
+down-k8-m3               stalled 1438->2085 back 7461.0->11062.0 later 0->0 EQUAL->EQUAL lag 113.0->204.7 wire1 45.7->49.4
+gap15-up-k12-m4          stalled 319->459 back 929.0->1061.0 later 0->0 EQUAL->EQUAL lag 20.0->21.8 wire1 72.0->84.1
+gap3-down-k12-m3         stalled 0->111 back 0.0->529.0 later 0->0 EQUAL->EQUAL lag 15.6->16.6 wire1 44.8->44.3
+gap3-down-k12-m4         stalled 260->323 back 930.0->1063.0 later 0->0 EQUAL->EQUAL lag 17.2->17.7 wire1 76.6->70.3
+gap3-down-k8-m3          stalled 1438->2085 back 7461.0->11062.0 later 0->0 EQUAL->EQUAL lag 43.9->67.2 wire1 45.7->49.4
+gap3-up-k12-m4           stalled 319->459 back 929.0->1061.0 later 0->0 EQUAL->EQUAL lag 17.6->18.5 wire1 72.0->84.1
+up-k12-m4                stalled 319->459 back 929.0->1061.0 later 0->0 EQUAL->EQUAL lag 25.7->29.3 wire1 72.0->84.1
+up-k12-m8                stalled 2501->2493 back 3213.0->4963.0 later 0->0 EQUAL->EQUAL lag 110.5->110.7 wire1 182.6->158.0
+up-k16-m8                stalled 699->829 back 1063.0->1597.0 later 0->0 EQUAL->EQUAL lag 27.2->28.9 wire1 248.8->249.0
+BETTER 8
+down-k12-m8              stalled 8913->3873 back 18664.0->7995.0 later 0->0 EQUAL->EQUAL lag 456.4->119.7 wire1 188.0->198.1
+down-k8-m4               stalled 3308->1827 back 14397.0->7863.0 later 0->0 EQUAL->EQUAL lag 273.2->117.1 wire1 75.8->89.4
+gap15-down-k8-m4         stalled 3308->1827 back 14397.0->7863.0 later 0->0 EQUAL->EQUAL lag 146.2->68.3 wire1 75.8->89.4
+gap15-up-k8-m2           stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 123.2->30.4 wire1 27.5->23.9
+gap3-down-k8-m4          stalled 3308->1827 back 14397.0->7863.0 later 0->0 EQUAL->EQUAL lag 91.2->50.3 wire1 75.8->89.4
+gap3-up-k8-m2            stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 72.7->22.9 wire1 27.5->23.9
+gap30-up-k8-m2           stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 86.0->24.8 wire1 27.5->23.9
+up-k8-m2                 stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 238.2->46.1 wire1 27.5->23.9
+SAME (within 10 frames / 10 %, 500 ms) 44
+#### r18-thin: bytes-only what-if against main's wire
+WORSE 7
+down-k12-m3              stalled 0->110 back 0.0->529.0 later 0->0 EQUAL->EQUAL lag 18.0->22.1 wire1 44.8->44.6
+gap15-up-k12-m4          stalled 319->459 back 929.0->1061.0 later 0->0 EQUAL->EQUAL lag 20.0->21.8 wire1 72.0->84.4
+gap3-down-k12-m3         stalled 0->110 back 0.0->529.0 later 0->0 EQUAL->EQUAL lag 15.6->16.6 wire1 44.8->44.6
+gap3-up-k12-m4           stalled 319->459 back 929.0->1061.0 later 0->0 EQUAL->EQUAL lag 17.6->18.5 wire1 72.0->84.4
+up-k12-m4                stalled 319->459 back 929.0->1061.0 later 0->0 EQUAL->EQUAL lag 25.7->29.3 wire1 72.0->84.4
+up-k12-m8                stalled 2501->2497 back 3213.0->5139.0 later 0->0 EQUAL->EQUAL lag 110.5->110.9 wire1 182.6->158.9
+up-k16-m8                stalled 699->816 back 1063.0->1597.0 later 0->0 EQUAL->EQUAL lag 27.2->28.8 wire1 248.8->249.7
+BETTER 13
+down-k12-m4              stalled 260->196 back 930.0->529.0 later 0->0 EQUAL->EQUAL lag 23.9->22.9 wire1 76.6->67.6
+down-k12-m8              stalled 8913->4191 back 18664.0->8527.0 later 0->0 EQUAL->EQUAL lag 456.4->136.5 wire1 188.0->198.9
+down-k16-m8              stalled 1098->901 back 1602.0->1597.0 later 0->0 EQUAL->EQUAL lag 31.7->29.4 wire1 209.0->211.0
+down-k8-m4               stalled 3308->2802 back 14397.0->11196.0 later 0->0 EQUAL->EQUAL lag 273.2->210.9 wire1 75.8->89.8
+gap15-down-k8-m4         stalled 3308->2802 back 14397.0->11196.0 later 0->0 EQUAL->EQUAL lag 146.2->115.2 wire1 75.8->89.8
+gap15-up-k8-m2           stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 123.2->30.4 wire1 27.5->24.0
+gap3-down-k12-m4         stalled 260->196 back 930.0->529.0 later 0->0 EQUAL->EQUAL lag 17.2->16.9 wire1 76.6->67.6
+gap3-down-k8-m4          stalled 3308->2802 back 14397.0->11196.0 later 0->0 EQUAL->EQUAL lag 91.2->73.9 wire1 75.8->89.8
+gap3-up-k8-m2            stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 72.7->23.0 wire1 27.5->24.0
+gap3-up-k8-m4            stalled 6804->6810 back None->6586.0 later 5087->5087 EQUAL->EQUAL lag 817.7->763.9 wire1 80.6->64.8
+gap30-up-k8-m2           stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 86.0->25.0 wire1 27.5->24.0
+up-k8-m2                 stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 238.2->46.1 wire1 27.5->24.0
+up-k8-m4                 stalled 2005->2011 back None->6586.0 later 0->0 EQUAL->EQUAL lag 229.6->192.1 wire1 80.6->64.8
+SAME (within 10 frames / 10 %, 500 ms) 44
+#### r18-thin-partb: elision (v3, a60906e) against main's wire (PE_NO_LIVE=1)
+WORSE 1
+down-k32-m3              stalled 1872->2066 back None->None later 0->0 EQUAL->EQUAL lag 371.1->375.3 wire1 92.8->93.0
+BETTER 2
+up-k24-m4                stalled 758->613 back None->22538.0 later 0->0 EQUAL->EQUAL lag 136.7->89.2 wire1 77.2->77.0
+up-k8-m2                 stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 238.2->46.1 wire1 27.5->23.9
+SAME (within 10 frames / 10 %, 500 ms) 32
+#### r18-thin-partb: bytes-only what-if against main's wire
+#### r18: elision (v3, a60906e) against main's wire (PE_NO_LIVE=1)
+WORSE 1
+capped-slow-member       stalled 1438->2085 back 7461.0->11062.0 later 0->0 EQUAL->EQUAL lag 166.8->309.8 wire1 45.7->49.4
+BETTER 1
+capped-8kbps             stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 238.2->46.1 wire1 27.5->23.9
+SAME (within 10 frames / 10 %, 500 ms) 12
+#### r18: bytes-only what-if against main's wire
+WORSE 0
+
+BETTER 1
+capped-8kbps             stalled 1523->433 back 12128.0->3331.0 later 0->0 EQUAL->EQUAL lag 238.2->46.1 wire1 27.5->24.0
+SAME (within 10 frames / 10 %, 500 ms) 13
