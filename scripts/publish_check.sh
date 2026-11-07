@@ -62,13 +62,15 @@ while IFS= read -r line || [ -n "$line" ]; do
     *) echo "publish_check: bad line in $terms: $line"; exit 2 ;;
   esac
   n=$((n + 1))
-  out=$(git grep -z -n -i $how -e "$pat" "$ref" -- | python -I scripts/publish_allow.py filter "$ref"; exit "${PIPESTATUS[0]}"); rc=$?
+  # rc is git grep's status (0 hits, 1 none); a failing filter makes it 2, so the check fails closed.
+  out=$(git grep -z -n -i $how -e "$pat" "$ref" -- | python -I scripts/publish_allow.py filter "$ref"
+        s=("${PIPESTATUS[@]}"); [ "${s[1]}" = 0 ] || exit 2; exit "${s[0]}"); rc=$?
   case $rc in
     0) printf '%s\n' "$out"
        a=$(printf '%s\n' "$out" | grep -c '^allowed: ')
        allowed=$((allowed + a)); hits=$((hits + $(printf '%s\n' "$out" | wc -l) - a)) ;;
     1) ;;
-    *) echo "publish_check: git grep failed (exit $rc) for a term of $terms"; exit 2 ;;
+    *) echo "publish_check: git grep or the allowlist filter failed (exit $rc) for a term of $terms"; exit 2 ;;
   esac
 done < "$terms"
 

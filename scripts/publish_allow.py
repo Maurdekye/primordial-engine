@@ -67,7 +67,13 @@ def main():
         for rec in sys.stdin.buffer.read().split(b"\n"):
             if not rec:
                 continue
-            name, n, text = rec.split(b"\0", 2)
+            parts = rec.split(b"\0", 2)
+            if len(parts) != 3:
+                # Not `name\0n\0text`, e.g. git grep's "Binary file <ref>:<path> matches": always a
+                # hit, printed as is (the allowlist holds text lines only).
+                print(rec.decode("utf-8", "replace"))
+                continue
+            name, n, text = parts
             path = name[len(ref) + 1:] if name.startswith(ref + b":") else name
             digest = line_hash(text)
             shown = f"{args[1]}:{path.decode('utf-8', 'replace')}:{n.decode()}"
