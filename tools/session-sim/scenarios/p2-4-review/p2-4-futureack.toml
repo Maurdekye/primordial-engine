@@ -1,6 +1,9 @@
 description = """
 P2-4 review round 2, VC-5: from 2 s, 9's acks claim epoch 999 (parts 1 and 2), or epoch 1 with no \
-decision behind it (parts 3 and 4). Each case runs with VC-5's fix switched off, then as shipped."""
+decision behind it (parts 3 and 4). Each case runs with VC-5's epoch rule switched off, then as \
+shipped. Epoch-999 acks are void, so 9 is demoted. Since trust survey #4 (VC-5's vote retired, its \
+guards kept) epoch-1 acks hold confirmation, with no removal and no fork, until admin 1 kicks 9 at \
+6 s. Part 1 is the only guard left on VC-5's epoch rule (review RA-1): keep it."""
 include = ["../common/review.toml"]
 end_ms = 12000
 quiet_panics = true
@@ -35,10 +38,13 @@ report = [
 ]
 
 [[part]]
-byzantine = [{ kind = "fake_ack_epoch", member = 9, from_ms = 2000, epoch = 1 }]
+# Trust survey #4: valid acks claiming epoch 1 hold confirmation (no reader counts them) until admin 1
+# kicks 9 at 6 s; no removal before, no fork.
+byzantine = [{ kind = "admin_kick", member = 1, target = 9, at_ms = 6000, honest = [1, 2, 3], to = [2, 3, 9] }, { kind = "fake_ack_epoch", member = 9, from_ms = 2000, epoch = 1 }]
 report = [
     { kind = "membership", honest = [1, 2, 3], label = "futureack-2" },
     { kind = "view_changes", honest = [1, 2, 3], label = "futureack-2" },
     { kind = "confs", honest = [1, 2, 3], label = "futureack-2" },
+    { kind = "check", case = "admin_kick", label = "futureack-2", honest = [1, 2, 3] },
     { kind = "verdict", honest = [1, 2, 3], label = "futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision)" },
 ]

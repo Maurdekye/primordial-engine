@@ -24,15 +24,28 @@
 //! (`crates/pe-session-harness`), which drives its peers through this core, reproduces the spike's
 //! digests.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::session::{EntryId, MemberId, Msg, Outcome, Payload, SignedEntry, TransferError, WorldSim};
+use crate::session::{perm, EntryId, Hold, MemberId, Msg, Outcome, Payload, SignedEntry, TransferError, WorldSim, PACK_MAX};
 
 /// R18: frames between hand poses, and between acks, at each congestion level. Review R3-9 added
 /// levels 4 and 5 for links of about 8-16 kbit/s; both are aligned to the same frame ticks, so a
 /// tick's hand pose shares the ack's datagram.
-pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
-pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+/// Thin links, Part A (design 10.9; the spike's p2/thin-link, main 11c20c1 with reviews PA-2 and PA2-1):
+/// level 6 drains a backlog at stride 8 without packs (D73 option B), and levels 7 and 8 send a single
+/// pose and an ack every 16 and 32 frames, for links the packed levels cannot carry. Above
+/// [`PACKED_LEVELS`] the author's hand is not exact: it reaches each pose over the stride, as before D73.
+pub const HAND_STRIDE: [u64; 9] = [1, 2, 3, 4, 6, 8, 8, 16, 32];
+pub const ACK_FRAMES: [u64; 9] = [2, 2, 3, 4, 6, 8, 8, 16, 32];
+/// Thin links, Part A: the coarsest level that sends packs (D73(a)); above it, single poses.
+pub const PACKED_LEVELS: usize = 5;
+/// Thin links, Part A: the level that drains a backlog without packs and returns to packed level 5
+/// after 300 ms of calm, once per D56 episode.
+pub const DRAIN_LEVEL: usize = 6;
+/// Thin links, Part A: from the coarsest packed level up, the controller climbs only while the queue is
+/// at least this deep (us), or still growing (by [`GROWING_US`] since the last level change).
+pub const DEEP_QUEUE_US: u64 = 300_000;
+pub const GROWING_US: u64 = 10_000;
 /// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
 pub const IDLE_ACK_FRAMES: u64 = 8;
 /// R18's thresholds (design 10.9): raise above 40 ms at most every 100 ms; lower after 300 ms below
@@ -93,7 +106,8 @@ pub enum AuthorError {
     NotReady,
     /// A hand that is not this member's (8.4).
     NotOwner,
-    /// A second pose for a hand in a frame that already has one.
+    /// A second pose for a hand in a frame that already has one, or (thin links, Part A) a pose
+    /// thinned out above the packed levels: off the stride's frame ticks, dropped.
     Stride,
     /// Accepted, nothing to send yet: under R18 thinning the pose waits in this member's pending
     /// pack (D73(a)) and already moves its hand here; it goes out with the pack.
@@ -137,14 +151,20 @@ pub struct SessionCore {
     /// Test fixture (review VCR-12 under 7.6 reduction 2): ack only on the member's own interval, never
     /// at once on leaving idle, so a member set to ack rarely keeps a stale horizon.
     pub ack_grid_only: bool,
-    /// The R18 below-20 item, option 1: this member's own entries go out live as [`Msg::Lean`]
-    /// (without the ids receivers rebuild). Off: explicit, as before.
-    pub lean_wire: bool,
+    /// This tick's own live entries, sent at `outbox` as runs (option 2): (entry, class, recipients).
+    own_out: Vec<(SignedEntry, Class, Vec<MemberId>)>,
     last_frame_seen: u64,
     /// R18: adapt the hand-pose stride and ack interval to the uplink queue delay. On by default.
     pub adapt: bool,
     pub level: usize,
     level_t: u64,
+    /// Thin links, Part A: the uplink queue delay (us) when the level last changed, to tell a queue
+    /// still growing at the coarsest packed level from one draining there.
+    level_b: u64,
+    /// Thin links, Part A: the drain level's quick return to packed level 5 was used in this D56
+    /// episode. Until then D56 remembers at most packed level 5; after it, leaving the drain level
+    /// follows D56 like any other level, so a link the packed levels cannot carry does not cycle.
+    drained: bool,
     calm_since: u64,
     queue_delay_us: Option<u64>,
     /// D56's memory (design 10.9): after congestion began at level L, lowering into L or below
@@ -170,7 +190,7 @@ pub struct SessionCore {
     /// D73(a): per hand, the poses waiting for their pack while R18 thins the stream.
     packs: BTreeMap<u32, Pack>,
     /// Ticks spent at each congestion level.
-    pub level_ms: [u64; 6],
+    pub level_ms: [u64; 9],
     tick: Option<TickState>,
     out: Vec<Out>,
     events: Vec<Event>,
@@ -185,6 +205,54 @@ pub struct SessionCore {
     state_asked: BTreeSet<MemberId>,
     /// Review P23-4: when each requester last got a state from this member.
     state_served: BTreeMap<MemberId, u64>,
+    /// Local time of the call in progress (receive or tick), for the admin indicators' send times.
+    now_us: u64,
+    ind: IndState,
+}
+
+/// Admin indicators (design 10.8): what an admin's client gets from [`SessionCore::indicators`].
+/// A hint for a kick, never proof; nothing acts on it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Indicators {
+    /// The present frame minus the confirmed frame.
+    pub lag_frames: u64,
+    pub lag_secs: f64,
+    /// Whom confirmation waits on: empty unless the lag has been at least a quarter of the
+    /// speculation window for at least 1 s. It says who, never why.
+    pub holding: Vec<Hold>,
+    /// The late-acks timing hint, per member this replica has judged.
+    pub late: Vec<LateAcks>,
+}
+
+/// One member's late acks over the last 10 s (design 10.8, the clock-free test).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LateAcks {
+    pub member: MemberId,
+    pub late: u32,
+    pub eligible: u32,
+    /// More than half of at least [`LATE_MIN_ACKS`] eligible acks were late.
+    pub flagged: bool,
+}
+
+/// The late-acks hint's window, and its round-trip median's (design 10.8).
+pub const LATE_WINDOW_US: u64 = 10_000_000;
+/// The window the late-acks hint's round trip is the largest sample of (review IB-1).
+pub const RTT_MAX_WINDOW_US: u64 = 2_000_000;
+/// Fewer eligible acks than this in the window flag nobody.
+pub const LATE_MIN_ACKS: u32 = 10;
+/// The margin's fixed part, on top of PACK_MAX frames (an ack built up to PACK_MAX frames before it is sent).
+pub const LATE_MARGIN_US: u64 = 50_000;
+
+#[derive(Clone, Debug, Default)]
+struct IndState {
+    /// Per member: my entry seq -> (when last handed to the link toward it, the entry's stamp, its id).
+    sent: BTreeMap<MemberId, BTreeMap<u32, (u64, u64, EntryId)>>,
+    /// Per member: round-trip samples (local time, round trip), from the IO's pings.
+    rtt: BTreeMap<MemberId, VecDeque<(u64, u64)>>,
+    /// Per member: its eligible acks (arrival, late).
+    acks: BTreeMap<MemberId, VecDeque<(u64, bool)>>,
+    /// Since when the lag has been at least a quarter of the speculation window.
+    lag_since: Option<u64>,
 }
 
 /// Review P23-4: a member answers one `FetchState` per requester per this interval.
@@ -208,11 +276,13 @@ impl SessionCore {
             ack_on_frames: true,
             was_idle: false,
             ack_grid_only: false,
-            lean_wire: true,
+            own_out: Vec::new(),
             last_frame_seen: u64::MAX,
             adapt: true,
             level: 0,
             level_t: 0,
+            level_b: 0,
+            drained: false,
             calm_since: 0,
             queue_delay_us: None,
             recall_calm_us: 5_000_000,
@@ -226,7 +296,7 @@ impl SessionCore {
             last_adapt_us: None,
             hand_last: BTreeMap::new(),
             packs: BTreeMap::new(),
-            level_ms: [0; 6],
+            level_ms: [0; 9],
             tick: None,
             out: Vec::new(),
             events: Vec::new(),
@@ -238,6 +308,8 @@ impl SessionCore {
             last_checks_bad: 0,
             state_asked: BTreeSet::new(),
             state_served: BTreeMap::new(),
+            now_us: 0,
+            ind: IndState::default(),
         }
     }
 
@@ -300,7 +372,7 @@ impl SessionCore {
         Some(frame_local.min(self.next_ack_us))
     }
 
-    /// Whether a payload other than a hand pose can be authored now.
+    /// Whether a payload other than a hand pose or an admin entry can be authored now.
     pub fn ready(&self) -> bool {
         self.started && self.sim.caught_up() && self.sim.frame == self.sim.now
     }
@@ -314,6 +386,7 @@ impl SessionCore {
 
     fn send_to_all(&mut self, to: &[MemberId], class: Class, msg: Msg) {
         let to: Vec<MemberId> = to.iter().copied().filter(|&m| m != self.sim.me).collect();
+        self.note_sent(&to, &msg);
         if !to.is_empty() {
             self.out.push(Out { to, class, msg });
         }
@@ -336,11 +409,14 @@ impl SessionCore {
 
     fn send_to(&mut self, to: MemberId, class: Class, msg: Msg) {
         if to != self.sim.me {
+            self.note_sent(&[to], &msg);
             self.out.push(Out { to: vec![to], class, msg });
         }
     }
 
     fn fetches(&mut self, now_us: u64) {
+        // Review O2-3: gaps are asked for in parallel only while this member's uplink is not adapting.
+        self.sim.congested = self.adapt && self.level > 0;
         for (dest, f) in self.sim.take_fetches(now_us / 1000) {
             self.send_to(dest, Class::Control, f);
         }
@@ -348,6 +424,7 @@ impl SessionCore {
 
     /// A message from member `from`. Entries are verified here; the IO has authenticated `from`.
     pub fn receive(&mut self, from: MemberId, m: Msg, now_us: u64) {
+        self.now_us = now_us;
         let audience = self.sim.audience();
         self.receive_one(from, m, now_us, &audience);
         self.note_events();
@@ -355,25 +432,53 @@ impl SessionCore {
 
     fn receive_one(&mut self, from: MemberId, m: Msg, now_us: u64, audience: &[MemberId]) {
         match m {
-            Msg::Entry(_) | Msg::Lean(_) => {
+            Msg::Entry(_) | Msg::Run { .. } => {
+                // Admin indicators: an ack straight from its author, judged on arrival (late acks).
+                let acks: Vec<(u64, u64, Vec<(MemberId, u32, EntryId)>, bool)> = match &m {
+                    Msg::Entry(e) => vec![e],
+                    Msg::Run { entries, .. } => entries.iter().collect(),
+                    _ => vec![],
+                }
+                .into_iter()
+                .filter(|e| e.member == from && from != self.sim.me)
+                .filter_map(|e| match &e.payload {
+                    Payload::Ack { horizon, heads, .. } => Some((e.stamp, *horizon, heads.clone(), matches!(m, Msg::Run { heads: true, .. }))),
+                    _ => None,
+                })
+                .collect();
+                for (stamp, horizon, heads, lean) in acks {
+                    self.judge_ack(from, stamp, horizon, &heads, now_us, lean);
+                }
                 let mut v = match m {
-                    Msg::Lean(e) => self.sim.insert_lean(from, e),
-                    Msg::Entry(e) => self.sim.insert(e),
+                    Msg::Run { lean, heads, signed, entries } => self.sim.insert_run(from, lean, heads, signed, entries),
+                    Msg::Entry(e) => {
+                        self.sim.note_answer(from, e.member, e.seq);
+                        self.sim.insert(e)
+                    }
                     _ => unreachable!(),
                 };
-                // Lean entries that waited for this one.
+                // Runs that waited for this one.
                 v.extend(self.sim.resolve_lean());
                 // Proofs of equivocation come back with this member's vote: broadcast them.
-                for e in v {
-                    self.send_to_all(audience, Class::Control, Msg::Entry(e));
+                for x in v {
+                    self.send_to_all(audience, Class::Control, x);
                 }
                 self.fetches(now_us);
             }
             // Review P23-4: requests are answered for the members and followers only (`audience`),
             // and every answer is a repair, which the IO may drop under a long queue.
             Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. } | Msg::FetchState if !audience.contains(&from) => {}
-            Msg::Fetch { author, from: a, to: b } => {
-                for r in self.sim.on_fetch(author, a, b) {
+            Msg::Fetch { author, from: a, to: b, held } => {
+                // Admin indicators: `from` lacks my chain from `a`, so it can't reference anything past
+                // the hole until it is repaired: that restarts the late-acks clock from `a` on.
+                if author == self.sim.me
+                    && let Some(sent) = self.ind.sent.get_mut(&from)
+                {
+                    for (_, v) in sent.range_mut(a..) {
+                        v.0 = v.0.max(now_us);
+                    }
+                }
+                for r in self.sim.on_fetch(author, a, b, held) {
                     self.send_to(from, Class::Repair, r);
                 }
             }
@@ -425,6 +530,7 @@ impl SessionCore {
     /// present frame (unless the world is background and not due; `burst` forces it). Returns
     /// the clock frame if the sim was advanced, which is when the IO authors that frame's actions.
     pub fn begin_tick(&mut self, now_us: u64, burst: bool) -> Option<u64> {
+        self.now_us = now_us;
         let Some(clock_frame) = self.clock_frame(now_us) else {
             self.tick = None;
             return None;
@@ -447,17 +553,30 @@ impl SessionCore {
                     // memory, raise or not (review D56-1).
                     let onset = !self.over;
                     self.over = true;
-                    self.congested_at = match self.congested_at {
-                        Some(l) if onset => Some(l.max(self.level)),
-                        Some(l) => Some(l),
-                        None => Some(self.level),
+                    let l = match self.congested_at {
+                        Some(l) if onset => l.max(self.level),
+                        Some(l) => l,
+                        None => self.level,
                     };
+                    // Thin links, Part A: until the drain level's quick return has been used in this
+                    // episode, D56 remembers at most the coarsest packed level. The first climb through
+                    // the drain and floor levels clears a passing backlog; remembered, an onset reached
+                    // on the way held a 32 kbit/s sweeper at stride 16 for the rest of its run (spike).
+                    // Congestion again after the return means the link needs the floor levels, and from
+                    // then on they are remembered.
+                    self.congested_at = Some(if self.drained { l } else { l.min(PACKED_LEVELS) });
                     self.congested_t = now_us;
                     self.quiet_us = 0;
                     self.calm_since = 0;
-                    if now_us >= self.level_t + RAISE_EVERY_US && self.level < HAND_STRIDE.len() - 1 {
+                    // Thin links, Part A: from the coarsest packed level up, climb only while the queue
+                    // is deep (`DEEP_QUEUE_US`) or still growing since the last level change: a backlog
+                    // that level 5 drains, with the author's hand exact, stays there. Below level 5,
+                    // climbs stay at one level per 100 ms.
+                    let deep_enough = self.level < PACKED_LEVELS || b > DEEP_QUEUE_US || b > self.level_b + GROWING_US;
+                    if deep_enough && now_us >= self.level_t + RAISE_EVERY_US && self.level < HAND_STRIDE.len() - 1 {
                         self.level += 1;
                         self.level_t = now_us;
+                        self.level_b = b;
                     }
                 }
                 Some(b) => {
@@ -479,6 +598,7 @@ impl SessionCore {
             }
             if self.congested_at.is_some() && (self.quiet_us >= self.forget_us || now_us >= self.congested_t + self.ceiling_us) {
                 self.congested_at = None;
+                self.drained = false;
             }
             if idle_now {
                 self.idle_at = now_us;
@@ -487,15 +607,35 @@ impl SessionCore {
                 // Lowering into the remembered level or a finer one takes the longer calm with the
                 // member active throughout: calm while idle never lowers into L (idle calm stops at
                 // L + 1), nor counts once the member is active again. Lowering above L is unchanged.
+                // Thin links, Part A: the drain level returns to packed level 5 after 300 ms of calm,
+                // whatever D56 remembers and whether or not the member is idle, the first time in a D56
+                // episode, which drains a first congestion's backlog of packs and gives the author its
+                // exact hand back soon. Above the packed levels (reviews PA-2, PA2-1), an idle member
+                // steps down on calm at the 300 ms pace and an active one after the recall calm, idle
+                // or not, so an idle member is back at level 5 within about a second and its next
+                // gesture starts packed. At level 5 and below nothing changes.
                 let into = self.level - 1;
-                let (calm, from) = if self.congested_at.is_some_and(|c| into <= c) {
-                    (self.recall_calm_us, self.calm_since.max(self.idle_at))
+                let quick_drain = self.level == DRAIN_LEVEL && !self.drained;
+                let (calm, from) = if quick_drain {
+                    (LOWER_AFTER_US, self.calm_since)
+                } else if self.congested_at.is_some_and(|c| into <= c) {
+                    if self.level <= PACKED_LEVELS {
+                        (self.recall_calm_us, self.calm_since.max(self.idle_at))
+                    } else if idle_now {
+                        (LOWER_AFTER_US, self.calm_since)
+                    } else {
+                        (self.recall_calm_us, self.calm_since)
+                    }
                 } else {
                     (LOWER_AFTER_US, self.calm_since)
                 };
                 if now_us >= from + calm && now_us >= self.level_t + LOWER_AFTER_US {
+                    if quick_drain {
+                        self.drained = true;
+                    }
                     self.level = into;
                     self.level_t = now_us;
+                    self.level_b = self.queue_delay_us.unwrap_or(0);
                     self.calm_since = now_us;
                 }
             }
@@ -523,6 +663,15 @@ impl SessionCore {
     /// The second half of a tick: ack when due, then attestations, suspicions, the view change and
     /// fetch requests.
     pub fn end_tick(&mut self, now_us: u64) {
+        self.now_us = now_us;
+        // Admin indicators: since when confirmation has lagged by a quarter of the window or more.
+        if let Some(f) = self.clock_frame(now_us) {
+            if f.saturating_sub(self.sim.conf) >= self.sim.cfg.window / 4 {
+                self.ind.lag_since.get_or_insert(now_us);
+            } else {
+                self.ind.lag_since = None;
+            }
+        }
         let Some(t) = self.tick.take() else { return };
         // 7.6 reduction 2 (spike 562b2fb): an idle member acks every IDLE_ACK_FRAMES frames at any R18
         // level, the longer of the two intervals; the ack that leaves idle goes at once, off the grid.
@@ -555,9 +704,9 @@ impl SessionCore {
         send(self, v, Class::Control);
         let v = self.sim.view_change_due();
         send(self, v, Class::Control);
-        // Lean entries held past their wait ask for their explicit form.
-        for e in self.sim.resolve_lean() {
-            self.send_to_all(&t.audience, Class::Control, Msg::Entry(e));
+        // Runs held past their wait ask for their explicit form.
+        for x in self.sim.resolve_lean() {
+            self.send_to_all(&t.audience, Class::Control, x);
         }
         self.fetches(now_us);
         self.note_events();
@@ -592,6 +741,18 @@ impl SessionCore {
                     if self.hand_last.get(&obj).is_some_and(|&l| s <= l) {
                         return Err(AuthorError::Stride);
                     }
+                    // Thin links, Part A: above the packed levels, the pre-D73 thinning: one pose on
+                    // clock frames that are multiples of k, reached over k frames; others are dropped.
+                    let level = self.level.min(HAND_STRIDE.len() - 1);
+                    if self.adapt && k > 1 && level > PACKED_LEVELS {
+                        if self.sim.now % k != 0 {
+                            return Err(AuthorError::Stride);
+                        }
+                        self.hand_last.insert(obj, s);
+                        self.flush_pack(obj);
+                        let e = self.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: k as u8, more: Vec::new() }, ahead);
+                        return Ok(self.sent(e));
+                    }
                     self.hand_last.insert(obj, s);
                     if k == 1 {
                         self.flush_pack(obj);
@@ -617,16 +778,21 @@ impl SessionCore {
                     }
                 }
             }
+            // Admin entries are authored while this replica is paused or behind, as hand poses are
+            // (design 12.4, "Admin entries while paused"): each is judged in the view change on its
+            // signature, its epoch and the roles of the sequence before it (`AdminRun`), never on the
+            // sim's state, and its stamp (the present, as a vote's) only orders it. An admin can then
+            // kick the member a pause is waiting on, the pause the user's ruling ends by a kick.
+            Payload::Kick { target, rejoin, .. } => self.sim.kick_with(target, rejoin),
+            Payload::Ban { key, on, perma, .. } => self.sim.ban(key, on, perma),
+            Payload::SetRole { member, role, .. } => self.sim.set_role(member, role),
+            Payload::DefineRole { role, perms, .. } => self.sim.define_role(role, perms),
             p => {
                 if !self.ready() {
                     return Err(AuthorError::NotReady);
                 }
                 match p {
                     Payload::Touch { obj, .. } => self.sim.author(p, Some(obj)),
-                    Payload::Kick { target, rejoin, .. } => self.sim.kick_with(target, rejoin),
-                    Payload::Ban { key, on, perma, .. } => self.sim.ban(key, on, perma),
-                    Payload::SetRole { member, role, .. } => self.sim.set_role(member, role),
-                    Payload::DefineRole { role, perms, .. } => self.sim.define_role(role, perms),
                     p => self.sim.author(p, None),
                 }
             }
@@ -658,19 +824,163 @@ impl SessionCore {
         e
     }
 
-    /// An entry going out live: this member's own lean ([`Msg::Lean`]) to the peers that hold its
-    /// chain, and any chain an ack names, nearly to it ([`WorldSim::lean_to`]), explicit to the
-    /// others; anything else explicit.
+    /// A round-trip sample toward `member`, from the IO's pings (pe-app's clock sync; the harness
+    /// stands in with what a ping through the same link queues would take). Admin indicators only.
+    pub fn rtt_sample(&mut self, member: MemberId, rtt_us: u64, now_us: u64) {
+        let q = self.ind.rtt.entry(member).or_default();
+        q.push_back((now_us, rtt_us));
+        while q.front().is_some_and(|&(t, _)| t + LATE_WINDOW_US < now_us) {
+            q.pop_front();
+        }
+    }
+
+    /// The largest round trip sampled toward `member` over the last [`RTT_MAX_WINDOW_US`]:
+    /// conservative, so a path that just got slower exempts acks at once instead of after a median
+    /// catches up. It can only exempt an ack, never flag one. The short window makes a withholder
+    /// that slows its pongs to be exempted pay with a slow pong every 2 s (review IB-1).
+    fn window_rtt(&self, member: MemberId, now_us: u64) -> Option<u64> {
+        self.ind.rtt.get(&member)?.iter().filter(|&&(t, _)| t + RTT_MAX_WINDOW_US >= now_us).map(|&(_, r)| r).max()
+    }
+
+    /// Admin indicators: the latest time each of my own entries was handed to the link toward each
+    /// member. A repair restarts the clock: a copy lost on a full queue isn't the receiver's fault.
+    fn note_sent(&mut self, to: &[MemberId], msg: &Msg) {
+        let me = self.sim.me;
+        let now = self.now_us;
+        let mine = |e: &SignedEntry, ind: &mut IndState| {
+            if e.member == me {
+                for &m in to {
+                    ind.sent.entry(m).or_default().insert(e.seq, (now, e.stamp, e.id()));
+                }
+            }
+        };
+        match msg {
+            Msg::Entry(e) => mine(e, &mut self.ind),
+            Msg::Run { entries, .. } => entries.iter().for_each(|e| mine(e, &mut self.ind)),
+            Msg::Batch(v) => {
+                for x in v {
+                    match x {
+                        Msg::Entry(e) => mine(e, &mut self.ind),
+                        Msg::Run { entries, .. } => entries.iter().for_each(|e| mine(e, &mut self.ind)),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Admin indicators, late acks (design 10.8, the clock-free test): an ack of `x` arriving at
+    /// `now_us` is eligible if some entry e of mine went to `x` more than its round trip plus the
+    /// margin ago and `x` built the ack after it could hold e (stamp >= e's stamp + half the round
+    /// trip, review LA-5); it is late if it still doesn't reference e in the version I sent. A lean
+    /// ack's heads carry no ids (the receiver rebuilds them from its own copy), so for it the seq alone counts.
+    fn judge_ack(&mut self, x: MemberId, stamp: u64, horizon: u64, heads: &[(MemberId, u32, EntryId)], now_us: u64, lean: bool) {
+        // Review LA-4: a member that voted against me, and a joiner still catching up, are left out.
+        if !self.sim.is_member(x) || self.sim.voted_against_me(x) || self.sim.admitted_at(x).is_some_and(|b| horizon < b) {
+            return;
+        }
+        let Some(rtt) = self.window_rtt(x, now_us) else { return };
+        let margin = PACK_MAX * self.dt_us + LATE_MARGIN_US;
+        let half = rtt / 2 / self.dt_us.max(1);
+        let me = self.sim.me;
+        let Some(sent) = self.ind.sent.get_mut(&x) else { return };
+        while sent.first_key_value().is_some_and(|(_, &(t, _, _))| t + 2 * LATE_WINDOW_US < now_us) {
+            sent.pop_first();
+        }
+        let due = sent.iter().rev().find(|(_, v)| now_us.saturating_sub(v.0) > rtt + margin && stamp >= v.1 + half);
+        let Some((&seq, &(_, _, id))) = due else { return };
+        let late = !heads.iter().any(|&(q, s, hid)| q == me && (s > seq || (s == seq && (lean || hid == id))));
+        let q = self.ind.acks.entry(x).or_default();
+        q.push_back((now_us, late));
+        while q.front().is_some_and(|&(t, _)| t + LATE_WINDOW_US < now_us) {
+            q.pop_front();
+        }
+    }
+
+    /// Admin indicators (design 10.8): whom confirmation waits on, and the late-acks hint. Nothing
+    /// unless `asker` holds the Kick permission in the decided roles. The gate is presentation only:
+    /// every input is data this replica holds. Read-only: it sends, fetches and changes nothing.
+    pub fn indicators(&self, asker: MemberId, now_us: u64) -> Option<Indicators> {
+        if self.sim.perms_of(asker) & perm::KICK == 0 {
+            return None;
+        }
+        let present = self.clock_frame(now_us).unwrap_or(self.sim.now);
+        let lag_frames = present.saturating_sub(self.sim.conf);
+        let shown = self.ind.lag_since.is_some_and(|t| now_us >= t + 1_000_000) && lag_frames >= self.sim.cfg.window / 4;
+        let holding = if shown { self.sim.holding(present) } else { Vec::new() };
+        let late = self
+            .ind
+            .acks
+            .iter()
+            .filter(|&(&member, _)| self.sim.is_member(member))
+            .map(|(&member, q)| {
+                let (mut late, mut eligible) = (0u32, 0u32);
+                for &(t, l) in q {
+                    if t + LATE_WINDOW_US >= now_us {
+                        eligible += 1;
+                        late += l as u32;
+                    }
+                }
+                LateAcks { member, late, eligible, flagged: eligible >= LATE_MIN_ACKS && 2 * late > eligible }
+            })
+            .collect();
+        Some(Indicators { lag_frames, lag_secs: lag_frames as f64 * self.dt_us as f64 / 1e6, holding, late })
+    }
+
+
+    /// An entry going out live. This member's own entries wait for `outbox`, which sends each
+    /// recipient this tick's in runs; anything else goes explicit at once.
     fn send_live(&mut self, to: &[MemberId], class: Class, e: SignedEntry) {
-        if !self.lean_wire || e.member != self.sim.me {
+        if (!self.sim.lean_wire && !self.sim.run_wire) || e.member != self.sim.me {
             return self.send_to_all(to, class, Msg::Entry(e));
         }
-        let (lean, explicit): (Vec<MemberId>, Vec<MemberId>) = to.iter().partition(|&&p| self.sim.lean_to(p, &e));
-        self.send_to_all(&explicit, class, Msg::Entry(e.clone()));
-        self.send_to_all(&lean, class, Msg::Lean(e));
+        let to: Vec<MemberId> = to.iter().copied().filter(|&m| m != self.sim.me).collect();
+        if !to.is_empty() {
+            self.own_out.push((e, class, to));
+        }
+    }
+
+    /// The R18 below-20 item. To each recipient, this tick's own entries in runs of consecutive seqs
+    /// signed once, on the top (option 2), lean ([`WorldSim::lean_to`], option 1) where that
+    /// recipient can rebuild the ids. Recipients with the same runs share each message.
+    fn flush_own(&mut self) {
+        let q = std::mem::take(&mut self.own_out);
+        if q.is_empty() {
+            return;
+        }
+        let mut per: BTreeMap<MemberId, Vec<(usize, usize, bool)>> = BTreeMap::new();
+        let recipients: BTreeSet<MemberId> = q.iter().flat_map(|x| x.2.iter().copied()).collect();
+        for p in recipients {
+            let mut runs: Vec<(usize, usize, bool)> = Vec::new();
+            for (i, (e, _, to)) in q.iter().enumerate() {
+                if !to.contains(&p) {
+                    continue;
+                }
+                let lean = self.sim.lean_wire && self.sim.lean_to(p, e);
+                match runs.last_mut() {
+                    Some((a, b, l)) if self.sim.run_wire && *l == lean && q[*b].0.seq + 1 == e.seq && i - *a < WorldSim::RUN_MAX => *b = i,
+                    _ => runs.push((i, i, lean)),
+                }
+            }
+            per.insert(p, runs);
+        }
+        let mut groups: BTreeMap<Vec<(usize, usize, bool)>, Vec<MemberId>> = BTreeMap::new();
+        for (p, runs) in per {
+            groups.entry(runs).or_default().push(p);
+        }
+        for (runs, to) in groups {
+            for (a, b, lean) in runs {
+                let class = if q[a..=b].iter().any(|x| x.1 == Class::Control) { Class::Control } else { Class::Live };
+                let entries: Vec<SignedEntry> = q[a..=b].iter().map(|x| x.0.clone()).collect();
+                let msg = if entries.len() == 1 && !lean { Msg::Entry(entries.into_iter().next().expect("one")) } else { Msg::Run { lean, heads: lean, signed: true, entries } };
+                self.out.push(Out { to: to.clone(), class, msg });
+            }
+        }
     }
 
     pub fn outbox(&mut self) -> Vec<Out> {
+        self.flush_own();
         std::mem::take(&mut self.out)
     }
 
@@ -733,6 +1043,39 @@ mod tests {
 
     fn core(me: MemberId, members: &[MemberId], scene: SceneKind) -> SessionCore {
         SessionCore::new(WorldSim::new(1, me, members, scene, SimConfig::default(), KeyRing::test(me)))
+    }
+
+    /// Admin entries are authored while the replica is paused (design 12.4, "Admin entries while
+    /// paused"); a touch is not. Member 2 never reaches member 1, so 1's confirmation stalls and its
+    /// sim pauses at the speculation limit.
+    #[test]
+    fn admin_entries_are_authored_while_paused() {
+        let scene = SceneKind::Pile { side: 2, layers: 2 };
+        let mut a = core(1, &[1, 2], scene);
+        a.start(0);
+        let mut paused_at = None;
+        for ms in 0..20_000u64 {
+            a.tick(ms * 1000);
+            let _ = a.outbox();
+            if a.started() && !a.ready() && a.sim.caught_up() {
+                paused_at = Some(ms);
+                break;
+            }
+        }
+        let ms = paused_at.expect("1 pauses with no word from 2");
+        assert!(a.sim.is_member(2), "2 is still a member at {ms} ms");
+        let touch = a.author(Payload::Touch { obj: 1, impulse: [0.0, 5.0, 0.0], grab: false }, 0);
+        assert!(matches!(touch, Err(AuthorError::NotReady)), "a touch waits: {touch:?}");
+        let present = a.sim.frame.max(a.sim.now);
+        for p in [
+            Payload::DefineRole { epoch: 0, role: 7, perms: 0 },
+            Payload::SetRole { epoch: 0, member: 2, role: 7 },
+            Payload::Ban { epoch: 0, key: crate::ownership::test_key(9), on: true, perma: false },
+            Payload::Kick { epoch: 0, target: 2, rejoin: crate::session::Rejoin::Free },
+        ] {
+            let e = a.author(p.clone(), 0).unwrap_or_else(|e| panic!("{p:?} while paused: {e:?}"));
+            assert_eq!(e.stamp, present, "stamped at the present, as a vote");
+        }
     }
 
     /// Two cores wired back to back with no loss: they start, exchange acks, confirm frames, and a

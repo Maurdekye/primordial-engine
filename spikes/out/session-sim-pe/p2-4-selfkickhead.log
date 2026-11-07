@@ -1,10 +1,10 @@
-  4 removed at m1: Some(2.26671) s
-  selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed) with VCR-2's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 576 of frame 593, m2 conf 579 of frame 593, m3 conf 576 of frame 593; at m1: members {1, 2, 3}, evicted [4]
-RESULT selfkickhead: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [4]
+  4 removed at m1: Some(2.283377) s
+  selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed) with VCR-2's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 576 of frame 593, m2 conf 576 of frame 593, m3 conf 576 of frame 593; at m1: members {1, 2, 3}, evicted [4]
+RESULT selfkickhead: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [4]
 RESULT selfkickhead: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [4]
-RESULT selfkickhead: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [4]
-RESULT selfkickhead: 4 removed at 2.27 s -> KICKED
-  m1: conf 579 frame 593 members {1, 2, 3} evicted {4: (19, 118)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 44 bad 0
+RESULT selfkickhead: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [4]
+RESULT selfkickhead: 4 removed at 2.28 s -> KICKED
+  m1: conf 579 frame 593 members {1, 2, 3} evicted {4: (19, 118)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 44 bad 0
   m2: conf 579 frame 593 members {1, 2, 3} evicted {4: (19, 118)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 44 bad 0
   m3: conf 579 frame 593 members {1, 2, 3} evicted {4: (19, 118)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 44 bad 0
 RESULT selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed): frames 0..592 honest m1=9015afd81b841054 m2=9015afd81b841054 m3=9015afd81b841054 | offline replay 9015afd81b841054 | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0

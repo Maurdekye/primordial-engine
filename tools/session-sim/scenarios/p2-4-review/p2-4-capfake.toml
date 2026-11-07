@@ -1,15 +1,23 @@
 description = """
-P2-4 review round 6, VC6R-1 (a halt): capstale, but 9's capped precommit (for no proposal, once \
-per epoch from 2 s while 1 still has it as a member) names a polka id that exists nowhere. Fix off \
-(VC6R1): the missing id is fetched for good, 9 is never removed and confirmation halts. As \
-shipped the fetch has a budget and 9 is voted out. Part 1 runs with VC6R-1's fix switched off, \
-part 2 as shipped."""
+P2-4 review round 6, VC6R-1: capstale, but 9's capped precommit names a polka id that exists \
+nowhere. Trust survey #4 retired the cap rule and its fetch budget, so the ids a capped precommit \
+carries are dead bytes nothing reads (their removal is a follow-up wire change; capfake then folds \
+into capstale). The cap holds confirmation until admin 1 kicks 9 at 6 s, which ends it."""
 include = ["../common/review.toml"]
 end_ms = 14000
 quiet_panics = true
 
 [world.1]
 members = [1, 2, 3, 9]
+
+# Trust survey #4: admin 1 kicks 9 at 6 s (listed first, as the spike steps it first).
+[[byzantine]]
+kind = "admin_kick"
+member = 1
+target = 9
+at_ms = 6000
+honest = [1, 2, 3]
+to = [2, 3, 9]
 
 [[byzantine]]
 kind = "precommit"
@@ -22,19 +30,24 @@ every_epoch = true
 while_member_at = 1
 polka = ["0xDEADBEEF00000001"]
 
-[[part]]
-world.1.fixes_off = ["VC6R1"]
-# This part halts (frame 263 at the end), so the spike's touch by 1 at frame 700 never fires; the tool
-# refuses an action its member never reaches, so this part's plan leaves it out.
-world.1.plan.1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
-report = [
-    { kind = "check", case = "capfake", label = "capfake fixed=false", at = 1, target = 9, honest = [1, 2, 3] },
-    { kind = "verdict", honest = [1, 2, 3], label = "capfake fixed=false" },
-]
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
 
-[[part]]
-world.1.plan.1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
-report = [
-    { kind = "check", case = "capfake", label = "capfake fixed=true", at = 1, target = 9, honest = [1, 2, 3] },
-    { kind = "verdict", honest = [1, 2, 3], label = "capfake fixed=true" },
-]
+[[report]]
+kind = "check"
+case = "capfake"
+label = "capfake"
+at = 1
+target = 9
+honest = [1, 2, 3]
+
+[[report]]
+kind = "check"
+case = "admin_kick"
+label = "capfake"
+honest = [1, 2, 3]
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3]
+label = "capfake"

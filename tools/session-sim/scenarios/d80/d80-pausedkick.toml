@@ -1,0 +1,78 @@
+description = """
+Admin entries while paused (design 12.4): member 8 withholds references from 2 s (refwithhold's \
+cheater), so confirmation stalls and every honest replica pauses at its speculation limit. Nothing \
+removes 8 automatically (trust survey #4). While paused, admin 1's planned entries are authored: it \
+defines role 7 at 4.5 s, gives it to 3 at 4.75 s, bans test key 9 for the session at 5 s, and kicks 8 \
+at 6 s. At 5.9 s every honest replica is at frame 230 with confirmation at 110, and the entries are \
+stamped at the present (270, 285, 300). The kick is decided, 8 is removed and confirmation resumes; \
+every replica agrees. With the old gate (acbb39d) none of the four is authored and confirmation stays \
+at 110 to the end."""
+include = ["../common/review.toml"]
+end_ms = 9000
+
+[world.1]
+members = [1, 2, 3, 8]
+
+[world.1.plan]
+1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 270, define_role = { role = 7, perms = 0 } },
+    { at = 285, set_role = { member = 3, role = 7 } },
+    { at = 300, ban = { key = 9, perma = false } },
+    { at = 360, kick = { target = 8 } },
+    { at = 480, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+[[byzantine]]
+kind = "hide_refs"
+member = 8
+from_ms = 2000
+
+[[report]]
+kind = "expect"
+at = 1
+members = [1, 2, 3]
+roles = [[3, 7]]
+conf_min = 450
+label = "d80-pausedkick: 8 kicked while paused, 3 holds role 7, confirmation resumes"
+
+[[report]]
+kind = "expect"
+at = 2
+members = [1, 2, 3]
+roles = [[3, 7]]
+conf_min = 450
+label = "d80-pausedkick: member 2 agrees"
+
+[[report]]
+kind = "check_world"
+frames = 450
+label = "d80-pausedkick"
+skip_evicted_at = 1
+
+[[report]]
+kind = "admin"
+honest = [1, 2, 3]
+label = "d80-pausedkick"
+outcomes = true
+roles = true
+bans = true
+
+# The full run, with the reports above.
+[[part]]
+
+# The same session cut at 5.9 s, before the kick: every honest replica is paused (confirmation stuck,
+# its sim at the speculation limit) while admin 1's three earlier entries were authored.
+[[part]]
+end_ms = 5900
+world.1.plan.1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 270, define_role = { role = 7, perms = 0 } },
+    { at = 285, set_role = { member = 3, role = 7 } },
+    { at = 300, ban = { key = 9, perma = false } },
+]
+report = [
+    { kind = "confs", honest = [1, 2, 3], label = "d80-pausedkick at 5.9 s" },
+    { kind = "admin", honest = [1, 2, 3], label = "d80-pausedkick at 5.9 s", outcomes = true, roles = true, bans = true },
+    { kind = "check_world", frames = 100, label = "d80-pausedkick at 5.9 s" },
+]

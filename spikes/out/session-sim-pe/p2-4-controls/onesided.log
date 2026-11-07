@@ -1,4 +1,4 @@
-RESULT onesided: m1 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 179 (t=3.08 s) round 1 removed [7, 8, 9]; epoch 2 at frame 330 (t=5.60 s) round 0 removed [3]
-RESULT onesided: m2 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 180 (t=3.10 s) round 1 removed [7, 8, 9]; epoch 2 at frame 332 (t=5.63 s) round 0 removed [3]
-RESULT onesided: m3 epoch 1 members {3, 7, 8, 9} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 447 (t=7.55 s) round 5 removed [1, 2]
+RESULT onesided: m1 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 180 (t=3.10 s) round 1 removed [7, 8, 9]; epoch 2 at frame 330 (t=5.60 s) round 0 removed [3]
+RESULT onesided: m2 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 182 (t=3.13 s) round 1 removed [7, 8, 9]; epoch 2 at frame 332 (t=5.63 s) round 0 removed [3]
+RESULT onesided: m3 epoch 1 members {3, 7, 8, 9} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 449 (t=7.58 s) round 5 removed [1, 2]
 RESULT onesided (control: 3 of 6 collude, above t(6) = 1): epoch 1 removed Some([7, 8, 9]) at m1, Some([1, 2]) at m3 -> two different epoch-1 decisions: the session forked

@@ -33,26 +33,22 @@ pub const FIXES: &[(&str, u64)] = &[
     ("VCR9", fix::VCR9),
     ("VCR12", fix::VCR12),
     ("HO1", fix::HO1),
-    ("VC3R1", fix::VC3R1),
     ("VC3R2", fix::VC3R2),
     ("VC3R3", fix::VC3R3),
     ("VC3R4", fix::VC3R4),
     ("VC3R6", fix::VC3R6),
     ("VC3R7", fix::VC3R7),
     ("LAGKEEP", fix::LAGKEEP),
-    ("VC4R1", fix::VC4R1),
     ("VC4R2", fix::VC4R2),
     ("VC4R3", fix::VC4R3),
     ("VC4R4", fix::VC4R4),
     ("VC4R5", fix::VC4R5),
     ("VC4R6", fix::VC4R6),
     ("VC3R3S", fix::VC3R3S),
-    ("VC6R1", fix::VC6R1),
     ("VC6R3", fix::VC6R3),
     ("VC6R4", fix::VC6R4),
     ("PF1", fix::PF1),
     ("VC7R1", fix::VC7R1),
-    ("VC7R2", fix::VC7R2),
     ("RECUT", fix::RECUT),
     ("VC8R1", fix::VC8R1),
     ("OWNY2", fix::OWNY2),
@@ -328,6 +324,12 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                 r.sim.set_perma_bans(w.perma_bans.iter().map(|&n| test_key(n)).collect());
             }
             r.sim.fixes_off = off;
+            if w.no_runs {
+                r.sim.run_wire = false;
+            }
+            if w.no_lean {
+                r.sim.lean_wire = false;
+            }
         }
         peers.push(p);
     }

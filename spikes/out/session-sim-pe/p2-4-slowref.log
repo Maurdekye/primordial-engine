@@ -1,14 +1,14 @@
-  9 removed: 13.15 s
-  slowref (9 stays connected but grows slower while 8's acks claim 5 more of 9's entries than anyone holds) with VC4R-3's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 938 of frame 953, m2 conf 938 of frame 953, m3 conf 938 of frame 953, m4 conf 938 of frame 953, m5 conf 938 of frame 953; at m1: members {1, 2, 3, 4, 5, 8}, evicted [9]
-RESULT slowref: m1 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 437 (t=7.38 s) round 1 removed [9]
-RESULT slowref: m2 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 437 (t=7.38 s) round 1 removed [9]
-RESULT slowref: m3 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 437 (t=7.38 s) round 1 removed [9]
-RESULT slowref: m4 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 437 (t=7.38 s) round 1 removed [9]
-RESULT slowref: m5 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 437 (t=7.38 s) round 1 removed [9]
-RESULT slowref: 9 removed at 7.38 s -> DEMOTED; m1 conf 942 of frame 953, m2 conf 942 of frame 953, m3 conf 942 of frame 953, m4 conf 942 of frame 953, m5 conf 942 of frame 953
-  m1: conf 942 frame 953 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (36, 255)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 109 bad 0
-  m2: conf 942 frame 953 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (36, 255)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 109 bad 0
-  m3: conf 942 frame 953 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (36, 255)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 109 bad 0
-  m4: conf 942 frame 953 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (36, 255)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 109 bad 0
-  m5: conf 942 frame 953 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (36, 255)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 109 bad 0
-RESULT slowref (9 stays connected but grows slower while 8's acks claim 5 more of 9's entries than anyone holds): frames 0..952 honest m1=13bee6fd238bf792 m2=13bee6fd238bf792 m3=13bee6fd238bf792 m4=13bee6fd238bf792 m5=13bee6fd238bf792 | offline replay 13bee6fd238bf792 | ALL EQUAL, NO FALSE CHECKS ; checks ok 545 bad 0
+  9 removed: 12.43 s
+  slowref (9 stays connected but grows slower while 8's acks claim 5 more of 9's entries than anyone holds) with VC4R-3's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 930 of frame 953, m2 conf 930 of frame 953, m3 conf 930 of frame 953, m4 conf 930 of frame 953, m5 conf 930 of frame 953; at m1: members {1, 2, 3, 4, 5, 8}, evicted [9]
+RESULT slowref: m1 epoch 1 members {1, 2, 3, 4, 5, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 595 (t=10.02 s) round 0 removed [9]
+RESULT slowref: m2 epoch 1 members {1, 2, 3, 4, 5, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 595 (t=10.02 s) round 0 removed [9]
+RESULT slowref: m3 epoch 1 members {1, 2, 3, 4, 5, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 595 (t=10.02 s) round 0 removed [9]
+RESULT slowref: m4 epoch 1 members {1, 2, 3, 4, 5, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 594 (t=10.00 s) round 0 removed [9]
+RESULT slowref: m5 epoch 1 members {1, 2, 3, 4, 5, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 595 (t=10.02 s) round 0 removed [9]
+RESULT slowref: 9 removed at 10.02 s -> DEMOTED; m1 conf 916 of frame 953, m2 conf 916 of frame 953, m3 conf 916 of frame 953, m4 conf 916 of frame 953, m5 conf 924 of frame 953
+  m1: conf 916 frame 953 members {1, 2, 3, 4, 5, 8} evicted {9: (47, 343)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 92 bad 0
+  m2: conf 916 frame 953 members {1, 2, 3, 4, 5, 8} evicted {9: (47, 343)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 93 bad 0
+  m3: conf 916 frame 953 members {1, 2, 3, 4, 5, 8} evicted {9: (47, 343)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 93 bad 0
+  m4: conf 916 frame 953 members {1, 2, 3, 4, 5, 8} evicted {9: (47, 343)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 93 bad 0
+  m5: conf 924 frame 953 members {1, 2, 3, 4, 5, 8} evicted {9: (47, 343)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 93 bad 0
+RESULT slowref (9 stays connected but grows slower while 8's acks claim 5 more of 9's entries than anyone holds): frames 0..952 honest m1=13bee6fd238bf792 m2=13bee6fd238bf792 m3=13bee6fd238bf792 m4=13bee6fd238bf792 m5=13bee6fd238bf792 | offline replay 13bee6fd238bf792 | ALL EQUAL, NO FALSE CHECKS ; checks ok 464 bad 0
