@@ -12,7 +12,7 @@ printf 'word zqxtermq\n' > scripts/publish_terms.local
 printf 'ok line\nvalue zqxtermq here\n' > a.txt
 printf 'bin\0zqxtermq\0' > b.bin
 printf 'zqxtermq again\n' > c.txt
-git add -A && git -c user.name=t -c user.email=t@t commit -qm t
+git add a.txt b.bin c.txt scripts/publish_check.sh scripts/publish_allow.py && git -c user.name=t -c user.email=t@t commit -qm t   # not the .local files
 python -I scripts/publish_allow.py hash a.txt 2 > scripts/publish_allow.local
 check() { PE_PUBLISH_ALLOW="${1:-scripts/publish_allow.local}" bash scripts/publish_check.sh > out.txt; echo $?; }
 
