@@ -271,15 +271,31 @@ pub fn capped(o: &Opts) {
         // DIFFER whenever someone was fed, which would hide a real difference.
         let cmp: Vec<MemberId> = live.iter().copied().filter(|&m| !sim.is_fed(1, m)).collect();
         let cmp = if cmp.is_empty() { live.clone() } else { cmp };
-        let last = cmp.iter().map(|&m| sim.replica(m, 1).sim.conf).min().unwrap().saturating_sub(1);
-        let hs: Vec<u64> = cmp.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, last)).collect();
+        // A replica still catching up has confirmed frames it hasn't simulated yet (its frame below its conf): the feed
+        // exit's echoing member, frozen at its window while its hole was open, confirms everything once the hole fills and
+        // simulates it on the following frames. down-k16-m3 ended on that frame: member 3 at frame 856 with conf 1760, its
+        // 904 unsimulated frames read as a difference, every frame it had simulated equal. Such a replica is compared over
+        // the frames it has both confirmed and simulated, against the same replay, and the log says so. Only one in its
+        // echo phase (@design-reviewer m819c82a9d344): any other replica behind is compared over every frame, so a stuck
+        // one reads DIFFER instead of passing as "compared over frames 0..=k".
+        let behind = |m: MemberId| {
+            let s = &sim.replica(m, 1).sim;
+            s.frame < s.conf && s.in_echo_phase()
+        };
+        let full: Vec<MemberId> = cmp.iter().copied().filter(|&m| !behind(m)).collect();
+        let full = if full.is_empty() { cmp.clone() } else { full };
+        let last = full.iter().map(|&m| sim.replica(m, 1).sim.conf).min().unwrap().saturating_sub(1);
+        let upto = |m: MemberId| if full.contains(&m) { last } else { sim.replica(m, 1).sim.frame.min(sim.replica(m, 1).sim.conf).min(last + 1).saturating_sub(1) };
+        let hs: Vec<u64> = cmp.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, upto(m))).collect();
         let r1 = &sim.replica(1, 1).sim;
         // The offline replay is built from a live member's log, and keeps that replica's hand owners, as
         // the suite's check does: a demoted member's log stops at its removal, and its hand entries
         // before it still count (D73 made member 1 removable here, on the shared uplink).
         let rl = &sim.replica(cmp[0], 1).sim;
         let members: Vec<MemberId> = rl.members.iter().copied().collect();
-        let rd = digest(&replay_sim_like(rl, scene, &members, &final_log(rl), last).hashes, last);
+        let rhashes = replay_sim_like(rl, scene, &members, &final_log(rl), last).hashes;
+        let rd = digest(&rhashes, last);
+        let equal = cmp.iter().zip(&hs).all(|(&m, h)| *h == digest(&rhashes, upto(m)));
         let restamped = r1.all_entries().iter().filter(|e| e.member == 1 && r1.effective_frame(e.id()).is_some_and(|f| f != e.stamp)).count();
         let join = |v: Vec<String>| v.join(" / ");
         let s2 = sim.replica(2, 1).sim.stats;
@@ -295,8 +311,12 @@ pub fn capped(o: &Opts) {
             s2.max_depth,
             back.map_or("never".to_string(), |t| format!("{} ms", t / 1000)),
             join(cmp.iter().zip(&hs).map(|(m, h)| format!("m{m} {h:016x}")).collect()),
-            if hs.iter().all(|h| *h == rd) { "EQUAL" } else { "DIFFER" }
+            if equal { "EQUAL" } else { "DIFFER" }
         );
+        for &m in cmp.iter().filter(|m| !full.contains(m)) {
+            let r = &sim.replica(m, 1).sim;
+            println!("RESULT     end state: m{m} is still catching up at its echo phase's end (simulated to frame {} of its confirmed {}): compared over frames 0..={} only", r.frame, r.conf, upto(m));
+        }
         // Each of member 1's hand entries, from the frame it is stamped at until each member confirms it
         // (design 7.6: unchanged by idle thinning while anything happens). In frames, max / mean.
         let dt_us = 1_000_000 / hz;
@@ -471,8 +491,10 @@ pub fn capped(o: &Opts) {
                     println!("RESULT     3 players, window modes at member 1 (300 frames each): {}", modes.join(" "));
                 }
                 println!(
-                    "RESULT     rule 1's echo, per member: echoes matched/mismatched {}",
-                    ids.iter().map(|&m| { let s = &sim.replica(m, 1).sim.stats; format!("{}/{}", s.echoes_matched, s.echo_mismatches) }).collect::<Vec<_>>().join(" ")
+                    "RESULT     rule 1's echo, per member: echoes matched/mismatched {}; feed exit: echo conflicts {}, echo phases ended {}",
+                    ids.iter().map(|&m| { let s = &sim.replica(m, 1).sim.stats; format!("{}/{}", s.echoes_matched, s.echo_mismatches) }).collect::<Vec<_>>().join(" "),
+                    ids.iter().map(|&m| sim.replica(m, 1).sim.stats.echo_conflicts.to_string()).collect::<Vec<_>>().join(" / "),
+                    ids.iter().map(|&m| sim.replica(m, 1).sim.stats.echo_phase_ends.to_string()).collect::<Vec<_>>().join(" / ")
                 );
             }
             println!(

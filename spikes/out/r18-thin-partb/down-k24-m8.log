@@ -1,16 +1,16 @@
-PROVENANCE commit 5b607a96360e, sources fdb5567cafe0f6f0, binary ebc6168c98c8cc73
+PROVENANCE commit 657dfb909cbe, sources eccd69bf6be6c3bb, binary b1087720ff8e4767
 RESULT r18 capped: 500-ball pit, 8 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 3 is on a slow link: 24 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive | 546.7 / 339.8 /  98.2 / 328.4 / 328.4 / 327.9 / 328.4 / 328.4 |  499 /  499 /  499 /  498 /  498 /  498 /  499 /  496 |  351 |   0 /   0 / 1069 /   0 /   0 /   0 /   0 /   0 |  54 /  54 / 1589 /  54 /  54 /  54 /  54 /  54 | 0 (own entries moved: 0) | 59.3/s,   3 | never | m1 ac6f2f94931f253f / m2 ac6f2f94931f253f / m3 ac6f2f94931f253f / m4 ac6f2f94931f253f / m5 ac6f2f94931f253f / m6 ac6f2f94931f253f / m7 ac6f2f94931f253f / m8 ac6f2f94931f253f replay ac6f2f94931f253f EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 54.4 / 53.8, m2 54.4 / 53.7, m3 1524.5 / 1042.9 (138 of 222 unconfirmed), m4 54.4 / 53.8, m5 54.4 / 53.8, m6 54.4 / 53.7, m7 54.4 / 53.8, m8 54.4 / 53.8
-RESULT     hand entries' confirmation latency P95, frames: m1 54.3, m2 54.3, m3 1520.5, m4 54.3, m5 54.3, m6 54.3, m7 54.3, m8 54.3
-RESULT     mean confirmation lag per member from the gesture's start, frames: 25.5 / 25.4 / 807.0 / 25.3 / 25.5 / 25.4 / 25.2 / 25.2
-RESULT     P95 confirmation lag per member from the gesture's start, frames: 53 / 53 / 1511 / 53 / 53 / 53 / 53 / 53
+RESULT   batched+adaptive | 561.3 / 346.8 / 134.5 / 339.1 / 339.1 / 347.4 / 338.9 / 339.1 |  463 /  407 /   39 /  407 /  407 /  400 /  349 /  407 |    9 |   0 /   0 /   0 /   0 /   0 /   0 /   0 /   0 |  54 /  54 / 1673 /  54 /  54 /  54 /  54 /  54 | 0 (own entries moved: 0) | 59.3/s,   3 | never | m1 7d62ffe8729da53c / m2 7d62ffe8729da53c / m4 7d62ffe8729da53c / m5 7d62ffe8729da53c / m6 7d62ffe8729da53c / m7 7d62ffe8729da53c / m8 7d62ffe8729da53c replay 7d62ffe8729da53c EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 54.4 / 53.8, m2 54.4 / 53.7, m3 none of 222 confirmed, m4 54.4 / 53.8, m5 54.4 / 53.8, m6 54.4 / 53.8, m7 54.4 / 53.8, m8 54.4 / 53.8
+RESULT     hand entries' confirmation latency P95, frames: m1 54.3, m2 54.3, m3 -, m4 54.3, m5 54.3, m6 54.3, m7 54.3, m8 54.3
+RESULT     mean confirmation lag per member from the gesture's start, frames: 30.2 / 30.1 / 836.6 / 30.1 / 30.2 / 30.1 / 30.2 / 30.1
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 53 / 53 / 1590 / 53 / 53 / 53 / 53 / 53
 RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 385/0/0  383/0/0  234/206/0  385/0/0  385/0/0  385/0/0  384/0/0  384/0/0
-RESULT     time on the state feed per member: 0 / 0 / 9802 / 0 / 0 / 0 / 0 / 0 ms
-RESULT     rule 1's echo, per member: echoes matched/mismatched 19/0 19/0 0/0 19/0 19/0 19/0 19/0 19/0
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 385/0/0  385/0/0  34/0/0  385/0/0  385/0/0  385/0/0  385/0/0  385/0/0
+RESULT     time on the state feed per member: 0 / 0 / 26966 / 0 / 0 / 0 / 0 / 0 ms
+RESULT     rule 1's echo, per member: echoes matched/mismatched 50/0 50/0 0/0 50/0 50/0 50/0 50/0 50/0; feed exit: echo conflicts 0 / 0 / 0 / 0 / 0 / 0 / 0 / 0, echo phases ended 0 / 0 / 0 / 0 / 0 / 0 / 0 / 0
 RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [29902, 0, 0, 0, 0, 0, 0, 0, 0] ms
-RESULT     controller on member 3, the slow member: time at each level: [3067, 400, 400, 790, 5500, 6744, 400, 2699, 9901] ms
+RESULT     controller on member 3, the slow member: time at each level: [2936, 0, 0, 0, 0, 0, 0, 0, 26965] ms

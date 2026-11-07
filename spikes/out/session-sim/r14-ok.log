@@ -10,10 +10,10 @@
   m1 world B: object 40 live copies 1; escrow []; arrivals ["T3393497030066987527:Accepted { obj: 75, frame: 145 }"]
   m3 world B: object 40 live copies 1; escrow []; arrivals ["T3393497030066987527:Accepted { obj: 75, frame: 145 }"]
 RESULT r14 ok: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (6.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 519 frame 534
-  m2 world 1: rollbacks 15 max depth 4 resim frames 63 (56.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 522 frame 533
-  m1 world 2: rollbacks 2 max depth 3 resim frames 5 (3.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 424 frame 442
-  m3 world 2: rollbacks 1 max depth 2 resim frames 3 (0.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 424 frame 442
+  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (1.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 519 frame 534
+  m2 world 1: rollbacks 15 max depth 4 resim frames 63 (8.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 522 frame 533
+  m1 world 2: rollbacks 2 max depth 3 resim frames 5 (0.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 424 frame 442
+  m3 world 2: rollbacks 1 max depth 2 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 424 frame 442
 RESULT r14 ok A world 1: frames 0..500 digests m1=51054dfdc64ffe84 m2=51054dfdc64ffe84 | offline replay 51054dfdc64ffe84 | ALL EQUAL
 RESULT r14 ok B world 2: frames 0..400 digests m1=e8ace31f0dc90eba m3=e8ace31f0dc90eba | offline replay e8ace31f0dc90eba | ALL EQUAL
 RESULT r14 ok: member 2's confirmation lag in A (present - confirmed, frames): avg 10.7 before t=3 s, 12.6 after (member 1 not throttled from t=3 s)
