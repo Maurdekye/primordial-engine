@@ -77,6 +77,12 @@ fn no_echo_phase() -> bool {
     *V.get_or_init(|| std::env::var("PE_NO_ECHO_PHASE").is_ok())
 }
 
+/// (spike diagnostics) PE_FEED_LOG: the echo phase's start and end too.
+fn feed_log() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_FEED_LOG").is_ok())
+}
+
 /// (spike) PE_NO_ECHO_ACK_CAP=1: a fed or echoing member's acks name its held heads uncapped (`echo_ack_caps`).
 fn no_echo_ack_cap() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -133,7 +139,11 @@ impl WorldSim {
         self.echo_phase = None;
         self.stats.echo_phase_ends += 1;
         let why = if applies { "my held chains reach my echo" } else { "Part B's echo no longer applies" };
-        self.ev(format!("feed exit: member {} ends its echo phase at frame {} (off the feed since frame {since}): {why}", self.me, self.frame));
+        let msg = format!("feed exit: member {} ends its echo phase at frame {} (off the feed since frame {since}): {why}", self.me, self.frame);
+        if feed_log() {
+            eprintln!("FEED now {} frame: {msg}", self.now);
+        }
+        self.ev(msg);
     }
 
     /// Rule (1)'s ack cap (feed exit): per author whose chain my echo runs ahead of my held head (fed, or in my echo
@@ -142,8 +152,13 @@ impl WorldSim {
     /// my echo's next checkpoint, may lie on another version than my echo: named, it could get me counted on two versions
     /// at once (my echo credited on one, my head on the other). (spike: PE_NO_ECHO_ACK_CAP=1 switches it off)
     pub(super) fn echo_ack_caps(&self) -> BTreeMap<MemberId, u32> {
+        self.echo_ack_caps_if(!no_echo_ack_cap())
+    }
+
+    /// `echo_ack_caps`, switched on or off (the unit test's control).
+    pub(super) fn echo_ack_caps_if(&self, on: bool) -> BTreeMap<MemberId, u32> {
         let mut out = BTreeMap::new();
-        if no_echo_ack_cap() {
+        if !on {
             return out;
         }
         let fed_like = self.fed_like();
@@ -253,7 +268,11 @@ impl WorldSim {
                             .filter(|&&x| x != self.me)
                             .filter_map(|&x| Some((x, self.contiguous.get(&x).copied().unwrap_or(0), *self.echo_seq.get(&x)?)))
                             .collect();
-                        self.ev(format!("feed exit: member {} keeps echoing until its held chains reach its echo, (member, held, echoed) {behind:?}", self.me));
+                        let msg = format!("feed exit: member {} keeps echoing until its held chains reach its echo, (member, held, echoed) {behind:?}", self.me);
+                        if feed_log() {
+                            eprintln!("FEED now {} frame: {msg}", self.now);
+                        }
+                        self.ev(msg);
                     }
                 }
             }
@@ -852,5 +871,209 @@ impl WorldSim {
                 b.to_state().write(&mut self.world, o.body);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    //! The feed exit (@coordinator-opus me3f6f2d96958, m5eeeaff3c105): rule (1) on both sides, the ack cap, and the end of
+    //! the echo phase, on replicas built from the state they read.
+    use super::super::{ckpt_link_for, ckpt_step, Payload, SceneKind, SimConfig, CKPT_FRAMES};
+    use super::*;
+
+    /// Member 1's chain of acks stamped every 7 frames with honest checkpoint links; from seq `fork` on another version
+    /// (other heads).
+    fn chain(n: u32, fork: u32) -> Vec<Entry> {
+        let (mut out, mut ck, mut prev): (Vec<Entry>, Option<(u64, EntryId)>, EntryId) = (Vec::new(), None, 0);
+        for s in 1..=n {
+            let stamp = 3 + s as u64 * 7;
+            let heads = if s >= fork { vec![(2, s, 99)] } else { vec![(2, s, 7)] };
+            let mut e = Entry { member: 1, seq: s, prev, stamp, payload: Payload::Ack { horizon: stamp - 1, heads, check: None, epoch: 0, fed: None }, carried: None, link: 0 };
+            e.link = ckpt_link_for(ck, stamp);
+            ck = ckpt_step(ck, &e);
+            prev = e.id();
+            out.push(e);
+        }
+        out
+    }
+
+    /// The chain's checkpoints: (block, seq, id, rest-hash).
+    fn ckpts_of(c: &[Entry]) -> Vec<(u64, u32, EntryId, u64)> {
+        let mut ck: Option<(u64, EntryId)> = None;
+        let mut out = Vec::new();
+        for e in c {
+            let before = ck;
+            ck = ckpt_step(ck, e);
+            if ck != before {
+                out.push((e.stamp / CKPT_FRAMES, e.seq, e.id(), e.rest_hash()));
+            }
+        }
+        out
+    }
+
+    /// Member `me`'s replica of a 3-member session holding `c` up to `upto`, its checkpoints included.
+    fn replica(me: MemberId, c: &[Entry], upto: u32) -> WorldSim {
+        let mut w = WorldSim::new(1, me, &[1, 2, 3], SceneKind::Empty, SimConfig { localize: true, ..SimConfig::default() });
+        for e in c.iter().take(upto as usize) {
+            w.by_author.insert((1, e.seq), e.id());
+            w.entries.insert(e.id(), e.clone());
+        }
+        w.contiguous.insert(1, upto);
+        let ck = ckpts_of(c);
+        for &(b, s, id, rest) in &ck {
+            if s <= upto {
+                w.ckpt_by_block.insert((1, b), (s, id, rest));
+                w.ckpt.insert(1, (b, id));
+            }
+        }
+        w
+    }
+
+    /// Fed, echoing member 1's chain from its checkpoint `k` (an index into the checkpoints, held).
+    fn fed_from(w: &mut WorldSim, ck: &[(u64, u32, EntryId, u64)], k: usize) {
+        w.fed = Some(Fed::default());
+        let (b, s, id, _) = ck[k];
+        w.echo_last.insert(1, (b, id));
+        w.echo_seq.insert(1, s);
+        w.echo_verified.insert(1, s);
+    }
+
+    fn list(ck: &[(u64, u32, EntryId, u64)]) -> Vec<(u64, u32, u64)> {
+        ck.iter().map(|&(b, s, _, r)| (b, s, r)).collect()
+    }
+
+    #[test]
+    fn the_echo_extends_only_the_chain_it_holds() {
+        // Member 3 holds V1 of member 1's chain to seq 30; member 1's Ckpts describe V2, forked at seq 20. V2's checkpoints
+        // at or below seq 30 conflict with the entries member 3 holds there.
+        let (v1, v2) = (chain(60, u32::MAX), chain(60, 20));
+        let (c1, c2) = (ckpts_of(&v1), ckpts_of(&v2));
+        assert_eq!(c1[0], c2[0], "the versions share their first checkpoint");
+        let fork = c2.iter().position(|&(_, s, _, _)| s >= 20).unwrap();
+        assert!(c2[fork].1 <= 30, "V2's first checkpoint past the fork lies within the held prefix");
+        let mut w = replica(3, &v1, 30);
+        fed_from(&mut w, &c1, 0);
+        w.on_ckpts(1, 1, Some(c2[0].0), list(&c2[1..]), false, None);
+        assert!(w.echo_stopped.contains_key(&1), "a conflict within the held prefix stops the echo");
+        assert_eq!(w.stats.echo_conflicts, 1);
+        assert_eq!(w.echo_last[&1].0, c2[fork - 1].0, "the echo stands at its last checked checkpoint");
+        w.on_ckpts(1, 1, Some(c2[fork - 1].0), list(&c2[fork..]), false, None);
+        assert_eq!(w.echo_last[&1].0, c2[fork - 1].0, "and goes no further");
+        // V1's own checkpoints extend it past the held head, the held ones checked on the way.
+        let mut h = replica(3, &v1, 30);
+        fed_from(&mut h, &c1, 0);
+        h.on_ckpts(1, 1, Some(c1[0].0), list(&c1[1..]), false, None);
+        assert!(h.echo_stopped.is_empty());
+        let newest = *c1.last().unwrap();
+        assert_eq!(h.echo_last[&1], (newest.0, newest.2));
+        let held_ck = *c1.iter().filter(|&&(_, s, _, _)| s <= 30).last().unwrap();
+        assert_eq!(h.echo_verified[&1], held_ck.1, "checked up to the newest checkpoint it holds");
+        assert!(h.echo_chain.keys().all(|&(_, b)| b > held_ck.0), "only checkpoints past the held head wait to be checked");
+    }
+
+    #[test]
+    fn a_checkpoint_the_echo_passed_is_checked_once_held() {
+        // Member 3 held seq 15 when it echoed V2's checkpoints; catching up, it comes to hold V1's.
+        let (v1, v2) = (chain(60, u32::MAX), chain(60, 20));
+        let (c1, c2) = (ckpts_of(&v1), ckpts_of(&v2));
+        let mut w = replica(3, &v1, 15);
+        fed_from(&mut w, &c1, 0);
+        w.on_ckpts(1, 1, Some(c2[0].0), list(&c2[1..]), false, None);
+        assert!(w.echo_stopped.is_empty(), "nothing held to check against yet");
+        let mut conflict_at = None;
+        for &(b, s, id, _) in c1.iter().filter(|&&(_, s, _, _)| s > 15) {
+            w.check_echo_block(1, b, s, id);
+            if w.echo_stopped.contains_key(&1) {
+                conflict_at = Some(s);
+                break;
+            }
+            assert_eq!(w.echo_verified[&1], s, "a matching checkpoint is checked");
+        }
+        assert!(conflict_at.is_some_and(|s| s >= 20), "the first conflict lies at or past the fork: {conflict_at:?}");
+    }
+
+    #[test]
+    fn receivers_credit_an_echo_only_on_their_version_of_its_named_head() {
+        // Receiver member 2 holds V1. Fed member 3 echoes one of V1's checkpoints; its acks name member 1's seq 25 of V1,
+        // or of V2 (forked at 20).
+        let (v1, v2) = (chain(60, u32::MAX), chain(60, 20));
+        let c1 = ckpts_of(&v1);
+        let (eb, es, eid, _) = *c1.iter().find(|&&(_, s, _, _)| s > 25).unwrap();
+        for (named, credited) in [(v1[24].id(), true), (v2[24].id(), false)] {
+            let mut r = replica(2, &v1, 60);
+            r.ack_head_hist.entry((3, 1)).or_default().insert(8, (25, named));
+            r.echo_pending.entry(3).or_default().insert(9, (vec![(1, eb)], echo_digest([(1, eb, eid)])));
+            r.retry_echoes();
+            assert_eq!(r.stats.echoes_matched, 1, "the digest matches either way");
+            assert_eq!(r.echo_refs.get(&(3, 1)).is_some_and(|m| m.contains_key(&es)), credited, "credited: {credited}");
+            assert_eq!(r.stats.echo_head_refused, u64::from(!credited));
+        }
+    }
+
+    #[test]
+    fn the_ack_cap_keeps_an_echoer_on_one_version() {
+        // The control (@coordinator-opus m3e1292851af3). Fed member 3 held V1 of member 1's chain to seq 15; member 1
+        // forks at seq 20 and sends 3 V2's checkpoints, so 3's echo runs past the fork on V2, and the replica on V2
+        // credits it (the head 3's acks name, 15, lies in V2 too). Then 3 catches up on V1 to seq 22: past the fork,
+        // before V1's next checkpoint (seq 23). Without the cap its next ack names V1's 22, which the replica on V1
+        // credits: one member counted on two versions above the fork. With it, 3 names nothing past its checked checkpoint.
+        let (v1, v2) = (chain(60, u32::MAX), chain(60, 20));
+        let (c1, c2) = (ckpts_of(&v1), ckpts_of(&v2));
+        let mut e = replica(3, &v1, 15);
+        let start = c1.iter().rposition(|&(_, s, _, _)| s <= 15).unwrap();
+        fed_from(&mut e, &c1, start);
+        e.ack_head_hist.entry((3, 1)).or_default().insert(5, (15, v1[14].id()));
+        e.on_ckpts(1, 1, Some(c2[start].0), list(&c2[start + 1..]), false, None);
+        let (eb, eid) = e.echo_last[&1];
+        let es = e.echo_seq[&1];
+        assert!(es > 20 && e.echo_stopped.is_empty(), "the echo runs past the fork on V2, unchecked");
+        let mut r2 = replica(2, &v2, 60);
+        r2.ack_head_hist.entry((3, 1)).or_default().insert(5, (15, v1[14].id()));
+        r2.echo_pending.entry(3).or_default().insert(6, (vec![(1, eb)], echo_digest([(1, eb, eid)])));
+        r2.retry_echoes();
+        assert!(r2.echo_refs.get(&(3, 1)).is_some_and(|m| m.contains_key(&es)), "the replica on V2 counts 3 on V2 past the fork");
+        // The catch-up brings V1's seq 16..=22, checking V1's checkpoint at seq 18 (shared) against the echo.
+        for ev in &v1[15..22] {
+            e.by_author.insert((1, ev.seq), ev.id());
+            e.entries.insert(ev.id(), ev.clone());
+        }
+        e.contiguous.insert(1, 22);
+        for &(b, s, id, rest) in c1.iter().filter(|&&(_, s, _, _)| s > 15 && s <= 22) {
+            e.ckpt_by_block.insert((1, b), (s, id, rest));
+            e.check_echo_block(1, b, s, id);
+        }
+        assert!(e.echo_stopped.is_empty(), "no conflict yet: V1's checkpoint past the fork isn't held");
+        let named = |on: bool| e.echo_ack_caps_if(on).get(&1).map_or(22, |&c| 22u32.min(c));
+        let fork = 20;
+        // Without the cap: V1's 22, which the replica on V1 holds and V2 doesn't. Two versions above the fork.
+        assert_eq!(named(false), 22);
+        assert_ne!(v1[21].id(), v2[21].id());
+        // With it: no new head past the checkpoint checked at 18. One version above the fork.
+        assert!(named(true) < fork, "named {}", named(true));
+        assert_eq!(named(true), 18);
+    }
+
+    #[test]
+    fn the_ack_cap_and_the_end_of_the_echo_phase() {
+        let v1 = chain(60, u32::MAX);
+        let c1 = ckpts_of(&v1);
+        let mut w = replica(3, &v1, 30);
+        fed_from(&mut w, &c1, 0);
+        // Its echo runs ahead of its held head (seq 30): acks name no new head past the checked checkpoint, or past the
+        // head already named (22), whichever is later.
+        let newest = *c1.last().unwrap();
+        w.echo_last.insert(1, (newest.0, newest.2));
+        w.echo_seq.insert(1, newest.1);
+        w.ack_head_hist.entry((3, 1)).or_default().insert(5, (22, v1[21].id()));
+        assert_eq!(w.echo_ack_caps().get(&1), Some(&c1[0].1.max(22)));
+        // Off the feed it keeps echoing, anchor and all, until its held chains reach its echo.
+        w.fed = None;
+        w.echo_phase = Some(EchoPhase { anchor: 400, echoed: 0, since: 500 });
+        assert!(w.fed_ack().is_some_and(|fa| fa.anchor == 400), "still echoing");
+        w.contiguous.insert(1, newest.1);
+        assert!(w.fed_ack().is_none(), "caught up: the next ack carries no anchor");
+        assert!(!w.in_echo_phase());
+        assert_eq!(w.stats.echo_phase_ends, 1);
+        assert!(w.echo_ack_caps().is_empty(), "no cap once the echo phase is over");
     }
 }
