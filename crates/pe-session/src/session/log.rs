@@ -84,8 +84,8 @@ impl WorldSim {
         let se = self.keys.sign(self.world_id, e.clone());
         self.sigs.insert(self.my_last, se.sig);
         let out = self.insert_entry(e.clone());
-        // D80 (fix KICKVOTE): what this insert authored of my own (the kicker's own vote) goes out
-        // right behind `e`; anything else it returns was dropped before and still is.
+        // D80 (fix KICKVOTE): every own entry this insert authored (today only the kicker's own vote)
+        // goes out right behind `e`; anything else it returns was dropped before and still is.
         if self.fixes_off & fix::KICKVOTE == 0 {
             let id = e.id();
             for x in out {
