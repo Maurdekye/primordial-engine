@@ -1,6 +1,6 @@
 DIRTY at m2 (conf 242, frame 362): m4 s96 stamp 238 Discriminant(0): eff Some(238) -> None; violation false disputed true late_void false verdict Some(true) pending false evicted Some((93, 0))
 
-thread 'main' (71976) panicked at spikes\sim-core\src\session.rs:2947:9:
+thread 'main' (9648) panicked at spikes\sim-core\src\session.rs:3035:9:
 protocol invariant violated: member 2 would roll back to frame 238, below its confirmed frame 242
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 RESULT premise1 (the old final term, PE_OLD_FINAL): n = 4; m4 removed at m1 at 5.92 s (epoch Some(1)); m3 stays; members at m1 at the end {1, 2, 3}; m1's frame 362 conf 242
@@ -8,5 +8,6 @@ RESULT premise1 (the old final term, PE_OLD_FINAL): m4's final cut per replica [
 RESULT premise1 (the old final term, PE_OLD_FINAL): m4's first entry stamped from 4 s: s98; m1's counted prefix of m4's chain over time ["4.40 s: s72", "4.45 s: s76", "4.55 s: s80", "4.66 s: s84", "4.75 s: s88", "4.86 s: s92", "4.96 s: s96", "5.06 s: s100", "5.16 s: s104", "5.25 s: s108", "5.36 s: s112"]
 RESULT premise1 (the old final term, PE_OLD_FINAL): the hole BITES
 RESULT premise1 (the old final term, PE_OLD_FINAL): per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 32856 / 1091 = 30.1, heads 3243; m2 32880 / 1091 = 30.1, heads 3246; m3 10799 / 957 = 11.3, heads 2838
+RESULT premise1 (the old final term, PE_OLD_FINAL): feed exit: echo conflicts / echo phases ended per replica: m1 0/0, m2 0/0, m3 0/0
 RESULT premise1 (the old final term, PE_OLD_FINAL): rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0, m3 0
 RESULT premise1 (the old final term, PE_OLD_FINAL): PANIC at t=10552 ms -> FAIL

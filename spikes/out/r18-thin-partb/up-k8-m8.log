@@ -1,9 +1,9 @@
-PROVENANCE commit 5b607a96360e, sources fdb5567cafe0f6f0, binary ebc6168c98c8cc73
+PROVENANCE commit 657dfb909cbe, sources eccd69bf6be6c3bb, binary b1087720ff8e4767
 RESULT r18 capped: 500-ball pit, 8 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 1 is on a slow link: 8 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive | 156.5 / 341.4 / 347.6 / 347.7 / 347.1 / 347.1 / 347.6 / 347.6 | 1541 /  407 /  472 /  472 /  471 /  318 /  472 /  472 |   91 |   0 /   0 /   0 /   0 /   0 /   0 /   0 /   0 | 1674 /  64 /  64 /  64 /  64 /  64 /  64 /  64 | 109 (own entries moved: 0) |  6.8/s,  55 | never | m2 5062a7b2fb1506ed / m3 5062a7b2fb1506ed / m4 5062a7b2fb1506ed / m5 5062a7b2fb1506ed / m6 5062a7b2fb1506ed / m7 5062a7b2fb1506ed / m8 5062a7b2fb1506ed replay 5062a7b2fb1506ed EQUAL
+RESULT   batched+adaptive | 156.5 / 341.6 / 348.1 / 348.2 / 347.6 / 347.6 / 348.1 / 348.1 | 1541 /  407 /  472 /  472 /  471 /  318 /  472 /  472 |   91 |   0 /   0 /   0 /   0 /   0 /   0 /   0 /   0 | 1674 /  64 /  64 /  64 /  64 /  64 /  64 /  64 | 109 (own entries moved: 0) |  6.8/s,  55 | never | m2 5062a7b2fb1506ed / m3 5062a7b2fb1506ed / m4 5062a7b2fb1506ed / m5 5062a7b2fb1506ed / m6 5062a7b2fb1506ed / m7 5062a7b2fb1506ed / m8 5062a7b2fb1506ed replay 5062a7b2fb1506ed EQUAL
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 none of 30 confirmed, m2 56.2 / 53.8, m3 56.3 / 53.8, m4 56.2 / 53.8, m5 56.3 / 53.8, m6 56.3 / 53.8, m7 56.3 / 53.8, m8 56.2 / 53.8
 RESULT     hand entries' confirmation latency P95, frames: m1 -, m2 55.2, m3 55.3, m4 55.2, m5 55.3, m6 55.3, m7 55.3, m8 55.2
 RESULT     mean confirmation lag per member from the gesture's start, frames: 836.6 / 34.8 / 34.9 / 34.8 / 34.9 / 34.8 / 34.9 / 34.8
@@ -12,5 +12,5 @@ RESULT     member 1's own hand against its target, over 221 gesture frames: mean
 RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 28/0/0  385/8/0  385/8/0  385/8/0  385/8/0  385/8/0  385/8/0  385/8/0
 RESULT     time on the state feed per member: 27400 / 0 / 0 / 0 / 0 / 0 / 0 / 0 ms
 RESULT     view changes at member 1: epoch 1 at frame 623 (10.38 s) removed []
-RESULT     rule 1's echo, per member: echoes matched/mismatched 0/0 36/0 36/0 36/0 36/0 36/0 36/0 36/0
+RESULT     rule 1's echo, per member: echoes matched/mismatched 0/0 36/0 36/0 36/0 36/0 36/0 36/0 36/0; feed exit: echo conflicts 0 / 0 / 0 / 0 / 0 / 0 / 0 / 0, echo phases ended 0 / 0 / 0 / 0 / 0 / 0 / 0 / 0
 RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2235, 100, 100, 68, 0, 0, 0, 0, 27399] ms

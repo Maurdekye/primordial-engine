@@ -14,6 +14,7 @@ RESULT cutfix-same: m6: m3's cut 149 at frame 407, epoch 0's vouch (without memb
 RESULT cutfix-same: m7: m3's cut 149 at frame 407, epoch 0's vouch (without members that had left: 149; its last epoch alone: 149); (member, read to, evidence, still a member) [(1, Some(4294967295), 148, true), (2, Some(4294967295), 147, false), (4, Some(4294967295), 149, true), (5, Some(4294967295), 150, true), (6, Some(4294967295), 149, true), (7, Some(4294967295), 149, true)]
 RESULT cutfix-same: the gap does not bite here
 RESULT cutfix-same: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 111442 / 3120 = 35.7, heads 18603; m4 111930 / 3121 = 35.9, heads 18609; m5 111736 / 3113 = 35.9, heads 18561; m6 111752 / 3113 = 35.9, heads 18561; m7 111884 / 3112 = 36.0, heads 18555
+RESULT cutfix-same: feed exit: echo conflicts / echo phases ended per replica: m1 0/0, m4 0/0, m5 0/0, m6 0/0, m7 0/0
 RESULT cutfix-same: rule 1's voids of members' entries (authors still members) per replica: m1 0, m4 0, m5 0, m6 0, m7 0
   m1: conf 1141 frame 1193 rollbacks 203 max depth 57 paused frames 0 checks ok 180 bad 0
   m4: conf 1141 frame 1193 rollbacks 203 max depth 57 paused frames 0 checks ok 180 bad 0

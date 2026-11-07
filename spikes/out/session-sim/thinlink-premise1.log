@@ -3,6 +3,7 @@ RESULT premise1 (the ruled final term): m4's final cut per replica [(1, Some(115
 RESULT premise1 (the ruled final term): m4's first entry stamped from 4 s: s98; m1's counted prefix of m4's chain over time ["4.40 s: s72", "4.45 s: s76", "4.55 s: s80", "4.66 s: s84", "4.75 s: s88", "4.86 s: s92", "4.96 s: s96", "5.06 s: s100", "5.16 s: s104", "5.25 s: s108", "5.36 s: s112"]
 RESULT premise1 (the ruled final term): the hole does not bite
 RESULT premise1 (the ruled final term): per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 39914 / 1539 = 25.9, heads 4584; m2 39902 / 1539 = 25.9, heads 4584; m3 24406 / 1538 = 15.9, heads 4581
+RESULT premise1 (the ruled final term): feed exit: echo conflicts / echo phases ended per replica: m1 0/0, m2 0/0, m3 0/0
 RESULT premise1 (the ruled final term): rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0, m3 0
   m1: conf 1176 frame 1193 rollbacks 85 max depth 94 paused frames 316 checks ok 63 bad 0
   m2: conf 1176 frame 1193 rollbacks 85 max depth 94 paused frames 317 checks ok 63 bad 0
