@@ -9,6 +9,11 @@ Windows loopback, release, once: `bash crates/pe-app/m1-equivocate.sh <pe-app> <
 - The outcome is the explicit run's; the timings are not (@shader-reviewer, review of f87f58b, rerun on its own
   build). Member 4 gets the successor naming A in lean form at 8.125 s. Rebuilt against its own version B it fails
   to verify, so pe-session fetches the explicit form, one round trip over the 120 ms-delayed link: the proof lands at
-  8.248 s, not 8.126 s. The split lasts about 15 frames instead of 8; rollback depths are about 16 (members 1-2) and
-  15-20 (member 4), against 8-9 and 8-16 explicit.
+  8.248 s, not 8.126 s. The split lasts about 15 frames instead of 8.
+- Rollback depths in this run (`key-lines.txt`):
+  - members 1 and 2: 16 at the proof (8.254 s);
+  - member 4: 15, 16 and 17 between the proof and the removal decision (8.56 s, removed [3]), then 35 when the
+    decision replaces its version B with A.
+  - @shader-reviewer's rerun gave 16 at members 1-2 and 15 / 20 at member 4, against 8 / 9 and 8 / 16 on the
+    explicit wire.
 - `key-lines.txt`: the split, member 3's touch seq 234 as each member saw it, the FINAL lines and the rollbacks.
