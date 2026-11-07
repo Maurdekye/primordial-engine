@@ -120,8 +120,8 @@ pub mod fix {
     /// below after the hold asks everyone for the whole range, so a fork's other version arrives even
     /// when the sender asked first is the forker. Off: only the sender is asked for the whole range.
     pub const HOLE: u64 = 1 << 41;
-    /// D80: what inserting this member's own entry authors (the kicker's own vote, cast as it records
-    /// its kick) is sent right behind that entry (`WorldSim::unsent_own`). Off: it is dropped, and the
+    /// D80: every own entry that inserting this member's own entry authors (today only the kicker's
+    /// own vote, cast as it records its kick) is sent right behind that entry (`WorldSim::unsent_own`). Off: it is dropped, and the
     /// others get it only by fetching the hole it leaves in this member's chain.
     pub const KICKVOTE: u64 = 1 << 42;
 }
