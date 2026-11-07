@@ -125,12 +125,45 @@ pub struct Net {
     /// The same bytes by message kind (inside batches too), per sender: (messages, bytes). Batch
     /// framing and the per-datagram overhead are their own kinds, so the kinds sum to `wire_from`.
     pub kinds_from: BTreeMap<(MemberId, &'static str), (u64, u64)>,
+    /// Measurement only (`--by-kind`): each sender's entries by kind, split by part ([`entry_parts`]).
+    pub parts_from: BTreeMap<(MemberId, &'static str), [u64; 6]>,
+    /// The rest of each sender's bytes: message and batch framing, and messages other than entries.
+    pub framing_from: BTreeMap<MemberId, u64>,
     /// R18 (viz-4): merge everything one member sends one peer in one tick into one datagram.
     pub batching: bool,
     outbox: BTreeMap<(WorldId, MemberId, MemberId), Vec<Msg>>,
     /// Every send attempt, when `tracing` is on.
     pub tracing: bool,
     pub trace: Vec<SendRec>,
+}
+
+/// Measurement only (`--by-kind`): the entries of `m` by part, as (entry kind, [entries, header
+/// (member, seq, stamp), prev id, ack head ids, payload, signatures]) in bytes on the wire (the spike
+/// signs nothing and its ids are 8 bytes); returns the rest of `m`'s bytes (message and batch framing;
+/// all of a message that carries no entry).
+pub fn entry_parts(m: &Msg, out: &mut Vec<(&'static str, [u64; 6])>) -> u64 {
+    let total = encode_msg(m).len() as u64;
+    match m {
+        Msg::Entry(e) => {
+            let nh = match &e.payload {
+                Payload::Ack { heads, .. } => heads.len() as u64,
+                _ => 0,
+            };
+            let full = total - 1;
+            out.push((kind(m), [1, 16, 8, 8 * nh, full - 16 - 8 - 8 * nh, 0]));
+            1
+        }
+        Msg::Batch(v) => {
+            let mut inner = 0;
+            for x in v {
+                let before = out.len();
+                entry_parts(x, out);
+                inner += out[before..].iter().map(|(_, p)| p[1..].iter().sum::<u64>()).sum::<u64>();
+            }
+            total - inner
+        }
+        _ => total,
+    }
 }
 
 pub fn kind(m: &Msg) -> &'static str {
@@ -171,6 +204,8 @@ impl Net {
             cap_dropped: 0,
             wire_from: BTreeMap::new(),
             kinds_from: BTreeMap::new(),
+            parts_from: BTreeMap::new(),
+            framing_from: BTreeMap::new(),
             batching: false,
             outbox: BTreeMap::new(),
             tracing: false,
@@ -222,6 +257,15 @@ impl Net {
                     count("(batch framing)", bytes.len() as u64 - inner);
                 }
                 _ => count(kind(m), bytes.len() as u64),
+            }
+            let mut v = Vec::new();
+            let rest = entry_parts(m, &mut v);
+            *self.framing_from.entry(from).or_default() += rest;
+            for (k, p) in v {
+                let c = self.parts_from.entry((from, k)).or_default();
+                for i in 0..6 {
+                    c[i] += p[i];
+                }
             }
         }
         // Bandwidth cap: the datagram leaves the bottleneck queue at `depart` (or is tail-dropped).

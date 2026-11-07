@@ -118,9 +118,10 @@ impl WorldSim {
             self.fetch_asked.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
             self.fetch_first.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
             // Review O2-6: a removed member's round-trip figure leaves the median. Only removed ones: a
-            // holder being admitted keeps its figure.
-            let removed = self.membership().removed();
-            let gone: Vec<MemberId> = self.fetch_rtt_fig.keys().copied().filter(|m| removed.contains_key(m)).collect();
+            // holder being admitted keeps its figure, and so does a current member (ids are never reused,
+            // design 10.3, so a removed id doesn't come back; the test keeps that from mattering).
+            let (removed, members) = (self.membership().removed(), self.membership().members());
+            let gone: Vec<MemberId> = self.fetch_rtt_fig.keys().copied().filter(|m| removed.contains_key(m) && !members.contains(m)).collect();
             for m in gone {
                 self.fetch_rtt.remove(&m);
                 self.fetch_rtt_fig.remove(&m);
