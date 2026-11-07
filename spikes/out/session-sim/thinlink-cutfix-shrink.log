@@ -16,6 +16,7 @@ RESULT cutfix-shrink: m5: m7's cut 302 at frame 563, epoch 1's vouch (without me
 RESULT cutfix-shrink: m6: m7's cut 302 at frame 563, epoch 1's vouch (without members that had left: 302; its last epoch alone: 302); (member, read to, evidence, still a member) [(1, Some(4294967295), 300, true), (4, Some(4294967295), 302, true), (5, Some(4294967295), 302, true), (6, Some(4294967295), 302, true)]
 RESULT cutfix-shrink: the gap does not bite here
 RESULT cutfix-shrink: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 131947 / 2852 = 46.3, heads 16998; m4 131679 / 2851 = 46.2, heads 16992; m5 114434 / 2851 = 40.1, heads 16992; m6 118568 / 2851 = 41.6, heads 16992
+RESULT cutfix-shrink: feed exit: echo conflicts / echo phases ended per replica: m1 0/0, m4 0/0, m5 0/0, m6 0/0
 RESULT cutfix-shrink: rule 1's voids of members' entries (authors still members) per replica: m1 0, m4 0, m5 0, m6 0
   m1: conf 1141 frame 1193 rollbacks 196 max depth 105 paused frames 7 checks ok 155 bad 0
   m4: conf 1141 frame 1193 rollbacks 192 max depth 105 paused frames 7 checks ok 155 bad 0

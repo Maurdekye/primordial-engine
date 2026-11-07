@@ -1,6 +1,7 @@
 RESULT window1 (its own epoch's window mode): n = 3, then 4 asks to join: view changes at m1 ["epoch 1 -> 2 at 4.78 s"]; members at m1 at the end {1, 2, 3, 4}
 RESULT window1 (its own epoch's window mode): member 1's touch at frame 241, verdict per replica [(1, Some(true)), (2, Some(true)), (3, Some(true))] -> SAME
 RESULT window1 (its own epoch's window mode): per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 903 / 1353 = 0.7, heads 3814; m2 1204 / 1353 = 0.9, heads 3814; m3 926 / 1353 = 0.7, heads 3814
+RESULT window1 (its own epoch's window mode): feed exit: echo conflicts / echo phases ended per replica: m1 0/0, m2 0/0, m3 0/0
 RESULT window1 (its own epoch's window mode): rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0, m3 0
   m1: conf 781 frame 833 rollbacks 38 max depth 3 paused frames 131 checks ok 58 bad 0
   m2: conf 781 frame 833 rollbacks 38 max depth 111 paused frames 140 checks ok 58 bad 0
