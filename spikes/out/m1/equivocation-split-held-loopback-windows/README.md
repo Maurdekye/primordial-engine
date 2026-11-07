@@ -14,7 +14,9 @@ Measured on p2/m1-gaps 80fc608, Windows loopback, release (`run-*/provenance.txt
 - At 7996 ms member 3's own link to member 4 slows too. Its next entry, frame 480, names A and so is the
   proof against B; it reaches member 4 120 ms late.
 
-So for about 8 frames each group simulates its own version. `run-*/key-lines.txt` has every line quoted
+So for about 8 frames each group simulates its own version. These timings are the explicit wire's: on the lean wire
+pe-app has run since 2026-11-07, the proof waits one explicit-fetch round trip and the split lasts about 15 frames,
+with the same outcome (../equivocation-split-held-lean-loopback-windows). `run-*/key-lines.txt` has every line quoted
 below.
 
 **How to read the trace columns:**
