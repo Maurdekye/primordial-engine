@@ -7,10 +7,10 @@
 //! [`Pos`] is the type wall (the user's m06d2643578d7): no reader, no constructor from numbers, `Pos - Pos` total,
 //! moving by [`Pos::checked_add`]. Its encoding, cells and rows are pe-core's.
 
+pub use pe_core::Frame;
 pub use pe_core::commit::{Hash, Hasher};
 pub use pe_core::coords::{Offset, OutOfRange, Pos};
 pub use pe_core::ids::{ChainId, EntryRef, LineId, MemberKey, ORIGIN_ENTRY, ObjectId};
-pub use pe_core::Frame;
 
 #[cfg(test)]
 mod tests {
@@ -30,8 +30,7 @@ mod tests {
         b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
-    /// Golden vectors, produced by WS-world's pe-core at world/core-v1 426d8420 (not by these copies). When pe-seams
-    /// switches to re-exporting pe-core's types, this test must still pass unchanged, so the copies cannot drift.
+    /// Golden vectors, pinned from pe-core at 426d8420; any change to these derivations or encodings fails here.
     #[test]
     fn golden_vectors_match_pe_core_426d8420() {
         let line = LineId::origin();
@@ -39,12 +38,18 @@ mod tests {
         let chain = ChainId::new(line, key, [0x22; 32]);
         assert_eq!(hex(&line.0.0), "9a570a9c46078da1b28a58daddf02dcea9c8bb31f4efc8ab61089b552b1ddb9e");
         assert_eq!(hex(&chain.0.0), "f9b15cc973e80406d2712f240a1d76008f015c16ca0f86b5f4bbde52c6869ac9");
-        assert_eq!(format!("{:032x}", ObjectId::created(line, key, chain, 7, 3).to_u128()), "7b1e6a231cb93972bbf8ecaab2238c94");
+        assert_eq!(
+            format!("{:032x}", ObjectId::created(line, key, chain, 7, 3).to_u128()),
+            "7b1e6a231cb93972bbf8ecaab2238c94"
+        );
         assert_eq!(
             format!("{:032x}", ObjectId::spawned(line, ObjectId::from_u128(0x1234), Frame(99), 2).to_u128()),
             "6c8e7703bd9c45f9428b175321a10c71"
         );
-        assert_eq!(format!("{:032x}", ObjectId::hand(line, key, 1, Frame(5)).to_u128()), "95b6a39b914e2646d926443016d398bd");
+        assert_eq!(
+            format!("{:032x}", ObjectId::hand(line, key, 1, Frame(5)).to_u128()),
+            "95b6a39b914e2646d926443016d398bd"
+        );
         let p = Pos::ORIGIN.checked_add(Offset([-1500.25, 0.5, 3_000_000.0])).unwrap();
         let mut out = Vec::new();
         p.encode(&mut out);
