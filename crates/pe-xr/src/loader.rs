@@ -63,21 +63,11 @@ impl std::fmt::Display for LoadError {
             LoadError::NoRuntimeRegistered(why) => {
                 write!(f, "no OpenXR runtime is registered: {why}")
             }
-            LoadError::ManifestMissing(p) => write!(
-                f,
-                "the registered OpenXR manifest {} does not exist",
-                p.display()
-            ),
-            LoadError::ManifestInvalid { path, why } => write!(
-                f,
-                "the OpenXR manifest {} is invalid: {why}",
-                path.display()
-            ),
-            LoadError::LibraryMissing(p) => write!(
-                f,
-                "the OpenXR runtime library {} does not exist",
-                p.display()
-            ),
+            LoadError::ManifestMissing(p) => write!(f, "the registered OpenXR manifest {} does not exist", p.display()),
+            LoadError::ManifestInvalid { path, why } => {
+                write!(f, "the OpenXR manifest {} is invalid: {why}", path.display())
+            }
+            LoadError::LibraryMissing(p) => write!(f, "the OpenXR runtime library {} does not exist", p.display()),
             LoadError::Refused(r) => write!(f, "{r}"),
             LoadError::LibraryLoad { path, why } => write!(f, "loading {}: {why}", path.display()),
             LoadError::NoNegotiateSymbol { library, symbol } => {
@@ -121,37 +111,24 @@ impl Discovery for SystemDiscovery {
 fn platform_active_manifest() -> Result<PathBuf, LoadError> {
     let key = windows_registry::LOCAL_MACHINE
         .open(r"SOFTWARE\Khronos\OpenXR\1")
-        .map_err(|e| {
-            LoadError::NoRuntimeRegistered(format!("HKLM\\SOFTWARE\\Khronos\\OpenXR\\1: {e}"))
-        })?;
-    let value = key
-        .get_string("ActiveRuntime")
-        .map_err(|e| LoadError::NoRuntimeRegistered(format!("ActiveRuntime: {e}")))?;
+        .map_err(|e| LoadError::NoRuntimeRegistered(format!("HKLM\\SOFTWARE\\Khronos\\OpenXR\\1: {e}")))?;
+    let value =
+        key.get_string("ActiveRuntime").map_err(|e| LoadError::NoRuntimeRegistered(format!("ActiveRuntime: {e}")))?;
     Ok(PathBuf::from(value))
 }
 
 #[cfg(not(windows))]
 fn platform_active_manifest() -> Result<PathBuf, LoadError> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home.map(|h| h.join(".config")));
+    let config_home =
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".config")));
     let config_dirs = std::env::var("XDG_CONFIG_DIRS").unwrap_or_else(|_| "/etc/xdg".into());
     let mut dirs: Vec<PathBuf> = config_home.into_iter().collect();
-    dirs.extend(
-        config_dirs
-            .split(':')
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from),
-    );
+    dirs.extend(config_dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
     xdg_candidates(&dirs, std::env::consts::ARCH)
         .into_iter()
         .find(|p| p.is_file())
-        .ok_or_else(|| {
-            LoadError::NoRuntimeRegistered(
-                "no active_runtime.json under the XDG config paths".into(),
-            )
-        })
+        .ok_or_else(|| LoadError::NoRuntimeRegistered("no active_runtime.json under the XDG config paths".into()))
 }
 
 /// The XDG candidates in order: for each config dir, the per-architecture file first, then the plain one.
@@ -197,56 +174,32 @@ pub struct Manifest {
 
 /// Parse a manifest's text. `path` is where it was read from, for resolving a relative library path.
 pub fn parse_manifest(path: &Path, text: &str) -> Result<Manifest, LoadError> {
-    let invalid = |why: String| LoadError::ManifestInvalid {
-        path: path.to_path_buf(),
-        why,
-    };
+    let invalid = |why: String| LoadError::ManifestInvalid { path: path.to_path_buf(), why };
     let v: serde_json::Value = serde_json::from_str(text).map_err(|e| invalid(e.to_string()))?;
-    let rt = v
-        .get("runtime")
-        .ok_or_else(|| invalid("no \"runtime\" object".into()))?;
+    let rt = v.get("runtime").ok_or_else(|| invalid("no \"runtime\" object".into()))?;
     let lib = rt
         .get("library_path")
         .and_then(|s| s.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| invalid("no \"runtime.library_path\"".into()))?;
-    let name = rt
-        .get("name")
-        .and_then(|s| s.as_str())
-        .unwrap_or("(unnamed)")
-        .to_string();
+    let name = rt.get("name").and_then(|s| s.as_str()).unwrap_or("(unnamed)").to_string();
     let negotiate_symbol = match rt.get("functions") {
         None => NEGOTIATE_SYMBOL.to_string(),
         Some(map) => {
-            let map = map
-                .as_object()
-                .ok_or_else(|| invalid("\"runtime.functions\" is not an object".into()))?;
+            let map = map.as_object().ok_or_else(|| invalid("\"runtime.functions\" is not an object".into()))?;
             match map.get(NEGOTIATE_SYMBOL) {
                 None => NEGOTIATE_SYMBOL.to_string(),
                 Some(alt) => alt
                     .as_str()
                     .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        invalid(format!(
-                            "\"runtime.functions.{NEGOTIATE_SYMBOL}\" is not a name"
-                        ))
-                    })?
+                    .ok_or_else(|| invalid(format!("\"runtime.functions.{NEGOTIATE_SYMBOL}\" is not a name")))?
                     .to_string(),
             }
         }
     };
     let lib = PathBuf::from(lib);
-    let library = if lib.is_relative() {
-        path.parent().unwrap_or(Path::new(".")).join(lib)
-    } else {
-        lib
-    };
-    Ok(Manifest {
-        path: path.to_path_buf(),
-        name,
-        library,
-        negotiate_symbol,
-    })
+    let library = if lib.is_relative() { path.parent().unwrap_or(Path::new(".")).join(lib) } else { lib };
+    Ok(Manifest { path: path.to_path_buf(), name, library, negotiate_symbol })
 }
 
 /// Read and parse the manifest at `path`, which must exist: a registration is never trusted on its own.
@@ -254,10 +207,8 @@ pub fn read_manifest(path: &Path) -> Result<Manifest, LoadError> {
     if !path.is_file() {
         return Err(LoadError::ManifestMissing(path.to_path_buf()));
     }
-    let text = std::fs::read_to_string(path).map_err(|e| LoadError::ManifestInvalid {
-        path: path.to_path_buf(),
-        why: e.to_string(),
-    })?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| LoadError::ManifestInvalid { path: path.to_path_buf(), why: e.to_string() })?;
     parse_manifest(path, &text)
 }
 
@@ -269,11 +220,7 @@ pub fn versions_acceptable(interface: u32, api: sys::Version) -> bool {
 /// The API version to ask `xrCreateInstance` for: the negotiated one, capped at 1.1, because a 1.0-only
 /// runtime refuses an instance that asks for 1.1 (spec 2). The patch number is left at 0.
 pub fn instance_api_version(negotiated: sys::Version) -> sys::Version {
-    if negotiated.minor() >= 1 {
-        sys::Version::new(1, 1, 0)
-    } else {
-        sys::Version::new(1, 0, 0)
-    }
+    if negotiated.minor() >= 1 { sys::Version::new(1, 1, 0) } else { sys::Version::new(1, 0, 0) }
 }
 
 /// The runtime's library, kept loaded for as long as anything made through it lives: the entry, every
@@ -310,17 +257,13 @@ pub fn load(discovery: &dyn Discovery, guard: &Guard) -> Result<Runtime, LoadErr
 
     // SAFETY: opening the runtime's library runs its initialisers. That is the boundary the user's ruling
     // allows (the runtime is an operating-system component), and the guard has permitted it.
-    let lib = unsafe { libloading::Library::new(&manifest.library) }.map_err(|e| {
-        LoadError::LibraryLoad {
-            path: manifest.library.clone(),
-            why: e.to_string(),
-        }
-    })?;
+    let lib = unsafe { libloading::Library::new(&manifest.library) }
+        .map_err(|e| LoadError::LibraryLoad { path: manifest.library.clone(), why: e.to_string() })?;
     let mut symbol = manifest.negotiate_symbol.clone().into_bytes();
     symbol.push(0);
     // SAFETY: the symbol has the signature the loader-runtime interface defines.
-    let negotiate: libloading::Symbol<sys::pfn::NegotiateLoaderRuntimeInterface> =
-        unsafe { lib.get(&symbol) }.map_err(|_| LoadError::NoNegotiateSymbol {
+    let negotiate: libloading::Symbol<sys::pfn::NegotiateLoaderRuntimeInterface> = unsafe { lib.get(&symbol) }
+        .map_err(|_| LoadError::NoNegotiateSymbol {
             library: manifest.library.clone(),
             symbol: manifest.negotiate_symbol.clone(),
         })?;
@@ -346,33 +289,18 @@ pub fn load(discovery: &dyn Discovery, guard: &Guard) -> Result<Runtime, LoadErr
     if r != sys::Result::SUCCESS {
         return Err(LoadError::NegotiationFailed(format!("{r:?}")));
     }
-    let (interface_version, api_version) = (
-        request.runtime_interface_version,
-        request.runtime_api_version,
-    );
+    let (interface_version, api_version) = (request.runtime_interface_version, request.runtime_api_version);
     if !versions_acceptable(interface_version, api_version) {
-        return Err(LoadError::VersionOutOfRange {
-            interface: interface_version,
-            api: format!("{api_version}"),
-        });
+        return Err(LoadError::VersionOutOfRange { interface: interface_version, api: format!("{api_version}") });
     }
-    let gipa = request.get_instance_proc_addr.ok_or_else(|| {
-        LoadError::NegotiationFailed("the runtime returned no xrGetInstanceProcAddr".into())
-    })?;
+    let gipa = request
+        .get_instance_proc_addr
+        .ok_or_else(|| LoadError::NegotiationFailed("the runtime returned no xrGetInstanceProcAddr".into()))?;
     // SAFETY: `gipa` comes from the runtime's own negotiation, and the library stays loaded (below).
     let entry = unsafe { openxr::Entry::from_get_instance_proc_addr(gipa, &()) }
         .map_err(|e| LoadError::Entry(e.to_string()))?;
-    let library = Arc::new(RuntimeLibrary {
-        path: manifest.library.clone(),
-        _lib: lib,
-    });
-    Ok(Runtime {
-        manifest,
-        entry,
-        interface_version,
-        api_version,
-        library,
-    })
+    let library = Arc::new(RuntimeLibrary { path: manifest.library.clone(), _lib: lib });
+    Ok(Runtime { manifest, entry, interface_version, api_version, library })
 }
 
 #[cfg(test)]
@@ -400,10 +328,7 @@ mod tests {
             r#"{"file_format_version":"1.0.0","runtime":{"library_path":".\\vd.dll","name":"VD"}}"#,
         )
         .unwrap();
-        assert_eq!(
-            m.library,
-            Path::new(r"C:\Program Files\VD\OpenXR").join(r".\vd.dll")
-        );
+        assert_eq!(m.library, Path::new(r"C:\Program Files\VD\OpenXR").join(r".\vd.dll"));
         assert_eq!(m.name, "VD");
         assert_eq!(m.negotiate_symbol, NEGOTIATE_SYMBOL);
     }
@@ -411,10 +336,8 @@ mod tests {
     #[test]
     fn absolute_library_path_is_kept() {
         let abs = std::env::temp_dir().join("rt.so");
-        let text = format!(
-            r#"{{"runtime":{{"library_path":{}}}}}"#,
-            serde_json::to_string(abs.to_str().unwrap()).unwrap()
-        );
+        let text =
+            format!(r#"{{"runtime":{{"library_path":{}}}}}"#, serde_json::to_string(abs.to_str().unwrap()).unwrap());
         let m = parse_manifest(Path::new("/etc/xdg/openxr/1/active_runtime.json"), &text).unwrap();
         assert_eq!(m.library, abs);
         assert_eq!(m.name, "(unnamed)");
@@ -428,11 +351,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.negotiate_symbol, "myNegotiate");
-        let m = parse_manifest(
-            Path::new("m.json"),
-            r#"{"runtime":{"library_path":"rt.dll","functions":{}}}"#,
-        )
-        .unwrap();
+        let m = parse_manifest(Path::new("m.json"), r#"{"runtime":{"library_path":"rt.dll","functions":{}}}"#).unwrap();
         assert_eq!(m.negotiate_symbol, NEGOTIATE_SYMBOL);
     }
 
@@ -463,20 +382,14 @@ mod tests {
     fn a_registered_manifest_that_does_not_exist_is_refused() {
         // The shape of this PC's stale Meta registration.
         let gone = fixture_dir("gone").join("oculus_openxr_64.json");
-        let e = load(&FixedManifest(gone.clone()), &Guard::CLOSED)
-            .err()
-            .unwrap();
+        let e = load(&FixedManifest(gone.clone()), &Guard::CLOSED).err().unwrap();
         assert_eq!(e, LoadError::ManifestMissing(gone));
     }
 
     #[test]
     fn a_library_that_does_not_exist_is_refused_before_the_guard() {
         let d = fixture_dir("nolib");
-        let m = write(
-            &d,
-            "rt.json",
-            r#"{"runtime":{"library_path":"./missing-runtime.dll"}}"#,
-        );
+        let m = write(&d, "rt.json", r#"{"runtime":{"library_path":"./missing-runtime.dll"}}"#);
         let e = load(&FixedManifest(m), &Guard::CLOSED).err().unwrap();
         assert!(matches!(e, LoadError::LibraryMissing(_)), "{e}");
     }
@@ -496,10 +409,7 @@ mod tests {
         // With the guard open, a non-library file fails in libloading: no runtime code exists to run.
         let d = fixture_dir("notlib");
         let m = write(&d, "rt.json", r#"{"runtime":{"library_path":"rt.json"}}"#);
-        let open = Guard {
-            real_env: None,
-            configured_on: true,
-        };
+        let open = Guard { real_env: None, configured_on: true };
         let e = load(&FixedManifest(m), &open).err().unwrap();
         assert!(matches!(e, LoadError::LibraryLoad { .. }), "{e}");
     }
@@ -515,26 +425,14 @@ mod tests {
 
     #[test]
     fn instance_version_is_capped_at_1_1() {
-        assert_eq!(
-            instance_api_version(sys::Version::new(1, 1, 62)),
-            sys::Version::new(1, 1, 0)
-        );
-        assert_eq!(
-            instance_api_version(sys::Version::new(1, 2, 0)),
-            sys::Version::new(1, 1, 0)
-        );
-        assert_eq!(
-            instance_api_version(sys::Version::new(1, 0, 34)),
-            sys::Version::new(1, 0, 0)
-        );
+        assert_eq!(instance_api_version(sys::Version::new(1, 1, 62)), sys::Version::new(1, 1, 0));
+        assert_eq!(instance_api_version(sys::Version::new(1, 2, 0)), sys::Version::new(1, 1, 0));
+        assert_eq!(instance_api_version(sys::Version::new(1, 0, 34)), sys::Version::new(1, 0, 0));
     }
 
     #[test]
     fn xdg_candidates_put_the_arch_file_first() {
-        let c = xdg_candidates(
-            &[PathBuf::from("/home/u/.config"), PathBuf::from("/etc/xdg")],
-            "x86_64",
-        );
+        let c = xdg_candidates(&[PathBuf::from("/home/u/.config"), PathBuf::from("/etc/xdg")], "x86_64");
         assert_eq!(c.len(), 4);
         assert!(c[0].ends_with("openxr/1/active_runtime.x86_64.json"));
         assert!(c[1].ends_with("openxr/1/active_runtime.json"));

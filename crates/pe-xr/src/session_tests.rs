@@ -17,27 +17,18 @@ struct Sink {
 
 impl FrameSink for Sink {
     fn render(&mut self, f: &FrameRequest<'_>) -> bool {
-        self.frames.push((
-            f.timing.predicted_display_time.0,
-            f.timing.predicted_display_period_ns,
-        ));
+        self.frames.push((f.timing.predicted_display_time.0, f.timing.predicted_display_period_ns));
         self.draw
     }
 }
 
 fn sink() -> Sink {
-    Sink {
-        frames: Vec::new(),
-        draw: true,
-    }
+    Sink { frames: Vec::new(), draw: true }
 }
 
 fn session(rt: FakeRuntime) -> (XrSession<FakeRuntime>, Arc<HandRing>) {
     let ring = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, PERIOD_120));
-    (
-        XrSession::new(rt, ring.clone(), GraspConfig::default()),
-        ring,
-    )
+    (XrSession::new(rt, ring.clone(), GraspConfig::default()), ring)
 }
 
 fn run(s: &mut XrSession<FakeRuntime>, sink: &mut Sink, n: usize) -> Vec<Step> {
@@ -45,11 +36,7 @@ fn run(s: &mut XrSession<FakeRuntime>, sink: &mut Sink, n: usize) -> Vec<Step> {
 }
 
 fn no_violations(s: &XrSession<FakeRuntime>) {
-    assert!(
-        s.backend().violations.is_empty(),
-        "{:#?}",
-        s.backend().violations
-    );
+    assert!(s.backend().violations.is_empty(), "{:#?}", s.backend().violations);
 }
 
 #[test]
@@ -69,30 +56,16 @@ fn a_full_lifecycle_with_a_restart_on_the_same_session_and_an_exit() {
     assert_eq!(s.state(), SessionState::Focused);
 
     // The headset sleeps: STOPPING, then IDLE. The session is kept, not destroyed.
-    for st in [
-        SessionState::Visible,
-        SessionState::Synchronized,
-        SessionState::Stopping,
-        SessionState::Idle,
-    ] {
+    for st in [SessionState::Visible, SessionState::Synchronized, SessionState::Stopping, SessionState::Idle] {
         s.backend_mut().push(XrEvent::StateChanged(st));
     }
     assert_eq!(s.step(&mut k), Step::Idle);
     assert_eq!(s.backend().count(&Call::EndSession), 1);
-    assert_eq!(
-        s.backend().count(&Call::DestroySession),
-        0,
-        "STOPPING keeps the session"
-    );
+    assert_eq!(s.backend().count(&Call::DestroySession), 0, "STOPPING keeps the session");
     assert_eq!(s.step(&mut k), Step::Idle);
 
     // It wakes: READY again on the same session.
-    for st in [
-        SessionState::Ready,
-        SessionState::Synchronized,
-        SessionState::Visible,
-        SessionState::Focused,
-    ] {
+    for st in [SessionState::Ready, SessionState::Synchronized, SessionState::Visible, SessionState::Focused] {
         s.backend_mut().push(XrEvent::StateChanged(st));
     }
     assert_eq!(s.step(&mut k), Step::Frame);
@@ -112,26 +85,14 @@ fn a_full_lifecycle_with_a_restart_on_the_same_session_and_an_exit() {
 
 #[test]
 fn loss_pending_tears_down_once_and_calls_nothing_after() {
-    let (mut s, _) = session(
-        FakeRuntime::new()
-            .started()
-            .at(5, XrEvent::StateChanged(SessionState::LossPending)),
-    );
+    let (mut s, _) = session(FakeRuntime::new().started().at(5, XrEvent::StateChanged(SessionState::LossPending)));
     let mut k = sink();
     let steps = run(&mut s, &mut k, 8);
     assert_eq!(steps[..5], [Step::Frame; 5]);
     assert_eq!(steps[5..], [Step::Ended { lost: true }; 3]);
     let calls = &s.backend().calls;
-    let destroy = calls
-        .iter()
-        .position(|c| *c == Call::DestroySession)
-        .unwrap();
-    assert_eq!(
-        calls.len(),
-        destroy + 1,
-        "nothing after the teardown: {:?}",
-        &calls[destroy..]
-    );
+    let destroy = calls.iter().position(|c| *c == Call::DestroySession).unwrap();
+    assert_eq!(calls.len(), destroy + 1, "nothing after the teardown: {:?}", &calls[destroy..]);
     assert_eq!(s.backend().count(&Call::DestroySession), 1);
     no_violations(&s);
 }
@@ -145,11 +106,7 @@ fn a_lost_session_mid_frame_ends_cleanly() {
     let steps = run(&mut s, &mut k, 5);
     assert_eq!(steps[3], Step::Ended { lost: true });
     assert_eq!(s.backend().count(&Call::DestroySession), 1);
-    assert_eq!(
-        ring.hand_at(Hand::Right, s.backend().now_for_test()),
-        None,
-        "hands absent after the loss"
-    );
+    assert_eq!(ring.hand_at(Hand::Right, s.backend().now_for_test()), None, "hands absent after the loss");
     no_violations(&s);
 }
 
@@ -158,12 +115,8 @@ fn every_frame_waits_begins_and_ends_in_order_with_one_layer() {
     let (mut s, _) = session(FakeRuntime::new().started());
     let mut k = sink();
     run(&mut s, &mut k, 6);
-    let frame_calls: Vec<&Call> = s
-        .backend()
-        .calls
-        .iter()
-        .filter(|c| !matches!(c, Call::PollEvent | Call::BeginSession))
-        .collect();
+    let frame_calls: Vec<&Call> =
+        s.backend().calls.iter().filter(|c| !matches!(c, Call::PollEvent | Call::BeginSession)).collect();
     // One frame: wait, begin, sync, both hands, acquire, locate, release, end.
     let one = |c: &[&Call]| {
         matches!(
@@ -208,17 +161,10 @@ fn should_render_false_submits_no_layer_but_still_samples_the_hands() {
 #[test]
 fn a_sink_that_draws_nothing_ends_the_frame_with_no_layer() {
     let (mut s, _) = session(FakeRuntime::new().started());
-    let mut k = Sink {
-        frames: Vec::new(),
-        draw: false,
-    };
+    let mut k = Sink { frames: Vec::new(), draw: false };
     run(&mut s, &mut k, 2);
     assert_eq!(s.backend().count(&Call::EndFrame(Layers::None)), 2);
-    assert_eq!(
-        s.backend().count(&Call::ReleaseImage),
-        2,
-        "the image is still released"
-    );
+    assert_eq!(s.backend().count(&Call::ReleaseImage), 2, "the image is still released");
     no_violations(&s);
 }
 
@@ -232,30 +178,16 @@ fn hands_reach_the_ring_while_focused_and_go_absent_without_focus() {
     assert!(h.tracked);
     assert_eq!(h.pose.position, [0.2, 1.0, -0.3]);
 
-    s.backend_mut()
-        .push(XrEvent::StateChanged(SessionState::Visible));
+    s.backend_mut().push(XrEvent::StateChanged(SessionState::Visible));
     run(&mut s, &mut k, 2);
-    assert_eq!(
-        ring.hand_at(Hand::Right, s.backend().now_for_test()),
-        None,
-        "absent while not focused"
-    );
+    assert_eq!(ring.hand_at(Hand::Right, s.backend().now_for_test()), None, "absent while not focused");
     let syncs = s.backend().count(&Call::SyncActions);
     run(&mut s, &mut k, 2);
-    assert_eq!(
-        s.backend().count(&Call::SyncActions),
-        syncs,
-        "no sync while VISIBLE"
-    );
+    assert_eq!(s.backend().count(&Call::SyncActions), syncs, "no sync while VISIBLE");
 
-    s.backend_mut()
-        .push(XrEvent::StateChanged(SessionState::Focused));
+    s.backend_mut().push(XrEvent::StateChanged(SessionState::Focused));
     run(&mut s, &mut k, 1);
-    assert!(
-        ring.hand_at(Hand::Right, s.backend().now_for_test())
-            .is_some(),
-        "back with focus"
-    );
+    assert!(ring.hand_at(Hand::Right, s.backend().now_for_test()).is_some(), "back with focus");
     no_violations(&s);
 }
 
@@ -264,21 +196,12 @@ fn a_recentre_bumps_the_discontinuity_of_both_hands() {
     let (mut s, ring) = session(FakeRuntime::new().started());
     let mut k = sink();
     run(&mut s, &mut k, 2);
-    let before = ring
-        .hand_at(Hand::Left, s.backend().now_for_test())
-        .unwrap()
-        .discontinuity;
+    let before = ring.hand_at(Hand::Left, s.backend().now_for_test()).unwrap().discontinuity;
     s.backend_mut().push(XrEvent::ReferenceSpaceChangePending);
     run(&mut s, &mut k, 1);
     let now = s.backend().now_for_test();
-    assert_eq!(
-        ring.hand_at(Hand::Left, now).unwrap().discontinuity,
-        before + 1
-    );
-    assert_eq!(
-        ring.hand_at(Hand::Right, now).unwrap().discontinuity,
-        before + 1
-    );
+    assert_eq!(ring.hand_at(Hand::Left, now).unwrap().discontinuity, before + 1);
+    assert_eq!(ring.hand_at(Hand::Right, now).unwrap().discontinuity, before + 1);
     assert_eq!(s.counters.recentres, 1);
     no_violations(&s);
 }
@@ -286,10 +209,7 @@ fn a_recentre_bumps_the_discontinuity_of_both_hands() {
 #[test]
 fn pacing_follows_whatever_period_the_runtime_gives_including_a_change_mid_run() {
     // 120 Hz, then 90 from frame 5, then 72 from frame 9: no target rate, no request (spec 7.2).
-    let rt = FakeRuntime::new()
-        .started()
-        .period_from(5, PERIOD_90)
-        .period_from(9, PERIOD_72);
+    let rt = FakeRuntime::new().started().period_from(5, PERIOD_90).period_from(9, PERIOD_72);
     let (mut s, ring) = session(rt);
     let mut k = sink();
     assert!(run(&mut s, &mut k, 12).iter().all(|x| *x == Step::Frame));
@@ -310,9 +230,7 @@ fn pacing_follows_whatever_period_the_runtime_gives_including_a_change_mid_run()
     moving.linear_velocity = Some([1.0, 0.0, 0.0]);
     moving.sampled_at = now.plus_nanos(1);
     ring.push(moving);
-    let far = ring
-        .hand_at(Hand::Right, now.plus_nanos(1_000_000_000))
-        .unwrap();
+    let far = ring.hand_at(Hand::Right, now.plus_nanos(1_000_000_000)).unwrap();
     let moved = far.pose.position[0] - 0.2;
     assert!((moved - PERIOD_72 as f32 * 1e-9).abs() < 1e-5, "{moved}");
     no_violations(&s);
@@ -338,10 +256,7 @@ fn a_held_controller_releases_after_the_grace_period_when_tracking_is_lost() {
         Reading {
             source: HandSource::Controller,
             at,
-            pose: (!lost).then_some(RigPose {
-                position: [0.2, 1.0, -0.3],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-            }),
+            pose: (!lost).then_some(RigPose { position: [0.2, 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] }),
             linear_velocity: None,
             angular_velocity: None,
             grip: Some(if hand == Hand::Right { 0.9 } else { 0.0 }),
@@ -358,18 +273,8 @@ fn a_held_controller_releases_after_the_grace_period_when_tracking_is_lost() {
     }
     // Held before the loss, still held within 250 ms of it, released after, and closed again on return.
     assert!(closed_at.iter().any(|&(t, c, tr)| t < 100 && c && tr));
-    assert!(
-        closed_at
-            .iter()
-            .filter(|&&(t, _, _)| (100..340).contains(&t))
-            .all(|&(_, c, _)| c)
-    );
-    assert!(
-        closed_at
-            .iter()
-            .filter(|&&(t, _, _)| (360..500).contains(&t))
-            .all(|&(_, c, tr)| !c && !tr)
-    );
+    assert!(closed_at.iter().filter(|&&(t, _, _)| (100..340).contains(&t)).all(|&(_, c, _)| c));
+    assert!(closed_at.iter().filter(|&&(t, _, _)| (360..500).contains(&t)).all(|&(_, c, tr)| !c && !tr));
     assert!(closed_at.iter().any(|&(t, c, tr)| t > 510 && c && tr));
     no_violations(&s);
 }

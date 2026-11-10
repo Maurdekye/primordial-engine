@@ -43,17 +43,11 @@ pub struct Guard {
 
 impl Guard {
     /// A guard that refuses everything: what every test that is not a real-runtime run uses.
-    pub const CLOSED: Guard = Guard {
-        real_env: None,
-        configured_on: false,
-    };
+    pub const CLOSED: Guard = Guard { real_env: None, configured_on: false };
 
     /// The guard from this process's environment and the application's VR setting.
     pub fn from_env(configured_on: bool) -> Guard {
-        Guard {
-            real_env: std::env::var(REAL_ENV).ok(),
-            configured_on,
-        }
+        Guard { real_env: std::env::var(REAL_ENV).ok(), configured_on }
     }
 
     pub fn check(&self) -> Result<Permit, Refused> {
@@ -78,41 +72,13 @@ mod tests {
     #[test]
     fn closed_by_default() {
         assert!(Guard::CLOSED.check().is_err());
-        assert!(
-            Guard {
-                real_env: Some("0".into()),
-                configured_on: false
-            }
-            .check()
-            .is_err()
-        );
-        assert!(
-            Guard {
-                real_env: Some("yes".into()),
-                configured_on: false
-            }
-            .check()
-            .is_err()
-        );
+        assert!(Guard { real_env: Some("0".into()), configured_on: false }.check().is_err());
+        assert!(Guard { real_env: Some("yes".into()), configured_on: false }.check().is_err());
     }
 
     #[test]
     fn opens_only_on_env_one_or_configuration() {
-        assert_eq!(
-            Guard {
-                real_env: Some("1".into()),
-                configured_on: false
-            }
-            .check(),
-            Ok(Permit::RealRunEnv)
-        );
-        assert_eq!(
-            Guard {
-                real_env: None,
-                configured_on: true
-            }
-            .check(),
-            Ok(Permit::ConfiguredOn)
-        );
+        assert_eq!(Guard { real_env: Some("1".into()), configured_on: false }.check(), Ok(Permit::RealRunEnv));
+        assert_eq!(Guard { real_env: None, configured_on: true }.check(), Ok(Permit::ConfiguredOn));
     }
 }

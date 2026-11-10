@@ -31,10 +31,7 @@ impl std::fmt::Display for MissingExtension {
 
 /// The extensions to enable, from those the runtime offers (spec 2's table). The graphics extension for
 /// `path` and this platform's time conversion are required; the rest are used when offered.
-pub fn choose_extensions(
-    available: &ExtensionSet,
-    path: GraphicsPath,
-) -> Result<ExtensionSet, MissingExtension> {
+pub fn choose_extensions(available: &ExtensionSet, path: GraphicsPath) -> Result<ExtensionSet, MissingExtension> {
     let mut want = ExtensionSet::default();
     match path {
         GraphicsPath::Vulkan => {
@@ -58,9 +55,7 @@ pub fn choose_extensions(
     #[cfg(windows)]
     {
         if !available.khr_win32_convert_performance_counter_time {
-            return Err(MissingExtension(
-                "XR_KHR_win32_convert_performance_counter_time",
-            ));
+            return Err(MissingExtension("XR_KHR_win32_convert_performance_counter_time"));
         }
         want.khr_win32_convert_performance_counter_time = true;
     }
@@ -117,10 +112,7 @@ pub struct XrInstance {
 
 impl XrInstance {
     pub fn create(runtime: &Runtime, path: GraphicsPath) -> Result<XrInstance, InstanceError> {
-        let available = runtime
-            .entry
-            .enumerate_extensions()
-            .map_err(|e| InstanceError::Xr(e.to_string()))?;
+        let available = runtime.entry.enumerate_extensions().map_err(|e| InstanceError::Xr(e.to_string()))?;
         let enabled = choose_extensions(&available, path).map_err(InstanceError::Missing)?;
         let app = openxr::ApplicationInfo {
             application_name: "Primordial Engine",
@@ -129,24 +121,14 @@ impl XrInstance {
             engine_version: 0,
             api_version: runtime.instance_api_version(),
         };
-        let instance = runtime
-            .entry
-            .create_instance(&app, &enabled, &[], &())
-            .map_err(|e| InstanceError::Xr(e.to_string()))?;
-        Ok(XrInstance {
-            instance,
-            path,
-            enabled,
-            library: runtime.library.clone(),
-        })
+        let instance =
+            runtime.entry.create_instance(&app, &enabled, &[], &()).map_err(|e| InstanceError::Xr(e.to_string()))?;
+        Ok(XrInstance { instance, path, enabled, library: runtime.library.clone() })
     }
 
     /// The head-mounted system, or why there is none now.
     pub fn headset(&self) -> Result<Headset, InstanceError> {
-        match self
-            .instance
-            .system(openxr::FormFactor::HEAD_MOUNTED_DISPLAY)
-        {
+        match self.instance.system(openxr::FormFactor::HEAD_MOUNTED_DISPLAY) {
             Ok(id) => Ok(Headset::Present(id)),
             Err(sys::Result::ERROR_FORM_FACTOR_UNAVAILABLE) => Ok(Headset::Absent),
             Err(sys::Result::ERROR_FORM_FACTOR_UNSUPPORTED) => Ok(Headset::Unsupported),
@@ -162,18 +144,12 @@ impl XrInstance {
             .exts()
             .khr_win32_convert_performance_counter_time
             .as_ref()
-            .ok_or(InstanceError::Missing(MissingExtension(
-                "XR_KHR_win32_convert_performance_counter_time",
-            )))?;
+            .ok_or(InstanceError::Missing(MissingExtension("XR_KHR_win32_convert_performance_counter_time")))?;
         let mut counter: sys::platform::LARGE_INTEGER = 0;
         // SAFETY: a live instance, the extension enabled at creation, and a valid out pointer.
-        let r = unsafe {
-            (ext.convert_time_to_win32_performance_counter)(self.instance.as_raw(), t, &mut counter)
-        };
+        let r = unsafe { (ext.convert_time_to_win32_performance_counter)(self.instance.as_raw(), t, &mut counter) };
         if r != sys::Result::SUCCESS {
-            return Err(InstanceError::Xr(format!(
-                "xrConvertTimeToWin32PerformanceCounterKHR: {r:?}"
-            )));
+            return Err(InstanceError::Xr(format!("xrConvertTimeToWin32PerformanceCounterKHR: {r:?}")));
         }
         Ok(crate::clock::counter_to_host(counter))
     }
@@ -186,23 +162,13 @@ impl XrInstance {
             .exts()
             .khr_win32_convert_performance_counter_time
             .as_ref()
-            .ok_or(InstanceError::Missing(MissingExtension(
-                "XR_KHR_win32_convert_performance_counter_time",
-            )))?;
+            .ok_or(InstanceError::Missing(MissingExtension("XR_KHR_win32_convert_performance_counter_time")))?;
         let counter: sys::platform::LARGE_INTEGER = crate::clock::host_to_counter(t);
         let mut out = sys::Time::from_nanos(0);
         // SAFETY: as above.
-        let r = unsafe {
-            (ext.convert_win32_performance_counter_to_time)(
-                self.instance.as_raw(),
-                &counter,
-                &mut out,
-            )
-        };
+        let r = unsafe { (ext.convert_win32_performance_counter_to_time)(self.instance.as_raw(), &counter, &mut out) };
         if r != sys::Result::SUCCESS {
-            return Err(InstanceError::Xr(format!(
-                "xrConvertWin32PerformanceCounterToTimeKHR: {r:?}"
-            )));
+            return Err(InstanceError::Xr(format!("xrConvertWin32PerformanceCounterToTimeKHR: {r:?}")));
         }
         Ok(out)
     }
@@ -214,19 +180,12 @@ impl XrInstance {
             .exts()
             .khr_convert_timespec_time
             .as_ref()
-            .ok_or(InstanceError::Missing(MissingExtension(
-                "XR_KHR_convert_timespec_time",
-            )))?;
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
+            .ok_or(InstanceError::Missing(MissingExtension("XR_KHR_convert_timespec_time")))?;
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
         // SAFETY: a live instance, the extension enabled at creation, and a valid out pointer.
         let r = unsafe { (ext.convert_time_to_timespec_time)(self.instance.as_raw(), t, &mut ts) };
         if r != sys::Result::SUCCESS {
-            return Err(InstanceError::Xr(format!(
-                "xrConvertTimeToTimespecTimeKHR: {r:?}"
-            )));
+            return Err(InstanceError::Xr(format!("xrConvertTimeToTimespecTimeKHR: {r:?}")));
         }
         Ok(crate::clock::timespec_to_host(&ts))
     }
@@ -238,18 +197,13 @@ impl XrInstance {
             .exts()
             .khr_convert_timespec_time
             .as_ref()
-            .ok_or(InstanceError::Missing(MissingExtension(
-                "XR_KHR_convert_timespec_time",
-            )))?;
+            .ok_or(InstanceError::Missing(MissingExtension("XR_KHR_convert_timespec_time")))?;
         let ts = crate::clock::host_to_timespec(t);
         let mut out = sys::Time::from_nanos(0);
         // SAFETY: as above.
-        let r =
-            unsafe { (ext.convert_timespec_time_to_time)(self.instance.as_raw(), &ts, &mut out) };
+        let r = unsafe { (ext.convert_timespec_time_to_time)(self.instance.as_raw(), &ts, &mut out) };
         if r != sys::Result::SUCCESS {
-            return Err(InstanceError::Xr(format!(
-                "xrConvertTimespecTimeToTimeKHR: {r:?}"
-            )));
+            return Err(InstanceError::Xr(format!("xrConvertTimespecTimeToTimeKHR: {r:?}")));
         }
         Ok(out)
     }
@@ -280,10 +234,7 @@ mod tests {
     fn vulkan_first_takes_the_required_and_the_offered_optionals() {
         let e = choose_extensions(&offered(), GraphicsPath::Vulkan).unwrap();
         assert!(e.khr_vulkan_enable2 && e.ext_hand_tracking);
-        assert!(
-            !e.fb_display_refresh_rate && !e.ext_hand_interaction,
-            "not offered, not enabled"
-        );
+        assert!(!e.fb_display_refresh_rate && !e.ext_hand_interaction, "not offered, not enabled");
         #[cfg(windows)]
         assert!(!e.khr_d3d12_enable, "only one graphics path");
     }
@@ -292,10 +243,7 @@ mod tests {
     fn a_missing_graphics_extension_is_named() {
         let mut a = offered();
         a.khr_vulkan_enable2 = false;
-        assert_eq!(
-            choose_extensions(&a, GraphicsPath::Vulkan),
-            Err(MissingExtension("XR_KHR_vulkan_enable2"))
-        );
+        assert_eq!(choose_extensions(&a, GraphicsPath::Vulkan), Err(MissingExtension("XR_KHR_vulkan_enable2")));
     }
 
     #[cfg(windows)]
@@ -305,9 +253,6 @@ mod tests {
         assert!(e.khr_d3d12_enable && !e.khr_vulkan_enable2);
         let mut a = offered();
         a.khr_win32_convert_performance_counter_time = false;
-        assert!(
-            choose_extensions(&a, GraphicsPath::Vulkan).is_err(),
-            "no shared time base, no VR"
-        );
+        assert!(choose_extensions(&a, GraphicsPath::Vulkan).is_err(), "no shared time base, no VR");
     }
 }

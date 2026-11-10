@@ -79,10 +79,7 @@ impl<B: Backend> XrSession<B> {
             state: SessionState::Idle,
             running: false,
             ended: None,
-            hands: [
-                HandState::new(Hand::Left, grasp),
-                HandState::new(Hand::Right, grasp),
-            ],
+            hands: [HandState::new(Hand::Left, grasp), HandState::new(Hand::Right, grasp)],
             ring,
             last_display_time: None,
             counters: Counters::default(),
@@ -234,16 +231,10 @@ impl<B: Backend> XrSession<B> {
         if timing.should_render {
             let image = self.backend.acquire_image()?;
             let eyes = self.backend.locate_views(timing.predicted_display_time)?;
-            let drawn = sink.render(&FrameRequest {
-                timing,
-                eyes: &eyes,
-                image,
-            });
+            let drawn = sink.render(&FrameRequest { timing, eyes: &eyes, image });
             self.backend.release_image()?;
             if drawn {
-                layers = Layers::Projection {
-                    with_depth: sink.submits_depth(),
-                };
+                layers = Layers::Projection { with_depth: sink.submits_depth() };
             }
         }
         if matches!(layers, Layers::None) {
@@ -252,7 +243,6 @@ impl<B: Backend> XrSession<B> {
             self.counters.frames_rendered += 1;
         }
         // Step 8.
-        self.backend
-            .end_frame(timing.predicted_display_time, layers)
+        self.backend.end_frame(timing.predicted_display_time, layers)
     }
 }
