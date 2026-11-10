@@ -1,7 +1,8 @@
 # pe-xr: the OpenXR session, stereo, tracked hands and 90 Hz pacing
 
-Status: draft 3, 2026-11-10, by @xr-eng (WS-xr). Draft 2 answered @shader-reviewer's review of draft 1 (M1-M5,
-L1-L4); draft 3 folds in @ballpit-viz's M0 report (cf7a3bb, branch `m0/feasibility-xr`). Nothing in it is built. It specifies M1's VR work in
+Status: draft 4, 2026-11-10, by @xr-eng (WS-xr). Draft 2 answered @shader-reviewer's review of draft 1 (M1-M5,
+L1-L4); draft 3 folds in @ballpit-viz's M0 report (cf7a3bb, branch `m0/feasibility-xr`); draft 4 answers the re-review of
+draft 3 (image states at release; API version; multiview on the desktop context). Nothing in it is built. It specifies M1's VR work in
 `docs/refound-plan.md` (branch `docs/refound-plan`, b610464), section 3.1: "the OpenXR session, stereo through
 pe-render, tracked hands into hand entries, 90 Hz pacing". Seam S5 is proposed in section 8. @engine-architect (WS-seams)
 takes its pe-seams part as proposed, for S5 v0; the pe-xr and pe-render interface (8.2) is to agree with @ballpit-viz
@@ -56,7 +57,8 @@ macOS (flat screen only, later); a VR user interface (the UI lab follows M1, WS-
      their struct versions included. The range offered is loader-runtime interface 1, and any API version 1.x
      (maximum 1.0x3ff.0xfff, as Khronos' loader offers): Virtual Desktop's runtime refuses a maximum of openxr-sys's
      own 1.1.58, because it is built against 1.1.62 [V: M0 report, section 2]. A runtime whose negotiated versions
-     are out of that range is refused, with the reason;
+     are out of that range is refused, with the reason. The instance then asks for the negotiated API version,
+     capped at 1.1, because a 1.0-only runtime (an older SteamVR or Monado) refuses an instance that asks for 1.1;
   4. build the `openxr::Entry` from the returned `xrGetInstanceProcAddr` (`Entry::from_get_instance_proc_addr`).
 
   Manifest discovery is injected, so tests run the loader on fixture manifests and never read the registry or
@@ -88,7 +90,7 @@ Extensions:
 | `XR_EXT_hand_tracking` | Tracked hands: 26 joints a hand | Controllers only |
 | `XR_EXT_hand_interaction` | A runtime-computed grip and pinch for tracked hands, through the action system | pe-xr computes grip from the joints (section 5.3) |
 | `XR_FB_display_refresh_rate` | Ask for 90 Hz where the headset offers it | Run at the runtime's rate, and report it |
-| `XR_EXT_local_floor` (core in OpenXR 1.1) | A floor-level space when STAGE is not offered | LOCAL, with the floor estimated from the head's height at start |
+| `XR_EXT_local_floor` (core in OpenXR 1.1; the extension on a 1.0 runtime) | A floor-level space when STAGE is not offered | LOCAL, with the floor estimated from the head's height at start |
 | `XR_KHR_composition_layer_depth` | Submit depth, so the compositor reprojects better | Colour only |
 | `XR_MND_headless` | Sessions without graphics, for input tests against Monado in CI | Those tests skip |
 
@@ -163,6 +165,8 @@ itself, with the extensions the runtime and wgpu each need. So:
 - **One backend per process.** A wgpu window alone picks Vulkan on this PC [V: M0 report], but the D3D12 path needs
   DX12 on the runtime's adapter. So on Windows pe-render's desktop context uses DX12 too, and entering VR keeps it
   when its adapter's LUID is the runtime's. Otherwise entering VR re-creates the context, before the session exists.
+  Because VR keeps that context, the desktop context is created with `Features::MULTIVIEW` whenever the adapter
+  offers it.
 
 **D3D12, on Windows** [M0: @ballpit-viz's first path]:
 1. Ask the runtime for its graphics requirements (`XR_KHR_D3D12_enable`): the adapter's LUID and the minimum
@@ -201,6 +205,16 @@ itself, with the extensions the runtime and wgpu each need. So:
   - D3D12: the initial state given to wgpu is COLOR_TARGET, because OpenXR hands D3D12 colour images over in
     RENDER_TARGET state and wants them back in it [M0; the headset run checks it].
   - Vulkan: wrapped with `TextureMemory::External` and an empty drop callback, so the runtime keeps ownership [M0].
+- **The image's state, at wrap and at every release.** OpenXR hands each image over in one layout and wants it back
+  in the same one at `xrReleaseSwapchainImage`: colour in RENDER_TARGET (D3D12) or COLOR_ATTACHMENT_OPTIMAL (Vulkan),
+  depth in DEPTH_WRITE (D3D12) or DEPTH_STENCIL_ATTACHMENT_OPTIMAL (Vulkan). wgpu leaves a texture in its last use.
+  So:
+  - every image is wrapped in wgpu's matching state on both backends: COLOR_TARGET for colour, DEPTH_STENCIL_WRITE
+    for depth;
+  - each frame's work ends with the image back in that state, by `CommandEncoder::transition_resources` (in wgpu 30)
+    after any other use. The desktop mirror (section 3.3) copies from the eye image within that frame's work, so the
+    transition comes after the copy; it never samples the swapchain image later;
+  - the frame's work is submitted to the queue before the image is released (section 7.1, step 8).
 
 ### 4.3 Losing the device
 
@@ -356,7 +370,8 @@ On the XR thread, which is also the VR render thread:
    the poses are fresh.
 7. pe-render draws the frame view into the image: both eyes, the scene at the drawn time (section 7.2), the own
    hands late-latched (section 5.6).
-8. Release the image, and `xrEndFrame` with one projection layer (and its depth, when offered).
+8. Submit the frame's work, its last command returning the image to its state (section 4.2); then release the image,
+   and `xrEndFrame` with one projection layer (and its depth, when offered).
 
 When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits no layers. The loop never skips
 `xrWaitFrame`, `xrBeginFrame` and `xrEndFrame`.
