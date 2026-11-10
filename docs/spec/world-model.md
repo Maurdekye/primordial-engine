@@ -317,7 +317,10 @@ in every derivation, and the reserved `Node.born_on` field and `lines` table. Me
 - **A depth limit** (@chunks-reviewer's Q2 on pe-api, via @coordinator-opus m8fe5d95c6f0d): an object may be at
   most 256 levels below its root [I; a world setting, at most 4,096]. A `Create`, `Copy`, `Reparent` or `Undelete`
   that would put any object deeper is refused with `TooDeep`. Every tree walk in pe-world, pe-sim and the API is
-  iterative, never recursive, so even a corrupt state cannot overflow a stack (5.3).
+  iterative, never recursive, so even a corrupt state cannot overflow a stack (5.3). Lowering the setting neither
+  refuses nor moves objects already deeper; later edits that do not deepen them still apply. A merge can join two
+  in-limit sides into a deeper chain; its replay refuses the deepening edit deterministically, like any edit
+  (@chunks-reviewer's r12 note).
 
 ### 3.4 Blobs
 
@@ -687,7 +690,8 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
     prefixes above it), because the trie is path-compressed and two sides with different id sets have tries of
     different shapes (@diverge-eng's Medium 1);
   - `node(prefix)` returns the node covering that prefix, passing through compressed segments:
-    `Inner { prefix, mask, children }` (its depth is its prefix's length), `Leaf { id, leaf_hash }`, or `Empty`;
+    `Inner { prefix, children }` (its depth is its prefix's length; the mask is computed from the children's nibbles,
+    never sent), `Leaf { id, leaf_hash }`, or `Empty`;
   - when my node's prefix and theirs differ, the difference is structural: everything under theirs is fetched, and
     everything under mine that they lack is removed;
   - `export(root, keys)` returns the records for objects and tables (`LeafKey`) with their paths to the root.
