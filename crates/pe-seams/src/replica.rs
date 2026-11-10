@@ -11,13 +11,15 @@
 //!   images, imports and outcomes. Nobody outside restores an arbitrary state.
 //! - **The driver** (pe-app's simulation thread, and the harness) runs: deliver messages to S3, `submit` local
 //!   entries, `tick`, [`Replica::advance`] to the present, give S3 the roots it asks for
-//!   ([`Replica::root_at_cut`]), and pass final cuts to [`Replica::finalize`] and pe-diverge. That loop is one
+//!   ([`Replica::root_at_cut`]), and pass the source's final cut ([`EntrySource::final_cut`]) to
+//!   [`Replica::finalize`] each time it changes, and S3's events to pe-diverge. That loop is one
 //!   function, which WS-state writes in pe-replica (`drive`), so the harness tests the loop that ships
 //!   (@harness-eng's DESIGN.md 3.2).
 //!
 //! **Kept state** (the user's ruling that every limit is a duration): the floor (the newest final cut), my last
 //! agreed cut `Cv` if older, and the roots of the final cuts within `T_keep` (1.5 s by default, at least the last 2
-//! cuts), which are served to peers for repair (divergence.md 11.1, 14). Merge bases are kept apart (M2).
+//! cuts), which are served to peers for repair (divergence.md 11.1, 14); also my root at a cut I diverged at, until
+//! its repair ends, and the root I voted with at each cut not yet final. Merge bases are kept apart (M2).
 //!
 //! **Provisional in v0:** [`Reason`]'s variants (@world-model fills in its fields as pe-world is written);
 //! [`TreePath`], [`Node`] and [`Record`]'s proof shape (WS-world with WS-diverge); [`PhysicsImage`] as one blob
@@ -154,7 +156,11 @@ pub enum GroupSel {
 /// Where a replica's entries come from: S3 in the engine ([`crate::Agreement`] extends it), a mock or the harness
 /// in tests.
 pub trait EntrySource {
-    /// The newest final cut, once there is one. Nothing at or below its frame changes again.
+    /// The newest final cut whose entries this member holds in full, once there is one: the replica's floor follows
+    /// it, and nothing at or below its frame changes again. It can lag the line's newest final cut
+    /// ([`crate::AgreeEvent::CutFinal`]): a member that was not among a cut's voters may learn the cut is final while
+    /// some of its entries are still on their way. Those entries then arrive as changes below the line's final frame
+    /// ([`EntrySource::take_changed_from`]), and the replica re-simulates them, down to its own floor.
     fn final_cut(&self) -> Option<&FinalCut>;
     /// The entries to simulate at `frame`, in agreed order: final ones, then the predicted rest. Entries voided by a
     /// final cut are absent.
@@ -186,14 +192,18 @@ pub enum Finalized {
     Agreed,
     /// My root differs: I diverged at this cut, and rung 1 is due.
     Diverged { mine: Hash },
-    /// I have not simulated the cut's frame with every entry in it (the d1 rule): nothing compared yet.
+    /// I do not hold every entry of the cut yet (the d1 rule): nothing compared, and the floor stays. It does not
+    /// happen when the driver passes [`EntrySource::final_cut`], which waits for the entries; a driver that passes a
+    /// cut early calls again once the source reports it.
     NotReady,
 }
 
 /// Rung 1's result (divergence.md 4.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rung1 {
-    /// Replayed from `Cv` to the cut; my root now equals the quorum's.
+    /// Replayed from `Cv` to the cut, and my root there now equals the quorum's. The cut is my new `Cv` and floor,
+    /// and the replica has replayed on to the present itself, so no frame after the cut still comes from the wrong
+    /// state.
     Cured,
     /// The replay gives the same wrong root again: the fault is not a transient one.
     Persisted { root: Hash },
@@ -267,9 +277,10 @@ pub trait Tree {
     fn frame(&self) -> Frame;
     /// A node's children, or a leaf; `None` if there is no node at that path.
     fn node(&self, path: &TreePath) -> Option<Node>;
-    /// The records of these objects, with their proofs. An object absent here is absent from the result; a verified
-    /// parent node proves its absence.
-    fn export(&self, ids: &[ObjectId]) -> Vec<Record>;
+    /// The records of these leaves (objects and tables), with their proofs. A leaf absent here is absent from the
+    /// result; a verified parent node proves its absence. A `LeafKey::Physics` key gives no record: the physics travels
+    /// as the whole image ([`Replica::physics_image`]).
+    fn export(&self, keys: &[LeafKey]) -> Vec<Record>;
     /// Each object's leaf hash, which covers its body's digest: for the fault bundle (divergence.md, `replay-bundle`).
     fn object_hashes(&self, ids: &[ObjectId]) -> Vec<(ObjectId, Option<Hash>)>;
     /// Rehash from the rows and tables alone, ignoring every cached hash (@diverge-eng's R-H3).
@@ -325,9 +336,9 @@ pub trait Replica: Send {
     /// The next frame to step: every frame below it is simulated.
     fn frame(&self) -> Frame;
 
-    /// Re-simulate from the earliest changed frame (never below the final cut), then step new frames up to
-    /// `present`, exclusive. Never waits for the network: an entry not held yet is simply absent. Never aborts on
-    /// input.
+    /// Re-simulate from the earliest changed frame, never below the replica's own floor (the last cut it finalized,
+    /// which can be older than the line's newest final cut), then step new frames up to `present`, exclusive. Never
+    /// waits for the network: an entry not held yet is simply absent. Never aborts on input.
     fn advance(&mut self, present: Frame, source: &mut dyn EntrySource) -> Advance;
 
     /// An entry's outcome at the frame it was last simulated.
@@ -338,23 +349,27 @@ pub trait Replica: Send {
     /// replica computes the root without them; its live state is unchanged.
     fn root_at_cut(&mut self, cut: &Cut, source: &mut dyn EntrySource) -> Result<Hash, RootError>;
 
-    /// A cut became final with the quorum's root. Agreed: it becomes the floor and `Cv`, and older state is released
-    /// beyond what is kept. Diverged: the floor moves, `Cv` stays, and rung 1 is due.
+    /// The source's final cut changed: compare my root at it with the quorum's. Agreed: the cut becomes the floor
+    /// and `Cv`, and older state is released beyond what is kept. Diverged: the floor moves, `Cv` stays, my own root
+    /// at the cut stays held (rung 2 diffs against it, through [`Replica::tree`]) until the repair ends, and rung 1
+    /// is due.
     fn finalize(&mut self, cut: &FinalCut, source: &mut dyn EntrySource) -> Finalized;
 
     /// Repair rung 1 (divergence.md 4.1): restore `Cv`, verify it from its records and from the restored physics
     /// itself, replay to the cut with the final entries, and compare. Uses no network.
     fn replay_from_last_agreed(&mut self, to: &FinalCut, source: &mut dyn EntrySource) -> Rung1;
 
-    /// A root this replica holds (the floor, `Cv`, and the final cuts within `T_keep`), for pe-world's tree calls.
+    /// A root this replica holds, for pe-world's tree calls: the floor, `Cv`, the final cuts within `T_keep`, my own
+    /// root at a cut I diverged at until its repair ends, and the root I voted with at each cut not yet final, until
+    /// that cut is final or superseded (a root split's reference serves it, divergence.md 5).
     fn tree(&self, root: &Hash) -> Option<Box<dyn Tree + '_>>;
 
     /// The canonical physics transfer of a held root: rung 2's and a joiner's donor side.
     fn physics_image(&self, root: &Hash) -> Option<PhysicsImage>;
 
     /// Rung 2's and a joiner's receiver: replace the group's state at the cut by the imported parts, each checked
-    /// against the agreed root first, then replay to the present. Returns the root at the cut afterwards. `group` is
-    /// `Domain` in M1.
+    /// against the agreed root first, then replay to the present. Returns the root at the cut afterwards; when it is
+    /// the agreed root, the cut is my new `Cv`. `group` is `Domain` in M1.
     fn import_at_cut(
         &mut self,
         group: &GroupSel,
