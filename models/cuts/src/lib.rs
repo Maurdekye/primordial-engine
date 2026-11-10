@@ -79,10 +79,13 @@ pub struct Adversary {
     pub backdate: bool,
     pub forge: bool,
     pub replay: bool,
+    /// The faulty member may send its entries to anyone at any time. Off, they reach others only inside its
+    /// proposals (the n = 4 quorum checks, where entries only tell its equivocating blocks apart).
+    pub send: bool,
 }
 
 impl Adversary {
-    pub const ALL: Adversary = Adversary { fork: true, backdate: true, forge: true, replay: true };
+    pub const ALL: Adversary = Adversary { fork: true, backdate: true, forge: true, replay: true, send: true };
 }
 
 #[derive(Clone, Debug)]
@@ -101,6 +104,10 @@ pub struct Cuts {
     /// never lost, and every end state must have a final cut at every honest member.
     pub liveness: bool,
     pub mutation: Option<Mutation>,
+    pub send_entries: bool,
+    /// List only actions that change the state (for Stateright's random walks, whose path reconstruction breaks
+    /// on actions that do nothing).
+    pub productive_only: bool,
     /// A fault-injected honest member whose replica computes a wrong root (WS-diverge 3.2): it runs the protocol
     /// honestly, but its votes carry the wrong root.
     pub corrupt: Option<u8>,
@@ -109,7 +116,7 @@ pub struct Cuts {
 
 impl Cuts {
     pub fn new(n: u8, fault: Fault, views: u8, heights: u8, honest_authors: u8, adv: Adversary, offset: u8) -> Cuts {
-        assert!((3..=NMAX as u8).contains(&n) && (1..HMAX as u8).contains(&heights) && honest_authors < n);
+        assert!((3..=NMAX as u8).contains(&n) && (1..HMAX as u8).contains(&heights) && honest_authors < n && (honest_authors > 0 || fault != Fault::None));
         let mut entries: Vec<EntryDef> = Vec::new();
         for a in 1..=honest_authors {
             let mut prev = NONE;
@@ -129,7 +136,7 @@ impl Cuts {
                 // Stamped before f.1a, which comes before it in the chain: void by the horizon rule, but valid alone.
                 entries.push(EntryDef { name: "f.2<".into(), author: 0, seq: 2, prev: s1, stamp: 1, signer: 0, world: 0 });
             }
-            if adv.forge && honest_authors > 0 {
+            if adv.forge {
                 entries.push(EntryDef { name: "forge(m1.1)".into(), author: 1, seq: 1, prev: NONE, stamp: 1, signer: 0, world: 0 });
             }
             if adv.replay {
@@ -137,7 +144,7 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, corrupt: None, entries }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries }
     }
 
     pub fn live(mut self) -> Self {
@@ -455,6 +462,15 @@ impl Cuts {
         s.m[m as usize] = mm;
     }
 
+    /// No honest member can make a step, timeouts included: whatever the faulty member does or withholds, the honest
+    /// side is done. Liveness is judged here, so a faulty member that stays silent can't hide a stall.
+    pub fn honest_stuck(&self, s: &State) -> bool {
+        let mut acts = Vec::new();
+        let timeouts = self.mutation != Some(Mutation::NoTimeouts) && (!self.liveness || self.quiescent(s));
+        self.honest_actions(s, &mut acts, timeouts);
+        acts.into_iter().all(|a| self.next_state(s, a).is_none())
+    }
+
     fn quiescent(&self, s: &State) -> bool {
         let mut acts = Vec::new();
         self.honest_actions(s, &mut acts, false);
@@ -502,7 +518,7 @@ impl Cuts {
         if !matches!(self.fault, Fault::Author | Fault::Byzantine) {
             return;
         }
-        for e in 0..self.entries.len() as u8 {
+        for e in (0..self.entries.len() as u8).filter(|_| self.send_entries) {
             if self.entries[e as usize].signer != 0 {
                 continue;
             }
@@ -726,6 +742,9 @@ impl Model for Cuts {
         let timeouts = self.mutation != Some(Mutation::NoTimeouts) && (!self.liveness || self.quiescent(s));
         self.honest_actions(s, acts, timeouts);
         self.adversary_actions(s, acts);
+        if self.productive_only {
+            acts.retain(|a| self.next_state(s, a.clone()).is_some());
+        }
     }
 
     fn next_state(&self, s0: &State, a: Action) -> Option<State> {
@@ -845,7 +864,7 @@ impl Model for Cuts {
         ];
         if self.liveness {
             p.push(Property::always("liveness: every end state has a final cut at every honest member", |c: &Cuts, s: &State| {
-                (0..c.n).filter(|&m| c.honest(m)).all(|m| s.m[m as usize].committed.h >= 1) || !c.next_states(s).is_empty()
+                (0..c.n).filter(|&m| c.honest(m)).all(|m| s.m[m as usize].committed.h >= 1) || !c.honest_stuck(s)
             }));
         }
         if self.corrupt.is_some() {
