@@ -1,20 +1,22 @@
 #!/bin/sh
 # The landing gate as a git hook: refuses any update of main whose new commit fails scripts/gate.sh.
 #
-# Enable it once per clone; the main checkout's copy then serves every worktree of the repository:
-#   git config core.hooksPath "<absolute path of the main checkout>/scripts/hooks"
+# Install it once per clone, for every worktree: bash scripts/install_gate_hook.sh
+# That writes a small trampoline into git's own folder, outside every working tree, and points
+# core.hooksPath at it. The trampoline runs this file as committed at main's old tip, so the hook, like the
+# rest of the gate's code, comes from the base: a landing can't change or delete the hook that judges it.
 # Git runs reference-transaction for every ref update in every worktree. This hook acts only when
 # refs/heads/main moves to a commit, in the "prepared" state, where a non-zero exit aborts the update:
-# a merge, commit, reset, update-ref, or a fetch or push into this repository alike. It runs scripts/gate.sh
-# as committed in the new commit, with the old tip as the base, and refuses the update if the gate fails or
-# can't run. Every other update returns at once.
+# a merge, commit, reset, update-ref, or a fetch or push into this repository alike. It runs scripts/gate.sh as
+# committed at the old tip, with the old tip as the base (when main is created: the new commit's, over its
+# whole history), and refuses the update if the gate fails or can't run. Every other update returns at once.
 #   PE_GATE=off                      skips the gate for one command, in an emergency only; report it to the
 #                                    coordinator in the same turn
 #   git config pe.gate.wrap '<cmd>'  runs the audit's cargo calls under <cmd> (the org's build-slot wrapper)
 # Check a branch before merging it, so a refusal is rare: bash scripts/gate.sh --base main <branch>
 
 if [ "$1" != prepared ]; then
-  while read -r _ _ _; do :; done
+  while read -r _; do :; done
   exit 0
 fi
 hit=
@@ -38,10 +40,11 @@ refuse() {
 }
 tmp=$(mktemp -d) || refuse "no temporary folder"
 trap 'rm -rf "$tmp"' EXIT
-git show "$new:scripts/gate.sh" > "$tmp/gate.sh" 2> /dev/null ||
-  refuse "$new has no scripts/gate.sh; the gate is required (to drop it, unset core.hooksPath)"
+case "$old" in *[!0]*) from=$old base="--base $old" ;; *) from=$new base=--full-history ;; esac
+git show "$from:scripts/gate.sh" > "$tmp/gate.sh" 2> /dev/null ||
+  refuse "$from has no scripts/gate.sh; the gate is required (to drop it: git config --unset core.hooksPath)"
 wrap=$(git config --get pe.gate.wrap) || wrap=
-case "$old" in *[!0]*) base="--base $old" ;; *) base=--full-history ;; esac
-echo "gate (hook): main ${old%"${old#??????????}"}..${new%"${new#??????????}"}: running the landing gate" >&2
-PE_GATE_WRAP=$wrap bash "$tmp/gate.sh" $base "$new" >&2 || refuse "the gate did not pass (above)"
+short() { printf '%s' "$1" | cut -c1-10; }
+echo "gate (hook): main $(short "$old")..$(short "$new"): running the landing gate, its code as of $(short "$from")" >&2
+PE_GATE_WRAP=$wrap PE_GATE_CODE=$from bash "$tmp/gate.sh" $base "$new" >&2 || refuse "the gate did not pass (above)"
 exit 0
