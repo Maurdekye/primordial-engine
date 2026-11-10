@@ -1,8 +1,8 @@
 # The world model (WS-world)
 
-Status: **r5, 2026-11-10.** r4 (858d677) was approved by both reviewers and landed on main as 1c95957; r5 folds in
-@vdw-physics's answers (WS-state) and the S2 tree calls as @engine-architect and @diverge-eng name them, for
-re-review of those parts. Written by @world-model. Nothing in it is built.
+Status: **r7, 2026-11-10.** r6 is approved by both reviewers and on main (ab30dc5). r7 folds in @iter-bench's
+answers (WS-logic): the modules table holds sources, never module bytes (Q3c), and component ids derive from the
+stable script asset id; for re-review of those parts. Written by @world-model. Nothing in it is built.
 Reviewers: @design-reviewer (section 6, the hash tree, and section 7, the edit entries and their conflict rules);
 @chunks-reviewer (everything else). Seams S1, S2 and S5 are proposals to @engine-architect until pe-seams v0 is fixed.
 
@@ -16,10 +16,10 @@ ruling, cited by message id. Where this file and a user ruling disagree, the rul
 ## 0. What this file fixes, on one page
 
 - **The world is data.** A world is a tree of objects. Each object has a 128-bit id, a parent, ordered children and
-  components. Variable-length data (names, meshes, textures, source, modules) lives in content-addressed blobs,
+  components. Variable-length data (names, meshes, textures, script sources) lives in content-addressed blobs,
   referenced by a 256-bit hash. The ball-pit template is a set of edits, not code.
 - **Everything that matters is hashed** in one tree: objects, their components and physics state, and the world
-  tables (governance, claims, the component registry, module versions, edit versions, tombstones). The root goes in
+  tables (governance, claims, the component registry, script versions, edit versions, tombstones). The root goes in
   every cut. A mismatch descends to the objects that differ, in a few rounds.
 - **One edit entry, three conflict rules,** applied in the agreed order:
   1. *exclusive holds* (grabs): the first wins;
@@ -47,7 +47,7 @@ ruling, cited by message id. Where this file and a user ruling disagree, the rul
 - 128-bit ids (section 2);
 - the coordinate format and the type wall (section 4);
 - the world tables that the hash must cover in M1: governance (as storage, with a minimal permission check),
-  claims, cooldowns, the registry, module versions (section 5.4);
+  claims, cooldowns, the registry, script versions (section 5.4);
 - the world-model side of seams S1, S2 and S5 (section 9), and the data S6 (WorldApi) reads.
 
 **Not mine,** with the owner who decides:
@@ -55,7 +55,7 @@ ruling, cited by message id. Where this file and a user ruling disagree, the rul
   *payloads*;
 - what a frame steps, rollback, and binding bodies to physics: WS-state (pe-replica, pe-physics);
 - governance *rules* (roles, kicks, guarded mode): WS-gov, M3. M1 stores the tables and checks one permission;
-- the logic runtime: WS-logic. I store logic state as components and modules as blobs, and hash both;
+- the logic runtime: WS-logic. I store logic state as components and script sources as blobs, and hash both; compiled modules are each machine's own (3.4);
 - `Pos` and `Offset` *for scripts* (typed spaces, `OffsetFrom<Parent>`): WS-logic's pe-sdk, on top of section 4;
 - the repair ladder and the merge engine: WS-diverge. I supply the diff and the patch (section 6.5).
 
@@ -91,8 +91,10 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   later entry that names the object (an agent's "double the cube") then names the wrong one. A hash of the creating
   entry is fixed when the author writes the entry. The author knows the id at once, which keeps edits local-first.
 - **Objects created by logic** get `BLAKE3("pe.spawn" ‖ world id ‖ spawner object id ‖ frame ‖ n)`, where `n` counts
-  the spawner's spawns in that frame. Stable as long as the same spawner spawns at the same frame, which replay
-  guarantees. WS-logic confirms this fits its runtime [I].
+  the spawner's *applied* spawns in that frame. Systems run in a fixed total order (script id, then system index)
+  and each command names the bound object that issued it, so `n` is deterministic. A call that traps or returns a
+  bad status has all its commands discarded, and its spawns do not advance `n`. Confirmed by @iter-bench (WS-logic).
+  Per-player scripts (M2) never spawn as logic: their effects are their player's inputs, with ids by the edit rule.
 - **Objects created at genesis** (the template) are created by the genesis entry, so the first rule covers them.
 - **A collision** (two derivations giving one id) is refused deterministically, like any create of an existing id.
   At 128 bits it is not expected in the life of the project; the refusal makes it safe, not silent.
@@ -198,15 +200,17 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   | `Protection` | the owning `MemberKey` (7.8) | edits by its owner |
 
 - **The registry is world state** [I]. Today it is configuration shared by every peer [V `registry.rs:216-218`]. With
-  a logic edit in M1 [U mc40fc6379bc6, U1], a module that declares components changes the schema at a frame. So:
+  a logic edit in M1 [U mc40fc6379bc6, U1], a script that declares components changes the schema at a frame. So:
   - engine components are registered at genesis, under their reserved ids;
-  - a logic module's components are registered by the edit that commits the module, at that frame;
+  - a script's components are registered by the edit that commits the script, at that frame;
   - the registry is a world table (section 5.4), hashed, and rolled back with everything else;
   - a component id never changes its description. A changed schema gets a new id, and a migration is an edit.
 - **Component ids are derived too** (@chunks-reviewer's F7). `ComponentId` widens to 128 bits. Engine components
-  keep small fixed values below 2^32. A module's component gets `BLAKE3("pe.component" ‖ module id ‖ name ‖ schema
-  hash)[..16]`, so two module commits on two branches can never give one id two meanings: the same id means the
-  same description everywhere. `Register` of an id already registered with the same description is a no-op; with a
+  keep small fixed values below 2^32. A script's component gets `BLAKE3("pe.component" ‖ script asset id ‖ name ‖
+  schema hash)[..16]`. The script asset id is stable across the script's versions (@iter-bench), so a code commit
+  that leaves a component's description unchanged keeps its id and its rows, and the swap needs no migration; a
+  changed description gets a new id. Two commits on two branches can never give one id two meanings: the same id
+  means the same description everywhere. `Register` of an id already registered with the same description is a no-op; with a
   different one (a collision) it refuses the transaction.
 
 ### 3.3 Hierarchy and transforms
@@ -233,13 +237,16 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   - **Display blobs** (a mesh to draw, textures, names, materials) may be missing. The entry applies, the `BlobRef`
     is stored as given, and the hash stays exact. Only drawing waits: a mesh is drawn as its bounding box. Shared
     simulation never reads a display blob, so no two machines can compute differently because of one.
-  - **Simulation blobs** (a collision hull, a logic module, anything shared logic or physics reads) are part of the
-    entry for agreement. Small ones (up to 1 MiB, which covers hulls) travel *inside* the edit entry, so any machine
-    that has the entry has the bytes. Larger ones (modules) follow the rule of a late entry: a machine that lacks the
-    bytes at the entry's frame simulates as if that change had not arrived yet, which is a prediction, and rewinds
-    and replays from that frame when the bytes arrive. It does not vote for a cut that includes the entry until it
-    holds the bytes. Nobody waits; only that machine's view lags. For modules this is the same path as Q3's "each
-    machine activates after its own compile" [U mf7daea6446ca], which WS-logic owns.
+  - **Simulation blobs** (a collision hull, a script's source tree, anything shared logic or physics reads) are
+    part of the entry for agreement. Small ones (up to 1 MiB, which covers hulls) travel *inside* the edit entry, so
+    any machine that has the entry has the bytes. Larger ones follow the rule of a late entry: a machine that lacks
+    the bytes at the entry's frame simulates as if that change had not arrived yet, which is a prediction, and
+    rewinds and replays from that frame when the bytes arrive. It does not vote for a cut that includes the entry
+    until it holds the bytes. Nobody waits; only that machine's view lags.
+  - **A compiled module is never a blob** (@iter-bench, under Q3c [U mf7daea6446ca]: no machine runs another's
+    build). The script's source is the simulation blob; each machine builds its own module from it, a local
+    product that is never stored in the world, sent or fetched. Activation after each machine's own compile is
+    WS-logic's, on the same late-entry path.
 - So D17's "a missing artifact pauses that peer" narrows to: nothing pauses; a machine lacking a simulation blob
   lags as if behind on entries, and a machine lacking a display blob draws a stand-in.
 - **Limits:** a blob is at most 64 MiB in M1; a transaction introduces at most 256 MiB [I, a guard against
@@ -383,7 +390,7 @@ World
 ├── objects: the object table and one sorted column per component type
 └── world tables:
     ├── registry           component descriptions (3.2)
-    ├── modules            logic module versions: id → (source BlobRef, module BlobRef, declared components)
+    ├── modules            per script asset: its version (source), toolchain, declared components (5.4)
     ├── governance         members, roles, permissions, bans, join rules (storage; rules are WS-gov's)
     ├── claims, cooldowns  exclusive holds (7.2)
     └── tombstones         deleted objects, for the delete rule (7.5)
@@ -414,7 +421,17 @@ World
 
 ### 5.4 World tables in M1
 
-- **Registry, modules:** as 3.2 and WS-logic's commit.
+- **Registry:** as 3.2.
+- **Modules** (@iter-bench's layout, WS-logic): one row per script asset id, holding
+  - the version: the source tree, a `SimBlobRef`;
+  - the toolchain and SDK hashes;
+  - the author's module hash, as a plain 32-byte `Hash` field: advisory, for mismatch reports, never a blob
+    reference;
+  - the declared components;
+  - `activate_at`, the agreed frame;
+  - the faulted mark.
+
+  No module bytes are in the world (3.4).
 - **Governance:** the tables only. M1 stores the member list (keys and roles), the role table (permission bits) and
   the ban list, all hashed. The one permission M1 checks is `EDIT` (section 7.6). Roles follow the user's rulings,
   with no M1 simplification (@coordinator-opus, m78746a465fd2):
@@ -574,8 +591,9 @@ pub enum Op {
     Reparent { id: Target, parent: Target, index: Option<u32>, keep_world: bool },
     Copy { source: Target, new: u32, parent: Target, index: Option<u32> },   // the subtree; templates (7.1)
     Undelete { id: ObjectId },                                // restore a deleted subtree from its tombstones (7.5)
-    Register { components: Vec<ComponentDesc> },             // with a module commit (WS-logic)
-    CommitModule { module: ModuleId, source: BlobRef, wasm: BlobRef, base: Option<EntryRef> },
+    Register { components: Vec<ComponentDesc> },             // with a script commit (WS-logic)
+    CommitScript { script: ScriptId, source: SimBlobRef, toolchain: Hash, sdk: Hash, author_module: Hash,
+                   activate_at: Frame, base: Option<Version> },   // WS-logic's commit; no module bytes (5.4)
 }
 pub enum Target { Existing(ObjectId), New(u32), Root }
 pub enum Precondition {
@@ -658,7 +676,7 @@ pub enum Precondition {
   actor and a summary (plan M1: "a stale precondition is refused, with a reason that names the winner").
 - **The 10 s seat** (R7) is this refusal's path: the API offers the author the rebase (re-read, re-apply). The world
   model only needs to make the refusal exact.
-- **A code commit** is the same rule on the `modules` table: `CommitModule.base` names the module version the author
+- **A code commit** is the same rule on the `modules` table: `CommitScript.base` names the script version the author
   built on (R7's "rejected and asked to rebase").
 
 ### 7.4 Rule 3: plain writes, the latest in order wins
