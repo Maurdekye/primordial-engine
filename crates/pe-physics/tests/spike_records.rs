@@ -1,6 +1,6 @@
 //! P2-2's done criterion: the phase-1 spike's goldens, 600-frame trace, snapshot images and
 //! rollback T1-T5 reproduce through pe-physics, with the digests committed in
-//! `spikes/out/vdw/` (engine configuration "vdw" and upstream "off"), at several worker counts.
+//! `tests/records/vdw/` (engine configuration "vdw" and upstream "off"), at several worker counts.
 
 mod common;
 

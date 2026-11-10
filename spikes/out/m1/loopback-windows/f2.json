@@ -1,3 +1,0 @@
-[{"at_ms": 2000, "loss_pct": 15, "delay_ms": 40, "jitter_ms": 15},
- {"at_ms": 9000, "to": 1, "loss_pct": 30, "delay_ms": 120, "jitter_ms": 40},
- {"at_ms": 14000, "loss_pct": 0, "delay_ms": 0}]

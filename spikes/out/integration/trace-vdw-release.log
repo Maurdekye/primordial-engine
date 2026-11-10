@@ -1,3 +1,0 @@
-trace: 600 frames, 256 bodies, release profile, 206.7169ms total (344.5 us/frame), digest cc60208f048dd6d7, final world hash 3c80f05627415299 -> spikes/out/integration/trace-vdw-release.txt
-build: release profile, target x86_64, contact recycling: scale-dependent (engine default), worker threads: 1
-RESULT: PASS

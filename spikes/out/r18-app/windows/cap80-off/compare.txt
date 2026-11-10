@@ -1,5 +1,0 @@
-| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
-|---|---|---|---|---|---|---|---|---|
-| 2 | 1800 | 00cf089f4bffcb68 | equal | 1800 | [2, 3] | 107 | 58/0 | 1215/0 |
-| 3 | 1800 | 00cf089f4bffcb68 | equal | 1800 | [2, 3] | 108 | 58/0 | 1184/0 |
-ALL EQUAL

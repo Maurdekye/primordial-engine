@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # P2-2 (pe-physics): runs the crate's tests, debug and release, on Windows and Linux, and checks
-# that every run reproduces the committed spike records (spikes/out/vdw/) with the same digests.
+# that every run reproduces the committed spike records (crates/pe-physics/tests/records/vdw/) with the same digests.
 #   scripts/run_p2_2_tests.sh              Windows debug and release (Git Bash)
 #   scripts/run_p2_2_tests.sh --linux      also Linux: static musl builds, run inside WSL
 #   scripts/run_p2_2_tests.sh --check-only compare the existing logs only

@@ -1,4 +1,0 @@
-target/final/mixed-2/run-1-windows.log: 0 decisions, 0 pauses
-target/final/mixed-2/run-2-windows.log: 0 decisions, 0 pauses
-target/final/mixed-2/run-3-linux.log: 0 decisions, 0 pauses
-target/final/mixed-2/run-4-linux.log: 0 decisions, 0 pauses

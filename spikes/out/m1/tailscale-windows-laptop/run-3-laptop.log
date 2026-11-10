@@ -1,7 +1,0 @@
-[m3 t=0ms f=0] session start received: epoch 2044321 (leader clock), my offset 822914 us, best rtt 15024 us
-[m3 t=18014ms f=1015] membership decision: epoch 1, removed []
-[m3 t=18462ms f=1015] membership decision: epoch 2, removed [4]
-[m3 t=30487ms f=1812] DONE frames 0..1800: digest 1274055ae97d3cb0 replay 1274055ae97d3cb0 (EQUAL), conf 1801, members [1, 2, 3]
-[m3 t=30487ms f=1812] slow step: 271 ms (receive 0 ms, tick 0 ms, send 271 ms)
-member 3: frames 0..1800 digest 1274055ae97d3cb0 replay 1274055ae97d3cb0 (EQUAL), conf 1801, members at end [1, 2, 3], rollbacks 74, checks ok 139 bad 0
-/usr/bin/bash: line 1: ver: command not found

@@ -1,6 +1,0 @@
-| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
-|---|---|---|---|---|---|---|---|---|
-| 1 | 12000 | e58ed0dd1956a7fa | equal | 12176 | [1, 2, 3] | 0 | 864/0 | 10695/0 |
-| 2 | 12000 | e58ed0dd1956a7fa | equal | 12176 | [1, 2, 3] | 0 | 864/0 | 8790/0 |
-| 3 | 12000 | e58ed0dd1956a7fa | equal | 12176 | [1, 2, 3] | 0 | 864/0 | 9031/0 |
-ALL EQUAL

@@ -1,6 +1,0 @@
-| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
-|---|---|---|---|---|---|---|---|---|
-| 1 | 1800 | a5502c49736f6fd5 | equal | 1976 | [1, 2, 4] | 1 | 148/0 | 3105/0 |
-| 2 | 1800 | a5502c49736f6fd5 | equal | 1976 | [1, 2, 4] | 1 | 148/0 | 2819/0 |
-| 4 | 1800 | a5502c49736f6fd5 | equal | 1976 | [1, 2, 4] | 1 | 148/0 | 7404/0 |
-ALL EQUAL
