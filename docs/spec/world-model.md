@@ -1,8 +1,9 @@
 # The world model (WS-world)
 
-Status: **r7, 2026-11-10.** r6 is approved by both reviewers and on main (ab30dc5). r7 folds in @iter-bench's
-answers (WS-logic): the modules table holds sources, never module bytes (Q3c), and component ids derive from the
-stable script asset id; for re-review of those parts. Written by @world-model. Nothing in it is built.
+Status: **r9, 2026-11-10.** r8 is approved by both reviewers and on main (bda10ae). r9 follows the user's one-origin
+ruling (md2e515db107c, mdad0d5626305; fable-review file 20): every world descends from one empty origin, so a world
+is identified by its line, not by a genesis of its own (new section 2.3); and it reserves what merging unrelated
+worlds and the world line tool need; for re-review of those parts. Written by @world-model. Nothing in it is built.
 Reviewers: @design-reviewer (section 6, the hash tree, and section 7, the edit entries and their conflict rules);
 @chunks-reviewer (everything else). Seams S1, S2 and S5 are proposals to @engine-architect until pe-seams v0 is fixed.
 
@@ -62,6 +63,18 @@ ruling, cited by message id. Where this file and a user ruling disagree, the rul
 **Later in WS-world:** the world record keeping every entry from creation (M3, the user 19:09Z); saves as signed
 named roots (M5); domains per contact group (the format is ready from M1, section 6.2).
 
+**The world line tool** (the user, mcd8bb1211150; fable-review file 19;
+@item:primordial-engine/world-line-visualization-tool-braided-glowing-li): any admin can take out a view of each
+player's recorded actions as braided lines. So that long histories draw cheaply, each stored state of the world
+record (M3) carries a **per-player summary** since the previous stored state [I, with @diverge-eng]:
+- per member key: the count of entries by class, the count of edits applied and refused, and the count of objects
+  touched, with a 256-bit digest of their sorted ids;
+- the line id, and any branch or merge made in that interval.
+
+pe-diverge computes it from the entries' footprints; the world record stores it beside the stored state, covered
+by that state's signature. It is derived from the log, so it is not in the world root, and anyone can recompute
+and check it.
+
 ## 2. Identity
 
 ### 2.1 Object ids
@@ -69,14 +82,14 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 - `ObjectId(u128)`, world-scoped. `ObjectId::NONE` is 0 and never names an object.
 - **Derived, never allocated** [I]. The id of the `k`-th object an edit entry creates is
 
-  `ObjectId = first 16 bytes of BLAKE3("pe.object" ‖ world id ‖ author key ‖ chain id ‖ author's chain seq as u64
+  `ObjectId = first 16 bytes of BLAKE3("pe.object" ‖ line id ‖ author key ‖ chain id ‖ author's chain seq as u64
   LE ‖ k as u32 LE)`,
 
   agreed with @api-eng (its O2). The author knows its key, its chain id and the next sequence number of its own
   chain when it composes the entry, so the ids are known before ordering and before signing, and they do not depend
   on the envelope's hash format.
 - **(chain id, seq) is unique for the world's whole life** (@chunks-reviewer's N1). A chain id is
-  `BLAKE3("pe.chain" ‖ world id ‖ author key ‖ nonce)`, where the nonce is 32 random bytes the author picks when it
+  `BLAKE3("pe.chain" ‖ line id ‖ author key ‖ nonce)`, where the nonce is 32 random bytes the author picks when it
   starts a chain and puts in that chain's first entry. Two requirements on S1, for @engine-architect and WS-agree:
   - a member keeps one chain per world for the world's life where it can: a returning member (a rejoin, a new
     session, a new machine with the same key) is handed its chain head and continues it;
@@ -90,12 +103,16 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   world-line merge after a long compile) a counter hands out different ids depending on what applied first, and a
   later entry that names the object (an agent's "double the cube") then names the wrong one. A hash of the creating
   entry is fixed when the author writes the entry. The author knows the id at once, which keeps edits local-first.
-- **Objects created by logic** get `BLAKE3("pe.spawn" ‖ world id ‖ spawner object id ‖ frame ‖ n)`, where `n` counts
+- **Objects created by logic** get `BLAKE3("pe.spawn" ‖ line id ‖ spawner object id ‖ frame ‖ n)`, where `n` counts
   the spawner's *applied* spawns in that frame. Systems run in a fixed total order (script id, then system index)
   and each command names the bound object that issued it, so `n` is deterministic. A call that traps or returns a
   bad status has all its commands discarded, and its spawns do not advance `n`. Confirmed by @iter-bench (WS-logic).
   Per-player scripts (M2) never spawn as logic: their effects are their player's inputs, with ids by the edit rule.
-- **Objects created at genesis** (the template) are created by the genesis entry, so the first rule covers them.
+- **The line id in every derivation** is that of the line the entry was authored on (2.3), which the signed
+  envelope names. So two branches that each create objects never derive the same id, and after a merge every
+  object keeps the id it was born with.
+- **Objects of a preset** (the ball-pit template) are created by the edits on the preset's own line, so the first
+  rule covers them, and two worlds branched from one preset share those objects by id.
 - **A collision** (two derivations giving one id) is refused deterministically, like any create of an existing id.
   At 128 bits it is not expected in the life of the project; the refusal makes it safe, not silent.
 - **A refused create creates nothing.** A later entry naming the id it would have had finds no object and no
@@ -108,13 +125,14 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 - **Order.** Ids sort as `u128`. Iteration in id order is deterministic and has no meaning beyond that; children
   carry their own order.
 - **Carrying between worlds** (copy then remove, Q7 [U md2fa23dfa774]) creates a new object in the destination by an
-  ordinary edit, so it gets a destination id. The source's `(world, id)` may be kept in a component for provenance;
+  ordinary edit, so it gets an id derived on the destination's line. The source's `(world, id)` may be kept in a component for provenance;
   nothing depends on it.
 
 ### 2.2 World ids, entry ids and member ids
 
-- `WorldId` is the 256-bit hash of the world's signed genesis entry [plan 2.1]. It replaces today's `u32`
-  [V `ids.rs:84`]. Two worlds made independently never share an id; a fork (M5) gets a new genesis.
+- **`WorldId` goes; a world is a line** (2.3). Today's `u32` [V `ids.rs:84`] is replaced by `LineId`, a 256-bit hash.
+  The plan's "a world's id is the hash of its signed genesis" (plan 2.1) no longer distinguishes worlds once every
+  world shares the origin's first entry, so the line id takes its place everywhere (@diverge-eng's R-W1).
 - `EntryId` is pe-log's 256-bit entry hash. The world model stores it wherever it must name an edit (the versions of
   section 7.3, tombstones, refusal reasons).
 - **Members.** The world model names a member by its 32-byte public key (`MemberKey`) wherever the name is stored in
@@ -123,6 +141,58 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 - `pe_core::LOGIC` (member 0, world logic) stays as the author of logic-caused changes. In stored fields it is the
   all-zero key. Governance refuses the all-zero key as a member's key (it is a small-order point, which strict
   signature verification rejects anyway), so no member can act as world logic.
+
+### 2.3 Lines, the origin and branching
+
+The user (md2e515db107c): "i like the idea of there not being any real distinction between different worlds, and all
+worlds can be descendant of one singular world "origin". all worlds can be merged with all other worlds, and if they
+share history, that history is kept." And (mdad0d5626305): "the origin is an empty world, and there are also other
+preset worlds that sprout from it with some preset content". The design, agreed with @diverge-eng [I]:
+
+- **One tree of versions.** Every world is a line in one tree whose root is the origin. Making a world, copying it,
+  forking it and starting from a preset are one operation: a **branch**.
+- **The origin** is a constant built into pe-core: an empty world. Its record is one entry whose bytes are fixed for
+  ever: the format tag `"pe.origin.v1"` and nothing else (no key, no signature, no content, no registry).
+  `LineId::ORIGIN = BLAKE3(those bytes)`. Every engine version must produce exactly these bytes, so a test pins
+  them, and changing them is forbidden.
+- **A branch entry** creates a line. It is a signed entry naming its parent line and the final cut it branches from
+  (that cut's frame and root), plus the new line's settings (5.1). The new line's id is the branch entry's hash.
+  A merged line's head names both parents (WS-diverge's merge record).
+- **Entries on a line** are signed over that line's id (S1), and object, chain, spawn and hand ids derive from it
+  (2.1). A merged line accepts the entries of every line in its ancestry, so both parents' signatures and ids stay
+  valid after a merge.
+- **A chain belongs to one line.** A member that continues on a branch (a saved copy reopened alone, a rejoin that
+  keeps a fork) starts a new chain there, with a new nonce, so (chain id, seq) never repeats across lines.
+- **Presets** are ordinary lines one branch from the origin, shipped with the engine as records. A preset can be
+  re-versioned by publishing a new line; worlds made from the old one keep it in their history. Only the origin
+  never changes.
+- **Engine components are registered by the first branch from the origin** (a preset, or an empty world), not by
+  the origin, since the origin can never change while engine components may. A newer engine that changes an engine
+  component gives it a new id (3.2); a line keeps the descriptions it was made with, and an upgrade is an edit.
+- **Old records stay readable for ever** (file 20, 5): every payload format carries a version tag, and a decoder
+  keeps every version it ever accepted [I].
+- **What a world is called** is a label on a line, which its admins set; labels need not be unique.
+
+**Merging two worlds that share only the origin** (or a preset), the parts that touch the world model; the merge
+itself is WS-diverge's (M5, "re-merging later, by choice"):
+
+- **Placement** (the user's answer 1, accepted as recommended): the incoming line's objects are placed where the
+  admins choose, by default beside the other world and clear of it. The world model makes that exact by requiring
+  the shift to be a whole number of chunks per axis: every root `Pos` moves by an integer chunk vector, which
+  changes no in-chunk offset and so no bit of any relative position, physics frame or script result [I]. Objects
+  the two sides share (a common preset's) are not shifted; they are already in the same place.
+- **Settings** (answer 2): the line merged into keeps its settings unless the admins choose otherwise in the preview.
+- **World-wide logic** (answer 4): it stays limited to the things it came with unless an admin widens it. For that,
+  every object records the line it was born on, as a small index (`Node.born_on: u32`) into a hashed world table,
+  `lines`, of the line ids that object births name; and each script row (5.4) holds the set of lines its world-wide
+  queries cover, which only an admin's edit widens. The rule itself and its worked example are WS-logic's, before
+  it is built (file 20, 7) [I].
+- **History is kept, deleted things included** (file 20, 5): the world record of each side comes along, joined at
+  the common ancestor. Dropping history on purpose ("share from now, without its past") is a branch from a cut with
+  the history cut off, a later feature.
+
+**For M1:** the origin constant, branch entries for one preset (the ball pit) and one world made from it, line ids
+in every derivation, and the reserved `Node.born_on` field and `lines` table. Merging unrelated worlds is M5's.
 
 ## 3. Objects and components
 
@@ -201,7 +271,7 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 
 - **The registry is world state** [I]. Today it is configuration shared by every peer [V `registry.rs:216-218`]. With
   a logic edit in M1 [U mc40fc6379bc6, U1], a script that declares components changes the schema at a frame. So:
-  - engine components are registered at genesis, under their reserved ids;
+  - engine components are registered by a line's first branch from the origin, under their reserved ids (2.3);
   - a script's components are registered by the edit that commits the script, at that frame;
   - the registry is a world table (section 5.4), hashed, and rolled back with everything else;
   - a component id never changes its description. A changed schema gets a new id, and a migration is an edit.
@@ -386,10 +456,11 @@ impl PartialEq for Pos;                                // exact, on canonical va
 
 ```
 World
-├── frame, seed, world id, config (tick rate, quorum setting, limits)
+├── frame, seed, line id, config (tick rate within the supported range, 60 Hz by default; quorum setting; limits)
 ├── objects: the object table and one sorted column per component type
 └── world tables:
     ├── registry           component descriptions (3.2)
+    ├── lines              the line ids that objects' `born_on` indices name (2.3)
     ├── modules            per script asset: its version (source), toolchain, declared components (5.4)
     ├── governance         members, roles, permissions, bans, join rules (storage; rules are WS-gov's)
     ├── claims, cooldowns  exclusive holds (7.2)
@@ -465,7 +536,7 @@ World
 
 ```
 world root = H("pe.root" ‖ frame ‖ config hash ‖ tables root ‖ domain roots in DomainId order)
-  tables root = H(registry ‖ modules ‖ governance ‖ claims ‖ cooldowns ‖ tombstones)   each a sorted-map hash
+  tables root = H(registry ‖ lines ‖ modules ‖ governance ‖ claims ‖ cooldowns ‖ tombstones)   each a sorted-map hash
   domain root = H("pe.domain" ‖ domain id ‖ objects root ‖ physics_global)
                 physics_global is pe-physics's hash of that domain's physics image (6.3); per domain, so M4's
                 domains per contact group change no format (@design-reviewer's r5 Low 1)
@@ -527,7 +598,9 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
 
 - **At every cut frame** proposed or voted on (pe-agree decides which frames those are), and on demand.
 - **Which frames are cut frames** is pe-agree's. My proposal to WS-agree [I]: cuts are proposed only at frames on a
-  fixed cadence (every K frames, K a world setting), so the replica knows in advance which frames are cut frames.
+  fixed cadence, so the replica knows in advance which frames are cut frames. The cadence is a duration (a world
+  setting in seconds), which pe-agree turns into K frames at the world's tick rate; the tick rate itself is a world
+  setting within a supported range, 60 Hz by default (the user, md4b42d16d9df).
 - **Hashing is lazy** (@design-reviewer's r5 Medium). At each pending cut frame (one this replica has not yet voted
   on, or not yet compared after finality) the replica keeps a copy-on-write snapshot, a handful of reference counts
   (5.2). A re-simulation across that frame replaces the snapshot; it hashes nothing. The root is computed from the
@@ -741,8 +814,9 @@ orphaned. if the delete occured second, then everything is destroyed."
   tombstone's hash covers that object's last leaf hash. So an add-on to a grandchild
   of the deleted object is orphaned at the grandchild's last place, as the user's rule asks (@design-reviewer's
   High 1). Tombstones are a world table, so they are hashed.
-  They are dropped when their frame is more than one minute of frames (the unconfirmed-play bound; 3,600 at 60 Hz)
-  behind the current frame, a deterministic rule of the state [I]. A merge older than that reads them back from the world record (M3,
+  They are dropped when their frame is more than one minute behind the current frame (the unconfirmed-play bound),
+  counted as one minute's worth of frames at the line's tick rate, a deterministic rule of the state [I]. Every time
+  limit in this file is in seconds, never a fixed count of frames (@coordinator-opus m3e12fe81d732). A merge older than that reads them back from the world record (M3,
   M5).
 - **Undelete** (@design-reviewer's r2 Medium). `Undelete { id }` restores a deleted subtree from its tombstones
   with the **same ids**, rows and versions, under its old parent at its old place (or as a root, orphaned, if that
@@ -840,7 +914,7 @@ pe-world decodes and applies the `Input` class too, because inputs write world s
   refused on every machine, with `NotYourHand`, and changes nothing.
 - **Hands are created by world logic at admission** (@chunks-reviewer's F8): when a member's join takes effect,
   logic (author `LOGIC`) creates its two hands with that member's key as owner. Their ids are
-  `BLAKE3("pe.hand" ‖ world id ‖ member key ‖ side ‖ admission frame)[..16]` (@chunks-reviewer's N3), so a rejoin
+  `BLAKE3("pe.hand" ‖ line id ‖ member key ‖ side ‖ admission frame)[..16]` (@chunks-reviewer's N3), so a rejoin
   gets fresh hands.
   No edit ever writes a `Hand` row (7.6), so no edit can create a hand owned by someone else's key. A leave removes
   them the same way.
@@ -916,7 +990,7 @@ outcomes (7.7), and the edit history by version. Two points for WS-api [I]:
 | Change | Crate | Tests that change on purpose |
 |---|---|---|
 | `ObjectId` becomes `u128`; `(creator, counter)` and the store's per-creator counters go; `create(creator)` becomes `create_with_id` only | pe-core, pe-sim | `ids::tests::object_id_order_matches_u64` (sizes 8 and 12); store tests that use `create(creator)` |
-| `WorldId` becomes a 256-bit hash; `GlobalId` goes | pe-core | the size check of `GlobalId` |
+| `WorldId` becomes `LineId`, a 256-bit hash, with the `LineId::ORIGIN` constant (2.3); `GlobalId` goes | pe-core | the size check of `GlobalId` |
 | `WorldPos` becomes `Pos` with private fields; `from_abs` and public fields go; saturation becomes `OutOfRange`; varint encoding | pe-core | `coords::tests::normalize_never_panics` (it asserts saturation, which the user ruled out); tests that build positions from numbers move to `ORIGIN + Offset` |
 | `FieldKind::ObjectId` (8 bytes) becomes `ObjectRef` (16); new kinds of 3.2; `ComponentId` widens to 128 bits; row versions beside rows | pe-sim | the `Node` size; schema hashes; reserved-id tests |
 | block copy-on-write, dirty bits, cached object hashes; instances; classes | pe-sim | none should: these are internals behind the same API |
