@@ -14,7 +14,7 @@ pub const SEED: u64 = 0x5052_494D_4F52_4449; // "PRIMORDI"
 
 /// The engine object id of the pile's n-th dynamic body (the ground is counter 1).
 pub fn pile_object(n: usize) -> ObjectId {
-    ObjectId::new(0, 2 + n as u32)
+    ObjectId::from_u128(2 + n as u128)
 }
 
 /// Ground plus `side * side * layers` mixed bodies, created in the spike's order with the
@@ -23,7 +23,7 @@ pub fn pile_world(config: PhysicsConfig, side: usize, layers: usize) -> (Physics
     let mut pw = PhysicsWorld::new(config).unwrap();
     let ground = BodyDesc::new(BodyKind::Static, [0.0, -1.0, 0.0])
         .with_shape(ShapeDesc::new(Geometry::Box { half_extents: [40.0, 1.0, 40.0] }));
-    pw.add_body(ObjectId::new(0, 1), &ground).unwrap();
+    pw.add_body(ObjectId::from_u128(1), &ground).unwrap();
 
     let mut objects = Vec::with_capacity(side * side * layers);
     for layer in 0..layers {

@@ -36,7 +36,7 @@ fn item(id: u128, pos: Pos, shape: Shape, color: [f32; 4]) -> DrawItem {
         _ => 1.0,
     };
     DrawItem {
-        id: ObjectId(id),
+        id: ObjectId::from_u128(id),
         pose: WorldPose { pos, rot: DQuat::from_rotation_y(0.5) },
         scale: [1.0; 3],
         shape,
@@ -122,7 +122,7 @@ fn a_capture_has_the_expected_coverage_and_repeats_exactly() {
     assert!((covered / expected - 1.0).abs() < 0.06, "covered {covered} px, expected {expected:.0}");
     let v = visible_list(&s, &cam, size);
     assert_eq!(v.len(), 1);
-    assert_eq!(v[0].id, ObjectId(7));
+    assert_eq!(v[0].id, ObjectId::from_u128(7));
     let [x0, y0, x1, y1] = v[0].rect;
     assert!(x0 < 128.0 && x1 > 128.0 && y0 < 72.0 && y1 > 72.0, "{:?}", v[0].rect);
     eprintln!("coverage {covered} px against {expected:.0} expected");
@@ -140,7 +140,7 @@ fn the_outline_draws_around_the_silhouette() {
     assert!(changed > 40, "outline changed only {changed} pixels");
     // The ball's centre keeps its colour.
     let v = visible_list(&s, &cam, [256, 144]);
-    let ball = v.iter().find(|v| v.id == ObjectId(2)).unwrap();
+    let ball = v.iter().find(|v| v.id == ObjectId::from_u128(2)).unwrap();
     let (cx, cy) = (((ball.rect[0] + ball.rect[2]) / 2.0) as usize, ((ball.rect[1] + ball.rect[3]) / 2.0) as usize);
     let i = (cy * 256 + cx) * 4;
     assert_eq!(plain.rgba[i..i + 4], lined.rgba[i..i + 4]);
