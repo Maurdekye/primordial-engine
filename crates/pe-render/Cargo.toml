@@ -15,6 +15,8 @@ bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.3"
 # The frame-view slot: one atomic pointer swap between the simulation and the render thread (pure Rust).
 arc-swap = "1"
+# The desktop window (render.md 10). Pure Rust; it loads the display server's libraries at run time on Linux.
+winit = "=0.30.13"
 # Encode only, pure Rust.
 png = "0.17"
 # Default features off, so no GLES (it pulls khronos-egl and a static import of opengl32.dll), no Metal or WebGPU,
