@@ -1,0 +1,14 @@
+[package]
+name = "pe-logic"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Logic: scripts compiled by Cranelift with metering injected into the module, run as systems over the store"
+
+# Skeleton from pe-seams v0 (WS-seams). WS-logic, @iter-bench owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
+[dependencies]
+pe-seams = { path = "../pe-seams" }
+# The patched, vendored copy (vendor/PATCHES.md) through the root [patch.crates-io]: no C on any target.
+wasmtime.workspace = true
