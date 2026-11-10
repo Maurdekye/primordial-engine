@@ -1,8 +1,9 @@
 # Divergence and recovery (WS-diverge)
 
-Status: v1.6, 2026-11-10. Approved as a design by @design-reviewer (m4dcfeabea340), after their review of v0
+Status: v1.7, 2026-11-10. Approved as a design by @design-reviewer (m4dcfeabea340), after their review of v0
 (bf94698), @vdw-physics's answer on R-H1 and the coordinator's rulings of 20:40Z. v1.6 records the user's answers
-of about 19:45Z (meef4f248923b, mfc2bbd9d28ad; file 14 section 8). Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
+of about 19:45Z (meef4f248923b, mfc2bbd9d28ad; file 14 section 8). v1.7 adds section 9.6, from the rulings of
+19:50-19:59Z (files 18-20). Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
 Nothing in it is built. It specifies `crates/pe-diverge` and the requirements pe-diverge places on other
 workstreams. Only WS-diverge edits this file and `crates/pe-diverge`.
 
@@ -254,6 +255,8 @@ Written on every repair past rung 1, and on every root split (file 14, 4.6).
   repair never waits for it.]
 - It is a local file, in the app's data folder. It is never sent anywhere without the user's action. It holds
   other players' inputs.
+- On a non-admin's machine it is discarded with the world when they leave, unless they export it on purpose
+  (9.6).
 - At most `B_keep` bundles and `B_bytes` in all; the oldest goes first.
 - Its format is versioned, and readable by `pe-harness` and by agents over MCP (WS-api: a `faults` resource).
 
@@ -474,20 +477,79 @@ split.
   compile ends it replays `theirs` on a second copy in the background, then submits the merge entry. [I]
 - **v2 (M3): split groups.** Both sides may lack finality. `base` is the last cut both hold; both are lines of
   unconfirmed play; the merge entry is the first entry of the reconvened quorum. Within one minute the merge is
-  automatic. After it, both lines know they have diverged (S3 `LineDiverged`) and become **branches of one world, as in
-  git**: neither keeps "the" world. Where each has someone able to own it, world ownership splits, and each branch
-  carries on as a world in its own right. Each branch records the cut it split from, so the common ancestor of any
-  two is always found [R meef4f248923b, answer 5; file 14 8.1]. A branch with no owner or admin present falls under
-  the no-admin rule (guarded mode, the countdown, then closing with its state saved), and can still be merged later
-  [I, file 14 8.1]. The ownership split is WS-gov's; pe-diverge emits the branch point.
-- **Re-merging later, by choice (M5):** the same function over the full record, from the branches' common
-  ancestor [R 19:09Z; file 14 8.2]:
-  - **consent:** an admin of each branch agrees, after a preview computed in a copy;
-  - **the exact merge is the default:** everything both branches touched is replayed together in order, however
-    long that takes, on a metered background thread;
-  - **a fast merge is an option, never the default:** "the later change wins, object by object", with the
-    delete-order rule. It is suggested to the people merging when the branches have a long history apart, and the
-    preview shows what it would do differently [R meef4f248923b, answer 7].
+  automatic. After it, both lines know they have diverged (S3 `LineDiverged`) and become **branches**, as in git
+  (9.6). pe-diverge records the branch point.
+- **Merging later, by choice (M5):** section 9.6.
+
+### 9.6 Branches, rejoining, and merges between any two worlds
+
+The user's rulings of 19:45-19:59Z (file 14 section 8; file 18; file 20) [R meef4f248923b, m6987a48ed7f0,
+ma9035760e0c1, mb3da953109cb, m2c5ed59eb9ab, m20c57d575b3f, md2e515db107c, mdad0d5626305].
+
+**Who keeps a version.**
+- There is no world owner. Every admin is a co-owner and keeps their own version, written as they play. While
+  admins play together their versions are the session's agreed state.
+- A non-admin holds the world only while playing; it is discarded when they leave.
+- A session with no admin keeps nothing unless an admin joins before it ends, and every player sees a permanent
+  mark saying so. An admin who arrives while it runs is offered its changes as a merge, under the usual rules
+  [file 18 2.2, accepted].
+- Having been an admin for any time gives a player the right to keep a saved copy as it stood up to the moment
+  they stopped being one. That copy is a branch like any other.
+
+**When a merge happens.** One function (9.2) serves every case; only the trigger and the consent differ:
+
+| Trigger | Consent | Default |
+|---|---|---|
+| A split heals within `T_diverge` | None: automatic | The merge of 9.3 |
+| A former admin reopens a world while another admin of it has it open (the rejoin) | Both: the rejoining admin and the admins present. If either declines, the rejoin is refused, and both stay branches [R mb3da953109cb]. With several admins present, any one refusal refuses [I, file 18 6] | Merge, unless the rejoining admin chose to stay forked [R ma9035760e0c1] |
+| Admins choose to merge two branches, or two worlds, later | An admin of each side, after a preview computed in a copy [file 14 8.2] | The exact merge. The fast merge ("the later change wins, object by object", with the delete-order rule) is an option offered for long histories apart, never the default, and the preview shows what it would do differently [R meef4f248923b, answer 7] |
+
+- **If only one version changed** since the two parted, there is nothing to merge: the other is brought up to
+  date, with a brief notice and no decision [file 18 2.7, 6].
+- **Long merges** run on a metered background thread, however long they take [R meef4f248923b, answer 4].
+- **Admins after a merge** are both sides' admins together, shown in the preview [R m20c57d575b3f]. The merge
+  takes both sides' admin lists as conflicting rows and returns their union; this is the one table it does not
+  resolve by order. Adding and removing admins (any admin, either way [R mb3da953109cb, m2c5ed59eb9ab]) is
+  WS-gov's.
+
+**One origin.** Every world descends from one empty origin; preset worlds branch from it with preset content; a
+world is a version, a point in one tree; creating a world is branching [R md2e515db107c, mdad0d5626305; file 20].
+For the merge this means:
+- **`base` always exists:** the last state the two versions share, found by walking their records back to their
+  newest common stored state. At worst it is the origin. Two worlds made from the same preset share the preset.
+- **Shared history is kept once.** Entries both records hold are the same entries, by id.
+- **Worlds that share only the origin** (or only a preset, outside the preset's own content):
+  - nothing both touched, so nothing is replayed, however long each history is;
+  - the incoming world's own objects are placed by an offset the admins choose in the preview, by default beside
+    the other and clear of it. The merge applies the offset to `theirs`'s objects that are not in `base`;
+  - the world-wide settings of the world merged into stand, unless the admins choose otherwise in the preview;
+  - world-wide logic stays limited to the things it came with, unless an admin widens it. This wants a worked
+    example before it is built (file 20, 7.4).
+- These choices are inputs: `merge(base, ours, theirs, rules, options)` with
+  `options = { placement: Offset, settings_from: Ours | Theirs | per setting, logic_scope, fast: bool }`.
+  The default options give the exact merge with the defaults above. Options are part of the merge entry, so every
+  machine computes the same result.
+
+**What the record must carry, for the merge and the world line tool** [I; file 19, file 20]:
+- every branch point (the cut it parted from) and every merge point (the merge entry, both parents), so the tree
+  of versions can be walked;
+- at each stored state, a small summary per player: actions since the last stored state, and how many objects
+  they touched [C m578e520a173b]. pe-diverge computes it with the footprint (S2) and hands it to WS-world, which
+  stores it;
+- per branch, the measures the tool draws: time apart, and how much changed (objects changed on each side since
+  `base`). The tool itself is a later item (@item:primordial-engine/world-line-visualization-tool-braided-glowing-li).
+
+**Requirement R-W1, identity under one origin (WS-world, WS-seams).** Every world now shares the origin's first
+entry, so a world cannot be named by the hash of its own genesis. A branch must also not start a new genesis, or it
+loses the shared history a merge needs. Proposed [I]: a version line's id is the hash of the entry that created it
+(its branching entry, or the origin's); entries bind the line id they were made on (S1's signed world id becomes
+that line id); a merged line accepts entries made on any line in its ancestry, so both parents' signatures stay
+valid after a merge. Object ids and chain ids that include the line id stay unique across branches. @world-model's
+spec (section 2.2, `WorldId` as the genesis hash, "a fork gets a new genesis") needs this change; it is theirs and
+@engine-architect's to settle.
+
+**The fault bundle under these rules:** a bundle holds world state, so on a non-admin's machine it is discarded
+with the world when they leave, unless they export it on purpose [I].
 
 ### 9.5 What the model must settle first
 
@@ -685,7 +747,7 @@ puts them behind its `mutants` feature.
 | M1 | Detection; rungs 1 and 2; root splits; the bundle and `replay-bundle`; the counters; the display layer's requirements to WS-render; tests 1-10 | S2 from WS-state and WS-world (R-H1 to R-H3); S3 from WS-agree; S4 repair lane; pe-harness |
 | M2 | The merge engine v1, after model v2 | WS-model v2; S2 fork, group restore and step, footprint |
 | M3 | The merge engine v2; rungs 3-5; the background self-check; the one-minute bound's divergence, with WS-agree | WS-model v3; the world record (WS-world) |
-| M5 | Re-merging later, by choice | M3 |
+| M5 | Merging later, by choice; rejoin merges; merges between unrelated worlds (9.6) | M3; R-W1 |
 
 **A point for the coordinator** [I]: the user put a logic edit into M1 (U1, mc40fc6379bc6), and Cranelift moved into
 M1 [C 19:52Z]. A compile on B longer than 2 s would then need Q3b's merge in M1. Below 2 s, the ordinary rollback
@@ -718,8 +780,11 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 - **For @engine-architect:** S2 and S3 as in section 11.
 - **For WS-world and WS-state:** R-H2, R-H3 and R-O1 (R-H1 is met by 4.2a).
 - **For WS-model:** section 9.5.
+- **For @world-model and @engine-architect:** R-W1, world and line identity under one origin (9.6).
 - **Settled by the user** (mfc2bbd9d28ad, meef4f248923b): the back-dating rule (9.3); components on deleted
   objects (R-O1); branches after a minute and the later merge (9.4); the visible-error and visibility targets (8).
+  Then files 18-20: no world owner, rejoin merges with both admins' consent, admin lists unioned, one origin
+  (9.6).
 - **Settled by the coordinator:** untouched groups need to be deterministic,
   not bit-exact (9.5), both at 20:40Z; M1's logic edit compiles in under 2 s (ma99622993534).
 - **With the user:** nothing open for WS-diverge.
