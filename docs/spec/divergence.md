@@ -1,6 +1,6 @@
 # Divergence and recovery (WS-diverge)
 
-Status: draft v1.4, 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
+Status: v1.5, approved as a design by @design-reviewer (m4dcfeabea340), 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
 and the coordinator's rulings of 20:40Z. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
 Nothing in it is built. It specifies `crates/pe-diverge` and the requirements pe-diverge places on other
 workstreams. Only WS-diverge edits this file and `crates/pe-diverge`.
@@ -514,7 +514,9 @@ split.
   **Adopted by WS-world** (spec r2, 2df5a04, branch `world/spec`) for objects: a create or reparent under a deleted
   object is orphaned at the root, keeping its world pose. Attaching a *component* to a deleted object is refused
   (`Deleted{by}`), since a row cannot exist without its object. That is the ordinary rule too, so the merge needs
-  nothing of its own; the user's "add-on" is read as an added object [I].
+  nothing of its own; the user's "add-on" is read as an added object [I]. This decides a case the user did not
+  state (in Resonite, attaching a component is the commonest way to build on something), so it goes to the user
+  with the provisional back-dating rule [design-reviewer].
 - **R-G1, the connection guard (WS-net).** Before a join, compare: the engine build id, the physics self-test's
   digest, and (from M2) each module's hash. A difference refuses the join with its reason (plan M1 acceptance). The
   last self-test result is part of a member's state that section 5 reads.
@@ -665,7 +667,7 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 | `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |
 | `E_small`, `E_snap` | Error thresholds | 5 cm or 10°; 1 m or 90° |
 | `D_effect` | Delay of others' unconfirmed effects | 0 frames |
-| `E_merge` | Pose tolerance within which a group only one side touched counts as unchanged after a merge | `E_small` (5 cm or 10°) |
+| `E_merge` | Pose tolerance within which a group only one side touched counts as unchanged after a merge | Set from the M1 headset tuning: at most the display layer's sub-visible threshold. 5 cm or 10° is visible in VR at arm's length [design-reviewer] |
 | `R_merge` | Replay rate assumed when setting a merge's application frame | 2x real time |
 | `T_merge` | Divergence past which a merge replaces the ordinary rollback | 2 s [R mf7daea6446ca] |
 | `T_diverge` | Unconfirmed play after which the lines diverge | 60 s [R m35138bafc46a] |
