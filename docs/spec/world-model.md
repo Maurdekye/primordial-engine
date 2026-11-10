@@ -1,6 +1,8 @@
 # The world model (WS-world)
 
-Status: **draft v0, 2026-11-10, for review.** Written by @world-model. Nothing in it is built.
+Status: **r5, 2026-11-10.** r4 (858d677) was approved by both reviewers and landed on main as 1c95957; r5 folds in
+@vdw-physics's answers (WS-state) and the S2 tree calls as @engine-architect and @diverge-eng name them, for
+re-review of those parts. Written by @world-model. Nothing in it is built.
 Reviewers: @design-reviewer (section 6, the hash tree, and section 7, the edit entries and their conflict rules);
 @chunks-reviewer (everything else). Seams S1, S2 and S5 are proposals to @engine-architect until pe-seams v0 is fixed.
 
@@ -161,6 +163,14 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   | `EntryRef` | 32 | an `EntryId` |
   | `Hash` | 32 | any other 256-bit hash |
 
+- **Bodies, as @vdw-physics proposed** (WS-state) [I]:
+  - mass comes from each shape's density (mass over volume), computed by pe-physics in one fixed order everywhere;
+  - a body's shapes are its own `Shape` plus those of its descendants that have no `Body` of their own, in id order,
+    up to 64 (a compound body: a table is one body with five boxes);
+  - a mesh shape is for static bodies only; a dynamic body uses primitives or a hull (`SimBlobRef`).
+- **`BodyState` is derived.** The step never reads it and no edit writes it; pe-replica writes it at cut frames and
+  on export, so a keyframe whose `BodyState` is a few frames old restores correctly. A query that wants live
+  velocities reads the frame view (S5), not the store.
 - **Edit versions are not a component** (@chunks-reviewer's F6). Every column keeps, beside each row, that row's
   version (7.3): the `EntryRef` of the last edit that wrote it and the op's index, 36 bytes padded to 40, in a
   parallel array of the column's blocks. An object's structural version and its object version (7.3) are fields of
@@ -175,9 +185,9 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   | `Node` | the hierarchy | the hierarchy API only |
   | `Transform` | position (section 4.4), rotation, scale | edits; physics writes back the simulated pose of a body |
   | `Name` | `BlobRef` to UTF-8 | edits |
-  | `Shape` | a primitive (box, sphere, capsule, plane) with its sizes, or a mesh `BlobRef` | edits |
-  | `Body` | static, dynamic or kinematic; mass, friction, restitution; grabbable | edits |
-  | `BodyState` | the simulated state of a bound body: linear and angular velocity, sleep, and the physics digest of section 6.3 | pe-replica, after each step |
+  | `Shape` | a primitive (box, sphere, capsule) with its sizes and density, or a mesh `SimBlobRef` (static bodies only); a plane is a large thin box | edits |
+  | `Body` | static, dynamic or kinematic; friction, restitution, linear and angular damping, rolling resistance, gravity scale, bullet, may sleep; grabbable | edits |
+  | `BodyState` | derived: the simulated state of a bound body (linear and angular velocity, awake flag and sleep timer) and the physics digest of section 6.3 | pe-replica, at cut frames and on export |
   | `Appearance` | base colour, emissive colour, roughness, metalness, an optional material `BlobRef` | edits |
   | `Light` | kind, colour, intensity, range | edits |
   | `Hand` | the owning `MemberKey`, side, grip, engaged | created by world logic at admission; then inputs of its owner only (section 8) |
@@ -324,8 +334,10 @@ impl PartialEq for Pos;                                // exact, on canonical va
   a million light-years.
 - **No silent saturation** [U m7e85960c864a]. Today `normalize` clamps at ±2^62 [V `coords.rs:83-108`]. Instead:
   - moving a `Pos` returns `Result<Pos, OutOfRange>` (4.2); every path that writes a position into the world (an
-    edit, an input, a physics write-back, a spawn) turns an error into a refusal of that entry, or, for physics,
-    into the body stopping at its last valid position with an event [I; WS-state confirms the physics half];
+    edit, an input, a physics write-back, a spawn) turns an error into a refusal of that entry. For physics, as
+    @vdw-physics confirmed: when a write-back would leave the range (or pe-physics's own 10^6 m from its physics
+    origin), the pose is not written; the body is set back to its last valid pose, the one still in `Transform`,
+    with zero velocity and its history reset, and an event is raised, at the same frame on every replica;
   - a non-finite offset is a refusal, not 0 [V today it becomes 0, `coords.rs:85`].
 - **A staged limitation of m7e85960c864a** (@chunks-reviewer's L7): from M1 to M3, a position beyond the `i64`
   chunk range is refused, never clamped. The ruling asks for promotion to arbitrary precision past it; that is M4's.
@@ -466,13 +478,21 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
   canonical encoding (4.5). So the hash never depends on how a position is stored in memory (4.3).
 - **Every component row,** including `Hand`, and every row's edit version (3.2), since versions decide precondition
   outcomes.
-- **The physics state of a bound body** enters through `BodyState`: pe-replica writes it after each step. Its digest
-  field is pe-physics's 256-bit hash of everything about that body a later step depends on: position and rotation
-  bits, velocities, sleep state, and the contact-cache entries of every pair whose lower id is this body [I; this is
-  the one place I need WS-state's agreement, section 9.2]. Then one ball's divergence shows in one leaf.
-- **What is not covered per object:** physics state that belongs to no body (island bookkeeping, solver order). Until
-  the history-free physics state (plan 3.1, later), pe-physics hashes it as one extra section of the tables root,
-  `physics_global`. A mismatch there cannot be localized; it goes to repair rung 1, and then rung 3 [I; WS-diverge].
+- **The physics state of a bound body** enters through `BodyState`, which pe-replica writes at cut frames. Its
+  digest is BLAKE3 over the body's pose bits, velocities, awake flag and sleep timer, and the contact-cache entries
+  of every pair whose lower id is this body, in canonical order (agreed with @vdw-physics). Then one ball's
+  divergence shows in one leaf. This digest **localizes**; it does not by itself make the root complete.
+- **`physics_global` makes it complete** (@vdw-physics). A step also reads state that belongs to no body or pair and
+  cannot be split out of the fork: the id pools, the constraint graph's colours and order, joint colours, solver-set
+  membership and order, islands, the broad-phase trees and move buffer, and sensor state [V as @vdw-physics cites:
+  `crates/box3d-fork/src/id_pool.rs:36-44`, `constraint_graph.rs:75-130`]. So `physics_global` is pe-physics's
+  full-state check hash: BLAKE3 over the canonical transfer bytes of the whole physics world
+  [V as cited: `crates/pe-physics/src/image.rs:343-347, 477-481`]. With it, equal roots give equal futures
+  (@diverge-eng's R-H1).
+- **What a mismatch means.** A mismatch in a leaf names the object. A mismatch only in `physics_global` means equal
+  body values with a different solver history: rare, not localizable, and repaired by the whole-image restore.
+- **Cost at a cut** [I, @vdw-physics's estimate]: about 0.2 ms for 500 body digests and 1-2 ms for the image hash;
+  M2's incremental images cache both.
 - **Not covered at all,** by design: `Local` objects; the drawn state of the display layer; caches; blob bytes
   (covered by their hashes). Nothing that changes a later shared outcome may live outside the tree: that is the rule
   F5 asks for (file 14, 2.3), and section 11 tests it by injecting a divergence into each covered part.
@@ -499,26 +519,29 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
 
 ### 6.5 Finding what differs, and patching it (S2)
 
-- **Diff** is a walk of two tries, in rounds: ask for a node's 16 child hashes, descend into those that differ. Over
-  the network that is about one round trip per level, 5 at a million objects. The S2 operations (section 9.2):
-  `tree_node(root, path)`, `object_state(root, ids)`.
-- `differing(local_root, remote_nodes)` returns the differing objects, and also the differing tables by name.
-- **Patch** (repair rung 2): `patch(objects, tables)` replaces the named objects' rows and the named tables with
-  fetched ones, verified before they are applied against the quorum-agreed root of a final cut, never against the
-  sender's claim. It is a restore of part of a root;
-  WS-diverge drives it and pe-replica replays forward from it.
+- **Diff** is a walk of two tries, in rounds: ask for a node's children, descend into those that differ. Over the
+  network that is about one round trip per level, 5 at a million objects. The S2 calls, as @engine-architect and
+  @diverge-eng name them (section 9.2): `node(root, path)` returns a node's child (key, hash) pairs, or a leaf;
+  `export(root, ids)` returns the objects' records with their paths to the root. Tables are named paths of the
+  same tree, so a differing table is found and exported the same way.
+- **Import** (repair rung 2): `import(at, records)` replaces the named objects' rows and the named tables with
+  fetched ones. Every record's path is checked, before anything is applied, against the quorum-agreed root of a
+  final cut, never against the sender's claim. It is a restore of part of a root; WS-diverge drives it and
+  pe-replica replays forward from it.
+- `object_hashes(ids)` returns the current leaf hash of each object, for the fault bundle's replay
+  (@diverge-eng's `replay-bundle`).
 - An object present on one side and absent on the other is a differing object like any other.
 - **A bound body cannot be patched by rows alone** (@diverge-eng's R-H1; @design-reviewer's High 2). The fork's
   API cannot set contact manifolds, warm starts, sleep timers, islands, solver sets or the broadphase, and writing a
   body's state back through it diverged at the first step: 2 of 256 bodies bit-equal [V design.md 6.9, as the
-  reviewer cites]. So, until WS-state provides an exact per-body setter, contacts included, with a bit-equality test:
-  - `patch` refuses an object that has a bound body, with `NeedsPhysicsImage`;
-  - WS-diverge sends such a divergence to a rung that restores the whole physics image at the agreed cut (rung 3 in
-    its ladder, or a rung 2b of its choosing), and patches only physics-free rows at rung 2.
+  reviewer cites]. @vdw-physics confirmed that an exact per-body setter is not feasible: even with every contact
+  copied, the ids, colours, islands and broad-phase topology would differ. So:
+  - `import` refuses an object that has a bound body, with `NeedsPhysicsImage`;
+  - WS-diverge restores the whole physics image at the agreed cut for such a divergence (it folds the whole-transfer
+    restore into its rung 2 for M1), and imports only physics-free rows by object.
 
   The per-body digest still localizes the fault: the fault bundle names the ball, even when the repair restores
-  more than the ball. If WS-state adds the setter, `object_state` carries that body's physics record and `patch`
-  hands it to pe-replica with the rows.
+  more than the ball. The lasting fix is a history-free physics state, which the plan keeps for later.
 
 ## 7. Edit entries and the three conflict rules
 
@@ -578,6 +601,9 @@ pub enum Precondition {
 - **The first in the agreed order wins** (R5): a grab of an object claimed by someone else is refused, with the
   holder named. pe-log's order decides "first": frame stamp, then the seeded rank (D37) [plan 5.2]. When both grab
   one ball, the later grab's author sees the ball slide out of their grip (the display layer's cue, file 14, 4.1).
+- **Out of reach** (@vdw-physics's proposal) [I]: a grab is refused with `OutOfReach` if the hand's centre is
+  further from the object than the hand's reach plus the object's bounding radius, both from `Transform` and
+  `Shape` at the grab's frame. It is deterministic, and it stops a grab joint yanking an object across the world.
 - **Holds protect what the holder feels** [I, after @design-reviewer's Low 6]. The display rule is that a player's
   hands and what they hold are never corrected (plan M1; file 14, 4.1). So, while an object is held:
   - a `Delete` of it, or of any ancestor of it, is refused with `Held { by }`;
@@ -725,10 +751,15 @@ The user (mbe87e750ca35, V1): "simple protections can exist for objects the same
 @api-eng (its O7) [I]:
 
 - A `Protection` row names an owner (`MemberKey`). It protects its object and the object's subtree.
-- **Only the owner can create one:** an op that adds a `Protection` row whose owner is not the transaction's author
-  (or the member an agent acts for) is refused with `Protected { owner }` (@chunks-reviewer's N6). Adding a
-  `Protection` to an object inside someone else's protected subtree is refused too. So no member can claim copy
-  rights over another's work.
+- **Who may protect an object** (@coordinator-opus's ruling U5, m857de72925dd, filling a gap in V1 that
+  @chunks-reviewer found): only the object's creator, meaning the author of its creating entry, or the member who
+  imported it, may add a `Protection` to it, and only with themselves as owner. An agent acting for that member
+  counts as them. Anyone else's attempt, `EDIT` or not, is refused with `Protected { owner }` or `NotCreator`.
+- So each object records who created or imported it: a `creator: MemberKey` field in `Node`, set by the creating
+  edit (for a `Copy`, the copier; for an import, the importer; for world logic, `LOGIC`) and never written after.
+- **Auto-protection** applies on import and on creation only, never later. Wearing an avatar never claims or
+  protects it.
+- Adding a `Protection` inside someone else's protected subtree is refused too.
 - A member who is not the owner may not: `Copy` a protected object (or a subtree containing one); remove or change
   its `Protection` row. Such an op refuses its transaction with `Protected { owner }`.
 - Every other edit stays under the ordinary role permissions, so an admin can still delete a griefing object.
@@ -782,11 +813,17 @@ The plan's sketch splits between pe-replica (WS-state) and pe-world. My proposal
 | `root_hash() -> Hash` | pe-world | requires pe-replica to have written `BodyState` and `physics_global` for the frame |
 | `verify(&Root) -> Result<(), Mismatch>` | pe-world | rehash from records, no caches (6.4) |
 | `permits(who, what) -> bool` | pe-world | from the governance tables |
-| `tree_node(root, path) -> Node16`, `object_state(root, ids)` | pe-world | the diff walk, 6.5. **Replaces the sketch's `differing(&Hash)`,** which cannot work from a hash alone |
-| `patch(rows, tables)` | pe-world, driven by pe-diverge | verified against the remote root first |
+| `node(root, path) -> Option<Node>` | pe-world | child (key, hash) pairs, or a leaf: the diff walk, 6.5. **Replaces the sketch's `differing(&Hash)`,** which cannot work from a hash alone |
+| `export(root, ids) -> Records` | pe-world | records with their paths to the root |
+| `import(at, records) -> Result<Root, ImportError>` | pe-world, driven by pe-diverge | checks every path against the quorum-agreed root first; refuses bound bodies (`NeedsPhysicsImage`) |
+| `object_hashes(ids)` | pe-world | leaf hashes (which cover each body's digest), for the fault bundle |
+| `physics_image(root)` | pe-replica (WS-state) | the domain's physics transfer as one blob tree by hash, for the whole-image restore (@vdw-physics's route c) |
 
-- **One thing I need from WS-state:** the per-body physics digest of 6.3, and the `physics_global` section. Without
-  them a diverged ball cannot be localized.
+- `Root` is a `Send` handle, and the roots of the last 8 final cuts are kept (@engine-architect's S2 answer).
+- **From WS-state, agreed with @vdw-physics:** the per-body digest and `physics_global` of 6.3, written at cut
+  frames, and the whole-image restore for bound bodies.
+- **The frame's stage order** (@engine-architect, after @iter-bench's N1): entries (inputs and edits, in the agreed
+  order), logic before physics, physics, logic after physics, events. pe-world's `apply` runs in the first stage.
 - **Body binding:** pe-replica creates and updates physics bodies from `Shape`, `Body` and `Transform`, and writes
   back `Transform` and `BodyState`. pe-world gives it the list of objects whose physics-relevant rows an edit changed
   at a frame, so it never scans.
@@ -828,7 +865,11 @@ outcomes (7.7), and the edit history by version. Two points for WS-api [I]:
 - **Everything else in pe-core stays as it is:** the clock, `dmath`, the RNG streams, the float-environment check
   and XXH64 [V `crates/pe-core/src/lib.rs:20-30`].
 - **pe-physics depends on pe-core's `ObjectId`** and serializes it as two `u32`s [V `crates/pe-physics/src/image.rs:242`].
-  Widening it touches WS-state's crate. I will send WS-state a patch for that one change rather than edit it.
+  Widening it touches WS-state's crate, so I send @vdw-physics the patch, after the archive, and it lands it:
+  16-byte ids in `image.rs:199-200, 242` and `world.rs:693-694`, `IMAGE_VERSION` 3 and `TRANSFER_VERSION` 2. The
+  committed physics records compare the fork's own world bytes, which carry no object ids, so they should not move;
+  any printed transfer hash that does is re-blessed in the same landing [V as @vdw-physics cites:
+  `tests/spike_records.rs:159-160`].
 - **pe-session and the spikes** also use these types [V their manifests], but M0 archives them outside the
   workspace (plan 2.4), so nothing there is rebuilt. I make the breaking changes only after the archive lands.
 - **The determinism property behind the changed tests stays tested:** each changed test is replaced by one that
@@ -893,5 +934,6 @@ For the reviewers and the coordinator. None needs the user, as far as I can see 
    physics and rendering, and buys a wall nobody has to trust.
 7. **Missing blobs never stop the world** (3.4): display blobs draw a stand-in; simulation blobs make only the
    lacking machine lag, as for a late entry. This narrows D17's "a missing artifact pauses that peer".
-8. **The per-body physics digest** (6.3, 9.2) is WS-state's to confirm.
+8. **The per-body physics digest** (6.3, 9.2): agreed with @vdw-physics, with `physics_global` as the full image
+   hash and no per-body setter.
 9. **Ids of logic spawns** (2.1) are WS-logic's to confirm.
