@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use pe_core::{Error, Frame, MemberId, ObjectId};
+use pe_core::{Error, Frame, ObjectId};
 
 use crate::column::Column;
 use crate::hierarchy::Node;
 use crate::registry::{Component, ComponentDesc, ComponentId, Registry};
 use crate::transform::Transform;
 
-/// The sim state of one world (design 16, 6.1): its frame, its objects, the next object counter of every
-/// creator, and one sorted column per component.
+/// The sim state of one world (design 16, 6.1): its frame, its objects and one sorted column per component.
+/// Object ids are derived by their creators (world-model.md 2.1), never allocated here.
 ///
 /// Everything here is rolled back, hashed and sync-checked. The registry is configuration: it is shared,
 /// not snapshotted.
@@ -24,8 +24,6 @@ pub struct SimStore {
     pub(crate) seed: u64,
     /// Live objects, sorted.
     pub(crate) objects: Arc<Vec<ObjectId>>,
-    /// Per creator, sorted by creator: `ObjectId { creator, counter: last counter allocated }`.
-    pub(crate) counters: Arc<Vec<ObjectId>>,
     pub(crate) columns: BTreeMap<ComponentId, Column>,
 }
 
@@ -38,7 +36,6 @@ impl SimStore {
             frame: Frame::ZERO,
             seed,
             objects: Arc::new(Vec::new()),
-            counters: Arc::new(Vec::new()),
             columns: BTreeMap::new(),
         }
     }
@@ -48,7 +45,6 @@ impl SimStore {
     pub fn deep_clone(&self) -> SimStore {
         let mut c = self.clone();
         c.objects = Arc::new(self.objects.to_vec());
-        c.counters = Arc::new(self.counters.to_vec());
         for col in c.columns.values_mut() {
             col.ids = Arc::new(col.ids.to_vec());
             col.data = Arc::new(col.data.to_vec());
@@ -84,33 +80,9 @@ impl SimStore {
         self.objects.binary_search(&id).is_ok()
     }
 
-    /// The last counter `creator` has used (0 if none).
-    pub fn last_counter(&self, creator: MemberId) -> u32 {
-        match self.counters.binary_search_by_key(&creator, |c| c.creator) {
-            Ok(i) => self.counters[i].counter,
-            Err(_) => 0,
-        }
-    }
-
-    fn bump_counter(&mut self, id: ObjectId) {
-        let counters = Arc::make_mut(&mut self.counters);
-        match counters.binary_search_by_key(&id.creator, |c| c.creator) {
-            Ok(i) => counters[i].counter = counters[i].counter.max(id.counter),
-            Err(i) => counters.insert(i, id),
-        }
-    }
-
-    /// Creates an object with the next id of `creator`, as a root with no components but its [`Node`].
-    pub fn create(&mut self, creator: MemberId) -> Result<ObjectId, Error> {
-        let next = self.last_counter(creator).checked_add(1).ok_or(Error::CountersExhausted { creator })?;
-        let id = ObjectId::new(creator, next);
-        self.create_with_id(id)?;
-        Ok(id)
-    }
-
-    /// Creates an object with a given id (scene content, a state transfer, R14 arrivals). The creator's
-    /// counter moves past it, so [`SimStore::create`] never reissues it.
-    pub fn create_with_id(&mut self, id: ObjectId) -> Result<(), Error> {
+    /// Creates an object with a given id, as a root with no components but its [`Node`]. Ids are derived by the
+    /// caller (world-model.md 2.1); an id already present is refused.
+    pub fn create(&mut self, id: ObjectId) -> Result<(), Error> {
         if id.is_none() {
             return Err(Error::UnknownObject(id));
         }
@@ -119,7 +91,6 @@ impl SimStore {
             Err(at) => at,
         };
         Arc::make_mut(&mut self.objects).insert(at, id);
-        self.bump_counter(id);
         self.put_row(ComponentId::NODE, id, bytemuck::bytes_of(&Node::ROOT));
         Ok(())
     }

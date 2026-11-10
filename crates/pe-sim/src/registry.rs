@@ -17,7 +17,7 @@ use pe_core::Error;
 
 /// A component type. Ids below [`ComponentId::FIRST_USER`] are reserved for the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ComponentId(pub u32);
+pub struct ComponentId(pub u128);
 
 impl ComponentId {
     /// The hierarchy ([`Node`](crate::Node)).
@@ -26,7 +26,7 @@ impl ComponentId {
     pub const TRANSFORM: ComponentId = ComponentId(2);
     /// The first id available to logic modules and tests. Lower ids are the engine's
     /// ([`Registry::register_engine`]).
-    pub const FIRST_USER: u32 = 1024;
+    pub const FIRST_USER: u128 = 1024;
 }
 
 /// The largest row a component may have: 64 KiB.
@@ -49,8 +49,20 @@ pub enum FieldKind {
     F64,
     /// One byte, 0 or 1.
     Bool,
-    /// An [`ObjectId`](pe_core::ObjectId): 8 bytes, 4-byte aligned.
-    ObjectId,
+    /// An [`ObjectId`](pe_core::ObjectId): 16 bytes, 8-byte aligned (world-model.md 3.2).
+    ObjectRef,
+    /// A display blob: a 32-byte hash and a `u64` length; all-zero is "none" (3.4).
+    BlobRef,
+    /// A simulation blob, the same layout (3.4).
+    SimBlobRef,
+    /// An exact position, a [`PosRow`](pe_core::coords::PosRow): 48 bytes (4.2).
+    Pos,
+    /// A member's public key, 32 bytes.
+    MemberKey,
+    /// An entry id, 32 bytes.
+    EntryRef,
+    /// Any other 256-bit hash.
+    Hash,
 }
 
 impl FieldKind {
@@ -59,13 +71,18 @@ impl FieldKind {
             FieldKind::U8 | FieldKind::I8 | FieldKind::Bool => 1,
             FieldKind::U16 | FieldKind::I16 => 2,
             FieldKind::U32 | FieldKind::I32 | FieldKind::F32 => 4,
-            FieldKind::U64 | FieldKind::I64 | FieldKind::F64 | FieldKind::ObjectId => 8,
+            FieldKind::U64 | FieldKind::I64 | FieldKind::F64 => 8,
+            FieldKind::ObjectRef => 16,
+            FieldKind::MemberKey | FieldKind::EntryRef | FieldKind::Hash => 32,
+            FieldKind::BlobRef | FieldKind::SimBlobRef => 40,
+            FieldKind::Pos => 48,
         }
     }
 
     pub fn align(self) -> u32 {
         match self {
-            FieldKind::ObjectId => 4,
+            FieldKind::ObjectRef | FieldKind::BlobRef | FieldKind::SimBlobRef | FieldKind::Pos => 8,
+            FieldKind::MemberKey | FieldKind::EntryRef | FieldKind::Hash => 1,
             k => k.size(),
         }
     }
@@ -137,7 +154,7 @@ impl ComponentDesc {
             return bad(format!("row size {at} is not a multiple of its alignment {max_align}"));
         }
         let mut h = Hasher::new(0x5045_5343_4845_4D41); // "PESCHEMA"
-        h.write_u32(id.0);
+        h.write(&id.0.to_le_bytes());
         h.write_u64(name.len() as u64);
         h.write(name.as_bytes());
         h.write_u32(at);
@@ -184,6 +201,7 @@ impl ComponentDesc {
                     FieldKind::F32 => f32::from_le_bytes(b.try_into().unwrap()).is_finite(),
                     FieldKind::F64 => f64::from_le_bytes(b.try_into().unwrap()).is_finite(),
                     FieldKind::Bool => b[0] <= 1,
+                    FieldKind::Pos => pe_core::Pos::from_row(bytemuck::pod_read_unaligned(b)).is_ok(),
                     _ => true,
                 };
                 if !ok {

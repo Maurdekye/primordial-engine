@@ -18,7 +18,8 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use core::mem::offset_of;
-use pe_core::coords::WorldPos;
+use pe_core::coords::{Offset, Pos};
+use pe_core::ObjectId;
 use pe_core::rng::Rng;
 use pe_sim::registry::{Component, ComponentDesc, ComponentId, FieldDesc, FieldKind, Registry};
 use pe_sim::{SimStore, Snapshot, Transform};
@@ -55,8 +56,9 @@ fn world(n: usize) -> SimStore {
     let mut rng = Rng::stream(1, 1);
     let mut ids = Vec::with_capacity(n);
     for i in 0..n {
-        let id = s.create(1 + (i % 4) as u32).unwrap();
-        s.insert(id, Transform::at(WorldPos::new([0; 3], [rng.next_f64() * 1000.0, 0.0, rng.next_f64() * 1000.0]))).unwrap();
+        let id = ObjectId::from_u128(i as u128 + 1);
+        s.create(id).unwrap();
+        s.insert(id, Transform::at(Pos::ORIGIN.checked_add(Offset([rng.next_f64() * 1000.0, 0.0, rng.next_f64() * 1000.0])).unwrap())).unwrap();
         s.insert(id, Velocity { v: [rng.next_f32(), 0.0, rng.next_f32()], spin: 0.0 }).unwrap();
         if i % 2 == 0 {
             let mut row = [0u8; 16];

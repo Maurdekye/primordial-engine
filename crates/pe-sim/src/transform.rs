@@ -38,7 +38,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use core::mem::offset_of;
-use pe_core::coords::WorldPos;
+use pe_core::coords::{Offset, Pos};
 use pe_core::{Error, ObjectId};
 
 use crate::registry::{Component, ComponentId, FieldDesc, FieldKind};
@@ -85,8 +85,10 @@ impl Transform {
     }
 
     /// A root transform at a canonical world position.
-    pub fn at(p: WorldPos) -> Transform {
-        Transform { chunk: p.chunk, pos: p.local, ..Transform::IDENTITY }
+    /// A root placement at `p`: its chunk index, and the offset from that chunk's corner (`p - corner`, exact).
+    pub fn at(p: Pos) -> Transform {
+        let (chunk, local) = split(p);
+        Transform { chunk, pos: local, ..Transform::IDENTITY }
     }
 
     pub fn with_rot(mut self, rot: [f32; 4]) -> Transform {
@@ -125,10 +127,20 @@ impl Transform {
         Ok(())
     }
 
-    /// The same root placement with `pos` moved inside its chunk (exact).
+    /// The position a root placement denotes: `chunk`'s corner moved by `pos`. `None` if out of range.
+    pub fn root_pos(&self) -> Option<Pos> {
+        Pos::at_chunk(self.chunk).ok()?.checked_add(Offset(self.pos)).ok()
+    }
+
+    /// The same root placement with `pos` moved inside its chunk (exact). Unchanged if out of range.
     pub fn rebased(&self) -> Transform {
-        let p = WorldPos::new(self.chunk, self.pos);
-        Transform { chunk: p.chunk, pos: p.local, ..*self }
+        match self.root_pos() {
+            Some(p) => {
+                let (chunk, local) = split(p);
+                Transform { chunk, pos: local, ..*self }
+            }
+            None => *self,
+        }
     }
 }
 
@@ -146,10 +158,19 @@ impl Component for Transform {
     }
 }
 
+/// A `Pos` as a chunk index and the offset from that chunk's corner. Only the wall's own operations are used:
+/// the integer cell at level 0, and `p - corner` (world-model.md 4.2).
+fn split(p: Pos) -> ([i64; 3], [f64; 3]) {
+    let c = p.cell(0).c;
+    let chunk = [c[0] as i64, c[1] as i64, c[2] as i64];
+    let corner = Pos::at_chunk(chunk).expect("a valid Pos's chunk is valid");
+    (chunk, (p - corner).0)
+}
+
 /// A world transform: derived from the hierarchy and the local transforms, never stored or hashed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldTransform {
-    pub pos: WorldPos,
+    pub pos: Pos,
     pub rot: [f32; 4],
     pub scale: [f32; 3],
 }
@@ -209,41 +230,40 @@ fn clamp_scale(s: f32) -> f32 {
 }
 
 impl WorldTransform {
-    /// The world transform of an object without a frame.
-    pub fn root(t: &Transform) -> WorldTransform {
-        WorldTransform {
-            pos: WorldPos::new(t.chunk, t.pos),
-            rot: quat_normalize(t.rot),
-            scale: t.scale.map(clamp_scale),
-        }
+    /// The world transform of an object without a frame. `None` if its position is out of range (a stored root
+    /// within the limits never is).
+    pub fn root(t: &Transform) -> Option<WorldTransform> {
+        Some(WorldTransform { pos: t.root_pos()?, rot: quat_normalize(t.rot), scale: t.scale.map(clamp_scale) })
     }
 
-    /// The world transform of an object with local transform `t` in this frame.
-    pub fn compose(&self, t: &Transform) -> WorldTransform {
+    /// The world transform of an object with local transform `t` in this frame. `None` if the composed position
+    /// leaves the range: refused, never clamped (world-model.md 4.3).
+    pub fn compose(&self, t: &Transform) -> Option<WorldTransform> {
         let scaled = [
             self.scale[0] as f64 * t.pos[0],
             self.scale[1] as f64 * t.pos[1],
             self.scale[2] as f64 * t.pos[2],
         ];
-        WorldTransform {
-            pos: self.pos.offset(rotate(self.rot, scaled)),
+        Some(WorldTransform {
+            pos: self.pos.checked_add(Offset(rotate(self.rot, scaled))).ok()?,
             rot: quat_normalize(quat_mul(self.rot, t.rot)),
             scale: [
                 clamp_scale(self.scale[0] * t.scale[0]),
                 clamp_scale(self.scale[1] * t.scale[1]),
                 clamp_scale(self.scale[2] * t.scale[2]),
             ],
-        }
+        })
     }
 
     /// The local transform that places an object at `self` in the frame `frame` (the inverse of
     /// [`WorldTransform::compose`], up to rounding), or as a root if `frame` is `None`.
     pub fn local_in(&self, frame: Option<&WorldTransform>) -> Transform {
         let Some(f) = frame else {
-            return Transform { chunk: self.pos.chunk, pos: self.pos.local, rot: self.rot, scale: self.scale, _pad: 0 };
+            let (chunk, local) = split(self.pos);
+            return Transform { chunk, pos: local, rot: self.rot, scale: self.scale, _pad: 0 };
         };
         let inv = quat_conj(f.rot);
-        let d = rotate(inv, self.pos.sub(&f.pos));
+        let d = rotate(inv, (self.pos - f.pos).0);
         Transform {
             chunk: [0; 3],
             pos: [d[0] / f.scale[0] as f64, d[1] / f.scale[1] as f64, d[2] / f.scale[2] as f64],
@@ -350,7 +370,8 @@ impl SimStore {
         flags
     }
 
-    /// The world transform of one object, composed from the top down. `None` if it has no `Transform`.
+    /// The world transform of one object, composed from the top down. `None` if it has no `Transform`, or if its
+    /// world position is out of range (an edit can never produce one: pe-world refuses it).
     pub fn world_transform(&self, id: ObjectId) -> Option<WorldTransform> {
         let t = self.get::<Transform>(id)?;
         // The transformed ancestors, nearest first; then compose from the top down (no recursion, so any
@@ -363,15 +384,16 @@ impl SimStore {
             }
             at = self.parent(a);
         }
-        let mut w = WorldTransform::root(chain.pop().unwrap());
+        let mut w = WorldTransform::root(chain.pop().unwrap())?;
         while let Some(t) = chain.pop() {
-            w = w.compose(t);
+            w = w.compose(t)?;
         }
         Some(w)
     }
 
     /// Every object's world transform, in depth-first order (objects without a `Transform` are skipped).
-    /// One pass: each frame is computed once.
+    /// One pass: each frame is computed once. An object whose world position is out of range is skipped with
+    /// its whole subtree (deterministic; an edit can never produce one).
     pub fn world_transforms(&self) -> Vec<(ObjectId, WorldTransform)> {
         let mut out = Vec::with_capacity(self.count(ComponentId::TRANSFORM));
         let roots: Vec<ObjectId> = self.roots().collect();
@@ -383,6 +405,7 @@ impl SimStore {
                         Some(p) => p.compose(t),
                         None => WorldTransform::root(t),
                     };
+                    let Some(w) = w else { continue };
                     out.push((id, w));
                     Some(w)
                 }
@@ -403,8 +426,9 @@ impl SimStore {
         old_frame: Option<ObjectId>,
         new_frame: Option<ObjectId>,
     ) -> Result<Vec<(ObjectId, Transform)>, Error> {
-        let old = old_frame.map(|f| self.world_transform(f).expect("a frame has a Transform"));
-        let new = new_frame.map(|f| self.world_transform(f).expect("a frame has a Transform"));
+        let wt = |f: ObjectId| self.world_transform(f).ok_or(Error::OutOfRange { object: f });
+        let old = old_frame.map(wt).transpose()?;
+        let new = new_frame.map(wt).transpose()?;
         self.relocalize_in(objects, old.as_ref(), new.as_ref())
     }
 
@@ -421,7 +445,8 @@ impl SimStore {
                 let w = match old {
                     Some(f) => f.compose(t),
                     None => WorldTransform::root(t),
-                };
+                }
+                .ok_or(Error::OutOfRange { object: o })?;
                 let lt = w.local_in(new);
                 lt.validate(new.is_some()).map_err(|field| invalid(o, field))?;
                 Ok((o, lt))
@@ -463,11 +488,12 @@ impl SimStore {
             self.put_row(ComponentId::TRANSFORM, id, bytemuck::bytes_of(&t));
             return Ok(());
         }
-        let old = frame.map(|f| self.world_transform(f).expect("a frame has a Transform"));
+        let old = frame.map(|f| self.world_transform(f).ok_or(Error::OutOfRange { object: f })).transpose()?;
         let new = match &old {
             Some(f) => f.compose(&t),
             None => WorldTransform::root(&t),
-        };
+        }
+        .ok_or(Error::OutOfRange { object: id })?;
         let kids = self.frame_children(id);
         let rewritten = self.relocalize_in(&kids, old.as_ref(), Some(&new))?;
         self.put_row(ComponentId::TRANSFORM, id, bytemuck::bytes_of(&t));

@@ -1,7 +1,7 @@
 //! Identifiers (world-model.md section 2). All have a total order, so containers keyed by them iterate identically on
 //! every machine (design 4.3 rule 4).
 //!
-//! * [`ObjectId`]: 128 bits, world-scoped, **derived, never counted** (2.1), so an object has the same id on every
+//! * [`ObjectId`]: 128 bits (two `u64` words, so rows stay 8-byte aligned), world-scoped, **derived, never counted** (2.1), so an object has the same id on every
 //!   machine, before and after a rollback, and in a merge, whatever the arrival order.
 //! * [`LineId`]: a world is a line in one tree of versions rooted at the fixed, empty origin (2.3).
 //! * [`MemberKey`]: a member is named by its 32-byte public key wherever the name is stored in the world (2.2).
@@ -44,13 +44,27 @@ impl core::ops::Sub<u64> for Frame {
     }
 }
 
-/// An object of one world (2.1). Ordered as a `u128`; the order means nothing beyond being deterministic.
-/// [`ObjectId::NONE`] (0) never names an object.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ObjectId(pub u128);
+/// An object of one world (2.1): a 128-bit value, held as two `u64` words (`hi`, then `lo`) so it is plain data
+/// with 8-byte alignment and can sit inside component rows (world-model.md 3.2: a `u128` is 16-byte aligned on
+/// x86-64, and columns are `u64` buffers). Ordered as the `u128` it denotes; the order means nothing beyond being
+/// deterministic. [`ObjectId::NONE`] (0) never names an object.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
+#[repr(C)]
+pub struct ObjectId {
+    hi: u64,
+    lo: u64,
+}
 
 impl ObjectId {
-    pub const NONE: ObjectId = ObjectId(0);
+    pub const NONE: ObjectId = ObjectId { hi: 0, lo: 0 };
+
+    pub const fn from_u128(v: u128) -> ObjectId {
+        ObjectId { hi: (v >> 64) as u64, lo: v as u64 }
+    }
+
+    pub const fn to_u128(self) -> u128 {
+        ((self.hi as u128) << 64) | self.lo as u128
+    }
 
     pub fn is_none(self) -> bool {
         self == ObjectId::NONE
@@ -64,7 +78,7 @@ impl ObjectId {
     /// The first 16 bytes of a hash, as a little-endian `u128`; 0 becomes 1, so a derived id is never NONE.
     fn from_hash(h: Hash) -> ObjectId {
         let v = u128::from_le_bytes(h.0[..16].try_into().unwrap());
-        ObjectId(if v == 0 { 1 } else { v })
+        ObjectId::from_u128(if v == 0 { 1 } else { v })
     }
 
     /// The `k`-th object an edit entry creates (2.1): `BLAKE3("pe.object" ‖ line ‖ author ‖ chain ‖ seq ‖ k)[..16]`.
@@ -77,7 +91,7 @@ impl ObjectId {
     /// The `n`-th applied spawn of `spawner` in `frame`, by world logic (2.1).
     pub fn spawned(line: LineId, spawner: ObjectId, frame: Frame, n: u32) -> ObjectId {
         let mut h = Hasher::new("pe.spawn");
-        h.write_hash(&line.0).write_u128(spawner.0).write_u64(frame.0).write_u32(n);
+        h.write_hash(&line.0).write_u128(spawner.to_u128()).write_u64(frame.0).write_u32(n);
         ObjectId::from_hash(h.finish())
     }
 
@@ -86,39 +100,6 @@ impl ObjectId {
         let mut h = Hasher::new("pe.hand");
         h.write_hash(&line.0).write(&member.0).write_u8(side).write_u64(admission.0);
         ObjectId::from_hash(h.finish())
-    }
-}
-
-/// An [`ObjectId`] as stored inside a component row: two little-endian `u64` words, so rows stay 8-byte aligned
-/// (a `u128` is 16-byte aligned on x86-64; world-model.md 3.2, `ObjectRef`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
-#[repr(C)]
-pub struct ObjectRef {
-    pub lo: u64,
-    pub hi: u64,
-}
-
-impl ObjectRef {
-    pub const NONE: ObjectRef = ObjectRef { lo: 0, hi: 0 };
-
-    pub fn id(self) -> ObjectId {
-        ObjectId(((self.hi as u128) << 64) | self.lo as u128)
-    }
-
-    pub fn is_none(self) -> bool {
-        self == ObjectRef::NONE
-    }
-}
-
-impl From<ObjectId> for ObjectRef {
-    fn from(id: ObjectId) -> ObjectRef {
-        ObjectRef { lo: id.0 as u64, hi: (id.0 >> 64) as u64 }
-    }
-}
-
-impl From<ObjectRef> for ObjectId {
-    fn from(r: ObjectRef) -> ObjectId {
-        r.id()
     }
 }
 
@@ -174,16 +155,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn object_ref_round_trip_and_order() {
-        let ids = [ObjectId(1), ObjectId(u64::MAX as u128), ObjectId((u64::MAX as u128) + 1), ObjectId(u128::MAX)];
-        for w in ids.windows(2) {
-            assert!(w[0] < w[1]);
+    fn object_id_order_matches_u128() {
+        let vals = [1u128, u64::MAX as u128, (u64::MAX as u128) + 1, u128::MAX];
+        for w in vals.windows(2) {
+            assert!(ObjectId::from_u128(w[0]) < ObjectId::from_u128(w[1]));
         }
-        for id in ids {
-            assert_eq!(ObjectRef::from(id).id(), id);
+        for v in vals {
+            assert_eq!(ObjectId::from_u128(v).to_u128(), v);
         }
-        assert_eq!(core::mem::size_of::<ObjectRef>(), 16);
-        assert_eq!(core::mem::align_of::<ObjectRef>(), 8);
+        assert_eq!(core::mem::size_of::<ObjectId>(), 16);
+        assert_eq!(core::mem::align_of::<ObjectId>(), 8);
         assert_eq!(ObjectId::NONE.some(), None);
     }
 
