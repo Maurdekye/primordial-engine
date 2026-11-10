@@ -1,0 +1,7 @@
+# The workspace's formatting (WS-seams; @world-model's request). The closest stable settings to the kept crates'
+# style: of rustfmt's options, these leave the fewest lines changed in pe-core, pe-sim and pe-physics (100, against
+# 262 with the default heuristics). Those crates are reformatted once by their owners before the gate checks them.
+# crates/box3d-fork and crates/pe-logic/vendor are never formatted: they track upstream sources.
+edition = "2024"
+max_width = 120
+use_small_heuristics = "Max"
