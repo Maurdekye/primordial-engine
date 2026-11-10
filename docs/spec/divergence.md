@@ -1,6 +1,6 @@
 # Divergence and recovery (WS-diverge)
 
-Status: v1.7, 2026-11-10. Approved as a design by @design-reviewer (m4dcfeabea340), after their review of v0
+Status: v1.8, 2026-11-10. Approved as a design by @design-reviewer (m4dcfeabea340), after their review of v0
 (bf94698), @vdw-physics's answer on R-H1 and the coordinator's rulings of 20:40Z. v1.6 records the user's answers
 of about 19:45Z (meef4f248923b, mfc2bbd9d28ad; file 14 section 8). v1.7 adds section 9.6, from the rulings of
 19:50-19:59Z (files 18-20). Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
@@ -504,13 +504,24 @@ ma9035760e0c1, mb3da953109cb, m2c5ed59eb9ab, m20c57d575b3f, md2e515db107c, mdad0
 | A former admin reopens a world while another admin of it has it open (the rejoin) | Both: the rejoining admin and the admins present. If either declines, the rejoin is refused, and both stay branches [R mb3da953109cb]. With several admins present, any one refusal refuses [I, file 18 6] | Merge, unless the rejoining admin chose to stay forked [R ma9035760e0c1] |
 | Admins choose to merge two branches, or two worlds, later | An admin of each side, after a preview computed in a copy [file 14 8.2] | The exact merge. The fast merge ("the later change wins, object by object", with the delete-order rule) is an option offered for long histories apart, never the default, and the preview shows what it would do differently [R meef4f248923b, answer 7] |
 
-- **If only one version changed** since the two parted, there is nothing to merge: the other is brought up to
-  date, with a brief notice and no decision [file 18 2.7, 6].
+- **If only one version changed** since the two parted, there is nothing to merge, and one side is brought up to
+  date. With no decision only when the side that changed is **the one already open**: a rejoiner who changed
+  nothing is simply brought up to date. Bringing the open world up to a rejoiner's changes (for example, a former
+  admin who kept editing their saved copy) takes the rejoin consent of the table above [file 18 2.7, 6;
+  design-reviewer, review of 8edd08db].
 - **Long merges** run on a metered background thread, however long they take [R meef4f248923b, answer 4].
-- **Admins after a merge** are both sides' admins together, shown in the preview [R m20c57d575b3f]. The merge
-  takes both sides' admin lists as conflicting rows and returns their union; this is the one table it does not
-  resolve by order. Adding and removing admins (any admin, either way [R mb3da953109cb, m2c5ed59eb9ab]) is
-  WS-gov's.
+- **Admins after a merge.** Adding and removing admins (any admin, either way [R mb3da953109cb, m2c5ed59eb9ab])
+  is WS-gov's; the merge treats the admin list in two ways:
+  - **an automatic merge** (a split healed within `T_diverge`) resolves it like any other table: a three-way set
+    merge against `base`. Base's admins, plus additions on either side, minus removals on either side, with an add
+    and a remove of one member decided by the ordinary order and the witnessed rule (9.3). So a removal made on one
+    side during a short split survives, and no one is restored without being asked [design-reviewer, review of
+    8edd08db];
+  - **a consented merge** (a rejoin, or a later merge) returns both sides' admins together, as the user ruled
+    [R m20c57d575b3f; file 18 7], and the preview lists every admin the merge would restore. The ruling chose this
+    for exactly the case where one side removed someone, on the ground that agreeing to merge is agreeing to share
+    the world. [I: reading the ruling as applying to consented merges only, since an automatic merge asks no one.
+    For the coordinator to confirm.]
 
 **One origin.** Every world descends from one empty origin; preset worlds branch from it with preset content; a
 world is a version, a point in one tree; creating a world is branching [R md2e515db107c, mdad0d5626305; file 20].
@@ -543,8 +554,10 @@ For the merge this means:
 entry, so a world cannot be named by the hash of its own genesis. A branch must also not start a new genesis, or it
 loses the shared history a merge needs. Proposed [I]: a version line's id is the hash of the entry that created it
 (its branching entry, or the origin's); entries bind the line id they were made on (S1's signed world id becomes
-that line id); a merged line accepts entries made on any line in its ancestry, so both parents' signatures stay
-valid after a merge. Object ids and chain ids that include the line id stay unique across branches. @world-model's
+that line id); a merged line accepts entries made on a line in its ancestry **only up to that line's recorded
+merge point** into it (its last included entry per chain), so both parents' signatures stay valid after a merge.
+Anything made later on a parent line belongs to that line, and needs a new merge [design-reviewer, review of
+8edd08db]. Object ids and chain ids that include the line id stay unique across branches. @world-model's
 spec (section 2.2, `WorldId` as the genesis hash, "a fork gets a new genesis") needs this change; it is theirs and
 @engine-architect's to settle.
 
@@ -563,6 +576,9 @@ with the world when they leave, unless they export it on purpose [I].
   - a witnessed earlier delete must orphan main's add-on;
   - Q3b: a connected long-compile machine's earlier delete must orphan main's later add-on.
 - The overlap rule, with its case: an object only `theirs` moved, overlapping one that `ours` moved.
+- **Admin lists and fast-forwards (9.6)**, with controls: a removal on one side survives an automatic merge; the
+  open world is never fast-forwarded to a rejoiner's changes without the rejoin consent; an entry made on a parent
+  line after its merge point is refused by the merged line.
 - **Physics and group-level merging** [@vdw-physics]. Under 4.2a, physics restores and steps a whole domain, so the
   exact reference is a replay of the whole domain from `base`. Until history-free physics exists (file 02 A2;
   file 11 3.1, "later"; about 6-10 weeks of fork work), a group only one side touched is not guaranteed to come out
