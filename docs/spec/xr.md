@@ -90,7 +90,7 @@ Extensions:
 | `XR_KHR_win32_convert_performance_counter_time` (Windows), `XR_KHR_convert_timespec_time` (Linux) | Converting `XrTime` to the engine's host clock (section 6.1) | No VR: without it the time base cannot be shared [I: every PC runtime I know offers it] |
 | `XR_EXT_hand_tracking` | Tracked hands: 26 joints a hand | Controllers only |
 | `XR_EXT_hand_interaction` | A runtime-computed grip and pinch for tracked hands, through the action system | pe-xr computes grip from the joints (section 5.3) |
-| `XR_FB_display_refresh_rate` | Ask for 90 Hz where the headset offers it | Run at the runtime's rate, and report it |
+| `XR_FB_display_refresh_rate` | Request the configured rate where offered | Run at the runtime's rate, and report it |
 | `XR_EXT_local_floor` (core in OpenXR 1.1; the extension on a 1.0 runtime) | A floor-level space when STAGE is not offered | LOCAL, with the floor estimated from the head's height at start |
 | `XR_KHR_composition_layer_depth` | Submit depth, so the compositor reprojects better | Colour only |
 | `XR_MND_headless` | Sessions without graphics, for input tests against Monado in CI | Those tests skip |
@@ -584,7 +584,7 @@ The user may be in VR on this PC. So:
 ### 10.4 On the headset, by hand (with the coordinator's go; recorded)
 
 From plan M1:
-- the frame time at 90 Hz with 500 balls and one remote hand at 60 ms one-way delay;
+- the frame time at 120 Hz and at 90 Hz with 500 balls and one remote hand at 60 ms one-way delay;
 - dropped frames, and judder under rollback;
 - the hand feel: D18b's two modes, and section 5.6's two ways to draw the own hand;
 - the hold transitions: a throw leaving the hand, and the snap at a grasp (section 5.6);
