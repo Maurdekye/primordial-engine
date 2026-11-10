@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use pe_replica::{DriveReport, Driver};
 use pe_seams::{
@@ -84,11 +85,13 @@ impl Agreement for Agree {
     }
 }
 
-/// A replica that has simulated every frame below the last `present` it was advanced to.
+/// A replica that has simulated every frame below the last `present` it was advanced to. `pending` roots answer
+/// `RootError::Pending` once each, as a replica whose budget ran out does (S2 v1.1).
 struct Rep {
     log: Log,
     present: u64,
     verdicts: VecDeque<Finalized>,
+    pending: Vec<u64>,
     view: Arc<FrameView>,
 }
 
@@ -99,11 +102,12 @@ impl Replica for Rep {
     fn frame(&self) -> Frame {
         Frame(self.present)
     }
+    fn set_budget(&mut self, _: Duration) {}
     fn advance(&mut self, present: Frame, _: &mut dyn EntrySource) -> Advance {
         note(&self.log, format!("replica.advance {}", present.0));
         let stepped = present.0.saturating_sub(self.present);
         self.present = self.present.max(present.0);
-        Advance { rolled_back_to: None, resimulated: 0, stepped }
+        Advance { rolled_back_to: None, resimulated: 0, stepped, caught_up: true }
     }
     fn outcome(&self, _: &EntryRef) -> Option<(Frame, Outcome)> {
         None
@@ -112,6 +116,10 @@ impl Replica for Rep {
         note(&self.log, format!("replica.root_at_cut h{}", cut.at.height));
         if cut.at.frame.0 > self.present {
             return Err(RootError::NotYetSimulated);
+        }
+        if let Some(i) = self.pending.iter().position(|&h| h == cut.at.height) {
+            self.pending.remove(i);
+            return Err(RootError::Pending);
         }
         Ok(Hash([cut.at.height as u8; 32]))
     }
@@ -159,7 +167,7 @@ fn node() -> Node {
     });
     Node {
         agree: Agree { log: log.clone(), final_cut: None, wants: Vec::new(), none: Vec::new() },
-        replica: Rep { log: log.clone(), present: 0, verdicts: VecDeque::new(), view },
+        replica: Rep { log: log.clone(), present: 0, verdicts: VecDeque::new(), pending: Vec::new(), view },
         driver: Driver::new(),
         log,
     }
@@ -243,4 +251,17 @@ fn a_diverged_verdict_is_reported_and_not_retried_by_the_driver() {
     // The repair, and finalize again for the same cut after it, are pe-diverge's (S2 v1).
     let r = n.tick(25, SelfTest::NotRun);
     assert!(r.finalized.is_empty());
+}
+
+/// S2 v1.1: a replica whose budget ran out answers `Pending`; the driver asks again on the next call.
+#[test]
+fn a_pending_root_is_asked_for_again() {
+    let mut n = node();
+    n.agree.wants = vec![cut(1, 8)];
+    n.replica.pending = vec![1];
+    let r = n.tick(8, SelfTest::NotRun);
+    assert!(r.votes.is_empty());
+    assert_eq!(r.no_root, [(cut(1, 8).at, RootError::Pending)]);
+    let r = n.tick(9, SelfTest::NotRun);
+    assert_eq!(r.votes, [(cut(1, 8).at, Hash([1; 32]))]);
 }
