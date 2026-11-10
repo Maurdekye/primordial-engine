@@ -106,8 +106,12 @@ pub struct GpuContext { pub instance: wgpu::Instance, pub adapter: wgpu::Adapter
     the VkInstance and VkDevice), or when the runtime names a different device after instance loss. pe-render handles
     a new context at any time (section 4, losing the context). The display layer's CPU state survives, so nothing
     jumps.
-  - **The D3D12 fallback,** if the runtime's Vulkan path fails: a DX12 context on the runtime's LUID, which leaving VR
-    can keep, drawing two passes (FXC, section 2).
+  - **A context made through the runtime keeps the runtime's library loaded** until the context is destroyed, even
+    after `xrDestroyInstance`, because the runtime may have hooked the Vulkan dispatch. pe-xr's loader owns the
+    library (xr.md 4.1); pe-render only drops the context first.
+  - **The D3D12 fallback,** chosen at start if the runtime's Vulkan path fails: a DX12 context on the runtime's LUID,
+    drawing two passes (FXC, section 2). Since the desktop is Vulkan, this is the only case in which a DX12 context
+    is kept across entering and leaving VR.
   - M0 measured both on the user's headset: Vulkan 944 of 944 frames, D3D12 941 of 941, at 120 Hz [V].
 - **Limits:** pe-render states its own limit set, `Limits::default()` raised only where it needs more. It never asks
   for an adapter's full limits: wgpu-core asserts `max_buffer_size <= u32::MAX`, and the full limits break that
