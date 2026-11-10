@@ -87,8 +87,14 @@ impl crypto::Session for TlsSession {
 
     fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError> {
         self.inner.read_hs(buf).map_err(|e| match self.inner.alert() {
-            Some(alert) => TransportError { code: TransportErrorCode::crypto(alert.into()), frame: None, reason: e.to_string() },
-            None => TransportError { code: TransportErrorCode::PROTOCOL_VIOLATION, frame: None, reason: format!("TLS error: {e}") },
+            Some(alert) => {
+                TransportError { code: TransportErrorCode::crypto(alert.into()), frame: None, reason: e.to_string() }
+            }
+            None => TransportError {
+                code: TransportErrorCode::PROTOCOL_VIOLATION,
+                frame: None,
+                reason: format!("TLS error: {e}"),
+            },
         })?;
         if !self.got_handshake_data {
             let have_server_name = match self.inner {
@@ -106,7 +112,9 @@ impl crypto::Session for TlsSession {
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
         match self.inner.quic_transport_parameters() {
             None => Ok(None),
-            Some(buf) => TransportParameters::read(self.side(), &mut io::Cursor::new(buf)).map(Some).map_err(Into::into),
+            Some(buf) => {
+                TransportParameters::read(self.side(), &mut io::Cursor::new(buf)).map(Some).map_err(Into::into)
+            }
         }
     }
 
@@ -142,8 +150,16 @@ impl crypto::Session for TlsSession {
         }
     }
 
-    fn export_keying_material(&self, output: &mut [u8], label: &[u8], context: &[u8]) -> Result<(), ExportKeyingMaterialError> {
-        self.inner.export_keying_material(output, label, Some(context)).map(|_| ()).map_err(|_| ExportKeyingMaterialError)
+    fn export_keying_material(
+        &self,
+        output: &mut [u8],
+        label: &[u8],
+        context: &[u8],
+    ) -> Result<(), ExportKeyingMaterialError> {
+        self.inner
+            .export_keying_material(output, label, Some(context))
+            .map(|_| ())
+            .map_err(|_| ExportKeyingMaterialError)
     }
 }
 
@@ -290,18 +306,32 @@ impl QuicClientConfig {
         }
         let inner = Arc::new(inner);
         let probe = ServerName::try_from("pe").map_err(|e| ConfigError(e.to_string()))?;
-        rustls::quic::ClientConnection::new(inner.clone(), Version::V1, probe, Vec::new()).map_err(|e| ConfigError(e.to_string()))?;
+        rustls::quic::ClientConnection::new(inner.clone(), Version::V1, probe, Vec::new())
+            .map_err(|e| ConfigError(e.to_string()))?;
         Ok(Self { inner, initial: initial_suite() })
     }
 }
 
 impl crypto::ClientConfig for QuicClientConfig {
-    fn start_session(self: Arc<Self>, version: u32, server_name: &str, params: &TransportParameters) -> Result<Box<dyn crypto::Session>, ConnectError> {
+    fn start_session(
+        self: Arc<Self>,
+        version: u32,
+        server_name: &str,
+        params: &TransportParameters,
+    ) -> Result<Box<dyn crypto::Session>, ConnectError> {
         let version = interpret_version(version)?;
-        let name = ServerName::try_from(server_name).map_err(|_| ConnectError::InvalidServerName(server_name.into()))?.to_owned();
+        let name = ServerName::try_from(server_name)
+            .map_err(|_| ConnectError::InvalidServerName(server_name.into()))?
+            .to_owned();
         let conn = rustls::quic::ClientConnection::new(self.inner.clone(), version, name, to_vec(params))
             .map_err(|_| ConnectError::InvalidServerName(server_name.into()))?;
-        Ok(Box::new(TlsSession { version, got_handshake_data: false, next_secrets: None, inner: Connection::Client(conn), suite: self.initial }))
+        Ok(Box::new(TlsSession {
+            version,
+            got_handshake_data: false,
+            next_secrets: None,
+            inner: Connection::Client(conn),
+            suite: self.initial,
+        }))
     }
 }
 
@@ -317,7 +347,8 @@ impl QuicServerConfig {
             return Err(ConfigError("0-RTT must stay off (transport.md 2.1)".into()));
         }
         let inner = Arc::new(inner);
-        rustls::quic::ServerConnection::new(inner.clone(), Version::V1, Vec::new()).map_err(|e| ConfigError(e.to_string()))?;
+        rustls::quic::ServerConnection::new(inner.clone(), Version::V1, Vec::new())
+            .map_err(|e| ConfigError(e.to_string()))?;
         Ok(Self { inner, initial: initial_suite() })
     }
 }
@@ -327,7 +358,13 @@ impl crypto::ServerConfig for QuicServerConfig {
         // quinn-proto calls this only for a version `initial_keys` accepted, and `new` checked the config.
         let version = interpret_version(version).unwrap_or(Version::V1);
         match rustls::quic::ServerConnection::new(self.inner.clone(), version, to_vec(params)) {
-            Ok(conn) => Box::new(TlsSession { version, got_handshake_data: false, next_secrets: None, inner: Connection::Server(conn), suite: self.initial }),
+            Ok(conn) => Box::new(TlsSession {
+                version,
+                got_handshake_data: false,
+                next_secrets: None,
+                inner: Connection::Server(conn),
+                suite: self.initial,
+            }),
             Err(_) => unreachable!("QuicServerConfig::new checked that rustls accepts this config"),
         }
     }
@@ -353,7 +390,9 @@ impl ResetKey {
     pub fn new(rng: &'static dyn Random) -> Result<Self, rustls::Error> {
         let mut k = Zeroizing::new([0u8; 64]);
         crate::random::fill(rng.as_secure_random(), k.as_mut())?;
-        <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(k.as_ref()).map(Self).map_err(|_| rustls::Error::General("hmac key".into()))
+        <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(k.as_ref())
+            .map(Self)
+            .map_err(|_| rustls::Error::General("hmac key".into()))
     }
 }
 
@@ -406,7 +445,10 @@ struct TokenAead(Aes256Gcm);
 
 impl crypto::AeadKey for TokenAead {
     fn seal(&self, data: &mut Vec<u8>, additional_data: &[u8]) -> Result<(), CryptoError> {
-        let tag = self.0.encrypt_inout_detached(&[0u8; 12].into(), additional_data, data.as_mut_slice().into()).map_err(|_| CryptoError)?;
+        let tag = self
+            .0
+            .encrypt_inout_detached(&[0u8; 12].into(), additional_data, data.as_mut_slice().into())
+            .map_err(|_| CryptoError)?;
         data.extend_from_slice(&tag);
         Ok(())
     }
@@ -415,7 +457,9 @@ impl crypto::AeadKey for TokenAead {
         let n = data.len().checked_sub(16).ok_or(CryptoError)?;
         let (body, tag) = data.split_at_mut(n);
         let tag: &aes_gcm::Tag = (&*tag).try_into().map_err(|_| CryptoError)?;
-        self.0.decrypt_inout_detached(&[0u8; 12].into(), additional_data, (&mut *body).into(), tag).map_err(|_| CryptoError)?;
+        self.0
+            .decrypt_inout_detached(&[0u8; 12].into(), additional_data, (&mut *body).into(), tag)
+            .map_err(|_| CryptoError)?;
         Ok(body)
     }
 }

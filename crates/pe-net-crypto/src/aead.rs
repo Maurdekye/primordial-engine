@@ -5,8 +5,9 @@
 use aes_gcm::aead::AeadInOut;
 use aes_gcm::{Aes128Gcm, KeyInit};
 use rustls::crypto::cipher::{
-    make_tls13_aad, AeadKey, InboundOpaqueMessage, InboundPlainMessage, Iv, MessageDecrypter, MessageEncrypter, Nonce,
+    AeadKey, InboundOpaqueMessage, InboundPlainMessage, Iv, MessageDecrypter, MessageEncrypter, Nonce,
     OutboundOpaqueMessage, OutboundPlainMessage, PrefixedPayload, Tls13AeadAlgorithm, UnsupportedOperationError,
+    make_tls13_aad,
 };
 use rustls::{ConnectionTrafficSecrets, ContentType, Error, ProtocolVersion};
 
@@ -77,9 +78,7 @@ impl MessageDecrypter for Records {
         let aad = make_tls13_aad(len);
         let (body, tag) = payload.split_at_mut(len - TAG);
         let tag: &aes_gcm::Tag = (&*tag).try_into().map_err(|_| Error::DecryptError)?;
-        self.aead
-            .decrypt_inout_detached(&nonce.into(), &aad, body.into(), tag)
-            .map_err(|_| Error::DecryptError)?;
+        self.aead.decrypt_inout_detached(&nonce.into(), &aad, body.into(), tag).map_err(|_| Error::DecryptError)?;
         payload.truncate(len - TAG);
         msg.into_tls13_unpadded_message()
     }

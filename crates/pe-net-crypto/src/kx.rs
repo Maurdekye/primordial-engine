@@ -81,9 +81,15 @@ mod tests {
 
     #[test]
     fn refuses_low_order_and_bad_length() {
-        let ex = Box::new(X25519Exchange { secret: x25519_dalek::StaticSecret::from([7u8; 32]), public: x25519_dalek::PublicKey::from([9u8; 32]) });
+        let ex = Box::new(X25519Exchange {
+            secret: x25519_dalek::StaticSecret::from([7u8; 32]),
+            public: x25519_dalek::PublicKey::from([9u8; 32]),
+        });
         assert!(ex.complete(&[0u8; 32]).is_err()); // the all-zero point gives a non-contributory secret
-        let ex = Box::new(X25519Exchange { secret: x25519_dalek::StaticSecret::from([7u8; 32]), public: x25519_dalek::PublicKey::from([9u8; 32]) });
+        let ex = Box::new(X25519Exchange {
+            secret: x25519_dalek::StaticSecret::from([7u8; 32]),
+            public: x25519_dalek::PublicKey::from([9u8; 32]),
+        });
         assert!(ex.complete(&[1u8; 31]).is_err());
     }
 }

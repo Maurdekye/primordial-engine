@@ -4,10 +4,10 @@
 use aes::cipher::BlockCipherEncrypt;
 use aes_gcm::aead::AeadInOut;
 use aes_gcm::{Aes128Gcm, KeyInit};
+use rustls::crypto::CipherSuiteCommon;
 use rustls::crypto::cipher::{AeadKey, Iv, Nonce};
 use rustls::crypto::tls13::HkdfUsingHmac;
-use rustls::crypto::CipherSuiteCommon;
-use rustls::{quic, CipherSuite, Error, Tls13CipherSuite};
+use rustls::{CipherSuite, Error, Tls13CipherSuite, quic};
 
 use crate::aead::Tls13Aes128Gcm;
 use crate::hash::{HMAC_SHA256, SHA256};
@@ -67,14 +67,17 @@ struct PacketKey {
 impl quic::PacketKey for PacketKey {
     fn encrypt_in_place(&self, packet_number: u64, header: &[u8], payload: &mut [u8]) -> Result<quic::Tag, Error> {
         let nonce = Nonce::new(&self.iv, packet_number).0;
-        let tag = self
-            .aead
-            .encrypt_inout_detached(&nonce.into(), header, payload.into())
-            .map_err(|_| Error::EncryptError)?;
+        let tag =
+            self.aead.encrypt_inout_detached(&nonce.into(), header, payload.into()).map_err(|_| Error::EncryptError)?;
         Ok(quic::Tag::from(tag.as_slice()))
     }
 
-    fn decrypt_in_place<'a>(&self, packet_number: u64, header: &[u8], payload: &'a mut [u8]) -> Result<&'a [u8], Error> {
+    fn decrypt_in_place<'a>(
+        &self,
+        packet_number: u64,
+        header: &[u8],
+        payload: &'a mut [u8],
+    ) -> Result<&'a [u8], Error> {
         let len = payload.len();
         if len < TAG {
             return Err(Error::DecryptError);
@@ -143,8 +146,8 @@ impl quic::HeaderProtectionKey for HeaderKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustls::quic::{HeaderProtectionKey as _, PacketKey as _, Version};
     use rustls::Side;
+    use rustls::quic::{HeaderProtectionKey as _, PacketKey as _, Version};
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
@@ -170,7 +173,10 @@ mod tests {
         let pn_offset = header.len() - pn_len;
         let sample: Vec<u8> = packet[pn_offset + 4..pn_offset + 20].to_vec();
         let (first, rest) = packet.split_at_mut(1);
-        keys.local.header.encrypt_in_place(&sample, &mut first[0], &mut rest[pn_offset - 1..pn_offset - 1 + pn_len]).unwrap();
+        keys.local
+            .header
+            .encrypt_in_place(&sample, &mut first[0], &mut rest[pn_offset - 1..pn_offset - 1 + pn_len])
+            .unwrap();
         packet
     }
 
@@ -197,7 +203,10 @@ mod tests {
         let sample: Vec<u8> = packet[pn_offset + 4..pn_offset + 20].to_vec();
         {
             let (first, rest) = packet.split_at_mut(1);
-            keys.remote.header.decrypt_in_place(&sample, &mut first[0], &mut rest[pn_offset - 1..pn_offset + 3]).unwrap();
+            keys.remote
+                .header
+                .decrypt_in_place(&sample, &mut first[0], &mut rest[pn_offset - 1..pn_offset + 3])
+                .unwrap();
         }
         let header = vector("a3_header");
         assert_eq!(&packet[..20], &header[..]);
@@ -213,7 +222,8 @@ mod tests {
 
     #[test]
     fn wycheproof_aes_gcm_through_the_packet_key() {
-        let data: serde_json::Value = serde_json::from_str(include_str!("../tests/data/wycheproof-aes-gcm-128-iv96.json")).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/data/wycheproof-aes-gcm-128-iv96.json")).unwrap();
         let tests = data["tests"].as_array().unwrap();
         assert!(tests.len() >= 60);
         let (mut valid, mut invalid) = (0, 0);

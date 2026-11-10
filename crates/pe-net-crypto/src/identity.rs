@@ -17,8 +17,10 @@ use std::sync::Arc;
 
 use ed25519_dalek::pkcs8::{EncodePrivateKey, EncodePublicKey};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{verify_tls13_signature_with_raw_key, CryptoProvider};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, SubjectPublicKeyInfoDer, UnixTime};
+use rustls::crypto::{CryptoProvider, verify_tls13_signature_with_raw_key};
+use rustls::pki_types::{
+    CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, SubjectPublicKeyInfoDer, UnixTime,
+};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::sign::CertifiedKey;
 use rustls::{DigitallySignedStruct, DistinguishedName, Error, SignatureScheme};
@@ -73,9 +75,33 @@ impl Identity {
     }
 }
 
+/// Seam S1: entries are signed with the member key. pe-seams adds `SIGNING_PREFIX` to the bytes it passes,
+/// so no entry signature can stand for a TLS CertificateVerify, or the other way round (transport.md 2.2).
+impl pe_seams::Signer for Identity {
+    fn key(&self) -> pe_seams::MemberKey {
+        pe_seams::MemberKey(self.public())
+    }
+
+    fn sign(&self, msg: &[u8]) -> pe_seams::Signature {
+        use ed25519_dalek::Signer as _;
+        pe_seams::Signature(self.signing.sign(msg).to_bytes())
+    }
+}
+
+/// Seam S1's verifier: Ed25519 `verify_strict` (small-order keys and malleable signatures refused).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StrictVerifier;
+
+impl pe_seams::Verifier for StrictVerifier {
+    fn verify(&self, key: &pe_seams::MemberKey, msg: &[u8], sig: &pe_seams::Signature) -> bool {
+        crate::sign::verify_strict(&key.0, msg, &sig.0).is_ok()
+    }
+}
+
 /// SubjectPublicKeyInfo DER for an Ed25519 public key; an error for bytes that aren't a valid point.
 pub fn spki_of(public: &PeerId) -> Result<Vec<u8>, Error> {
-    let key = ed25519_dalek::VerifyingKey::from_bytes(public).map_err(|_| Error::General("not an Ed25519 key".into()))?;
+    let key =
+        ed25519_dalek::VerifyingKey::from_bytes(public).map_err(|_| Error::General("not an Ed25519 key".into()))?;
     Ok(key.to_public_key_der().map_err(|_| Error::General("spki".into()))?.as_bytes().to_vec())
 }
 
@@ -128,7 +154,13 @@ pub struct Reply {
 
 impl Invite {
     pub fn encode(&self) -> String {
-        with_check(format!("pe1:{}/{}/{}/{}", hex(&self.id), hex(&self.key), self.expiry_unix_s, addrs_text(&self.addrs)))
+        with_check(format!(
+            "pe1:{}/{}/{}/{}",
+            hex(&self.id),
+            hex(&self.key),
+            self.expiry_unix_s,
+            addrs_text(&self.addrs)
+        ))
     }
 
     pub fn decode(s: &str) -> Result<Self, TextError> {
@@ -194,7 +226,11 @@ fn addrs_text(addrs: &[SocketAddr]) -> String {
 }
 
 fn parse_addrs(s: &str) -> Result<Vec<SocketAddr>, TextError> {
-    let v: Vec<SocketAddr> = s.split(',').filter(|x| !x.is_empty()).map(|x| x.parse().map_err(|_| TextError::BadAddr)).collect::<Result<_, _>>()?;
+    let v: Vec<SocketAddr> = s
+        .split(',')
+        .filter(|x| !x.is_empty())
+        .map(|x| x.parse().map_err(|_| TextError::BadAddr))
+        .collect::<Result<_, _>>()?;
     if v.is_empty() {
         return Err(TextError::NoAddrs);
     }
@@ -240,8 +276,17 @@ fn unhex_n<const N: usize>(s: &str) -> Result<[u8; N], TextError> {
     Ok(out)
 }
 
-fn verify_sig(message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
-    verify_tls13_signature_with_raw_key(message, &SubjectPublicKeyInfoDer::from(cert.as_ref()), dss, &crate::sign::ALGORITHMS)
+fn verify_sig(
+    message: &[u8],
+    cert: &CertificateDer<'_>,
+    dss: &DigitallySignedStruct,
+) -> Result<HandshakeSignatureValid, Error> {
+    verify_tls13_signature_with_raw_key(
+        message,
+        &SubjectPublicKeyInfoDer::from(cert.as_ref()),
+        dss,
+        &crate::sign::ALGORITHMS,
+    )
 }
 
 /// The joiner's check of the side it dials: the raw key must be the invite's (or the reply code's).
@@ -257,7 +302,14 @@ impl PinnedKey {
 }
 
 impl ServerCertVerifier for PinnedKey {
-    fn verify_server_cert(&self, end_entity: &CertificateDer<'_>, intermediates: &[CertificateDer<'_>], _name: &ServerName<'_>, _ocsp: &[u8], _now: UnixTime) -> Result<ServerCertVerified, Error> {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        _name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, Error> {
         if intermediates.is_empty() && end_entity.as_ref() == self.spki.as_slice() {
             Ok(ServerCertVerified::assertion())
         } else {
@@ -265,11 +317,21 @@ impl ServerCertVerifier for PinnedKey {
         }
     }
 
-    fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+    fn verify_tls12_signature(
+        &self,
+        _: &[u8],
+        _: &CertificateDer<'_>,
+        _: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
         Err(Error::General("TLS 1.2 is not used".into()))
     }
 
-    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
         verify_sig(message, cert, dss)
     }
 
@@ -292,7 +354,12 @@ impl ClientCertVerifier for AnyPeerKey {
         &[]
     }
 
-    fn verify_client_cert(&self, end_entity: &CertificateDer<'_>, intermediates: &[CertificateDer<'_>], _now: UnixTime) -> Result<ClientCertVerified, Error> {
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, Error> {
         if intermediates.is_empty() && peer_id_of(end_entity.as_ref()).is_some() {
             Ok(ClientCertVerified::assertion())
         } else {
@@ -300,11 +367,21 @@ impl ClientCertVerifier for AnyPeerKey {
         }
     }
 
-    fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+    fn verify_tls12_signature(
+        &self,
+        _: &[u8],
+        _: &CertificateDer<'_>,
+        _: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
         Err(Error::General("TLS 1.2 is not used".into()))
     }
 
-    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
         verify_sig(message, cert, dss)
     }
 
@@ -343,7 +420,11 @@ mod tests {
 
     #[test]
     fn reply_round_trip() {
-        let r = Reply { invite_id: [8; 8], key: Identity::from_seed(&[3; 32]).public(), addrs: vec!["10.0.0.2:5000".parse().unwrap()] };
+        let r = Reply {
+            invite_id: [8; 8],
+            key: Identity::from_seed(&[3; 32]).public(),
+            addrs: vec!["10.0.0.2:5000".parse().unwrap()],
+        };
         assert_eq!(Reply::decode(&r.encode()).unwrap(), r);
         assert_eq!(Invite::decode(&r.encode()), Err(TextError::BadPrefix));
     }
@@ -373,6 +454,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn s1_signer_and_strict_verifier() {
+        use pe_seams::{Signer, Verifier};
+        let id = Identity::from_seed(&[6; 32]);
+        let msg = [pe_seams::entry::SIGNING_PREFIX, b"entry bytes"].concat();
+        let sig = id.sign(&msg);
+        assert_eq!(id.key().0, id.public());
+        assert!(StrictVerifier.verify(&id.key(), &msg, &sig));
+        assert!(!StrictVerifier.verify(&id.key(), b"entry bytes", &sig), "the prefix is part of what is signed");
+        let mut bad = pe_seams::Signature(sig.0);
+        bad.0[10] ^= 1;
+        assert!(!StrictVerifier.verify(&id.key(), &msg, &bad));
+        let other = Identity::from_seed(&[7; 32]);
+        assert!(!StrictVerifier.verify(&other.key(), &msg, &sig));
+        // The identity point as a key: refused whatever the signature.
+        let mut weak = [0u8; 32];
+        weak[0] = 1;
+        let mut s0 = [0u8; 64];
+        s0[0] = 1;
+        assert!(!StrictVerifier.verify(&pe_seams::MemberKey(weak), &msg, &pe_seams::Signature(s0)));
     }
 
     #[test]
