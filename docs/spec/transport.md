@@ -384,6 +384,10 @@ seconds (the user's ruling md4b42d16d9df: the tick rate is configurable per worl
 - **It is clock-ready** when that target has moved less than `E_ready` for three rounds running. It then tells
   pe-agree, and pe-agree's join waits for that.
 - **The order:** the welcome, then the mesh, then the samples, then clock-ready, then pe-agree's join.
+- **The quorum counts the start cut's list,** not the welcome's hint (6.4). If the cut's list differs from the
+  hint, the joiner connects to the members it was missing and re-checks its quorum against the cut's list
+  before it acts. So a hint that leaves members out can't make it ready on too few [@design-reviewer's Low on
+  draft 1.1].
 - **If it isn't ready within `T_ready`,** that is a `ClockFault` (5.6), and the join fails with its reason.
 - **A world's first member** has offset 0, and is ready at once.
 
