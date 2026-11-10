@@ -1,0 +1,22 @@
+[package]
+name = "pe-xr"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "OpenXR for Primordial Engine: the session, stereo through pe-render, tracked hands into hand samples, frame pacing (docs/spec/xr.md)"
+
+# Standalone until WS-seams adds pe-xr to the root workspace with pe-seams v0 (the root Cargo.toml is
+# WS-seams's). This table goes then, and `seam.rs`'s stand-ins become re-exports of pe-seams.
+[workspace]
+
+[dependencies]
+# No features: not `loaded` (it would look for Khronos' C++ loader, which Windows doesn't have), and never
+# `static` or `linked`, which build or link that loader. `loader.rs` loads the runtime itself (spec 2).
+openxr = { version = "=0.22.0", default-features = false }
+libloading = "0.8"
+serde_json = "1"
+arc-swap = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
