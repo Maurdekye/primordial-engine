@@ -1,6 +1,7 @@
 # pe-app: the application (WS-app)
 
-Owner: @engine-architect. Draft 2, 2026-11-10 (@design-reviewer's review of draft 1, mf5074c5ab2fd). Plan: docs/refound-plan.md 3.1 and 3.2 (threads are WS-app's to decide
+Owner: @engine-architect. Draft 3, 2026-11-11 (@design-reviewer's reviews of drafts 1 and 2, mf5074c5ab2fd and
+m94ee513a61ac; pe-render's desktop view, @ballpit-viz, mf78a9a2a2ecc). Plan: docs/refound-plan.md 3.1 and 3.2 (threads are WS-app's to decide
 with WS-state, WS-render and WS-xr). Seams: crates/pe-seams (S1-S6, RULINGS.md).
 
 ## 0. In short
@@ -19,7 +20,7 @@ with WS-state, WS-render and WS-xr). Seams: crates/pe-seams (S1-S6, RULINGS.md).
 
 | Thread | Runs | Owns | Spawned with |
 |---|---|---|---|
-| Main | winit's event loop; on the desktop, pe-render's `Presenter` per frame, paced by `Fifo` present | the window, the desktop GPU context, the desktop hand | the process |
+| Main | winit's event loop; on the desktop, pe-render's `DesktopView`: every window event is forwarded to it, `about_to_wait` requests a redraw, and `RedrawRequested` draws one frame (pacing, the desktop hand, the `Presenter`, effects, the present) | the window, the desktop GPU context, the desktop hand | the process |
 | Simulation | the tick of section 3 | pe-agree's `Agreement`, pe-replica's `Replica` (with pe-world and pe-logic inside), pe-diverge's state | a stack of pe-logic's `Settings::thread_stack()` (`max_wasm_stack` + 2 MiB; logic.md 5.1), because it runs wasm guests. The floating-point guard holds at every guest entry (N11) |
 | Network | pe-net's `Core` over the socket (transport.md 7) | the socket, QUIC, the lanes, the rate budget, the clock | pe-net's runner |
 | XR (VR mode) | pe-xr's frame loop (xr.md 7.1); it is the render thread in VR | the OpenXR session, the XR GPU context, the hand ring | pe-xr's runner |
@@ -43,6 +44,7 @@ with WS-state, WS-render and WS-xr). Seams: crates/pe-seams (S1-S6, RULINGS.md).
 | Edits | pe-api's handlers | simulation | pe-api's bounded edit queue; full means `rate_limited` to the caller (api.md 9.2) |
 | Hand samples | desktop hand (main thread) or pe-xr's ring | simulation | `HandFeed::hand_at(hand, host_time_of(frame))` (S5) |
 | Messages in and out | network | simulation | pe-net's bounded single-producer queues of `Received` and `(peer, lane, bytes)` (transport.md 7) |
+| The host clock | pe-app | every thread | one monotonic clock giving `HostTime` (QPC on Windows, `CLOCK_MONOTONIC` elsewhere), made once and handed to pe-render's `DesktopConfig`, pe-net's runner, pe-xr and the simulation thread, so every time is on one base |
 | The session clock | network | simulation, XR, main | pe-net's clock model behind `FrameClock` (S4), read lock-free |
 | Effects to play | main or XR thread | the audio sink (M1: counted and logged only), pe-xr's haptics | a bounded queue |
 | Self-test requests and verdicts | simulation, worker | worker, simulation | a bounded queue each way |
@@ -85,7 +87,11 @@ tick would stall the simulation for hundreds of milliseconds, and with it agreem
 other member. So the replica re-simulates at most a budget of frames per call, expressed as simulated time (a local
 setting, deterministic for the harness; pe-app may adjust it from the measured step cost), and resumes on the next
 call. Until it has reached the present again it publishes no new frame view, so the display keeps drawing, and
-extrapolating, the last one, while agreement keeps ticking and voting. A replay or an import that does not fit in one
+extrapolating, the last one, while agreement keeps ticking and voting. The budget is never below two frames of
+simulated time at the world's rate, because real time adds a frame per tick and a budget of one frame never catches
+up (S2's floor; @design-reviewer's Low on 549f4ca4); pe-app raises it from the measured step cost, never below that
+floor. Each hold is counted, with its length; the objects that jump when the view resumes are blended and, above
+`E_cue`, cued like any correction (render.md 8, D2-D3). A replay or an import that does not fit in one
 call returns "pending" and is called again on a later tick. The budget is part of S2 (`Advance::caught_up`,
 `RootError::Pending`, `ImportError::Pending`). M2's second copy then keeps the old prediction moving during a deep
 replay instead of holding the view.
@@ -132,6 +138,10 @@ that ships is the loop the properties check.
 
 ## 6. The M1 demo
 
+**The desktop player** (B, U4) moves only the camera's eye within the rig (WASD and right-drag, pe-render), and
+touches with the desktop hand: `Hand::Right` from pe-render's `DesktopHandFeed`, read through `HandFeed` like pe-xr's
+hands. Moving the rig itself, an input entry, is after M1: the demo does not need it.
+
 The demo is the plan's M1 sequence (docs/refound-plan.md section 1, M1), as one script per machine: A opens the ball
 pit and prints an invite; B joins on the desktop; both see and touch the balls; an agent on A edits the lamp script
 through MCP; B's lamp changes at the agreed frame. The script drives pe-app through its configuration and MCP only,
@@ -142,7 +152,8 @@ so the same script is the two-process acceptance test.
 - **No waiting:** the simulation keeps its rate with the render thread stalled, with the network inbox full, and with
   the edit queue full (each a test with a mock on the other side).
 - **No stall in a repair:** during a rung-1 replay of `W_fg`, and during a rollback of `W_fg`, every tick ends on
-  time, votes and messages keep flowing, and the frame view resumes within the catch-up time the budget gives.
+  time, votes and messages keep flowing, and the frame view resumes within the catch-up time the budget gives: at
+  the floor budget of two frames, a `W_fg` backlog catches up within `W_fg`.
 - **Startup without a GPU:** headless capture works, so CI runs the two-process test.
 - **Shutdown:** the leave reaches the other member, which pauses for zero frames.
 - **The two-process session** of section 6, on Windows and Linux.

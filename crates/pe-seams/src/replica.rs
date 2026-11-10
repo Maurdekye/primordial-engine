@@ -492,7 +492,9 @@ pub trait Replica: Send {
     fn frame(&self) -> Frame;
 
     /// The most simulated time one call may re-simulate or step: a local setting, never world state, which pe-app may
-    /// adjust from the measured step cost. It changes how fast the replica catches up, never what it computes.
+    /// adjust from the measured step cost. It changes how fast the replica catches up, never what it computes. It is
+    /// never below two frames at the world's rate: a smaller value is raised to that floor, because real time adds a
+    /// frame per call and a budget of one frame would never catch up (@design-reviewer's Low on 549f4ca4).
     fn set_budget(&mut self, simulated: Duration);
 
     /// Re-simulate from the earliest changed frame, never below the replica's own floor (the last cut it finalized,
