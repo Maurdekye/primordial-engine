@@ -20,7 +20,8 @@ Numbers marked [I] are starting values, tuned at the M1 headset test.
   - default features off, so no GLES;
   - the DX12 shader compiler pinned;
   - a GPU context accepted from outside;
-  - DX12 on Windows, so entering VR can keep the context.
+  - Vulkan first, on Windows too, with multiview; D3D12 with FXC and two passes is the fallback [R coordinator, on review
+    M1].
 - **Pacing follows the display.** pe-render paces to whatever period the monitor or the runtime reports, and budgets
   per period [R m981c546957f2: "work with whatever the runtime gives actually"].
 - **Camera-relative everything.** A position reaches the GPU only as `object Pos − camera Pos`, an f64 difference cast
@@ -53,9 +54,13 @@ Numbers marked [I] are starting values, tuned at the M1 headset test.
   for capture labels (pure Rust). pe-render **re-exports `wgpu` and `wgpu-hal`**, and pe-xr uses only those (xr.md 8.2).
 - **Why no GLES:** wgpu's default features pull GLES. That adds khronos-egl ("links a system library") and a static
   import of `opengl32.dll`; without it, both are gone [V M0, `imports-windows.txt`].
-- **The DX12 shader compiler is pinned to FXC** (`Dx12Compiler::Fxc`, `d3dcompiler_47.dll`, part of Windows). wgpu's
-  default `Auto` loads any `dxcompiler.dll` found on the PATH [V wgpu-types 30 source], an unregistered boundary. If
-  FXC's shader model 5.1 limits us, DXC is shipped at a known path and registered instead [I].
+- **The DX12 shader compiler is pinned to FXC** (`Dx12Compiler::Fxc`, `d3dcompiler_47.dll`, part of Windows), for
+  the D3D12 fallback. wgpu's default `Auto` loads any `dxcompiler.dll` found on the PATH [V wgpu-types 30 source],
+  an unregistered boundary.
+  - **The cost:** with FXC, wgpu-hal runs D3D12 at shader model 5.1, and D3D12 multiview needs view instancing and
+    SM 6.1. So the D3D12 path draws two passes per frame [V @shader-reviewer, wgpu-hal 30 dx12/adapter.rs:436, 722].
+  - **Shipping DXC is out:** it would distribute a native Microsoft binary, beyond the boundaries the user's D1
+    ruling allows, unless the user asks for it [R coordinator, on review M1].
 - **The register of boundaries** (plan A8) gets pe-render's rows, from the M0 report section 4:
   - the Vulkan loader and driver;
   - `d3d12.dll`, `dxgi.dll` and the D3D12 driver;
@@ -91,8 +96,14 @@ pub struct GpuContext { pub instance: wgpu::Instance, pub adapter: wgpu::Adapter
 
 - **Accepted from outside** (xr.md 4.1). In VR mode pe-xr creates it on the runtime's adapter. In desktop mode
   pe-render creates it.
-- **The desktop context, on Windows, is DX12,** with `Features::MULTIVIEW` whenever the adapter offers it. Entering VR
-  then keeps it, if the adapter's LUID is the runtime's (xr.md 4.1). On Linux it is Vulkan.
+- **Vulkan everywhere first** [R coordinator, on review M1]. The desktop context is Vulkan on Windows and Linux,
+  with `Features::MULTIVIEW` when offered.
+  - Entering VR on the Vulkan path **re-creates the context**, because the runtime must create the VkInstance and
+    VkDevice (xr.md 4.1). It happens before the session exists, and again on leaving VR. The display layer's CPU state
+    survives both, so nothing jumps.
+  - **The D3D12 fallback,** if the runtime's Vulkan path fails: a DX12 context on the runtime's LUID, which leaving VR
+    can keep, drawing two passes (FXC, section 2).
+  - M0 measured both on the user's headset: Vulkan 944 of 944 frames, D3D12 941 of 941, at 120 Hz [V].
 - **Limits:** pe-render states its own limit set, `Limits::default()` raised only where it needs more. It never asks
   for an adapter's full limits: wgpu-core asserts `max_buffer_size <= u32::MAX`, and the full limits break that
   [V M0 headset run].
@@ -130,7 +141,8 @@ impl Renderer {
   Desktop's runtime takes an infinite far is open (R2).
 - **The player's scale** is unbounded (xr.md). Near and far scale with the rig's scale, so a giant's world and an
   ant's world both fit the depth range [I].
-- **Stereo:** with `Features::MULTIVIEW`, both eyes in one pass; without it, one pass per eye, as the M0 check does.
+- **Stereo:** with `Features::MULTIVIEW` (Vulkan), both eyes in one pass. Without it, which includes the D3D12
+  fallback under FXC, one pass per eye, as the M0 check does; that cost is measured at the headset test.
 
 ## 6. The scene renderer (M1)
 
@@ -169,8 +181,9 @@ impl Renderer {
     drawn from a guess, but the world (not the head or the own hands) is that much late.
 - **What each costs, at the lead measured on Virtual Desktop** (38-63 ms p50-p95 [V M0]):
   - (a) draws a ball at 5 m/s up to 30 cm from where the next frame view puts it, when it hits something meanwhile.
-    The display layer then blends that error away like a correction, counted apart from corrections
-    (`extrapolation_error`, section 11).
+    The display layer blends that miss exactly as a correction (D2), and **in-view misses above `E_cue` carry the
+    cue and count** under the user's target [R coordinator, on review M2]: the player sees a jump the same way
+    whatever caused it. `extrapolation_error` reports them apart as well.
   - (b) shows every object 40-60 ms or more after its simulated time.
   - Neither makes a pushed ball react sooner: the simulation hasn't seen the push yet.
 - **Counted either way** (for pe-xr's counters too): `t_draw − display_time`, the extrapolation span, the age of the
@@ -187,17 +200,25 @@ State: per object id, on the render thread, a **drawn pose** and a **correction 
 that decays to zero. The simulated pose comes from S5; time-resolving it (section 7) gives the **target pose**.
 
 - **D1. Two poses.** drawn = target ∘ offset. The simulation never reads the drawn pose.
-- **D2. Blending a correction.** When S5 marks an object `corrected` (its simulated pose was rewritten by a replay,
-  repair or merge since the last publication):
-  - the offset becomes `drawn_before − target_now`, so the drawn pose doesn't move at that instant;
+- **D2. Blending a correction.** On **every new frame view**, for every object not held (D4), the offset becomes
+  `drawn_before − target_now`, so the drawn pose never moves at the instant a frame view arrives. A non-zero offset
+  has two causes, and both blend under D3:
+  - **a correction:** S5 marks the object `corrected` (its simulated pose was rewritten by a replay, repair or merge
+    since the last publication). It counts in `corrections_per_min`;
+  - **an extrapolation miss** under X8 (a): the object did something between frame views that its velocity didn't
+    predict. It counts in `extrapolation_error`, and in `snaps_in_view` and `cueless_large_corrections` exactly like
+    a correction [R coordinator, on review M2].
+  - Under X8 (b) and for objects in steady motion, the offset is zero up to float error, so nothing blends.
+  The blend itself:
   - the offset then decays with a monotone smoothstep over the blend time. Position decays linearly in the gap;
     rotation decays by slerp to identity. There is no overshoot;
   - a further correction mid-blend restarts from the current drawn pose, never jumping back.
 - **D3. By size and by view.** With `e` the offset's size (position, or angle as a distance at the object's bounding
   radius):
   - `e < E_small` (5 cm or 10° [I]): blend over `T_blend` (100 ms);
+  - `E_small` ≤ `e` ≤ `E_snap`, out of every view: blend over `T_blend`, with no cue (review L1);
   - `e > E_snap` (1 m or 90°) and out of every view: jump, with offset 0;
-  - otherwise in view: blend over `T_blend`, or over `T_fast` (40 ms) above `E_snap`;
+  - in view: blend over `T_blend`, or over `T_fast` (40 ms) above `E_snap`;
   - **every in-view correction above `E_cue`** (a hand's width, 10 cm [R meef4f248923b]) **carries the cue.** My
     proposal for the cue (R6): a 250 ms fading outline on the object, plus a faint ghost at the pose it left, fading
     over the same time. It is visible, but not a flash. `cueless_large_corrections` counts any miss; the code path
@@ -209,7 +230,8 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
   get no offset, ever.
   - In VR the own hands are drawn at pe-xr's late-latched pose (`LocalPresentation.hands`), and a held object at
     that pose times the S5 grip offset (xr.md 5.6, X1). "Draw where simulated" is the other setting.
-  - On the desktop the own hand is drawn at its simulated pose.
+  - On the desktop the own hand is drawn at its current input pose (the mouse ray now, section 9): the desktop's
+    late-latch, never extrapolated or corrected. A held object follows it at the grip offset.
   - **When a hold ends** (released, thrown, or undone because a race was lost), the object enters the display layer
     with its last drawn pose and velocity. Its offset is set from there and blends; a lost grab also plays its short
     cue (D7).
@@ -220,8 +242,12 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
 - **D5. Remote hands blend** like any object.
 - **D6. One-shot effects fire once.**
   - pe-render keeps the set of effect keys already played (frame, causing entry or "physics", object, kind,
-    ordinal), for as long as a replay can reach back (a duration);
+    ordinal), covering `W_fg` (2 s) (divergence.md 069e147d);
   - a key seen again is not replayed;
+  - **a new one-shot effect plays only if its causing entry arrived at this machine within `T_effect_lag` (1 s) of
+    the effect's frame.** An effect that arises only from a merge, or from a replay with no newly arrived cause, is
+    never played; its sustained state shows as state. So a remote push at 0.6 s one-way still sounds its collision
+    once, and a 60 s merge plays nothing (divergence.md 8, D6);
   - a sustained effect whose key lands in S5's retracted list stops, fading over `T_blend`;
   - own effects play at once; others' wait `D_effect`, a duration (default 0 s).
   - pe-render plays visual effects (particles) itself. It hands sound and haptic plays and stops, already
@@ -236,13 +262,15 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
 
 B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the same").
 
-- **The ray:** from the camera through the cursor. The hand sits where the ray first hits a drawn solid, 3 cm short
-  of the surface. With nothing hit, it sits at the last depth used (default 1.5 m).
+- **The ray:** from the camera through the cursor. Hovering, the hand sits where the ray first hits a drawn solid,
+  3 cm short of the surface, so pointing at something never disturbs it. With nothing hit, it sits at the last depth
+  used (default 1.5 m).
 - **Grab:** the left button closes the hand (`closed = true`, `grip = 1`). While closed, the ray's depth is locked at
   the grab distance, so the held object moves in the plane facing the camera. The wheel changes the depth. Releasing
   the button opens the hand; the hand's velocity at release throws.
-- **Push:** with the button up, moving the hand into objects pushes them. The hand is a physical body in the
-  simulation, as tracked hands are.
+- **Push (deliberate, review L3):** holding Shift drives the hand along the ray, 10 cm past the surface it hovers
+  over, at about 1 m/s, and moving the cursor then sweeps it through what it touches. The hand is a physical body in
+  the simulation, as tracked hands are; only Shift or a grab puts it into contact.
 - **Orientation:** the hand faces along the ray. Q and E roll it (for the "rotation" a hand entry carries).
 - **Camera:** right-drag orbits and WASD moves the rig, as fly controls in M1. The UI lab revisits them.
 - **Output:** `HandInput { source: Desktop, ... }` in the rig frame, pushed to a ring that implements `HandFeed`
@@ -263,6 +291,9 @@ B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the
   step (0.1, down to 0.7), and MSAA in VR drops before it. Within 70% of budget for 2 s: back up a step. Every limit
   here is a duration, never a frame count [R md4b42d16d9df]. A single miss is the compositor's (VR) or
   vsync's (desktop) to absorb.
+- **Passes per frame in VR:** the Vulkan path, one multiview pass plus the key light's shadow pass. The D3D12 fallback,
+  two eye passes plus the shadow pass, so its CPU recording and vertex cost about double. The 120 Hz budget
+  (xr.md 7.3: about 6 ms of GPU) is checked on both paths at the headset test, with 500 balls [I until measured].
 - **Measured baseline** [V M0, a feasibility renderer with 40 bodies]:
   - window at 165 Hz: p50 6.06 ms, p99 7.28 ms present interval;
   - headset at 120 Hz (Quest 3 via Virtual Desktop), D3D12 and Vulkan: 941 and 944 of 941 and 944 frames submitted
@@ -304,7 +335,8 @@ Beyond world-model.md 9.3's object fields (id, class, simulated `Pos`, rotation 
 - **`corrected`** per object: the simulated pose was rewritten by a replay since the last publication (divergence.md
   11.3). Interpolation can't tell a correction from fast motion;
 - **the grip offset** of a held object (xr.md 8.1);
-- **effect events** with their stable keys, plus the retracted list (D6);
+- **effect events** with their stable keys, plus the retracted list, and per effect the arrival time of its causing
+  entry, or a flag that it arose with no newly arrived cause (D6);
 - **a bounding radius** per object, or the shape that gives it, for view tests, the desktop hand and captures;
 - **a frame view that can be held:** the render thread keeps two (newest and previous), and a capture keeps its
   snapshot until drawn. So frame views are `Arc`s that the simulation never mutates after publishing.
@@ -354,10 +386,10 @@ For @coordinator-opus unless marked; my proposal first.
 
 | # | Point | Proposal |
 |---|---|---|
-| R1 (with @xr-eng) | X8, the drawn time | (a) extrapolate, capped at `L_max`, as the default; (b) as a setting; the headset test judges |
+| R1 (with @xr-eng) | X8, the drawn time | (a) extrapolate, capped at `L_max`, as the default; (b) as a setting; the headset test judges. Misses blend, cue and count either way (ruled, review M2) |
 | R2 (with @xr-eng) | Infinite far plane in VR's depth layer | Finite in VR (100 × rig scale [I]) until Virtual Desktop's runtime is shown to accept infinite |
 | R3 | Shadows in M1 | One shadow-casting key light; lamps unshadowed |
-| R4 | The DX12 shader compiler | FXC pinned. DXC only if needed, then shipped and registered |
+| R4 | The graphics path and shader compiler | **Ruled** (on review M1): Vulkan first, with multiview; D3D12 with FXC, two passes, as the fallback; no shipped DXC |
 | R5 (WS-app) | The window's thread | The main thread is the render thread in desktop mode; WS-app decides |
 | R6 | The correction cue's form | A 250 ms fading outline, plus a ghost at the old pose |
 | R7 | The desktop hand's controls | As section 9; revisited in the UI lab |
