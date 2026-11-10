@@ -30,6 +30,9 @@ targets spikes/iter-bench/cb_guest wasm32-unknown-unknown -- benchmark guest, bu
 exclude spikes/stack-audit -- D1's probe crates (spike-report 7.2, design 20.3), one candidate stack each, several deliberately native (ring, aws-lc-sys, blake3 default, openxr static, wasmtime default); never built into the engine
 exclude spikes/iter-bench/audit -- D12's runtime probes (iteration-benchmark 5): wasmi and two minimal wasmtime builds; wasmtime compiles helpers.c on Linux (design 20.2); never built into the engine
 
+# The prototype engine, archived by M0.
+exclude archive -- the prototype's crates, tools and physics spike, moved here by M0 (docs/refound-plan.md 2.4; tag archive/v0-prototype): kept to read and port from, in no workspace, never built
+
 # Classes the ruling accepts as a whole.
 class inline-asm -- Rust inline assembly (asm!, global_asm!, naked_asm!) is Rust: allowed by D1 (design 20.2, settled 2026-10-30 19:11Z as recommended); in our own crates pe-core/src/fpenv.rs and box3d-fork/src/worker_pool.rs read and write MXCSR / FPCR
 class inert-sources -- ships C/C++/asm files but has no build script, so cargo never compiles them (design 20.2: "crates that ship but do not compile C/asm files ... harmless"); today cc (its test sources) and ttf-parser (its C API)
@@ -37,8 +40,8 @@ class windows-import-lib -- prebuilt import stubs for Windows system DLLs, an OS
 
 # Single packages.
 allow blake3 1.* compiles-native with=pure -- with `pure` its build.rs takes the Rust-intrinsics paths and compiles no C or asm (blake3 1.8.7 build.rs:343-371; design 16.6, 20.3); on x86_64 it still runs the C compiler once to probe AVX-512 flag support (c_compiler_support, build.rs:161-195) and discards the answer, so nothing it compiles is linked
-allow wayland-sys 0.31.* links-native with=dlopen -- Linux only, through wgpu-hal in the video tool: with `dlopen` its build.rs returns before calling pkg-config ("Do not link to anything", 0.31.11 build.rs:4-7) and libwayland is loaded at run time, a system library (design 20.1)
-allow ash 0.38.* links-native without=linked -- Vulkan bindings, through wgpu-hal in the video tool: its build.rs emits rustc-link-lib=vulkan only with `linked` (0.38.0 build.rs:2-21); without it (`loaded`) the Vulkan loader is loaded at run time (design 20.1)
+allow wayland-sys 0.31.* links-native with=dlopen -- (matches nothing since M0 archived pe-app's video tool; wgpu-hal brings it back) Linux only, through wgpu-hal in the video tool: with `dlopen` its build.rs returns before calling pkg-config ("Do not link to anything", 0.31.11 build.rs:4-7) and libwayland is loaded at run time, a system library (design 20.1)
+allow ash 0.38.* links-native without=linked -- (matches nothing since M0 archived pe-app's video tool; wgpu-hal brings it back) Vulkan bindings, through wgpu-hal in the video tool: its build.rs emits rustc-link-lib=vulkan only with `linked` (0.38.0 build.rs:2-21); without it (`loaded`) the Vulkan loader is loaded at run time (design 20.1)
 allow rayon-core 1.* links-native -- `links = "rayon-core"` only stops two rayon-core versions in one build; its build.rs links nothing ("we're not *actually* linking to anything", 1.13.0 build.rs:1-7)
 allow wasmtime 50.* compiles-native in=spikes/iter-bench/host -- the iteration benchmark's host (iteration-benchmark 5, D12 evidence) runs guests in wasmtime to compare runtimes; on Linux and macOS wasmtime's build.rs compiles helpers.c whatever the features (design 20.2); a benchmark, never the engine
 allow wayland-backend 0.3.* compiles-native without=log -- (matches nothing today; winit brings it, design 20.2) its build.rs compiles its C log shims only with `log` (0.3.17 build.rs:5-12); keep that feature off (design 20.2: "keep wayland-backend/log off; CI checks the resolved features")

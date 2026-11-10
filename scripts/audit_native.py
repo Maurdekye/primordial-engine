@@ -3,12 +3,15 @@
 What it reports, per package that cargo actually builds (normal and build edges; dev edges excluded) for a
 target triple, from `cargo tree` (the real feature resolver) and `cargo metadata` (package facts):
   * whether it has a build script, and which native-build helpers its build dependencies pull in
-    (cc, cmake, nasm-rs, cxx-build, bindgen, autotools) or system-library finders (pkg-config, vcpkg,
+    (cc and its old name gcc, cmake, nasm-rs, cxx-build, bindgen, autotools, and the Windows resource
+    compilers embed-resource, winres and winresource) or system-library finders (pkg-config, vcpkg,
     system-deps), from the edges `cargo tree` resolves, not from `cargo metadata`, whose broader
     feature unification over-reports (an early run flagged ring under rustls-graviola, and the
     2026-11-10 run flagged khronos-egl's pkg-config, which no build enables);
-  * how many C / C++ / assembly / Objective-C sources and prebuilt native libraries ship in the package,
-    its `links` key, and whether its build script asks to link a native library;
+  * how many C / C++ / assembly / Objective-C sources and prebuilt binaries ship in the package (native
+    libraries and objects by extension; executables, archives and wasm modules by their first bytes,
+    whatever their name), its `links` key, and whether its build script, or a module it includes, asks
+    cargo to link (rustc-link-lib or rustc-link-arg);
   * for the workspace's own crates, also `#[link(...)]` attributes;
   * how many of its Rust files use inline assembly (`asm!`, `global_asm!`, `naked_asm!`): Rust by the
     ruling's wording (D1, design 20.2), listed as its own class. A text scan, so a hit may sit behind a
@@ -20,9 +23,9 @@ Each package gets the first class that fits, in this order (the names the allow 
   native-sources      ships native sources and has a build script, but no helper crate (it could still run
                       a compiler itself)
   windows-import-lib  windows_<arch>_<abi>: prebuilt import stubs for Windows system DLLs
-  prebuilt-native     ships prebuilt native libraries or objects and has a build script
-  links-native        a `links` key, a system-library finder, a build script that emits rustc-link-lib,
-                      or (own crates only) a #[link] attribute
+  prebuilt-native     ships prebuilt binaries (above) and has a build script
+  links-native        a `links` key, a system-library finder, a build script that emits rustc-link-lib or
+                      rustc-link-arg, or (own crates only) a #[link] attribute
   inline-asm          Rust files with inline assembly
   inert-sources       ships native sources but has no build script, so cargo never compiles them
   pure                none of the above
@@ -38,9 +41,12 @@ Two modes.
   Check (the landing gate, scripts/gate.sh): python -I scripts/audit_native.py --check [--tree DIR]
                       [--allow FILE] [--md OUT.md] [--offline]
     finds every Cargo workspace in DIR (default: the current directory; its tracked and untracked,
-    not ignored, files if it is a git work tree, else every file under it), audits each one, the
-    workspace as a whole and each of its crates on its own, for the allow file's targets, and exits
-    0 if every flagged package is accepted, 1 if not, 2 on an error. New crates are covered as they
+    not ignored, files if it is a git work tree, else every file under it, folders named target or
+    .tools included: the gate's DIR is an export of one commit, which holds only committed files),
+    audits each one, the workspace as a whole and each of its crates on its own, for the allow file's
+    targets, and exits 0 if every flagged package is accepted, 1 if not, 2 on an error. A root is a
+    manifest with a [workspace] table, or a [package] with a Cargo.lock beside it that no audited
+    workspace already covers (a vendored crate may ship its own lock). New crates are covered as they
     appear: a crate that is in no workspace the gate audits, and not under an `exclude` line, fails.
     --allow defaults to DIR/scripts/native_allow.txt; its format is described in that file.
 """
@@ -52,15 +58,27 @@ import re
 import subprocess
 import sys
 
-NATIVE_BUILD = {"cc", "cmake", "nasm-rs", "cxx-build", "bindgen", "autotools"}
+NATIVE_BUILD = {"cc", "gcc", "cmake", "nasm-rs", "cxx-build", "bindgen", "autotools", "embed-resource", "winres",
+                "winresource"}
 SYSLIB_BUILD = {"pkg-config", "vcpkg", "system-deps"}
 SRC_EXT = {".c": "c", ".cc": "c++", ".cpp": "c++", ".cxx": "c++", ".S": "asm", ".s": "asm", ".asm": "asm",
            ".m": "objc", ".mm": "objc++"}
-BIN_EXT = {".a", ".lib", ".o", ".obj", ".so", ".dylib", ".dll"}
+BIN_EXT = {".a", ".lib", ".o", ".obj", ".so", ".dylib", ".dll", ".exe", ".wasm"}
+# Prebuilt binaries by their first bytes, whatever their name (a build script may run a shipped executable,
+# such as protoc): ELF, PE, Mach-O (thin and fat), ar archives (static libraries), wasm modules.
+BIN_MAGIC = (b"\x7fELF", b"MZ", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",
+             b"\xca\xfe\xba\xbe", b"!<arch>\n", b"\x00asm")
+# Files whose first bytes aren't read: source and text formats, which no binary uses as its extension.
+TEXT_EXT = {".rs", ".toml", ".md", ".txt", ".json", ".lock", ".yml", ".yaml", ".h", ".hpp", ".hh", ".inc", ".in",
+            ".py", ".sh", ".html", ".css", ".js", ".svg", ".xml", ".csv", ".rst", ".adoc", ".cfg", ".ini",
+            ".wit", ".wat", ".wast", ".proto", ".pest", ".lalrpop", ".ron", ".glsl", ".wgsl", ".hlsl", ".spvasm"}
+LINK_DIRECTIVES = (b"rustc-link-lib", b"rustc-link-arg")
 ASM_MACROS = (b"asm!(", b"asm! (", b"naked_asm!(")
 # #[link(...)] links a native library; #[link(wasm_import_module = "...")] only names a wasm import module.
 LINK_ATTR = re.compile(rb"#\[link\((?!\s*wasm_import_module\s*=)")
 SKIP_DIRS = {"target", ".git", ".tools", ".worktrees"}
+# Folders a walk skips. list_manifests() narrows it to .git when DIR is an export, where every file is committed.
+WALK_SKIP = set(SKIP_DIRS)
 CLASSES = ["compiles-native", "native-helper", "native-sources", "windows-import-lib", "prebuilt-native",
            "links-native", "inline-asm", "inert-sources", "pure"]
 IMPORTLIB = re.compile(r"^windows_(x86_64|i686|aarch64)_(msvc|gnu|gnullvm)$")
@@ -198,16 +216,18 @@ def cargo_tree(root, triple, offline, pkgid=None):
 _scan_cache = {}
 
 
-def scan_package(pkg_dir, own):
-    """File facts of one package directory (cached; registry sources are immutable)."""
-    key = (os.path.normcase(os.path.abspath(pkg_dir)), own)
+def scan_package(pkg_dir, own, magic):
+    """File facts of one package directory (cached; registry sources are immutable). With magic, files of
+    other than a text extension are also read for a binary's first bytes (only a package with a build
+    script can use a shipped binary, so the caller asks only for those)."""
+    key = (os.path.normcase(os.path.abspath(pkg_dir)), own, magic)
     if key in _scan_cache:
         return _scan_cache[key]
     srcs, bins, asm, link_attr = {}, 0, 0, 0
     for dirpath, dirnames, filenames in os.walk(pkg_dir):
         keep = []
         for d in dirnames:
-            if d in SKIP_DIRS:
+            if d in WALK_SKIP:
                 continue
             # In the workspace's own crates, a nested package is its own crate (audited as one if it is
             # built). A registry package is scanned whole: its build script may compile any file in it.
@@ -221,7 +241,7 @@ def scan_package(pkg_dir, own):
             ext = os.path.splitext(fn)[1]
             if ext in SRC_EXT:
                 srcs[SRC_EXT[ext]] = srcs.get(SRC_EXT[ext], 0) + 1
-            elif ext in BIN_EXT:
+            elif ext in BIN_EXT or (magic and ext.lower() not in TEXT_EXT and is_binary(os.path.join(dirpath, fn))):
                 bins += 1
             elif ext == ".rs" and not in_test_dir:
                 try:
@@ -238,22 +258,51 @@ def scan_package(pkg_dir, own):
     return facts
 
 
+def is_binary(path):
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+    except OSError:
+        return False
+    return any(head.startswith(m) for m in BIN_MAGIC)
+
+
 _links_cache = {}
 
 
+def build_script_files(src_path, pkg_dir):
+    """The build script and the files it can include: the .rs files beside it, and those below it when it
+    has a folder of its own; for a build script at the package root, those under build/."""
+    d = os.path.dirname(src_path)
+    files = [src_path]
+    try:
+        files += [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".rs")]
+    except OSError:
+        pass
+    at_root = os.path.normcase(os.path.abspath(d)) == os.path.normcase(os.path.abspath(pkg_dir))
+    below = os.path.join(d, "build") if at_root else d
+    for dirpath, dirnames, filenames in os.walk(below):
+        dirnames[:] = [x for x in dirnames if x not in WALK_SKIP]
+        files += [os.path.join(dirpath, f) for f in filenames if f.endswith(".rs")]
+    return sorted(set(os.path.normpath(f) for f in files))
+
+
 def build_script_links(pkg):
-    """True if the package's build script mentions rustc-link-lib (asks cargo to link a native library)."""
+    """True if the package's build script, or a file it can include, emits rustc-link-lib or rustc-link-arg
+    (asks cargo to link a native library, or to pass the linker an argument)."""
     if pkg["id"] in _links_cache:
         return _links_cache[pkg["id"]]
     _links_cache[pkg["id"]] = False
     for t in pkg["targets"]:
         if "custom-build" in t["kind"]:
-            try:
-                with open(t["src_path"], "rb") as f:
-                    if b"rustc-link-lib" in f.read():
-                        _links_cache[pkg["id"]] = True
-            except OSError:
-                pass
+            for path in build_script_files(t["src_path"], os.path.dirname(pkg["manifest_path"])):
+                try:
+                    with open(path, "rb") as f:
+                        text = f.read()
+                except OSError:
+                    continue
+                if any(m in text for m in LINK_DIRECTIVES):
+                    _links_cache[pkg["id"]] = True
     return _links_cache[pkg["id"]]
 
 
@@ -276,7 +325,7 @@ def classify(key, pkg, edges, own):
     reach = {k[0] for k in closure(direct_build, edges)}
     native = sorted(reach & NATIVE_BUILD)
     syslib = sorted(reach & SYSLIB_BUILD)
-    facts = scan_package(os.path.dirname(pkg["manifest_path"]), own)
+    facts = scan_package(os.path.dirname(pkg["manifest_path"]), own, build_script)
     links_lib = build_script and build_script_links(pkg)
     srcs = facts["srcs"]
     if build_script and native and srcs:
@@ -404,9 +453,9 @@ def describe(r):
     if r["srcs"]:
         bits.append("sources " + ", ".join(f"{k} {v}" for k, v in sorted(r["srcs"].items())))
     if r["bins"]:
-        bits.append(f"{r['bins']} prebuilt native files")
+        bits.append(f"{r['bins']} prebuilt binaries")
     if r["build_links"]:
-        bits.append("build script emits rustc-link-lib")
+        bits.append("build script emits rustc-link-lib or rustc-link-arg")
     if r["link_attr"]:
         bits.append(f"{r['link_attr']} files with #[link]")
     if r["asm"]:
@@ -422,13 +471,16 @@ PKG_RE = re.compile(r"(?m)^\s*\[package\]")
 
 
 def list_manifests(tree):
+    global WALK_SKIP
     if os.path.exists(os.path.join(tree, ".git")):
         out = run(["git", "-C", tree, "ls-files", "-z", "-c", "-o", "--exclude-standard"])
         rels = [p for p in out.split("\0") if p and (p == "Cargo.toml" or p.endswith("/Cargo.toml"))]
         return sorted(p for p in rels if os.path.isfile(os.path.join(tree, p)))
+    # An export of one commit: every file in it is committed, so no folder is skipped.
+    WALK_SKIP = {".git"}
     rels = []
     for dirpath, dirnames, filenames in os.walk(tree):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        dirnames[:] = sorted(d for d in dirnames if d not in WALK_SKIP)
         if "Cargo.toml" in filenames:
             rels.append(os.path.relpath(os.path.join(dirpath, "Cargo.toml"), tree).replace(os.sep, "/"))
     return sorted(rels)
@@ -449,9 +501,14 @@ def check(tree, allow, offline, md):
         d = os.path.dirname(rel)
         info[rel] = {"ws": bool(WS_RE.search(text)), "pkg": bool(PKG_RE.search(text)),
                      "lock": os.path.isfile(os.path.join(tree, d, "Cargo.lock")), "dir": d or "."}
-    roots = [r for r in manifests if info[r]["ws"] or (info[r]["pkg"] and info[r]["lock"])]
+    # Workspaces first, so that a package with its own lock (a vendored crate) that one of them covers is
+    # audited as part of it, not as a root of its own.
+    roots = [r for r in manifests if info[r]["ws"]] + \
+        [r for r in manifests if not info[r]["ws"] and info[r]["pkg"] and info[r]["lock"]]
     problems, covered, results, skipped = [], set(), [], []
     for rel in roots:
+        if not info[rel]["ws"] and os.path.normcase(rel).replace(os.sep, "/") in covered:
+            continue
         d = info[rel]["dir"]
         ex = allow.excluded(d)
         if ex:
