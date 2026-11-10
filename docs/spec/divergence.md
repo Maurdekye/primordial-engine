@@ -519,8 +519,8 @@ The user's rulings of 19:45-19:59Z (file 14 section 8; file 18; file 20) [R].
   - **a consented merge** (a rejoin, or a later merge) returns both sides' admins together, as the user ruled
     [R; file 18 7], and the preview lists every admin the merge would restore. The ruling chose this
     for exactly the case where one side removed someone, on the ground that agreeing to merge is agreeing to share
-    the world. [I: reading the ruling as applying to consented merges only, since an automatic merge asks no one.
-    For the coordinator to confirm.]
+    the world. [C: the union applies to consented merges only, since the ruling says it is "shown in
+    the preview" and only consented merges have one; the user may overrule.]
 
 **One origin.** Every world descends from one empty origin; preset worlds branch from it with preset content; a
 world is a version, a point in one tree; creating a world is branching [R; file 20].
