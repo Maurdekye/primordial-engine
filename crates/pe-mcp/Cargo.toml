@@ -1,0 +1,13 @@
+[package]
+name = "pe-mcp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The MCP server over WorldApi: its tools and transports, started by pe-app as a library, and the small bridge binary"
+
+# Skeleton from pe-seams v0 (WS-seams). WS-api, @api-eng owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
+[dependencies]
+pe-seams = { path = "../pe-seams", features = ["world-api"] }
+pe-api = { path = "../pe-api" }
