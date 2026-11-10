@@ -12,7 +12,8 @@
 //! - [`backend`], [`session`]: the session lifecycle and the frame loop over a small backend trait (spec 3.1,
 //!   7.1), tested against [`fake`], a fake runtime that checks OpenXR's call order;
 //! - [`clock`], [`real`]: the host clock, and the real runtime at the instance level: extensions, the
-//!   headset lookup, `XrTime` to host time (spec 2, 3.3, 6.1);
+//!   headset lookup, `XrTime` to host time (spec 2, 3.3, 6.1); [`real_session`], the real backend over the
+//!   `openxr` crate, generic over its graphics type;
 //! - [`seam`]: stand-ins for pe-seams v0's S5 types (spec 8.1), until pe-seams lands.
 
 pub mod backend;
@@ -23,6 +24,7 @@ pub mod hands;
 pub mod loader;
 pub mod math;
 pub mod real;
+pub mod real_session;
 pub mod ring;
 pub mod seam;
 pub mod session;
