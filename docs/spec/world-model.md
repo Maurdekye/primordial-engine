@@ -581,7 +581,8 @@ An edit entry is pe-log's envelope with class `Edit` and this payload [I]:
 
 ```rust
 pub struct Transaction {
-    pub actor: Actor,                     // Person, or Agent { name }: a label for the UI and one-step revert (C11)
+    pub actor: Actor,                     // who produced it: for history, the UI and one-step revert (C11)
+    pub label: Option<String>,            // at most 200 bytes: "make the balls blue", for the UI and history
     pub preconditions: Vec<Precondition>, // all must hold, or nothing applies
     pub ops: Vec<Op>,                     // applied in order, all or nothing
     pub blobs: Vec<BlobRef>,              // blobs this transaction introduces (3.4)
@@ -600,6 +601,11 @@ pub enum Op {
                    activate_at: Frame, base: Option<Version> },   // WS-logic's commit; no module bytes (5.4)
 }
 pub enum Target { Existing(ObjectId), New(u32), Root }
+pub enum Actor {
+    Person,                                                   // the entry's author, by hand
+    Agent { harness: String, principal: MemberKey,            // "Alice's agent (Claude Code)"
+            requested_by: Option<MemberKey> },                // a guest at an unlocked panel (M5, A1); None in M1
+}
 pub enum Precondition {
     Version { id: ObjectId, component: ComponentId, instance: u16, is: Version },  // the version the author read
     ObjectVersion { id: ObjectId, is: Version },              // anything about the object: any row, parent, children
@@ -609,6 +615,16 @@ pub enum Precondition {
 }
 ```
 
+- **The actor** (@api-eng's O12). An agent's edit is authored and signed by its principal's member, and the agent
+  holds all of that member's permissions (the user's moderation answer, @coordinator-opus m220b6210535b), so
+  `principal` must equal the entry's author key; otherwise the transaction is refused as `Invalid`. `harness` (at
+  most 64 bytes) names the agent program for the label. `requested_by` is reserved for M5's guests at an unlocked
+  panel and must be `None` until then. The actor decides nothing else: permissions come from the author.
+- **WorldApi's per-op versions** (`if_version`) become `ObjectVersion` preconditions in the one list, and its
+  `$ref`s become `New(k)` targets (@api-eng, api.md fd8baf6), so the wire carries no per-op versions.
+- **A grab moves no version** (inputs never do, 7.3): an object someone is holding refuses pose edits as `held`
+  while held (7.2), and once released an edit based on the version read before the grab still applies. Only an
+  edit makes a precondition stale.
 - **Copy and templates** (@api-eng's O3). `Copy` duplicates an object and its subtree, rows and all, under a new
   parent. The copies take derived ids: `new` is the index `k` of the copy's root, and the rest of the subtree takes
   the next indices in depth-first order, children in their order. So a `Copy` of an n-object subtree reserves the
