@@ -348,6 +348,42 @@ fn replayed_packets_deliver_nothing_twice() {
 }
 
 #[test]
+fn key_updates_keep_the_connection() {
+    let mut t = setup(pe_net_crypto::random::os(), true);
+    assert!(run(
+        &mut t.client,
+        &mut t.server,
+        &mut t.now,
+        &mut pass,
+        &|c, s| c.connected() && s.connected(),
+        Duration::from_secs(5)
+    ));
+    // Three key updates (RFC 9001 6), each followed by data both ways: next_1rtt_keys and the new packet keys.
+    for round in 0..3u8 {
+        t.client.conn().force_key_update();
+        let msg = vec![round; 2000];
+        assert_eq!(stream_once(&mut t, &mut pass, &msg), msg);
+        t.server.conn().force_key_update();
+        t.server.conn().datagrams().send(Bytes::from(vec![round; 100]), false).unwrap();
+        let got = std::cell::Cell::new(false);
+        assert!(run(
+            &mut t.client,
+            &mut t.server,
+            &mut t.now,
+            &mut pass,
+            &|c, _| {
+                if c.conn().datagrams().recv().is_some() {
+                    got.set(true);
+                }
+                got.get()
+            },
+            Duration::from_secs(5)
+        ));
+    }
+    assert!(t.client.lost().is_none() && t.server.lost().is_none());
+}
+
+#[test]
 fn zero_rtt_is_refused_at_config_time() {
     let rng = pe_net_crypto::random::os();
     let mut c = tls_client(&Identity::from_seed(&[2; 32]), &Identity::from_seed(&[1; 32]).public(), rng);
