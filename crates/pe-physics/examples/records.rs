@@ -2,10 +2,12 @@
 //! physics records can be regenerated once the spike is archived.
 //!
 //! Subcommands:
-//!   records <dir>             write the records pe-physics's tests read, for both configurations, into <dir>:
+//!   records <dir> [workers]   write the records pe-physics's tests read, for both configurations, into <dir>:
 //!                             trace-{vdw,off}-win-{profile}.txt (600 frames of the pile, the spike's `trace`) and
 //!                             images-{vdw,off}-win-{profile}.txt (the world image every 50 frames, the spike's
 //!                             `images`). Run it in release and in debug: the image records differ by profile.
+//!                             `workers` (default 1) is the world's worker count; the records must not depend on
+//!                             it (D2; scripts/check_par_determinism.sh).
 //!   bench [workers]           step, save, restore and image size at 256 to 4,096 bodies (the spike's `bench`),
 //!                             with a comma-separated list of worker counts (D2; the default is 1).
 //!
@@ -29,9 +31,10 @@ use pe_physics::PhysicsConfig;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let ok = match args.get(1).map(String::as_str) {
-        Some("records") => match args.get(2) {
-            Some(dir) => records(Path::new(dir)),
-            None => usage(),
+        Some("records") => match (args.get(2), args.get(3).map(|s| s.parse::<i32>())) {
+            (Some(dir), None) => records(Path::new(dir), 1),
+            (Some(dir), Some(Ok(w))) if w >= 1 => records(Path::new(dir), w),
+            _ => usage(),
         },
         Some("bench") => {
             let list = args.get(2).map(String::as_str).unwrap_or("1");
@@ -54,18 +57,21 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> bool {
-    eprintln!("usage: records records <dir> | records bench [workers,...]");
+    eprintln!("usage: records records <dir> [workers] | records bench [workers,...]");
     false
 }
 
-/// The trace and image records of both configurations, written as the spike wrote them.
-fn records(dir: &Path) -> bool {
+/// The trace and image records of both configurations, written as the spike wrote them, with `workers`
+/// worker threads per world.
+fn records(dir: &Path, workers: i32) -> bool {
     if let Err(e) = std::fs::create_dir_all(dir) {
         eprintln!("cannot create {}: {e}", dir.display());
         return false;
     }
+    println!("records: {workers} worker(s) per world");
     let mut ok = true;
     for (config, mode) in modes() {
+        let config = config.with_workers(workers);
         ok &= write_trace(config, mode, dir);
         ok &= write_images(config, mode, dir);
     }

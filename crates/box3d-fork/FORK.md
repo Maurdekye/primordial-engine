@@ -42,7 +42,9 @@ Every change is marked in the source with a `Primordial Engine fork` comment.
 ### Release validators: measured effect
 
 Release, the engine pile scene, 5 interleaved runs of `pe-spike-physics bench`, medians. Raw data is in
-`spikes/out/fork/validate-gate-ab-win-release.txt`.
+`spikes/out/fork/validate-gate-ab-win-release.txt` at the tag `archive/v0-prototype`: the M0 archive removed that
+folder from main, along with the spike (now `archive/spikes/physics`). pe-physics's `examples/records.rs bench` is
+its successor.
 
 | Bodies | Scene build, before → after | Step, before → after |
 | --- | --- | --- |
