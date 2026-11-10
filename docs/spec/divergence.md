@@ -78,11 +78,11 @@ Marks: **[V]** verified in the repository or the named record; **[R]** a user ru
   cut voids, and replays with the cut's entries only.
 - A machine computes its root at `C` only once it holds every entry in `C`: the d1 rule [plan 4.2]. Before that
   it neither votes nor compares.
-- Equal roots: `Cv := C`. The replica may release roots older than the last `K_keep` cuts (section 14).
+- Equal roots: `Cv := C`. The replica may release the roots of final cuts older than `T_keep` (section 14).
 - Different roots: this machine has diverged at `C`. The ladder starts (section 4).
 
 [I] Comparing at every final cut, not every frame, costs one hash per cut and finds a fault within one cut interval
-(about 9 frames at 60 Hz on good links [V file 12]).
+(about 0.15 s on good links: 9 frames at 60 Hz [V file 12]).
 
 ### 3.2 The vote carries the root
 
@@ -138,7 +138,7 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
 - **Network:** none. **Cost:** `C.frame - Cv.frame` frames of replay, normally one cut interval, plus one full
   rehash. [I] At M1's size (500 balls) this fits in the frame; from M2 it runs on a second copy (S2 `fork`) and is
   swapped in, as every deep replay does (file 14, 4.2).
-- **If `Cv` is older than `K_keep` cuts,** its root has been released: skip rung 1.
+- **If `Cv` is older than `T_keep`,** its root has been released: skip rung 1.
 
 ### 4.2 Rung 2: fetch what differs, patch, replay forward (M1)
 
@@ -161,7 +161,7 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
 - **Network:** the descent plus the differing objects. **Seen by the user:** one blended correction of the
   objects that differed and of whatever they touched since `C`.
 - **When repair data arrives late:** if, when the fetch completes, `C` is older than the replica can replay in
-  the foreground (`W_fg` frames), restart the rung at the newest final cut instead. A persistent fault shows there
+  the foreground (older than `W_fg`), restart the rung at the newest final cut instead. A persistent fault shows there
   too, and the descent is short. [I]
 - **Cells and groups:** the tree's interior nodes are cells, and from M4 contact groups. S2 `import` patches
   objects inside a cell without reloading the cell [C 20:05Z, "per-group save, restore and step"].
@@ -189,7 +189,7 @@ pair: body and contact ids come from free-list pools [V `crates/box3d-fork/src/i
 
 ### 4.3 When rung 2 does not hold
 
-- **The same objects diverge again** within `N_recur` cuts of a rung-2 cure: this machine computes them
+- **The same objects diverge again** within `T_recur` of a rung-2 cure: this machine computes them
   differently. In M1, pe-diverge keeps curing them by rung 2 at each cut, at most `N_recur_max` times, marks the
   objects "repeatedly diverging" in the counters and the bundle, and raises a `RepeatedDivergence` event that
   pe-app shows the user, plainly: "this machine computes <object> differently; it is being kept in step from the
@@ -206,8 +206,8 @@ pair: body and contact ids come from free-list pools [V `crates/box3d-fork/src/i
 1. **No final frame is undone.** Repair moves this machine's state to the final root; it never changes a final
    cut, and never rolls back below `Cv`.
 2. **No unverified byte is imported.** Every record crosses a hash check against a quorum's root.
-3. **Repair never blocks the frame.** Replays deeper than `W_fg` run on a second copy (M2 on), and below that in the
-   foreground within the frame budget.
+3. **Repair never blocks the frame.** Replays reaching back further than `W_fg` run on a second copy (M2 on), and
+   shallower ones in the foreground within the frame budget.
 4. **The local player's own entries survive.** A repair replays them; it never drops them.
 5. **Repair serves others while it runs.** A machine that is itself repairing still serves tree nodes and records
    of roots it has verified.
@@ -332,7 +332,7 @@ that object's events that frame)`.
 - A key already played is never played again.
 - A sustained effect whose event disappears after a replay is stopped, faded over `T_blend`.
 - Effects of the local player's own actions play at once.
-- Effects of others' actions not yet final may wait `D_effect` frames. [I] Default 0 frames, for immediacy;
+- Effects of others' actions not yet final may wait `D_effect`. [I] Default 0 s, for immediacy;
   file 14 section 6 doubts the delay is wanted.
 
 **D7. Lost races and refusals are told,** not hidden: a lost grab has its cue (D4); a refused edit shows who won
@@ -431,8 +431,8 @@ merging fit together" checks (plan 4.4). How it is ordered depends on whether it
 
 - **Witnessed:** an entry is witnessed when a signed acknowledgement by a member other than its author, on either
   side, references it, and that acknowledgement's stamp is within `B` of the entry's stamp. `B` is the normal
-  back-dating bound: the acknowledgement interval plus slack, about 4-10 frames [V design 8.2, cited by
-  @design-reviewer]. A witnessed entry is ordered by its stamp like any other, and the user's order rule applies:
+  back-dating bound: the acknowledgement interval plus slack, a duration set by WS-agree; about 4-10 frames, or
+  70-170 ms, at 60 Hz [V design 8.2, cited by @design-reviewer]. A witnessed entry is ordered by its stamp like any other, and the user's order rule applies:
   a delete first orphans the add-on, a delete second destroys it [R m35138bafc46a]. This covers an honest split
   group, and a connected machine back from a long compile (Q3b), whose entries the others acknowledged in time.
 - **Unwitnessed:** no such acknowledgement exists. A thin player whose entries arrived late is the usual case, as
@@ -607,7 +607,7 @@ with the world when they leave, unless they export it on purpose [I].
   hash covers them [V `crates/pe-physics/src/image.rs:345`]. Rung 2 patches objects; if their contact and solver
   state is not patched with them, the patched replica diverges again on the next step, and per-body import cannot
   work (4.2a). Test (WS-state, in its plan): assemble a replica from an imported root (the world-model subtree plus
-  the physics transfer), and step it 600 frames beside one that ran continuously; every frame's root must be
+  the physics transfer), and step it for 10 s of simulated time beside one that ran continuously; every frame's root must be
   equal. Negative control: importing per-body state only must diverge.
 - **R-H2, everything that matters is hashed (WS-world).** Fields, governance, claims and cooldowns from M1; logic
   state and module versions from M2 (plan M1 acceptance; file 14 F5). A divergence injected in any one is found by
@@ -668,7 +668,7 @@ pub trait Replica {
   `import_at_cut(group, parts, source)`, and rung 1's `replay_from_last_agreed(source)`. pe-diverge calls those
   names; the sketch above is the shape, not the final signatures, which pe-seams v0 fixes.
 - `Root` is a handle that keeps its structure alive, and is `Send`, so a worker can replay it.
-- Roots of the last `K_keep` final cuts are kept, and served to peers: about 1.2 s, enough for repair.
+- Roots of the final cuts of the last `T_keep` are kept, and served to peers: enough for repair.
 - **Merge bases are kept separately.** A member keeps its `Cv` root, and the log since, for as long as it may be a
   branch (up to `T_diverge`, a minute), whatever `K_keep` says. Older bases come from the world record (M3).
 
@@ -727,7 +727,8 @@ network model with random schedules.
 2. **A persistent fault:** the same ball is altered in B's saved root too. Rung 1 fails its verify; rung 2 fetches
    that ball only (`repair_bytes` bounded by one object's records and the descent); a bundle is written.
 3. **A computational fault:** B's replica perturbs one ball each step (a test-only mutation of the replica). Rung 2
-   cures it each cut; after `N_recur`, `RepeatedDivergence` is raised; play never pauses.
+   cures it each cut; after `N_recur_max` repeats within `T_recur`, `RepeatedDivergence` is raised; play never
+   pauses.
 4. **Every kind of state** (R-H2): the same as 2 for a field, a governance record and a claim.
 4a. **A bound body:** rung 2 cures it by restoring the physics image (4.2a), with `repair_bytes` about one image.
 5. **A lying source:** a peer serves a wrong record. It is rejected by hash; the next source cures it; no wrong
@@ -772,17 +773,20 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 
 ## 14. Parameters
 
+Every limit is a duration, never a frame count: the tick rate is configurable per world within a supported range,
+60 Hz by default [R md4b42d16d9df]. A duration converts to frames at the world's rate, rounded up.
+
 | Name | Meaning | Default [I] |
 |---|---|---|
-| `K_keep` | Final cuts whose roots are kept and served | 8 |
-| `W_fg` | Deepest replay run in the foreground | 120 frames at 60 Hz: the old speculation window, `2 * hz` [V `spikes/session-sim/src/r18.rs:108`] |
+| `T_keep` | Age of the final cuts whose roots are kept and served (and at least the last 2 cuts) | 1.5 s |
+| `W_fg` | Deepest replay run in the foreground | 2 s: the old speculation window, `2 * hz` frames at any rate [V `spikes/session-sim/src/r18.rs:108`] |
 | `T_peer` | Wait for a repair source before trying the next | 4 round-trip times, at least 100 ms |
 | `N_descend` | Descents per rung-2 attempt | 3 |
-| `N_recur`, `N_recur_max` | Cuts within which a repeat counts; repeats before the event | 10 cuts; 3 |
+| `T_recur`, `N_recur_max` | Time within which a repeat counts; repeats before the event | 1.5 s; 3 |
 | `B_keep`, `B_bytes` | Bundles kept on disk | 50; 500 MB |
 | `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |
 | `E_small`, `E_snap` | Error thresholds | 5 cm or 10°; 1 m or 90° |
-| `D_effect` | Delay of others' unconfirmed effects | 0 frames |
+| `D_effect` | Delay of others' unconfirmed effects | 0 s |
 | `E_merge` | Pose tolerance within which a group only one side touched counts as unchanged after a merge | Set from the M1 headset tuning: at most the display layer's sub-visible threshold. 5 cm or 10° is visible in VR at arm's length [design-reviewer] |
 | `R_merge` | Replay rate assumed when setting a merge's application frame | 2x real time |
 | `T_merge` | Divergence past which a merge replaces the ordinary rollback | 2 s [R mf7daea6446ca] |
