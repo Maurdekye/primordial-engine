@@ -39,14 +39,17 @@ fn suite() -> Vec<Check> {
         Check { name: "n4-byz-live", model: n4(none).live(), expect_fail: &[], what: "4 members, Byzantine, liveness" },
         Check { name: "n4-crash-live", model: Cuts::new(4, Silent, 3, 1, 2, none, 0).live(), expect_fail: &[], what: "4 members, one silent, liveness" },
         Check { name: "n4-byz-v4", model: Cuts::new(4, Byzantine, 4, 1, 1, none, 2), expect_fail: &[], what: "4 members, Byzantine leads view 3 of 4 (the lock's case), safety" },
+        Check { name: "n3-root", model: n3(none).corrupt(2), expect_fail: &[], what: "3 members, author-faulty, member 2's replica computes a wrong root, safety" },
+        Check { name: "n4-root", model: n4(none).corrupt(3), expect_fail: &[], what: "4 members, Byzantine, member 3's replica computes a wrong root, safety" },
         // The size bound, not a control: at n = 3, t = 0, so one equivocating voter splits the two honest members.
-        Check { name: "bound-n3-byz", model: Cuts::new(3, Byzantine, 3, 1, 1, none, 0), expect_fail: &["agreement"], what: "3 members, one Byzantine: t = 0, agreement must fail (why n >= 4)" },
+        Check { name: "bound-n3-byz", model: Cuts::new(3, Byzantine, 4, 1, 1, none, 0), expect_fail: &["agreement"], what: "3 members, one Byzantine: t = 0, agreement must fail (why n >= 4)" },
         // Controls.
         Check { name: "ctl-d1", model: n3(chain).mutate(VoteWithoutChainValidation), expect_fail: &["validity: void set the same everywhere", "no final frame undone"], what: "d1: vote without validating each chain in order" },
         Check { name: "ctl-unchecked", model: n4(sig).mutate(AcceptProposalUnchecked), expect_fail: &["validity: chains"], what: "accept the proposer's cut unchecked" },
-        Check { name: "ctl-quorum", model: n4(none).mutate(QuorumOneTooSmall), expect_fail: &["agreement"], what: "quorum one too small: split-brain" },
+        Check { name: "ctl-quorum", model: Cuts::new(4, Byzantine, 4, 1, 1, none, 0).mutate(QuorumOneTooSmall), expect_fail: &["agreement"], what: "quorum one too small: split-brain" },
         Check { name: "ctl-nolock", model: Cuts::new(4, Byzantine, 4, 1, 1, none, 2).mutate(NoLockRule), expect_fail: &["agreement"], what: "vote ignoring the timeout certificate's highest certificate" },
         Check { name: "ctl-nosig", model: n3(sig).mutate(NoSignatureCheck), expect_fail: &["validity: chains"], what: "no own-hands / world-id signature check" },
+        Check { name: "ctl-noroot", model: n4(none).corrupt(3).mutate(VoteWithoutRoot), expect_fail: &["root: a diverged replica learns it at the cut"], what: "votes carry no root: a diverged replica confirms without learning it" },
         Check { name: "ctl-notimeout", model: n4(none).live().mutate(NoTimeouts), expect_fail: &["liveness: every end state has a final cut at every honest member"], what: "no timeouts: a faulty proposer stalls the line" },
     ]
 }
@@ -70,7 +73,7 @@ fn main() {
         }
     }
     let mut bad = 0;
-    println!("{:<16} {:>12} {:>6} {:>9}  result", "check", "states", "depth", "seconds");
+    println!("{:<16} {:>12} {:>13} {:>6} {:>9}  result", "check", "states", "generated", "depth", "seconds");
     for c in suite() {
         if !filters.is_empty() && !filters.iter().any(|f| c.name == f.as_str()) {
             continue;
@@ -116,8 +119,11 @@ fn main() {
                 true
             }
         };
-        let done = if ch.is_done() { "" } else { " (timed out)" };
-        println!("{:<16} {:>12} {:>6} {:>9.1}  {}{} {}", c.name, ch.unique_state_count(), ch.max_depth(), secs, if ok { "OK  " } else { "FAIL" }, done, verdict.join("; "));
+        // A base check that stopped at the state cap or the time limit is not exhaustive: that is a failure.
+        let capped = max_states.is_some_and(|m| ch.state_count() >= m) || secs >= 3599.0;
+        let ok = ok && !(capped && c.expect_fail.is_empty());
+        let done = if capped { " (STOPPED AT THE CAP: not exhaustive)" } else { "" };
+        println!("{:<16} {:>12} {:>13} {:>6} {:>9.1}  {}{} {}", c.name, ch.unique_state_count(), ch.state_count(), ch.max_depth(), secs, if ok { "OK  " } else { "FAIL" }, done, verdict.join("; "));
         println!("    {}; q = {}; entries {}", c.what, q, entries.join(" "));
         if !c.expect_fail.is_empty() {
             for p in c.expect_fail {
