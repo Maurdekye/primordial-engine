@@ -1,7 +1,8 @@
 # Divergence and recovery (WS-diverge)
 
-Status: v1.5, approved as a design by @design-reviewer (m4dcfeabea340), 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
-and the coordinator's rulings of 20:40Z. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
+Status: v1.6, 2026-11-10. Approved as a design by @design-reviewer (m4dcfeabea340), after their review of v0
+(bf94698), @vdw-physics's answer on R-H1 and the coordinator's rulings of 20:40Z. v1.6 records the user's answers
+of about 19:45Z (meef4f248923b, mfc2bbd9d28ad; file 14 section 8). Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
 Nothing in it is built. It specifies `crates/pe-diverge` and the requirements pe-diverge places on other
 workstreams. Only WS-diverge edits this file and `crates/pe-diverge`.
 
@@ -272,6 +273,7 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `corrections_per_min` | Drawn objects whose drawn pose had to blend or jump after a correction, per minute | pe-render (section 8) |
 | `visible_error` | Mean and max distance between drawn and simulated pose, over objects in view, per second | pe-render |
 | `snaps_in_view` | Corrections that jumped rather than blended while in view | pe-render |
+| `cueless_large_corrections` | Corrections in view larger than `E_cue` shown without a cue. Must be zero | pe-render |
 | `own_error` | Error of the local player's own hands and held objects. Must be exactly zero | pe-render |
 | `rollback_depth` | Deepest rollback, and the distribution | pe-replica (WS-state) |
 | `voided_own` | The local player's entries voided as late (P5) | pe-agree, through S3 |
@@ -281,8 +283,11 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 ## 8. The display layer: requirements for WS-render
 
 pe-render builds it (plan 3.1, WS-render); WS-diverge states what it must do and how it is tested. The numbers are
-parameters, to be tuned with a person in VR at the M1 checkpoint (plan section 8). Whether the user wants a number
-for visible error is still open with the user (file 14, section 7, question 3).
+parameters, to be tuned with a person in VR at the M1 checkpoint (plan section 8), within the user's targets
+[R meef4f248923b, answer 8; file 14 8.3]:
+- **no correction larger than a hand's width in view without a visible cue** (`E_cue`, section 14);
+- others see an action within **0.25 s on good links and 1 s on poor ones**. That is a harness property over every
+  network scenario, owned by WS-harness; the display layer's blends count inside it, so `T_blend` must leave room.
 
 **D1. Two poses.** Every drawn object has a simulated pose (from S5) and a drawn pose (pe-render's own). The
 simulation never reads the drawn pose.
@@ -300,6 +305,9 @@ replay since the last publication (a `corrected` flag, or the correction offset)
 **D3. Choose by size and by view** (file 14, 4.1):
 - an error below `E_small` blends over `T_blend`;
 - an error above `E_snap`, out of view, jumps at once;
+- any correction in view larger than `E_cue` (a hand's width) carries a visible cue, whether it blends or jumps
+  [R meef4f248923b]. The cue's form is WS-render's to design; `cueless_large_corrections` counts misses and must be
+  zero;
 - above `E_snap` in view: a fast blend over `T_fast`, or a jump if the blend's straight path would pass through
   another drawn solid. [I: the solid test may wait until after M1; until then, in view always blends fast.]
 
@@ -406,7 +414,8 @@ by the engine's ordinary rules, applied once to both lines' actions [file 14, 4.
 **Voided entries are merged in, but are never back-dated past finality.** An entry of `theirs` that main voided
 as late is in the set: that is what "their changes are merged in" means, and what the property "voiding and
 merging fit together" checks (plan 4.4). How it is ordered depends on whether its stamp was witnessed.
-**[C m61125c4194d4 and maf0da5275cdd, 2026-11-10: provisional, pending the user.]**
+**[R mfc2bbd9d28ad: confirmed by the user, as ruled by the coordinator in m61125c4194d4 and maf0da5275cdd,
+1/1 residual included.]**
 
 - **Witnessed:** an entry is witnessed when a signed acknowledgement by a member other than its author, on either
   side, references it, and that acknowledgement's stamp is within `B` of the entry's stamp. `B` is the normal
@@ -426,7 +435,7 @@ merging fit together" checks (plan 4.4). How it is ordered depends on whether it
   delete still destroy main's work at `A`, which is winning by another route.]
 - **Plain writes** are safe under the ordinary order in both cases: a back-stamped write loses to main's later
   one.
-- **Residuals, to be stated to the user:**
+- **Residuals, accepted by the user:**
   - colluders beyond `t` can witness each other's back-stamps;
   - in a 1/1 split, a lone cheater can back-date up to a minute against a lone honest player.
 - **Why** [design-reviewer, High and re-review]: ordered by stamp alone, a member could stamp actions in the past,
@@ -456,11 +465,20 @@ split.
   compile ends it replays `theirs` on a second copy in the background, then submits the merge entry. [I]
 - **v2 (M3): split groups.** Both sides may lack finality. `base` is the last cut both hold; both are lines of
   unconfirmed play; the merge entry is the first entry of the reconvened quorum. Within one minute the merge is
-  automatic; after it, both lines know they have diverged (S3 `Diverged`), and each continues as its own world line
-  [R m35138bafc46a; plan M3].
-- **Re-merging later, by choice (M5):** the same function over the full record, from the last cut both worlds
-  share, with an admin of each consenting and a preview computed in a copy first (file 14, 4.4). The user's open
-  question applies there: may the later change win, object by object, where an exact replay would take too long?
+  automatic. After it, both lines know they have diverged (S3 `Diverged`) and become **branches of one world, as in
+  git**: neither keeps "the" world. Where each has someone able to own it, world ownership splits, and each branch
+  carries on as a world in its own right. Each branch records the cut it split from, so the common ancestor of any
+  two is always found [R meef4f248923b, answer 5; file 14 8.1]. A branch with no owner or admin present falls under
+  the no-admin rule (guarded mode, the countdown, then closing with its state saved), and can still be merged later
+  [I, file 14 8.1]. The ownership split is WS-gov's; pe-diverge emits the branch point.
+- **Re-merging later, by choice (M5):** the same function over the full record, from the branches' common
+  ancestor [R 19:09Z; file 14 8.2]:
+  - **consent:** an admin of each branch agrees, after a preview computed in a copy;
+  - **the exact merge is the default:** everything both branches touched is replayed together in order, however
+    long that takes, on a metered background thread;
+  - **a fast merge is an option, never the default:** "the later change wins, object by object", with the
+    delete-order rule. It is suggested to the people merging when the branches have a long history apart, and the
+    preview shows what it would do differently [R meef4f248923b, answer 7].
 
 ### 9.5 What the model must settle first
 
@@ -514,9 +532,9 @@ split.
   **Adopted by WS-world** (spec r2, 2df5a04, branch `world/spec`) for objects: a create or reparent under a deleted
   object is orphaned at the root, keeping its world pose. Attaching a *component* to a deleted object is refused
   (`Deleted{by}`), since a row cannot exist without its object. That is the ordinary rule too, so the merge needs
-  nothing of its own; the user's "add-on" is read as an added object [I]. This decides a case the user did not
-  state (in Resonite, attaching a component is the commonest way to build on something), so it goes to the user
-  with the provisional back-dating rule [design-reviewer].
+  nothing of its own. **Confirmed by the user** [R mfc2bbd9d28ad]: a component attached to an object deleted first
+  is refused, **with a notice to its author** (through the refusal's reason, as every refusal is reported:
+  WS-api and pe-render, P4).
 - **R-G1, the connection guard (WS-net).** Before a join, compare: the engine build id, the physics self-test's
   digest, and (from M2) each module's hash. A difference refuses the join with its reason (plan M1 acceptance). The
   last self-test result is part of a member's state that section 5 reads.
@@ -671,6 +689,7 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 | `R_merge` | Replay rate assumed when setting a merge's application frame | 2x real time |
 | `T_merge` | Divergence past which a merge replaces the ordinary rollback | 2 s [R mf7daea6446ca] |
 | `T_diverge` | Unconfirmed play after which the lines diverge | 60 s [R m35138bafc46a] |
+| `E_cue` | Correction in view above which a visible cue is required | a hand's width, about 10 cm [R meef4f248923b] |
 
 ## 15. Open points
 
@@ -679,8 +698,8 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 - **For @engine-architect:** S2 and S3 as in section 11.
 - **For WS-world and WS-state:** R-H2, R-H3 and R-O1 (R-H1 is met by 4.2a).
 - **For WS-model:** section 9.5.
-- **Provisional, pending the user:** the witnessed/unwitnessed back-dating rule (9.3) [C m61125c4194d4].
+- **Settled by the user** (mfc2bbd9d28ad, meef4f248923b): the back-dating rule (9.3); components on deleted
+  objects (R-O1); branches after a minute and the later merge (9.4); the visible-error and visibility targets (8).
 - **Settled by the coordinator:** untouched groups need to be deterministic,
   not bit-exact (9.5), both at 20:40Z; M1's logic edit compiles in under 2 s (ma99622993534).
-- **With the user** (file 14, section 7): a number for visible error; for long divergences merged later, whether
-  the later change may win object by object.
+- **With the user:** nothing open for WS-diverge.
