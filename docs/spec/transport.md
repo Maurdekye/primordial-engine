@@ -580,7 +580,10 @@ impl Core {
     `EndpointConfig::cid_generator` and `ClientConfig::initial_dst_cid_provider(Cids::initial_dcid(rng))`;
   - address-validation tokens carry a wall-clock time. Set a fixed `ServerConfig::time_source`;
   - the seeded source is the `insecure-deterministic-rng` feature of pe-net-crypto. The gate checks that no
-    shipped binary enables it.
+    shipped binary enables it (@provenance-eng's "shipped builds" check).
+  - **Shipped binaries are built per crate** (`cargo build -p pe-app --release`), never in a workspace-wide
+    build. Cargo unifies features across every member a build selects, so with pe-harness in the same build the
+    seeded source would reach pe-app's binary [S cargo's feature unification; @provenance-eng].
 - **The network model (WS-harness)** per link: one-way delay, seeded jitter, random and burst loss, a bottleneck
   with drop-tail or AQM queueing, reordering, and an "inbound blocked" switch for the firewall of 2.4.
 - **The demo's CI run** also uses real QUIC between two processes on one machine (the plan's M1 acceptance).
