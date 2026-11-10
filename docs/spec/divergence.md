@@ -1,6 +1,6 @@
 # Divergence and recovery (WS-diverge)
 
-Status: v1.8, 2026-11-10. Approved as a design by @design-reviewer (m4dcfeabea340), after their review of v0
+Status: v1.9, 2026-11-10. Approved as a design by @design-reviewer (m4dcfeabea340), after their review of v0
 (bf94698), @vdw-physics's answer on R-H1 and the coordinator's rulings of 20:40Z. v1.6 records the user's answers
 of about 19:45Z (meef4f248923b, mfc2bbd9d28ad; file 14 section 8). v1.7 adds section 9.6, from the rulings of
 19:50-19:59Z (files 18-20). Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
@@ -532,10 +532,12 @@ For the merge this means:
 - **Worlds that share only the origin** (or only a preset, outside the preset's own content):
   - nothing both touched, so nothing is replayed, however long each history is;
   - the incoming world's own objects are placed by an offset the admins choose in the preview, by default beside
-    the other and clear of it. The merge applies the offset to `theirs`'s objects that are not in `base`;
+    the other and clear of it. The merge applies it to `theirs`'s objects that are not in `base`, as a whole-chunk
+    shift of their roots, which is exact; shared preset objects are not shifted [@world-model r9];
   - the world-wide settings of the world merged into stand, unless the admins choose otherwise in the preview;
-  - world-wide logic stays limited to the things it came with, unless an admin widens it. This wants a worked
-    example before it is built (file 20, 7.4).
+  - world-wide logic stays limited to the things it came with, unless an admin widens it: each object records the
+    line it was born on (`Node.born_on`, into a hashed `lines` table [@world-model r9]), and WS-logic scopes by it.
+    This wants a worked example before it is built (file 20, 7.4).
 - These choices are inputs: `merge(base, ours, theirs, rules, options)` with
   `options = { placement: Offset, settings_from: Ours | Theirs | per setting, logic_scope, fast: bool }`.
   The default options give the exact merge with the defaults above. Options are part of the merge entry, so every
@@ -544,17 +546,21 @@ For the merge this means:
 **What the record must carry, for the merge and the world line tool** [I; file 19, file 20]:
 - every branch point (the cut it parted from) and every merge point (the merge entry, both parents), so the tree
   of versions can be walked;
-- at each stored state, a small summary per player: actions since the last stored state, and how many objects
-  they touched [C m578e520a173b]. pe-diverge computes it with the footprint (S2) and hands it to WS-world, which
-  stores it;
+- at each stored state, a small summary per player [C m578e520a173b]. pe-diverge computes it from the footprints
+  (S2); WS-world stores it in the world record beside the stored state, signed with it but outside the root
+  [@world-model, world-model.md r9 2.3, db29bd75]. Per member key: entries by class, edits applied and refused,
+  the count of objects touched with a digest of their sorted ids, and the line id with any branch or merge in the
+  interval;
 - per branch, the measures the tool draws: time apart, and how much changed (objects changed on each side since
   `base`). The tool itself is a later item (@item:primordial-engine/world-line-visualization-tool-braided-glowing-li).
 
 **Requirement R-W1, identity under one origin (WS-world, WS-seams).** Every world now shares the origin's first
 entry, so a world cannot be named by the hash of its own genesis. A branch must also not start a new genesis, or it
-loses the shared history a merge needs. Proposed [I]: a version line's id is the hash of the entry that created it
-(its branching entry, or the origin's); entries bind the line id they were made on (S1's signed world id becomes
-that line id); a merged line accepts entries made on a line in its ancestry **only up to that line's recorded
+loses the shared history a merge needs. **Adopted by WS-world** (world-model.md r9 2.3, db29bd75, in review):
+`LineId` is the hash of the entry that created the line, a branch entry or the origin's; `LineId::ORIGIN` is pinned
+by a test and never changes; a branch entry names its parent line and the final cut it branches from; a merged
+line's head names both parents; a chain belongs to one line, so continuing on a branch starts a new chain. Entries
+bind the line id they were made on (S1's signed world id becomes that line id); a merged line accepts entries made on a line in its ancestry **only up to that line's recorded
 merge point** into it (its last included entry per chain), so both parents' signatures stay valid after a merge.
 Anything made later on a parent line belongs to that line, and needs a new merge [design-reviewer, review of
 8edd08db]. Object ids and chain ids that include the line id stay unique across branches. @world-model's
@@ -670,7 +676,7 @@ pub trait Replica {
 - `Root` is a handle that keeps its structure alive, and is `Send`, so a worker can replay it.
 - Roots of the final cuts of the last `T_keep` are kept, and served to peers: enough for repair.
 - **Merge bases are kept separately.** A member keeps its `Cv` root, and the log since, for as long as it may be a
-  branch (up to `T_diverge`, a minute), whatever `K_keep` says. Older bases come from the world record (M3).
+  branch (up to `T_diverge`, a minute), whatever `T_keep` says. Older bases come from the world record (M3).
 
 ### 11.2 S3, Agreement
 
