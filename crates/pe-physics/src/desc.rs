@@ -27,6 +27,8 @@ pub mod limits {
     pub const MAX_PUSH: f32 = 1.0e9;
     /// Largest gravity component, m/s^2.
     pub const MAX_GRAVITY: f32 = 1.0e4;
+    /// Most Box3D sub-steps per tick: the rule gives 8 at the slowest supported rate, 30 Hz.
+    pub const MAX_SUB_STEPS: i32 = 16;
     /// Most points a hull is built from (Box3D keeps at most 64 hull vertices), and most
     /// shapes on one body: building costs every peer CPU time (review P22R-6).
     pub const MAX_HULL_POINTS: usize = 1024;
