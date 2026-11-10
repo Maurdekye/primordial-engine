@@ -350,6 +350,16 @@ impl ServerCertVerifier for PinnedKey {
 pub struct AnyPeerKey;
 
 impl ClientCertVerifier for AnyPeerKey {
+    /// Said outright rather than left to rustls's defaults: every dialler must present a key and prove it
+    /// (@design-reviewer's Medium on pe-net-crypto; tests/tls.rs).
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        true
+    }
+
     fn root_hint_subjects(&self) -> &[DistinguishedName] {
         &[]
     }

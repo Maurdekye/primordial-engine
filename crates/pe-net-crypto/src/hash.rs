@@ -51,6 +51,7 @@ impl rhmac::Hmac for HmacSha256 {
         // HMAC takes a key of any length, so this cannot fail.
         match hmac::Hmac::<Sha256>::new_from_slice(key) {
             Ok(k) => Box::new(HmacKey(k)),
+            #[allow(clippy::unreachable, reason = "HMAC accepts a key of any length")]
             Err(_) => unreachable!("HMAC accepts any key length"),
         }
     }
