@@ -3,7 +3,11 @@
 //! The ring's policy is local: it decides only how far back a re-simulation starts, never a result. It is the old
 //! loop's `Log(k)`, with its spacing set in time: a keyframe every `rate / 15` frames (4 at 60 Hz, about 67 ms) for
 //! the newest `k` spacings, then about two per doubling of age, so memory grows with the logarithm of the unconfirmed
-//! span. Frames the replica must be able to restore (the floor, `Cv`, held roots) are pinned and never trimmed.
+//! span. The floor's and `Cv`'s keyframes are pinned and never trimmed.
+//!
+//! Held roots are not keyframes. A held root is the state with exactly its cut's entries (`root_at_cut`), which the
+//! history's keyframe at that frame need not share, and a rollback below it must not take it away. The replica keeps
+//! each as its own snapshot, by root (replica.md 8: `save() -> Saved`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -74,12 +78,15 @@ impl<K> Ring<K> {
         self.keys.range(..=frame).next_back().map(|(f, k)| (*f, k))
     }
 
-    /// Drop every keyframe after `frame`: they belong to a history a re-simulation is replacing.
+    /// Drop every keyframe after `frame`: they belong to a history a re-simulation is replacing. Pinned frames stay,
+    /// as everywhere. They are the floor and `Cv`, both at or below the floor, and a re-simulation never starts below
+    /// the floor (4.2), so in use no pinned frame is ever after `frame`.
     pub fn truncate_after(&mut self, frame: Frame) {
-        self.keys.retain(|f, _| *f <= frame);
+        let pinned = &self.pinned;
+        self.keys.retain(|f, _| *f <= frame || pinned.contains(f));
     }
 
-    /// Never trim these frames' keyframes (the floor, `Cv`, held roots); the set replaces the previous one.
+    /// Never trim these frames' keyframes (the floor and `Cv`, 4.1); the set replaces the previous one.
     pub fn pin(&mut self, frames: impl IntoIterator<Item = Frame>) {
         self.pinned = frames.into_iter().collect();
     }
@@ -179,5 +186,16 @@ mod tests {
         r.truncate_after(Frame(20));
         assert_eq!(r.frames().last(), Some(Frame(20)));
         assert_eq!(r.at_or_before(Frame(39)).map(|(f, _)| f), Some(Frame(20)));
+    }
+
+    /// The doc's "pinned frames are never trimmed" holds for a rollback too (chunks-reviewer's low on 58ea9345).
+    #[test]
+    fn a_rollback_keeps_pinned_frames() {
+        let p = Policy::log4(60);
+        let mut r = filled(p, 40);
+        r.pin([Frame(32)]);
+        r.truncate_after(Frame(20));
+        let frames: Vec<u64> = r.frames().map(|f| f.0).collect();
+        assert_eq!(&frames[frames.len() - 2..], [20, 32]);
     }
 }
