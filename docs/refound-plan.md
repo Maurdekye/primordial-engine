@@ -4,7 +4,9 @@ Status: the build plan, 2026-11-10. Written by @engine-architect for @coordinato
 Base: main 757219f, the review's base. The plan has been revised twice:
 - after the user's answers to its four questions (mc40fc6379bc6) and to the review's later questions;
 - after @design-reviewer's read and the coordinator's rulings on its thirteen decisions (2026-11-10 20:05Z and
-  after).
+  after);
+- with the user's last answers of the design phase (merging, frozen places, carried state as a check, no world
+  owner).
 
 The order it plans is the user's (2026-11-10, m08995ecb2eab): "we are proceeding with @fable-reviewer 's rewrite plan
 first: halt all work continuing the current version of the engine, and begin the suggested rewrite. on finishing, bring
@@ -29,10 +31,11 @@ Inputs, each read in full for this plan:
   - 13, the Q3 and Q4 follow-up;
   - 14, divergence and recovery;
   - 15, machines without a compiler, and a public world with no admin reachable;
-  - 16, simulation distance as the Open World Orchestrator does it, through section 6.6;
-  - 17, coordinates for script authors.
-- The user's decisions and the coordinator's rulings, in `_shared/user-design-decisions.md` through 20:26Z on
-  2026-11-10, and the earlier rulings that still apply.
+  - 16, simulation distance as the Open World Orchestrator does it, through section 6.7;
+  - 17, coordinates for script authors;
+  - 18, no world owner: every admin is a co-owner.
+- The user's decisions and the coordinator's rulings, in `_shared/user-design-decisions.md` to the end of the design
+  phase on 2026-11-10 (its last entries are the no-world-owner rulings), and the earlier rulings that still apply.
 - @design-reviewer's read of the first version (b610464), `design-reviewer/read-refound-plan-b610464.md`.
 - The repository at 757219f: crate sizes and dependencies, which I counted for this plan.
 
@@ -72,12 +75,9 @@ calendar time, not writing.
   - The agreed-cut rules are written first as a model that a checker exhausts at small sizes.
   - The review's three probes are tests from the first week.
   - Every safety rule has a control that bites: a mutation that a test must catch.
-- **Every ruling of the user's carries over.** Section 5 says where each lands. The few points still open with the
-  user are parameters, not blockers (section 6):
-  - the default and the limits of an object's simulation size (file 16, 6.5);
-  - two merge questions (file 14);
-  - a number for "a reasonable timeframe".
-- **All 25 live docket items are triaged:** 17 carry and 8 park.
+- **Every ruling of the user's carries over.** Section 5 says where each lands. The design phase is closed. The four
+  points still open with the user, all from file 18, are parameters, not blockers (section 6).
+- **All 27 live docket items are triaged:** 17 carry and 10 park.
 - **Every decision the plan asked for has been made.** The user answered U1-U4, and the coordinator ruled C1-C13 with
   conditions (section 9).
 
@@ -209,6 +209,9 @@ final.
   - a transaction applies all or nothing, and a dry run changes nothing;
   - a stale precondition is refused, with a reason that names the winner;
   - every refusal is reported over MCP.
+- **Carried state is a check, not an overwrite** (B4; the user, mfedf5a6c3c5b). After re-simulation, an
+  interaction's carried state is compared with the simulated one. It replaces it only when they differ for a reason
+  other than an entry not yet held. Two players pushing one ball within one network delay both take effect.
 - **The logic edit:**
   - the same module bytes give the same fuel and trap points on all four hosted platforms;
   - a machine never loads a module it did not compile itself, and no module runs on wasmi;
@@ -238,9 +241,12 @@ final.
     reach.
 - **Two physical machines** (by hand, once per checkpoint): the demo's script, with both machines' roots logged at
   every cut.
+- **The user's convergence targets, on good links** (meef4f248923b, answer 8), as distributions over 20 seeds and 5
+  delays:
+  - the other machine sees an action within 0.25 s;
+  - no correction larger than a hand's width is shown in view without a cue.
 - **Measured and reported, not yet gated:**
-  - how long before the other machine sees an action, and before it is final, as distributions over 20 seeds and 5
-    delays;
+  - how long before an action is final;
   - edit to first frame on each machine, for the logic edit;
   - the display layer's counters: corrections per minute, mean visible error, deepest rollback, rungs used.
 
@@ -266,7 +272,8 @@ final.
 - **The merge engine v1.**
   - A third member (a process on either PC) diverges: its compile outlasts the window, or its link does, while the
     other two finalize.
-  - It merges back by a three-way merge at main's final frontier (section 4.4).
+  - It merges back by a three-way merge at main's final frontier, under the witnessed-order rule the user
+    confirmed (mfc2bbd9d28ad; section 4.4).
   - This completes Q3b.
 - **A per-player script, under QR (b):** a lamp that is red only for A opens a door, and the door's opening is A's
   signed input.
@@ -291,6 +298,8 @@ final.
   - no final frame is undone;
   - the returning machine's work is kept wherever the deterministic rules allow, and every action that loses says
     why;
+  - a witnessed action keeps its stamp, and an unwitnessed action never overturns something already final;
+  - a component attached to an object that was deleted first is refused, and its author is told;
   - every member ends with the same root.
 - **The per-player mode:**
   - an effect that names a stale version it read is refused;
@@ -325,10 +334,10 @@ final.
   - The quorum stays a strict 2/3, with no kick exception (Q5, mf7daea6446ca): at five members q = 4, so an admin's
     kick of the two cannot be decided without them.
   - If the two return within a minute, the lines merge automatically.
-  - If not, at one minute each side re-founds its own membership as a line of its own, with a line id. The three's
-    line gets finality back under its own quorum, and both lines know which they are [I: my reading of
-    "dropped / diverges" with the user's 19:09Z instruction]. The two lines may be re-merged later, by choice (M5).
-    This is probe twosilent5-kick.
+  - If not, at one minute the two sides become git-style branches (meef4f248923b, answer 5). Each re-founds its own
+    membership, with a line id, and gets finality back under its own quorum.
+  - A side with an admin is kept by its admins. A side with no admin lasts only while its players play (file 18).
+  - The branches may be merged later, by choice (M5). This is probe twosilent5-kick.
 - **The network splits three and two.**
   - Both sides keep playing.
   - When they reconvene within a minute, the histories merge by the deterministic rules of file 14 (4.4). A deletion
@@ -339,7 +348,8 @@ final.
     time.
   - The world then enters guarded mode with a visible notice, and a countdown starts (the owner sets it; 30 s by
     default).
-  - When the countdown runs out, the world closes with its state saved (mb09ab8952a38).
+  - When the countdown runs out, the world closes with its state saved (mb09ab8952a38). Whether anything is kept
+    when no admin is present at all is open with the user (file 18, question 3).
   - Below quorum there is no cut to decide the fact on, so it is decided on the line that re-founds its membership at
     the one-minute mark [I; WS-gov's specification states it].
 - **Thin links.**
@@ -348,6 +358,9 @@ final.
   - Cuts wait for a quorum, not for that player. Its own view follows by state at cuts, and the others never pause.
 - **Late joining.** A late joiner starts from a cut, watches until it has caught up, then acts. It verifies the
   governance it is handed.
+- **An admin returns** after playing alone (ma9035760e0c1; file 18, 2.7). Reopening the world opens their own
+  version. Another admin has it open, so the client joins them and merges, unless the returning admin chooses to
+  stay forked.
 - **Relays.** Two players behind strict routers connect through a third member acting as relay; no helper node exists.
 
 **Acceptance:**
@@ -361,7 +374,11 @@ final.
   - Control: with the bound raised, the bound test must fail.
 - **The full change record.** Every entry since the world's creation is kept, together with signed states at
   intervals. History below a final cut leaves live memory for the world record and peer caches, and is never deleted
-  (the user, 19:09Z).
+  (the user, 19:09Z). The admins keep it; a non-admin's copy is discarded when they leave (file 18).
+- **Witnessed order:** a back-dated, unwitnessed action from a lone member never overturns a final action. Its
+  control: honouring the unwitnessed stamp must fail the property.
+- **No world owner** (file 18): every admin keeps their own version as they play; there are no ownership
+  certificates; the old owner rules are gone; D87's version-control merging is kept.
 - **Guarded mode:**
   - the countdown starts and stops at cuts, the same on every machine;
   - the risky rights are suspended for the remaining players;
@@ -372,6 +389,7 @@ final.
   - the thin player keeps its vote;
   - the thin player's delays and merges are reported.
 - **Eight players at 90 Hz, every one acting.** Finality and visibility delays are reported as distributions.
+- **The user's convergence target on poor links** (meef4f248923b, answer 8): others see an action within 1 s.
 - **The repair ladder:**
   - rungs 3-5 (reload a cell, rejoin, quarantine) each have a test;
   - a background self-check replays a random recent stretch and compares it with the recorded hashes.
@@ -398,7 +416,11 @@ File 16 maps it onto this engine:
 - **The player's scale** selects which layers count.
 - **Per machine.** Each machine holds its own set.
 - **Freezing.** Chunks nobody is near freeze. Their state lives in the world record and in peer caches (Q4,
-  mf7daea6446ca).
+  mf7daea6446ca); a non-admin's cache lasts only for the session (file 18).
+- **Missed time** (meef4f248923b, mfedf5a6c3c5b; file 16, 6.7). When a player returns to a frozen place, the time
+  it missed is re-simulated, up to one minute after it froze, on a metered separate thread. The limit is a world
+  setting, and one of its values is "no limit". The first machine to return computes it, and the result is agreed
+  like any state.
 - **Notice of arrivals.** An arrival comes as an entry in the log of a chunk already loaded, never from a scan.
 - **The unit of agreement.** Agreement and simulation run per group of things in contact, across layers, not per
   cell (file 16, C4). The domain id that every entry carries from M1 names that group.
@@ -412,7 +434,10 @@ sections 6.1-6.6):
 - **Every object has a nonzero simulation size** (maa60620a6ced; file 16, 6.5). This replaces the layer floor:
   - it is one length, always greater than zero, and it decides the object's layer;
   - it has no effect on collision or on how the object looks;
-  - every object is created with a default size;
+  - every object is created with a default size: 1 m times the maker's scale (m8c42b4b093bd);
+  - it is never below the object's real extent, and it may be set larger, up to the world's maximum;
+  - a saved object's size is recorded relative to the player who saved it, and it spawns at the same size relative
+    to the player who spawns it;
   - the size follows the object when it is scaled;
   - parts take the layer of the whole assembly.
 - **Simulating and watching are a spectrum, not two states** (mbcc1c5fd8d39; file 16, 6.6, which replaces the switch
@@ -436,10 +461,6 @@ sections 6.1-6.6):
 **Before anyone builds on the spectrum:** WS-state measures how closely a replayed contact impulse reproduces the
 holders' result (the coordinator's ruling, 19:36Z).
 
-**Parameters, until the user confirms** (section 6): the simulation size's default (proposed: 1 m times the maker's
-scale), whether it may be smaller than the object's real extent (proposed: never), and whether it may be set larger,
-up to the world's maximum (proposed: yes).
-
 **First, the evidence** (file 11, section 6):
 - a two-dimensional protocol simulator with real player movement, run at the default ratio and at 1 km;
 - a measurement, with a person's hands, of two things of nearly equal size in adjacent layers;
@@ -448,8 +469,9 @@ up to the world's maximum (proposed: yes).
 **Demo:**
 - The world is several kilometres across.
 - Two players far apart simulate disjoint sets of chunks.
-- A ball thrown out of everyone's range stays frozen where it left it.
-- Player B carries the ball back into A's range, and A learns of it from an arrival entry.
+- A ball thrown out of everyone's range freezes when nobody has it loaded. When a player returns, the minute it
+  missed is re-simulated, so it has landed.
+- Player B carries a ball back into A's range, and A learns of it from an arrival entry.
 - A player walking into an area takes its state from those already there.
 - Large objects simulate and draw from farther away than small ones.
 - A far player has a ship loaded but not the crates on its deck. The far player simulates the ship, and the crates'
@@ -469,7 +491,8 @@ up to the world's maximum (proposed: yes).
   - every root stays equal, and switching between entries and state changes nothing in the result.
 - **Sizes:** every object has a nonzero simulation size, an object created without one gets the default, the size
   follows scaling, and parts take the layer of the whole.
-- **The open parameters** (the size's default and limits) can be switched, and the tests pass at each setting.
+- **Missed time:** a frozen place re-simulated on return gives the same state on every machine, within the world's
+  limit, without stalling a frame.
 - **A cost budget per machine,** measured at the default ratio and at 1 km.
 
 **Size:** 4-6 for the skeleton and the evidence, then 10-16 (file 11).
@@ -478,14 +501,16 @@ up to the world's maximum (proposed: yes).
 
 Each track writes its short specification before its code.
 - **Saves, backups and merges of world copies,** derived from the world model and the world record. A save is a
-  signed, named root.
-- **Re-merging later, by choice.** Two lines that diverged more than a minute ago can be merged at any later time, as
-  the user asked (19:09Z): the full record, the same rules, consent from an admin of each, and a preview computed in a
-  copy first (file 14, 4.4). One rule is still open with the user: for long divergences, may the later change win,
-  object by object?
+  signed, named root, kept by the world's admins (file 18). A world with one admin lives on one machine, so a backup
+  under the admin's control (a second machine of theirs, or an export) must be easy.
+- **Re-merging later, by choice.** Two branches that diverged more than a minute ago can be merged at any later time
+  (19:09Z), with the full record and the same rules (meef4f248923b, answers 6 and 7; file 14, 8.2):
+  - an admin of each branch consents, after a preview computed in a copy;
+  - the exact merge is the default;
+  - a fast merge ("the later change wins, object by object") is an option, suggested for long histories.
 - **Several worlds and portals.** Carrying between worlds is copy then remove (Q7).
-- **People:** identities, invites and live vouching; bans, and perma-bans saved with the world. Received avatars and
-  objects get simple Resonite-style protections (V1, mbe87e750ca35).
+- **People:** identities, invites and live vouching; bans, and perma-bans saved with the world by its admins.
+  Received avatars and objects get simple Resonite-style protections (V1, mbe87e750ca35).
 - **Player voice.** No design exists yet; it meets the Rust ruling at the codec.
 - **Avatars:** standard formats first (VRM, glTF), then Resonite import as far as the licence research allows.
 - **Engine releases and updates.** No design exists yet.
@@ -520,7 +545,7 @@ Line counts are of `.rs` files at 757219f [V].
 |---|---|---|
 | `crates/box3d-fork` | 102,929 | **Kept.** WS-state adds incremental world images (file 11, 3.1). Excluded from the format and lint gates |
 | `crates/pe-core` | 1,636 | **Kept.** WS-world widens object ids to 128 bits and makes a world's id the hash of its signed genesis (M1). WS-world also owns the script-facing position types: `Pos`, the typed offsets and `ORIGIN`, built on `WorldPos` (file 17; used from M2). The cell index promotes past 64 bits (the format in M1, the rest in M4) |
-| `crates/pe-physics` | 3,422 | **Kept.** WS-state moves the physics bench in from `spikes/physics`, runs the floating-point guard on the simulation thread, and wires one shared worker pool (D2). Its test records move from `spikes/out/vdw` into the crate |
+| `crates/pe-physics` | 3,422 | **Kept.** WS-state moves the physics bench in from `archive/spikes/physics`, runs the floating-point guard on the simulation thread, and wires one shared worker pool (D2). Its test records move from `spikes/out/vdw` into the crate |
 | `crates/pe-sim` | 2,870 | **Kept and evolved** (about 500 lines of internals, file 04 A6). It gains: block copy-on-write with dirty bits and cached hashes; blob-backed variable-length fields; several components of one type per object; a persistence class; a registry versioned by frame |
 
 ### 2.2 Kept in part: ported into new crates, behind the seams
@@ -573,10 +598,10 @@ first. Everything archived stays readable at the tag.
 | Path | Lines or files | How it is archived |
 |---|---|---|
 | `spikes/sim-core`, `spikes/session-sim` | 27,432 | Removed. Part B is not ported |
-| `spikes/physics`, `p2p`, `wasm-hotswap`, `ballpit-viz`, `physics-in-wasm` | 4,368 | Removed, because each depends on `spikes/sim-core` [V]. The physics bench is ported into pe-physics first. ballpit-viz's wgpu code and wasm-hotswap stay readable at the tag, for WS-render and WS-logic |
-| `crates/pe-session`, `crates/pe-session-harness`, `tools/session-sim`, `crates/pe-mcp`, `crates/pe-app` | 38,428 | Moved to `archive/`, outside the workspace and the gate, so their owners can port from them. Deleted at M3 |
+| `spikes/p2p`, `wasm-hotswap`, `ballpit-viz`, `physics-in-wasm` | 2,662 | Removed, because each depends on `spikes/sim-core` [V]. ballpit-viz's wgpu code and wasm-hotswap stay readable at the tag, for WS-render and WS-logic |
+| `crates/pe-session`, `crates/pe-session-harness`, `tools/session-sim`, `crates/pe-mcp`, `crates/pe-app`, `spikes/physics` | 40,134 | Moved to `archive/`, outside the workspace and the gate, so their owners can port from them; `spikes/physics` is there for WS-state's port of the physics bench. Deleted at M3 |
 | `spikes/out` | 2,333 files, 34 MB | Removed, except the records that kept tests read: `spikes/out/vdw` moves to `crates/pe-physics/tests/records/` [V: pe-physics's tests read it] |
-| `scripts/` | — | Removed: the scripts that drive only archived code, for example `run_r18*.sh`, `run_session_sim.sh`, `regress_session_sim.sh`, `compare_*.sh`, `session_log_norm.py`, `scripts/p2-3/`, `run-p2p.sh`, `run_ballpit_viz.sh` and `run_perturbation_history.sh`. WS-archive checks each script's inputs. Kept: `audit_native.py`, the `publish_*` scripts, the determinism-matrix scripts, `rebless_physics_records.sh`, and the wasm and iteration-benchmark scripts |
+| `scripts/` | — | Removed: the session, r18, thin-link, p2p, ballpit, chunks and regress scripts. Moved to `archive/scripts/`: the determinism-matrix, par-bench, rebless and guest-build scripts, which drive the archived physics bench; they come back with WS-state's port. Kept: `audit_native.py`, the `publish_*` scripts, the P2-1 and P2-2 test scripts, and the wasm and iteration-benchmark scripts |
 | `spikes/chunks`, `wasm-guests`, `iter-bench`, `stack-audit` | — | Kept as references outside the workspace, as now (file 11, section 5) |
 | The documents on the kept base: `vdw-simulation`, `parallel-physics`, `d58-double-precision`, `p2-1-core-sim`, `p2-2-physics`, `p2-6-p2-7-matrix`, `iteration-benchmark` | — | Kept in `docs/` |
 
@@ -611,7 +636,7 @@ Only a path's owner edits it.
 | WS-app | @engine-architect, after WS-seams | `crates/pe-app` | The application: threads, wiring, invites, configuration, the demo script | The launcher (M5) |
 | WS-harness | @harness-eng | `crates/pe-harness`, with its scenarios and the probes | The network model, the scenario runner, the properties, the three probes, randsched | Long runs and distributions (M3) |
 | WS-diverge | @diverge-eng | `crates/pe-diverge` and its tests; `docs/spec/divergence.md` | The repair ladder's rungs 1 and 2; the fault bundle; the counters; the display layer's requirements, handed to WS-render | The merge function, a pure function it alone owns: v1 at main's final frontier (M2) and v2 for split groups (M3). Rungs 3-5, and the background self-check (M3) |
-| WS-gov (M3) | to be staffed | `crates/pe-gov`, `docs/spec/governance.md` | — | M3, including guarded mode. It takes governance validity over from WS-world |
+| WS-gov (M3) | to be staffed | `crates/pe-gov`, `docs/spec/governance.md` | — | M3: guarded mode; admins as co-owners, with no ownership certificates (file 18); moderator roles made by hand; an admin's agent holding that admin's permissions. It takes governance validity over from WS-world |
 | WS-regions (M4) | to be staffed | `crates/pe-regions`, `docs/spec/regions.md`, the region simulator | — | M4 |
 
 Rules:
@@ -633,7 +658,7 @@ not built yet. Appendix A sketches them. WS-seams fixes v0 in M0, from the owner
 
 | Seam | Between | What crosses it |
 |---|---|---|
-| S1 Entries | everyone | The signed envelope: author, sequence number, the previous entry's hash, domain id, frame stamp, class (input, edit, governance or protocol), typed payload, signature. The signed bytes bind the world id (the genesis hash), so an entry cannot be replayed into another world. Hashes are 256 bits and object ids 128 bits. The domain id is there from the start, so the regions work needs no format change: one domain per world until M4, then one per group of things in contact (file 16, C4) |
+| S1 Entries | everyone | The signed envelope: author key, chain id (one chain per member per world for its life; a restart takes a new nonce), sequence number, the previous entry's hash, domain id, frame stamp, class (input, edit, governance or protocol), typed payload, signature. The signed bytes bind the world id (the genesis hash), so an entry cannot be replayed into another world. Hashes are 256 bits and object ids 128 bits. The domain id is there from the start, so the regions work needs no format change: one domain per world until M4, then one per group of things in contact (file 16, C4) |
 | S2 Replica | pe-agree and pe-replica, pe-world, pe-diverge | Step a frame with its ordered entries; save, restore and step per group; the root hash; each entry's outcome (applied, or refused with a reason) and any permission check at a frame; a subtree-hash exchange, node hashes by path, through which repair and merging find what differs. The trait is object-safe, so the harness can wrap it |
 | S3 Agreement | pe-agree and pe-app, pe-harness, pe-diverge | Submit a local entry; receive a message; tick on local monotonic time, with the frame from pe-net's sans-IO clock. What to simulate now. The newest final cut, which carries a line id. A hold on votes until a build is ready (Q3). Events, and one trace vocabulary shared with the model: proposals, votes and final cuts; voided and refused entries with reasons; equivocations; joins and leaves; quorum lost; unconfirmed time; diverged; merged; and "paused", which must never fire. pe-agree calls the merge function; it does not own it |
 | S4 Transport | pe-net and pe-agree, through pe-app | Send by class (protocol, action, pose, repair, bulk), in that priority; receive; statistics per link. A pose that cannot be sent is superseded, never queued |
@@ -728,7 +753,9 @@ M5  the platform tracks
    - no final frame is ever undone;
    - once faults stop, progress resumes within a stated bound;
    - no input from any member aborts a replica: bad data is refused with a reason, and its author is reported;
-   - live memory stays bounded over long sessions, while the full change record is kept.
+   - live memory stays bounded over long sessions, while the full change record is kept;
+   - the user's convergence targets: others see an action within 0.25 s on good links and 1 s on poor ones, and no
+     correction larger than a hand's width is shown in view without a cue (meef4f248923b, answer 8).
 2. **The model before the code.**
    - The agreed-cut rules, and then the merge rules, are written as an executable model and checked exhaustively at
      small sizes before pe-agree and pe-diverge depend on them (file 11, 3.3 and 3.9).
@@ -801,8 +828,13 @@ passed to the liaison so that the user can correct it):
   is the returning machine's replay under the new rules, and "ours" is main's final state.
 - The deterministic rules of file 14 (4.4) resolve conflicts: one order by frame stamp with ties broken by the
   author's key, then the engine's ordinary rules.
+- **Witnessed order** (the user confirmed it, mfc2bbd9d28ad; file 14, 9.1): an action that another member
+  acknowledged within the normal bound of its stamp keeps its stamp; an unwitnessed action cannot overturn something
+  already final. The known residual: in a split of one against one, neither side has a witness, so a lone cheater
+  can back-date by up to the one-minute limit.
+- **A component attached to an object deleted first** is refused, with a notice to its author (file 14, 9.2).
 - No final frame is ever undone.
-- Model v2 checks this rule before merge v1 is built.
+- Model v2 checks these rules before merge v1 is built.
 
 **The tool:** Stateright, a model checker written in Rust (C3). Its tier-1 profile is time-bounded (C3's condition).
 
@@ -811,8 +843,8 @@ passed to the liaison so that the user can correct it):
   reordered, lost or duplicated, a few cuts deep.
 - **v1 (M1):** admitting by entry, leave, join from a cut, and the vote hold during a build.
 - **v2 (M2):** one branch merging with the main line at main's final frontier: a long compile, or a bad link.
-- **v3 (M3):** quorum loss, unconfirmed play, the one-minute bound with membership re-founded per line and line ids,
-  split groups and their merge.
+- **v3 (M3):** quorum loss, unconfirmed play, the one-minute bound with membership re-founded per branch and line
+  ids, split groups and their merge.
 
 **Safety properties:**
 - Agreement: no two honest members finalize different cuts at the same height on the same line.
@@ -820,6 +852,7 @@ passed to the liaison so that the user can correct it):
 - No final frame is undone.
 - **Merge determinism:** the same entry sets give the same merged order and outcomes, whatever the arrival order.
 - **Merge keeps work:** an action survives the merge unless the ordinary rules would have refused it with no split.
+- **Witnessed order:** an unwitnessed action never changes the outcome of a final action.
 - **Voiding and merging fit together:** entries made during a split are never voided by the tolerance rule merely
   because they were apart [I; settled in v2 and v3].
 - **Lines know themselves:** after the one-minute bound, every member knows which line it is on, and no cut of one
@@ -838,6 +871,7 @@ passed to the liaison so that the user can correct it):
 - stopping play below quorum (the h1 freeze);
 - accepting a proposer's cut without checking it;
 - ordering a merge by arrival;
+- honouring an unwitnessed back-dated stamp against a final action;
 - voiding the entries made during a split;
 - raising the one-minute bound.
 
@@ -893,12 +927,17 @@ in the headset is the user's to judge, at the checkpoints.
 | 2. One quorum mechanism replaces unanimous confirmation, the view change and Part B, keeping the user's rulings (Q2) | pe-agree (agreed cuts); `models/cuts` | The model in M0, the code in M1, complete in M3 | Section 4.4 |
 | 3. Code activation (Q3, mf7daea6446ca): the owner runs a change at once, and every other machine rewinds and replays when its own compile finishes. Objects keep running the old code, then jump (Q3a). A divergence over 2 s becomes a world-line merge with main (Q3b). No machine runs another's build (Q3c) | pe-logic: activation inside the window in M1 (the coordinator's ruling, 20:22Z), with M1's edit measured to compile in under 2 s on the second PC (20:26Z); the merge function of pe-diverge for longer divergences, a three-way merge at main's final frontier (the coordinator's reading) | M1 (inside the window), M2 (the merge) | M1's logic tests; merge v1's tests |
 | Standalone, compiler-less headsets: excluded from the prototype; any later support comes through our own deterministic cross-platform compiler, not follow-by-state; own-PC builds are moot (mb09ab8952a38) | Not built (section 6) | — | — |
-| 4. Regions (Q4): only what is near the player simulates; a frozen area's state lives in the world record and peer caches (mf7daea6446ca); the simulation distance follows the Open World Orchestrator (m5adc22d1388d). The OWO's ratio is the default, changeable per world (C1); the player's scale selects a window of layers (C2) (m1d4a95c6d4bd); every object has a nonzero simulation size (maa60620a6ced); simulating and watching are a spectrum, with influences from unloaded things sent as entries (mbcc1c5fd8d39), any influence counting, script logic included (ma27c73c50fd4) | pe-regions, as in M4: layers as the loading index, per-machine chunk sets, frozen chunks, arrival entries instead of scans, agreement per group in contact, and influence entries for whatever acts from outside a machine's loaded set. The domain id is in every entry from M1. The size's default and limits are parameters (section 6) | M4; the format from M1 | M4's tests |
+| 4. Regions (Q4): only what is near the player simulates; a frozen area's state lives in the world record and peer caches (mf7daea6446ca); missed time is re-simulated on return, up to one minute after freezing, a world setting, on a metered thread (meef4f248923b, mfedf5a6c3c5b); sizes default to 1 m times the maker's scale, never below the real extent, settable larger (m8c42b4b093bd); the simulation distance follows the Open World Orchestrator (m5adc22d1388d). The OWO's ratio is the default, changeable per world (C1); the player's scale selects a window of layers (C2) (m1d4a95c6d4bd); every object has a nonzero simulation size (maa60620a6ced); simulating and watching are a spectrum, with influences from unloaded things sent as entries (mbcc1c5fd8d39), any influence counting, script logic included (ma27c73c50fd4) | pe-regions, as in M4: layers as the loading index, per-machine chunk sets, frozen chunks, arrival entries instead of scans, agreement per group in contact, and influence entries for whatever acts from outside a machine's loaded set. The domain id is in every entry from M1. The size's default and limits are parameters (section 6) | M4; the format from M1 | M4's tests |
 | 5. The removal quorum stays 2/3, strictly, with no kick exception (Q5) | pe-agree: t = floor((n − 1) / 3), q = floor((n + t) / 2) + 1 (section 4.4). Below quorum, play continues unconfirmed and reconvenes by merge (the 18:58Z instruction), so nobody is frozen | M3 | probe-twosilent5-kick |
-| Unconfirmed play below quorum lasts one minute at worst, then the session diverges (m35138bafc46a). The full change record is kept from creation, and diverged worlds may be re-merged later by choice (19:09Z) | pe-agree and pe-diverge (the bound, membership re-founded per line, line ids); WS-world (the world record); M5 (re-merging later) | M3; re-merging in M5 | The one-minute and record tests (M3) |
+| Unconfirmed play below quorum lasts one minute at worst, then the session diverges (m35138bafc46a) into git-style branches (meef4f248923b). The full change record is kept from creation, and diverged worlds may be re-merged later by choice (19:09Z), with an admin of each consenting after a preview; the exact merge by default, a fast merge optional (meef4f248923b) | pe-agree and pe-diverge (the bound, membership re-founded per line, line ids); WS-world (the world record); M5 (re-merging later) | M3; re-merging in M5 | The one-minute and record tests (M3) |
 | A delete against an add-on on two branches is decided by the order of events: delete first, the add-on is orphaned; delete second, everything is destroyed (m35138bafc46a) | pe-diverge's merge: the ordinary replay in event order | M2-M3 | A merge scenario for each order |
+| The merge rules (mfc2bbd9d28ad): witnessed order, with its one-against-one residual; a component attached to an object deleted first is refused, with a notice to its author | pe-diverge's merge, modelled in v2 | M2-M3 | The witnessed-order property and its control |
+| Convergence targets (meef4f248923b, answer 8): others see an action within 0.25 s on good links and 1 s on poor ones; no correction larger than a hand's width in view without a cue | A property of every network scenario (pe-harness) | M1 (good links), M3 (poor links) | The delay and correction distributions |
+| Carried state is a check, not an overwrite (Q15, B4; mfedf5a6c3c5b) | pe-replica | M1 | M1's carried-state test |
+| No world owner (m6987a48ed7f0, ma9035760e0c1; file 18): every admin is a co-owner and keeps their own version; non-admins keep nothing after leaving; rejoining reopens your version and merges with an admin who has it open, unless you stay forked | WS-gov (admins, no ownership certificates), WS-world (the record kept by admins), WS-diverge (the rejoin merge) | M3; saves in M5 | The returning-admin scenario |
+| Moderation (meef4f248923b, answers 13 and 14): no moderator role by default, though one can be made by hand; an admin's agent holds that admin's permissions | WS-gov; M5's agent panels | M3, M5 | — |
 | 6. Public worlds start strangers without admin rights (Q6 of the first round) | pe-gov: the public template's joining role has no admin permissions. Governance is ordinary entries over the hashed world state | M3 | probe-capture-close |
-| No admin reachable (Q6 of the follow-ups, mb09ab8952a38): guarded mode, then a countdown the owner sets (30 s by default), then the world closes with its state saved | pe-gov. "Unreachable" is a recorded fact decided at a cut | M3 | The guarded-mode tests |
+| No admin reachable (Q6 of the follow-ups, mb09ab8952a38): guarded mode, then a countdown (30 s by default, now an admin's world setting), then the world closes with its state saved | pe-gov. "Unreachable" is a recorded fact decided at a cut. Whether anything is kept with no admin present is file 18's question 3 | M3 | The guarded-mode tests |
 | 7. Carrying between worlds is copy then remove; a rare duplicate is acceptable; no lease (Q7) | M5's worlds track: the carrier creates the object in the destination as an ordinary permitted edit, then removes it from the source once a cut in the destination holds it | M5 | A crash mid-carry leaves at most a duplicate, never a loss |
 | 8. QR (b): only the owning player's machine runs their per-player script copy (Q8) | pe-logic's per-player mode. It runs once per eligible player, on that player's machine, on predicted state, and its effects on shared state are that player's signed inputs. Three mitigations stay within the ruling (file 11, 3.5): an effect names the versions it read and is refused if they are stale; each effect is declared "once for the world" or "once per player"; per-player state may live in the player's profile store | M2 | M2's per-player tests |
 | 9. Helper nodes are optional and never assumed (Q9) | pe-net: an invite carries keys and reachable addresses; any member can act as rendezvous and relay; the helper protocol is written down, and the node list ships empty | Direct in M1; relays in M3 | Every test runs with no helper |
@@ -921,7 +960,7 @@ All of the user's earlier requirements still apply (m83bc23ef13ec). These are th
 | R3: a deterministic local simulation with rollback; traffic only on interaction | Kept. Entries flow only on interaction; cut votes flow while anyone acts |
 | R4: Box3D; Rust and wgpu | Kept |
 | R5: the soonest interaction wins. Same-frame order follows the seeded rank (D37), and only grabs claim | pe-log's order and claims, unchanged. The same order decides merges |
-| "An author never sees its own interaction corrected" (m21f5bdac80b3); an interaction carries the new state with a canonical frame (m84a607d3a701) | pe-replica, unchanged; the display layer never applies a correction offset to a player's own hands or what they hold. The review's proposal to carry state as a check (file 02, B1) was never put to the user and is not adopted |
+| "An author never sees its own interaction corrected" (m21f5bdac80b3); an interaction carries the new state with a canonical frame (m84a607d3a701) | Narrowed by the user's answer to B4 (mfedf5a6c3c5b): the carried state is a check, not an overwrite, so an author's body may be corrected by a late earlier action. An author's own action is still applied at once and never refused, and the display layer never applies a correction offset to a player's own hands or what they hold (pe-replica, M1) |
 | R6: sync checks, and repair from the earliest frame | The hash tree over objects (pe-world) finds what differs, through the subtree-hash exchange; the repair ladder (pe-diverge) fixes only that |
 | R7: live edits, source control, rebase, the 10 s seat | One edit entry with a base version (pe-world). A stale one is refused with its reason, and the seat is the path that refusal takes. Fields and the first code in M1 |
 | R8: MCP for state, logic and shaders | WorldApi and the small tool set (pe-api, pe-mcp) |
@@ -933,8 +972,8 @@ All of the user's earlier requirements still apply (m83bc23ef13ec). These are th
 | R18: detect collapse and recover; keep congestion with the thin player | Covered by cuts, the link budget and the merge, in M3:<br>- a slow member keeps its vote, and nobody demotes it;<br>- cuts wait for a quorum, not for it, and its own view follows by state at cuts;<br>- a member diverged for more than 2 s merges with the main line;<br>- each link gets its own rate budget in pe-net;<br>- late actions past the tolerance are void, decided by the cut, and the engine sets the tolerance from measured links;<br>- "fewer than 0.01% dropped on acceptable connections" is measured |
 | The premise: distributed verification of a change record (m3c8512748b8c, answered "all current") | Cuts are the verified record, and the full record is kept. The order comes from the authors' frame stamps; the earlier change wins a conflict; each scale keeps its own record |
 | Trust players; admins kick (the trust survey) | Hardening covers crashes and corruption only; griefing is the admins' to handle. Equivocation is the one anti-cheat (file 14, 4.5) |
-| D80 and the admin rules: admins plus 2/3; admins are equal; a role that can assign roles counts as an admin; kicking an admin needs its own permission; the last admin cannot release the role; admins may kick and ban while paused; a session closes with its last admin (m716adebd0591) | pe-gov (M3), as rules over the hashed state, with the quorum formula of section 4.4. In public worlds the guarded-mode rule decides how a session without an admin closes |
-| Perma-bans are saved with the world (m5c4b84d186a8) | Fields of the world's access list, written by ordinary governance entries (M5, saves) |
+| D80 and the admin rules: admins plus 2/3; admins are equal; a role that can assign roles counts as an admin; kicking an admin needs its own permission; the last admin cannot release the role; admins may kick and ban while paused; a session closes with its last admin (m716adebd0591) | pe-gov (M3), as rules over the hashed state, with the quorum formula of section 4.4. In public worlds the guarded-mode rule decides how a session without an admin closes. With no world owner (file 18), the owner rules are overturned: the signed ownership chain, Q27 and the owner kick rule, O1-O5. D87's version-control merging is kept, with "all co-owners" read as all admins |
+| Perma-bans are saved with the world (m5c4b84d186a8) | Fields of the world's access list, written by ordinary governance entries and kept by the admins (M5, saves) |
 | D11: every peer compiles from source | Kept, and now with its timing: each machine compiles for itself and activates at the agreed frame (Q3) |
 | D12: "wasmi now, Cranelift later" (mc164bb1fac63) | Answered by U3, Cranelift. By the coordinator's ruling (19:52Z), Cranelift starts in M1, with metering injected, and no logic ships on wasmi |
 | D13: WGSL for now | Kept |
@@ -950,19 +989,20 @@ All of the user's earlier requirements still apply (m83bc23ef13ec). These are th
 
 Q3, the one point the first version listed as out of scope, has since been answered (mf7daea6446ca). M1 and M2 plan it.
 
-**Still open with the user, kept as parameters, none blocking M1:**
-- **The simulation size** (file 16, 6.5): the user ruled that every object has one (maa60620a6ced). The details are
-  pending confirmation, and M4 builds each as a setting:
-  - the default: 1 m times the maker's scale;
-  - never below the object's real extent;
-  - settable above it, up to the world's maximum.
-- **Merging, from file 14 (section 7):**
-  - for long divergences merged later, may the later change win, object by object, where an exact replay would take
-    too long (M5)?
-  - is a number wanted for visible error (a target for the display layer's tests)?
-- **The merge against finality:** the coordinator's reading (a three-way merge at main's final frontier) has gone to
-  the liaison so that the user can correct it. Model v2 checks it before merge v1 is built.
-- **A reasonable timeframe** (file 11, 3.0): the user's number. Every milestone reports the measured delays meanwhile.
+The design phase is closed: the user has answered every question the review asked. The simulation size's details
+(m8c42b4b093bd), the later merge (meef4f248923b), visible error and "a reasonable timeframe" (the convergence
+targets, answer 8) are all settled above.
+
+**Still open with the user, kept as parameters, none blocking M1** (file 18, section 5; WS-gov's specification builds
+each as a setting):
+- whether the admin already in a world gets a say when a returning admin's version merges into it;
+- who adds and removes admins (recommended: 2/3 of the admins, a sole admin deciding alone);
+- whether a session with no admin keeps nothing, with a permanent "nothing here is being kept" mark;
+- whether join rules that named "a world owner" test any admin of the world (recommended), or only those present.
+
+**One reading still to confirm:** the coordinator's reading of the merge against finality (a three-way merge at
+main's final frontier) has gone to the liaison so that the user can correct it. Model v2 checks it, with the
+witnessed-order rule the user confirmed, before merge v1 is built.
 
 **Excluded from the prototype:** standalone headsets and other machines without a compiler (mb09ab8952a38). The design
 keeps nothing that would make them impossible later. Their path is the project's own deterministic cross-platform
@@ -972,9 +1012,9 @@ None of these is built before it is answered. Each one's place in the plan is no
 
 ## 7. Triage of the docket
 
-There are 25 live items (not archived); I read them on 2026-11-10 at 19:02Z [V]. The coordinator counted 27; if two
-more exist, I can't see them. The coordinator's ruling put item 25 to park (20:05Z). The last column is where each
-item goes, and why.
+There are 27 live items (not archived). I read 25 of them on 2026-11-10 at 19:02Z [V]; the coordinator parked the two
+I could not see (rows 26 and 27), and its ruling put item 25 to park (20:05Z). The last column is where each item
+goes, and why.
 
 | # | Item | Status, owner | Verdict | Where, and why |
 |---|---|---|---|---|
@@ -991,7 +1031,7 @@ item goes, and why.
 | 11 | @item:primordial-engine/clock-sync-frequencies-converge-before-frame-0-s | backlogged, coordinator-opus | Carry | M1, WS-net: keep the fault-tolerant midpoint, drop the frequency loop, converge before frame 0, and then steer gradually (files 01 and 14). Restate its acceptance for pe-net |
 | 12 | @item:primordial-engine/r16-chunk-coordinates-i64-backed-extending-to-ar | backlogged, coordinator-opus | Carry | WS-world: the format in M1 and `Pos` in M2 (file 17); WS-regions: the rest in M4. A cell index that promotes past the 64-bit range and never saturates (m7e85960c864a) |
 | 13 | @item:primordial-engine/logic-shaders-and-assets-as-objects-unified-hier | backlogged, coordinator-opus | Carry | M1-M2, WS-logic and WS-world: its user rulings are requirements of the logic specification, and its open points are answered there, under systems over the store |
-| 14 | @item:primordial-engine/owner-s-client-writes-perma-bans-into-the-world-s | backlogged, coordinator-opus | Carry | M5, saves: perma-bans become fields of the world's access list, written by ordinary governance entries. PB-1 and PB-2 follow from the log's order |
+| 14 | @item:primordial-engine/owner-s-client-writes-perma-bans-into-the-world-s | backlogged, coordinator-opus | Carry | M5, saves: perma-bans become fields of the world's access list, written by ordinary governance entries and kept by the admins; with no world owner (file 18), an admin's client writes them. PB-1 and PB-2 follow from the log's order |
 | 15 | @item:primordial-engine/port-the-randsched-widening-and-s6-to-pe-session | backlogged, engine-architect | Carry, re-scoped | M0-M1, WS-harness and WS-model: the widened randsched runs against pe-agree, and S6 becomes a property of the model. Nothing is ported to pe-session |
 | 16 | @item:primordial-engine/gnosarium-the-flagship-game-on-the-primordial-en | blocked on the user, coordinator-opus | Carry as it is | The game's identity. The user has parked the business model (mbe87e750ca35); the interface direction feeds M5 |
 | 17 | @item:primordial-engine/ball-pit-video-matrix-re-rendered-on-the-current | deploy_ready, ballpit-viz | Carry as it is | Built and approved; delivering it is the liaison's. Later videos come from pe-render, one per milestone, with the commit printed on them (file 09, A15) |
@@ -1003,6 +1043,8 @@ item goes, and why.
 | 23 | @item:primordial-engine/r18-controller-retune-for-the-3-player-thin-cell | backlogged, coordinator-opus | Park | Tuning of the replaced level ladder |
 | 24 | @item:primordial-engine/thin-links-space-an-idle-member-s-acks-while-d56 | backlogged, coordinator-opus | Park | Tuning of the replaced level ladder (D56) |
 | 25 | @item:primordial-engine/trading-lease-only-one-live-instance-of-a-world-t | backlogged, engine-architect | Park | The user ruled "there is no lease" (Q7, md2fa23dfa774), so nothing in the plan needs it. Parked, not dropped, as old items are (the coordinator's ruling) |
+| 26 | @item:primordial-engine/pe-session-per-entry-wire-savings-signatures-pe-a | parked by the coordinator | Park | Wire savings in the old session core |
+| 27 | @item:primordial-engine/r18-on-scenario-suite-pass-harness-batching-cost | parked by the coordinator | Park | The old harness's R18 batching cost |
 
 ## 8. Risks, and the evidence that settles each
 
@@ -1025,6 +1067,7 @@ item goes, and why.
 | Agents in Session 0 have no desktop, for windows or the headset | Place WS-render and WS-xr in a signed-in session; headless tests render offscreen | M0-M1 |
 | The model's state space at five members with splits and merges | Small bounds, symmetry reduction, a time-bounded fast profile, and a deep profile run nightly | M0-M3 |
 | Determinism has never run on ARM or macOS (file 02) | Tier 2 in M0 | M0 |
+| With no world owner, a world with one admin lives on one machine, and being made an admin hands over the world for good (file 18, 4) | An easy backup under the admin's control (M5, saves); WS-gov's specification states who may add and remove admins (file 18's question 2) | M3, M5 |
 
 ## 9. Decisions
 
@@ -1162,7 +1205,7 @@ File 14 (section 2) lists the ways the world line diverges. Each row gets a scen
 | P7 | Entering an area whose state has not arrived | The last known state at once; fetch only what differs; fade in | WS-regions, WS-render | M4 |
 | P8 | A per-player script acted on a guess later undone | Effects name what they read and are refused if stale | WS-logic | M2 |
 | S1 | A slow member far behind | It keeps its vote; cuts wait for a quorum, not for it; its view follows by state at cuts; past 2 s, it merges with the main line | WS-agree, WS-diverge | M3 |
-| S2, S3 | A split; too few for a quorum | Unconfirmed play for up to a minute, then a git-style merge, or each line re-founds its membership; re-merging later by choice | WS-agree, WS-diverge, WS-world | M3 (re-merging, M5) |
+| S2, S3 | A split; too few for a quorum | Unconfirmed play for up to a minute, then a git-style merge under witnessed order, or the sides become branches that each re-found their membership; re-merging later by choice | WS-agree, WS-diverge, WS-world | M3 (re-merging, M5) |
 | S4 | A crash and return, or a new joiner | State at a cut plus the recent log; watch first, act when caught up | WS-agree, WS-world | M1 (joining), M3 |
 | F1, F3, F6 | Physics or builds that differ; different engine versions | Guards at connection and start-up; the hash tree; the repair ladder; the fault bundle | WS-net, WS-diverge, WS-world | M1 |
 | F2 | A logic module that behaves differently on two machines | Metering in the module's bytes; logic state and module versions in the hash | WS-logic, WS-world | M1 |
@@ -1173,7 +1216,7 @@ File 14 (section 2) lists the ways the world line diverges. Each row gets a scen
 
 ## Appendix C. Sources
 
-- Review: `_teams/1847/fable-review/` files 00-17, and `appendix/evidence/` (the probes and their logs).
+- Review: `_teams/1847/fable-review/` files 00-18, and `appendix/evidence/` (the probes and their logs).
 - @design-reviewer's read of b610464: `design-reviewer/read-refound-plan-b610464.md`.
 - The user's rulings and the coordinator's: `_shared/user-design-decisions.md`, cited by message id above.
 - Docket: the 25 live items listed in section 7, read on 2026-11-10.
