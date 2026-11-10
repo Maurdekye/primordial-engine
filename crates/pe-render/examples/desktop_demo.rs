@@ -60,7 +60,9 @@ fn main() {
     let c2 = clock.clone();
     std::thread::spawn(move || {
         let hz = 60u64;
-        for f in 0u64.. {
+        // Publishes until the process exits with the window.
+        #[allow(clippy::infinite_loop)]
+        for f in 0u64..u64::MAX {
             let t = f as f64 / hz as f64;
             let mut objects = vec![object(
                 1,
