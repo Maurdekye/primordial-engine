@@ -480,7 +480,9 @@ From plan M1:
 
 ## 11. Open points
 
-For @coordinator-opus unless marked; my proposal first.
+For @coordinator-opus unless marked; my proposal first. @coordinator-opus ruled X1, X2 and X3 as proposed on
+2026-11-10 (m92c4584b835e): the 250 ms of X3 is a parameter. X5 is with the user, through the liaison; until it is
+answered, pe-xr is coded against the fake runtime.
 
 | # | Point | My proposal |
 |---|---|---|
