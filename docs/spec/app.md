@@ -1,13 +1,14 @@
 # pe-app: the application (WS-app)
 
-Owner: @engine-architect. Draft 1, 2026-11-10. Plan: docs/refound-plan.md 3.1 and 3.2 (threads are WS-app's to decide
+Owner: @engine-architect. Draft 2, 2026-11-10 (@design-reviewer's review of draft 1, mf5074c5ab2fd). Plan: docs/refound-plan.md 3.1 and 3.2 (threads are WS-app's to decide
 with WS-state, WS-render and WS-xr). Seams: crates/pe-seams (S1-S6, RULINGS.md).
 
 ## 0. In short
 
-- **Five kinds of thread.** The main thread runs winit's event loop and, on the desktop, draws. The simulation thread
-  owns agreement, the replica and divergence repair. The network thread owns the socket. In VR, pe-xr's XR thread
-  draws the eyes. MCP handlers run on a small runtime pe-app starts.
+- **Seven kinds of thread.** The main thread runs winit's event loop and, on the desktop, draws. The simulation
+  thread owns agreement, the replica and divergence repair. The network thread owns the socket. In VR, pe-xr's XR
+  thread draws the eyes. MCP handlers run on a small runtime pe-app starts. A worker runs self-tests, and an I/O
+  thread writes files.
 - **The simulation thread never waits** on rendering, the network or the API. It waits only for its own next frame
   or for new input, and every hand-over is a bounded queue or an atomic swap.
 - **pe-app is a binary over libraries.** Each crate keeps its own loop logic; pe-app spawns threads, connects their
@@ -23,13 +24,15 @@ with WS-state, WS-render and WS-xr). Seams: crates/pe-seams (S1-S6, RULINGS.md).
 | Network | pe-net's `Core` over the socket (transport.md 7) | the socket, QUIC, the lanes, the rate budget, the clock | pe-net's runner |
 | XR (VR mode) | pe-xr's frame loop (xr.md 7.1); it is the render thread in VR | the OpenXR session, the XR GPU context, the hand ring | pe-xr's runner |
 | MCP | pe-mcp's transports on a tokio runtime of 2 workers; handlers call WorldApi through `spawn_blocking` (WS-api O9) | the token store (pe-app's, O9) | pe-app |
+| Worker | the physics self-test, when pe-diverge asks for one (M1); from M2 also background re-simulation and merges on a second replica copy | its own scratch physics world | the simulation thread's stack, because from M2 it runs guests |
+| I/O | writing fault bundles (M1) and saves (M5) | the data directory | pe-app |
 
 - **One code path for the event loop.** winit's loop must run on the main thread on some platforms (render.md 3);
   pe-app runs it there on every platform, so there is one order of events to test.
 - **In VR mode** the main thread only pumps window events and input. The XR thread draws the eyes and, as a setting,
   the desktop mirror (render.md 10).
-- **Background re-simulation and merges** (M2) run on a worker that steps a second replica copy. It is spawned with
-  the same stack as the simulation thread, because it also runs guests.
+- **Nothing slow runs on the simulation thread.** A self-test that takes more than a frame runs on the worker, and its
+  verdict feeds a later vote; file writes go to the I/O thread through a bounded queue.
 
 ## 2. Shared values and queues
 
@@ -42,6 +45,8 @@ with WS-state, WS-render and WS-xr). Seams: crates/pe-seams (S1-S6, RULINGS.md).
 | Messages in and out | network | simulation | pe-net's bounded single-producer queues of `Received` and `(peer, lane, bytes)` (transport.md 7) |
 | The session clock | network | simulation, XR, main | pe-net's clock model behind `FrameClock` (S4), read lock-free |
 | Effects to play | main or XR thread | the audio sink (M1: counted and logged only), pe-xr's haptics | a bounded queue |
+| Self-test requests and verdicts | simulation, worker | worker, simulation | a bounded queue each way |
+| Fault bundles to write | simulation | I/O | a bounded queue |
 
 A full outgoing queue is a local fault, counted and reported, never a stall (transport.md 7).
 
@@ -53,15 +58,37 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
 2. **Local input.** Read both hands with `hand_at(hand, clock.host_time_of(p))`, drain the edit queue, and build the
    frame's entries (pe-world's input and edit codecs). Each goes through `Agreement::submit`, which signs it.
 3. **Agreement's time.** `Agreement::tick(now, clock)`; its outgoing messages go to the network outbox.
-4. **The replica.** pe-replica's `drive(replica, agree, p, self_test)` (WS-state; @harness-eng's DESIGN.md 3.2):
-   `advance` to `p`; answer `wants_roots` with `root_at_cut` and `vote`; and pass `final_cut()` to `finalize` each
-   time it changes. It returns what it did, including each `Finalized`.
-5. **Divergence.** Hand S3's events and each `Finalized` to pe-diverge. It runs the repair rungs through S2
-   (`replay_to`, `import_at_cut`, then `finalize` again; RULINGS.md "S2 v1") and returns its Repair-lane messages,
-   which go to the outbox.
+4. **The replica.** pe-replica's `Driver::drive(replica, agree, p + 1, self_test)` (WS-state, @vdw-physics,
+   m7e812664fbd8; @harness-eng's DESIGN.md 3.2). `present` is exclusive, so frame `p`, whose local entries step 2 just
+   submitted, is simulated. It runs `advance`, answers `wants_roots` with `root_at_cut` and `vote` (one vote per cut),
+   and passes `final_cut()` to `finalize` each time it changes. Its `DriveReport` holds the `Advance`, the votes, the
+   cuts with no root yet, and each `finalize` result.
+5. **Divergence.** pe-app drains S3's events and hands pe-diverge **one ordered list**: the events drained before
+   `drive`, with each of the report's `finalize` results placed right after the `CutFinal` of its cut (first in the
+   list if that `CutFinal` came in an earlier tick, because the cut's entries were late), then the events drained after
+   `drive`. So a `CutFinal` at height h, its result, and a `RootSplit` at h + 1 reach pe-diverge in that order.
+   pe-diverge returns actions, each routed in this tick:
+   - Repair-lane messages: to the outbox;
+   - `Revote { cut, root }`: to `Agreement::vote`, with the current self-test verdict;
+   - `RunSelfTest`: to the worker's queue. When the verdict comes back, it is the `self_test` that later votes and
+     `drive` calls carry;
+   - `WriteBundle`: to the I/O thread's queue.
+
+   Its repairs run through S2 v1 (`replay_to`, `import_at_cut`, then `finalize` again; RULINGS.md "S2 v1"), within
+   the replica's budget (below).
 6. **Publish.** `FrameSlot::publish(replica.view())`, the snapshot port, and the effects queue.
 7. **Wait** until `clock.host_time_of(p + 1)`, or until the inbox or the edit queue wakes the thread, whichever is
    first.
+
+**Bounded work per tick.** A deep rollback, or a repair's replay of up to `W_fg` (2 s, 120-240 frames), done in one
+tick would stall the simulation for hundreds of milliseconds, and with it agreement's votes and messages for every
+other member. So the replica re-simulates at most a budget of frames per call, expressed as simulated time (a local
+setting, deterministic for the harness; pe-app may adjust it from the measured step cost), and resumes on the next
+call. Until it has reached the present again it publishes no new frame view, so the display keeps drawing, and
+extrapolating, the last one, while agreement keeps ticking and voting. A replay or an import that does not fit in one
+call returns "pending" and is called again on a later tick. The budget is part of S2 (`Advance::caught_up`,
+`RootError::Pending`, `ImportError::Pending`). M2's second copy then keeps the old prediction moving during a deep
+replay instead of holding the view.
 
 The harness's node driver runs steps 1 to 5 with its own network and clock, through the same `drive`, so the loop
 that ships is the loop the properties check.
@@ -82,16 +109,21 @@ that ships is the loop the properties check.
    newest final cut, fetched on the Bulk lane and imported (`import_at_cut`), then replayed to the present.
 6. **The simulation thread**, then the XR thread (VR) or the main thread's drawing (desktop), then the MCP transports.
 
-**Shutdown**, in reverse: stop MCP; submit a leave entry and wait for its cut, up to a duration (2 s by default),
-so others drop this member without a pause (plan 4.3); stop the simulation, XR and network threads; release the GPU.
+**Shutdown**, in reverse:
+1. Stop MCP.
+2. Submit a leave entry, and no local entry after it. The simulation and network threads keep ticking while pe-app
+   waits, because the leaver's own vote may be needed for the cut that includes the leave (at n = 2, q = 2).
+3. Stop waiting as soon as a final cut includes the leave, after 2 s (a duration), or at once when no other member is
+   connected. Then the others drop this member without a pause (plan 4.3).
+4. Stop the simulation, worker, XR and network threads; flush the I/O thread; release the GPU.
 
 ## 5. What pe-app needs from each crate
 
 | Crate | Needs |
 |---|---|
-| pe-replica (@vdw-physics) | A constructor from a world config and a seed; `drive` as one function over `&mut dyn Replica` and `&mut dyn Agreement` (section 3, step 4) |
+| pe-replica (@vdw-physics) | A constructor from a world config and a seed; `Driver::drive` over `&mut dyn Replica` and `&mut dyn Agreement` (section 3, step 4); the per-call budget of section 3 |
 | pe-agree (@world-chunks) | A constructor from the member key, the line and the world config; `Agreement` (S3) |
-| pe-diverge (@diverge-eng) | Its state machine with `on_event`, `receive` and `tick(now, clock)` returning Repair-lane messages; fault bundles handed to pe-app to write |
+| pe-diverge (@diverge-eng) | Its state machine with `on_event` over the ordered list of section 3, `receive` and `tick(now, clock)`, returning its actions (Repair messages, `Revote`, `RunSelfTest`, `WriteBundle`); a repair that is pending continues on later ticks |
 | pe-net (@shader-lang) | A runner that owns the network thread and returns its two queues and a `FrameClock` handle; the invite, dial and admission calls (transport.md 6) |
 | pe-render (@ballpit-viz) | Done in part 1: `GpuContext`, `FrameSlot`, `Presenter`, the desktop hand's `HandFeed`. Still needed: a call that creates the window's surface from winit's window, and the creation lock exposed to pe-xr |
 | pe-xr (@xr-eng) | A runner for the XR thread that takes the GPU context, a `FrameSlot` reader and the clock, and returns its `HandFeed` |
@@ -109,6 +141,8 @@ so the same script is the two-process acceptance test.
 
 - **No waiting:** the simulation keeps its rate with the render thread stalled, with the network inbox full, and with
   the edit queue full (each a test with a mock on the other side).
+- **No stall in a repair:** during a rung-1 replay of `W_fg`, and during a rollback of `W_fg`, every tick ends on
+  time, votes and messages keep flowing, and the frame view resumes within the catch-up time the budget gives.
 - **Startup without a GPU:** headless capture works, so CI runs the two-process test.
 - **Shutdown:** the leave reaches the other member, which pauses for zero frames.
 - **The two-process session** of section 6, on Windows and Linux.
