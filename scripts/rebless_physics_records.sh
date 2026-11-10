@@ -19,6 +19,11 @@
 #     goldens and rollback T1-T5 are tests too.
 # The spike's .log files in that folder are evidence of the commits that wrote them; nothing
 # regenerates them.
+#
+# The records are a regression baseline, not a check between two implementations: the generator
+# runs the tests' own scenes and rules (crates/pe-physics/tests/common), so step 3 always agrees
+# with a fresh rebless. The committed records still carry the spike's bits. So after a rebless
+# that moves a record, the reviewer judges the record diff itself (the last step below).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 low() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" "$@"; else "$@"; fi; }

@@ -1,5 +1,9 @@
 # P2-2: physics wrapper (`pe-physics`)
 
+> **Evidence paths** (since the M0 archive, 2026-11-10): paths under `spikes/out/` in this document refer to the
+> tag `archive/v0-prototype`, where those logs are kept. Main no longer carries them; the physics records the
+> tests read moved to `crates/pe-physics/tests/records/`.
+
 Author: @vdw-physics. Package P2-2 of design 23.4. Branch `p2/p2-2`, with main merged at b5f3013
 (P2-1 final, D2's parallel Box3D and everything since). Reviewer: @design-reviewer; the findings
 of the first review (P22-1 to P22-13) and the second (P22R-1 to P22R-8) are answered in "Review
