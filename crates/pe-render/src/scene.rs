@@ -251,7 +251,6 @@ pub struct Renderer {
     settings: RenderSettings,
     module: wgpu::ShaderModule,
     globals_bgl: wgpu::BindGroupLayout,
-    shadow_bgl: wgpu::BindGroupLayout,
     main_layout: wgpu::PipelineLayout,
     shadow_pipeline: wgpu::RenderPipeline,
     pipelines: BTreeMap<(u32, u32), Pipelines>,
@@ -359,7 +358,6 @@ impl Renderer {
             settings,
             module,
             globals_bgl,
-            shadow_bgl,
             main_layout,
             shadow_pipeline,
             pipelines: BTreeMap::new(),
@@ -487,8 +485,22 @@ impl Renderer {
             };
             let p = Pipelines {
                 main: make("scene", "vs_main", "fs_main", Some(wgpu::Face::Back), true, None),
-                ghost: make("ghost", "vs_main", "fs_ghost", Some(wgpu::Face::Back), false, Some(wgpu::BlendState::ALPHA_BLENDING)),
-                outline: make("outline", "vs_outline", "fs_outline", Some(wgpu::Face::Front), false, Some(wgpu::BlendState::ALPHA_BLENDING)),
+                ghost: make(
+                    "ghost",
+                    "vs_main",
+                    "fs_ghost",
+                    Some(wgpu::Face::Back),
+                    false,
+                    Some(wgpu::BlendState::ALPHA_BLENDING),
+                ),
+                outline: make(
+                    "outline",
+                    "vs_outline",
+                    "fs_outline",
+                    Some(wgpu::Face::Front),
+                    false,
+                    Some(wgpu::BlendState::ALPHA_BLENDING),
+                ),
             };
             self.pipelines.insert(key, p);
         }
@@ -619,7 +631,8 @@ impl Renderer {
                         LightKind::Spot { inner_angle, outer_angle } => (1.0, outer_angle.cos(), inner_angle.cos()),
                         LightKind::Directional => (2.0, -1.0, -1.0),
                     };
-                    let score = if k == 2.0 { f64::MAX } else { l.light.intensity as f64 / rel.length_squared().max(1.0) };
+                    let score =
+                        if k == 2.0 { f64::MAX } else { l.light.intensity as f64 / rel.length_squared().max(1.0) };
                     rest.push((
                         score,
                         GpuLight {
@@ -643,8 +656,13 @@ impl Renderer {
         // The key light's shadow: an orthographic box around the anchor.
         let shadows = self.settings.shadow_size > 0;
         let e = env.shadow_extent.max(0.1);
-        let light_view = Mat4::look_at_rh(-key_dir * (2.0 * e), Vec3::ZERO, if key_dir.y.abs() > 0.99 { Vec3::X } else { Vec3::Y });
-        let light_vp = Mat4::orthographic_rh(-e, e, -e, e, 0.0, 4.0 * e) * light_view;
+        let light_view = glam::camera::rh::view::look_at_mat4(
+            -key_dir * (2.0 * e),
+            Vec3::ZERO,
+            if key_dir.y.abs() > 0.99 { Vec3::X } else { Vec3::Y },
+        );
+        // wgpu's clip space is glam's DirectX convention: depth 0..1, +Y up.
+        let light_vp = glam::camera::rh::proj::directx::orthographic(-e, e, -e, e, 0.0, 4.0 * e) * light_view;
 
         // One uniform slot per view, plus one for the shadow pass.
         let needed = views.len() as u64 + 1;
@@ -677,7 +695,8 @@ impl Renderer {
             self.pipelines(v.format, samples);
         }
 
-        let mut enc = self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pe-render") });
+        let mut enc =
+            self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pe-render") });
         if shadows {
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow"),
@@ -719,7 +738,12 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: resolve,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: sky[0] as f64, g: sky[1] as f64, b: sky[2] as f64, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: sky[0] as f64,
+                            g: sky[1] as f64,
+                            b: sky[2] as f64,
+                            a: 1.0,
+                        }),
                         store: if resolve.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
                     },
                 })],
@@ -758,8 +782,14 @@ impl Renderer {
 fn anchored_model(anchor: Pos, pose: &WorldPose, s: [f32; 3]) -> Mat4 {
     let r = DMat3::from_quat(pose.rot.normalize());
     let t = offset_vec(pose.pos - anchor);
-    let c = |v: DVec3, k: f32| Vec4::new((v.x * k as f64) as f32, (v.y * k as f64) as f32, (v.z * k as f64) as f32, 0.0);
-    Mat4::from_cols(c(r.x_axis, s[0]), c(r.y_axis, s[1]), c(r.z_axis, s[2]), Vec4::new(t.x as f32, t.y as f32, t.z as f32, 1.0))
+    let c =
+        |v: DVec3, k: f32| Vec4::new((v.x * k as f64) as f32, (v.y * k as f64) as f32, (v.z * k as f64) as f32, 0.0);
+    Mat4::from_cols(
+        c(r.x_axis, s[0]),
+        c(r.y_axis, s[1]),
+        c(r.z_axis, s[2]),
+        Vec4::new(t.x as f32, t.y as f32, t.z as f32, 1.0),
+    )
 }
 
 /// A view's matrix from anchor space, and its eye in anchor space: the eye's rotation and its small offset from
@@ -770,7 +800,10 @@ fn anchored_view(anchor: Pos, cam: &Camera) -> (Mat4, Vec3) {
     let r = DMat3::from_quat(inv);
     let t = -(inv * eye);
     let c = |v: DVec3| Vec4::new(v.x as f32, v.y as f32, v.z as f32, 0.0);
-    (Mat4::from_cols(c(r.x_axis), c(r.y_axis), c(r.z_axis), Vec4::new(t.x as f32, t.y as f32, t.z as f32, 1.0)), eye.as_vec3())
+    (
+        Mat4::from_cols(c(r.x_axis), c(r.y_axis), c(r.z_axis), Vec4::new(t.x as f32, t.y as f32, t.z as f32, 1.0)),
+        eye.as_vec3(),
+    )
 }
 
 fn vertex_layouts() -> [Option<wgpu::VertexBufferLayout<'static>>; 2] {
@@ -869,12 +902,12 @@ mod tests {
         for t in idx.chunks(3) {
             let [a, b, c] = [t[0], t[1], t[2]].map(|i| Vec3::from(v[i as usize].pos));
             let n = (b - a).cross(c - a);
-            if n.length() < 1e-9 {
+            if n.length() < 1e-6 {
                 continue; // a pole's degenerate triangle
             }
             let centre = (a + b + c) / 3.0;
             let out = Vec3::from(v[t[0] as usize].normal) + Vec3::from(v[t[1] as usize].normal);
-            assert!(n.dot(out) > 0.0 || n.dot(centre) > 0.0, "inward triangle at {centre:?}");
+            assert!(n.dot(out) > 0.0, "inward triangle at {centre:?}: face {n:?}, vertex normals {out:?}");
             checked += 1;
         }
         assert!(checked > 10);

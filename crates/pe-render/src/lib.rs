@@ -11,15 +11,19 @@
 //! - [`gpu`]: the GPU context, Vulkan first, D3D12 with FXC as the fallback (render.md 4).
 //! - [`scene`]: the scene renderer, one for the window, the eyes and the capture (render.md 6).
 //! - [`capture`]: the offscreen capture and `visible_list` (render.md 11).
+//! - [`pacing`]: the display period and the render-scale controller (render.md 10).
+//! - [`desktop_hand`]: the mouse-ray hand and its `HandFeed` (render.md 9).
 //!
 //! pe-render re-exports `wgpu` and `wgpu-hal`; pe-xr uses only those (xr.md 8.2).
 
 pub mod camera;
 pub mod capture;
+pub mod desktop_hand;
 pub mod display;
 pub mod drawn_time;
 pub mod effects;
 pub mod gpu;
+pub mod pacing;
 pub mod pose;
 pub mod scene;
 
