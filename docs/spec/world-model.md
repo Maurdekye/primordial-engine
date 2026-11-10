@@ -155,8 +155,11 @@ preset worlds that sprout from it with some preset content". The design, agreed 
   ever: the format tag `"pe.origin.v1"` and nothing else (no key, no signature, no content, no registry).
   `LineId::ORIGIN = BLAKE3(those bytes)`. Every engine version must produce exactly these bytes, so a test pins
   them, and changing them is forbidden.
-- **A branch entry** creates a line. It is a signed entry naming its parent line and the final cut it branches from
-  (that cut's frame and root), plus the new line's settings (5.1). The new line's id is the branch entry's hash.
+- **A branch entry** creates a line. It is a signed entry naming its parent line and the state it branches from,
+  plus the new line's settings (5.1). The new line's id is the branch entry's hash. The state is either a final cut
+  of the parent (its frame and root), or a stored state signed by the brancher (its frame and root): a removed
+  admin's saved copy, "as it stood up to the moment they were removed", is a local stored state and not at a final
+  cut, and the merge's search for a common base must find it (@design-reviewer's r9 Low 3).
   A merged line's head names both parents (WS-diverge's merge record).
 - **Entries on a line** are signed over that line's id (S1), and object, chain, spawn and hand ids derive from it
   (2.1). A merged line accepts the entries of every line in its ancestry, so both parents' signatures and ids stay
@@ -181,15 +184,25 @@ itself is WS-diverge's (M5, "re-merging later, by choice"):
 
 - **Placement** (the user's answer 1, accepted as recommended): the incoming line's objects are placed where the
   admins choose, by default beside the other world and clear of it. The world model makes that exact by requiring
-  the shift to be a whole number of chunks per axis: every root `Pos` moves by an integer chunk vector, which
-  changes no in-chunk offset and so no bit of any relative position, physics frame or script result [I]. Objects
-  the two sides share (a common preset's) are not shifted; they are already in the same place.
+  the shift to be a whole number of chunks per axis, and applying it to **every `Pos`-typed field** of the incoming
+  objects (the schema marks them): root transforms, and also waypoints, spawn points and targets stored on any
+  object (@design-reviewer's r9 Medium 2). An integer chunk shift changes no in-chunk offset, and so no bit of any
+  relative position, physics frame or script result [I]. `Offset` fields and child-local transforms are relative,
+  so they do not shift. Objects the two sides share (a common preset's) are not shifted; they are already in the
+  same place.
+- **What cannot shift:** a number a script stored after `pos - Pos::ORIGIN` is a plain number, and the engine
+  cannot know it was a position. That is the user's deliberate opt-in (4.2); after a placement shift it points at
+  the old place. A note for WS-logic's documentation.
 - **Settings** (answer 2): the line merged into keeps its settings unless the admins choose otherwise in the preview.
 - **World-wide logic** (answer 4): it stays limited to the things it came with unless an admin widens it. For that,
   every object records the line it was born on, as a small index (`Node.born_on: u32`) into a hashed world table,
   `lines`, of the line ids that object births name; and each script row (5.4) holds the set of lines its world-wide
   queries cover, which only an admin's edit widens. The rule itself and its worked example are WS-logic's, before
   it is built (file 20, 7) [I].
+- **Merging two `lines` tables** (@design-reviewer's r9 Low 1): the two sides may give one index to different lines.
+  The merged table is the union keyed by `LineId`, with indices reassigned in `LineId` order, and every `born_on`
+  remapped to the new index. It is deterministic, and its cost is one row write for each object only one side had,
+  which the placement shift touches anyway.
 - **History is kept, deleted things included** (file 20, 5): the world record of each side comes along, joined at
   the common ancestor. Dropping history on purpose ("share from now, without its past") is a branch from a cut with
   the history cut off, a later feature.
@@ -817,9 +830,11 @@ orphaned. if the delete occured second, then everything is destroyed."
   tombstone's hash covers that object's last leaf hash. So an add-on to a grandchild
   of the deleted object is orphaned at the grandchild's last place, as the user's rule asks (@design-reviewer's
   High 1). Tombstones are a world table, so they are hashed.
-  They are dropped when their frame is more than one minute behind the current frame (the unconfirmed-play bound),
-  counted as one minute's worth of frames at the line's tick rate, a deterministic rule of the state [I]. Every time
-  limit in this file is in seconds, never a fixed count of frames (@coordinator-opus m3e12fe81d732). A merge older than that reads them back from the world record (M3,
+  Each tombstone stores its **expiry frame**, fixed at the delete: the delete's frame plus one minute (the
+  unconfirmed-play bound) converted at the tick rate in effect then, so a later change of the rate does not move
+  existing expiries (@design-reviewer's r9 Low 2). It is dropped once the current frame passes its expiry, a
+  deterministic rule of the state [I]. Every time limit in this file is in seconds, never a fixed count of frames
+  (@coordinator-opus m3e12fe81d732). A merge older than that reads them back from the world record (M3,
   M5).
 - **Undelete** (@design-reviewer's r2 Medium). `Undelete { id }` restores a deleted subtree from its tombstones
   with the **same ids**, rows and versions, under its old parent at its old place (or as a root, orphaned, if that
@@ -1034,6 +1049,10 @@ Each is a test in pe-world, pe-sim or pe-core unless marked [I on all thresholds
    resolves again to the same id.
 7. **Ids:** the same entries applied in two different valid orders give the same ids to the same objects; an id
    collision is a refusal.
+7a. **Lines:** the origin's bytes and `LineId::ORIGIN` equal their pinned values. After lines A and B merge into M,
+    an entry B's chain makes after its recorded merge point is refused on M (the control: accepting it must fail
+    this test). A whole-chunk placement shift moves every `Pos` field of the incoming objects and no `Offset`, and
+    leaves every relative position bit-identical.
 8. **Own hands:** a hand input from a member who does not own the hand is refused and changes nothing.
 9. **What the hash covers:** a one-bit change injected into each covered part (a component row, a row version,
    `BodyState`, each world table, the registry) changes the root, and the diff walk names exactly that object or
