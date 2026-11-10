@@ -525,6 +525,7 @@ pub enum Op {
     RemoveRow { id: Target, component: ComponentId, instance: u16 },
     Reparent { id: Target, parent: Target, index: Option<u32>, keep_world: bool },
     Copy { source: Target, new: u32, parent: Target, index: Option<u32> },   // the subtree; templates (7.1)
+    Undelete { id: ObjectId },                                // restore a deleted subtree from its tombstones (7.5)
     Register { components: Vec<ComponentDesc> },             // with a module commit (WS-logic)
     CommitModule { module: ModuleId, source: BlobRef, wasm: BlobRef, base: Option<EntryRef> },
 }
@@ -540,7 +541,10 @@ pub enum Precondition {
 
 - **Copy and templates** (@api-eng's O3). `Copy` duplicates an object and its subtree, rows and all, under a new
   parent. The copies take derived ids: `new` is the index `k` of the copy's root, and the rest of the subtree takes
-  the next indices in depth-first order, children in their order. Templates are world data: ordinary objects under
+  the next indices in depth-first order, children in their order. So a `Copy` of an n-object subtree reserves the
+  contiguous range `new .. new + n` of the transaction's `New` indices. Two ops whose ranges overlap (a `Create` and
+  a `Copy`, or two `Copy`s) refuse the transaction at validation with `NewIndexOverlap`, never as "id exists"
+  (@design-reviewer's r2 Low 1). Templates are world data: ordinary objects under
   a `Templates` root that the schema lists (the ball-pit's box, ball and lamp), and creating from one is a `Copy`.
   "Double the cube" is a `Copy` too. A copy is copy-on-write in storage (file 04 A1: new ids over the same records)
   [I; an optimisation, invisible in the hash].
@@ -587,6 +591,9 @@ pub enum Precondition {
   a per-player script's effect names the versions it read and is refused if they are stale) uses it, so a lamp that
   logic turned off makes the effect stale. Its one blind spot is a row that changed and changed back between the
   read and the check; then the effect's cause is present again, which I take to be acceptable. WS-logic confirms.
+  A row that physics or logic writes every frame (a moving ball's `Transform`) is stale at every check, so an effect
+  should name only the rows its script declares as causes (the lamp), never everything it touched
+  (@design-reviewer's r2 Low 2; a note for WS-logic).
   The refusal names no winner, since the writer may be no entry; it reports the current row instead.
 - **The check.** At the transaction's place in the agreed order, every precondition is evaluated against the state
   just before it. If any fails, nothing applies, and the outcome is
@@ -627,12 +634,19 @@ orphaned. if the delete occured second, then everything is destroyed."
   The outcome is `Applied` with the note `Orphaned { deleted_by }`. The parent's structural version is never an
   implicit precondition of an add-on.
 - **Tombstones** make that possible. A delete leaves a tombstone for **every object of the deleted subtree**, each
-  with the deleting `EntryRef`, the frame and that object's own last world transform. So an add-on to a grandchild
+  with the deleting `EntryRef`, the frame, that object's own last world transform, and its rows, versions and place
+  in its parent as they were (shared copy-on-write with the snapshot before the delete, so it costs no copy). The
+  tombstone's hash covers that object's last leaf hash. So an add-on to a grandchild
   of the deleted object is orphaned at the grandchild's last place, as the user's rule asks (@design-reviewer's
   High 1). Tombstones are a world table, so they are hashed.
   They are dropped when their frame is more than one minute of frames (the unconfirmed-play bound; 3,600 at 60 Hz)
   behind the current frame, a deterministic rule of the state [I]. A merge older than that reads them back from the world record (M3,
   M5).
+- **Undelete** (@design-reviewer's r2 Medium). `Undelete { id }` restores a deleted subtree from its tombstones
+  with the **same ids**, rows and versions, under its old parent at its old place (or as a root, orphaned, if that
+  parent is gone too), and drops the tombstones. It is valid only while the tombstone lives and the id is absent;
+  otherwise it refuses with `Unknown(id)` or `Exists(id)`. Because the ids are the same, every `ObjectRef`, script
+  target and precondition that named the deleted objects resolves again. A one-step revert of a delete uses it.
 - **Deleting an object already deleted** applies, with the note `AlreadyDeleted { by }` (@design-reviewer's
   Medium 4). So when both sides of a merge deleted one object, the later side's transaction still applies its other
   ops. `Delete { Root }` is refused: the world's root is not an object.
@@ -678,7 +692,7 @@ pub enum Outcome {
 ```
 
 - `inverse` is the ops that undo this transaction (@api-eng's O4): the prior rows it replaced, deletes of what it
-  created, recreations (by `Copy` from the tombstone's record, within the tombstone window) of what it deleted.
+  created, and an `Undelete` of what it deleted (within the tombstone window; 7.5).
   WorldApi's one-step revert submits it as a new transaction, with `Version` preconditions on the versions this one
   set, so a revert after someone else's edit is refused as stale rather than undoing their work.
 - `Note` includes `Orphaned { deleted_by }` and `AlreadyDeleted { by }`.
@@ -811,7 +825,8 @@ Each is a test in pe-world, pe-sim or pe-core unless marked [I on all thresholds
 6. **Delete and add-on, both orders,** on one machine and through a merge-order replay: delete first gives an
    orphaned root at the parent's last place; delete second destroys both. The same for an add-on under a depth-2
    descendant of the deleted object; and both sides deleting one object leaves the later transaction's other ops
-   applied.
+   applied. Revert of a delete: delete a referenced object, apply the outcome's `inverse`, and the reference
+   resolves again to the same id.
 7. **Ids:** the same entries applied in two different valid orders give the same ids to the same objects; an id
    collision is a refusal.
 8. **Own hands:** a hand input from a member who does not own the hand is refused and changes nothing.
