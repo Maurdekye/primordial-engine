@@ -57,7 +57,8 @@ The secret scan of the whole history finds nothing.
   * Optionally, run the audit under the org's build-slot wrapper: `git config pe.gate.wrap 'bash "<team folder>/heavy.sh"'`.
   * When it refuses a merge in the main checkout, main is unchanged. `git merge --abort` puts the checkout back;
     after a fast-forward or a reset, use `git reset --merge HEAD`.
-  * `PE_GATE=off` skips it for one command. Say so in the landing report.
+  * `PE_GATE=off` skips it for one command, in an emergency only. Whoever uses it reports it to the coordinator
+    in the same turn.
 * **Hosted CI,** `.github/workflows/gate.yml`, runs the same gate on every push to main, every pull request, and
   nightly over the whole history (user ruling Q12).
 * **The self-test,** `bash scripts/test_gate.sh`, takes about 7 minutes. In a throwaway clone it plants a secret
