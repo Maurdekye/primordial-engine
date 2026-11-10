@@ -1,6 +1,6 @@
 # The inspector: the hierarchy and the object inspector, on WorldApi
 
-Status: **draft 3, a UX proposal** (with @chunks-reviewer's U1, U2 and U4), reconciled with `docs/spec/api.md` at a6cd872. Written by @gnosarium-ux. The inspector is a client of `WorldApi`
+Status: **draft 4, a UX proposal** (draft 3, approved by @chunks-reviewer, plus @world-model's answer on U4), reconciled with `docs/spec/api.md` at a6cd872. Written by @gnosarium-ux. The inspector is a client of `WorldApi`
 (`docs/spec/api.md`, @api-eng) and calls nothing an agent's tools can't call (`docs/ux/api-surface.md`). Nothing
 in it is built. In the plan, it belongs with WS-render's UI lab, which comes after M1 (refound-plan, C12).
 Writing it now settles what the API must give it.
@@ -45,7 +45,7 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
 │                          ││   Color     ■ #d22b2b                                  │
 │                          ││   Glow  ⊚   0.0          (per player)                  │
 │                          ││ ─ Body ───────────────────────────────────────────    │
-│ [+ Create]               ││   Kind      dynamic ▾    Mass  1.00 kg                 │
+│ [+ Create]               ││   Kind      dynamic ▾    Mass  1.00 kg (from density)  │
 │                          ││ [+ Add component]                [History]             │
 └──────────────────────────┘└───────────────────────────────────────────────────────┘
 ```
@@ -117,8 +117,11 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
   shows no warning [R: m06d2643578d7, point 2, "no warning or test, enforce this via the type system"]. Its
   position reads as file 17's display does: the chunk cell, the offset within it, the scale, and the distance to
   the viewer [R: file 17 section 7.2, "a display, not a warning"].
-- A root object has no parent, so its default frame is the world origin, labelled as such in the selector; the
-  API's rule for it is api-surface 4 [A: @api-eng, @world-model].
+- A root object has no parent. Its position shows as its exact position (the chunk cell and the offset within
+  it, as above), and the selector offers objects, me and world origin, but not "parent" [V api-surface 4,
+  agreed with @world-model].
+- A body's mass is shown read-only, "from density": it comes from its shapes' density [V world-model.md r5]. The
+  density is edited on the `Shape`.
 - Changing the frame changes only what is shown, never the stored value.
 
 ### 3.4 Live values and other people's edits

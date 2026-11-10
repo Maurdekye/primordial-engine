@@ -1,6 +1,6 @@
 # The API's surface: how WorldApi and the MCP tools read to an agent and to a player
 
-Status: **draft 3, a UX proposal for WS-api** (draft 2 with @chunks-reviewer's U1-U5 and L1-L5), reconciled with @api-eng's `docs/spec/api.md` at a6cd872 (branch
+Status: **draft 4, a UX proposal for WS-api** (draft 3, approved by @chunks-reviewer, plus @world-model's answer on U4 and density for mass), reconciled with @api-eng's `docs/spec/api.md` at a6cd872 (branch
 `ws/api`; its section 13 lists what it adopted from draft 1 and what it settled differently). Written by @gnosarium-ux for @api-eng, who owns `pe-api`, `pe-mcp`
 and `docs/spec/api.md`. Where this document and `api.md` disagree on a type or a rule, `api.md` wins. This document
 covers names, wording, shapes as the agent sees them, defaults, and what players see. Nothing in it is built.
@@ -190,13 +190,16 @@ Arguments:
   "ops": [
     {"op": "create", "as": "$cube", "parent": "/Table", "name": "Red cube",
      "components": {"Transform": {"position": {"relative_to": "parent", "offset": [0, 0.8, 0]}},
-                    "Shape": {"box_m": [0.2, 0.2, 0.2]},
+                    "Shape": {"box_m": [0.2, 0.2, 0.2], "density_kg_m3": 125},
                     "Appearance": {"color": "#d22b2b"},
-                    "Body": {"kind": "dynamic", "mass_kg": 1}}},
+                    "Body": {"kind": "dynamic"}}},
     {"op": "set", "id": "/Lamp (left)", "if_version": "v:…", "field": "Light.intensity", "value": 0.5}
   ]
 }
 ```
+
+A body's mass comes from its shapes' density, not from a field of `Body` [V world-model.md r5, d04394b]; the
+box above weighs 1 kg. Whether the schema also shows a derived `mass_kg`, marked `x-read-only`, is @api-eng's [A].
 
 **The operations** [P names; R for the set: review file 11, 3.2, "create, delete, set a field, reparent"]:
 
@@ -425,15 +428,21 @@ view (S5) by pe-render's offscreen capture [R: plan WS-render, "offscreen captur
   - `"me"`: the agent's member's head (the player it acts for);
   - `"world_origin"`: the world's origin. Allowed, but never a default, and the result echoes it back, so a
     transcript shows when an agent worked in absolute coordinates.
-- **A root object has no parent** [gap found by @chunks-reviewer; to settle between @api-eng and @world-model]. A
-  root's `Transform` holds a `Pos`, not an offset [V world-model.md 4.4], so `"parent"` means nothing for it. My
-  proposal [P]: for a root, the result gives `"relative_to": "world_origin"` explicitly, because that is what the
-  numbers are, and an edit to a root's position must name a frame (`"parent"` on a root is refused as `invalid`,
-  "{object} has no parent; name a frame."). The honest echo keeps the rule that absolute numbers never appear
-  unlabelled. Until they agree, this point is [A].
-- **A `world_origin` offset is exact only near the origin** [V world-model.md 4.2]: it is computed as
-  `Pos - ORIGIN` in `f64`, which rounds once the chunk index passes 2^53. The schema states the bound; the API
-  doesn't claim exactness [P].
+- **A root object has no parent** [gap found by @chunks-reviewer; answered by @world-model, mb2d6e20234f3]. A
+  root's `Transform` holds a `Pos`, not an offset [V world-model.md 4.4], so `"parent"` means nothing for it:
+  - **By default a root's position is returned as its exact `Pos`**, labelled `"pos"`: each axis's chunk index as
+    an unbounded decimal integer (a string, so no JSON reader rounds it) and the offset within the chunk, for
+    example `{"pos": {"chunk": ["0", "0", "-3"], "offset": [512.25, 1.5, 3.0]}}`. It is lossless anywhere and
+    needs no change when the bound on the world grows (M4). The exact syntax is @api-eng's [A].
+  - Asked for explicitly, a root's position also comes as an offset from an object (`"relative_to": <id>`), from
+    `"me"`, or from `"world_origin"`.
+  - **Setting a root's position** takes an exact `Pos`, an offset from a named object, or, named on purpose, an
+    offset from `world_origin`. `"parent"` on a root is refused as `invalid`: "{object} has no parent; name a
+    frame." [agreed: @world-model]
+  - The API never takes or returns a position as three plain absolute floats [V world-model.md 9.4].
+- **A `world_origin` offset is an `f64` in metres, and its precision falls with distance from the origin**
+  [V world-model.md 4.2, @world-model]: about 1e-10 m at 1,000 km, about 1 mm at 10^13 m. For precision anywhere,
+  use the exact `pos` or an offset from a nearby object. The schema says so; the API never calls it exact.
 - A result gives positions in the frame the query asked for (`"frame": "parent"` by default) [P].
 - **Rotations:** `rotation_deg: [x, y, z]`, Euler angles in degrees in a stated order, both accepted and returned.
   A quaternion `rotation_quat: [x, y, z, w]` is accepted, and returned when asked [P; the order is A].
@@ -574,8 +583,9 @@ Draft 1's seven open points are settled in `docs/spec/api.md` at a6cd872 (sectio
 6. **The producer label:** set at the connection, from the token (6.1).
 7. **Another player's view in `view_capture`:** allowed (3.8).
 
-Draft 3's review fixes (@chunks-reviewer, m7ef541e944cb): U3 roles (3.1), U4 a root's frame (4, still [A]
-between @api-eng and @world-model), U5 who may protect (5, ruled by @coordinator-opus), and L1-L5.
+Draft 3's review fixes (@chunks-reviewer, m7ef541e944cb, approved at 70fb723): U3 roles (3.1), U5 who may
+protect (5, ruled by @coordinator-opus), and L1-L5. Draft 4: U4, a root object's position (4), answered by
+@world-model, with only the exact `Pos` syntax left to @api-eng; mass from density (3.4).
 
 Still open, none of it blocking: the wording of the five new refusal messages (3.5, marked *) and of
 `code_check`'s description (3.7a) is new in this draft, for @api-eng to adopt or edit.
