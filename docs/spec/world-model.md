@@ -251,7 +251,7 @@ in every derivation, and the reserved `Node.born_on` field and `lines` table. Me
 
   | Kind | Bytes | Meaning |
   |---|---|---|
-  | `ObjectRef` | 16 | an `ObjectId`, stored as `[u64; 2]` little-endian so rows stay 8-byte aligned (`u128` is 16-byte aligned on x86-64, and columns are `u64` buffers [V `column.rs:6-13`]); replaces the 8-byte `ObjectId` kind |
+  | `ObjectRef` | 16 | an `ObjectId`, stored as two `u64` words (`hi`, then `lo`, each little-endian), so rows stay 8-byte aligned (`u128` is 16-byte aligned on x86-64, and columns are `u64` buffers [V `column.rs:6-13`]); replaces the 8-byte `ObjectId` kind |
   | `BlobRef` | 40 | a display blob (3.4): a 32-byte blob hash and a `u64` length; all-zero is "none" |
   | `SimBlobRef` | 40 | a simulation blob (3.4), the same layout |
   | `Pos` | 48 | an exact position (section 4); only `Pos` operations read it |
@@ -461,10 +461,15 @@ impl PartialEq for Pos;                                // exact, on canonical va
 - A root object's `Transform` holds a `Pos`. A child's holds an `f64` offset in its frame's space, rotation and
   scale, as today [V `transform.rs:4-10`]. So "an object's own position is relative to its parent", as in Resonite
   (file 17, 7.3).
-- The `Transform` row becomes: `pos: Pos` (48 bytes, for a root) or `local: [f64; 3]` (for a child, `pos` all-zero),
-  `rot: [f32; 4]`, `scale: [f32; 3]`, one flag word [I; the exact layout is the code's]. The limits of
-  `transform.rs:22-26` [V] stay, except that the root chunk limit of 2^61 [V `transform.rs:51`] goes: a root's
-  position is checked by 4.3, not clamped.
+- The `Transform` row keeps today's layout [I, as built on world/core-v1]: `chunk: [i64; 3]` and `pos: [f64; 3]`,
+  `rot: [f32; 4]`, `scale: [f32; 3]`, `_pad`. For a root, the position it denotes is `Pos::at_chunk(chunk)` moved by
+  `pos` (`checked_add`), so the row stores a chunk index and an offset, never a lossy absolute; for a child, `chunk`
+  is zero and `pos` is the offset in its frame. The limits of `transform.rs:22-26` [V] stay, including the root
+  chunk limit of 2^61 [V `transform.rs:51`], which is now a refusal limit on stored roots (an insert past it is
+  refused, never clamped), so a stored root's own position is always in range. A composed world position that
+  would leave the range is refused (`world_transform` returns `None`), never clamped (4.3). The leaf hash reads a
+  root's position through its canonical `Pos` encoding (6.3), so equal places hash equally however the row
+  splits them.
 - World transforms compose as today and give a `Pos` [V `transform.rs:31-37`].
 
 ### 4.5 The canonical encoding of a `Pos`
@@ -550,7 +555,10 @@ World
 ### 6.1 The hash
 
 - **BLAKE3, 256 bits,** for every commitment: object leaves, tree nodes, roots, blobs, ids [plan 3.2, S1: the only
-  hash type is 256 bits]. Keyed by domain-separation strings (`"pe.leaf"`, `"pe.node"` and so on).
+  hash type is 256 bits]. Keyed by domain-separation strings (`"pe.leaf"`, `"pe.node"` and so on): the notation
+  `BLAKE3("pe.x" ‖ a ‖ b)` means BLAKE3's key-derivation mode with the context string `"pe.x"`, fed `a` then `b`
+  (`pe_core::commit::Hasher::new`). Only content addresses (a blob's name, 3.4) and the origin entry (2.3) use plain
+  BLAKE3.
 - The crate is used with its pure-Rust implementation (feature `pure`, or the portable path), so the native audit
   passes [I; WS-ci confirms the audit's verdict].
 - XXH64 stays in pe-core for non-commitment uses: physics test records and caches [V `crates/pe-core/src/hash.rs`;
