@@ -9,9 +9,9 @@
 
 use openxr as xr;
 
-use crate::backend::{Backend, EyePose, Fov, FrameTiming, ImageIndex, Layers, SessionState, XrError, XrEvent};
+use crate::backend::{Backend, EyePose, Fov, FrameTiming, ImageIndex, Layers, Located, SessionState, XrError, XrEvent};
 use crate::hands::{GraspConfig, Joint, Reading, grip_from_joints, joint};
-use crate::real::XrInstance;
+use crate::real::{GraphicsPath, XrInstance};
 use crate::seam::{Hand, HandSource, HostTime, RigPose};
 
 const VIEW: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
@@ -58,6 +58,20 @@ fn state(s: xr::SessionState) -> Option<SessionState> {
     })
 }
 
+/// The rank of a swapchain format the runtime offers, as its raw value on `path`: `Some` only for the sRGB 8-bit
+/// colour formats pe-render draws to, lower first (spec 4.2).
+pub fn srgb_rank(path: GraphicsPath, raw: i64) -> Option<u8> {
+    match (path, raw) {
+        // VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_B8G8R8A8_SRGB.
+        (GraphicsPath::Vulkan, 43) => Some(0),
+        (GraphicsPath::Vulkan, 50) => Some(1),
+        // DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB.
+        (GraphicsPath::D3D12, 29) => Some(0),
+        (GraphicsPath::D3D12, 91) => Some(1),
+        _ => None,
+    }
+}
+
 /// The swapchain pe-xr creates: one colour swapchain with two array layers, one per eye (spec 4.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SwapchainSize {
@@ -92,6 +106,8 @@ pub struct RealBackend<G: xr::Graphics> {
     live: Option<Live<G>>,
     events: xr::EventDataBuffer,
     grasp: GraspConfig,
+    /// Interaction profiles the runtime refused to bind, with its reason (for the log).
+    pub binding_warnings: Vec<String>,
     /// Declared last, so it drops after the session.
     xr: XrInstance,
 }
@@ -113,7 +129,6 @@ impl<G: xr::Graphics> RealBackend<G> {
         xr: XrInstance,
         system: xr::SystemId,
         info: &G::SessionCreateInfo,
-        pick_format: impl Fn(i64) -> bool,
         grasp: GraspConfig,
     ) -> Result<Self, CreateError> {
         let instance = xr.instance.clone();
@@ -128,14 +143,17 @@ impl<G: xr::Graphics> RealBackend<G> {
         let squeeze =
             set.create_action::<f32>("squeeze", "Hand squeeze", &[left, right]).map_err(ce("squeeze action"))?;
         let path = |s: String| instance.string_to_path(&s).map_err(ce("path"));
+        let mut binding_warnings = Vec::new();
         for (profile, squeeze_input) in PROFILES {
             let mut b = Vec::new();
             for side in ["left", "right"] {
                 b.push(xr::Binding::new(&grip, path(format!("/user/hand/{side}/input/grip/pose"))?));
                 b.push(xr::Binding::new(&squeeze, path(format!("/user/hand/{side}/input/{squeeze_input}"))?));
             }
-            // A runtime may refuse a profile it does not know; the others still apply.
-            let _ = instance.suggest_interaction_profile_bindings(path(profile.to_string())?, &b);
+            // A runtime may refuse a profile it does not know; the others still apply, and the refusal is kept.
+            if let Err(e) = instance.suggest_interaction_profile_bindings(path(profile.to_string())?, &b) {
+                binding_warnings.push(format!("{profile}: {e}"));
+            }
         }
         let hand_interaction = xr.enabled.ext_hand_interaction;
         if hand_interaction {
@@ -144,7 +162,9 @@ impl<G: xr::Graphics> RealBackend<G> {
                 b.push(xr::Binding::new(&grip, path(format!("/user/hand/{side}/input/grip/pose"))?));
                 b.push(xr::Binding::new(&squeeze, path(format!("/user/hand/{side}/input/grasp_ext/value"))?));
             }
-            let _ = instance.suggest_interaction_profile_bindings(path(HAND_INTERACTION.to_string())?, &b);
+            if let Err(e) = instance.suggest_interaction_profile_bindings(path(HAND_INTERACTION.to_string())?, &b) {
+                binding_warnings.push(format!("{HAND_INTERACTION}: {e}"));
+            }
         }
         // Attached once, at creation; synced every frame while FOCUSED (spec 5.4).
         session.attach_action_sets(&[&set]).map_err(ce("xrAttachSessionActionSets"))?;
@@ -171,15 +191,24 @@ impl<G: xr::Graphics> RealBackend<G> {
         };
 
         let views = instance.enumerate_view_configuration_views(system, VIEW).map_err(ce("view configuration"))?;
+        if views.len() < 2 {
+            return Err(CreateError(format!("{} views in the stereo configuration, two expected", views.len())));
+        }
+        // One swapchain serves both eyes, so it takes the larger of the two recommended sizes.
         let size = SwapchainSize {
-            width: views[0].recommended_image_rect_width,
-            height: views[0].recommended_image_rect_height,
+            width: views.iter().take(2).map(|v| v.recommended_image_rect_width).max().unwrap_or(0),
+            height: views.iter().take(2).map(|v| v.recommended_image_rect_height).max().unwrap_or(0),
         };
         let formats = session.enumerate_swapchain_formats().map_err(ce("swapchain formats"))?;
+        // Only sRGB formats, best first (spec 4.2): pe-render writes linear values and relies on the target's sRGB
+        // encoding, so a UNORM format would show the headset image too dark.
+        let path = xr.path;
         let format = formats
             .iter()
             .copied()
-            .find(|&f| pick_format(G::lower_format(f)))
+            .filter_map(|f| srgb_rank(path, G::lower_format(f)).map(|r| (r, f)))
+            .min_by_key(|(r, _)| *r)
+            .map(|(_, f)| f)
             .ok_or_else(|| CreateError("no swapchain format pe-render can draw to".into()))?;
         let swapchain = session
             .create_swapchain(&xr::SwapchainCreateInfo {
@@ -215,6 +244,7 @@ impl<G: xr::Graphics> RealBackend<G> {
             }),
             events: xr::EventDataBuffer::new(),
             grasp,
+            binding_warnings,
             xr,
         })
     }
@@ -265,20 +295,41 @@ impl<G: xr::Graphics> RealBackend<G> {
         if !pose_valid(palm.location_flags) {
             return None;
         }
+        // The pose is the grip pose (spec 5.1): from the grip action space when XR_EXT_hand_interaction binds it to
+        // the tracked hand, with its velocities; otherwise the palm joint, which is the nearest joint to the grip
+        // point (spec 5.1 says so).
+        let (pose, linear_velocity, angular_velocity) = match live.hand_interaction.then(|| self.grip_space(hand, t)) {
+            Some(Some(g)) => g,
+            _ => (rig_pose(&palm.pose), None, None),
+        };
         // The runtime's grasp value when it offers one (XR_EXT_hand_interaction), else the joints' curl (spec 5.3).
         let grip = if live.hand_interaction {
             self.squeeze_value(hand).or_else(|| grip_from_joints(&joints, &self.grasp))
         } else {
             grip_from_joints(&joints, &self.grasp)
         };
-        Some(Reading {
-            source: HandSource::Tracked,
-            at,
-            pose: Some(rig_pose(&palm.pose)),
-            linear_velocity: None,
-            angular_velocity: None,
-            grip,
-        })
+        Some(Reading { source: HandSource::Tracked, at, pose: Some(pose), linear_velocity, angular_velocity, grip })
+    }
+
+    /// The grip action space's pose and velocities, if valid.
+    #[allow(clippy::type_complexity)]
+    fn grip_space(&self, hand: Hand, t: xr::Time) -> Option<(RigPose, Option<[f32; 3]>, Option<[f32; 3]>)> {
+        let live = self.live.as_ref()?;
+        let (loc, vel) = live.grip_spaces[hand.index()].relate(&live.space, t).ok()?;
+        if !pose_valid(loc.location_flags) {
+            return None;
+        }
+        let lin = vel.velocity_flags.contains(xr::SpaceVelocityFlags::LINEAR_VALID).then_some([
+            vel.linear_velocity.x,
+            vel.linear_velocity.y,
+            vel.linear_velocity.z,
+        ]);
+        let ang = vel.velocity_flags.contains(xr::SpaceVelocityFlags::ANGULAR_VALID).then_some([
+            vel.angular_velocity.x,
+            vel.angular_velocity.y,
+            vel.angular_velocity.z,
+        ]);
+        Some((rig_pose(&loc.pose), lin, ang))
     }
 
     fn squeeze_value(&self, hand: Hand) -> Option<f32> {
@@ -302,7 +353,8 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
                 xr::Event::InstanceLossPending(_) => Some(XrEvent::InstanceLossPending),
                 xr::Event::ReferenceSpaceChangePending(_) => Some(XrEvent::ReferenceSpaceChangePending),
                 xr::Event::InteractionProfileChanged(_) => Some(XrEvent::InteractionProfileChanged),
-                // Lost events and the rest: nothing pe-xr acts on; read the next.
+                xr::Event::EventsLost(l) => Some(XrEvent::EventsLost(l.lost_event_count())),
+                // The rest: nothing pe-xr acts on; read the next.
                 _ => None,
             };
             if mapped.is_some() {
@@ -396,10 +448,12 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
         Ok(ImageIndex(i))
     }
 
-    fn locate_views(&mut self, display_time: HostTime) -> Result<[EyePose; 2], XrError> {
+    fn locate_views(&mut self, display_time: HostTime) -> Result<Located, XrError> {
         let t = self.xr_time(display_time)?;
         let live = self.live()?;
-        let (_, views) = live.session.locate_views(VIEW, t, &live.space).map_err(xr_err)?;
+        let (flags, views) = live.session.locate_views(VIEW, t, &live.space).map_err(xr_err)?;
+        let valid =
+            flags.contains(xr::ViewStateFlags::ORIENTATION_VALID) && flags.contains(xr::ViewStateFlags::POSITION_VALID);
         if views.len() < 2 {
             return Err(XrError::Other(format!("{} views located, two expected", views.len())));
         }
@@ -407,9 +461,10 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             pose: rig_pose(&v.pose),
             fov: Fov { left: v.fov.angle_left, right: v.fov.angle_right, up: v.fov.angle_up, down: v.fov.angle_down },
         };
-        let out = [eye(&views[0]), eye(&views[1])];
-        live.views = Some(views);
-        Ok(out)
+        let eyes = [eye(&views[0]), eye(&views[1])];
+        // Invalid views are never submitted (end_frame needs them stored to build a layer).
+        live.views = valid.then_some(views);
+        Ok(Located { eyes, valid })
     }
 
     fn release_image(&mut self) -> Result<(), XrError> {
@@ -440,5 +495,25 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             }
             _ => live.stream.end(t, xr::EnvironmentBlendMode::OPAQUE, &[]).map_err(xr_err),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_srgb_formats_are_taken_and_rgba_first() {
+        // Virtual Desktop's offered lists, in its order [V: M0 headset run, b35c448].
+        let vulkan = [43i64, 50, 37, 44, 97, 126, 130, 129, 124];
+        let dxgi = [29i64, 91, 28, 87, 93, 88, 10, 40, 20, 45, 55];
+        let best = |path, list: &[i64]| list.iter().copied().filter_map(|f| srgb_rank(path, f).map(|r| (r, f))).min();
+        assert_eq!(best(GraphicsPath::Vulkan, &vulkan), Some((0, 43)));
+        assert_eq!(best(GraphicsPath::D3D12, &dxgi), Some((0, 29)));
+        // A runtime listing UNORM first still gets sRGB.
+        assert_eq!(best(GraphicsPath::Vulkan, &[37, 44, 50]), Some((1, 50)));
+        assert_eq!(best(GraphicsPath::D3D12, &[28, 87, 91]), Some((1, 91)));
+        // No sRGB at all: nothing.
+        assert_eq!(best(GraphicsPath::Vulkan, &[37, 44]), None);
     }
 }

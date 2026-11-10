@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reader_on_another_thread_never_blocks_the_writer() {
+    fn a_reader_on_another_thread_and_the_writer_run_concurrently() {
         let r = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, PERIOD));
         let reader = {
             let r = r.clone();

@@ -28,6 +28,8 @@ pub enum XrEvent {
     /// A recentre: the tracking space moves under the player.
     ReferenceSpaceChangePending,
     InteractionProfileChanged,
+    /// The runtime's event queue overflowed and dropped this many events.
+    EventsLost(u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +64,15 @@ pub struct Fov {
 pub struct EyePose {
     pub pose: RigPose,
     pub fov: Fov,
+}
+
+/// Both eyes at the display time, and whether the runtime says their poses are valid. During a moment of lost
+/// head tracking they are not, and the frame must not be drawn from them (review M1 of the first code).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Located {
+    pub eyes: [EyePose; 2],
+    /// Both ORIENTATION_VALID and POSITION_VALID.
+    pub valid: bool,
 }
 
 /// The swapchain image acquired for this frame.
@@ -99,8 +110,8 @@ pub trait Backend {
     fn read_hand(&mut self, hand: Hand, at: HostTime) -> Reading;
     /// Acquire, then wait for, this frame's swapchain image.
     fn acquire_image(&mut self) -> Result<ImageIndex, XrError>;
-    /// `xrLocateViews` at the display time.
-    fn locate_views(&mut self, display_time: HostTime) -> Result<[EyePose; 2], XrError>;
+    /// `xrLocateViews` at the display time, with the view state's validity.
+    fn locate_views(&mut self, display_time: HostTime) -> Result<Located, XrError>;
     /// Release the image, after the frame's work was submitted.
     fn release_image(&mut self) -> Result<(), XrError>;
     fn end_frame(&mut self, display_time: HostTime, layers: Layers) -> Result<(), XrError>;
