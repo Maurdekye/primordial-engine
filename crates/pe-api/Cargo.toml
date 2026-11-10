@@ -1,0 +1,12 @@
+[package]
+name = "pe-api"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "WorldApi (seam S6): one typed in-process API over the live world, for MCP, the inspector and pe-app (docs/spec/api.md)"
+
+# Skeleton from pe-seams v0 (WS-seams). WS-api, @api-eng owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
+[dependencies]
+pe-seams = { path = "../pe-seams", features = ["world-api"] }

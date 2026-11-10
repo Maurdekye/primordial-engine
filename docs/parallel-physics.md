@@ -1,5 +1,9 @@
 # D2: parallel Box3D in our fork, bit-exact across thread counts
 
+> **Evidence paths** (since the M0 archive, 2026-11-10): paths under `spikes/out/` in this document refer to the
+> tag `archive/v0-prototype`, where those logs are kept. Main no longer carries them; the physics records the
+> tests read moved to `crates/pe-physics/tests/records/`.
+
 Docket: @item:primordial-engine/parallel-box3d-in-our-fork-bit-exact-across-thre. User ruling
 2026-10-30 18:44Z: "goal is parallel". Branch `physics/parallel` from main `d79f160`.
 

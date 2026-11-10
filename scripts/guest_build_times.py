@@ -1,4 +1,8 @@
-"""P2-7 build-time table for the activation lead (design 13.2, 23.4): how long a peer takes to build a
+"""LEGACY since the M0 archive (2026-11-10): scripts/build_wasm_guests.sh moved to archive/scripts/, and the
+physics_in_wasm module (spikes/physics-in-wasm) is removed, so its row no longer builds; both are at the tag
+archive/v0-prototype. Kept as the record of how P2-7 measured.
+
+P2-7 build-time table for the activation lead (design 13.2, 23.4): how long a peer takes to build a
 committed guest module from source, with the reproducible-build flags of scripts/build_wasm_guests.sh.
 
 For each module: a cold build (a fresh target directory, as when joining a world), a no-op rebuild, and

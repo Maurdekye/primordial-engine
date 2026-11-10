@@ -1,0 +1,26 @@
+[package]
+name = "pe-seams"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Primordial Engine's six seams (S1 entries, S2 replica, S3 agreement, S4 transport, S5 frame view, S6 WorldApi): the types and traits every workstream codes against"
+
+[features]
+# S6, WorldApi (`world_api`): its types serialize to JSON, the MCP surface, so they need serde and JSON Schema.
+# pe-api, pe-mcp and pe-app turn it on; nothing else pays for it.
+world-api = ["dep:serde", "dep:serde_json", "dep:schemars"]
+# Test helpers: an entry builder, deterministic test keys with a stand-in signature, and the `Corrupt` trait.
+# Never in a shipped build (the gate checks pe-app's normal edges).
+test-util = []
+
+[dependencies]
+pe-core = { path = "../pe-core" }
+blake3.workspace = true
+bytes.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+
+[dev-dependencies]
+pe-seams = { path = ".", features = ["test-util", "world-api"] }
