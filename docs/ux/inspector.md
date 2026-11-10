@@ -1,6 +1,6 @@
 # The inspector: the hierarchy and the object inspector, on WorldApi
 
-Status: **draft 4, a UX proposal** (draft 3, approved by @chunks-reviewer, plus @world-model's answer on U4), reconciled with `docs/spec/api.md` at a6cd872. Written by @gnosarium-ux. The inspector is a client of `WorldApi`
+Status: **draft 5, a UX proposal** (approved through draft 4 by @chunks-reviewer; draft 5 adds @iter-bench's answer on U2), reconciled with `docs/spec/api.md` at a6cd872. Written by @gnosarium-ux. The inspector is a client of `WorldApi`
 (`docs/spec/api.md`, @api-eng) and calls nothing an agent's tools can't call (`docs/ux/api-surface.md`). Nothing
 in it is built. In the plan, it belongs with WS-render's UI lab, which comes after M1 (refound-plan, C12).
 Writing it now settles what the API must give it.
@@ -161,8 +161,17 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
   - **Allowed for fields logic reads** [R: QR (b), m5f805fdd0ffc]: a shared script reading a per-player field reads
     each player's own value, in a player-local instance, and its shared effects go out as that player's input,
     "like a player holding a local paddle hitting a ball" (m38e3fce7d7a3). The hover on such a field says so:
-    "Scripts read each player's own value here." [P wording]
-  - The split between the two is to settle with @iter-bench (WS-logic) [A].
+    "Scripts read each player's own value here; their changes to the shared world are sent as each player's
+    actions." [P wording, with @iter-bench]
+  - **The menu item names the scripts it moves** [V @iter-bench m3ffd63b02121; logic.md 7 at 75ac956]: any
+    system that reads or writes a per-player field runs per player, so making one field per-player can move
+    several systems, in this script and others. The item reads, for example, "Make per-player · Scripts that will
+    run per player: Blink.pulse, Score.count", and confirms before applying when the list is not empty [P].
+  - **A moved system's shared effects happen once per player** unless the script declares them "once for the
+    world" [V same]. The confirmation says so when any listed system writes shared state: "These scripts change
+    the shared world; each player's copy will send its own changes." [P wording]
+  - The physics/logic split is agreed with @iter-bench (WS-logic). Per-player mode arrives in M2; nothing here is
+    in the M1 slice.
 
 ### 4.3 Protection
 
