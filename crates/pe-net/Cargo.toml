@@ -1,0 +1,13 @@
+[package]
+name = "pe-net"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Transport (seam S4): direct QUIC connections from an invite, five lanes, the rate budget, the session clock"
+
+# Skeleton from pe-seams v0 (WS-seams). WS-net, @shader-lang owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
+[dependencies]
+pe-seams = { path = "../pe-seams" }
+pe-net-crypto = { path = "../pe-net-crypto" }

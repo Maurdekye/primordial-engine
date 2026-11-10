@@ -47,12 +47,7 @@ pub struct GraspConfig {
 
 impl Default for GraspConfig {
     fn default() -> Self {
-        GraspConfig {
-            close_at: 0.7,
-            open_at: 0.4,
-            lost_grace_s: 0.25,
-            fist_curl_rad: 3.0,
-        }
+        GraspConfig { close_at: 0.7, open_at: 0.4, lost_grace_s: 0.25, fist_curl_rad: 3.0 }
     }
 }
 
@@ -70,14 +65,10 @@ pub fn finger_curl(joints: &[Joint; joint::COUNT], base: usize) -> Option<f32> {
 /// The grip of a tracked hand from its joints: the mean curl of the middle, ring and little fingers,
 /// scaled so that 0 is open and 1 a fist (spec 5.3). `None` if no finger can be judged.
 pub fn grip_from_joints(joints: &[Joint; joint::COUNT], config: &GraspConfig) -> Option<f32> {
-    let curls: Vec<f32> = [
-        joint::MIDDLE_METACARPAL,
-        joint::RING_METACARPAL,
-        joint::LITTLE_METACARPAL,
-    ]
-    .into_iter()
-    .filter_map(|base| finger_curl(joints, base))
-    .collect();
+    let curls: Vec<f32> = [joint::MIDDLE_METACARPAL, joint::RING_METACARPAL, joint::LITTLE_METACARPAL]
+        .into_iter()
+        .filter_map(|base| finger_curl(joints, base))
+        .collect();
     if curls.is_empty() {
         return None;
     }
@@ -201,16 +192,8 @@ impl HandState {
             sampled_at: r.at,
             tracked: self.tracked,
             pose,
-            linear_velocity: if self.tracked {
-                r.linear_velocity
-            } else {
-                None
-            },
-            angular_velocity: if self.tracked {
-                r.angular_velocity
-            } else {
-                None
-            },
+            linear_velocity: if self.tracked { r.linear_velocity } else { None },
+            angular_velocity: if self.tracked { r.angular_velocity } else { None },
             grip: self.grip,
             closed: self.closed,
             discontinuity: self.discontinuity,
@@ -226,10 +209,7 @@ mod tests {
         Reading {
             source: HandSource::Controller,
             at: HostTime::from_millis(ms),
-            pose: tracked.then_some(RigPose {
-                position: [0.0, 1.0, -0.3],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-            }),
+            pose: tracked.then_some(RigPose { position: [0.0, 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] }),
             linear_velocity: tracked.then_some([0.0; 3]),
             angular_velocity: None,
             grip,
@@ -238,16 +218,10 @@ mod tests {
 
     /// A finger along -Z, bent by `bend` radians at each of its two middle joints.
     fn hand_with_bend(bend: f32) -> [Joint; joint::COUNT] {
-        let mut j = [Joint {
-            position: [0.0; 3],
-            valid: true,
-        }; joint::COUNT];
-        for base in [
-            joint::INDEX_METACARPAL,
-            joint::MIDDLE_METACARPAL,
-            joint::RING_METACARPAL,
-            joint::LITTLE_METACARPAL,
-        ] {
+        let mut j = [Joint { position: [0.0; 3], valid: true }; joint::COUNT];
+        for base in
+            [joint::INDEX_METACARPAL, joint::MIDDLE_METACARPAL, joint::RING_METACARPAL, joint::LITTLE_METACARPAL]
+        {
             let x = base as f32 * 0.01;
             let mut pos = [x, 0.0, 0.0];
             let mut dir = 0.0f32; // angle in the Y-Z plane, 0 = -Z
@@ -291,9 +265,7 @@ mod tests {
         let mut flips = 0;
         let mut last = false;
         // Noise around 0.55, between the two thresholds, after one real close.
-        let grips = [
-            0.2, 0.75, 0.6, 0.5, 0.58, 0.45, 0.52, 0.41, 0.6, 0.3, 0.5, 0.69, 0.55,
-        ];
+        let grips = [0.2, 0.75, 0.6, 0.5, 0.58, 0.45, 0.52, 0.41, 0.6, 0.3, 0.5, 0.69, 0.55];
         for (i, g) in grips.into_iter().enumerate() {
             let s = h.update(reading(i as i64 * 8, Some(g), true)).unwrap();
             if s.closed != last {
@@ -312,11 +284,7 @@ mod tests {
         assert!(h.update(reading(0, Some(0.9), true)).unwrap().closed);
         let s = h.update(reading(100, None, false)).unwrap();
         assert!(!s.tracked && s.closed, "still held inside the grace period");
-        assert_eq!(
-            s.pose.position,
-            [0.0, 1.0, -0.3],
-            "the last valid pose is kept"
-        );
+        assert_eq!(s.pose.position, [0.0, 1.0, -0.3], "the last valid pose is kept");
         assert!(s.linear_velocity.is_none());
         assert!(h.update(reading(349, None, false)).unwrap().closed);
         let s = h.update(reading(350, None, false)).unwrap();
@@ -337,22 +305,12 @@ mod tests {
     fn reacquiring_recentring_and_changing_source_bump_the_discontinuity() {
         let mut h = HandState::new(Hand::Right, GraspConfig::default());
         let d0 = h.update(reading(0, Some(0.1), true)).unwrap().discontinuity;
-        assert_eq!(
-            h.update(reading(8, Some(0.1), true)).unwrap().discontinuity,
-            d0,
-            "plain motion"
-        );
+        assert_eq!(h.update(reading(8, Some(0.1), true)).unwrap().discontinuity, d0, "plain motion");
         h.update(reading(16, None, false));
-        let d1 = h
-            .update(reading(24, Some(0.1), true))
-            .unwrap()
-            .discontinuity;
+        let d1 = h.update(reading(24, Some(0.1), true)).unwrap().discontinuity;
         assert_eq!(d1, d0 + 1, "reacquired");
         h.recentre();
-        let d2 = h
-            .update(reading(32, Some(0.1), true))
-            .unwrap()
-            .discontinuity;
+        let d2 = h.update(reading(32, Some(0.1), true)).unwrap().discontinuity;
         assert_eq!(d2, d1 + 1, "recentred");
         let mut r = reading(40, Some(0.1), true);
         r.source = HandSource::Tracked;
@@ -367,10 +325,7 @@ mod tests {
         // Focus back, but the grip reading still says "closed": a new close needs no reopen first, since
         // the hysteresis state was reset with the release.
         let s = h.update(reading(500, Some(0.5), true)).unwrap();
-        assert!(
-            !s.closed,
-            "0.5 is below close_at, so the hand stays open after focus returns"
-        );
+        assert!(!s.closed, "0.5 is below close_at, so the hand stays open after focus returns");
     }
 
     #[test]

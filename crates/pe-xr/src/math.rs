@@ -52,11 +52,7 @@ pub fn qmul(a: Quat, b: Quat) -> Quat {
 
 pub fn qnormalize(q: Quat) -> Quat {
     let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-    if n < 1e-12 {
-        [0.0, 0.0, 0.0, 1.0]
-    } else {
-        [q[0] / n, q[1] / n, q[2] / n, q[3] / n]
-    }
+    if n < 1e-12 { [0.0, 0.0, 0.0, 1.0] } else { [q[0] / n, q[1] / n, q[2] / n, q[3] / n] }
 }
 
 /// Spherical interpolation along the shorter arc.
@@ -69,23 +65,14 @@ pub fn qslerp(a: Quat, b: Quat, t: f32) -> Quat {
     }
     if d > 0.9995 {
         // Nearly parallel: normalized lerp is accurate and avoids dividing by a tiny sine.
-        let q = [
-            a[0] + (b[0] - a[0]) * t,
-            a[1] + (b[1] - a[1]) * t,
-            a[2] + (b[2] - a[2]) * t,
-            a[3] + (b[3] - a[3]) * t,
-        ];
+        let q =
+            [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t];
         return qnormalize(q);
     }
     let theta = d.acos();
     let s = theta.sin();
     let (wa, wb) = (((1.0 - t) * theta).sin() / s, (t * theta).sin() / s);
-    qnormalize([
-        a[0] * wa + b[0] * wb,
-        a[1] * wa + b[1] * wb,
-        a[2] * wa + b[2] * wb,
-        a[3] * wa + b[3] * wb,
-    ])
+    qnormalize([a[0] * wa + b[0] * wb, a[1] * wa + b[1] * wb, a[2] * wa + b[2] * wb, a[3] * wa + b[3] * wb])
 }
 
 /// The rotation by `omega` (rad/s, in the rig frame) for `dt` seconds, applied to `q`.

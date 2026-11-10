@@ -1,28 +1,75 @@
 [workspace]
 resolver = "3"
+# Every M1 crate is listed here from M0 (docs/refound-plan.md 3.1), so nobody else edits this file. Each crate's
+# dependencies go in its own manifest. WS-seams (@engine-architect) owns this file.
 members = [
+    # The kept determinism base.
     "crates/box3d-fork",
     "crates/pe-core",
     "crates/pe-sim",
     "crates/pe-physics",
+    # The seams (WS-seams).
+    "crates/pe-seams",
+    # M1 crates, by workstream.
+    "crates/pe-world",      # WS-world
+    "crates/pe-log",        # WS-agree
+    "crates/pe-agree",      # WS-agree
+    "crates/pe-replica",    # WS-state
+    "crates/pe-net",        # WS-net
+    "crates/pe-net-crypto", # WS-net
+    "crates/pe-logic",      # WS-logic
+    "crates/pe-sdk",        # WS-logic
+    "crates/pe-api",        # WS-api
+    "crates/pe-mcp",        # WS-api
+    "crates/pe-render",     # WS-render
+    "crates/pe-xr",         # WS-xr
+    "crates/pe-diverge",    # WS-diverge
+    "crates/pe-harness",    # WS-harness
+    "crates/pe-app",        # WS-app
 ]
 # The re-founding (docs/refound-plan.md): the old engine is archived. archive/ holds the crates the new ones
 # port from, for reading only, until M3; everything else is at the tag archive/v0-prototype. The spikes left
 # in spikes/ are references with their own builds (the guest crates build for wasm32-unknown-unknown).
-exclude = ["archive", "spikes/wasm-guests", "spikes/stack-audit", "spikes/iter-bench", "spikes/chunks"]
+# models/ and feasibility/ hold crates with workspaces of their own. crates/pe-logic/vendor holds the patched
+# wasmtime, which is a patched dependency, not a member: excluded, so no workspace build, test, format or lint
+# reaches it.
+exclude = [
+    "archive",
+    "spikes/wasm-guests",
+    "spikes/stack-audit",
+    "spikes/iter-bench",
+    "spikes/chunks",
+    "models",
+    "feasibility",
+    "crates/pe-logic/vendor",
+]
 
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 
+# Versions shared by more than one crate. A crate may pin anything else in its own manifest.
 [workspace.dependencies]
 box3d-rust = "=0.5.0"
+# The pure-Rust path only, so the native-code audit passes (world-model.md 6.1).
+blake3 = { version = "1.8", default-features = false, features = ["std", "pure"] }
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.2"
+# Cranelift, with default features off (logic.md 5.1): no cache (zstd-sys), no debug-builtins (helpers.c), no
+# async (fiber's windows.c), no profiling (ittapi-sys). The version is pinned to the vendored copy below.
+wasmtime = { version = "=50.0.1", default-features = false, features = ["std", "runtime", "cranelift", "parallel-compilation"] }
 
+[patch.crates-io]
 # Our fork of box3d-rust 0.5.0 (MIT): the scale-dependent contact-recycling radius
 # ("van der Waals simulation"). Toggle-off is bit-identical to the published crate.
-[patch.crates-io]
 box3d-rust = { path = "crates/box3d-fork" }
+# wasmtime 50.0.1 with no C on any target (crates/pe-logic/vendor/PATCHES.md; coordinator ruling 2026-11-10,
+# option A). It must stay in one commit with a member that depends on wasmtime =50.0.1 (pe-logic): unused, cargo
+# reports "patch was not used" and rewrites Cargo.lock, which fails the gate's --locked checks (@iter-bench).
+wasmtime = { path = "crates/pe-logic/vendor/wasmtime-50.0.1" }
 
 [profile.release]
 debug = false

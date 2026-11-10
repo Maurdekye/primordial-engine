@@ -6,9 +6,7 @@
 
 use std::collections::VecDeque;
 
-use crate::backend::{
-    Backend, EyePose, Fov, FrameTiming, ImageIndex, Layers, SessionState, XrError, XrEvent,
-};
+use crate::backend::{Backend, EyePose, Fov, FrameTiming, ImageIndex, Layers, SessionState, XrError, XrEvent};
 use crate::hands::Reading;
 use crate::seam::{Hand, HandSource, HostTime, RigPose};
 
@@ -147,12 +145,7 @@ impl FakeRuntime {
     }
 
     fn period(&self) -> i64 {
-        self.periods
-            .iter()
-            .rev()
-            .find(|p| p.0 <= self.frames)
-            .map(|p| p.1)
-            .unwrap_or(PERIOD_120)
+        self.periods.iter().rev().find(|p| p.0 <= self.frames).map(|p| p.1).unwrap_or(PERIOD_120)
     }
 
     fn violate(&mut self, what: impl Into<String>) {
@@ -196,10 +189,7 @@ impl Backend for FakeRuntime {
         self.calls.push(Call::BeginSession);
         self.need_session("xrBeginSession");
         if self.state != SessionState::Ready || self.running {
-            self.violate(format!(
-                "xrBeginSession in {:?} (running: {})",
-                self.state, self.running
-            ));
+            self.violate(format!("xrBeginSession in {:?} (running: {})", self.state, self.running));
         }
         self.running = true;
         Ok(())
@@ -209,19 +199,14 @@ impl Backend for FakeRuntime {
         self.calls.push(Call::EndSession);
         self.need_session("xrEndSession");
         if self.state != SessionState::Stopping || !self.running {
-            self.violate(format!(
-                "xrEndSession in {:?} (running: {})",
-                self.state, self.running
-            ));
+            self.violate(format!("xrEndSession in {:?} (running: {})", self.state, self.running));
         }
         self.running = false;
         if self.exit_requested {
             // The runtime goes on to IDLE, then EXITING.
             let k = self.frames;
-            self.events
-                .push_back((k, XrEvent::StateChanged(SessionState::Idle)));
-            self.events
-                .push_back((k, XrEvent::StateChanged(SessionState::Exiting)));
+            self.events.push_back((k, XrEvent::StateChanged(SessionState::Idle)));
+            self.events.push_back((k, XrEvent::StateChanged(SessionState::Exiting)));
         }
         Ok(())
     }
@@ -234,12 +219,9 @@ impl Backend for FakeRuntime {
         }
         self.exit_requested = true;
         let k = self.frames;
-        self.events
-            .push_back((k, XrEvent::StateChanged(SessionState::Visible)));
-        self.events
-            .push_back((k, XrEvent::StateChanged(SessionState::Synchronized)));
-        self.events
-            .push_back((k, XrEvent::StateChanged(SessionState::Stopping)));
+        self.events.push_back((k, XrEvent::StateChanged(SessionState::Visible)));
+        self.events.push_back((k, XrEvent::StateChanged(SessionState::Synchronized)));
+        self.events.push_back((k, XrEvent::StateChanged(SessionState::Stopping)));
         Ok(())
     }
 
@@ -330,19 +312,9 @@ impl Backend for FakeRuntime {
 
     fn locate_views(&mut self, display_time: HostTime) -> Result<[EyePose; 2], XrError> {
         self.calls.push(Call::LocateViews(display_time));
-        let fov = Fov {
-            left: -0.8,
-            right: 0.8,
-            up: 0.8,
-            down: -0.8,
-        };
-        let eye = |x: f32| EyePose {
-            pose: RigPose {
-                position: [x, 1.6, 0.0],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-            },
-            fov,
-        };
+        let fov = Fov { left: -0.8, right: 0.8, up: 0.8, down: -0.8 };
+        let eye =
+            |x: f32| EyePose { pose: RigPose { position: [x, 1.6, 0.0], orientation: [0.0, 0.0, 0.0, 1.0] }, fov };
         Ok([eye(-0.032), eye(0.032)])
     }
 

@@ -59,18 +59,12 @@ pub fn timespec_to_host(ts: &libc::timespec) -> HostTime {
 /// Host nanoseconds to a `CLOCK_MONOTONIC` `timespec`, for `xrConvertTimespecTimeToTimeKHR`.
 #[cfg(unix)]
 pub fn host_to_timespec(t: HostTime) -> libc::timespec {
-    libc::timespec {
-        tv_sec: t.0.div_euclid(1_000_000_000) as _,
-        tv_nsec: t.0.rem_euclid(1_000_000_000) as _,
-    }
+    libc::timespec { tv_sec: t.0.div_euclid(1_000_000_000) as _, tv_nsec: t.0.rem_euclid(1_000_000_000) as _ }
 }
 
 #[cfg(unix)]
 pub fn now() -> HostTime {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: a valid out pointer; CLOCK_MONOTONIC is always available on Linux.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     timespec_to_host(&ts)
