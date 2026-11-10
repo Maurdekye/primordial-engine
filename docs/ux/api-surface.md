@@ -199,7 +199,7 @@ Arguments:
 ```
 
 A body's mass comes from its shapes' density, not from a field of `Body` [V world-model.md r5, d04394b]; the
-box above weighs 1 kg. Whether the schema also shows a derived `mass_kg`, marked `x-read-only`, is @api-eng's [A].
+box above weighs 1 kg. The schema also shows a derived `mass_kg`, read-only, with density as its setter [V world-model.md r6, ab30dc5].
 
 **The operations** [P names; R for the set: review file 11, 3.2, "create, delete, set a field, reparent"]:
 
