@@ -1,13 +1,15 @@
 # pe-net: the transport
 
-Status: draft 0.1, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built. Draft 0.1 answers @design-reviewer's
-review of draft 0 (Mediums 1-2, Lows 1-4).
-- **Contents:** only the rules that M0's QUIC feasibility check settled (section 2), and the coordinator's
-  rulings on that check (mc64f7a24509e).
-- **Still to come:** the full specification of WS-net's M1 scope (`docs/refound-plan.md`, branch
-  `docs/refound-plan`, b610464, the WS-net row). It is outlined in section 3.
+Status: draft 1, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built.
+- **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
+  feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
+- **Draft 1** adds sections 3-12, the rest of WS-net's M1 scope (`docs/refound-plan.md`, branch
+  `docs/refound-plan`, the WS-net row): the S4 lanes, the rate budget v0, the clock, the connection lifecycle,
+  threads, the harness, tests, parameters and open questions. It also folds @chunks-reviewer's notes on the M0
+  report into 2.3 and 2.5. It follows the S4 shape agreed with @engine-architect, and seams v0 may revise it.
 - **Evidence:** the M0 report, `spikes/quic-feasibility/REPORT.md` (branch `spike/quic-feasibility`,
   6ff52ec), and its logs in `spikes/out/quic-feasibility/`.
+- **Time:** every limit is in seconds, never frames (the user's ruling md4b42d16d9df).
 
 Marks: **[V]** verified, with what was checked named; **[S]** read in a crate's source; **[I]** inference or
 design judgement.
@@ -17,7 +19,8 @@ design judgement.
 - **Connections:** direct QUIC connections between peers, made from an invite, with no helper nodes assumed
   (user Q9). Over a LAN or the user's own VPN in M1.
 - **Two kinds of traffic on one connection per peer pair:**
-  - unreliable datagrams, for live entries and poses;
+  - datagrams for live traffic: protocol messages and entries, repeated until acknowledged, and poses, newest
+    only (3);
   - reliable streams, for repair, state and assets.
 - **Also in M1:** the rate budget (v0); the clock, with gradual steering; and the version and self-test
   comparison when a connection opens.
@@ -84,6 +87,8 @@ What follows from the rule:
   arrives, and treats a close before the welcome as a refusal.
 - **The inviter:** decides admission on the key the handshake proved: membership, bans, vouching, and an
   invite token if one is used. It then sends the welcome, or closes with a reason code.
+- **When:** only after QUIC's handshake is *confirmed* (HANDSHAKE_DONE, RFC 9001 4.1.2), not merely completed.
+  The welcome is the admission decision itself [@chunks-reviewer's addition].
 - **The welcome carries [I]:** the version and self-test comparison of section 1, and the world's identity.
 - **A welcome admits a connection, not a member.**
   - It is one peer accepting one connection.
@@ -135,7 +140,11 @@ Coordinator ruling, for each of the QUIC keys, the adapter port and the provider
   - fuzzing of packet parsing and the handshake (cargo-fuzz, gate tier 2);
   - that the joiner sends nothing above the transport before the welcome;
   - a QUIC key update, and the Retry token;
-  - that secrets are zeroized on drop.
+  - that secrets are zeroized on drop;
+  - that an invite or reply code with non-ASCII or malformed text is an error, never a panic (the M0 parser
+    panicked on non-ASCII);
+  - that no path in the glue unwraps on a peer's input: M0's retry tag and header-key wrappers did, as quinn's
+    own adapter does, and pe-net returns errors instead [@chunks-reviewer's Lows].
 - **Reviewer:** @design-reviewer, not the author.
 
 ### 2.6 What M0 measured (for scale only)
@@ -152,17 +161,442 @@ table]:
 | Largest datagram payload, default path MTU | 1,162 B |
 
 The rise under load comes from the two kinds of traffic sharing one connection's congestion window. The rate
-budget and the priority between lanes decide it (section 3) [I].
+budget and the priority between lanes decide it (section 4) [I].
 
-## 3. Still to specify (the rest of the draft)
+## 3. Seam S4: lanes and delivery
 
-- The lanes on seam S4 (protocol, action, pose, repair, bulk), as @engine-architect's seams list has it. Which
-  lanes are datagrams and which are streams; priorities; message framing and size limits.
-- The rate budget v0 per link, and how it interacts with QUIC's congestion control. It replaces the old R18
-  ladder.
-- The clock: the fault-tolerant midpoint kept; the frequency loop dropped; converging before frame 0; gradual
-  steering. The sans-IO interface pe-agree's `tick(HostTime)` uses.
-- The connection lifecycle: invite, simultaneous open, handshake, welcome, the version and self-test
-  comparison, keep-alive, path changes, and close with reason codes.
-- The threading model: the network thread, and the handoff to the simulation thread.
-- What the harness drives: quinn-proto with a deterministic network model.
+### 3.1 The interface
+
+The shape is the plan's (appendix A) and @engine-architect's seams list: lanes protocol, action, pose, repair and
+bulk, in that priority; pe-diverge's four repair messages go on the repair lane [I for the rest].
+
+```rust
+pub type PeerId = [u8; 32];                    // the peer's Ed25519 public key (2.2)
+pub enum Lane { Protocol, Action, Pose, Repair, Bulk }   // priority order
+
+pub trait Transport {
+    fn send(&mut self, to: PeerId, lane: Lane, bytes: Bytes);  // never blocks; see 3.2 for what each lane promises
+    fn poll(&mut self) -> Option<Received>;                    // Received { from, lane, bytes, at: HostTime }
+    fn link(&self, peer: PeerId) -> LinkStats;                 // 4.4
+    fn events(&mut self) -> Vec<NetEvent>;                     // link up, degraded, down, saturated; join requests (6)
+}
+```
+
+pe-agree, pe-diverge and pe-world give pe-net opaque bytes and never see QUIC. pe-net never decodes a payload.
+
+### 3.2 What each lane promises
+
+| Lane | Carries | Delivery | Over QUIC |
+|---|---|---|---|
+| Protocol | pe-agree's messages: proposals, votes, cuts, joins and leaves | Reliable, each message once, any order | Datagrams, repeated until acknowledged (3.3); a large message on its own stream |
+| Action | signed entries: inputs, hand entries, edits, governance | Reliable, each message once, any order | As Protocol, below it in priority |
+| Pose | display-only poses that are not entries (a remote head and body between entries) | Newest only: an unsent pose is replaced by the next, never queued; a late one is dropped | Datagrams, never repeated (3.4) |
+| Repair | pe-diverge's NodeRequest/Reply, RecordRequest/Reply | Reliable, each message once, any order | One unidirectional stream per message (3.5) |
+| Bulk | blobs fetched by hash; state for a newcomer | Reliable, each message once, any order | One unidirectional stream per message, lowest priority |
+
+Rules for all lanes [I]:
+- **No order.** pe-net promises no order between messages, on any lane. Receivers order by what the bytes say:
+  a chain's sequence number, a cut's height. That's what lets Protocol and Action use repeated datagrams, and it
+  keeps a loss on one message from holding up another (no head-of-line blocking).
+- **Once.** The receiver drops duplicates, so each message is delivered to the caller once.
+- **Per link.** Everything is per peer pair: one connection, one budget (4), one set of queues. A slow peer slows
+  only what is sent to it.
+- **On a link going down,** the messages still queued for it are dropped, and the caller gets `LinkDown`. pe-agree
+  recovers what the other side lacks through its own protocol, as it must anyway for a peer that was away.
+
+### 3.3 Protocol and Action: reliable small messages over datagrams
+
+The idea is rollback netcode's: repeat recent inputs in every packet until the peer confirms them, so one lost
+packet costs nothing, not a retransmission round trip [I].
+- **Numbering:** pe-net numbers each message per peer and per lane: `seq` = 0, 1, 2, ...
+- **Every datagram to a peer** carries its acknowledgements for that peer (the highest seq received in order
+  per lane, and a 64-bit map of the ones after it), then as many unacknowledged messages as fit: Protocol before
+  Action, oldest first.
+- **A message is repeated** in each following datagram until it is acknowledged. When a peer has nothing new to
+  send, it sends an acknowledgement-only datagram within `T_ack` of receiving.
+- **Large messages:** a message larger than half a datagram's payload goes on its own unidirectional stream
+  instead, at the stream priority of its lane. That covers, for example, an edit carrying a small simulation blob
+  (up to 1 MiB, `docs/spec/world-model.md`).
+- **The cost:** repetition multiplies bytes on the wire by about (1 + loss) at low loss. The budget (4) counts
+  every repeat, so on a thin link repetition competes with poses, not with the controller's limit.
+
+### 3.4 Pose: newest only
+
+- **One slot per peer:** `send(peer, Pose, ...)` replaces any pose not yet sent to that peer. A caller with
+  several pose sources (head, two hands) packs them into one message per frame.
+- **When it's sent:** only when the budget has room after Protocol and Action. A pose is never repeated.
+- **On arrival:** a pose older than the last one delivered from that peer (by its seq) is dropped.
+- **Under a tight budget,** poses thin out on their own (fewer per second). That's continuous by construction,
+  with no levels (A3 of review file 01).
+
+### 3.5 Repair and Bulk: streams
+
+- **Each message** is one unidirectional QUIC stream: written, then finished. The receiver delivers it when the
+  stream ends.
+- **Priority:** Repair above Bulk (quinn's stream priority), both below datagram traffic in pe-net's queue (4.2).
+- **Limits:**
+  - at most `N_streams_in` incoming streams open at once per peer (QUIC flow control);
+  - at most `L_bulk` bytes per message. Larger transfers are split by the caller, for example by hash ranges of a
+    blob's chunks.
+- **A request and its reply** are two messages. pe-diverge matches them by content (the root), as its spec says,
+  so pe-net needs no request ids.
+
+### 3.6 Framing
+
+- **A datagram:** a 1-byte format version, the acknowledgements, then items `(lane, seq, length, bytes)` with
+  varint fields, then optional pe-net control records (clock samples, 5.2; rendezvous, 6.7).
+- **A stream:** a 1-byte lane, a varint seq, then the bytes to the stream's end.
+- **Limits:**
+  - **The datagram payload** is QUIC's `max_datagram_size()`: at least 1,162 B at QUIC's minimum path MTU
+    [V M0], more after path-MTU discovery.
+  - **One message:** up to `L_msg` on Protocol and Action, `L_bulk` on Bulk.
+  - **Anything over a limit** is a `Fault` naming the peer, never a panic (the plan's "no panics on a peer's
+    input").
+
+## 4. The rate budget v0
+
+It replaces R18's level ladder (D56) and its delay-gradient estimator, which were tuned on an oracle signal
+(review file 01, defect 10).
+
+### 4.1 What it reads
+
+Only what a real endpoint observes [the plan's rule against oracles]: QUIC's congestion window and its
+smoothed and minimum round-trip times, lost packets and congestion events, all from quinn-proto's path
+statistics. The harness reports nothing else to it.
+
+### 4.2 The budget and the queue
+
+- **The congestion controller is QUIC's:** quinn's Cubic by default. It handles pacing, loss recovery and
+  congestion response, with loss as a signal as well as delay, so fq_codel and CAKE routers are covered
+  (defect 10's gap) [S quinn-proto; I].
+- **pe-net's own queue, per link:** on every wake-up, pe-net hands quinn only what the controller lets out now,
+  in priority order:
+  1. Protocol;
+  2. Action;
+  3. the newest Pose;
+  4. Repair;
+  5. Bulk.
+
+  quinn's own send buffers stay small (about one congestion window), so the priority decision stays in pe-net
+  and nothing high-priority waits behind bulk data already handed to QUIC [I].
+- **The budget:** `cwnd / srtt` bytes per second.
+
+### 4.3 The delay guard for the low lanes
+
+- **The problem:** a loss-based controller fills a deep router buffer before it backs off, which would add
+  queueing delay to actions and poses.
+- **The guard:** Repair and Bulk send only while `srtt - min_rtt` is under `D_guard`, so the low lanes yield
+  before the queue grows. This is LEDBAT's idea, applied to the low lanes only [I].
+- **Measured in M1:** Cubic with the guard against quinn's BBR, on delay cells and on loss-only (AQM) cells
+  (section 9).
+
+### 4.4 A link that cannot carry its share
+
+- **LinkStats** per peer: state (6.5), `srtt`, `min_rtt`, the budget in bytes per second, loss rate, the bytes
+  queued per lane, and the age of the oldest unacknowledged Protocol and Action messages.
+- **`LinkSaturated`** fires when the oldest unacknowledged Action message is older than `T_saturated`; `LinkOk`
+  fires when that clears.
+- **pe-net only reports.** It removes and demotes nobody, so what to do with a slow member is pe-agree's and
+  the user's rulings' business [I; R18 and the trust survey].
+- **Poses** thin out before anything else (3.4).
+
+## 5. The clock
+
+It keeps the old fault-tolerant midpoint and drops the frequency loop, converges before frame 0, then steers
+gradually (the plan; review file 01; item clock-sync-frequencies-converge-before-frame-0-s). Every limit is in
+seconds (the user's ruling md4b42d16d9df: the tick rate is configurable per world).
+
+### 5.1 Three times
+
+- **`HostTime`:** this machine's monotonic clock, in i64 nanoseconds (seam S5). Never adjusted.
+- **Session time:** `HostTime + offset`. The offset is the clock's only state, and it changes only as 5.4 and
+  5.5 allow.
+- **The frame:** `frame(t) = floor((session(t) - epoch) * rate)`, where `epoch` (frame 0's session time) and
+  `rate` (the world's tick rate) come from the world, in the welcome.
+
+### 5.2 Samples
+
+- **Exchange:** each side sends a clock record to each peer every `T_sample`, every `T_sample_fast` while
+  converging. These are pe-net control records in datagrams (3.6), never repeated, and ahead of every lane.
+- **Four timestamps, as NTP:**
+  - t1: my send, in HostTime;
+  - t2: the peer's receive, in its session time;
+  - t3: the peer's send, in its session time;
+  - t4: my receive, in HostTime.
+
+  Then the offset `θ = ((t2 - t1) + (t3 - t4)) / 2` (the peer's session time minus my HostTime), and the delay
+  `δ = (t4 - t1) - (t3 - t2)`. The peer's time to answer drops out.
+- **Filter** (kept from pe-app): samples from the last `W_clock`, and per `B_clock` bucket the one with the
+  smallest δ, since a queued sample is biased by its queue. A peer's offset is the θ of the smallest-δ sample in
+  its newest three buckets. Its error is within δ/2.
+
+### 5.3 The target: the fault-tolerant midpoint
+
+- **The values:** each connected member's θ, plus my own offset.
+- **The midpoint:** n values, t = floor((n - 1) / 3). Drop the t lowest and the t highest, and take the
+  midpoint of the lowest and highest that remain.
+- **Why this one:** with n ≥ 3t + 1, every honest target stays inside the honest range, and the honest spread
+  at least halves per round, even against a member that tells each peer something different. A median doesn't
+  have that property (review CM-1 of pe-app's clock).
+- **With two members,** t = 0, so each moves to the middle.
+
+### 5.4 Before frame 0: converge
+
+- **A joiner** sets its offset to the target at once, each round, while it is not yet in the session. A jump is
+  allowed here, since nothing has run.
+- **It is clock-ready** when the target has moved less than `E_ready` for three rounds running, and it tells
+  pe-agree. pe-agree's join waits for that.
+- **If it isn't ready within `T_ready`,** that is a `ClockFault` (5.6), and the join fails with its reason.
+- **A world's first member** has offset 0, and is ready at once.
+
+### 5.5 After frame 0: steer
+
+- **No jumps after frame 0:** the offset moves toward the target at a rate
+  `clamp((target - offset) / T_settle, -S_max, +S_max)`.
+- **Bounded:** with `S_max` = 0.2 %, session time runs between 0.998 and 1.002 of real time. It never stops,
+  never runs backwards and never skips a frame. At 60 Hz a frame's period changes by at most 33 µs.
+- **Drift without a frequency loop:** a steady drift d between two machines leaves a steady error of about
+  `d * T_settle`. That's 0.4 ms at 100 ppm, typical of PCs, and 4 ms at the 0.1 % fault limit [I, arithmetic].
+  That's why the frequency loop can go.
+
+### 5.6 Clock faults
+
+**The rule** (review file 01, accepted into the plan): a clock that runs more than 0.1 % away from the members'
+midpoint is a fault on its machine.
+- **Detection:** the slope of a peer's θ over `W_clock`, or my own steering pinned at `S_max` for longer than
+  `T_pinned`.
+- **Who is at fault:**
+  - with three or more members, it's the one outside the midpoint;
+  - with two, nobody can tell which, so both are told how far apart they are.
+- **What it does:** a `ClockFault` event goes to pe-agree and the app. pe-net doesn't drop the link; what
+  follows is pe-agree's (open question N2).
+- **This machine's own case:** pe-app measured the WSL2 VM's clock drifting 2-9 % from Windows
+  [`crates/pe-app/src/clock.rs` header, `spikes/out/m1/wsl-clock-skew`]. Under the rule, a Windows-WSL session
+  on one machine is a clock fault by design.
+  - So real-time cross-OS tests run between two machines or on hosted runners.
+  - The harness uses virtual time and is unaffected.
+  - QUIC itself worked over that link in M0 [V].
+
+### 5.7 What the simulation thread reads
+
+pe-net publishes a small model for the simulation thread to read without a lock: `(host_ref, offset_ref,
+slew_rate, epoch, rate)`, swapped atomically. The simulation thread computes `session(now)`, `frame_at(now)` and
+`host_time_of(frame)` itself, so asking for the time never crosses a thread. pe-agree's `tick(HostTime)` gets
+its frame this way (seam S3).
+
+## 6. The connection lifecycle
+
+### 6.1 The endpoint and its addresses
+
+- **One UDP socket per member,** on a fixed port (chosen once, kept in the member's settings) so that invites
+  stay valid. It is dual-stack where the system allows, otherwise one socket per address family. All
+  connections share it, and simultaneous open needs that: the punch packets leave from the port the peer will
+  answer.
+- **An invite's addresses:** every non-loopback, non-link-local interface address (LAN and VPN), with the
+  socket's port, plus any the user adds. A reply code carries the joiner's the same way.
+- **Formats:** `pe1:` for an invite, `pe1r:` for a reply code. Both have a version, an expiry, and a checksum
+  against typing errors. Both are checked as ASCII before parsing, and any malformed text is an error, never a
+  panic (2.5).
+
+### 6.2 Dialling
+
+- **Staggered:** the joiner dials the invite's addresses `T_stagger` apart, all with the pinned key. The first
+  handshake confirmed wins, and the rest are closed.
+- **The reply code:** after `T_reply` with no answer, the joiner shows one (2.4). When the inviter takes it in,
+  both send at once: the inviter's punch packets and its own dial to the joiner's addresses, the joiner's dials
+  to the invite's. Whichever handshake is confirmed first is kept, and the other is closed.
+
+### 6.3 Hello and the connection guards
+
+- **First, the hello:** after the handshake is confirmed, each side's first message, on a control stream, is a
+  hello:
+  - the protocol version;
+  - the engine build id;
+  - the digest and time of its physics self-test;
+  - from M2, each module's hash;
+  - the world id it means;
+  - the invite id or token;
+  - its addresses;
+  - whether its clock is ready (5.4).
+- **The guards, in order, at the side being joined:** protocol version, build id, self-test digest, world id
+  (R-G1 of `docs/spec/divergence.md`). The first difference refuses the connection, with a reason code and the
+  two values, so the joiner is told why before it joins (the plan's M1 acceptance).
+- **Then admission:** pe-net raises `JoinRequest { peer, hello }`, and the app decides from the agreed governance
+  (2.3) by calling `admit(peer, welcome)` or `refuse(peer, reason)`.
+
+### 6.4 The welcome
+
+- **It carries:**
+  - the world id;
+  - the epoch and the tick rate (5.1);
+  - the members, with their keys and last addresses, for 6.7;
+  - what pe-agree needs to start the join (pe-agree's to define).
+- **Until the welcome arrives,** the joiner sends only its hello and clock records (2.3).
+
+### 6.5 Link states
+
+- **The states:** Connecting, Confirmed (handshake confirmed), Welcomed, Up, Degraded (nothing heard for
+  `T_degraded`), Down (idle for `T_idle`, or closed).
+- **Keep-alive:** QUIC PING every `T_keepalive` when idle.
+- **Address changes:** QUIC connection migration is on. A peer's new address is used only after QUIC's path
+  validation, so a forged source address can't redirect a link.
+
+### 6.6 Close reasons
+
+These are the application error codes on a QUIC close. The joiner's app shows the reason.
+
+| Code | Reason |
+|---|---|
+| 0 | left |
+| 1 | different protocol version |
+| 2 | different engine build |
+| 3 | different physics self-test |
+| 4 | another world |
+| 5 | not admitted (not a member, banned, or a bad invite token) |
+| 6 | protocol fault (bad bytes; the event names the peer) |
+| 7 | clock fault (5.6) |
+| 8 | overloaded |
+
+### 6.7 Connecting to the other members
+
+- **The mesh:** after its welcome, a joiner connects to every member in the welcome's list. One connection per
+  peer pair (plan; file 11).
+- **The rendezvous:** a member already connected to both sends each side a rendezvous record (the other's key
+  and addresses), and both send at once (2.4).
+- **Each of these connections** has its own hello, guards and welcome, judged from the agreed governance (2.3).
+- **M3** adds relaying through members, and hole punching through NATs.
+
+## 7. Threads and the sans-IO core
+
+- **`pe_net::Core`** holds everything above the socket: quinn-proto's endpoint and connections, the lanes, the
+  budget, the clock and the lifecycle. It takes time and bytes as inputs and returns bytes and events [I;
+  quinn-proto is built this way, S].
+
+```rust
+impl Core {
+    pub fn new(cfg: Config, identity: Identity, seed: [u8; 32]) -> Self;     // seed: see 8
+    pub fn handle_datagram(&mut self, now: HostTime, from: SocketAddr, data: &[u8]);
+    pub fn handle_timeout(&mut self, now: HostTime);
+    pub fn poll_transmit(&mut self, now: HostTime) -> Option<Transmit>;   // (to, bytes)
+    pub fn poll_timeout(&self) -> Option<HostTime>;
+    pub fn dial(&mut self, now: HostTime, invite: &Invite) -> Result<(), InviteError>;
+    pub fn take_reply(&mut self, now: HostTime, reply: &Reply) -> Result<(), InviteError>;
+    pub fn admit(&mut self, peer: PeerId, welcome: Welcome);
+    pub fn refuse(&mut self, peer: PeerId, reason: Refusal);
+    // plus the Transport methods of 3.1, and the clock model of 5.7
+}
+```
+
+- **The network thread** owns the socket and a Core. It waits on the socket until `poll_timeout`, feeds what
+  arrives, and sends what Core returns.
+- **To and from the simulation thread:** bounded single-producer queues for outgoing `(peer, lane, bytes)` and
+  incoming `Received` and events, plus the clock model of 5.7.
+- **The simulation thread never waits on the network.** A full outgoing queue is a local fault, reported, not a
+  stall. The queue is sized for `T_queue` of traffic.
+- **The other threads** (render, XR, agent handlers) are WS-app's to arrange with WS-state, WS-render and WS-xr
+  (the plan). pe-net needs only its own thread.
+
+## 8. What the harness drives
+
+- **Exactly the production path:** the harness drives Core directly, with virtual time, so every scenario runs
+  pe-net's real lanes, budget and congestion control. That is the plan's rule against oracles.
+- **Determinism:**
+  - quinn-proto's endpoint takes a fixed RNG seed (`EndpointConfig::rng_seed`) [S];
+  - our provider's randomness (key shares, nonces) comes from the same seed through a test-only source;
+  - time is the harness's;
+  - so a scenario is a pure function of its seed [I].
+- **The network model (WS-harness)** per link: one-way delay, seeded jitter, random and burst loss, a bottleneck
+  with drop-tail or AQM queueing, reordering, and an "inbound blocked" switch for the firewall of 2.4.
+- **The demo's CI run** also uses real QUIC between two processes on one machine (the plan's M1 acceptance).
+
+## 9. Tests for M1
+
+Gated, unless marked:
+
+1. **Lanes:**
+   - a Pose is superseded, never queued;
+   - Protocol and Action arrive once each at 0-30 % random loss, and at 10 % loss most need no retransmission
+     round trip (each counted);
+   - nothing is delivered twice;
+   - under a budget too small for everything, Protocol is never delayed by the lower lanes.
+2. **The budget:**
+   - a thin link to one peer doesn't slow traffic to the others;
+   - Repair and Bulk yield under the delay guard;
+   - during a bulk transfer, action latency stays within `min_rtt + D_guard + 10 ms` at p99 (a harness cell).
+3. **The clock:**
+   - convergence before frame 0 within `T_ready`, to within `E_ready`;
+   - the steering rate never exceeds `S_max`;
+   - session time is monotonic;
+   - with four members, one telling each peer something different stays bounded;
+   - a clock 0.15 % off raises `ClockFault`.
+4. **The lifecycle:**
+   - a wrong key fails;
+   - each guard refuses with its reason, and the joiner shows it;
+   - a close before the welcome counts as a refusal;
+   - the joiner sends nothing above the transport before the welcome;
+   - with the inviter's inbound blocked, the two-way invite connects;
+   - a third member joins through a rendezvous;
+   - an address change survives, and a forged source address doesn't redirect a link.
+5. **The security code:** 2.5's list.
+6. **No panic** on any bytes from a peer (fuzzing, gate tier 2).
+7. **Measured and reported, not gated:**
+   - handshake time;
+   - action latency over 20 seeds by 5 delays, against the user's target that the other machine sees an action
+     within 0.25 s on good links (meef4f248923b);
+   - Cubic with the guard against BBR, on delay cells and loss-only cells.
+
+## 10. Parameters
+
+Every one is a starting value to measure against [I], in seconds or bytes.
+
+| Name | Value | Meaning |
+|---|---|---|
+| `T_ack` | 10 ms | Longest wait before an acknowledgement-only datagram |
+| `L_msg` | 1 MiB | Largest Protocol or Action message (an edit with a small simulation blob) |
+| `L_bulk` | 64 MiB | Largest Bulk message |
+| `N_streams_in` | 64 | Incoming streams open at once per peer |
+| `D_guard` | 25 ms | Queueing delay above `min_rtt` at which Repair and Bulk pause |
+| `T_saturated` | 1 s | Oldest unacknowledged Action message before `LinkSaturated` |
+| `T_sample` / `T_sample_fast` | 1 s / 0.2 s | Clock sample interval, steady / converging |
+| `W_clock` / `B_clock` | 30 s / 2 s | Clock sample window / bucket |
+| `E_ready` | 1 ms | Convergence before frame 0 |
+| `T_ready` | 5 s | Longest convergence before a `ClockFault` |
+| `T_settle` | 4 s | Steering time constant |
+| `S_max` | 0.2 % | Steering rate limit |
+| `T_pinned` | 10 s | Steering pinned at `S_max` before a `ClockFault` |
+| `T_stagger` | 0.25 s | Gap between dials to an invite's addresses |
+| `T_reply` | 3 s | No answer before the joiner shows a reply code |
+| `T_keepalive` | 0.5 s | QUIC PING when idle |
+| `T_degraded` | 1 s | Nothing heard before Degraded |
+| `T_idle` | 5 s | QUIC idle timeout: Down |
+| `T_queue` | 1 s | Outgoing queue capacity, in traffic time |
+
+## 11. Open questions
+
+- **N1. The firewall default** (2.4): the two-way invite, or Windows' allow prompt. It's with the user (the
+  coordinator, me6ad351bf759). The two-way invite holds until they answer.
+- **N2. What a clock fault does** (5.6): refuse the join, keep the member but mark its frames, or only report.
+  The rule that a clock off by 0.1 % is a fault comes from the review. Its consequence is pe-agree's and the
+  coordinator's.
+- **N3. A saturated link** (4.4): pe-net reports it. What pe-agree does with a member that can't keep up falls
+  under the user's R18 rulings, as file 01's proposals carry them into M3.
+- **N4. Per-entry signatures against link authentication:** review file 01 proposes that the encrypted link
+  authenticates the sender and only every Kth entry is signed. S1 signs every entry in M1. The proposal is the
+  user's call, and not for M1.
+
+## 12. What pe-net needs from the others
+
+- **WS-agree (pe-agree):**
+  - accept messages in any order, delivered once (3.2);
+  - give entry signatures their own prefix, and use `verify_strict` (2.2);
+  - wait for clock-ready before a join (5.4);
+  - define what the welcome carries for its join (6.4).
+- **WS-seams:** S4 as in 3.1; `HostTime` as in S5.
+- **WS-harness:** the network model of 8, its inbound-blocked switch, virtual time, and the seeded randomness.
+- **WS-app:**
+  - the network thread and the queues (7);
+  - the invite and reply-code screens, and showing refusal reasons (6);
+  - the admission call from governance (6.3).
+- **WS-diverge:** repair messages within `L_msg`, matched by content (3.5).
+- **WS-world:** blobs on Bulk within `L_bulk`, fetched by hash; small simulation blobs inside edit entries, on
+  Action's stream path (3.3).
