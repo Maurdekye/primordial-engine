@@ -164,13 +164,16 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   | `Hash` | 32 | any other 256-bit hash |
 
 - **Bodies, as @vdw-physics proposed** (WS-state) [I]:
-  - mass comes from each shape's density (mass over volume), computed by pe-physics in one fixed order everywhere;
+  - mass comes from each shape's density (mass over volume), computed by pe-physics in one fixed order everywhere.
+    The schema shows a derived, read-only `mass_kg` per body, so people and agents still see a mass; setting it is
+    done through density (@chunks-reviewer's r5 Low, a note for @api-eng's schema mapping);
   - a body's shapes are its own `Shape` plus those of its descendants that have no `Body` of their own, in id order,
     up to 64 (a compound body: a table is one body with five boxes);
   - a mesh shape is for static bodies only; a dynamic body uses primitives or a hull (`SimBlobRef`).
-- **`BodyState` is derived.** The step never reads it and no edit writes it; pe-replica writes it at cut frames and
-  on export, so a keyframe whose `BodyState` is a few frames old restores correctly. A query that wants live
-  velocities reads the frame view (S5), not the store.
+- **`BodyState` is derived and hash-only** (@design-reviewer's r5 Low 2). The step never reads it and no edit writes
+  it; pe-replica writes it at cut frames and on export, so between cuts it is stale, and a keyframe whose
+  `BodyState` is a few frames old restores correctly. No reader treats it as physics truth: WorldApi's `query`, the
+  inspector and logic read poses and velocities from the replica's frame view (S5), never from `BodyState`.
 - **Edit versions are not a component** (@chunks-reviewer's F6). Every column keeps, beside each row, that row's
   version (7.3): the `EntryRef` of the last edit that wrote it and the op's index, 36 bytes padded to 40, in a
   parallel array of the column's blocks. An object's structural version and its object version (7.3) are fields of
@@ -441,9 +444,11 @@ World
 
 ```
 world root = H("pe.root" ‖ frame ‖ config hash ‖ tables root ‖ domain roots in DomainId order)
-  tables root = H(registry ‖ modules ‖ governance ‖ claims ‖ cooldowns ‖ tombstones ‖ physics_global)
-                each a sorted-map hash; physics_global is pe-physics's (6.3)
-  domain root = the root of a path-compressed 16-way trie over the ObjectIds of that domain's World objects
+  tables root = H(registry ‖ modules ‖ governance ‖ claims ‖ cooldowns ‖ tombstones)   each a sorted-map hash
+  domain root = H("pe.domain" ‖ domain id ‖ objects root ‖ physics_global)
+                physics_global is pe-physics's hash of that domain's physics image (6.3); per domain, so M4's
+                domains per contact group change no format (@design-reviewer's r5 Low 1)
+  objects root = the root of a path-compressed 16-way trie over the ObjectIds of that domain's World objects
     inner node = H("pe.node" ‖ depth ‖ 16-bit child mask ‖ the hashes of the present children, in nibble order)
     leaf       = H("pe.leaf" ‖ object id ‖ object leaf hash)
     empty trie = a fixed constant
@@ -500,10 +505,14 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
 ### 6.4 When it is computed
 
 - **At every cut frame** proposed or voted on (pe-agree decides which frames those are), and on demand.
-- **Which frames are cut frames** is pe-agree's, but the replica must hash a cut frame when it simulates it, and
-  again whenever it re-simulates across it. My proposal to WS-agree [I]: cuts are proposed only at frames on a fixed
-  cadence (every K frames, K a world setting), so the replica knows in advance which frames to hash and keeps their
-  roots in its history.
+- **Which frames are cut frames** is pe-agree's. My proposal to WS-agree [I]: cuts are proposed only at frames on a
+  fixed cadence (every K frames, K a world setting), so the replica knows in advance which frames are cut frames.
+- **Hashing is lazy** (@design-reviewer's r5 Medium). At each pending cut frame (one this replica has not yet voted
+  on, or not yet compared after finality) the replica keeps a copy-on-write snapshot, a handful of reference counts
+  (5.2). A re-simulation across that frame replaces the snapshot; it hashes nothing. The root is computed from the
+  snapshot only when it is needed: to vote, or to compare. So a deep rollback never pays the 1-2 ms image hash per
+  cut frame it crosses; a vote pays it once. Once a cut is final and compared, its snapshot is dropped (the last 8
+  final roots are kept, 9.2). M1 measures the cost of one deep rollback and one vote (acceptance 15).
 - **Incrementally:** each object leaf is cached; a write marks the object dirty (by block, 5.2); a hash at a cut
   rehashes the dirty objects and the trie paths above them. A moving ball dirties its leaf once per frame; 500 moving
   balls rehash 500 leaves and about 500 × 3 trie nodes per cut [I; measured in M1].
@@ -603,7 +612,10 @@ pub enum Precondition {
   one ball, the later grab's author sees the ball slide out of their grip (the display layer's cue, file 14, 4.1).
 - **Out of reach** (@vdw-physics's proposal) [I]: a grab is refused with `OutOfReach` if the hand's centre is
   further from the object than the hand's reach plus the object's bounding radius, both from `Transform` and
-  `Shape` at the grab's frame. It is deterministic, and it stops a grab joint yanking an object across the world.
+  `Shape` at the grab's frame, plus a slack (a world setting, a few centimetres by default). The slack absorbs
+  prediction error: the check runs in the agreed order, and the author's prediction may have placed a thrown ball
+  just in reach, so without it the author could feel a grab and then lose it, a correction of what they hold
+  (@design-reviewer's r5 Low 3). It is deterministic, and it stops a grab joint yanking an object across the world.
 - **Holds protect what the holder feels** [I, after @design-reviewer's Low 6]. The display rule is that a player's
   hands and what they hold are never corrected (plan M1; file 14, 4.1). So, while an object is held:
   - a `Delete` of it, or of any ancestor of it, is refused with `Held { by }`;
@@ -754,7 +766,8 @@ The user (mbe87e750ca35, V1): "simple protections can exist for objects the same
 - **Who may protect an object** (@coordinator-opus's ruling U5, m857de72925dd, filling a gap in V1 that
   @chunks-reviewer found): only the object's creator, meaning the author of its creating entry, or the member who
   imported it, may add a `Protection` to it, and only with themselves as owner. An agent acting for that member
-  counts as them. Anyone else's attempt, `EDIT` or not, is refused with `Protected { owner }` or `NotCreator`.
+  counts as them. Anyone else's attempt, `EDIT` or not, is refused with `Protected { owner }` (one reason, which
+  WorldApi reports as `protected`).
 - So each object records who created or imported it: a `creator: MemberKey` field in `Node`, set by the creating
   edit (for a `Copy`, the copier; for an import, the importer; for world logic, `LOGIC`) and never written after.
 - **Auto-protection** applies on import and on creation only, never later. Wearing an avatar never claims or
@@ -866,7 +879,7 @@ outcomes (7.7), and the edit history by version. Two points for WS-api [I]:
   and XXH64 [V `crates/pe-core/src/lib.rs:20-30`].
 - **pe-physics depends on pe-core's `ObjectId`** and serializes it as two `u32`s [V `crates/pe-physics/src/image.rs:242`].
   Widening it touches WS-state's crate, so I send @vdw-physics the patch, after the archive, and it lands it:
-  16-byte ids in `image.rs:199-200, 242` and `world.rs:693-694`, `IMAGE_VERSION` 3 and `TRANSFER_VERSION` 2. The
+  16-byte ids in `image.rs:197-200, 242` and `world.rs:693-694`, `IMAGE_VERSION` 3 and `TRANSFER_VERSION` 2. The
   committed physics records compare the fork's own world bytes, which carry no object ids, so they should not move;
   any printed transfer hash that does is re-blessed in the same landing [V as @vdw-physics cites:
   `tests/spike_records.rs:159-160`].
@@ -912,8 +925,9 @@ Each is a test in pe-world, pe-sim or pe-core unless marked [I on all thresholds
     range, never as a different position.
 14. **No input aborts:** property tests feed arbitrary bytes as edit and input payloads, and arbitrary valid-looking
     transactions; nothing panics, and each is applied or refused.
-15. **Cost, measured, not gated:** the hash at a cut with 500 moving balls, and an edit's apply time, reported in the
-    checkpoint record.
+15. **Cost, measured, not gated:** the hash at a cut with 500 moving balls (leaves, body digests and the image
+    hash), one deep rollback across several pending cut frames (which must hash nothing), and an edit's apply time,
+    reported in the checkpoint record.
 
 ## 12. Open points
 
