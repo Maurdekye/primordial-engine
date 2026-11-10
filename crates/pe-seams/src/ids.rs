@@ -126,6 +126,36 @@ impl ObjectId {
     pub fn some(self) -> Option<ObjectId> {
         (!self.is_none()).then_some(self)
     }
+
+    /// The first 16 bytes of a hash, as a little-endian `u128`; 0 becomes 1, so a derived id is never NONE.
+    fn from_hash(h: Hash) -> ObjectId {
+        let mut b = [0u8; 16];
+        b.copy_from_slice(&h.0[..16]);
+        let v = u128::from_le_bytes(b);
+        ObjectId(if v == 0 { 1 } else { v })
+    }
+
+    /// The `k`-th object an edit entry creates (world-model.md 2.1):
+    /// `BLAKE3("pe.object" ‖ line ‖ author ‖ chain ‖ seq ‖ k)[..16]`.
+    pub fn created(line: LineId, author: MemberKey, chain: ChainId, seq: u64, k: u32) -> ObjectId {
+        let mut h = Hasher::new("pe.object");
+        h.write_hash(&line.0).write(&author.0).write_hash(&chain.0).write_u64(seq).write_u32(k);
+        ObjectId::from_hash(h.finish())
+    }
+
+    /// The `n`-th applied spawn of `spawner` in `frame`, by world logic (world-model.md 2.1).
+    pub fn spawned(line: LineId, spawner: ObjectId, frame: Frame, n: u32) -> ObjectId {
+        let mut h = Hasher::new("pe.spawn");
+        h.write_hash(&line.0).write_u128(spawner.0).write_u64(frame.0).write_u32(n);
+        ObjectId::from_hash(h.finish())
+    }
+
+    /// A member's hand, created by world logic at admission (world-model.md 8): `side` 0 is left, 1 is right.
+    pub fn hand(line: LineId, member: MemberKey, side: u8, admission: Frame) -> ObjectId {
+        let mut h = Hasher::new("pe.hand");
+        h.write_hash(&line.0).write(&member.0).write_u8(side).write_u64(admission.0);
+        ObjectId::from_hash(h.finish())
+    }
 }
 
 /// A member's 32-byte Ed25519 public key (world-model.md 2.2). The all-zero key is world logic
@@ -275,6 +305,25 @@ impl Pos {
     pub fn dist2(&self, other: &Pos) -> f64 {
         (*self - *other).length2()
     }
+
+    /// The canonical encoding (world-model.md 4.5): per axis, the chunk index as a zigzag LEB128 varint, then the
+    /// offset's 8 little-endian bytes. One encoding per position.
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        for a in 0..3 {
+            let c = self.chunk[a] as i128;
+            let mut z = ((c << 1) ^ (c >> 127)) as u128; // zigzag
+            loop {
+                let b = (z & 0x7f) as u8;
+                z >>= 7;
+                if z == 0 {
+                    out.push(b);
+                    break;
+                }
+                out.push(b | 0x80);
+            }
+            out.extend_from_slice(&self.local[a].to_le_bytes());
+        }
+    }
 }
 
 /// Total: the chunk difference is taken in `i128`, then rounded once.
@@ -302,6 +351,44 @@ mod tests {
         let h = LineId::origin().0.0;
         assert_eq!((h[0], h[1], h[2], h[3]), (0x9a, 0x57, 0x0a, 0x9c));
         assert_eq!((h[30], h[31]), (0xdb, 0x9e));
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// Golden vectors, produced by WS-world's pe-core at world/core-v1 426d8420 (not by these copies). When pe-seams
+    /// switches to re-exporting pe-core's types, this test must still pass unchanged, so the copies cannot drift.
+    #[test]
+    fn golden_vectors_match_pe_core_426d8420() {
+        let line = LineId::origin();
+        let key = MemberKey([0x11; 32]);
+        let chain = ChainId::new(line, key, [0x22; 32]);
+        assert_eq!(hex(&line.0.0), "9a570a9c46078da1b28a58daddf02dcea9c8bb31f4efc8ab61089b552b1ddb9e");
+        assert_eq!(hex(&chain.0.0), "f9b15cc973e80406d2712f240a1d76008f015c16ca0f86b5f4bbde52c6869ac9");
+        assert_eq!(format!("{:032x}", ObjectId::created(line, key, chain, 7, 3).0), "7b1e6a231cb93972bbf8ecaab2238c94");
+        assert_eq!(
+            format!("{:032x}", ObjectId::spawned(line, ObjectId(0x1234), Frame(99), 2).0),
+            "6c8e7703bd9c45f9428b175321a10c71"
+        );
+        assert_eq!(format!("{:032x}", ObjectId::hand(line, key, 1, Frame(5)).0), "95b6a39b914e2646d926443016d398bd");
+        let p = Pos::ORIGIN.checked_add(Offset([-1500.25, 0.5, 3_000_000.0])).unwrap();
+        let mut out = Vec::new();
+        p.encode(&mut out);
+        assert_eq!(hex(&out), "0300000000001e814000000000000000e03fe22d0000000000008640");
+        let far = Pos::at_chunk([1 << 40, -7, i64::MAX]).unwrap().checked_add(Offset([0.125, 1023.5, 0.0])).unwrap();
+        let mut out = Vec::new();
+        far.encode(&mut out);
+        assert_eq!(hex(&out), "808080808040000000000000c03f0d0000000000fc8f40feffffffffffffffff010000000000000000");
+        let d = far - p;
+        assert_eq!(
+            [d.0[0].to_bits(), d.0[1].to_bits(), d.0[2].to_bits()],
+            [0x4310000000001772, 0xc0b8010000000000, 0x447ffffffffffffd]
+        );
+        assert_eq!(
+            hex(&Hash::of("pe.test", b"golden").0),
+            "656fdcd17676e327ae73607c0da58259c4fd15bbc98b0dd7a1b78cd90cbcf802"
+        );
     }
 
     #[test]

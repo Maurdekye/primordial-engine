@@ -19,19 +19,30 @@ The id, hash and position types belong in pe-core (world-model.md 9.1, accepted)
 `world/core-v1` (stage A, 426d8420) and lands only with pe-sim and pe-physics adapted. So v0 carries copies of their
 shapes, from 426d8420: the same names, fields, derives and formulas. When `world/core-v1` lands, that landing replaces
 `crates/pe-seams/src/ids.rs`'s definitions with `pub use pe_core::{...}` (@world-model makes the edit; I review it).
-Code that imports them from `pe_seams` does not change.
+Code that imports them from `pe_seams` does not change. Golden vectors produced by pe-core at 426d8420 (a line id,
+a chain id, the three object-id derivations, two `Pos` encodings, a `Pos - Pos` and a context hash) pin the copies;
+the re-export landing must pass the same test unchanged (@design-reviewer, m0bb9196df5ec).
+
+## The floor, and a member that did not vote
+
+A member that was not among a cut's voters can learn the cut is final while some of its entries are still on their
+way (@design-reviewer's High on a18ab39f). So `EntrySource::final_cut` is the newest final cut whose entries this
+member holds in full; the replica's floor follows it, and `advance` re-simulates down to that floor, not to the
+line's newest final cut. The driver passes `final_cut()` to `finalize` each time it changes. Rung 1's `Cured` leaves
+the replica replayed to the present with the cut as its new `Cv`, as a successful `import_at_cut` does. A harness
+case for @harness-eng: a non-voter at n = 4 that receives one of a final cut's entries late.
 
 ## The conflicts between proposals, and v0's rulings
 
 | # | Question | v0 takes | Who changes what |
 |---|---|---|---|
-| 1 | The tree calls' names | `node`, `export`, `object_hashes` and `verify`, on `Tree`: pe-world's calls on one held root, reached through `Replica::tree(&root)`. The receiver of an import is pe-replica's `import_at_cut` (2) | replica.md drops `tree_node`, `object_state` and `patch` as seam names; pe-world's internal patch call is its own |
+| 1 | The tree calls' names | `node`, `export` (by `LeafKey`, so tables are repaired like objects; @diverge-eng, m454882c5cf87), `object_hashes` and `verify`, on `Tree`: pe-world's calls on one held root, reached through `Replica::tree(&root)`. The receiver of an import is pe-replica's `import_at_cut` (2) | replica.md drops `tree_node`, `object_state` and `patch` as seam names; pe-world's internal patch call is its own |
 | 2 | The import receiver | `Replica::import_at_cut(group, CutImport, source) -> Result<Hash, ImportError>`: every record checked against the agreed root first, then a replay to the present; `NeedsPhysicsImage` when a bound body is in it without the image | divergence.md 11.1's `import(at, records)` becomes this call |
 | 3 | How a replica is stepped | replica.md 8: `advance(present, source)`, `outcome`, `root_at_cut`, `finalize`, `replay_from_last_agreed`. Keyframes, save and restore stay inside the replica; permission checks are outcomes. Nobody outside restores an arbitrary state | world-model.md 9.2 and divergence.md 11.1 drop `step`, `save`, `restore` and `permits` from the trait. The driver loop is WS-state's `drive` in pe-replica (@harness-eng's 3.2) |
 | 4 | Roots | Named by `Hash`; held roots are reached through `Replica::tree`. A `Send` root handle comes with M2's fork | divergence.md's `Root` handle and `root_of` go |
 | 5 | `physics_image` | `physics_image(&Hash) -> Option<PhysicsImage>`, one blob with its check hash in v0 (provisional: chunking by hash with the Bulk lane) | divergence.md's `PhysicsBlobTree` waits for that |
 | 6 | The second copy (M2) | Not in v0. v1 adds a fork, per-group restore and step, and the footprint, with the merge | — |
-| 7 | How long roots are kept | The floor, `Cv`, and the final cuts within `T_keep` (1.5 s by default, at least the last 2 cuts), served to peers. The "last 8 cuts" I wrote earlier is withdrawn: every limit is a duration (md4b42d16d9df) | world-model.md 9.2 and DESIGN.md S2.4 drop "8" |
+| 7 | How long roots are kept | The floor, `Cv`, and the final cuts within `T_keep` (1.5 s by default, at least the last 2 cuts), served to peers; also my root at a cut I diverged at, until its repair ends, and the root I voted with at each cut not yet final (a root split's reference serves it; @diverge-eng, m454882c5cf87). The "last 8 cuts" I wrote earlier is withdrawn: every limit is a duration (md4b42d16d9df) | world-model.md 9.2 and DESIGN.md S2.4 drop "8" |
 | 8 | Where `physics_global` sits | In each domain's root, as world-model.md r9 6.2 has it (@design-reviewer's r5 Low 1): M4's domains then change no format | replica.md 5.1 follows r9 |
 | 9 | pe-world's side of a step | Not a seam (pe-world and pe-replica are both behind S2). replica.md 3's list holds: each applied entry returns its physics effects (changed objects, pushes, a carried check), acted on before the next entry, and `World::end_frame(f)` expires claims and cooldowns | @world-model provides it in pe-world's API |
 | 10 | Where WorldApi reads poses | Poses and velocities from the published frame view (S5), live; rows from pe-world's snapshot. `BodyState` is hash-only and never read by the API | replica.md 2.3's "velocities as of the last cut" option goes |
@@ -68,6 +79,17 @@ Code that imports them from `pe_seams` does not change.
 - **S1's byte layout** (format 1: `Entry::signing_bytes`, `SignedEntry::encode`) is provisional; WS-agree may change
   it in v1, through WS-seams. A chain's first entry carries its nonce, so anyone can check its chain id.
 - **The vote hold** (@iter-bench's N3): `hold_votes_from(frame)` and `release_votes_from(frame)`.
+- **The simulation rate** (the user, mc8dc9e5a6ffb): `SimRate`, 30 to 120 Hz in whole hertz, 60 by default;
+  `FrameClock::rate_hz` always returns one. pe-physics runs `ceil(240 / rate)` sub-steps (@vdw-physics).
+- **Voids name their cut:** `AgreeEvent::Voided { entry, author, reason, cut }`, so the harness checks that every
+  void is decided by a final cut and that members agree on which (@harness-eng, m3bb675a96918).
+- **Root splits** carry each voter's self-test verdict (`RootSplit { roots: [(root, [(member, SelfTest)])] }`), for
+  the tie rule at n = 2 (@diverge-eng, m454882c5cf87).
+- **Not in v0:** a node-hash function at the seam, so pe-diverge could check nodes during the descent. The formula is
+  pe-world's (world-model.md 6.2) and `Node` would need its depth; v1 adds it with @world-model. Until then a lying
+  source costs time, never correctness: `import_at_cut` checks every record's proof.
+- **macOS:** the vendored wasmtime's unwind registration through `dlsym` is untested there; no determinism claim for
+  macOS until tier 2 runs a trap test on it (@design-reviewer's Low).
 - **Roots for votes:** S3 lists the cuts it wants roots for (`wants_roots`); the driver answers with
   `Replica::root_at_cut` and `Agreement::vote`, which is also the revote after a repair.
 - **The script contract** (@iter-bench, m7a29c468fa08): the script crate is `forbid(unsafe_code)`, and the SDK hands

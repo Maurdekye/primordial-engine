@@ -1,5 +1,9 @@
 # Iteration-latency and logic-runtime benchmark
 
+> **Evidence paths** (since the M0 archive, 2026-11-10): paths under `spikes/out/` in this document refer to the
+> tag `archive/v0-prototype`, where those logs are kept. Main no longer carries them; the physics records the
+> tests read moved to `crates/pe-physics/tests/records/`.
+
 Owner: iter-bench. Docket: @item:primordial-engine/iteration-latency-and-logic-runtime-benchmark-wa.
 Measured 2026-10-30 on the desktop: Ryzen 7 9700X (16 threads), Windows 11, rustc 1.99.0 stable (cargo 1.99.0). Nightly 1.94.0 (2025-12-10) was used only for the Cranelift codegen backend.
 
