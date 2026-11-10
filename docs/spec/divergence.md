@@ -1,6 +1,6 @@
 # Divergence and recovery (WS-diverge)
 
-Status: draft v1.2, 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
+Status: draft v1.3, 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
 and the coordinator's rulings of 20:40Z. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
 Nothing in it is built. It specifies `crates/pe-diverge` and the requirements pe-diverge places on other
 workstreams. Only WS-diverge edits this file and `crates/pe-diverge`.
@@ -405,30 +405,33 @@ by the engine's ordinary rules, applied once to both lines' actions [file 14, 4.
 
 **Voided entries are merged in, but are never back-dated past finality.** An entry of `theirs` that main voided
 as late is in the set: that is what "their changes are merged in" means, and what the property "voiding and
-merging fit together" checks (plan 4.4). But in a conflict group, a `theirs` entry that is not on main **never
-changes the outcome of a final entry of `ours`**, whatever its stamp:
-- it is replayed at its stamp only if, there, it changes the outcome of no final `ours` entry;
-- otherwise it is **rebased**: applied at the application frame `A`, where the ordinary rules judge it afresh. A
-  grab on an object a final entry holds is refused there; a stale precondition is refused there; a delete
-  applies there and destroys what main built since, as the user's rule has it for a delete that came second
-  [R m35138bafc46a].
-- "Outcome" covers every kind of entry: an exclusive hold, a precondition, and structure. A back-stamped delete
-  that would refuse main's final writes to the object (`Deleted`), or orphan main's final add-ons under it, is
-  rebased like a back-stamped grab [design-reviewer, re-review of 9519c9f].
-- Plain writes are already safe under the ordinary order: a back-stamped write loses to main's later one.
+merging fit together" checks (plan 4.4). How it is ordered depends on whether its stamp was witnessed.
+**[C 19:41Z, m61125c4194d4: provisional, pending the user.]**
 
-[C 20:40Z, m68977e8f9830: option (a), ruled. It carries the user's confirmed rule that the late or stale side
-loses conflicts into merges. The widening to every outcome, and rebasing to `A` rather than refusing, are mine
-[I], within that ruling: rebasing keeps the returner's work wherever the ordinary rules allow it at `A`.]
-- **Why** [design-reviewer, High]: ordered by stamp alone, a member could stamp grabs and writes in the past,
-  stay silent past `T_merge`, then return and win at the merge against honest players' final actions. Today's
-  bound on back-dating is about 4-10 frames: the published horizon plus the cut's void [V design 8.2, cited by
-  @design-reviewer]. A silent member publishes no horizon, so neither rule bounds it, and stamp order alone would
-  widen the window to a minute.
-- **The alternatives, not taken:** (b) void `theirs` entries stamped before the returner's last published
-  horizon, which does not cover a fully silent member; (c) accept the window under the trust ruling.
-- **In v2** (split groups, neither side final), neither side has final entries to protect, so this back-dating is
-  bounded only by the one-minute rule. That is for WS-model's v3 to settle.
+- **Witnessed:** a returning entry held by members of its own side during the split, within the normal back-dating
+  bound (about 4-10 frames: the published horizon plus the cut's void [V design 8.2, cited by @design-reviewer]).
+  It is ordered by its stamp like any other entry, and the user's order rule applies: a delete first orphans
+  the add-on, a delete second destroys it [R m35138bafc46a]. This is the case of an honest split group.
+- **Unwitnessed:** a returning entry that no member of its own side held within that bound. A lone diverged
+  machine (Q3b, or a bad link past 2 s) has no side, so all its entries not on main are unwitnessed; so is an
+  entry stamped outside its side's bound. Such an entry **loses to any final `ours` entry whose outcome it would
+  change**, whatever the operation: an exclusive hold, a precondition, or structure. For example, a back-stamped
+  delete that would refuse main's final writes to the object (`Deleted`), or orphan main's final add-ons. It is
+  refused, with the reason "lost to a final entry". Where it changes no final outcome, it replays at its stamp.
+  [I: "loses" is read as refused. Rebasing it to the application frame `A` instead would let a back-stamped
+  delete still destroy main's work at `A`, which is winning by another route.]
+- **Plain writes** are safe under the ordinary order in both cases: a back-stamped write loses to main's later
+  one.
+- **Why** [design-reviewer, High and re-review]: ordered by stamp alone, a member could stamp actions in the past,
+  stay silent past `T_merge`, then return and win at the merge against honest players' final actions. A silent
+  member publishes no horizon, so the 4-10 frame bound would widen to a minute. The window needs a silent member
+  with no witness, which is exactly what the unwitnessed rule covers. Refusing every earlier entry instead, the
+  general form, would contradict the user's delete-order ruling for honest split groups [C m61125c4194d4].
+- **History:** the coordinator first ruled option (a), protecting holds and preconditions (20:40Z, m68977e8f9830).
+  @design-reviewer showed structure must be protected too; the witnessed/unwitnessed split reconciles that with
+  the user's ruling.
+- **In v2** (split groups, neither side final), neither side has final entries to protect. What an unwitnessed
+  entry loses to there is for WS-model's v3 to settle.
 
 **Overlaps pull objects in.** An object only `theirs` moved, whose resulting bounds overlap an object `ours`
 moved, joins the conflict group. So the merge never leaves interpenetrating bodies at the application frame
@@ -459,9 +462,9 @@ split.
   hit by something `ours` moved. The rule above takes `theirs` unchanged and lets the next step resolve any overlap;
   the alternative pulls it into the group.
 - That no final frame is undone, with the merge applied at `A`.
-- The back-dating rule above, with its controls: a model in which a back-stamped silent returner's grab would
-  win, and one in which its back-stamped delete of an object main later edited would refuse main's final edits.
-  The checker must catch both [C 20:40Z; design-reviewer].
+- The back-dating rule above, with its controls [C m61125c4194d4]:
+  - a lone returner's back-stamped grab, and its back-stamped delete of an object main later edited, must lose;
+  - a two-member side's witnessed earlier delete must orphan main's add-on.
 - The overlap rule, with its case: an object only `theirs` moved, overlapping one that `ours` moved.
 - **Physics and group-level merging** [@vdw-physics]. Under 4.2a, physics restores and steps a whole domain, so the
   exact reference is a replay of the whole domain from `base`. Until history-free physics exists (file 02 A2;
@@ -612,8 +615,8 @@ network model with random schedules.
 
 **M2-M3:** the merge properties of 9.5, first in the model, then on pe-diverge's `merge` with the model's traces
 replayed through it (plan 4.1, rule 2); a merge scenario for each order of a delete and an add-on, at depth 1 and
-at depth 2 [R m35138bafc46a]; a silent returner with back-stamped grabs, and with a back-stamped delete of an
-object main later edited; the overlap case; a sticky root-split
+at depth 2 [R m35138bafc46a]; a lone returner with back-stamped grabs, and with a back-stamped delete of an
+object main later edited (both lose); a two-member side's witnessed earlier delete (main's add-on is orphaned); the overlap case; a sticky root-split
 reference under a persistent fault at `n = 2`. pe-harness wires the mutations `MergeByArrival`, `MergeDropsSide`
 and `VoidSplitEntries` to its property P9 (`crates/pe-harness/DESIGN.md` 6.1, branch `harness/design`); pe-diverge
 puts them behind its `mutants` feature.
@@ -658,7 +661,8 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 - **For @engine-architect:** S2 and S3 as in section 11.
 - **For WS-world and WS-state:** R-H2, R-H3 and R-O1 (R-H1 is met by 4.2a).
 - **For WS-model:** section 9.5.
-- **Settled by the coordinator:** the back-dating rule is (a) (9.3); untouched groups need to be deterministic,
+- **Provisional, pending the user:** the witnessed/unwitnessed back-dating rule (9.3) [C m61125c4194d4].
+- **Settled by the coordinator:** untouched groups need to be deterministic,
   not bit-exact (9.5), both at 20:40Z; M1's logic edit compiles in under 2 s (ma99622993534).
 - **With the user** (file 14, section 7): a number for visible error; for long divergences merged later, whether
   the later change may win object by object.
