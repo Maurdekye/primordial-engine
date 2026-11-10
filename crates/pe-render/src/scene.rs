@@ -384,6 +384,12 @@ impl Renderer {
         &self.settings
     }
 
+    /// The MSAA sample count from the next frame (the quality ladder, render.md 10). Pipelines and targets per count
+    /// are made when first needed.
+    pub fn set_msaa(&mut self, samples: u32) {
+        self.settings.msaa = samples.max(1);
+    }
+
     fn globals_buffer(device: &wgpu::Device, slots: u64) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),

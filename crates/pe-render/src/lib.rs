@@ -14,6 +14,7 @@
 //! - [`pacing`]: the display period and the render-scale controller (render.md 10).
 //! - [`desktop_hand`]: the mouse-ray hand and its `HandFeed` (render.md 9).
 //! - [`present`]: the frame-view slot and the per-frame presenter (render.md 3).
+//! - [`window`]: the desktop window and its loop (render.md 9, 10).
 //!
 //! pe-render re-exports `wgpu` and `wgpu-hal`; pe-xr uses only those (xr.md 8.2).
 
@@ -28,6 +29,7 @@ pub mod pacing;
 pub mod pose;
 pub mod present;
 pub mod scene;
+pub mod window;
 
 pub use pe_seams;
 pub use {wgpu, wgpu_hal};
