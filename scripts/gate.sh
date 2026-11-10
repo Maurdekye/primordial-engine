@@ -63,8 +63,14 @@ if [ -n "$report" ]; then mkdir -p "$report" && report=$(cd "$report" && pwd) ||
 
 # Revisions resolve in the current worktree (its own HEAD); gitleaks reads the shared object store.
 gitdir=$(git rev-parse --path-format=absolute --git-common-dir 2> /dev/null) || die "not in a git repository"
-# In-tree attributes off for every git command (git 2.40+): export-ignore, -diff, eol or a filter in a committed
-# .gitattributes would otherwise change what the gate reads.
+# In-tree attributes off for every git command: export-ignore, -diff, eol or a filter in a committed .gitattributes
+# would otherwise change what the gate reads. GIT_ATTR_SOURCE needs git 2.40 or later; an older git ignores it
+# without a word, so the gate refuses to run on one.
+gv=$(git version) || die "git does not run"
+case "$gv" in
+  "git version 2."[4-9][0-9]*|"git version 2."[1-9][0-9][0-9]*|"git version "[3-9]*) ;;
+  *) die "$gv is older than 2.40, which the gate needs (GIT_ATTR_SOURCE keeps a committed .gitattributes from hiding lines)" ;;
+esac
 GIT_ATTR_SOURCE=$(git hash-object -t tree /dev/null) || die "git hash-object failed"
 export GIT_ATTR_SOURCE
 G() { git "$@"; }

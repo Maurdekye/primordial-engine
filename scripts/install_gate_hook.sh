@@ -9,7 +9,21 @@
 # old tip (at the new commit when main is created), so the hook comes from the base like the rest of the
 # gate's code (scripts/gate.sh). core.hooksPath replaces git's own hooks folder, so this refuses to run while
 # that folder holds a hook (git's .sample files aside) or core.hooksPath points elsewhere.
+# Install it only once the gate is on main: the trampoline refuses every update of main while main's tip has no
+# scripts/hooks/reference-transaction, so this refuses to run until then. It also needs git 2.40 or later, as the
+# gate does.
 set -euo pipefail
+gv=$(git version)
+case "$gv" in
+  "git version 2."[4-9][0-9]*|"git version 2."[1-9][0-9][0-9]*|"git version "[3-9]*) ;;
+  *) echo "install_gate_hook: $gv is older than 2.40, which the gate needs (GIT_ATTR_SOURCE)" >&2; exit 2 ;;
+esac
+for f in scripts/hooks/reference-transaction scripts/gate.sh; do
+  if ! git cat-file -e "refs/heads/main:$f" 2> /dev/null; then
+    echo "install_gate_hook: main has no $f yet; install the hook once the gate is on main (until then it would refuse every update of main)" >&2
+    exit 2
+  fi
+done
 common=$(git rev-parse --path-format=absolute --git-common-dir)
 dir="$common/pe-gate-hooks"
 cur=$(git config --get core.hooksPath || true)

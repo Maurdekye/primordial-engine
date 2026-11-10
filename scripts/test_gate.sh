@@ -269,8 +269,18 @@ expect export-refusals fail "link: a symbolic link" "sub: a submodule" "readme\.
 # 24. The hook, through its trampoline: refuses a merge into main that fails, leaves main where it was, refuses
 #     an update-ref, lets a clean merge in, and runs the base's hook and gate when a landing changes both.
 new_case
-(cd "$R" && bash scripts/install_gate_hook.sh > "$tmp/install-hook.log" 2>&1) || { cat "$tmp/install-hook.log"; die "install_gate_hook.sh failed"; }
+# The installer waits for the gate: while main's tip has no hook (here the repository's first commit), it refuses,
+# since the trampoline would refuse every update of main; once main is <rev>, it installs.
+g update-ref refs/heads/main "$(git -C "$R" rev-list --max-parents=0 "$sha" | tail -1)"
+if (cd "$R" && bash scripts/install_gate_hook.sh > "$tmp/install-early.log" 2>&1); then
+  bad=$((bad + 1)); echo "test_gate: BAD  installer-waits-for-the-gate (it installed while main has no gate)"
+elif grep -q "main has no scripts/" "$tmp/install-early.log"; then
+  pass=$((pass + 1)); echo "test_gate: ok   installer-waits-for-the-gate"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  installer-waits-for-the-gate"; sed 's/^/    /' "$tmp/install-early.log"
+fi
 g checkout -q -B main "$sha"
+(cd "$R" && bash scripts/install_gate_hook.sh > "$tmp/install-hook.log" 2>&1) || { cat "$tmp/install-hook.log"; die "install_gate_hook.sh failed"; }
 g checkout -q -b leak "$sha"; printf 'aws_secret = %s\n' "$(fake aws)" > "$R/leak.txt"; commit -m "leak"
 g checkout -q -b fine "$sha"; echo "fine" >> "$R/README.md"; commit -m "fine"
 g checkout -q -b neuter "$sha"; printf '#!/bin/sh\ncat > /dev/null\nexit 0\n' > "$R/scripts/hooks/reference-transaction"
