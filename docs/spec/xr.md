@@ -1,6 +1,6 @@
 # pe-xr: the OpenXR session, stereo, tracked hands and 90 Hz pacing
 
-Status: draft 1, 2026-11-10, by @xr-eng (WS-xr). Nothing in it is built. It specifies M1's VR work in
+Status: draft 2, 2026-11-10, by @xr-eng (WS-xr). Draft 2 answers @shader-reviewer's review of draft 1 (M1-M5, L1-L4). Nothing in it is built. It specifies M1's VR work in
 `docs/refound-plan.md` (branch `docs/refound-plan`, b610464), section 3.1: "the OpenXR session, stereo through
 pe-render, tracked hands into hand entries, 90 Hz pacing". Seam S5 is proposed in section 8. @engine-architect (WS-seams)
 takes its pe-seams part as proposed, for S5 v0; the pe-xr and pe-render interface (8.2) is to agree with @ballpit-viz
@@ -42,19 +42,30 @@ macOS (flat screen only, later); a VR user interface (the UI lab follows M1, WS-
   has no `openxr_loader.dll` in System32 [V: @ballpit-viz's M0 finding, and my listing of System32]. So pe-xr has its
   own small loader in Rust, the one @ballpit-viz is writing for the M0 check:
   1. find the active runtime's manifest: `XR_RUNTIME_JSON` if set, else `ActiveRuntime` under
-     `HKLM\SOFTWARE\Khronos\OpenXR\1` on Windows, else `active_runtime.json` under the XDG config paths on Linux;
-  2. open the runtime's library from the manifest with `libloading`;
-  3. call its `xrNegotiateLoaderRuntimeInterface`;
+     `HKLM\SOFTWARE\Khronos\OpenXR\1` on Windows, else `active_runtime.json` under the XDG config paths on Linux.
+     The manifest file must exist; a registry entry is never trusted on its own (this PC lists a runtime whose
+     manifest is gone, below);
+  2. resolve `runtime.library_path` against the manifest's own folder when it is relative (Virtual Desktop's is
+     `.\virtualdesktop-openxr.dll` [V]), and open it with `libloading`;
+  3. look up the negotiation entry point, under the name the manifest's optional `functions` map gives it, else
+     `xrNegotiateLoaderRuntimeInterface`, and call it with the loader-info and runtime-request structs filled in,
+     their struct versions included. A runtime whose negotiated interface version or API version is out of range is
+     refused, with the reason;
   4. build the `openxr::Entry` from the returned `xrGetInstanceProcAddr` (`Entry::from_get_instance_proc_addr`).
+
+  Manifest discovery is injected, so tests run the loader on fixture manifests and never read the registry or
+  `XR_RUNTIME_JSON` (section 10.3). Opening a runtime's library already runs its code, so the loader is also where
+  the headset guard sits (section 10.3).
 
   The cost: no API layers. Virtual Desktop registers one implicit layer (an Oculus compatibility layer), which we do
   without [M0]. The runtime is then the only boundary, and it goes in the register of boundaries (plan C6).
 - **Graphics path in M1,** following the M0 check (section 4.4): D3D12 through `XR_KHR_D3D12_enable` on Windows, and
   Vulkan through `XR_KHR_vulkan_enable2` on Linux and as Windows' alternative.
-- **Runtimes on this PC** [V: read from `HKLM\SOFTWARE\Khronos\OpenXR\1`, registry only, no session started]: the
-  active runtime is Virtual Desktop's (`virtualdesktop-openxr.json`); Meta Horizon's (`oculus_openxr_64.json`) is
-  installed too. No SteamVR runtime is registered. Which runtime the headset tests use is the coordinator's and the
-  user's choice (section 11, X5).
+- **The runtime: Virtual Desktop's.** The user chose it for the headset tests (X5, m2aaafe98cbbe). It is the active
+  runtime here, and the only usable one [V: `HKLM\SOFTWARE\Khronos\OpenXR\1` and the file system, read only, no
+  session started]. `AvailableRuntimes` also lists Meta's `oculus_openxr_64.json`, but neither that file nor its
+  folder exists: the entry is stale (@shader-reviewer's finding, which I re-checked). No SteamVR is installed. No other
+  runtime is installed unless the user asks.
 - **Linux:** SteamVR and Monado, through the same Vulkan path [I; not tried here].
 - **No runtime registered, no runtime library, or no headset** is not an error. The application runs in desktop mode, says why once, and
   offers to retry (section 3.3).
@@ -89,15 +100,20 @@ FOCUSED, STOPPING, LOSS_PENDING and EXITING. What each state means for the engin
 | SYNCHRONIZED | Frames are paced but not shown; submit no layers | None | Runs |
 | VISIBLE | Frames are shown; input is not focused | Absent (the runtime gives no input) | Runs |
 | FOCUSED | Full frame loop | Sampled every frame | Runs |
-| STOPPING | `xrEndSession`; back to desktop mode | Absent | Runs |
-| LOSS_PENDING | Destroy the session and the graphics objects; try again later | Absent | Runs |
-| EXITING | Destroy the session; desktop mode | Absent | Runs |
+| STOPPING | `xrEndSession`, then IDLE. The session and the GPU context are kept; the desktop window draws on the same device. The runtime may send READY again on the same session (some do when the headset sleeps and wakes) | Absent | Runs |
+| LOSS_PENDING | Destroy the swapchains, then the session, then the GPU context; try again later | Absent | Runs |
+| EXITING | The same teardown; desktop mode on a context of pe-render's | Absent | Runs |
 
 - **The simulation never stops for VR.** Every row says "runs".
 - **Hands become absent** whenever input is not focused. Section 5.5 says what an absent hand does to a grab.
 - **Instance loss** (`XR_ERROR_INSTANCE_LOST`, or a runtime restart) is handled as session loss plus a new instance.
   The GPU objects made on the runtime's device go with it, so pe-render must be able to drop and re-create
   its GPU resources (section 4.3).
+- **Leaving VR by choice** is `xrRequestExitSession`, then STOPPING, IDLE and EXITING, with the teardown above.
+- **Events** drive every row. pe-xr drains `xrPollEvent` once per frame while the frame loop runs (section 7.1), and
+  about every 100 ms while it does not (IDLE before READY, and after STOPPING), on the XR thread [I: OpenXR has no
+  blocking wait for events]. The events it handles: session state changes, instance loss pending, reference-space
+  change pending, and interaction-profile changes.
 
 ### 3.2 Reference space and the rig
 
@@ -116,7 +132,8 @@ FOCUSED, STOPPING, LOSS_PENDING and EXITING. What each state means for the engin
 - The application starts in desktop mode. It enters VR when the user asks for it, or at start when configured to,
   and a runtime and headset are present.
 - **Probing for a runtime** creates an instance and asks for the HMD's system id. It starts no session. Probing is
-  still a call into the runtime, so it is off unless configured (section 10.3).
+  still a call into the runtime, and on some runtimes `xrCreateInstance` starts the runtime's companion application,
+  so it is off unless configured (section 10.3).
 - In VR mode the desktop window may stay open as a mirror of one eye (pe-render's choice; useful for recording the
   demo).
 - **The desktop hand and the tracked hands are alternatives** for one player: the input source in use is named in
@@ -130,17 +147,24 @@ The runtime decides which GPU the headset is drawn on, and on the Vulkan path it
 itself, with the extensions the runtime and wgpu each need. So:
 - **In VR mode, pe-xr creates the GPU context** and gives it to pe-render.
 - **In desktop mode, pe-render creates it** itself.
-- **pe-render accepts a context from outside** in either case. Switching modes re-creates it (section 4.3).
+- **pe-render accepts a context from outside** in either case.
+- **The context outlives the session.** It is re-created only after `xrDestroySession` (section 3.1), never while a
+  session holds its device and queue. The order of teardown is swapchains, then session, then context.
+- **On D3D12, leaving VR re-creates nothing:** wgpu creates the device itself, so the desktop keeps the same context,
+  unless it wants a different adapter. On Vulkan the runtime created the device, so leaving VR re-creates it.
 
 **D3D12, on Windows** [M0: @ballpit-viz's first path]:
 1. Ask the runtime for its graphics requirements (`XR_KHR_D3D12_enable`): the adapter's LUID and the minimum
    feature level.
-2. Create wgpu's D3D12 instance as usual, and pick the adapter whose LUID matches.
+2. Create wgpu's D3D12 instance as usual, and pick the adapter whose LUID matches. wgpu's `AdapterInfo` carries no
+   LUID, so each adapter's is read through `as_hal::<Dx12>()`, `raw_adapter()` and `GetDesc1().AdapterLuid`.
 3. Create the device with the features pe-render asks for.
 4. Create the session with the D3D12 binding: the raw `ID3D12Device` and command queue, taken from wgpu through
    `as_hal`.
 
 **Vulkan, on Linux and as Windows' alternative** [M0; the names are wgpu 30's, V: in the cargo cache]:
+0. Call `xrGetVulkanGraphicsRequirements2KHR` (`graphics_requirements::<Vulkan>`) first: the session fails with
+   `XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING` without it.
 1. Ask wgpu-hal's Vulkan backend for the instance extensions it wants (`Instance::desired_extensions`), and create
    the VkInstance with `xrCreateVulkanInstanceKHR` (`openxr::Instance::create_vulkan_instance`).
 2. Wrap it with wgpu-hal's `Instance::from_raw`, and then `wgpu::Instance::from_hal`.
@@ -165,8 +189,8 @@ itself, with the extensions the runtime and wgpu each need. So:
 
 ### 4.3 Losing the device
 
-On session or instance loss, or when leaving VR, the GPU context goes away. pe-render must drop every GPU resource
-and rebuild from the frame view on the next context. Its meshes and materials are derived from world data, so
+After `xrDestroySession` (session or instance loss, or leaving VR on the Vulkan path), the GPU context may go away.
+pe-render must then drop every GPU resource and rebuild from the frame view on the next context. Its meshes and materials are derived from world data, so
 nothing is lost but time [I].
 
 ### 4.4 Which path, on which runtime
@@ -177,8 +201,8 @@ nothing is lost but time [I].
   images are the only graphics-specific code, and pe-render sees only wgpu types either way.
 - **Linux needs Vulkan,** so the Vulkan path is built in M1 even if D3D12 serves Windows. Whether it can be tested
   before M1's end depends on a Linux machine with a headset, or on the Monado tier (section 10.2).
-- If neither path works on Virtual Desktop's runtime, the fallback is the Meta runtime, which offers both [I], and
-  the user picks (X5).
+- If neither path works on Virtual Desktop's runtime, there is no other runtime here. A fallback would mean installing
+  Meta's PC software or SteamVR, which is the user's call; nothing is installed unless the user asks.
 
 ## 5. Hands
 
@@ -190,7 +214,8 @@ Every display frame, while input is focused, pe-xr samples both hands and publis
 - `source`: a tracked hand, a controller, or (from pe-render) the desktop hand.
 - `sampled_at`: the host time the pose is for.
 - `tracked`: whether the pose is valid now. When false, the pose is the last valid one.
-- `pose`: the grip pose in the rig frame: position in metres and a unit quaternion, `f32`.
+- `pose`: the grip pose in the rig frame: position in metres and a unit quaternion in OpenXR's order (x, y, z, w),
+  `f32`.
 - `linear_velocity`, `angular_velocity`: in the rig frame, when the runtime gives them.
 - `grip`: 0 to 1, how closed the hand is (section 5.3).
 - `closed`: the grasp state, decided on the author's machine with hysteresis (section 5.3).
@@ -228,7 +253,9 @@ review SH-1; D52's coast must never run past a held hand). Dropping unchanged sa
 
 ### 5.4 Controllers
 
-Controllers go through the action system, with one action set: a grip pose, an aim pose, a squeeze value, a trigger
+Controllers go through the action system. The action set is attached once, at session creation
+(`xrAttachSessionActionSets`), and synced every frame while FOCUSED (`xrSyncActions`, section 7.1); without the sync no
+action state or action-space pose is valid, for controllers or for `XR_EXT_hand_interaction`'s grasp. One action set: a grip pose, an aim pose, a squeeze value, a trigger
 value and haptic output, with suggested bindings for `khr/simple_controller`, `oculus/touch_controller` and
 `valve/index_controller`. Where a runtime offers both a tracked hand and a controller for one hand, the tracked hand
 is used while it is tracked [I]. M1 needs controllers because tracking-only runtimes are not the only ones, and a
@@ -247,8 +274,10 @@ controller gives a recording of the same demo with less noise.
 
 The display layer (file 14, 4.1) never blends a player's own hands or what they hold. In VR there is one more choice:
 where to draw them.
-- **The simulated hand** lags the real one by up to one simulation frame plus the wait to the display time: 11 to 28
-  ms at 60 Hz [I]. At 2 m/s that is 2 to 6 cm.
+- **The simulated hand** trails the display time by the display lead (the predicted display time is one to three
+  display periods ahead of now, 11-33 ms at 90 Hz, and more on a streaming runtime such as Virtual Desktop's), plus up
+  to one simulation frame (17 ms at 60 Hz): about 15-50 ms [I; the lead is measured, section 9]. At 2 m/s that is 3
+  to 10 cm.
 - **My proposal: draw the own hand at the tracked pose for the predicted display time** (late-latched), and draw a
   held object at that hand pose times the simulation's grip offset (the held object's pose relative to the simulated
   hand). This is design.md 18.3's rule. The simulated hand still does the pushing: other objects react to the
@@ -256,6 +285,16 @@ where to draw them.
 - **The alternative:** draw the own hand where it is simulated. Nothing is ever drawn where the simulation does not
   have it, at the cost of a hand that trails the real one.
 - **Both are a setting,** and the user judges them at the headset test, alongside D18b.
+- **When a hold ends** (a release, a throw, a grasp lost to the grace period, or a correction saying the hold never
+  happened), the object is handed to the display layer with its last drawn pose and velocity, as an object no longer
+  held. From then on it is an ordinary object, which the display layer may blend toward its simulated pose. The rule
+  bars blending only while an object is held. Without this, a thrown object would jump back to its simulated pose,
+  10-20 cm or more at 5 m/s, just as the eye follows it. A hold the simulation undid also gets the brief cue of file
+  14, 4.1.
+- **When a hold starts,** the object snaps to the hand pose times the grip offset. At a grasp the hand is nearly
+  still, so the snap is small [I]. If the headset test shows a visible pop, a short settle (about 50 ms) is the
+  setting to try.
+- **A grip offset changed by a rollback** shows as a snap, which the rule allows.
 - **The plan's test** "the error of a player's own hands, and of what they hold, is exactly zero" reads, as agreed
   with @engine-architect: the display layer never applies a correction offset to the own hands or to what they hold;
   they are never blended toward a corrected simulated state. It does not mean "drawn pose equals simulated pose",
@@ -277,7 +316,8 @@ where to draw them.
 - pe-xr keeps a short ring of hand samples, about the last 100 ms, each stamped with its host time.
 - **The simulation thread asks for frame k's hand at frame k's host time.** pe-xr interpolates between the two
   samples around that time. If the time is past the newest sample, it extrapolates from the newest sample's velocity
-  for at most one display period, and otherwise returns the newest sample as it is.
+  for at most one display period, and otherwise returns the newest sample as it is. For a time older than the ring
+  (after a stall, while the simulation catches up), it returns the oldest sample it holds, and counts it.
 - **Sampling time.** Each display frame pe-xr locates the hands twice: at the predicted display time, for drawing
   (section 5.6), and at the current time, for the ring. The ring's samples are what entries are made from, so an
   entry never carries a pose predicted into the future.
@@ -290,18 +330,20 @@ where to draw them.
 ### 7.1 One frame
 
 On the XR thread, which is also the VR render thread:
+0. Drain `xrPollEvent`, and act on what it returns (section 3.1).
 1. `xrWaitFrame`: the runtime paces the thread and returns the predicted display time and period.
 2. `xrBeginFrame`.
-3. Locate the hands at the current time; push the samples to the ring (section 6.2).
+3. While FOCUSED, `xrSyncActions`; then locate the hands at the current time, and push the samples to the ring
+   (section 6.2).
 4. Take the newest published frame view (section 8): one atomic pointer swap, never a lock the simulation holds.
 5. Acquire and wait for a swapchain image.
 6. Locate the views (`xrLocateViews`) and the hands at the predicted display time. This is as late as possible, so
    the poses are fresh.
-7. pe-render draws the frame view into the image: both eyes, the scene interpolated to the display time, the own
+7. pe-render draws the frame view into the image: both eyes, the scene at the drawn time (section 7.2), the own
    hands late-latched (section 5.6).
 8. Release the image, and `xrEndFrame` with one projection layer (and its depth, when offered).
 
-When `shouldRender` is false, steps 3 to 7 are skipped, and `xrEndFrame` submits no layers. The loop never skips
+When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits no layers. The loop never skips
 `xrWaitFrame`, `xrBeginFrame` and `xrEndFrame`.
 
 ### 7.2 Rates
@@ -309,10 +351,19 @@ When `shouldRender` is false, steps 3 to 7 are skipped, and `xrEndFrame` submits
 - **Display rate:** pe-xr asks for 90 Hz with `XR_FB_display_refresh_rate` where offered, and otherwise takes the
   runtime's rate. It reports the rate it got.
 - **Simulation rate:** a world setting (D4), 60 or 90 Hz. pe-xr does not depend on it.
-- **Interpolation:** each display frame draws the simulation at the predicted display time. pe-render interpolates
-  between the two newest frame views, or extrapolates from the newest for at most one simulation frame (WS-render
-  decides which) [I]. So 72, 90 and 120 Hz displays all work against 60 and 90 Hz simulations, as M1's rendering test
-  asks.
+- **The drawn time.** The newest frame view is for a simulation frame at or before now, and the predicted display
+  time is one to three display periods past now. So the display time is almost always past the newest frame view,
+  and interpolating between frame views cannot reach it. The time the world is drawn at is WS-render's choice, one
+  of:
+  - **(a) extrapolate** from the newest frame view to the display time, up to the measured lead, with the display
+    layer's smoothing. This is design.md 18.3's rule, and my proposal [I];
+  - **(b) interpolate** between the two newest frame views at the display time minus a render delay. Nothing is
+    drawn from a guess, but everything except the head and the own hands is shown that much later.
+- **Counted either way:** the gap between the drawn time and the display time, and the lead from the newest frame
+  view's `sim_time` to the display time (section 9).
+- **So 72, 90 and 120 Hz displays** all work against 60 and 90 Hz simulations, as M1's rendering test asks. The test
+  checks the rule WS-render chose: each display frame's drawn time follows from its display time and the newest
+  frame view by that rule.
 
 ### 7.3 The budget at 90 Hz
 
@@ -412,6 +463,8 @@ impl Renderer {
 }
 ```
 
+- **pe-render re-exports `wgpu` and `wgpu-hal`,** and pe-xr uses only those, so the two crates can never drift to
+  different versions or backend features.
 - pe-render chooses the projection's details (reverse Z, infinite far plane) and multiview or two passes.
 - pe-render reports its frame times and render scale to pe-xr's counters.
 - The desktop path calls the same `render_views` with one eye.
@@ -432,8 +485,9 @@ pe-xr reports, per second and as distributions over a run:
 - display frames, frames rendered, frames with `shouldRender` false, and missed frames (a predicted display time more
   than 1.5 periods after the previous one);
 - `xrWaitFrame` time, XR-thread CPU time, pe-render's CPU and GPU time, the render scale;
-- the age of the frame view drawn at its display time;
-- for each simulation frame's hand: the sample's age, and each extrapolation's length;
+- the age of the frame view drawn at its display time; the display lead; the gap between the drawn time and the
+  display time (section 7.2);
+- for each simulation frame's hand: the sample's age, each extrapolation's length, and requests older than the ring;
 - hand tracking lost, regained, and releases forced by the grace period;
 - the display rate the runtime gave, and session state changes.
 
@@ -444,17 +498,22 @@ pe-xr reports, per second and as distributions over a run:
 pe-xr's logic is written against a small backend trait, so almost all of it runs without OpenXR [I]:
 - **A fake runtime** scripts display periods, poses, hand joints, tracking loss, focus changes, recentring, session
   loss and instance loss. The real backend wraps `openxr` and is thin.
-- **The session:** every state and transition in section 3.1, including loss and re-creation. The simulation keeps
-  stepping through all of them.
-- **The frame loop:** wait, begin and end are called in order every frame; with `shouldRender` false no layer is
+- **The session:** every state and transition in section 3.1, scripted as events, including STOPPING back to READY
+  on the same session, loss, and re-creation. The GPU context is never dropped while a session exists, and teardown
+  runs swapchains, session, context. The simulation keeps stepping through every state.
+- **The frame loop:** events are drained every frame; actions are attached once and synced before they are read;
+  wait, begin and end are called in order every frame; with `shouldRender` false no layer is
   submitted; nothing on the XR thread takes a lock that the simulation holds.
-- **Rates:** displays at 72, 90 and 120 Hz against simulations at 60 and 90 Hz. Each display frame gets the right
-  interpolation time, and the simulation's frame count is unchanged by the display rate.
+- **Rates:** displays at 72, 90 and 120 Hz against simulations at 60 and 90 Hz, with display leads of one to three
+  periods. Each display frame's drawn time follows WS-render's rule (section 7.2), and the simulation's frame count is
+  unchanged by the display rate.
 - **Hands:** on scripted and later recorded joint traces, `closed` never chatters; a lost hand that holds is released
-  after the grace period; a recentre bumps `discontinuity`; `hand_at` interpolates between samples and never
-  extrapolates more than one display period.
-- **Fallback:** with no runtime registered, or a manifest that points nowhere, VR is reported unavailable, and
-  nothing panics. The Rust loader's manifest parsing is tested on fixture files.
+  after the grace period; a recentre bumps `discontinuity`; `hand_at` interpolates between samples, never
+  extrapolates more than one display period, and returns the oldest sample for a time older than the ring; a released
+  object leaves the hand from its last drawn pose and velocity, never from its simulated pose.
+- **Fallback and the loader,** on injected discovery and fixture manifests only: no runtime registered, a registered
+  manifest that does not exist, a library that does not exist, a relative library path, a renamed entry point, and a
+  refused negotiation. Each reports VR unavailable with its reason, and nothing panics.
 - **The audit:** pe-xr adds no native build code (the gate's audit).
 
 ### 10.2 Against a simulated runtime (tier 2, if it works)
@@ -466,7 +525,12 @@ stays empty and the fake runtime carries the load].
 ### 10.3 Never against the real headset by accident
 
 The user may be in VR on this PC. So:
-- **No test loads an OpenXR runtime** unless `PE_XR_REAL=1` is set. Those tests are `#[ignore]` as well.
+- **The guard is a run-time check in the loader,** the one place a runtime's code can start: it refuses to open any
+  runtime library unless `PE_XR_REAL=1` is set, or the application's configuration turns VR on, which is off by
+  default. `#[ignore]` alone is not enough, since `cargo test -- --ignored` runs those tests; they are `#[ignore]` as
+  well, as a second guard.
+- **Tests never discover the real runtime:** discovery is injected (section 2), because a runtime is registered on
+  this PC.
 - **The application probes for a runtime only when configured to** (section 3.3).
 - **I run nothing against the real runtime without @coordinator-opus's go**, each time.
 
@@ -476,13 +540,14 @@ From plan M1:
 - the frame time at 90 Hz with 500 balls and one remote hand at 60 ms one-way delay;
 - dropped frames, and judder under rollback;
 - the hand feel: D18b's two modes, and section 5.6's two ways to draw the own hand;
+- the hold transitions: a throw leaving the hand, and the snap at a grasp (section 5.6);
 - the grasp thresholds and the tracking-loss grace period.
 
 ## 11. Open points
 
 For @coordinator-opus unless marked; my proposal first. @coordinator-opus ruled X1, X2 and X3 as proposed on
 2026-11-10 (m92c4584b835e): the 250 ms of X3 is a parameter. X5 is with the user, through the liaison; until it is
-answered, pe-xr is coded against the fake runtime.
+answered, pe-xr is coded against the fake runtime. The user answered X5 (m2aaafe98cbbe): Virtual Desktop.
 
 | # | Point | My proposal |
 |---|---|---|
@@ -490,9 +555,10 @@ answered, pe-xr is coded against the fake runtime.
 | X2 | Controllers in M1 | Yes, alongside tracked hands (section 5.4) |
 | X3 | A lost hand that holds something | Release after 250 ms (section 5.5) |
 | X4 | Who quantizes and formats hand entries | pe-world, from pe-xr's rig-frame samples (section 5.2) |
-| X5 (user) | Which runtime, and which headset, the headset tests use | The active one, Virtual Desktop's, if the Vulkan path holds there; otherwise Meta's. The headset model decides the refresh rates offered |
+| X5 (user) | Which runtime the headset tests use | Answered by the user: Virtual Desktop's. It is the only usable runtime here; any other would have to be installed, which is the user's call (section 4.4) |
 | X6 | The graphics paths | D3D12 on Windows and Vulkan on Linux, both behind one interface, following the M0 check (section 4.4) |
 | X7 | API layers | None in M1: the Rust loader loads no layers (section 2). Revisit if a runtime needs its implicit layer |
+| X8 (WS-render) | The drawn time: extrapolate to the display time, or interpolate at a delay | (a), extrapolate (section 7.2) |
 
 ## 12. Size and order
 
