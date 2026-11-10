@@ -46,7 +46,10 @@ fn components_typed_and_raw() {
     assert!(s.insert_raw(HEAT, a, &bad_bool).is_err());
     assert!(matches!(s.insert_raw(HEAT, a, &[0u8; 8]), Err(Error::WrongSize { .. })));
     assert_eq!(s.insert_raw(ComponentId(4000), a, &[0u8; 8]), Err(Error::UnknownComponent(4000)));
-    assert_eq!(s.insert_raw(ComponentId::NODE, a, bytemuck::bytes_of(&Node::ROOT)), Err(Error::Reserved { component: 1 }));
+    assert_eq!(
+        s.insert_raw(ComponentId::NODE, a, bytemuck::bytes_of(&Node::ROOT)),
+        Err(Error::Reserved { component: 1 })
+    );
     assert_eq!(s.remove_raw(ComponentId::NODE, a), Err(Error::Reserved { component: 1 }));
     // Unvalidated writes are caught by the check pass.
     s.get_mut::<Velocity>(a).unwrap().spin = f32::INFINITY;
@@ -156,7 +159,8 @@ fn keep_world_edits() {
     let mut s = new_store();
     let [far, near, obj, kid, holder] = [0; 5].map(|_| s.mk(1));
     let q = [0.0, 0.6, 0.0, 0.8];
-    s.insert(far, Transform::at(wp([5_000_000_000, 0, -7], [10.0, 2.0, 3.0])).with_rot(q).with_scale([3.0, 1.0, 0.5])).unwrap();
+    s.insert(far, Transform::at(wp([5_000_000_000, 0, -7], [10.0, 2.0, 3.0])).with_rot(q).with_scale([3.0, 1.0, 0.5]))
+        .unwrap();
     // `near` is about 3 km from `far`, turned about another axis.
     let q2 = [0.28, 0.0, 0.96, 0.0];
     s.insert(near, Transform::at(wp([5_000_000_003, 0, -5], [500.0, 0.0, 9.0])).with_rot(q2)).unwrap();
@@ -189,7 +193,9 @@ fn keep_world_edits() {
     let remote = s.mk(1);
     s.insert(remote, Transform::at(wp([2_000_000_000_000, 0, 0], [0.0; 3]))).unwrap();
     let before = s.state_hash();
-    assert!(matches!(s.set_parent_keep_world(remote, Some(near), None), Err(Error::InvalidValue { field, .. }) if field == "pos"));
+    assert!(
+        matches!(s.set_parent_keep_world(remote, Some(near), None), Err(Error::InvalidValue { field, .. }) if field == "pos")
+    );
     assert_eq!(s.state_hash(), before);
     assert_eq!(s.parent(remote), None);
 }
@@ -201,7 +207,8 @@ fn keep_world_round_trips_do_not_drift() {
     let [a, b, o] = [0; 3].map(|_| s.mk(1));
     let (sa, ca) = pe_core::dmath::sin_cos(0.7);
     let (sb, cb) = pe_core::dmath::sin_cos(-1.9);
-    s.insert(a, Transform::at(wp([10, 0, 0], [3.0, 0.0, 0.0])).with_rot([0.0, sa, 0.0, ca]).with_scale([1.5; 3])).unwrap();
+    s.insert(a, Transform::at(wp([10, 0, 0], [3.0, 0.0, 0.0])).with_rot([0.0, sa, 0.0, ca]).with_scale([1.5; 3]))
+        .unwrap();
     s.insert(b, Transform::at(wp([15, 1, 0], [9.0, 0.0, 0.0])).with_rot([sb, 0.0, 0.0, cb])).unwrap();
     s.insert(o, Transform::at(wp([12, 0, 2], [100.0, 5.0, 7.0]))).unwrap();
     let w0 = s.world_transform(o).unwrap();

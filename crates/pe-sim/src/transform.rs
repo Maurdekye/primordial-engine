@@ -208,15 +208,12 @@ pub fn rotate(q: [f32; 4], v: [f64; 3]) -> [f64; 3] {
         return v;
     }
     let (ux, uy, uz, w) = (x / n, y / n, z / n, w / n);
-    let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let cross =
+        |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
     let u = [ux, uy, uz];
     let t = cross(u, v);
     let t2 = cross(u, t);
-    [
-        v[0] + 2.0 * (w * t[0] + t2[0]),
-        v[1] + 2.0 * (w * t[1] + t2[1]),
-        v[2] + 2.0 * (w * t[2] + t2[2]),
-    ]
+    [v[0] + 2.0 * (w * t[0] + t2[0]), v[1] + 2.0 * (w * t[1] + t2[1]), v[2] + 2.0 * (w * t[2] + t2[2])]
 }
 
 /// Clamps a world scale component's magnitude to [2^-100, 2^100], keeping its sign; NaN becomes 1.
@@ -238,11 +235,8 @@ impl WorldTransform {
     /// The world transform of an object with local transform `t` in this frame. `None` if the composed position
     /// leaves the range: refused, never clamped (world-model.md 4.3).
     pub fn compose(&self, t: &Transform) -> Option<WorldTransform> {
-        let scaled = [
-            self.scale[0] as f64 * t.pos[0],
-            self.scale[1] as f64 * t.pos[1],
-            self.scale[2] as f64 * t.pos[2],
-        ];
+        let scaled =
+            [self.scale[0] as f64 * t.pos[0], self.scale[1] as f64 * t.pos[1], self.scale[2] as f64 * t.pos[2]];
         Some(WorldTransform {
             pos: self.pos.checked_add(Offset(rotate(self.rot, scaled))).ok()?,
             rot: quat_normalize(quat_mul(self.rot, t.rot)),

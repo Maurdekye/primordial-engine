@@ -8,7 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use core::mem::offset_of;
 use pe_core::clock::TickRate;
 use pe_core::coords::{Offset, Pos};
-use pe_core::{dmath, Frame, LineId, ObjectId};
+use pe_core::{Frame, LineId, ObjectId, dmath};
 use pe_sim::registry::{Component, ComponentDesc, ComponentId, FieldDesc, FieldKind, Registry};
 use pe_sim::{Schedule, SimStore, TickCtx, Transform};
 
@@ -34,12 +34,16 @@ impl Component for Velocity {
 pub const HEAT: ComponentId = ComponentId(1025);
 
 pub fn heat_desc() -> ComponentDesc {
-    ComponentDesc::new(HEAT, "Heat", vec![
-        FieldDesc::new("t", FieldKind::F64, 0, 1),
-        FieldDesc::new("ticks", FieldKind::U32, 8, 1),
-        FieldDesc::new("hot", FieldKind::Bool, 12, 1),
-        FieldDesc::new("_pad", FieldKind::U8, 13, 3),
-    ])
+    ComponentDesc::new(
+        HEAT,
+        "Heat",
+        vec![
+            FieldDesc::new("t", FieldKind::F64, 0, 1),
+            FieldDesc::new("ticks", FieldKind::U32, 8, 1),
+            FieldDesc::new("hot", FieldKind::Bool, 12, 1),
+            FieldDesc::new("_pad", FieldKind::U8, 13, 3),
+        ],
+    )
     .unwrap()
 }
 

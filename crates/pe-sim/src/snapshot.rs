@@ -18,9 +18,9 @@ use pe_core::{Error, Frame, ObjectId};
 
 use crate::column::Column;
 use crate::hierarchy::Node;
-use crate::transform::Transform;
 use crate::registry::{ComponentId, Registry};
 use crate::store::SimStore;
+use crate::transform::Transform;
 
 const MAGIC: &[u8; 8] = b"PESNAP02"; // 02: 128-bit object and component ids, no counters
 const HASH_SEED: u64 = 0x5045_5354_4154_4531; // "PESTATE1"
@@ -119,12 +119,7 @@ impl Snapshot {
     }
 
     pub fn state_hash(&self) -> u64 {
-        hash_state(
-            self.frame,
-            self.seed,
-            &self.objects,
-            self.columns.iter().map(|c| (c.id, c.schema_hash, &c.col)),
-        )
+        hash_state(self.frame, self.seed, &self.objects, self.columns.iter().map(|c| (c.id, c.schema_hash, &c.col)))
     }
 
     /// Bytes of row data held (ids excluded): what a deep copy of this snapshot would copy.
@@ -134,7 +129,10 @@ impl Snapshot {
 
     /// The canonical serialization (little-endian).
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64 + self.objects.len() * 16 + self.columns.iter().map(|c| c.col.len() * (16 + c.col.size) + 40).sum::<usize>());
+        let mut out = Vec::with_capacity(
+            64 + self.objects.len() * 16
+                + self.columns.iter().map(|c| c.col.len() * (16 + c.col.size) + 40).sum::<usize>(),
+        );
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&self.frame.0.to_le_bytes());
         out.extend_from_slice(&self.seed.to_le_bytes());
@@ -196,7 +194,11 @@ impl Snapshot {
             }
             let mut words = vec![0u64; data.len().div_ceil(8)];
             bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..data.len()].copy_from_slice(data);
-            columns.push(SnapColumn { id, schema_hash, col: Column { size, ids: Arc::new(ids), data: Arc::new(words) } });
+            columns.push(SnapColumn {
+                id,
+                schema_hash,
+                col: Column { size, ids: Arc::new(ids), data: Arc::new(words) },
+            });
         }
         if r.at != bytes.len() {
             return Err(Error::Corrupt("trailing bytes"));
@@ -215,7 +217,11 @@ impl Snapshot {
                 let has_frame = frames(&n.col.ids, node_rows, &tc.col.ids);
                 for (i, t) in ts.iter().enumerate() {
                     if let Err(field) = t.validate(has_frame[i]) {
-                        return Err(Error::InvalidValue { component: ComponentId::TRANSFORM.0, object: tc.col.ids[i], field: field.to_string() });
+                        return Err(Error::InvalidValue {
+                            component: ComponentId::TRANSFORM.0,
+                            object: tc.col.ids[i],
+                            field: field.to_string(),
+                        });
                     }
                 }
             }
@@ -296,7 +302,8 @@ fn frames(ids: &[ObjectId], nodes: &[Node], transformed: &[ObjectId]) -> Vec<boo
     let has_t: Vec<bool> = ids.iter().map(|i| transformed.binary_search(i).is_ok()).collect();
     // Depth-first from the roots, carrying "an ancestor has a Transform".
     let mut framed = vec![false; ids.len()];
-    let mut stack: Vec<(usize, bool)> = (0..ids.len()).filter(|&i| nodes[i].parent.is_none()).map(|i| (i, false)).collect();
+    let mut stack: Vec<(usize, bool)> =
+        (0..ids.len()).filter(|&i| nodes[i].parent.is_none()).map(|i| (i, false)).collect();
     while let Some((i, above)) = stack.pop() {
         framed[i] = above;
         let mut at = nodes[i].first_child;

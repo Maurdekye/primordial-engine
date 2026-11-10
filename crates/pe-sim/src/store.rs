@@ -31,13 +31,7 @@ impl SimStore {
     /// An empty world at frame 0. `seed` is the session seed that [`TickCtx::rng`](crate::TickCtx::rng)
     /// streams derive from.
     pub fn new(registry: Arc<Registry>, seed: u64) -> Self {
-        SimStore {
-            registry,
-            frame: Frame::ZERO,
-            seed,
-            objects: Arc::new(Vec::new()),
-            columns: BTreeMap::new(),
-        }
+        SimStore { registry, frame: Frame::ZERO, seed, objects: Arc::new(Vec::new()), columns: BTreeMap::new() }
     }
 
     /// A copy that shares no buffer with this store or its snapshots (tools and benchmarks; a plain
@@ -270,7 +264,11 @@ impl SimStore {
         let flags = self.transform_frame_flags();
         for ((id, t), has_frame) in self.iter::<Transform>().zip(flags) {
             if let Err(field) = t.validate(has_frame) {
-                return Err(Error::InvalidValue { component: ComponentId::TRANSFORM.0, object: id, field: field.to_string() });
+                return Err(Error::InvalidValue {
+                    component: ComponentId::TRANSFORM.0,
+                    object: id,
+                    field: field.to_string(),
+                });
             }
         }
         Ok(())

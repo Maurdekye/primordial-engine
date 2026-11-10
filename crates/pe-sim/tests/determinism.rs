@@ -3,8 +3,8 @@
 
 mod scenario;
 
-use pe_core::hash::Hasher;
 use pe_core::Frame;
+use pe_core::hash::Hasher;
 use pe_sim::{SimStore, Snapshot, Transform};
 use scenario::*;
 
@@ -39,7 +39,12 @@ fn rollback_resimulation_is_identical() {
         assert_eq!(b.state_hash(), s.state_hash());
         let start = s.frame().0;
         if start > 0 {
-            assert_eq!(s.state_hash(), hashes[start as usize - 1], "snapshot at {start} is the state after frame {}", start - 1);
+            assert_eq!(
+                s.state_hash(),
+                hashes[start as usize - 1],
+                "snapshot at {start} is the state after frame {}",
+                start - 1
+            );
         }
         for f in start..600 {
             sched.tick(&mut a, |_, _| {});
@@ -202,7 +207,11 @@ fn golden_trace() {
         }
     }
     let world = w.finish();
-    println!("RESULT golden objects={} frame={} trace={trace:#018x} world={world:#018x}", store.objects().len(), store.frame().0);
+    println!(
+        "RESULT golden objects={} frame={} trace={trace:#018x} world={world:#018x}",
+        store.objects().len(),
+        store.frame().0
+    );
     assert_eq!(store.frame(), Frame(600));
     assert_eq!((trace, world), (GOLDEN_TRACE, GOLDEN_WORLD), "golden digests changed");
 }
