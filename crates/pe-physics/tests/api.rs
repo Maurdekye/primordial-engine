@@ -22,7 +22,7 @@ fn ground() -> BodyDesc {
 }
 
 fn id(n: u32) -> ObjectId {
-    ObjectId::new(1, n)
+    ObjectId::from_u128((1u128 << 32) | n as u128)
 }
 
 fn world(config: PhysicsConfig) -> PhysicsWorld {
@@ -359,10 +359,10 @@ fn hostile_transfers() {
 #[test]
 fn poses_reach_the_sim_store() {
     let mut store = SimStore::new(Arc::new(Registry::new()), 7);
-    let root = store.create(1).unwrap();
-    let frame = store.create(1).unwrap();
-    let child = store.create(1).unwrap();
-    let grandchild = store.create(1).unwrap();
+    let root = new_obj(&mut store);
+    let frame = new_obj(&mut store);
+    let child = new_obj(&mut store);
+    let grandchild = new_obj(&mut store);
     store.insert(root, Transform::IDENTITY.with_scale([2.0; 3])).unwrap();
     store.insert(frame, Transform::IDENTITY.with_scale([0.5; 3])).unwrap();
     store.insert(child, Transform::local([0.0, 1.0, 0.0])).unwrap();
@@ -383,8 +383,8 @@ fn poses_reach_the_sim_store() {
     for o in [frame, child, grandchild] {
         let w = store.world_transform(o).unwrap();
         let p = pw.pose(o).unwrap();
-        let want = pe_core::coords::WorldPos::new(origin, p.position);
-        let d = w.pos.sub(&want);
+        let want = pe_core::Pos::at_chunk(origin).unwrap().checked_add(pe_core::Offset(p.position)).unwrap();
+        let d = (w.pos - want).0;
         assert!(d.iter().all(|c| c.abs() < 1.0e-5), "{o:?} is {d:?} from its body");
         let dot: f32 = w.rot.iter().zip(&p.rotation).map(|(a, b)| a * b).sum();
         assert!(dot.abs() > 1.0 - 1.0e-5, "{o:?} rotation");
@@ -395,8 +395,8 @@ fn poses_reach_the_sim_store() {
     // A body whose rebased chunk is beyond the sim store's limit keeps its transform and is
     // reported; the other body is still written (review P22R-7).
     let mut store = SimStore::new(Arc::new(Registry::new()), 7);
-    let a = store.create(1).unwrap();
-    let b = store.create(1).unwrap();
+    let a = new_obj(&mut store);
+    let b = new_obj(&mut store);
     store.insert(a, Transform::IDENTITY).unwrap();
     store.insert(b, Transform::IDENTITY).unwrap();
     let mut pw = world(PhysicsConfig::engine());
@@ -1059,4 +1059,12 @@ fn carried_state_exact_across_histories() {
             assert_eq!(first_state, None, "state_hash, {label}");
         }
     }
+}
+
+/// A fresh object with the next test id (ids are derived by their creators; world-model.md 2.1).
+fn new_obj(store: &mut SimStore) -> ObjectId {
+    let next = store.objects().last().map_or(1, |o| o.to_u128() + 1);
+    let id = ObjectId::from_u128(next);
+    store.create(id).unwrap();
+    id
 }
