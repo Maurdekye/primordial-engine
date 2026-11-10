@@ -6,8 +6,8 @@
 //! - [`quic`]: the QUIC packet and header protection keys for that suite (RFC 9001 5).
 //! - [`quinn`]: quinn-proto's crypto traits over `rustls::quic`, without ring or aws-lc-rs. A port of
 //!   quinn-proto's own rustls adapter (MIT/Apache-2.0), with RustCrypto in place of ring.
-//! - [`identity`]: Ed25519 keys as TLS raw public keys (RFC 7250), invites and reply codes, and the
-//!   verifiers that pin a key.
+//! - [`identity`]: Ed25519 keys as TLS raw public keys (RFC 7250), invites and reply codes, the verifiers
+//!   that pin a key, and seam S1's `Signer` and `Verifier` (strict Ed25519 over `SIGNING_PREFIX ‖ bytes`).
 //!
 //! Every entry point that takes a peer's bytes returns an error rather than panicking (transport.md 2.5).
 //! Its reviewer is @design-reviewer, not the author (coordinator ruling mc64f7a24509e).
@@ -27,8 +27,8 @@ mod sign;
 
 use std::sync::Arc;
 
-use rustls::crypto::CryptoProvider;
 use rustls::SupportedCipherSuite;
+use rustls::crypto::CryptoProvider;
 
 pub use random::Random;
 

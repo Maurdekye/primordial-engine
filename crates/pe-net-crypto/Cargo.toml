@@ -1,19 +1,20 @@
 [package]
 name = "pe-net-crypto"
 version = "0.1.0"
-edition = "2024"
-license = "MIT OR Apache-2.0"
-publish = false
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
 description = "pe-net's security code: a small pure-Rust rustls provider, QUIC packet keys, quinn-proto's crypto traits, peer identity and invites (docs/spec/transport.md 2)."
 
-# Standalone until seams v0's skeleton lands (engine-architect, m8f328685109f); then it joins the root workspace.
-[workspace]
+# Skeleton from pe-seams v0 (WS-seams). WS-net, @shader-lang owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
 
 [features]
 # A seeded randomness source for the deterministic harness (transport.md 8). Never in a shipped build.
 insecure-deterministic-rng = ["dep:chacha20"]
 
 [dependencies]
+pe-seams = { path = "../pe-seams" }
 rustls = { version = "0.23.46", default-features = false, features = ["std"] }
 quinn-proto = { version = "0.11.19", default-features = false }
 bytes = "1"

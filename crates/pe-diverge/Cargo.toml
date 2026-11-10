@@ -1,0 +1,17 @@
+[package]
+name = "pe-diverge"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Divergence detection and repair (docs/spec/divergence.md): the repair ladder, root splits, fault bundles, counters"
+
+# Skeleton from pe-seams v0 (WS-seams). WS-diverge, @diverge-eng owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
+[dependencies]
+pe-seams = { path = "../pe-seams" }
+
+[features]
+# Planted defects for the harness's mutation tests (pe-harness DESIGN.md 6.1): inert unless a node's configuration
+# names one, and never in a production build (the gate checks pe-app's normal edges).
+mutants = []
