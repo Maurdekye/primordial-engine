@@ -131,6 +131,8 @@ fn main() {
         hand: DesktopHandSettings::default(),
         eye: RigPose { position: [0.0, 1.4, 0.0], orientation: [-0.199, 0.0, 0.0, 0.980] },
         run_for: Some(Duration::from_secs_f64(secs)),
+        // An optional second argument: write the window's own frame at 5 s to this PNG.
+        snapshot: std::env::args().nth(2).map(|p| (Duration::from_secs(5), p.into())),
     };
     let r = run_desktop(cfg, slot, Arc::new(DesktopHandFeed::default()), Box::new(Print)).expect("desktop");
     let mut iv = r.intervals_ms.clone();
@@ -140,5 +142,8 @@ fn main() {
         "adapter {}; monitor {:?} mHz; frames {}; skipped {}; quality changes {}",
         r.adapter, r.monitor_mhz, r.frames, r.skipped, r.quality_changes
     );
+    if let Some(s) = &r.snapshot {
+        println!("snapshot: {s:?}");
+    }
     println!("present interval p50 {:.2} ms, p99 {:.2} ms", pct(0.5), pct(0.99));
 }

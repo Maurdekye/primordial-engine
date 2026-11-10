@@ -53,6 +53,9 @@ pub struct DesktopConfig {
     pub eye: RigPose,
     /// Close the window after this long (tests, demos); `None` runs until closed.
     pub run_for: Option<Duration>,
+    /// Write the window's own frame to a PNG once, this long after the window opens: the swapchain image read back
+    /// in-process before it is presented, so nothing outside pe-render's drawing can appear in it.
+    pub snapshot: Option<(Duration, std::path::PathBuf)>,
 }
 
 /// What a run measured (render.md 13's per-frame numbers, summarized).
@@ -66,6 +69,64 @@ pub struct DesktopReport {
     pub skipped: u64,
     pub quality_changes: u64,
     pub monitor_mhz: Option<u32>,
+    /// The snapshot's outcome, when one was asked for.
+    pub snapshot: Option<Result<std::path::PathBuf, String>>,
+}
+
+/// Read the swapchain image back before present and write it as an RGBA PNG.
+fn snapshot(
+    g: &Gfx,
+    tex: &wgpu::Texture,
+    size: [u32; 2],
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    if !g.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
+        return Err("the surface does not allow copies".into());
+    }
+    let ctx = g.renderer.context();
+    let row = (size[0] * 4).div_ceil(256) * 256;
+    let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("window snapshot"),
+        size: row as u64 * size[1] as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(size[1]) },
+        },
+        wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+    );
+    ctx.queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    ctx.device
+        .poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(5)) })
+        .map_err(|e| e.to_string())?;
+    let data = buf.slice(..).get_mapped_range().map_err(|e| format!("{e:?}"))?;
+    let bgra = matches!(g.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+    let mut rgba = Vec::with_capacity((size[0] * size[1] * 4) as usize);
+    for y in 0..size[1] as usize {
+        for px in data[y * row as usize..y * row as usize + size[0] as usize * 4].chunks(4) {
+            if bgra {
+                rgba.extend_from_slice(&[px[2], px[1], px[0], 255])
+            } else {
+                rgba.extend_from_slice(&[px[0], px[1], px[2], 255])
+            }
+        }
+    }
+    drop(data);
+    buf.unmap();
+    let img = crate::capture::Image { width: size[0], height: size[1], rgba };
+    std::fs::write(path, img.encode_png()).map_err(|e| e.to_string())?;
+    Ok(path.to_path_buf())
 }
 
 #[derive(Default)]
@@ -152,6 +213,11 @@ impl DesktopView {
         };
         config.present_mode = cfg.present_mode;
         config.desired_maximum_frame_latency = 2;
+        if cfg.snapshot.is_some()
+            && surface.get_capabilities(&ctx.adapter).usages.contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            config.usage |= wgpu::TextureUsages::COPY_SRC;
+        }
         // Draw through an sRGB view, so the window reads as the capture and the headset do.
         let format = config.format.add_srgb_suffix();
         if format != config.format {
@@ -291,6 +357,12 @@ impl DesktopView {
         let color =
             tex.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(g.format), ..Default::default() });
         let stats = g.renderer.render_views(&frame.scene, &[EyeView { camera, color: &color, format: g.format, size }]);
+        if let Some((at, path)) = self.cfg.snapshot.clone()
+            && self.started.elapsed() >= at
+        {
+            self.cfg.snapshot = None;
+            self.report.snapshot = Some(snapshot(g, &tex.texture, size, &path));
+        }
         g.window.pre_present_notify();
         g.renderer.context().queue.present(tex);
         let cpu = before_acquire + Duration::from_secs_f64(stats.cpu_record_ms / 1e3);
