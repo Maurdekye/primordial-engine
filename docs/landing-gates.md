@@ -95,6 +95,8 @@ and are never built. The secret scan of the whole history finds nothing.
     folder (`.git/pe-gate-hooks/`), outside every working tree, and points `core.hooksPath` at it. The trampoline
     runs the hook as committed at main's old tip, and the hook runs that tip's gate. So no landing can change or
     delete the hook that judges it.
+  * The installer runs only once the gate is on main, since the trampoline refuses every update of main while
+    main's tip has no hook. It and the gate need git 2.40 or later: an older git ignores `GIT_ATTR_SOURCE`.
   * Undo: `git config --unset core.hooksPath`.
   * Optionally, run the audit under the org's build-slot wrapper: `git config pe.gate.wrap 'bash "<team folder>/heavy.sh"'`.
   * When it refuses a merge in the main checkout, main is unchanged. `git merge --abort` puts the checkout back;
@@ -106,7 +108,7 @@ and are never built. The secret scan of the whole history finds nothing.
   GitHub runs the workflow file as the landing has it, so the gate's NOTE lists a change to it.
 * **The self-test,** `bash scripts/test_gate.sh`, takes about 20 minutes; run it as one build-slot job
   (`bash "<team folder>/heavy.sh" bash scripts/test_gate.sh`). In a throwaway clone it runs the gate as the hook
-  does, in 29 checks:
+  does, in 30 checks:
   * secrets in eleven ways: in the tree, only in the history, only in a message, behind an inline
     `gitleaks:allow`, a pe-app member key file, under an `export-ignore` path, in a file marked `-diff`, added
     only by a merge, behind a committed `.gitleaksignore` or one in the folder the gate runs from, and a session
@@ -118,12 +120,16 @@ and are never built. The secret scan of the whole history finds nothing.
   * the gate's own code: a landing that changes it is judged by the base's, one that runs its own copy hands
     over, one that adds its own exception has it applied, a committed gitleaks binary is refused, a committed
     cargo configuration isn't applied, and the export refuses a symbolic link, a submodule and a case twin;
-  * the hook: it refuses a merge and an update-ref, lets a clean merge in, and runs the base's hook and gate when
-    a landing empties both.
+  * the hook: the installer waits until main has the gate; the hook refuses a merge and an update-ref, lets a
+    clean merge in, and runs the base's hook and gate when a landing empties both.
 
   Run it after changing the gate.
 
 ## Accepting an exception
+
+The allow files come from the landing itself, so a landing can accept its own finding, and the gate's NOTE is
+what shows it. **A landing report quotes the gate's NOTE lines**, and the landing's reviewer approves every line
+they name.
 
 * **Native code:** add an `allow` line (or a `class`, `exclude` or `targets` line) to `scripts/native_allow.txt`.
   Give the reason, with evidence: the build script's lines, and the features it depends on.
