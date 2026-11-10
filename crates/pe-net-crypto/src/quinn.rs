@@ -420,6 +420,51 @@ impl crypto::AeadKey for TokenAead {
     }
 }
 
+/// Connection ids from the crate's one randomness source. quinn-proto's own generators draw on
+/// `rand::rng()` (the thread's generator), so a seeded harness run would not repeat (transport.md 8).
+/// Install with `EndpointConfig::cid_generator(move || Box::new(Cids::new(rng)))`.
+pub struct Cids {
+    rng: &'static dyn Random,
+}
+
+impl Cids {
+    /// Connection id length: 8 bytes, as quinn-proto's default.
+    pub const LEN: usize = 8;
+
+    pub fn new(rng: &'static dyn Random) -> Self {
+        Self { rng }
+    }
+
+    /// The client's first destination connection id, from `rng`, 20 bytes as quinn-proto's default.
+    /// Install with `ClientConfig::initial_dst_cid_provider(Cids::initial_dcid(rng))`: the default draws
+    /// on the thread's generator too.
+    pub fn initial_dcid(rng: &'static dyn Random) -> Arc<dyn Fn() -> ConnectionId + Send + Sync> {
+        Arc::new(move || {
+            let mut b = [0u8; 20];
+            let _ = rng.as_secure_random().fill(&mut b);
+            ConnectionId::new(&b)
+        })
+    }
+}
+
+impl quinn_proto::ConnectionIdGenerator for Cids {
+    fn generate_cid(&mut self) -> ConnectionId {
+        let mut b = [0u8; Self::LEN];
+        // On a failed read the id is all zeros: still valid, only less private (getrandom doesn't fail on
+        // the supported platforms).
+        let _ = self.rng.as_secure_random().fill(&mut b);
+        ConnectionId::new(&b)
+    }
+
+    fn cid_len(&self) -> usize {
+        Self::LEN
+    }
+
+    fn cid_lifetime(&self) -> Option<std::time::Duration> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
