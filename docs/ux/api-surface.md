@@ -1,6 +1,7 @@
 # The API's surface: how WorldApi and the MCP tools read to an agent and to a player
 
-Status: **draft 1, a UX proposal for WS-api**, aligned with @api-eng's shapes of 19:31Z (mce7a3e3e5bd3). Written by @gnosarium-ux for @api-eng, who owns `pe-api`, `pe-mcp`
+Status: **draft 2, a UX proposal for WS-api**, reconciled with @api-eng's `docs/spec/api.md` at a6cd872 (branch
+`ws/api`; its section 13 lists what it adopted from draft 1 and what it settled differently). Written by @gnosarium-ux for @api-eng, who owns `pe-api`, `pe-mcp`
 and `docs/spec/api.md`. Where this document and `api.md` disagree on a type or a rule, `api.md` wins. This document
 covers names, wording, shapes as the agent sees them, defaults, and what players see. Nothing in it is built.
 
@@ -11,22 +12,23 @@ independent review's files 06, 08, 11, 14 and 17, and the user's rulings in the 
 Marks:
 - **[R]** a user ruling, cited;
 - **[P]** my proposal;
-- **[A]** to agree with @api-eng (a shape or default that depends on how pe-api is built).
+- **[A]** to agree with @api-eng (a shape or default that depends on how pe-api is built);
+- **[V]** verified in a named source, chiefly `docs/spec/api.md` at a6cd872, which wins on types and rules.
 
 ## 0. On one page
 
 - **Tool names use underscores on the wire** (`world_query`, not `world.query`): the Anthropic API accepts only
   `[a-zA-Z0-9_-]` in tool names [V @api-eng, from the old pe-mcp].
-- **The tools are few and schema-driven** [R: refound-plan S6; review file 06, A1-A2]. M1 has seven:
-  `world_schema`, `world_query`, `world_apply`, `world_watch`, `history_list`, `history_revert` and
-  `view_capture`, plus `session_info`. The old design's seventy tools would cost about 35-40k tokens in every
+- **The tools are few and schema-driven** [R: refound-plan S6; review file 06, A1-A2]. M1 has nine:
+  `session_info`, `world_schema`, `world_query`, `world_apply`, `world_watch`, `history_list`, `history_revert`,
+  `view_capture`, and `code_check` for the logic edit the user added to M1 (U1) [V api.md 6.2]. The old design's seventy tools would cost about 35-40k tokens in every
   agent context (review file 06, M4). **The target for the whole M1 tool list is under 5k tokens** [P].
 - **The world is live, and the server says so first** [P]. Time runs whether or not the agent calls anything,
   other players act at the same time, and every change shows up for everyone. The old server told agents "Time
   only moves when you call world_step" on a live peer (review file 06, finding 6).
 - **`world_apply` returns at once** [P, from the governing principle: "everything reacts immediately for the
-  local user"]. It returns once the change is accepted on this machine, with `status: "accepted"`. Ordering and
-  finality come later and are reported by `world_watch`, or by `apply` itself when the agent asks it to wait.
+  local user"]. It returns once the change is accepted on this machine, with `status: "accepted"`. Finality
+  comes later and are reported by `world_watch`, or by `apply` itself when the agent asks it to wait.
   Agent edits apply at once, labelled and revertible [R: coordinator decision C11].
 - **A refusal is always explained.** It carries a machine code, one plain sentence, and, for a stale edit, the
   change that won: who made it, through which producer, and when [R: refound-plan M1 acceptance; review file 14,
@@ -84,7 +86,7 @@ The MCP server's `instructions` string, sent at connection [P; the text is for @
 ## 3. The tools in M1
 
 Each entry gives the description the agent sees (kept short; the token budget is in section 3.9), then the
-argument and result shapes as the agent sees them in JSON. Types and exact field names are [A].
+argument and result shapes as the agent sees them in JSON. Types and exact field names are api.md's.
 
 ### 3.1 `session_info`
 
@@ -139,12 +141,14 @@ Arguments [P; the selector grammar is A]:
 }
 ```
 - `where` takes one of:
-  - `{"id": "o:…"}`;
+  - `{"id": "o:…"}` or `{"ids": [ … ]}`; `{"path": "/Table/*"}` (`*` one level, `**` any depth);
   - `{"name": "Lamp"}`, matching a name exactly, or `{"name_like": "lamp"}`, case-insensitive;
   - `{"has": "Ball"}`, objects with that component;
-  - `{"near": {"of": "o:…", "within_m": 2}}`;
-  - `{"child_of": "o:…"}`;
+  - `{"near": {"of": "o:…" or "me", "within_m": 2}}`;
+  - `{"child_of": "o:…"}` (direct children, in their order, paged by cursor) or `{"under": "o:…"}` (the subtree);
   - `{"all": [ … ]}`, the conjunction of these.
+
+  [V api.md 5.2, which also adds `at` (`"latest"`, `"final"` or a retained frame) and `count_only`.]
 - `fields` takes component names, or `Component.field`. Leaving it out returns names, ids, parents and versions
   only.
 - `children`: how many levels of children to include (default 0).
@@ -161,8 +165,8 @@ Result:
   "more": "c:…"
 }
 ```
-- `version` changes whenever the object's own fields change [A: per object, or per component? Per object is
-  simpler to explain; per component refuses fewer edits].
+- `version` is per object in M1, and only edits change it; simulation never does [V api.md 4.2]. It is opaque,
+  so a version per component can come later without changing the agent's side.
 - `more` is a cursor when the limit cut the list; it is absent otherwise.
 - A query reads the newest published snapshot. It never waits on the simulation [R: plan S6].
 
@@ -194,10 +198,10 @@ Arguments:
 | op | Does | Notes |
 |---|---|---|
 | `create` | Creates an object with components under a parent | `as: "$name"` lets later ops in the same change refer to it |
-| `code` | The logic edit the user added to M1 (U1, mc40fc6379bc6) | Its shape is WS-logic's and @api-eng's; the same envelope, statuses and refusals apply [A] |
+| `code` | The logic edit the user added to M1 (U1, mc40fc6379bc6): `{"op": "code", "id", "source", "attach"}` | The script object's version is its precondition, as for any op; a source this machine can't compile is refused as `compile` [V api.md 7] |
 | `set` | Sets one field, or several with `fields: {…}` | Takes a value checked against the schema |
 | `add` / `remove` | Adds or removes a component | |
-| `reparent` | Moves an object under a new parent, at an index | `keep: "world_pose"` (default) or `"local_pose"` |
+| `reparent` | Moves an object under a new parent, at an index | `keep: "world_pose"` (default) or `"local_pose"`; a loop is refused as `invalid` |
 | `duplicate` | Copies an object and its subtree | New ids over the same records (file 11, 3.2); refused on a protected object for a non-owner (section 5) |
 | `delete` | Deletes an object and its subtree | |
 
@@ -207,7 +211,7 @@ Arguments:
 ```
 - The selector is expanded on this machine, against the snapshot the agent's change is made on, into explicit
   ids. The entry that travels carries the ids, never the selector, so every machine applies exactly the same
-  change [A: this keeps the edit deterministic whatever the snapshot timing].
+  change [V api.md 5.3: this keeps the edit deterministic whatever the snapshot timing].
 - `max` is required with `where`, as a guard against changing the whole world by mistake. The result reports the
   count.
 - A selector edit can't name versions. It is a plain write: the latest write in the agreed order wins (review
@@ -220,7 +224,8 @@ Arguments:
 - **Exclusive holds** (grabs) are hands' business, not the API's in M1.
 - **The default** [P, A]: the server fills in `if_version` from the agent's own last read of that object in this
   connection, unless the op says `"if_version": "any"`. Agents then get the safe rule without having to copy
-  versions about, and a plain write stays one word away. This is the main default to agree with @api-eng.
+  versions about, and a plain write stays one word away. Adopted [V api.md 4.2]: an object this connection never
+  read falls back to its version at the change's `base` snapshot.
 
 **`mode`:**
 - `live` (default): make the change.
@@ -230,10 +235,12 @@ Arguments:
 - `in_fork`: M2, with `fork_*`.
 
 **`wait`** [P]:
-- `local` (default): return once the change is accepted on this machine. Others see it within about one network
-  delay.
-- `final`: return once it is final, or with `status: "pending"` after `timeout_ms` (default 2,000, at most
-  10,000). It never blocks the simulation.
+- `local` (default): return once the change is accepted (or refused) on this machine. Others see it within
+  about one network delay.
+- `final`: return once it is final, refused or dropped.
+- `none`: return at once, with `status: "queued"`.
+- `timeout_ms` bounds the wait (default 2,000, at most 10,000); past it, the result is the status reached so far,
+  `queued` or `accepted` [V api.md 5.3]. It never blocks the simulation.
 
 Result:
 ```json
@@ -249,14 +256,17 @@ Result:
 
 **The life of a change** [P words; R semantics from the plan and file 14]:
 
-| `status` | Meaning | Where the agent hears it |
+The statuses are @api-eng's [V api.md 5.3.2]; the wording and the "where the agent hears it" column are mine.
+Draft 1's separate `applied` is gone: before a cut, the order a machine sees is itself a prediction, so "ordered
+but not final" says nothing an agent can rely on.
+
+| `status` | Meaning, in the agent's words | Where the agent hears it |
 |---|---|---|
-| `accepted` | Applied here at once (the ticket and the frame it was stamped); others see it within about one network delay | `apply` |
-| `applied` | Ordered among everyone's changes and applied by the rules | `world_watch`, or `apply` with `wait: "final"` |
-| `final` | In the agreed history for good | `apply` with `wait: "final"`, or `world_watch` |
-| `refused` | Refused by the rules at its frame, on every machine alike | `apply` (checked here first), or `world_watch` if the conflict arrived later |
-| `dropped` | Arrived too late to be included, and was undone | `world_watch` |
-| `pending` | `wait: "final"` timed out before finality | `apply` |
+| `queued` | Taken, not yet applied (`wait: "none"`, or the wait ran out) | `apply` |
+| `accepted` | Applied here at once, stamped with a frame; others see it within about one network delay. Not final yet | `apply` |
+| `final` | In the agreed history for good. Only a new change can undo it | `apply` with `wait: "final"`, or `world_watch` (`mine`) |
+| `refused` | Refused, with a reason. `final: false` while it is this machine's check or still a prediction; `final: true` once its frame is final | `apply` (checked here first), or `world_watch` if the conflict arrived later |
+| `dropped` | Arrived too late to be included, and was undone everywhere | `world_watch` (`mine`) |
 
 An accepted change can still be refused when a conflicting change from another machine turns out to be earlier.
 `world_watch` then reports it with the same refusal envelope, and the agent's change is undone on every machine
@@ -264,33 +274,44 @@ An accepted change can still be refused when a conflicting change from another m
 
 ### 3.5 Refusals
 
-One envelope for every refusal, from `apply` or `watch`. It is @api-eng's error envelope `{code, message,
-field?, details?}`, returned with `isError: true`; `winner` and `next` below sit inside `details` [A]. Shown here
-flattened for reading [P]:
+One envelope for every refusal, from `apply`, `watch` or a dry run. pe-mcp returns a refused `world_apply` or
+`history_revert` with `isError: true`, `code` and `message` at the top and the rest in `details` [V api.md 6.3].
+Shown here flattened for reading:
 ```json
 {
   "status": "refused",
+  "final": false,
   "change": "x:…",
   "code": "stale_version",
   "message": "Bob moved Lamp (left) after you read it.",
   "op": 1,
   "object": {"id": "o:lamp-left", "name": "Lamp (left)"},
-  "winner": {"change": "x:…", "by": "Bob", "producer": "Bob (by hand)", "frame": 18347,
-             "label": "Moved Lamp (left)"},
+  "field": "Transform.position",
+  "read": "v:…", "now": "v:…",
+  "winner": {"change": "x:…", "frame": 18347, "by": "m:… (Bob)", "producer": {"kind": "hand"},
+             "label": "Moved Lamp (left)", "value": {"relative_to": "parent", "offset": [1.2, 0, 0.4]}},
   "next": "Read Lamp (left) again with world_query and decide whether your change still applies."
 }
 ```
+
+The codes are an enum in pe-seams [V api.md 5.3.3]. The messages and `next` are mine, adopted by api.md as
+written; the five rows marked * are codes api.md added, worded here for the first time [P].
 
 | `code` | Plain message, as a template | `next` |
 |---|---|---|
 | `stale_version` | "{winner.by} changed {object} after you read it." | Read again and decide |
 | `not_found` | "{object} no longer exists." (with the deleting change as `winner` when known) | Query again |
+| `ambiguous` * | "{path} matches {count} objects." (`matches`, at most 10) | Name one by id |
+| `held` * | "{held_by} is holding {object}." | Wait for them to let go, or leave it |
 | `not_permitted` | "Your role ({role}) can't {action}." | Ask an admin, or don't |
 | `protected` | "{object} is protected by {owner}. Only they can {action} it." | None; don't retry |
-| `invalid` | "{field} must be {rule}; you gave {value}." | Fix the value (the schema has the rule) |
+| `invalid` | "{field} must be {rule}; you gave {value}." Also an unknown component or field, a read-only field ("{field} is set by the engine."), and a reparent that would make a loop ("{object} can't go under its own child.") | Fix the change (the schema has the rule) |
+| `compile` * | "The script {object} doesn't compile: {first diagnostic}." | Run `code_check`, fix, and apply again |
 | `in_change` | "Op {n} refers to {ref}, which this change doesn't create." | Fix the change |
 | `too_many` | "The selector matched {count} objects; `max` is {max}." | Narrow it, or raise `max` |
+| `too_large` * | "This change is bigger than the limit of {limit}." | Split it into several changes |
 | `rate_limited` | "You're sending changes faster than {n} a second." | Retry after `retry_after_ms` |
+| `not_ready` * | "This machine is still catching up with the session." | Wait for `world_watch`'s session item, then retry |
 | `dropped` | "The change reached the others too late and was undone." | Apply again if it still makes sense |
 
 - `message` is one sentence, in the player's words, safe to show a player as it stands [P]. The engine writes it;
@@ -314,8 +335,13 @@ Result: `{"cursor": "c:…", "changes": [ … ], "mine": [ … ], "more": false}
   500 moving balls flood the agent].
 - `mine`: the status changes of the agent's own changes (`final`, `refused`, `dropped`), with the refusal
   envelope.
-- **Physics motion is not a change** [P, A]. Bodies moving under simulation don't appear in `changes`, or every
-  watch would return 500 balls. An agent that wants motion asks `world_query` for poses.
+- **Simulation is not a change** [V api.md 5.4]. Bodies moving and fields that logic writes don't appear in
+  `changes`, or every watch would return 500 balls. An agent that wants motion asks `world_query` for poses, or
+  opts in with `"motion": {"every_ms": 250}` and a `where` of at most 16 ids, for sampled poses of those objects.
+- `session` items report members joining and leaving, this machine catching up, the newest final frame, and a new
+  schema version [V api.md 5.4].
+- After a rollback, the feed never rewrites what it has delivered; it adds a new item for the same change (an edit
+  that no longer happened is `retracted`) [V api.md 5.4].
 
 ### 3.7 `history_list` and `history_revert`
 
@@ -335,6 +361,16 @@ Result: `{"cursor": "c:…", "changes": [ … ], "mine": [ … ], "more": false}
   right in M1 [P].
 - Saves, backups and world-line merges (M2-M3) appear in the same history as named entries [P, A with WS-diverge].
 
+### 3.7a `code_check`
+
+> Compile a script's source and check it, without changing anything. Returns each problem with its file, line and
+> message. Run it before a `code` op in `world_apply`.
+
+- It may take seconds, and runs off the simulation thread [V api.md 7].
+- Its diagnostics are the same ones a `compile` refusal carries, so an agent sees one format whichever way it
+  meets them [P].
+- In the world, the script's own object is the one that shows the agent cue (6.2) when the edit applies [P].
+
 ### 3.8 `view_capture`
 
 > An image of the world, from a player's view or from a camera you place. Optionally highlights objects and lists
@@ -353,7 +389,8 @@ Arguments [P]:
 - `from` takes one of:
   - `{"player": "me"}` or `{"player": "Bob"}`: that player's current head view, drawn on this machine from the
     shared world. It shows only what this machine would draw; an unsynced object of Bob's doesn't appear [R: Q13 a,
-    an unsynced engaged object is never visible to others].
+    an unsynced engaged object is never visible to others]. Any member's view is allowed, in keeping with
+    "openness over privacy" [V api.md 8].
   - `{"orbit": "o:…", "yaw_deg": 30, "pitch_deg": 20, "distance_m": 3}`: a camera looking at an object.
   - `{"at": {"relative_to": "o:…", "offset": [x, y, z]}, "look_at": "o:…"}`: a camera placed exactly.
 - `size`: default 768 × 432, at most 1,920 × 1,080. A small default keeps the image cheap in an agent's context
@@ -489,8 +526,8 @@ The plan's step 5: "put a red cube on the table", "make the balls blue", "double
 
 ## 8. Later surfaces this API must leave room for
 
-- **M2:** `fork.create` / `fork.apply` / `fork.step` / `fork.drop`, `code.check`, `code.test`, `shader.validate`,
-  `asset.import`. The same envelope, the same refusal codes, the same producer labels [R: plan WS-api M2].
+- **M2:** `fork_create` / `fork_apply` / `fork_step` / `fork_drop`, `code_test`, `shader_validate`,
+  `asset_import` (`code_check` moved into M1 with U1). The same envelope, the same refusal codes, the same producer labels [R: plan WS-api M2].
 - **Agent panels (M5)** [R: A1 and A2, mbe87e750ca35; plan section 5]:
   - **A1, the unlock warning** for a panel on a subscription login, shown before unlocking and as a line on the
     unlocked panel [P wording]: "This panel uses your {provider} subscription. Letting others prompt it is against
@@ -502,14 +539,18 @@ The plan's step 5: "put a red cube on the table", "make the balls blue", "double
 - **The inspector** (docs/ux/inspector.md, next) is a schema-driven view over `world_query`, `world_apply`,
   `world_watch` and `history_*`. It needs nothing the agent's tools don't have.
 
-## 9. Open points for @api-eng
+## 9. Agreed with @api-eng
 
-1. The default `if_version` (filled from the agent's last read) versus requiring agents to pass it (3.4).
-2. A version per object or per component (3.3).
-3. Whether physics motion is excluded from `world_watch` (3.6), and how an agent asks for motion.
-4. The selector grammar's first set (3.3), and its expansion into ids on this machine (3.4).
-5. The refusal codes as an enum in `pe-seams` or `pe-api` (3.5).
-6. Where the producer label is set: at the MCP connection (my proposal) or per call.
-7. Whether `view_capture` with `{"player": "Bob"}` is allowed, or only `"me"` and placed cameras. It shows the
-   shared world as Bob's machine would draw it, nothing private (3.8). Allowing it is in keeping with "openness
-   over privacy".
+Draft 1's seven open points are settled in `docs/spec/api.md` at a6cd872 (section 13), and this draft follows it:
+1. **Default `if_version`:** adopted, filled from this connection's last read, else the version at `base` (3.4).
+2. **Versions:** per object, changed only by edits, opaque (3.3).
+3. **Motion:** excluded from `world_watch`; an opt-in `motion` samples at most 16 named objects (3.6).
+4. **Selectors:** this draft's, plus `ids`, `path` and `under`; `near.of` takes `"me"`; expanded into ids on
+   this machine; selector ops are plain writes (3.3, 3.4).
+5. **Refusal codes:** an enum in pe-seams, with `ambiguous`, `held`, `too_large`, `not_ready` and `compile` added
+   and `invalid` widened (3.5).
+6. **The producer label:** set at the connection, from the token (6.1).
+7. **Another player's view in `view_capture`:** allowed (3.8).
+
+Still open, none of it blocking: the wording of the five new refusal messages (3.5, marked *) and of
+`code_check`'s description (3.7a) is new in this draft, for @api-eng to adopt or edit.

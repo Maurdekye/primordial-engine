@@ -1,11 +1,11 @@
 # The inspector: the hierarchy and the object inspector, on WorldApi
 
-Status: **draft 1, a UX proposal.** Written by @gnosarium-ux. The inspector is a client of `WorldApi`
+Status: **draft 2, a UX proposal**, reconciled with `docs/spec/api.md` at a6cd872. Written by @gnosarium-ux. The inspector is a client of `WorldApi`
 (`docs/spec/api.md`, @api-eng) and calls nothing an agent's tools can't call (`docs/ux/api-surface.md`). Nothing
 in it is built. In the plan, it belongs with WS-render's UI lab, which comes after M1 (refound-plan, C12).
 Writing it now settles what the API must give it.
 
-Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with @api-eng.
+Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with @api-eng; **[V]** verified in `docs/spec/api.md` at a6cd872.
 
 ## 0. On one page
 
@@ -59,7 +59,7 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
 
 - **What it shows.** The object tree in order, names as written, and a count on folded groups ("Balls (500)").
 - **Big groups don't load whole.** A folded node costs nothing; an unfolded one pages its children through
-  `world_query` (`child_of`, `limit`, `cursor`) [A: cursors over children].
+  `world_query` (`child_of`, `limit`, `cursor`) [V api.md 5.2: pages follow the children's order].
 - **Filter** (`⌕`) uses `world_query`'s selectors: a name, `has: Component`, or "near me". The matches show with
   their ancestors.
 - **Drag to reparent:** a `world_apply` `reparent`, keeping the world pose by default. Holding Alt keeps the local
@@ -122,7 +122,7 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
 
 - The inspector follows the object through `world_watch` with a filter on its id, so its fields update live [P].
 - **Physics motion** updates the pose fields at a low rate (about 4 Hz), from the frame view, not from `watch`
-  [A: api-surface 3.6 excludes motion from watch].
+  [V api.md 5.4: motion is excluded from watch].
 - **Someone else's edit to a field** flashes the field briefly with their name: "Bob, just now". If the player was
   typing in that field, their text stays, and a small "changed by Bob" note appears beside it. On commit, the
   player's change is refused as stale (3.5), so they decide with both values in view.
@@ -160,7 +160,8 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
 ## 5. The history tab
 
 - The object's changes, newest first: the `summary` words, the producer display label, the time, and whether it is
-  final (a small check when final; "pending" in grey before). A **Revert** button on each line the viewer may
+  final (a small check when final; "not final yet" in grey while `accepted`).
+  A change later refused or dropped stays in the list, struck through, with the refusal's message. A **Revert** button on each line the viewer may
   revert [P; api-surface 6.4].
 - An agent transaction is one line with its label, which expands to its operations.
 - **Filter:** this object and its subtree / this object only; by member; agent changes only.
@@ -184,6 +185,7 @@ All of it is in api-surface.md, so the inspector needs no private path [P]:
 - `history_list` filtered by object, and `history_revert`;
 - the frame view (S5) for live poses, and the producer display labels.
 
-Open for @api-eng:
-1. paging children with a cursor;
-2. a per-object `world_watch` filter that is cheap enough to keep open for every selected object.
+Agreed with @api-eng [V api.md 5.2, 5.4, section 13]:
+1. **Paging children:** `world_query` with `child_of` and a cursor, in the children's order.
+2. **A per-object watch:** a `world_watch` whose `where` names ids costs one lookup per change, cheap enough to
+   keep one open for each selected object.
