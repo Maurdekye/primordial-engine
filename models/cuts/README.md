@@ -11,20 +11,32 @@ bash <team folder>/heavy.sh target/release/cuts-model.exe --threads 4 [check nam
 
 `cuts-model` runs every check (or the named ones) and exits non-zero if any outcome differs from its expectation:
 a base check must hold every property and find every example; a control must give a counterexample. Each control's
-counterexample is printed as its action trace.
+counterexample is printed as its action trace, shortened by a shrinker (drop steps while the property still breaks).
+Progress goes to stderr.
+
+**Three kinds of search,** each labelled in the results:
+- **Exhaustive:** Stateright's depth-first search over the whole reachable space (it keeps only fingerprints; its
+  breadth-first search keeps the whole frontier and ran out of memory).
+- **Bounded:** every behaviour of at most N steps, by `src/bounded.rs`: depth-first, keeping each state's
+  shallowest depth and expanding a state again when a shorter path reaches it. Stateright's own depth bound is not
+  exhaustive up to the bound (its visited mark hides a state first met at the bound), and its bounded breadth-first
+  search ran out of memory at depth 17 for n = 4. Used where the full space does not finish: the n = 4 Byzantine
+  space passed 184 M states, and the n = 3 four-view space 110 M, without finishing.
+- **Random walks** (seeded, Stateright's simulation): only as an extra probe past the bound; a walk that breaks a
+  property is a counterexample all the same, but no walk proves one holds.
 
 ## The rule modelled
 
 - **Members and quorum.** n members, fixed membership. The quorum is D80 (b)'s (coordinator ruling, 2026-11-10):
   t = floor((n-1)/3), q = floor((n+t)/2) + 1. n = 3: q = 2, t = 0; n = 4: q = 3, t = 1.
-- **Entries.** Each author signs a chain: seq, prev (the entry it follows), frame stamp, author, and the world id
+- **Entries.** Each author signs a chain: seq, prev (the entry it follows), frame stamp, author, and the line id (pe-seams' name for the world's line; the world id in the plan)
   (bound into the signed bytes). A cut at height h covers stamps below `3h` (cuts on a fixed cadence of K = 3 frames).
 - **Views and proposals.** Views 1, 2, ... are led in a seeded rotation. The leader of view v proposes a block: its
   parent (a certified block) and a cut naming, for each author, the last entry covered. A cut extends its parent's.
   The proposal carries the entries it covers.
 - **Votes.** A member votes at most once per view, and only for a proposal of its current view whose cut it has
   checked: each author's newly covered segment links back to the parent's entry, every entry is signed by its author
-  for this world, and is stamped below the cut's frame. q votes for a block are its certificate (QC).
+  for this line, and is stamped below the cut's frame. q votes for a block are its certificate (QC).
 - **Timeouts and the lock.** A member that gives up on a view sends a timeout carrying its highest QC, and stops
   voting in that view. q timeouts are a timeout certificate (TC) and move everyone to the next view. A proposal that
   does not extend the previous view's QC must carry a TC, and a member votes for it only if its parent is at least as
@@ -46,7 +58,7 @@ needed.
 - **Network.** Every message sent stays in a set and may be delivered to anyone any number of times, in any order,
   or never: delay, reordering, duplication and loss.
 - **Author fault** (member 0): runs the cut protocol but signs a fork of its seq 1, an entry back-dated below its
-  predecessor, an entry forged in member 1's name, an entry signed for another world, and sends any of them to any
+  predecessor, an entry forged in member 1's name, an entry signed for another line (another world), and sends any of them to any
   member at any time, or withholds them.
 - **Byzantine** (member 0, n >= 4 only): author faults, plus its vote counts for every block (it equivocates), it
   times out with any certificate, and as leader it proposes any block on any certified parent with any valid
@@ -69,7 +81,7 @@ needed.
 | Property | Statement |
 |---|---|
 | agreement | Any two honest members' final blocks are on one chain (no two different cuts final at one height) |
-| validity: chains | Every final cut's newly covered segments link to the parent's, are signed by their author for this world, and are stamped below the cut's frame |
+| validity: chains | Every final cut's newly covered segments link to the parent's, are signed by their author for this line, and are stamped below the cut's frame |
 | validity: void set the same everywhere | Two honest members that have judged an entry against their final cuts judged it alike |
 | no final frame undone | Every verdict an honest member has reached is the one the whole chain gives, so later entries never change it (D-1 as a property); and final cuts only extend |
 | liveness | (liveness profile) every end state has a final cut at every honest member |
@@ -83,8 +95,8 @@ RESULTS
 
 - Join, leave, return and a restarted chain (one key, a new chain id): v1. There the stamp floor must hold per key
   across chains, with a back-stamped first entry of a new chain as its control (@design-reviewer, md88ada36bfaf).
-- A state root in votes (votes over (cut, the voter's own root); final only with a quorum root; RootSplit): see
-  below.
+- Revoting after a repair, and RootSplit's handling past detection (WS-diverge). v0 checks that votes carry the
+  voter's root and that a diverged replica learns it at the cut.
 - Below quorum, the one-minute bound and split groups (v3); merging (v2).
 - Votes ride in acks in the design; here they are separate signed messages. Acks' declared horizons are folded into
   entry stamps: every entry's stamp is a declared horizon.

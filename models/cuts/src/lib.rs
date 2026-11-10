@@ -26,7 +26,7 @@ pub enum Fault {
     /// Crashed from the start: sends nothing.
     Silent,
     /// Runs the cut protocol honestly but lies with its own entries: forks a sequence number, back-dates, forges an
-    /// entry in another author's name, replays one signed for another world, and sends any of them to anyone, or
+    /// entry in another author's name, replays one signed for another line (another world), and sends any of them to anyone, or
     /// withholds them.
     Author,
     /// Author faults, plus any vote, timeout or proposal: it equivocates freely (n >= 4 only, coordinator 2026-11-10).
@@ -45,7 +45,7 @@ pub enum Mutation {
     QuorumOneTooSmall,
     /// A voter ignores the timeout certificate's highest certificate (no lock).
     NoLockRule,
-    /// A voter does not check that an entry is signed by its author for this world (own hands, world id).
+    /// A voter does not check that an entry is signed by its author for this line (own hands, line id).
     NoSignatureCheck,
     /// Nobody times out a silent or faulty proposer.
     NoTimeouts,
@@ -62,14 +62,14 @@ pub struct EntryDef {
     /// The entry it names as previous in its author's chain (an index into `entries`), or NONE at seq 1.
     pub prev: u8,
     pub stamp: u8,
-    /// Who actually signed it, and for which world (the signed bytes bind both).
+    /// Who actually signed it, and for which line (the world's line id, bound into the signed bytes with the signer).
     pub signer: u8,
-    pub world: u8,
+    pub line: u8,
 }
 
 impl EntryDef {
     pub fn signed_ok(&self) -> bool {
-        self.signer == self.author && self.world == 0
+        self.signer == self.author && self.line == 0
     }
 }
 
@@ -122,25 +122,25 @@ impl Cuts {
             let mut prev = NONE;
             for h in 1..=heights {
                 let i = entries.len() as u8;
-                entries.push(EntryDef { name: format!("m{a}.{h}"), author: a, seq: h, prev, stamp: FRAMES * (h - 1) + 1, signer: a, world: 0 });
+                entries.push(EntryDef { name: format!("m{a}.{h}"), author: a, seq: h, prev, stamp: FRAMES * (h - 1) + 1, signer: a, line: 0 });
                 prev = i;
             }
         }
         if matches!(fault, Fault::Author | Fault::Byzantine) {
             let s1 = entries.len() as u8;
-            entries.push(EntryDef { name: "f.1a".into(), author: 0, seq: 1, prev: NONE, stamp: 2, signer: 0, world: 0 });
+            entries.push(EntryDef { name: "f.1a".into(), author: 0, seq: 1, prev: NONE, stamp: 2, signer: 0, line: 0 });
             if adv.fork {
-                entries.push(EntryDef { name: "f.1b".into(), author: 0, seq: 1, prev: NONE, stamp: 2, signer: 0, world: 0 });
+                entries.push(EntryDef { name: "f.1b".into(), author: 0, seq: 1, prev: NONE, stamp: 2, signer: 0, line: 0 });
             }
             if adv.backdate {
                 // Stamped before f.1a, which comes before it in the chain: void by the horizon rule, but valid alone.
-                entries.push(EntryDef { name: "f.2<".into(), author: 0, seq: 2, prev: s1, stamp: 1, signer: 0, world: 0 });
+                entries.push(EntryDef { name: "f.2<".into(), author: 0, seq: 2, prev: s1, stamp: 1, signer: 0, line: 0 });
             }
             if adv.forge {
-                entries.push(EntryDef { name: "forge(m1.1)".into(), author: 1, seq: 1, prev: NONE, stamp: 1, signer: 0, world: 0 });
+                entries.push(EntryDef { name: "forge(m1.1)".into(), author: 1, seq: 1, prev: NONE, stamp: 1, signer: 0, line: 0 });
             }
             if adv.replay {
-                entries.push(EntryDef { name: "f.1@w1".into(), author: 0, seq: 1, prev: NONE, stamp: 1, signer: 0, world: 1 });
+                entries.push(EntryDef { name: "f.1@line1".into(), author: 0, seq: 1, prev: NONE, stamp: 1, signer: 0, line: 1 });
             }
         }
         assert!(entries.len() <= 16);
