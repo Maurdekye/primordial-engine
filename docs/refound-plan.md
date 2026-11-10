@@ -75,9 +75,9 @@ calendar time, not writing.
   - The agreed-cut rules are written first as a model that a checker exhausts at small sizes.
   - The review's three probes are tests from the first week.
   - Every safety rule has a control that bites: a mutation that a test must catch.
-- **Every ruling of the user's carries over.** Section 5 says where each lands. The design phase is closed. One point
-  is still open with the user, whose admin list applies after two branches merge (file 18); it is a parameter, not a
-  blocker (section 6).
+- **Every ruling of the user's carries over.** Section 5 says where each lands. The design phase is closed. No point
+  is open with the user: file 20 answered the last one (after two branches merge, both sides' admins are admins,
+  m20c57d575b3f).
 - **All 27 live docket items are triaged:** 17 carry and 10 park.
 - **Every decision the plan asked for has been made.** The user answered U1-U4, and the coordinator ruled C1-C13 with
   conditions (section 9).
@@ -161,8 +161,9 @@ final.
    - the connection is direct QUIC, over a LAN or the user's own VPN, with no helper nodes;
    - B uses a desktop window only, and VR runs on A (U4);
    - before B joins, the two machines compare their engine versions and a short physics self-test.
-3. **Both see the same world.** Both machines draw it with wgpu. The headset runs at its own rate (90 Hz target), and
-   the simulation steps at a fixed rate whatever the display rate (R2).
+3. **Both see the same world.** Both machines draw it with wgpu. Each display runs at its own rate, and the
+   simulation steps at the world's fixed rate (60 Hz by default), which never depends on the display rate (R2; the
+   user, m8ac62c1872ac).
 4. **Both touch it.**
    - A's tracked hands push and grab balls; hand entries now carry position, rotation and grip.
    - B sees it within about one network delay.
@@ -232,11 +233,12 @@ final.
   joins.
 - **The agent.** `view.capture` returns an image; headless tests render with a software adapter. The agent's whole
   script runs in CI against the two-process session.
-- **Rendering.** The display runs at 72, 90 and 120 Hz against a simulation at 60 and 90 Hz, and the simulation never
-  depends on the frame rate.
+- **Rendering.** The display runs at 72, 90 and 120 Hz against simulation rates across the supported range (30, 60 and
+  120 Hz: the user's 30-120 Hz, mc8dc9e5a6ffb), and the simulation never depends on the display rate
+  (m8ac62c1872ac).
 - **VR, in CI:** the OpenXR frame loop runs against a simulated runtime, where one is available [I].
 - **VR, on the headset** (by hand, recorded, on the Virtual Desktop runtime, each run with a go through the liaison):
-  - the frame time at 90 Hz with 500 balls and one remote hand at 60 ms one-way delay;
+  - the display frame time at the headset's own rate with 500 balls and one remote hand at 60 ms one-way delay;
   - dropped frames, and judder under rollback;
   - the user's verdict on hand feel: hands physical only when engaged (D18b), beside hands always physical within
     reach.
@@ -375,15 +377,21 @@ final.
 - **The one-minute bound.**
   - Unconfirmed play never lasts longer than one minute.
   - At the bound, each line re-founds its membership, and every member knows which line it is on.
-  - Memory and replay time stay within what one minute needs: 3,600 frames at 60 Hz (file 14).
+  - Memory and replay time stay within what one minute needs at the world's rate: 3,600 frames at the default 60 Hz,
+    7,200 at 120 Hz (file 14). The bound is a duration, never a frame count (md4b42d16d9df).
   - Control: with the bound raised, the bound test must fail.
 - **The full change record.** Every entry since the world's creation is kept, together with signed states at
   intervals. History below a final cut leaves live memory for the world record and peer caches, and is never deleted
   (the user, 19:09Z). The admins keep it; a non-admin's copy is discarded when they leave (file 18). Each stored
   state carries a small summary per player, so long histories draw cheaply in the world line tool (file 19).
-- **One origin** (the user, 19:57Z): every world descends from one origin world, and any two worlds can be merged,
-  keeping the history they share. Nothing in the record, the ids or the signatures may assume that two worlds are
-  unrelated (section 3.2, S1).
+- **One origin** (the user, 19:57Z; file 20, mdad0d5626305): every world descends from one origin world, and any two
+  worlds can be merged, keeping the history they share. Nothing in the record, the ids or the signatures may assume
+  that two worlds are unrelated (section 3.2, S1).
+  - The origin is an empty world. Presets branch from it, and creating a world is branching from the origin or a
+    preset. The origin's entry is byte-identical across engine versions for ever (pe-seams pins its hash).
+  - Merging two unrelated worlds places one beside the other by default, or where the admins choose. The world merged
+    into keeps its settings, and the other's world-wide logic stays limited to its own part unless an admin widens it.
+  - After two branches merge, both sides' admins are admins (m20c57d575b3f).
 - **Witnessed order:** a back-dated, unwitnessed action from a lone member never overturns a final action. Its
   control: honouring the unwitnessed stamp must fail the property.
 - **No world owner** (file 18): every admin keeps their own version as they play; there are no ownership
@@ -397,7 +405,8 @@ final.
   - the others never pause;
   - the thin player keeps its vote;
   - the thin player's delays and merges are reported.
-- **Eight players at 90 Hz, every one acting.** Finality and visibility delays are reported as distributions.
+- **Eight players at 60 Hz and at the top of the supported range, every one acting.** Finality and visibility delays
+  are reported as distributions.
 - **The user's convergence target on poor links** (meef4f248923b, answer 8): others see an action within 1 s.
 - **The repair ladder:**
   - rungs 3-5 (reload a cell, rejoin, quarantine) each have a test;
@@ -527,8 +536,9 @@ Each track writes its short specification before its code.
   any admin can take it out in the world. It draws each player's recorded actions as braided, glowing lines
   travelling one way; a player who diverges leaves the braid, darker and dimmer the further they go. It reads the
   world record and the per-player summaries kept from M3.
-- **Merging any two worlds** (19:57Z): all worlds descend from one origin, so any two can be merged, keeping their
-  shared history. The later-merge track handles it with the same rules.
+- **Merging any two worlds** (19:57Z; file 20): all worlds descend from one origin, so any two can be merged, keeping
+  their shared history. The later-merge track handles it with the same rules, with file 20's placement (beside by
+  default, or where the admins choose), the settings of the world merged into, and logic limited to its own part.
 - **The interface:** the UI layer with the Gnosarium look as a skin, the tour, and agent panels.
   - The first-party agent loop runs on an API key, because providers allow subscriptions only through their own
     binaries (file 11, 3.7).
@@ -647,7 +657,7 @@ Only a path's owner edits it.
 | WS-logic | @iter-bench | `crates/pe-logic`, `crates/pe-sdk`, `docs/spec/logic.md` | Cranelift with metering injected into the module; a first kind of system over the store; code commits with an agreed frame; activation inside the window | Forks and `code.test`, the per-player mode, native declarative components; the SDK re-exports WS-world's position types (M2) |
 | WS-api | @api-eng | `crates/pe-api`, `crates/pe-mcp`, `docs/spec/api.md` | WorldApi (schema, query, apply, watch, history); the MCP tools; `view.capture`; `code.check` and commit | `fork.*` and `code.test` (M2) |
 | WS-render | @ballpit-viz | `crates/pe-render`, `docs/spec/render.md` | The window; the scene renderer, drawing from published snapshots; the display layer (file 14, 4.1); the desktop hand; offscreen capture; the GPU context and view interface that pe-xr uses | The UI lab (after M1); the UI layer and skin (M5) |
-| WS-xr | @xr-eng | `crates/pe-xr`, `docs/spec/xr.md` | The OpenXR session, stereo through pe-render, tracked hands into hand entries, 90 Hz pacing | Tracking for avatars (M5) |
+| WS-xr | @xr-eng | `crates/pe-xr`, `docs/spec/xr.md` | The OpenXR session, stereo through pe-render, tracked hands into hand entries, frame pacing at the headset's display rate, apart from the simulation rate | Tracking for avatars (M5) |
 | WS-app | @engine-architect, after WS-seams | `crates/pe-app` | The application: threads, wiring, invites, configuration, the demo script | The launcher (M5) |
 | WS-harness | @harness-eng | `crates/pe-harness`, with its scenarios and the probes | The network model, the scenario runner, the properties, the three probes, randsched | Long runs and distributions (M3) |
 | WS-diverge | @diverge-eng | `crates/pe-diverge` and its tests; `docs/spec/divergence.md` | The repair ladder's rungs 1 and 2; the fault bundle; the counters; the display layer's requirements, handed to WS-render | The merge function, a pure function it alone owns: v1 at main's final frontier (M2) and v2 for split groups (M3). Rungs 3-5, and the background self-check (M3) |
@@ -673,7 +683,7 @@ not built yet. Appendix A sketches them. WS-seams fixes v0 in M0, from the owner
 
 | Seam | Between | What crosses it |
 |---|---|---|
-| S1 Entries | everyone | The signed envelope: author key, chain id (one chain per member per world for its life; a restart takes a new nonce), sequence number, the previous entry's hash, domain id, frame stamp, class (input, edit, governance or protocol), typed payload, signature. The signed bytes bind the world id (the genesis hash of the branch the entry was made on), so an entry cannot be replayed into an unrelated world. Since all worlds descend from one origin and any two may merge (19:57Z), a merge keeps both branches' entries with their own bindings; WS-world and WS-agree settle the rule before v0 fixes S1. Hashes are 256 bits and object ids 128 bits. The domain id is there from the start, so the regions work needs no format change: one domain per world until M4, then one per group of things in contact (file 16, C4) |
+| S1 Entries | everyone | The signed envelope: author key, chain id (one chain per member per world for its life; a restart takes a new nonce), sequence number, the previous entry's hash, domain id, frame stamp, class (input, edit, governance or protocol), typed payload, signature. The signed bytes bind the line id: a world is a line in the tree of versions that descends from the one origin, and an entry is signed over the line it was made on, so it cannot be replayed into an unrelated world. A merge keeps both branches' entries with their own bindings (pe-seams v0; world-model.md 2.3). On the wire (codec v1, WS-agree with WS-net), an entry drops the chain fields its receiver knows, which rebuilds the signing bytes to verify, and above 60 Hz one input entry carries two frames' samples, so a member sends at most 60 input entries a second (m6c44cb38ce4c; the coordinator, m4d3330e0e35d). Hashes are 256 bits and object ids 128 bits. The domain id is there from the start, so the regions work needs no format change: one domain per world until M4, then one per group of things in contact (file 16, C4) |
 | S2 Replica | pe-agree and pe-replica, pe-world, pe-diverge | Step a frame with its ordered entries; save, restore and step per group; the root hash; each entry's outcome (applied, or refused with a reason) and any permission check at a frame; a subtree-hash exchange, node hashes by path, through which repair and merging find what differs. The trait is object-safe, so the harness can wrap it |
 | S3 Agreement | pe-agree and pe-app, pe-harness, pe-diverge | Submit a local entry; receive a message; tick on local monotonic time, with the frame from pe-net's sans-IO clock. What to simulate now. The newest final cut, which carries a line id. A hold on votes until a build is ready (Q3). Events, and one trace vocabulary shared with the model: proposals, votes and final cuts; voided and refused entries with reasons; equivocations; joins and leaves; quorum lost; unconfirmed time; diverged; merged; and "paused", which must never fire. pe-agree calls the merge function; it does not own it |
 | S4 Transport | pe-net and pe-agree, through pe-app | Send by class (protocol, action, pose, repair, bulk), in that priority; receive; statistics per link. A pose that cannot be sent is superseded, never queued |
@@ -782,7 +792,7 @@ M5  the platform tracks
    network scenario.
 5. **Determinism across platforms** on hosted runners, after every landing (tier 2).
 6. **Measurements are distributions** over at least 20 seeds and 5 delays, with every player acting, with loss-only
-   congestion, and at 90 Hz (file 01, A7).
+   congestion, and at two simulation rates: the default 60 Hz and the top of the supported range (file 01, A7).
 7. **One implementation.** No spike re-implements the protocol (file 09, A12).
 
 ### 4.2 The review's probes become tests
@@ -812,7 +822,8 @@ M5  the platform tracks
 ### 4.4 The model of agreed cuts, and of merging
 
 The mechanism, from file 11 (3.3):
-- Every few frames, the next member in a seeded rotation proposes a cut: a frame and, for each author, the last entry
+- On a fixed cadence (a duration, a world setting, turned into frames at the world's rate), the next member in a
+  seeded rotation proposes a cut: a frame and, for each author, the last entry
   included.
 - Members vote with one hash in their next acknowledgement, and the quorum makes the cut final.
 - Entries inside a final cut are final. An entry stamped before the cut and not in it is void for everyone.
@@ -952,7 +963,7 @@ in the headset is the user's to judge, at the checkpoints.
 | No world owner (m6987a48ed7f0, ma9035760e0c1, mb3da953109cb, m2c5ed59eb9ab; file 18): every admin is a co-owner and keeps their own version; non-admins keep nothing after leaving; rejoining reopens your version and merges with an admin who has it open only if both agree, otherwise the rejoin is refused; any admin can add or remove any other; having been an admin for any time gives the right to keep a saved copy; a session with no admin keeps nothing unless an admin joins, shown by a permanent mark; join rules that named a world owner test any admin | WS-gov (admins, no ownership certificates), WS-world (the record kept by admins), WS-diverge (the rejoin merge) | M3; saves in M5 | The returning-admin scenario |
 | Moderation (meef4f248923b, answers 13 and 14): no moderator role by default, though one can be made by hand; an admin's agent holds that admin's permissions | WS-gov; M5's agent panels | M3, M5 | — |
 | The world line tool (mcd8bb1211150; file 19), a new product requirement | M5's interface track, from the world record; the per-player summary in each stored state is designed in M3 (WS-world, WS-diverge) | M3 (the data), M5 (the tool) | — |
-| One origin (19:57Z): "all worlds can be descendant of one singular world 'origin'. all worlds can be merged with all other worlds, and if they share history, that history is kept" | S1's world id and chain id, and the record, must not assume two worlds are unrelated (WS-world, WS-agree, before seams v0 fixes S1); merging any two worlds in M5 (WS-diverge) | M0 (the format), M5 | — |
+| One origin (19:57Z): "all worlds can be descendant of one singular world 'origin'. all worlds can be merged with all other worlds, and if they share history, that history is kept"; file 20's answers (mdad0d5626305, m20c57d575b3f): an empty origin, presets and new worlds branch from it, the origin entry fixed for ever, unrelated worlds placed beside by default, the merged-into world's settings, logic limited to its own part, both sides' admins | S1 signs entries over their line id, chain and object ids derive over it, and the origin's line id is pinned (pe-seams v0, world-model.md r9); WS-gov takes both sides' admins; merging any two worlds in M5 (WS-diverge) | M0 (the format, done in seams v0), M3, M5 | pe-seams' golden vectors (the origin's line id) |
 | 6. Public worlds start strangers without admin rights (Q6 of the first round) | pe-gov: the public template's joining role has no admin permissions. Governance is ordinary entries over the hashed world state | M3 | probe-capture-close |
 | No admin reachable (Q6 of the follow-ups, mb09ab8952a38): guarded mode, then a countdown (30 s by default, now an admin's world setting), then the world closes with its state saved | pe-gov. "Unreachable" is a recorded fact decided at a cut. With no admin present at all, nothing is kept unless an admin joins before the session ends (mb3da953109cb) | M3 | The guarded-mode tests |
 | 7. Carrying between worlds is copy then remove; a rare duplicate is acceptable; no lease (Q7) | M5's worlds track: the carrier creates the object in the destination as an ordinary permitted edit, then removes it from the source once a cut in the destination holds it | M5 | A crash mid-carry leaves at most a duplicate, never a loss |
@@ -973,7 +984,7 @@ All of the user's earlier requirements still apply (m83bc23ef13ec). These are th
 | The ruling | Where it lands |
 |---|---|
 | R1: no host and no central authority | Proposers rotate and hold no authority: they propose, the others verify, and a silent one is skipped. "Main" in a merge is the quorum's line, not a host |
-| R2: a fixed timestep, independent of frame rate | pe-core's tick clock; pe-render interpolates. M1 tests display rates against tick rates |
+| R2: a fixed timestep, independent of frame rate; the simulation rate fixed apart from the display rate (m8ac62c1872ac), a world setting of 30-120 Hz in whole hertz, 60 by default (md4b42d16d9df, mc8dc9e5a6ffb) | pe-core's tick clock and pe-seams' rate bounds; pe-physics's sub-steps follow the rate (ceil(240 / rate)); pe-render interpolates. M1 tests display rates against tick rates |
 | R3: a deterministic local simulation with rollback; traffic only on interaction | Kept. Entries flow only on interaction; cut votes flow while anyone acts |
 | R4: Box3D; Rust and wgpu | Kept |
 | R5: the soonest interaction wins. Same-frame order follows the seeded rank (D37), and only grabs claim | pe-log's order and claims, unchanged. The same order decides merges |
@@ -996,7 +1007,7 @@ All of the user's earlier requirements still apply (m83bc23ef13ec). These are th
 | D13: WGSL for now | Kept |
 | 100% Rust, with operating-system, driver and runtime boundaries loaded dynamically (md35ba688f6b4) | QUIC with pure-Rust cryptography, its provider named in M0; OpenXR's loader loaded at run time, never compiled in; Cranelift with wasmtime's C file patched out; the audit as a gate; one register of boundaries (file 09, A8) |
 | D2: parallel physics, bit-exact; D58: double precision; van der Waals | Kept in the fork; the worker pool is wired by WS-state |
-| D4: the 90 Hz target; D50: the memory and CPU slider | 90 Hz is measured in M1. The slider's positions become policies over incremental images (M2) |
+| D4: the 90 Hz target; D50: the memory and CPU slider | D4 is superseded: the simulation rate is a world setting, 60 Hz by default within a supported range, and independent of the display rate (md4b42d16d9df, m8ac62c1872ac). The user ruled the range (mc8dc9e5a6ffb): 30-120 Hz in whole hertz, 60 by default, with ceil(240 / rate) physics sub-steps, as @vdw-physics and @engine-architect proposed (m6c44cb38ce4c). pe-seams carries the bounds; pe-physics takes its sub-steps from the rate. Every limit is a duration, never a frame count. The slider's positions become policies over incremental images (M2) |
 | D23: eight players for the MVP, aiming higher | M3 tests eight; regions (M4) are the way beyond |
 | The sync model's user answers (v11): the synchronized line; publication is automatic and never the player's concern (m27cdafe8fcfa); QR (b); QH2 (c); a held paddle visible only to its holder (Q13 a) | Fields and their modes in pe-world (M1-M2), and pe-logic (M2). The org's proxy records give way to a held shared body visible per player, on the condition that only its holder sees it, as Q13 (a) has it (C9) |
 | The cross-scale answers: Q1 (c), a far player reads a large object from those near it; Q6 (c), delayed reads; Q8 (d), a giant's peers host native-scale objects; "readings ok" | M4. Q6 (c) is replaced: the delay applied only to followed objects (ma27c73c50fd4), and then the spectrum of file 16 (6.6) removed the fixed delay altogether (mbcc1c5fd8d39). Q1 (c) lives on as influence entries. WS-regions' specification states how Q8 (d) fits, and takes it to the user if it changes the answer |
@@ -1012,8 +1023,8 @@ targets, answer 8) are all settled above.
 
 File 18's four questions are answered too (mb3da953109cb, m2c5ed59eb9ab; section 5.1).
 
-**Still open with the user, kept as a parameter, not blocking M1:** whose admin list applies after two branches merge
-(file 18; recommended: both sides' admins together). WS-gov's specification builds it as a setting.
+**Nothing is open with the user.** File 20 answered the last point (m20c57d575b3f): after two branches merge, both
+sides' admins are admins.
 
 **One reading still to confirm:** the coordinator's reading of the merge against finality (a three-way merge at
 main's final frontier) has gone to the liaison so that the user can correct it. Model v2 checks it, with the
@@ -1075,7 +1086,7 @@ goes, and why.
 | Merging physics after a split: a contact group may spread so far that a merge replays a whole pile (file 14, 6) | Model v2 and v3 come before the code. A small experiment comes before the merge is promised. The one-minute bound caps the replay at 3,600 frames | M2-M3 |
 | A replayed contact impulse may not reproduce the holders' result (file 16, 6.6) | WS-state's measurement before anyone builds on the spectrum; the holders' agreed state corrects any difference | Before M4 |
 | A merge, or an activation after a slow compile, may need a long replay that blocks a frame | Replays run on a second copy in the background and are swapped in (file 14, 4.2) | M1-M2 |
-| Rollback cost at 90 Hz in VR: a full keyframe costs about as much as a step (file 02) | M1 measures the ball pit at 90 Hz; incremental images follow in M2 | M1-M2 |
+| Rollback cost at high simulation rates in VR: a full keyframe costs about as much as a step (file 02), and re-simulation grows with the square of the rate (replica.md 13: 2.9x at 120 Hz against 60 Hz at 100 ms of delay) | M1 measures the ball pit at 60 and 120 Hz; incremental images follow in M2 | M1-M2 |
 | Builds that differ across machines break activation after each machine's own compile (file 03: identical output shown only for six small modules on two x86-64 machines) | Tier 2 compares module bytes from the same source on all four platforms; a mismatch is a fault the hash tree catches, repaired by rungs 1-2 | M1 |
 | Two objects of nearly equal size in adjacent layers (files 11 and 16) | M4's measurement with a person's hands, before the build | M4 |
 | Twelve agents behind `heavy.sh`'s two slots | Iterate with `cargo check -p`; tier 1 covers only the crates a landing touches; branch builds and the platform matrix on hosted runners. The coordinator sets the slots | Throughout |
