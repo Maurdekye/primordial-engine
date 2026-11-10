@@ -620,6 +620,11 @@ pub enum Precondition {
   `principal` must equal the entry's author key; otherwise the transaction is refused as `Invalid`. `harness` (at
   most 64 bytes) names the agent program for the label. `requested_by` is reserved for M5's guests at an unlocked
   panel and must be `None` until then. The actor decides nothing else: permissions come from the author.
+- **`label` and `harness` are untrusted peer text** (@design-reviewer's and @chunks-reviewer's r8 Low). They must be
+  valid UTF-8 within their length limits; anything else refuses the transaction as `Invalid`, so decoding is total
+  and identical everywhere (5.3). Every display treats them as untrusted text, and wherever an agent reads them
+  (history, watch) they are quoted as peer text, never as instructions (api.md's rule on peer text). `Actor` is an
+  honest client's statement: a modified client can claim `Person`, and nothing depends on it.
 - **WorldApi's per-op versions** (`if_version`) become `ObjectVersion` preconditions in the one list, and its
   `$ref`s become `New(k)` targets (@api-eng, api.md fd8baf6), so the wire carries no per-op versions.
 - **A grab moves no version** (inputs never do, 7.3): an object someone is holding refuses pose edits as `held`
