@@ -1,6 +1,7 @@
 # pe-net: the transport
 
-Status: draft 1, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built.
+Status: draft 1.1, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built. Draft 1.1 answers
+@design-reviewer's review of draft 1 (the High, Mediums 1-3, Lows 1-5).
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
 - **Draft 1** adds sections 3-12, the rest of WS-net's M1 scope (`docs/refound-plan.md`, branch
@@ -206,19 +207,31 @@ Rules for all lanes [I]:
 
 ### 3.3 Protocol and Action: reliable small messages over datagrams
 
-The idea is rollback netcode's: repeat recent inputs in every packet until the peer confirms them, so one lost
-packet costs nothing, not a retransmission round trip [I].
+Each message is sent once, with a little bounded redundancy so a single lost datagram usually costs nothing,
+and retransmitted only after a timeout. Repeating every unacknowledged message in every datagram (draft 1)
+would multiply bandwidth by the datagrams sent per round trip, not by the loss rate: about six times at 60
+datagrams/s and a 100 ms RTT. On a thin link, new messages would then wait behind repeats of old ones, which is
+R18's failure again [@design-reviewer's High].
 - **Numbering:** pe-net numbers each message per peer and per lane: `seq` = 0, 1, 2, ...
-- **Every datagram to a peer** carries its acknowledgements for that peer (the highest seq received in order
-  per lane, and a 64-bit map of the ones after it), then as many unacknowledged messages as fit: Protocol before
-  Action, oldest first.
-- **A message is repeated** in each following datagram until it is acknowledged. When a peer has nothing new to
-  send, it sends an acknowledgement-only datagram within `T_ack` of receiving.
+- **Acknowledgements:** every datagram to a peer carries, per lane:
+  - the highest seq received in order from that peer;
+  - up to `N_ack_ranges` ranges received after it, as QUIC's ACK frame does.
+
+  Ranges rather than a fixed bitmap, so a full second of messages in flight still fits.
+- **First send:** a new message goes in the next datagram to the peer, Protocol before Action.
+- **Bounded redundancy:** a message of at most `L_redundant` bytes also rides in the next `r - 1` datagrams to
+  that peer, if they have room after new messages (`r` = 2). This is rollback netcode's way with its tiny inputs:
+  one lost datagram then costs no round trip.
+- **Retransmission:** a message still unacknowledged after `RTO = srtt + max(4 * rttvar, T_rto_min)` goes again
+  in the next datagram, and the timer doubles on each further loss (as QUIC's PTO, RFC 9002).
+  - New messages and retransmissions share their lane's queue, oldest first.
+  - Every byte counts against the budget (4).
+- **Acknowledgement-only datagrams:** a peer with nothing to send sends one within `T_ack` of receiving.
 - **Large messages:** a message larger than half a datagram's payload goes on its own unidirectional stream
   instead, at the stream priority of its lane. That covers, for example, an edit carrying a small simulation blob
   (up to 1 MiB, `docs/spec/world-model.md`).
-- **The cost:** repetition multiplies bytes on the wire by about (1 + loss) at low loss. The budget (4) counts
-  every repeat, so on a thin link repetition competes with poses, not with the controller's limit.
+- **The cost:** wire bytes over payload bytes stay near `1 + (r - 1) × (share of small messages) + loss`.
+  Section 9 tests that it stays under 1.5 on a 16 kbit/s link with 1 % loss.
 
 ### 3.4 Pose: newest only
 
@@ -277,16 +290,31 @@ statistics. The harness reports nothing else to it.
   4. Repair;
   5. Bulk.
 
-  quinn's own send buffers stay small (about one congestion window), so the priority decision stays in pe-net
-  and nothing high-priority waits behind bulk data already handed to QUIC [I].
-- **The budget:** `cwnd / srtt` bytes per second.
+- **The budget:** `cwnd / srtt` bytes per second, from quinn-proto's public path statistics (`cwnd`, `rtt`).
+  quinn-proto keeps its bytes-in-flight count private [S `connection/mod.rs`, `pub(crate) fn
+  bytes_in_flight`].
+- **Priority holds only if quinn's buffers stay small** [@design-reviewer's Medium 2]. pe-net relies on quinn's
+  own backpressure:
+  - **Datagrams:** `datagram_send_buffer_size` is set to about `N_dgram_buf` datagrams. pe-net hands over a
+    datagram only when `send_buffer_space()` has room for it [S `connection/datagrams.rs`], so quinn never drops
+    an old datagram to make room.
+  - **Streams:** `send_window` (bytes accepted from the application across all streams [S
+    `config/transport.rs`]) is set to `W_send`. pe-net writes Repair and Bulk messages in chunks of at most
+    `L_chunk`, each gated by the budget, and a write that quinn blocks waits in pe-net's queue. So a 1 MiB
+    message never lands in quinn's buffer at once.
+  - **Inside a packet,** quinn-proto writes DATAGRAM frames before STREAM frames [S `connection/mod.rs`,
+    `populate_packet`]. So Protocol, Action and Pose datagrams already handed to quinn go out ahead of any stream
+    data it holds.
+  - **Between Repair and Bulk,** quinn's stream priority decides.
 
 ### 4.3 The delay guard for the low lanes
 
 - **The problem:** a loss-based controller fills a deep router buffer before it backs off, which would add
   queueing delay to actions and poses.
-- **The guard:** Repair and Bulk send only while `srtt - min_rtt` is under `D_guard`, so the low lanes yield
+- **The guard:** Repair and Bulk send only while `srtt - base_rtt` is under `D_guard`, so the low lanes yield
   before the queue grows. This is LEDBAT's idea, applied to the low lanes only [I].
+- **`base_rtt`** is pe-net's own minimum of the RTT samples over the last `W_base`. Without a window, a route
+  change that raises the base delay would block Repair and Bulk for good [@design-reviewer's Low 3].
 - **Measured in M1:** Cubic with the guard against quinn's BBR, on delay cells and on loss-only (AQM) cells
   (section 9).
 
@@ -339,13 +367,23 @@ seconds (the user's ruling md4b42d16d9df: the tick rate is configurable per worl
   at least halves per round, even against a member that tells each peer something different. A median doesn't
   have that property (review CM-1 of pe-app's clock).
 - **With two members,** t = 0, so each moves to the middle.
+- **At two and three members,** t = 0, so the clock tolerates no liar: one member can pull the target where it
+  likes [@design-reviewer's Low 5]. That costs fairness, not safety. Frame stamps only bound back-dating, voids
+  are decided at cuts, so a liar mostly hurts its own stamps [I].
 
 ### 5.4 Before frame 0: converge
 
 - **A joiner** sets its offset to the target at once, each round, while it is not yet in the session. A jump is
   allowed here, since nothing has run.
-- **It is clock-ready** when the target has moved less than `E_ready` for three rounds running, and it tells
-  pe-agree. pe-agree's join waits for that.
+- **The target comes from the members, not from the inviter alone** [@design-reviewer's Medium 3].
+  - Before the welcome, the joiner's only peer is the inviter, so one peer's word would set its clock.
+  - So the joiner first connects to the members (6.7), and its target is the midpoint over the members it has
+    samples from.
+  - It needs samples from at least a quorum (two thirds, rounded up) of the members on the list it starts from
+    (6.4), and from every one of them it can reach within `T_ready`.
+- **It is clock-ready** when that target has moved less than `E_ready` for three rounds running. It then tells
+  pe-agree, and pe-agree's join waits for that.
+- **The order:** the welcome, then the mesh, then the samples, then clock-ready, then pe-agree's join.
 - **If it isn't ready within `T_ready`,** that is a `ClockFault` (5.6), and the join fails with its reason.
 - **A world's first member** has offset 0, and is ready at once.
 
@@ -404,7 +442,13 @@ its frame this way (seam S3).
   handshake confirmed wins, and the rest are closed.
 - **The reply code:** after `T_reply` with no answer, the joiner shows one (2.4). When the inviter takes it in,
   both send at once: the inviter's punch packets and its own dial to the joiner's addresses, the joiner's dials
-  to the invite's. Whichever handshake is confirmed first is kept, and the other is closed.
+  to the invite's.
+- **Two connections at once** [@design-reviewer's Medium 1]: when both sides dial, there are two QUIC
+  connections, A's to B and B's to A.
+  - Keeping whichever is confirmed first is a local judgement: each side could see a different one first, and
+    both would be closed.
+  - So both sides keep the connection whose QUIC client has the lower public key (bytes compared), whichever
+    finished first, and close the other. Every rendezvous (6.7) uses the same rule.
 
 ### 6.3 Hello and the connection guards
 
@@ -414,23 +458,29 @@ its frame this way (seam S3).
   - the engine build id;
   - the digest and time of its physics self-test;
   - from M2, each module's hash;
-  - the world id it means;
+  - the line it means: the `LineId` of `docs/spec/world-model.md` r9 (called the world id in earlier drafts);
   - the invite id or token;
   - its addresses;
   - whether its clock is ready (5.4).
-- **The guards, in order, at the side being joined:** protocol version, build id, self-test digest, world id
-  (R-G1 of `docs/spec/divergence.md`). The first difference refuses the connection, with a reason code and the
-  two values, so the joiner is told why before it joins (the plan's M1 acceptance).
+- **The guards, in order, on both sides:** protocol version, build id, self-test digest, line id (R-G1 of
+  `docs/spec/divergence.md`).
+  - The first difference refuses the connection, with a reason code and the two values, so the joiner is told
+    why before it joins (the plan's M1 acceptance).
+  - The joiner checks the other side's hello too, and refuses on a mismatch, rather than learning of it only
+    from a close [@design-reviewer's Low 4].
 - **Then admission:** pe-net raises `JoinRequest { peer, hello }`, and the app decides from the agreed governance
   (2.3) by calling `admit(peer, welcome)` or `refuse(peer, reason)`.
 
 ### 6.4 The welcome
 
 - **It carries:**
-  - the world id;
+  - the line id;
   - the epoch and the tick rate (5.1);
   - the members, with their keys and last addresses, for 6.7;
   - what pe-agree needs to start the join (pe-agree's to define).
+- **The member list is only a hint** [@design-reviewer's Low 1]. The list that counts comes from the cut the
+  joiner starts from, checked against that cut's root, so an inviter can neither hide a member nor add one. The
+  joiner uses the welcome's list only to start connecting, and re-checks it against the cut.
 - **Until the welcome arrives,** the joiner sends only its hello and clock records (2.3).
 
 ### 6.5 Link states
@@ -451,7 +501,7 @@ These are the application error codes on a QUIC close. The joiner's app shows th
 | 1 | different protocol version |
 | 2 | different engine build |
 | 3 | different physics self-test |
-| 4 | another world |
+| 4 | another line (`LineId`) |
 | 5 | not admitted (not a member, banned, or a bad invite token) |
 | 6 | protocol fault (bad bytes; the event names the peer) |
 | 7 | clock fault (5.6) |
@@ -518,6 +568,7 @@ Gated, unless marked:
    - Protocol and Action arrive once each at 0-30 % random loss, and at 10 % loss most need no retransmission
      round trip (each counted);
    - nothing is delivered twice;
+   - wire bytes over payload bytes stay under 1.5 on a 16 kbit/s link with 1 % loss (3.3);
    - under a budget too small for everything, Protocol is never delayed by the lower lanes.
 2. **The budget:**
    - a thin link to one peer doesn't slow traffic to the others;
@@ -536,6 +587,10 @@ Gated, unless marked:
    - the joiner sends nothing above the transport before the welcome;
    - with the inviter's inbound blocked, the two-way invite connects;
    - a third member joins through a rendezvous;
+   - when both sides dial at once, both keep the same connection (6.2);
+   - the joiner refuses an inviter whose hello differs (6.3);
+   - a joiner is not clock-ready on the inviter's word alone at four members (5.4);
+   - a welcome whose member list differs from the start cut's is caught (6.4);
    - an address change survives, and a forged source address doesn't redirect a link.
 5. **The security code:** 2.5's list.
 6. **No panic** on any bytes from a peer (fuzzing, gate tier 2).
@@ -552,6 +607,14 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | Name | Value | Meaning |
 |---|---|---|
 | `T_ack` | 10 ms | Longest wait before an acknowledgement-only datagram |
+| `N_ack_ranges` | 32 | Acknowledgement ranges per lane in one datagram |
+| `r` | 2 | Datagrams a small message rides in, the first send included |
+| `L_redundant` | 128 B | Largest message that gets redundancy |
+| `T_rto_min` | 20 ms | Floor of the retransmission timeout's variance term |
+| `N_dgram_buf` | 4 | quinn's datagram send buffer, in datagrams |
+| `W_send` | 64 KiB | quinn's `send_window`: stream bytes it may hold |
+| `L_chunk` | 16 KiB | Largest Repair or Bulk write handed to quinn at once |
+| `W_base` | 30 s | Window of `base_rtt` for the delay guard |
 | `L_msg` | 1 MiB | Largest Protocol or Action message (an edit with a small simulation blob) |
 | `L_bulk` | 64 MiB | Largest Bulk message |
 | `N_streams_in` | 64 | Incoming streams open at once per peer |
