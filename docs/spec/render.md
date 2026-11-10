@@ -201,8 +201,14 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
 
 - **D1. Two poses.** drawn = target ∘ offset. The simulation never reads the drawn pose.
 - **D2. Blending a correction.** On **every new frame view**, for every object not held (D4), the offset becomes
-  `drawn_before − target_now`, so the drawn pose never moves at the instant a frame view arrives. A non-zero offset
-  has two causes, and both blend under D3:
+  `drawn_before − target_now`, both taken at **this display frame's `t_draw`** (review M3):
+  - `drawn_before` is the old state resolved to `t_draw`: the previous frame views time-resolved to `t_draw` (section
+    7), composed with the current offset. It is not the pose drawn at the previous display frame, which lags a moving
+    object by v × one display period and would put a hitch on every moving object at every simulation tick;
+  - `target_now` is the new frame views resolved to the same `t_draw`.
+
+  So the offset is exactly the change of prediction, and the drawn pose never moves at the instant a frame view
+  arrives. A non-zero offset has two causes, and both blend under D3:
   - **a correction:** S5 marks the object `corrected` (its simulated pose was rewritten by a replay, repair or merge
     since the last publication). It counts in `corrections_per_min`;
   - **an extrapolation miss** under X8 (a): the object did something between frame views that its velocity didn't
@@ -365,7 +371,8 @@ On the gate, in pe-render, with a software adapter where a GPU is needed:
    - the two controls of section 8.
 2. **Effects:** a replayed key fires once; a retracted sustained effect stops; own effects play at once.
 3. **Rates (D8):** section 7's fake-clock test at 72/90/120/165 Hz displays against 60 Hz, 90 Hz and one odd
-   simulation rate in the range (e.g. 75 Hz), under both X8 rules.
+   simulation rate in the range (e.g. 75 Hz), under both X8 rules. **Steady motion keeps a zero offset** (to float
+   tolerance) across every frame-view arrival, at every rate pair (review M3).
 4. **Coordinates:** a scene placed at 10^15 m from the origin draws the same image as at the origin (pixels equal on
    one adapter), because only differences reach the GPU.
 5. **Capture:** an image of a known scene has the expected coverage and identical pixels twice; `visible_list` names
