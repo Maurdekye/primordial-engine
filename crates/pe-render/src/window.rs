@@ -277,6 +277,9 @@ impl DesktopView {
             .collect();
 
         let g = self.gfx.as_mut().expect("checked above");
+        // The frame's own work so far. Acquiring the next image waits for vsync, so it is not the frame's cost: counted
+        // in, every frame looks one period long and the ladder drops at a steady rate (seen in the first window run).
+        let before_acquire = t0.elapsed();
         let tex = match g.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => {
@@ -290,7 +293,7 @@ impl DesktopView {
         let stats = g.renderer.render_views(&frame.scene, &[EyeView { camera, color: &color, format: g.format, size }]);
         g.window.pre_present_notify();
         g.renderer.context().queue.present(tex);
-        let cpu = t0.elapsed();
+        let cpu = before_acquire + Duration::from_secs_f64(stats.cpu_record_ms / 1e3);
         self.report.frames += 1;
         self.report.cpu_record_ms.push(stats.cpu_record_ms);
         let p = Instant::now();
