@@ -1,6 +1,6 @@
 # Divergence and recovery (WS-diverge)
 
-Status: v1.9, 2026-11-10. Approved as a design by @design-reviewer (m4dcfeabea340), after their review of v0
+Status: v1.10, 2026-11-10. Approved as a design by @design-reviewer (m4dcfeabea340), after their review of v0
 (bf94698), @vdw-physics's answer on R-H1 and the coordinator's rulings of 20:40Z. v1.6 records the user's answers
 of about 19:45Z (meef4f248923b, mfc2bbd9d28ad; file 14 section 8). v1.7 adds section 9.6, from the rulings of
 19:50-19:59Z (files 18-20). Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
@@ -317,8 +317,11 @@ replay since the last publication (a `corrected` flag, or the correction offset)
   another drawn solid. [I: the solid test may wait until after M1; until then, in view always blends fast.]
 
 **D4. Never correct what the player holds.** The local player's own hands, and any object the local player holds in
-the current predicted state, are drawn at exactly their simulated pose. Their error is exactly zero: `own_error`
-is a test, not a measurement [R m21f5bdac80b3].
+the current predicted state, never receive a correction offset. `own_error`, the offset applied to them, is exactly
+zero: a test, not a measurement [R m21f5bdac80b3]. On the desktop they are drawn at their simulated pose. In VR they
+are drawn at pe-xr's late-latched hand pose, and a held object at that pose times the grip offset: presentation
+ahead of the simulation by design, never a correction (`docs/spec/xr.md` 5.6; render.md 8, c85927f1 on
+`ws/render`).
 - When an object leaves the local player's grip because a race was lost (P3), it becomes blendable from that
   moment, starting from where the hand had it. It slides out of the grip over `T_blend` with a short cue (sound or
   haptic) [plan M1 demo step 4].
@@ -330,6 +333,11 @@ WS-state's (P2).
 is stable across replays [I]: `(frame, causing entry's hash or "physics", object id, event kind, ordinal within
 that object's events that frame)`.
 - A key already played is never played again.
+- **Stale effects are not played.** A replay can reach back a long way: up to `W_fg` in the foreground, and up to
+  `T_diverge` for a merge applied at its application frame. A one-shot effect whose frame is older than
+  `T_stale_effect` before the drawn time is never played, even if its key is new; sustained state (a lamp that is
+  now on) shows as state, not as an effect. So the set of played keys needs keeping only for `T_stale_effect`, not
+  for a minute [I].
 - A sustained effect whose event disappears after a replay is stopped, faded over `T_blend`.
 - Effects of the local player's own actions play at once.
 - Effects of others' actions not yet final may wait `D_effect`. [I] Default 0 s, for immediacy;
@@ -533,7 +541,9 @@ For the merge this means:
   - nothing both touched, so nothing is replayed, however long each history is;
   - the incoming world's own objects are placed by an offset the admins choose in the preview, by default beside
     the other and clear of it. The merge applies it to `theirs`'s objects that are not in `base`, as a whole-chunk
-    shift of their roots, which is exact; shared preset objects are not shifted [@world-model r9];
+    shift, which is exact; shared preset objects are not shifted [@world-model r9]. Which fields shift (root
+    transforms only, or every `Pos`-typed field, as @design-reviewer has asked) is WS-world's to settle, and the
+    merge follows it;
   - the world-wide settings of the world merged into stand, unless the admins choose otherwise in the preview;
   - world-wide logic stays limited to the things it came with, unless an admin widens it: each object records the
     line it was born on (`Node.born_on`, into a hashed `lines` table [@world-model r9]), and WS-logic scopes by it.
@@ -780,7 +790,9 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 ## 14. Parameters
 
 Every limit is a duration, never a frame count: the tick rate is configurable per world within a supported range,
-60 Hz by default [R md4b42d16d9df]. A duration converts to frames at the world's rate, rounded up.
+60 Hz by default [R md4b42d16d9df]. A duration converts to frames at the world's rate, rounded up, **at the rate in
+effect at the frame where the bound starts**, and that rate is recorded with any stored bound. A rate change
+mid-session never moves a bound that is already running [design-reviewer].
 
 | Name | Meaning | Default [I] |
 |---|---|---|
@@ -793,6 +805,7 @@ Every limit is a duration, never a frame count: the tick rate is configurable pe
 | `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |
 | `E_small`, `E_snap` | Error thresholds | 5 cm or 10°; 1 m or 90° |
 | `D_effect` | Delay of others' unconfirmed effects | 0 s |
+| `T_stale_effect` | Age past which a newly seen one-shot effect is not played | 0.25 s |
 | `E_merge` | Pose tolerance within which a group only one side touched counts as unchanged after a merge | Set from the M1 headset tuning: at most the display layer's sub-visible threshold. 5 cm or 10° is visible in VR at arm's length [design-reviewer] |
 | `R_merge` | Replay rate assumed when setting a merge's application frame | 2x real time |
 | `T_merge` | Divergence past which a merge replaces the ordinary rollback | 2 s [R mf7daea6446ca] |
