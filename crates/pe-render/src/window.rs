@@ -75,6 +75,23 @@ pub struct DesktopReport {
     pub snapshot: Option<Result<std::path::PathBuf, String>>,
 }
 
+/// A lost surface is made again on the same window and device (review L3). False if that fails, so the caller backs
+/// off instead of retrying at once.
+fn recreate_surface(g: &mut Gfx) -> bool {
+    let made = {
+        let _one_at_a_time = crate::gpu::creation_lock();
+        g.renderer.context().instance.create_surface(g.window.clone())
+    };
+    match made {
+        Ok(s) => {
+            s.configure(&g.renderer.context().device, &g.config);
+            g.surface = s;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Read the swapchain image back before present and write it as an RGBA PNG.
 fn snapshot(
     g: &Gfx,
@@ -84,6 +101,10 @@ fn snapshot(
 ) -> Result<std::path::PathBuf, String> {
     if !g.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
         return Err("the surface does not allow copies".into());
+    }
+    use wgpu::TextureFormat as F;
+    if !matches!(g.config.format, F::Bgra8Unorm | F::Bgra8UnormSrgb | F::Rgba8Unorm | F::Rgba8UnormSrgb) {
+        return Err(format!("snapshots read 8-bit RGBA or BGRA only, not {:?}", g.config.format));
     }
     let ctx = g.renderer.context();
     let row = (size[0] * 4).div_ceil(256) * 256;
@@ -164,7 +185,12 @@ pub struct DesktopView {
     yaw: f64,
     pitch: f64,
     eye_pos: DVec3,
+    /// `Occluded(true)` from the window system.
     occluded: bool,
+    /// A zero-sized window (minimized), kept apart from `occluded` (review L5).
+    minimized: bool,
+    /// After a failed acquire, no redraw is asked for before this.
+    backoff_until: Option<Instant>,
     started: Instant,
     last_present: Option<Instant>,
     last_frame: Option<HostTime>,
@@ -244,6 +270,8 @@ impl DesktopView {
             pitch,
             eye_pos,
             occluded: false,
+            minimized: false,
+            backoff_until: None,
             started: Instant::now(),
             last_present: None,
             last_frame: None,
@@ -260,9 +288,44 @@ impl DesktopView {
         &self.report
     }
 
-    /// Ask winit for the next frame (call from `about_to_wait`).
+    /// Ask winit for the next frame. [`DesktopView::schedule`] calls it when there is a frame to draw.
     pub fn request_redraw(&self) {
         self.window().request_redraw();
+    }
+
+    /// Call from the event loop's `about_to_wait`; pe-app's loop and [`run_desktop`]'s both do. It sets the control
+    /// flow, and requests a redraw only when it will draw (review L1, part 2a, with @engine-architect):
+    /// - a frame to draw: a redraw and `Poll`; the swapchain acquire paces the loop;
+    /// - minimized or occluded: `Wait` (until `run_for` ends, if set); the `Resized` or `Occluded(false)` that ends
+    ///   the state wakes the loop;
+    /// - before the first frame view, or backing off after a failed acquire: a wait of one display period, since a
+    ///   publish doesn't wake winit;
+    /// - `run_for` passed: exit.
+    pub fn about_to_wait(&self, el: &ActiveEventLoop) {
+        if self.done() {
+            el.exit();
+            return;
+        }
+        let now = Instant::now();
+        let flow = if self.occluded || self.minimized {
+            match self.cfg.run_for {
+                Some(d) => ControlFlow::WaitUntil(self.started + d),
+                None => ControlFlow::Wait,
+            }
+        } else if self.slot.newest().is_none() {
+            ControlFlow::WaitUntil(now + self.pacer.period())
+        } else if let Some(t) = self.backoff_until.filter(|t| *t > now) {
+            ControlFlow::WaitUntil(t)
+        } else {
+            self.request_redraw();
+            ControlFlow::Poll
+        };
+        el.set_control_flow(flow);
+    }
+
+    /// `run_for` has passed.
+    pub fn done(&self) -> bool {
+        self.cfg.run_for.is_some_and(|d| self.started.elapsed() >= d)
     }
 
     fn eye_rot(&self) -> DQuat {
@@ -290,8 +353,34 @@ impl DesktopView {
     }
 
     fn draw(&mut self) {
+        if self.slot.newest().is_none() {
+            return;
+        }
+        let Some(g) = self.gfx.as_mut() else { return };
+        // Acquire first. The acquire waits for vsync, so the clock and the frame view are sampled after it, as fresh
+        // as they can be (review L2, part 2a), and the wait is never counted as the frame's cost (b06783b4). A
+        // failed acquire skips the frame before the display layer or the effects move.
+        let tex = match g.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            failed => {
+                self.report.skipped += 1;
+                let retry_now = match failed {
+                    wgpu::CurrentSurfaceTexture::Outdated => {
+                        g.surface.configure(&g.renderer.context().device, &g.config);
+                        true
+                    }
+                    wgpu::CurrentSurfaceTexture::Lost => recreate_surface(g),
+                    _ => false,
+                };
+                if !retry_now {
+                    self.backoff_until = Some(Instant::now() + self.pacer.period());
+                }
+                return;
+            }
+        };
+        let t0 = Instant::now();
         let Some(view) = self.slot.newest() else { return };
-        let Some(g) = self.gfx.as_ref() else { return };
+        let g = self.gfx.as_ref().expect("checked above");
         let mhz = g.window.current_monitor().and_then(|m| m.refresh_rate_millihertz());
         let size = [g.config.width, g.config.height];
         let now = (self.cfg.clock)();
@@ -300,7 +389,6 @@ impl DesktopView {
         self.report.monitor_mhz = mhz;
         self.pacer.update_period(mhz.map_or(PeriodSource::Measured, PeriodSource::Monitor));
         let display_time = self.pacer.desktop_display_time(now);
-        let t0 = Instant::now();
 
         // The eye, and the camera through it.
         self.move_eye(dt);
@@ -345,20 +433,11 @@ impl DesktopView {
             .collect();
 
         let g = self.gfx.as_mut().expect("checked above");
-        // The frame's own work so far. Acquiring the next image waits for vsync, so it is not the frame's cost: counted
-        // in, every frame looks one period long and the ladder drops at a steady rate (seen in the first window run).
-        let before_acquire = t0.elapsed();
-        let tex = match g.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            _ => {
-                self.report.skipped += 1;
-                g.surface.configure(&g.renderer.context().device, &g.config);
-                return;
-            }
-        };
         let color =
             tex.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(g.format), ..Default::default() });
         let stats = g.renderer.render_views(&frame.scene, &[EyeView { camera, color: &color, format: g.format, size }]);
+        // The frame's cost: everything after the acquire, up to the submit (not the snapshot, a test aid).
+        let cpu = t0.elapsed();
         if let Some((at, path)) = self.cfg.snapshot.clone()
             && self.started.elapsed() >= at
         {
@@ -367,7 +446,6 @@ impl DesktopView {
         }
         g.window.pre_present_notify();
         g.renderer.context().queue.present(tex);
-        let cpu = before_acquire + Duration::from_secs_f64(stats.cpu_record_ms / 1e3);
         self.report.frames += 1;
         self.report.cpu_record_ms.push(stats.cpu_record_ms);
         if let Some(ms) = stats.gpu_ms {
@@ -393,8 +471,8 @@ impl DesktopView {
             WindowEvent::Occluded(o) => self.occluded = o,
             WindowEvent::Resized(s) => {
                 if let Some(g) = self.gfx.as_mut() {
-                    self.occluded = s.width == 0 || s.height == 0;
-                    if !self.occluded {
+                    self.minimized = s.width == 0 || s.height == 0;
+                    if !self.minimized {
                         g.config.width = s.width;
                         g.config.height = s.height;
                         g.surface.configure(&g.renderer.context().device, &g.config);
@@ -446,7 +524,7 @@ impl DesktopView {
                 self.pointer.keys[i] = down;
             }
             WindowEvent::RedrawRequested => {
-                if !self.occluded {
+                if !self.occluded && !self.minimized {
                     self.draw();
                 }
                 if self.cfg.run_for.is_some_and(|d| self.started.elapsed() >= d) {
@@ -496,9 +574,9 @@ impl ApplicationHandler for Standalone {
         }
     }
 
-    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if let Some(v) = &self.view {
-            v.request_redraw();
+            v.about_to_wait(el);
         }
     }
 }
@@ -511,7 +589,6 @@ pub fn run_desktop(
     sink: Box<dyn EffectSink>,
 ) -> Result<DesktopReport, ContextError> {
     let el = EventLoop::new().map_err(|e| ContextError::Device(format!("event loop: {e}")))?;
-    el.set_control_flow(ControlFlow::Poll);
     let mut app = Standalone { parts: Some((cfg, slot, feed, sink)), view: None, error: None };
     el.run_app(&mut app).map_err(|e| ContextError::Device(format!("event loop: {e}")))?;
     match (app.error, app.view) {

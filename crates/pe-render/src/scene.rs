@@ -174,8 +174,9 @@ pub struct FrameStats {
     pub draws: u32,
     pub lights: u32,
     pub cpu_record_ms: f64,
-    /// The GPU time of the newest frame whose timestamps have been read back, usually one or two frames old. `None`
-    /// until the first arrives, and always on an adapter without timestamp queries. Captures are not timed.
+    /// A GPU time that arrived during this call: an earlier frame's, usually one or two frames back. `None` when no
+    /// new reading arrived (each reading is reported once, review L4), and always on an adapter without timestamp
+    /// queries. Captures are not timed.
     pub gpu_ms: Option<f64>,
 }
 
@@ -243,8 +244,9 @@ impl GpuTimer {
         })
     }
 
-    /// Collect every reading that has arrived; never waits.
-    fn harvest(&mut self, device: &wgpu::Device) {
+    /// Collect every reading that has arrived; never waits. Returns the newest of them.
+    fn harvest(&mut self, device: &wgpu::Device) -> Option<f64> {
+        let before = self.latest;
         use std::sync::atomic::Ordering;
         let _ = device.poll(wgpu::PollType::Poll);
         for s in &mut self.slots {
@@ -261,6 +263,7 @@ impl GpuTimer {
                 self.latest = Some((s.frame, (ticks[1] - ticks[0]) as f64 * self.period_ns / 1e6));
             }
         }
+        (self.latest != before).then_some(self.latest).flatten().map(|(_, ms)| ms)
     }
 
     /// The slot this frame writes, if one is free.
@@ -710,9 +713,7 @@ impl Renderer {
     /// [`Renderer::render_views`], untimed when `timed` is false (captures, which run between frames).
     pub(crate) fn draw(&mut self, scene: &Scene, views: &[EyeView<'_>], timed: bool) -> FrameStats {
         let t0 = std::time::Instant::now();
-        if let Some(t) = self.timer.as_mut() {
-            t.harvest(&self.ctx.device);
-        }
+        let fresh = self.timer.as_mut().and_then(|t| t.harvest(&self.ctx.device));
         let timing = if timed { self.timer.as_mut().and_then(GpuTimer::begin) } else { None };
         let passes = self.settings.shadow_size.min(1) as usize + views.len();
         let mut stats = FrameStats { views: views.len() as u32, ..Default::default() };
@@ -938,7 +939,7 @@ impl Renderer {
         if let (Some(slot), Some(t)) = (timing, self.timer.as_mut()) {
             t.submitted(slot);
         }
-        stats.gpu_ms = self.timer.as_ref().and_then(|t| t.latest).map(|(_, ms)| ms);
+        stats.gpu_ms = fresh;
         stats.cpu_record_ms = t0.elapsed().as_secs_f64() * 1e3;
         stats
     }
