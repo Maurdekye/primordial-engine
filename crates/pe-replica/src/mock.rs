@@ -22,12 +22,25 @@ const RANGE: f64 = 1.0e6;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MockOp {
     /// Create a physical object.
-    Spawn { id: ObjectId, kind: BodyKind, shape: ShapeRow, pos: [f64; 3] },
-    Remove { id: ObjectId },
+    Spawn {
+        id: ObjectId,
+        kind: BodyKind,
+        shape: ShapeRow,
+        pos: [f64; 3],
+    },
+    Remove {
+        id: ObjectId,
+    },
     /// Set a body's position (a teleport).
-    Teleport { id: ObjectId, pos: [f64; 3] },
+    Teleport {
+        id: ObjectId,
+        pos: [f64; 3],
+    },
     /// An impulse at the centre of mass.
-    Push { id: ObjectId, impulse: [f32; 3] },
+    Push {
+        id: ObjectId,
+        impulse: [f32; 3],
+    },
 }
 
 /// Encode ops as an entry payload.
@@ -220,7 +233,12 @@ impl MockWorld {
         h.finish()
     }
 
-    fn apply_ops(&mut self, ops: &[MockOp], effects: &mut Effects, created: &mut Vec<ObjectId>) -> Result<(), (u32, Reason)> {
+    fn apply_ops(
+        &mut self,
+        ops: &[MockOp],
+        effects: &mut Effects,
+        created: &mut Vec<ObjectId>,
+    ) -> Result<(), (u32, Reason)> {
         let mut changed: BTreeMap<ObjectId, Change> = BTreeMap::new();
         for (i, op) in ops.iter().enumerate() {
             let i = i as u32;

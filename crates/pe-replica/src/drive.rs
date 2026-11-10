@@ -67,16 +67,16 @@ impl Driver {
             }
         }
 
-        if let Some(fc) = agree.final_cut().cloned() {
-            if self.finalized != Some(fc.cut.at) {
-                let verdict = replica.finalize(&fc, agree);
-                if verdict != Finalized::NotReady {
-                    self.finalized = Some(fc.cut.at);
-                    let height = fc.cut.at.height;
-                    self.voted.retain(|c| c.height > height);
-                }
-                report.finalized.push((fc.cut.at, verdict));
+        if let Some(fc) = agree.final_cut().cloned()
+            && self.finalized != Some(fc.cut.at)
+        {
+            let verdict = replica.finalize(&fc, agree);
+            if verdict != Finalized::NotReady {
+                self.finalized = Some(fc.cut.at);
+                let height = fc.cut.at.height;
+                self.voted.retain(|c| c.height > height);
             }
+            report.finalized.push((fc.cut.at, verdict));
         }
         report
     }
