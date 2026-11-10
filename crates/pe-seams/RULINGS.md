@@ -28,17 +28,52 @@ the re-export landing must pass the same test unchanged (@design-reviewer, m0bb9
 A member that was not among a cut's voters can learn the cut is final while some of its entries are still on their
 way (@design-reviewer's High on a18ab39f). So `EntrySource::final_cut` is the newest final cut whose entries this
 member holds in full; the replica's floor follows it, and `advance` re-simulates down to that floor, not to the
-line's newest final cut. The driver passes `final_cut()` to `finalize` each time it changes. Rung 1's `Cured` leaves
-the replica replayed to the present with the cut as its new `Cv`, as a successful `import_at_cut` does. A harness
-case for @harness-eng: a non-voter at n = 4 that receives one of a final cut's entries late.
+line's newest final cut. The driver passes `final_cut()` to `finalize` each time it changes. A harness case for
+@harness-eng: a non-voter at n = 4 that receives one of a final cut's entries late.
+
+## S2 v1: only `finalize` moves `Cv` and the floor; the tree by prefix
+
+@design-reviewer's High on pe-diverge ff37b4fd (m85b5e2e6f7fc): at n = 2 every divergence is a root split, whose cut
+is not final, and v0's rung 1 and import moved `Cv` and the floor to the cut they repaired. Had that cut then been
+superseded, the replica would have refused to re-simulate below it, and late entries would have been lost. So, in
+v1:
+- **Only `finalize` moves `Cv` and the floor.** `replay_to(&Cut, source) -> Result<Hash, RootError>` (rung 1, which
+  replaces `replay_from_last_agreed` and its `Rung1`) and `import_at_cut` change the live state only, re-simulated to
+  the present, and return my root at the cut. They work at a final cut and at a cut not final yet. After a repair at a
+  final cut, the driver calls `finalize` for that cut again; it moves `Cv` once my root matches. @diverge-eng proposed
+  a separate dry call and a `provisional` flag on imports (mbde4239f0f8a); one rule for every repair needs neither.
+- **`CutImport`** carries the full `Cut` (the imported state is the state at its frame with exactly its entries) and
+  a `target_root`: a final cut's quorum root, or a root split's reference root.
+- **The tree by prefix** (@design-reviewer's Medium 1; agreed with @world-model, world-model.md 6.2 r12, and
+  @diverge-eng). `TreePath` names the upper levels (`World`, `Tables`, `Domain`) and addresses a domain's objects
+  trie by nibble prefix (`Nibbles`, most significant first), so two tries of different shapes are compared prefix by
+  prefix; `Tree::node` returns the node covering the prefix, passing through path-compressed segments, or `Empty`.
+  `Node::Inner` carries its full prefix. A record's proof is its nodes from the root.
+- **`Node::hash`** (Medium 3) is the one definition of every node's hash: pe-world builds its tree with it, and
+  pe-diverge checks each node a peer sends against the hash its parent named, from the agreed root, so a lying
+  source is caught at its first lie. The trie formulas are @world-model's (m02fcb0bd43e8): an inner node binds its
+  depth, its packed prefix, its child mask and its children; a leaf binds the id and the object leaf hash; the empty
+  trie is `BLAKE3-derive("pe.empty")`. The upper levels follow 6.2, with counts before the variable lists.
+  A malformed node has no hash, so a peer's bad node is a fault, never a panic.
+
+## S2 v1.1: bounded work per call
+
+@design-reviewer's review of docs/spec/app.md draft 1 (mf5074c5ab2fd): a repair's replay of up to `W_fg` (2 s,
+120-240 frames), or a rollback that deep, run in one tick, stalls the simulation thread, and agreement's votes and
+messages with it, for hundreds of milliseconds. So the replica re-simulates at most a budget per call
+(`Replica::set_budget`, in simulated time, a local setting) and resumes on the next call; `Advance::caught_up` says
+whether it reached the present; `root_at_cut` and `replay_to` return `RootError::Pending`, `import_at_cut`
+`ImportError::Pending`, to be called again on a later tick; `finalize` returns `NotReady` until the replica has
+re-simulated to the cut. Until it reaches the present again, `view` keeps the last view published there. M2's second
+copy later keeps the old prediction moving during a deep replay instead.
 
 ## The conflicts between proposals, and v0's rulings
 
 | # | Question | v0 takes | Who changes what |
 |---|---|---|---|
 | 1 | The tree calls' names | `node`, `export` (by `LeafKey`, so tables are repaired like objects; @diverge-eng, m454882c5cf87), `object_hashes` and `verify`, on `Tree`: pe-world's calls on one held root, reached through `Replica::tree(&root)`. The receiver of an import is pe-replica's `import_at_cut` (2) | replica.md drops `tree_node`, `object_state` and `patch` as seam names; pe-world's internal patch call is its own |
-| 2 | The import receiver | `Replica::import_at_cut(group, CutImport, source) -> Result<Hash, ImportError>`: every record checked against the agreed root first, then a replay to the present; `NeedsPhysicsImage` when a bound body is in it without the image | divergence.md 11.1's `import(at, records)` becomes this call |
-| 3 | How a replica is stepped | replica.md 8: `advance(present, source)`, `outcome`, `root_at_cut`, `finalize`, `replay_from_last_agreed`. Keyframes, save and restore stay inside the replica; permission checks are outcomes. Nobody outside restores an arbitrary state | world-model.md 9.2 and divergence.md 11.1 drop `step`, `save`, `restore` and `permits` from the trait. The driver loop is WS-state's `drive` in pe-replica (@harness-eng's 3.2) |
+| 2 | The import receiver | `Replica::import_at_cut(group, CutImport, source) -> Result<Hash, ImportError>`: every record checked against the target root first, then a replay to the present; `NeedsPhysicsImage` when a bound body is in it without the image; it moves neither `Cv` nor the floor (v1) | divergence.md 11.1's `import(at, records)` becomes this call |
+| 3 | How a replica is stepped | replica.md 8: `advance(present, source)`, `outcome`, `root_at_cut`, `finalize`, and rung 1 (`replay_to` since v1). Keyframes, save and restore stay inside the replica; permission checks are outcomes. Nobody outside restores an arbitrary state | world-model.md 9.2 and divergence.md 11.1 drop `step`, `save`, `restore` and `permits` from the trait. The driver loop is WS-state's `drive` in pe-replica (@harness-eng's 3.2) |
 | 4 | Roots | Named by `Hash`; held roots are reached through `Replica::tree`. A `Send` root handle comes with M2's fork | divergence.md's `Root` handle and `root_of` go |
 | 5 | `physics_image` | `physics_image(&Hash) -> Option<PhysicsImage>`, one blob with its check hash in v0 (provisional: chunking by hash with the Bulk lane) | divergence.md's `PhysicsBlobTree` waits for that |
 | 6 | The second copy (M2) | Not in v0. v1 adds a fork, per-group restore and step, and the footprint, with the merge | — |
@@ -79,13 +114,13 @@ case for @harness-eng: a non-voter at n = 4 that receives one of a final cut's e
 - **S1's byte layout** (format 1: `Entry::signing_bytes`, `SignedEntry::encode`) is provisional; WS-agree may change
   it in v1, through WS-seams. A chain's first entry carries its nonce, so anyone can check its chain id.
 - **The vote hold** (@iter-bench's N3): `hold_votes_from(frame)` and `release_votes_from(frame)`.
+- **The simulation rate** (the user, mc8dc9e5a6ffb): `SimRate`, 30 to 120 Hz in whole hertz, 60 by default;
+  `FrameClock::rate_hz` always returns one. pe-physics runs `ceil(240 / rate)` sub-steps (@vdw-physics).
 - **Voids name their cut:** `AgreeEvent::Voided { entry, author, reason, cut }`, so the harness checks that every
   void is decided by a final cut and that members agree on which (@harness-eng, m3bb675a96918).
 - **Root splits** carry each voter's self-test verdict (`RootSplit { roots: [(root, [(member, SelfTest)])] }`), for
   the tie rule at n = 2 (@diverge-eng, m454882c5cf87).
-- **Not in v0:** a node-hash function at the seam, so pe-diverge could check nodes during the descent. The formula is
-  pe-world's (world-model.md 6.2) and `Node` would need its depth; v1 adds it with @world-model. Until then a lying
-  source costs time, never correctness: `import_at_cut` checks every record's proof.
+- **The node hash at the seam** came in S2 v1 (`Node::hash`), above.
 - **macOS:** the vendored wasmtime's unwind registration through `dlsym` is untested there; no determinism claim for
   macOS until tier 2 runs a trap test on it (@design-reviewer's Low).
 - **Roots for votes:** S3 lists the cuts it wants roots for (`wants_roots`); the driver answers with
