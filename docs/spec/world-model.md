@@ -437,8 +437,12 @@ World
   with no M1 simplification (@coordinator-opus, m78746a465fd2):
   - a private world's template gives the admin role to its creator only;
   - others join under the home-world ruling [U m76967fa60b43]: friends as Guest, a role that has `EDIT` for the
-    slice's editing; the owner's confidants as admins;
+    slice's editing; the confidants of the world's admins as admins;
   - public worlds start strangers with no admin rights [U md2fa23dfa774, Q6]; that template is WS-gov's (M3).
+- **No separate world-ownership state** (the user, 19:50Z, via @coordinator-opus mfa5afc01f0ce): anyone with the
+  admin role is a co-owner of the world, so "owner" in a world means "an admin", and the world model stores no
+  ownership table or certificate chain. (An object's `Protection` owner, 7.8, is a different thing: the member who
+  created or imported that object.) How admins reconvene after a split is WS-gov's and WS-diverge's.
 
   How M1 decides who is a friend or a confidant (the relationship data of m9b1db6041d50) is WS-gov's and WS-app's;
   the M1 demo needs only the creator and one Guest.
