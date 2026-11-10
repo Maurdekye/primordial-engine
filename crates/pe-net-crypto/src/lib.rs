@@ -13,8 +13,8 @@
 //! Its reviewer is @design-reviewer, not the author (coordinator ruling mc64f7a24509e).
 
 #![forbid(unsafe_code)]
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable))]
 
 mod aead;
 mod hash;

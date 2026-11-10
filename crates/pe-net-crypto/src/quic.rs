@@ -37,6 +37,7 @@ pub struct Aes128GcmQuic;
 fn aead(key: &AeadKey) -> Aes128Gcm {
     match Aes128Gcm::new_from_slice(key.as_ref()) {
         Ok(c) => c,
+        #[allow(clippy::unreachable, reason = "rustls derives QUIC keys at aead_key_len() = 16 bytes")]
         Err(_) => unreachable!("rustls supplies aead_key_len() = 16 bytes"),
     }
 }
@@ -49,6 +50,7 @@ impl quic::Algorithm for Aes128GcmQuic {
     fn header_protection_key(&self, key: AeadKey) -> Box<dyn quic::HeaderProtectionKey> {
         let hp = match aes::Aes128::new_from_slice(key.as_ref()) {
             Ok(c) => c,
+            #[allow(clippy::unreachable, reason = "rustls derives QUIC keys at aead_key_len() = 16 bytes")]
             Err(_) => unreachable!("rustls supplies aead_key_len() = 16 bytes"),
         };
         Box::new(HeaderKey(hp))

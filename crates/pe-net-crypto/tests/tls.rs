@@ -7,30 +7,63 @@ use std::sync::Arc;
 
 use pe_net_crypto::identity::{AnyPeerKey, Identity, PinnedKey};
 
-fn pair(pin_right: bool) -> (rustls::ClientConnection, rustls::ServerConnection) {
+/// How a side presents itself.
+enum Present {
+    /// Its own key, signing with it.
+    Own,
+    /// The raw key of `named`, but CertificateVerify signed with its own key: claiming a key it can't prove.
+    Claims(Box<Identity>),
+    /// No client key at all (client side only).
+    Nothing,
+}
+
+fn certified(
+    id: &Identity,
+    how: &Present,
+    p: &rustls::crypto::CryptoProvider,
+) -> Option<Arc<rustls::sign::CertifiedKey>> {
+    let own = id.certified_key(p).unwrap();
+    match how {
+        Present::Own => Some(own),
+        Present::Claims(named) => Some(Arc::new(rustls::sign::CertifiedKey::new(
+            vec![rustls::pki_types::CertificateDer::from(named.spki().unwrap())],
+            own.key.clone(),
+        ))),
+        Present::Nothing => None,
+    }
+}
+
+fn pair_with(client: Present, server: Present, pin: [u8; 32]) -> (rustls::ClientConnection, rustls::ServerConnection) {
     let rng = pe_net_crypto::random::os();
     let sid = Identity::from_seed(&[1; 32]);
     let cid = Identity::from_seed(&[2; 32]);
-    let pin = if pin_right { sid.public() } else { Identity::from_seed(&[3; 32]).public() };
     let p = pe_net_crypto::provider_with(rng);
     let server = rustls::ServerConfig::builder_with_provider(p.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .with_client_cert_verifier(Arc::new(AnyPeerKey))
         .with_cert_resolver(Arc::new(rustls::server::AlwaysResolvesServerRawPublicKeys::new(
-            sid.certified_key(&p).unwrap(),
+            certified(&sid, &server, &p).unwrap(),
         )));
-    let client = rustls::ClientConfig::builder_with_provider(p.clone())
+    let builder = rustls::ClientConfig::builder_with_provider(p.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinnedKey::new(&pin).unwrap()))
-        .with_client_cert_resolver(Arc::new(rustls::client::AlwaysResolvesClientRawPublicKeys::new(
-            cid.certified_key(&p).unwrap(),
-        )));
+        .with_custom_certificate_verifier(Arc::new(PinnedKey::new(&pin).unwrap()));
+    let client = match certified(&cid, &client, &p) {
+        Some(ck) => {
+            builder.with_client_cert_resolver(Arc::new(rustls::client::AlwaysResolvesClientRawPublicKeys::new(ck)))
+        }
+        None => builder.with_no_client_auth(),
+    };
     let c = rustls::ClientConnection::new(Arc::new(client), "pe".try_into().unwrap()).unwrap();
     let s = rustls::ServerConnection::new(Arc::new(server)).unwrap();
     (c, s)
+}
+
+fn pair(pin_right: bool) -> (rustls::ClientConnection, rustls::ServerConnection) {
+    let pin = if pin_right { Identity::from_seed(&[1; 32]).public() } else { Identity::from_seed(&[3; 32]).public() };
+    pair_with(Present::Own, Present::Own, pin)
 }
 
 /// Moves TLS bytes from one side to the other; `$tamper` may change them. Evaluates to the receiver's result.
@@ -99,4 +132,37 @@ fn a_tampered_record_is_refused() {
         b[n - 3] ^= 0x01;
     });
     assert!(err.is_err(), "a flipped bit in a record must fail its AEAD check");
+}
+
+// The possession proof (@design-reviewer's Medium on pe-net-crypto): the key a side records is the key that
+// signed the handshake, not just bytes it was shown.
+
+#[test]
+fn a_dialler_claiming_a_key_it_cannot_sign_with_is_refused() {
+    // The client presents member K's raw key (K = seed 9) but signs CertificateVerify with its own key.
+    let (mut c, mut s) = pair_with(
+        Present::Claims(Box::new(Identity::from_seed(&[9; 32]))),
+        Present::Own,
+        Identity::from_seed(&[1; 32]).public(),
+    );
+    let r = handshake(&mut c, &mut s);
+    assert!(r.is_err(), "the server must refuse a CertificateVerify that doesn't match the presented key");
+    assert!(s.peer_certificates().is_none() || s.is_handshaking());
+}
+
+#[test]
+fn a_server_showing_the_pinned_key_but_signing_with_another_is_refused() {
+    // The server presents exactly the pinned key's bytes, but signs with a different key.
+    let pinned = Identity::from_seed(&[9; 32]);
+    let (mut c, mut s) =
+        pair_with(Present::Own, Present::Claims(Box::new(Identity::from_seed(&[9; 32]))), pinned.public());
+    assert!(handshake(&mut c, &mut s).is_err(), "the client must refuse a signature by another key");
+    assert!(c.is_handshaking());
+}
+
+#[test]
+fn a_dialler_with_no_key_is_refused() {
+    let (mut c, mut s) = pair_with(Present::Nothing, Present::Own, Identity::from_seed(&[1; 32]).public());
+    assert!(handshake(&mut c, &mut s).is_err(), "client authentication is mandatory");
+    assert!(s.peer_certificates().is_none());
 }

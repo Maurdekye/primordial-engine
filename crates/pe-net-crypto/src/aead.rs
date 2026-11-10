@@ -19,6 +19,7 @@ fn cipher(key: &AeadKey) -> Aes128Gcm {
     // rustls derives the key at the length key_len() asks for, so this is 16 bytes.
     match Aes128Gcm::new_from_slice(key.as_ref()) {
         Ok(c) => c,
+        #[allow(clippy::unreachable, reason = "rustls derives the key at key_len() = 16 bytes")]
         Err(_) => unreachable!("rustls supplies a 16-byte key"),
     }
 }
