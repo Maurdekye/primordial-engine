@@ -24,6 +24,10 @@ pub const CHUNK_EXP: i32 = 10;
 pub const CHUNK: f64 = 1024.0;
 /// The reserved chunk index (4.3): never valid, kept as M4's overflow marker.
 pub const RESERVED_CHUNK: i64 = i64::MIN;
+/// The finest supported cell level: cells of 2^-50 m. Sizes below [`MIN_EXTENT`] have no level.
+pub const MIN_LEVEL: i32 = -60;
+/// The coarsest supported cell level: one level-64 cell covers every valid chunk index.
+pub const MAX_LEVEL: i32 = 64;
 
 /// A position left the supported range, or was not finite (4.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,28 +101,43 @@ pub struct CellKey {
     pub c: [i128; 3],
 }
 
-/// Exact `2^e` for |e| < 1023.
-pub fn pow2(e: i32) -> f64 {
-    assert!(e > -1022 && e < 1023);
-    f64::from_bits(((e + 1023) as u64) << 52)
+/// The smallest extent that has a level (2^-50 m, about 1e-15 m): `level_for_extent` is at least [`MIN_LEVEL`].
+/// world-model.md 3.5 bounds `SimSize` and extents by it, so no data can reach a level outside the range.
+pub const MIN_EXTENT: f64 = f64::from_bits((1023 - 50) << 52);
+
+/// Exact `2^e`, for normal results (-1022 < e < 1023); `None` otherwise. Never panics (world-model.md 5.3).
+pub fn pow2(e: i32) -> Option<f64> {
+    (e > -1022 && e < 1023).then(|| f64::from_bits(((e + 1023) as u64) << 52))
 }
 
-/// Width of a level-`level` cell in metres.
-pub fn cell_size(level: i32) -> f64 {
+/// `2^e` for an exponent the code fixes (a constant in range).
+fn p2(e: i32) -> f64 {
+    pow2(e).expect("a constant exponent in range")
+}
+
+/// Width of a level-`level` cell in metres; `None` outside [`MIN_LEVEL`]..=[`MAX_LEVEL`].
+pub fn cell_size(level: i32) -> Option<f64> {
+    if !(MIN_LEVEL..=MAX_LEVEL).contains(&level) {
+        return None;
+    }
     pow2(CHUNK_EXP + level)
 }
 
-/// `ceil(log2(x))` for a positive normal `x`, read from the bit pattern (no transcendental).
-pub fn ceil_log2(x: f64) -> i32 {
-    assert!(x.is_normal() && x > 0.0, "ceil_log2 of {x}");
+/// `ceil(log2(x))` for a positive normal `x`, read from the bit pattern (no transcendental); `None` otherwise.
+pub fn ceil_log2(x: f64) -> Option<i32> {
+    if !(x.is_normal() && x > 0.0) {
+        return None;
+    }
     let bits = x.to_bits();
     let e = ((bits >> 52) & 0x7ff) as i32 - 1023;
-    if bits & ((1u64 << 52) - 1) == 0 { e } else { e + 1 }
+    Some(if bits & ((1u64 << 52) - 1) == 0 { e } else { e + 1 })
 }
 
-/// Smallest level whose cell is at least `extent` metres wide.
-pub fn level_for_extent(extent: f64) -> i32 {
-    ceil_log2(extent) - CHUNK_EXP
+/// Smallest level whose cell is at least `extent` metres wide; `None` if `extent` is not a positive normal number
+/// or its level is outside [`MIN_LEVEL`]..=[`MAX_LEVEL`] (an extent below [`MIN_EXTENT`]).
+pub fn level_for_extent(extent: f64) -> Option<i32> {
+    let l = ceil_log2(extent)? - CHUNK_EXP;
+    (MIN_LEVEL..=MAX_LEVEL).contains(&l).then_some(l)
 }
 
 fn valid_chunk(c: i128) -> Option<i64> {
@@ -143,8 +162,10 @@ impl Pos {
         Ok(Pos { chunk, local: [0.0; 3] })
     }
 
-    /// `self` moved by `d`. Exact in the chunk part; each axis's offset is rounded once (`local + d`), then carried
-    /// into whole chunks exactly. A non-finite `d` or a result past the range is [`OutOfRange`].
+    /// `self` moved by `d`. Exact in the chunk part. Each axis's offset is rounded in `local + d`, and may round once
+    /// more when it is carried into the chunk (`v - 1024 * floor(v / 1024)` is exact except for a small negative
+    /// `v`, where adding 1024 rounds); every step is a fixed IEEE operation, so the result is the same bits on every
+    /// machine. A non-finite `d` or a result past the range is [`OutOfRange`].
     pub fn checked_add(self, d: Offset) -> Result<Pos, OutOfRange> {
         let mut out = self;
         for a in 0..3 {
@@ -156,7 +177,7 @@ impl Pos {
             let k = (v / CHUNK).floor();
             let mut l = v - k * CHUNK;
             // |k| >= 2^64 chunks is out of range whatever the start; below that the cast is exact.
-            let mut kc: i128 = if k.abs() < pow2(64) { k as i128 } else { return Err(OutOfRange) };
+            let mut kc: i128 = if k.abs() < p2(64) { k as i128 } else { return Err(OutOfRange) };
             if l >= CHUNK {
                 // A negative v smaller than half an ulp of 1024 rounds to 1024: that is 0 of the next chunk.
                 l -= CHUNK;
@@ -187,20 +208,24 @@ impl Pos {
         (*self - *other).length2()
     }
 
-    /// The cell containing this position at `level`.
-    pub fn cell(&self, level: i32) -> CellKey {
+    /// The cell containing this position at `level`; `None` outside [`MIN_LEVEL`]..=[`MAX_LEVEL`].
+    pub fn cell(&self, level: i32) -> Option<CellKey> {
+        let size = cell_size(level)?;
         let mut c = [0i128; 3];
         for a in 0..3 {
             c[a] = if level >= 0 {
                 (self.chunk[a] as i128) >> level
             } else {
-                let k = -level;
-                assert!(k <= 60, "level {level} below the supported range");
-                let sub = (self.local[a] / cell_size(level)).floor() as i128; // exact: pow2 divide
-                ((self.chunk[a] as i128) << k) + sub
+                let sub = (self.local[a] / size).floor() as i128; // exact: pow2 divide
+                ((self.chunk[a] as i128) << -level) + sub
             };
         }
-        CellKey { level, c }
+        Some(CellKey { level, c })
+    }
+
+    /// The level-0 chunk index (exact, an integer like every cell).
+    pub fn chunk_index(&self) -> [i64; 3] {
+        self.chunk
     }
 
     /// The canonical encoding (4.5): per axis, the chunk index as a zigzag LEB128 varint, then the offset's 8
@@ -323,7 +348,7 @@ impl Default for PosRow {
 }
 
 impl CellKey {
-    pub fn size(&self) -> f64 {
+    pub fn size(&self) -> Option<f64> {
         cell_size(self.level)
     }
 
@@ -331,14 +356,19 @@ impl CellKey {
         CellKey { level: self.level + 1, c: [self.c[0] >> 1, self.c[1] >> 1, self.c[2] >> 1] }
     }
 
-    /// The minimum corner, for levels >= 0 (whole chunks, exact). `None` if it is out of range.
+    /// The minimum corner, for levels 0..=[`MAX_LEVEL`] (whole chunks, exact). `None` if it is out of range, including
+    /// a hand-made key whose shift would lose bits.
     pub fn min_corner(&self) -> Option<Pos> {
-        if self.level < 0 {
+        if !(0..=MAX_LEVEL).contains(&self.level) {
             return None;
         }
         let mut chunk = [0i64; 3];
         for a in 0..3 {
-            chunk[a] = valid_chunk(self.c[a].checked_shl(self.level as u32)?)?;
+            let v = self.c[a].checked_shl(self.level as u32)?;
+            if v >> self.level != self.c[a] {
+                return None;
+            }
+            chunk[a] = valid_chunk(v)?;
         }
         Some(Pos { chunk, local: [0.0; 3] })
     }
@@ -355,11 +385,11 @@ mod tests {
     #[test]
     fn carry_and_difference() {
         let q = p([0, 0, 0], [-0.25, 1024.0, 2048.5]);
-        assert_eq!(q.cell(0).c, [-1, 1, 2]);
+        assert_eq!(q.cell(0).unwrap().c, [-1, 1, 2]);
         assert_eq!(q - p([-1, 1, 2], [0.0; 3]), Offset([1023.75, 0.0, 0.5]));
         let far = p([5_000_000_000, 0, 0], [3.0, 0.0, 0.0]);
         let back = far.checked_sub(Offset([3072.0, 0.0, 0.0])).unwrap();
-        assert_eq!(back.cell(0).c[0], 4_999_999_997);
+        assert_eq!(back.cell(0).unwrap().c[0], 4_999_999_997);
         assert_eq!(back - far, Offset([-3072.0, 0.0, 0.0]));
         // The origin route: an explicit choice, coarse far away.
         assert_eq!(q - Pos::ORIGIN, Offset([-0.25, 1024.0, 2048.5]));
@@ -436,10 +466,10 @@ mod tests {
     #[test]
     fn owo_battery_corner_aligned() {
         for level in [-5, 0, 5, 10, 20] {
-            let s = cell_size(level);
+            let s = cell_size(level).unwrap();
             for (f, want) in [(0.3, 0i128), (-0.7, -1), (0.9, 0), (-0.0000001, -1), (1.0, 1)] {
                 let q = Pos::ORIGIN.checked_add(Offset([f * s, 0.0, 0.0])).unwrap();
-                assert_eq!(q.cell(level).c[0], want, "level {level} f {f}");
+                assert_eq!(q.cell(level).unwrap().c[0], want, "level {level} f {f}");
             }
         }
     }
@@ -448,17 +478,30 @@ mod tests {
     fn cells_nest() {
         for q in [p([-3, 7, i64::MAX / 2], [1.5, 1023.999, 0.0]), p([i64::MIN / 2, -1, 0], [0.000001, 512.0, 999.0])] {
             for level in -40..62 {
-                assert_eq!(q.cell(level).parent(), q.cell(level + 1), "level {level}");
+                assert_eq!(q.cell(level).unwrap().parent(), q.cell(level + 1).unwrap(), "level {level}");
             }
         }
-        let c = p([12, -9, 3], [5.0, 6.0, 7.0]).cell(2);
-        assert_eq!(c.min_corner().unwrap().cell(2), c);
+        let c = p([12, -9, 3], [5.0, 6.0, 7.0]).cell(2).unwrap();
+        assert_eq!(c.min_corner().unwrap().cell(2), Some(c));
+        // A hand-made key whose shift would lose bits has no corner (no wrap into the range).
+        assert_eq!(CellKey { level: 2, c: [i128::MAX / 2, 0, 0] }.min_corner(), None);
     }
 
     #[test]
     fn ceil_log2_matches() {
         for (x, e) in [(1.0, 0), (1.5, 1), (2.0, 1), (0.75, 0), (0.5, -1), (1024.0, 10), (1025.0, 11)] {
-            assert_eq!(ceil_log2(x), e, "{x}");
+            assert_eq!(ceil_log2(x), Some(e), "{x}");
         }
+        // No input panics (world-model.md 5.3): subnormal, zero, negative, NaN and tiny sizes give None.
+        for x in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MIN_POSITIVE / 2.0] {
+            assert_eq!(ceil_log2(x), None, "{x}");
+            assert_eq!(level_for_extent(x), None, "{x}");
+        }
+        assert_eq!(level_for_extent(1e-300), None);
+        assert_eq!(level_for_extent(MIN_EXTENT), Some(MIN_LEVEL));
+        assert_eq!(level_for_extent(MIN_EXTENT / 2.0), None);
+        assert_eq!(Pos::ORIGIN.cell(MIN_LEVEL - 1), None);
+        assert_eq!(Pos::ORIGIN.cell(MAX_LEVEL + 1), None);
+        assert_eq!(pow2(-1022), None);
     }
 }

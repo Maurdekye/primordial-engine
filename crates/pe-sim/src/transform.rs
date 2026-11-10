@@ -161,8 +161,7 @@ impl Component for Transform {
 /// A `Pos` as a chunk index and the offset from that chunk's corner. Only the wall's own operations are used:
 /// the integer cell at level 0, and `p - corner` (world-model.md 4.2).
 fn split(p: Pos) -> ([i64; 3], [f64; 3]) {
-    let c = p.cell(0).c;
-    let chunk = [c[0] as i64, c[1] as i64, c[2] as i64];
+    let chunk = p.chunk_index();
     let corner = Pos::at_chunk(chunk).expect("a valid Pos's chunk is valid");
     (chunk, (p - corner).0)
 }

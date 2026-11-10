@@ -364,6 +364,9 @@ accepted the details below (m8c42b4b093bd, via @coordinator-opus m04de7b0d9a18; 
   itself, and no rule needs to rewrite the stored value [I].
 - **Settable above the extent, up to the world maximum** (a world config value). An edit that sets it to zero, a
   non-finite value or above the maximum is refused.
+- **A floor of 2^-50 m** (`pe_core::coords::MIN_EXTENT`, about 1e-15 m; @chunks-reviewer's C2 on world/core-v1):
+  a `SimSize` below it is refused, and an extent below it counts as the floor, so every size has a cell level within
+  the supported range and no input can reach a level the engine cannot represent (5.3).
 - **Saved objects keep their relative size** (m8c42b4b093bd). A saved object (an inventory item, M5) records its
   `SimSize` divided by the saving player's scale; spawning it sets `SimSize` to that ratio times the spawning
   player's scale. So an object saved by a giant and spawned by a mouse is, for simulation distance, the same size

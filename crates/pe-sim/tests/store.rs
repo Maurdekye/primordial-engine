@@ -129,7 +129,7 @@ fn world_transforms_compose() {
     // +x local, rotated 90 degrees about +y, is -z; scaled by 2.
     let d = dsub(mid_w.pos, wp([3, 0, -2], [1023.5, 0.0, 0.0]));
     assert!((d[0]).abs() < 1e-6 && (d[2] + 2.0).abs() < 1e-6, "{d:?}");
-    assert_eq!(mid_w.pos.cell(0).c, [3, 0, -3], "the child crossed into the next chunk");
+    assert_eq!(mid_w.pos.chunk_index(), [3, 0, -3], "the child crossed into the next chunk");
     let under_w = s.world_transform(under).unwrap();
     let d2 = dsub(under_w.pos, mid_w.pos);
     assert!((d2[0] - 2.0).abs() < 1e-6, "+z local under the turned root is +x, scaled by 2: {d2:?}");
@@ -168,7 +168,7 @@ fn keep_world_edits() {
     // Detach to a root: placed in its world chunk, not at chunk 0.
     s.set_parent_keep_world(obj, None, None).unwrap();
     assert!(close(&s.world_transform(obj).unwrap(), &w_obj, 1e-9));
-    assert_eq!(s.get::<Transform>(obj).unwrap().chunk, w_obj.pos.cell(0).c.map(|c| c as i64));
+    assert_eq!(s.get::<Transform>(obj).unwrap().chunk, w_obj.pos.chunk_index());
     assert!(close(&s.world_transform(kid).unwrap(), &w_kid, 1e-9), "the subtree moves with it");
     // Under another parent, and under an object without a Transform (whose frame is `near`).
     s.set_parent(holder, Some(near), None).unwrap();
