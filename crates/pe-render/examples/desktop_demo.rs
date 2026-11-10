@@ -27,7 +27,7 @@ impl EffectSink for Print {
 
 fn object(id: u128, p: [f64; 3], v: [f32; 3], shape: Shape, color: [f32; 4], radius: f32) -> ViewObject {
     ViewObject {
-        id: ObjectId(id),
+        id: ObjectId::from_u128(id),
         class: ObjectClass::World,
         pos: Pos::ORIGIN.checked_add(Offset(p)).unwrap(),
         rotation: [0.0, 0.0, 0.0, 1.0],
