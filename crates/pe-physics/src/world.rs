@@ -674,14 +674,14 @@ impl PhysicsWorld {
     // Stepping and state
     // ---------------------------------------------------------------------------------------
 
-    /// Advance by `dt` seconds (0 < dt <= 1) in [`crate::SUBSTEPS`] sub-steps.
+    /// Advance by `dt` seconds (0 < dt <= 1) in the configuration's sub-steps ([`PhysicsConfig::sub_steps`]).
     pub fn step(&mut self, dt: f32) -> Result<(), PhysicsError> {
         self.usable()?;
         check_length_units()?;
         if !(dt.is_finite() && dt > 0.0 && dt <= 1.0) {
             return Err(PhysicsError::InvalidValue("step time"));
         }
-        self.world.step(dt, crate::config::SUBSTEPS);
+        self.world.step(dt, self.config.sub_steps);
         Ok(())
     }
 

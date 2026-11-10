@@ -30,7 +30,9 @@ mod error;
 mod image;
 mod world;
 
-pub use config::{PhysicsConfig, SUBSTEPS, engine_world_def};
+pub use config::{
+    PhysicsConfig, SUBSTEPS, TICK_HZ_DEFAULT, TICK_HZ_MAX, TICK_HZ_MIN, engine_world_def, sub_steps_for_rate,
+};
 pub use desc::{BodyDesc, BodyKind, Geometry, ShapeDesc, limits};
 pub use digest::BodyDigest;
 pub use error::PhysicsError;
