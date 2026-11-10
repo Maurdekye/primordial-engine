@@ -23,7 +23,7 @@ fn at(x: f64, y: f64, z: f64) -> Pos {
 
 fn ball(id: u128, p: Pos, v: [f32; 3]) -> ViewObject {
     ViewObject {
-        id: ObjectId(id),
+        id: ObjectId::from_u128(id),
         class: ObjectClass::World,
         pos: p,
         rotation: [0.0, 0.0, 0.0, 1.0],
@@ -384,7 +384,7 @@ fn own_hands_and_held_objects_are_never_corrected() {
         let mut layer = DisplayLayer::new(settings);
         let vols = volumes();
         let me = MemberKey([7; 32]);
-        let hand_id = ObjectId(10);
+        let hand_id = ObjectId::from_u128(10);
         let mut cues_on_ball = 0;
         let mut last_ball: Option<Pos> = None;
         for k in 0..120u64 {
@@ -414,7 +414,7 @@ fn own_hands_and_held_objects_are_never_corrected() {
                     key: EffectKey {
                         frame: Frame(40),
                         cause: EffectCause::Physics,
-                        object: ObjectId(1),
+                        object: ObjectId::from_u128(1),
                         kind: EffectKind::GrabLost,
                         ordinal: 0,
                     },
@@ -437,7 +437,7 @@ fn own_hands_and_held_objects_are_never_corrected() {
             };
             let out = layer.frame(FrameInput { view: &v, display_time: now, volumes: &vols, local: &local });
             let h = out.objects.iter().find(|o| o.id == hand_id).unwrap();
-            let bo = out.objects.iter().find(|o| o.id == ObjectId(1)).unwrap();
+            let bo = out.objects.iter().find(|o| o.id == ObjectId::from_u128(1)).unwrap();
             if !correct_own {
                 // The hand is drawn at the late-latched pose (an f32 rig pose, hence 1e-6).
                 assert!(dist(h.pose.pos, at(0.25, 0.1, -0.5)) < 1e-6);
@@ -507,7 +507,7 @@ fn effect(frame: u64, own: bool, resimulated: bool, trigger_arrived: Option<Host
         key: EffectKey {
             frame: Frame(frame),
             cause: EffectCause::Physics,
-            object: ObjectId(1),
+            object: ObjectId::from_u128(1),
             kind: EffectKind::ContactBegin,
             ordinal: 0,
         },
