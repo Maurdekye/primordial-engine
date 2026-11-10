@@ -1,0 +1,46 @@
+# The secret scan of the landing gate (scripts/gate.sh): gitleaks (the version pinned in
+# scripts/install_gitleaks.sh) with its 222 default rules, this project's own rules, and the reviewed
+# exceptions below. The gate runs gitleaks with --ignore-gitleaks-allow, so an inline `gitleaks:allow`
+# comment never lets a line through: every exception is an [[allowlists]] entry in this file, with its
+# reason, approved by the landing's reviewer like any other change.
+
+title = "primordial-engine landing gate"
+
+[extend]
+useDefault = true
+
+# The project's own secret formats.
+
+[[rules]]
+id = "pe-member-key-file"
+description = "A pe-app member signing-key file: `pe-app session-new` writes member-<id>.key, the member's Ed25519 seed in hex (crates/pe-app/src/main.rs:108); it never belongs in the repository"
+path = '''(^|/)member-[0-9]+\.key$'''
+
+[[rules]]
+id = "key-file-by-name"
+description = "A file named like a private key or a key store (none is tracked today)"
+path = '''(?i)(^|/)(id_(rsa|dsa|ecdsa|ed25519)(_sk)?|[^/]+\.(key|pem|p12|pfx|ppk|jks|keystore|kdbx))$'''
+
+[[rules]]
+id = "tailscale-key"
+description = "A Tailscale auth, API or OAuth client key (the user's machines meet over Tailscale; no default rule covers it)"
+regex = '''\btskey-[a-z]+-[0-9A-Za-z_-]{20,}'''
+keywords = ["tskey-"]
+
+# Reviewed exceptions, each matched on its exact line, so a changed line is scanned again.
+
+[[allowlists]]
+description = "pe-app session files: members[].key is each member's Ed25519 VERIFYING key, public by design (crates/pe-app/src/main.rs:110 writes hex(verifying_key); config.rs:86 reads it as one), and nonce is the session's shared nonce"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(^|/)session\.json$''']
+regexTarget = "line"
+regexes = ['''^\+?\s*"(key|nonce)"\s*:\s*"[0-9a-f]{64}",?\s*$''']
+
+[[allowlists]]
+description = "box3d-fork test: a made-up registry tag key, an integer literal"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^crates/box3d-fork/src/recording_replay_tests_registry\.rs$''']
+regexTarget = "line"
+regexes = ['''^\+?\s*let key = 0x1234_5678_9ABC_DEF0u64;\s*$''']
