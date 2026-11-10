@@ -36,8 +36,12 @@ terms=${PE_PUBLISH_TERMS:-scripts/publish_terms.local}
 
 if [ "${1:-}" = --history ]; then
   shift
+  # publish_history.py reads its flags before the two term files, so they go first (they used to follow
+  # the files and reached git log as revision arguments).
+  flags=()
+  while [ $# -gt 0 ] && { [ "$1" = --ignore-identity ] || [ "$1" = --blobs ]; }; do flags+=("$1"); shift; done
   [ $# -gt 0 ] || { echo "publish_check: --history needs a revision range"; exit 2; }
-  exec python -I scripts/publish_history.py "$terms" "${PE_PUBLISH_HISTORY_TERMS:-scripts/publish_history_terms.local}" "$@"
+  exec python -I scripts/publish_history.py ${flags[@]+"${flags[@]}"} "$terms" "${PE_PUBLISH_HISTORY_TERMS:-scripts/publish_history_terms.local}" "$@"
 fi
 
 ref=HEAD
