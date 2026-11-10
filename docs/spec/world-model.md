@@ -153,6 +153,7 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   | `Light` | kind, colour, intensity, range | edits |
   | `Hand` | the owning `MemberKey`, side, grip, engaged | inputs of its owner only (section 8) |
   | `Edited` | the per-instance edit versions of section 7.3 | the edit path only |
+  | `SimSize` | the simulation size of 3.5 | set at creation; edits |
 
 - **The registry is world state** [I]. Today it is configuration shared by every peer [V `registry.rs:217-222`]. With
   a logic edit in M1 [U mc40fc6379bc6, U1], a module that declares components changes the schema at a frame. So:
@@ -185,6 +186,23 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   the edit names [I].
 - **Limits:** a blob is at most 64 MiB in M1; a transaction introduces at most 256 MiB [I, a guard against
   flooding, to tune].
+
+### 3.5 Simulation size
+
+The user (maa60620a6ced, via @coordinator-opus m78c6bd2b2bf5; file 16, 6.4): every object has a nonzero "size" used
+purely for simulation distance, with no bearing on collision, and it gets a reasonable default at creation. Pending
+the user's confirmation, the design is [I, after the coordinator's brief]:
+
+- **Every `World` object has a `SimSize` row,** in metres: positive and finite. It never affects physics, drawing or
+  collision; WS-regions reads it to choose the object's layer (M4).
+- **The default at creation** is 1 m times the scale of the member who made it (the maker's avatar scale at the
+  edit's frame). Objects made by world logic or at genesis take 1 m times the spawner's world scale [I].
+- **Never below the real extent.** The size WS-regions uses is `max(SimSize, extent)`, where the extent is the
+  object's world-space bounding size from its `Shape` and world scale. So an object that grows is never smaller than
+  itself, and no rule needs to rewrite the stored value [I].
+- **Settable above the extent, up to the world maximum** (a world config value). An edit that sets it to zero, a
+  non-finite value or above the maximum is refused.
+- It is an ordinary component: hashed, versioned (7.3), and written by plain edits.
 
 ## 4. Coordinates: `Pos`, `Offset` and the wall
 
@@ -647,10 +665,10 @@ For the reviewers and the coordinator. None needs the user, as far as I can see 
    agent that read a ball's position and then sets it with a precondition overwrites wherever physics has moved it.
    That is a plain write in effect, which I think is right for poses.
 4. **Tombstone lifetime** (7.5): one minute, tied to the unconfirmed-play bound.
-5. **`pos.cell(level)` and the wall** (4.2): integer cells are exact, so I keep them, but they are a form of absolute
-   number. If the user's "absolute numbers only by subtracting the origin" is meant to cover integers too, cells move
-   behind the regions crate. This is the one point that might need the user; I read the ruling as aimed at lossy
-   floats.
+5. **`pos.cell(level)` and the wall** (4.2): kept. @coordinator-opus ruled (m707c519c0bcf): the user's concern was
+   precision loss, and exact integer cells cannot lose it [I, the coordinator's reading]; the liaison tells the user,
+   who may correct it.
+10. **Simulation size** (3.5): the default, the extent floor and the maximum await the user's confirmation.
 6. **The engine under the wall** (4.2): no internal escape hatch. It costs a few explicit `- origin` subtractions in
    physics and rendering, and buys a wall nobody has to trust.
 7. **Missing blobs never stop the world** (3.4), narrowing D17's "a missing artifact pauses that peer" to what needs
