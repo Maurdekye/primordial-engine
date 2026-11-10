@@ -7,8 +7,8 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use core::mem::offset_of;
 use pe_core::clock::TickRate;
-use pe_core::coords::WorldPos;
-use pe_core::{dmath, ObjectId};
+use pe_core::coords::{Offset, Pos};
+use pe_core::{Frame, LineId, ObjectId, dmath};
 use pe_sim::registry::{Component, ComponentDesc, ComponentId, FieldDesc, FieldKind, Registry};
 use pe_sim::{Schedule, SimStore, TickCtx, Transform};
 
@@ -34,12 +34,16 @@ impl Component for Velocity {
 pub const HEAT: ComponentId = ComponentId(1025);
 
 pub fn heat_desc() -> ComponentDesc {
-    ComponentDesc::new(HEAT, "Heat", vec![
-        FieldDesc::new("t", FieldKind::F64, 0, 1),
-        FieldDesc::new("ticks", FieldKind::U32, 8, 1),
-        FieldDesc::new("hot", FieldKind::Bool, 12, 1),
-        FieldDesc::new("_pad", FieldKind::U8, 13, 3),
-    ])
+    ComponentDesc::new(
+        HEAT,
+        "Heat",
+        vec![
+            FieldDesc::new("t", FieldKind::F64, 0, 1),
+            FieldDesc::new("ticks", FieldKind::U32, 8, 1),
+            FieldDesc::new("hot", FieldKind::Bool, 12, 1),
+            FieldDesc::new("_pad", FieldKind::U8, 13, 3),
+        ],
+    )
     .unwrap()
 }
 
@@ -72,12 +76,14 @@ fn spawn(store: &mut SimStore, ctx: &TickCtx) {
         return;
     }
     let mut rng = ctx.rng(1);
-    let creator = 1 + rng.below(3) as u32;
-    let id = store.create(creator).unwrap();
+    let _creator = 1 + rng.below(3) as u32; // kept: the RNG stream's draws are unchanged
+    // A logic spawn (world-model.md 2.1): one per frame here, so n = 0.
+    let id = ObjectId::spawned(LineId::origin(), ObjectId::NONE, Frame(ctx.frame.0), 0);
+    store.create(id).unwrap();
     let parent = if rng.next_f32() < 0.4 { pick(store, ctx, 2).filter(|&p| p != id) } else { None };
     let t = match parent {
         Some(_) => Transform::local([rng.range_f32(-2.0, 2.0) as f64, rng.range_f32(0.0, 1.0) as f64, 0.5]),
-        None => Transform::at(WorldPos::new(
+        None => Transform::at(wp(
             [rng.below(5) as i64 - 2, 0, -(rng.below(3) as i64)],
             [rng.range_f32(0.0, 1024.0) as f64, rng.next_f64() * 10.0, rng.range_f32(0.0, 1024.0) as f64],
         )),
@@ -156,4 +162,40 @@ pub const SEED: u64 = 0x5EED_0FC0_FFEE;
 
 pub fn new_store() -> SimStore {
     SimStore::new(registry(), SEED)
+}
+
+/// A test id: the old `(creator, counter)` packed into the low 64 bits.
+pub fn oid(creator: u32, counter: u32) -> ObjectId {
+    ObjectId::from_u128(((creator as u128) << 32) | counter as u128)
+}
+
+/// A test position: `chunk`'s corner moved by `local`.
+pub fn wp(chunk: [i64; 3], local: [f64; 3]) -> Pos {
+    Pos::at_chunk(chunk).unwrap().checked_add(Offset(local)).unwrap()
+}
+
+/// `a - b` as plain numbers (the wall's own operation).
+pub fn dsub(a: Pos, b: Pos) -> [f64; 3] {
+    (a - b).0
+}
+
+/// Test-only id allocation: the next `oid(creator, k)` after the largest live one.
+pub trait Mk {
+    fn mk(&mut self, creator: u32) -> ObjectId;
+}
+
+impl Mk for SimStore {
+    fn mk(&mut self, creator: u32) -> ObjectId {
+        let next = self
+            .objects()
+            .iter()
+            .filter(|o| (o.to_u128() >> 32) as u32 == creator && o.to_u128() >> 64 == 0)
+            .map(|o| o.to_u128() as u32)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let id = oid(creator, next);
+        self.create(id).unwrap();
+        id
+    }
 }

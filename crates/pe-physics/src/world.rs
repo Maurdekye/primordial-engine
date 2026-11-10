@@ -690,8 +690,7 @@ impl PhysicsWorld {
         h.write_u64(self.box3d_hash()?);
         h.write_u64(self.bodies.len() as u64);
         for (id, body) in &self.bodies {
-            h.write_u32(id.creator);
-            h.write_u32(id.counter);
+            h.write(&id.to_u128().to_le_bytes());
             h.write_u32(body.index1 as u32);
             h.write_u32(body.generation as u32);
         }
@@ -767,7 +766,9 @@ impl PhysicsWorld {
             None => Transform { chunk: origin, pos: p, rot, scale: current.scale, _pad: 0 }.rebased(),
             Some(f) => {
                 let fw = store.world_transform(f).expect("a frame has a Transform");
-                let target = WorldTransform { pos: pe_core::coords::WorldPos::new(origin, p), rot, scale: [1.0; 3] };
+                // `origin`'s corner moved by the body's region-frame position: the wall's own operations.
+                let pos = pe_core::Pos::at_chunk(origin).ok()?.checked_add(pe_core::Offset(p)).ok()?;
+                let target = WorldTransform { pos, rot, scale: [1.0; 3] };
                 Transform { scale: current.scale, ..target.local_in(Some(&fw)) }
             }
         };

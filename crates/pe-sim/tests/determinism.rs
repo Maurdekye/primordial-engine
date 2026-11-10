@@ -3,8 +3,8 @@
 
 mod scenario;
 
+use pe_core::Frame;
 use pe_core::hash::Hasher;
-use pe_core::{Frame, ObjectId};
 use pe_sim::{SimStore, Snapshot, Transform};
 use scenario::*;
 
@@ -39,7 +39,12 @@ fn rollback_resimulation_is_identical() {
         assert_eq!(b.state_hash(), s.state_hash());
         let start = s.frame().0;
         if start > 0 {
-            assert_eq!(s.state_hash(), hashes[start as usize - 1], "snapshot at {start} is the state after frame {}", start - 1);
+            assert_eq!(
+                s.state_hash(),
+                hashes[start as usize - 1],
+                "snapshot at {start} is the state after frame {}",
+                start - 1
+            );
         }
         for f in start..600 {
             sched.tick(&mut a, |_, _| {});
@@ -89,9 +94,10 @@ fn serialization_round_trip_is_bit_exact() {
         s.world_transforms()
             .iter()
             .flat_map(|(id, w)| {
-                let mut v = vec![id.to_u64()];
-                v.extend(w.pos.chunk.iter().map(|&c| c as u64));
-                v.extend(w.pos.local.iter().map(|x| x.to_bits()));
+                let mut v = vec![(id.to_u128() >> 64) as u64, id.to_u128() as u64];
+                let mut b = Vec::new();
+                w.pos.encode(&mut b);
+                v.extend(b.iter().map(|&x| x as u64));
                 v.extend(w.rot.iter().chain(&w.scale).map(|x| x.to_bits() as u64));
                 v
             })
@@ -125,7 +131,7 @@ fn corrupt_or_mismatched_bytes_are_refused() {
     assert!(Snapshot::from_bytes(&bytes, &bare).is_err());
     let mut other = SimStore::new(bare, SEED);
     for _ in 0..10 {
-        let o = other.create(4).unwrap();
+        let o = other.mk(4);
         other.insert(o, Transform::local([1.0, 2.0, 3.0])).unwrap();
     }
     let (h, b) = (other.state_hash(), other.snapshot().to_bytes());
@@ -141,11 +147,11 @@ fn corrupt_or_mismatched_bytes_are_refused() {
 fn hash_ignores_history_only_state() {
     // The same final state reached by different operation orders hashes and serializes identically.
     let reg = registry();
-    let ids = [ObjectId::new(2, 1), ObjectId::new(1, 3), ObjectId::new(1, 1), ObjectId::new(3, 7)];
+    let ids = [oid(2, 1), oid(1, 3), oid(1, 1), oid(3, 7)];
     let build = |order: &[usize], comps_first: bool| {
         let mut s = SimStore::new(reg.clone(), SEED);
         for &i in order {
-            s.create_with_id(ids[i]).unwrap();
+            s.create(ids[i]).unwrap();
         }
         let add = |s: &mut SimStore| {
             for &i in order.iter().rev() {
@@ -177,8 +183,10 @@ fn hash_ignores_history_only_state() {
 
 /// Golden values for the cross-platform check (P2-1 "done": equal on Windows and Linux). They were
 /// recorded on Windows x64; a different value on any target is a determinism bug, not a test to update.
-const GOLDEN_TRACE: u64 = 0x820d14b183fb6434;
-const GOLDEN_WORLD: u64 = 0xa15e17ef2b97bc12;
+/// Re-blessed 2026-11-10 (world/core-v1) for a change of format on every target at once: 128-bit derived ids, logic
+/// spawns by `ObjectId::spawned`, and positions hashed through `Pos::encode`. Linux must reproduce them.
+const GOLDEN_TRACE: u64 = 0x06ab_671a_812a_ed50;
+const GOLDEN_WORLD: u64 = 0x10d0_04da_da21_7a97;
 
 #[test]
 fn golden_trace() {
@@ -190,19 +198,20 @@ fn golden_trace() {
     let trace = h.finish();
     let mut w = Hasher::new(0);
     for (id, t) in store.world_transforms() {
-        w.write_u64(id.to_u64());
-        for c in t.pos.chunk {
-            w.write_u64(c as u64);
-        }
-        for x in t.pos.local {
-            w.write_u64(x.to_bits());
-        }
+        w.write(&id.to_u128().to_le_bytes());
+        let mut b = Vec::new();
+        t.pos.encode(&mut b);
+        w.write(&b);
         for x in t.rot.iter().chain(&t.scale) {
             w.write_u32(x.to_bits());
         }
     }
     let world = w.finish();
-    println!("RESULT golden objects={} frame={} trace={trace:#018x} world={world:#018x}", store.objects().len(), store.frame().0);
+    println!(
+        "RESULT golden objects={} frame={} trace={trace:#018x} world={world:#018x}",
+        store.objects().len(),
+        store.frame().0
+    );
     assert_eq!(store.frame(), Frame(600));
     assert_eq!((trace, world), (GOLDEN_TRACE, GOLDEN_WORLD), "golden digests changed");
 }

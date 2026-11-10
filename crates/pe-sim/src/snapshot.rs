@@ -18,11 +18,11 @@ use pe_core::{Error, Frame, ObjectId};
 
 use crate::column::Column;
 use crate::hierarchy::Node;
-use crate::transform::Transform;
 use crate::registry::{ComponentId, Registry};
 use crate::store::SimStore;
+use crate::transform::Transform;
 
-const MAGIC: &[u8; 8] = b"PESNAP01";
+const MAGIC: &[u8; 8] = b"PESNAP02"; // 02: 128-bit object and component ids, no counters
 const HASH_SEED: u64 = 0x5045_5354_4154_4531; // "PESTATE1"
 
 #[derive(Clone, Debug)]
@@ -38,7 +38,6 @@ pub struct Snapshot {
     frame: Frame,
     seed: u64,
     objects: Arc<Vec<ObjectId>>,
-    counters: Arc<Vec<ObjectId>>,
     columns: Vec<SnapColumn>,
 }
 
@@ -46,7 +45,6 @@ fn hash_state<'a>(
     frame: Frame,
     seed: u64,
     objects: &[ObjectId],
-    counters: &[ObjectId],
     columns: impl Iterator<Item = (ComponentId, u64, &'a Column)>,
 ) -> u64 {
     let mut h = Hasher::new(HASH_SEED);
@@ -54,13 +52,11 @@ fn hash_state<'a>(
     h.write_u64(seed);
     h.write_u64(objects.len() as u64);
     h.write(bytemuck::cast_slice(objects));
-    h.write_u64(counters.len() as u64);
-    h.write(bytemuck::cast_slice(counters));
     for (id, schema, col) in columns {
         if col.len() == 0 {
             continue;
         }
-        h.write_u32(id.0);
+        h.write(&id.0.to_le_bytes());
         h.write_u64(schema);
         h.write_u64(col.len() as u64);
         h.write(bytemuck::cast_slice(&col.ids));
@@ -76,7 +72,6 @@ impl SimStore {
             frame: self.frame,
             seed: self.seed,
             objects: Arc::clone(&self.objects),
-            counters: Arc::clone(&self.counters),
             columns: self
                 .columns
                 .iter()
@@ -102,19 +97,17 @@ impl SimStore {
         self.frame = s.frame;
         self.seed = s.seed;
         self.objects = Arc::clone(&s.objects);
-        self.counters = Arc::clone(&s.counters);
         self.columns = s.columns.iter().map(|c| (c.id, c.col.clone())).collect();
         Ok(())
     }
 
-    /// The state hash (9.1): frame, seed, objects, counters and every non-empty column with its schema.
+    /// The state hash (9.1): frame, seed, objects and every non-empty column with its schema.
     pub fn state_hash(&self) -> u64 {
         let reg = &self.registry;
         hash_state(
             self.frame,
             self.seed,
             &self.objects,
-            &self.counters,
             self.columns.iter().map(|(&id, col)| (id, reg.get(id).map_or(0, |d| d.schema_hash()), col)),
         )
     }
@@ -126,13 +119,7 @@ impl Snapshot {
     }
 
     pub fn state_hash(&self) -> u64 {
-        hash_state(
-            self.frame,
-            self.seed,
-            &self.objects,
-            &self.counters,
-            self.columns.iter().map(|c| (c.id, c.schema_hash, &c.col)),
-        )
+        hash_state(self.frame, self.seed, &self.objects, self.columns.iter().map(|c| (c.id, c.schema_hash, &c.col)))
     }
 
     /// Bytes of row data held (ids excluded): what a deep copy of this snapshot would copy.
@@ -142,14 +129,15 @@ impl Snapshot {
 
     /// The canonical serialization (little-endian).
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64 + self.objects.len() * 8 + self.columns.iter().map(|c| c.col.len() * (8 + c.col.size) + 24).sum::<usize>());
+        let mut out = Vec::with_capacity(
+            64 + self.objects.len() * 16
+                + self.columns.iter().map(|c| c.col.len() * (16 + c.col.size) + 40).sum::<usize>(),
+        );
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&self.frame.0.to_le_bytes());
         out.extend_from_slice(&self.seed.to_le_bytes());
         out.extend_from_slice(&(self.objects.len() as u64).to_le_bytes());
         out.extend_from_slice(bytemuck::cast_slice(&self.objects));
-        out.extend_from_slice(&(self.counters.len() as u64).to_le_bytes());
-        out.extend_from_slice(bytemuck::cast_slice(&self.counters));
         out.extend_from_slice(&(self.columns.len() as u32).to_le_bytes());
         for c in &self.columns {
             out.extend_from_slice(&c.id.0.to_le_bytes());
@@ -177,22 +165,10 @@ impl Snapshot {
         if !strictly_sorted(&objects) || objects.iter().any(|o| o.is_none()) {
             return Err(Error::Corrupt("object table not sorted"));
         }
-        let counters = r.ids()?;
-        if !counters.windows(2).all(|w| w[0].creator < w[1].creator) {
-            return Err(Error::Corrupt("counters not sorted"));
-        }
-        for o in &objects {
-            let ok = counters
-                .binary_search_by_key(&o.creator, |c| c.creator)
-                .is_ok_and(|i| counters[i].counter >= o.counter);
-            if !ok {
-                return Err(Error::Corrupt("object id beyond its creator's counter"));
-            }
-        }
         let n = r.u32()? as usize;
         let mut columns: Vec<SnapColumn> = Vec::with_capacity(n.min(4096));
         for _ in 0..n {
-            let id = ComponentId(r.u32()?);
+            let id = ComponentId(r.u128()?);
             let schema_hash = r.u64()?;
             let size = r.u32()? as usize;
             let desc = registry.get(id).ok_or(Error::UnknownComponent(id.0))?;
@@ -218,7 +194,11 @@ impl Snapshot {
             }
             let mut words = vec![0u64; data.len().div_ceil(8)];
             bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..data.len()].copy_from_slice(data);
-            columns.push(SnapColumn { id, schema_hash, col: Column { size, ids: Arc::new(ids), data: Arc::new(words) } });
+            columns.push(SnapColumn {
+                id,
+                schema_hash,
+                col: Column { size, ids: Arc::new(ids), data: Arc::new(words) },
+            });
         }
         if r.at != bytes.len() {
             return Err(Error::Corrupt("trailing bytes"));
@@ -237,12 +217,16 @@ impl Snapshot {
                 let has_frame = frames(&n.col.ids, node_rows, &tc.col.ids);
                 for (i, t) in ts.iter().enumerate() {
                     if let Err(field) = t.validate(has_frame[i]) {
-                        return Err(Error::InvalidValue { component: ComponentId::TRANSFORM.0, object: tc.col.ids[i], field: field.to_string() });
+                        return Err(Error::InvalidValue {
+                            component: ComponentId::TRANSFORM.0,
+                            object: tc.col.ids[i],
+                            field: field.to_string(),
+                        });
                     }
                 }
             }
         }
-        Ok(Snapshot { frame, seed, objects: Arc::new(objects), counters: Arc::new(counters), columns })
+        Ok(Snapshot { frame, seed, objects: Arc::new(objects), columns })
     }
 }
 
@@ -318,7 +302,8 @@ fn frames(ids: &[ObjectId], nodes: &[Node], transformed: &[ObjectId]) -> Vec<boo
     let has_t: Vec<bool> = ids.iter().map(|i| transformed.binary_search(i).is_ok()).collect();
     // Depth-first from the roots, carrying "an ancestor has a Transform".
     let mut framed = vec![false; ids.len()];
-    let mut stack: Vec<(usize, bool)> = (0..ids.len()).filter(|&i| nodes[i].parent.is_none()).map(|i| (i, false)).collect();
+    let mut stack: Vec<(usize, bool)> =
+        (0..ids.len()).filter(|&i| nodes[i].parent.is_none()).map(|i| (i, false)).collect();
     while let Some((i, above)) = stack.pop() {
         framed[i] = above;
         let mut at = nodes[i].first_child;
@@ -352,6 +337,10 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
 
+    fn u128(&mut self) -> Result<u128, Error> {
+        Ok(u128::from_le_bytes(self.take(16)?.try_into().unwrap()))
+    }
+
     fn u64(&mut self) -> Result<u64, Error> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
@@ -363,8 +352,9 @@ impl<'a> Reader<'a> {
     }
 
     fn ids_n(&mut self, n: usize) -> Result<Vec<ObjectId>, Error> {
-        let raw = self.take(n.checked_mul(8).ok_or(Error::Corrupt("size overflow"))?)?;
-        Ok(raw.as_chunks::<8>().0.iter().map(|c| bytemuck::pod_read_unaligned::<ObjectId>(c)).collect())
+        const W: usize = core::mem::size_of::<ObjectId>();
+        let raw = self.take(n.checked_mul(W).ok_or(Error::Corrupt("size overflow"))?)?;
+        Ok(raw.as_chunks::<W>().0.iter().map(|c| bytemuck::pod_read_unaligned::<ObjectId>(c)).collect())
     }
 
     fn ids(&mut self) -> Result<Vec<ObjectId>, Error> {
@@ -378,7 +368,7 @@ mod tests {
     use super::*;
 
     fn id(n: u32) -> ObjectId {
-        ObjectId::new(1, n)
+        ObjectId::from_u128(n as u128)
     }
 
     #[test]

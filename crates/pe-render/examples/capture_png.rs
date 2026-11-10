@@ -31,7 +31,7 @@ fn main() {
             _ => 1.0,
         };
         s.items.push(DrawItem {
-            id: ObjectId(id),
+            id: ObjectId::from_u128(id),
             pose: WorldPose { pos: at(p), rot: DQuat::from_rotation_y(0.6) },
             scale: [1.0; 3],
             shape,

@@ -72,8 +72,7 @@ impl Writer {
         self.f32(v.z);
     }
     fn id(&mut self, id: ObjectId) {
-        self.u32(id.creator);
-        self.u32(id.counter);
+        self.0.update(&id.to_u128().to_le_bytes());
     }
 }
 
