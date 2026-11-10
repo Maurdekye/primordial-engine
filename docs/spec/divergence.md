@@ -333,11 +333,16 @@ WS-state's (P2).
 is stable across replays [I]: `(frame, causing entry's hash or "physics", object id, event kind, ordinal within
 that object's events that frame)`.
 - A key already played is never played again.
-- **Stale effects are not played.** A replay can reach back a long way: up to `W_fg` in the foreground, and up to
-  `T_diverge` for a merge applied at its application frame. A one-shot effect whose frame is older than
-  `T_stale_effect` before the drawn time is never played, even if its key is new; sustained state (a lamp that is
-  now on) shows as state, not as an effect. So the set of played keys needs keeping only for `T_stale_effect`, not
-  for a minute [I].
+- **Old effects are judged by when their cause arrived, not by their frame.** A replay can reach back a long way:
+  up to `W_fg` in the foreground, and up to `T_diverge` for a merge applied at its application frame. So [I;
+  design-reviewer, review of cd2e9fc9]:
+  - a one-shot effect with a new key plays once if its causing entry **arrived at this machine within
+    `T_effect_lag`** of the effect's frame (the poor-link target, 1 s [R meef4f248923b]). A remote push that
+    arrives 0.3-1 s late still sounds its collision;
+  - an effect that arises only from a merge applied at `A`, or from a replay with no newly arrived cause (a repair,
+    a re-simulation), is never played. Sustained state (a lamp that is now on) shows as state, not as an effect.
+    That prevents a burst of old sounds;
+  - the set of played keys then covers `W_fg` (2 s), not a minute.
 - A sustained effect whose event disappears after a replay is stopped, faded over `T_blend`.
 - Effects of the local player's own actions play at once.
 - Effects of others' actions not yet final may wait `D_effect`. [I] Default 0 s, for immediacy;
@@ -350,6 +355,7 @@ that object's events that frame)`.
 (R2). Interpolation is not a correction and does not count as one.
 
 **Tests (WS-render's, in its crate, against pe-harness scenarios):**
+- a remote push at 0.6 s one-way delay plays its collision sound exactly once; a 60 s merge plays none;
 - the drawn pose reaches the simulated pose within `T_blend` of the last correction, to within float tolerance;
 - `own_error == 0` in every scenario, including lost grabs and repairs;
 - a replayed event's effect fires once; an undone event's sustained effect stops;
@@ -805,7 +811,7 @@ mid-session never moves a bound that is already running [design-reviewer].
 | `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |
 | `E_small`, `E_snap` | Error thresholds | 5 cm or 10°; 1 m or 90° |
 | `D_effect` | Delay of others' unconfirmed effects | 0 s |
-| `T_stale_effect` | Age past which a newly seen one-shot effect is not played | 0.25 s |
+| `T_effect_lag` | Greatest lag, from an effect's frame to the arrival of its cause, at which a new one-shot effect still plays | 1 s, the poor-link target [R meef4f248923b] |
 | `E_merge` | Pose tolerance within which a group only one side touched counts as unchanged after a merge | Set from the M1 headset tuning: at most the display layer's sub-visible threshold. 5 cm or 10° is visible in VR at arm's length [design-reviewer] |
 | `R_merge` | Replay rate assumed when setting a merge's application frame | 2x real time |
 | `T_merge` | Divergence past which a merge replaces the ordinary rollback | 2 s [R mf7daea6446ca] |
