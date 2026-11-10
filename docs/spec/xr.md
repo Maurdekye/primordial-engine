@@ -387,8 +387,10 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
 
 ### 7.2 Rates
 
-- **Display rate:** pe-xr asks for 90 Hz with `XR_FB_display_refresh_rate` where offered, and otherwise takes the
-  runtime's rate. It reports the rate it got. Virtual Desktop's runtime ran the Quest 3 at 120 Hz (a constant 8.333 ms
+- **Display rate:** designed for 120 Hz, the rate observed, with 90 Hz (the D4 target) as a supported setting
+  (@coordinator-opus, m809f182b5033, until the user answers X9). By default pe-xr takes the runtime's rate. When the
+  setting asks for another rate, pe-xr requests it with `XR_FB_display_refresh_rate` where offered. It reports the
+  rate it got. Virtual Desktop's runtime ran the Quest 3 at 120 Hz (a constant 8.333 ms
   period) [V: M0 headset run]; whether it offers the extension is not yet known. If it does not, the rate is the
   user's Virtual Desktop setting (section 11, X9).
 - **Simulation rate:** a world setting (D4), 60 or 90 Hz. pe-xr does not depend on it.
@@ -408,10 +410,11 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
   checks the rule WS-render chose: each display frame's drawn time follows from its display time and the newest
   frame view by that rule.
 
-### 7.3 The budget at 90 Hz
+### 7.3 The budget at 120 Hz, and at 90 Hz
 
-A frame is 11.1 ms at 90 Hz. At 120 Hz, the rate Virtual Desktop's runtime ran the Quest 3 at, it is 8.3 ms, and
-the GPU budget below shrinks to about 6 ms. My budget [I], to be measured:
+A frame is 8.3 ms at 120 Hz, the rate Virtual Desktop's runtime ran the Quest 3 at and the one pe-xr is designed for,
+and 11.1 ms at 90 Hz. The table is for 90 Hz; at 120 Hz the GPU budget shrinks to about 6 ms and the rest scale with
+it. My budget [I], to be measured:
 
 | Part | Budget | Note |
 |---|---|---|
