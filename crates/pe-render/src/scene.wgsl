@@ -19,7 +19,7 @@ struct Globals {
     key_dir: vec4<f32>,     // the direction the key light travels, shadow on (1) or off (0)
     key_color: vec4<f32>,
     ambient: vec4<f32>,
-    counts: vec4<u32>,      // number of lights
+    counts: vec4<u32>,      // number of lights, encode sRGB in the shader (1: the target is not an sRGB format)
     lights: array<GpuLight, 16>,
 };
 
@@ -177,18 +177,28 @@ fn shade(i: VOut) -> vec3<f32> {
     return c + i.emissive_rough.rgb;
 }
 
+// Linear to sRGB, for a target whose format doesn't encode it (an sRGB format's hardware does).
+fn encode(c: vec3<f32>) -> vec3<f32> {
+    if g.counts.y == 0u {
+        return c;
+    }
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
 @fragment
 fn fs_main(i: VOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(tone_map(shade(i)), 1.0);
+    return vec4<f32>(encode(tone_map(shade(i))), 1.0);
 }
 
 // The ghost of the correction cue: the same shading, faint.
 @fragment
 fn fs_ghost(i: VOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(tone_map(shade(i)), i.color.a);
+    return vec4<f32>(encode(tone_map(shade(i))), i.color.a);
 }
 
 @fragment
 fn fs_outline(i: VOut) -> @location(0) vec4<f32> {
-    return i.color;
+    return vec4<f32>(encode(i.color.rgb), i.color.a);
 }

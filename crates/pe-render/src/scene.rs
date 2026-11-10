@@ -671,21 +671,26 @@ impl Renderer {
             self.globals = Self::globals_buffer(&self.ctx.device, self.globals_slots);
             self.globals_bg = Self::globals_bind_group(&self.ctx.device, &self.globals_bgl, &self.globals);
         }
-        let base = |view_proj: Mat4, eye: Vec3| Globals {
+        // A target without an sRGB format gets the transfer applied in the shader (review L1).
+        let base = |view_proj: Mat4, eye: Vec3, encode_srgb: bool| Globals {
             view_proj: view_proj.to_cols_array_2d(),
             light_vp: light_vp.to_cols_array_2d(),
             eye: [eye.x, eye.y, eye.z, self.settings.outline_width],
             key_dir: [key_dir.x, key_dir.y, key_dir.z, if shadows { 1.0 } else { 0.0 }],
             key_color: [key_color.x, key_color.y, key_color.z, 0.0],
             ambient: [env.ambient[0], env.ambient[1], env.ambient[2], 0.0],
-            counts: [rest.len() as u32, 0, 0, 0],
+            counts: [rest.len() as u32, encode_srgb as u32, 0, 0],
             lights,
         };
         let shadow_slot = views.len() as u64;
-        self.ctx.queue.write_buffer(&self.globals, shadow_slot * SLOT, bytemuck::bytes_of(&base(light_vp, Vec3::ZERO)));
+        self.ctx.queue.write_buffer(
+            &self.globals,
+            shadow_slot * SLOT,
+            bytemuck::bytes_of(&base(light_vp, Vec3::ZERO, false)),
+        );
         for (i, v) in views.iter().enumerate() {
             let (view_m, eye) = anchored_view(anchor, &v.camera);
-            let g = base(v.camera.projection() * view_m, eye);
+            let g = base(v.camera.projection() * view_m, eye, !v.format.is_srgb());
             self.ctx.queue.write_buffer(&self.globals, i as u64 * SLOT, bytemuck::bytes_of(&g));
         }
         for (i, v) in views.iter().enumerate() {

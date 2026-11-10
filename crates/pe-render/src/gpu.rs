@@ -9,6 +9,17 @@
 //!   u32::MAX`, and full limits break it [V M0]).
 
 use std::fmt;
+use std::sync::Mutex;
+
+/// Instances, adapters and devices are made one at a time in a process. Made concurrently on D3D12 (WARP, FXC),
+/// the process segfaulted in 6 of 15 runs of the GPU tests; serialized, 0 of 50 [V 2026-11-10, render/m1]. Which
+/// layer races (wgpu-hal's dx12, FXC's loading, or WARP) is not yet known. Creation is rare, so the lock costs
+/// nothing.
+static CREATE: Mutex<()> = Mutex::new(());
+
+fn creating() -> std::sync::MutexGuard<'static, ()> {
+    CREATE.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// The device pe-render draws with. In VR mode pe-xr builds it through the runtime and hands it in.
 pub struct GpuContext {
@@ -76,10 +87,12 @@ impl GpuContext {
     /// A context for the desktop window: Vulkan first, then D3D12, on the best adapter that can present to
     /// `surface` (when given).
     pub fn desktop(instance: wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<GpuContext, ContextError> {
-        let mut adapters: Vec<wgpu::Adapter> = pollster::block_on(instance.enumerate_adapters(backends()))
-            .into_iter()
-            .filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)))
-            .collect();
+        let all = {
+            let _one_at_a_time = creating();
+            pollster::block_on(instance.enumerate_adapters(backends()))
+        };
+        let mut adapters: Vec<wgpu::Adapter> =
+            all.into_iter().filter(|a| surface.is_none_or(|s| a.is_surface_supported(s))).collect();
         // Vulkan before D3D12 on any one class of device; hardware before software.
         adapters.sort_by_key(|a| {
             let (kind, backend) = rank(a);
@@ -100,11 +113,14 @@ impl GpuContext {
 
     /// [`GpuContext::headless`] on the given backends only.
     pub fn headless_on(backends: wgpu::Backends, choice: AdapterChoice) -> Result<GpuContext, ContextError> {
-        let instance = wgpu::Instance::new(instance_descriptor(backends));
-        let mut adapters: Vec<wgpu::Adapter> = pollster::block_on(instance.enumerate_adapters(backends));
-        adapters.retain(|a| choice == AdapterChoice::Any || a.get_info().device_type == wgpu::DeviceType::Cpu);
-        adapters.sort_by_key(rank);
-        let adapter = adapters.into_iter().next().ok_or(ContextError::NoAdapter)?;
+        let (instance, adapter) = {
+            let _one_at_a_time = creating();
+            let instance = wgpu::Instance::new(instance_descriptor(backends));
+            let mut adapters: Vec<wgpu::Adapter> = pollster::block_on(instance.enumerate_adapters(backends));
+            adapters.retain(|a| choice == AdapterChoice::Any || a.get_info().device_type == wgpu::DeviceType::Cpu);
+            adapters.sort_by_key(rank);
+            (instance, adapters.into_iter().next().ok_or(ContextError::NoAdapter)?)
+        };
         Self::on(instance, adapter)
     }
 
@@ -116,6 +132,7 @@ impl GpuContext {
             required_limits: wgpu::Limits::default(),
             ..Default::default()
         };
+        let _one_at_a_time = creating();
         let (device, queue) =
             pollster::block_on(adapter.request_device(&desc)).map_err(|e| ContextError::Device(e.to_string()))?;
         Ok(GpuContext { instance, adapter, device, queue })
