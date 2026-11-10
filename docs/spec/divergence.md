@@ -1,6 +1,7 @@
 # Divergence and recovery (WS-diverge)
 
-Status: draft v1, 2026-11-10, after @design-reviewer's review of v0 (bf94698) and @vdw-physics's answer on R-H1. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
+Status: draft v1.1, 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
+and the coordinator's rulings of 20:40Z. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
 Nothing in it is built. It specifies `crates/pe-diverge` and the requirements pe-diverge places on other
 workstreams. Only WS-diverge edits this file and `crates/pe-diverge`.
 
@@ -407,17 +408,15 @@ as late is in the set: that is what "their changes are merged in" means, and wha
 merging fit together" checks (plan 4.4). But in a conflict group, a `theirs` entry that is not on main **never
 beats a final entry of `ours` on an exclusive hold or a precondition**, whatever its stamp. It is replayed at its
 stamp where it conflicts with nothing final; otherwise it is refused, with the reason "lost to a final entry".
-Plain writes keep the ordinary order. [I: the default proposed to the coordinator, whose decision it is.]
+Plain writes keep the ordinary order. [C 20:40Z, m68977e8f9830: option (a), ruled. It carries the user's
+confirmed rule that the late or stale side loses conflicts into merges.]
 - **Why** [design-reviewer, High]: ordered by stamp alone, a member could stamp grabs and writes in the past,
   stay silent past `T_merge`, then return and win at the merge against honest players' final actions. Today's
   bound on back-dating is about 4-10 frames: the published horizon plus the cut's void [V design 8.2, cited by
   @design-reviewer]. A silent member publishes no horizon, so neither rule bounds it, and stamp order alone would
   widen the window to a minute.
-- **The alternatives:**
-  - (b) void `theirs` entries stamped before the returner's last published horizon. That does not cover a fully
-    silent member.
-  - (c) accept the window under the trust ruling, and tell the user plainly that their rule that late actions past
-    the tolerance are dropped no longer holds for divergences over 2 s.
+- **The alternatives, not taken:** (b) void `theirs` entries stamped before the returner's last published
+  horizon, which does not cover a fully silent member; (c) accept the window under the trust ruling.
 - **In v2** (split groups, neither side final), neither side has final entries to protect, so this back-dating is
   bounded only by the one-minute rule. That is for WS-model's v3 to settle.
 
@@ -450,16 +449,17 @@ split.
   hit by something `ours` moved. The rule above takes `theirs` unchanged and lets the next step resolve any overlap;
   the alternative pulls it into the group.
 - That no final frame is undone, with the merge applied at `A`.
-- The back-dating rule above, with its control: a silent returner whose back-stamped grabs must not beat final
-  grabs.
+- The back-dating rule above, with its control: a model in which a back-stamped silent returner would win, which
+  the checker must catch [C 20:40Z].
 - The overlap rule, with its case: an object only `theirs` moved, overlapping one that `ours` moved.
 - **Physics and group-level merging** [@vdw-physics]. Under 4.2a, physics restores and steps a whole domain, so the
   exact reference is a replay of the whole domain from `base`. Until history-free physics exists (file 02 A2;
   file 11 3.1, "later"; about 6-10 weeks of fork work), a group only one side touched is not guaranteed to come out
   bit-identical to that side's branch: its contacts can take other ids and colours because of the other side's
-  activity. If the merge must keep untouched groups exactly as they stood, history-free physics becomes an M2-M3
-  dependency. @vdw-physics has raised this with the coordinator; the model should state which semantics it
-  checks.
+  activity. **Ruled [C 20:40Z]: deterministic is enough, not bit-exact.** Every machine must reach the same
+  merged state, and the visible result of a group only one side touched must stay unchanged within a stated pose
+  tolerance (`E_merge`, section 14). That is a property checked in model v2 and measured in the harness. Hiding
+  sub-visible differences is the display layer's job. History-free physics stays "later", as in the plan.
 - That `merge` is independent of arrival order, and of which machine computes it.
 - **Controls that bite:** ordering by arrival; voiding entries made during a split; dropping one side's
   non-conflicting work. Each must give a counterexample.
@@ -634,6 +634,7 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 | `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |
 | `E_small`, `E_snap` | Error thresholds | 5 cm or 10°; 1 m or 90° |
 | `D_effect` | Delay of others' unconfirmed effects | 0 frames |
+| `E_merge` | Pose tolerance within which a group only one side touched counts as unchanged after a merge | `E_small` (5 cm or 10°) |
 | `R_merge` | Replay rate assumed when setting a merge's application frame | 2x real time |
 | `T_merge` | Divergence past which a merge replaces the ordinary rollback | 2 s [R mf7daea6446ca] |
 | `T_diverge` | Unconfirmed play after which the lines diverge | 60 s [R m35138bafc46a] |
@@ -645,8 +646,7 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 - **For @engine-architect:** S2 and S3 as in section 11.
 - **For WS-world and WS-state:** R-H2, R-H3 and R-O1 (R-H1 is met by 4.2a).
 - **For WS-model:** section 9.5.
-- **For the coordinator:** the merge's back-dating rule (9.3): the proposed default, (b), or (c) put to the user;
-  and whether the merge must keep untouched groups bit-exact (9.5), which would make history-free physics an M2-M3
-  dependency. Section 13's point is settled: M1's logic edit compiles in under 2 s (ma99622993534).
+- **Settled by the coordinator:** the back-dating rule is (a) (9.3); untouched groups need to be deterministic,
+  not bit-exact (9.5), both at 20:40Z; M1's logic edit compiles in under 2 s (ma99622993534).
 - **With the user** (file 14, section 7): a number for visible error; for long divergences merged later, whether
   the later change may win object by object.
