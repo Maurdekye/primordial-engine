@@ -465,7 +465,7 @@ split.
   compile ends it replays `theirs` on a second copy in the background, then submits the merge entry. [I]
 - **v2 (M3): split groups.** Both sides may lack finality. `base` is the last cut both hold; both are lines of
   unconfirmed play; the merge entry is the first entry of the reconvened quorum. Within one minute the merge is
-  automatic. After it, both lines know they have diverged (S3 `Diverged`) and become **branches of one world, as in
+  automatic. After it, both lines know they have diverged (S3 `LineDiverged`) and become **branches of one world, as in
   git**: neither keeps "the" world. Where each has someone able to own it, world ownership splits, and each branch
   carries on as a world in its own right. Each branch records the cut it split from, so the common ancestor of any
   two is always found [R meef4f248923b, answer 5; file 14 8.1]. A branch with no owner or admin present falls under
@@ -586,7 +586,7 @@ What pe-diverge needs from pe-agree, beyond the sketch:
 - **Witnesses** (from M2, for 9.3): for an entry, the signed acknowledgements by other members that reference it,
   with their stamps, so the merge can test "witnessed within `B`". They are kept with the merge base, for up to
   `T_diverge`.
-- From M2: the merge entry is an ordinary entry; `Merged` and (M3) `Diverged` events, as sketched;
+- From M2: the merge entry is an ordinary entry; `Merged` and (M3) `LineDiverged` events (renamed from the sketch's `Diverged`, which is pe-diverge's root-mismatch event; @harness-eng 3b8fa6c);
   `Unconfirmed(time)` and `QuorumLost`, as sketched.
 - A member's vote carries its last self-test result, or the guard's verdict is otherwise visible to all (5, step 2).
 
