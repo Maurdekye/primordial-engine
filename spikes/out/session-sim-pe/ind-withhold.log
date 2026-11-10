@@ -1,4 +1,0 @@
-  t=0.00s m1: lag 0 frames (0.00 s); holding [] late acks flagged []
-  t=3.50s m1: lag 93 frames (1.55 s); holding [not referencing (8, 1), not referencing (8, 2), not referencing (8, 3)] late acks flagged []
-  t=6.25s m1: lag 6 frames (0.10 s); holding [] late acks flagged []
-RESULT ind-withhold: m1 asked 33 times; named {8}; not referencing {8}; late {} -> OK

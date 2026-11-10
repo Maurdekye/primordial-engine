@@ -1,4 +1,0 @@
-pe-spike-chunks closure (box3d positions: f32)
-== closure (review R16-2): support and awake bodies (f32) ==
-RESULT closure mode=f32 rule=relevance-only crate_rest_y=0.510 crate_min_y=0.450 crate_final_y=0.450 coin_final_y=0.942 coin_frozen_midair=true max_body_speed_during_approach_mps=0.00 active_max=49 stones_inside_crate=81
-RESULT closure mode=f32 rule=closed crate_rest_y=0.510 crate_min_y=0.488 crate_final_y=0.488 coin_final_y=0.015 coin_frozen_midair=false max_body_speed_during_approach_mps=0.00 active_max=134 stones_inside_crate=0

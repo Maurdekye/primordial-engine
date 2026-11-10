@@ -1,5 +1,0 @@
-bench   256 bodies: step avg    363.6 us (max    599.3 us), save avg   249.0 us, restore avg   247.9 us, max image   588930 bytes, awake at end 249
-bench  1024 bodies: step avg   1914.0 us (max   3546.3 us), save avg  1181.1 us, restore avg   910.9 us, max image  2426102 bytes, awake at end 1009
-bench  2048 bodies: step avg   5916.4 us (max  11243.2 us), save avg  2656.9 us, restore avg  2073.7 us, max image  5411108 bytes, awake at end 2034
-build: release profile, target x86_64
-RESULT: PASS

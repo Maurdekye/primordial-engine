@@ -1,6 +1,0 @@
-| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
-|---|---|---|---|---|---|---|---|---|
-| 1 | 1800 | 104451cdf57015c4 | equal | 1800 | [1, 2, 3] | 192 | 140/0 | 3116/0 |
-| 2 | 1800 | 104451cdf57015c4 | equal | 1807 | [1, 2, 3] | 117 | 141/0 | 2611/251 |
-| 3 | 1800 | 104451cdf57015c4 | equal | 1807 | [1, 2, 3] | 0 | 141/0 | 2837/129 |
-ALL EQUAL

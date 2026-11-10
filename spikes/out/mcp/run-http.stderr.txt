@@ -1,1 +1,0 @@
-pe-mcp: http http://127.0.0.1:53375/mcp (ipv6 true)

@@ -1,2 +1,0 @@
-[PASS] D4 Box3D pile run compiled to wasm32 + wasmi == native digest: digest 80839f4a54133e13 (native 80839f4a54133e13, engine world def); module compile 10.9563ms; 600 f
-RESULT: PASS

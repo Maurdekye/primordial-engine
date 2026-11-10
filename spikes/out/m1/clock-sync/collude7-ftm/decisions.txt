@@ -1,7 +1,0 @@
-member 1: 0 membership decisions, 0 pauses; last decision: 
-member 2: 0 membership decisions, 0 pauses; last decision: 
-member 3: 0 membership decisions, 0 pauses; last decision: 
-member 4: 0 membership decisions, 0 pauses; last decision: 
-member 5: 0 membership decisions, 0 pauses; last decision: 
-member 6: 0 membership decisions, 0 pauses; last decision: 
-member 7: 0 membership decisions, 0 pauses; last decision: 
