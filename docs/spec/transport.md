@@ -1,6 +1,7 @@
 # pe-net: the transport
 
-Status: draft 0, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built.
+Status: draft 0.1, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built. Draft 0.1 answers @design-reviewer's
+review of draft 0 (Mediums 1-2, Lows 1-4).
 - **Contents:** only the rules that M0's QUIC feasibility check settled (section 2), and the coordinator's
   rulings on that check (mc64f7a24509e).
 - **Still to come:** the full specification of WS-net's M1 scope (`docs/refound-plan.md`, branch
@@ -43,8 +44,11 @@ design judgement.
   endpoint helpers) are compiled only with ring [S]. pe-net builds each config explicitly, as the M0 spike
   does.
 - **The audit:** the M0 spike passes `scripts/audit_native.py` on windows-x64, linux-x64, linux-arm64,
-  macos-arm64 and android-arm64 [V]. The browser target (`wasm32-unknown-unknown`) does not, because quinn-proto
-  depends on ring there [S], so a browser client is out of scope.
+  macos-arm64 and android-arm64 [V for M0's stack, which used rustls-rustcrypto for key exchange and signatures;
+  our own provider is not built yet, so it is unchecked]. The browser target (`wasm32-unknown-unknown`) does not
+  pass, because quinn-proto depends on ring there [S], so a browser client is out of scope.
+- **0-RTT is off:** no early data, no session resumption. Early data can be replayed, and nothing above the
+  transport runs before the welcome anyway (2.3). A test checks that a 0-RTT attempt is refused [I].
 
 ### 2.2 Identity and invites
 
@@ -59,6 +63,12 @@ design judgement.
     the handshake [V M0].
   - The production form adds a version, an expiry and a compact encoding. Whether it adds a one-time token is
     still open [I].
+- **One key, two protocols:** the TLS raw key is the member's signing key, so the two uses must not overlap.
+  - TLS 1.3 signs its CertificateVerify under its own context string.
+  - Entry signatures (seam S1, WS-agree) need their own prefix, for example `"pe.entry"`, so that neither
+    signature can stand in for the other.
+  - Ed25519 verification uses `verify_strict` everywhere, since governance relies on refusing small-order keys
+    [I, @design-reviewer's L2].
 
 ### 2.3 Admission is an explicit welcome
 
@@ -75,6 +85,12 @@ What follows from the rule:
 - **The inviter:** decides admission on the key the handshake proved: membership, bans, vouching, and an
   invite token if one is used. It then sends the welcome, or closes with a reason code.
 - **The welcome carries [I]:** the version and self-test comparison of section 1, and the world's identity.
+- **A welcome admits a connection, not a member.**
+  - It is one peer accepting one connection.
+  - Joining the session is pe-agree's join, decided at a cut.
+  - Every later connection between the joiner and another member gets its own welcome, judged from the agreed
+    governance (membership, bans), never from one peer's opinion. So M3's mesh and relays inherit no
+    inviter-centred admission.
 
 ### 2.4 Reaching a peer behind a host firewall: simultaneous open
 
@@ -84,9 +100,22 @@ What follows from the rule:
   firewall does this; seen in M0 [V]:
   - the active profile is BlockInbound, and the WSL Hyper-V firewall's default inbound action is Block;
   - a QUIC joiner, and a plain-UDP control, both got no answer.
-- **The rule in practice:** the joiner's addresses reach the inviter (through the invite response or a member
-  already connected to both), and each side sends a few packets to the other's addresses from its QUIC socket
-  before and while the joiner dials. The firewall then sees the joiner's packets as replies.
+- **The rule in practice:** the joiner's addresses reach the inviter, and each side sends a few packets to the
+  other's addresses from its QUIC socket before and while the joiner dials. The firewall then sees the joiner's
+  packets as replies.
+- **How the joiner's addresses reach the inviter:**
+  - **From a member already connected to both:** for every connection after the first. That member is the
+    rendezvous.
+  - **The first connection in M1, between two machines with no helper: a two-way invite** [I].
+    - The joiner dials the invite's addresses first.
+    - If nothing answers within 3 s, it shows a short reply code: its key, its addresses, and the invite's id.
+    - The user pastes the code into the inviter, and both sides then send at once.
+    - This keeps to the coordinator's preference for simultaneous open, and needs no change to either machine.
+  - **The documented alternative:** Windows' own "allow access" prompt, the first time pe-app listens. It
+    creates a firewall rule, but by the user's own click, which is the user's go the ruling asks for. Whether it
+    becomes the default is the coordinator's and the user's call. M0's test ran under WSL and Hyper-V, where no
+    prompt appears [I].
+  - M3's hole punching inherits the same channels.
 - **Seen in M0** [V `win-server-linux-client-punched.log`]: three small packets from the inviter's socket to
   the joiner's address let the Linux joiner's handshake through to Windows.
 - **The other fix, not the default:** a firewall rule added at install changes the user's machine, so it needs
@@ -100,8 +129,13 @@ Coordinator ruling, for each of the QUIC keys, the adapter port and the provider
 - **Their own tests:**
   - the RFC 9001 vectors (header protection A.2, retry tag A.4, the Initial keys);
   - negative tests: a wrong key, a tampered packet, a replayed packet.
-- **More tests** [I]: Wycheproof AES-GCM vectors, and a handshake against a known-good QUIC implementation in
-  a dev-only test outside the shipped graph.
+- **More tests** [I; the fuzzing and the last four from @design-reviewer]:
+  - Wycheproof AES-GCM vectors;
+  - a handshake against a known-good QUIC implementation, in a dev-only test outside the shipped graph;
+  - fuzzing of packet parsing and the handshake (cargo-fuzz, gate tier 2);
+  - that the joiner sends nothing above the transport before the welcome;
+  - a QUIC key update, and the Retry token;
+  - that secrets are zeroized on drop.
 - **Reviewer:** @design-reviewer, not the author.
 
 ### 2.6 What M0 measured (for scale only)
