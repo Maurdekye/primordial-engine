@@ -113,7 +113,7 @@ fn suite() -> Vec<Check> {
         Check { name: "n3-crash-live", model: Cuts::new(3, Silent, 3, 1, 2, none, 0).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, one silent from the start, liveness" },
         Check { name: "n3-chain-h2", model: Cuts::new(3, Author, 3, 2, 1, chain, 0), expect_fail: &[], random: false, depth: Some(16), what: "3 members, author-faulty, chain faults, two content cuts deep, safety (depth 20 passed 247 M states without finishing)" },
         Check { name: "n4-byz", model: n4(quiet), expect_fail: &[], random: false, depth: Some(18), what: "4 members, one Byzantine (equivocates votes, timeouts and proposals), safety" },
-        Check { name: "n4-byz-chain", model: n4(chain), expect_fail: &[], random: false, depth: Some(18), what: "4 members, Byzantine with chain faults too, safety" },
+        Check { name: "n4-byz-chain", model: n4(chain), expect_fail: &[], random: false, depth: Some(16), what: "4 members, Byzantine with chain faults too, safety (depth 18 passed 258 M states without finishing)" },
         Check { name: "n4-byz-live", model: n4(quiet).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "4 members, Byzantine, liveness" },
         Check { name: "n4-crash-live", model: Cuts::new(4, Silent, 3, 1, 2, none, 0).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "4 members, one silent, liveness" },
         Check { name: "n4-byz-v4", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2), expect_fail: &[], random: false, depth: Some(18), what: "4 members, Byzantine leads view 3 of 4 (the lock's case), safety" },
