@@ -1,6 +1,6 @@
 # Divergence and recovery (WS-diverge)
 
-Status: draft v0, 2026-11-10. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
+Status: draft v1, 2026-11-10, after @design-reviewer's review of v0 (bf94698) and @vdw-physics's answer on R-H1. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
 Nothing in it is built. It specifies `crates/pe-diverge` and the requirements pe-diverge places on other
 workstreams. Only WS-diverge edits this file and `crates/pe-diverge`.
 
@@ -97,6 +97,11 @@ Detection needs agreement to say which root a quorum holds. The proposal to WS-a
 `n = 5`, two at `n = 6`. At `n = 2` (`q = 2`) one faulty member blocks it, as do three members whose roots all
 differ. Section 5 settles those cases.
 
+Two consequences [design-reviewer, review of bf94698]:
+- an honest member that has diverged counts toward `t`, exactly as a faulty one does;
+- roots are visible in votes, so a voter could copy one without computing it. That is a fault within `t`, like
+  any other lie; the background self-check (M3) is what catches it, on the copier's own machine.
+
 ### 3.3 Kinds of mismatch
 
 pe-diverge only sees "my root is not the quorum's". It learns which kind of fault from what cures it:
@@ -155,6 +160,27 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
   too, and the descent is short. [I]
 - **Cells and groups:** the tree's interior nodes are cells, and from M4 contact groups. S2 `import` patches
   objects inside a cell without reloading the cell [C 20:05Z, "per-group save, restore and step"].
+- **A source that has released `C`'s root** answers "not held", and the next voter is asked.
+- **Tables as well as objects:** governance, claims and the other world-model tables go through `export` and
+  `import` the same way as objects.
+
+### 4.2a Physics: one canonical image per domain
+
+Physics state cannot be patched body by body. Box3D's step depends on state that belongs to no single body or
+pair: body and contact ids come from free-list pools [V `crates/box3d-fork/src/id_pool.rs:36-44`, cited by
+@vdw-physics], and a contact's solver colour depends on which contacts began earlier and on body ids
+[V `constraint_graph.rs:75-130`, same]. Bodies written back through the API diverged at the first step
+[V design.md 6.9, cited by @design-reviewer]. So, by WS-state's decision (`docs/spec/replica.md`, branch
+`ws/state`):
+- the replica's root hashes the world-model root together with pe-physics's full-state check hash over its
+  canonical transfer bytes, which cover the pools, colours, contacts, warm starts, sleep timers and islands
+  [V `image.rs:343-347`, `477-481`];
+- **in M1, rung 2 for physics** fetches the source's whole physics transfer at `C`, checks it against the root's
+  physics part, restores the whole physics world, and replays forward. Exact; about 1.2 MB for the M1 ball pit
+  [V file 02 bench, cited by @vdw-physics]. World-model rows are still patched one by one;
+- **from M2**, incremental images make the physics image a content-addressed chunk tree, and rung 2 fetches only
+  the chunks whose hashes differ. Still exact, with traffic in proportion to what changed;
+- the repair record format treats physics as "one blob tree per domain, by hash" from the start.
 
 ### 4.3 When rung 2 does not hold
 
@@ -188,16 +214,21 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
 - **With no quorum root** (S3 `RootSplit`): typically two players, or three that all differ. Every member applies
   the same rule [I]:
   1. Every member runs rung 1 from its own `Cv` and votes again. Transient faults end here.
-  2. If the split persists: a member whose last self-test failed, or whose connection guard reported a
-     difference (WS-net, section 10), adopts another's root. The test of that is in each member's vote.
-  3. If it still persists: the **reference root** is the root held by the most voters; ties go to the smaller
-     root hash. Every member that does not hold it runs rung 2 toward it, with its voters as sources, and votes
-     again.
-  4. The split is reported, with a fault bundle, on every machine.
-- **Why the smaller hash** [I]: no player and no machine is favoured, every member computes the same answer, and
-  nobody can steer it without changing the state itself. It is arbitrary by design. Between two machines with no
-  third, nothing tells which computed correctly; the rule makes them agree and the bundle reports it. The rule is
-  for @design-reviewer to approve or replace.
+  2. If the split persists, every member **re-runs the physics self-test** at once, rather than reading its last
+     result. A member whose fresh self-test fails, or whose connection guard reported a difference (WS-net,
+     section 10), adopts another's root. At `n = 2` a fresh failure is the only real evidence of which machine is
+     wrong.
+  3. If it still persists, a **reference member** is chosen once per episode: the member whose root most voters
+     hold, with ties going to the smaller `H(Cv's root ‖ member key)`. Every member that does not hold the
+     reference member's root runs rung 2 toward it and votes again.
+  4. **The choice is sticky.** It holds until a cut is final with matching roots, which ends the episode. Without
+     this, a persistent computational fault changes the roots every cut, so a pick by root hash changes winner
+     every cut, and both players see their machines patched toward each other in turn [design-reviewer].
+  5. The split is reported, with a fault bundle, on every machine.
+- **Why a hash of `Cv` and the key** [I]: no player is favoured in general, every member computes the same answer
+  from data agreed before the split, and nobody can steer it by changing state. It is arbitrary by design. Between
+  two machines with no third, nothing tells which computed correctly; the rule makes them agree, and the bundle
+  reports it.
 
 ## 6. The fault bundle
 
@@ -334,10 +365,18 @@ merge(base: Root, ours: Line, theirs: Line, rules: Rules) -> Merged
 
 - **Pure:** no clock, no randomness, no I/O, no arrival order. The same inputs give the same `Merged` on every
   machine. That is the property "merge determinism" (plan 4.4).
-- **Inputs are agreed.** The merge runs as an ordinary entry: the returning machine (v1), or the first proposer
-  after reconvening (v2), submits a merge entry naming `base` and the hashes of `theirs.entries`. When a final cut
-  includes it at frame `F`, every member computes `merge(base, ours = main at F, theirs, rules)` and applies the
-  result at `F + 1`. Main's frames up to `F` stay as they were. [I]
+- **Inputs are agreed.** The merge runs as an ordinary entry. The returning machine (v1), or the first proposer
+  after reconvening (v2), submits a merge entry naming `base`, the hashes of `theirs.entries`, and an
+  **application frame `A = F + D`**. When a final cut includes it at frame `F`, every member computes
+  `merge(base, ours = main at A, theirs, rules)` in the background and applies it at `A`. Main's frames before
+  `A` stay as they were. [I]
+- **`D` covers the compute.** Every member must replay up to a minute of `theirs` from `base`. The submitter sets
+  `D` from the replay length at a conservative rate (`R_merge`, section 14), so that members finish before `A` and
+  do not roll back a second time. A member that finishes late rolls back to `A`, as for any late entry
+  [design-reviewer].
+- **A member that has not yet built the code `theirs` needs** cannot compute the merge. It treats the merge as a
+  pending code activation (Q3): it keeps predicting, does not vote on cuts at or past `A` until it has built the
+  code and computed the merge, then rolls back to `A`. Past `T_merge`, it is itself a returning branch.
 - **`theirs` is replayed under the new rules:** from `base`, with `theirs.entries` and the code in effect on main,
   so the returning machine's own actions are re-simulated (Q3b).
 
@@ -363,9 +402,28 @@ by the engine's ordinary rules, applied once to both lines' actions [file 14, 4.
    reason; a later plain write wins; a delete and an add-on fall as the user ruled, by their order;
 5. the group's state at `F` is the result.
 
-**Voided entries are merged in.** An entry of `theirs` that main voided as late is in the set like any other.
-That is what "their changes are merged in" means, and what the property "voiding and merging fit together" checks
-(plan 4.4) [I].
+**Voided entries are merged in, but are never back-dated past finality.** An entry of `theirs` that main voided
+as late is in the set: that is what "their changes are merged in" means, and what the property "voiding and
+merging fit together" checks (plan 4.4). But in a conflict group, a `theirs` entry that is not on main **never
+beats a final entry of `ours` on an exclusive hold or a precondition**, whatever its stamp. It is replayed at its
+stamp where it conflicts with nothing final; otherwise it is refused, with the reason "lost to a final entry".
+Plain writes keep the ordinary order. [I: the default proposed to the coordinator, whose decision it is.]
+- **Why** [design-reviewer, High]: ordered by stamp alone, a member could stamp grabs and writes in the past,
+  stay silent past `T_merge`, then return and win at the merge against honest players' final actions. Today's
+  bound on back-dating is about 4-10 frames: the published horizon plus the cut's void [V design 8.2, cited by
+  @design-reviewer]. A silent member publishes no horizon, so neither rule bounds it, and stamp order alone would
+  widen the window to a minute.
+- **The alternatives:**
+  - (b) void `theirs` entries stamped before the returner's last published horizon. That does not cover a fully
+    silent member.
+  - (c) accept the window under the trust ruling, and tell the user plainly that their rule that late actions past
+    the tolerance are dropped no longer holds for divergences over 2 s.
+- **In v2** (split groups, neither side final), neither side has final entries to protect, so this back-dating is
+  bounded only by the one-minute rule. That is for WS-model's v3 to settle.
+
+**Overlaps pull objects in.** An object only `theirs` moved, whose resulting bounds overlap an object `ours`
+moved, joins the conflict group. So the merge never leaves interpenetrating bodies at the application frame
+[design-reviewer].
 
 **Things only one side touched do not change** (file 14, 4.4), except where the group closure pulls them in. That
 is the "merge keeps work" property: an action is dropped only if the ordinary rules would have refused it with no
@@ -391,7 +449,17 @@ split.
   every non-conflict object. The case to model: an object only `theirs` moved, which in the merged replay would be
   hit by something `ours` moved. The rule above takes `theirs` unchanged and lets the next step resolve any overlap;
   the alternative pulls it into the group.
-- That no final frame is undone, with the merge applied at `F + 1`.
+- That no final frame is undone, with the merge applied at `A`.
+- The back-dating rule above, with its control: a silent returner whose back-stamped grabs must not beat final
+  grabs.
+- The overlap rule, with its case: an object only `theirs` moved, overlapping one that `ours` moved.
+- **Physics and group-level merging** [@vdw-physics]. Under 4.2a, physics restores and steps a whole domain, so the
+  exact reference is a replay of the whole domain from `base`. Until history-free physics exists (file 02 A2;
+  file 11 3.1, "later"; about 6-10 weeks of fork work), a group only one side touched is not guaranteed to come out
+  bit-identical to that side's branch: its contacts can take other ids and colours because of the other side's
+  activity. If the merge must keep untouched groups exactly as they stood, history-free physics becomes an M2-M3
+  dependency. @vdw-physics has raised this with the coordinator; the model should state which semantics it
+  checks.
 - That `merge` is independent of arrival order, and of which machine computes it.
 - **Controls that bite:** ordering by arrival; voiding entries made during a split; dropping one side's
   non-conflicting work. Each must give a counterexample.
@@ -400,14 +468,15 @@ split.
 
 ## 10. Requirements on other workstreams
 
-- **R-H1, equal roots give equal futures (WS-world, WS-state).** Every byte a step reads is under the root, and
-  per object (or per pair of objects) in the tree. Today the per-frame physics hash leaves out sleep timers,
+- **R-H1, equal roots give equal futures (WS-world, WS-state).** Every byte a step reads is under the root.
+  **Met by WS-state's decision (4.2a):** the physics image, as one canonical blob tree per domain, is hashed under
+  the root and restored whole. What follows was the problem. Today the per-frame physics hash leaves out sleep timers,
   contact caches, warm starts and islands [V `crates/pe-physics/src/world.rs:684-688`]; only the whole-image check
   hash covers them [V `crates/pe-physics/src/image.rs:345`]. Rung 2 patches objects; if their contact and solver
-  state is not patched with them, the patched replica diverges again on the next step. So: either those caches go
-  into the tree, keyed by body and by body pair, or the step must not read them. Test (WS-state): restore a
-  replica from a root assembled by import, and step it 600 frames beside one that ran continuously; every frame's
-  root must be equal.
+  state is not patched with them, the patched replica diverges again on the next step, and per-body import cannot
+  work (4.2a). Test (WS-state, in its plan): assemble a replica from an imported root (the world-model subtree plus
+  the physics transfer), and step it 600 frames beside one that ran continuously; every frame's root must be
+  equal. Negative control: importing per-body state only must diverge.
 - **R-H2, everything that matters is hashed (WS-world).** Fields, governance, claims and cooldowns from M1; logic
   state and module versions from M2 (plan M1 acceptance; file 14 F5). A divergence injected in any one is found by
   the tree and cured by rungs 1 and 2: a test of pe-diverge's, per kind.
@@ -418,6 +487,8 @@ split.
   pose: it is orphaned, not refused [R m35138bafc46a]. A delete removes the subtree as it is at that point in the
   order, so a later delete destroys the add-on too. This is the ordinary rule with no split, so that the merge
   needs none of its own. It means an add-on does not take the parent's version as a refusing precondition.
+  It must hold at any depth: an add-on under a grandchild of the deleted object is orphaned too, so a tombstone
+  covers the deleted subtree, not only its root [design-reviewer, Low 4].
 - **R-G1, the connection guard (WS-net).** Before a join, compare: the engine build id, the physics self-test's
   digest, and (from M2) each module's hash. A difference refuses the join with its reason (plan M1 acceptance). The
   last self-test result is part of a member's state that section 5 reads.
@@ -441,6 +512,7 @@ pub trait Replica {
     fn verify(&self, root: &Root) -> Result<(), Mismatch>;     // rehash from records, no caches (R-H3)
     fn node(&self, root: &Root, path: &TreePath) -> Option<Node>;  // child (key, Hash) pairs, or a leaf
     fn export(&self, root: &Root, ids: &[ObjectId]) -> Records;    // records, with their paths to the root
+    fn physics_image(&self, root: &Root) -> PhysicsBlobTree;    // the whole domain's image, by hash (4.2a)
     fn import(&mut self, at: &Root, records: Records) -> Result<Root, ImportError>; // checks every path
     fn object_hashes(&self, ids: &[ObjectId]) -> Vec<(ObjectId, Hash)>;  // for replay-bundle
     fn fork(&self, root: &Root) -> Self where Self: Sized;     // a second copy, for background replay (M2)
@@ -452,7 +524,9 @@ pub trait Replica {
 ```
 
 - `Root` is a handle that keeps its structure alive, and is `Send`, so a worker can replay it.
-- Roots of the last `K_keep` final cuts are kept, and served to peers.
+- Roots of the last `K_keep` final cuts are kept, and served to peers: about 1.2 s, enough for repair.
+- **Merge bases are kept separately.** A member keeps its `Cv` root, and the log since, for as long as it may be a
+  branch (up to `T_diverge`, a minute), whatever `K_keep` says. Older bases come from the world record (M3).
 
 ### 11.2 S3, Agreement
 
@@ -508,6 +582,7 @@ network model with random schedules.
 3. **A computational fault:** B's replica perturbs one ball each step (a test-only mutation of the replica). Rung 2
    cures it each cut; after `N_recur`, `RepeatedDivergence` is raised; play never pauses.
 4. **Every kind of state** (R-H2): the same as 2 for a field, a governance record and a claim.
+4a. **A bound body:** rung 2 cures it by restoring the physics image (4.2a), with `repair_bytes` about one image.
 5. **A lying source:** a peer serves a wrong record. It is rejected by hash; the next source cures it; no wrong
    byte is imported.
 6. **Two players, a root split:** section 5's rule makes both agree; both report it.
@@ -525,7 +600,11 @@ network model with random schedules.
 - leaving physics caches out of the patch (R-H1's test must fail).
 
 **M2-M3:** the merge properties of 9.5, first in the model, then on pe-diverge's `merge` with the model's traces
-replayed through it (plan 4.1, rule 2); a merge scenario for each order of a delete and an add-on [R m35138bafc46a].
+replayed through it (plan 4.1, rule 2); a merge scenario for each order of a delete and an add-on, at depth 1 and
+at depth 2 [R m35138bafc46a]; a silent returner with back-stamped grabs; the overlap case; a sticky root-split
+reference under a persistent fault at `n = 2`. pe-harness wires the mutations `MergeByArrival`, `MergeDropsSide`
+and `VoidSplitEntries` to its property P9 (`crates/pe-harness/DESIGN.md` 6.1, branch `harness/design`); pe-diverge
+puts them behind its `mutants` feature.
 
 ## 13. Milestones
 
@@ -555,6 +634,7 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 | `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |
 | `E_small`, `E_snap` | Error thresholds | 5 cm or 10°; 1 m or 90° |
 | `D_effect` | Delay of others' unconfirmed effects | 0 frames |
+| `R_merge` | Replay rate assumed when setting a merge's application frame | 2x real time |
 | `T_merge` | Divergence past which a merge replaces the ordinary rollback | 2 s [R mf7daea6446ca] |
 | `T_diverge` | Unconfirmed play after which the lines diverge | 60 s [R m35138bafc46a] |
 
@@ -563,8 +643,10 @@ v2) move into M1. This file assumes the edit is small and the merge stays in M2.
 - **For @design-reviewer:** the root-split rule (section 5); the vote-with-root proposal (3.2); rung 2 patching at
   the diverged cut rather than at `Cv` (4.2).
 - **For @engine-architect:** S2 and S3 as in section 11.
-- **For WS-world and WS-state:** R-H1 to R-H3 and R-O1, especially where physics caches go in the tree.
+- **For WS-world and WS-state:** R-H2, R-H3 and R-O1 (R-H1 is met by 4.2a).
 - **For WS-model:** section 9.5.
-- **For the coordinator:** section 13's point on M1's logic edit.
+- **For the coordinator:** the merge's back-dating rule (9.3): the proposed default, (b), or (c) put to the user;
+  and whether the merge must keep untouched groups bit-exact (9.5), which would make history-free physics an M2-M3
+  dependency. Section 13's point is settled: M1's logic edit compiles in under 2 s (ma99622993534).
 - **With the user** (file 14, section 7): a number for visible error; for long divergences merged later, whether
   the later change may win object by object.
