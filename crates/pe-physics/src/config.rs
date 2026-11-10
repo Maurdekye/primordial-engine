@@ -1,7 +1,7 @@
 //! The engine's world definition.
 
 use box3d_rust::recycle_scale::ContactRecycleScaling;
-use box3d_rust::types::{default_world_def, WorldDef};
+use box3d_rust::types::{WorldDef, default_world_def};
 
 /// Box3D sub-steps per frame.
 pub const SUBSTEPS: i32 = 4;
@@ -42,10 +42,7 @@ impl PhysicsConfig {
     /// Upstream Box3D's defaults (fixed contact-recycling distance), for comparison with the
     /// C goldens. Not for engine worlds.
     pub fn upstream() -> PhysicsConfig {
-        PhysicsConfig {
-            contact_recycle_scaling: ContactRecycleScaling::disabled(),
-            ..PhysicsConfig::engine()
-        }
+        PhysicsConfig { contact_recycle_scaling: ContactRecycleScaling::disabled(), ..PhysicsConfig::engine() }
     }
 
     pub fn with_workers(mut self, workers: i32) -> PhysicsConfig {
@@ -62,11 +59,7 @@ impl PhysicsConfig {
     pub fn world_def(&self) -> WorldDef {
         let mut def = default_world_def();
         def.contact_recycle_scaling = self.contact_recycle_scaling;
-        def.gravity = box3d_rust::math_functions::Vec3 {
-            x: self.gravity[0],
-            y: self.gravity[1],
-            z: self.gravity[2],
-        };
+        def.gravity = box3d_rust::math_functions::Vec3 { x: self.gravity[0], y: self.gravity[1], z: self.gravity[2] };
         def.enable_sleep = self.enable_sleep;
         def.worker_count = self.workers;
         def

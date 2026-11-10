@@ -1,7 +1,7 @@
 //! Engine-side descriptions of bodies and shapes. Plain data, validated before anything
 //! reaches Box3D (4.3 rule 6: no NaN or infinity enters the simulation).
 
-use box3d_rust::math_functions::{is_normalized_quat, Quat, Vec3};
+use box3d_rust::math_functions::{Quat, Vec3, is_normalized_quat};
 
 use crate::error::PhysicsError;
 
@@ -40,7 +40,11 @@ pub(crate) fn bounded(v: &[f32], max: f32, what: &'static str) -> Result<(), Phy
 }
 
 pub(crate) fn position(v: &[f64; 3], what: &'static str) -> Result<(), PhysicsError> {
-    if v.iter().all(|c| c.is_finite() && c.abs() <= MAX_POSITION) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
+    if v.iter().all(|c| c.is_finite() && c.abs() <= MAX_POSITION) {
+        Ok(())
+    } else {
+        Err(PhysicsError::InvalidValue(what))
+    }
 }
 
 /// `q` as Box3D will take it. Its bits are kept when Box3D's own check (`is_normalized_quat`,
@@ -77,13 +81,24 @@ pub enum BodyKind {
 /// A shape's geometry, in the body's frame.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Geometry {
-    Sphere { center: [f32; 3], radius: f32 },
-    Capsule { center1: [f32; 3], center2: [f32; 3], radius: f32 },
+    Sphere {
+        center: [f32; 3],
+        radius: f32,
+    },
+    Capsule {
+        center1: [f32; 3],
+        center2: [f32; 3],
+        radius: f32,
+    },
     /// A box centred on the body origin, by half extents.
-    Box { half_extents: [f32; 3] },
+    Box {
+        half_extents: [f32; 3],
+    },
     /// The convex hull of 4 to [`limits::MAX_HULL_POINTS`] points (at most 64 hull vertices
     /// are kept).
-    Hull { points: Vec<[f32; 3]> },
+    Hull {
+        points: Vec<[f32; 3]>,
+    },
 }
 
 /// A shape: geometry plus surface and mass properties.
@@ -128,7 +143,11 @@ impl ShapeDesc {
 
     pub(crate) fn validate(&self) -> Result<(), PhysicsError> {
         let size = |v: f32, what| {
-            if v.is_finite() && (MIN_SIZE..=MAX_SIZE).contains(&v) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
+            if v.is_finite() && (MIN_SIZE..=MAX_SIZE).contains(&v) {
+                Ok(())
+            } else {
+                Err(PhysicsError::InvalidValue(what))
+            }
         };
         match &self.geometry {
             Geometry::Sphere { center, radius } => {
