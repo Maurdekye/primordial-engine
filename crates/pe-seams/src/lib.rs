@@ -53,10 +53,10 @@ pub use ids::{
     ChainId, EntryRef, Frame, Hash, Hasher, LineId, MemberKey, ORIGIN_ENTRY, ObjectId, Offset, OutOfRange, Pos,
 };
 pub use replica::{
-    Advance, CutImport, EntrySource, FieldPath, Finalized, GroupSel, ImportError, LeafKey, Mismatch, Node, Note,
-    Outcome, PhysicsImage, Reason, Record, Replica, RootError, Rung1, Stage, Tree, TreePath, Version,
+    Advance, CutImport, EntrySource, FieldPath, Finalized, GroupSel, ImportError, LeafKey, Mismatch, Nibbles, Node,
+    Note, Outcome, PhysicsImage, Reason, Record, Replica, RootError, Stage, Tree, TreePath, Version,
 };
-pub use time::{HostTime, frames_ceil};
+pub use time::{HostTime, SimRate, frames_ceil};
 pub use trace::{DivergeEvent, Rung, TraceEvent};
 pub use transport::{FrameClock, Lane, LinkState, LinkStats, NetEvent, PeerId, Received, Transport};
 pub use view::{
