@@ -1,7 +1,7 @@
 # pe-net: the transport
 
-Status: draft 1.1, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built. Draft 1.1 answers
-@design-reviewer's review of draft 1 (the High, Mediums 1-3, Lows 1-5).
+Status: draft 1.2, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built. Draft 1.2 records the user's
+ruling on the firewall default (m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
 - **Draft 1** adds sections 3-12, the rest of WS-net's M1 scope (`docs/refound-plan.md`, branch
@@ -112,20 +112,33 @@ What follows from the rule:
 - **How the joiner's addresses reach the inviter:**
   - **From a member already connected to both:** for every connection after the first. That member is the
     rendezvous.
-  - **The first connection in M1, between two machines with no helper: a two-way invite** [I].
+  - **The first connection in M1, by default: Windows' own "allow access" prompt** (the user's ruling,
+    m4534df91cc48: "(b) Allow prompt (rec.)").
+    - The first time pe-app opens its socket on a Windows machine, Windows asks the user whether to allow it on
+      their networks. The user's click creates the firewall rule, which is the user's go the coordinator's
+      ruling asks for. pe-app creates no rule itself.
+    - After that, the inviter accepts a joiner's dial directly.
+    - pe-app says before the first listen what the prompt is for, and which networks to tick: private networks
+      for a LAN, and whichever network the user's VPN shows as [I].
+    - The prompt appears only in an interactive desktop session. Headless runs (CI, Session 0) and M0's test
+      under WSL and Hyper-V never see it [I], so they use the fallback.
+    - Declining the prompt usually leaves persistent *block* rules for the app, so the prompt doesn't return
+      [I, @design-reviewer]. pe-app detects that state, uses the fallback, and tells the user how to undo the
+      block if they want direct connections.
+    - The rule is tied to the executable's path, so a build at another path prompts again. At the two-machine
+      checkpoints, a new prompt after a new build is expected, not a fault.
+  - **The fallback: a two-way invite** [I].
+    - It is used when the prompt was declined or never shown, or the inviter isn't on Windows behind such a
+      firewall.
     - The joiner dials the invite's addresses first.
     - If nothing answers within 3 s, it shows a short reply code: its key, its addresses, and the invite's id.
-    - The user pastes the code into the inviter, and both sides then send at once.
-    - This keeps to the coordinator's preference for simultaneous open, and needs no change to either machine.
-  - **The documented alternative:** Windows' own "allow access" prompt, the first time pe-app listens. It
-    creates a firewall rule, but by the user's own click, which is the user's go the ruling asks for. Whether it
-    becomes the default is the coordinator's and the user's call. M0's test ran under WSL and Hyper-V, where no
-    prompt appears [I].
+    - The user pastes the code into the inviter, and both sides then send at once, which needs no change to
+      either machine.
   - M3's hole punching inherits the same channels.
 - **Seen in M0** [V `win-server-linux-client-punched.log`]: three small packets from the inviter's socket to
   the joiner's address let the Linux joiner's handshake through to Windows.
-- **The other fix, not the default:** a firewall rule added at install changes the user's machine, so it needs
-  the user's go (coordinator ruling).
+- **Not done:** pe-app adding a firewall rule itself, at install or at run time. That would change the user's
+  machine without their click (coordinator ruling).
 - **Tests:** every test runs with no helper node (Q9). Hole punching through NATs and member relays are
   WS-net's M3 scope; this rule is their first step.
 
@@ -589,7 +602,11 @@ Gated, unless marked:
    - each guard refuses with its reason, and the joiner shows it;
    - a close before the welcome counts as a refusal;
    - the joiner sends nothing above the transport before the welcome;
-   - with the inviter's inbound blocked, the two-way invite connects;
+   - with the inviter's inbound blocked (a headless run), the two-way invite connects (the fallback, 2.4);
+   - by hand, on Windows: after the user really declines the prompt (block rules left behind), the two-way
+     invite still connects, and pe-app shows how to undo the block;
+   - by hand, once per checkpoint on the two physical machines: after the user accepts Windows' allow prompt,
+     the joiner's dial connects directly (the default, 2.4);
    - a third member joins through a rendezvous;
    - when both sides dial at once, both keep the same connection (6.2);
    - the joiner refuses an inviter whose hello differs (6.3);
@@ -640,8 +657,8 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 
 ## 11. Open questions
 
-- **N1. The firewall default** (2.4): the two-way invite, or Windows' allow prompt. It's with the user (the
-  coordinator, me6ad351bf759). The two-way invite holds until they answer.
+- **N1. The firewall default** (2.4): settled by the user (m4534df91cc48). Windows' allow prompt is the default,
+  and the two-way invite is the fallback.
 - **N2. What a clock fault does** (5.6): refuse the join, keep the member but mark its frames, or only report.
   The rule that a clock off by 0.1 % is a fault comes from the review. Its consequence is pe-agree's and the
   coordinator's.

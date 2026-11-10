@@ -1,0 +1,12 @@
+[package]
+name = "pe-render"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Rendering: the window, the scene renderer drawing from frame views (S5), the display layer, the desktop hand, offscreen capture, the GPU context pe-xr uses"
+
+# Skeleton from pe-seams v0 (WS-seams). WS-render, @ballpit-viz owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
+[dependencies]
+pe-seams = { path = "../pe-seams" }
