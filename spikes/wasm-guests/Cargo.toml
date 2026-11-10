@@ -1,3 +1,6 @@
+# LEGACY since the M0 archive (2026-11-10): scripts/build_wasm_guests.sh moved to archive/scripts/, and
+# spikes/physics-in-wasm is removed (both are at the tag archive/v0-prototype). The guests stay as references
+# for WS-logic; build them with the plain cargo command below.
 # Game-logic guest modules. Build with scripts/build_wasm_guests.sh, which remaps local paths
 # (design 13.2), or: cargo build --release --target wasm32-unknown-unknown   (from this directory)
 # physics_in_wasm lives in the root workspace (spikes/physics-in-wasm): it depends on sim-core and

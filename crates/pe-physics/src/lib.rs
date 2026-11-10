@@ -18,18 +18,21 @@
 //! Determinism: all inputs are validated and bounded ([`limits`]; no NaN or infinity enters
 //! Box3D, 4.3 rule 6), and every table is ordered. [`PhysicsWorld::state_hash`] is the
 //! per-frame hash (poses, velocities, tables); [`PhysicsWorld::check_hash`] covers the whole
-//! state.
+//! state. [`PhysicsWorld::body_digests`] gives one digest per body, which localizes a divergence
+//! but does not cover the state that belongs to no body (docs/spec/replica.md 5.1).
 //!
 //! Feature `raw` exposes `PhysicsWorld::raw_mut`, for test scenes and tools only.
 
 mod config;
 mod desc;
+mod digest;
 mod error;
 mod image;
 mod world;
 
 pub use config::{engine_world_def, PhysicsConfig, SUBSTEPS};
 pub use desc::{limits, BodyDesc, BodyKind, Geometry, ShapeDesc};
+pub use digest::BodyDigest;
 pub use error::PhysicsError;
 pub use image::{CheckHash, Transfer, WorldImage};
 pub use pe_core::ids::ObjectId;

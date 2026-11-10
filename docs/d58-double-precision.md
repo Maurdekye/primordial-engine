@@ -1,5 +1,9 @@
 # D58: Box3D double precision on
 
+> **Evidence paths** (since the M0 archive, 2026-11-10): paths under `spikes/out/` in this document refer to the
+> tag `archive/v0-prototype`, where those logs are kept. Main no longer carries them; the physics records the
+> tests read moved to `crates/pe-physics/tests/records/`.
+
 Author: @vdw-physics. Follow-up to P2-2, docket
 @item:primordial-engine/p2-2-follow-up-turn-box3d-double-precision-on-d5. Branch
 `p2/double-precision`. Status: records re-blessed, P2-6 matrix PASS; in review.

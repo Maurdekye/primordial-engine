@@ -8,6 +8,8 @@
 # cargo job runs through it as `bash $PE_HEAVY <command>`. Never runs `wsl --shutdown`.
 # The fork's own suite (cargo test -p box3d-rust --release, Windows) is logged in
 # spikes/out/p2-2/fork-suite-windows-release.txt and must pass.
+# Logs are written by this run and compared within it; they are not committed (the logs committed before the
+# M0 archive are at the tag archive/v0-prototype).
 # Logs: spikes/out/p2-2/{windows,linux-musl}-{debug,release}.txt, each starting with the commit, the
 # working-tree state and the compiler. The RESULT lines must be equal across all four logs, except
 # the images digest, which differs between debug and release in Box3D's own snapshot header
@@ -95,5 +97,5 @@ for prof in debug release; do
     [ "$a" = "$b" ] || { echo "images differ between Windows and Linux ($prof)"; status=1; }
   fi
 done
-if [ $status = 0 ]; then echo "RESULT: PASS (every run equal and matching spikes/out/vdw)"; else echo "RESULT: FAIL"; fi
+if [ $status = 0 ]; then echo "RESULT: PASS (every run equal and matching crates/pe-physics/tests/records/vdw)"; else echo "RESULT: FAIL"; fi
 exit $status
