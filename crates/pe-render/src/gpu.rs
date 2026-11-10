@@ -130,9 +130,10 @@ impl GpuContext {
 
     /// A device on `adapter` with pe-render's own limits.
     pub fn on(instance: wgpu::Instance, adapter: wgpu::Adapter) -> Result<GpuContext, ContextError> {
+        // Timestamp queries where the adapter has them: the frame's GPU time feeds the quality ladder (render.md 10).
         let desc = wgpu::DeviceDescriptor {
             label: Some("pe-render"),
-            required_features: wgpu::Features::empty(),
+            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
             required_limits: wgpu::Limits::default(),
             ..Default::default()
         };

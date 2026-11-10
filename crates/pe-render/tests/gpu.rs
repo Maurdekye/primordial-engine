@@ -157,3 +157,47 @@ fn no_adapter_is_capture_unavailable() {
     let (s, cam) = scene_at(Pos::ORIGIN);
     assert_eq!(r.capture(&s, cam, [4000, 10]).err(), Some(CaptureError::BadSize));
 }
+
+/// Render.md 10: the frame's GPU time comes back from timestamp queries within a few frames, without blocking, and
+/// captures don't touch it.
+#[test]
+fn gpu_time_arrives_from_timestamps() {
+    let Some(mut r) = renderer() else { return };
+    if !r.context().device.features().contains(pe_render::wgpu::Features::TIMESTAMP_QUERY) {
+        eprintln!("SKIPPED: the software adapter has no timestamp queries");
+        return;
+    }
+    let (s, cam) = scene_at(Pos::ORIGIN);
+    // A capture first: untimed, so the frames below report nothing until their own readings arrive.
+    let _ = capture(&mut r, &s, cam, [64, 36]);
+    let tex = r.context().device.create_texture(&pe_render::wgpu::TextureDescriptor {
+        label: None,
+        size: pe_render::wgpu::Extent3d { width: 256, height: 144, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: pe_render::wgpu::TextureDimension::D2,
+        format: pe_render::wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: pe_render::wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&Default::default());
+    let eye = || pe_render::scene::EyeView {
+        camera: cam,
+        color: &view,
+        format: pe_render::wgpu::TextureFormat::Rgba8UnormSrgb,
+        size: [256, 144],
+    };
+    let first = r.render_views(&s, &[eye()]);
+    assert_eq!(first.gpu_ms, None, "a reading before any timed frame finished");
+    let mut got = None;
+    for _ in 0..200 {
+        got = r.render_views(&s, &[eye()]).gpu_ms;
+        if got.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let ms = got.expect("no GPU time within 200 frames");
+    assert!(ms > 0.0 && ms < 2000.0, "implausible GPU time {ms} ms");
+    eprintln!("gpu time {ms:.3} ms");
+}

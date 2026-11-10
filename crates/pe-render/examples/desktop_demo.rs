@@ -146,4 +146,10 @@ fn main() {
         println!("snapshot: {s:?}");
     }
     println!("present interval p50 {:.2} ms, p99 {:.2} ms", pct(0.5), pct(0.99));
+    let mut g = r.gpu_ms.clone();
+    g.sort_by(f64::total_cmp);
+    match (g.get(g.len() / 2), g.get((g.len().max(1) - 1) * 99 / 100)) {
+        (Some(a), Some(b)) => println!("gpu time p50 {a:.3} ms, p99 {b:.3} ms ({} readings)", g.len()),
+        _ => println!("gpu time: no timestamp queries on this adapter"),
+    }
 }

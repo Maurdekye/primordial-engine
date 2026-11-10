@@ -66,6 +66,8 @@ pub struct DesktopReport {
     /// Present intervals, milliseconds.
     pub intervals_ms: Vec<f64>,
     pub cpu_record_ms: Vec<f64>,
+    /// GPU time per frame, from timestamp queries (empty on an adapter without them).
+    pub gpu_ms: Vec<f64>,
     pub skipped: u64,
     pub quality_changes: u64,
     pub monitor_mhz: Option<u32>,
@@ -368,6 +370,9 @@ impl DesktopView {
         let cpu = before_acquire + Duration::from_secs_f64(stats.cpu_record_ms / 1e3);
         self.report.frames += 1;
         self.report.cpu_record_ms.push(stats.cpu_record_ms);
+        if let Some(ms) = stats.gpu_ms {
+            self.report.gpu_ms.push(ms);
+        }
         let p = Instant::now();
         if let Some(l) = self.last_present {
             self.report.intervals_ms.push((p - l).as_secs_f64() * 1e3);
@@ -375,7 +380,7 @@ impl DesktopView {
         self.last_present = Some(p);
         let done = (self.cfg.clock)();
         self.pacer.presented(done);
-        if let Some(q) = self.pacer.frame_done(done, cpu, None) {
+        if let Some(q) = self.pacer.frame_done(done, cpu, stats.gpu_ms.map(|ms| Duration::from_secs_f64(ms / 1e3))) {
             self.report.quality_changes += 1;
             g.renderer.set_msaa(q.msaa);
         }
