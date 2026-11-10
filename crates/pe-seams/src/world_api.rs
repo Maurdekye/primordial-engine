@@ -116,13 +116,13 @@ hex_id!(
 
 impl core::convert::From<crate::ObjectId> for ObjectId {
     fn from(id: crate::ObjectId) -> Self {
-        ObjectId(id.0.to_be_bytes())
+        ObjectId(id.to_u128().to_be_bytes())
     }
 }
 
 impl core::convert::From<ObjectId> for crate::ObjectId {
     fn from(id: ObjectId) -> Self {
-        crate::ObjectId(u128::from_be_bytes(id.0))
+        crate::ObjectId::from_u128(u128::from_be_bytes(id.0))
     }
 }
 
@@ -1200,8 +1200,8 @@ mod tests {
 
     #[test]
     fn s1_ids_convert_both_ways_and_keep_their_order() {
-        let a = crate::ObjectId(1);
-        let b = crate::ObjectId(1 << 100);
+        let a = crate::ObjectId::from_u128(1);
+        let b = crate::ObjectId::from_u128(1 << 100);
         // `From` is this module's history enum here, so the conversions are spelled with `into`.
         let (ta, tb): (ObjectId, ObjectId) = (a.into(), b.into());
         assert_eq!(ta.to_string(), format!("o:{}01", "0".repeat(30)));

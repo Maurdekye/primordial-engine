@@ -116,9 +116,9 @@ pub struct Transfer {
 }
 
 const IMAGE_MAGIC: u32 = 0x5045_5049; // "PEPI"
-const IMAGE_VERSION: u32 = 2;
+const IMAGE_VERSION: u32 = 3; // 3: 16-byte object ids (world-model.md 2.1)
 const TRANSFER_MAGIC: u32 = 0x5045_5054; // "PEPT"
-const TRANSFER_VERSION: u32 = 1;
+const TRANSFER_VERSION: u32 = 2; // 2: 16-byte object ids
 /// Offset of the flags word in Box3D's world bytes (after magic, version, layout hash).
 const SNAP_FLAGS_OFFSET: usize = 12;
 
@@ -196,8 +196,7 @@ impl WorldImage {
         out.extend_from_slice(&self.world);
         put_u32(&mut out, self.bodies.len() as u32);
         for &(id, body) in &self.bodies {
-            put_u32(&mut out, id.creator);
-            put_u32(&mut out, id.counter);
+            out.extend_from_slice(&id.to_u128().to_le_bytes());
             put_body(&mut out, body);
         }
         put_u32(&mut out, self.joints.len() as u32);
@@ -236,10 +235,10 @@ impl WorldImage {
         }
         let n = r.len()?;
         let world = r.take(n)?.to_vec();
-        let count = r.count(16)?;
+        let count = r.count(24)?;
         let mut bodies = Vec::with_capacity(count);
         for _ in 0..count {
-            let id = ObjectId { creator: r.u32()?, counter: r.u32()? };
+            let id = ObjectId::from_u128(u128::from_le_bytes(r.take(16)?.try_into().unwrap()));
             bodies.push((id, r.body()?));
         }
         let count = r.count(17)?;
