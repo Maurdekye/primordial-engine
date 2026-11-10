@@ -208,11 +208,11 @@ fn a_falling_ball_misses_by_less_than_a_hands_width() {
 // ---- test 1: the display layer ------------------------------------------------------------------------------------
 
 /// Arrivals at 60 Hz on a 120 Hz display, with an object at rest; `jump(f)` gives frame f's displacement.
-fn correction_run(
-    settings: DisplaySettings,
-    place: Pos,
-    jumps: &[(u64, [f64; 3])],
-) -> (DisplayLayer, Vec<(HostTime, u64, Pos, Pos, bool)>) {
+/// One display frame of a correction run: its time, the frame view's frame, the drawn and target positions, and
+/// whether the cue is on.
+type Row = (HostTime, u64, Pos, Pos, bool);
+
+fn correction_run(settings: DisplaySettings, place: Pos, jumps: &[(u64, [f64; 3])]) -> (DisplayLayer, Vec<Row>) {
     let mut layer = DisplayLayer::new(settings);
     let vols = volumes();
     let mut rows = Vec::new();

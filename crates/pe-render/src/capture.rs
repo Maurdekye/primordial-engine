@@ -154,10 +154,19 @@ impl Renderer {
         });
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("capture copy") });
         enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded_row), rows_per_image: Some(size[1]) },
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: Some(size[1]),
+                },
             },
             wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
         );
@@ -196,7 +205,9 @@ impl PendingCapture {
 
     fn read(&self) -> Image {
         let [w, h] = self.size;
-        let data = self.buffer.slice(..).get_mapped_range();
+        let Ok(data) = self.buffer.slice(..).get_mapped_range() else {
+            return Image { width: w, height: h, rgba: Vec::new() };
+        };
         let mut rgba = Vec::with_capacity((w * h * 4) as usize);
         for row in 0..h as usize {
             let start = row * self.padded_row as usize;
