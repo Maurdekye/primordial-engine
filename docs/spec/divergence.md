@@ -1,0 +1,570 @@
+# Divergence and recovery (WS-diverge)
+
+Status: draft v0, 2026-11-10. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
+Nothing in it is built. It specifies `crates/pe-diverge` and the requirements pe-diverge places on other
+workstreams. Only WS-diverge edits this file and `crates/pe-diverge`.
+
+Sources: the re-founding plan (`docs/refound-plan.md`, branch `docs/refound-plan` at b610464: section 3.1, the
+seams in 3.2 and Appendices A and B); the review's file 14 (divergence and recovery), file 11 sections 3.0-3.3 and
+file 13 Part A (`_teams/1847/fable-review/`); the user's rulings and the coordinator's decisions of 2026-11-10 in
+`_shared/user-design-decisions.md`.
+
+Marks: **[V]** verified in the repository or the named record; **[R]** a user ruling, quoted or cited by message id;
+**[C]** a coordinator decision; **[I]** my design judgement, open to review. Every number marked [I] is a parameter
+(section 14), not a constant.
+
+## 0. The page in short
+
+- **The goal it serves** [R mfc7e0ddc4137, 18:56:50Z]: the local user is never held up; everyone converges on one
+  world line; divergences are repaired "promptly and with as little visibility or impact on the user's experience
+  as possible".
+- **pe-diverge is sans-IO.** It takes events, messages and time, drives a replica through seam S2, and returns
+  messages for the repair lane. It owns no thread, socket or clock.
+- **M1 builds four things:**
+  1. detection: every final cut's root is compared with this machine's own root at that cut (section 3);
+  2. the repair ladder's rungs 1 and 2: replay locally from the last cut that matched, then fetch only the objects
+     that differ, verified by hash, and replay forward (section 4);
+  3. the fault bundle: a self-contained, offline-replayable record of each repair past rung 1 (section 6);
+  4. the counters (section 7).
+- **It also hands WS-render the display layer's requirements** (section 8): corrections are blended, a player's own
+  hands and what they hold are never corrected, one-shot effects fire once.
+- **M2 builds the merge engine v1 and M3 v2** (section 9): one pure function, a three-way merge at main's final
+  frontier [C 20:05Z]. It is drafted here for WS-model to model before anything is built.
+- **What it needs from the seams** (section 11): a vote that carries the voter's root, a root-split event, roots
+  kept for the last few cuts, tree nodes and object records served by hash, and a guarantee that equal roots give
+  equal futures.
+
+## 1. Scope
+
+**pe-diverge does:**
+- compare roots at final cuts and classify a mismatch;
+- run the repair ladder (rungs 1-2 in M1; 3-5 in M3);
+- resolve a root split where no root has a quorum (section 5);
+- write fault bundles and keep the counters;
+- compute merges (M2, M3), as a pure function that WS-agree calls [C 20:05Z];
+- run the background self-check (M3).
+
+**pe-diverge does not:**
+- decide finality, order entries or void late entries: that is pe-agree's (S3);
+- simulate: that is the replica's (S2), owned by WS-state and WS-world;
+- draw anything: the display layer is pe-render's (WS-render). This file states its requirements only;
+- guard connections: the version and self-test comparison is pe-net's (WS-net). pe-diverge consumes its result
+  (section 5) and states what the guard must compare (section 10).
+
+## 2. Terms
+
+- **Cut:** a frame `f`, the last entry included for each author, and a root. Final once a quorum has voted for it
+  (file 11, 3.3). Quorum: `t = floor((n-1)/3)`, `q = floor((n+t)/2) + 1` [C 20:05Z]; so `q = 2` at `n = 2` and
+  `n = 3`.
+- **Root:** the hash, 256 bits, of the replica's whole state at a frame (S1, S2). The tree under it runs from the
+  world to cells to objects (file 11, 3.2).
+- **My root at a cut:** the root this replica computes at frame `f` with exactly the cut's entries in effect, and no
+  others. Entries this machine predicted with that are void under the cut are removed first (section 3.1).
+- **Verified cut (`Cv`):** the newest final cut whose root this machine has matched. It is the base for rung 1 and
+  for every merge.
+- **Diverged:** a final cut's root differs from my root at that cut.
+- **Main:** the line a quorum finalizes. It is never a host (R1; plan 5.2).
+- **Branch:** a run of frames that one machine, or one group, simulated without a final cut it matched.
+
+## 3. Detection
+
+### 3.1 When a root is compared
+
+- On each final cut `C` (S3 event `CutFinal`), pe-diverge asks the replica for its root at `C` (S2
+  `root_at_cut`). The replica conforms first: it rolls back past any entry stamped at or before `C.frame` that the
+  cut voids, and replays with the cut's entries only.
+- A machine computes its root at `C` only once it holds every entry in `C`: the d1 rule [plan 4.2]. Before that
+  it neither votes nor compares.
+- Equal roots: `Cv := C`. The replica may release roots older than the last `K_keep` cuts (section 14).
+- Different roots: this machine has diverged at `C`. The ladder starts (section 4).
+
+[I] Comparing at every final cut, not every frame, costs one hash per cut and finds a fault within one cut interval
+(about 9 frames at 60 Hz on good links [V file 12]).
+
+### 3.2 The vote carries the root
+
+Detection needs agreement to say which root a quorum holds. The proposal to WS-agree (S3, section 11.2) [I]:
+- A proposal names the cut and the proposer's root.
+- A member that holds every entry votes with one hash over `(cut, my root)`.
+- Only votes with equal hashes count toward the quorum. So a cut is final only with a root that a quorum computed
+  for itself.
+- A member whose root differs still sends its vote. It counts for nothing, and every member sees the
+  disagreement.
+- If votes for one cut split so that no root can reach a quorum, agreement emits `RootSplit { cut, roots: [(root,
+  voters)] }` to every member (section 5).
+
+**Why a vote never waits for repair:** up to `n - q` diverged members do not block the quorum: one at `n = 3` to
+`n = 5`, two at `n = 6`. At `n = 2` (`q = 2`) one faulty member blocks it, as do three members whose roots all
+differ. Section 5 settles those cases.
+
+### 3.3 Kinds of mismatch
+
+pe-diverge only sees "my root is not the quorum's". It learns which kind of fault from what cures it:
+
+| Cured by | Kind of fault (file 14, 2.3) | Example |
+|---|---|---|
+| Rung 1 | Transient, in live state only | A bit flip in a body; a replay-order bug that does not recur |
+| Rung 2, once | Persistent in this machine's saved state | A corrupted saved root (F4) |
+| Rung 2, then it recurs | Computational: this machine computes differently | A build or CPU that differs (F1, F3); a logic module that behaves differently (F2) |
+| Not by repair | State outside the hash (F5) | Shows as two equal roots whose futures differ. Section 10 requires it never to exist |
+
+## 4. The repair ladder
+
+Each rung is tried only if the one before has failed. A rung succeeds when the replica's root at the diverged cut
+equals the quorum's root. Throughout, the machine keeps simulating and drawing: no rung pauses the local user
+[R mf7daea6446ca]. The display layer blends whatever the repair moves (section 8).
+
+### 4.1 Rung 1: replay locally from the verified cut (M1)
+
+1. Restore the root at `Cv` (S2 `restore`) on the replica.
+2. **Verify it:** recompute its hashes from the records, ignoring every cached hash (S2 `verify`). If it does not
+   equal `Cv`'s root, the saved state itself is damaged: go to rung 2 at once.
+3. Replay from `Cv.frame` to `C.frame` with the final log's entries (S3 `final_entries(Cv, C)`).
+4. Compare the root with `C`'s.
+   - Equal: the fault was transient. Replay on from `C` to the current frame with the entries held, predictions
+     included, and carry on. Count a rung-1 cure (section 7). No bundle is written; a log line is.
+   - Different: go to rung 2.
+
+- **Network:** none. **Cost:** `C.frame - Cv.frame` frames of replay, normally one cut interval, plus one full
+  rehash. [I] At M1's size (500 balls) this fits in the frame; from M2 it runs on a second copy (S2 `fork`) and is
+  swapped in, as every deep replay does (file 14, 4.2).
+- **If `Cv` is older than `K_keep` cuts,** its root has been released: skip rung 1.
+
+### 4.2 Rung 2: fetch what differs, patch, replay forward (M1)
+
+1. **Choose a source:** one of the voters of `C`, the members that hold its root. Prefer the lowest measured
+   delay; on a timeout of `T_peer`, the next one. A source is trusted for nothing: every byte is checked against
+   `C`'s root, so a lying or faulty source costs time, never correctness.
+2. **Descend the tree.** Ask the source for the child hashes of the tree nodes under `C`'s root (S2 `node`,
+   served by the source's pe-diverge over the repair lane). Compare them with my tree at my root at `C`. Descend
+   only into children that differ, a whole level per round trip. At the leaves are the differing objects.
+   - [I] At M1's size the tree is about three levels deep, so the descent is about three round trips.
+3. **Fetch** the records of the differing objects at `C`, with the hashes on their path to the root (S2
+   `export`). Check each record's path against `C`'s root. Reject any record that does not check, and ask the next
+   source for it.
+4. **Patch** my state at `C` with the records (S2 `import`). Its root must now equal `C`'s. If it does not, the
+   patch is incomplete: descend again against the patched tree, at most `N_descend` times, then fail the rung.
+5. **Replay forward** from `C.frame` to the current frame, with every entry held since: final ones and
+   predictions, my own included. This is the same replay as after a late entry.
+6. **Record:** write a fault bundle (section 6) and count a rung-2 cure.
+
+- **Network:** the descent plus the differing objects. **Seen by the user:** one blended correction of the
+  objects that differed and of whatever they touched since `C`.
+- **When repair data arrives late:** if, when the fetch completes, `C` is older than the replica can replay in
+  the foreground (`W_fg` frames), restart the rung at the newest final cut instead. A persistent fault shows there
+  too, and the descent is short. [I]
+- **Cells and groups:** the tree's interior nodes are cells, and from M4 contact groups. S2 `import` patches
+  objects inside a cell without reloading the cell [C 20:05Z, "per-group save, restore and step"].
+
+### 4.3 When rung 2 does not hold
+
+- **The same objects diverge again** within `N_recur` cuts of a rung-2 cure: this machine computes them
+  differently. In M1, pe-diverge keeps curing them by rung 2 at each cut, at most `N_recur_max` times, marks the
+  objects "repeatedly diverging" in the counters and the bundle, and raises a `RepeatedDivergence` event that
+  pe-app shows the user, plainly: "this machine computes <object> differently; it is being kept in step from the
+  others". [I]
+- **M3 adds the higher rungs** (file 14, 4.3):
+  - rung 3, reload the whole cell (or contact group) at the newest cut, behind a brief fade;
+  - rung 4, rejoin from a cut, a visible reconnect;
+  - rung 5, quarantine: the object or module that keeps diverging is frozen on every machine, by an ordinary
+    entry, and reported.
+- Until M3, M1's escalation stops at the event above: nothing in M1 freezes or disconnects.
+
+### 4.4 Rules that hold on every rung
+
+1. **No final frame is undone.** Repair moves this machine's state to the final root; it never changes a final
+   cut, and never rolls back below `Cv`.
+2. **No unverified byte is imported.** Every record crosses a hash check against a quorum's root.
+3. **Repair never blocks the frame.** Replays deeper than `W_fg` run on a second copy (M2 on), and below that in the
+   foreground within the frame budget.
+4. **The local player's own entries survive.** A repair replays them; it never drops them.
+5. **Repair serves others while it runs.** A machine that is itself repairing still serves tree nodes and records
+   of roots it has verified.
+
+## 5. Who is right: root splits
+
+- **With a quorum root** (at most `n - q` members differ): the quorum's root is right. The minority repairs
+  toward it (section 4).
+- **With no quorum root** (S3 `RootSplit`): typically two players, or three that all differ. Every member applies
+  the same rule [I]:
+  1. Every member runs rung 1 from its own `Cv` and votes again. Transient faults end here.
+  2. If the split persists: a member whose last self-test failed, or whose connection guard reported a
+     difference (WS-net, section 10), adopts another's root. The test of that is in each member's vote.
+  3. If it still persists: the **reference root** is the root held by the most voters; ties go to the smaller
+     root hash. Every member that does not hold it runs rung 2 toward it, with its voters as sources, and votes
+     again.
+  4. The split is reported, with a fault bundle, on every machine.
+- **Why the smaller hash** [I]: no player and no machine is favoured, every member computes the same answer, and
+  nobody can steer it without changing the state itself. It is arbitrary by design. Between two machines with no
+  third, nothing tells which computed correctly; the rule makes them agree and the bundle reports it. The rule is
+  for @design-reviewer to approve or replace.
+
+## 6. The fault bundle
+
+Written on every repair past rung 1, and on every root split (file 14, 4.6).
+
+**Contents:**
+- the world id, the engine build id, the platform and CPU features, the self-test result;
+- `Cv` and `C`: frames, roots and voters;
+- the state at `Cv` for the cells (M4: contact groups) that hold the differing objects, with the hashes on their
+  path to the root, so it imports into an empty replica;
+- every entry from `Cv` to `C`, with signatures;
+- the ids of the differing objects; their records under my root and under the quorum's;
+- the rung reached, the sources used, and the times taken.
+
+**Rules:**
+- It is self-contained: `pe-diverge replay-bundle <file>` (an example binary of the crate) replays it on any
+  machine and prints, per frame, the hashes of the differing objects. Two machines' printouts, or two builds',
+  differ first at the first frame that diverged. [I: this finds the first differing frame offline, so the live
+  repair never waits for it.]
+- It is a local file, in the app's data folder. It is never sent anywhere without the user's action. It holds
+  other players' inputs.
+- At most `B_keep` bundles and `B_bytes` in all; the oldest goes first.
+- Its format is versioned, and readable by `pe-harness` and by agents over MCP (WS-api: a `faults` resource).
+
+## 7. Counters
+
+pe-diverge keeps them, or collects them from their source through the events named; pe-app shows them, and MCP
+exposes them (WS-api). They are measured in every harness scenario (plan 4.1, rule 4).
+
+| Counter | Definition | Source |
+|---|---|---|
+| `cuts_compared`, `cuts_matched` | Final cuts compared at, and matched | pe-diverge |
+| `diverged` | Mismatches found, by kind of state (field, governance, claim, body; from M2 logic, module) | pe-diverge, from the tree's leaves |
+| `cured_by_rung[1..5]` | Repairs, by the rung that cured them | pe-diverge |
+| `repair_latency` | From the `CutFinal` that showed the mismatch to an equal root, as a distribution | pe-diverge |
+| `repair_bytes` | Bytes fetched for repair | pe-diverge |
+| `repeated_divergence` | Objects marked repeatedly diverging | pe-diverge |
+| `root_splits` | `RootSplit` events, and how each ended | pe-diverge |
+| `bundles_written` | Bundles written | pe-diverge |
+| `corrections_per_min` | Drawn objects whose drawn pose had to blend or jump after a correction, per minute | pe-render (section 8) |
+| `visible_error` | Mean and max distance between drawn and simulated pose, over objects in view, per second | pe-render |
+| `snaps_in_view` | Corrections that jumped rather than blended while in view | pe-render |
+| `own_error` | Error of the local player's own hands and held objects. Must be exactly zero | pe-render |
+| `rollback_depth` | Deepest rollback, and the distribution | pe-replica (WS-state) |
+| `voided_own` | The local player's entries voided as late (P5) | pe-agree, through S3 |
+| `merges`, `merge_conflicts`, `merge_replay_frames` | From M2 | pe-diverge |
+| `unconfirmed_time` | Time played since the last final cut, as a distribution | pe-agree (M3) |
+
+## 8. The display layer: requirements for WS-render
+
+pe-render builds it (plan 3.1, WS-render); WS-diverge states what it must do and how it is tested. The numbers are
+parameters, to be tuned with a person in VR at the M1 checkpoint (plan section 8). Whether the user wants a number
+for visible error is still open with the user (file 14, section 7, question 3).
+
+**D1. Two poses.** Every drawn object has a simulated pose (from S5) and a drawn pose (pe-render's own). The
+simulation never reads the drawn pose.
+
+**D2. Corrections blend.** When the simulated pose of an object moves discontinuously (a rollback, a repair or a
+merge changed it), the drawn pose keeps its place and closes the gap:
+- over `T_blend` (about 0.1 s [I], file 14 4.1), smoothly, with no overshoot;
+- the gap is in position and orientation both;
+- a further correction during a blend starts from the current drawn pose; it never jumps back.
+
+How pe-render knows a correction happened: S5 marks, per object, that this frame's simulated pose was rewritten by a
+replay since the last publication (a `corrected` flag, or the correction offset). This is a requirement on S5
+(section 11.3).
+
+**D3. Choose by size and by view** (file 14, 4.1):
+- an error below `E_small` blends over `T_blend`;
+- an error above `E_snap`, out of view, jumps at once;
+- above `E_snap` in view: a fast blend over `T_fast`, or a jump if the blend's straight path would pass through
+  another drawn solid. [I: the solid test may wait until after M1; until then, in view always blends fast.]
+
+**D4. Never correct what the player holds.** The local player's own hands, and any object the local player holds in
+the current predicted state, are drawn at exactly their simulated pose. Their error is exactly zero: `own_error`
+is a test, not a measurement [R m21f5bdac80b3].
+- When an object leaves the local player's grip because a race was lost (P3), it becomes blendable from that
+  moment, starting from where the hand had it. It slides out of the grip over `T_blend` with a short cue (sound or
+  haptic) [plan M1 demo step 4].
+
+**D5. Remote hands blend freely,** with the same rules as objects. Guessing them between updates is WS-net's and
+WS-state's (P2).
+
+**D6. One-shot effects fire once.** Sounds, particles and haptics are keyed by the event that caused them. The key
+is stable across replays [I]: `(frame, causing entry's hash or "physics", object id, event kind, ordinal within
+that object's events that frame)`.
+- A key already played is never played again.
+- A sustained effect whose event disappears after a replay is stopped, faded over `T_blend`.
+- Effects of the local player's own actions play at once.
+- Effects of others' actions not yet final may wait `D_effect` frames. [I] Default 0 frames, for immediacy;
+  file 14 section 6 doubts the delay is wanted.
+
+**D7. Lost races and refusals are told,** not hidden: a lost grab has its cue (D4); a refused edit shows who won
+(WS-api and pe-render, P4); an entry of mine voided as late is shown plainly (P5).
+
+**D8. Display rate is not tick rate.** The same layer interpolates between simulated frames for any display rate
+(R2). Interpolation is not a correction and does not count as one.
+
+**Tests (WS-render's, in its crate, against pe-harness scenarios):**
+- the drawn pose reaches the simulated pose within `T_blend` of the last correction, to within float tolerance;
+- `own_error == 0` in every scenario, including lost grabs and repairs;
+- a replayed event's effect fires once; an undone event's sustained effect stops;
+- the counters of section 7 are reported for every network scenario;
+- **a control that bites:** turning blending off must raise `snaps_in_view`; blending the local hand must make
+  `own_error` non-zero, and the test must catch both.
+
+## 9. The merge engine (M2 v1, M3 v2): draft for WS-model
+
+Not built until WS-model's model v2 checks it [C 20:05Z, C8]. This section is the shape to model.
+
+### 9.1 What the user asked for
+
+- Q3b [R mf7daea6446ca], verbatim: "no player should ever wait for other players' actions to finish. if a length
+  divergence occurs (>2 seconds), the diverging player performs a world line merge with main: main hands them back
+  the state that they diverged from, everything is resimulated using the new rules from that point forward,
+  including the actions the player took, and their changes to the world state are merged in".
+- On reconvening [R 18:58Z], verbatim: "treat it like a git merge where every action is a commit to the main tree,
+  but with deterministic rules for resolving it whenever possible".
+- A delete against an add-on [R m35138bafc46a]: "if the delete occurred first, then the add-on is orphaned. if the
+  delete occured second, then everything is destroyed".
+- The bound [R m35138bafc46a]: one minute at worst; after it, the lines diverge for good, and may be re-merged later
+  by choice from the full record [R 19:09Z].
+- The coordinator's reading [C 20:05Z]: a three-way merge at main's final frontier; base, the diverged-from state;
+  theirs, the returning machine's replay under the new rules; ours, main's final state; deterministic rules resolve
+  conflicts; no final frame is undone. [C: an [I] reading, open to the user's correction.]
+
+### 9.2 One pure function
+
+```text
+merge(base: Root, ours: Line, theirs: Line, rules: Rules) -> Merged
+  Line   = { root: Root, entries: [SignedEntry] since base, footprint: per object, the frames it was written }
+  Merged = { root: Root, kept: [entry], refused: [(entry, reason)], conflicts: [group], report }
+```
+
+- **Pure:** no clock, no randomness, no I/O, no arrival order. The same inputs give the same `Merged` on every
+  machine. That is the property "merge determinism" (plan 4.4).
+- **Inputs are agreed.** The merge runs as an ordinary entry: the returning machine (v1), or the first proposer
+  after reconvening (v2), submits a merge entry naming `base` and the hashes of `theirs.entries`. When a final cut
+  includes it at frame `F`, every member computes `merge(base, ours = main at F, theirs, rules)` and applies the
+  result at `F + 1`. Main's frames up to `F` stay as they were. [I]
+- **`theirs` is replayed under the new rules:** from `base`, with `theirs.entries` and the code in effect on main,
+  so the returning machine's own actions are re-simulated (Q3b).
+
+### 9.3 The rules, per group of objects
+
+For every object, compare `base`, `ours` and `theirs` by the tree (equal hashes need no look inside):
+
+| Since `base` | git's name | Result |
+|---|---|---|
+| Neither line changed it | unchanged | `base` |
+| Only `ours` changed it | fast-forward | `ours` |
+| Only `theirs` changed it | fast-forward | `theirs` |
+| Both changed it to the same record | clean | that record |
+| Both changed it differently | conflict | the group is resolved by replay (below) |
+
+**Conflict groups.** A conflicting object, and every object it touched in either line (contact, a joint, a
+parent, a script's reads and writes) since `base`, form one group, closed under "touched". Each group is resolved
+by the engine's ordinary rules, applied once to both lines' actions [file 14, 4.4]:
+1. start from the group's state at `base` (S2 per-group restore [C 20:05Z]);
+2. take both lines' entries on the group, as a set: an entry in both lines counts once;
+3. order them by frame stamp, ties by the seeded rank (D37), as the engine always orders;
+4. replay them on the group (S2 per-group step). The soonest grab wins; a stale precondition is refused with its
+   reason; a later plain write wins; a delete and an add-on fall as the user ruled, by their order;
+5. the group's state at `F` is the result.
+
+**Voided entries are merged in.** An entry of `theirs` that main voided as late is in the set like any other.
+That is what "their changes are merged in" means, and what the property "voiding and merging fit together" checks
+(plan 4.4) [I].
+
+**Things only one side touched do not change** (file 14, 4.4), except where the group closure pulls them in. That
+is the "merge keeps work" property: an action is dropped only if the ordinary rules would have refused it with no
+split.
+
+### 9.4 v1 and v2
+
+- **v1 (M2): one branch against main.** `theirs` is one machine's line: a long compile (Q3b), or a bad link past
+  2 s (plan M3, thin links, which use the same engine). Below `T_merge = 2 s` no merge is needed: the ordinary
+  rollback replays the change from its agreed frame. Above it, the machine keeps playing on the old code; when its
+  compile ends it replays `theirs` on a second copy in the background, then submits the merge entry. [I]
+- **v2 (M3): split groups.** Both sides may lack finality. `base` is the last cut both hold; both are lines of
+  unconfirmed play; the merge entry is the first entry of the reconvened quorum. Within one minute the merge is
+  automatic; after it, both lines know they have diverged (S3 `Diverged`), and each continues as its own world line
+  [R m35138bafc46a; plan M3].
+- **Re-merging later, by choice (M5):** the same function over the full record, from the last cut both worlds
+  share, with an admin of each consenting and a preview computed in a copy first (file 14, 4.4). The user's open
+  question applies there: may the later change win, object by object, where an exact replay would take too long?
+
+### 9.5 What the model must settle first
+
+- Whether "ours" and "theirs" as states (the coordinator's three-way reading) and the per-group replay agree on
+  every non-conflict object. The case to model: an object only `theirs` moved, which in the merged replay would be
+  hit by something `ours` moved. The rule above takes `theirs` unchanged and lets the next step resolve any overlap;
+  the alternative pulls it into the group.
+- That no final frame is undone, with the merge applied at `F + 1`.
+- That `merge` is independent of arrival order, and of which machine computes it.
+- **Controls that bite:** ordering by arrival; voiding entries made during a split; dropping one side's
+  non-conflicting work. Each must give a counterexample.
+- [I] The merge's cost: how far a conflict group spreads over a minute of a busy pile (file 14, section 6). An
+  experiment before the merge is promised (plan section 8).
+
+## 10. Requirements on other workstreams
+
+- **R-H1, equal roots give equal futures (WS-world, WS-state).** Every byte a step reads is under the root, and
+  per object (or per pair of objects) in the tree. Today the per-frame physics hash leaves out sleep timers,
+  contact caches, warm starts and islands [V `crates/pe-physics/src/world.rs:684-688`]; only the whole-image check
+  hash covers them [V `crates/pe-physics/src/image.rs:345`]. Rung 2 patches objects; if their contact and solver
+  state is not patched with them, the patched replica diverges again on the next step. So: either those caches go
+  into the tree, keyed by body and by body pair, or the step must not read them. Test (WS-state): restore a
+  replica from a root assembled by import, and step it 600 frames beside one that ran continuously; every frame's
+  root must be equal.
+- **R-H2, everything that matters is hashed (WS-world).** Fields, governance, claims and cooldowns from M1; logic
+  state and module versions from M2 (plan M1 acceptance; file 14 F5). A divergence injected in any one is found by
+  the tree and cured by rungs 1 and 2: a test of pe-diverge's, per kind.
+- **R-H3, verified restore (WS-world).** A restored root can be rehashed from its records, ignoring caches (rung 1
+  step 2).
+- **R-O1, orphaned add-ons (WS-world).** An edit that adds to an object deleted earlier in the order, for example a
+  child parented to it or a component attached, is applied detached, at the world's root and keeping its world
+  pose: it is orphaned, not refused [R m35138bafc46a]. A delete removes the subtree as it is at that point in the
+  order, so a later delete destroys the add-on too. This is the ordinary rule with no split, so that the merge
+  needs none of its own. It means an add-on does not take the parent's version as a refusing precondition.
+- **R-G1, the connection guard (WS-net).** Before a join, compare: the engine build id, the physics self-test's
+  digest, and (from M2) each module's hash. A difference refuses the join with its reason (plan M1 acceptance). The
+  last self-test result is part of a member's state that section 5 reads.
+- **R-E1, stable effect keys (WS-state, through S5).** Events carry the key of D6.
+
+## 11. Seams: what pe-diverge needs
+
+A proposal to @engine-architect for seams v0, to be agreed before it is fixed. The names follow the plan's
+Appendix A sketch.
+
+### 11.1 S2, Replica
+
+The sketch's `differing(&other: &Hash)` cannot be answered locally: a replica holds only its own tree. In its
+place [I]:
+
+```rust
+pub trait Replica {
+    // as sketched: step, save, restore, root_hash, permits
+    fn root_of(&self, root: &Root) -> Hash;                    // the hash of any kept root
+    fn root_at_cut(&mut self, cut: &Cut) -> Hash;              // conformed to the cut: its entries only (3.1)
+    fn verify(&self, root: &Root) -> Result<(), Mismatch>;     // rehash from records, no caches (R-H3)
+    fn node(&self, root: &Root, path: &TreePath) -> Option<Node>;  // child (key, Hash) pairs, or a leaf
+    fn export(&self, root: &Root, ids: &[ObjectId]) -> Records;    // records, with their paths to the root
+    fn import(&mut self, at: &Root, records: Records) -> Result<Root, ImportError>; // checks every path
+    fn object_hashes(&self, ids: &[ObjectId]) -> Vec<(ObjectId, Hash)>;  // for replay-bundle
+    fn fork(&self, root: &Root) -> Self where Self: Sized;     // a second copy, for background replay (M2)
+    // M2-M3, for the merge [C 20:05Z]:
+    fn group_restore(&mut self, root: &Root, group: &[ObjectId]);
+    fn group_step(&mut self, frame: Frame, ordered: &[SignedEntry]) -> Vec<Outcome>;
+    fn footprint(&self) -> Footprint;                          // objects written or touched, per frame
+}
+```
+
+- `Root` is a handle that keeps its structure alive, and is `Send`, so a worker can replay it.
+- Roots of the last `K_keep` final cuts are kept, and served to peers.
+
+### 11.2 S3, Agreement
+
+What pe-diverge needs from pe-agree, beyond the sketch:
+- `CutFinal { cut, frame, root, voters }`: the root the quorum signed, and who holds it.
+- Votes over `(cut, the voter's own root)`, and `RootSplit { cut, roots: [(Hash, voters)] }` when no root can reach
+  a quorum (3.2).
+- A way to vote again on a pending cut after a repair (`revote(cut, root)`), for section 5.
+- `final_entries(from, to)`: the final log between two cuts, for rung 1, the bundle and the merge.
+- `Voided { entry, reason }`, as sketched: for `voided_own` and for the merge (9.3).
+- From M2: the merge entry is an ordinary entry; `Merged` and (M3) `Diverged` events, as sketched;
+  `Unconfirmed(time)` and `QuorumLost`, as sketched.
+- A member's vote carries its last self-test result, or the guard's verdict is otherwise visible to all (5, step 2).
+
+### 11.3 S1, S4 and S5
+
+- **S1:** a merge entry, as a protocol payload (M2). No "rebased from" link is needed: voided entries go into the
+  merge as they are (9.3) [I].
+- **S4:** repair messages travel on the `Repair` lane. pe-diverge's messages: `NodeRequest { root, paths }`,
+  `NodeReply { root, nodes }`, `RecordRequest { root, ids }`, `RecordReply { root, records }`. Unsigned: every reply
+  is checked by hash.
+- **S5:** per object, a `corrected` flag or offset (D2), whether the local player holds it (D4), and effect events
+  with stable keys and a retracted list (D6).
+
+### 11.4 pe-diverge's own interface
+
+```rust
+pub struct Diverge { /* state machine: Cv, the ladder's state, counters, peers */ }
+impl Diverge {
+    pub fn on_event(&mut self, ev: &agree::Event, replica: &mut impl Replica);   // CutFinal, RootSplit, Voided...
+    pub fn receive(&mut self, from: PeerId, msg: &[u8], replica: &mut impl Replica) -> Result<(), Fault>;
+    pub fn tick(&mut self, now: Frame, replica: &mut impl Replica) -> Vec<Outgoing>;  // Repair-lane messages
+    pub fn counters(&self) -> &Counters;
+    pub fn take_bundles(&mut self) -> Vec<FaultBundle>;   // pe-app writes them to disk
+    pub fn events(&mut self) -> Vec<DivergeEvent>;         // Repaired{rung}, RepeatedDivergence, RootSplitEnded
+}
+pub fn merge(base: &Root, ours: &Line, theirs: &Line, rules: &Rules, replica: &mut impl Replica) -> Merged; // M2
+```
+
+- No method takes a clock, socket or random source. `receive` never panics on any bytes: bad bytes are a `Fault`
+  naming the sender (plan 4.1).
+
+## 12. Tests and controls
+
+In `crates/pe-diverge/tests`, using pe-harness as a library (plan 3.1). Each property runs over the harness's
+network model with random schedules.
+
+**M1:**
+1. **A transient fault:** one ball's live state is altered on B. Rung 1 cures it at the next cut; the roots are
+   equal; no bundle; `cured_by_rung[1] == 1`.
+2. **A persistent fault:** the same ball is altered in B's saved root too. Rung 1 fails its verify; rung 2 fetches
+   that ball only (`repair_bytes` bounded by one object's records and the descent); a bundle is written.
+3. **A computational fault:** B's replica perturbs one ball each step (a test-only mutation of the replica). Rung 2
+   cures it each cut; after `N_recur`, `RepeatedDivergence` is raised; play never pauses.
+4. **Every kind of state** (R-H2): the same as 2 for a field, a governance record and a claim.
+5. **A lying source:** a peer serves a wrong record. It is rejected by hash; the next source cures it; no wrong
+   byte is imported.
+6. **Two players, a root split:** section 5's rule makes both agree; both report it.
+7. **Late repair data:** the fetch is delayed past `W_fg`; the rung restarts at the newest cut and cures it.
+8. **Bytes from a peer** (property test): no message on the repair lane panics pe-diverge.
+9. **Replay of a bundle** reproduces the divergence on a clean replica, and prints the first frame that differs
+   when run against the reference.
+10. **No final frame undone, no pause:** across all of the above, the harness's properties hold (plan 4.1).
+
+**Controls that bite** (each must make a test fail):
+- importing records without checking their paths (test 5 must fail);
+- patching at `C` but not replaying forward (test 2 must fail: the root at the next cut differs);
+- comparing roots before conforming to the cut (false mismatches: `diverged > 0` on a clean run must fail);
+- skipping the verify in rung 1 (test 2 must fail: rung 1 claims a cure that the next cut disproves);
+- leaving physics caches out of the patch (R-H1's test must fail).
+
+**M2-M3:** the merge properties of 9.5, first in the model, then on pe-diverge's `merge` with the model's traces
+replayed through it (plan 4.1, rule 2); a merge scenario for each order of a delete and an add-on [R m35138bafc46a].
+
+## 13. Milestones
+
+| Milestone | WS-diverge builds | Depends on |
+|---|---|---|
+| M0 | This specification; S2 and S3 agreed with @engine-architect | — |
+| M1 | Detection; rungs 1 and 2; root splits; the bundle and `replay-bundle`; the counters; the display layer's requirements to WS-render; tests 1-10 | S2 from WS-state and WS-world (R-H1 to R-H3); S3 from WS-agree; S4 repair lane; pe-harness |
+| M2 | The merge engine v1, after model v2 | WS-model v2; S2 fork, group restore and step, footprint |
+| M3 | The merge engine v2; rungs 3-5; the background self-check; the one-minute bound's divergence, with WS-agree | WS-model v3; the world record (WS-world) |
+| M5 | Re-merging later, by choice | M3 |
+
+**A point for the coordinator** [I]: the user put a logic edit into M1 (U1, mc40fc6379bc6), and Cranelift moved into
+M1 [C 19:52Z]. A compile on B longer than 2 s would then need Q3b's merge in M1. Below 2 s, the ordinary rollback
+covers it. Unless M1's logic edit is kept small enough to compile in under 2 s on the second PC, merge v1 (and model
+v2) move into M1. This file assumes the edit is small and the merge stays in M2.
+
+## 14. Parameters
+
+| Name | Meaning | Default [I] |
+|---|---|---|
+| `K_keep` | Final cuts whose roots are kept and served | 8 |
+| `W_fg` | Deepest replay run in the foreground | 120 frames at 60 Hz: the old speculation window, `2 * hz` [V `spikes/session-sim/src/r18.rs:108`] |
+| `T_peer` | Wait for a repair source before trying the next | 4 round-trip times, at least 100 ms |
+| `N_descend` | Descents per rung-2 attempt | 3 |
+| `N_recur`, `N_recur_max` | Cuts within which a repeat counts; repeats before the event | 10 cuts; 3 |
+| `B_keep`, `B_bytes` | Bundles kept on disk | 50; 500 MB |
+| `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |
+| `E_small`, `E_snap` | Error thresholds | 5 cm or 10°; 1 m or 90° |
+| `D_effect` | Delay of others' unconfirmed effects | 0 frames |
+| `T_merge` | Divergence past which a merge replaces the ordinary rollback | 2 s [R mf7daea6446ca] |
+| `T_diverge` | Unconfirmed play after which the lines diverge | 60 s [R m35138bafc46a] |
+
+## 15. Open points
+
+- **For @design-reviewer:** the root-split rule (section 5); the vote-with-root proposal (3.2); rung 2 patching at
+  the diverged cut rather than at `Cv` (4.2).
+- **For @engine-architect:** S2 and S3 as in section 11.
+- **For WS-world and WS-state:** R-H1 to R-H3 and R-O1, especially where physics caches go in the tree.
+- **For WS-model:** section 9.5.
+- **For the coordinator:** section 13's point on M1's logic edit.
+- **With the user** (file 14, section 7): a number for visible error; for long divergences merged later, whether
+  the later change may win object by object.
