@@ -251,7 +251,7 @@ in every derivation, and the reserved `Node.born_on` field and `lines` table. Me
 
   | Kind | Bytes | Meaning |
   |---|---|---|
-  | `ObjectRef` | 16 | an `ObjectId`, stored as `[u64; 2]` little-endian so rows stay 8-byte aligned (`u128` is 16-byte aligned on x86-64, and columns are `u64` buffers [V `column.rs:6-13`]); replaces the 8-byte `ObjectId` kind |
+  | `ObjectRef` | 16 | an `ObjectId`, stored as two `u64` words (`hi`, then `lo`, each little-endian), so rows stay 8-byte aligned (`u128` is 16-byte aligned on x86-64, and columns are `u64` buffers [V `column.rs:6-13`]); replaces the 8-byte `ObjectId` kind |
   | `BlobRef` | 40 | a display blob (3.4): a 32-byte blob hash and a `u64` length; all-zero is "none" |
   | `SimBlobRef` | 40 | a simulation blob (3.4), the same layout |
   | `Pos` | 48 | an exact position (section 4); only `Pos` operations read it |
@@ -364,6 +364,9 @@ accepted the details below (m8c42b4b093bd, via @coordinator-opus m04de7b0d9a18; 
   itself, and no rule needs to rewrite the stored value [I].
 - **Settable above the extent, up to the world maximum** (a world config value). An edit that sets it to zero, a
   non-finite value or above the maximum is refused.
+- **A floor of 2^-50 m** (`pe_core::coords::MIN_EXTENT`, about 1e-15 m; @chunks-reviewer's C2 on world/core-v1):
+  a `SimSize` below it is refused, and an extent below it counts as the floor, so every size has a cell level within
+  the supported range and no input can reach a level the engine cannot represent (5.3).
 - **Saved objects keep their relative size** (m8c42b4b093bd). A saved object (an inventory item, M5) records its
   `SimSize` divided by the saving player's scale; spawning it sets `SimSize` to that ratio times the spawning
   player's scale. So an object saved by a giant and spawned by a mouse is, for simulation distance, the same size
@@ -461,10 +464,15 @@ impl PartialEq for Pos;                                // exact, on canonical va
 - A root object's `Transform` holds a `Pos`. A child's holds an `f64` offset in its frame's space, rotation and
   scale, as today [V `transform.rs:4-10`]. So "an object's own position is relative to its parent", as in Resonite
   (file 17, 7.3).
-- The `Transform` row becomes: `pos: Pos` (48 bytes, for a root) or `local: [f64; 3]` (for a child, `pos` all-zero),
-  `rot: [f32; 4]`, `scale: [f32; 3]`, one flag word [I; the exact layout is the code's]. The limits of
-  `transform.rs:22-26` [V] stay, except that the root chunk limit of 2^61 [V `transform.rs:51`] goes: a root's
-  position is checked by 4.3, not clamped.
+- The `Transform` row keeps today's layout [I, as built on world/core-v1]: `chunk: [i64; 3]` and `pos: [f64; 3]`,
+  `rot: [f32; 4]`, `scale: [f32; 3]`, `_pad`. For a root, the position it denotes is `Pos::at_chunk(chunk)` moved by
+  `pos` (`checked_add`), so the row stores a chunk index and an offset, never a lossy absolute; for a child, `chunk`
+  is zero and `pos` is the offset in its frame. The limits of `transform.rs:22-26` [V] stay, including the root
+  chunk limit of 2^61 [V `transform.rs:51`], which is now a refusal limit on stored roots (an insert past it is
+  refused, never clamped), so a stored root's own position is always in range. A composed world position that
+  would leave the range is refused (`world_transform` returns `None`), never clamped (4.3). The leaf hash reads a
+  root's position through its canonical `Pos` encoding (6.3), so equal places hash equally however the row
+  splits them.
 - World transforms compose as today and give a `Pos` [V `transform.rs:31-37`].
 
 ### 4.5 The canonical encoding of a `Pos`
@@ -550,7 +558,10 @@ World
 ### 6.1 The hash
 
 - **BLAKE3, 256 bits,** for every commitment: object leaves, tree nodes, roots, blobs, ids [plan 3.2, S1: the only
-  hash type is 256 bits]. Keyed by domain-separation strings (`"pe.leaf"`, `"pe.node"` and so on).
+  hash type is 256 bits]. Keyed by domain-separation strings (`"pe.leaf"`, `"pe.node"` and so on): the notation
+  `BLAKE3("pe.x" ‖ a ‖ b)` means BLAKE3's key-derivation mode with the context string `"pe.x"`, fed `a` then `b`
+  (`pe_core::commit::Hasher::new`). Only content addresses (a blob's name, 3.4) and the origin entry (2.3) use plain
+  BLAKE3.
 - The crate is used with its pure-Rust implementation (feature `pure`, or the portable path), so the native audit
   passes [I; WS-ci confirms the audit's verdict].
 - XXH64 stays in pe-core for non-commitment uses: physics test records and caches [V `crates/pe-core/src/hash.rs`;
@@ -803,8 +814,8 @@ pub enum Precondition {
   with that id already exists, the commit is refused as `Stale`, naming the commit that made it, so two authors'
   first commits of one script cannot silently overwrite each other (@design-reviewer's r7 Low 1).
 - **`activate_at` is bounded** (@design-reviewer's r7 Low 2): it may be no earlier than the entry's own frame
-  stamp; an earlier one is refused, so a commit cannot activate code in the past. WS-logic may require more (past
-  the next cut, for its agreed frame), as its own validity rule.
+  stamp; an earlier one is refused, so a commit cannot activate code in the past. **In M1 it must equal the stamp**
+  (WS-logic's rule; pe-seams v0 ruling 22), and pe-world refuses any other value as `Invalid`.
 
 ### 7.4 Rule 3: plain writes, the latest in order wins
 
@@ -980,7 +991,15 @@ The plan's sketch splits between pe-replica (WS-state) and pe-world. My proposal
 | `object_hashes(ids)` | pe-world | leaf hashes (which cover each body's digest), for the fault bundle |
 | `physics_image(root)` | pe-replica (WS-state) | the domain's physics transfer as one blob tree by hash, for the whole-image restore (@vdw-physics's route c) |
 
-- `Root` is a `Send` handle, and the roots of the last 8 final cuts are kept (@engine-architect's S2 answer).
+- `Root` is a `Send` handle. Which roots are kept is pe-seams v0's ruling 7 (`crates/pe-seams/RULINGS.md`): the
+  floor, `Cv`, and the final cuts within `T_keep` (a duration, 1.5 s by default, at least the last 2 cuts); the
+  earlier "last 8 final cuts" is withdrawn, since every limit is a duration (md4b42d16d9df).
+- **How S2 reaches the tree** (ruling 1): `Replica::tree(&root)` gives pe-world's `Tree` on one held root, with
+  `node`, `export`, `object_hashes` and `verify`; the receiver of an import is pe-replica's `import_at_cut`.
+- **pe-world's side of a step** (ruling 9; replica.md 3): `World::apply` returns, with each applied entry's
+  outcome, its physics effects (the objects whose physics-relevant rows changed, pushes, a carried check), which
+  pe-replica acts on before the next entry; `World::end_frame(f)` then expires claims and cooldowns. Stepping,
+  keyframes, save and restore are pe-replica's (ruling 3).
 - **From WS-state, agreed with @vdw-physics:** the per-body digest and `physics_global` of 6.3, written at cut
   frames, and the whole-image restore for bound bodies.
 - **The frame's stage order** (@engine-architect, after @iter-bench's N1): entries (inputs and edits, in the agreed

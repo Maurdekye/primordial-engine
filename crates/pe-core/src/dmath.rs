@@ -154,18 +154,10 @@ pub fn tan(x: f32) -> f32 {
     (s / c) as f32
 }
 
-const ATAN_HI: [f64; 4] = [
-    4.63647609000806093515e-01,
-    7.85398163397448278999e-01,
-    9.82793723247329054082e-01,
-    1.57079632679489655800e+00,
-];
-const ATAN_LO: [f64; 4] = [
-    2.26987774529616870924e-17,
-    3.06161699786838301793e-17,
-    1.39033110312309984516e-17,
-    6.12323399573676603587e-17,
-];
+const ATAN_HI: [f64; 4] =
+    [4.63647609000806093515e-01, 7.85398163397448278999e-01, 9.82793723247329054082e-01, 1.57079632679489655800e+00];
+const ATAN_LO: [f64; 4] =
+    [2.26987774529616870924e-17, 3.06161699786838301793e-17, 1.39033110312309984516e-17, 6.12323399573676603587e-17];
 const AT: [f64; 11] = [
     3.33333333333329318027e-01,
     -1.99999999998764832476e-01,
@@ -295,7 +287,8 @@ fn exp_f64(x: f64) -> f64 {
     let r = (x - kf * LN2_HI) - kf * LN2_LO;
     // Horner form of sum_{n=0..13} r^n / n!; the truncation error is below 2^-60 relative.
     let mut p = 1.0 / 6227020800.0; // 1/13!
-    for d in [479001600.0, 39916800.0, 3628800.0, 362880.0, 40320.0, 5040.0, 720.0, 120.0, 24.0, 6.0, 2.0, 1.0, 1.0f64] {
+    for d in [479001600.0, 39916800.0, 3628800.0, 362880.0, 40320.0, 5040.0, 720.0, 120.0, 24.0, 6.0, 2.0, 1.0, 1.0f64]
+    {
         p = p * r + 1.0 / d;
     }
     // 2^k may leave the normal range for |x| near 709; split the scaling in two exact steps.
@@ -442,7 +435,10 @@ mod tests {
         check("cos", cos, f32::cos, &angles, 1);
         check("tan", tan, f32::tan, &sweep(-1.5, 1.5, 100_000), 1);
         // Large arguments (review P21-4), against std's f64 functions, which reduce exactly.
-        let large: Vec<f32> = (0..20_000).map(|i| f32::from_bits(0x4880_0000 + i * 0xB439)).chain([f32::MAX, -f32::MAX, 1.0e38, -3.0e30]).collect();
+        let large: Vec<f32> = (0..20_000)
+            .map(|i| f32::from_bits(0x4880_0000 + i * 0xB439))
+            .chain([f32::MAX, -f32::MAX, 1.0e38, -3.0e30])
+            .collect();
         check("sin large", sin, |x| (x as f64).sin() as f32, &large, 1);
         check("cos large", cos, |x| (x as f64).cos() as f32, &large, 1);
         for &x in &large {
