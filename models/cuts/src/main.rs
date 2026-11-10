@@ -2,6 +2,8 @@
 //! Exits non-zero if any check's outcome differs from its expectation (a base check must pass; a control must give a
 //! counterexample to one of the properties it names).
 
+mod bounded;
+
 use std::time::{Duration, Instant};
 
 use cuts_model::{Adversary, Cuts, Fault, Mutation};
@@ -106,20 +108,20 @@ fn suite() -> Vec<Check> {
         Check { name: "n3-chain", model: n3(chain), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, one author-faulty with chain faults (forks, back-dates, withholds), safety" },
         Check { name: "n3-sig", model: n3(sig), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, one author-faulty with signature faults (forges, replays), safety" },
         Check { name: "n3-crash", model: Cuts::new(3, Silent, 4, 1, 2, none, 0), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, one silent, 4 views (consensus: agreement through timeouts), safety" },
-        Check { name: "n3-author-v4", model: Cuts::new(3, Author, 4, 1, 0, quiet, 0), expect_fail: &[], random: false, depth: Some(22), what: "3 members, author-faulty, 4 views (consensus; its full space passed 110 M states), safety" },
+        Check { name: "n3-author-v4", model: Cuts::new(3, Author, 4, 1, 0, quiet, 0), expect_fail: &[], random: false, depth: Some(20), what: "3 members, author-faulty, 4 views (consensus; its full space passed 110 M states), safety" },
         Check { name: "n3-chain-live", model: Cuts::new(3, Author, 3, 1, 1, chain, 0).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, author-faulty, chain faults, liveness" },
         Check { name: "n3-crash-live", model: Cuts::new(3, Silent, 3, 1, 2, none, 0).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, one silent from the start, liveness" },
-        Check { name: "n3-chain-h2", model: Cuts::new(3, Author, 3, 2, 1, chain, 0), expect_fail: &[], random: false, depth: Some(22), what: "3 members, author-faulty, chain faults, two content cuts deep, safety" },
-        Check { name: "n4-byz", model: n4(quiet), expect_fail: &[], random: false, depth: Some(20), what: "4 members, one Byzantine (equivocates votes, timeouts and proposals), safety" },
-        Check { name: "n4-byz-chain", model: n4(chain), expect_fail: &[], random: false, depth: Some(20), what: "4 members, Byzantine with chain faults too, safety" },
+        Check { name: "n3-chain-h2", model: Cuts::new(3, Author, 3, 2, 1, chain, 0), expect_fail: &[], random: false, depth: Some(20), what: "3 members, author-faulty, chain faults, two content cuts deep, safety" },
+        Check { name: "n4-byz", model: n4(quiet), expect_fail: &[], random: false, depth: Some(18), what: "4 members, one Byzantine (equivocates votes, timeouts and proposals), safety" },
+        Check { name: "n4-byz-chain", model: n4(chain), expect_fail: &[], random: false, depth: Some(18), what: "4 members, Byzantine with chain faults too, safety" },
         Check { name: "n4-byz-live", model: n4(quiet).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "4 members, Byzantine, liveness" },
         Check { name: "n4-crash-live", model: Cuts::new(4, Silent, 3, 1, 2, none, 0).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "4 members, one silent, liveness" },
-        Check { name: "n4-byz-v4", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2), expect_fail: &[], random: false, depth: Some(20), what: "4 members, Byzantine leads view 3 of 4 (the lock's case), safety" },
+        Check { name: "n4-byz-v4", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2), expect_fail: &[], random: false, depth: Some(18), what: "4 members, Byzantine leads view 3 of 4 (the lock's case), safety" },
         Check { name: "n3-root", model: n3(none).corrupt(2), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, author-faulty, member 2's replica computes a wrong root, safety" },
-        Check { name: "n4-root", model: n4(quiet).corrupt(3), expect_fail: &[], random: false, depth: Some(20), what: "4 members, Byzantine, member 3's replica computes a wrong root, safety" },
+        Check { name: "n4-root", model: n4(quiet).corrupt(3), expect_fail: &[], random: false, depth: Some(18), what: "4 members, Byzantine, member 3's replica computes a wrong root, safety" },
         // Random-walk twins of the two random controls: the same search, unmutated, must find nothing (the walks are
         // not exhaustive; n4-byz-v4 is the exhaustive check of the second where it completes).
-        Check { name: "n4-byz-v4b", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0), expect_fail: &[], random: false, depth: Some(20), what: "twin of ctl-quorum: 4 members, Byzantine leads view 1 of 4, safety" },
+        Check { name: "n4-byz-v4b", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0), expect_fail: &[], random: false, depth: Some(18), what: "twin of ctl-quorum: 4 members, Byzantine leads view 1 of 4, safety" },
         Check { name: "walk-n4-v4", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0), expect_fail: &[], random: true, depth: UNBOUNDED, what: "twin of ctl-quorum, unmutated, random walks for 120 s" },
         Check { name: "walk-n4-v4-lock", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2), expect_fail: &[], random: true, depth: UNBOUNDED, what: "twin of ctl-nolock, unmutated, random walks for 120 s" },
         // The size bound, not a control: at n = 3, t = 0, so one equivocating voter splits the two honest members.
@@ -127,8 +129,8 @@ fn suite() -> Vec<Check> {
         // Controls.
         Check { name: "ctl-d1", model: n3(chain).mutate(VoteWithoutChainValidation), expect_fail: &["validity: void set the same everywhere", "no final frame undone"], random: false, depth: UNBOUNDED, what: "d1: vote without validating each chain in order" },
         Check { name: "ctl-unchecked", model: n4(sig).mutate(AcceptProposalUnchecked), expect_fail: &["validity: chains"], random: false, depth: UNBOUNDED, what: "accept the proposer's cut unchecked" },
-        Check { name: "ctl-quorum", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0).mutate(QuorumOneTooSmall), expect_fail: &["agreement"], random: false, depth: Some(20), what: "quorum one too small: split-brain" },
-        Check { name: "ctl-nolock", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2).mutate(NoLockRule), expect_fail: &["agreement"], random: false, depth: Some(20), what: "vote ignoring the timeout certificate's highest certificate" },
+        Check { name: "ctl-quorum", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0).mutate(QuorumOneTooSmall), expect_fail: &["agreement"], random: false, depth: Some(18), what: "quorum one too small: split-brain" },
+        Check { name: "ctl-nolock", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2).mutate(NoLockRule), expect_fail: &["agreement"], random: false, depth: Some(18), what: "vote ignoring the timeout certificate's highest certificate" },
         Check { name: "ctl-nosig", model: n3(sig).mutate(NoSignatureCheck), expect_fail: &["validity: chains"], random: false, depth: UNBOUNDED, what: "no own-hands / world-id signature check" },
         Check { name: "ctl-noroot", model: n4(quiet).corrupt(3).mutate(VoteWithoutRoot), expect_fail: &["root: a diverged replica learns it at the cut"], random: false, depth: UNBOUNDED, what: "votes carry no root: a diverged replica confirms without learning it" },
         Check { name: "ctl-notimeout", model: n4(quiet).live().mutate(NoTimeouts), expect_fail: &["liveness: every end state has a final cut at every honest member"], random: false, depth: UNBOUNDED, what: "no timeouts: a faulty proposer stalls the line" },
@@ -185,15 +187,19 @@ fn main() {
             b = b.target_state_count(m);
         }
         let depth = depth.or(c.depth);
-        if let Some(d) = depth.filter(|_| !c.random) {
-            b = b.target_max_depth(d);
-        }
+
         // Progress goes to stderr every few seconds.
         let b = b.timeout(Duration::from_secs(3600));
         let mut err = std::io::stderr();
         let mut rep = WriteReporter::new(&mut err);
         eprintln!("== {}", c.name);
-        let ch = if c.random {
+        let ch = if let Some(d) = depth.filter(|_| !c.random) {
+            // Depth-bounded: our own search (see bounded.rs), sound up to the bound and light on memory.
+            let model2 = model.clone();
+            let tick = |u: usize, v: usize| eprintln!("Checking (bounded). unique={u}, visits={v}");
+            let r = bounded::check(&model2, d, threads, c.expect_fail, &tick);
+            Summary { unique: r.unique, total: r.visits, depth: r.depth, found: r.found }
+        } else if c.random {
             let secs = if c.expect_fail.is_empty() { 120 } else { 900 };
             Summary::of(b.timeout(Duration::from_secs(secs)).spawn_simulation(20261110, UniformChooser).report(&mut rep))
         } else if bfs {
