@@ -144,7 +144,8 @@ fn bench(workers: &[i32]) -> bool {
             let build = t.elapsed();
             let mut g = Game { pw, objects, frame: 0, claims: Default::default(), seed: SEED };
             let frames = 300u32;
-            let (mut step, mut save, mut restore, mut max_step) = (Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO);
+            let (mut step, mut save, mut restore, mut max_step) =
+                (Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO);
             let mut bytes = 0usize;
             for _ in 0..frames {
                 let t = Instant::now();

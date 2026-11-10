@@ -66,13 +66,26 @@ fn transfer_import_is_exact_and_per_body_import_is_not() {
         let h = a.pw.box3d_hash().unwrap();
         assert_eq!(h, b.pw.box3d_hash().unwrap(), "transfer import, frame {f}");
         if f % 100 == 99 {
-            assert_eq!(a.pw.check_hash().unwrap(), b.pw.check_hash().unwrap(), "transfer import, check hash, frame {f}");
-            assert_eq!(a.pw.body_digests().unwrap(), b.pw.body_digests().unwrap(), "transfer import, digests, frame {f}");
+            assert_eq!(
+                a.pw.check_hash().unwrap(),
+                b.pw.check_hash().unwrap(),
+                "transfer import, check hash, frame {f}"
+            );
+            assert_eq!(
+                a.pw.body_digests().unwrap(),
+                b.pw.body_digests().unwrap(),
+                "transfer import, digests, frame {f}"
+            );
         }
         if per_body_differs_at.is_none() && h != c.pw.box3d_hash().unwrap() {
             per_body_differs_at = Some(f);
         }
     }
-    println!("RESULT import: the transfer import stayed exact for 600 frames; the per-body import first differed at frame {per_body_differs_at:?}");
-    assert!(per_body_differs_at.is_some(), "the per-body import stayed equal for 600 frames: the control does not bite");
+    println!(
+        "RESULT import: the transfer import stayed exact for 600 frames; the per-body import first differed at frame {per_body_differs_at:?}"
+    );
+    assert!(
+        per_body_differs_at.is_some(),
+        "the per-body import stayed equal for 600 frames: the control does not bite"
+    );
 }
