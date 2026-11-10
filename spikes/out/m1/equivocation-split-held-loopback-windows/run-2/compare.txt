@@ -1,6 +1,0 @@
-| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
-|---|---|---|---|---|---|---|---|---|
-| 1 | 1800 | 713d3092da4ae52c | equal | 1976 | [1, 2, 4] | 4 | 148/0 | 1926/0 |
-| 2 | 1800 | 713d3092da4ae52c | equal | 1976 | [1, 2, 4] | 4 | 148/0 | 1610/0 |
-| 4 | 1800 | 713d3092da4ae52c | equal | 1976 | [1, 2, 4] | 6 | 148/0 | 1905/0 |
-ALL EQUAL

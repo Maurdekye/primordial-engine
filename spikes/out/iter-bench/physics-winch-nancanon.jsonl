@@ -1,3 +1,0 @@
-{"kind":"physics","rt":"wasmtime-winch-fuel","compile_ms":10.03,"ms_per_frame_median":1.5351,"digest":"7903109aab28ed9b","digest_matches_native":true}
-{"kind":"physics","rt":"wasmtime-winch-fuel-nancanon","compile_ms":9.55,"ms_per_frame_median":1.9563,"digest":"7903109aab28ed9b","digest_matches_native":true}
-{"kind":"physics","rt":"wasmtime-winch-nancanon","compile_ms":9.25,"ms_per_frame_median":1.9260,"digest":"7903109aab28ed9b","digest_matches_native":true}

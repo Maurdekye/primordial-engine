@@ -1,25 +1,15 @@
 [workspace]
 resolver = "3"
 members = [
-    "spikes/sim-core",
-    "spikes/physics",
-    "spikes/p2p",
-    "spikes/wasm-hotswap",
-    "spikes/session-sim",
     "crates/box3d-fork",
-    "spikes/ballpit-viz",
-    "spikes/physics-in-wasm",
-    "crates/pe-mcp",
     "crates/pe-core",
     "crates/pe-sim",
     "crates/pe-physics",
-    "tools/session-sim",
-    "crates/pe-session",
-    "crates/pe-session-harness",
-    "crates/pe-app",
 ]
-# Guest game-logic crates build for wasm32-unknown-unknown separately.
-exclude = ["spikes/wasm-guests", "spikes/stack-audit", "spikes/iter-bench", "spikes/chunks"]
+# The re-founding (docs/refound-plan.md): the old engine is archived. archive/ holds the crates the new ones
+# port from, for reading only, until M3; everything else is at the tag archive/v0-prototype. The spikes left
+# in spikes/ are references with their own builds (the guest crates build for wasm32-unknown-unknown).
+exclude = ["archive", "spikes/wasm-guests", "spikes/stack-audit", "spikes/iter-bench", "spikes/chunks"]
 
 [workspace.package]
 edition = "2024"
@@ -28,7 +18,6 @@ publish = false
 
 [workspace.dependencies]
 box3d-rust = "=0.5.0"
-pe-sim-core = { path = "spikes/sim-core" }
 
 # Our fork of box3d-rust 0.5.0 (MIT): the scale-dependent contact-recycling radius
 # ("van der Waals simulation"). Toggle-off is bit-identical to the published crate.
@@ -38,8 +27,8 @@ box3d-rust = { path = "crates/box3d-fork" }
 [profile.release]
 debug = false
 
-# The wasm guest profile (the logic guests' own workspace uses the same settings), for
-# physics_in_wasm: cargo build -p physics_in_wasm --target wasm32-unknown-unknown --profile wasm-guest
+# The wasm guest profile, kept for guest builds (the logic guests' own workspace uses the same settings):
+# cargo build -p <guest> --target wasm32-unknown-unknown --profile wasm-guest
 [profile.wasm-guest]
 inherits = "release"
 opt-level = "s"
@@ -47,6 +36,6 @@ lto = true
 panic = "abort"
 codegen-units = 1
 # No name section (design 13.2, P2-7): cargo's crate identity for a nested workspace member
-# (spikes/sim-core, crates/box3d-fork) depends on the host OS's path spelling, and the mangled
+# (crates/box3d-fork) depends on the host OS's path spelling, and the mangled
 # names carry it, so Windows and Linux builds differed there and nowhere else.
 strip = "symbols"

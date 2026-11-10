@@ -1,6 +1,0 @@
-ae109ced8629e8dfeb474734dadc4030891e7de798229b0ff8467f61ff0b67d5 *spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v1.wasm
-391910115c6145153fc6e76bc900527572e9f0423317eb016e4a19bbbd908ffe *spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v2.wasm
-4bbde67ef4ffc7fcc3f499c858329097063cc13c7da39175abe7adc134ee6af5 *spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_runaway.wasm
-4acf36bfa6a5d96cf68cb43fbbdd87cbe99f14aa3639202001d56c4d0a42c318 *target/wasm32-unknown-unknown/wasm-guest/physics_in_wasm.wasm
-8a87f7defc5b93d89254e014d110347ac45bdcdd03335c9193bc44851099db3c *spikes/iter-bench/guests/target/wasm32-unknown-unknown/release/logic_mono.wasm
-1196c2f6604d4975ab738f62d50a2f38fa869e03c0e9df09c9a65a9ab8ce8229 *spikes/iter-bench/guests/target/wasm32-unknown-unknown/release/logic_wasm.wasm

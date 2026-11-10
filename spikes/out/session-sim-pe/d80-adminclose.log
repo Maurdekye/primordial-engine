@@ -1,8 +1,0 @@
-RESULT adminclose: m2 epoch 1 members {} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 383 (t=6.48 s) round 1 removed [1]
-RESULT adminclose: m3 epoch 1 members {} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 386 (t=6.53 s) round 1 removed [1]
-  m2: members {} roles {2: 1, 3: 1} admins [] closed at Some(439)
-  m3: members {} roles {2: 1, 3: 1} admins [] closed at Some(439)
-RESULT adminclose: the only admin (1) silent from 3 s; session closed at frame Some(439) at m2, Some(439) at m3; members the close removed [2, 3] at m2, [2, 3] at m3 -> CLOSED, the same frame everywhere, every member left removed
-  m2: conf 375 frame 495 members {} evicted {1: (25, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 12 bad 0
-  m3: conf 379 frame 499 members {} evicted {1: (25, 173)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 12 bad 0
-RESULT adminclose (the only admin goes silent at t=3 s): frames 0..494 honest m2=822a6b38715c5e7f m3=822a6b38715c5e7f | offline replay 822a6b38715c5e7f | ALL EQUAL, NO FALSE CHECKS ; checks ok 24 bad 0

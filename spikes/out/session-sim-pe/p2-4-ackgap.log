@@ -1,9 +1,0 @@
-  ackgap (3 acks once a second; two decisions fall between two of its acks) with VCR-3's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 516 of frame 533, m2 conf 516 of frame 533, m3 conf 367 of frame 487; at m1: members {1, 2}, evicted [3]
-RESULT ackgap: m1 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []; epoch 2 at frame 144 (t=2.50 s) round 0 removed []
-RESULT ackgap: m2 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 143 (t=2.48 s) round 0 removed []
-RESULT ackgap: m3 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 144 (t=2.50 s) round 0 removed []
-RESULT ackgap: m1 conf 497 of frame 533, m2 conf 497 of frame 533, m3 conf 502 of frame 533
-  m1: conf 497 frame 533 members {1, 2, 3} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 19 bad 0
-  m2: conf 497 frame 533 members {1, 2, 3} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 19 bad 0
-  m3: conf 502 frame 533 members {1, 2, 3} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 22 bad 0
-RESULT ackgap (3 acks once a second; two decisions fall between two of its acks): frames 0..532 honest m1=a271eaa0ec68bcc7 m2=a271eaa0ec68bcc7 m3=a271eaa0ec68bcc7 | offline replay a271eaa0ec68bcc7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 60 bad 0

@@ -1,5 +1,0 @@
-commit aa2680b (main)
-5613bd0c314593b7816671bccf15f6dc2563080535c0a6935f8e184e9b881778 *target/release/pe-app.exe
-21c81c26a169a48569c66fa1920a42f33d9fed59e302bd4bd63076a3d5800faf *target/release/pe-mcp.exe
-2.1.316 (Claude Code)
-2026-11-01T12:47:00Z

@@ -1,8 +1,0 @@
-spawn of a no-op exe from Python: median 5.28 ms
-split dev                          build   0.756s [0.727-0.921]  noop 0.057s  swap   107.12ms (compile 29.3, tick1 34.0)  loop 0.862s  8246877 B
-split rel-fast                     build   1.176s [1.101-1.229]  noop 0.062s  swap    25.37ms (compile 19.9, tick1 3.8)  loop 1.203s  1412345 B
-split release                      build   5.907s [5.857-6.106]  noop 0.056s  swap    31.50ms (compile 26.9, tick1 3.1)  loop 5.938s  1751082 B
-mono dev                           build   1.006s [0.932-1.123]  noop 0.055s  swap   106.46ms (compile 29.4, tick1 34.0)  loop 1.116s  8380313 B
-mono rel-fast                      build   1.426s [1.374-1.746]  noop 0.056s  swap    32.98ms (compile 28.1, tick1 3.4)  loop 1.459s  1790173 B
-mono release                       build  10.894s [10.399-11.641]  noop 0.057s  swap    32.78ms (compile 27.7, tick1 3.4)  loop 10.927s  1811879 B
-raw: E:\Libraries\Desktop\Primordial Engine\spikes\out\iter-bench\loop-scale-x8.jsonl

@@ -1,7 +1,0 @@
-RESULT fault-partition-heal: m1 members {1, 2, 3} evicted {} conf 576 frame 593 paused frames 2 lying votes found 0
-RESULT fault-partition-heal: m2 members {1, 2, 3} evicted {} conf 574 frame 594 paused frames 3 lying votes found 0
-RESULT fault-partition-heal: m3 members {1, 2, 3} evicted {} conf 574 frame 593 paused frames 0 lying votes found 0
-  m1 world 1: rollbacks 9 max depth 67 resim frames 92 (38.6 ms) overwrites 5 paused frames 2 violations 0 equivocations 0 checks ok 34 bad 0 nonfinite 0 conf 576 frame 593
-  m2 world 1: rollbacks 9 max depth 67 resim frames 95 (41.4 ms) overwrites 5 paused frames 3 violations 0 equivocations 0 checks ok 34 bad 0 nonfinite 0 conf 574 frame 594
-  m3 world 1: rollbacks 10 max depth 92 resim frames 224 (95.6 ms) overwrites 7 paused frames 0 violations 0 equivocations 0 checks ok 34 bad 0 nonfinite 0 conf 574 frame 593
-RESULT fault-partition-heal world 1: frames 0..550 digests m1=233096b3f5e2fb88 m2=233096b3f5e2fb88 m3=233096b3f5e2fb88 | offline replay 233096b3f5e2fb88 | ALL EQUAL

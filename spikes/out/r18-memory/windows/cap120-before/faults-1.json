@@ -1,1 +1,0 @@
-[{"at_ms": 0, "delay_ms": 25, "jitter_ms": 10}, {"at_ms": 2000, "delay_ms": 25, "jitter_ms": 10, "rate_kbps": 120, "queue_ms": 500, "codel": false}]

@@ -1,4 +1,0 @@
-  t=0.00s m1: lag 0 frames (0.00 s); holding [] late acks flagged []
-RESULT ind-asym m1: m1 asked 33 times; named {}; not referencing {}; late {} -> OK
-  t=0.00s m2: lag 0 frames (0.00 s); holding [] late acks flagged []
-RESULT ind-asym m2: m2 asked 33 times; named {}; not referencing {}; late {} -> OK

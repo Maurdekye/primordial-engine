@@ -1,8 +1,0 @@
-pe-spike-chunks closure2 (box3d positions: f32)
-== closure2 (review N7): gravel heap and crate thrown onto gravel (f32) ==
-RESULT closure2 mode=f32 scene=heap rule="all-dynamic (control)" crate_rest_y_on_gravel=0.251 crate_min_y=0.236 crate_final_y=0.242 gravel_inside_crate=0 gravel_sunk_more_than_half_extent=0 dynamic_max=309 proxies_max=0
-RESULT closure2 mode=f32 scene=heap rule="one-hop" crate_rest_y_on_gravel=0.251 crate_min_y=0.193 crate_final_y=0.197 gravel_inside_crate=0 gravel_sunk_more_than_half_extent=68 dynamic_max=309 proxies_max=0
-RESULT closure2 mode=f32 scene=heap rule="swept+proxy" crate_rest_y_on_gravel=0.251 crate_min_y=0.242 crate_final_y=0.243 gravel_inside_crate=0 gravel_sunk_more_than_half_extent=0 dynamic_max=309 proxies_max=124
-RESULT closure2 mode=f32 scene=thrown rule="all-dynamic (control)" crate_rest_y_on_gravel=0.112 crate_min_y=0.106 crate_final_y=0.106 gravel_inside_crate=16 gravel_sunk_more_than_half_extent=0 dynamic_max=3601 proxies_max=0
-RESULT closure2 mode=f32 scene=thrown rule="one-hop" crate_rest_y_on_gravel=0.112 crate_min_y=0.105 crate_final_y=0.105 gravel_inside_crate=2 gravel_sunk_more_than_half_extent=0 dynamic_max=3181 proxies_max=0
-RESULT closure2 mode=f32 scene=thrown rule="swept+proxy" crate_rest_y_on_gravel=0.112 crate_min_y=0.106 crate_final_y=0.106 gravel_inside_crate=21 gravel_sunk_more_than_half_extent=0 dynamic_max=3421 proxies_max=111
