@@ -67,12 +67,16 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 - `ObjectId(u128)`, world-scoped. `ObjectId::NONE` is 0 and never names an object.
 - **Derived, never allocated** [I]. The id of the `k`-th object an edit entry creates is
 
-  `ObjectId = first 16 bytes of BLAKE3("pe.object" ‖ world id ‖ entry id ‖ k as u32 LE)`,
+  `ObjectId = first 16 bytes of BLAKE3("pe.object" ‖ world id ‖ author key ‖ author's chain seq as u64 LE ‖ k as u32
+  LE)`,
 
-  where the entry id is pe-log's 256-bit hash of the unsigned envelope (it covers the author's key, the sequence
-  number, the previous hash and the payload). A result of 0 is replaced by 1 (probability 2^-128).
-- **Why derived, not counted.** Today an id is `(creator, counter)` [V `crates/pe-core/src/ids.rs:62-66`], with a
-  per-creator counter in the store [V `crates/pe-sim/src/store.rs:31`]. Under reordering (rollback, a merge, a
+  agreed with @api-eng (its O2). The author knows its key and the next sequence number of its own chain when it
+  composes the entry, so the ids are known before ordering and before signing, and they do not depend on the
+  envelope's hash format. Two entries with one sequence number (equivocation) would derive the same ids; pe-agree
+  drops both as proof against their author, and a create of an id already present is refused anyway. A result of 0
+  is replaced by 1 (probability 2^-128).
+- **Why derived, not counted.** Today an id is `(creator, counter)` [V `crates/pe-core/src/ids.rs:50-58`], with a
+  per-creator counter in the store [V `crates/pe-sim/src/store.rs:28`]. Under reordering (rollback, a merge, a
   world-line merge after a long compile) a counter hands out different ids depending on what applied first, and a
   later entry that names the object (an agent's "double the cube") then names the wrong one. A hash of the creating
   entry is fixed when the author writes the entry. The author knows the id at once, which keeps edits local-first.
@@ -82,6 +86,11 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 - **Objects created at genesis** (the template) are created by the genesis entry, so the first rule covers them.
 - **A collision** (two derivations giving one id) is refused deterministically, like any create of an existing id.
   At 128 bits it is not expected in the life of the project; the refusal makes it safe, not silent.
+- **A refused create creates nothing.** A later entry naming the id it would have had finds no object and no
+  tombstone, and is refused with `Unknown(id)`. Only a tombstone orphans (7.5).
+- **Ground ids, and grinding.** Derived ids are uniform for honest authors. A member could grind entry bytes so its
+  ids share a prefix of d nibbles, at about 16^d work per object; that only deepens a few trie paths, and the trie
+  and its diff walk are sized for the full depth of 32 (6.2).
 - **A transaction names its own new objects** by a local index (`New(k)`) until it is applied; the API resolves
   `New(k)` to the derived id. So an agent can create a cube and parent a light to it in one transaction.
 - **Order.** Ids sort as `u128`. Iteration in id order is deterministic and has no meaning beyond that; children
@@ -93,14 +102,15 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 ### 2.2 World ids, entry ids and member ids
 
 - `WorldId` is the 256-bit hash of the world's signed genesis entry [plan 2.1]. It replaces today's `u32`
-  [V `ids.rs:96-98`]. Two worlds made independently never share an id; a fork (M5) gets a new genesis.
+  [V `ids.rs:84`]. Two worlds made independently never share an id; a fork (M5) gets a new genesis.
 - `EntryId` is pe-log's 256-bit entry hash. The world model stores it wherever it must name an edit (the versions of
   section 7.3, tombstones, refusal reasons).
 - **Members.** The world model names a member by its 32-byte public key (`MemberKey`) wherever the name is stored in
   the world (hand ownership, claims, roles), because a session-local index changes when a member rejoins (file 04,
   defect 7). pe-log may keep a compact session index for the wire; it never enters world state.
 - `pe_core::LOGIC` (member 0, world logic) stays as the author of logic-caused changes. In stored fields it is the
-  all-zero key.
+  all-zero key. Governance refuses the all-zero key as a member's key (it is a small-order point, which strict
+  signature verification rejects anyway), so no member can act as world logic.
 
 ## 3. Objects and components
 
@@ -109,14 +119,20 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 | Part | What it is | Stored in |
 |---|---|---|
 | Id | `ObjectId` | the object table |
-| Class | `World` (shared, hashed, saved) or `Local` (this machine only: never hashed, never sent) | the object table |
+| Class | `World` (shared, hashed, saved); `Local` objects live elsewhere, below | the object table |
 | Hierarchy | parent, ordered children | the built-in `Node` component, as today [V `crates/pe-sim/src/hierarchy.rs`] |
 | Components | typed rows, zero or more instances of each type | one sorted column per type |
 
-- **`Local` objects** are for things like a player's own UI. Shared state never depends on them: a `World` object
-  may not have a `Local` parent or child, and an edit entry may not name a `Local` object. A `Local` object is
-  created and changed only by its machine, outside the log. M1 needs this for drawn-only helpers [I]; the plan's
-  "persistence class" also names `Session` (shared, not saved), which I add in M3 with the world record.
+- **`Local` objects** are for things like a player's own UI and drawn-only helpers [I]. They are kept apart from
+  the world, so shared state cannot depend on them by construction (@chunks-reviewer's F5):
+  - they live in a separate per-machine store, outside every root and every snapshot. A rollback or a restore of
+    the world never touches them, and nothing replays them;
+  - their ids are a distinct type, `LocalId`, from a per-machine counter. An edit names objects only by `ObjectId`,
+    so it cannot name a `Local` object at all;
+  - a `Local` object may refer to a `World` object (a label that follows a ball); a `World` object can hold no
+    `LocalId`, since no field kind stores one.
+- The plan's "persistence class" also names `Session` (shared, hashed, not saved), which I add in M3 with the world
+  record.
 - **Several instances of one type** (plan 2.1). A row's key is `(ObjectId, instance: u16)`; instance 0 is the
   default. Columns sort by that key. M1 builds the key; most engine components allow only instance 0 [I].
 
@@ -129,13 +145,17 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 
   | Kind | Bytes | Meaning |
   |---|---|---|
-  | `ObjectRef` | 16 | an `ObjectId` (replaces the 8-byte `ObjectId` kind) |
+  | `ObjectRef` | 16 | an `ObjectId`, stored as `[u64; 2]` little-endian so rows stay 8-byte aligned (`u128` is 16-byte aligned on x86-64, and columns are `u64` buffers [V `column.rs:6-13`]); replaces the 8-byte `ObjectId` kind |
   | `BlobRef` | 40 | a 32-byte blob hash and a `u64` length; all-zero is "none" |
   | `Pos` | 48 | an exact position (section 4); only `Pos` operations read it |
   | `MemberKey` | 32 | a member's public key |
   | `EntryRef` | 32 | an `EntryId` |
   | `Hash` | 32 | any other 256-bit hash |
 
+- **Edit versions are not a component** (@chunks-reviewer's F6). Every column keeps, beside each row, that row's
+  version (7.3): the `EntryRef` of the last edit that wrote it and the op's index, 36 bytes padded to 40, in a
+  parallel array of the column's blocks. An object's structural version and its object version (7.3) are fields of
+  its `Node` row. All are in the object's leaf hash (6.3).
 - **No string kind, no list kind.** Variable-length data is a blob [I, from file 04 A1]. A name is a `BlobRef` to
   UTF-8 bytes. A list of objects is children, or a blob. That keeps rows fixed-size, which is what makes them cheap
   to copy, hash and roll back.
@@ -151,16 +171,21 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   | `BodyState` | the simulated state of a bound body: linear and angular velocity, sleep, and the physics digest of section 6.3 | pe-replica, after each step |
   | `Appearance` | base colour, emissive colour, roughness, metalness, an optional material `BlobRef` | edits |
   | `Light` | kind, colour, intensity, range | edits |
-  | `Hand` | the owning `MemberKey`, side, grip, engaged | inputs of its owner only (section 8) |
-  | `Edited` | the per-instance edit versions of section 7.3 | the edit path only |
+  | `Hand` | the owning `MemberKey`, side, grip, engaged | created by world logic at admission; then inputs of its owner only (section 8) |
   | `SimSize` | the simulation size of 3.5 | set at creation; edits |
+  | `Protection` | the owning `MemberKey` (7.8) | edits by its owner |
 
-- **The registry is world state** [I]. Today it is configuration shared by every peer [V `registry.rs:217-222`]. With
+- **The registry is world state** [I]. Today it is configuration shared by every peer [V `registry.rs:216-218`]. With
   a logic edit in M1 [U mc40fc6379bc6, U1], a module that declares components changes the schema at a frame. So:
   - engine components are registered at genesis, under their reserved ids;
   - a logic module's components are registered by the edit that commits the module, at that frame;
   - the registry is a world table (section 5.4), hashed, and rolled back with everything else;
   - a component id never changes its description. A changed schema gets a new id, and a migration is an edit.
+- **Component ids are derived too** (@chunks-reviewer's F7). `ComponentId` widens to 128 bits. Engine components
+  keep small fixed values below 2^32. A module's component gets `BLAKE3("pe.component" ‖ module id ‖ name ‖ schema
+  hash)[..16]`, so two module commits on two branches can never give one id two meanings: the same id means the
+  same description everywhere. `Register` of an id already registered with the same description is a no-op; with a
+  different one (a collision) it refuses the transaction.
 
 ### 3.3 Hierarchy and transforms
 
@@ -179,19 +204,27 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   that names it (the user, 19:09Z).
 - **How they travel:** an edit that introduces a blob names its hash and length. The bytes travel alongside on the
   bulk lane (S4), or are fetched by hash from any member that has them.
-- **A missing blob does not stop the world** [I, the governing principle; D17 kept in its narrow form]. The entry
-  applies; the `BlobRef` is stored as given; the hash stays exact. Only what needs the bytes waits: a mesh is drawn as
-  its bounding box, a module is not run until its bytes arrive (WS-logic's activation rule). Physics never reads a
-  blob in M1: shapes are primitives, or a mesh with its convex hull computed once and stored as a second blob that
-  the edit names [I].
+- **Blobs are of two uses, with two rules** [I, after @chunks-reviewer's F1]. A component field declares which:
+  - **Display blobs** (a mesh to draw, textures, names, materials) may be missing. The entry applies, the `BlobRef`
+    is stored as given, and the hash stays exact. Only drawing waits: a mesh is drawn as its bounding box. Shared
+    simulation never reads a display blob, so no two machines can compute differently because of one.
+  - **Simulation blobs** (a collision hull, a logic module, anything shared logic or physics reads) are part of the
+    entry for agreement. Small ones (up to 1 MiB, which covers hulls) travel *inside* the edit entry, so any machine
+    that has the entry has the bytes. Larger ones (modules) follow the rule of a late entry: a machine that lacks the
+    bytes at the entry's frame simulates as if that change had not arrived yet, which is a prediction, and rewinds
+    and replays from that frame when the bytes arrive. It does not vote for a cut that includes the entry until it
+    holds the bytes. Nobody waits; only that machine's view lags. For modules this is the same path as Q3's "each
+    machine activates after its own compile" [U mf7daea6446ca], which WS-logic owns.
+- So D17's "a missing artifact pauses that peer" narrows to: nothing pauses; a machine lacking a simulation blob
+  lags as if behind on entries, and a machine lacking a display blob draws a stand-in.
 - **Limits:** a blob is at most 64 MiB in M1; a transaction introduces at most 256 MiB [I, a guard against
   flooding, to tune].
 
 ### 3.5 Simulation size
 
 The user (maa60620a6ced, via @coordinator-opus m78c6bd2b2bf5; file 16, 6.4): every object has a nonzero "size" used
-purely for simulation distance, with no bearing on collision, and it gets a reasonable default at creation. Pending
-the user's confirmation, the design is [I, after the coordinator's brief]:
+purely for simulation distance, with no bearing on collision, and it gets a reasonable default at creation. The user
+accepted the details below (m8c42b4b093bd, via @coordinator-opus m04de7b0d9a18; file 16, 6.5):
 
 - **Every `World` object has a `SimSize` row,** in metres: positive and finite. It never affects physics, drawing or
   collision; WS-regions reads it to choose the object's layer (M4).
@@ -202,6 +235,10 @@ the user's confirmation, the design is [I, after the coordinator's brief]:
   itself, and no rule needs to rewrite the stored value [I].
 - **Settable above the extent, up to the world maximum** (a world config value). An edit that sets it to zero, a
   non-finite value or above the maximum is refused.
+- **Saved objects keep their relative size** (m8c42b4b093bd). A saved object (an inventory item, M5) records its
+  `SimSize` divided by the saving player's scale; spawning it sets `SimSize` to that ratio times the spawning
+  player's scale. So an object saved by a giant and spawned by a mouse is, for simulation distance, the same size
+  relative to each.
 - It is an ordinary component: hashed, versioned (7.3), and written by plain edits.
 
 ## 4. Coordinates: `Pos`, `Offset` and the wall
@@ -221,43 +258,70 @@ pub struct Offset(pub [f64; 3]);                       // a displacement, world 
 impl Pos {
     pub const ORIGIN: Pos;                             // chunk 0, offset 0: the world constant
 }
-impl Sub<Pos> for Pos      { type Output = Offset; }   // exact in the chunk part, rounded once
-impl Add<Offset> for Pos   { type Output = Pos; }      // see 4.3 for out of range
-impl Sub<Offset> for Pos   { type Output = Pos; }
-impl PartialEq for Pos;                                // exact
+impl Sub<Pos> for Pos { type Output = Offset; }       // total: the chunk difference is taken in i128 (below)
+impl Pos {
+    pub fn checked_add(self, d: Offset) -> Result<Pos, OutOfRange>;   // no panicking Pos + Offset exists
+    pub fn checked_sub(self, d: Offset) -> Result<Pos, OutOfRange>;
+}
+impl PartialEq for Pos;                                // exact, on canonical values (no -0.0, below)
 ```
 
+- **No operator on a `Pos` can panic** (@chunks-reviewer's F3). `Pos - Pos` is total. Moving a position is
+  `checked_add` or `checked_sub` and returns `Result`; there is no `Pos + Offset` operator, so no input can reach a
+  panic through operator sugar.
+- **`Pos - Pos`, pinned** (@chunks-reviewer's F4), per axis, as part of the determinism contract:
+
+  ```
+  dc = (a.chunk as i128) - (b.chunk as i128)        // exact; |dc| < 2^65
+  dl = a.local - b.local                             // one IEEE f64 subtraction
+  d  = (dc as f64) * 1024.0 + dl                     // the cast rounds only if |dc| > 2^53; * 1024 is exact
+  ```
+
+  Each step is an IEEE operation in this fixed order, so every machine gets the same bits. The result is exact in
+  the chunk part while |dc| ≤ 2^53, which is every pair of positions closer than about 9 × 10^18 m; past that, its
+  error is relative to the distance, which is what such code needs. It is not "rounded once" in general: `dl` and
+  the final add each round.
+- **No negative zero** (@chunks-reviewer's L1): every constructor and operation canonicalizes a `-0.0` offset to
+  `+0.0`, so equal positions have equal bytes and the decoder of 4.5 accepts every encoding a `Pos` produces.
+
 - **What is missing on purpose:** `Pos + Pos`, `Pos * f64`, any field access, `From<[f64; 3]>`, `Into<[f64; 3]>`,
-  and `from_abs` [V today's `WorldPos::from_abs`, `coords.rs:73-76`, and its public fields, `coords.rs:23-28`, are
+  and `from_abs` [V today's `WorldPos::from_abs`, `coords.rs:70`, and its public fields, `coords.rs:23-28`, are
   removed].
-- **The only way to numbers** is `pos - Pos::ORIGIN`, and the only way back is `Pos::ORIGIN + offset`. Both read as
-  what they are.
+- **The only way to numbers** is `pos - Pos::ORIGIN`, and the only way back is `Pos::ORIGIN.checked_add(offset)`.
+  Both read as what they are.
 - **The engine obeys the same wall** [I]. Physics, rendering and regions all need numbers in some frame, and each gets
   them by subtracting a `Pos` it chose as that frame's origin: physics a region origin (today's `to_region`
-  [V `coords.rs:163-172`] becomes `pos - region_origin`), the renderer the camera. There is no `pub(crate)` escape
+  [V `coords.rs:154-162`] becomes `pos - region_origin`), the renderer the camera. There is no `pub(crate)` escape
   hatch: pe-core's own modules use the same operators. So a lossy use is visible as `- Pos::ORIGIN` in review.
 - **Kept, because integers are exact** [I; file 17, 3.5, not withdrawn by 7.1]:
   - `pos.cell(level) -> CellKey`: exact integer cells for regions, procedural generation and grids. A `CellKey` is
     not a position and has no `Offset` arithmetic;
   - `pos.encode()` and `Pos::decode(bytes)`: the canonical bytes (4.5), for hashing, the wire and saves. Bytes are
     not numbers; WorldApi shows a `Pos` to people and agents as exact text, never as three floats (section 9.4).
+    Bytes and text can be parsed back into numbers, so they are side doors; the ruling is aimed at accidents, so the
+    engine may use them, but pe-sdk should not give scripts `encode()` or a text parser (a note for WS-logic,
+    after @chunks-reviewer's L6).
 - `dist(&Pos, &Pos) -> f64` and `dist2` stay, as sugar for the difference.
 
 ### 4.3 Range without saturation
 
 - In memory a chunk index is an `i64` per axis, 1,024 m chunks [V `coords.rs:17`]: about ±9.4 × 10^21 m, roughly
   a million light-years.
-- **No silent saturation** [U m7e85960c864a]. Today `normalize` clamps at ±2^62 [V `coords.rs:96-125`]. Instead:
-  - the operators `Pos + Offset` and `Pos - Offset` panic on overflow, as Rust's integer arithmetic does with
-    overflow checks: they are for code whose values are known to be small;
-  - every path that writes a position into the world (an edit, an input, a physics write-back, a spawn) uses
-    `Pos::checked_add(offset) -> Result<Pos, OutOfRange>` instead, and turns an error into a refusal of that entry,
-    or, for physics, into the body stopping at its last valid position with an event [I; WS-state confirms the
-    physics half]. pe-world denies the panicking operators in its own code by a lint, so no input can reach them;
-  - a non-finite offset is a refusal, not 0 [V today it becomes 0, `coords.rs:99-101`].
-- **The format already goes past 64 bits** (plan 2.1: the format in M1, the rest in M4). The canonical encoding of a
-  chunk index is a signed variable-length integer (4.5). In M4 WS-regions promotes the in-memory index to arbitrary
-  precision; the encoding, the hash and every stored world stay the same.
+- **No silent saturation** [U m7e85960c864a]. Today `normalize` clamps at ±2^62 [V `coords.rs:83-108`]. Instead:
+  - moving a `Pos` returns `Result<Pos, OutOfRange>` (4.2); every path that writes a position into the world (an
+    edit, an input, a physics write-back, a spawn) turns an error into a refusal of that entry, or, for physics,
+    into the body stopping at its last valid position with an event [I; WS-state confirms the physics half];
+  - a non-finite offset is a refusal, not 0 [V today it becomes 0, `coords.rs:85`].
+- **A staged limitation of m7e85960c864a** (@chunks-reviewer's L7): from M1 to M3, a position beyond the `i64`
+  chunk range is refused, never clamped. The ruling asks for promotion to arbitrary precision past it; that is M4's.
+- **The format already goes past 64 bits** (plan 2.1: the format in M1, the rest in M4), and what is hashed does
+  not change at M4 (@chunks-reviewer's F2):
+  - the canonical encoding of a chunk index is a signed variable-length integer (4.5);
+  - an object's leaf hashes a `Pos` field through that canonical encoding, never as its raw row bytes (6.3);
+  - in M4 the row keeps its 48-byte inline form, an `i64` per axis, and an index beyond `i64` is held in an overflow
+    side table keyed by (object, component, instance, field), with a reserved marker inline [I; WS-regions may
+    choose another storage]. The encoding and so the hash of every position already stored stay the same; only the
+    in-memory storage grows.
 - **Offsets inside a chunk** keep today's resolution: about 1.1 × 10^-13 m anywhere [V `coords.rs:10-11`].
 
 ### 4.4 Positions in the store
@@ -291,8 +355,8 @@ World
     ├── modules            logic module versions: id → (source BlobRef, module BlobRef, declared components)
     ├── governance         members, roles, permissions, bans, join rules (storage; rules are WS-gov's)
     ├── claims, cooldowns  exclusive holds (7.2)
-    ├── tombstones         deleted objects, for the delete rule (7.5)
-    └── edit versions      kept per row in the `Edited` component (7.3)
+    └── tombstones         deleted objects, for the delete rule (7.5)
+(edit versions are kept beside each row, 3.2; Local objects are outside the world, 3.1)
 ```
 
 ### 5.2 Snapshots and roots
@@ -321,8 +385,15 @@ World
 
 - **Registry, modules:** as 3.2 and WS-logic's commit.
 - **Governance:** the tables only. M1 stores the member list (keys and roles), the role table (permission bits) and
-  the ban list, all hashed. The one permission M1 checks is `EDIT` (section 7.6). The template gives every member
-  of a private world the admin role [I; the public-world default of Q6 is WS-gov's, M3].
+  the ban list, all hashed. The one permission M1 checks is `EDIT` (section 7.6). Roles follow the user's rulings,
+  with no M1 simplification (@coordinator-opus, m78746a465fd2):
+  - a private world's template gives the admin role to its creator only;
+  - others join under the home-world ruling [U m76967fa60b43]: friends as Guest, a role that has `EDIT` for the
+    slice's editing; the owner's confidants as admins;
+  - public worlds start strangers with no admin rights [U md2fa23dfa774, Q6]; that template is WS-gov's (M3).
+
+  How M1 decides who is a friend or a confidant (the relationship data of m9b1db6041d50) is WS-gov's and WS-app's;
+  the M1 demo needs only the creator and one Guest.
 - **Claims and cooldowns:** ported from pe-session's tables (plan 2.2: `session/store.rs` → pe-world)
   [V `crates/pe-session/src/session/store.rs:28-55`], keyed by `ObjectId` and `MemberKey` instead of indices.
 - **Tombstones:** section 7.5.
@@ -341,16 +412,28 @@ World
 ### 6.2 The shape
 
 ```
-world root = H("pe.root" ‖ frame ‖ config hash ‖ tables root ‖ domain roots…)
-  tables root = H(registry ‖ modules ‖ governance ‖ claims ‖ cooldowns ‖ tombstones)   each a sorted-map hash
-  domain root = the root of a 16-way trie over the ObjectIds of that domain's World objects
-    trie node = H("pe.node" ‖ depth ‖ the 16 child hashes, empty ones as a fixed constant)
-    leaf      = H("pe.leaf" ‖ object id ‖ object leaf hash)
+world root = H("pe.root" ‖ frame ‖ config hash ‖ tables root ‖ domain roots in DomainId order)
+  tables root = H(registry ‖ modules ‖ governance ‖ claims ‖ cooldowns ‖ tombstones ‖ physics_global)
+                each a sorted-map hash; physics_global is pe-physics's (6.3)
+  domain root = the root of a path-compressed 16-way trie over the ObjectIds of that domain's World objects
+    inner node = H("pe.node" ‖ depth ‖ 16-bit child mask ‖ the hashes of the present children, in nibble order)
+    leaf       = H("pe.leaf" ‖ object id ‖ object leaf hash)
+    empty trie = a fixed constant
 ```
 
-- **A trie keyed by id** [I]. Derived ids are uniform, so the trie is balanced: about log16(n) levels, 5 for a
-  million objects. Its shape depends only on the set of ids, never on the order things happened, so two machines
-  with equal state have equal trees.
+- **A trie keyed by id, with one canonical shape** [I]. The rule:
+  - a leaf sits at the shortest prefix of its id (in nibbles) that no other id in the trie shares;
+  - an inner node exists only where at least two children do, at the depth where their ids first differ, and its
+    hash includes that depth;
+  - a delete that leaves an inner node with one child collapses it, so the shape is exactly the one a fresh build of
+    the same id set gives.
+
+  So the shape is a function of the set of ids alone, never of the order of inserts and deletes, and two machines
+  with equal state have equal tries. A property test checks it: random insert and delete sequences, in different
+  orders, give equal roots and equal shapes.
+- **Depth.** Derived ids are uniform, so a leaf sits at about log16(n) nibbles: 5 for a million objects. An author
+  could grind entry bytes so its ids share a long prefix. That only lengthens one path (at most 32 levels, the id's
+  32 nibbles), a linear cost, and it changes no outcome [I; noted, not capped].
 - **Why not by place:** balls cross cells many times a second; a spatial tree would rehash paths on every move. The
   plan puts agreement per contact group from M4 (file 16, C4), and a group is a set of ids, so the trie per domain
   fits it.
@@ -360,10 +443,13 @@ world root = H("pe.root" ‖ frame ‖ config hash ‖ tables root ‖ domain ro
 
 ### 6.3 What an object's leaf covers
 
-`object leaf hash = H("pe.obj" ‖ id ‖ class ‖ Node row ‖ for each component row in (type, instance) order: type id ‖
-schema hash ‖ instance ‖ row bytes)`
+`object leaf hash = H("pe.obj" ‖ id ‖ Node row ‖ for each component row in (type, instance) order: type id ‖
+schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
 
-- **Every component row,** including `Edited` (the versions that decide precondition outcomes) and `Hand`.
+- **Canonical row bytes** are the row's raw little-endian bytes, except that each `Pos` field is replaced by its
+  canonical encoding (4.5). So the hash never depends on how a position is stored in memory (4.3).
+- **Every component row,** including `Hand`, and every row's edit version (3.2), since versions decide precondition
+  outcomes.
 - **The physics state of a bound body** enters through `BodyState`: pe-replica writes it after each step. Its digest
   field is pe-physics's 256-bit hash of everything about that body a later step depends on: position and rotation
   bits, velocities, sleep state, and the contact-cache entries of every pair whose lower id is this body [I; this is
@@ -378,9 +464,17 @@ schema hash ‖ instance ‖ row bytes)`
 ### 6.4 When it is computed
 
 - **At every cut frame** proposed or voted on (pe-agree decides which frames those are), and on demand.
+- **Which frames are cut frames** is pe-agree's, but the replica must hash a cut frame when it simulates it, and
+  again whenever it re-simulates across it. My proposal to WS-agree [I]: cuts are proposed only at frames on a fixed
+  cadence (every K frames, K a world setting), so the replica knows in advance which frames to hash and keeps their
+  roots in its history.
 - **Incrementally:** each object leaf is cached; a write marks the object dirty (by block, 5.2); a hash at a cut
   rehashes the dirty objects and the trie paths above them. A moving ball dirties its leaf once per frame; 500 moving
   balls rehash 500 leaves and about 500 × 3 trie nodes per cut [I; measured in M1].
+- **Caches roll back with the state.** The cached leaf hashes and trie node hashes live inside the snapshotted
+  copy-on-write blocks, so `restore` brings back the caches of the restored frame, never hashes from the future. A
+  property test: after random sequences of steps, snapshots and rollbacks, the incremental root equals the root
+  computed from scratch.
 - **Verified restore** (@diverge-eng's R-H3): `verify(root)` rehashes a root from its rows and tables alone,
   ignoring every cached hash, and compares. Repair rung 1 uses it on a restored root; tests use it after every
   incremental hash, so a stale cache is a test failure, never a silent wrong root.
@@ -394,13 +488,21 @@ schema hash ‖ instance ‖ row bytes)`
   `tree_node(root, path)`, `object_state(root, ids)`.
 - `differing(local_root, remote_nodes)` returns the differing objects, and also the differing tables by name.
 - **Patch** (repair rung 2): `patch(objects, tables)` replaces the named objects' rows and the named tables with
-  fetched ones, verified against the remote root before they are applied. It is a restore of part of a root;
+  fetched ones, verified before they are applied against the quorum-agreed root of a final cut, never against the
+  sender's claim. It is a restore of part of a root;
   WS-diverge drives it and pe-replica replays forward from it.
 - An object present on one side and absent on the other is a differing object like any other.
-- **Patching a body patches its physics** (@diverge-eng's R-H1). For a bound body, `object_state` also carries
-  pe-replica's physics record of that body: its state and the contact-cache entries whose digest is in its
-  `BodyState` (6.3). `patch` hands that record to pe-replica with the rows. Otherwise a patched ball would diverge
-  again on the next step, from a stale contact cache. The encoding of the record is WS-state's.
+- **A bound body cannot be patched by rows alone** (@diverge-eng's R-H1; @design-reviewer's High 2). The fork's
+  API cannot set contact manifolds, warm starts, sleep timers, islands, solver sets or the broadphase, and writing a
+  body's state back through it diverged at the first step: 2 of 256 bodies bit-equal [V design.md 6.9, as the
+  reviewer cites]. So, until WS-state provides an exact per-body setter, contacts included, with a bit-equality test:
+  - `patch` refuses an object that has a bound body, with `NeedsPhysicsImage`;
+  - WS-diverge sends such a divergence to a rung that restores the whole physics image at the agreed cut (rung 3 in
+    its ladder, or a rung 2b of its choosing), and patches only physics-free rows at rung 2.
+
+  The per-body digest still localizes the fault: the fault bundle names the ball, even when the repair restores
+  more than the ball. If WS-state adds the setter, `object_state` carries that body's physics record and `patch`
+  hands it to pe-replica with the rows.
 
 ## 7. Edit entries and the three conflict rules
 
@@ -422,18 +524,26 @@ pub enum Op {
     SetField { id: Target, component: ComponentId, instance: u16, field: u16, value: Bytes },
     RemoveRow { id: Target, component: ComponentId, instance: u16 },
     Reparent { id: Target, parent: Target, index: Option<u32>, keep_world: bool },
+    Copy { source: Target, new: u32, parent: Target, index: Option<u32> },   // the subtree; templates (7.1)
     Register { components: Vec<ComponentDesc> },             // with a module commit (WS-logic)
     CommitModule { module: ModuleId, source: BlobRef, wasm: BlobRef, base: Option<EntryRef> },
 }
 pub enum Target { Existing(ObjectId), New(u32), Root }
 pub enum Precondition {
     Version { id: ObjectId, component: ComponentId, instance: u16, is: Version },  // the version the author read
-    ObjectVersion { id: ObjectId, is: Version },              // the object's structure: parent, children, existence
+    ObjectVersion { id: ObjectId, is: Version },              // anything about the object: any row, parent, children
     Exists(ObjectId),
     Absent(ObjectId),
+    Content { id: ObjectId, component: ComponentId, instance: u16, hash: Hash },  // the row's bytes, as read
 }
 ```
 
+- **Copy and templates** (@api-eng's O3). `Copy` duplicates an object and its subtree, rows and all, under a new
+  parent. The copies take derived ids: `new` is the index `k` of the copy's root, and the rest of the subtree takes
+  the next indices in depth-first order, children in their order. Templates are world data: ordinary objects under
+  a `Templates` root that the schema lists (the ball-pit's box, ball and lamp), and creating from one is a `Copy`.
+  "Double the cube" is a `Copy` too. A copy is copy-on-write in storage (file 04 A1: new ids over the same records)
+  [I; an optimisation, invisible in the hash].
 - Field writes name a field by its index in the description, and give its bytes. WorldApi turns names into indices
   against the schema at the author's frame.
 - **Limits** per transaction [I, to tune]: 4,096 ops, 1 MiB of payload apart from blobs. Over the limit is a
@@ -448,18 +558,36 @@ pub enum Precondition {
 - **The first in the agreed order wins** (R5): a grab of an object claimed by someone else is refused, with the
   holder named. pe-log's order decides "first": frame stamp, then the seeded rank (D37) [plan 5.2]. When both grab
   one ball, the later grab's author sees the ball slide out of their grip (the display layer's cue, file 14, 4.1).
-- **Holds do not block edits** [I]. An agent may recolour or move a held ball; the holder's hand keeps driving it. A
-  `Delete` of a held object releases the claim. The reason: a hold is about manipulation, not ownership, and edits
-  have their own rules. If the reviewers prefer, an edit to a held object can be refused instead; it is one check.
+- **Holds protect what the holder feels** [I, after @design-reviewer's Low 6]. The display rule is that a player's
+  hands and what they hold are never corrected (plan M1; file 14, 4.1). So, while an object is held:
+  - a `Delete` of it, or of any ancestor of it, is refused with `Held { by }`;
+  - an edit that writes its `Transform`, `Body` or `Shape`, or reparents it, is refused with `Held { by }`;
+  - every other edit passes: an agent may recolour a held ball. WorldApi reports the refusal as `held` (@api-eng's
+    O5).
+
+  In a merge the order decides, as everywhere: a delete before the grab destroys the ball and the grab is refused;
+  a grab before the delete refuses the delete.
 
 ### 7.3 Rule 2: edits with a precondition, refused if stale
 
 - **What a version is.** Every component row has a version: the `EntryRef` of the last *edit* that wrote it, with
   the op's index. Every object also has a structural version: the last edit that created it, reparented it or changed
-  its children. Both live in the object's `Edited` component, so they are in the hash.
+  its children. Row versions sit beside their rows and the structural version in `Node` (3.2), so both are in the hash.
+- **The object version** (@api-eng's O1) is the last edit that changed anything about the object: any of its rows,
+  its parent or its children. It is also kept in `Node`, and it is what an `ObjectVersion` precondition checks, so
+  an agent that read a whole object can ask "nobody edited it since". Row versions are the finer option.
+- **Versions are entry ids, not frames.** A version names the edit (its `EntryRef` and op index), so a late entry
+  ordered earlier than the author's read still moves the version and is still a change.
 - **Only edits move versions** [I]. Physics write-backs, logic systems and inputs do not. Otherwise a moving ball or
-  a ticking score would be stale every frame, and no agent could ever edit them with a precondition. An edit's
+  a ticking score would be stale every frame, and no agent could ever edit them with a precondition. A `Version`
   precondition is about other *edits*: "nobody changed this since I read it".
+- **A content precondition** covers every writer [I, after @design-reviewer's Medium 3]. `Content` holds the
+  BLAKE3 hash of the row bytes as the author read them, and is stale if the row's bytes now differ, whoever wrote
+  them: an edit, logic, an input or physics. It needs no extra state. The plan's QR (b) mitigation (plan 5.1, Q8:
+  a per-player script's effect names the versions it read and is refused if they are stale) uses it, so a lamp that
+  logic turned off makes the effect stale. Its one blind spot is a row that changed and changed back between the
+  read and the check; then the effect's cause is present again, which I take to be acceptable. WS-logic confirms.
+  The refusal names no winner, since the writer may be no entry; it reports the current row instead.
 - **The check.** At the transaction's place in the agreed order, every precondition is evaluated against the state
   just before it. If any fails, nothing applies, and the outcome is
 
@@ -480,7 +608,7 @@ pub enum Precondition {
   replaced (`overwrote: Vec<Version>`), and WorldApi's watch delivers "your write to X was overwritten by Y" to the
   earlier writer.
 - Field granularity: a `SetField` changes one field, so two edits that set different fields of one row both stand.
-  The row's version moves with each [I: one version per row, not per field, to keep the `Edited` row small;
+  The row's version moves with each [I: one version per row, not per field, to keep the version array small;
   per-field versions are a later option if agents trip on it].
 
 ### 7.5 Deletion, and the delete against an add-on
@@ -498,11 +626,19 @@ orphaned. if the delete occured second, then everything is destroyed."
 
   The outcome is `Applied` with the note `Orphaned { deleted_by }`. The parent's structural version is never an
   implicit precondition of an add-on.
-- **Tombstones** make that possible. A delete leaves, for the deleted object (not its subtree), a tombstone: the
-  deleting `EntryRef`, its frame and its last world transform. Tombstones are a world table, so they are hashed.
+- **Tombstones** make that possible. A delete leaves a tombstone for **every object of the deleted subtree**, each
+  with the deleting `EntryRef`, the frame and that object's own last world transform. So an add-on to a grandchild
+  of the deleted object is orphaned at the grandchild's last place, as the user's rule asks (@design-reviewer's
+  High 1). Tombstones are a world table, so they are hashed.
   They are dropped when their frame is more than one minute of frames (the unconfirmed-play bound; 3,600 at 60 Hz)
   behind the current frame, a deterministic rule of the state [I]. A merge older than that reads them back from the world record (M3,
   M5).
+- **Deleting an object already deleted** applies, with the note `AlreadyDeleted { by }` (@design-reviewer's
+  Medium 4). So when both sides of a merge deleted one object, the later side's transaction still applies its other
+  ops. `Delete { Root }` is refused: the world's root is not an object.
+- **After a tombstone expires,** an op naming that id is refused with `Unknown(id)`, as for an id that never
+  existed. A re-merge older than the window (M5) replays from the world record, and the replay re-creates the
+  tombstones at the frames it passes through, so it gets the ordinary rule.
 - **Other ops on a deleted object** (`SetRow`, `SetField`, `RemoveRow`, `Reparent` of it) refuse the whole
   transaction with `Deleted { by }`. That includes attaching a component to it: a row cannot exist without its
   object, so there is nothing to orphan [I]. It is still the ordinary rule, so a merge needs none of its own. A precondition `Exists(parent)` lets an author choose refusal over orphaning.
@@ -516,15 +652,17 @@ Checked in order, at the entry's place in the agreed order. The first failure re
 its reason and the index of the op [I]:
 
 1. **Decoding.** The payload decodes canonically; limits hold.
-2. **Permission.** The author holds `EDIT` (5.4). Governance is in the hashed state, so every machine gives the same
+2. **Permission.** The author holds `EDIT` (5.4), and no op breaks a protection (7.8). Governance is in the hashed state, so every machine gives the same
    answer (plan S2's `permits`).
 3. **Preconditions** (7.3).
 4. **Each op:** its targets exist (or orphan, 7.5); the components are registered; the rows have the right size and
    valid values; positions are in range (4.3); no cycle; `Hand` rows are not written by edits (they are inputs);
-   `Node`, `Edited` and `BodyState` are never written by edits.
+   `Node`, `BodyState` and row versions are never written by edits.
 5. **All or nothing.** The ops apply to a copy-on-write working state; any failure discards it. Nothing outside the
    transaction sees a partial result.
 
+- **One pure function** (@api-eng's O4). `World::apply(state, frame, entry) -> (state', Outcome)` is the only edit
+  path. The ordered step, the author's local prediction and a dry run all call it, so they cannot disagree.
 - **A dry run** is the same path, run on a scratch copy of the latest state and discarded. It changes nothing and
   returns the outcome the live run would give at that state.
 
@@ -534,13 +672,30 @@ Every entry the world model applies returns one `Outcome` (plan S2):
 
 ```rust
 pub enum Outcome {
-    Applied { created: Vec<ObjectId>, overwrote: Vec<Version>, notes: Vec<Note> },  // Note: Orphaned, ...
+    Applied { created: Vec<ObjectId>, overwrote: Vec<Version>, notes: Vec<Note>, inverse: Vec<Op> },
     Refused { op: Option<u32>, reason: Reason },   // Stale{..}, Deleted{by}, NoPermission, Invalid{field}, ...
 }
 ```
 
+- `inverse` is the ops that undo this transaction (@api-eng's O4): the prior rows it replaced, deletes of what it
+  created, recreations (by `Copy` from the tombstone's record, within the tombstone window) of what it deleted.
+  WorldApi's one-step revert submits it as a new transaction, with `Version` preconditions on the versions this one
+  set, so a revert after someone else's edit is refused as stale rather than undoing their work.
+- `Note` includes `Orphaned { deleted_by }` and `AlreadyDeleted { by }`.
+
 Outcomes are a function of the state and the entry, so every machine computes the same ones, and a replay gives them
 again. They are not themselves hashed: the state they produce is.
+
+### 7.8 Protections
+
+The user (mbe87e750ca35, V1): "simple protections can exist for objects the same way resonite functions". With
+@api-eng (its O7) [I]:
+
+- A `Protection` row names an owner (`MemberKey`). It protects its object and the object's subtree.
+- A member who is not the owner may not: `Copy` a protected object (or a subtree containing one); remove or change
+  its `Protection` row. Such an op refuses its transaction with `Protected { owner }`.
+- Every other edit stays under the ordinary role permissions, so an admin can still delete a griefing object.
+- Later (M5): wearing, saving, exporting and fetching the assets of a protected object, under the same owner rule.
 
 ## 8. Inputs: hands, pushes and grabs
 
@@ -553,8 +708,11 @@ pe-world decodes and applies the `Input` class too, because inputs write world s
 - **Grab, release:** 7.2.
 - **Own hands only** (@item:primordial-engine/session-validation-a-member-moves-only-its-own-h, plan M1): a hand is an
   object with a `Hand` component naming its owner's `MemberKey`. A hand input whose author is not the owner is
-  refused on every machine, with `NotYourHand`, and changes nothing. Hands are created by the join path (an edit by
-  the joining member, or by world logic at admission; WS-agree decides which) [I].
+  refused on every machine, with `NotYourHand`, and changes nothing.
+- **Hands are created by world logic at admission** (@chunks-reviewer's F8): when a member's join takes effect,
+  logic (author `LOGIC`) creates its two hands with that member's key as owner, with ids by the spawn rule of 2.1.
+  No edit ever writes a `Hand` row (7.6), so no edit can create a hand owned by someone else's key. A leave removes
+  them the same way.
 - **Validity:** finite values, positions in range, impulses within a world limit [I]; a failure refuses the entry.
 
 ## 9. The seams, my side
@@ -570,7 +728,8 @@ Proposals to @engine-architect for pe-seams v0. Names follow the plan's appendix
   `decode_edit(&[u8]) -> Result<Transaction, Reason>` and `decode_input`, both canonical and total, and the
   encoders. pe-agree never decodes them (plan 3.2).
 - **The domain id** in the envelope: M1 uses one value per world. The world model asks nothing of it until M4.
-- **The entry id** must be computable by the author before signing, since object ids derive from it (2.1).
+- **Object ids derive from the author's key and chain sequence number** (2.1), so pe-world needs both, as typed
+  envelope fields, when it applies an entry.
 
 ### 9.2 S2, the replica
 
@@ -621,7 +780,7 @@ outcomes (7.7), and the edit history by version. Two points for WS-api [I]:
 | `ObjectId` becomes `u128`; `(creator, counter)` and the store's per-creator counters go; `create(creator)` becomes `create_with_id` only | pe-core, pe-sim | `ids::tests::object_id_order_matches_u64` (sizes 8 and 12); store tests that use `create(creator)` |
 | `WorldId` becomes a 256-bit hash; `GlobalId` goes | pe-core | the size check of `GlobalId` |
 | `WorldPos` becomes `Pos` with private fields; `from_abs` and public fields go; saturation becomes `OutOfRange`; varint encoding | pe-core | `coords::tests::normalize_never_panics` (it asserts saturation, which the user ruled out); tests that build positions from numbers move to `ORIGIN + Offset` |
-| `FieldKind::ObjectId` (8 bytes) becomes `ObjectRef` (16); new kinds of 3.2 | pe-sim | the `Node` size; schema hashes |
+| `FieldKind::ObjectId` (8 bytes) becomes `ObjectRef` (16); new kinds of 3.2; `ComponentId` widens to 128 bits; row versions beside rows | pe-sim | the `Node` size; schema hashes; reserved-id tests |
 | block copy-on-write, dirty bits, cached object hashes; instances; classes | pe-sim | none should: these are internals behind the same API |
 | the state hash becomes the BLAKE3 tree of section 6 | pe-sim, pe-world | every test that pins an XXH64 state hash value |
 | `Transform` holds a `Pos` for roots; the 2^61 root limit goes | pe-sim | transform limit tests at the root chunk limit |
@@ -650,42 +809,48 @@ Each is a test in pe-world, pe-sim or pe-core unless marked [I on all thresholds
    intervening edit it applies; physics motion and logic writes never make it stale.
 5. **Rule 3:** of two plain writes to one field the later stands, and its outcome names the overwritten version.
 6. **Delete and add-on, both orders,** on one machine and through a merge-order replay: delete first gives an
-   orphaned root at the parent's last place; delete second destroys both.
+   orphaned root at the parent's last place; delete second destroys both. The same for an add-on under a depth-2
+   descendant of the deleted object; and both sides deleting one object leaves the later transaction's other ops
+   applied.
 7. **Ids:** the same entries applied in two different valid orders give the same ids to the same objects; an id
    collision is a refusal.
 8. **Own hands:** a hand input from a member who does not own the hand is refused and changes nothing.
-9. **What the hash covers:** a one-bit change injected into each covered part (a component row, `Edited`,
+9. **What the hash covers:** a one-bit change injected into each covered part (a component row, a row version,
    `BodyState`, each world table, the registry) changes the root, and the diff walk names exactly that object or
    table. A change to a `Local` object changes nothing.
-10. **Diff and patch:** two worlds that differ in k of n objects are reconciled by the walk and a patch to equal
+10. **Canonical trie and caches:** random insert and delete orders give equal roots and shapes; after random steps,
+    snapshots and rollbacks the incremental root equals the root from scratch (`verify`).
+11. **Diff and patch:** two worlds that differ in k of n objects are reconciled by the walk and a patch to equal
     roots, with at most about k × log16(n) nodes exchanged.
-11. **The wall:** a compile-fail test (`trybuild`, or doc tests marked `compile_fail`) for `Pos + Pos`, `pos.x`, a
-    `Pos` built from numbers and a `Pos` converted to numbers; `pos - Pos::ORIGIN` compiles.
-12. **No saturation:** an edit or spawn that would place an object past the range is refused on every machine with
+12. **The wall:** a compile-fail test (`trybuild`, or doc tests marked `compile_fail`) for `Pos + Pos`, `Pos +
+    Offset`, `pos.x`, a `Pos` built from numbers and a `Pos` converted to numbers; `pos - Pos::ORIGIN` compiles.
+    `Pos - Pos` at the extremes of the range gives the pinned bits of 4.2 and never panics.
+13. **No saturation:** an edit or spawn that would place an object past the range is refused on every machine with
     the same reason; a varint chunk index beyond `i64` decodes as a valid encoding that the M1 build reports as out of
     range, never as a different position.
-13. **No input aborts:** property tests feed arbitrary bytes as edit and input payloads, and arbitrary valid-looking
+14. **No input aborts:** property tests feed arbitrary bytes as edit and input payloads, and arbitrary valid-looking
     transactions; nothing panics, and each is applied or refused.
-14. **Cost, measured, not gated:** the hash at a cut with 500 moving balls, and an edit's apply time, reported in the
+15. **Cost, measured, not gated:** the hash at a cut with 500 moving balls, and an edit's apply time, reported in the
     checkpoint record.
 
 ## 12. Open points
 
 For the reviewers and the coordinator. None needs the user, as far as I can see [I]; I flag where one might.
 
-1. **Holds and edits** (7.2): edits pass through holds. The alternative refuses edits to a held object.
+1. **Holds and edits** (7.2): deletes and pose, shape and parent edits of a held object are refused; others pass.
 2. **Version granularity** (7.4): one version per row, not per field.
-3. **Only edits move versions** (7.3): physics and logic writes never make a precondition stale. A consequence: an
+3. **Only edits move versions** (7.3): physics and logic writes never make a `Version` precondition stale; `Content`
+   preconditions cover every writer. A consequence: an
    agent that read a ball's position and then sets it with a precondition overwrites wherever physics has moved it.
    That is a plain write in effect, which I think is right for poses.
 4. **Tombstone lifetime** (7.5): one minute, tied to the unconfirmed-play bound.
 5. **`pos.cell(level)` and the wall** (4.2): kept. @coordinator-opus ruled (m707c519c0bcf): the user's concern was
    precision loss, and exact integer cells cannot lose it [I, the coordinator's reading]; the liaison tells the user,
    who may correct it.
-10. **Simulation size** (3.5): the default, the extent floor and the maximum await the user's confirmation.
+10. **Simulation size** (3.5): accepted by the user (m8c42b4b093bd).
 6. **The engine under the wall** (4.2): no internal escape hatch. It costs a few explicit `- origin` subtractions in
    physics and rendering, and buys a wall nobody has to trust.
-7. **Missing blobs never stop the world** (3.4), narrowing D17's "a missing artifact pauses that peer" to what needs
-   the bytes.
+7. **Missing blobs never stop the world** (3.4): display blobs draw a stand-in; simulation blobs make only the
+   lacking machine lag, as for a late entry. This narrows D17's "a missing artifact pauses that peer".
 8. **The per-body physics digest** (6.3, 9.2) is WS-state's to confirm.
 9. **Ids of logic spawns** (2.1) are WS-logic's to confirm.
