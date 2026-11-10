@@ -118,6 +118,17 @@ pub struct ObjectId(pub u128);
 impl ObjectId {
     pub const NONE: ObjectId = ObjectId(0);
 
+    /// As pe-core's `ObjectId::from_u128`, which world/core-v1 brings: code that uses these two compiles before and
+    /// after the switch to pe-core's type, whose fields are private.
+    pub const fn from_u128(v: u128) -> ObjectId {
+        ObjectId(v)
+    }
+
+    /// As pe-core's `ObjectId::to_u128`.
+    pub const fn to_u128(self) -> u128 {
+        self.0
+    }
+
     pub fn is_none(self) -> bool {
         self == ObjectId::NONE
     }
