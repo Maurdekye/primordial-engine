@@ -381,6 +381,9 @@ schema hash ‖ instance ‖ row bytes)`
 - **Incrementally:** each object leaf is cached; a write marks the object dirty (by block, 5.2); a hash at a cut
   rehashes the dirty objects and the trie paths above them. A moving ball dirties its leaf once per frame; 500 moving
   balls rehash 500 leaves and about 500 × 3 trie nodes per cut [I; measured in M1].
+- **Verified restore** (@diverge-eng's R-H3): `verify(root)` rehashes a root from its rows and tables alone,
+  ignoring every cached hash, and compares. Repair rung 1 uses it on a restored root; tests use it after every
+  incremental hash, so a stale cache is a test failure, never a silent wrong root.
 - Today a whole-store XXH64 runs on every simulated and re-simulated frame [V file 04, 1]. The
   per-frame hash goes: nothing in the new design needs a hash at a frame that is not a cut [I].
 
@@ -394,6 +397,10 @@ schema hash ‖ instance ‖ row bytes)`
   fetched ones, verified against the remote root before they are applied. It is a restore of part of a root;
   WS-diverge drives it and pe-replica replays forward from it.
 - An object present on one side and absent on the other is a differing object like any other.
+- **Patching a body patches its physics** (@diverge-eng's R-H1). For a bound body, `object_state` also carries
+  pe-replica's physics record of that body: its state and the contact-cache entries whose digest is in its
+  `BodyState` (6.3). `patch` hands that record to pe-replica with the rows. Otherwise a patched ball would diverge
+  again on the next step, from a stale contact cache. The encoding of the record is WS-state's.
 
 ## 7. Edit entries and the three conflict rules
 
@@ -484,15 +491,21 @@ orphaned. if the delete occured second, then everything is destroyed."
 - **Delete second:** `Delete` destroys the object and its whole subtree, add-ons included, as today
   [V `store.rs:131-153`].
 - **Delete first:** an edit that creates an object under, or reparents an object to, an object already deleted does
-  not fail. The new object becomes a root, placed where the deleted parent last was (its last world transform,
-  composed with the op's local transform). The outcome is `Applied` with the note `Orphaned { deleted_by }`.
+  not fail (@diverge-eng's R-O1, `docs/spec/divergence.md` §10). The object becomes a root:
+  - a created object is placed where the deleted parent last was: its last world transform, composed with the op's
+    local transform;
+  - a reparented object keeps its own world pose.
+
+  The outcome is `Applied` with the note `Orphaned { deleted_by }`. The parent's structural version is never an
+  implicit precondition of an add-on.
 - **Tombstones** make that possible. A delete leaves, for the deleted object (not its subtree), a tombstone: the
   deleting `EntryRef`, its frame and its last world transform. Tombstones are a world table, so they are hashed.
   They are dropped when their frame is more than one minute of frames (the unconfirmed-play bound; 3,600 at 60 Hz)
   behind the current frame, a deterministic rule of the state [I]. A merge older than that reads them back from the world record (M3,
   M5).
 - **Other ops on a deleted object** (`SetRow`, `SetField`, `RemoveRow`, `Reparent` of it) refuse the whole
-  transaction with `Deleted { by }`. A precondition `Exists(parent)` lets an author choose refusal over orphaning.
+  transaction with `Deleted { by }`. That includes attaching a component to it: a row cannot exist without its
+  object, so there is nothing to orphan [I]. It is still the ordinary rule, so a merge needs none of its own. A precondition `Exists(parent)` lets an author choose refusal over orphaning.
 - **The same rule, live and in a merge.** Nothing here knows about merges: a merge replays both branches' entries in
   one order (file 14, 4.4), and this rule then gives the user's answer for either order. That is the property I want
   the reviewers to check first.
@@ -568,6 +581,7 @@ The plan's sketch splits between pe-replica (WS-state) and pe-world. My proposal
 | `step(frame, ordered) -> Vec<Outcome>` | pe-replica | for each entry in order, calls `World::apply(frame, &entry) -> Outcome`; then logic and physics |
 | `save() -> Root`, `restore(&Root)` | pe-replica | composes pe-world's snapshot with the physics image |
 | `root_hash() -> Hash` | pe-world | requires pe-replica to have written `BodyState` and `physics_global` for the frame |
+| `verify(&Root) -> Result<(), Mismatch>` | pe-world | rehash from records, no caches (6.4) |
 | `permits(who, what) -> bool` | pe-world | from the governance tables |
 | `tree_node(root, path) -> Node16`, `object_state(root, ids)` | pe-world | the diff walk, 6.5. **Replaces the sketch's `differing(&Hash)`,** which cannot work from a hash alone |
 | `patch(rows, tables)` | pe-world, driven by pe-diverge | verified against the remote root first |
