@@ -9,7 +9,7 @@ description = "OpenXR for Primordial Engine: the session, stereo through pe-rend
 # WS-xr, @xr-eng owns this crate and its manifest; the root Cargo.toml lists it (WS-seams).
 [dependencies]
 pe-seams = { path = "../pe-seams" }
-pe-render = { path = "../pe-render" }
+# pe-render comes back with the graphics binding, which uses its GpuContext.
 # No features: not `loaded` (it would look for Khronos' C++ loader, which Windows doesn't have), and never
 # `static` or `linked`, which build or link that loader. `loader.rs` loads the runtime itself (spec 2).
 openxr = { version = "=0.22.0", default-features = false }
