@@ -4,7 +4,8 @@
 //!   adjusted, and it is the only clock a sans-IO core is given: `tick(HostTime)` (S3, S4).
 //! - The session frame comes from pe-net's clock model through [`crate::FrameClock`] (transport.md 5.7).
 //! - **Every limit is a duration, never a frame count** (the user, md4b42d16d9df): the simulation rate is a world
-//!   setting, 60 Hz by default, within a supported range, and it is independent of the display rate (m8ac62c1872ac).
+//!   setting, [`SimRate`], 30 to 120 Hz in whole hertz and 60 by default (mc8dc9e5a6ffb), and it is independent of
+//!   the display rate (m8ac62c1872ac).
 //!   Limits are [`core::time::Duration`]s, which are exact integers. A bound that every machine must decide alike is
 //!   turned into frames by [`frames_ceil`] at the rate in effect at the frame where the bound starts, and that rate is
 //!   recorded with any stored bound (divergence.md 14).
@@ -36,6 +37,38 @@ impl HostTime {
     }
 }
 
+/// A world's simulation rate, in whole hertz within the supported range: 30 to 120 Hz, 60 by default (the user,
+/// mc8dc9e5a6ffb, after md4b42d16d9df). It is fixed apart from the display rate (m8ac62c1872ac). pe-physics runs
+/// `ceil(240 / rate)` sub-steps per frame, so contacts keep their stiffness at every rate (replica.md 13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SimRate(u32);
+
+impl SimRate {
+    pub const MIN_HZ: u32 = 30;
+    pub const MAX_HZ: u32 = 120;
+    pub const DEFAULT: SimRate = SimRate(60);
+
+    /// `None` outside 30..=120 Hz.
+    pub fn new(hz: u32) -> Option<SimRate> {
+        (Self::MIN_HZ..=Self::MAX_HZ).contains(&hz).then_some(SimRate(hz))
+    }
+
+    pub fn hz(self) -> u32 {
+        self.0
+    }
+
+    /// The frames that cover `d` at this rate, rounded up ([`frames_ceil`]).
+    pub fn frames(self, d: Duration) -> u64 {
+        frames_ceil(d, self.0)
+    }
+}
+
+impl Default for SimRate {
+    fn default() -> Self {
+        SimRate::DEFAULT
+    }
+}
+
 /// The number of whole frames that cover `d` at `hz` frames per second, rounded up: the frame count of a bound.
 /// Exact integer arithmetic, so every machine gets the same answer. `hz` 0 gives 0.
 pub fn frames_ceil(d: Duration, hz: u32) -> u64 {
@@ -56,6 +89,17 @@ mod tests {
         assert_eq!(frames_ceil(Duration::from_millis(10), 60), 1);
         assert_eq!(frames_ceil(Duration::ZERO, 60), 0);
         assert_eq!(frames_ceil(Duration::from_secs(1), 0), 0);
+    }
+
+    #[test]
+    fn the_rate_range_is_the_users() {
+        assert_eq!(SimRate::new(29), None);
+        assert_eq!(SimRate::new(121), None);
+        assert_eq!(SimRate::new(30).map(SimRate::hz), Some(30));
+        assert_eq!(SimRate::new(120).map(SimRate::hz), Some(120));
+        assert_eq!(SimRate::default().hz(), 60);
+        assert_eq!(SimRate::DEFAULT.frames(Duration::from_secs(60)), 3_600);
+        assert_eq!(SimRate::new(120).unwrap().frames(Duration::from_secs(60)), 7_200);
     }
 
     #[test]

@@ -116,6 +116,9 @@ pub struct GpuContext { pub instance: wgpu::Instance, pub adapter: wgpu::Adapter
 - **Limits:** pe-render states its own limit set, `Limits::default()` raised only where it needs more. It never asks
   for an adapter's full limits: wgpu-core asserts `max_buffer_size <= u32::MAX`, and the full limits break that
   [V M0 headset run].
+- **Contexts are made one at a time in a process.** Making several concurrently on D3D12 (WARP, FXC) segfaulted in 6
+  of 15 test runs; serialized, 0 of 50 [V render/m1 a9ec4cee]. The racing layer is not yet known, so pe-render's lock
+  also covers its shader and pipeline creation. pe-app and pe-xr make their own instances one at a time too.
 - **Losing the context** (session loss, leaving VR on Vulkan): pe-render drops every GPU resource and rebuilds from the
   next frame view. Meshes and materials are derived from world data, so nothing but time is lost. The display layer's
   CPU state survives, so drawn poses don't jump on a rebuild.
@@ -142,9 +145,12 @@ impl Renderer {
 
 - **The camera's world position** is the rig's `Pos` (from the frame view's `local_rig`) plus the eye's rig-frame
   pose, times the rig's rotation and scale.
-- **Every object's model matrix is camera-relative:** translation `(object Pos − camera Pos)` per axis, as world-model
-  4.2's pinned f64 subtraction, then cast to f32 in the camera's frame. Far objects lose precision only where it
-  doesn't show. A raw absolute never reaches the GPU.
+- **Every object's model matrix is relative to the frame's anchor,** the first view's camera `Pos`: translation
+  `(object Pos − anchor Pos)` per axis, as world-model 4.2's pinned f64 subtraction, then cast to f32, along world
+  axes. Each view's matrix carries only its eye's rotation and its small offset from the anchor (computed in f64).
+  The precision equals rotating into each camera's frame, and both eyes share one instance upload, which suits
+  multiview [agreed in code review, part 1]. Far objects lose precision only where it doesn't show. A raw absolute
+  never reaches the GPU.
 - **Projection:** reverse Z, with an infinite far plane on the desktop and in captures. In VR the far plane is finite
   and stated, because the depth layer (`XR_KHR_composition_layer_depth`) carries near and far. Whether Virtual
   Desktop's runtime takes an infinite far is open (R2).
@@ -160,7 +166,7 @@ impl Renderer {
 | From | Drawn as |
 |---|---|
 | `Shape`: box, sphere, capsule (a plane is a thin box) | Built-in unit meshes, scaled and instanced. Capsules are a cylinder and two half-spheres, generated per radius-to-length ratio and cached |
-| `Shape`: mesh `SimBlobRef` (static bodies) | The mesh, uploaded once per blob hash |
+| `Shape`: mesh `SimBlobRef` (static bodies) | The mesh, uploaded once per blob hash. S5 gives pe-render no blob access in M1, so until it does, a box inscribed in the bounding sphere stands in |
 | A display mesh `BlobRef` | The mesh when its bytes are here; its bounding box until then (world-model 3.4) |
 | `Appearance` | Base colour, emissive, roughness, metalness: a small PBR-ish forward shader (Lambert plus GGX specular), one material uniform per instance |
 | `Light` | Forward-lit: up to 16 point and spot lights per frame, picked by distance and intensity, plus one directional key light from the world's environment. Only the key light casts a shadow in M1 (R3) |
@@ -172,9 +178,12 @@ impl Renderer {
   (balls on a floor), and it costs one depth pass [I: under 0.5 ms for 500 instanced spheres, to be measured].
 - **Anti-aliasing:** 4× MSAA on the desktop. In VR, 4× MSAA if the per-period budget allows, else 2× or none, chosen
   by the render scale controller (section 10).
-- **Colour:** linear lighting into an sRGB target, with a simple filmic tone map. No HDR display output in M1.
-- **Markers for the user:** an outline pass (for `view_capture`'s highlight, and for the correction cue, D3), drawn by
-  inflating back faces into a stencil-tested pass.
+- **Colour:** linear lighting into an sRGB target, with a filmic tone map (Narkowicz's ACES fit). A target whose format
+  isn't sRGB gets the transfer in the shader (review L1). No HDR display output in M1.
+- **Markers for the user:** an outline pass (for `view_capture`'s highlight, and for the correction cue, D3): the back
+  faces of a shell pushed out along the normals by a width that grows with distance, alpha-blended, no stencil.
+  Box faces have flat normals, so a box's outline can crack at its edges and corners [I]; smoothed shell normals fix
+  it if the headset test shows it.
 
 ## 7. Time: interpolation, the drawn time (X8) and rates
 
@@ -217,7 +226,19 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
   - `target_now` is the new frame views resolved to the same `t_draw`.
 
   So the offset is exactly the change of prediction, and the drawn pose never moves at the instant a frame view
-  arrives. A non-zero offset has two causes, and both blend under D3:
+  arrives.
+  - **Each change of prediction is its own blend component,** decaying independently; the drawn pose is the target
+    composed with all live components (positions summed; rotations composed oldest outermost, newest innermost, so
+    a rotation added mid-blend turns nothing; review M1). A single blend restarted at every frame view would never
+    settle under X8 (a): gravity alone is a miss at every tick, and its steady offset would be about 11 cm, past
+    `E_cue`. D3 classifies each change of prediction, not the accumulated offset; `visible_error_max` bounds the
+    accumulated one.
+  - **Under X8 (b),** the new view isn't drawn yet when it arrives, so its change of prediction there is zero and a
+    correction would show as one simulation period of fast motion. Instead a corrected view's pose is replaced by
+    the old timeline's velocity continuation until the drawn time reaches it; there the offset becomes the
+    continuation minus the real pose, and it blends and cues like any correction.
+
+  A non-zero offset has two causes, and both blend under D3:
   - **a correction:** S5 marks the object `corrected` (its simulated pose was rewritten by a replay, repair or merge
     since the last publication). It counts in `corrections_per_min`;
   - **an extrapolation miss** under X8 (a): the object did something between frame views that its velocity didn't
@@ -409,6 +430,8 @@ For @coordinator-opus unless marked; my proposal first.
 | R5 (WS-app) | The window's thread | The main thread is the render thread in desktop mode; WS-app decides |
 | R6 | The correction cue's form | A 250 ms fading outline, plus a ghost at the old pose |
 | R7 | The desktop hand's controls | As section 9; revisited in the UI lab |
+| R8 (with @xr-eng) | Gravity in X8 (a)'s extrapolation | Measured [V, CPU test]: a falling ball (60 Hz simulation, 90 Hz display, 50 ms lead) misses by up to 1.14 cm a tick and is drawn up to 4.0 cm from its target, never with a cue. @shader-reviewer's suggestion: extrapolate unsupported dynamic bodies with the world's gravity, which needs the gravity vector or a flag in S5. Judged at the headset test |
+| R9 | Known limits of the M1 scene | Metals read dark (no environment lighting); a mesh blob draws as its bounding stand-in; a box's outline may crack at corners (section 6) |
 
 ## 16. Size and order
 

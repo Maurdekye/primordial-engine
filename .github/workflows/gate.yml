@@ -1,0 +1,63 @@
+# The landing gate on hosted runners (user ruling Q12, m08a916809047: "Allow hosted runners").
+# scripts/gate.sh: the native-code audit (the "100% Rust" ruling, D1) and the secret scan, on every push to
+# main, every pull request, and nightly over the whole history. docs/landing-gates.md describes the gate;
+# the same script runs locally on every landing (scripts/hooks/reference-transaction).
+name: gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: native audit and secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run the gate
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          case "$EVENT" in
+            push) base=$BEFORE ;;
+            pull_request) base=$PR_BASE ;;
+            *) base= ;;
+          esac
+          # A new branch, a history rewrite or the nightly run: scan everything HEAD reaches. Otherwise the gate's
+          # code comes from the base, as on a local landing: gitleaks is installed, and the gate run, as the
+          # base has them (docs/landing-gates.md).
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2> /dev/null; then
+            args="--base $base" code=HEAD
+            if git cat-file -e "$base:scripts/gate.sh" 2> /dev/null; then code=$base; fi
+          else
+            args=--full-history code=HEAD
+          fi
+          git show "$code:scripts/install_gitleaks.sh" > "$RUNNER_TEMP/install_gitleaks.sh"
+          git show "$code:scripts/gate.sh" > "$RUNNER_TEMP/gate.sh"
+          bash "$RUNNER_TEMP/install_gitleaks.sh"
+          bash "$RUNNER_TEMP/gate.sh" $args --report gate-report HEAD
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gate-report
+          path: gate-report
+          if-no-files-found: ignore
+          retention-days: 14
