@@ -75,8 +75,8 @@ checks either.
    * A `--full-history` run doesn't fail on the old history's terms: the user chose to keep that history
      (2026-10-31 11:49Z), and the cleaner replaces those terms.
 
-On main at 041af2d (after M0's archive), the audit checks 7 workspaces and 268 package builds, and every flag is
-accepted. `archive/` is excluded: the prototype's crates are kept there to read and port from, in no workspace,
+On main at 7155e8f (after M0's archive, the seams and the first M1 crates), the audit checks 7 workspaces and 681
+package builds, and every flag is accepted. `archive/` is excluded: the prototype's crates are kept there to read and port from, in no workspace,
 and are never built. The secret scan of the whole history finds nothing.
 
 ## Running it

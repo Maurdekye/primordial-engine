@@ -423,6 +423,54 @@ regexes = [
 ]
 
 [[allowlists]]
+description = "pe-net-crypto test vectors: Wycheproof's public AES-GCM vectors (C2SP/wycheproof testvectors_v1/aes_gcm_test.json, Apache-2.0, filtered to 128-bit keys and 96-bit IVs; the file's source line), whose key fields are published test keys. Each value below is one of the file's 39 keys (read at main 7155e8f8), so a changed or new value is scanned like any other line"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^crates/pe-net-crypto/tests/data/wycheproof-aes-gcm-128-iv96\.json$''']
+regexTarget = "line"
+regexes = [
+  '''^\+?\s*"key"\s*:\s*"000102030405060708090a0b0c0d0e0f",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"00112233445566778899aabbccddeeff",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"01842c51b9943da4ec4effc057f8c3e3",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"28ff3def08179311e2734c6d1c4e2871",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"3076741408f734ce25d48f982e8b844b",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"38449890234eb8afab0bbf82e2385454",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"384ea416ac3c2f51a76e7d8226346d4e",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"3c55f88e9faa0d68ab50d02b47161276",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"4a30eac07b788b7354a90e6448f56676",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"5a475f9976ed117ab37a4fffab0592eb",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"5b9604fe14eadba931b0ccf34843dab9",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"62b3881832d428b6f900cacfa0fc5cd8",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"65d38f0b268f180d6ba548d509111dde",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"67bd1fe83e4500ddaea721035d4cf7e4",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"6a68671dfe323d419894381f85eb63fd",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"6f8307bb3d83d67866c2fa5b26f9cade",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"7e0e0cf8c9ac58867ef3e3315d0a4338",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"7e37d56e6b1d0172d40d64d6111dd424",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"8aeaa2591a452e626b9a6468b623bdfc",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"97ec85a69a05131cd4ff643972f6d8f9",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"a294e70fa2ac10a1fb00c588b888b673",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"a8ee11b26d7ceb7f17eaa1e4b83a2cf6",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"aa023d0478dcb2b2312498293d9a9129",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"bb571c160132b0c8d5d190d0bc356ddc",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"bedcfb5a011ebc84600fcb296c15af0d",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"bf2056baaf45c5a00a733b49f10b7dd0",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"c15ed227dd2e237ecd087eaaaad19ea4",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"c4b03435b91fc52e09eff27e4dc3fb42",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"cae31cd9f55526eb038241fc44cac1e5",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"d9218931dc592aef3bffb924c9e0b02c",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"dd6197cd63c963919cf0c273ef6b28bf",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"e12260fcd355a51a0d01bb1f6fa538c2",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"e63a43216c08867210e248859eb5e99c",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"e7e0827a582b946828cb6df0d1c4617e",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"e88d95eabe88fcf158fae858af951221",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"f01a3c3559c58e80bc832544e069ef29",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"f64d1bc47b081afb21181bdc16ffbcca",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"fc8e6d2c7f42cab59375327285cc3398",?\s*$''',
+  '''^\+?\s*"key"\s*:\s*"ffdf4228361ea1f8165852136b3480f7",?\s*$''',
+]
+
+[[allowlists]]
 description = "box3d-fork test: a made-up registry tag key, an integer literal"
 targetRules = ["generic-api-key"]
 condition = "AND"
