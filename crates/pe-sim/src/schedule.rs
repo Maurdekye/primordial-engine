@@ -11,10 +11,10 @@
 //! Randomness comes from [`TickCtx::rng`]: a stream of `(session seed, stream id, frame)`, so systems need
 //! no RNG state either.
 
+use pe_core::Frame;
 use pe_core::clock::TickRate;
 use pe_core::fpenv;
 use pe_core::rng::Rng;
-use pe_core::Frame;
 
 use crate::store::SimStore;
 

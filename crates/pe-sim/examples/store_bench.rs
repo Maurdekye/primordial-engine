@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use core::mem::offset_of;
-use pe_core::coords::{Offset, Pos};
 use pe_core::ObjectId;
+use pe_core::coords::{Offset, Pos};
 use pe_core::rng::Rng;
 use pe_sim::registry::{Component, ComponentDesc, ComponentId, FieldDesc, FieldKind, Registry};
 use pe_sim::{SimStore, Snapshot, Transform};
@@ -48,8 +48,12 @@ fn world(n: usize) -> SimStore {
     let mut reg = Registry::new();
     reg.register_type::<Velocity>().unwrap();
     reg.register(
-        ComponentDesc::new(EXTRA, "Extra", vec![FieldDesc::new("a", FieldKind::F64, 0, 1), FieldDesc::new("b", FieldKind::U64, 8, 1)])
-            .unwrap(),
+        ComponentDesc::new(
+            EXTRA,
+            "Extra",
+            vec![FieldDesc::new("a", FieldKind::F64, 0, 1), FieldDesc::new("b", FieldKind::U64, 8, 1)],
+        )
+        .unwrap(),
     )
     .unwrap();
     let mut s = SimStore::new(Arc::new(reg), 7);
@@ -58,7 +62,13 @@ fn world(n: usize) -> SimStore {
     for i in 0..n {
         let id = ObjectId::from_u128(i as u128 + 1);
         s.create(id).unwrap();
-        s.insert(id, Transform::at(Pos::ORIGIN.checked_add(Offset([rng.next_f64() * 1000.0, 0.0, rng.next_f64() * 1000.0])).unwrap())).unwrap();
+        s.insert(
+            id,
+            Transform::at(
+                Pos::ORIGIN.checked_add(Offset([rng.next_f64() * 1000.0, 0.0, rng.next_f64() * 1000.0])).unwrap(),
+            ),
+        )
+        .unwrap();
         s.insert(id, Velocity { v: [rng.next_f32(), 0.0, rng.next_f32()], spin: 0.0 }).unwrap();
         if i % 2 == 0 {
             let mut row = [0u8; 16];

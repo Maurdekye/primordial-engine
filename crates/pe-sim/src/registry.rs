@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 
 use bytemuck::Pod;
-use pe_core::hash::Hasher;
 use pe_core::Error;
+use pe_core::hash::Hasher;
 
 /// A component type. Ids below [`ComponentId::FIRST_USER`] are reserved for the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -225,7 +225,12 @@ pub trait Component: Pod {
     fn desc() -> ComponentDesc {
         let d = ComponentDesc::new(Self::ID, Self::NAME, Self::fields())
             .unwrap_or_else(|e| panic!("bad description for {}: {e}", Self::NAME));
-        assert_eq!(d.size(), core::mem::size_of::<Self>(), "{}: description does not match the struct size", Self::NAME);
+        assert_eq!(
+            d.size(),
+            core::mem::size_of::<Self>(),
+            "{}: description does not match the struct size",
+            Self::NAME
+        );
         assert!(core::mem::align_of::<Self>() <= 8, "{}: alignment above 8", Self::NAME);
         d
     }
@@ -298,24 +303,47 @@ mod tests {
     #[test]
     fn layout_rules() {
         let id = ComponentId(2000);
-        let ok = ComponentDesc::new(id, "c", vec![
-            FieldDesc::new("b", FieldKind::F32, 8, 2),
-            FieldDesc::new("a", FieldKind::U64, 0, 1),
-        ])
+        let ok = ComponentDesc::new(
+            id,
+            "c",
+            vec![FieldDesc::new("b", FieldKind::F32, 8, 2), FieldDesc::new("a", FieldKind::U64, 0, 1)],
+        )
         .unwrap();
         assert_eq!(ok.size(), 16);
         assert_eq!(ok.fields()[0].name, "a");
         // A gap (implicit padding) is refused.
-        assert!(ComponentDesc::new(id, "c", vec![FieldDesc::new("a", FieldKind::U8, 0, 1), FieldDesc::new("b", FieldKind::U32, 4, 1)]).is_err());
+        assert!(
+            ComponentDesc::new(
+                id,
+                "c",
+                vec![FieldDesc::new("a", FieldKind::U8, 0, 1), FieldDesc::new("b", FieldKind::U32, 4, 1)]
+            )
+            .is_err()
+        );
         // A trailing pad to the alignment is required.
-        assert!(ComponentDesc::new(id, "c", vec![FieldDesc::new("a", FieldKind::U64, 0, 1), FieldDesc::new("b", FieldKind::U8, 8, 1)]).is_err());
+        assert!(
+            ComponentDesc::new(
+                id,
+                "c",
+                vec![FieldDesc::new("a", FieldKind::U64, 0, 1), FieldDesc::new("b", FieldKind::U8, 8, 1)]
+            )
+            .is_err()
+        );
         // Misaligned and overlapping fields are refused.
-        assert!(ComponentDesc::new(id, "c", vec![FieldDesc::new("a", FieldKind::U8, 0, 2), FieldDesc::new("b", FieldKind::U16, 1, 1)]).is_err());
+        assert!(
+            ComponentDesc::new(
+                id,
+                "c",
+                vec![FieldDesc::new("a", FieldKind::U8, 0, 2), FieldDesc::new("b", FieldKind::U16, 1, 1)]
+            )
+            .is_err()
+        );
         // The schema hash changes with any part of the description.
-        let other = ComponentDesc::new(id, "c", vec![
-            FieldDesc::new("a", FieldKind::U64, 0, 1),
-            FieldDesc::new("b", FieldKind::I32, 8, 2),
-        ])
+        let other = ComponentDesc::new(
+            id,
+            "c",
+            vec![FieldDesc::new("a", FieldKind::U64, 0, 1), FieldDesc::new("b", FieldKind::I32, 8, 2)],
+        )
         .unwrap();
         assert_ne!(ok.schema_hash(), other.schema_hash());
         let mut r = Registry::new();
@@ -327,11 +355,15 @@ mod tests {
     #[test]
     fn overflow_and_reserved_ids() {
         // Review P21-3: a count that overflows u32 is refused, not wrapped to a zero-size row.
-        let huge = ComponentDesc::new(ComponentId(2002), "h", vec![FieldDesc::new("a", FieldKind::U32, 0, 0x4000_0000)]);
+        let huge =
+            ComponentDesc::new(ComponentId(2002), "h", vec![FieldDesc::new("a", FieldKind::U32, 0, 0x4000_0000)]);
         assert!(matches!(huge, Err(Error::BadLayout(_))));
         let big = ComponentDesc::new(ComponentId(2003), "b", vec![FieldDesc::new("a", FieldKind::U8, 0, MAX_ROW + 1)]);
         assert!(big.is_err());
-        assert!(ComponentDesc::new(ComponentId(2004), "o", vec![FieldDesc::new("a", FieldKind::U8, usize::MAX, 1)]).is_err());
+        assert!(
+            ComponentDesc::new(ComponentId(2004), "o", vec![FieldDesc::new("a", FieldKind::U8, usize::MAX, 1)])
+                .is_err()
+        );
         // Review P21-11: runtime descriptions cannot take the engine's ids.
         let low = ComponentDesc::new(ComponentId(7), "low", vec![FieldDesc::new("a", FieldKind::U32, 0, 1)]).unwrap();
         let mut r = Registry::new();
@@ -341,11 +373,15 @@ mod tests {
 
     #[test]
     fn value_checks() {
-        let d = ComponentDesc::new(ComponentId(2001), "v", vec![
-            FieldDesc::new("x", FieldKind::F32, 0, 2),
-            FieldDesc::new("flag", FieldKind::Bool, 8, 1),
-            FieldDesc::new("_pad", FieldKind::U8, 9, 3),
-        ])
+        let d = ComponentDesc::new(
+            ComponentId(2001),
+            "v",
+            vec![
+                FieldDesc::new("x", FieldKind::F32, 0, 2),
+                FieldDesc::new("flag", FieldKind::Bool, 8, 1),
+                FieldDesc::new("_pad", FieldKind::U8, 9, 3),
+            ],
+        )
         .unwrap();
         let mut row = [0u8; 12];
         assert_eq!(d.invalid_field(&row), None);

@@ -87,7 +87,13 @@ impl Rng {
         } else {
             let b = hi.to_bits();
             // Wrapping, so a NaN `hi` behaves the same in debug and release builds (review P21S-6).
-            let below = if hi > 0.0 { b.wrapping_sub(1) } else if hi == 0.0 { 0x8000_0001 } else { b.wrapping_add(1) };
+            let below = if hi > 0.0 {
+                b.wrapping_sub(1)
+            } else if hi == 0.0 {
+                0x8000_0001
+            } else {
+                b.wrapping_add(1)
+            };
             f32::from_bits(below).max(lo)
         }
     }

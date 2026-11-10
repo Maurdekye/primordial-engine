@@ -421,7 +421,11 @@ mod tests {
 
     #[test]
     fn encoding_round_trips_and_refuses_non_canonical() {
-        for q in [Pos::ORIGIN, p([-3, 7, i64::MAX], [1.5, 1023.999, 0.0]), p([i64::MIN + 1, -1, 0], [0.000001, 512.0, 999.0])] {
+        for q in [
+            Pos::ORIGIN,
+            p([-3, 7, i64::MAX], [1.5, 1023.999, 0.0]),
+            p([i64::MIN + 1, -1, 0], [0.000001, 512.0, 999.0]),
+        ] {
             let mut b = Vec::new();
             q.encode(&mut b);
             assert_eq!(Pos::decode(&b), Ok((q, b.len())));

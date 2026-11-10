@@ -29,7 +29,7 @@ pub mod hash;
 pub mod ids;
 pub mod rng;
 
-pub use error::Error;
 pub use commit::Hash;
 pub use coords::{Offset, OutOfRange, Pos};
+pub use error::Error;
 pub use ids::{ChainId, EntryRef, Frame, LineId, MemberKey, ObjectId};
