@@ -1205,3 +1205,44 @@ fn new_obj(store: &mut SimStore) -> ObjectId {
     store.create(id).unwrap();
     id
 }
+
+/// Ids with the high word set (128-bit ids, world-model.md 2.1) survive the image, the transfer and the hashes, and
+/// two worlds that differ only in an id's high word hash differently (chunks-reviewer's low on the id patch).
+#[test]
+fn ids_with_the_high_word_set_round_trip() {
+    let build = |high: u128| {
+        let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
+        let ids = [ObjectId::from_u128(3), ObjectId::from_u128(high << 64 | 1), ObjectId::from_u128(high << 64 | 2)];
+        for (i, &id) in ids.iter().enumerate() {
+            let sphere = ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 });
+            pw.add_body(id, &BodyDesc::new(BodyKind::Dynamic, [i as f64 * 2.0, 1.0, 0.0]).with_shape(sphere)).unwrap();
+        }
+        pw.step(1.0 / 60.0).unwrap();
+        (pw, ids)
+    };
+    let (mut a, ids) = build(0xfeed_0000_0000_0001);
+    let (state, check, digests) = (a.state_hash().unwrap(), a.check_hash().unwrap(), a.body_digests().unwrap());
+    assert_eq!(a.objects().collect::<Vec<_>>(), ids);
+
+    // The image: a rollback brings back the same ids and state.
+    let image = a.save_image().unwrap();
+    a.step(1.0 / 60.0).unwrap();
+    a.restore_image(&image).unwrap();
+    assert_eq!(a.objects().collect::<Vec<_>>(), ids);
+    assert_eq!((a.state_hash().unwrap(), a.check_hash().unwrap()), (state, check));
+
+    // The transfer, through its bytes: a new world with the same ids, hashes and digests.
+    let bytes = a.save_transfer().unwrap().to_bytes();
+    let b =
+        PhysicsWorld::from_transfer(PhysicsConfig::engine(), &Transfer::from_bytes(&bytes).unwrap(), &check).unwrap();
+    assert_eq!(b.objects().collect::<Vec<_>>(), ids);
+    assert_eq!((b.state_hash().unwrap(), b.check_hash().unwrap()), (state, check));
+    assert_eq!(b.body_digests().unwrap(), digests);
+
+    // Only the high word differs: every hash differs.
+    let (c, _) = build(0xbeef_0000_0000_0001);
+    assert_ne!(c.state_hash().unwrap(), state);
+    assert_ne!(c.check_hash().unwrap(), check);
+    let differ = c.body_digests().unwrap().iter().zip(&digests).filter(|(x, y)| x.1 != y.1).count();
+    assert_eq!(differ, 2, "the two bodies with a high word have other digests");
+}
