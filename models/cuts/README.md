@@ -52,9 +52,17 @@ needed.
   times out with any certificate, and as leader it proposes any block on any certified parent with any valid
   justification and any cut, to each member separately.
 - **Silent** (member 0): sends nothing.
+- **What each check carries.** To keep each state space checkable, chain faults (fork, back-date) and signature
+  faults (forge, replay) are checked in separate n = 3 runs, each with its controls. The n = 4 Byzantine checks
+  are about quorums and locks: they carry no honest entries, and the Byzantine member's one entry reaches others
+  only inside its proposals, where it tells its equivocating blocks apart.
+- **Root.** Abstract, one bit: right, or wrong at one fault-injected honest member (`corrupt`). Votes are over
+  (block, the voter's root), a certificate needs q votes for the same pair, and a member that sees a quorum certify
+  a root it did not compute raises RootSplit.
 - **Liveness profile.** Messages between protocol members are never lost, and timeouts fire only when every
-  protocol member has nothing left to do (the network has settled, standing in for "after the timeout"). Every end
-  state must then have a final cut at every honest member.
+  protocol member has nothing left to do (the network has settled, standing in for "after the timeout"). An end
+  state is one where no honest member can make a step, whatever the faulty member has done or withheld; every end
+  state must have a final cut at every honest member.
 
 ## Properties
 
