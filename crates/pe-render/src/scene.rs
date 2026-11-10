@@ -174,6 +174,129 @@ pub struct FrameStats {
     pub draws: u32,
     pub lights: u32,
     pub cpu_record_ms: f64,
+    /// The GPU time of the newest frame whose timestamps have been read back, usually one or two frames old. `None`
+    /// until the first arrives, and always on an adapter without timestamp queries. Captures are not timed.
+    pub gpu_ms: Option<f64>,
+}
+
+/// Frames whose timestamps can be in flight at once. A frame finding its slot still mapping goes untimed.
+const TIMER_RING: usize = 3;
+
+/// GPU timestamps around a frame's passes, read back without ever blocking (render.md 10).
+struct GpuTimer {
+    set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    slots: Vec<TimerSlot>,
+    next: usize,
+    frame: u64,
+    /// Nanoseconds per timestamp tick.
+    period_ns: f64,
+    /// The newest reading: (frame number, milliseconds).
+    latest: Option<(u64, f64)>,
+}
+
+struct TimerSlot {
+    buf: wgpu::Buffer,
+    /// 0 free, 1 mapping, 2 mapped.
+    state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    frame: u64,
+}
+
+impl GpuTimer {
+    fn new(ctx: &GpuContext) -> Option<GpuTimer> {
+        if !ctx.device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            return None;
+        }
+        let d = &ctx.device;
+        let set = d.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("frame timestamps"),
+            ty: wgpu::QueryType::Timestamp,
+            count: 2 * TIMER_RING as u32,
+        });
+        let size = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT * TIMER_RING as u64;
+        let resolve = d.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("timestamp resolve"),
+            size,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let slots = (0..TIMER_RING)
+            .map(|_| TimerSlot {
+                buf: d.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("timestamp readback"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                state: Default::default(),
+                frame: 0,
+            })
+            .collect();
+        Some(GpuTimer {
+            set,
+            resolve,
+            slots,
+            next: 0,
+            frame: 0,
+            period_ns: ctx.queue.get_timestamp_period() as f64,
+            latest: None,
+        })
+    }
+
+    /// Collect every reading that has arrived; never waits.
+    fn harvest(&mut self, device: &wgpu::Device) {
+        use std::sync::atomic::Ordering;
+        let _ = device.poll(wgpu::PollType::Poll);
+        for s in &mut self.slots {
+            if s.state.load(Ordering::Acquire) != 2 {
+                continue;
+            }
+            let ticks: Option<[u64; 2]> =
+                s.buf.slice(..).get_mapped_range().ok().map(|d| bytemuck::pod_read_unaligned(&d[..16]));
+            s.buf.unmap();
+            s.state.store(0, Ordering::Release);
+            // An end before the start (a reset counter, or a pass the driver reordered) is no reading.
+            let Some(ticks) = ticks else { continue };
+            if ticks[1] >= ticks[0] && self.latest.is_none_or(|(f, _)| s.frame > f) {
+                self.latest = Some((s.frame, (ticks[1] - ticks[0]) as f64 * self.period_ns / 1e6));
+            }
+        }
+    }
+
+    /// The slot this frame writes, if one is free.
+    fn begin(&mut self) -> Option<usize> {
+        let i = self.next;
+        (self.slots[i].state.load(std::sync::atomic::Ordering::Acquire) == 0).then_some(i)
+    }
+
+    fn writes(&self, slot: usize, first: bool, last: bool) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        (first || last).then(|| wgpu::RenderPassTimestampWrites {
+            query_set: &self.set,
+            beginning_of_pass_write_index: first.then_some(2 * slot as u32),
+            end_of_pass_write_index: last.then_some(2 * slot as u32 + 1),
+        })
+    }
+
+    fn resolve(&self, enc: &mut wgpu::CommandEncoder, slot: usize) {
+        let q = 2 * slot as u32;
+        let at = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT * slot as u64;
+        enc.resolve_query_set(&self.set, q..q + 2, &self.resolve, at);
+        enc.copy_buffer_to_buffer(&self.resolve, at, &self.slots[slot].buf, 0, 16);
+    }
+
+    /// After the frame's submit: map the slot's readback.
+    fn submitted(&mut self, slot: usize) {
+        use std::sync::atomic::Ordering;
+        self.frame += 1;
+        let s = &mut self.slots[slot];
+        s.frame = self.frame;
+        s.state.store(1, Ordering::Release);
+        let state = s.state.clone();
+        s.buf
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| state.store(if r.is_ok() { 2 } else { 0 }, Ordering::Release));
+        self.next = (slot + 1) % TIMER_RING;
+    }
 }
 
 #[repr(C)]
@@ -263,6 +386,7 @@ pub struct Renderer {
     instances: wgpu::Buffer,
     instance_cap: u64,
     targets: Vec<Targets>,
+    timer: Option<GpuTimer>,
 }
 
 fn format_key(f: wgpu::TextureFormat) -> u32 {
@@ -373,7 +497,14 @@ impl Renderer {
             instances,
             instance_cap,
             targets: Vec::new(),
+            timer: None,
         }
+        .with_timer()
+    }
+
+    fn with_timer(mut self) -> Renderer {
+        self.timer = GpuTimer::new(&self.ctx);
+        self
     }
 
     pub fn context(&self) -> &GpuContext {
@@ -570,9 +701,20 @@ impl Renderer {
         self.targets[i] = t;
     }
 
-    /// Draw `scene` into every view. One instance upload serves all views.
+    /// Draw `scene` into every view. One instance upload serves all views. The frame is timed on the GPU where the
+    /// adapter allows (`FrameStats::gpu_ms`).
     pub fn render_views(&mut self, scene: &Scene, views: &[EyeView<'_>]) -> FrameStats {
+        self.draw(scene, views, true)
+    }
+
+    /// [`Renderer::render_views`], untimed when `timed` is false (captures, which run between frames).
+    pub(crate) fn draw(&mut self, scene: &Scene, views: &[EyeView<'_>], timed: bool) -> FrameStats {
         let t0 = std::time::Instant::now();
+        if let Some(t) = self.timer.as_mut() {
+            t.harvest(&self.ctx.device);
+        }
+        let timing = if timed { self.timer.as_mut().and_then(GpuTimer::begin) } else { None };
+        let passes = self.settings.shadow_size.min(1) as usize + views.len();
         let mut stats = FrameStats { views: views.len() as u32, ..Default::default() };
         let Some(first) = views.first() else { return stats };
         let anchor = first.camera.pose.pos;
@@ -713,6 +855,7 @@ impl Renderer {
 
         let mut enc =
             self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pe-render") });
+        let ts = |k: usize| timing.and_then(|slot| self.timer.as_ref()?.writes(slot, k == 0, k + 1 == passes));
         if shadows {
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow"),
@@ -722,7 +865,7 @@ impl Renderer {
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: ts(0),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -768,7 +911,7 @@ impl Renderer {
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: ts(shadows as usize + i),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -788,7 +931,14 @@ impl Renderer {
                 stats.draws += 1;
             }
         }
+        if let (Some(slot), Some(t)) = (timing, self.timer.as_ref()) {
+            t.resolve(&mut enc, slot);
+        }
         self.ctx.queue.submit([enc.finish()]);
+        if let (Some(slot), Some(t)) = (timing, self.timer.as_mut()) {
+            t.submitted(slot);
+        }
+        stats.gpu_ms = self.timer.as_ref().and_then(|t| t.latest).map(|(_, ms)| ms);
         stats.cpu_record_ms = t0.elapsed().as_secs_f64() * 1e3;
         stats
     }
