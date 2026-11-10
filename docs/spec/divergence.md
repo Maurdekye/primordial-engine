@@ -124,8 +124,10 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
 ### 4.1 Rung 1: replay locally from the verified cut (M1)
 
 1. Restore the root at `Cv` (S2 `restore`) on the replica.
-2. **Verify it:** recompute its hashes from the records, ignoring every cached hash (S2 `verify`). If it does not
-   equal `Cv`'s root, the saved state itself is damaged: go to rung 2 at once.
+2. **Verify it:** recompute its hashes from the records, ignoring every cached hash (S2 `verify`), **and
+   recompute the physics hashes from the restored physics world itself**: a stored `physics_global` or `BodyState`
+   hash proves nothing about the physics bytes behind it [@vdw-physics, `docs/spec/replica.md` 6.1, d21a809 on
+   `ws/state`]. If either does not equal `Cv`'s root, the saved state itself is damaged: go to rung 2 at once.
 3. Replay from `Cv.frame` to `C.frame` with the final log's entries (S3 `final_entries(Cv, C)`).
 4. Compare the root with `C`'s.
    - Equal: the fault was transient. Replay on from `C` to the current frame with the entries held, predictions
@@ -403,8 +405,15 @@ For every object, compare `base`, `ours` and `theirs` by the tree (equal hashes 
 
 **Conflict groups.** A conflicting object, and every object it touched in either line (contact, a joint, a
 parent, a script's reads and writes) since `base`, form one group, closed under "touched". Each group is resolved
-by the engine's ordinary rules, applied once to both lines' actions [file 14, 4.4]:
-1. start from the group's state at `base` (S2 per-group restore [C 20:05Z]);
+by the engine's ordinary rules, applied once to both lines' actions [file 14, 4.4].
+
+**A group with any bound body acts as the whole domain** [@vdw-physics, replica.md 6.3]: physics, and the rows of
+every object with a body, are restored to `base` and replayed together. Physics can only be restored whole (4.2a),
+so a group restoring only its own rows would leave bodies outside it re-stepped while their rows stayed in the
+present: the body table would no longer equal the world model, and edits would be applied twice. Per-group restore
+and patch hold for physics-free rows only.
+
+1. start from the group's state at `base` (S2 per-group restore [C 20:05Z]; `GroupSel`, 11.1);
 2. take both lines' entries on the group, as a set: an entry in both lines counts once;
 3. order them by frame stamp, ties by the seeded rank (D37), as the engine always orders;
 4. replay them on the group (S2 per-group step). The soonest grab wins; a stale precondition is refused with its
@@ -500,6 +509,11 @@ split.
   merged state, and the visible result of a group only one side touched must stay unchanged within a stated pose
   tolerance (`E_merge`, section 14). That is a property checked in model v2 and measured in the harness. Hiding
   sub-visible differences is the display layer's job. History-free physics stays "later", as in the plan.
+  - **The risk to measure** [@vdw-physics, I]: in a whole-domain replay, the other side's activity can give an
+    untouched group's new contacts other ids and colours, and an active pile may drift past `E_merge` within a
+    minute. The harness scenario (replica.md 6.3): a moving ball pit and a resting stack, merged after 1, 10 and
+    60 s. If it fails, a fork fix cheaper than history-free physics may do: create and colour new contacts in
+    canonical shape-pair order.
 - That `merge` is independent of arrival order, and of which machine computes it.
 - **Controls that bite:** ordering by arrival; voiding entries made during a split; dropping one side's
   non-conflicting work. Each must give a counterexample.
@@ -563,12 +577,18 @@ pub trait Replica {
     fn object_hashes(&self, ids: &[ObjectId]) -> Vec<(ObjectId, Hash)>;  // for replay-bundle
     fn fork(&self, root: &Root) -> Self where Self: Sized;     // a second copy, for background replay (M2)
     // M2-M3, for the merge [C 20:05Z]:
-    fn group_restore(&mut self, root: &Root, group: &[ObjectId]);
-    fn group_step(&mut self, frame: Frame, ordered: &[SignedEntry]) -> Vec<Outcome>;
+    fn group_restore(&mut self, root: &Root, group: &GroupSel);
+    fn group_step(&mut self, frame: Frame, group: &GroupSel, ordered: &[SignedEntry]) -> Vec<Outcome>;
     fn footprint(&self) -> Footprint;                          // objects written or touched, per frame
 }
 ```
 
+- `GroupSel = Domain | Objects(BTreeSet<ObjectId>)`. M1 uses `Domain` only. A group containing any bound body acts
+  as `Domain` (9.3) [agreed with @vdw-physics].
+- **Settled names** [@world-model, world-model.md r5, d04394b; @vdw-physics, replica.md d21a809]: pe-world owns
+  `node`, `export`, `import`, `verify` and `object_hashes`; pe-replica owns `physics_image(root)`, the receiver
+  `import_at_cut(group, parts, source)`, and rung 1's `replay_from_last_agreed(source)`. pe-diverge calls those
+  names; the sketch above is the shape, not the final signatures, which pe-seams v0 fixes.
 - `Root` is a handle that keeps its structure alive, and is `Send`, so a worker can replay it.
 - Roots of the last `K_keep` final cuts are kept, and served to peers: about 1.2 s, enough for repair.
 - **Merge bases are kept separately.** A member keeps its `Cv` root, and the log since, for as long as it may be a
