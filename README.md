@@ -22,6 +22,8 @@ What is on `main` now:
 | `crates/pe-sim` | The sim store: fixed-size component rows, snapshots and hashing |
 | `crates/pe-physics` | The engine's interface to the Box3D fork: bodies bound to sim objects, deterministic stepping, state hashes |
 | `crates/box3d-fork` | Our fork of box3d-rust 0.5.0 (MIT); see its [FORK.md](crates/box3d-fork/FORK.md) for every change |
+| `crates/pe-seams` | The six seams every workstream codes against (entries, replica, agreement, transport, frame view, WorldApi), v0; its [RULINGS.md](crates/pe-seams/RULINGS.md) settles the owners' proposals |
+| `crates/pe-*` (the rest) | Skeletons of every M1 crate, filled in by their workstreams (plan 3.1). `crates/pe-logic/vendor` holds wasmtime 50.0.1 with no C on any target ([PATCHES.md](crates/pe-logic/vendor/PATCHES.md)) |
 | `docs/spec/` | Short specifications of the new subsystems, one per workstream |
 | `archive/` | The old engine's session core, its harness and simulator, its MCP server and peer, and the physics spike, kept for reading while the new crates port from them. Not built. Removed at milestone M3 |
 | `spikes/` | References with their own builds: the chunk benchmarks, the WASM guests, the iteration benchmark, a native-code audit of candidate dependencies |
@@ -51,6 +53,7 @@ commands work on Windows (Git Bash for the scripts) and on Linux.
 ```bash
 cargo build --workspace --release
 cargo test -p pe-core -p pe-sim -p pe-physics --release
+cargo test -p pe-seams
 cargo test -p box3d-rust --release   # the fork's own suite
 ```
 

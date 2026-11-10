@@ -1,0 +1,18 @@
+[package]
+name = "pe-agree"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Agreed cuts (seam S3): proposals, votes over the voter's own root, final cuts, holds on votes"
+
+# Skeleton from pe-seams v0 (WS-seams). WS-agree, @world-chunks owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
+[dependencies]
+pe-seams = { path = "../pe-seams" }
+pe-log = { path = "../pe-log" }
+
+[features]
+# Planted defects for the harness's mutation tests (pe-harness DESIGN.md 6.1): inert unless a node's configuration
+# names one, and never in a production build (the gate checks pe-app's normal edges).
+mutants = []

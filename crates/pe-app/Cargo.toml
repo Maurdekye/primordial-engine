@@ -1,0 +1,23 @@
+[package]
+name = "pe-app"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The application: threads, wiring, invites, configuration, the demo script"
+
+# Skeleton from pe-seams v0 (WS-seams). WS-app, @engine-architect owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
+[dependencies]
+pe-seams = { path = "../pe-seams", features = ["world-api"] }
+pe-world = { path = "../pe-world" }
+pe-log = { path = "../pe-log" }
+pe-agree = { path = "../pe-agree" }
+pe-replica = { path = "../pe-replica" }
+pe-net = { path = "../pe-net" }
+pe-logic = { path = "../pe-logic" }
+pe-api = { path = "../pe-api" }
+pe-mcp = { path = "../pe-mcp" }
+pe-render = { path = "../pe-render" }
+pe-xr = { path = "../pe-xr" }
+pe-diverge = { path = "../pe-diverge" }

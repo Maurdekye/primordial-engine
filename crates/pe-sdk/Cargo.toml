@@ -1,0 +1,11 @@
+[package]
+name = "pe-sdk"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The script SDK: what a guest module links against (it builds for wasm32-unknown-unknown and the host)"
+
+# Skeleton from pe-seams v0 (WS-seams). WS-logic, @iter-bench owns this crate and its manifest; the root Cargo.toml
+# already lists it, so adding dependencies here needs no other change.
+[dependencies]
