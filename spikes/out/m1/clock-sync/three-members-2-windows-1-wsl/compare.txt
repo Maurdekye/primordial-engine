@@ -1,6 +1,0 @@
-| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
-|---|---|---|---|---|---|---|---|---|
-| 1 | 7200 | ba0bc5a3d82375c1 | equal | 7374 | [1, 2, 3] | 494 | 492/0 | 11705/0 |
-| 2 | 7200 | ba0bc5a3d82375c1 | equal | 7374 | [1, 2, 3] | 304 | 492/0 | 9518/1031 |
-| 3 | 7200 | ba0bc5a3d82375c1 | equal | 7374 | [1, 2, 3] | 402 | 492/0 | 10543/536 |
-ALL EQUAL

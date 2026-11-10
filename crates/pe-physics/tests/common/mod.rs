@@ -1,6 +1,6 @@
 //! The phase-1 spike's scene, interaction rules and rollback, rebuilt on pe-physics. Each piece
-//! mirrors `spikes/sim-core` exactly, so the committed records in `spikes/out/vdw/` must
-//! reproduce bit for bit.
+//! mirrors the spike's sim-core exactly (archived; at the tag archive/v0-prototype), so the committed
+//! records in `tests/records/vdw/` must reproduce bit for bit.
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -294,15 +294,15 @@ impl RollbackSim {
     }
 }
 
-/// `spikes/out/vdw/<name>` in the repository: under `$PE_RECORDS` if set, else next to this
-/// crate's source if that exists (a host build), else relative to the working directory (a
-/// cross-built binary run from the repository root, e.g. the Linux run in WSL).
+/// `crates/pe-physics/tests/records/vdw/<name>` in the repository: under `$PE_RECORDS` if set, else
+/// next to this crate's source if that exists (a host build), else relative to the working directory
+/// (a cross-built binary run from the repository root, e.g. the Linux run in WSL).
 pub fn record(name: &str) -> PathBuf {
     if let Some(dir) = std::env::var_os("PE_RECORDS") {
         return PathBuf::from(dir).join(name);
     }
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../spikes/out/vdw");
-    if here.is_dir() { here.join(name) } else { PathBuf::from("spikes/out/vdw").join(name) }
+    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/records/vdw");
+    if here.is_dir() { here.join(name) } else { PathBuf::from("crates/pe-physics/tests/records/vdw").join(name) }
 }
 
 /// "release" or "debug": the committed records differ only in the snapshot images, whose

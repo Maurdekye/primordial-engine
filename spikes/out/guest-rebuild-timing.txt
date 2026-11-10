@@ -1,2 +1,0 @@
-release (opt-level=s, lto, cgu=1): 0.78s, 0.24s, 0.24s, 0.22s, 0.24s, 0.24s  (min 0.22s, max 0.78s)
-dev (debug): 0.19s, 0.19s, 0.20s, 0.20s, 0.21s, 0.21s  (min 0.19s, max 0.21s)

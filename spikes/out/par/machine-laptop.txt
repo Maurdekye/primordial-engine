@@ -1,1 +1,0 @@
-# machine: 13th Gen Intel(R) Core(TM) i7-13620H (16 logical), Microsoft Windows 11 Home; source 7072429; rustc 1.99.0 (b940084d7 2026-09-28)

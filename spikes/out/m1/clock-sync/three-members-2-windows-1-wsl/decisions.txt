@@ -1,3 +1,0 @@
-target/final/three-2win-1wsl/run-1-windows.log: 0 decisions, 0 pauses
-target/final/three-2win-1wsl/run-2-windows.log: 0 decisions, 0 pauses
-target/final/three-2win-1wsl/run-3-linux.log: 0 decisions, 0 pauses

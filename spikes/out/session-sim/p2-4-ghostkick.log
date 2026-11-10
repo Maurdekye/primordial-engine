@@ -1,9 +1,0 @@
-RESULT ghostkick: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 364 (t=6.17 s) round 5 removed [9]
-RESULT ghostkick: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 364 (t=6.17 s) round 5 removed [9]
-RESULT ghostkick: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 364 (t=6.17 s) round 5 removed [9]
-RESULT ghostkick: m1 conf 580 of frame 593, m2 conf 580 of frame 593, m3 conf 580 of frame 593
-RESULT ghostkick: worst confirmation lag when admin 1 kicks 9 at 6.00 s: 251 frames (window 120); 9 removed at 6.17 s; lag at the end 13 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
-  m1: conf 580 frame 593 members {1, 2, 3} evicted {9: (87, 349)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 40 bad 0
-  m2: conf 580 frame 593 members {1, 2, 3} evicted {9: (87, 349)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 40 bad 0
-  m3: conf 580 frame 593 members {1, 2, 3} evicted {9: (87, 349)} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 40 bad 0
-RESULT ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist; admin 1 kicks 9 at 6 s): frames 0..592 honest m1=f93153ae741660f6 m2=f93153ae741660f6 m3=f93153ae741660f6 | offline replay f93153ae741660f6 | ALL EQUAL, NO FALSE CHECKS ; checks ok 120 bad 0

@@ -1,4 +1,0 @@
-target/final/allwin-1/run-1-windows.log: 0 decisions, 0 pauses
-target/final/allwin-1/run-2-windows.log: 0 decisions, 0 pauses
-target/final/allwin-1/run-3-windows.log: 0 decisions, 0 pauses
-target/final/allwin-1/run-4-windows.log: 0 decisions, 0 pauses

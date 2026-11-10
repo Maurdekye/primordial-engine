@@ -1,1 +1,0 @@
-{"mcpServers": {"pe": {"type": "stdio", "command": "target/release/pe-mcp.exe", "args": ["bridge"], "env": {"PE_MCP_PIPE": "${PE_MCP_PIPE}", "PE_MCP_TOKEN": "${PE_MCP_TOKEN}"}}}}

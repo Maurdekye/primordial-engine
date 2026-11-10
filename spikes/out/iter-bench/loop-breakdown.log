@@ -1,7 +1,0 @@
-spawn of a no-op exe from Python: median 5.94 ms
-split dev +breakdown               build   0.494s [0.437-0.759]  noop 0.062s  rustc-sum 481ms  direct-rustc 0.679s  3034693 B
-split rel-fast +breakdown          build   0.481s [0.446-0.556]  noop 0.065s  rustc-sum 449ms  direct-rustc 0.442s  224774 B
-split release +breakdown           build   1.306s [1.261-1.349]  noop 0.060s  rustc-sum 1264ms  direct-rustc 1.250s  263917 B
-mono dev +breakdown                build   0.499s [0.462-0.514]  noop 0.057s  rustc-sum 407ms  direct-rustc 0.404s  3010166 B
-mono release +breakdown            build   1.895s [1.861-2.704]  noop 0.055s  rustc-sum 1822ms  direct-rustc 1.813s  269388 B
-raw: E:\Libraries\Desktop\Primordial Engine\spikes\out\iter-bench\loop-breakdown.jsonl

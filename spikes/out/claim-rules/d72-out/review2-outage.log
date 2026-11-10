@@ -1,8 +1,0 @@
-  member 1's touch at m1: m1s31@60 eff=Some(60) void=false
-  member 1's touch at m2: m1s31@60 eff=Some(60) void=false
-  member 1's touch at m3: m1s31@60 eff=Some(60) void=false
-OUTCOME outage (honest members, 6.5 s one-way ack outage) w1 m1 s31 push Accepted
-  m1: conf 705 frame 713 members {1, 2, 3} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 46 bad 0
-  m2: conf 705 frame 713 members {1, 2, 3} evicted {} rollbacks 1 max depth 38 violations 0 equivocations 0 checks ok 46 bad 0
-  m3: conf 707 frame 713 members {1, 2, 3} evicted {} rollbacks 1 max depth 38 violations 0 equivocations 0 checks ok 46 bad 0
-RESULT outage (honest members, 6.5 s one-way ack outage): frames 0..712 honest m1=e4d63de1372596d8 m2=e4d63de1372596d8 m3=e4d63de1372596d8 | offline replay e4d63de1372596d8 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0

@@ -8,19 +8,11 @@ are first-class users: every peer exposes an MCP server, so an agent can read th
 
 ## Status
 
-**Phase 2 of 6: the deterministic core and the session protocol. Milestone M1 is reached.**
+**Re-founding, milestone M0.** An independent review on 2026-11-10 found the deterministic base sound and the
+work above it the wrong shape for what remains, and the project owner ordered a rewrite above the base. The
+plan is [docs/refound-plan.md](docs/refound-plan.md): a vertical slice first (see, touch in VR and edit through
+an agent, between two machines), then authoring, sessions that survive real networks, regions, and the platform.
 This is a research codebase, not a usable engine: there is no renderer, no VR and no game yet.
-
-M1 (design 23.2) is 2-4 desktop peers on a LAN, Windows and Linux mixed, running a physics sandbox.
-Interactions are confirmed by the other members, gaps are repaired, equivocation is detected, a member
-that drops out is removed by the view change, and an AI agent drives one peer over MCP. The runs that
-show it are in [spikes/out/m1](spikes/out/m1), and [The M1 demo](#the-m1-demo) below shows how to run it:
-- four peers across two machines, Windows and Linux
-  ([two-machine-windows-wsl-laptop](spikes/out/m1/two-machine-windows-wsl-laptop));
-- equivocation detected and the equivocator removed
-  ([late](spikes/out/m1/equivocation-loopback-windows),
-  [split](spikes/out/m1/equivocation-split-held-loopback-windows));
-- an AI agent driving a peer on `main` (aa2680b) ([agent-windows-main](spikes/out/m1/agent-windows-main)).
 
 What is on `main` now:
 
@@ -30,24 +22,22 @@ What is on `main` now:
 | `crates/pe-sim` | The sim store: fixed-size component rows, snapshots and hashing |
 | `crates/pe-physics` | The engine's interface to the Box3D fork: bodies bound to sim objects, deterministic stepping, state hashes |
 | `crates/box3d-fork` | Our fork of box3d-rust 0.5.0 (MIT); see its [FORK.md](crates/box3d-fork/FORK.md) for every change |
-| `crates/pe-session` | The session protocol: the signed session log, confirmation and repair, rollback, view change, R18 congestion control, as a sans-IO `SessionCore` |
-| `crates/pe-session-harness` | An in-process network harness for pe-session's scenarios and regression runs |
-| `crates/pe-app` | The headless M1 peer: one member of a session over signed UDP, with clock sync and pe-mcp attached; see its [README](crates/pe-app/README.md) |
-| `crates/pe-mcp` | The engine's MCP server (rmcp): the tool catalogue, tokens and scopes, stdio, named pipe or loopback HTTP |
-| `tools/session-sim` | An in-process session simulator with network faults, used for regression scenarios |
-| `spikes/*` | Phase-1 feasibility spikes: physics goldens and rollback, a two-peer UDP session, WASM hot-swap, iteration-latency benchmarks, a native-code audit of the dependency stack |
+| `docs/spec/` | Short specifications of the new subsystems, one per workstream |
+| `archive/` | The old engine's session core, its harness and simulator, its MCP server and peer, and the physics spike, kept for reading while the new crates port from them. Not built. Removed at milestone M3 |
+| `spikes/` | References with their own builds: the chunk benchmarks, the WASM guests, the iteration benchmark, a native-code audit of candidate dependencies |
 
-Phases 3-6 (internet play, rendering, live editing with in-game
-agent panels, VR and avatars, discovery at scale) are designed but not started.
+**The prototype before the re-founding** (the signed session log with unanimous confirmation, the view
+change, thin-link congestion control, the M1 demo of four peers over UDP, every evidence log) is kept at
+the tag `archive/v0-prototype`. Its documents are in [docs/archive/](docs/archive).
 
 ## Documentation
 
-* [docs/design.md](docs/design.md): the architecture, the requirements it traces, the phased plan (23.2)
-  and the decisions taken. It is long; sections 2 (architecture at a glance) and 23 (plan and risks) are
-  the best starting points.
-* [docs/spike-report.md](docs/spike-report.md): what the phase-1 spikes ran and measured.
-* [docs/decisions-open.md](docs/decisions-open.md): decisions still open.
-* The other files in [docs/](docs) are results and studies for individual work packages.
+* [docs/refound-plan.md](docs/refound-plan.md): the build plan, with its milestones, workstreams, tests and the
+  owner's rulings.
+* [docs/spec/](docs/spec): one short specification per subsystem.
+* The other files in [docs/](docs) describe the kept base: the core and store (P2-1), the physics interface
+  (P2-2), the determinism matrix, parallel physics, double precision and the van der Waals contact radius.
+* [docs/archive/](docs/archive): the old design document and the old engine's studies.
 
 Results in the docs are labelled: **[V]** or "measured" for something that was run, **[I]** or
 "inferred" for a judgement.
@@ -60,79 +50,11 @@ commands work on Windows (Git Bash for the scripts) and on Linux.
 
 ```bash
 cargo build --workspace --release
-cargo test -p pe-core -p pe-sim -p pe-physics -p pe-mcp --release
-
-# Phase-1 spikes
-./target/release/pe-spike-physics goldens
-./target/release/pe-spike-physics rollback
-bash scripts/run_session_sim.sh
-bash scripts/build_wasm_guests.sh && ./target/release/pe-spike-wasm-hotswap
-
-# The whole determinism set (spike report 5j). It is heavy: run it at low priority.
-bash scripts/run_determinism.sh
+cargo test -p pe-core -p pe-sim -p pe-physics --release
+cargo test -p box3d-rust --release   # the fork's own suite
 ```
 
-`scripts/run_matrix.sh` runs the determinism set on several machines (Windows, Linux under WSL, a
-second Windows PC over ssh) and compares every output. Machine-specific settings go in
-`scripts/matrix.local.sh`; see `scripts/matrix.local.example.sh`.
-
-## The M1 demo
-
-Four peers, on Windows and Linux, run a shared physics sandbox over UDP. Scripted loss and delay hit some
-links, one member drops out mid-session and is removed by the view change, and an AI agent (Claude Code,
-over MCP) drives one of the peers. At the end every peer's history is identical, and identical to an
-offline replay. The runs behind this are in [spikes/out/m1](spikes/out/m1); the peer's options and
-limits are in [crates/pe-app/README.md](crates/pe-app/README.md).
-
-```bash
-cargo build --release -p pe-app -p pe-mcp
-```
-
-**On one machine.** Four peers on 127.0.0.1, loss and delay on members 2 and 3, member 4 dropping out at
-6 s, then a comparison of every member's history and its offline replay. It ends with `ALL EQUAL`.
-
-```bash
-bash crates/pe-app/m1-loopback.sh target/release/pe-app /tmp/pe-m1
-```
-
-**On several machines** (Windows and Linux mix freely; clocks are synced continuously, so a WSL2 VM's
-drifting clock is fine):
-
-1. On any one machine, make the session: one address per member, in member order.
-   ```bash
-   pe-app init --addrs 192.168.0.10:7101,192.168.0.11:7101,192.168.0.12:7101,192.168.0.12:7102 --frames 7200 --out m1
-   ```
-   This writes `m1/session.json` (public: ids, addresses, public keys) and `m1/member-<id>.key` (each
-   member's secret key).
-2. Copy `session.json` to every machine, and each `member-<id>.key` only to the machine that runs that
-   member. Allow inbound UDP on the members' ports (on Windows, for `pe-app.exe`; from WSL2, on the WSL
-   adapter). A member binds its session address by default. A WSL2 member reached from *another* PC, in
-   WSL2's default NAT mode, can't bind its LAN address: run it with `--bind 0.0.0.0:PORT` and forward
-   the port on its host, or use mirrored networking. The recorded mixed runs kept WSL2 on the same PC
-   as the Windows members.
-3. Start every member, in any order. The session begins once all are up.
-   ```bash
-   pe-app run --session session.json --key member-2.key --me 2 --touches-per-s 3 --out out -v
-   ```
-   Optional: `--faults faults.json` scripts loss and delay on that member's datagrams
-   (`[{"at_ms": 2000, "loss_pct": 10, "delay_ms": 30, "jitter_ms": 10}]`), and `--crash-at-ms 15000` makes
-   it drop out without a word.
-4. When the members finish, gather every machine's `out/summary-*.json` and `out/hashes-*.txt` into one
-   folder and run `pe-app compare <folder>`.
-
-**An AI agent drives a peer.** `--mcp-pipe` attaches pe-mcp to that member and launches the harness
-after `--` with a fresh token. The harness reaches the peer through `pe-mcp bridge`. Run this from the
-repository root (the paths are relative):
-
-```bash
-echo '{"mcpServers": {"pe": {"type": "stdio", "command": "target/release/pe-mcp", "args": ["bridge"],
-  "env": {"PE_MCP_PIPE": "${PE_MCP_PIPE}", "PE_MCP_TOKEN": "${PE_MCP_TOKEN}"}}}}' > cfg.json
-pe-app run --session session.json --key member-1.key --me 1 --out out -v --mcp-pipe -- claude -p "$(cat spikes/out/m1/agent-windows-rebase/agent-scenario.md)" --mcp-config cfg.json
-```
-
-The scenario file is the one the recorded agent run used: find your hand, move and hold it, watch the
-dropped-out member's removal, and see `scenario_check` refused on a live peer. On a live peer,
-`world_step` waits in real time while the peer runs.
+The physics records that pe-physics's tests reproduce bit for bit are in `crates/pe-physics/tests/records/`.
 
 ## How this was made
 
@@ -167,5 +89,4 @@ additional terms or conditions.
 * [box3d-rust](https://github.com/larsbrubaker/box3d-rust) by Lars Brubaker: the pure-Rust port of Box3D,
   forked at 0.5.0 in `crates/box3d-fork` (MIT).
 * The Rust crates listed in `Cargo.lock`, under their own licences (all permissive: MIT, Apache-2.0,
-  BSD, ISC, Zlib, Unlicense, CC0, Unicode-3.0). Among them: [rmcp](https://crates.io/crates/rmcp) for MCP,
-  [wasmi](https://crates.io/crates/wasmi) for WASM and [wgpu](https://crates.io/crates/wgpu) for graphics.
+  BSD, ISC, Zlib, Unlicense, CC0, Unicode-3.0).

@@ -1,5 +1,0 @@
-# machine: AMD Ryzen 7 9700X 8-Core Processor              (16 logical), Microsoft Windows 11 Pro
-# git: 03eaf00 6 dirty files; rustc: rustc 1.99.0 (b940084d7 2026-09-28)
-# started 2026-10-30T21:41:13Z
-# scaling done 2026-10-30T21:42:27Z
-# finished 2026-10-30T21:43:06Z

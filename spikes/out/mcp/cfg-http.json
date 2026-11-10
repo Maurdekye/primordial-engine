@@ -1,1 +1,0 @@
-{"mcpServers": {"pe": {"type": "http", "url": "${PE_MCP_URL}", "headers": {"Authorization": "Bearer ${PE_MCP_TOKEN}"}}}}

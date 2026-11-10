@@ -1,3 +1,0 @@
-code: p2/m1-gaps bb5f5f6
-e259f15f393a7fbba3bb92ce6cf159accea4d15510c77391db1f5fdedd11f6d4  pe-app.exe (Windows release)
-run: bash crates/pe-app/m1-equivocate.sh target/release/pe-app.exe <out> <port> split

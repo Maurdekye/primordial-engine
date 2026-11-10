@@ -1,6 +1,0 @@
-RESULT crashstall: m1 members {1, 2} evicted {3: (86, 173)} conf 887 frame 893 paused frames 72 lying votes found 0
-RESULT crashstall: m2 members {1, 2} evicted {3: (86, 173)} conf 887 frame 893 paused frames 74 lying votes found 0
-RESULT crashstall: member 3 silent from t=3 s; at t=15 s m1 conf 887 (frame 893), member 3 still a member: false
-  m1: conf 887 frame 893 members {1, 2} evicted {3: (86, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 31 bad 0
-  m2: conf 887 frame 893 members {1, 2} evicted {3: (86, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 31 bad 0
-RESULT crashstall (member 3 silent from t=3 s): frames 0..892 honest m1=1dd44f33b4c1d266 m2=1dd44f33b4c1d266 | offline replay 1dd44f33b4c1d266 | ALL EQUAL, NO FALSE CHECKS ; checks ok 62 bad 0
