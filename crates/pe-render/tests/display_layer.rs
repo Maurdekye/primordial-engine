@@ -141,9 +141,11 @@ fn steady_motion_never_hitches_at_any_rate_pair() {
     };
     for rule in [
         DrawnTime::Extrapolate { l_max: Duration::from_millis(80) },
-        DrawnTime::InterpolateLate { d_render: Duration::from_millis(60) },
+        DrawnTime::InterpolateLate { d_render: Duration::from_millis(70) },
     ] {
-        for sim_hz in [60, 75, 90] {
+        // The supported simulation range is 30-120 Hz (SimRate, @engine-architect): both ends, the default, and
+        // two rates between.
+        for sim_hz in [30, 60, 75, 90, 120] {
             for display_hz in [72, 90, 120, 165] {
                 let run = Run { sim_hz, display_hz, lead: Duration::from_millis(30) };
                 let mut layer = DisplayLayer::new(DisplaySettings { drawn_time: rule, ..Default::default() });

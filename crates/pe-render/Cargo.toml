@@ -11,6 +11,18 @@ description = "Rendering: the window, the scene renderer drawing from frame view
 [dependencies]
 pe-seams = { path = "../pe-seams" }
 glam = "0.33"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.3"
+# Encode only, pure Rust.
+png = "0.17"
+# Default features off, so no GLES (it pulls khronos-egl and a static import of opengl32.dll), no Metal or WebGPU,
+# and never static-dxc (DXC compiled in is C++). The DX12 compiler is pinned to FXC in code (gpu.rs).
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "vulkan"] }
+wgpu-hal = { version = "=30.0.1", default-features = false, features = ["dx12", "vulkan"] }
+[target.'cfg(not(windows))'.dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan"] }
+wgpu-hal = { version = "=30.0.1", default-features = false, features = ["vulkan"] }
 
 [dev-dependencies]
 pe-seams = { path = "../pe-seams", features = ["test-util"] }
