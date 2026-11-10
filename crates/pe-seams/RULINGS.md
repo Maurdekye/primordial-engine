@@ -65,7 +65,8 @@ messages with it, for hundreds of milliseconds. So the replica re-simulates at m
 whether it reached the present; `root_at_cut` and `replay_to` return `RootError::Pending`, `import_at_cut`
 `ImportError::Pending`, to be called again on a later tick; `finalize` returns `NotReady` until the replica has
 re-simulated to the cut. Until it reaches the present again, `view` keeps the last view published there. M2's second
-copy later keeps the old prediction moving during a deep replay instead.
+copy later keeps the old prediction moving during a deep replay instead. The budget's floor is two frames of simulated time at
+the world's rate; a smaller value is raised to it (@design-reviewer, m94ee513a61ac).
 
 ## The conflicts between proposals, and v0's rulings
 
