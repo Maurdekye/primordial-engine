@@ -1,6 +1,6 @@
 # The API's surface: how WorldApi and the MCP tools read to an agent and to a player
 
-Status: **draft 2, a UX proposal for WS-api**, reconciled with @api-eng's `docs/spec/api.md` at a6cd872 (branch
+Status: **draft 3, a UX proposal for WS-api** (draft 2 with @chunks-reviewer's U1-U5 and L1-L5), reconciled with @api-eng's `docs/spec/api.md` at a6cd872 (branch
 `ws/api`; its section 13 lists what it adopted from draft 1 and what it settled differently). Written by @gnosarium-ux for @api-eng, who owns `pe-api`, `pe-mcp`
 and `docs/spec/api.md`. Where this document and `api.md` disagree on a type or a rule, `api.md` wins. This document
 covers names, wording, shapes as the agent sees them, defaults, and what players see. Nothing in it is built.
@@ -28,7 +28,7 @@ Marks:
   only moves when you call world_step" on a live peer (review file 06, finding 6).
 - **`world_apply` returns at once** [P, from the governing principle: "everything reacts immediately for the
   local user"]. It returns once the change is accepted on this machine, with `status: "accepted"`. Finality
-  comes later and are reported by `world_watch`, or by `apply` itself when the agent asks it to wait.
+  comes later and is reported by `world_watch`, or by `apply` itself when the agent asks it to wait.
   Agent edits apply at once, labelled and revertible [R: coordinator decision C11].
 - **A refusal is always explained.** It carries a machine code, one plain sentence, and, for a stale edit, the
   change that won: who made it, through which producer, and when [R: refound-plan M1 acceptance; review file 14,
@@ -97,8 +97,8 @@ Result:
 {
   "world": {"id": "w:…", "name": "Ball pit"},
   "me": {"member": "m:…", "name": "Alice", "producer": "Alice's agent (Claude Code)",
-         "role": "Admin", "may": ["edit", "create", "delete", "revert_others"]},
-  "members": [{"member": "m:…", "name": "Bob", "role": "Admin", "here": true}],
+         "role": "Admin", "may": ["edit"]},
+  "members": [{"member": "m:…", "name": "Bob", "role": "Guest", "here": true}],
   "frame": 18342,
   "final_frame": 18334,
   "link": "fine"
@@ -107,7 +107,12 @@ Result:
 - `link` uses the player-facing words of review file 08, A6: `fine`, `thin`, `some actions dropped`,
   `catching up`, `watching only` [P].
 - `may` lists permissions in the role system's own words, so an agent can tell in advance what will be refused
-  [A, with WS-gov from M3; in M1 everyone is an admin of the demo world].
+  [A, with WS-gov from M3]. M1 checks one permission, `EDIT` [V world-model.md 5.4]. Roles follow the user's
+  rulings with no M1 simplification [R: @coordinator-opus m78746a465fd2]: a private world gives the admin role to
+  its creator only; friends join as Guest, a role that has `EDIT`; the owner's confidants join as admins. In the
+  example Alice created the world and Bob is a friend.
+- There is no separate revert right (3.7): reverting needs the permissions the reverted change's ops need, so
+  `may` doesn't list one.
 
 ### 3.2 `world_schema`
 
@@ -183,12 +188,12 @@ Arguments:
   "mode": "live",
   "wait": "local",
   "ops": [
-    {"op": "create", "as": "$cube", "parent": "o:table", "name": "Red cube",
+    {"op": "create", "as": "$cube", "parent": "/Table", "name": "Red cube",
      "components": {"Transform": {"position": {"relative_to": "parent", "offset": [0, 0.8, 0]}},
                     "Shape": {"box_m": [0.2, 0.2, 0.2]},
                     "Appearance": {"color": "#d22b2b"},
                     "Body": {"kind": "dynamic", "mass_kg": 1}}},
-    {"op": "set", "id": "o:lamp-left", "if_version": "v:…", "field": "Light.intensity", "value": 0.5}
+    {"op": "set", "id": "/Lamp (left)", "if_version": "v:…", "field": "Light.intensity", "value": 0.5}
   ]
 }
 ```
@@ -249,7 +254,7 @@ Result:
   "change": "x:…",
   "frame": 18350,
   "created": {"$cube": {"id": "o:…", "version": "v:…"}},
-  "changed": [{"id": "o:lamp-left", "version": "v:…"}],
+  "changed": [{"id": "o:…", "version": "v:…"}],
   "count": 2
 }
 ```
@@ -285,7 +290,7 @@ Shown here flattened for reading:
   "code": "stale_version",
   "message": "Bob moved Lamp (left) after you read it.",
   "op": 1,
-  "object": {"id": "o:lamp-left", "name": "Lamp (left)"},
+  "object": {"id": "o:…", "name": "Lamp (left)"},
   "field": "Transform.position",
   "read": "v:…", "now": "v:…",
   "winner": {"change": "x:…", "frame": 18347, "by": "m:… (Bob)", "producer": {"kind": "hand"},
@@ -330,7 +335,7 @@ Arguments: `{"cursor": "c:…", "where": {…}, "wait_ms": 5000, "limit": 200}`.
 - `where` uses `world_query`'s selector.
 
 Result: `{"cursor": "c:…", "changes": [ … ], "mine": [ … ], "more": false}`.
-- `changes`: `{"change", "by", "producer", "label", "frame", "final", "created": […], "deleted": […],
+- `changes`: `{"change", "by", "producer", "label", "frame", "final", "created": […], "deleted": […], "reparented": […],
   "set": [{"id", "field", "value"}]}`. Values are included only for the fields the filter names [P: otherwise
   500 moving balls flood the agent].
 - `mine`: the status changes of the agent's own changes (`final`, `refused`, `dropped`), with the refusal
@@ -420,6 +425,15 @@ view (S5) by pe-render's offscreen capture [R: plan WS-render, "offscreen captur
   - `"me"`: the agent's member's head (the player it acts for);
   - `"world_origin"`: the world's origin. Allowed, but never a default, and the result echoes it back, so a
     transcript shows when an agent worked in absolute coordinates.
+- **A root object has no parent** [gap found by @chunks-reviewer; to settle between @api-eng and @world-model]. A
+  root's `Transform` holds a `Pos`, not an offset [V world-model.md 4.4], so `"parent"` means nothing for it. My
+  proposal [P]: for a root, the result gives `"relative_to": "world_origin"` explicitly, because that is what the
+  numbers are, and an edit to a root's position must name a frame (`"parent"` on a root is refused as `invalid`,
+  "{object} has no parent; name a frame."). The honest echo keeps the rule that absolute numbers never appear
+  unlabelled. Until they agree, this point is [A].
+- **A `world_origin` offset is exact only near the origin** [V world-model.md 4.2]: it is computed as
+  `Pos - ORIGIN` in `f64`, which rounds once the chunk index passes 2^53. The schema states the bound; the API
+  doesn't claim exactness [P].
 - A result gives positions in the frame the query asked for (`"frame": "parent"` by default) [P].
 - **Rotations:** `rotation_deg: [x, y, z]`, Euler angles in degrees in a stated order, both accepted and returned.
   A quaternion `rotation_quat: [x, y, z, w]` is accepted, and returned when asked [P; the order is A].
@@ -438,7 +452,7 @@ exporting the avatar, or grabbing its materials with the Material Tool. Only the
 page also says it "does not guarantee meshes, textures, etc. can't be grabbed through other methods, such as
 using an inspector".
 
-**The proposal** [P, A]:
+**The proposal** [P, with @coordinator-opus's ruling on who may protect, m0ff702169a60]:
 - **A `Protection` component** on an object protects that object and its subtree. Its field `owner` names one
   player identity (the player's long-term key, not a session member id). It is synced and hashed like any field.
 - **For anyone but the owner, WorldApi refuses** with `code: "protected"`:
@@ -452,10 +466,16 @@ using an inspector".
   object stays governed by role permissions, as for any object (Q33, editing others' objects allowed by default).
   Resonite's component protects copying, not editing. If the user wants "only the owner may edit it" too, that is
   a separate flag.
+- **Who may add one** [R: @coordinator-opus, m0ff702169a60, on V1]: only the object's **creator** (the author of
+  its creating entry) or the player who **imported** it, and only with themselves as owner. Anyone else's `add` of
+  a `Protection` is refused as `protected`, even with `EDIT`, and so is adding one inside someone else's protected
+  subtree [V world-model.md 7.8]. Nobody can claim copy rights over another's work.
 - **When it is added:**
-  - automatically, to every avatar a player imports or wears, with that player as owner [P: Resonite's avatar
-    creator does the same in practice; the user can turn it off per avatar];
-  - by choice, to any object, through the inspector or `world_apply` (`add`), by its owner.
+  - automatically, on import and on creation of an avatar, with the importer or creator as owner [R: same
+    ruling; the owner can remove it];
+  - by choice, by the creator or importer, through the inspector or `world_apply` (`add`).
+  - **Wearing never protects or claims anything.** Wearing someone else's unprotected avatar leaves it
+    unprotected, so the person who shared it can still copy it [R: same ruling].
 - **The owner's own agent acts as the owner.** An agent connected as Alice may duplicate Alice's protected
   objects.
 - **Honest limit, stated in the inspector** [P]: like Resonite's, the protection stops the engine's own paths, not
@@ -515,7 +535,7 @@ The plan's step 5: "put a red cube on the table", "make the balls blue", "double
    height.
 2. `world_apply` with one `create` under the table at `offset [0, 0.8, 0]` (from the table's shape), red, dynamic.
    Returns `accepted`, the cube's id and version.
-3. `view_capture {"from": {"orbit": "o:cube"}, "highlight": ["o:cube"]}` to check it.
+3. `view_capture {"from": {"orbit": "o:…"}, "highlight": ["o:…"]}`, with the cube's id from step 2, to check it.
 4. `world_apply` with one `set` where `has: "Ball"`, `max: 1000`, `Appearance.color` blue. Returns `count: 500`.
 5. `world_apply` with `duplicate` of the cube, then a `set` of the copy's `Transform` 0.3 m to the side, both in
    one change (`as: "$copy"`).
@@ -533,8 +553,10 @@ The plan's step 5: "put a red cube on the table", "make the balls blue", "double
     unlocked panel [P wording]: "This panel uses your {provider} subscription. Letting others prompt it is against
     {provider}'s terms, and they may suspend your account. You take that risk." The panel stays usable, and the
     warning can't be turned off for that panel while it is unlocked.
-  - **A2, Google models:** the same pattern [P wording]: "Google's terms don't allow its models in apps used by
-    people under 18. You take that risk."
+  - **A2, Google models:** shown when a player picks a Google model for a panel that others can reach, with the
+    same pattern [P wording]: "Google's API terms require users to be 18 or older and forbid apps 'likely to be
+    accessed by individuals under the age of 18'. Others here may be under 18. You take that risk." The quotes are
+    the report's (legal research, 2.3).
   - Both name the clause and link the research report's section, so a player can read the source.
 - **The inspector** (docs/ux/inspector.md, next) is a schema-driven view over `world_query`, `world_apply`,
   `world_watch` and `history_*`. It needs nothing the agent's tools don't have.
@@ -551,6 +573,9 @@ Draft 1's seven open points are settled in `docs/spec/api.md` at a6cd872 (sectio
    and `invalid` widened (3.5).
 6. **The producer label:** set at the connection, from the token (6.1).
 7. **Another player's view in `view_capture`:** allowed (3.8).
+
+Draft 3's review fixes (@chunks-reviewer, m7ef541e944cb): U3 roles (3.1), U4 a root's frame (4, still [A]
+between @api-eng and @world-model), U5 who may protect (5, ruled by @coordinator-opus), and L1-L5.
 
 Still open, none of it blocking: the wording of the five new refusal messages (3.5, marked *) and of
 `code_check`'s description (3.7a) is new in this draft, for @api-eng to adopt or edit.

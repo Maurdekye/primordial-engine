@@ -1,6 +1,6 @@
 # The inspector: the hierarchy and the object inspector, on WorldApi
 
-Status: **draft 2, a UX proposal**, reconciled with `docs/spec/api.md` at a6cd872. Written by @gnosarium-ux. The inspector is a client of `WorldApi`
+Status: **draft 3, a UX proposal** (with @chunks-reviewer's U1, U2 and U4), reconciled with `docs/spec/api.md` at a6cd872. Written by @gnosarium-ux. The inspector is a client of `WorldApi`
 (`docs/spec/api.md`, @api-eng) and calls nothing an agent's tools can't call (`docs/ux/api-surface.md`). Nothing
 in it is built. In the plan, it belongs with WS-render's UI lab, which comes after M1 (refound-plan, C12).
 Writing it now settles what the API must give it.
@@ -113,9 +113,12 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
 
 - Positions show in the **parent's** frame by default, which is Resonite's local position [R: file 17 section 7.3,
   "frames follow Resonite"].
-- The frame selector offers: parent; another object (pick it); me; and **from world origin**. The last one shows a
-  small note, "absolute: precision falls far from the origin", the first time it is picked in a session [P, a
-  player-facing reading of file 17's hard wall; the API echoes the frame too].
+- The frame selector offers: parent; another object (pick it); me; and **from world origin**. Picking the last
+  shows no warning [R: m06d2643578d7, point 2, "no warning or test, enforce this via the type system"]. Its
+  position reads as file 17's display does: the chunk cell, the offset within it, the scale, and the distance to
+  the viewer [R: file 17 section 7.2, "a display, not a warning"].
+- A root object has no parent, so its default frame is the world origin, labelled as such in the selector; the
+  API's rule for it is api-surface 4 [A: @api-eng, @world-model].
 - Changing the frame changes only what is shown, never the stored value.
 
 ### 3.4 Live values and other people's edits
@@ -149,8 +152,14 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
   underline, in the skin's gold. Synced fields carry no mark.
 - The hover names the field's driver and what it reads, or says "Your own value · remembered" for a remembered
   per-player field (Q11 a).
-- **Make per-player** is a field-menu item for builders. For a field the simulation reads it is disabled, with the
-  reason: "The simulation reads this field, so it must stay the same for everyone."
+- **Make per-player** is a field-menu item for builders.
+  - **Disabled for fields physics reads**: a body's `Shape`, `Body` and `Transform`. The reason on hover: "Physics
+    uses this field, so it must stay the same for everyone." [P; the exact list is the sync model's]
+  - **Allowed for fields logic reads** [R: QR (b), m5f805fdd0ffc]: a shared script reading a per-player field reads
+    each player's own value, in a player-local instance, and its shared effects go out as that player's input,
+    "like a player holding a local paddle hitting a ball" (m38e3fce7d7a3). The hover on such a field says so:
+    "Scripts read each player's own value here." [P wording]
+  - The split between the two is to settle with @iter-bench (WS-logic) [A].
 
 ### 4.3 Protection
 
