@@ -75,8 +75,9 @@ calendar time, not writing.
   - The agreed-cut rules are written first as a model that a checker exhausts at small sizes.
   - The review's three probes are tests from the first week.
   - Every safety rule has a control that bites: a mutation that a test must catch.
-- **Every ruling of the user's carries over.** Section 5 says where each lands. The design phase is closed. The four
-  points still open with the user, all from file 18, are parameters, not blockers (section 6).
+- **Every ruling of the user's carries over.** Section 5 says where each lands. The design phase is closed. One point
+  is still open with the user, whose admin list applies after two branches merge (file 18); it is a parameter, not a
+  blocker (section 6).
 - **All 27 live docket items are triaged:** 17 carry and 10 park.
 - **Every decision the plan asked for has been made.** The user answered U1-U4, and the coordinator ruled C1-C13 with
   conditions (section 9).
@@ -348,8 +349,9 @@ final.
     time.
   - The world then enters guarded mode with a visible notice, and a countdown starts (the owner sets it; 30 s by
     default).
-  - When the countdown runs out, the world closes with its state saved (mb09ab8952a38). Whether anything is kept
-    when no admin is present at all is open with the user (file 18, question 3).
+  - When the countdown runs out, the world closes with its state saved (mb09ab8952a38).
+  - A session with no admin at all keeps nothing unless an admin joins before it ends, and every player sees a
+    permanent mark saying so (mb3da953109cb).
   - Below quorum there is no cut to decide the fact on, so it is decided on the line that re-founds its membership at
     the one-minute mark [I; WS-gov's specification states it].
 - **Thin links.**
@@ -358,9 +360,12 @@ final.
   - Cuts wait for a quorum, not for that player. Its own view follows by state at cuts, and the others never pause.
 - **Late joining.** A late joiner starts from a cut, watches until it has caught up, then acts. It verifies the
   governance it is handed.
-- **An admin returns** after playing alone (ma9035760e0c1; file 18, 2.7). Reopening the world opens their own
-  version. Another admin has it open, so the client joins them and merges, unless the returning admin chooses to
-  stay forked.
+- **An admin returns** after playing alone (ma9035760e0c1, mb3da953109cb; file 18, 2.7 and 6). Reopening the world
+  opens their own version. Another admin has it open, so the client asks to join them and merge. The merge happens
+  only if both admins agree; otherwise the rejoin is refused. The returning admin may also choose to stay forked.
+- **Admins** (mb3da953109cb, m2c5ed59eb9ab): any admin can add or remove any other admin. A removed admin keeps the
+  world: having been an admin for any time gives a player the right to keep a saved copy, to reopen and continue
+  alone.
 - **Relays.** Two players behind strict routers connect through a third member acting as relay; no helper node exists.
 
 **Acceptance:**
@@ -374,7 +379,11 @@ final.
   - Control: with the bound raised, the bound test must fail.
 - **The full change record.** Every entry since the world's creation is kept, together with signed states at
   intervals. History below a final cut leaves live memory for the world record and peer caches, and is never deleted
-  (the user, 19:09Z). The admins keep it; a non-admin's copy is discarded when they leave (file 18).
+  (the user, 19:09Z). The admins keep it; a non-admin's copy is discarded when they leave (file 18). Each stored
+  state carries a small summary per player, so long histories draw cheaply in the world line tool (file 19).
+- **One origin** (the user, 19:57Z): every world descends from one origin world, and any two worlds can be merged,
+  keeping the history they share. Nothing in the record, the ids or the signatures may assume that two worlds are
+  unrelated (section 3.2, S1).
 - **Witnessed order:** a back-dated, unwitnessed action from a lone member never overturns a final action. Its
   control: honouring the unwitnessed stamp must fail the property.
 - **No world owner** (file 18): every admin keeps their own version as they play; there are no ownership
@@ -514,6 +523,12 @@ Each track writes its short specification before its code.
 - **Player voice.** No design exists yet; it meets the Rust ruling at the codec.
 - **Avatars:** standard formats first (VRM, glTF), then Resonite import as far as the licence research allows.
 - **Engine releases and updates.** No design exists yet.
+- **The world line tool** (mcd8bb1211150; file 19; @item:primordial-engine/world-line-visualization-tool-braided-glowing-li):
+  any admin can take it out in the world. It draws each player's recorded actions as braided, glowing lines
+  travelling one way; a player who diverges leaves the braid, darker and dimmer the further they go. It reads the
+  world record and the per-player summaries kept from M3.
+- **Merging any two worlds** (19:57Z): all worlds descend from one origin, so any two can be merged, keeping their
+  shared history. The later-merge track handles it with the same rules.
 - **The interface:** the UI layer with the Gnosarium look as a skin, the tour, and agent panels.
   - The first-party agent loop runs on an API key, because providers allow subscriptions only through their own
     binaries (file 11, 3.7).
@@ -658,7 +673,7 @@ not built yet. Appendix A sketches them. WS-seams fixes v0 in M0, from the owner
 
 | Seam | Between | What crosses it |
 |---|---|---|
-| S1 Entries | everyone | The signed envelope: author key, chain id (one chain per member per world for its life; a restart takes a new nonce), sequence number, the previous entry's hash, domain id, frame stamp, class (input, edit, governance or protocol), typed payload, signature. The signed bytes bind the world id (the genesis hash), so an entry cannot be replayed into another world. Hashes are 256 bits and object ids 128 bits. The domain id is there from the start, so the regions work needs no format change: one domain per world until M4, then one per group of things in contact (file 16, C4) |
+| S1 Entries | everyone | The signed envelope: author key, chain id (one chain per member per world for its life; a restart takes a new nonce), sequence number, the previous entry's hash, domain id, frame stamp, class (input, edit, governance or protocol), typed payload, signature. The signed bytes bind the world id (the genesis hash of the branch the entry was made on), so an entry cannot be replayed into an unrelated world. Since all worlds descend from one origin and any two may merge (19:57Z), a merge keeps both branches' entries with their own bindings; WS-world and WS-agree settle the rule before v0 fixes S1. Hashes are 256 bits and object ids 128 bits. The domain id is there from the start, so the regions work needs no format change: one domain per world until M4, then one per group of things in contact (file 16, C4) |
 | S2 Replica | pe-agree and pe-replica, pe-world, pe-diverge | Step a frame with its ordered entries; save, restore and step per group; the root hash; each entry's outcome (applied, or refused with a reason) and any permission check at a frame; a subtree-hash exchange, node hashes by path, through which repair and merging find what differs. The trait is object-safe, so the harness can wrap it |
 | S3 Agreement | pe-agree and pe-app, pe-harness, pe-diverge | Submit a local entry; receive a message; tick on local monotonic time, with the frame from pe-net's sans-IO clock. What to simulate now. The newest final cut, which carries a line id. A hold on votes until a build is ready (Q3). Events, and one trace vocabulary shared with the model: proposals, votes and final cuts; voided and refused entries with reasons; equivocations; joins and leaves; quorum lost; unconfirmed time; diverged; merged; and "paused", which must never fire. pe-agree calls the merge function; it does not own it |
 | S4 Transport | pe-net and pe-agree, through pe-app | Send by class (protocol, action, pose, repair, bulk), in that priority; receive; statistics per link. A pose that cannot be sent is superseded, never queued |
@@ -934,10 +949,12 @@ in the headset is the user's to judge, at the checkpoints.
 | The merge rules (mfc2bbd9d28ad): witnessed order, with its one-against-one residual; a component attached to an object deleted first is refused, with a notice to its author | pe-diverge's merge, modelled in v2 | M2-M3 | The witnessed-order property and its control |
 | Convergence targets (meef4f248923b, answer 8): others see an action within 0.25 s on good links and 1 s on poor ones; no correction larger than a hand's width in view without a cue | A property of every network scenario (pe-harness) | M1 (good links), M3 (poor links) | The delay and correction distributions |
 | Carried state is a check, not an overwrite (Q15, B4; mfedf5a6c3c5b) | pe-replica | M1 | M1's carried-state test |
-| No world owner (m6987a48ed7f0, ma9035760e0c1; file 18): every admin is a co-owner and keeps their own version; non-admins keep nothing after leaving; rejoining reopens your version and merges with an admin who has it open, unless you stay forked | WS-gov (admins, no ownership certificates), WS-world (the record kept by admins), WS-diverge (the rejoin merge) | M3; saves in M5 | The returning-admin scenario |
+| No world owner (m6987a48ed7f0, ma9035760e0c1, mb3da953109cb, m2c5ed59eb9ab; file 18): every admin is a co-owner and keeps their own version; non-admins keep nothing after leaving; rejoining reopens your version and merges with an admin who has it open only if both agree, otherwise the rejoin is refused; any admin can add or remove any other; having been an admin for any time gives the right to keep a saved copy; a session with no admin keeps nothing unless an admin joins, shown by a permanent mark; join rules that named a world owner test any admin | WS-gov (admins, no ownership certificates), WS-world (the record kept by admins), WS-diverge (the rejoin merge) | M3; saves in M5 | The returning-admin scenario |
 | Moderation (meef4f248923b, answers 13 and 14): no moderator role by default, though one can be made by hand; an admin's agent holds that admin's permissions | WS-gov; M5's agent panels | M3, M5 | — |
+| The world line tool (mcd8bb1211150; file 19), a new product requirement | M5's interface track, from the world record; the per-player summary in each stored state is designed in M3 (WS-world, WS-diverge) | M3 (the data), M5 (the tool) | — |
+| One origin (19:57Z): "all worlds can be descendant of one singular world 'origin'. all worlds can be merged with all other worlds, and if they share history, that history is kept" | S1's world id and chain id, and the record, must not assume two worlds are unrelated (WS-world, WS-agree, before seams v0 fixes S1); merging any two worlds in M5 (WS-diverge) | M0 (the format), M5 | — |
 | 6. Public worlds start strangers without admin rights (Q6 of the first round) | pe-gov: the public template's joining role has no admin permissions. Governance is ordinary entries over the hashed world state | M3 | probe-capture-close |
-| No admin reachable (Q6 of the follow-ups, mb09ab8952a38): guarded mode, then a countdown (30 s by default, now an admin's world setting), then the world closes with its state saved | pe-gov. "Unreachable" is a recorded fact decided at a cut. Whether anything is kept with no admin present is file 18's question 3 | M3 | The guarded-mode tests |
+| No admin reachable (Q6 of the follow-ups, mb09ab8952a38): guarded mode, then a countdown (30 s by default, now an admin's world setting), then the world closes with its state saved | pe-gov. "Unreachable" is a recorded fact decided at a cut. With no admin present at all, nothing is kept unless an admin joins before the session ends (mb3da953109cb) | M3 | The guarded-mode tests |
 | 7. Carrying between worlds is copy then remove; a rare duplicate is acceptable; no lease (Q7) | M5's worlds track: the carrier creates the object in the destination as an ordinary permitted edit, then removes it from the source once a cut in the destination holds it | M5 | A crash mid-carry leaves at most a duplicate, never a loss |
 | 8. QR (b): only the owning player's machine runs their per-player script copy (Q8) | pe-logic's per-player mode. It runs once per eligible player, on that player's machine, on predicted state, and its effects on shared state are that player's signed inputs. Three mitigations stay within the ruling (file 11, 3.5): an effect names the versions it read and is refused if they are stale; each effect is declared "once for the world" or "once per player"; per-player state may live in the player's profile store | M2 | M2's per-player tests |
 | 9. Helper nodes are optional and never assumed (Q9) | pe-net: an invite carries keys and reachable addresses; any member can act as rendezvous and relay; the helper protocol is written down, and the node list ships empty | Direct in M1; relays in M3 | Every test runs with no helper |
@@ -993,12 +1010,10 @@ The design phase is closed: the user has answered every question the review aske
 (m8c42b4b093bd), the later merge (meef4f248923b), visible error and "a reasonable timeframe" (the convergence
 targets, answer 8) are all settled above.
 
-**Still open with the user, kept as parameters, none blocking M1** (file 18, section 5; WS-gov's specification builds
-each as a setting):
-- whether the admin already in a world gets a say when a returning admin's version merges into it;
-- who adds and removes admins (recommended: 2/3 of the admins, a sole admin deciding alone);
-- whether a session with no admin keeps nothing, with a permanent "nothing here is being kept" mark;
-- whether join rules that named "a world owner" test any admin of the world (recommended), or only those present.
+File 18's four questions are answered too (mb3da953109cb, m2c5ed59eb9ab; section 5.1).
+
+**Still open with the user, kept as a parameter, not blocking M1:** whose admin list applies after two branches merge
+(file 18; recommended: both sides' admins together). WS-gov's specification builds it as a setting.
 
 **One reading still to confirm:** the coordinator's reading of the merge against finality (a three-way merge at
 main's final frontier) has gone to the liaison so that the user can correct it. Model v2 checks it, with the
@@ -1067,7 +1082,7 @@ goes, and why.
 | Agents in Session 0 have no desktop, for windows or the headset | Place WS-render and WS-xr in a signed-in session; headless tests render offscreen | M0-M1 |
 | The model's state space at five members with splits and merges | Small bounds, symmetry reduction, a time-bounded fast profile, and a deep profile run nightly | M0-M3 |
 | Determinism has never run on ARM or macOS (file 02) | Tier 2 in M0 | M0 |
-| With no world owner, a world with one admin lives on one machine, and being made an admin hands over the world for good (file 18, 4) | An easy backup under the admin's control (M5, saves); WS-gov's specification states who may add and remove admins (file 18's question 2) | M3, M5 |
+| With no world owner, a world with one admin lives on one machine, and being made an admin hands over the world for good, since any admin may keep a saved copy (file 18) | An easy backup under the admin's control (M5, saves); admins are added and removed by any admin, as the user ruled, so granting admin is shown as handing over a copy | M3, M5 |
 
 ## 9. Decisions
 
