@@ -90,7 +90,7 @@ Extensions:
 | `XR_KHR_win32_convert_performance_counter_time` (Windows), `XR_KHR_convert_timespec_time` (Linux) | Converting `XrTime` to the engine's host clock (section 6.1) | No VR: without it the time base cannot be shared [I: every PC runtime I know offers it] |
 | `XR_EXT_hand_tracking` | Tracked hands: 26 joints a hand | Controllers only |
 | `XR_EXT_hand_interaction` | A runtime-computed grip and pinch for tracked hands, through the action system | pe-xr computes grip from the joints (section 5.3) |
-| `XR_FB_display_refresh_rate` | Ask for 90 Hz where the headset offers it | Run at the runtime's rate, and report it |
+| `XR_FB_display_refresh_rate` | Request the configured rate where offered | Run at the runtime's rate, and report it |
 | `XR_EXT_local_floor` (core in OpenXR 1.1; the extension on a 1.0 runtime) | A floor-level space when STAGE is not offered | LOCAL, with the floor estimated from the head's height at start |
 | `XR_KHR_composition_layer_depth` | Submit depth, so the compositor reprojects better | Colour only |
 | `XR_MND_headless` | Sessions without graphics, for input tests against Monado in CI | Those tests skip |
@@ -387,8 +387,10 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
 
 ### 7.2 Rates
 
-- **Display rate:** pe-xr asks for 90 Hz with `XR_FB_display_refresh_rate` where offered, and otherwise takes the
-  runtime's rate. It reports the rate it got. Virtual Desktop's runtime ran the Quest 3 at 120 Hz (a constant 8.333 ms
+- **Display rate:** designed for 120 Hz, the rate observed, with 90 Hz (the D4 target) as a supported setting
+  (@coordinator-opus, m809f182b5033, until the user answers X9). By default pe-xr takes the runtime's rate. When the
+  setting asks for another rate, pe-xr requests it with `XR_FB_display_refresh_rate` where offered. It reports the
+  rate it got. Virtual Desktop's runtime ran the Quest 3 at 120 Hz (a constant 8.333 ms
   period) [V: M0 headset run]; whether it offers the extension is not yet known. If it does not, the rate is the
   user's Virtual Desktop setting (section 11, X9).
 - **Simulation rate:** a world setting (D4), 60 or 90 Hz. pe-xr does not depend on it.
@@ -408,10 +410,11 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
   checks the rule WS-render chose: each display frame's drawn time follows from its display time and the newest
   frame view by that rule.
 
-### 7.3 The budget at 90 Hz
+### 7.3 The budget at 120 Hz, and at 90 Hz
 
-A frame is 11.1 ms at 90 Hz. At 120 Hz, the rate Virtual Desktop's runtime ran the Quest 3 at, it is 8.3 ms, and
-the GPU budget below shrinks to about 6 ms. My budget [I], to be measured:
+A frame is 8.3 ms at 120 Hz, the rate Virtual Desktop's runtime ran the Quest 3 at and the one pe-xr is designed for,
+and 11.1 ms at 90 Hz. The table is for 90 Hz; at 120 Hz the GPU budget shrinks to about 6 ms and the rest scale with
+it. My budget [I], to be measured:
 
 | Part | Budget | Note |
 |---|---|---|
@@ -581,7 +584,7 @@ The user may be in VR on this PC. So:
 ### 10.4 On the headset, by hand (with the coordinator's go; recorded)
 
 From plan M1:
-- the frame time at 90 Hz with 500 balls and one remote hand at 60 ms one-way delay;
+- the frame time at 120 Hz and at 90 Hz with 500 balls and one remote hand at 60 ms one-way delay;
 - dropped frames, and judder under rollback;
 - the hand feel: D18b's two modes, and section 5.6's two ways to draw the own hand;
 - the hold transitions: a throw leaving the hand, and the snap at a grasp (section 5.6);
