@@ -455,7 +455,9 @@ view (S5) by pe-render's offscreen capture [R: plan WS-render, "offscreen captur
   use the exact `pos` or an offset from a nearby object. The schema says so; the API never calls it exact.
 - A result gives positions in the frame the query asked for (`"frame": "parent"` by default) [P].
 - **Rotations:** `rotation_deg: [x, y, z]`, Euler angles in degrees in a stated order, both accepted and returned.
-  A quaternion `rotation_quat: [x, y, z, w]` is accepted, and returned when asked [P; the order is A].
+  A quaternion `rotation_quat: [x, y, z, w]` is accepted, and returned when asked [P]. The Euler order is Z, then
+  X, then Y, in the world's y-up frame, with Unity's maths: +90° about y takes +z to +x. The API applies no mirror;
+  converting a right-handed, -z-forward source is an importer's job (M5) [V api.md O6b, @api-eng m4df2a20ee968].
 - **Colours:** `"#rrggbb"` sRGB, or `{"srgb": [r, g, b, a]}` as 0-1 floats [P].
 - **Scale:** a multiplier, `[1, 1, 1]`. The user's unbounded player scale (2026-10-30, R16 addendum) means "1 m"
   is the world's metre, not the player's. `session_info` gives the player's own scale [P].
