@@ -9,11 +9,19 @@
 //! - [`loader`]: finding and loading the OpenXR runtime in Rust, with no Khronos loader (spec 2);
 //! - [`hands`]: from raw hand readings to hand samples: grip, grasp with hysteresis, tracking loss (spec 5);
 //! - [`ring`]: the ring of hand samples the simulation thread reads, without locks (spec 6.2);
+//! - [`backend`], [`session`]: the session lifecycle and the frame loop over a small backend trait (spec 3.1,
+//!   7.1), tested against [`fake`], a fake runtime that checks OpenXR's call order;
 //! - [`seam`]: stand-ins for pe-seams v0's S5 types (spec 8.1), until pe-seams lands.
 
+pub mod backend;
+pub mod fake;
 pub mod guard;
 pub mod hands;
 pub mod loader;
 pub mod math;
 pub mod ring;
 pub mod seam;
+pub mod session;
+
+#[cfg(test)]
+mod session_tests;
