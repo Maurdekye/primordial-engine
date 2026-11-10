@@ -1,6 +1,6 @@
 # Divergence and recovery (WS-diverge)
 
-Status: draft v1.1, 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
+Status: draft v1.2, 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
 and the coordinator's rulings of 20:40Z. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
 Nothing in it is built. It specifies `crates/pe-diverge` and the requirements pe-diverge places on other
 workstreams. Only WS-diverge edits this file and `crates/pe-diverge`.
@@ -406,10 +406,20 @@ by the engine's ordinary rules, applied once to both lines' actions [file 14, 4.
 **Voided entries are merged in, but are never back-dated past finality.** An entry of `theirs` that main voided
 as late is in the set: that is what "their changes are merged in" means, and what the property "voiding and
 merging fit together" checks (plan 4.4). But in a conflict group, a `theirs` entry that is not on main **never
-beats a final entry of `ours` on an exclusive hold or a precondition**, whatever its stamp. It is replayed at its
-stamp where it conflicts with nothing final; otherwise it is refused, with the reason "lost to a final entry".
-Plain writes keep the ordinary order. [C 20:40Z, m68977e8f9830: option (a), ruled. It carries the user's
-confirmed rule that the late or stale side loses conflicts into merges.]
+changes the outcome of a final entry of `ours`**, whatever its stamp:
+- it is replayed at its stamp only if, there, it changes the outcome of no final `ours` entry;
+- otherwise it is **rebased**: applied at the application frame `A`, where the ordinary rules judge it afresh. A
+  grab on an object a final entry holds is refused there; a stale precondition is refused there; a delete
+  applies there and destroys what main built since, as the user's rule has it for a delete that came second
+  [R m35138bafc46a].
+- "Outcome" covers every kind of entry: an exclusive hold, a precondition, and structure. A back-stamped delete
+  that would refuse main's final writes to the object (`Deleted`), or orphan main's final add-ons under it, is
+  rebased like a back-stamped grab [design-reviewer, re-review of 9519c9f].
+- Plain writes are already safe under the ordinary order: a back-stamped write loses to main's later one.
+
+[C 20:40Z, m68977e8f9830: option (a), ruled. It carries the user's confirmed rule that the late or stale side
+loses conflicts into merges. The widening to every outcome, and rebasing to `A` rather than refusing, are mine
+[I], within that ruling: rebasing keeps the returner's work wherever the ordinary rules allow it at `A`.]
 - **Why** [design-reviewer, High]: ordered by stamp alone, a member could stamp grabs and writes in the past,
   stay silent past `T_merge`, then return and win at the merge against honest players' final actions. Today's
   bound on back-dating is about 4-10 frames: the published horizon plus the cut's void [V design 8.2, cited by
@@ -449,8 +459,9 @@ split.
   hit by something `ours` moved. The rule above takes `theirs` unchanged and lets the next step resolve any overlap;
   the alternative pulls it into the group.
 - That no final frame is undone, with the merge applied at `A`.
-- The back-dating rule above, with its control: a model in which a back-stamped silent returner would win, which
-  the checker must catch [C 20:40Z].
+- The back-dating rule above, with its controls: a model in which a back-stamped silent returner's grab would
+  win, and one in which its back-stamped delete of an object main later edited would refuse main's final edits.
+  The checker must catch both [C 20:40Z; design-reviewer].
 - The overlap rule, with its case: an object only `theirs` moved, overlapping one that `ours` moved.
 - **Physics and group-level merging** [@vdw-physics]. Under 4.2a, physics restores and steps a whole domain, so the
   exact reference is a replay of the whole domain from `base`. Until history-free physics exists (file 02 A2;
@@ -601,7 +612,8 @@ network model with random schedules.
 
 **M2-M3:** the merge properties of 9.5, first in the model, then on pe-diverge's `merge` with the model's traces
 replayed through it (plan 4.1, rule 2); a merge scenario for each order of a delete and an add-on, at depth 1 and
-at depth 2 [R m35138bafc46a]; a silent returner with back-stamped grabs; the overlap case; a sticky root-split
+at depth 2 [R m35138bafc46a]; a silent returner with back-stamped grabs, and with a back-stamped delete of an
+object main later edited; the overlap case; a sticky root-split
 reference under a persistent fault at `n = 2`. pe-harness wires the mutations `MergeByArrival`, `MergeDropsSide`
 and `VoidSplitEntries` to its property P9 (`crates/pe-harness/DESIGN.md` 6.1, branch `harness/design`); pe-diverge
 puts them behind its `mutants` feature.
