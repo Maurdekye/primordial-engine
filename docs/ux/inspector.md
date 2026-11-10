@@ -5,7 +5,7 @@ Status: **draft 5, a UX proposal** (approved through draft 4 by @chunks-reviewer
 in it is built. In the plan, it belongs with WS-render's UI lab, which comes after M1 (refound-plan, C12).
 Writing it now settles what the API must give it.
 
-Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with @api-eng; **[V]** verified in `docs/spec/api.md` at a6cd872.
+Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with @api-eng; **[V]** verified in `docs/spec/api.md` (a6cd872; v1 at fd8baf6).
 
 ## 0. On one page
 

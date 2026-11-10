@@ -1,7 +1,8 @@
 # The API's surface: how WorldApi and the MCP tools read to an agent and to a player
 
-Status: **draft 4, a UX proposal for WS-api** (draft 3, approved by @chunks-reviewer, plus @world-model's answer on U4 and density for mass), reconciled with @api-eng's `docs/spec/api.md` at a6cd872 (branch
-`ws/api`; its section 13 lists what it adopted from draft 1 and what it settled differently). Written by @gnosarium-ux for @api-eng, who owns `pe-api`, `pe-mcp`
+Status: **draft 6, a UX proposal for WS-api**, reconciled with @api-eng's `docs/spec/api.md` v1 at fd8baf6 (branch
+`ws/api`, section 13). The approved drafts landed on main (0f49b5b). Draft 6 adds the exact position syntax, the user's
+no-world-owner ruling and a corrected stale-edit example. Written by @gnosarium-ux for @api-eng, who owns `pe-api`, `pe-mcp`
 and `docs/spec/api.md`. Where this document and `api.md` disagree on a type or a rule, `api.md` wins. This document
 covers names, wording, shapes as the agent sees them, defaults, and what players see. Nothing in it is built.
 
@@ -13,7 +14,8 @@ Marks:
 - **[R]** a user ruling, cited;
 - **[P]** my proposal;
 - **[A]** to agree with @api-eng (a shape or default that depends on how pe-api is built);
-- **[V]** verified in a named source, chiefly `docs/spec/api.md` at a6cd872, which wins on types and rules.
+- **[V]** verified in a named source, chiefly `docs/spec/api.md` (a6cd872, and v1 at fd8baf6), which wins on types
+  and rules.
 
 ## 0. On one page
 
@@ -109,8 +111,15 @@ Result:
 - `may` lists permissions in the role system's own words, so an agent can tell in advance what will be refused
   [A, with WS-gov from M3]. M1 checks one permission, `EDIT` [V world-model.md 5.4]. Roles follow the user's
   rulings with no M1 simplification [R: @coordinator-opus m78746a465fd2]: a private world gives the admin role to
-  its creator only; friends join as Guest, a role that has `EDIT`; the owner's confidants join as admins. In the
-  example Alice created the world and Bob is a friend.
+  its creator only; friends join as Guest, a role that has `EDIT`; the confidants of the world's admins join as
+  admins. In the example Alice created the world and Bob is a friend.
+- **There is no world owner** [R: the user, 19:50Z, `_teams/1847/fable-review/18-no-world-owner.md`]: every admin
+  is a co-owner and keeps their own version of the world. So no result has an owner field; `session_info` gives
+  members and roles only [V api.md 10.5], and nothing in the agent's words or a player's says "the world's owner".
+- **Whether this session is being kept** [P]: `session_info` adds `"kept": true` while an admin is present, since
+  only admins keep the world (file 18, 1.5 and 2.2). With no admin, `"kept": false`, and every player sees a
+  permanent mark: "Nothing here is being kept: no admin of this world is present." One of the user's open
+  questions on file 18 is whether such a session keeps nothing, so this stays a parameter until answered.
 - There is no separate revert right (3.7): reverting needs the permissions the reverted change's ops need, so
   `may` doesn't list one.
 
@@ -303,7 +312,7 @@ Shown here flattened for reading:
 ```
 
 The codes are an enum in pe-seams [V api.md 5.3.3]. The messages and `next` are mine, adopted by api.md as
-written; the five rows marked * are codes api.md added, worded here for the first time [P].
+written; the five rows marked * are codes api.md added; their wording here was adopted in api.md v1 (fd8baf6).
 
 | `code` | Plain message, as a template | `next` |
 |---|---|---|
@@ -433,7 +442,8 @@ view (S5) by pe-render's offscreen capture [R: plan WS-render, "offscreen captur
   - **By default a root's position is returned as its exact `Pos`**, labelled `"pos"`: each axis's chunk index as
     an unbounded decimal integer (a string, so no JSON reader rounds it) and the offset within the chunk, for
     example `{"pos": {"chunk": ["0", "0", "-3"], "offset": [512.25, 1.5, 3.0]}}`. It is lossless anywhere and
-    needs no change when the bound on the world grows (M4). The exact syntax is @api-eng's [A].
+    needs no change when the bound on the world grows (M4). The syntax is fixed as shown, with offsets in
+    `[0, 1024)` [V api.md v1, fd8baf6].
   - Asked for explicitly, a root's position also comes as an offset from an object (`"relative_to": <id>`), from
     `"me"`, or from `"world_origin"`.
   - **Setting a root's position** takes an exact `Pos`, an offset from a named object, or, named on purpose, an
@@ -485,6 +495,8 @@ using an inspector".
   - by choice, by the creator or importer, through the inspector or `world_apply` (`add`).
   - **Wearing never protects or claims anything.** Wearing someone else's unprotected avatar leaves it
     unprotected, so the person who shared it can still copy it [R: same ruling].
+- **This "owner" is the protection's, not the world's.** It names the member who created or imported the object
+  [V world-model.md 5.4 and 7.8]; worlds have no owner (3.1).
 - **The owner's own agent acts as the owner.** An agent connected as Alice may duplicate Alice's protected
   objects.
 - **Honest limit, stated in the inspector** [P]: like Resonite's, the protection stops the engine's own paths, not
@@ -550,8 +562,12 @@ The plan's step 5: "put a red cube on the table", "make the balls blue", "double
    one change (`as: "$copy"`).
 6. `world_query {"where": {"name_like": "lamp"}}` returns two lamps; the agent picks the left one by its position
    relative to `"me"`, and `world_apply` `delete`s it.
-7. The stale-edit test (plan M1 acceptance): Bob moves the left lamp by hand between steps 6's query and apply. The
-   apply is refused with `stale_version`, winner "Bob (by hand)", and the agent reads again.
+7. The stale-edit test (plan M1 acceptance): between step 6's query and its apply, Bob changes the left lamp in
+   the inspector (an edit, so the lamp's version moves). The apply is refused with `stale_version`, winner
+   "Bob (by hand)", and the agent reads again.
+   - If Bob instead **grabs** the lamp, that is an input, not an edit, and the version doesn't move. While he holds
+     it the agent's delete is refused as `held` ("Bob is holding Lamp (left)."); once he lets go it applies
+     [V @api-eng m4b1b16251858].
 
 ## 8. Later surfaces this API must leave room for
 
@@ -587,5 +603,6 @@ Draft 3's review fixes (@chunks-reviewer, m7ef541e944cb, approved at 70fb723): U
 protect (5, ruled by @coordinator-opus), and L1-L5. Draft 4: U4, a root object's position (4), answered by
 @world-model, with only the exact `Pos` syntax left to @api-eng; mass from density (3.4).
 
-Still open, none of it blocking: the wording of the five new refusal messages (3.5, marked *) and of
-`code_check`'s description (3.7a) is new in this draft, for @api-eng to adopt or edit.
+Draft 6: the position syntax fixed (4, [V api.md v1]); the no-world-owner ruling (3.1, 5), with `kept` as a
+proposal; step 7 corrected to an inspector edit, with the grab case as `held` (7). @api-eng adopted the five new
+refusal messages and `code_check`'s description as written (api.md v1, section 13).
