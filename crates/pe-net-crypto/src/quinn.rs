@@ -419,3 +419,26 @@ impl crypto::AeadKey for TokenAead {
         Ok(body)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    // RFC 9001 A.4: the Retry packet for the A.2 client's DCID; its last 16 bytes are the tag.
+    #[test]
+    fn rfc9001_a4_retry_tag() {
+        let data = include_str!("../tests/data/rfc9001-appendix-a.txt");
+        let retry = hex(data.lines().find(|l| l.starts_with("a4_retry ")).unwrap().split_once(' ').unwrap().1);
+        let odcid = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
+        let (packet, tag) = retry.split_at(retry.len() - 16);
+        let mut pseudo = vec![odcid.len() as u8];
+        pseudo.extend_from_slice(&odcid);
+        pseudo.extend_from_slice(packet);
+        assert_eq!(retry_tag_for(Version::V1, &pseudo).unwrap().to_vec(), tag);
+        assert!(retry_tag_for(Version::V2, &pseudo).is_none());
+    }
+}
