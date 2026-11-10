@@ -98,9 +98,14 @@ pub struct GpuContext { pub instance: wgpu::Instance, pub adapter: wgpu::Adapter
   pe-render creates it.
 - **Vulkan everywhere first** [R coordinator, on review M1]. The desktop context is Vulkan on Windows and Linux,
   with `Features::MULTIVIEW` when offered.
-  - Entering VR on the Vulkan path **re-creates the context**, because the runtime must create the VkInstance and
-    VkDevice (xr.md 4.1). It happens before the session exists, and again on leaving VR. The display layer's CPU state
-    survives both, so nothing jumps.
+  - **When VR is configured at start,** pe-xr creates the context through the runtime from the start
+    (`xrCreateVulkanInstanceKHR` and `xrCreateVulkanDeviceKHR`), and the window draws on it. Entering and leaving VR
+    then re-create nothing: those Vulkan objects are the application's to destroy, so they outlive the session
+    (xr.md 4.1, draft 6 ab625b58) [I until checked in code].
+  - **The context is re-created only** when VR is entered from a context pe-render made itself (the runtime must create
+    the VkInstance and VkDevice), or when the runtime names a different device after instance loss. pe-render handles
+    a new context at any time (section 4, losing the context). The display layer's CPU state survives, so nothing
+    jumps.
   - **The D3D12 fallback,** if the runtime's Vulkan path fails: a DX12 context on the runtime's LUID, which leaving VR
     can keep, drawing two passes (FXC, section 2).
   - M0 measured both on the user's headset: Vulkan 944 of 944 frames, D3D12 941 of 941, at 120 Hz [V].
