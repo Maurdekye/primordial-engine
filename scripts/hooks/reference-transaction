@@ -1,0 +1,46 @@
+#!/bin/sh
+# The landing gate as a git hook: refuses any update of main whose new commit fails scripts/gate.sh.
+#
+# Enable it once per clone; the main checkout's copy then serves every worktree of the repository:
+#   git config core.hooksPath "<absolute path of the main checkout>/scripts/hooks"
+# Git runs reference-transaction for every ref update in every worktree. This hook acts only when
+# refs/heads/main moves to a commit, in the "prepared" state, where a non-zero exit aborts the update:
+# a merge, commit, reset, update-ref, or a fetch or push into this repository alike. It runs scripts/gate.sh
+# as committed in the new commit, with the old tip as the base, and refuses the update if the gate fails or
+# can't run. Every other update returns at once.
+#   PE_GATE=off                      skips the gate for one command: say so in the landing report
+#   git config pe.gate.wrap '<cmd>'  runs the audit's cargo calls under <cmd> (the org's build-slot wrapper)
+# Check a branch before merging it, so a refusal is rare: bash scripts/gate.sh --base main <branch>
+
+if [ "$1" != prepared ]; then
+  while read -r _ _ _; do :; done
+  exit 0
+fi
+hit=
+while read -r old new ref; do
+  if [ "$ref" = refs/heads/main ]; then hit="$old $new"; fi
+done
+[ -n "$hit" ] || exit 0
+set -- $hit
+old=$1 new=$2
+case "$new" in *[!0]*) ;; *) exit 0 ;; esac   # main deleted: nothing to check
+if [ "${PE_GATE:-on}" = off ]; then
+  echo "gate (hook): PE_GATE=off, main moves to $new UNCHECKED; say so in the landing report" >&2
+  exit 0
+fi
+
+refuse() {
+  echo "gate (hook): REFUSED: main stays at $old. $*" >&2
+  echo "gate (hook): if this was a merge in the main checkout, put it back with: git merge --abort" >&2
+  echo "gate (hook):   (after a fast-forward or a reset: git reset --merge HEAD)" >&2
+  exit 1
+}
+tmp=$(mktemp -d) || refuse "no temporary folder"
+trap 'rm -rf "$tmp"' EXIT
+git show "$new:scripts/gate.sh" > "$tmp/gate.sh" 2> /dev/null ||
+  refuse "$new has no scripts/gate.sh; the gate is required (to drop it, unset core.hooksPath)"
+wrap=$(git config --get pe.gate.wrap) || wrap=
+case "$old" in *[!0]*) base="--base $old" ;; *) base=--full-history ;; esac
+echo "gate (hook): main ${old%"${old#??????????}"}..${new%"${new#??????????}"}: running the landing gate" >&2
+PE_GATE_WRAP=$wrap bash "$tmp/gate.sh" $base "$new" >&2 || refuse "the gate did not pass (above)"
+exit 0

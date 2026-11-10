@@ -21,3 +21,6 @@ scripts/publish_terms.local
 scripts/publish_history_terms.local
 scripts/publish_replacements.local
 scripts/publish_allow.local
+
+# Gate tools (scripts/install_gitleaks.sh puts the pinned scanner here)
+/.tools/
