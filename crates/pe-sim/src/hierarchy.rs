@@ -41,11 +41,11 @@ impl Component for Node {
     const NAME: &'static str = "Node";
     fn fields() -> Vec<FieldDesc> {
         vec![
-            FieldDesc::new("parent", FieldKind::ObjectId, offset_of!(Node, parent), 1),
-            FieldDesc::new("first_child", FieldKind::ObjectId, offset_of!(Node, first_child), 1),
-            FieldDesc::new("last_child", FieldKind::ObjectId, offset_of!(Node, last_child), 1),
-            FieldDesc::new("prev_sibling", FieldKind::ObjectId, offset_of!(Node, prev_sibling), 1),
-            FieldDesc::new("next_sibling", FieldKind::ObjectId, offset_of!(Node, next_sibling), 1),
+            FieldDesc::new("parent", FieldKind::ObjectRef, offset_of!(Node, parent), 1),
+            FieldDesc::new("first_child", FieldKind::ObjectRef, offset_of!(Node, first_child), 1),
+            FieldDesc::new("last_child", FieldKind::ObjectRef, offset_of!(Node, last_child), 1),
+            FieldDesc::new("prev_sibling", FieldKind::ObjectRef, offset_of!(Node, prev_sibling), 1),
+            FieldDesc::new("next_sibling", FieldKind::ObjectRef, offset_of!(Node, next_sibling), 1),
         ]
     }
 }

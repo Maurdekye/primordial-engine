@@ -32,4 +32,4 @@ pub mod rng;
 pub use error::Error;
 pub use commit::Hash;
 pub use coords::{Offset, OutOfRange, Pos};
-pub use ids::{ChainId, EntryRef, Frame, LineId, MemberKey, ObjectId, ObjectRef};
+pub use ids::{ChainId, EntryRef, Frame, LineId, MemberKey, ObjectId};

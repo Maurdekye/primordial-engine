@@ -13,7 +13,7 @@
 //! * [`schedule`]: the fixed-step tick: an ordered list of stateless system functions.
 //!
 //! Snapshot, restore, serialization and the state hash are in [`snapshot`]. The hash covers the frame,
-//! the object table, the creator counters and every non-empty column with its schema hash.
+//! the object table and every non-empty column with its schema hash.
 
 mod column;
 pub mod hierarchy;
