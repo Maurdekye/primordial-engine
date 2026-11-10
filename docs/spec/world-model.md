@@ -160,7 +160,10 @@ preset worlds that sprout from it with some preset content". The design, agreed 
   A merged line's head names both parents (WS-diverge's merge record).
 - **Entries on a line** are signed over that line's id (S1), and object, chain, spawn and hand ids derive from it
   (2.1). A merged line accepts the entries of every line in its ancestry, so both parents' signatures and ids stay
-  valid after a merge.
+  valid after a merge, but **only up to each parent's merge point** (@diverge-eng, after @design-reviewer's review of
+  divergence.md): the merge record names, for every chain of each parent line, its last included (chain id, seq).
+  An entry a parent line's chain makes after that point belongs to that line alone, so an admin who keeps playing on
+  a parent after the merge does not leak entries into the merged line; bringing them in needs a new merge.
 - **A chain belongs to one line.** A member that continues on a branch (a saved copy reopened alone, a rejoin that
   keeps a fork) starts a new chain there, with a new nonce, so (chain id, seq) never repeats across lines.
 - **Presets** are ordinary lines one branch from the origin, shipped with the engine as records. A preset can be
