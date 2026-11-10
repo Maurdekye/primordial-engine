@@ -1,11 +1,14 @@
-# pe-xr: the OpenXR session, stereo, tracked hands and 90 Hz pacing
+# pe-xr: the OpenXR session, stereo, tracked hands and frame pacing
 
 Status: draft 5, 2026-11-10, by @xr-eng (WS-xr). Draft 2 answered @shader-reviewer's review of draft 1 (M1-M5,
 L1-L4); draft 3 folds in @ballpit-viz's M0 report (cf7a3bb, branch `m0/feasibility-xr`); draft 4 answers the re-review of
 draft 3 (image states at release; API version; multiview on the desktop context); draft 5 folds in @ballpit-viz's
-headset run (Quest 3 through Virtual Desktop, b35c448). Nothing in it is built. It specifies M1's VR work in
+headset run (Quest 3 through Virtual Desktop, b35c448); draft 6 applies the user's rulings on rates (pace to
+whatever the runtime gives; a simulation rate fixed apart from the display, 60 by default and configurable per world;
+limits in seconds) and the coordinator's ruling of Vulkan first for VR on Windows. Nothing in it is built. It specifies M1's VR work in
 `docs/refound-plan.md` (branch `docs/refound-plan`, b610464), section 3.1: "the OpenXR session, stereo through
-pe-render, tracked hands into hand entries, 90 Hz pacing". Seam S5 is proposed in section 8. @engine-architect (WS-seams)
+pe-render, tracked hands into hand entries, 90 Hz pacing"; the user has since ruled that pacing follows the
+runtime's rate (section 7.2). Seam S5 is proposed in section 8. @engine-architect (WS-seams)
 takes its pe-seams part as proposed, for S5 v0; the pe-xr and pe-render interface (8.2) is to agree with @ballpit-viz
 (WS-render).
 
@@ -25,8 +28,10 @@ It holds no world state, decides nothing about physics, agreement or entries, an
 simulation runs at its own fixed rate whether a headset is on, off, lost or absent (R2).
 
 Rules it follows:
-- **The user's requirements:** full VR (R10); a fixed timestep independent of the frame rate (R2); the 90 Hz target
-  (D4); 100% Rust, with the OpenXR runtime loaded at run time as an operating-system boundary, by a loader of
+- **The user's requirements:** full VR (R10); a fixed timestep independent of the frame rate (R2), restated on
+  2026-11-10: "the simulation rate should be fixed outside of the rendered framerate" (m8ac62c1872ac), "60 default,
+  fully configurable in a range per world" (md4b42d16d9df), and for the display "work with whatever the runtime gives
+  actually" (m0e225386a052), which replaces D4's 90 Hz target for VR; 100% Rust, with the OpenXR runtime loaded at run time as an operating-system boundary, by a loader of
   our own in Rust (md35ba688f6b4; section 2); Windows and Linux PC VR (D18a, D20); standalone headsets excluded from the prototype
   (mb09ab8952a38).
 - **The governing principle** (mfc7e0ddc4137): the local user is never held up. For pe-xr this means: head motion
@@ -68,8 +73,8 @@ macOS (flat screen only, later); a VR user interface (the UI lab follows M1, WS-
 
   The cost: no API layers. Virtual Desktop registers one implicit layer (an Oculus compatibility layer), which we do
   without [M0]. The runtime is then the only boundary, and it goes in the register of boundaries (plan C6).
-- **Graphics path in M1,** following the M0 check (section 4.4): D3D12 through `XR_KHR_D3D12_enable` on Windows, and
-  Vulkan through `XR_KHR_vulkan_enable2` on Linux and as Windows' alternative.
+- **Graphics path in M1:** Vulkan through `XR_KHR_vulkan_enable2` on Windows and Linux; D3D12 through
+  `XR_KHR_D3D12_enable` as Windows' fallback (@coordinator-opus's ruling on render.md, mccc7e65b662f; section 4.4).
 - **The runtime: Virtual Desktop's.** The user chose it for the headset tests (X5, m2aaafe98cbbe). It is the active
   runtime here, and the only usable one [V: `HKLM\SOFTWARE\Khronos\OpenXR\1` and the file system, read only, no
   session started]. `AvailableRuntimes` also lists Meta's `oculus_openxr_64.json`, but neither that file nor its
@@ -85,12 +90,12 @@ Extensions:
 
 | Extension | Use | If absent |
 |---|---|---|
-| `XR_KHR_D3D12_enable` (Windows) | The session draws into D3D12 swapchains from wgpu's D3D12 device, on the adapter the runtime names | The Vulkan path, or desktop mode |
-| `XR_KHR_vulkan_enable2` | The runtime creates the VkInstance and VkDevice that wgpu then wraps | On Linux, no VR; on Windows, the D3D12 path |
+| `XR_KHR_vulkan_enable2` | The runtime creates the VkInstance and VkDevice that wgpu then wraps | On Linux, no VR; on Windows, the D3D12 fallback |
+| `XR_KHR_D3D12_enable` (Windows) | The fallback: the session draws into D3D12 swapchains from wgpu's D3D12 device, on the adapter the runtime names | Desktop mode |
 | `XR_KHR_win32_convert_performance_counter_time` (Windows), `XR_KHR_convert_timespec_time` (Linux) | Converting `XrTime` to the engine's host clock (section 6.1) | No VR: without it the time base cannot be shared [I: every PC runtime I know offers it] |
 | `XR_EXT_hand_tracking` | Tracked hands: 26 joints a hand | Controllers only |
 | `XR_EXT_hand_interaction` | A runtime-computed grip and pinch for tracked hands, through the action system | pe-xr computes grip from the joints (section 5.3) |
-| `XR_FB_display_refresh_rate` | Request the configured rate where offered | Run at the runtime's rate, and report it |
+| `XR_FB_display_refresh_rate` | Read the current rate, and report changes. pe-xr requests no rate (section 7.2) | The rate is read from the predicted display period |
 | `XR_EXT_local_floor` (core in OpenXR 1.1; the extension on a 1.0 runtime) | A floor-level space when STAGE is not offered | LOCAL, with the floor estimated from the head's height at start |
 | `XR_KHR_composition_layer_depth` | Submit depth, so the compositor reprojects better | Colour only |
 | `XR_MND_headless` | Sessions without graphics, for input tests against Monado in CI | Those tests skip |
@@ -161,26 +166,26 @@ itself, with the extensions the runtime and wgpu each need. So:
 - **pe-render accepts a context from outside** in either case.
 - **The context outlives the session.** It is re-created only after `xrDestroySession` (section 3.1), never while a
   session holds its device and queue. The order of teardown is swapchains, then session, then context.
-- **On D3D12, leaving VR re-creates nothing:** wgpu creates the device itself, so the desktop keeps the same context,
-  unless it wants a different adapter. On Vulkan the runtime created the device, so leaving VR re-creates it.
-- **One backend per process.** A wgpu window alone picks Vulkan on this PC [V: M0 report], but the D3D12 path needs
-  DX12 on the runtime's adapter. So on Windows pe-render's desktop context uses DX12 too, and entering VR keeps it
-  when its adapter's LUID is the runtime's. Otherwise entering VR re-creates the context, before the session exists.
-  Because VR keeps that context, the desktop context is created with `Features::MULTIVIEW` whenever the adapter
-  offers it.
+- **One backend per process, and on Windows it is Vulkan** (the window alone picks Vulkan here anyway [V: M0
+  report]). On the Vulkan path the runtime creates the VkInstance and VkDevice, so a context pe-render made by itself
+  cannot be reused for VR:
+  - **when VR is configured at start,** pe-xr creates the context through the runtime from the start, and the desktop
+    window draws on it. Entering and leaving VR then re-create nothing;
+  - **when VR is entered from a context pe-render made,** the context is re-created through the runtime before the
+    session exists;
+  - **leaving VR keeps the context.** The instance and device that `xrCreateVulkanInstanceKHR` and
+    `xrCreateVulkanDeviceKHR` return are the application's to destroy [I: my reading of `XR_KHR_vulkan_enable2`; the
+    code checks it], so they outlive the session and are destroyed only with the context;
+  - after instance loss, the next session needs `xrGetVulkanGraphicsDevice2KHR`'s device again; if it differs, the
+    context is re-created.
+- **On the D3D12 fallback,** wgpu creates the device itself, so leaving VR re-creates nothing; entering VR keeps a DX12
+  context whose adapter's LUID is the runtime's, and re-creates it otherwise.
+- The context is created with `Features::MULTIVIEW` whenever the adapter offers it, because VR keeps it.
 
-**D3D12, on Windows** [M0: @ballpit-viz's first path]:
-1. Ask the runtime for its graphics requirements (`XR_KHR_D3D12_enable`): the adapter's LUID and the minimum
-   feature level.
-2. Create wgpu's D3D12 instance as usual, and pick the adapter whose LUID matches. wgpu's `AdapterInfo` carries no
-   LUID, so each adapter's is read through `as_hal::<Dx12>()`, `raw_adapter()` and `GetDesc1().AdapterLuid`.
-3. Create the device with the features pe-render asks for.
-4. Create the session with the D3D12 binding: the raw `ID3D12Device` and command queue, taken from wgpu through
-   `as_hal`.
-
-**Vulkan, on Linux and as Windows' alternative** [M0; the names are wgpu 30's, V: in the cargo cache]:
+**Vulkan, on Windows and Linux** [M0; the names are wgpu 30's, V: in the cargo cache]:
 0. Call `xrGetVulkanGraphicsRequirements2KHR` (`graphics_requirements::<Vulkan>`) first: the session fails with
-   `XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING` without it.
+   `XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING` without it. Virtual Desktop's runtime asks for Vulkan 1.1 to 2.0 [V:
+   M0 headset run].
 1. Ask wgpu-hal's Vulkan backend for the instance extensions it wants (`Instance::desired_extensions`), and create
    the VkInstance with `xrCreateVulkanInstanceKHR` (`openxr::Instance::create_vulkan_instance`).
 2. Wrap it with wgpu-hal's `Instance::from_raw`, and then `wgpu::Instance::from_hal`.
@@ -194,11 +199,23 @@ itself, with the extensions the runtime and wgpu each need. So:
 6. Create the session with the Vulkan binding: the instance, physical device, device, queue family and
    queue index that wgpu uses.
 
+**D3D12, Windows' fallback** [M0: @ballpit-viz's first path]:
+1. Ask the runtime for its graphics requirements (`XR_KHR_D3D12_enable`): the adapter's LUID and the minimum
+   feature level.
+2. Create wgpu's D3D12 instance as usual, and pick the adapter whose LUID matches. wgpu's `AdapterInfo` carries no
+   LUID, so each adapter's is read through `as_hal::<Dx12>()`, `raw_adapter()` and `GetDesc1().AdapterLuid`.
+3. Create the device with the features pe-render asks for.
+4. Create the session with the D3D12 binding: the raw `ID3D12Device` and command queue, taken from wgpu through
+   `as_hal`.
+5. Shaders compile with FXC, which has no view instancing, so the fallback draws one pass per eye (render.md's (a);
+   no DXC is shipped, since a native Microsoft binary is beyond the boundaries D1 allows).
+
 ### 4.2 Swapchains
 
 - **Colour:** one swapchain with two array layers, one per eye. With `Features::MULTIVIEW` [V: the feature exists
   in wgpu-types 30, on Vulkan and on D3D12 with view instancing], both layers are drawn in one pass; without it, one
-  pass per layer, as the M0 check does now.
+  pass per layer, as the M0 check does now. On Vulkan, multiview is the plan; on the D3D12 fallback, one pass per
+  layer (FXC). At 120 Hz the two passes must fit the same per-period budget (section 7.3).
 - **Format:** the first sRGB format the runtime offers that pe-render can target (RGBA8 or BGRA8 sRGB).
 - **Size:** the runtime's recommended size per eye, times a render scale pe-render may lower under load (section 7).
 - **Depth:** a second swapchain in a depth format, submitted with `XR_KHR_composition_layer_depth` when offered.
@@ -221,17 +238,23 @@ itself, with the extensions the runtime and wgpu each need. So:
 
 ### 4.3 Losing the device
 
-After `xrDestroySession` (session or instance loss, or leaving VR on the Vulkan path), the GPU context may go away.
+After `xrDestroySession` the GPU context may go away (section 4.1 says when it does).
 pe-render must then drop every GPU resource and rebuild from the frame view on the next context. Its meshes and materials are derived from world data, so
 nothing is lost but time [I].
 
 ### 4.4 Which path, on which runtime
 
-- Virtual Desktop's runtime, the active one here, draws through Direct3D underneath, so its Vulkan support is interop
-  [I]. That is why the M0 check tries D3D12 first on Windows, and Vulkan second.
+- **Vulkan first, D3D12 as the fallback** (@coordinator-opus, mccc7e65b662f, on render.md's review). Vulkan keeps
+  the build 100% Rust with only system boundaries (the driver), and gives multiview without a shipped shader
+  compiler. It ran on the user's headset [V: M0 headset run]. D3D12 on wgpu needs DXC for multiview, which would
+  mean shipping a native Microsoft binary; with FXC it draws two passes.
+- **One thing to watch:** in the M0 run's 8 s, Vulkan repeated 22 frames and D3D12 9 [V: b35c448]. Virtual Desktop's
+  runtime draws through Direct3D underneath, so its Vulkan path is interop [I]. Eight seconds is too short to say
+  more; the first M1 headset run measures repeated frames on both paths over a longer stretch, and a lasting gap goes
+  to the coordinator.
 - **pe-xr keeps both paths behind one interface:** creating the context, the session binding, and wrapping swapchain
   images are the only graphics-specific code, and pe-render sees only wgpu types either way.
-- **Linux needs Vulkan,** so the Vulkan path is built in M1 even if D3D12 serves Windows. Whether it can be tested
+- **Linux needs Vulkan** too, so one path serves both. Whether Linux can be tested
   before M1's end depends on a Linux machine with a headset, or on the Monado tier (section 10.2).
 - If neither path works on Virtual Desktop's runtime, there is no other runtime here. A fallback would mean installing
   Meta's PC software or SteamVR, which is the user's call; nothing is installed unless the user asks.
@@ -302,7 +325,8 @@ enable hand tracking first (section 11, X9).
 ### 5.5 When tracking is lost
 
 - **While not holding:** the sample goes `tracked = false`. The simulation side applies its world rule for an
-  entry-less hand (D52: coast for at most 6 frames, then hold) [V design.md 6.10].
+  entry-less hand (D52: coast for at most 6 frames, then hold) [V design.md 6.10]. Under the user's rule that every
+  limit is in seconds (m0dbd561302e0), WS-world restates it as a duration (6 frames at 60 Hz is 100 ms).
 - **While holding:** after a grace period of 250 ms without tracking, pe-xr sets `closed = false`, so the object is
   released deliberately rather than held by a frozen hand [I]. The grace period is a setting.
 - **When tracking returns,** `discontinuity` is bumped.
@@ -312,8 +336,8 @@ enable hand tracking first (section 11, X9).
 
 The display layer (file 14, 4.1) never blends a player's own hands or what they hold. In VR there is one more choice:
 where to draw them.
-- **The simulated hand** trails the display time by the display lead plus up to one simulation frame (17 ms at 60
-  Hz). The lead measured on Virtual Desktop's runtime is 38-63 ms (p50 to p95, D3D12; max 68 ms), about five display
+- **The simulated hand** trails the display time by the display lead plus up to one simulation frame (17 ms at the
+  default 60 Hz). The lead measured on Virtual Desktop's runtime is 38-63 ms (p50 to p95, D3D12; max 68 ms), about five display
   periods at 120 Hz [V: M0 headset run, b35c448]. So the simulated hand trails the display time by about 40-80 ms, and
   at 2 m/s that is 8 to 16 cm. Late-latching matters more than I first estimated.
 - **My proposal: draw the own hand at the tracked pose for the predicted display time** (late-latched), and draw a
@@ -363,7 +387,7 @@ where to draw them.
 - **The thread.** The ring is written by the XR thread and read by the simulation thread with no lock either side
   waits on: a fixed-size ring with a sequence counter [I].
 
-## 7. The frame loop and 90 Hz pacing
+## 7. The frame loop and pacing
 
 ### 7.1 One frame
 
@@ -387,13 +411,15 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
 
 ### 7.2 Rates
 
-- **Display rate:** designed for 120 Hz, the rate observed, with 90 Hz (the D4 target) as a supported setting
-  (@coordinator-opus, m809f182b5033, until the user answers X9). By default pe-xr takes the runtime's rate. When the
-  setting asks for another rate, pe-xr requests it with `XR_FB_display_refresh_rate` where offered. It reports the
-  rate it got. Virtual Desktop's runtime ran the Quest 3 at 120 Hz (a constant 8.333 ms
-  period) [V: M0 headset run]; whether it offers the extension is not yet known. If it does not, the rate is the
-  user's Virtual Desktop setting (section 11, X9).
-- **Simulation rate:** a world setting (D4), 60 or 90 Hz. pe-xr does not depend on it.
+- **Display rate: whatever the runtime gives.** The user's ruling, verbatim: "work with whatever the runtime gives
+  actually" (m0e225386a052). pe-xr has no target rate and requests none. It paces to the predicted display period
+  `xrWaitFrame` returns each frame, takes a change of period as it comes, and reports the rate it got. Every budget is
+  per period (section 7.3). Virtual Desktop's runtime ran the Quest 3 at 120 Hz, a constant 8.333 ms period [V: M0
+  headset run]; the rate is the user's to set in Virtual Desktop.
+- **Simulation rate:** fixed apart from the display. The user: "the simulation rate should be fixed outside of the
+  rendered framerate" (m8ac62c1872ac), and "60 default, fully configurable in a range per world" (md4b42d16d9df). The
+  range's bounds are being proposed by @engine-architect and @vdw-physics. pe-xr does not depend on the rate, and
+  nothing in pe-xr counts simulation frames: its limits are durations.
 - **The drawn time.** The newest frame view is for a simulation frame at or before now, and the predicted display
   time is well past now: 38-63 ms on Virtual Desktop's runtime (section 5.6), about five periods at 120 Hz. So the display time is almost always past the newest frame view,
   and interpolating between frame views cannot reach it. The time the world is drawn at is WS-render's choice, one
@@ -406,22 +432,21 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
     Both are larger than design.md 18.3 assumed [I]; the headset test judges them.
 - **Counted either way:** the gap between the drawn time and the display time, and the lead from the newest frame
   view's `sim_time` to the display time (section 9).
-- **So 72, 90 and 120 Hz displays** all work against 60 and 90 Hz simulations, as M1's rendering test asks. The test
+- **So any display rate** works against any simulation rate in the world's range, as M1's rendering test asks. The test
   checks the rule WS-render chose: each display frame's drawn time follows from its display time and the newest
   frame view by that rule.
 
-### 7.3 The budget at 120 Hz, and at 90 Hz
+### 7.3 The budget, per display period
 
-A frame is 8.3 ms at 120 Hz, the rate Virtual Desktop's runtime ran the Quest 3 at and the one pe-xr is designed for,
-and 11.1 ms at 90 Hz. The table is for 90 Hz; at 120 Hz the GPU budget shrinks to about 6 ms and the rest scale with
-it. My budget [I], to be measured:
+The budget is a share of whatever period the runtime reports (P). At 120 Hz, as observed, P is 8.3 ms; at 90 Hz,
+11.1 ms; at 72 Hz, 13.9 ms. My budget [I], to be measured:
 
-| Part | Budget | Note |
-|---|---|---|
-| XR thread CPU: steps 2-8, without drawing | 1 ms | Locating, acquiring, submitting |
-| pe-render CPU: recording the frame | 3 ms | 500 balls, two eyes, multiview |
-| GPU frame time | 8 ms | Leaves room for the runtime's compositor and, with Virtual Desktop, its video encoder |
-| Simulation thread | its own core | Never on the XR thread. Rollback replays already cost 2.5 ms a frame at 90 Hz with 500 balls and one remote hand (file 02) |
+| Part | Budget | At 120 Hz | Note |
+|---|---|---|---|
+| XR thread CPU: steps 0-8, without drawing | 0.1 P | 0.8 ms | Events, locating, acquiring, submitting |
+| pe-render CPU: recording the frame | 0.3 P | 2.5 ms | 500 balls, two eyes: one multiview pass on Vulkan, two passes on the D3D12 fallback |
+| GPU frame time | 0.7 P | 5.8 ms | Leaves room for the runtime's compositor and, with Virtual Desktop, its video encoder. The fallback's second pass comes out of the same share |
+| Simulation thread | its own core | — | Never on the XR thread, and never paced by it. Rollback replays already cost 2.5 ms a frame at 90 Hz with 500 balls and one remote hand (file 02) |
 
 - **When the GPU misses:** pe-render lowers its render scale step by step (down to 0.7) and raises it again after a
   stretch of frames within budget. The compositor's reprojection covers a single miss.
@@ -551,8 +576,9 @@ pe-xr's logic is written against a small backend trait, so almost all of it runs
 - **The frame loop:** events are drained every frame; actions are attached once and synced before they are read;
   wait, begin and end are called in order every frame; with `shouldRender` false no layer is
   submitted; nothing on the XR thread takes a lock that the simulation holds.
-- **Rates:** displays at 72, 90 and 120 Hz against simulations at 60 and 90 Hz, with display leads of one to six
-  periods (Virtual Desktop's measured lead is about five). Each display frame's drawn time follows WS-render's rule (section 7.2), and the simulation's frame count is
+- **Rates:** displays at 72, 90 and 120 Hz, and a period that changes mid-run, against simulations across the
+  world's range (60 by default), with display leads of one to six periods (Virtual Desktop's measured lead is about
+  five). Every pe-xr limit is checked as a duration at two simulation rates. Each display frame's drawn time follows WS-render's rule (section 7.2), and the simulation's frame count is
   unchanged by the display rate.
 - **Hands:** on scripted and later recorded joint traces, `closed` never chatters; a lost hand that holds is released
   after the grace period; a recentre bumps `discontinuity`; `hand_at` interpolates between samples, never
@@ -584,7 +610,9 @@ The user may be in VR on this PC. So:
 ### 10.4 On the headset, by hand (with the coordinator's go; recorded)
 
 From plan M1:
-- the frame time at 120 Hz and at 90 Hz with 500 balls and one remote hand at 60 ms one-way delay;
+- the frame time per period, at the rate Virtual Desktop gives, with 500 balls and one remote hand at 60 ms one-way
+  delay, on Vulkan and on the D3D12 fallback;
+- repeated frames on both paths over a longer stretch than M0's 8 s (section 4.4);
 - dropped frames, and judder under rollback;
 - the hand feel: D18b's two modes, and section 5.6's two ways to draw the own hand;
 - the hold transitions: a throw leaving the hand, and the snap at a grasp (section 5.6);
@@ -594,7 +622,9 @@ From plan M1:
 
 For @coordinator-opus unless marked; my proposal first. @coordinator-opus ruled X1, X2 and X3 as proposed on
 2026-11-10 (m92c4584b835e): the 250 ms of X3 is a parameter. X5 is with the user, through the liaison; until it is
-answered, pe-xr is coded against the fake runtime. The user answered X5 (m2aaafe98cbbe): Virtual Desktop.
+answered, pe-xr is coded against the fake runtime. The user answered X5 (m2aaafe98cbbe): Virtual Desktop. The user
+answered X9 (m981c546957f2, m0e225386a052): hand tracking will be enabled before the M1 headset tests, and the display
+rate is whatever the runtime gives. @coordinator-opus ruled X6 (mccc7e65b662f): Vulkan first.
 
 | # | Point | My proposal |
 |---|---|---|
@@ -603,10 +633,10 @@ answered, pe-xr is coded against the fake runtime. The user answered X5 (m2aaafe
 | X3 | A lost hand that holds something | Release after 250 ms (section 5.5) |
 | X4 | Who quantizes and formats hand entries | pe-world, from pe-xr's rig-frame samples (section 5.2) |
 | X5 (user) | Which runtime the headset tests use | Answered by the user: Virtual Desktop's. It is the only usable runtime here; any other would have to be installed, which is the user's call (section 4.4) |
-| X6 | The graphics paths | D3D12 on Windows and Vulkan on Linux, both behind one interface, following the M0 check (section 4.4) |
+| X6 | The graphics paths | Ruled: Vulkan on Windows and Linux; D3D12 with FXC and two passes as Windows' fallback; both behind one interface (section 4.4) |
 | X7 | API layers | None in M1: the Rust loader loads no layers (section 2). Revisit if a runtime needs its implicit layer |
 | X8 (WS-render) | The drawn time: extrapolate to the display time, or interpolate at a delay | (a), extrapolate (section 7.2) |
-| X9 (user) | Tracked hands and the display rate on Virtual Desktop | Ask the user, before the headset test, to enable hand tracking in Virtual Desktop (it is off now) and to pick its refresh rate (90 Hz for the D4 target), unless the runtime takes both from pe-xr (sections 5.4, 7.2) |
+| X9 (user) | Tracked hands and the display rate on Virtual Desktop | Answered: the user enables hand tracking before the M1 headset tests; the rate is whatever the runtime gives (sections 5.4, 7.2) |
 
 ## 12. Size and order
 
