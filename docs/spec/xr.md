@@ -1,8 +1,9 @@
 # pe-xr: the OpenXR session, stereo, tracked hands and 90 Hz pacing
 
-Status: draft 4, 2026-11-10, by @xr-eng (WS-xr). Draft 2 answered @shader-reviewer's review of draft 1 (M1-M5,
+Status: draft 5, 2026-11-10, by @xr-eng (WS-xr). Draft 2 answered @shader-reviewer's review of draft 1 (M1-M5,
 L1-L4); draft 3 folds in @ballpit-viz's M0 report (cf7a3bb, branch `m0/feasibility-xr`); draft 4 answers the re-review of
-draft 3 (image states at release; API version; multiview on the desktop context). Nothing in it is built. It specifies M1's VR work in
+draft 3 (image states at release; API version; multiview on the desktop context); draft 5 folds in @ballpit-viz's
+headset run (Quest 3 through Virtual Desktop, b35c448). Nothing in it is built. It specifies M1's VR work in
 `docs/refound-plan.md` (branch `docs/refound-plan`, b610464), section 3.1: "the OpenXR session, stereo through
 pe-render, tracked hands into hand entries, 90 Hz pacing". Seam S5 is proposed in section 8. @engine-architect (WS-seams)
 takes its pe-seams part as proposed, for S5 v0; the pe-xr and pe-render interface (8.2) is to agree with @ballpit-viz
@@ -187,7 +188,9 @@ itself, with the extensions the runtime and wgpu each need. So:
    (`expose_adapter`).
 4. Create the VkDevice with `xrCreateVulkanDeviceKHR` (`create_vulkan_device`), enabling the adapter's
    `required_device_extensions` for the features pe-render asks for, multiview among them.
-5. Wrap it with `device_from_raw`, then `wgpu::Adapter::create_device_from_hal`.
+5. Wrap it with `device_from_raw`, then `wgpu::Adapter::create_device_from_hal`. Ask for the limits pe-render
+   needs (`Limits::default()` or a stated set), never the adapter's full limits: wgpu-core asserts
+   `max_buffer_size <= u32::MAX`, which the full limits break [V: M0 headset run, b35c448].
 6. Create the session with the Vulkan binding: the instance, physical device, device, queue family and
    queue index that wgpu uses.
 
@@ -290,6 +293,12 @@ value and haptic output, with suggested bindings for `khr/simple_controller`, `o
 is used while it is tracked [I]. M1 needs controllers because tracking-only runtimes are not the only ones, and a
 controller gives a recording of the same demo with less noise.
 
+**On the user's setup, controllers are the only hands for now** [V: M0 headset run, b35c448]. Virtual Desktop's
+runtime offers `XR_EXT_hand_tracking`, but reported the Quest 3 system as not supporting it, because hand tracking
+was off in Virtual Desktop (the user, through @coordinator-opus, m26c107e13707: "It's off"). The user also saw the
+test's pile of bodies and controller spheres in the headset. Tracked hands at the headset test need the user to
+enable hand tracking first (section 11, X9).
+
 ### 5.5 When tracking is lost
 
 - **While not holding:** the sample goes `tracked = false`. The simulation side applies its world rule for an
@@ -303,10 +312,10 @@ controller gives a recording of the same demo with less noise.
 
 The display layer (file 14, 4.1) never blends a player's own hands or what they hold. In VR there is one more choice:
 where to draw them.
-- **The simulated hand** trails the display time by the display lead (the predicted display time is one to three
-  display periods ahead of now, 11-33 ms at 90 Hz, and more on a streaming runtime such as Virtual Desktop's), plus up
-  to one simulation frame (17 ms at 60 Hz): about 15-50 ms [I; the lead is measured, section 9]. At 2 m/s that is 3
-  to 10 cm.
+- **The simulated hand** trails the display time by the display lead plus up to one simulation frame (17 ms at 60
+  Hz). The lead measured on Virtual Desktop's runtime is 38-63 ms (p50 to p95, D3D12; max 68 ms), about five display
+  periods at 120 Hz [V: M0 headset run, b35c448]. So the simulated hand trails the display time by about 40-80 ms, and
+  at 2 m/s that is 8 to 16 cm. Late-latching matters more than I first estimated.
 - **My proposal: draw the own hand at the tracked pose for the predicted display time** (late-latched), and draw a
   held object at that hand pose times the simulation's grip offset (the held object's pose relative to the simulated
   hand). This is design.md 18.3's rule. The simulated hand still does the pushing: other objects react to the
@@ -379,16 +388,20 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
 ### 7.2 Rates
 
 - **Display rate:** pe-xr asks for 90 Hz with `XR_FB_display_refresh_rate` where offered, and otherwise takes the
-  runtime's rate. It reports the rate it got.
+  runtime's rate. It reports the rate it got. Virtual Desktop's runtime ran the Quest 3 at 120 Hz (a constant 8.333 ms
+  period) [V: M0 headset run]; whether it offers the extension is not yet known. If it does not, the rate is the
+  user's Virtual Desktop setting (section 11, X9).
 - **Simulation rate:** a world setting (D4), 60 or 90 Hz. pe-xr does not depend on it.
 - **The drawn time.** The newest frame view is for a simulation frame at or before now, and the predicted display
-  time is one to three display periods past now. So the display time is almost always past the newest frame view,
+  time is well past now: 38-63 ms on Virtual Desktop's runtime (section 5.6), about five periods at 120 Hz. So the display time is almost always past the newest frame view,
   and interpolating between frame views cannot reach it. The time the world is drawn at is WS-render's choice, one
   of:
   - **(a) extrapolate** from the newest frame view to the display time, up to the measured lead, with the display
     layer's smoothing. This is design.md 18.3's rule, and my proposal [I];
   - **(b) interpolate** between the two newest frame views at the display time minus a render delay. Nothing is
     drawn from a guess, but everything except the head and the own hands is shown that much later.
+  - At the measured lead, (a) extrapolates other objects by 40-60 ms, and (b) shows the world 40-60 ms or more late.
+    Both are larger than design.md 18.3 assumed [I]; the headset test judges them.
 - **Counted either way:** the gap between the drawn time and the display time, and the lead from the newest frame
   view's `sim_time` to the display time (section 9).
 - **So 72, 90 and 120 Hz displays** all work against 60 and 90 Hz simulations, as M1's rendering test asks. The test
@@ -397,7 +410,8 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
 
 ### 7.3 The budget at 90 Hz
 
-A frame is 11.1 ms. My budget [I], to be measured:
+A frame is 11.1 ms at 90 Hz. At 120 Hz, the rate Virtual Desktop's runtime ran the Quest 3 at, it is 8.3 ms, and
+the GPU budget below shrinks to about 6 ms. My budget [I], to be measured:
 
 | Part | Budget | Note |
 |---|---|---|
@@ -534,8 +548,8 @@ pe-xr's logic is written against a small backend trait, so almost all of it runs
 - **The frame loop:** events are drained every frame; actions are attached once and synced before they are read;
   wait, begin and end are called in order every frame; with `shouldRender` false no layer is
   submitted; nothing on the XR thread takes a lock that the simulation holds.
-- **Rates:** displays at 72, 90 and 120 Hz against simulations at 60 and 90 Hz, with display leads of one to three
-  periods. Each display frame's drawn time follows WS-render's rule (section 7.2), and the simulation's frame count is
+- **Rates:** displays at 72, 90 and 120 Hz against simulations at 60 and 90 Hz, with display leads of one to six
+  periods (Virtual Desktop's measured lead is about five). Each display frame's drawn time follows WS-render's rule (section 7.2), and the simulation's frame count is
   unchanged by the display rate.
 - **Hands:** on scripted and later recorded joint traces, `closed` never chatters; a lost hand that holds is released
   after the grace period; a recentre bumps `discontinuity`; `hand_at` interpolates between samples, never
@@ -589,6 +603,7 @@ answered, pe-xr is coded against the fake runtime. The user answered X5 (m2aaafe
 | X6 | The graphics paths | D3D12 on Windows and Vulkan on Linux, both behind one interface, following the M0 check (section 4.4) |
 | X7 | API layers | None in M1: the Rust loader loads no layers (section 2). Revisit if a runtime needs its implicit layer |
 | X8 (WS-render) | The drawn time: extrapolate to the display time, or interpolate at a delay | (a), extrapolate (section 7.2) |
+| X9 (user) | Tracked hands and the display rate on Virtual Desktop | Ask the user, before the headset test, to enable hand tracking in Virtual Desktop (it is off now) and to pick its refresh rate (90 Hz for the D4 target), unless the runtime takes both from pe-xr (sections 5.4, 7.2) |
 
 ## 12. Size and order
 
