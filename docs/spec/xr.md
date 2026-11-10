@@ -66,6 +66,8 @@ macOS (flat screen only, later); a VR user interface (the UI lab follows M1, WS-
      are out of that range is refused, with the reason. The instance then asks for the negotiated API version,
      capped at 1.1, because a 1.0-only runtime (an older SteamVR or Monado) refuses an instance that asks for 1.1;
   4. build the `openxr::Entry` from the returned `xrGetInstanceProcAddr` (`Entry::from_get_instance_proc_addr`).
+     The loader's `Runtime` owns the opened `Library`, and is kept alive by every instance and every GPU context made
+     through it, so the library is never unloaded while the runtime's code may still be called (section 4.1).
 
   Manifest discovery is injected, so tests run the loader on fixture manifests and never read the registry or
   `XR_RUNTIME_JSON` (section 10.3). Opening a runtime's library already runs its code, so the loader is also where
@@ -177,9 +179,13 @@ itself, with the extensions the runtime and wgpu each need. So:
     `xrCreateVulkanDeviceKHR` return are the application's to destroy [I: my reading of `XR_KHR_vulkan_enable2`; the
     code checks it], so they outlive the session and are destroyed only with the context;
   - after instance loss, the next session needs `xrGetVulkanGraphicsDevice2KHR`'s device again; if it differs, the
-    context is re-created.
-- **On the D3D12 fallback,** wgpu creates the device itself, so leaving VR re-creates nothing; entering VR keeps a DX12
-  context whose adapter's LUID is the runtime's, and re-creates it otherwise.
+    context is re-created;
+  - **a context made through the runtime keeps the runtime's library loaded until the context is destroyed,** even
+    after `xrDestroyInstance`, because the runtime may have hooked the Vulkan dispatch. The loader's `Runtime` owns
+    the `Library`, and the context holds a reference to that `Runtime` (section 2).
+- **On the D3D12 fallback,** wgpu creates the device itself, so leaving VR re-creates nothing. Entering VR keeps a DX12
+  context only when the fallback was chosen at start (the desktop is otherwise Vulkan) and its adapter's LUID is the
+  runtime's; otherwise it re-creates the context.
 - The context is created with `Features::MULTIVIEW` whenever the adapter offers it, because VR keeps it.
 
 **Vulkan, on Windows and Linux** [M0; the names are wgpu 30's, V: in the cargo cache]:
