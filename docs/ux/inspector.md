@@ -166,10 +166,12 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
   - **The menu item names the scripts it moves** [V @iter-bench m3ffd63b02121; logic.md 7 at 75ac956]: any
     system that reads or writes a per-player field runs per player, so making one field per-player can move
     several systems, in this script and others. The item reads, for example, "Make per-player · Scripts that will
-    run per player: Blink.pulse, Score.count", and confirms before applying when the list is not empty [P].
+    run per player: Blink.pulse, Score.count". It applies on click, with no confirmation: publication is
+    automatic and not the player's concern [R: m27cdafe8fcfa, 2026-11-07 16:10Z], and the change can be reverted
+    from history like any other [P].
   - **A moved system's shared effects happen once per player** unless the script declares them "once for the
-    world" [V same]. The confirmation says so when any listed system writes shared state: "These scripts change
-    the shared world; each player's copy will send its own changes." [P wording]
+    world" [V same]. When any listed system writes shared state, the menu item adds a line of information:
+    "These scripts change the shared world; each player's copy will send its own changes." [P wording]
   - The physics/logic split is agreed with @iter-bench (WS-logic). Per-player mode arrives in M2; nothing here is
     in the M1 slice.
 
