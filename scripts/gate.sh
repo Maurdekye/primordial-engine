@@ -112,7 +112,8 @@ esac
 
 # 2. The secret scan. Exit 3 means leaks; anything else but 0 is an error.
 cfg=$(native "$x/.gitleaks.toml")
-GLF=(--no-banner --no-color --redact --ignore-gitleaks-allow --exit-code 3 -c "$cfg" -f json)
+# -i: only a .gitleaksignore committed in <rev> counts, never one lying in the current folder.
+GLF=(--no-banner --no-color --redact --ignore-gitleaks-allow --exit-code 3 -c "$cfg" -i "$(native "$x")" -f json)
 scan() {  # name, then the gitleaks command line (its report goes to $tmp/<name>.json)
   local name=$1; shift
   "$@" "${GLF[@]}" -r "$(native "$tmp/$name.json")" > "$tmp/$name.log" 2>&1
