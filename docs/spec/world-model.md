@@ -681,7 +681,12 @@ pub enum Precondition {
 - **The 10 s seat** (R7) is this refusal's path: the API offers the author the rebase (re-read, re-apply). The world
   model only needs to make the refusal exact.
 - **A code commit** is the same rule on the `modules` table: `CommitScript.base` names the script version the author
-  built on (R7's "rejected and asked to rebase").
+  built on (R7's "rejected and asked to rebase"). `base: None` means "this script does not exist yet": if a script
+  with that id already exists, the commit is refused as `Stale`, naming the commit that made it, so two authors'
+  first commits of one script cannot silently overwrite each other (@design-reviewer's r7 Low 1).
+- **`activate_at` is bounded** (@design-reviewer's r7 Low 2): it may be no earlier than the entry's own frame
+  stamp; an earlier one is refused, so a commit cannot activate code in the past. WS-logic may require more (past
+  the next cut, for its agreed frame), as its own validity rule.
 
 ### 7.4 Rule 3: plain writes, the latest in order wins
 
