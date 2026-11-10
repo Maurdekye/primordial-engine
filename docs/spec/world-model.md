@@ -814,8 +814,8 @@ pub enum Precondition {
   with that id already exists, the commit is refused as `Stale`, naming the commit that made it, so two authors'
   first commits of one script cannot silently overwrite each other (@design-reviewer's r7 Low 1).
 - **`activate_at` is bounded** (@design-reviewer's r7 Low 2): it may be no earlier than the entry's own frame
-  stamp; an earlier one is refused, so a commit cannot activate code in the past. WS-logic may require more (past
-  the next cut, for its agreed frame), as its own validity rule.
+  stamp; an earlier one is refused, so a commit cannot activate code in the past. **In M1 it must equal the stamp**
+  (WS-logic's rule; pe-seams v0 ruling 22), and pe-world refuses any other value as `Invalid`.
 
 ### 7.4 Rule 3: plain writes, the latest in order wins
 
@@ -991,7 +991,15 @@ The plan's sketch splits between pe-replica (WS-state) and pe-world. My proposal
 | `object_hashes(ids)` | pe-world | leaf hashes (which cover each body's digest), for the fault bundle |
 | `physics_image(root)` | pe-replica (WS-state) | the domain's physics transfer as one blob tree by hash, for the whole-image restore (@vdw-physics's route c) |
 
-- `Root` is a `Send` handle, and the roots of the last 8 final cuts are kept (@engine-architect's S2 answer).
+- `Root` is a `Send` handle. Which roots are kept is pe-seams v0's ruling 7 (`crates/pe-seams/RULINGS.md`): the
+  floor, `Cv`, and the final cuts within `T_keep` (a duration, 1.5 s by default, at least the last 2 cuts); the
+  earlier "last 8 final cuts" is withdrawn, since every limit is a duration (md4b42d16d9df).
+- **How S2 reaches the tree** (ruling 1): `Replica::tree(&root)` gives pe-world's `Tree` on one held root, with
+  `node`, `export`, `object_hashes` and `verify`; the receiver of an import is pe-replica's `import_at_cut`.
+- **pe-world's side of a step** (ruling 9; replica.md 3): `World::apply` returns, with each applied entry's
+  outcome, its physics effects (the objects whose physics-relevant rows changed, pushes, a carried check), which
+  pe-replica acts on before the next entry; `World::end_frame(f)` then expires claims and cooldowns. Stepping,
+  keyframes, save and restore are pe-replica's (ruling 3).
 - **From WS-state, agreed with @vdw-physics:** the per-body digest and `physics_global` of 6.3, written at cut
   frames, and the whole-image restore for bound bodies.
 - **The frame's stage order** (@engine-architect, after @iter-bench's N1): entries (inputs and edits, in the agreed
