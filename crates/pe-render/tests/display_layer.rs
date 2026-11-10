@@ -284,6 +284,50 @@ fn a_mid_blend_correction_never_jumps() {
     }
 }
 
+/// Review M1: with a rotational correction mid-blend, a second one about another axis leaves the drawn rotation
+/// unchanged at its arrival, and the drawn rotation still reaches the target.
+#[test]
+fn a_mid_blend_rotational_correction_never_turns() {
+    let run = |second: bool| {
+        let mut layer = DisplayLayer::new(extrapolating());
+        let vols = volumes();
+        let mut out = Vec::new();
+        let mut cur: Option<Arc<FrameView>> = None;
+        for k in 0..120u64 {
+            let now = HostTime(k as i64 * NS / 120);
+            let f = k / 2;
+            if cur.as_ref().is_none_or(|v| v.frame.0 != f) {
+                let mut q = DQuat::IDENTITY;
+                if f >= 30 {
+                    q = DQuat::from_rotation_x(20f64.to_radians()) * q;
+                }
+                if second && f >= 32 {
+                    q = DQuat::from_rotation_y(20f64.to_radians()) * q;
+                }
+                let mut o = ball(1, at(0.0, 0.0, -4.0), [0.0; 3]);
+                o.radius = 0.3;
+                o.rotation = [q.x as f32, q.y as f32, q.z as f32, q.w as f32];
+                if f == 30 || (second && f == 32) {
+                    o.flags = o.flags.with(ViewFlags::CORRECTED);
+                }
+                cur = Some(view(f, frame_time(f, 60), vec![o]));
+            }
+            let v = cur.clone().unwrap();
+            let local = LocalPresentation { display_time: now, hands: [None, None] };
+            let fr = layer.frame(FrameInput { view: &v, display_time: now, volumes: &vols, local: &local });
+            out.push((f, fr.objects[0].pose.rot, fr.objects[0].target.rot));
+        }
+        out
+    };
+    let (two, one) = (run(true), run(false));
+    let i = two.iter().position(|r| r.0 == 32).unwrap();
+    let turn = two[i].1.angle_between(one[i].1).to_degrees();
+    assert!(turn < 1e-4, "the second arrival turned the drawn rotation by {turn} degrees");
+    assert!(two[i].1.angle_between(two[i].2).to_degrees() > 5.0, "mid-blend");
+    let last = two.last().unwrap();
+    assert!(last.1.angle_between(last.2) < 1e-6, "reaches the target");
+}
+
 #[test]
 fn every_in_view_correction_above_e_cue_has_a_cue() {
     // A deterministic spread of sizes, in and out of view.

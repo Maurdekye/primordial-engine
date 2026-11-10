@@ -13,6 +13,7 @@
 //! - [`capture`]: the offscreen capture and `visible_list` (render.md 11).
 //! - [`pacing`]: the display period and the render-scale controller (render.md 10).
 //! - [`desktop_hand`]: the mouse-ray hand and its `HandFeed` (render.md 9).
+//! - [`present`]: the frame-view slot and the per-frame presenter (render.md 3).
 //!
 //! pe-render re-exports `wgpu` and `wgpu-hal`; pe-xr uses only those (xr.md 8.2).
 
@@ -25,6 +26,7 @@ pub mod effects;
 pub mod gpu;
 pub mod pacing;
 pub mod pose;
+pub mod present;
 pub mod scene;
 
 pub use pe_seams;

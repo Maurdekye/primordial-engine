@@ -213,7 +213,9 @@ impl ObjState {
         for c in &self.components {
             let r = c.remaining(now);
             p += c.d_pos * r;
-            q = DQuat::IDENTITY.slerp(c.d_rot, r) * q;
+            // Oldest outermost, newest innermost (review M1): a new component d = T_old·T_new⁻¹ goes right of
+            // the rotation already applied, so Q_old·d·T_new = Q_old·T_old and nothing turns at arrival.
+            q *= DQuat::IDENTITY.slerp(c.d_rot, r);
         }
         (p, q.normalize())
     }
@@ -552,7 +554,8 @@ impl DisplayLayer {
             let (ra, rb) = (a.remaining(now), b.remaining(now));
             let m = Component {
                 d_pos: a.d_pos * ra + b.d_pos * rb,
-                d_rot: (DQuat::IDENTITY.slerp(b.d_rot, rb) * DQuat::IDENTITY.slerp(a.d_rot, ra)).normalize(),
+                // The older outer, as in `offset`.
+                d_rot: (DQuat::IDENTITY.slerp(a.d_rot, ra) * DQuat::IDENTITY.slerp(b.d_rot, rb)).normalize(),
                 start: now,
                 dur: a.dur.max(b.dur),
             };
