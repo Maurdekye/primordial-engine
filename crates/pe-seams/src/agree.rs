@@ -160,22 +160,28 @@ pub enum AgreeEvent {
         root: Hash,
         self_test: SelfTest,
     },
-    /// A cut is final, with the root a quorum computed for itself, and who voted for it.
+    /// A cut is final on the line, with the root a quorum computed for itself, and who voted for it. The replica's
+    /// source reports it as its final cut only once this member holds every entry it includes
+    /// ([`EntrySource::final_cut`]).
     CutFinal {
         cut: CutRef,
         root: Hash,
         voters: Vec<MemberKey>,
     },
-    /// Votes for one cut split so that no root can reach a quorum; every member sees who holds which root.
+    /// Votes for one cut split so that no root can reach a quorum; every member sees who holds which root, with each
+    /// voter's self-test verdict from its vote, for the tie rule at n = 2 (divergence.md 5).
     RootSplit {
         cut: CutRef,
-        roots: Vec<(Hash, Vec<MemberKey>)>,
+        roots: Vec<(Hash, Vec<(MemberKey, SelfTest)>)>,
     },
     /// A final cut voided an entry (late, or stamped below its author's previous stamp).
     Voided {
         entry: EntryRef,
         author: MemberKey,
         reason: VoidReason,
+        /// The final cut that decided it: a void is decided by a cut, never by arrival, and every member names the same
+        /// cut for it (the harness's P4; @harness-eng, m3bb675a96918).
+        cut: CutRef,
     },
     /// An entry was refused before ordering (bad signature, wrong line, rate).
     Refused {
