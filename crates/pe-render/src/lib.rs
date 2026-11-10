@@ -8,14 +8,23 @@
 //! - [`effects`]: one-shot effects fire once, D6.
 //! - [`camera`]: camera-relative transforms, reverse-Z projections, view volumes (render.md 5).
 //! - [`pose`]: world poses as `Pos` plus an f64 rotation.
+//! - [`gpu`]: the GPU context, Vulkan first, D3D12 with FXC as the fallback (render.md 4).
+//! - [`scene`]: the scene renderer, one for the window, the eyes and the capture (render.md 6).
+//! - [`capture`]: the offscreen capture and `visible_list` (render.md 11).
+//!
+//! pe-render re-exports `wgpu` and `wgpu-hal`; pe-xr uses only those (xr.md 8.2).
 
 pub mod camera;
+pub mod capture;
 pub mod display;
 pub mod drawn_time;
 pub mod effects;
+pub mod gpu;
 pub mod pose;
+pub mod scene;
 
 pub use pe_seams;
+pub use {wgpu, wgpu_hal};
 
 use pe_seams::{HostTime, RigPose};
 
