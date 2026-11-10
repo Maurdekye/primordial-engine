@@ -445,8 +445,9 @@ using an inspector".
 
 ### 6.2 Agent edits in the world
 
-- **A brief cue on what changed** [P]: an object an agent creates or changes shows a soft outline pulse for about
-  1.5 s, with a small tag carrying the producer label. Seen by everyone nearby, in keeping with "openness over
+- **A brief cue on what changed** [P]: an object an agent creates or changes shows a soft violet outline pulse for
+  about 1.5 s, with a small tag carrying the producer label. Violet is the colour reserved for anything belonging
+  to an AI agent [R: gnosarium palette, 2026-10-30 19:21Z]. Seen by everyone nearby, in keeping with "openness over
   privacy" (decisions, 2026-10-30 22:28Z: nearby players can watch agents work in real time). Each player can turn
   the cue off.
 - **Selector edits** ("make the balls blue") show one tag at the group's centre, "Alice's agent: 500 balls", not
