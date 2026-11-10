@@ -160,6 +160,9 @@ preset worlds that sprout from it with some preset content". The design, agreed 
   of the parent (its frame and root), or a stored state signed by the brancher (its frame and root): a removed
   admin's saved copy, "as it stood up to the moment they were removed", is a local stored state and not at a final
   cut, and the merge's search for a common base must find it (@design-reviewer's r9 Low 3).
+- **Who signs a branch entry** (@chunks-reviewer's r9 L4): the member who branches, with their own key. The entry
+  sits outside every chain, on the parent line and on the new one, since the new line's id is its hash. Who may
+  branch is governance (WS-gov): by the user's rulings, any admin, and a former admin for the saved copy they keep.
   A merged line's head names both parents (WS-diverge's merge record).
 - **Entries on a line** are signed over that line's id (S1), and object, chain, spawn and hand ids derive from it
   (2.1). A merged line accepts the entries of every line in its ancestry, so both parents' signatures and ids stay
@@ -188,7 +191,11 @@ itself is WS-diverge's (M5, "re-merging later, by choice"):
   objects (the schema marks them): root transforms, and also waypoints, spawn points and targets stored on any
   object (@design-reviewer's r9 Medium 2). An integer chunk shift changes no in-chunk offset, and so no bit of any
   relative position, physics frame or script result [I]. `Offset` fields and child-local transforms are relative,
-  so they do not shift. Objects the two sides share (a common preset's) are not shifted; they are already in the
+  so they do not shift. `Pos` values held in the incoming side's world tables shift too: the last world transforms
+  in its tombstones (7.5), so a later orphan lands where its parent really was (@chunks-reviewer's r9 L2).
+- **The shift is checked first** (@chunks-reviewer's r9 L1): every shifted `Pos` is computed with `checked_add`, and
+  if any would leave the range or land on the reserved `i64::MIN` (4.3), the placement is refused before anything
+  applies, and the preview offers another. Objects the two sides share (a common preset's) are not shifted; they are already in the
   same place.
 - **What cannot shift:** a number a script stored after `pos - Pos::ORIGIN` is a plain number, and the engine
   cannot know it was a position. That is the user's deliberate opt-in (4.2); after a placement shift it points at
@@ -199,10 +206,11 @@ itself is WS-diverge's (M5, "re-merging later, by choice"):
   `lines`, of the line ids that object births name; and each script row (5.4) holds the set of lines its world-wide
   queries cover, which only an admin's edit widens. The rule itself and its worked example are WS-logic's, before
   it is built (file 20, 7) [I].
-- **Merging two `lines` tables** (@design-reviewer's r9 Low 1): the two sides may give one index to different lines.
-  The merged table is the union keyed by `LineId`, with indices reassigned in `LineId` order, and every `born_on`
-  remapped to the new index. It is deterministic, and its cost is one row write for each object only one side had,
-  which the placement shift touches anyway.
+- **Merging two `lines` tables** (@design-reviewer's r9 Low 1; @chunks-reviewer's r9 L3): the two sides may give one
+  index to different lines. The line merged into keeps its indices unchanged; the incoming side's lines that it
+  lacks are appended in `LineId` order; and the incoming objects' `born_on` values are remapped to the merged
+  indices. It is deterministic. The cost is one row write per incoming object (shared objects already carry the
+  merged-into side's index), which the placement shift touches anyway.
 - **History is kept, deleted things included** (file 20, 5): the world record of each side comes along, joined at
   the common ancestor. Dropping history on purpose ("share from now, without its past") is a branch from a cut with
   the history cut off, a later feature.
