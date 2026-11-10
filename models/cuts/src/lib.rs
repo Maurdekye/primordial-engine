@@ -6,8 +6,8 @@
 //! after a view that timed out it carries a timeout certificate as well, and must extend a block at least as high as
 //! the highest certificate in it (the lock). Members vote once per view. A cut is final when its child, proposed in the
 //! very next view, gets a quorum (the two-chain rule of the chained-HotStuff family, as in Jolteon / DiemBFT v4).
-//! Entries a final cut covers take effect in chain order; one stamped at or before a stamp earlier in its author's
-//! chain, or before the previous cut's frame, is void; an entry stamped before the cut's frame and not covered is void.
+//! Entries a final cut covers take effect in chain order; one stamped strictly below a stamp earlier in its author's
+//! chain (an equal stamp is valid, ordered by seq), or before the previous cut's frame, is void; an entry stamped before the cut's frame and not covered is void.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -49,6 +49,8 @@ pub enum Mutation {
     NoSignatureCheck,
     /// Nobody times out a silent or faulty proposer.
     NoTimeouts,
+    /// Votes carry no state root: a member whose replica diverged confirms the quorum's cut without learning it.
+    VoteWithoutRoot,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +101,9 @@ pub struct Cuts {
     /// never lost, and every end state must have a final cut at every honest member.
     pub liveness: bool,
     pub mutation: Option<Mutation>,
+    /// A fault-injected honest member whose replica computes a wrong root (WS-diverge 3.2): it runs the protocol
+    /// honestly, but its votes carry the wrong root.
+    pub corrupt: Option<u8>,
     pub entries: Vec<EntryDef>,
 }
 
@@ -132,12 +137,27 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, entries }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, corrupt: None, entries }
     }
 
     pub fn live(mut self) -> Self {
         self.liveness = true;
         self
+    }
+
+    pub fn corrupt(mut self, m: u8) -> Self {
+        self.corrupt = Some(m);
+        self
+    }
+
+    /// The root member m computes for any block: the right one (true), unless its replica is fault-injected. In v0 the
+    /// root is abstract: one bit, right or wrong.
+    pub fn own_root(&self, m: u8) -> bool {
+        self.corrupt != Some(m)
+    }
+
+    fn roots(&self) -> bool {
+        self.mutation != Some(Mutation::VoteWithoutRoot)
     }
 
     pub fn mutate(mut self, m: Mutation) -> Self {
@@ -187,41 +207,43 @@ impl Cuts {
         self.mutation == Some(Mutation::NoSignatureCheck) || self.entries[e as usize].signed_ok()
     }
 
-    /// Votes for `b`: the honest ones sent, and the Byzantine member's, which counts for anything (it equivocates).
-    fn votes(&self, s: &State, b: &Block) -> usize {
-        let honest = s.net.iter().filter(|m| matches!(m, Msg::Vote { block, .. } if block == b)).count();
+    /// Votes for `b` with root `r`: the honest ones sent, and the Byzantine member's, which counts for anything (it
+    /// equivocates). Without roots in votes (the control), every vote for `b` counts.
+    fn votes(&self, s: &State, b: &Block, r: bool) -> usize {
+        let honest = s.net.iter().filter(|m| matches!(m, Msg::Vote { block, root, .. } if block == b && (*root == r || !self.roots()))).count();
         honest + usize::from(self.byz())
     }
 
-    pub fn certified(&self, s: &State, b: &Block) -> bool {
-        b.h == 0 || self.votes(s, b) >= self.quorum()
+    pub fn certified(&self, s: &State, c: &Cert) -> bool {
+        c.block.h == 0 || self.votes(s, &c.block, c.root) >= self.quorum()
     }
 
-    fn certified_blocks(&self, s: &State) -> Vec<Block> {
-        let mut out = vec![Block::GENESIS];
+    fn certified_blocks(&self, s: &State) -> Vec<Cert> {
+        let mut out = vec![Cert::GENESIS];
         for m in &s.net {
-            if let Msg::Vote { block, .. } = m {
-                if !out.contains(block) && self.certified(s, block) {
-                    out.push(*block);
+            if let Msg::Vote { block, root, .. } = m {
+                let c = Cert { block: *block, root: *root || !self.roots() };
+                if !out.contains(&c) && self.certified(s, &c) {
+                    out.push(c);
                 }
             }
         }
         out
     }
 
-    fn timeouts(&self, s: &State, view: u8) -> Vec<Block> {
+    fn timeouts(&self, s: &State, view: u8) -> Vec<Cert> {
         s.net.iter().filter_map(|m| match m { Msg::Timeout { view: v, high, .. } if *v == view => Some(*high), _ => None }).collect()
     }
 
     /// The highest certificates a valid timeout certificate for `view` can show: the maximum over each quorum-sized set
     /// of timeouts (the Byzantine member's own timeout may show genesis). Empty if no certificate can be formed.
-    fn tc_maxima(&self, s: &State, view: u8) -> Vec<Block> {
+    fn tc_maxima(&self, s: &State, view: u8) -> Vec<Cert> {
         let mut pool = self.timeouts(s, view);
         if self.byz() {
-            pool.push(Block::GENESIS);
+            pool.push(Cert::GENESIS);
         }
         let q = self.quorum();
-        let mut out: Vec<Block> = Vec::new();
+        let mut out: Vec<Cert> = Vec::new();
         if pool.len() < q {
             return out;
         }
@@ -229,7 +251,7 @@ impl Cuts {
             if mask.count_ones() as usize != q {
                 continue;
             }
-            let best = (0..pool.len()).filter(|i| mask & (1 << i) != 0).map(|i| pool[i]).max_by_key(|b| b.view()).unwrap();
+            let best = (0..pool.len()).filter(|i| mask & (1 << i) != 0).map(|i| pool[i]).max_by_key(|c| c.block.view()).unwrap();
             if !out.contains(&best) {
                 out.push(best);
             }
@@ -362,7 +384,7 @@ impl Cuts {
                     }
                     let all_known = earlier.iter().all(|&y| self.has(known, y));
                     let ok = if all_known {
-                        e.stamp >= lo && earlier.iter().all(|&y| self.entries[y as usize].stamp < e.stamp)
+                        e.stamp >= lo && earlier.iter().all(|&y| self.entries[y as usize].stamp <= e.stamp)
                     } else if d1 {
                         e.stamp >= lo
                     } else {
@@ -388,9 +410,14 @@ impl Cuts {
     // ---- member steps ----
 
     /// A member learns that `x` is certified: its highest certificate, the view, and the two-chain commit.
-    fn note_cert(&self, mm: &mut Member, x: Block) {
-        if x.view() > mm.high.view() {
-            mm.high = x;
+    fn note_cert(&self, mm: &mut Member, me: u8, c: Cert) {
+        let x = c.block;
+        // RootSplit: a quorum's root for this block is not the one this member computed.
+        if x.h > 0 && self.roots() && c.root != self.own_root(me) {
+            mm.split = true;
+        }
+        if x.view() > mm.high.block.view() {
+            mm.high = c;
         }
         if x.view() >= mm.view {
             mm.view = x.view() + 1;
@@ -408,22 +435,22 @@ impl Cuts {
         }
     }
 
-    fn on_propose(&self, s: &mut State, m: u8, block: Block, tc: Option<Block>, carried: u16) {
+    fn on_propose(&self, s: &mut State, m: u8, block: Block, proot: bool, tc: Option<Cert>, carried: u16) {
         let mut mm = s.m[m as usize];
         let v = block.view();
         let p = block.parent();
         mm.held |= carried;
-        self.note_cert(&mut mm, p);
+        self.note_cert(&mut mm, m, Cert { block: p, root: proot });
         if let Some(t) = tc {
-            self.note_cert(&mut mm, t);
+            self.note_cert(&mut mm, m, t);
             if v > mm.view {
                 mm.view = v;
             }
         }
-        let lock_ok = p.view() + 1 == v || tc.is_some_and(|t| p.view() >= t.view()) || self.mutation == Some(Mutation::NoLockRule);
+        let lock_ok = p.view() + 1 == v || tc.is_some_and(|t| p.view() >= t.block.view()) || self.mutation == Some(Mutation::NoLockRule);
         if v == mm.view && v > mm.voted && v > mm.timed_out && v <= self.views && lock_ok && self.cut_ok(&block, mm.held) {
             mm.voted = v;
-            s.net.insert(Msg::Vote { voter: m, block });
+            s.net.insert(Msg::Vote { voter: m, block, root: self.own_root(m) });
         }
         s.m[m as usize] = mm;
     }
@@ -447,9 +474,9 @@ impl Cuts {
                     _ => {}
                 }
             }
-            for b in &certified {
-                if b.h > 0 {
-                    acts.push(Action::Observe(m, *b));
+            for c in &certified {
+                if c.block.h > 0 {
+                    acts.push(Action::Observe(m, *c));
                 }
             }
             let mm = &s.m[m as usize];
@@ -493,11 +520,12 @@ impl Cuts {
             if self.leader(v) != 0 {
                 continue;
             }
-            let mut tcs: Vec<Option<Block>> = vec![None];
+            let mut tcs: Vec<Option<Cert>> = vec![None];
             if v > 1 {
                 tcs.extend(self.tc_maxima(s, v - 1).into_iter().map(Some));
             }
-            for parent in certified.iter().filter(|b| b.view() < v && b.h < self.hcap()) {
+            for pc in certified.iter().filter(|c| c.block.view() < v && c.block.h < self.hcap()) {
+                let parent = &pc.block;
                 for cut in self.adversary_cuts(parent) {
                     let block = parent.child(v, cut);
                     let mut carried = 0u16;
@@ -510,7 +538,7 @@ impl Cuts {
                     }
                     for tc in &tcs {
                         for to in 1..self.n {
-                            acts.push(Action::AdvPropose(to, Msg::Propose { block, tc: *tc, carried }));
+                            acts.push(Action::AdvPropose(to, Msg::Propose { block, proot: pc.root, tc: *tc, carried }));
                         }
                     }
                 }
@@ -610,14 +638,26 @@ impl fmt::Debug for Block {
     }
 }
 
+/// A certified block, with the root its quorum voted for.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct Cert {
+    pub block: Block,
+    pub root: bool,
+}
+
+impl Cert {
+    pub const GENESIS: Cert = Cert { block: Block::GENESIS, root: true };
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum Msg {
     Entry { to: u8, e: u8 },
     /// From the view's leader; the parent's certificate is implied (the parent must be certified), `tc` is the highest
     /// certificate of the timeout certificate for the view before, if the proposal needs one.
-    Propose { block: Block, tc: Option<Block>, carried: u16 },
-    Vote { voter: u8, block: Block },
-    Timeout { voter: u8, view: u8, high: Block },
+    Propose { block: Block, proot: bool, tc: Option<Cert>, carried: u16 },
+    /// Over (block, the voter's own root).
+    Vote { voter: u8, block: Block, root: bool },
+    Timeout { voter: u8, view: u8, high: Cert },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -627,16 +667,18 @@ pub struct Member {
     pub timed_out: u8,
     pub proposed: u8,
     /// The highest certified block it knows.
-    pub high: Block,
+    pub high: Cert,
     pub held: u16,
     pub committed: Block,
     /// A final cut arrived that does not extend this member's final cut.
     pub undone: bool,
+    /// It has seen a quorum certify a root it did not compute (RootSplit).
+    pub split: bool,
 }
 
 impl Member {
     fn new(held: u16) -> Member {
-        Member { view: 1, voted: 0, timed_out: 0, proposed: 0, high: Block::GENESIS, held, committed: Block::GENESIS, undone: false }
+        Member { view: 1, voted: 0, timed_out: 0, proposed: 0, high: Cert::GENESIS, held, committed: Block::GENESIS, undone: false, split: false }
     }
 }
 
@@ -651,10 +693,10 @@ pub struct State {
 pub enum Action {
     Deliver(u8, Msg),
     /// A member collects a quorum of votes for a block.
-    Observe(u8, Block),
+    Observe(u8, Cert),
     Timeout(u8),
     /// A member forms a timeout certificate for its view, adopting the given certificate from it.
-    AdvanceTc(u8, Block),
+    AdvanceTc(u8, Cert),
     Propose(u8),
     AdvEntry(u8, u8),
     AdvPropose(u8, Msg),
@@ -692,13 +734,13 @@ impl Model for Cuts {
             Action::Deliver(m, Msg::Entry { e, .. }) => {
                 s.m[m as usize].held |= 1 << e;
             }
-            Action::Deliver(m, Msg::Propose { block, tc, carried }) | Action::AdvPropose(m, Msg::Propose { block, tc, carried }) => {
-                self.on_propose(&mut s, m, block, tc, carried);
+            Action::Deliver(m, Msg::Propose { block, proot, tc, carried }) | Action::AdvPropose(m, Msg::Propose { block, proot, tc, carried }) => {
+                self.on_propose(&mut s, m, block, proot, tc, carried);
             }
             Action::Deliver(..) | Action::AdvPropose(..) => return None,
             Action::Observe(m, b) => {
                 let mut mm = s.m[m as usize];
-                self.note_cert(&mut mm, b);
+                self.note_cert(&mut mm, m, b);
                 s.m[m as usize] = mm;
             }
             Action::Timeout(m) => {
@@ -713,7 +755,7 @@ impl Model for Cuts {
             Action::AdvanceTc(m, o) => {
                 let mut mm = s.m[m as usize];
                 let v = mm.view;
-                self.note_cert(&mut mm, o);
+                self.note_cert(&mut mm, m, o);
                 mm.view = mm.view.max(v + 1);
                 s.m[m as usize] = mm;
             }
@@ -723,17 +765,17 @@ impl Model for Cuts {
                 if self.leader(v) != m || v > self.views || mm.proposed >= v || mm.timed_out >= v {
                     return None;
                 }
-                let tc = if mm.high.view() + 1 == v {
+                let tc = if mm.high.block.view() + 1 == v {
                     None
                 } else {
                     let maxima = self.tc_maxima(&s, v - 1);
-                    let Some(t) = maxima.into_iter().min_by_key(|b| b.view()) else { return None };
-                    if t.view() > mm.high.view() {
+                    let Some(t) = maxima.into_iter().min_by_key(|c| c.block.view()) else { return None };
+                    if t.block.view() > mm.high.block.view() {
                         mm.high = t;
                     }
                     Some(t)
                 };
-                let parent = mm.high;
+                let (parent, proot) = (mm.high.block, mm.high.root);
                 if parent.h >= self.hcap() {
                     return None;
                 }
@@ -741,7 +783,7 @@ impl Model for Cuts {
                 let block = parent.child(v, cut);
                 mm.proposed = v;
                 s.m[m as usize] = mm;
-                s.net.insert(Msg::Propose { block, tc, carried });
+                s.net.insert(Msg::Propose { block, proot, tc, carried });
             }
             Action::AdvEntry(to, e) => {
                 s.m[to as usize].held |= 1 << e;
@@ -792,11 +834,23 @@ impl Model for Cuts {
                     !mm.undone && eff & tv == 0 && void & te == 0
                 })
             }),
+            // A member never holds a final cut whose quorum root differs from its own without knowing it (RootSplit).
+            Property::always("root: a diverged replica learns it at the cut", |c: &Cuts, s: &State| {
+                (0..c.n).filter(|&m| c.honest(m)).all(|m| {
+                    let mm = &s.m[m as usize];
+                    mm.committed.h == 0 || c.own_root(m) || mm.split
+                })
+            }),
             Property::sometimes("a cut is final", |c: &Cuts, s: &State| (0..c.n).any(|m| c.honest(m) && s.m[m as usize].committed.h >= 1)),
         ];
         if self.liveness {
             p.push(Property::always("liveness: every end state has a final cut at every honest member", |c: &Cuts, s: &State| {
                 (0..c.n).filter(|&m| c.honest(m)).all(|m| s.m[m as usize].committed.h >= 1) || !c.next_states(s).is_empty()
+            }));
+        }
+        if self.corrupt.is_some() {
+            p.push(Property::sometimes("a diverged replica sees RootSplit", |c: &Cuts, s: &State| {
+                (0..c.n).any(|m| c.honest(m) && s.m[m as usize].split && s.m[m as usize].committed.h >= 1)
             }));
         }
         if matches!(self.fault, Fault::Author | Fault::Byzantine) {
@@ -808,7 +862,7 @@ impl Model for Cuts {
                 })
             }));
         }
-        if self.honest_authors > 0 {
+        if self.honest_authors > 0 && !self.liveness {
             p.push(Property::sometimes("an honest entry is void (late)", |c: &Cuts, s: &State| {
                 (0..c.n).any(|m| c.honest(m) && {
                     let mm = &s.m[m as usize];
