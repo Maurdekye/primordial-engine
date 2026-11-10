@@ -1,6 +1,6 @@
 # Divergence and recovery (WS-diverge)
 
-Status: draft v1.3, 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
+Status: draft v1.4, 2026-11-10, after @design-reviewer's review of v0 (bf94698), @vdw-physics's answer on R-H1,
 and the coordinator's rulings of 20:40Z. Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
 Nothing in it is built. It specifies `crates/pe-diverge` and the requirements pe-diverge places on other
 workstreams. Only WS-diverge edits this file and `crates/pe-diverge`.
@@ -406,22 +406,29 @@ by the engine's ordinary rules, applied once to both lines' actions [file 14, 4.
 **Voided entries are merged in, but are never back-dated past finality.** An entry of `theirs` that main voided
 as late is in the set: that is what "their changes are merged in" means, and what the property "voiding and
 merging fit together" checks (plan 4.4). How it is ordered depends on whether its stamp was witnessed.
-**[C 19:41Z, m61125c4194d4: provisional, pending the user.]**
+**[C m61125c4194d4 and maf0da5275cdd, 2026-11-10: provisional, pending the user.]**
 
-- **Witnessed:** a returning entry held by members of its own side during the split, within the normal back-dating
-  bound (about 4-10 frames: the published horizon plus the cut's void [V design 8.2, cited by @design-reviewer]).
-  It is ordered by its stamp like any other entry, and the user's order rule applies: a delete first orphans
-  the add-on, a delete second destroys it [R m35138bafc46a]. This is the case of an honest split group.
-- **Unwitnessed:** a returning entry that no member of its own side held within that bound. A lone diverged
-  machine (Q3b, or a bad link past 2 s) has no side, so all its entries not on main are unwitnessed; so is an
-  entry stamped outside its side's bound. Such an entry **loses to any final `ours` entry whose outcome it would
-  change**, whatever the operation: an exclusive hold, a precondition, or structure. For example, a back-stamped
-  delete that would refuse main's final writes to the object (`Deleted`), or orphan main's final add-ons. It is
-  refused, with the reason "lost to a final entry". Where it changes no final outcome, it replays at its stamp.
+- **Witnessed:** an entry is witnessed when a signed acknowledgement by a member other than its author, on either
+  side, references it, and that acknowledgement's stamp is within `B` of the entry's stamp. `B` is the normal
+  back-dating bound: the acknowledgement interval plus slack, about 4-10 frames [V design 8.2, cited by
+  @design-reviewer]. A witnessed entry is ordered by its stamp like any other, and the user's order rule applies:
+  a delete first orphans the add-on, a delete second destroys it [R m35138bafc46a]. This covers an honest split
+  group, and a connected machine back from a long compile (Q3b), whose entries the others acknowledged in time.
+- **Unwitnessed:** no such acknowledgement exists. A thin player whose entries arrived late is the usual case, as
+  is an entry back-stamped by a silent member. Such an entry **loses to any final `ours` entry whose outcome it
+  would change**, whatever the operation: an exclusive hold, a precondition, or structure. For example, a
+  back-stamped delete that would refuse main's final writes to the object (`Deleted`), or orphan main's final
+  add-ons. It is refused, with the reason "lost to a final entry". Where it changes no final outcome, it replays
+  at its stamp. This matches the confirmed rule that the late or stale side loses conflicts.
+- **A 1/1 split** (a two-player session): a conflict between two unwitnessed entries keeps stamp order, the user's
+  rule. A hash would override that rule for honest pairs.
   [I: "loses" is read as refused. Rebasing it to the application frame `A` instead would let a back-stamped
   delete still destroy main's work at `A`, which is winning by another route.]
 - **Plain writes** are safe under the ordinary order in both cases: a back-stamped write loses to main's later
   one.
+- **Residuals, to be stated to the user:**
+  - colluders beyond `t` can witness each other's back-stamps;
+  - in a 1/1 split, a lone cheater can back-date up to a minute against a lone honest player.
 - **Why** [design-reviewer, High and re-review]: ordered by stamp alone, a member could stamp actions in the past,
   stay silent past `T_merge`, then return and win at the merge against honest players' final actions. A silent
   member publishes no horizon, so the 4-10 frame bound would widen to a minute. The window needs a silent member
@@ -462,9 +469,10 @@ split.
   hit by something `ours` moved. The rule above takes `theirs` unchanged and lets the next step resolve any overlap;
   the alternative pulls it into the group.
 - That no final frame is undone, with the merge applied at `A`.
-- The back-dating rule above, with its controls [C m61125c4194d4]:
+- The back-dating rule above, with its controls [C maf0da5275cdd]:
   - a lone returner's back-stamped grab, and its back-stamped delete of an object main later edited, must lose;
-  - a two-member side's witnessed earlier delete must orphan main's add-on.
+  - a witnessed earlier delete must orphan main's add-on;
+  - Q3b: a connected long-compile machine's earlier delete must orphan main's later add-on.
 - The overlap rule, with its case: an object only `theirs` moved, overlapping one that `ours` moved.
 - **Physics and group-level merging** [@vdw-physics]. Under 4.2a, physics restores and steps a whole domain, so the
   exact reference is a replay of the whole domain from `base`. Until history-free physics exists (file 02 A2;
@@ -503,6 +511,10 @@ split.
   needs none of its own. It means an add-on does not take the parent's version as a refusing precondition.
   It must hold at any depth: an add-on under a grandchild of the deleted object is orphaned too, so a tombstone
   covers the deleted subtree, not only its root [design-reviewer, Low 4].
+  **Adopted by WS-world** (spec r2, 2df5a04, branch `world/spec`) for objects: a create or reparent under a deleted
+  object is orphaned at the root, keeping its world pose. Attaching a *component* to a deleted object is refused
+  (`Deleted{by}`), since a row cannot exist without its object. That is the ordinary rule too, so the merge needs
+  nothing of its own; the user's "add-on" is read as an added object [I].
 - **R-G1, the connection guard (WS-net).** Before a join, compare: the engine build id, the physics self-test's
   digest, and (from M2) each module's hash. A difference refuses the join with its reason (plan M1 acceptance). The
   last self-test result is part of a member's state that section 5 reads.
@@ -616,7 +628,8 @@ network model with random schedules.
 **M2-M3:** the merge properties of 9.5, first in the model, then on pe-diverge's `merge` with the model's traces
 replayed through it (plan 4.1, rule 2); a merge scenario for each order of a delete and an add-on, at depth 1 and
 at depth 2 [R m35138bafc46a]; a lone returner with back-stamped grabs, and with a back-stamped delete of an
-object main later edited (both lose); a two-member side's witnessed earlier delete (main's add-on is orphaned); the overlap case; a sticky root-split
+object main later edited (both lose); a witnessed earlier delete, and a connected long-compile machine's earlier delete (main's add-on
+is orphaned in both); a 1/1 split in both orders; the overlap case; a sticky root-split
 reference under a persistent fault at `n = 2`. pe-harness wires the mutations `MergeByArrival`, `MergeDropsSide`
 and `VoidSplitEntries` to its property P9 (`crates/pe-harness/DESIGN.md` 6.1, branch `harness/design`); pe-diverge
 puts them behind its `mutants` feature.
