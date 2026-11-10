@@ -126,8 +126,8 @@ pub trait Transport {
 /// The session's frame clock: pe-net's clock model (transport.md 5.1, 5.7), steered gradually and published for
 /// lock-free reads. The harness gives its own, driven by each node's local clock with an offset and a drift.
 pub trait FrameClock: Send + Sync {
-    /// The world's simulation rate, in frames per second. Fixed for the session in M1, a world setting (60 Hz by
-    /// default) within a supported range, and independent of the display rate.
+    /// The world's simulation rate, in frames per second: always a valid [`crate::SimRate`] (30 to 120 Hz, 60 by
+    /// default). Fixed for the session in M1, and independent of the display rate.
     fn rate_hz(&self) -> u32;
     /// The session frame at this machine's host time; `None` before frame 0 (the clock is converging).
     fn frame_at(&self, now: HostTime) -> Option<Frame>;

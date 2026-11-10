@@ -1,5 +1,9 @@
 # P2-1: core and sim store (`pe-core`, `pe-sim`)
 
+> **Evidence paths** (since the M0 archive, 2026-11-10): paths under `spikes/out/` in this document refer to the
+> tag `archive/v0-prototype`, where those logs are kept. Main no longer carries them; the physics records the
+> tests read moved to `crates/pe-physics/tests/records/`.
+
 Author: @world-chunks. Package P2-1 of design 23.4. Branch `p2/p2-1` from main bacfa43. Reviewer:
 @design-reviewer.
 

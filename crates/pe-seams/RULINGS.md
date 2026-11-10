@@ -79,6 +79,8 @@ case for @harness-eng: a non-voter at n = 4 that receives one of a final cut's e
 - **S1's byte layout** (format 1: `Entry::signing_bytes`, `SignedEntry::encode`) is provisional; WS-agree may change
   it in v1, through WS-seams. A chain's first entry carries its nonce, so anyone can check its chain id.
 - **The vote hold** (@iter-bench's N3): `hold_votes_from(frame)` and `release_votes_from(frame)`.
+- **The simulation rate** (the user, mc8dc9e5a6ffb): `SimRate`, 30 to 120 Hz in whole hertz, 60 by default;
+  `FrameClock::rate_hz` always returns one. pe-physics runs `ceil(240 / rate)` sub-steps (@vdw-physics).
 - **Voids name their cut:** `AgreeEvent::Voided { entry, author, reason, cut }`, so the harness checks that every
   void is decided by a final cut and that members agree on which (@harness-eng, m3bb675a96918).
 - **Root splits** carry each voter's self-test verdict (`RootSplit { roots: [(root, [(member, SelfTest)])] }`), for
