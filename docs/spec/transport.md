@@ -122,6 +122,11 @@ What follows from the rule:
       for a LAN, and whichever network the user's VPN shows as [I].
     - The prompt appears only in an interactive desktop session. Headless runs (CI, Session 0) and M0's test
       under WSL and Hyper-V never see it [I], so they use the fallback.
+    - Declining the prompt usually leaves persistent *block* rules for the app, so the prompt doesn't return
+      [I, @design-reviewer]. pe-app detects that state, uses the fallback, and tells the user how to undo the
+      block if they want direct connections.
+    - The rule is tied to the executable's path, so a build at another path prompts again. At the two-machine
+      checkpoints, a new prompt after a new build is expected, not a fault.
   - **The fallback: a two-way invite** [I].
     - It is used when the prompt was declined or never shown, or the inviter isn't on Windows behind such a
       firewall.
@@ -597,8 +602,9 @@ Gated, unless marked:
    - each guard refuses with its reason, and the joiner shows it;
    - a close before the welcome counts as a refusal;
    - the joiner sends nothing above the transport before the welcome;
-   - with the inviter's inbound blocked (the prompt declined, or a headless run), the two-way invite connects
-     (the fallback, 2.4);
+   - with the inviter's inbound blocked (a headless run), the two-way invite connects (the fallback, 2.4);
+   - by hand, on Windows: after the user really declines the prompt (block rules left behind), the two-way
+     invite still connects, and pe-app shows how to undo the block;
    - by hand, once per checkpoint on the two physical machines: after the user accepts Windows' allow prompt,
      the joiner's dial connects directly (the default, 2.4);
    - a third member joins through a rendezvous;
