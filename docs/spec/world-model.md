@@ -1,9 +1,9 @@
 # The world model (WS-world)
 
-Status: **r9, 2026-11-10.** r8 is approved by both reviewers and on main (bda10ae). r9 follows the user's one-origin
-ruling (md2e515db107c, mdad0d5626305; fable-review file 20): every world descends from one empty origin, so a world
-is identified by its line, not by a genesis of its own (new section 2.3); and it reserves what merging unrelated
-worlds and the world line tool need; for re-review of those parts. Written by @world-model. Nothing in it is built.
+Status: **r12, 2026-11-11.** r11 is on world/core-v1 (with the first WS-world code), reviewed piecewise. r12 follows
+pe-seams S2 v1 (c93fa631): the tree is addressed by nibble prefix, and `pe_seams::Node::hash` is the single definition
+of every tree hash (6.2, 6.5); it adds a hierarchy depth limit (3.3, @chunks-reviewer's Q2 via @coordinator-opus
+m8fe5d95c6f0d); for review of those parts. Written by @world-model. Nothing in it is built.
 Reviewers: @design-reviewer (section 6, the hash tree, and section 7, the edit entries and their conflict rules);
 @chunks-reviewer (everything else). Seams S1, S2 and S5 are proposals to @engine-architect until pe-seams v0 is fixed.
 
@@ -314,6 +314,10 @@ in every derivation, and the reserved `Node.born_on` field and `lines` table. Me
 - Kept: plain edits store what they are given; keep-world edits are explicit [V `transform.rs:11-21`]. A reparent
   edit says which it wants.
 - **A cycle** (reparenting an object under its own descendant) is refused.
+- **A depth limit** (@chunks-reviewer's Q2 on pe-api, via @coordinator-opus m8fe5d95c6f0d): an object may be at
+  most 256 levels below its root [I; a world setting, at most 4,096]. A `Create`, `Copy`, `Reparent` or `Undelete`
+  that would put any object deeper is refused with `TooDeep`. Every tree walk in pe-world, pe-sim and the API is
+  iterative, never recursive, so even a corrupt state cannot overflow a stack (5.3).
 
 ### 3.4 Blobs
 
@@ -569,17 +573,37 @@ World
 
 ### 6.2 The shape
 
+**The single definition is `pe_seams::Node::hash`** (S2 v1, c93fa631, approved by @design-reviewer at 7bd3a3cd):
+pe-world calls it, and so does every walker that checks a node against its parent, so the two can never disagree.
+`H(ctx ‖ …)` is BLAKE3 in key-derivation mode with the context `ctx` (6.1); every integer is little-endian; counts come
+before variable lists.
+
 ```
-world root = H("pe.root" ‖ frame ‖ config hash ‖ tables root ‖ domain roots in DomainId order)
-  tables root = H(registry ‖ lines ‖ modules ‖ governance ‖ claims ‖ cooldowns ‖ tombstones)   each a sorted-map hash
-  domain root = H("pe.domain" ‖ domain id ‖ objects root ‖ physics_global)
-                physics_global is pe-physics's hash of that domain's physics image (6.3); per domain, so M4's
-                domains per contact group change no format (@design-reviewer's r5 Low 1)
+world root   = H("pe.root"   ‖ frame u64 ‖ config hash ‖ tables root ‖ count of domains u64 ‖ each domain root,
+                               in DomainId order)
+  config hash  = the hash of the world's canonical config bytes
+  tables root  = H("pe.tables" ‖ count u64 ‖ each table's hash, in this order: registry, lines, modules, governance,
+                               claims, cooldowns, tombstones)          each table hash is a sorted-map hash
+  domain root  = H("pe.domain" ‖ domain id u64 ‖ objects root ‖ physics_global)
+                 physics_global is pe-physics's hash of that domain's physics image (6.3); per domain, so M4's
+                 domains per contact group change no format (@design-reviewer's r5 Low 1)
   objects root = the root of a path-compressed 16-way trie over the ObjectIds of that domain's World objects
-    inner node = H("pe.node" ‖ depth ‖ 16-bit child mask ‖ the hashes of the present children, in nibble order)
-    leaf       = H("pe.leaf" ‖ object id ‖ object leaf hash)
-    empty trie = a fixed constant
+    inner node = H("pe.node"  ‖ depth u8 ‖ the node's prefix, ceil(depth / 2) bytes, two nibbles per byte, high
+                               nibble first, the last low nibble zero when depth is odd ‖ child mask u16
+                               ‖ the hashes of the present children, in nibble order)
+    leaf       = H("pe.leaf"  ‖ object id u128 ‖ object leaf hash)
+    empty trie = H("pe.empty") of no bytes
 ```
+
+- **Nibbles run from the most significant** nibble of the id's `u128` down (`pe_seams::Nibbles::of_id`), so prefix
+  order is id order.
+- **A node binds its own prefix**, so a source cannot relabel a subtree without breaking its parent's hash
+  (@diverge-eng's Medium 3). A walker from the agreed root checks each received node against the hash its parent
+  named, and the first lie is caught.
+- **Malformed nodes have no hash** (`Node::hash` returns `None`): an inner node at depth 32, one with no children,
+  one with a child nibble of 16 or more or children out of order, and domains out of order. An inner node with one
+  child is legal in the formula, but the canonical trie never makes one, so a peer's one-child node fails its
+  parent's hash.
 
 - **A trie keyed by id, with one canonical shape** [I]. The rule:
   - a leaf sits at the shortest prefix of its id (in nibbles) that no other id in the trie shares;
@@ -658,10 +682,16 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
 ### 6.5 Finding what differs, and patching it (S2)
 
 - **Diff** is a walk of two tries, in rounds: ask for a node's children, descend into those that differ. Over the
-  network that is about one round trip per level, 5 at a million objects. The S2 calls, as @engine-architect and
-  @diverge-eng name them (section 9.2): `node(root, path)` returns a node's child (key, hash) pairs, or a leaf;
-  `export(root, ids)` returns the objects' records with their paths to the root. Tables are named paths of the
-  same tree, so a differing table is found and exported the same way.
+  network that is about one round trip per level, 5 at a million objects. The S2 calls (S2 v1; section 9.2):
+  - **paths are nibble prefixes** (`TreePath`: 0 to 32 nibbles of an id, with the domain and table paths as named
+    prefixes above it), because the trie is path-compressed and two sides with different id sets have tries of
+    different shapes (@diverge-eng's Medium 1);
+  - `node(prefix)` returns the node covering that prefix, passing through compressed segments:
+    `Inner { prefix, mask, children }` (its depth is its prefix's length), `Leaf { id, leaf_hash }`, or `Empty`;
+  - when my node's prefix and theirs differ, the difference is structural: everything under theirs is fetched, and
+    everything under mine that they lack is removed;
+  - `export(root, keys)` returns the records for objects and tables (`LeafKey`) with their paths to the root.
+  Tables are named paths of the same tree, so a differing table is found and exported the same way.
 - **Import** (repair rung 2): `import(at, records)` replaces the named objects' rows and the named tables with
   fetched ones. Every record's path is checked, before anything is applied, against the quorum-agreed root of a
   final cut, never against the sender's claim. It is a restore of part of a root; WS-diverge drives it and
