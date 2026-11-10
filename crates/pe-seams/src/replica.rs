@@ -33,6 +33,7 @@
 //! as one blob (chunking by hash comes with the Bulk lane). **Not yet in the trait:** the M2 calls for the merge and
 //! background replay (a fork at a frame, per-group restore and step, the per-frame footprint).
 
+use core::time::Duration;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -190,6 +191,9 @@ pub struct Advance {
     pub resimulated: u64,
     /// New frames stepped.
     pub stepped: u64,
+    /// Whether it reached `present` within its budget ([`Replica::set_budget`]). When false it resumes on the next
+    /// call, and [`Replica::view`] keeps the last view published at the present.
+    pub caught_up: bool,
 }
 
 /// What [`Replica::finalize`] found.
@@ -200,9 +204,9 @@ pub enum Finalized {
     /// My root differs: I diverged at this cut. The floor moves to it (its entries are final), `Cv` stays, and a
     /// repair is due. After the repair, the driver calls [`Replica::finalize`] again for the same cut.
     Diverged { mine: Hash },
-    /// I do not hold every entry of the cut yet (the d1 rule): nothing compared, and the floor stays. It does not
-    /// happen when the driver passes [`EntrySource::final_cut`], which waits for the entries; a driver that passes a
-    /// cut early calls again once the source reports it.
+    /// I do not hold every entry of the cut yet (the d1 rule), or I have not yet re-simulated to its frame within my
+    /// budget: nothing compared, and the floor stays. The driver calls again on a later tick. (The first case does not
+    /// happen when the driver passes [`EntrySource::final_cut`], which waits for the entries.)
     NotReady,
 }
 
@@ -218,6 +222,9 @@ pub enum RootError {
     /// The saved state at `Cv` failed its full rehash, from its records or from the restored physics itself: rung 2
     /// is due at once.
     Damaged,
+    /// The work did not fit in this call's budget ([`Replica::set_budget`]) and is under way: call again with the
+    /// same cut on a later tick.
+    Pending,
 }
 
 // ---- the tree ------------------------------------------------------------------------------------------------------
@@ -457,6 +464,9 @@ pub enum ImportError {
     PhysicsCheck,
     /// Everything checked, but the patched root is not the target: the import was incomplete.
     RootMismatch { got: Hash },
+    /// The re-simulation to the present did not fit in this call's budget and is under way: call again with the same
+    /// import on a later tick.
+    Pending,
 }
 
 // ---- the trait -----------------------------------------------------------------------------------------------------
@@ -468,15 +478,27 @@ pub enum ImportError {
 /// [`Replica::import_at_cut`]) changes the live state only, so it may run at a cut that is not final, as in a root
 /// split; if that cut is then superseded, nothing below it was given up. When the repaired cut is final, the driver
 /// calls `finalize` for it again, which moves `Cv` once my root matches.
+///
+/// **Bounded work per call** (v1.1; @design-reviewer on docs/spec/app.md, mf5074c5ab2fd). A deep rollback, or a
+/// repair's replay of up to `W_fg`, would otherwise stall the simulation thread, and agreement with it, for hundreds
+/// of milliseconds. So the replica re-simulates at most its budget per call ([`Replica::set_budget`], simulated time,
+/// so the harness stays deterministic) and resumes on the next call. While a replay or an import is pending, `advance`
+/// continues it first. Until the replica reaches the present again, [`Replica::view`] keeps the last view it published
+/// there, so the display draws (and extrapolates) that one. The results never depend on how the work was split.
 pub trait Replica: Send {
     fn domain(&self) -> DomainId;
 
     /// The next frame to step: every frame below it is simulated.
     fn frame(&self) -> Frame;
 
+    /// The most simulated time one call may re-simulate or step: a local setting, never world state, which pe-app may
+    /// adjust from the measured step cost. It changes how fast the replica catches up, never what it computes.
+    fn set_budget(&mut self, simulated: Duration);
+
     /// Re-simulate from the earliest changed frame, never below the replica's own floor (the last cut it finalized,
-    /// which can be older than the line's newest final cut), then step new frames up to `present`, exclusive. Never
-    /// waits for the network: an entry not held yet is simply absent. Never aborts on input.
+    /// which can be older than the line's newest final cut), then step new frames up to `present`, exclusive, within
+    /// the budget ([`Advance::caught_up`]). Never waits for the network: an entry not held yet is simply absent. Never
+    /// aborts on input.
     fn advance(&mut self, present: Frame, source: &mut dyn EntrySource) -> Advance;
 
     /// An entry's outcome at the frame it was last simulated.
@@ -518,7 +540,7 @@ pub trait Replica: Send {
     ) -> Result<Hash, ImportError>;
 
     /// The newest published frame view (S5): published once per frame, after the replica reached the present, never
-    /// during a re-simulation.
+    /// during a re-simulation or while catching up within the budget.
     fn view(&self) -> Arc<FrameView>;
 }
 

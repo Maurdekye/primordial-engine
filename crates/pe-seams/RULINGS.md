@@ -56,6 +56,17 @@ v1:
   trie is `BLAKE3-derive("pe.empty")`. The upper levels follow 6.2, with counts before the variable lists.
   A malformed node has no hash, so a peer's bad node is a fault, never a panic.
 
+## S2 v1.1: bounded work per call
+
+@design-reviewer's review of docs/spec/app.md draft 1 (mf5074c5ab2fd): a repair's replay of up to `W_fg` (2 s,
+120-240 frames), or a rollback that deep, run in one tick, stalls the simulation thread, and agreement's votes and
+messages with it, for hundreds of milliseconds. So the replica re-simulates at most a budget per call
+(`Replica::set_budget`, in simulated time, a local setting) and resumes on the next call; `Advance::caught_up` says
+whether it reached the present; `root_at_cut` and `replay_to` return `RootError::Pending`, `import_at_cut`
+`ImportError::Pending`, to be called again on a later tick; `finalize` returns `NotReady` until the replica has
+re-simulated to the cut. Until it reaches the present again, `view` keeps the last view published there. M2's second
+copy later keeps the old prediction moving during a deep replay instead.
+
 ## The conflicts between proposals, and v0's rulings
 
 | # | Question | v0 takes | Who changes what |
