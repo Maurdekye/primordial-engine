@@ -275,7 +275,7 @@ impl Renderer {
     pub fn new(ctx: GpuContext, settings: RenderSettings) -> Renderer {
         let device = &ctx.device;
         // Under the creation lock: if the race in gpu.rs is FXC's, a compile is where it would bite.
-        let compiling = crate::gpu::creating();
+        let compiling = crate::gpu::creation_lock();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pe-render scene"),
             source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
@@ -462,7 +462,7 @@ impl Renderer {
         let key = (format_key(format), samples);
         if !self.pipelines.contains_key(&key) {
             // D3D12 compiles shaders here, at pipeline creation: under the creation lock (gpu.rs).
-            let _compiling = crate::gpu::creating();
+            let _compiling = crate::gpu::creation_lock();
             let device = &self.ctx.device;
             let make = |label, vs, fs, cull, depth_write, blend: Option<wgpu::BlendState>| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

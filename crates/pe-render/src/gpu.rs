@@ -19,7 +19,9 @@ use std::sync::Mutex;
 /// Creation is rare, so the lock costs nothing.
 static CREATE: Mutex<()> = Mutex::new(());
 
-pub(crate) fn creating() -> std::sync::MutexGuard<'static, ()> {
+/// The process-wide creation lock. pe-xr and pe-app take it around any instance, adapter, device or pipeline
+/// they make themselves (app.md: every context is made on the main thread, one at a time, XR's first).
+pub fn creation_lock() -> std::sync::MutexGuard<'static, ()> {
     CREATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -90,7 +92,7 @@ impl GpuContext {
     /// `surface` (when given).
     pub fn desktop(instance: wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<GpuContext, ContextError> {
         let all = {
-            let _one_at_a_time = creating();
+            let _one_at_a_time = creation_lock();
             pollster::block_on(instance.enumerate_adapters(backends()))
         };
         let mut adapters: Vec<wgpu::Adapter> =
@@ -116,7 +118,7 @@ impl GpuContext {
     /// [`GpuContext::headless`] on the given backends only.
     pub fn headless_on(backends: wgpu::Backends, choice: AdapterChoice) -> Result<GpuContext, ContextError> {
         let (instance, adapter) = {
-            let _one_at_a_time = creating();
+            let _one_at_a_time = creation_lock();
             let instance = wgpu::Instance::new(instance_descriptor(backends));
             let mut adapters: Vec<wgpu::Adapter> = pollster::block_on(instance.enumerate_adapters(backends));
             adapters.retain(|a| choice == AdapterChoice::Any || a.get_info().device_type == wgpu::DeviceType::Cpu);
@@ -134,7 +136,7 @@ impl GpuContext {
             required_limits: wgpu::Limits::default(),
             ..Default::default()
         };
-        let _one_at_a_time = creating();
+        let _one_at_a_time = creation_lock();
         let (device, queue) =
             pollster::block_on(adapter.request_device(&desc)).map_err(|e| ContextError::Device(e.to_string()))?;
         Ok(GpuContext { instance, adapter, device, queue })

@@ -87,13 +87,14 @@ struct Gfx {
     renderer: Renderer,
 }
 
-struct App {
+/// The desktop view: pe-app's main thread owns the winit window and its event loop, and forwards the window's
+/// events here (app.md, WS-app). [`run_desktop`] is the same view with its own event loop, for demos and tests.
+pub struct DesktopView {
     cfg: DesktopConfig,
     slot: Arc<FrameSlot>,
     feed: Arc<DesktopHandFeed>,
     sink: Box<dyn EffectSink>,
     gfx: Option<Gfx>,
-    error: Option<ContextError>,
     pacer: Pacer,
     hand: DesktopHand,
     pointer: Pointer,
@@ -108,7 +109,94 @@ struct App {
     report: DesktopReport,
 }
 
-impl App {
+/// The window's surface and a GPU context that can present to it: Vulkan first, then D3D12 (render.md 4). The
+/// instance, adapter and device are made under the creation lock.
+pub fn surface_and_context(window: Arc<Window>) -> Result<(wgpu::Surface<'static>, GpuContext), ContextError> {
+    let (instance, surface) = {
+        let _one_at_a_time = crate::gpu::creation_lock();
+        let instance = wgpu::Instance::new(instance_descriptor(backends()));
+        let surface = instance.create_surface(window).map_err(|e| ContextError::Device(e.to_string()))?;
+        (instance, surface)
+    };
+    let ctx = GpuContext::desktop(instance, Some(&surface))?;
+    Ok((surface, ctx))
+}
+
+impl DesktopView {
+    /// The view on `window`: its surface and context (see [`surface_and_context`]), configured for `cfg`.
+    pub fn new(
+        window: Arc<Window>,
+        cfg: DesktopConfig,
+        slot: Arc<FrameSlot>,
+        feed: Arc<DesktopHandFeed>,
+        sink: Box<dyn EffectSink>,
+    ) -> Result<DesktopView, ContextError> {
+        let (surface, ctx) = surface_and_context(window.clone())?;
+        Self::on(window, surface, ctx, cfg, slot, feed, sink)
+    }
+
+    /// The view on a surface and context the caller made (one at a time, under [`crate::gpu::creation_lock`]).
+    pub fn on(
+        window: Arc<Window>,
+        surface: wgpu::Surface<'static>,
+        ctx: GpuContext,
+        cfg: DesktopConfig,
+        slot: Arc<FrameSlot>,
+        feed: Arc<DesktopHandFeed>,
+        sink: Box<dyn EffectSink>,
+    ) -> Result<DesktopView, ContextError> {
+        let report = DesktopReport { adapter: ctx.describe(), ..Default::default() };
+        let size = window.inner_size();
+        let Some(mut config) = surface.get_default_config(&ctx.adapter, size.width.max(1), size.height.max(1)) else {
+            return Err(ContextError::Device("the surface is not supported by the adapter".into()));
+        };
+        config.present_mode = cfg.present_mode;
+        config.desired_maximum_frame_latency = 2;
+        // Draw through an sRGB view, so the window reads as the capture and the headset do.
+        let format = config.format.add_srgb_suffix();
+        if format != config.format {
+            config.view_formats = vec![format];
+        }
+        surface.configure(&ctx.device, &config);
+        let renderer = Renderer::new(ctx, cfg.render);
+        let f = quat(cfg.eye.orientation) * DVec3::NEG_Z;
+        // The inverse of eye_rot: forward is (-sin yaw cos pitch, sin pitch, -cos yaw cos pitch).
+        let (yaw, pitch) = ((-f.x).atan2(-f.z), f.y.clamp(-1.0, 1.0).asin());
+        let eye_pos = DVec3::new(cfg.eye.position[0] as f64, cfg.eye.position[1] as f64, cfg.eye.position[2] as f64);
+        Ok(DesktopView {
+            pacer: Pacer::new(PacerSettings::default(), &DESKTOP_LADDER),
+            hand: DesktopHand::new(cfg.hand),
+            cfg,
+            slot,
+            feed,
+            sink,
+            gfx: Some(Gfx { window, surface, config, format, renderer }),
+            pointer: Pointer::default(),
+            yaw,
+            pitch,
+            eye_pos,
+            occluded: false,
+            started: Instant::now(),
+            last_present: None,
+            last_frame: None,
+            targets: Vec::new(),
+            report,
+        })
+    }
+
+    pub fn window(&self) -> &Arc<Window> {
+        &self.gfx.as_ref().expect("made in new").window
+    }
+
+    pub fn report(&self) -> &DesktopReport {
+        &self.report
+    }
+
+    /// Ask winit for the next frame (call from `about_to_wait`).
+    pub fn request_redraw(&self) {
+        self.window().request_redraw();
+    }
+
     fn eye_rot(&self) -> DQuat {
         DQuat::from_rotation_y(self.yaw) * DQuat::from_rotation_x(self.pitch)
     }
@@ -217,68 +305,11 @@ impl App {
             g.renderer.set_msaa(q.msaa);
         }
     }
-}
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, el: &ActiveEventLoop) {
-        if self.gfx.is_some() || self.error.is_some() {
-            return;
-        }
-        let attrs = Window::default_attributes()
-            .with_title(self.cfg.title.clone())
-            .with_inner_size(winit::dpi::PhysicalSize::new(self.cfg.size[0], self.cfg.size[1]));
-        let window = match el.create_window(attrs) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                self.error = Some(ContextError::Device(e.to_string()));
-                el.exit();
-                return;
-            }
-        };
-        let made = {
-            let _one_at_a_time = crate::gpu::creating();
-            let instance = wgpu::Instance::new(instance_descriptor(backends()));
-            instance.create_surface(window.clone()).map(|s| (instance, s))
-        };
-        let (instance, surface) = match made {
-            Ok(x) => x,
-            Err(e) => {
-                self.error = Some(ContextError::Device(e.to_string()));
-                el.exit();
-                return;
-            }
-        };
-        let ctx = match GpuContext::desktop(instance, Some(&surface)) {
-            Ok(c) => c,
-            Err(e) => {
-                self.error = Some(e);
-                el.exit();
-                return;
-            }
-        };
-        self.report.adapter = ctx.describe();
-        let size = window.inner_size();
-        let Some(mut config) = surface.get_default_config(&ctx.adapter, size.width.max(1), size.height.max(1)) else {
-            self.error = Some(ContextError::Device("the surface is not supported by the adapter".into()));
-            el.exit();
-            return;
-        };
-        config.present_mode = self.cfg.present_mode;
-        config.desired_maximum_frame_latency = 2;
-        // Draw through an sRGB view, so the window reads as the capture and the headset do.
-        let format = config.format.add_srgb_suffix();
-        if format != config.format {
-            config.view_formats = vec![format];
-        }
-        surface.configure(&ctx.device, &config);
-        let renderer = Renderer::new(ctx, self.cfg.render);
-        self.gfx = Some(Gfx { window, surface, config, format, renderer });
-        self.started = Instant::now();
-    }
-
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        match event {
-            WindowEvent::CloseRequested => el.exit(),
+    /// One window event. Returns true when the window should close (closed, or `run_for` passed).
+    pub fn window_event(&mut self, event: &WindowEvent) -> bool {
+        match *event {
+            WindowEvent::CloseRequested => return true,
             WindowEvent::Occluded(o) => self.occluded = o,
             WindowEvent::Resized(s) => {
                 if let Some(g) = self.gfx.as_mut() {
@@ -318,8 +349,8 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
                 };
             }
-            WindowEvent::ModifiersChanged(m) => self.pointer.shift = m.state().shift_key(),
-            WindowEvent::KeyboardInput { event, .. } => {
+            WindowEvent::ModifiersChanged(ref m) => self.pointer.shift = m.state().shift_key(),
+            WindowEvent::KeyboardInput { ref event, .. } => {
                 let down = event.state == ElementState::Pressed;
                 let i = match event.physical_key {
                     PhysicalKey::Code(KeyCode::KeyW) => 0,
@@ -330,7 +361,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyC) => 5,
                     PhysicalKey::Code(KeyCode::KeyQ) => 6,
                     PhysicalKey::Code(KeyCode::KeyE) => 7,
-                    _ => return,
+                    _ => return false,
                 };
                 self.pointer.keys[i] = down;
             }
@@ -339,16 +370,55 @@ impl ApplicationHandler for App {
                     self.draw();
                 }
                 if self.cfg.run_for.is_some_and(|d| self.started.elapsed() >= d) {
-                    el.exit();
+                    return true;
                 }
             }
             _ => {}
         }
+        false
+    }
+}
+
+/// What a [`DesktopView`] is made from, held until the window exists.
+type Parts = (DesktopConfig, Arc<FrameSlot>, Arc<DesktopHandFeed>, Box<dyn EffectSink>);
+
+/// [`run_desktop`]'s own event loop around a [`DesktopView`].
+struct Standalone {
+    parts: Option<Parts>,
+    view: Option<DesktopView>,
+    error: Option<ContextError>,
+}
+
+impl ApplicationHandler for Standalone {
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        let Some((cfg, slot, feed, sink)) = self.parts.take() else { return };
+        let attrs = Window::default_attributes()
+            .with_title(cfg.title.clone())
+            .with_inner_size(winit::dpi::PhysicalSize::new(cfg.size[0], cfg.size[1]));
+        let made = el
+            .create_window(attrs)
+            .map_err(|e| ContextError::Device(e.to_string()))
+            .and_then(|w| DesktopView::new(Arc::new(w), cfg, slot, feed, sink));
+        match made {
+            Ok(v) => self.view = Some(v),
+            Err(e) => {
+                self.error = Some(e);
+                el.exit();
+            }
+        }
+    }
+
+    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let Some(v) = self.view.as_mut()
+            && v.window_event(&event)
+        {
+            el.exit();
+        }
     }
 
     fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
-        if let Some(g) = &self.gfx {
-            g.window.request_redraw();
+        if let Some(v) = &self.view {
+            v.request_redraw();
         }
     }
 }
@@ -362,37 +432,11 @@ pub fn run_desktop(
 ) -> Result<DesktopReport, ContextError> {
     let el = EventLoop::new().map_err(|e| ContextError::Device(format!("event loop: {e}")))?;
     el.set_control_flow(ControlFlow::Poll);
-    let q = quat(cfg.eye.orientation);
-    let (yaw, pitch) = {
-        let f = q * DVec3::NEG_Z;
-        // The inverse of eye_rot: forward is (−sin yaw cos pitch, sin pitch, −cos yaw cos pitch).
-        ((-f.x).atan2(-f.z), f.y.clamp(-1.0, 1.0).asin())
-    };
-    let eye_pos = DVec3::new(cfg.eye.position[0] as f64, cfg.eye.position[1] as f64, cfg.eye.position[2] as f64);
-    let hand = DesktopHand::new(cfg.hand);
-    let mut app = App {
-        pacer: Pacer::new(PacerSettings::default(), &DESKTOP_LADDER),
-        cfg,
-        slot,
-        feed,
-        sink,
-        gfx: None,
-        error: None,
-        hand,
-        pointer: Pointer::default(),
-        yaw,
-        pitch,
-        eye_pos,
-        occluded: false,
-        started: Instant::now(),
-        last_present: None,
-        last_frame: None,
-        targets: Vec::new(),
-        report: DesktopReport::default(),
-    };
+    let mut app = Standalone { parts: Some((cfg, slot, feed, sink)), view: None, error: None };
     el.run_app(&mut app).map_err(|e| ContextError::Device(format!("event loop: {e}")))?;
-    match app.error {
-        Some(e) => Err(e),
-        None => Ok(app.report),
+    match (app.error, app.view) {
+        (Some(e), _) => Err(e),
+        (None, Some(v)) => Ok(v.report),
+        (None, None) => Err(ContextError::Device("the window was never made".into())),
     }
 }
