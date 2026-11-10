@@ -563,6 +563,9 @@ What pe-diverge needs from pe-agree, beyond the sketch:
 - A way to vote again on a pending cut after a repair (`revote(cut, root)`), for section 5.
 - `final_entries(from, to)`: the final log between two cuts, for rung 1, the bundle and the merge.
 - `Voided { entry, reason }`, as sketched: for `voided_own` and for the merge (9.3).
+- **Witnesses** (from M2, for 9.3): for an entry, the signed acknowledgements by other members that reference it,
+  with their stamps, so the merge can test "witnessed within `B`". They are kept with the merge base, for up to
+  `T_diverge`.
 - From M2: the merge entry is an ordinary entry; `Merged` and (M3) `Diverged` events, as sketched;
   `Unconfirmed(time)` and `QuorumLost`, as sketched.
 - A member's vote carries its last self-test result, or the guard's verdict is otherwise visible to all (5, step 2).
