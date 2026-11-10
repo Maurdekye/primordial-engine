@@ -116,10 +116,10 @@ Result:
 - **There is no world owner** [R: the user, 19:50Z, `_teams/1847/fable-review/18-no-world-owner.md`]: every admin
   is a co-owner and keeps their own version of the world. So no result has an owner field; `session_info` gives
   members and roles only [V api.md 10.5], and nothing in the agent's words or a player's says "the world's owner".
-- **Whether this session is being kept** [P]: `session_info` adds `"kept": true` while an admin is present, since
-  only admins keep the world (file 18, 1.5 and 2.2). With no admin, `"kept": false`, and every player sees a
-  permanent mark: "Nothing here is being kept: no admin of this world is present." One of the user's open
-  questions on file 18 is whether such a session keeps nothing, so this stays a parameter until answered.
+- **Whether this session is being kept** [R: the user, 19:53Z, mb3da953109cb; file 18 section 6]: a session with
+  no admin keeps nothing unless an admin joins before it ends, shown by a permanent mark. `session_info` gives
+  `"kept": true` while an admin is present and `"kept": false` otherwise; with `false`, every player sees the
+  mark "Nothing here is being kept: no admin of this world is present." [P wording]
 - There is no separate revert right (3.7): reverting needs the permissions the reverted change's ops need, so
   `may` doesn't list one.
 
@@ -603,6 +603,6 @@ Draft 3's review fixes (@chunks-reviewer, m7ef541e944cb, approved at 70fb723): U
 protect (5, ruled by @coordinator-opus), and L1-L5. Draft 4: U4, a root object's position (4), answered by
 @world-model, with only the exact `Pos` syntax left to @api-eng; mass from density (3.4).
 
-Draft 6: the position syntax fixed (4, [V api.md v1]); the no-world-owner ruling (3.1, 5), with `kept` as a
-proposal; step 7 corrected to an inspector edit, with the grab case as `held` (7). @api-eng adopted the five new
+Draft 6: the position syntax fixed (4, [V api.md v1]); the no-world-owner ruling (3.1, 5), with `kept` (user-ruled
+19:53Z, mb3da953109cb; the field name and wording are mine); step 7 corrected to an inspector edit, with the grab case as `held` (7). @api-eng adopted the five new
 refusal messages and `code_check`'s description as written (api.md v1, section 13).
