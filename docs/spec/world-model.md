@@ -67,12 +67,20 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
 - `ObjectId(u128)`, world-scoped. `ObjectId::NONE` is 0 and never names an object.
 - **Derived, never allocated** [I]. The id of the `k`-th object an edit entry creates is
 
-  `ObjectId = first 16 bytes of BLAKE3("pe.object" ‖ world id ‖ author key ‖ author's chain seq as u64 LE ‖ k as u32
-  LE)`,
+  `ObjectId = first 16 bytes of BLAKE3("pe.object" ‖ world id ‖ author key ‖ chain id ‖ author's chain seq as u64
+  LE ‖ k as u32 LE)`,
 
-  agreed with @api-eng (its O2). The author knows its key and the next sequence number of its own chain when it
-  composes the entry, so the ids are known before ordering and before signing, and they do not depend on the
-  envelope's hash format. Two entries with one sequence number (equivocation) would derive the same ids; pe-agree
+  agreed with @api-eng (its O2). The author knows its key, its chain id and the next sequence number of its own
+  chain when it composes the entry, so the ids are known before ordering and before signing, and they do not depend
+  on the envelope's hash format.
+- **(chain id, seq) is unique for the world's whole life** (@chunks-reviewer's N1). A chain id is
+  `BLAKE3("pe.chain" ‖ world id ‖ author key ‖ nonce)`, where the nonce is 32 random bytes the author picks when it
+  starts a chain and puts in that chain's first entry. Two requirements on S1, for @engine-architect and WS-agree:
+  - a member keeps one chain per world for the world's life where it can: a returning member (a rejoin, a new
+    session, a new machine with the same key) is handed its chain head and continues it;
+  - if a chain must ever start again (a member restored an older local state, or lost its head), it starts with a
+    new nonce, so a new chain id. Its sequence numbers then derive fresh ids and never take an earlier object's id,
+    even after that object's tombstone has expired; and an honest restart is a new chain, not an equivocation. Two entries with one sequence number (equivocation) would derive the same ids; pe-agree
   drops both as proof against their author, and a create of an id already present is refused anyway. A result of 0
   is replaced by 1 (probability 2^-128).
 - **Why derived, not counted.** Today an id is `(creator, counter)` [V `crates/pe-core/src/ids.rs:50-58`], with a
@@ -146,7 +154,8 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   | Kind | Bytes | Meaning |
   |---|---|---|
   | `ObjectRef` | 16 | an `ObjectId`, stored as `[u64; 2]` little-endian so rows stay 8-byte aligned (`u128` is 16-byte aligned on x86-64, and columns are `u64` buffers [V `column.rs:6-13`]); replaces the 8-byte `ObjectId` kind |
-  | `BlobRef` | 40 | a 32-byte blob hash and a `u64` length; all-zero is "none" |
+  | `BlobRef` | 40 | a display blob (3.4): a 32-byte blob hash and a `u64` length; all-zero is "none" |
+  | `SimBlobRef` | 40 | a simulation blob (3.4), the same layout |
   | `Pos` | 48 | an exact position (section 4); only `Pos` operations read it |
   | `MemberKey` | 32 | a member's public key |
   | `EntryRef` | 32 | an `EntryId` |
@@ -204,7 +213,10 @@ named roots (M5); domains per contact group (the format is ready from M1, sectio
   that names it (the user, 19:09Z).
 - **How they travel:** an edit that introduces a blob names its hash and length. The bytes travel alongside on the
   bulk lane (S4), or are fetched by hash from any member that has them.
-- **Blobs are of two uses, with two rules** [I, after @chunks-reviewer's F1]. A component field declares which:
+- **Blobs are of two uses, with two rules** [I, after @chunks-reviewer's F1]. A component field declares which, by
+  its kind: `BlobRef` for display, `SimBlobRef` for simulation. The enforcement point is the reader: pe-physics and
+  pe-sdk read bytes only through `SimBlobRef` fields, and pe-sdk gives logic no way to read a display blob's bytes
+  (@chunks-reviewer's N5; a note for WS-logic).
   - **Display blobs** (a mesh to draw, textures, names, materials) may be missing. The entry applies, the `BlobRef`
     is stored as given, and the hash stays exact. Only drawing waits: a mesh is drawn as its bounding box. Shared
     simulation never reads a display blob, so no two machines can compute differently because of one.
@@ -228,8 +240,11 @@ accepted the details below (m8c42b4b093bd, via @coordinator-opus m04de7b0d9a18; 
 
 - **Every `World` object has a `SimSize` row,** in metres: positive and finite. It never affects physics, drawing or
   collision; WS-regions reads it to choose the object's layer (M4).
-- **The default at creation** is 1 m times the scale of the member who made it (the maker's avatar scale at the
-  edit's frame). Objects made by world logic or at genesis take 1 m times the spawner's world scale [I].
+- **The default at creation** is 1 m times the scale of the member who made it: the world scale of that member's
+  avatar root, a `World` object, at the edit's frame. So the default is a function of hashed state, the same on
+  every machine (@chunks-reviewer's N4). An agent's edit takes the scale of the member it acts for. Objects made by
+  world logic or at genesis take 1 m times the spawner's world scale [I]. In M1, before avatars, a member's
+  avatar root is its hands' parent object, created at admission with scale 1.
 - **Never below the real extent.** The size WS-regions uses is `max(SimSize, extent)`, where the extent is the
   object's world-space bounding size from its `Shape` and world scale. So an object that grows is never smaller than
   itself, and no rule needs to rewrite the stored value [I].
@@ -319,8 +334,9 @@ impl PartialEq for Pos;                                // exact, on canonical va
   - the canonical encoding of a chunk index is a signed variable-length integer (4.5);
   - an object's leaf hashes a `Pos` field through that canonical encoding, never as its raw row bytes (6.3);
   - in M4 the row keeps its 48-byte inline form, an `i64` per axis, and an index beyond `i64` is held in an overflow
-    side table keyed by (object, component, instance, field), with a reserved marker inline [I; WS-regions may
-    choose another storage]. The encoding and so the hash of every position already stored stay the same; only the
+    side table keyed by (object, component, instance, field), with a reserved marker inline: the value `i64::MIN`.
+    From M1, `i64::MIN` is never a valid chunk index (a position there is out of range, 4.3), so no M1 world can
+    store it legitimately (@chunks-reviewer's N2) [I; WS-regions may choose another storage]. The encoding and so the hash of every position already stored stay the same; only the
     in-memory storage grows.
 - **Offsets inside a chunk** keep today's resolution: about 1.1 × 10^-13 m anywhere [V `coords.rs:10-11`].
 
@@ -647,6 +663,9 @@ orphaned. if the delete occured second, then everything is destroyed."
   parent is gone too), and drops the tombstones. It is valid only while the tombstone lives and the id is absent;
   otherwise it refuses with `Unknown(id)` or `Exists(id)`. Because the ids are the same, every `ObjectRef`, script
   target and precondition that named the deleted objects resolves again. A one-step revert of a delete uses it.
+  Row versions are restored as they were, but each restored object's object version and structural version move
+  to the `Undelete` entry, so an `ObjectVersion` precondition read before the delete is stale afterwards: "nobody
+  edited it since" stays strictly true (@design-reviewer's r3 Low).
 - **Deleting an object already deleted** applies, with the note `AlreadyDeleted { by }` (@design-reviewer's
   Medium 4). So when both sides of a merge deleted one object, the later side's transaction still applies its other
   ops. `Delete { Root }` is refused: the world's root is not an object.
@@ -706,6 +725,10 @@ The user (mbe87e750ca35, V1): "simple protections can exist for objects the same
 @api-eng (its O7) [I]:
 
 - A `Protection` row names an owner (`MemberKey`). It protects its object and the object's subtree.
+- **Only the owner can create one:** an op that adds a `Protection` row whose owner is not the transaction's author
+  (or the member an agent acts for) is refused with `Protected { owner }` (@chunks-reviewer's N6). Adding a
+  `Protection` to an object inside someone else's protected subtree is refused too. So no member can claim copy
+  rights over another's work.
 - A member who is not the owner may not: `Copy` a protected object (or a subtree containing one); remove or change
   its `Protection` row. Such an op refuses its transaction with `Protected { owner }`.
 - Every other edit stays under the ordinary role permissions, so an admin can still delete a griefing object.
@@ -724,7 +747,9 @@ pe-world decodes and applies the `Input` class too, because inputs write world s
   object with a `Hand` component naming its owner's `MemberKey`. A hand input whose author is not the owner is
   refused on every machine, with `NotYourHand`, and changes nothing.
 - **Hands are created by world logic at admission** (@chunks-reviewer's F8): when a member's join takes effect,
-  logic (author `LOGIC`) creates its two hands with that member's key as owner, with ids by the spawn rule of 2.1.
+  logic (author `LOGIC`) creates its two hands with that member's key as owner. Their ids are
+  `BLAKE3("pe.hand" ‖ world id ‖ member key ‖ side ‖ admission frame)[..16]` (@chunks-reviewer's N3), so a rejoin
+  gets fresh hands.
   No edit ever writes a `Hand` row (7.6), so no edit can create a hand owned by someone else's key. A leave removes
   them the same way.
 - **Validity:** finite values, positions in range, impulses within a world limit [I]; a failure refuses the entry.
@@ -742,8 +767,9 @@ Proposals to @engine-architect for pe-seams v0. Names follow the plan's appendix
   `decode_edit(&[u8]) -> Result<Transaction, Reason>` and `decode_input`, both canonical and total, and the
   encoders. pe-agree never decodes them (plan 3.2).
 - **The domain id** in the envelope: M1 uses one value per world. The world model asks nothing of it until M4.
-- **Object ids derive from the author's key and chain sequence number** (2.1), so pe-world needs both, as typed
-  envelope fields, when it applies an entry.
+- **Object ids derive from the author's key, chain id and chain sequence number** (2.1), so pe-world needs all
+  three, as typed envelope fields, when it applies an entry. S1 must keep (chain id, seq) unique for the world's
+  life: one chain per member per world, continued on return, and a new nonce whenever a chain starts again (2.1).
 
 ### 9.2 S2, the replica
 
