@@ -1,5 +1,9 @@
 # Van der Waals simulation: a scale-dependent contact-recycling radius
 
+> **Evidence paths** (since the M0 archive, 2026-11-10): paths under `spikes/out/` in this document refer to the
+> tag `archive/v0-prototype`, where those logs are kept. Main no longer carries them; the physics records the
+> tests read moved to `crates/pe-physics/tests/records/`.
+
 Date: 2026-10-30. Author: @vdw-physics. Branch `vdw/contact-recycling`. Docket item:
 @item:primordial-engine/van-der-waals-simulation-scale-dependent-contact.
 

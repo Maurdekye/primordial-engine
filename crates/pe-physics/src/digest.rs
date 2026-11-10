@@ -3,7 +3,8 @@
 //!
 //! A digest covers what one body carries: its pose bits, its velocities, its awake flag and sleep timer, and the
 //! touching contacts it shares with every body of a higher object id, manifold by manifold, point by point. Each
-//! pair is covered once, by its lower id.
+//! pair is covered once, by its lower id. A contact with a body that has no object id (the grab anchor, which is
+//! not bound) is in neither side's digest; [`PhysicsWorld::check_hash`] covers it.
 //!
 //! **Equal digests do not mean equal futures.** A step also reads state that belongs to no body:
 //! - the id pools;
