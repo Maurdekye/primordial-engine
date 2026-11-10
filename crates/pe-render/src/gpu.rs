@@ -13,11 +13,13 @@ use std::sync::Mutex;
 
 /// Instances, adapters and devices are made one at a time in a process. Made concurrently on D3D12 (WARP, FXC),
 /// the process segfaulted in 6 of 15 runs of the GPU tests; serialized, 0 of 50 [V 2026-11-10, render/m1]. Which
-/// layer races (wgpu-hal's dx12, FXC's loading, or WARP) is not yet known. Creation is rare, so the lock costs
-/// nothing.
+/// layer races (wgpu-hal's dx12, FXC's loading, or WARP) is not yet known, so the lock also covers pe-render's
+/// shader compiles (`Renderer::new`), in case it is FXC. It does not cover an `Instance` the caller makes itself
+/// for [`GpuContext::desktop`] (pe-app's window) or pe-xr's runtime-made context: make those one at a time too.
+/// Creation is rare, so the lock costs nothing.
 static CREATE: Mutex<()> = Mutex::new(());
 
-fn creating() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn creating() -> std::sync::MutexGuard<'static, ()> {
     CREATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 

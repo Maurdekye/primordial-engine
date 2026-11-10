@@ -274,6 +274,8 @@ fn format_key(f: wgpu::TextureFormat) -> u32 {
 impl Renderer {
     pub fn new(ctx: GpuContext, settings: RenderSettings) -> Renderer {
         let device = &ctx.device;
+        // Under the creation lock: if the race in gpu.rs is FXC's, a compile is where it would bite.
+        let compiling = crate::gpu::creating();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pe-render scene"),
             source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
@@ -344,6 +346,7 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        drop(compiling);
         let globals_slots = 4;
         let globals = Self::globals_buffer(device, globals_slots);
         let globals_bg = Self::globals_bind_group(device, &globals_bgl, &globals);
@@ -452,6 +455,8 @@ impl Renderer {
     fn pipelines(&mut self, format: wgpu::TextureFormat, samples: u32) -> &Pipelines {
         let key = (format_key(format), samples);
         if !self.pipelines.contains_key(&key) {
+            // D3D12 compiles shaders here, at pipeline creation: under the creation lock (gpu.rs).
+            let _compiling = crate::gpu::creating();
             let device = &self.ctx.device;
             let make = |label, vs, fs, cull, depth_write, blend: Option<wgpu::BlendState>| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

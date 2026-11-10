@@ -90,12 +90,13 @@ impl Presenter {
         let volumes: Vec<_> = cameras.iter().map(Camera::volume).collect();
         let display =
             self.display.frame(FrameInput { view, display_time: local.display_time, volumes: &volumes, local });
-        let mut effects = Vec::new();
-        if self.last.as_ref().is_none_or(|l| !Arc::ptr_eq(l, view)) {
-            effects = self.effects.take(view, self.sim_rate_hz, local.display_time);
+        // `take` also releases what is due; between arrivals, only the waits run.
+        let effects = if self.last.as_ref().is_none_or(|l| !Arc::ptr_eq(l, view)) {
             self.last = Some(view.clone());
-        }
-        effects.extend(self.effects.due(local.display_time));
+            self.effects.take(view, self.sim_rate_hz, local.display_time)
+        } else {
+            self.effects.due(local.display_time)
+        };
         let mut scene = Scene::displayed(view, &display);
         scene.environment = self.environment;
         PresentedFrame { scene, display, effects }
