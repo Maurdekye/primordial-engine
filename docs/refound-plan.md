@@ -234,7 +234,7 @@ final.
 - **The agent.** `view.capture` returns an image; headless tests render with a software adapter. The agent's whole
   script runs in CI against the two-process session.
 - **Rendering.** The display runs at 72, 90 and 120 Hz against simulation rates across the supported range (30, 60 and
-  120 Hz while the proposed 30-120 Hz awaits the user), and the simulation never depends on the display rate
+  120 Hz: the user's 30-120 Hz, mc8dc9e5a6ffb), and the simulation never depends on the display rate
   (m8ac62c1872ac).
 - **VR, in CI:** the OpenXR frame loop runs against a simulated runtime, where one is available [I].
 - **VR, on the headset** (by hand, recorded, on the Virtual Desktop runtime, each run with a go through the liaison):
@@ -984,7 +984,7 @@ All of the user's earlier requirements still apply (m83bc23ef13ec). These are th
 | The ruling | Where it lands |
 |---|---|
 | R1: no host and no central authority | Proposers rotate and hold no authority: they propose, the others verify, and a silent one is skipped. "Main" in a merge is the quorum's line, not a host |
-| R2: a fixed timestep, independent of frame rate | pe-core's tick clock; pe-render interpolates. M1 tests display rates against tick rates |
+| R2: a fixed timestep, independent of frame rate; the simulation rate fixed apart from the display rate (m8ac62c1872ac), a world setting of 30-120 Hz in whole hertz, 60 by default (md4b42d16d9df, mc8dc9e5a6ffb) | pe-core's tick clock and pe-seams' rate bounds; pe-physics's sub-steps follow the rate (ceil(240 / rate)); pe-render interpolates. M1 tests display rates against tick rates |
 | R3: a deterministic local simulation with rollback; traffic only on interaction | Kept. Entries flow only on interaction; cut votes flow while anyone acts |
 | R4: Box3D; Rust and wgpu | Kept |
 | R5: the soonest interaction wins. Same-frame order follows the seeded rank (D37), and only grabs claim | pe-log's order and claims, unchanged. The same order decides merges |
@@ -1007,7 +1007,7 @@ All of the user's earlier requirements still apply (m83bc23ef13ec). These are th
 | D13: WGSL for now | Kept |
 | 100% Rust, with operating-system, driver and runtime boundaries loaded dynamically (md35ba688f6b4) | QUIC with pure-Rust cryptography, its provider named in M0; OpenXR's loader loaded at run time, never compiled in; Cranelift with wasmtime's C file patched out; the audit as a gate; one register of boundaries (file 09, A8) |
 | D2: parallel physics, bit-exact; D58: double precision; van der Waals | Kept in the fork; the worker pool is wired by WS-state |
-| D4: the 90 Hz target; D50: the memory and CPU slider | D4 is superseded: the simulation rate is a world setting, 60 Hz by default within a supported range, and independent of the display rate (md4b42d16d9df, m8ac62c1872ac). The range proposed is 30-120 Hz in whole hertz, with ceil(240 / rate) physics sub-steps (@vdw-physics and @engine-architect, m6c44cb38ce4c); it is a parameter until the user answers. Every limit is a duration, never a frame count. The slider's positions become policies over incremental images (M2) |
+| D4: the 90 Hz target; D50: the memory and CPU slider | D4 is superseded: the simulation rate is a world setting, 60 Hz by default within a supported range, and independent of the display rate (md4b42d16d9df, m8ac62c1872ac). The user ruled the range (mc8dc9e5a6ffb): 30-120 Hz in whole hertz, 60 by default, with ceil(240 / rate) physics sub-steps, as @vdw-physics and @engine-architect proposed (m6c44cb38ce4c). pe-seams carries the bounds; pe-physics takes its sub-steps from the rate. Every limit is a duration, never a frame count. The slider's positions become policies over incremental images (M2) |
 | D23: eight players for the MVP, aiming higher | M3 tests eight; regions (M4) are the way beyond |
 | The sync model's user answers (v11): the synchronized line; publication is automatic and never the player's concern (m27cdafe8fcfa); QR (b); QH2 (c); a held paddle visible only to its holder (Q13 a) | Fields and their modes in pe-world (M1-M2), and pe-logic (M2). The org's proxy records give way to a held shared body visible per player, on the condition that only its holder sees it, as Q13 (a) has it (C9) |
 | The cross-scale answers: Q1 (c), a far player reads a large object from those near it; Q6 (c), delayed reads; Q8 (d), a giant's peers host native-scale objects; "readings ok" | M4. Q6 (c) is replaced: the delay applied only to followed objects (ma27c73c50fd4), and then the spectrum of file 16 (6.6) removed the fixed delay altogether (mbcc1c5fd8d39). Q1 (c) lives on as influence entries. WS-regions' specification states how Q8 (d) fits, and takes it to the user if it changes the answer |
