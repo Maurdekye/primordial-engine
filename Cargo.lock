@@ -2318,10 +2318,12 @@ dependencies = [
 name = "pe-replica"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "bytes",
  "pe-core",
  "pe-physics",
  "pe-seams",
+ "pe-sim",
  "pe-world",
 ]
 
