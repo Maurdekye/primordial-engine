@@ -60,6 +60,14 @@ pub struct VulkanVr {
     pub gpu: GpuContext,
 }
 
+// VR opens on the main thread, before the window's context, and moves to the XR thread (app.md 4, @engine-architect
+// m27326d366779): this fails to compile if it ever stops being `Send`.
+const _: fn() = || {
+    fn send<T: Send>() {}
+    send::<VulkanVr>();
+    send::<RealBackend<xr::Vulkan>>();
+};
+
 impl Drop for VulkanVr {
     fn drop(&mut self) {
         // The swapchain goes with the session, right after this: the GPU must be done with its images first (L4).
