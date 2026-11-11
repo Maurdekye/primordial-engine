@@ -1,7 +1,9 @@
 # pe-net: the transport
 
-Status: draft 1.2, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built. Draft 1.2 records the user's
-ruling on the firewall default (m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
+Status: draft 1.3, 2026-11-11, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space and spare
+budget (3.3, 4.2, 10), found while building the lanes. Draft 1.2 records the user's ruling on the firewall default
+(m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
 - **Draft 1** adds sections 3-12, the rest of WS-net's M1 scope (`docs/refound-plan.md`, branch
@@ -233,8 +235,16 @@ R18's failure again [@design-reviewer's High].
   Ranges rather than a fixed bitmap, so a full second of messages in flight still fits.
 - **First send:** a new message goes in the next datagram to the peer, Protocol before Action.
 - **Bounded redundancy:** a message of at most `L_redundant` bytes also rides in the next `r - 1` datagrams to
-  that peer, if they have room after new messages (`r` = 2). This is rollback netcode's way with its tiny inputs:
-  one lost datagram then costs no round trip.
+  that peer (`r` = 2). This is rollback netcode's way with its tiny inputs: one lost datagram then costs no round
+  trip. A ride only ever takes space that would otherwise go unused [@shader-lang, found building lanes.rs; V]:
+  - **piggyback only:** it rides in a datagram that goes out anyway, for a new message, a retransmission, a
+    pose or a due acknowledgement, after all of those. pe-net never sends a datagram for rides alone;
+  - **only with budget to spare:** rides are on only while the link's budget (4.2) is at least
+    `K_redundant` times its reliable send rate: the bytes of Protocol and Action messages first sent in the last
+    second. Below that the link is thin, and every byte goes to new data and retransmissions.
+
+  Without these two rules, the 16 kbit/s cell of section 9 failed: rides took a thin link's capacity, as the
+  repeats did in draft 1.
 - **Retransmission:** a message still unacknowledged after `RTO = srtt + max(4 * rttvar, T_rto_min)` goes again
   in the next datagram, and the timer doubles on each further loss (as QUIC's PTO, RFC 9002).
   - New messages and retransmissions share their lane's queue, oldest first.
@@ -243,8 +253,10 @@ R18's failure again [@design-reviewer's High].
 - **Large messages:** a message larger than half a datagram's payload goes on its own unidirectional stream
   instead, at the stream priority of its lane. That covers, for example, an edit carrying a small simulation blob
   (up to 1 MiB, `docs/spec/world-model.md`).
-- **The cost:** wire bytes over payload bytes stay near `1 + (r - 1) × (share of small messages) + loss`.
-  Section 9 tests that it stays under 1.5 on a 16 kbit/s link with 1 % loss.
+- **The cost:** wire bytes over payload bytes stay near `1 + (r - 1) × (share of small messages) + loss` while
+  rides are on, and near `1 + framing + loss` on a thin link, where they're off. Section 9 tests that it stays
+  under 1.5 on a 16 kbit/s link with 1 % loss: 1.30 in pe-net's lanes test, with a 30-byte action every second
+  frame at 60 Hz (rides off: 900 B/s against a 2,000 B/s budget) [V `pe-net/src/lanes.rs`].
 
 ### 3.4 Pose: newest only
 
@@ -319,6 +331,9 @@ statistics. The harness reports nothing else to it.
     `populate_packet`]. So Protocol, Action and Pose datagrams already handed to quinn go out ahead of any stream
     data it holds.
   - **Between Repair and Bulk,** quinn's stream priority decides.
+- **Redundancy is a guest of the budget:** pe-net turns rides (3.3) on only while the budget is at least
+  `K_redundant` times the reliable send rate. With `r` = 2, rides double the small messages' bytes at most, so a
+  factor of 4 leaves the other half for poses, retransmissions and the low lanes [I].
 
 ### 4.3 The delay guard for the low lanes
 
@@ -643,6 +658,7 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | `N_ack_ranges` | 32 | Acknowledgement ranges per lane in one datagram |
 | `r` | 2 | Datagrams a small message rides in, the first send included |
 | `L_redundant` | 128 B | Largest message that gets redundancy |
+| `K_redundant` | 4 | Budget over reliable send rate below which rides stop |
 | `T_rto_min` | 20 ms | Floor of the retransmission timeout's variance term |
 | `N_dgram_buf` | 4 | quinn's datagram send buffer, in datagrams |
 | `W_send` | 64 KiB | quinn's `send_window`: stream bytes it may hold |
