@@ -131,6 +131,8 @@ pub enum Reason {
     Held { by: MemberKey },
     /// A grab beyond the hand's reach.
     OutOfReach,
+    /// The author's cooldown on the object runs until `until`; it may grab it again from then (world-model.md 8.1).
+    Cooldown { until: Frame },
     /// An input that moves another member's hand.
     NotYourHand,
     /// A transaction's new-object indices overlap.
