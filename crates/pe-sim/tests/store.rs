@@ -339,3 +339,42 @@ fn deep_chain_loads_in_linear_time() {
     assert!(t.elapsed().as_secs_f64() < 5.0, "from_bytes took {:?}", t.elapsed());
     assert_eq!(back.state_hash(), s.state_hash());
 }
+
+#[test]
+fn row_versions_sit_beside_rows() {
+    // world-model.md 3.2, 7.3: each row keeps the version of the last edit that wrote it; only edits move it.
+    use pe_sim::RowVersion;
+    let mut s = new_store();
+    let (a, b) = (oid(5, 1), oid(5, 2));
+    s.create(a).unwrap();
+    s.create(b).unwrap();
+    let t = ComponentId::TRANSFORM;
+    s.insert(a, Transform::IDENTITY).unwrap();
+    assert_eq!(s.row_version(t, a), Some(RowVersion::NONE), "a new row has no edit version");
+    assert_eq!(s.row_version(t, b), None);
+    let v = RowVersion { entry: [7; 32], op: 3, _pad: 0 };
+    assert!(s.set_row_version(t, a, v));
+    assert!(!s.set_row_version(t, b, v), "no row, no version");
+    // A trusted overwrite (physics write-back, logic) keeps the version.
+    s.insert(a, Transform::local([1.0, 0.0, 0.0])).unwrap();
+    s.get_mut::<Transform>(a).unwrap().pos[1] = 2.0;
+    assert_eq!(s.row_version(t, a), Some(v));
+    // A row inserted before it shifts it, and the version stays with its row.
+    s.insert(b, Transform::IDENTITY).unwrap();
+    s.insert(oid(5, 0), Transform::IDENTITY).unwrap_err();
+    assert_eq!((s.row_version(t, a), s.row_version(t, b)), (Some(v), Some(RowVersion::NONE)));
+    // Snapshots share and serialize them; the state hash covers them.
+    let snap = s.snapshot();
+    let h = s.state_hash();
+    let back = pe_sim::Snapshot::from_bytes(&snap.to_bytes(), s.registry()).unwrap();
+    let mut r = new_store();
+    r.restore(&back).unwrap();
+    assert_eq!(r.row_version(t, a), Some(v));
+    assert_eq!(r.state_hash(), h);
+    assert!(s.set_row_version(t, a, RowVersion { op: 4, ..v }));
+    assert_ne!(s.state_hash(), h, "the hash covers row versions");
+    // Removing the row drops its version; a new row starts with none.
+    s.remove::<Transform>(a).unwrap();
+    s.insert(a, Transform::IDENTITY).unwrap();
+    assert_eq!(s.row_version(t, a), Some(RowVersion::NONE));
+}

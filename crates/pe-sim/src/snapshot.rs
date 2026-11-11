@@ -16,13 +16,13 @@ use std::sync::Arc;
 use pe_core::hash::Hasher;
 use pe_core::{Error, Frame, ObjectId};
 
-use crate::column::Column;
+use crate::column::{Column, RowVersion};
 use crate::hierarchy::Node;
 use crate::registry::{ComponentId, Registry};
 use crate::store::SimStore;
 use crate::transform::Transform;
 
-const MAGIC: &[u8; 8] = b"PESNAP02"; // 02: 128-bit object and component ids, no counters
+const MAGIC: &[u8; 8] = b"PESNAP03"; // 02: 128-bit object and component ids, no counters; 03: row versions
 const HASH_SEED: u64 = 0x5045_5354_4154_4531; // "PESTATE1"
 
 #[derive(Clone, Debug)]
@@ -61,6 +61,7 @@ fn hash_state<'a>(
         h.write_u64(col.len() as u64);
         h.write(bytemuck::cast_slice(&col.ids));
         h.write(col.bytes());
+        h.write(bytemuck::cast_slice(&col.versions));
     }
     h.finish()
 }
@@ -131,7 +132,7 @@ impl Snapshot {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(
             64 + self.objects.len() * 16
-                + self.columns.iter().map(|c| c.col.len() * (16 + c.col.size) + 40).sum::<usize>(),
+                + self.columns.iter().map(|c| c.col.len() * (56 + c.col.size) + 40).sum::<usize>(),
         );
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&self.frame.0.to_le_bytes());
@@ -146,6 +147,7 @@ impl Snapshot {
             out.extend_from_slice(&(c.col.len() as u64).to_le_bytes());
             out.extend_from_slice(bytemuck::cast_slice(&c.col.ids));
             out.extend_from_slice(c.col.bytes());
+            out.extend_from_slice(bytemuck::cast_slice(&c.col.versions));
         }
         out
     }
@@ -192,12 +194,18 @@ impl Snapshot {
                     return Err(Error::InvalidValue { component: id.0, object: ids[i], field: f.to_string() });
                 }
             }
+            let vbytes = r.take(len.checked_mul(size_of::<RowVersion>()).ok_or(Error::Corrupt("size overflow"))?)?;
+            let versions: Vec<RowVersion> =
+                vbytes.chunks_exact(size_of::<RowVersion>()).map(bytemuck::pod_read_unaligned).collect();
+            if versions.iter().any(|v| v._pad != 0) {
+                return Err(Error::Corrupt("row version padding not zero"));
+            }
             let mut words = vec![0u64; data.len().div_ceil(8)];
             bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..data.len()].copy_from_slice(data);
             columns.push(SnapColumn {
                 id,
                 schema_hash,
-                col: Column { size, ids: Arc::new(ids), data: Arc::new(words) },
+                col: Column { size, ids: Arc::new(ids), data: Arc::new(words), versions: Arc::new(versions) },
             });
         }
         if r.at != bytes.len() {

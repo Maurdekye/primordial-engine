@@ -23,6 +23,7 @@ pub mod snapshot;
 mod store;
 pub mod transform;
 
+pub use column::RowVersion;
 pub use hierarchy::Node;
 pub use registry::{Component, ComponentDesc, ComponentId, FieldDesc, FieldKind, Registry};
 pub use schedule::{Schedule, SystemFn, TickCtx};

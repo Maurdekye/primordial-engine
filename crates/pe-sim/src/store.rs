@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use pe_core::{Error, Frame, ObjectId};
 
-use crate::column::Column;
+use crate::column::{Column, RowVersion};
 use crate::hierarchy::Node;
 use crate::registry::{Component, ComponentDesc, ComponentId, Registry};
 use crate::transform::Transform;
@@ -42,6 +42,7 @@ impl SimStore {
         for col in c.columns.values_mut() {
             col.ids = Arc::new(col.ids.to_vec());
             col.data = Arc::new(col.data.to_vec());
+            col.versions = Arc::new(col.versions.to_vec());
         }
         c
     }
@@ -138,6 +139,21 @@ impl SimStore {
             }
             Err(_) => false,
         }
+    }
+
+    /// A row's edit version (world-model.md 7.3), or `None` if there is no such row.
+    pub fn row_version(&self, c: ComponentId, id: ObjectId) -> Option<RowVersion> {
+        let col = self.columns.get(&c)?;
+        col.find(id).ok().map(|i| col.version(i))
+    }
+
+    /// Sets a row's edit version. pe-world's call, after an edit wrote the row; trusted writes never move it.
+    /// Returns whether the row exists.
+    pub fn set_row_version(&mut self, c: ComponentId, id: ObjectId, v: RowVersion) -> bool {
+        let Some(col) = self.columns.get_mut(&c) else { return false };
+        let Ok(i) = col.find(id) else { return false };
+        col.set_version(i, RowVersion { _pad: 0, ..v });
+        true
     }
 
     pub(crate) fn row(&self, c: ComponentId, id: ObjectId) -> Option<&[u8]> {
