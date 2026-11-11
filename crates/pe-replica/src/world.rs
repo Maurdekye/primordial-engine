@@ -47,7 +47,8 @@ pub struct CarriedFx {
 /// The physics effects of one applied entry, or of one logic stage's change set. Empty for a refused entry.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Effects {
-    /// In id order, at most one per object.
+    /// In id order, at most one per object, except `Rebuilt` then `Teleported` for a body whose shapes or fields
+    /// and whose world pose an entry both changed: a rebuild keeps a moving body's physics pose.
     pub changed: Vec<(ObjectId, Change)>,
     pub pushes: Vec<PushFx>,
     pub carried: Option<CarriedFx>,
