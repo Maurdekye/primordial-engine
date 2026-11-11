@@ -92,6 +92,8 @@ pub enum Note {
     Orphaned { object: ObjectId, deleted_by: EntryRef },
     /// It deleted an object that was already deleted.
     AlreadyDeleted { object: ObjectId, by: EntryRef },
+    /// Op `op` changed nothing: it removed a component instance that was already gone (world-model.md 7.6).
+    NoEffect { op: u32 },
 }
 
 /// Why an entry was refused: pe-world's reasons, checked in the order of world-model.md 7.6. A refused entry
