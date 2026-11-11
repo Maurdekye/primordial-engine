@@ -1152,7 +1152,7 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
   measured against that input stream's hand pose, and a hand's target must be bounded: a maximum distance from
   the member's own rig or head, and a maximum change per frame. Otherwise a modified client puts its hand next to
   anything and neither reach check bounds anything (@design-reviewer's r14 point 4, widening the ruling's (b), accepted by
-  @coordinator-opus). This is not optional; it gates opening a world to strangers. 
+  @coordinator-opus). This is not optional; it gates opening a world to strangers.
 - **Agent powers** (user rulings, relayed by @coordinator-opus, overruling the hand-less gate of;
   @item:primordial-engine/agent-actions-within-the-owning-user-s-simulatio). This settles the strangers-gate item on
   hand-less grabs. The design below was decided by @coordinator-opus (with
