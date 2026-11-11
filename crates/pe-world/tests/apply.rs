@@ -122,7 +122,7 @@ fn edits_alone_and_combined() {
     assert_eq!(s.world_transform(ball).unwrap().pos, Pos::ORIGIN.checked_add(Offset([5.0, 1.0, 0.0])).unwrap());
     assert_eq!(s.info(ball).unwrap().version, ver(&e1, 3));
     assert_eq!(fp.rows, [(ball, ids::APPEARANCE), (ball, ids::APPEARANCE), (ball, ids::BODY)]);
-    assert_eq!(fp.reparented, [ball]);
+    assert_eq!(fp.reparented, [(ball, true)]);
     // Delete.
     let e2 = entry(&mut f.a, &tx(vec![Op::Delete { id: Target::Existing(table) }]));
     let (_, fp) = apply(&mut f.w, &e2);

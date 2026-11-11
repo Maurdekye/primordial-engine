@@ -28,8 +28,9 @@ pub struct Footprint {
     pub removed: Vec<ObjectId>,
     /// Rows written or removed by edits, in op order (an object and component may repeat).
     pub rows: Vec<(ObjectId, ComponentId)>,
-    /// Reparented, in op order.
-    pub reparented: Vec<ObjectId>,
+    /// Reparented, in op order, each with whether its world pose was kept (`keep_world`, or forced by an orphaning,
+    /// 7.5); if not, its local transform was kept and its world pose moved.
+    pub reparented: Vec<(ObjectId, bool)>,
 }
 
 /// Where a transaction that is not signed yet would come from (a dry run, api.md 9.2): its author and the
@@ -929,7 +930,7 @@ impl World {
         for p in [old, parent].into_iter().flatten() {
             self.touch(p, v, true);
         }
-        cx.fp.reparented.push(id);
+        cx.fp.reparented.push((id, keep_world));
         Ok(())
     }
 
