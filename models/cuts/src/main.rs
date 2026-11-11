@@ -103,7 +103,10 @@ fn suite() -> Vec<Check> {
     let n3 = |adv| Cuts::new(3, Author, 2, 1, 1, adv, 0);
     // n = 4 Byzantine checks carry no honest entries: chain faults are checked at n = 3; here the attacks are on
     // quorums and locks, plus the faulty member's own entries where a check needs them.
-    let n4 = |adv| Cuts::new(4, Byzantine, 3, 1, 0, adv, 0);
+    // Fixed frames (v0.2): with the Byzantine member also choosing frames, n4-byz passed 454 M states at 18 steps
+    // without finishing (integration run, 2026-11-11). These checks attack quorums, locks and roots, not frames; the
+    // Byzantine frame choice has its own checks (n4-byz-frames, ctl-noframe), as the lock checks already did.
+    let n4 = |adv| Cuts::new(4, Byzantine, 3, 1, 0, adv, 0).fixed_frames();
     vec![
         Check { name: "n3-chain", model: n3(chain), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, one author-faulty with chain faults (forks, back-dates, withholds), safety" },
         Check { name: "n3-sig", model: n3(sig), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, one author-faulty with signature faults (forges, replays), safety" },
@@ -144,15 +147,15 @@ fn suite() -> Vec<Check> {
         Check { name: "n4-root", model: n4(quiet).corrupt(3), expect_fail: &[], random: false, depth: Some(18), what: "4 members, Byzantine, member 3's replica computes a wrong root, safety" },
         // Random-walk twins of the two random controls: the same search, unmutated, must find nothing (the walks are
         // not exhaustive; n4-byz-v4 is the exhaustive check of the second where it completes).
-        Check { name: "n4-byz-v4b", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0), expect_fail: &[], random: false, depth: Some(18), what: "twin of ctl-quorum: 4 members, Byzantine leads view 1 of 4, safety" },
-        Check { name: "walk-n4-v4", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0), expect_fail: &[], random: true, depth: UNBOUNDED, what: "twin of ctl-quorum, unmutated, random walks for 120 s" },
+        Check { name: "n4-byz-v4b", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0).fixed_frames(), expect_fail: &[], random: false, depth: Some(18), what: "twin of ctl-quorum: 4 members, Byzantine leads view 1 of 4, safety" },
+        Check { name: "walk-n4-v4", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0).fixed_frames(), expect_fail: &[], random: true, depth: UNBOUNDED, what: "twin of ctl-quorum, unmutated, random walks for 120 s" },
         Check { name: "walk-n4-v4-lock", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2).fixed_frames(), expect_fail: &[], random: true, depth: UNBOUNDED, what: "twin of ctl-nolock, unmutated, random walks for 120 s" },
         // The size bound, not a control: at n = 3, t = 0, so one equivocating voter splits the two honest members.
         Check { name: "bound-n3-byz", model: Cuts::new(3, Byzantine, 4, 1, 0, quiet, 0), expect_fail: &["agreement"], random: false, depth: UNBOUNDED, what: "3 members, one Byzantine: t = 0, agreement must fail (why n >= 4)" },
         // Controls.
         Check { name: "ctl-d1", model: n3(chain).mutate(VoteWithoutChainValidation), expect_fail: &["no final frame undone"], random: false, depth: UNBOUNDED, what: "d1: vote without validating each chain in order" },
         Check { name: "ctl-unchecked", model: n4(sig).mutate(AcceptProposalUnchecked), expect_fail: &["validity: chains"], random: false, depth: UNBOUNDED, what: "accept the proposer's cut unchecked" },
-        Check { name: "ctl-quorum", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0).mutate(QuorumOneTooSmall), expect_fail: &["agreement"], random: false, depth: Some(18), what: "quorum one too small: split-brain" },
+        Check { name: "ctl-quorum", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0).fixed_frames().mutate(QuorumOneTooSmall), expect_fail: &["agreement"], random: false, depth: Some(18), what: "quorum one too small: split-brain" },
         Check { name: "ctl-nolock", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2).fixed_frames().mutate(NoLockRule), expect_fail: &["agreement"], random: false, depth: Some(18), what: "vote ignoring the timeout certificate's highest certificate" },
         Check { name: "n4-byz-frames", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0), expect_fail: &[], random: false, depth: Some(12), what: "twin of ctl-noframe: 4 members, Byzantine leads view 1 and names any frame from parent + 1 to + 2K" },
         Check { name: "ctl-noframe", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0).mutate(NoFrameCheck), expect_fail: &["no entry takes effect below an earlier final frame"], random: false, depth: Some(10), what: "voters accept a frame not above the parent's (v0.1)" },
