@@ -59,6 +59,8 @@ pub enum Mutation {
     VoteWithoutRoot,
     /// A voter accepts any frame the proposer names, not only one above its parent's (v0.1).
     NoFrameCheck,
+    /// A proposer with nothing new proposes nothing (v0.1, condition 5): the last content cut never gets its child.
+    SkipEmptyCut,
 }
 
 #[derive(Clone, Debug)]
@@ -894,6 +896,9 @@ impl Model for Cuts {
                 }
                 let frame = parent.frame() + if wide { FRAME_STEP_MAX } else { FRAMES };
                 let (cut, carried) = self.build_cut(&parent, mm.held, frame);
+                if self.mutation == Some(Mutation::SkipEmptyCut) && cut == parent.cut() {
+                    return None;
+                }
                 let block = parent.child(v, frame, cut);
                 mm.proposed = v;
                 s.m[m as usize] = mm;
@@ -986,6 +991,11 @@ impl Model for Cuts {
         if self.liveness {
             p.push(Property::always("liveness: every end state has a final cut at every honest member", |c: &Cuts, s: &State| {
                 (0..c.n).filter(|&m| c.honest(m)).all(|m| s.m[m as usize].committed.h >= 1) || !c.honest_stuck(s)
+            }));
+            // The last cut needs a child (condition 5): when content stops, an empty cut still follows, so every content
+            // height ends final.
+            p.push(Property::always("liveness: every content cut ends final", |c: &Cuts, s: &State| {
+                (0..c.n).filter(|&m| c.honest(m)).all(|m| s.m[m as usize].committed.h >= c.heights) || !c.honest_stuck(s)
             }));
         }
         if self.corrupt.is_some() {
