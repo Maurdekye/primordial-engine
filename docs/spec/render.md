@@ -319,11 +319,24 @@ B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the
 
 - **winit 0.30,** one window. Present mode `Fifo` (vsync) by default, `Mailbox` as a setting.
   `desired_maximum_frame_latency` 2.
+- **Who drives it** (R5, decided by WS-app, app.md 3): pe-app's main thread owns winit's event loop and forwards
+  the window's events to a `DesktopView` (`surface_and_context`, `DesktopView::new` or `on`, `window_event`,
+  `request_redraw`). `run_desktop` is the same view with its own loop, for demos. Every GPU context in the process
+  is made under `gpu::creation_lock` (section 4).
 - **Pace to what the display gives:** pe-render reads the monitor's refresh rate (winit `refresh_rate_millihertz`) and
   measures present intervals. In VR it reads the runtime's predicted display period every frame. It never assumes 90
   or 120 Hz [R m981c546957f2].
 - **Budget per period:** CPU recording and GPU time are measured each frame (GPU time with timestamp queries when the
-  adapter has them). Over budget in more than a quarter of the frames of the last 0.25 s: the render scale drops a
+  adapter has them).
+  - **Acquire first, then sample:** the swapchain acquire waits for vsync, so the frame acquires its image before
+    it reads the clock and the newest frame view, which are then a period fresher (review L2, part 2a). A failed
+    acquire skips the frame before the display layer or the effects move.
+  - **The CPU cost is the frame's own work,** from the acquire's return to the submit: never the vsync wait.
+    Counted in, every frame looked one period long, and the first window run dropped quality twice at a steady
+    165 Hz [V render/m1 b06783b4].
+  - **GPU time:** a timestamp pair around the frame's passes, in a three-slot ring read back without blocking. The
+    ladder uses each reading once, on the frame it arrives (one or two frames late). A frame whose slot is still
+    mapping goes untimed, and captures are never timed. Over budget in more than a quarter of the frames of the last 0.25 s: the render scale drops a
   step (0.1, down to 0.7), and MSAA in VR drops before it. Within 70% of budget for 2 s: back up a step. Every limit
   here is a duration, never a frame count [R md4b42d16d9df]. A single miss is the compositor's (VR) or
   vsync's (desktop) to absorb.
@@ -332,9 +345,19 @@ B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the
   (xr.md 7.3: about 6 ms of GPU) is checked on both paths at the headset test, with 500 balls [I until measured].
 - **Measured baseline** [V M0, a feasibility renderer with 40 bodies]:
   - window at 165 Hz: p50 6.06 ms, p99 7.28 ms present interval;
+  - pe-render's own window, `desktop_demo` (a stand-in scene, debug build, idle priority; RTX 3080 Ti, Vulkan, 165 Hz)
+    [V render/m1 0c45414f]: 1,627 frames in 10 s, none skipped, present interval p50 6.06 ms and p99 6.66 ms, no
+    quality change;
   - headset at 120 Hz (Quest 3 via Virtual Desktop), D3D12 and Vulkan: 941 and 944 of 941 and 944 frames submitted
     in 8 s.
 - **Minimized or occluded:** stop drawing, keep the simulation running.
+- **The event loop never spins** (`DesktopView::about_to_wait`, which pe-app's loop calls; review L1, part 2a):
+  `Poll` with a redraw only while there is a frame to draw, since the acquire paces it. Minimized or occluded, `Wait`
+  (the event that ends it wakes the loop). Before the first frame view, or after a failed acquire, a wait of one
+  period. A lost surface is made again on the same device; an outdated one is reconfigured.
+- **A snapshot of the window** (`DesktopConfig::snapshot`) is the swapchain image read back in-process before it
+  is presented, so nothing but pe-render's own drawing can appear in it. Screen captures are never used: they can
+  record the user's other windows.
 - **A desktop mirror of the headset** (VR mode, optional): copy the left eye into the window inside the frame's work,
   before the swapchain image's state is restored (xr.md 4.2).
 
@@ -427,7 +450,7 @@ For @coordinator-opus unless marked; my proposal first.
 | R2 (with @xr-eng) | Infinite far plane in VR's depth layer | Finite in VR (100 × rig scale [I]) until Virtual Desktop's runtime is shown to accept infinite |
 | R3 | Shadows in M1 | One shadow-casting key light; lamps unshadowed |
 | R4 | The graphics path and shader compiler | **Ruled** (on review M1): Vulkan first, with multiview; D3D12 with FXC, two passes, as the fallback; no shipped DXC |
-| R5 (WS-app) | The window's thread | The main thread is the render thread in desktop mode; WS-app decides |
+| R5 (WS-app) | The window's thread | **Decided** (app.md 3): pe-app's main thread runs winit and drives `DesktopView`; in VR the XR thread draws |
 | R6 | The correction cue's form | A 250 ms fading outline, plus a ghost at the old pose |
 | R7 | The desktop hand's controls | As section 9; revisited in the UI lab |
 | R8 (with @xr-eng) | Gravity in X8 (a)'s extrapolation | Measured [V, CPU test]: a falling ball (60 Hz simulation, 90 Hz display, 50 ms lead) misses by up to 1.14 cm a tick and is drawn up to 4.0 cm from its target, never with a cue. @shader-reviewer's suggestion: extrapolate unsupported dynamic bodies with the world's gravity, which needs the gravity vector or a flag in S5. Judged at the headset test |
