@@ -1,7 +1,10 @@
 # pe-net: the transport
 
-Status: draft 1.2, 2026-11-10, by @shader-lang (WS-net). Nothing in it is built. Draft 1.2 records the user's
-ruling on the firewall default (m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
+Status: draft 1.5, 2026-11-11, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
+with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
+budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.2 records the user's ruling on the firewall default
+(m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
 - **Draft 1** adds sections 3-12, the rest of WS-net's M1 scope (`docs/refound-plan.md`, branch
@@ -233,8 +236,16 @@ R18's failure again [@design-reviewer's High].
   Ranges rather than a fixed bitmap, so a full second of messages in flight still fits.
 - **First send:** a new message goes in the next datagram to the peer, Protocol before Action.
 - **Bounded redundancy:** a message of at most `L_redundant` bytes also rides in the next `r - 1` datagrams to
-  that peer, if they have room after new messages (`r` = 2). This is rollback netcode's way with its tiny inputs:
-  one lost datagram then costs no round trip.
+  that peer (`r` = 2). This is rollback netcode's way with its tiny inputs: one lost datagram then costs no round
+  trip. A ride only ever takes space that would otherwise go unused [@shader-lang, found building lanes.rs; V]:
+  - **piggyback only:** it rides in a datagram that goes out anyway, for a new message, a retransmission, a
+    pose or a due acknowledgement, after all of those. pe-net never sends a datagram for rides alone;
+  - **only on a link with room:** rides are optional bytes, like Repair and Bulk, and stop when the link shows
+    it is full (4.2's ride gate: the delay guard and a budget check). Every byte then goes to new data and
+    retransmissions.
+
+  Without these two rules, the lanes test's 16 kbit/s cell failed: rides took a thin link's capacity, as the
+  repeats did in draft 1.
 - **Retransmission:** a message still unacknowledged after `RTO = srtt + max(4 * rttvar, T_rto_min)` goes again
   in the next datagram, and the timer doubles on each further loss (as QUIC's PTO, RFC 9002).
   - New messages and retransmissions share their lane's queue, oldest first.
@@ -243,8 +254,15 @@ R18's failure again [@design-reviewer's High].
 - **Large messages:** a message larger than half a datagram's payload goes on its own unidirectional stream
   instead, at the stream priority of its lane. That covers, for example, an edit carrying a small simulation blob
   (up to 1 MiB, `docs/spec/world-model.md`).
-- **The cost:** wire bytes over payload bytes stay near `1 + (r - 1) × (share of small messages) + loss`.
-  Section 9 tests that it stays under 1.5 on a 16 kbit/s link with 1 % loss.
+- **The cost:** wire bytes over payload bytes stay near `1 + (r - 1) × (share of small messages) + loss` while
+  rides are on, and near `1 + framing + loss` on a thin link, where they're off. Both counts are pe-net's: its
+  datagram bytes over its message bytes. At the IP layer, 30-byte actions can never come near 1.5: each packet
+  adds about 57 B of IP, UDP, QUIC header, AEAD tag and frame header [I: 28 + about 11 with our 8-byte
+  connection ids + 16 + 2]. Section 9 tests that it stays under 1.5 with 1 % loss, over quinn on a thin shaped
+  link.
+  So far that's shown only with the budget handed to the lanes: 1.30, at 2,000 B/s of pe-net datagram bytes,
+  with a 30-byte action every second frame at 60 Hz and rides off [V `pe-net/src/lanes.rs`, budget set to the
+  link's capacity].
 
 ### 3.4 Pose: newest only
 
@@ -319,13 +337,33 @@ statistics. The harness reports nothing else to it.
     `populate_packet`]. So Protocol, Action and Pose datagrams already handed to quinn go out ahead of any stream
     data it holds.
   - **Between Repair and Bulk,** quinn's stream priority decides.
+- **The ride gate:** rides (3.3) are optional bytes, so they need a sign that the link has room. `cwnd / srtt`
+  alone isn't one: quinn's Cubic doesn't grow the window while the sender is application-limited (quinn-proto
+  0.11.19 `cubic.rs`, `on_ack`), and even its 2,400-byte minimum over an 80 ms srtt reads 30,000 B/s, fifteen
+  times a 16 kbit/s link (2,000 B/s) [@design-reviewer's Medium on draft 1.3; S]. Rides are on only while both hold:
+  - **the delay guard (4.3):** `srtt - base_rtt` is under `D_guard`. Once it reaches `D_guard`, rides stay off
+    until it is back under `D_guard / 2`. Without that band they would flap: rides build the queue, which stops
+    them, which drains it [I]. This catches a thin link once its queue reaches about `D_guard`;
+  - **the budget check:** the budget is at least `K_redundant` times the reliable send rate. That covers a link
+    whose congestion response has already cut `cwnd`. The rate counts wire bytes (each message with its
+    framing, as the budget does) of Protocol and Action messages first sent, over a one-second window that
+    slides and updates at each first send. So at the start of a burst, rides add at most about
+    budget / `K_redundant` [I]. With `r` = 2, rides at most double the small messages' bytes, so a factor of 4
+    leaves half the budget for poses, retransmissions and the low lanes [I].
+- **What the gate doesn't see:** an AQM router (fq_codel, CAKE) keeps the queue short and drops instead, so the
+  delay guard may never fire, and random loss looks like congestion loss. The loss-only cells of section 9
+  measure what rides cost there; for M1 that's enough [@design-reviewer]. **Exit (open, N5):** if those cells
+  show rides raising loss more than they save, a loss-aware rule comes before sessions with strangers, for
+  example rides off for a few seconds to compare the loss.
+- **Jitter:** on Wi-Fi, `srtt - base_rtt` often swings past `D_guard`, so the guard turns rides off where they
+  help most. 9.7 measures the share of time rides are on, with a jitter cell; no rule change yet [I].
 
 ### 4.3 The delay guard for the low lanes
 
 - **The problem:** a loss-based controller fills a deep router buffer before it backs off, which would add
   queueing delay to actions and poses.
 - **The guard:** Repair and Bulk send only while `srtt - base_rtt` is under `D_guard`, so the low lanes yield
-  before the queue grows. This is LEDBAT's idea, applied to the low lanes only [I].
+  before the queue grows. Redundant rides follow the same guard, with a band (4.2). This is LEDBAT's idea, applied to the low lanes only [I].
 - **`base_rtt`** is pe-net's own minimum of the RTT samples over the last `W_base`. Without a window, a route
   change that raises the base delay would block Repair and Bulk for good [@design-reviewer's Low 3].
 - **Measured in M1:** Cubic with the guard against quinn's BBR, on delay cells and on loss-only (AQM) cells
@@ -595,9 +633,23 @@ Gated, unless marked:
 1. **Lanes:**
    - a Pose is superseded, never queued;
    - Protocol and Action arrive once each at 0-30 % random loss, and at 10 % loss most need no retransmission
-     round trip (each counted);
+     round trip (each counted; that cell runs with budget to spare, so rides are on);
    - nothing is delivered twice;
-   - wire bytes over payload bytes stay under 1.5 on a 16 kbit/s link with 1 % loss (3.3);
+   - the ride gate (4.2), over quinn on shaped links (harness cells, the real budget path). Each cell sends one
+     30-byte action every second frame at 60 Hz and nothing else, with 1 % loss: about 30 packets/s of about
+     100 IP bytes, and about 134 with a ride [I, arithmetic; @design-reviewer]. Link rates count IP bytes, as a
+     shaper does. Each cell stays at least 10 % away from a full link with rides on, so it comes out the same
+     way every run. Each reports its measured load, so a reader can tell "rides overfilled it" from "the cell
+     overfilled it":
+     - **thin, the gate must close:** 28 kbit/s (3,500 B/s), about 86 % without rides and 115 % with them.
+       Gated on pe-net datagram bytes over message bytes under 1.5 (3.3);
+     - **room, the gate must stay open:** 64 kbit/s (8,000 B/s), about 38 % without rides and 50 % with them.
+       Gated on rides being on for at least 90 % of the run. The ratio is only reported (about 2, by design).
+       This catches a guard that starves rides on a link with room;
+     - **the queue, in both:** `srtt - base_rtt` at p50 and p99, failing above `D_guard + 10 ms + s` at p99,
+       where `s` is one serialization time of the cell's largest packet at the link's rate (about 30 ms for
+       100 B at 3,500 B/s; measured from the packets sent, not assumed). So no cell passes on the ratio with a
+       deep queue;
    - under a budget too small for everything, Protocol is never delayed by the lower lanes.
 2. **The budget:**
    - a thin link to one peer doesn't slow traffic to the others;
@@ -631,7 +683,11 @@ Gated, unless marked:
    - handshake time;
    - action latency over 20 seeds by 5 delays, against the user's target that the other machine sees an action
      within 0.25 s on good links (meef4f248923b);
-   - Cubic with the guard against BBR, on delay cells and loss-only cells.
+   - Cubic with the guard against BBR, on delay cells and loss-only cells;
+   - on the loss-only (AQM) cells, what rides cost and save, with rides on against off (4.2): the loss rate
+     and the number of actions that needed a retransmission round trip. The net of the two decides;
+   - the share of time rides are on, including one jitter cell (Wi-Fi-like `srtt` swings past `D_guard`, where
+     rides help most), to learn whether the band of 4.2 is too tight.
 
 ## 10. Parameters
 
@@ -643,6 +699,7 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | `N_ack_ranges` | 32 | Acknowledgement ranges per lane in one datagram |
 | `r` | 2 | Datagrams a small message rides in, the first send included |
 | `L_redundant` | 128 B | Largest message that gets redundancy |
+| `K_redundant` | 4 | Budget over reliable send rate (both in wire bytes) below which rides stop |
 | `T_rto_min` | 20 ms | Floor of the retransmission timeout's variance term |
 | `N_dgram_buf` | 4 | quinn's datagram send buffer, in datagrams |
 | `W_send` | 64 KiB | quinn's `send_window`: stream bytes it may hold |
@@ -651,7 +708,7 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | `L_msg` | 1 MiB | Largest Protocol or Action message (an edit with a small simulation blob) |
 | `L_bulk` | 64 MiB | Largest Bulk message |
 | `N_streams_in` | 64 | Incoming streams open at once per peer |
-| `D_guard` | 25 ms | Queueing delay above `min_rtt` at which Repair and Bulk pause |
+| `D_guard` | 25 ms | Queueing delay above `base_rtt` at which Repair, Bulk and rides pause (rides resume below half) |
 | `T_saturated` | 1 s | Oldest unacknowledged Action message before `LinkSaturated` |
 | `T_sample` / `T_sample_fast` | 1 s / 0.2 s | Clock sample interval, steady / converging |
 | `W_clock` / `B_clock` | 30 s / 2 s | Clock sample window / bucket |
@@ -679,6 +736,8 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 - **N4. Per-entry signatures against link authentication:** review file 01 proposes that the encrypted link
   authenticates the sender and only every Kth entry is signed. S1 signs every entry in M1. The proposal is the
   user's call, and not for M1.
+- **N5. Redundant rides on AQM links** (4.2): the gate can't tell congestion loss from random loss. M1 measures
+  it (9.7); a loss-aware rule comes before sessions with strangers if rides raise loss more than they save.
 
 ## 12. What pe-net needs from the others
 
