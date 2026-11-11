@@ -156,10 +156,12 @@ impl KvSeamReplica {
     /// It does not check that every head appears in `entries_at`: a cut may cover a void entry (back-stamped, or
     /// stamped below the previous cut's frame), which the source rightly leaves out, so a replica cannot tell
     /// "missing" from "void" there. The d1 rule is the agreement's, through `wants_roots` and `final_cut`.
+    ///
+    /// A frame no longer kept is never stepped empty (S3 v1.2). Below the floor only a replay from `Cv` meets one:
+    /// `NotKept`, and rung 2 is next. At or above it the root cannot be taken: `Damaged`, and rung 2 is due at once.
     fn replay_cut(&self, mut base: KvReplica, cut: &Cut, source: &dyn EntrySource) -> Result<KvReplica, RootError> {
         while base.frame() < cut.at.frame.0 {
             let Some(all) = source.entries_at(Frame(base.frame())) else {
-                // No longer kept (S3 v1.2): below the floor only a replay from `Cv` needs it, at or above it a root.
                 return Err(if base.frame() < self.floor { RootError::NotKept } else { RootError::Damaged });
             };
             let mine: Vec<SignedEntry> =
@@ -178,7 +180,7 @@ impl KvSeamReplica {
         let mut outcomes = std::mem::take(&mut self.outcomes);
         while self.live.frame() < to {
             let f = self.live.frame();
-            // A frame no longer kept is never stepped empty (S3 v1.2): the live state stops there.
+            // S3 v1.2: a frame no longer kept is never stepped empty; the replica stops there.
             let Some(entries) = source.entries_at(Frame(f)).map(<[SignedEntry]>::to_vec) else { break };
             let mut live = self.live.clone();
             self.step(&mut live, &entries, Some(&mut outcomes));
@@ -219,10 +221,15 @@ impl Replica for KvSeamReplica {
             adv.resimulated = self.resimulate_from(back, source);
         }
         let mut outcomes = std::mem::take(&mut self.outcomes);
+        let mut stopped = false;
         while self.live.frame() < present.0 {
             let f = self.live.frame();
-            // A frame no longer kept is never stepped empty (S3 v1.2): the live state stops there.
-            let Some(entries) = source.entries_at(Frame(f)).map(<[SignedEntry]>::to_vec) else { break };
+            // S3 v1.2: never stepped empty. The stand-in steps only from its floor up here, and replays rung 1 within
+            // one call, so no trim lands in a running replay: a stop is the at-or-above-the-floor case.
+            let Some(entries) = source.entries_at(Frame(f)).map(<[SignedEntry]>::to_vec) else {
+                stopped = true;
+                break;
+            };
             let mut live = self.live.clone();
             self.step(&mut live, &entries, Some(&mut outcomes));
             self.live = live;
@@ -230,7 +237,7 @@ impl Replica for KvSeamReplica {
             adv.stepped += 1;
         }
         self.outcomes = outcomes;
-        adv.caught_up = true;
+        adv.caught_up = !stopped;
         if adv.stepped > 0 || adv.resimulated > 0 {
             self.view = Arc::new(Self::empty_view(self.live.frame()));
         }
@@ -257,7 +264,7 @@ impl Replica for KvSeamReplica {
     fn finalize(&mut self, cut: &FinalCut, source: &mut dyn EntrySource) -> Finalized {
         let mine = match self.root_at_cut(&cut.cut, source) {
             Ok(h) => h,
-            // A frame from the floor up is no longer kept: no root will come, rung 2 is due (S3 v1.2).
+            // S3 v1.2: a frame from my floor up is no longer kept, and waiting will not change that: rung 2 at once.
             Err(RootError::Damaged) => return Finalized::Damaged,
             Err(_) => return Finalized::NotReady,
         };
@@ -273,17 +280,21 @@ impl Replica for KvSeamReplica {
         } else {
             self.live = exact.clone();
         }
-        if mine == cut.root {
+        let verdict = if mine == cut.root {
             self.cv = (f, exact);
             Finalized::Agreed
         } else {
             Finalized::Diverged { mine }
-        }
+        };
+        // S3 v1.2: what this replica still needs, `Cv` for rung 1 and the floor for re-simulation.
+        source.keep_final_from(Frame(self.cv.0), Frame(self.floor));
+        verdict
     }
 
     fn replay_to(&mut self, cut: &Cut, source: &mut dyn EntrySource) -> Result<Hash, RootError> {
         let (cv_frame, cv) = self.cv.clone();
-        if cut.at.frame.0 < cv_frame {
+        // S3 v1.2: below `kept_from` the entries from `Cv` on are gone; refused before anything is restored.
+        if cut.at.frame.0 < cv_frame || Frame(cv_frame) < source.kept_from() {
             return Err(RootError::NotKept);
         }
         let at = self.replay_cut(cv, cut, source)?;
@@ -294,6 +305,7 @@ impl Replica for KvSeamReplica {
         self.live = at;
         let mut outcomes = std::mem::take(&mut self.outcomes);
         while self.live.frame() < present {
+            // S3 v1.2: a frame no longer kept, past the cut, stops the replay; the root is taken already.
             let Some(entries) = source.entries_at(Frame(self.live.frame())).map(<[SignedEntry]>::to_vec) else {
                 break;
             };

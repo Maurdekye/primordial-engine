@@ -9,7 +9,11 @@
 //! - below the final frame, `entries_at` holds only entries the final cut covers and has not voided (an uncovered
 //!   entry is held but never applied).
 //!
-//! Plus P1-P6 on every scenario. The control plants the d1 defect (`vote_without_holding`) and P15 must fire.
+//! - retention (S3 v1.2): `kept_from` never goes back and is truthful, and the replica's `keep_final_from(cv, floor)`
+//!   is all a source that trims below `Cv` needs.
+//!
+//! Plus P1-P6 on every scenario. The controls plant the d1 defect (`vote_without_holding`) and a lying `kept_from`,
+//! and P15 must fire. A time cap past the floor ends in `Finalized::Damaged`, recorded as `Ev::Damaged`.
 
 use std::collections::BTreeMap;
 
@@ -39,16 +43,29 @@ struct Target<A: Agreement> {
     frame_entry: fn(&SignedEntry) -> Vec<u8>,
 }
 
-fn lockstep_nodes(keys: &TestKeys, n: u32, relay: bool, defect: bool) -> BTreeMap<NodeId, SeamNode<LockstepAgreement>> {
+fn lockstep_with(
+    keys: &TestKeys,
+    n: u32,
+    set: fn(&mut LockstepAgreement),
+) -> BTreeMap<NodeId, SeamNode<LockstepAgreement>> {
     let rate = SimRate::new(HZ).unwrap_or_default();
     (1..=n)
         .map(|id| {
             let mut node = SeamNode::lockstep(keys, id, &Template::AllAdmin, &[OBJ], rate, CADENCE_NS);
-            node.agree.relay = relay;
-            node.agree.vote_without_holding = defect;
+            set(&mut node.agree);
             (id, node)
         })
         .collect()
+}
+
+fn lockstep_nodes(keys: &TestKeys, n: u32, relay: bool, defect: bool) -> BTreeMap<NodeId, SeamNode<LockstepAgreement>> {
+    if defect {
+        lockstep_with(keys, n, |a| (a.relay, a.vote_without_holding) = (false, true))
+    } else if relay {
+        lockstep_with(keys, n, |_| {})
+    } else {
+        lockstep_with(keys, n, |a| a.relay = false)
+    }
 }
 
 fn targets() -> Vec<Target<LockstepAgreement>> {
@@ -61,6 +78,11 @@ fn targets() -> Vec<Target<LockstepAgreement>> {
         Target {
             name: "lockstep, fetch only",
             nodes: |k, n| lockstep_nodes(k, n, false, false),
+            frame_entry: LockstepAgreement::entry_message,
+        },
+        Target {
+            name: "lockstep, trims below Cv",
+            nodes: |k, n| lockstep_with(k, n, |a| a.trim_below_cv = true),
             frame_entry: LockstepAgreement::entry_message,
         },
     ]
@@ -159,4 +181,37 @@ fn p15_bites_on_a_vote_without_the_entries() {
     let r = hole(&t, (t.nodes)(&keys, 3), &keys);
     let vs = props::p15_source_contract(&r.trace);
     assert!(vs.iter().any(|v| v.prop == Prop::P15 && v.detail.starts_with("wants_roots")), "{vs:#?}");
+}
+
+#[test]
+fn p15_bites_on_a_kept_from_that_lies() {
+    // The retention control: the source trims below Cv but says it keeps everything.
+    let keys = TestKeys::new(41, 3);
+    let t = Target {
+        name: "lying kept_from",
+        nodes: |k, n| lockstep_with(k, n, |a| (a.trim_below_cv, a.kept_from_lies) = (true, true)),
+        frame_entry: LockstepAgreement::entry_message,
+    };
+    let sc = Scenario::new(41, 2 * SEC).at(frame_at(10), 1, Op::Set { obj: OBJ, field: 0, value: 4 });
+    let r = run(&sc, (t.nodes)(&keys, 3));
+    let vs = props::p15_source_contract(&r.trace);
+    assert!(vs.iter().any(|v| v.detail.starts_with("kept_from")), "{vs:#?}");
+}
+
+#[test]
+fn a_time_cap_past_the_floor_is_damaged_never_a_wait_and_keeps_the_contract() {
+    // A cap of two frames trims what the first cut's root needs before its marks arrive: every member's replica
+    // answers Damaged for it, recorded as such, and the source still keeps its contract (no P15).
+    let keys = TestKeys::new(41, 3);
+    let nodes = lockstep_with(&keys, 3, |a| a.trim_cap = Some(2));
+    let sc = Scenario::new(41, 2 * SEC).at(frame_at(10), 1, Op::Set { obj: OBJ, field: 0, value: 4 });
+    let r = run(&sc, nodes);
+    for n in 1..=3 {
+        assert!(
+            r.trace.records.iter().any(|x| x.node == n && matches!(x.ev, pe_harness::trace::Ev::Damaged { .. })),
+            "member {n} records no Damaged"
+        );
+    }
+    let vs = props::p15_source_contract(&r.trace);
+    assert!(vs.is_empty(), "{vs:#?}");
 }

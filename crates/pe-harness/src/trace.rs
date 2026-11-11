@@ -40,6 +40,10 @@ pub enum Ev {
     /// node holds in full (`EntrySource::final_cut`). It can lag the line's `Final`: a non-voter can learn that a
     /// cut is final before all its entries arrive (engine-architect mb5f08692ac31).
     Floor { frame: Frame },
+    /// Recorder: the replica answered `Damaged` for the cut at `frame`, from `root_at_cut` when voting or from
+    /// `finalize` (S3 v1.2): a frame the root needs, at or above the floor, is no longer kept. The floor stays, and
+    /// rung 2 is due. Once per cut.
+    Damaged { frame: Frame },
     /// Recorder: an `Advance` rolled back to `frame` (`Advance.rolled_back_to`) and replayed forward from it.
     RolledBack { frame: Frame },
     /// Recorder: the entry source broke its contract (P15): it handed over a cut through `rule` (`wants_roots` or
