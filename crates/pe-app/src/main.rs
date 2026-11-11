@@ -1,6 +1,6 @@
-//! pe-app's binary (docs/spec/app.md). This first slice runs a world alone on the desktop: the simulation thread, with
-//! stand-ins for agreement and the replica (`pe_app::standin`), and the window on the main thread. The network, VR,
-//! MCP, configuration and invites join as their crates land.
+//! pe-app's binary (docs/spec/app.md). It runs a world alone on the desktop: the simulation thread, with the stand-in
+//! agreement (`pe_app::standin`) and pe-replica's replica over a new, empty pe-world world (`pe_app::world`), and the
+//! window on the main thread. The network, VR, MCP, configuration and invites join as their crates land.
 //!
 //! `pe-app [--seconds <n>]` closes the window after `n` seconds; without it the window runs until it is closed.
 
@@ -9,20 +9,26 @@ use std::time::Duration;
 
 use pe_app::clock::{self, LocalClock};
 use pe_app::sim::{self, Budget, Sim};
-use pe_app::standin::{EmptyReplica, SoloAgreement};
+use pe_app::standin::SoloAgreement;
+use pe_app::world;
 use pe_render::desktop_hand::{DesktopHandFeed, DesktopHandSettings};
 use pe_render::display::DisplaySettings;
 use pe_render::effects::{EffectCommand, EffectSettings};
 use pe_render::present::{FrameSlot, Presenter};
 use pe_render::scene::{Environment, RenderSettings};
 use pe_render::window::{DesktopConfig, EffectSink, run_desktop};
-use pe_seams::{Frame, FrameClock, LineId, RigPose, SimRate};
+use pe_seams::{FrameClock, LineId, RigPose, SimRate};
 
 /// The simulation thread's stack until pe-logic's `Settings::thread_stack()` is on main (app.md 1): wasmtime's
 /// default `max_wasm_stack` of 512 KiB plus 2 MiB, rounded up.
 // TODO(pe-logic): spawn with `pe_logic::Settings::thread_stack()` (`max_wasm_stack` + 2 MiB, on ws/logic) once pe-logic
 // lands, from the same `Settings` the replica runs guests with (design-reviewer's Low 1 on slice 1).
 const SIM_STACK: usize = 4 << 20;
+
+/// A new world's seed and cut cadence, until configuration names the world and its settings (app.md 4, step 1). The
+/// stand-in agreement makes no cuts, so the cadence only places the replica's roots; 133 ms is pe-replica's test value.
+const WORLD_SEED: u64 = 0;
+const CUT_INTERVAL: Duration = Duration::from_millis(133);
 
 /// M1 counts and logs effects; the sound library comes later (app.md 8).
 struct LogEffects;
@@ -48,14 +54,12 @@ fn main() {
     let host = clock::shared();
     let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
     let slot = Arc::new(FrameSlot::new());
-    let replica = EmptyReplica::new(frames.clone(), Frame(0));
-    let sim = Sim::new(
-        Box::new(SoloAgreement::new(LineId::origin())),
-        Box::new(replica),
-        frames,
-        slot.clone(),
-        Budget::new(rate),
-    );
+    let replica = match world::open_new(WORLD_SEED, rate, CUT_INTERVAL, frames.clone()) {
+        Ok(r) => r,
+        Err(e) => fail(&format!("the replica did not start: {e}")),
+    };
+    let sim =
+        Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, frames, slot.clone(), Budget::new(rate));
     let sim = match sim::spawn(sim, host.clone(), SIM_STACK) {
         Ok(t) => t,
         Err(e) => fail(&format!("the simulation thread did not start: {e}")),
