@@ -6,19 +6,34 @@ use bytemuck::{Pod, Zeroable};
 use pe_core::ObjectId;
 
 /// A row's edit version (world-model.md 3.2, 7.3): the `EntryRef` bytes of the last edit that wrote the row and the
-/// op's index, 36 bytes padded to 40. All zero means "never written by an edit". Only edits move it: trusted writes
-/// (physics write-back, logic, inputs) keep it as it is.
+/// op's index, and the row's instance tag, 56 bytes with no padding. All zero means "never written by an edit".
+/// Only edits move it: trusted writes (physics write-back, logic, inputs) keep it as it is.
+///
+/// The tag (7.6) names one addition of the row: pe-world sets it when an edit adds the row where there was none, and
+/// keeps it while edits overwrite the row, so a `RemoveRow` that names it cannot remove a row added again later.
+/// pe-sim only stores it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
 #[repr(C)]
 pub struct RowVersion {
     pub entry: [u8; 32],
     pub op: u32,
+    /// The instance tag, a `u128` in little-endian bytes; zero for a row no edit added.
+    pub tag: [u8; 16],
     /// Always zero.
     pub _pad: u32,
 }
 
 impl RowVersion {
-    pub const NONE: RowVersion = RowVersion { entry: [0; 32], op: 0, _pad: 0 };
+    pub const NONE: RowVersion = RowVersion { entry: [0; 32], op: 0, tag: [0; 16], _pad: 0 };
+
+    /// Whether an edit ever wrote the row (the entry and op are not all zero).
+    pub fn edited(&self) -> bool {
+        self.entry != [0; 32] || self.op != 0
+    }
+
+    pub fn tag(&self) -> u128 {
+        u128::from_le_bytes(self.tag)
+    }
 }
 
 /// Rows are stored back to back in a `u64` buffer, so the bytes are 8-byte aligned and typed views

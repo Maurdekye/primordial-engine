@@ -9,7 +9,8 @@
 //! Not in this slice: `Register` and `CommitScript` (7.1, WS-logic's), and `Local` or `Session` classes, which no
 //! edit creates in M1 (3.1).
 
-use pe_core::{EntryRef, Hash, MemberKey, ObjectId};
+use pe_core::commit::Hasher;
+use pe_core::{ChainId, EntryRef, Hash, LineId, MemberKey, ObjectId};
 use pe_seams::Version;
 use pe_sim::ComponentId;
 
@@ -108,10 +109,14 @@ pub enum Op {
         field: u16,
         value: Vec<u8>,
     },
+    /// Removes one component instance: the row at `component` and `instance`, if its instance tag is `tag`
+    /// ([`row_tag`]). If that instance is already gone (no row, or a row added again since, with another tag), the op
+    /// changes nothing and its outcome notes "no effect" (7.6), so a stale remove cannot take out a later row.
     RemoveRow {
         id: Target,
         component: ComponentId,
         instance: u16,
+        tag: u128,
     },
     /// Moves `id` under `parent` at `index` (`None`: last). `keep_world` keeps its world pose; otherwise its local
     /// transform is kept (3.3).
@@ -133,6 +138,20 @@ pub enum Op {
     Undelete {
         id: ObjectId,
     },
+}
+
+/// The instance tag of a row that op `op` of an entry adds (7.6): `BLAKE3("pe.row" ‖ line ‖ author ‖ chain ‖ seq ‖
+/// op)[..16]`, from the same coordinates as [`ObjectId::created`], so an author can name a row its own transaction
+/// adds. A row no edit added has tag 0. Comparisons are only within one object, component and instance, so a tag
+/// need not be unique beyond that.
+pub fn row_tag(line: LineId, author: MemberKey, chain: ChainId, seq: u64, op: u32) -> u128 {
+    let mut h = Hasher::new("pe.row");
+    h.write_hash(&line.0).write(&author.0).write_hash(&chain.0).write_u64(seq).write_u32(op);
+    let h = h.finish().0;
+    let mut b = [0; 16];
+    b.copy_from_slice(&h[..16]);
+    // Zero means "no edit added it", so an edit's tag is never zero.
+    u128::from_le_bytes(b).max(1)
 }
 
 /// The context of [`Precondition::Content`] hashes.
@@ -297,11 +316,12 @@ impl Transaction {
                     w.u16(*field);
                     w.bytes(value);
                 }
-                Op::RemoveRow { id, component, instance } => {
+                Op::RemoveRow { id, component, instance, tag } => {
                     w.u8(4);
                     w.target(*id);
                     w.u128(component.0);
                     w.u16(*instance);
+                    w.u128(*tag);
                 }
                 Op::Reparent { id, parent, index, keep_world } => {
                     w.u8(5);
@@ -482,7 +502,12 @@ impl<'a> R<'a> {
                     field: self.u16()?,
                     value: self.bytes()?,
                 },
-                4 => Op::RemoveRow { id: self.target()?, component: self.component()?, instance: self.u16()? },
+                4 => Op::RemoveRow {
+                    id: self.target()?,
+                    component: self.component()?,
+                    instance: self.u16()?,
+                    tag: self.u128()?,
+                },
                 5 => Op::Reparent {
                     id: self.target()?,
                     parent: self.target()?,

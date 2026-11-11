@@ -3,8 +3,8 @@
 //!
 //! The checks run in 7.6's order: decoding, the actor, `EDIT`, the preconditions against the state before the
 //! transaction, then each op in order on a copy-on-write working state, which replaces the world only if every op
-//! applies. Protections (7.8) are checked at each op, against the state just before it, since an op may name an
-//! object an earlier op of the same transaction created.
+//! applies. Protections (7.8) and holds (7.2) are checked at each op, against the state just before it, since an op
+//! may name an object an earlier op of the same transaction created. The reported reason is the first failing op's.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use pe_seams::{Class, FieldPath, Note, Outcome, Reason, SignedEntry, Version};
 use pe_sim::{ComponentId, Node, RowVersion, Transform};
 
 use crate::components::{Protection, SimSize, ids};
-use crate::edit::{Actor, Op, Precondition, Row, Target, Transaction, content_hash};
+use crate::edit::{Actor, Op, Precondition, Row, Target, Transaction, content_hash, row_tag};
 use crate::world::{DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, depth, perm};
 
 /// What an applied entry touched, for the replica's physics effects (9.2) and the caches. Empty for a refusal.
@@ -58,6 +58,11 @@ struct Cx {
 }
 
 impl Cx {
+    /// The instance tag of a row op `i` adds (7.6).
+    fn tag(&self, i: u32) -> [u8; 16] {
+        row_tag(self.line, self.author, self.chain, self.seq, i).to_le_bytes()
+    }
+
     /// Objects that are gone after this op can carry no precondition in the inverse.
     fn forget(&mut self, gone: &[ObjectId]) {
         self.undo_pre.retain(|(id, _), _| !gone.contains(id));
@@ -74,11 +79,13 @@ fn invalid_field(c: ComponentId, field: u32) -> Reason {
     Reason::Invalid { field: Some(FieldPath { component: c.0, field }) }
 }
 
-/// The reason for a depth-limit refusal. pe-seams v1's `Reason` has no `TooDeep` yet (asked of @engine-architect);
-/// until it does, the refusal is `Invalid` with no field.
-fn too_deep() -> Reason {
-    invalid()
+fn too_deep(object: ObjectId, limit: u32) -> Reason {
+    Reason::TooDeep { object, limit }
 }
+
+/// Op `i` changed nothing (7.6): a `RemoveRow` of an instance already gone. pe-seams has no `Note::NoEffect` yet
+/// (asked of @engine-architect, m48a126a4d778); until it does, the op applies with no note.
+fn no_effect(_cx: &mut Cx, _i: u32) {}
 
 fn version(entry: EntryRef, op: u32) -> Version {
     Version { entry, op }
@@ -273,9 +280,9 @@ impl World {
                 let row = self.field_row(id, *component, *instance, *field, value)?;
                 self.write_row(cx, i, id, *component, *instance, &row, false)
             }
-            Op::RemoveRow { id, component, instance } => {
+            Op::RemoveRow { id, component, instance, tag } => {
                 let id = self.live(cx, *id)?;
-                self.op_remove_row(cx, i, id, *component, *instance)
+                self.op_remove_row(cx, i, id, *component, *instance, *tag)
             }
             Op::Reparent { id, parent, index, keep_world } => {
                 let id = self.live(cx, *id)?;
@@ -313,7 +320,7 @@ impl World {
         };
         let v = version(cx.entry, i);
         self.create_at(id, parent, index.map(|x| x as usize), cx.author, v).map_err(|e| match e {
-            WorldError::TooDeep { .. } => too_deep(),
+            WorldError::TooDeep { object, limit } => too_deep(object, limit),
             WorldError::Duplicate(id) => Reason::Exists(id),
             WorldError::UnknownObject(id) => Reason::Unknown(id),
             WorldError::Store(_) => invalid(),
@@ -362,8 +369,12 @@ impl World {
             Res::Live(o) => o,
         };
         let doomed = self.store.subtree(o);
+        // A hold by anyone but the author refuses the delete (7.2). The author's own holds end with it, so a player
+        // can delete what they hold without letting go first (@coordinator-opus m6d5969e46cb1, option (b)).
         for d in &doomed {
-            if let Some(c) = self.claims.get(d) {
+            if let Some(c) = self.claims.get(d)
+                && c.member != cx.author
+            {
                 return Err(Reason::Held { by: c.member });
             }
         }
@@ -397,9 +408,11 @@ impl World {
         for (d, s) in stones {
             t.insert(d, s);
         }
-        // Holds by hands that went with the subtree end with them.
-        if self.claims.values().any(|c| doomed.contains(&c.hand)) {
-            Arc::make_mut(&mut self.claims).retain(|_, c| !doomed.contains(&c.hand));
+        // Holds on the deleted objects (all the author's, by the check above), and holds by hands that went with the
+        // subtree, end with them.
+        let gone = |o: &ObjectId, c: &crate::world::Claim| doomed.contains(o) || doomed.contains(&c.hand);
+        if self.claims.iter().any(|(o, c)| gone(o, c)) {
+            Arc::make_mut(&mut self.claims).retain(|o, c| !gone(o, c));
         }
         if let Some(p) = parent {
             self.touch(p, version(cx.entry, i), true);
@@ -454,10 +467,10 @@ impl World {
         if let Some(p) = parent
             && depth(&self.store, p) + 1 + self.height(src) > self.depth_limit
         {
-            return Err(too_deep());
+            return Err(too_deep(src, self.depth_limit));
         }
         let v = version(cx.entry, i);
-        let rv = RowVersion { entry: v.entry.0.0, op: v.op, _pad: 0 };
+        let rv = RowVersion { entry: v.entry.0.0, op: v.op, tag: cx.tag(i), _pad: 0 };
         let registry = self.store.registry().clone();
         let mut map: BTreeMap<ObjectId, ObjectId> = BTreeMap::new();
         for (j, &x) in subtree.iter().enumerate() {
@@ -540,7 +553,7 @@ impl World {
         if let Some(p) = parent {
             let height = order.iter().map(|x| self.stone_depth(id, *x)).max().unwrap_or(0);
             if depth(&self.store, p) + 1 + height > self.depth_limit {
-                return Err(too_deep());
+                return Err(too_deep(id, self.depth_limit));
             }
         }
         let v = version(cx.entry, i);
@@ -675,22 +688,29 @@ impl World {
         }
         let before = self.store.row_version(c, id);
         let prior = self.store.get_raw(c, id).map(<[u8]>::to_vec);
+        // An overwrite keeps the instance's tag; an addition gives it this op's.
+        let tag = before.map_or(cx.tag(i), |v| v.tag);
         self.store.insert_raw(c, id, bytes).map_err(|e| self.store_reason(c, e))?;
         if !creating {
             cx.undo.push(match prior {
                 Some(bytes) => Op::SetRow { id: Target::Existing(id), row: Row { component: c, instance: 0, bytes } },
-                None => Op::RemoveRow { id: Target::Existing(id), component: c, instance: 0 },
+                None => Op::RemoveRow {
+                    id: Target::Existing(id),
+                    component: c,
+                    instance: 0,
+                    tag: u128::from_le_bytes(tag),
+                },
             });
             cx.undo_pre.insert((id, c), version(cx.entry, i));
         }
         if !creating
             && let Some(v) = before
-            && v != RowVersion::NONE
+            && v.edited()
         {
             cx.overwrote.push(from_row_version(v));
         }
         let v = version(cx.entry, i);
-        self.store.set_row_version(c, id, RowVersion { entry: v.entry.0.0, op: v.op, _pad: 0 });
+        self.store.set_row_version(c, id, RowVersion { entry: v.entry.0.0, op: v.op, tag, _pad: 0 });
         self.touch(id, v, false);
         cx.fp.rows.push((id, c));
         Ok(())
@@ -703,10 +723,18 @@ impl World {
         id: ObjectId,
         c: ComponentId,
         instance: u16,
+        tag: u128,
     ) -> Result<(), Reason> {
         if instance != 0 || !edit_writable(c) || c == ids::SIM_SIZE || self.store.registry().get(c).is_none() {
             return Err(invalid_field(c, u32::MAX));
         }
+        // The instance it names is already gone: no row, or a row added again since with another tag (7.6). There is
+        // nothing to remove, so nothing to hold or protect either, and two removals in a merge need no rule of their
+        // own.
+        let Some(before) = self.store.row_version(c, id).filter(|v| v.tag() == tag) else {
+            no_effect(cx, i);
+            return Ok(());
+        };
         if held_rows(c)
             && let Some(claim) = self.claims.get(&id)
         {
@@ -715,16 +743,12 @@ impl World {
         if c == ids::PROTECTION {
             self.check_protection_write(cx.author, id, None)?;
         }
-        let Some(before) = self.store.row_version(c, id) else {
-            // Removing an absent row changes nothing, so a merge of two removals needs no rule of its own.
-            return Ok(());
-        };
         if let Some(bytes) = self.store.get_raw(c, id).map(<[u8]>::to_vec) {
             cx.undo.push(Op::SetRow { id: Target::Existing(id), row: Row { component: c, instance: 0, bytes } });
         }
         cx.undo_pre.remove(&(id, c));
         self.store.remove_raw(c, id).map_err(|e| self.store_reason(c, e))?;
-        if before != RowVersion::NONE {
+        if before.edited() {
             cx.overwrote.push(from_row_version(before));
         }
         self.touch(id, version(cx.entry, i), false);
@@ -758,7 +782,7 @@ impl World {
                 return Err(Reason::Cycle);
             }
             if depth(&self.store, p) + 1 + self.height(id) > self.depth_limit {
-                return Err(too_deep());
+                return Err(too_deep(id, self.depth_limit));
             }
         }
         let old = self.store.parent(id);
