@@ -6,8 +6,32 @@ license.workspace = true
 publish.workspace = true
 description = "The MCP server over WorldApi: its tools and transports, started by pe-app as a library, and the small bridge binary"
 
-# Skeleton from pe-seams v0 (WS-seams). WS-api, @api-eng owns this crate and its manifest; the root Cargo.toml
-# already lists it, so adding dependencies here needs no other change.
+# WS-api (@api-eng) owns this crate and its manifest; the root Cargo.toml lists it (pe-seams v0).
+[lib]
+name = "pe_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pe-mcp"
+path = "src/main.rs"
+
 [dependencies]
 pe-seams = { path = "../pe-seams", features = ["world-api"] }
 pe-api = { path = "../pe-api" }
+# Kept from the archived pe-mcp (archive/crates/pe-mcp/Cargo.toml), which passed the native-code audit.
+rmcp = { version = "=3.8.0", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-async-rw", "transport-streamable-http-server"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "process"] }
+tokio-util = "0.7"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+getrandom = "0.3"
+subtle = "2.6"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Memory"] }
+
+[dev-dependencies]
+rmcp = { version = "=3.8.0", default-features = false, features = ["client", "server", "macros", "schemars", "transport-async-rw"] }
