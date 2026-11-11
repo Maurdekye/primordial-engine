@@ -3,7 +3,7 @@
 use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId, Offset, Pos};
 use pe_sim::Transform;
 use pe_world::components::{Body, Hand, Name, Protection, Shape, body_kind, shape_kind};
-use pe_world::{BlobRef, BlobStore, Claim, DEPTH_LIMIT, Value, Version, World, WorldError};
+use pe_world::{BlobRef, BlobStore, Claim, DEPTH_LIMIT, GENESIS, Value, Version, World, WorldError};
 
 fn id(n: u128) -> ObjectId {
     ObjectId::from_u128(n)
@@ -143,7 +143,7 @@ fn names_need_their_blob() {
     let blobs = BlobStore::default();
     let mut w = World::new(1, blobs.clone());
     let text = BlobRef::of(b"late");
-    w.create(id(1), None, ALICE, Version::GENESIS).unwrap();
+    w.create(id(1), None, ALICE, GENESIS).unwrap();
     w.insert(id(1), Name { text }).unwrap();
     let s = w.snapshot(Frame(0));
     assert_eq!(s.info(id(1)).unwrap().name, None, "a missing display blob is not an error");
@@ -157,32 +157,32 @@ fn names_need_their_blob() {
 fn creation_refusals_change_nothing() {
     let mut w = scene();
     let before = w.snapshot(Frame(0));
-    assert_eq!(w.create(id(10), None, ALICE, Version::GENESIS), Err(WorldError::Duplicate(id(10))));
-    assert_eq!(w.create(id(60), Some(id(99)), ALICE, Version::GENESIS), Err(WorldError::UnknownObject(id(99))));
-    assert_eq!(w.create(ObjectId::NONE, None, ALICE, Version::GENESIS), Err(WorldError::UnknownObject(ObjectId::NONE)));
+    assert_eq!(w.create(id(10), None, ALICE, GENESIS), Err(WorldError::Duplicate(id(10))));
+    assert_eq!(w.create(id(60), Some(id(99)), ALICE, GENESIS), Err(WorldError::UnknownObject(id(99))));
+    assert_eq!(w.create(ObjectId::NONE, None, ALICE, GENESIS), Err(WorldError::UnknownObject(ObjectId::NONE)));
     assert_eq!(w.store().objects(), before.all());
 }
 
 #[test]
 fn depth_limit() {
     let mut w = World::new(1, BlobStore::default());
-    w.create(id(1), None, ALICE, Version::GENESIS).unwrap();
+    w.create(id(1), None, ALICE, GENESIS).unwrap();
     for n in 2..=(DEPTH_LIMIT as u128 + 1) {
-        w.create(id(n), Some(id(n - 1)), ALICE, Version::GENESIS).unwrap();
+        w.create(id(n), Some(id(n - 1)), ALICE, GENESIS).unwrap();
     }
     // id(DEPTH_LIMIT + 1) is DEPTH_LIMIT levels below the root: one more is refused.
     let deepest = id(DEPTH_LIMIT as u128 + 1);
     let next = id(DEPTH_LIMIT as u128 + 2);
     assert_eq!(
-        w.create(next, Some(deepest), ALICE, Version::GENESIS),
+        w.create(next, Some(deepest), ALICE, GENESIS),
         Err(WorldError::TooDeep { object: next, limit: DEPTH_LIMIT })
     );
     assert!(!w.store().exists(next));
     // Lowering the limit refuses new depth but leaves what is there.
     w.set_depth_limit(4);
     assert!(w.store().exists(deepest));
-    assert!(w.create(next, Some(id(5)), ALICE, Version::GENESIS).is_err());
-    assert!(w.create(next, Some(id(4)), ALICE, Version::GENESIS).is_ok());
+    assert!(w.create(next, Some(id(5)), ALICE, GENESIS).is_err());
+    assert!(w.create(next, Some(id(4)), ALICE, GENESIS).is_ok());
     // Reads over a deep chain are iterative: the deepest object still finds the root's protection.
     w.insert(id(1), Protection { owner: BOB }).unwrap();
     assert_eq!(w.snapshot(Frame(0)).info(deepest).unwrap().protected_by, Some(BOB));
@@ -194,7 +194,7 @@ fn depth_limit() {
 fn padding_must_be_zero() {
     use pe_world::components::ids;
     let mut w = World::new(1, BlobStore::default());
-    w.create(id(1), None, ALICE, Version::GENESIS).unwrap();
+    w.create(id(1), None, ALICE, GENESIS).unwrap();
     let shape = Shape { kind: shape_kind::BOX, density: 1.0, size: [1.0; 3], ..Default::default() };
     let bad = Shape { _pad: 0xdead_beef, ..shape };
     // Through the typed insert and the raw one (logic, MCP, scene loading).

@@ -12,5 +12,6 @@ mod read;
 mod world;
 
 pub use components::BlobRef;
+pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
-pub use world::{BlobStore, Claim, DEPTH_LIMIT, DEPTH_LIMIT_MAX, Version, World, WorldError};
+pub use world::{BlobStore, Claim, DEPTH_LIMIT, DEPTH_LIMIT_MAX, GENESIS, World, WorldError};
