@@ -128,11 +128,49 @@ on pe-replica 3d13ff88, both reproduced. Decided by @coordinator-opus (m4fb423f7
   covers a cut that names only void entries stamped below the floor.
 - The harness: one `EntrySource` conformance test, run against every mock now and against pe-agree once it exists;
   a property that no member votes on a cut while lacking an entry the cut names; probe-d1 stays as the regression.
+  Built as P15 (harness/design 5d9d4bb1, seamnode.rs, per member) and tests/conform_source.rs, which runs the line
+  against every agreement; pe-agree only adds a target.
 - pe-agree and its model (@world-chunks): nothing may treat "entries in [floor, cut frame)" as "everything the cut
   covers". pe-diverge's replay and a newcomer's catch-up carry the same risk (docket, @diverge-eng).
 - Residual risk: a driver that hands the replica a cut it didn't get from `wants_roots` (in a repair or a merge).
   If pe-diverge ever needs that for real, an `EntrySource::holds(&Cut)` seam method gets added then, with a real
   caller. Not now.
+
+## S3 v1.2 and S2 v1.2: retention for rung 1
+
+@design-reviewer's Medium on pe-replica 3d13ff88 (mcc435138b02c), raised by @vdw-physics as a decision: rung 1
+replays from `Cv`, which can sit well below the floor while a member stays diverged, and nothing promised that S3
+keeps those entries, so a trim would replay empty frames into a wrong root instead of falling to rung 2. Decided by
+@coordinator-opus (m1de77bed432b, option A with a hard cap; @fable-reviewer concurs, m705aa0c589db):
+- S3 keeps final entries from the later of the frame the replica asks for (`Cv`'s) and a cap: the user's one-minute
+  divergence bound (`T_diverge`, m35138bafc46a) plus a margin, in frames from the world's `SimRate`, and a byte limit
+  for a busy minute. The margin is `T_keep` (@engine-architect's choice).
+- `EntrySource::kept_from() -> Frame`: `entries_at(f)` is complete for every `f` at or above it; nothing is promised
+  below. No default, so every source answers it; one that never trims answers `Frame(0)`.
+- The asked frame only moves forward. A request below what is already trimmed is answered truthfully by
+  `kept_from()`, not honoured.
+- `replay_to` answers `NotKept` when `Cv` is older than `kept_from()`, before restoring anything, and the ladder goes
+  to rung 2: the right outcome for a member that far behind, not a failure. pe-replica's test sets the floor, trims,
+  then asks for a replay from below it, and asserts `NotKept` and rung 2, never a root (@vdw-physics).
+- pe-agree implements the window and the byte cap in S3's store (@world-chunks).
+- This window serves rung 1 only. The admins' world record on disk is separate and not bounded by it.
+- The floor is local, so a diverged member can pin only its own machine's memory, never anyone else's.
+
+Two choices the decision left to the seam (@engine-architect):
+- **A distinct "not kept" result:** `entries_at` answers `Option<&[SignedEntry]>`, `None` for a trimmed frame and
+  never an empty slice, so no later caller can forget to check. It was cheap: on main it touches only pe-seams and
+  pe-replica, and three unlanded branches fix a line or two at their next merge (@vdw-physics's count over every
+  local branch). It also covers `advance`, which a check inside `replay_to` alone would miss: a replica whose floor
+  falls further behind than the cap counts a fault instead of stepping empty frames silently.
+- **Who asks:** the replica, from `finalize`, through `EntrySource::keep_final_from(frame)`, whenever `Cv` moves. It
+  is the only call that moves `Cv`, it already holds the source, and it covers pe-diverge's calls to `finalize` after
+  a repair, which run outside the driver. So there is no `Cv` accessor on `Replica` and no driver call each tick.
+
+Folded in: @design-reviewer's two Lows on S3 v1.1 round 3 (m91523df37dd3): "No cut without its entries" now asks
+only for the entries a cut newly includes (after the previous final cut's head, up to this cut's), which a member can
+still meet once the window trims; and `replay_to`'s cut is one this member holds in full, its final cut or a cut it
+voted on, such as a root split's. And their Low on pe-app slice 1 (mbadfd2502e35): `Replica::view` returns the same
+`Arc` until the view changes.
 
 ## The conflicts between proposals, and v0's rulings
 
