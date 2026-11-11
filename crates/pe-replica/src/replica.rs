@@ -43,15 +43,22 @@
 //! **The d1 rule is S3's.** `root_at_cut` and `replay_to` never answer "missing entries": a cut may cover void
 //! entries that `entries_at` leaves out, so the replica cannot count them (@coordinator-opus, m8126544ad530).
 //!
+//! **Rung 2 and joining** (`import_at_cut`, 6.2; S2 v1.2 round 3): the import is checked whole before the live state
+//! changes, then the live state is the imported one at the cut's frame, in a new physics world, and re-simulates to
+//! the present through the replay. pe-physics restores a transfer only into a new world, whose images are not the
+//! old world's, so the ring starts again at the cut, and until the floor reaches the cut the replica keeps no
+//! history below it (`base_frame`): there, roots answer `Damaged` (rung 2 again), changes are faults, and no replay
+//! starts from an older `Cv`.
+//!
 //! **Not yet here** (the M1 increments that follow): hands, grips and grab joints (3.3), carried checks (3.4), logic
-//! stages (3, steps 3 and 8), `import_at_cut` (6.2), and the view's rows beyond bodies (7).
+//! stages (3, steps 3 and 8), and the view's rows beyond bodies (7).
 
 use core::time::Duration;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use pe_physics::{PhysicsConfig, PhysicsError, PhysicsWorld, Pose, WorldImage};
+use pe_physics::{CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Transfer, WorldImage};
 use pe_seams::{
     Advance, Cut, CutImport, CutRef, DomainId, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameClock,
     FrameView, GroupSel, Hash, HostTime, ImportError, ObjectClass, ObjectId, Offset, Outcome, PhysicsImage, Pos,
@@ -151,6 +158,9 @@ pub struct ReplicaImpl<W: WorldModel> {
     replay: Option<Replay>,
     /// The last rung-1 replay that finished, and its root: asked again, it answers at once.
     replayed: Option<(CutRef, Hash)>,
+    /// The cut of my last import (rung 2 or joining) and my root there, until the floor reaches it. The replica
+    /// keeps no history below it: its physics world is new, and older keyframes cannot be restored into it.
+    imported: Option<(CutRef, Hash)>,
     /// A replay that ended at a frame no longer kept, and what it answers when asked again: `NotKept` below the floor
     /// (abandoned), `Damaged` at or above it when its cut's root needed that frame (S2 v1.2 round 3).
     lost: Option<(CutRef, RootError)>,
@@ -220,6 +230,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             diverged: None,
             replay: None,
             replayed: None,
+            imported: None,
             lost: None,
             stuck_at: None,
             unkept_met: None,
@@ -278,8 +289,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// The lowest frame a rollback may reach: the floor, or a replay's cut frame while the replay runs.
     fn rollback_floor(&self) -> Frame {
-        let floor = self.floor_frame();
+        let floor = self.base_frame();
         self.replay.as_ref().map_or(floor, |r| floor.max(r.cut.at.frame))
+    }
+
+    /// The lowest frame the replica re-simulates from: the floor, or my last import's cut frame above it.
+    fn base_frame(&self) -> Frame {
+        let floor = self.floor_frame();
+        self.imported.map_or(floor, |i| floor.max(i.0.frame))
     }
 
     /// Whether the live history stopped below `at`, at a frame S3 no longer keeps: no root at `at` will come.
@@ -525,7 +542,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// The first frame from the floor below the cut's frame whose live entries are not exactly the cut's.
     fn first_difference(&self, cut: &Cut, source: &dyn EntrySource) -> Option<Frame> {
-        (self.floor_frame().0..cut.at.frame.0).map(Frame).find(|&g| {
+        (self.base_frame().0..cut.at.frame.0).map(Frame).find(|&g| {
             // A frame no longer kept counts as different (`my_root` refuses before asking).
             let Some(all) = source.entries_at(g) else { return true };
             let want: Vec<EntryRef> = in_cut(all, cut).iter().map(|e| e.id()).collect();
@@ -535,9 +552,17 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// My root at the cut, computed (no cache) and held.
     fn my_root(&mut self, cut: &Cut, source: &dyn EntrySource) -> Result<Hash, RootError> {
+        // At my last import's cut, my root is the imported one, with no re-step below it (S2 v1.2).
+        if let Some((_, root)) = self.imported.filter(|i| i.0 == cut.at) {
+            return Ok(root);
+        }
         let at = cut.at.frame;
         if at < self.floor_frame() {
             return Err(RootError::NotKept);
+        }
+        // Below my last import there is no history of mine, so no root of mine will come: rung 2 is due there.
+        if self.imported.is_some_and(|i| at < i.0.frame) {
+            return Err(RootError::Damaged);
         }
         if self.stopped_short_of(at) {
             return Err(RootError::Damaged);
@@ -553,7 +578,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         // it differs. One S3 no longer keeps (its time cap, for a replica far behind, or an S3 fault) means no root
         // here will ever come: rung 2 is due (@chunks-reviewer's Medium on 3d8e9442). One fault per such frame, since
         // the driver asks again each tick.
-        let floor = self.floor_frame();
+        let floor = self.base_frame();
         if let Some(gone) = (floor.0..at.0).map(Frame).find(|&f| source.entries_at(f).is_none()) {
             if self.unkept_met != Some(gone) {
                 self.faults += 1;
@@ -603,10 +628,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
         source: &dyn EntrySource,
     ) -> Result<(Hash, Held<W::Saved>), RootError> {
         let at = cut.at.frame;
-        let ReplicaImpl { ring, world, physics, .. } = self;
+        let ReplicaImpl { ring, world, physics, faults, .. } = self;
         let (k, key) = ring.at_or_before(from).ok_or(RootError::NotKept)?;
         world.restore(&key.world);
-        physics.restore_image(&key.image).map_err(|_| RootError::Damaged)?;
+        // A refused physics call is a fault, counted (@chunks-reviewer's nit on 7a360722); here it is the scratch's.
+        if physics.restore_image(&key.image).is_err() {
+            *faults += 1;
+            return Err(RootError::Damaged);
+        }
         self.frame = k;
         let mut root = None;
         while self.frame < at {
@@ -619,9 +648,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
             Some(root) => root,
             None => self.take_root(),
         };
-        let transfer = self.physics.save_transfer().map_err(|_| RootError::Damaged)?;
+        let (Ok(transfer), Ok(image)) = (self.physics.save_transfer(), self.physics.save_image()) else {
+            self.faults += 1;
+            return Err(RootError::Damaged);
+        };
         let global = Hash(transfer.check_hash().0);
-        let image = self.physics.save_image().map_err(|_| RootError::Damaged)?;
         let held =
             Held { frame: at, world: self.world.save(), image, transfer: Bytes::from(transfer.to_bytes()), global };
         Ok((root, held))
@@ -643,6 +674,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         keep.extend(self.cv.as_ref().map(|c| c.1));
         keep.extend(self.diverged.map(|d| d.1));
         keep.extend(self.voted.values().copied());
+        keep.extend(self.imported.map(|i| i.1));
         self.held.retain(|h, _| keep.contains(h));
     }
 
@@ -734,6 +766,12 @@ fn in_cut<'s>(all: &'s [SignedEntry], cut: &Cut) -> Vec<&'s SignedEntry> {
     all.iter().filter(|e| cut.includes(&e.entry.chain, e.entry.seq)).collect()
 }
 
+/// A new physics world from a canonical transfer whose check hash is `global`; `None` if it is not one.
+fn restored(config: PhysicsConfig, bytes: &[u8], global: Hash) -> Option<PhysicsWorld> {
+    let transfer = Transfer::from_bytes(bytes).ok()?;
+    PhysicsWorld::from_transfer(config, &transfer, &CheckHash(global.0)).ok()
+}
+
 fn bounding_radius(shapes: &[ShapePart]) -> f32 {
     let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     shapes
@@ -767,8 +805,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         let excused = std::mem::take(&mut self.excused);
         if let Some(f) = source.take_changed_from() {
             let expected = excused.iter().any(|&(g, floor)| (g..floor).contains(&f));
-            if f < self.floor_frame() && !expected {
-                // A protocol fault (4.2): reported, and not acted on below the floor.
+            if f < self.base_frame() && !expected {
+                // A protocol fault (4.2): reported, and not acted on below the floor, or below my last import, whose
+                // history the replica no longer has.
                 self.faults += 1;
             }
             let to = f.max(self.rollback_floor());
@@ -789,6 +828,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         out
     }
 
+    /// The outcome my live history gave `entry`, and its frame. `None` for an entry this replica has not applied: one
+    /// not stepped yet, one in a frame an abandoned replay never reached, or one above the floor and below my last
+    /// import's cut, whose history the import replaced (@design-reviewer's Low on 7a360722).
     fn outcome(&self, entry: &EntryRef) -> Option<(Frame, Outcome)> {
         self.outcomes.get(entry).cloned()
     }
@@ -797,6 +839,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // S3 v1.2: stopped at a frame no longer kept, it gives no root past it, not even one computed before.
         if self.stopped_short_of(cut.at.frame) {
             return Err(RootError::Damaged);
+        }
+        // After an import at the cut, my root there is the imported one, even at my floor's cut (rung 2 after a
+        // divergence there), until finalize takes it.
+        if let Some((_, root)) = self.imported.filter(|i| i.0 == cut.at) {
+            return Ok(root);
         }
         if let Some(floor) = self.floor.as_ref().filter(|f| f.cut.at == cut.at) {
             return Ok(floor.root);
@@ -843,6 +890,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             Finalized::Diverged { mine }
         };
         self.move_floor(&cut.cut, mine);
+        if self.imported.is_some_and(|i| i.0.frame <= at.frame) {
+            self.imported = None;
+        }
         // What I still need (S3 v1.2): from `Cv`'s frame for rung 1's replay, from the floor's for re-simulation. The
         // floor moved either way; S3 ignores a frame that does not move forward.
         let cv = self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame);
@@ -868,7 +918,12 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         let cv_frame = self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame);
         // S3 v1.2: below `kept_from` the entries are gone, so a replay from `Cv` would step empty frames. Refused
         // before anything is restored, so the live state is unchanged and the ladder goes on to rung 2.
-        if cut.at.frame < cv_frame || !self.held.contains_key(&cv_root) || cv_frame < source.kept_from() {
+        let imported_above = self.imported.is_some_and(|i| cv_frame < i.0.frame);
+        if cut.at.frame < cv_frame
+            || !self.held.contains_key(&cv_root)
+            || cv_frame < source.kept_from()
+            || imported_above
+        {
             return Err(RootError::NotKept);
         }
         // Check `Cv` from its records and from the restored physics itself, keeping the live state until it passes.
@@ -920,15 +975,90 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         })
     }
 
+    /// Rung 2 and joining (S2 v1.2 round 3; replica.md 6.2). Every group is the domain in M1. Everything is checked
+    /// before the live state changes: the records by the world model, the physics image by
+    /// `PhysicsWorld::from_transfer` (`PhysicsCheck`), and the patched state's root against the target
+    /// (`RootMismatch`). The base is my own state at the cut when I hold my root there, else the empty state; without
+    /// an image, the physics is my own at the cut, or an empty world. The live state then becomes the imported one at
+    /// the cut's frame, in a new physics world: the ring starts again at the cut, and the replica keeps no history
+    /// below it. It re-simulates to the present within the budget, through the replay, answering `Pending` until it
+    /// has. The same import asked again answers its progress; it is not imported twice.
     fn import_at_cut(
         &mut self,
         _group: &GroupSel,
-        _import: CutImport,
-        _source: &mut dyn EntrySource,
+        import: CutImport,
+        source: &mut dyn EntrySource,
     ) -> Result<Hash, ImportError> {
-        // The next increment (6.2). pe-physics restores a transfer only into a new world, whose images are not this
-        // world's, so the import also replaces the ring and the held snapshots.
-        Err(ImportError::NotKept)
+        let cut = import.cut.clone();
+        if let Some((at, root)) = self.imported.filter(|i| i.0 == cut.at && i.1 == import.target_root) {
+            let running = self.replay.as_ref().is_some_and(|r| r.cut.at == at);
+            return if running { Err(ImportError::Pending) } else { Ok(root) };
+        }
+        let c = cut.at.frame;
+        let mine = (self.voted.get(&cut.at).copied())
+            .or(self.diverged.filter(|d| d.0 == cut.at).map(|d| d.1))
+            .or(self.finals.iter().find(|f| f.0 == cut.at).map(|f| f.1))
+            .or(self.floor.as_ref().filter(|f| f.cut.at == cut.at).map(|f| f.root));
+        let own = mine.and_then(|r| self.held.get(&r)).filter(|h| h.frame == c);
+        let base = own.map_or_else(|| self.world.empty(), |h| h.world.clone());
+        let own_physics = own.map(|h| (h.transfer.clone(), h.global));
+        let patched = self.world.import(&base, &import)?;
+        let config = self.config.physics.with_tick_rate(self.rate.hz()).map_err(|_| ImportError::PhysicsCheck)?;
+        let physics = match (&import.physics, own_physics) {
+            (Some(image), _) => restored(config, &image.bytes, image.global),
+            (None, Some((bytes, global))) => restored(config, &bytes, global),
+            (None, None) => PhysicsWorld::new(config).ok(),
+        }
+        .ok_or(ImportError::PhysicsCheck)?;
+        // The patched state's root in the new physics world; the live state comes back unless it is the target.
+        let live = self.world.save();
+        let old = std::mem::replace(&mut self.physics, physics);
+        self.world.restore(&patched);
+        let root = self.take_root();
+        let saved = (root == import.target_root).then(|| (self.physics.save_transfer(), self.physics.save_image()));
+        let Some((Ok(transfer), Ok(image))) = saved else {
+            self.world.restore(&live);
+            self.physics = old;
+            return Err(if root == import.target_root {
+                ImportError::PhysicsCheck
+            } else {
+                ImportError::RootMismatch { got: root }
+            });
+        };
+        // The live history starts again at the cut. What my replaced history held above the floor is gone, its
+        // outcomes included: entries there that I never applied report none.
+        let floor = self.floor_frame();
+        self.frame = c;
+        self.reached = self.reached.max(c);
+        self.ring = Ring::new();
+        self.ring.insert(c, Key { world: self.world.save(), image: image.clone() });
+        self.ring.pin([c]);
+        self.forget_after(c);
+        self.live.retain(|f, _| *f < floor);
+        self.live.insert(c, root);
+        self.stepped.retain(|f, _| *f < floor);
+        self.outcomes.retain(|_, (f, _)| *f < floor);
+        let global = Hash(transfer.check_hash().0);
+        let held =
+            Held { frame: c, world: self.world.save(), image, transfer: Bytes::from(transfer.to_bytes()), global };
+        self.held.insert(root, held);
+        self.voted.clear();
+        (self.replay, self.replayed, self.lost, self.stuck_at, self.unkept_met) = (None, None, None, None, None);
+        self.imported = Some((cut.at, root));
+        if self.frame >= self.reached {
+            self.replayed = Some((cut.at, root));
+            return Ok(root);
+        }
+        self.replay = Some(Replay { cut, root: Some(root) });
+        let (mut budget, mut out) = (self.budget, Advance::default());
+        let present = self.reached;
+        self.run(present, &*source, &mut budget, &mut out);
+        self.counters.frames_resimulated += out.resimulated;
+        match (&self.replay, self.replayed) {
+            (Some(_), _) => Err(ImportError::Pending),
+            (None, Some((_, r))) if r == root => Ok(root),
+            _ => Err(ImportError::NotKept),
+        }
     }
 
     fn view(&self) -> Arc<FrameView> {
