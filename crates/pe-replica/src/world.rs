@@ -144,10 +144,6 @@ pub struct BodyStateRow {
     pub digest: [u8; 32],
 }
 
-/// A pose outside the supported range (world-model.md 4.3): nothing was written.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PoseOutOfRange;
-
 // ---- the trait -----------------------------------------------------------------------------------------------------
 
 /// pe-world, as the replica drives it (replica.md 3 and 8.1). Every call is deterministic in the state and its
@@ -180,11 +176,16 @@ pub trait WorldModel: Send {
 
     // what the replica writes
 
-    /// The write-back of one moved body (replica.md 3, step 7).
-    fn write_pose(&mut self, id: ObjectId, pos: Pos, rotation: [f32; 4]) -> Result<(), PoseOutOfRange>;
+    /// Step 7's write-back (replica.md 3), once per frame: every body that moved, in id order, with its world pose.
+    /// pe-world converts each against the frame's final world poses, parents first, so the result does not depend on
+    /// the order (@world-model, m65729e24d52c). Returns the bodies whose pose is out of range (world-model.md 4.3), in
+    /// id order: nothing is written for them, and the rest apply.
+    fn write_poses(&mut self, poses: &[(ObjectId, Pos, [f32; 4])]) -> Vec<ObjectId>;
     /// Repairs out-of-limit transforms that trusted code wrote, and returns how many: nonzero is a fault (3.1).
     fn maintain_transforms(&mut self) -> u32;
-    /// At a cut frame, before the root: every bound body's `BodyState`, and the domain's `physics_global`.
+    /// At a cut frame, before the root: every bound body's `BodyState`, and the domain's `physics_global`. It replaces
+    /// every `BodyState` row: a body missing from `rows` has none afterwards. The root of a `save()` taken right after
+    /// it, once restored, is the root taken then (rung 1 checks `Cv` that way).
     fn write_physics(&mut self, rows: &[(ObjectId, BodyStateRow)], global: Hash);
 
     // state

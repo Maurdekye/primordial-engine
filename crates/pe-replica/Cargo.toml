@@ -9,6 +9,11 @@ description = "The replica (seam S2): one domain's deterministic state machine w
 # Skeleton from pe-seams v0 (WS-seams). WS-state, @vdw-physics owns this crate and its manifest; the root Cargo.toml
 # already lists it, so adding dependencies here needs no other change.
 [dependencies]
+bytes.workspace = true
+pe-core = { path = "../pe-core" }
 pe-seams = { path = "../pe-seams" }
 pe-world = { path = "../pe-world" }
 pe-physics = { path = "../pe-physics" }
+
+[dev-dependencies]
+pe-seams = { path = "../pe-seams", features = ["test-util"] }

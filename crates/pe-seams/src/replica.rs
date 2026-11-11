@@ -214,12 +214,14 @@ pub enum Finalized {
 }
 
 /// Why [`Replica::root_at_cut`] or [`Replica::replay_to`] has no root.
+///
+/// There is no "missing entries" case: the d1 rule is S3's alone ([`crate::Agreement::wants_roots`] and
+/// [`EntrySource::final_cut`] hand over only cuts whose entries the member holds). The replica cannot check it, since a
+/// cut may cover void entries that [`EntrySource::entries_at`] rightly leaves out (@coordinator-opus, m8126544ad530).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootError {
     /// The state needed is no longer kept: the cut's frame is below my floor, or (for a replay) `Cv`'s state is gone.
     NotKept,
-    /// I do not hold every entry the cut includes (the d1 rule): I may neither vote nor compare.
-    MissingEntries,
     /// The cut's frame is past what I have simulated.
     NotYetSimulated,
     /// The saved state at `Cv` failed its full rehash, from its records or from the restored physics itself: rung 2

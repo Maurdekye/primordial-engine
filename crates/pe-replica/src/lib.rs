@@ -6,12 +6,17 @@
 //! - [`drive`]: the S2/S3 glue of each simulation tick (pe-seams ruling 3; app.md 3), against the seam traits only.
 //! - [`world`]: what the replica needs from pe-world (replica.md 8.1), until pe-world is written.
 //! - [`ring`]: the keyframes (replica.md 4.1).
+//! - [`replica`]: the replica itself, [`ReplicaImpl`], over a [`WorldModel`] and pe-physics; [`bodies`] is its
+//!   physics glue.
 //! - [`mock`]: a small world model for tests and the harness, until pe-world exists.
 
+pub mod bodies;
 pub mod drive;
 pub mod mock;
+pub mod replica;
 pub mod ring;
 pub mod world;
 
 pub use drive::{DriveReport, Driver};
+pub use replica::{ReplicaConfig, ReplicaImpl};
 pub use world::WorldModel;

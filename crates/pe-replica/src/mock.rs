@@ -4,6 +4,7 @@
 //! nothing, and the root covers every row, the physics rows and the frame.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use pe_seams::{
     Class, DomainId, Frame, Hash, Hasher, ImportError, LeafKey, Mismatch, Node, ObjectId, Offset, Outcome, Pos, Reason,
@@ -11,8 +12,7 @@ use pe_seams::{
 };
 
 use crate::world::{
-    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, PhysicsSettings, PoseOutOfRange, PushFx,
-    ShapeRow, WorldModel,
+    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, PhysicsSettings, PushFx, ShapeRow, WorldModel,
 };
 
 /// Farthest a body may be from the origin, in metres: pe-physics's `MAX_POSITION`.
@@ -193,6 +193,9 @@ pub struct MockWorld {
     bodies: BTreeMap<ObjectId, BodyRow>,
     physics: BTreeMap<ObjectId, BodyStateRow>,
     global: Hash,
+    /// A one-shot fault for repair tests, shared by every save of this world, so restoring a snapshot does not arm
+    /// it again: at the end of the frame it names, the lowest static body's row moves by a millimetre.
+    glitch: Arc<Mutex<Option<Frame>>>,
 }
 
 impl MockWorld {
@@ -204,7 +207,14 @@ impl MockWorld {
             bodies: BTreeMap::new(),
             physics: BTreeMap::new(),
             global: Hash::ZERO,
+            glitch: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Arm the one-shot fault at the end of `frame`: a transient corruption, as from a bad memory bit, that a replay
+    /// does not repeat.
+    pub fn glitch_at(&self, frame: Frame) {
+        *self.glitch.lock().unwrap_or_else(|e| e.into_inner()) = Some(frame);
     }
 
     /// A body's position, as plain numbers from the origin.
@@ -312,6 +322,13 @@ impl WorldModel for MockWorld {
 
     fn end_frame(&mut self, frame: Frame) {
         self.frame = Frame(frame.0.saturating_add(1));
+        let fire = {
+            let mut armed = self.glitch.lock().unwrap_or_else(|e| e.into_inner());
+            (*armed == Some(frame)).then(|| armed.take()).is_some()
+        };
+        if let Some(b) = fire.then(|| self.bodies.values_mut().find(|b| b.kind == BodyKind::Static)).flatten() {
+            b.pos = b.pos.checked_add(Offset([0.001, 0.0, 0.0])).unwrap_or(b.pos);
+        }
     }
 
     fn body(&self, id: ObjectId) -> Option<BodyRow> {
@@ -334,16 +351,18 @@ impl WorldModel for MockWorld {
         self.settings
     }
 
-    fn write_pose(&mut self, id: ObjectId, pos: Pos, rotation: [f32; 4]) -> Result<(), PoseOutOfRange> {
-        let p = (pos - Pos::ORIGIN).0;
-        if p.iter().any(|c| !c.is_finite() || c.abs() > RANGE) {
-            return Err(PoseOutOfRange);
+    fn write_poses(&mut self, poses: &[(ObjectId, Pos, [f32; 4])]) -> Vec<ObjectId> {
+        let mut refused = Vec::new();
+        for &(id, pos, rotation) in poses {
+            let p = (pos - Pos::ORIGIN).0;
+            if p.iter().any(|c| !c.is_finite() || c.abs() > RANGE) {
+                refused.push(id);
+            } else if let Some(b) = self.bodies.get_mut(&id) {
+                b.pos = pos;
+                b.rotation = rotation;
+            }
         }
-        if let Some(b) = self.bodies.get_mut(&id) {
-            b.pos = pos;
-            b.rotation = rotation;
-        }
-        Ok(())
+        refused
     }
 
     fn maintain_transforms(&mut self) -> u32 {
