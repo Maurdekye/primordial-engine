@@ -8,15 +8,18 @@
 //! - [`ring`]: the keyframes (replica.md 4.1).
 //! - [`replica`]: the replica itself, [`ReplicaImpl`], over a [`WorldModel`] and pe-physics; [`bodies`] is its
 //!   physics glue.
-//! - [`mock`]: a small world model for tests and the harness, until pe-world exists.
+//! - [`mock`]: a small world model for tests and the harness.
+//! - [`peworld`]: pe-world's `World` as the replica's [`WorldModel`], [`PeWorld`].
 
 pub mod bodies;
 pub mod drive;
 pub mod mock;
+pub mod peworld;
 pub mod replica;
 pub mod ring;
 pub mod world;
 
 pub use drive::{DriveReport, Driver};
+pub use peworld::PeWorld;
 pub use replica::{ReplicaConfig, ReplicaImpl};
 pub use world::WorldModel;

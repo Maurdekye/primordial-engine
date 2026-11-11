@@ -13,7 +13,9 @@ bytes.workspace = true
 pe-core = { path = "../pe-core" }
 pe-seams = { path = "../pe-seams" }
 pe-world = { path = "../pe-world" }
+pe-sim = { path = "../pe-sim" }
 pe-physics = { path = "../pe-physics" }
 
 [dev-dependencies]
+bytemuck = "1.25"
 pe-seams = { path = "../pe-seams", features = ["test-util"] }

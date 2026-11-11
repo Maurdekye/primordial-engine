@@ -47,7 +47,8 @@ pub struct CarriedFx {
 /// The physics effects of one applied entry, or of one logic stage's change set. Empty for a refused entry.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Effects {
-    /// In id order, at most one per object.
+    /// In id order, at most one per object, except `Rebuilt` then `Teleported` for a body whose shapes or fields
+    /// and whose world pose an entry both changed: a rebuild keeps a moving body's physics pose.
     pub changed: Vec<(ObjectId, Change)>,
     pub pushes: Vec<PushFx>,
     pub carried: Option<CarriedFx>,
@@ -77,6 +78,14 @@ pub enum ShapeRow {
     Box { center: [f32; 3], rotation: [f32; 4], half_extents: [f32; 3] },
 }
 
+/// One shape of a body and its density: pe-world keeps a density on each `Shape` row (world-model.md 3.2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShapePart {
+    pub shape: ShapeRow,
+    /// Kg per cubic metre (replica.md 2.1: mass becomes density).
+    pub density: f32,
+}
+
 /// The physics view of one physical object: its `Body`, its shapes (its own `Shape`, then its compound children's in
 /// id order) and its world transform.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,9 +93,7 @@ pub struct BodyRow {
     pub kind: BodyKind,
     pub pos: Pos,
     pub rotation: [f32; 4],
-    pub shapes: Vec<ShapeRow>,
-    /// Per shape: kg per cubic metre (replica.md 2.1: mass becomes density).
-    pub density: f32,
+    pub shapes: Vec<ShapePart>,
     pub friction: f32,
     pub restitution: f32,
     pub rolling_resistance: f32,
@@ -196,7 +203,14 @@ pub trait WorldModel: Send {
     fn restore(&mut self, saved: &Self::Saved);
     /// The S2 tree calls on a saved root.
     fn tree<'a>(&'a self, saved: &'a Self::Saved) -> Box<dyn Tree + 'a>;
-    /// Rung 2's and a joiner's world-model part: `saved` patched from checked records (`NeedsPhysicsImage` for a
-    /// bound body without the image).
+    /// The state with no objects, no rows and empty world tables. Not genesis, which would bring the registry and the
+    /// settings along. It is only ever an import base, for an import from empty (a joiner, or a replica that answered
+    /// `Damaged` at the cut), never a state to step from (@world-model, m5442e8e58e81).
+    fn empty(&self) -> Self::Saved;
+    /// Rung 2's and a joiner's world-model part: `saved` patched from records, each checked against
+    /// `import.target_root` before anything is applied (`BadProof`), with every leaf in `import.absent` removed. The
+    /// patched state is the state at the cut's frame. It refuses a bound body that comes in a record, or that
+    /// `absent` removes, without the physics image (`NeedsPhysicsImage`): either changes the physics. It refuses an
+    /// image whose `global` is not the cut's `physics_global` record (`PhysicsCheck`; @world-model, m5442e8e58e81).
     fn import(&self, saved: &Self::Saved, import: &pe_seams::CutImport) -> Result<Self::Saved, ImportError>;
 }
