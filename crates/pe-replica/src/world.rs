@@ -77,6 +77,14 @@ pub enum ShapeRow {
     Box { center: [f32; 3], rotation: [f32; 4], half_extents: [f32; 3] },
 }
 
+/// One shape of a body and its density: pe-world keeps a density on each `Shape` row (world-model.md 3.2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShapePart {
+    pub shape: ShapeRow,
+    /// Kg per cubic metre (replica.md 2.1: mass becomes density).
+    pub density: f32,
+}
+
 /// The physics view of one physical object: its `Body`, its shapes (its own `Shape`, then its compound children's in
 /// id order) and its world transform.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,9 +92,7 @@ pub struct BodyRow {
     pub kind: BodyKind,
     pub pos: Pos,
     pub rotation: [f32; 4],
-    pub shapes: Vec<ShapeRow>,
-    /// Per shape: kg per cubic metre (replica.md 2.1: mass becomes density).
-    pub density: f32,
+    pub shapes: Vec<ShapePart>,
     pub friction: f32,
     pub restitution: f32,
     pub rolling_resistance: f32,

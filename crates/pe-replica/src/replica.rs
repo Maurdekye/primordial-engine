@@ -60,7 +60,7 @@ use pe_seams::{
 
 use crate::bodies;
 use crate::ring::{Policy, Ring};
-use crate::world::{BodyStateRow, ShapeRow, WorldModel};
+use crate::world::{BodyStateRow, ShapePart, ShapeRow, WorldModel};
 
 /// The replica's settings. Only `cut_every` follows from world state (the world's cut interval); the rest are local.
 #[derive(Clone)]
@@ -739,11 +739,11 @@ fn in_cut<'s>(all: &'s [SignedEntry], cut: &Cut) -> Vec<&'s SignedEntry> {
     all.iter().filter(|e| cut.includes(&e.entry.chain, e.entry.seq)).collect()
 }
 
-fn bounding_radius(shapes: &[ShapeRow]) -> f32 {
+fn bounding_radius(shapes: &[ShapePart]) -> f32 {
     let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     shapes
         .iter()
-        .map(|s| match *s {
+        .map(|p| match p.shape {
             ShapeRow::Sphere { center, radius } => len(center) + radius,
             ShapeRow::Capsule { center1, center2, radius } => len(center1).max(len(center2)) + radius,
             ShapeRow::Box { center, half_extents, .. } => len(center) + len(half_extents),

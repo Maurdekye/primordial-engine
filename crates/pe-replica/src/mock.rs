@@ -13,7 +13,8 @@ use pe_seams::{
 };
 
 use crate::world::{
-    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, PhysicsSettings, PushFx, ShapeRow, WorldModel,
+    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, PhysicsSettings, PushFx, ShapePart, ShapeRow,
+    WorldModel,
 };
 
 /// Farthest a body may be from the origin, in metres: pe-physics's `MAX_POSITION`.
@@ -170,8 +171,7 @@ fn body(kind: BodyKind, shape: ShapeRow, pos: Pos) -> BodyRow {
         kind,
         pos,
         rotation: [0.0, 0.0, 0.0, 1.0],
-        shapes: vec![shape],
-        density: 1000.0,
+        shapes: vec![ShapePart { shape, density: 1000.0 }],
         friction: 0.6,
         restitution: 0.0,
         rolling_resistance: 0.0,
@@ -478,8 +478,8 @@ fn encode_object(b: &BodyRow, phys: Option<&BodyStateRow>) -> Vec<u8> {
     }
     f32s(&mut out, &b.rotation);
     out.push(u8::try_from(b.shapes.len()).expect("a mock body has few shapes"));
-    for shape in &b.shapes {
-        match *shape {
+    for part in &b.shapes {
+        match part.shape {
             ShapeRow::Sphere { center, radius } => {
                 out.push(0);
                 f32s(&mut out, &center);
@@ -498,16 +498,10 @@ fn encode_object(b: &BodyRow, phys: Option<&BodyStateRow>) -> Vec<u8> {
                 f32s(&mut out, &half_extents);
             }
         }
+        f32s(&mut out, &[part.density]);
     }
-    let materials = [
-        b.density,
-        b.friction,
-        b.restitution,
-        b.rolling_resistance,
-        b.linear_damping,
-        b.angular_damping,
-        b.gravity_scale,
-    ];
+    let materials =
+        [b.friction, b.restitution, b.rolling_resistance, b.linear_damping, b.angular_damping, b.gravity_scale];
     f32s(&mut out, &materials);
     out.extend([b.bullet as u8, b.may_sleep as u8, b.grabbable as u8]);
     match phys {
@@ -541,7 +535,7 @@ fn decode_object(bytes: &[u8]) -> Option<(BodyRow, Option<BodyStateRow>)> {
     let rotation = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
     let mut shapes = Vec::new();
     for _ in 0..r.u8()? {
-        shapes.push(match r.u8()? {
+        let shape = match r.u8()? {
             0 => ShapeRow::Sphere { center: r.vec3()?, radius: r.f32()? },
             1 => ShapeRow::Capsule { center1: r.vec3()?, center2: r.vec3()?, radius: r.f32()? },
             2 => ShapeRow::Box {
@@ -550,14 +544,14 @@ fn decode_object(bytes: &[u8]) -> Option<(BodyRow, Option<BodyStateRow>)> {
                 half_extents: r.vec3()?,
             },
             _ => return None,
-        });
+        };
+        shapes.push(ShapePart { shape, density: r.f32()? });
     }
     let row = BodyRow {
         kind,
         pos,
         rotation,
         shapes,
-        density: r.f32()?,
         friction: r.f32()?,
         restitution: r.f32()?,
         rolling_resistance: r.f32()?,
