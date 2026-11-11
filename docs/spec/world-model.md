@@ -1237,8 +1237,9 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
       `at` is `Some` is refused `Invalid` until a later slice bounds angular speed change too. So the linear caps
       bound everything a push does. (Slice B accepts `at` within the object's radius; the agent-powers slice
       narrows it.)
-    - Over either cap, the push is refused `TooLarge { limit }` with the cap in mm/s [I; or a new reason, with
-      @engine-architect, if `TooLarge` reads wrongly here too]. A push is never scaled down. Refused pushes do
+    - Over either cap, the push is refused with a new additive seam reason, `TooFast { limit }`, the cap in mm/s
+      (from @engine-architect, beside `TooManyClaims`; `TooLarge` would read as a size limit). A push is never
+      scaled down. Refused pushes do
       not count against either budget.
     - Physics adds continuous collision detection against static geometry for small dynamic bodies, on the
       deterministic path (@vdw-physics's part of the decision).
