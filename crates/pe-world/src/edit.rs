@@ -6,8 +6,8 @@
 //! end, trailing bytes, a limit broken) is refused, never panics, and each value has exactly one encoding, so
 //! `encode(decode(b)) == b` for every accepted `b` (5.3).
 //!
-//! Not in this slice: `Copy`, `Undelete`, `Register` and `CommitScript` (7.1), and `Local` or `Session` classes,
-//! which no edit creates in M1 (3.1).
+//! Not in this slice: `Register` and `CommitScript` (7.1, WS-logic's), and `Local` or `Session` classes, which no
+//! edit creates in M1 (3.1).
 
 use pe_core::{EntryRef, Hash, MemberKey, ObjectId};
 use pe_seams::Version;
@@ -120,6 +120,18 @@ pub enum Op {
         parent: Target,
         index: Option<u32>,
         keep_world: bool,
+    },
+    /// Copies `source` and its subtree under `parent`. The copies take `New` indices `new .. new + n` in depth-first
+    /// order, children in their order (7.1).
+    Copy {
+        source: Target,
+        new: u32,
+        parent: Target,
+        index: Option<u32>,
+    },
+    /// Restores a deleted subtree from its tombstones, with the same ids (7.5).
+    Undelete {
+        id: ObjectId,
     },
 }
 
@@ -298,6 +310,17 @@ impl Transaction {
                     w.opt_u32(*index);
                     w.u8(*keep_world as u8);
                 }
+                Op::Copy { source, new, parent, index } => {
+                    w.u8(6);
+                    w.target(*source);
+                    w.u32(*new);
+                    w.target(*parent);
+                    w.opt_u32(*index);
+                }
+                Op::Undelete { id } => {
+                    w.u8(7);
+                    w.id(*id);
+                }
             }
         }
         w.len(self.blobs.len());
@@ -466,6 +489,13 @@ impl<'a> R<'a> {
                     index: self.opt_u32()?,
                     keep_world: self.flag()?,
                 },
+                6 => Op::Copy {
+                    source: self.target()?,
+                    new: self.u32()?,
+                    parent: self.target()?,
+                    index: self.opt_u32()?,
+                },
+                7 => Op::Undelete { id: self.id()? },
                 _ => return None,
             });
         }

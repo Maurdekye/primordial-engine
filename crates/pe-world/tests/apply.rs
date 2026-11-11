@@ -429,3 +429,105 @@ fn codec_is_canonical_and_total() {
     let e = f.a.next(Class::Edit, Frame(1), Bytes::from_static(b"\x07garbage"));
     assert_eq!(refused(&f.w.apply_edit(Frame(1), &e).0), (None, Reason::Malformed));
 }
+
+fn inverse(o: &Outcome) -> Transaction {
+    match o {
+        Outcome::Applied { inverse: Some(b), .. } => Transaction::decode(b).expect("the inverse decodes"),
+        o => panic!("no inverse: {o:?}"),
+    }
+}
+
+#[test]
+fn copy_takes_derived_ids_in_depth_first_order() {
+    let mut f = fx();
+    let (table, ball, _) = table_and_ball(&mut f);
+    let t = tx(vec![
+        Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None },
+        // The copy's indices are 0 (the table) and 1 (the ball): a Create at 1 overlaps.
+        Op::Create { new: 1, parent: Target::Root, index: None, rows: vec![] },
+    ]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &t)).0), (Some(1), Reason::NewIndexOverlap));
+    let t = tx(vec![Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None }]);
+    let ids = created(&apply(&mut f.w, &entry(&mut f.a, &t)).0);
+    assert_eq!(ids.len(), 2);
+    let s = f.w.snapshot(Frame(0));
+    assert_eq!(s.children(ids[0]), [ids[1]]);
+    assert_eq!(s.world_transform(ids[1]).unwrap().pos, s.world_transform(ball).unwrap().pos);
+    assert!(s.fields(ids[1], "Body").is_some(), "rows and all");
+    // Only the owner copies a protected object.
+    let protect = tx(vec![Op::SetRow { id: Target::Existing(table), row: row(Protection { owner: f.keys.key(0) }) }]);
+    created_ok(&apply(&mut f.w, &entry(&mut f.a, &protect)).0);
+    let t = tx(vec![Op::Copy { source: Target::Existing(ball), new: 0, parent: Target::Root, index: None }]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.b, &t)).0).1, Reason::Protected { owner: f.keys.key(0) });
+}
+
+#[test]
+fn revert_of_a_delete_restores_the_same_ids() {
+    // Acceptance 6: delete a referenced object, apply the outcome's inverse, and the reference resolves again.
+    let mut f = fx();
+    let (table, ball, _) = table_and_ball(&mut f);
+    let before = f.w.snapshot(Frame(0));
+    let t = ComponentId::TRANSFORM;
+    let row_version = f.w.store().row_version(t, ball);
+    assert!(row_version.is_some_and(|v| v.op == 1), "written by the creating entry's op 1");
+    let del = entry(&mut f.a, &tx(vec![Op::Delete { id: Target::Existing(table) }]));
+    let (o, _) = apply(&mut f.w, &del);
+    assert!(!f.w.store().exists(ball));
+    let undo = entry(&mut f.a, &inverse(&o));
+    let (o2, fp) = apply(&mut f.w, &undo);
+    created_ok(&o2);
+    assert_eq!(fp.created, [table, ball]);
+    let s = f.w.snapshot(Frame(0));
+    assert_eq!(s.children(table), [ball]);
+    assert_eq!(s.world_transform(ball), before.world_transform(ball));
+    assert_eq!(s.fields(ball, "Body"), before.fields(ball, "Body"));
+    // Row versions come back as they were; object versions move to the Undelete.
+    assert_eq!(f.w.store().row_version(t, ball), row_version);
+    assert_eq!(s.info(ball).unwrap().version, ver(&undo, 0));
+    assert!(f.w.tombstone(ball).is_none());
+    // Undelete of a live object, or of one never deleted, is refused.
+    let again = entry(&mut f.a, &tx(vec![Op::Undelete { id: ball }]));
+    assert_eq!(refused(&apply(&mut f.w, &again).0).1, Reason::Exists(ball));
+}
+
+#[test]
+fn revert_of_edits_restores_rows_and_is_stale_after_another_edit() {
+    let mut f = fx();
+    let (table, ball, _) = table_and_ball(&mut f);
+    let t = tx(vec![
+        Op::SetRow { id: Target::Existing(ball), row: row(Appearance { base: [0.5; 4], ..Default::default() }) },
+        Op::SetRow { id: Target::Existing(ball), row: row(Transform::local([3.0, 0.0, 0.0])) },
+        Op::Reparent { id: Target::Existing(ball), parent: Target::Root, index: None, keep_world: true },
+        Op::Create { new: 0, parent: Target::Existing(table), index: None, rows: vec![] },
+    ]);
+    let (o, _) = apply(&mut f.w, &entry(&mut f.a, &t));
+    let inv = inverse(&o);
+    // Reverting at once restores every row and link (versions aside, which move to the revert).
+    let mut w = f.w.clone();
+    created_ok(&apply(&mut w, &entry(&mut f.a.clone(), &inv)).0);
+    let s = w.snapshot(Frame(0));
+    assert_eq!(s.parent(ball), Some(table));
+    assert_eq!(s.children(table), [ball]);
+    assert!(s.fields(ball, "Appearance").is_none());
+    assert_eq!(w.store().get::<Transform>(ball), Some(&Transform::local([0.0, 1.0, 0.0])));
+    // After someone else's edit to a row it set, the revert is stale rather than undoing their work.
+    let other = tx(vec![Op::SetRow { id: Target::Existing(ball), row: row(Appearance::default()) }]);
+    created_ok(&apply(&mut f.w, &entry(&mut f.b, &other)).0);
+    assert!(matches!(refused(&apply(&mut f.w, &entry(&mut f.a, &inv)).0).1, Reason::Stale { .. }));
+}
+
+#[test]
+fn tombstones_expire_after_a_minute() {
+    let mut f = fx();
+    let (table, _, _) = table_and_ball(&mut f);
+    apply(&mut f.w, &entry(&mut f.a, &tx(vec![Op::Delete { id: Target::Existing(table) }])));
+    let expires = f.w.tombstone(table).unwrap().expires;
+    assert_eq!(expires, Frame(1 + 60 * 60), "one minute at 60 Hz from the delete's frame");
+    f.w.end_frame(Frame(expires.0 - 1));
+    assert!(f.w.tombstone(table).is_some());
+    f.w.end_frame(expires);
+    assert!(f.w.tombstone(table).is_none());
+    // After expiry an op naming the id is refused as unknown, and an add-on no longer orphans.
+    let add = tx(vec![Op::Create { new: 0, parent: Target::Existing(table), index: None, rows: vec![] }]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.b, &add)).0).1, Reason::Unknown(table));
+}
