@@ -1051,55 +1051,106 @@ pe-world decodes and applies the `Input` class too, because inputs write world s
   them the same way.
 - **Validity:** finite values, positions in range, impulses within a world limit [I]; a failure refuses the entry.
 
-### 8.1 The input payload (r13 draft, for (B))
+### 8.1 The input payload, claims and pushes (r14)
 
 An input entry is pe-log's envelope with class `Input` and this payload, in `edit.rs`'s codec conventions (7.6
 As built: little-endian, one-byte tags, flags 0 or 1, `u32`-counted lists, ids as `u128`; strict and total) [I]:
 
 ```rust
 pub enum Input {
-    /// Frames `stamp .. stamp + poses.len() - 1 + span` of one hand (D73 (a)): pose `j` is the target at frame
-    /// `stamp + j`, each held one frame except the last, which is held `span` frames (1..=255).
-    Hand { hand: ObjectId, poses: Vec<HandPose>, span: u8 },   // 1..=16 poses
+    /// Frames `stamp .. stamp + poses.len() - 1 + hold` of one hand (D73 (a)): pose `j` is the target at frame
+    /// `stamp + j`; the last pose is then held `hold` more frames (0..=255).
+    Hand { hand: ObjectId, poses: Vec<HandPose>, hold: u8 },   // 1..=16 poses
     /// An impulse in newton seconds, in the world frame, at `at` (a world `Pos`) or the centre of mass.
     Push { object: ObjectId, impulse: [f32; 3], at: Option<Pos> },
-    /// Claims `object` for the author's `hand` (7.2), or renews the author's claim on it.
-    Grab { object: ObjectId, hand: ObjectId },
-    /// Ends the author's claim on `object`, if it has one; otherwise changes nothing ("no effect").
+    /// Claims `object` for the author's `hand` (7.2), or renews the author's claim on it. `hand` is `None` for an
+    /// agent with no hand, which then renews by repeating the `Grab`.
+    Grab { object: ObjectId, hand: Option<ObjectId> },
+    /// Ends the author's claim on `object`; without one it changes nothing and notes `NoEffect`.
     Release { object: ObjectId },
 }
 pub struct HandPose { pub pos: Pos, pub rot: [f32; 4], pub grip: f32, pub engaged: bool }
 ```
 
-- **What a hand input writes** (a trusted write: no version moves, 7.3). At each frame it covers, the pose goes
-  to the hand object's `Transform` (the target; a hand is a root with no `Body`, so physics never writes it), and
-  `grip`, `engaged`, `stamp`/`span` and the previous input's `stamp`/`span` to its `Hand` row (replica.md 3.3's
-  stream rule). It is refused with `NotYourHand` unless the author is the `Hand` row's owner, and as `Invalid`
-  for a non-finite or out-of-range value.
-- **Claims** (7.2, ported from pe-session's claims and cooldowns [V archive/v0-prototype `session/sim.rs`]). A
-  `Grab` by a hand the author owns takes the object's claim, or renews the author's own, until the frame
-  `now + CLAIM_SECONDS` (0.5 s, as pe-session's 30 frames at 60 Hz); the claim records the hand, the member, the
-  first frame (`since`) and that expiry (`until`). It is refused with `Held { by }` while someone else's claim is
-  unexpired, with `OutOfReach` past reach (7.2), and with `Cooldown { until }` while the author's own cooldown on
-  that object runs. A `Push` on an object someone else holds acts only through physics; it never moves the claim.
+**Time limits are integer milliseconds** (@design-reviewer's M1). Each is a world setting, a `u32` of
+milliseconds within a bound, refused outside it, and converted to frames as `ceil(ms × hz / 1000)` in integer
+arithmetic at the tick rate in effect when the claim or cooldown is set, so every machine gets the same frame:
+
+| Setting | Default | Bound | At 60 Hz |
+|---|---|---|---|
+| `claim_ms` | 500 | 100 - 5,000 | 30 frames (pe-session's `CLAIM_FRAMES`) |
+| `cooldown_ms` | 166 | 0 - 2,000 | 10 frames (pe-session's `CLAIM_COOLDOWN`) |
+| `push_budget` | 2.0 N·s per member per second | 0 - 1,000; 0 turns remote push off | |
+
+**Validity.** Every value is finite and every `Pos` in range (4.3). A pose's rotation must have a norm within
+`1 ± 1e-3` and is stored normalized by `quat_normalize` (deterministic); `grip` is in [0, 1]. A failure refuses
+the whole entry as `Invalid`.
+
+**What a hand input writes** (a trusted write: no version moves, 7.3). It is refused with `NotYourHand` unless
+the author is the `Hand` row's owner. Applied at its stamp frame, pose 0 goes to the hand object's `Transform`
+(the target; a hand is a root with no `Body`, so physics never writes it, 8) and `grip`, `engaged`, `stamp`,
+`span` and the previous input's `stamp`/`span` to its `Hand` row. The row's `span` is the whole coverage,
+`poses.len() - 1 + hold`, and `prev_span` the previous input's coverage, as replica.md 3.3's stream rule reads
+them. The whole pack is kept in a world table, `hand_packs` (hand -> stamp, poses, hold; in the root, so a
+rollback re-applies the same poses).
+
+**Overlap and coverage** (@design-reviewer's M2.1, M2.2). A later input for the same hand replaces the pack
+from its own stamp on: chain order decides "later", and stamps are non-decreasing in a chain by the horizon rule.
+`World::end_frame(f)` writes each pending pack's pose for `f + 1` (target, `grip`, `engaged`), after claim and
+cooldown expiry, so at the start of frame `f + 1` the `Transform` holds that frame's target. Past its coverage a
+pack is dropped and the hand keeps its last pose, with `engaged` as last sent: releasing a grip is the input's to
+say, never a timeout's.
+
+**Order within a frame** (M2.3, M2.4). At frame `f`, all hand inputs stamped `f` apply first, in agreed order;
+then grabs, releases and pushes, in agreed order. So a `Grab`'s reach is measured from the hand's target after
+`f`'s hand inputs, and a `Release` and a `Grab` by different members in one frame resolve in agreed order. The
+`now` of every input is its stamp frame, also when a late-ordered input is applied during re-simulation.
+
+**Claims** (7.2; ported from pe-session's claims and cooldowns [V archive/v0-prototype `session/sim.rs`];
+@coordinator-opus md6eb506d0fce, @fable-reviewer concurring).
+- **What may be claimed:** an object with a `Body`. A non-owner may grab a protected object, since 7.8 guards
+  taking, not touching. The gap, named and not in this slice: a per-object "others can't grab or push this"
+  setting, off by default.
+- **A `Grab`** by the author's own hand (or with `hand: None`, an agent's) takes the object's claim, or renews
+  the author's own, until `now + claim frames`; the claim records the hand, the member, `since` (its first
+  frame) and `until`. It is refused with:
+  - `Held { by }` while another member's claim on the object, or on anything in its subtree, is unexpired. The
+    reverse is allowed: a lamp on a table someone holds may be grabbed (a cup off a carried tray);
+  - `OutOfReach` past reach (7.2), measured from the hand's target, since the hand's simulated body is
+    pe-replica's own. A blocked hand can grab within reach of its target. A `Grab` with `hand: None` has no reach
+    check;
+  - `Cooldown { until }` while the author's own cooldown on that object runs.
+- **Implicit renewal.** Every applied hand input whose newest pose is `engaged` renews the claims held by that
+  hand to `now + claim frames`. The object drops only when a claim really expires with no valid renewal before
+  it: one void renewal followed by a good one within the claim keeps the grip. A client sends an engaged hand's
+  input at least every third of `claim_ms`, even when it is still, so a held grip is never left to lapse. There
+  is no automatic re-grab after a drop.
+- **Release** ends the author's claim at once, with no cooldown (pe-session put the cooldown on expiry only).
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
-  object until `f + 1 + COOLDOWN_SECONDS` (1/6 s, as pe-session's 10 frames at 60 Hz); cooldowns past their `until` end. Claims and cooldowns are
-  world tables, in the root (6, 12.11). Both limits are world settings in seconds, converted at the tick rate in
-  effect when each claim or cooldown is set.
-- **The pack across frames** (@vdw-physics, mf3d28eee4849). The entry applies at its stamp frame: pose 0 goes to
-  the `Transform` and `Hand` row then, and the whole pack is kept in a world table, `hand_packs` (hand -> stamp,
-  poses, span; in the root, so a rollback re-applies the same poses). `World::end_frame(f)`, after expiry, writes
-  each pending pack's pose for `f + 1` (its target, `grip` and `engaged`), so at the start of frame `f + 1` the
-  `Transform` holds that frame's target; past the last pose the last one holds until `stamp + poses.len() - 1 +
-  span`, then the pack is dropped and the hand keeps its last pose. A hand input stamped `f + 1` replaces the
-  pack when it applies. The `Hand` row's `span` is the whole coverage, `poses.len() - 1 + span`, and its
-  `prev_span` the previous input's coverage, as replica.md 3.3's stream rule reads them.
-- **Reach is measured from the hand's target** (its `Transform`), since the hand's simulated body is pe-replica's
-  own. A blocked hand can grab within reach of its target; pe-session measured from the simulated hand. It is
-  deterministic either way [I, for @design-reviewer].
-- **What the replica gets:** `Footprint` gains the pushes (object, impulse, `at`) and the hands written, so the
-  adapter builds `Effects` and `HandRow`s.
-- New seam reason [I, to ask @engine-architect]: `Reason::Cooldown { until: Frame }`.
+  object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
+  expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).
+- **Same-frame grabs** of one object by two members: the first in agreed order wins and the second is refused
+  `Held`, by the engine's fixed order.
+
+**Pushes** (@coordinator-opus md6eb506d0fce).
+- **In M1 a push needs no hand and no reach.** It is bounded by a budget per member per second: the sum of
+  `|impulse|` over a member's pushes stamped in the last second (by frame) may not exceed `push_budget`; a push
+  that would is refused as `Invalid`. `push_budget = 0` turns remote push off.
+- A push on an object another member holds is refused `Held { by }`.
+- Every applied push is recorded with its author in the outcome and the history, so admins can see who did it.
+- **Required before any session with strangers:** a push must come from the author's own hand, within reach
+  measured against that input stream's hand pose. This is not optional; it gates opening a world to strangers.
+
+**What the replica gets.** `Footprint` gains the pushes (object, impulse, `at`, author). The replica reads
+`hands()` and `claims()` every frame. A refused grab's outcome names the holder (`Held { by }`), which is what
+the display layer's "slides out of grip" cue needs (7.2).
+
+New seam reason: `Reason::Cooldown { until: Frame }` (@engine-architect, docked as
+@item:primordial-engine/pe-seams-reason-cooldown-until-frame-for-pe-worl).
+
+**Tests the slice must have** (@coordinator-opus): grabbing a held object's ancestor is refused and its child
+allowed, in both orders; two members grabbing one object in the same frame; implicit renewal surviving one void
+renewal; a disconnected holder's claim expiring and freeing the subtree; the push budget and `push_budget = 0`.
 
 ## 9. The seams, my side
 
