@@ -201,14 +201,17 @@ Round 3, on @design-reviewer's Medium on b3c2d18f (md4714b88e7e6) and @chunks-re
   so pe-diverge has one rung-2 trigger, not two. @coordinator-opus's option (a); (b) and (c) were rejected for
   @chunks-reviewer's reasons. The name is @engine-architect's. `NotKept` from `root_at_cut` keeps its plain, benign
   meaning: a cut below my floor.
-- **Rung 2 without a root of mine** (@engine-architect's choice, flagged to @coordinator-opus): after `Damaged` the
-  replica holds no root of its own at the cut, so rung 2 has nothing to diff against (divergence.md 4.2, step 2). It
-  imports the group's whole state at the cut, as for a joiner, and `import_at_cut` replaces the group's state from
-  empty when it holds no root of mine at the cut. pe-diverge already fetches everything, and names nothing absent,
-  when it has no tree of mine (ws/diverge e333635f). The other way, diffing against the floor's root, would need the
-  receiver to know which base the records patch: a new `CutImport` field. Either way, afterwards my root at the cut
-  is the import's, for `root_at_cut` and `finalize`, with no re-step of the frames below it, so the next `finalize`
-  agrees instead of meeting the trimmed frames again.
+- **Rung 2 without a root of mine** (@engine-architect's proposal; decided by @coordinator-opus, m6861a42dd4a2, with
+  @design-reviewer's support): after `Damaged` the replica holds no root of its own at the cut, so rung 2 has nothing
+  to diff against (divergence.md 4.2, step 2). It imports the group's whole state at the cut, as for a joiner, and
+  `import_at_cut` replaces the group's state from empty when it holds no root of mine at the cut. It is rare (a
+  member more than a minute behind) and simple. pe-diverge already fetches everything, and names nothing absent, when
+  it has no tree of mine (ws/diverge e333635f). Afterwards my root at the cut is the import's, for `root_at_cut` and
+  `finalize`, with no re-step of the frames below it, so the next `finalize` agrees instead of meeting the trimmed
+  frames again.
+  - **A later optimization, not now:** diff against the floor's root, which the replica always holds, so that only
+    what differs is fetched. It needs a new `CutImport` field naming the base the records patch, and pe-diverge then
+    tracks the floor's root. It is worth doing once world sizes make a whole import expensive.
 - `Finalized` stays exhaustive, so every caller has to handle `Damaged`. On main the only caller, pe-replica's
   driver, needs no change. At their next merge, pe-diverge's ladder (ws/diverge) and the harness's seamnode
   (harness/m0) each add one arm.
