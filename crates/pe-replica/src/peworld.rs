@@ -19,7 +19,9 @@
 //!
 //! **Shapes** (replica.md 2.1): a body's shapes are its own `Shape`, then those of its compound children (the
 //! descendants reached without passing another `Body`) in id order, each placed in the body's frame and scaled by
-//! its object's world scale. Boxes scale per axis. A sphere or capsule under non-uniform scale, a mesh, a hull or an
+//! its object's world scale. A child's place composes the local transforms from the body down to it, starting from
+//! the body's world scale, so it does not depend on the body's pose; an object without a `Transform` sits at its
+//! frame (world-model.md 3.3). Boxes scale per axis. A sphere or capsule under non-uniform scale, a mesh, a hull or an
 //! unknown kind cannot be built yet, and the object has no body.
 
 use std::collections::BTreeSet;
@@ -28,8 +30,8 @@ use pe_seams::{
     Class, DomainId, Frame, Hash, ImportError, LeafKey, Mismatch, Node, ObjectId, Outcome, Pos, Record, SignedEntry,
     Tree, TreePath,
 };
-use pe_sim::transform::{quat_mul, rotate};
-use pe_sim::{Component, Transform, WorldTransform};
+use pe_sim::transform::rotate;
+use pe_sim::{Component, SimStore, Transform, WorldTransform};
 use pe_world::components::{Body, BodyState, Shape, body_kind, shape_kind};
 use pe_world::{Footprint, World};
 
@@ -205,13 +207,14 @@ fn body_row(world: &World, id: ObjectId) -> Option<BodyRow> {
         _ => return None,
     };
     let at = store.world_transform(id)?;
+    let origin = WorldTransform { pos: Pos::ORIGIN, rot: IDENTITY_ROTATION, scale: at.scale };
     let mut shapes = Vec::new();
     if let Some(shape) = store.get::<Shape>(id) {
-        shapes.push(part(shape, &at, None)?);
+        shapes.push(part(shape, &origin)?);
     }
     for child in compound_children(world, id) {
         if let Some(shape) = store.get::<Shape>(child) {
-            shapes.push(part(shape, &at, Some(&store.world_transform(child)?))?);
+            shapes.push(part(shape, &in_body(store, &origin, id, child)?)?);
         }
     }
     if shapes.is_empty() {
@@ -250,18 +253,31 @@ fn compound_children(world: &World, body: ObjectId) -> Vec<ObjectId> {
     found
 }
 
-/// One shape in its body's frame. `own` is the shape's object's world transform when it is a compound child; the
-/// body's own shape sits at the body's origin, unturned.
-fn part(shape: &Shape, body: &WorldTransform, own: Option<&WorldTransform>) -> Option<ShapePart> {
-    let (center, rotation, scale) = match own {
-        None => ([0.0; 3], IDENTITY_ROTATION, body.scale),
-        Some(o) => {
-            let inverse = [-body.rot[0], -body.rot[1], -body.rot[2], body.rot[3]];
-            let offset = rotate(inverse, (o.pos - body.pos).0);
-            (offset.map(|c| c as f32), quat_mul(inverse, o.rot), o.scale)
+/// Where a compound child sits in its body's frame: `origin` (the body's frame at `Pos::ORIGIN`, with the body's
+/// world scale), composed with the local transforms of the objects from the body down to `child`. An object without
+/// a `Transform` sits at its frame, so it adds nothing (chunks-reviewer's Medium and L1 on 48e4e521).
+fn in_body(store: &SimStore, origin: &WorldTransform, body: ObjectId, child: ObjectId) -> Option<WorldTransform> {
+    let mut chain = Vec::new();
+    let mut at = child;
+    while at != body {
+        if let Some(t) = store.get::<Transform>(at) {
+            chain.push(*t);
         }
-    };
-    let scale = scale.map(f32::abs);
+        at = store.parent(at)?;
+    }
+    let mut placed = *origin;
+    while let Some(t) = chain.pop() {
+        placed = placed.compose(&t)?;
+    }
+    Some(placed)
+}
+
+/// One shape at `placed`, its place in its body's frame and its world scale. The body's own shape sits at the
+/// body's origin, unturned.
+fn part(shape: &Shape, placed: &WorldTransform) -> Option<ShapePart> {
+    let center = (placed.pos - Pos::ORIGIN).0.map(|c| c as f32);
+    let rotation = placed.rot;
+    let scale = placed.scale.map(f32::abs);
     let uniform = scale[0] == scale[1] && scale[1] == scale[2];
     let size = shape.size;
     let row = match shape.kind {
