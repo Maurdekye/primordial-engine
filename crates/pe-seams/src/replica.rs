@@ -182,17 +182,19 @@ pub trait EntrySource {
     /// never the same as a frame kept and empty, `Some(&[])` (S3 v1.2).
     fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]>;
     /// The earliest frame whose entries are still kept (S3 v1.2): [`EntrySource::entries_at`] is complete for every
-    /// frame at or above it, and answers `None` below it. It is the later of the frame the replica last asked for
-    /// ([`EntrySource::keep_final_from`]) and S3's cap, so it can pass the asked frame only when the cap trimmed past
-    /// it. A source that never trims answers `Frame(0)`.
+    /// frame at or above it, and answers `None` below it. It passes the `floor` last given to
+    /// [`EntrySource::keep_final_from`] only through the time cap, for a replica that fell more than `T_diverge` plus
+    /// `T_keep` behind this member's final cut; below the floor it can pass `cv` through either cap ([`crate::agree`],
+    /// "Retention for rung 1"). A source that never trims answers `Frame(0)`.
     fn kept_from(&self) -> Frame;
-    /// Keep final entries from `frame` on (S3 v1.2). The replica calls it from [`Replica::finalize`] whenever `Cv`
-    /// moves, with `Cv`'s frame, because rung 1 replays from there ([`Replica::replay_to`]). It only moves forward:
-    /// a frame below one already asked for changes nothing, and so does a frame below what is already trimmed,
-    /// which [`EntrySource::kept_from`] then reports truthfully. S3 keeps from the later of this frame and its cap
-    /// ([`crate::agree`], "Retention for rung 1"), so a member that stays diverged pins only its own memory, and
-    /// only for a bounded time.
-    fn keep_final_from(&mut self, frame: Frame);
+    /// What the replica still needs (S3 v1.2), given from [`Replica::finalize`] whenever `Cv` or the floor moves:
+    /// `cv`, `Cv`'s frame, for rung 1's replay ([`Replica::replay_to`]), and `floor`, its floor's frame, for
+    /// re-simulation ([`Replica::advance`]). Each only moves forward: a lower frame changes nothing, and so does a
+    /// frame below what is already trimmed, which [`EntrySource::kept_from`] then reports truthfully. S3 never trims
+    /// at or above `floor` except by the time cap, and below it keeps from `cv` unless a cap trimmed past it, so a
+    /// member that stays diverged pins only its own memory, and only for a bounded time. Before the first call, both
+    /// are frame 0.
+    fn keep_final_from(&mut self, cv: Frame, floor: Frame);
     /// The earliest frame whose entries changed since the last call, if any.
     fn take_changed_from(&mut self) -> Option<Frame>;
     /// When an entry arrived on this machine, if it came from the network: for "play a new effect only if its cause
@@ -241,8 +243,9 @@ pub enum RootError {
     NotKept,
     /// The cut's frame is past what I have simulated.
     NotYetSimulated,
-    /// The saved state at `Cv` failed its full rehash, from its records or from the restored physics itself: rung 2
-    /// is due at once.
+    /// The saved state at `Cv` failed its full rehash, from its records or from the restored physics itself; or
+    /// (from [`Replica::root_at_cut`]) the replica stopped at a frame whose entries are no longer kept (S3 v1.2):
+    /// rung 2 is due at once.
     Damaged,
     /// The work did not fit in this call's budget ([`Replica::set_budget`]) and is under way: call again with the
     /// same cut on a later tick.
@@ -523,9 +526,9 @@ pub trait Replica: Send {
     /// which can be older than the line's newest final cut), then step new frames up to `present`, exclusive, within
     /// the budget ([`Advance::caught_up`]). Never waits for the network: an entry not held yet is simply absent. Never
     /// aborts on input. A frame it must re-simulate that is no longer kept ([`EntrySource::entries_at`] answers
-    /// `None`: the floor fell further behind than S3's cap) is a fault the replica counts, never a silent empty
-    /// frame; at worst its root at the next final cut differs, and the ladder takes it to rung 2, since rung 1 then
-    /// answers [`RootError::NotKept`].
+    /// `None`: the replica fell further behind than S3's time cap, or S3 broke its contract) is never stepped empty:
+    /// the replica stops at that frame and counts the fault, and [`Replica::root_at_cut`] answers
+    /// [`RootError::Damaged`] for any cut past it, so rung 2 is due at once (S3 v1.2).
     fn advance(&mut self, present: Frame, source: &mut dyn EntrySource) -> Advance;
 
     /// An entry's outcome at the frame it was last simulated.
@@ -540,7 +543,7 @@ pub trait Replica: Send {
     /// only call that moves `Cv` and the floor. Agreed: the cut becomes the floor and `Cv`, and older state is
     /// released beyond what is kept. Diverged: the floor moves, `Cv` stays, and my own root at the cut stays held
     /// (rung 2 diffs against it, through [`Replica::tree`]) until a later call agrees.
-    /// When `Cv` moves, it tells the source with [`EntrySource::keep_final_from`] (S3 v1.2).
+    /// When `Cv` or the floor moves, it tells the source with [`EntrySource::keep_final_from`] (S3 v1.2).
     fn finalize(&mut self, cut: &FinalCut, source: &mut dyn EntrySource) -> Finalized;
 
     /// Repair rung 1 (divergence.md 4.1), at a final cut or at a cut not final yet: restore `Cv`, verify it from its
