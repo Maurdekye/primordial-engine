@@ -1915,6 +1915,7 @@ dependencies = [
 name = "pe-app"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "pe-agree",
  "pe-api",
  "pe-diverge",
