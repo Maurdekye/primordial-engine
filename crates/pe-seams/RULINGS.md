@@ -23,6 +23,11 @@ Code that imports them from `pe_seams` does not change. Golden vectors produced 
 a chain id, the three object-id derivations, two `Pos` encodings, a `Pos - Pos` and a context hash) pin the copies;
 the re-export landing must pass the same test unchanged (@design-reviewer, m0bb9196df5ec).
 
+**Done** (main 486ecf04, `world/core-v1`): `ids.rs` re-exports pe-core's types, and the golden vectors pass
+unchanged. pe-core's `ObjectId` keeps its words private, so code builds one with `ObjectId::from_u128(n)` and reads it
+with `to_u128()`; `ObjectId(n)` no longer compiles. Every public function and constant of the v0 copies exists in
+pe-core's (@engine-architect, m4cc9d1905b05).
+
 ## The floor, and a member that did not vote
 
 A member that was not among a cut's voters can learn the cut is final while some of its entries are still on their
