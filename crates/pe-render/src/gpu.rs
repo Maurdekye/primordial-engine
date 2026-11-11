@@ -62,6 +62,24 @@ pub enum AdapterChoice {
 }
 
 /// The backends pe-render enables: Vulkan everywhere, plus D3D12 on Windows.
+/// The features pe-render asks for, of those the adapter offers: timestamp queries for the frame's GPU time
+/// (render.md 10), and multiview with multisampled array textures for one-pass stereo (render.md 5). pe-xr opens its
+/// device through the runtime with exactly these.
+pub fn wanted_features(offered: wgpu::Features) -> wgpu::Features {
+    offered & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::MULTIVIEW | wgpu::Features::MULTISAMPLE_ARRAY)
+}
+
+/// The limits pe-render asks for: wgpu's defaults (never an adapter's full limits, see the module header), plus two
+/// multiview views where the adapter has them. The default allows none, so without this every two-view pass is
+/// refused ("Multiview view count limit violated", seen on the RTX's Vulkan at render/xr 99c0d4f7). pe-xr opens its
+/// device through the runtime with these.
+pub fn wanted_limits(offered: &wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits {
+        max_multiview_view_count: if offered.max_multiview_view_count >= 2 { 2 } else { 0 },
+        ..wgpu::Limits::default()
+    }
+}
+
 pub fn backends() -> wgpu::Backends {
     if cfg!(windows) { wgpu::Backends::VULKAN | wgpu::Backends::DX12 } else { wgpu::Backends::VULKAN }
 }
@@ -133,8 +151,8 @@ impl GpuContext {
         // Timestamp queries where the adapter has them: the frame's GPU time feeds the quality ladder (render.md 10).
         let desc = wgpu::DeviceDescriptor {
             label: Some("pe-render"),
-            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
-            required_limits: wgpu::Limits::default(),
+            required_features: wanted_features(adapter.features()),
+            required_limits: wanted_limits(&adapter.limits()),
             ..Default::default()
         };
         let _one_at_a_time = creation_lock();
@@ -147,5 +165,19 @@ impl GpuContext {
     pub fn describe(&self) -> String {
         let i = self.adapter.get_info();
         format!("{} ({:?}, {:?})", i.name, i.backend, i.device_type)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Multiview needs its view count raised from wgpu's default of 0, but never past what the adapter offers.
+    #[test]
+    fn the_limits_allow_two_views_only_where_offered() {
+        let rich = wgpu::Limits { max_multiview_view_count: 6, ..wgpu::Limits::default() };
+        assert_eq!(wanted_limits(&rich).max_multiview_view_count, 2);
+        assert_eq!(wanted_limits(&wgpu::Limits::default()).max_multiview_view_count, 0);
+        assert_eq!(wanted_limits(&rich).max_buffer_size, wgpu::Limits::default().max_buffer_size);
     }
 }

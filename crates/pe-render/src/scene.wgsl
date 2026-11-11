@@ -4,6 +4,10 @@
 //
 // Every position here is relative to the frame's anchor (the first view's camera), along world axes: the CPU took
 // `object Pos - anchor Pos` in f64 before casting (render.md 5). No absolute coordinate reaches this shader.
+//
+// Two variants are compiled from this one source (scene.rs, `shader_source`): single-view, where `VIEW_INDEX` is 0
+// and each view has its own uniform slot, and multiview, where `/*VIEW*/` becomes the `view_index` builtin and one
+// slot holds both eyes.
 
 struct GpuLight {
     pos_range: vec4<f32>,   // anchor-relative position, range (0: unbounded)
@@ -13,9 +17,9 @@ struct GpuLight {
 };
 
 struct Globals {
-    view_proj: mat4x4<f32>,
+    view_proj: array<mat4x4<f32>, 2>,   // per view (multiview: both eyes; single-view: [0])
     light_vp: mat4x4<f32>,
-    eye: vec4<f32>,         // eye position, outline width per metre of distance
+    eye: array<vec4<f32>, 2>,           // per view: eye position, outline width per metre of distance
     key_dir: vec4<f32>,     // the direction the key light travels, shadow on (1) or off (0)
     key_color: vec4<f32>,
     ambient: vec4<f32>,
@@ -46,6 +50,7 @@ struct VOut {
     @location(2) color: vec4<f32>,
     @location(3) emissive_rough: vec4<f32>,
     @location(4) metal: f32,
+    @location(5) eye: vec3<f32>,
 };
 
 fn model_of(v: VIn) -> mat4x4<f32> {
@@ -59,10 +64,12 @@ fn normal_of(v: VIn) -> vec3<f32> {
 }
 
 @vertex
-fn vs_main(v: VIn) -> VOut {
+fn vs_main(v: VIn/*VIEW*/) -> VOut {
+    let vi = VIEW_INDEX;
     let w = model_of(v) * vec4<f32>(v.pos, 1.0);
     var o: VOut;
-    o.clip = g.view_proj * w;
+    o.clip = g.view_proj[vi] * w;
+    o.eye = g.eye[vi].xyz;
     o.world = w.xyz;
     o.normal = normal_of(v);
     o.color = v.color;
@@ -79,13 +86,15 @@ fn vs_shadow(v: VIn) -> @builtin(position) vec4<f32> {
 // The outline: back faces of a shell pushed out along the normal, by a width that grows with distance so it stays
 // about the same on screen.
 @vertex
-fn vs_outline(v: VIn) -> VOut {
+fn vs_outline(v: VIn/*VIEW*/) -> VOut {
+    let vi = VIEW_INDEX;
     let w0 = model_of(v) * vec4<f32>(v.pos, 1.0);
     let n = normal_of(v);
-    let width = g.eye.w * distance(w0.xyz, g.eye.xyz);
+    let width = g.eye[vi].w * distance(w0.xyz, g.eye[vi].xyz);
     let w = vec4<f32>(w0.xyz + n * width, 1.0);
     var o: VOut;
-    o.clip = g.view_proj * w;
+    o.clip = g.view_proj[vi] * w;
+    o.eye = g.eye[vi].xyz;
     o.world = w.xyz;
     o.normal = n;
     o.color = v.color;
@@ -151,7 +160,7 @@ fn tone_map(x: vec3<f32>) -> vec3<f32> {
 
 fn shade(i: VOut) -> vec3<f32> {
     let n = normalize(i.normal);
-    let v = normalize(g.eye.xyz - i.world);
+    let v = normalize(i.eye - i.world);
     let base = i.color.rgb;
     let rough = clamp(i.emissive_rough.w, 0.04, 1.0);
     var c = g.ambient.rgb * base * (1.0 - 0.5 * i.metal);
