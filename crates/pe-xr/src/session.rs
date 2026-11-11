@@ -43,6 +43,10 @@ pub trait FrameSink {
     fn submits_depth(&self) -> bool {
         false
     }
+    /// The session is about to be destroyed, its swapchain with it: drop every wrapper of the swapchain's images and
+    /// wait until the GPU is idle on them before returning (review 1, L4; spec 4.3). Called once, before
+    /// `xrDestroySwapchain`.
+    fn release_swapchain(&mut self) {}
 }
 
 /// Why a session ended.
@@ -98,6 +102,8 @@ pub struct XrSession<B: Backend> {
     state: SessionState,
     running: bool,
     ended: Option<EndReason>,
+    /// Whether the session (and its swapchain) has been destroyed, after the sink released the images.
+    destroyed: bool,
     hands: [HandState; 2],
     ring: Arc<HandRing>,
     last_display_time: Option<HostTime>,
@@ -126,6 +132,7 @@ impl<B: Backend> XrSession<B> {
             state: SessionState::Idle,
             running: false,
             ended: None,
+            destroyed: false,
             hands: [HandState::new(Hand::Left, grasp), HandState::new(Hand::Right, grasp)],
             ring,
             last_display_time: None,
@@ -172,12 +179,24 @@ impl<B: Backend> XrSession<B> {
         }
     }
 
+    /// Mark the session ended. It is destroyed by [`Self::teardown`], which [`Self::step`] calls before returning
+    /// `Ended`, so that the sink has released the swapchain's images first.
     fn end(&mut self, why: EndReason) {
         if self.ended.is_none() {
             self.hands_absent();
             self.running = false;
-            self.backend.destroy_session();
             self.ended = Some(why);
+        }
+    }
+
+    /// Destroy an ended session: the sink drops its image wrappers and idles the GPU on them, then the session and
+    /// its swapchain go. Once only. The application calls it itself when it ends a session outside `step` (with
+    /// [`Self::request_exit`] before the session ran).
+    pub fn teardown(&mut self, sink: &mut dyn FrameSink) {
+        if self.ended.is_some() && !self.destroyed {
+            sink.release_swapchain();
+            self.backend.destroy_session();
+            self.destroyed = true;
         }
     }
 
@@ -220,8 +239,16 @@ impl<B: Backend> XrSession<B> {
         Ok(())
     }
 
-    /// One turn of the XR thread.
+    /// One turn of the XR thread. When it returns `Ended`, the session has been torn down ([`Self::teardown`]).
     pub fn step(&mut self, sink: &mut dyn FrameSink) -> Step {
+        let step = self.step_inner(sink);
+        if let Step::Ended(_) = step {
+            self.teardown(sink);
+        }
+        step
+    }
+
+    fn step_inner(&mut self, sink: &mut dyn FrameSink) -> Step {
         if let Some(why) = self.ended {
             return Step::Ended(why);
         }
