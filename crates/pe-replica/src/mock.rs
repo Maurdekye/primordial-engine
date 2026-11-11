@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use bytes::Bytes;
 use pe_seams::{
     Class, DomainId, Frame, Hash, Hasher, ImportError, LeafKey, Mismatch, Node, ObjectId, Offset, Outcome, Pos, Reason,
     Record, SignedEntry, SimRate, Tree, TreePath,
@@ -230,6 +231,11 @@ impl MockWorld {
         self.bodies.get(&id).map(|b| (b.pos - Pos::ORIGIN).0)
     }
 
+    /// Every leaf the mock's root covers, for an export of the whole state: its objects, then its `physics_global`.
+    pub fn leaves(&self) -> Vec<LeafKey> {
+        self.bodies.keys().map(|&id| LeafKey::Object(id)).chain([LeafKey::Physics(self.domain)]).collect()
+    }
+
     fn object_hash(id: ObjectId, b: &BodyRow, phys: Option<&BodyStateRow>) -> Hash {
         let mut h = Hasher::new("pe-replica.mock.object");
         h.write_u128(id.to_u128());
@@ -406,12 +412,177 @@ impl WorldModel for MockWorld {
         Box::new(MockTree(saved))
     }
 
-    fn import(&self, _saved: &MockWorld, _import: &pe_seams::CutImport) -> Result<MockWorld, ImportError> {
-        Err(ImportError::NotKept)
+    /// No objects and no physics rows. The mock keeps its settings, which its root does not cover.
+    fn empty(&self) -> MockWorld {
+        MockWorld {
+            frame: Frame(0),
+            bodies: BTreeMap::new(),
+            physics: BTreeMap::new(),
+            global: Hash::ZERO,
+            ..self.clone()
+        }
+    }
+
+    /// The mock has no inner nodes, so it checks no proofs. A record that does not decode, or names another domain or
+    /// a table, is `BadProof`. Any other difference shows as the replica's `RootMismatch`. Every mock object is a bound
+    /// body, so a record or an absent key for one needs the physics image.
+    fn import(&self, saved: &MockWorld, import: &pe_seams::CutImport) -> Result<MockWorld, ImportError> {
+        let mut next = saved.clone();
+        for key in &import.absent {
+            if let LeafKey::Object(id) = *key {
+                if import.physics.is_none() {
+                    return Err(ImportError::NeedsPhysicsImage(id));
+                }
+                next.bodies.remove(&id);
+                next.physics.remove(&id);
+            }
+        }
+        for (i, record) in import.records.iter().enumerate() {
+            match record.key {
+                LeafKey::Object(id) => {
+                    let (b, phys) = decode_object(&record.bytes).ok_or(ImportError::BadProof(i))?;
+                    if import.physics.is_none() {
+                        return Err(ImportError::NeedsPhysicsImage(id));
+                    }
+                    next.bodies.insert(id, b);
+                    match phys {
+                        Some(p) => next.physics.insert(id, p),
+                        None => next.physics.remove(&id),
+                    };
+                }
+                LeafKey::Physics(d) if d == self.domain => {
+                    let global = <[u8; 32]>::try_from(&record.bytes[..]).map_err(|_| ImportError::BadProof(i))?;
+                    next.global = Hash(global);
+                }
+                _ => return Err(ImportError::BadProof(i)),
+            }
+        }
+        if let Some(image) = &import.physics
+            && (image.domain != self.domain || image.global != next.global)
+        {
+            return Err(ImportError::PhysicsCheck);
+        }
+        next.frame = import.cut.at.frame;
+        Ok(next)
     }
 }
 
-/// The mock's tree: its root, and its objects' hashes. It has no inner nodes, so `node` and `export` find nothing.
+// ---- the mock's records ----------------------------------------------------------------------------------------------
+
+/// An object's record bytes: its whole row and, at a cut, its `BodyState` row.
+fn encode_object(b: &BodyRow, phys: Option<&BodyStateRow>) -> Vec<u8> {
+    let mut out = vec![b.kind as u8];
+    let f32s = |out: &mut Vec<u8>, vs: &[f32]| vs.iter().for_each(|v| out.extend_from_slice(&v.to_le_bytes()));
+    for c in (b.pos - Pos::ORIGIN).0 {
+        out.extend_from_slice(&c.to_le_bytes());
+    }
+    f32s(&mut out, &b.rotation);
+    out.push(u8::try_from(b.shapes.len()).expect("a mock body has few shapes"));
+    for shape in &b.shapes {
+        match *shape {
+            ShapeRow::Sphere { center, radius } => {
+                out.push(0);
+                f32s(&mut out, &center);
+                f32s(&mut out, &[radius]);
+            }
+            ShapeRow::Capsule { center1, center2, radius } => {
+                out.push(1);
+                f32s(&mut out, &center1);
+                f32s(&mut out, &center2);
+                f32s(&mut out, &[radius]);
+            }
+            ShapeRow::Box { center, rotation, half_extents } => {
+                out.push(2);
+                f32s(&mut out, &center);
+                f32s(&mut out, &rotation);
+                f32s(&mut out, &half_extents);
+            }
+        }
+    }
+    let materials = [
+        b.density,
+        b.friction,
+        b.restitution,
+        b.rolling_resistance,
+        b.linear_damping,
+        b.angular_damping,
+        b.gravity_scale,
+    ];
+    f32s(&mut out, &materials);
+    out.extend([b.bullet as u8, b.may_sleep as u8, b.grabbable as u8]);
+    match phys {
+        None => out.push(0),
+        Some(p) => {
+            out.push(1);
+            f32s(&mut out, &p.linear);
+            f32s(&mut out, &p.angular);
+            out.push(p.awake as u8);
+            f32s(&mut out, &[p.sleep_time]);
+            out.extend_from_slice(&p.digest);
+        }
+    }
+    out
+}
+
+fn decode_object(bytes: &[u8]) -> Option<(BodyRow, Option<BodyStateRow>)> {
+    let mut r = Reader(bytes);
+    let flag = |r: &mut Reader| match r.u8()? {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    };
+    let kind = match r.u8()? {
+        0 => BodyKind::Static,
+        1 => BodyKind::Kinematic,
+        2 => BodyKind::Dynamic,
+        _ => return None,
+    };
+    let pos = at(r.pos()?)?;
+    let rotation = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+    let mut shapes = Vec::new();
+    for _ in 0..r.u8()? {
+        shapes.push(match r.u8()? {
+            0 => ShapeRow::Sphere { center: r.vec3()?, radius: r.f32()? },
+            1 => ShapeRow::Capsule { center1: r.vec3()?, center2: r.vec3()?, radius: r.f32()? },
+            2 => ShapeRow::Box {
+                center: r.vec3()?,
+                rotation: [r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+                half_extents: r.vec3()?,
+            },
+            _ => return None,
+        });
+    }
+    let row = BodyRow {
+        kind,
+        pos,
+        rotation,
+        shapes,
+        density: r.f32()?,
+        friction: r.f32()?,
+        restitution: r.f32()?,
+        rolling_resistance: r.f32()?,
+        linear_damping: r.f32()?,
+        angular_damping: r.f32()?,
+        gravity_scale: r.f32()?,
+        bullet: flag(&mut r)?,
+        may_sleep: flag(&mut r)?,
+        grabbable: flag(&mut r)?,
+    };
+    let phys = match flag(&mut r)? {
+        false => None,
+        true => Some(BodyStateRow {
+            linear: r.vec3()?,
+            angular: r.vec3()?,
+            awake: flag(&mut r)?,
+            sleep_time: r.f32()?,
+            digest: r.take::<32>()?,
+        }),
+    };
+    r.0.is_empty().then_some((row, phys))
+}
+
+/// The mock's tree: its root, its objects' hashes and their records. It has no inner nodes, so `node` finds nothing,
+/// and its records carry no proof.
 struct MockTree<'a>(&'a MockWorld);
 
 impl Tree for MockTree<'_> {
@@ -424,8 +595,17 @@ impl Tree for MockTree<'_> {
     fn node(&self, _path: &TreePath) -> Option<Node> {
         None
     }
-    fn export(&self, _keys: &[LeafKey]) -> Vec<Record> {
-        Vec::new()
+    fn export(&self, keys: &[LeafKey]) -> Vec<Record> {
+        let w = self.0;
+        let record = |key| {
+            let bytes = match key {
+                LeafKey::Object(id) => encode_object(w.bodies.get(&id)?, w.physics.get(&id)),
+                LeafKey::Physics(d) if d == w.domain => w.global.0.to_vec(),
+                _ => return None,
+            };
+            Some(Record { key, bytes: Bytes::from(bytes), proof: Vec::new() })
+        };
+        keys.iter().filter_map(|&key| record(key)).collect()
     }
     fn object_hashes(&self, ids: &[ObjectId]) -> Vec<(ObjectId, Option<Hash>)> {
         ids.iter()
@@ -457,5 +637,86 @@ mod tests {
         assert_eq!(decode(&encode(&ops)).as_deref(), Some(&ops[..]));
         assert_eq!(decode(&[9]), None);
         assert_eq!(decode(&encode(&ops)[..5]), None);
+    }
+
+    fn spawn(w: &mut MockWorld, n: u128, kind: BodyKind, shape: ShapeRow, pos: [f64; 3]) {
+        let mut fx = Effects::default();
+        w.apply_ops(&[MockOp::Spawn { id: ObjectId::from_u128(n), kind, shape, pos }], &mut fx, &mut Vec::new())
+            .expect("spawn");
+    }
+
+    fn import_of(w: &MockWorld, records: Vec<Record>, absent: Vec<LeafKey>, image: bool) -> pe_seams::CutImport {
+        let cut = pe_seams::Cut {
+            at: pe_seams::CutRef { line: pe_seams::LineId::origin(), height: 3, frame: w.frame },
+            heads: Vec::new(),
+        };
+        let physics = image.then(|| pe_seams::PhysicsImage {
+            domain: w.domain,
+            frame: w.frame,
+            global: w.global,
+            bytes: Bytes::new(),
+        });
+        pe_seams::CutImport { cut, target_root: w.root(), records, absent, physics }
+    }
+
+    /// A donor at a cut frame: two bodies of every shape kind, `BodyState` rows on one, a `physics_global`.
+    fn donor() -> MockWorld {
+        let mut w = MockWorld::new(DomainId(4), SimRate::DEFAULT);
+        let rotation = [0.0, 0.6, 0.0, 0.8];
+        spawn(&mut w, 1, BodyKind::Dynamic, ShapeRow::Sphere { center: [0.0; 3], radius: 0.04 }, [1.0, 2.0, 3.0]);
+        let shape = ShapeRow::Box { center: [0.1, 0.0, 0.0], rotation, half_extents: [0.5, 0.25, 0.125] };
+        spawn(&mut w, 2, BodyKind::Static, shape, [-4.0, 0.0, 0.5]);
+        let shape = ShapeRow::Capsule { center1: [0.0; 3], center2: [0.0, 1.0, 0.0], radius: 0.3 };
+        spawn(&mut w, 3, BodyKind::Kinematic, shape, [0.0, 9.0, 0.0]);
+        let state = BodyStateRow {
+            linear: [0.5, -1.0, 0.0],
+            angular: [0.0, 0.0, 2.0],
+            awake: true,
+            sleep_time: 0.25,
+            digest: [7; 32],
+        };
+        w.write_physics(&[(ObjectId::from_u128(1), state)], Hash([9; 32]));
+        w.end_frame(Frame(29));
+        w
+    }
+
+    #[test]
+    fn a_whole_export_imported_into_empty_has_the_donor_s_root() {
+        let d = donor();
+        let records = d.tree(&d).export(&d.leaves());
+        assert_eq!(records.len(), 4);
+        let got = d.import(&d.empty(), &import_of(&d, records, Vec::new(), true)).expect("import");
+        assert_eq!(got.root(), d.root());
+        assert_eq!(got.body(ObjectId::from_u128(2)), d.body(ObjectId::from_u128(2)));
+        assert_eq!(d.empty().root(), MockWorld::new(DomainId(4), SimRate::DEFAULT).root());
+    }
+
+    #[test]
+    fn an_import_patches_and_removes_from_a_base() {
+        let d = donor();
+        let mut base = d.clone();
+        spawn(&mut base, 8, BodyKind::Dynamic, ShapeRow::Sphere { center: [0.0; 3], radius: 1.0 }, [0.0; 3]);
+        base.bodies.get_mut(&ObjectId::from_u128(1)).expect("body 1").pos = at([5.0, 5.0, 5.0]).expect("in range");
+        let records = d.tree(&d).export(&[LeafKey::Object(ObjectId::from_u128(1))]);
+        let absent = vec![LeafKey::Object(ObjectId::from_u128(8))];
+        let got = d.import(&base, &import_of(&d, records, absent, true)).expect("import");
+        assert_eq!(got.root(), d.root());
+    }
+
+    #[test]
+    fn an_import_refuses_a_bad_record_a_missing_image_and_a_wrong_global() {
+        let d = donor();
+        let all = d.tree(&d).export(&d.leaves());
+        let import = |records, image| d.import(&d.empty(), &import_of(&d, records, Vec::new(), image));
+        assert_eq!(import(all.clone(), false).err(), Some(ImportError::NeedsPhysicsImage(ObjectId::from_u128(1))));
+        let mut bad = all.clone();
+        bad[1].bytes = Bytes::from_static(&[2, 0]);
+        assert_eq!(import(bad, true).err(), Some(ImportError::BadProof(1)));
+        let mut other = all.clone();
+        other[3].key = LeafKey::Physics(DomainId(5));
+        assert_eq!(import(other, true).err(), Some(ImportError::BadProof(3)));
+        let mut wrong = import_of(&d, all, Vec::new(), true);
+        wrong.physics.as_mut().expect("image").global = Hash([1; 32]);
+        assert_eq!(d.import(&d.empty(), &wrong).err(), Some(ImportError::PhysicsCheck));
     }
 }
