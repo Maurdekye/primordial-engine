@@ -1,0 +1,4 @@
+check                  states     generated  depth   seconds  result
+== n4-byz-frames
+n4-byz-frames         9004284      50381260     12      30.0  OK   (every behaviour of up to 12 steps) all properties hold; examples found
+    twin of ctl-noframe: 4 members, Byzantine leads view 1 and names any frame from parent + 1 to + 2K; q = 3; entries 0=f.1a
