@@ -158,6 +158,41 @@ impl Renderer {
   ant's world both fit the depth range [I].
 - **Stereo:** with `Features::MULTIVIEW` (Vulkan), both eyes in one pass. Without it, which includes the D3D12
   fallback under FXC, one pass per eye, as the M0 check does; that cost is measured at the headset test.
+  - **Multiview with MSAA** also needs `Features::MULTISAMPLE_ARRAY` (a multisampled two-layer target; Vulkan only).
+    Without it, MSAA in VR draws two passes. `gpu::wanted_features` asks for both, and timestamp queries, where the
+    adapter offers them; pe-xr opens its device through the runtime with exactly those.
+  - **One shader source, two variants:** the uniform carries a view-projection and an eye per view. The multiview
+    variant indexes them by `@builtin(view_index)`; the single-view variant reads index 0, from one uniform slot
+    per view.
+
+```rust
+pub struct StereoTarget<'a> {
+    pub color: &'a wgpu::Texture,          // two layers, sRGB, wrapped in COLOR_TARGET
+    pub depth: Option<&'a wgpu::Texture>,  // two layers, wrapped in DEPTH_STENCIL_WRITE (Depth32Float preferred)
+    pub extent: [u32; 2],                  // the drawn rectangle from the origin: the render scale
+}
+impl Renderer {
+    pub fn render_stereo(&mut self, scene: &Scene, eyes: [Camera; 2], target: &StereoTarget) -> FrameStats;
+}
+impl Camera { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max depth, near_z, far_z
+```
+
+- **`render_stereo`** draws both eyes and submits. Its work ends with the colour image transitioned back to
+  COLOR_TARGET and the depth image to DEPTH_STENCIL_WRITE (xr.md 4.2), so pe-xr releases the images once it
+  returns. pe-render keeps no reference to them. The glue (pe-app's `FrameSink`, with pe-xr's `XrTargets`) feeds
+  it the frame view through the `Presenter`, with `FrameRequest.hands` as `LocalPresentation.hands`.
+- **The render scale is a viewport:** only `extent` is drawn, so the swapchain never changes size. The projection
+  layer's `imageRect` is the extent.
+- **The depth layer** (`XR_KHR_composition_layer_depth`, review L2):
+  - **Range:** `xr_depth_info` gives `min_depth` 0 and `max_depth` 1. With reverse Z, 0 lies at the far plane, so
+    `near_z` is the far plane and `far_z` the near one; `near_z > far_z` is how the extension marks reversed depth.
+    The far plane is VR's finite one (R2).
+  - **Stored:** single-sampled Depth32Float is drawn into directly, with its store op Store. With MSAA (or another
+    depth format), the scene draws its own depth, and a fullscreen pass per eye writes the nearest of each
+    pixel's samples into the headset's depth (wgpu resolves no depth). Nearest, so a foreground edge never takes
+    the background's depth in the compositor's reprojection. The alternatives were dropping MSAA whenever depth is
+    submitted (an aliased image), or a second, depth-only draw of the scene (the vertex cost twice); the
+    resolve costs one fullscreen triangle per eye.
 
 ## 6. The scene renderer (M1)
 
@@ -464,7 +499,7 @@ About 6-8 engineer-weeks of M1's "renderer and VR with hands" (8-12, shared with
 |---|---|---|
 | Context, window, pacing, the scene renderer over a mock frame view; camera-relative transforms | 2 | S5 v0 (mockable) |
 | The display layer and its tests, effects | 1.5 | S5's `corrected`, velocities and effect keys |
-| `render_views` for pe-xr: multiview, late-latched own hands | 1 | pe-xr's skeleton |
+| `render_views` for pe-xr: multiview, late-latched own hands (`render_stereo`, render/xr) | 1 | pe-xr's skeleton |
 | The offscreen capture, outline and labels, for `view_capture` | 1 | pe-api's port |
 | The desktop hand | 0.5 | `HandFeed` in S5 |
 | Counters, harness scenarios, headset tuning | 1-1.5 | pe-harness; the coordinator's go |

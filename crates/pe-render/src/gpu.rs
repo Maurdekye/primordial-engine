@@ -62,6 +62,13 @@ pub enum AdapterChoice {
 }
 
 /// The backends pe-render enables: Vulkan everywhere, plus D3D12 on Windows.
+/// The features pe-render asks for, of those the adapter offers: timestamp queries for the frame's GPU time
+/// (render.md 10), and multiview with multisampled array textures for one-pass stereo (render.md 5). pe-xr opens its
+/// device through the runtime with exactly these.
+pub fn wanted_features(offered: wgpu::Features) -> wgpu::Features {
+    offered & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::MULTIVIEW | wgpu::Features::MULTISAMPLE_ARRAY)
+}
+
 pub fn backends() -> wgpu::Backends {
     if cfg!(windows) { wgpu::Backends::VULKAN | wgpu::Backends::DX12 } else { wgpu::Backends::VULKAN }
 }
@@ -133,7 +140,7 @@ impl GpuContext {
         // Timestamp queries where the adapter has them: the frame's GPU time feeds the quality ladder (render.md 10).
         let desc = wgpu::DeviceDescriptor {
             label: Some("pe-render"),
-            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+            required_features: wanted_features(adapter.features()),
             required_limits: wgpu::Limits::default(),
             ..Default::default()
         };
