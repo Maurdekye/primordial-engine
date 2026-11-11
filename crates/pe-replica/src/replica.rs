@@ -19,9 +19,12 @@
 //!   cut's frame: at most the distance from the floor to the cut, normally one or two cut intervals;
 //! - `replay_to`'s check of `Cv`: a full tree `verify` and a physics rehash, O(world) in one call (M2's worker).
 //!
-//! **Entries below the floor.** Rung 1 replays from `Cv`, which can be older than the floor, and reads those frames'
-//! entries from the source too. That assumes S3 keeps the entries since `Cv` (6.1), which the seam does not promise
-//! yet (@design-reviewer's Medium on 3d13ff88: a retention rule and `EntrySource::kept_from`, asked of WS-seams).
+//! **Entries below the floor (S3 v1.2).** Rung 1 replays from `Cv`, which can be older than the floor, and reads
+//! those frames' entries from the source too. When `Cv` moves, `finalize` asks the source to keep final entries from
+//! its frame on (`keep_final_from`); S3 keeps them within its cap. When the cap has trimmed past `Cv`,
+//! `replay_to` answers `NotKept` before restoring anything, and the ladder goes to rung 2. A frame that must be
+//! stepped but is no longer kept (`entries_at` answers `None`) is a fault, stepped empty; a replay ends there, and
+//! answers `NotKept` when asked again.
 //!
 //! **The d1 rule is S3's.** `root_at_cut` and `replay_to` never answer "missing entries": a cut may cover void
 //! entries that `entries_at` leaves out, so the replica cannot count them (@coordinator-opus, m8126544ad530).
@@ -133,6 +136,8 @@ pub struct ReplicaImpl<W: WorldModel> {
     replay: Option<Replay>,
     /// The last rung-1 replay that finished, and its root: asked again, it answers at once.
     replayed: Option<(CutRef, Hash)>,
+    /// A replay that ended because a frame it had to step was no longer kept: asked again, it answers `NotKept`.
+    lost: Option<CutRef>,
     /// Frames one call may step.
     budget: u64,
     view: Arc<FrameView>,
@@ -194,6 +199,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             diverged: None,
             replay: None,
             replayed: None,
+            lost: None,
             budget: u64::MAX,
             view: Arc::new(empty_view(domain)),
             counters: ViewCounters::default(),
@@ -253,12 +259,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.replay.as_ref().map_or(floor, |r| floor.max(r.cut.at.frame))
     }
 
-    /// The entries frame `f` steps: the source's, or exactly the cut's below a replay's cut frame.
-    fn entries_for<'s>(&self, source: &'s dyn EntrySource, f: Frame) -> Vec<&'s SignedEntry> {
-        match &self.replay {
-            Some(r) if f < r.cut.at.frame => in_cut(source.entries_at(f), &r.cut),
-            _ => source.entries_at(f).iter().collect(),
-        }
+    /// The entries frame `f` steps: the source's, or exactly the cut's below a replay's cut frame. `None` when the
+    /// source no longer keeps the frame's entries (S3 v1.2).
+    fn entries_for<'s>(&self, source: &'s dyn EntrySource, f: Frame) -> Option<Vec<&'s SignedEntry>> {
+        let all = source.entries_at(f)?;
+        Some(match &self.replay {
+            Some(r) if f < r.cut.at.frame => in_cut(all, &r.cut),
+            _ => all.iter().collect(),
+        })
     }
 
     // ---- one frame --------------------------------------------------------------------------------------------------
@@ -410,7 +418,13 @@ impl<W: WorldModel> ReplicaImpl<W> {
             if self.frame >= target || *budget == 0 {
                 break;
             }
-            let entries = self.entries_for(source, self.frame);
+            let entries = self.entries_for(source, self.frame).unwrap_or_else(|| {
+                // No longer kept: the floor fell further behind than S3's cap. A fault, never a silent empty frame,
+                // and a replay cannot be exact past it: it ends, and asked again it answers `NotKept` (rung 2 next).
+                self.faults += 1;
+                self.lost = self.replay.take().map(|r| r.cut.at).or(self.lost);
+                Vec::new()
+            });
             let resimulated = self.frame < self.reached;
             let root = self.step(&entries, true);
             *budget -= 1;
@@ -440,7 +454,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// The first frame from the floor below the cut's frame whose live entries are not exactly the cut's.
     fn first_difference(&self, cut: &Cut, source: &dyn EntrySource) -> Option<Frame> {
         (self.floor_frame().0..cut.at.frame.0).map(Frame).find(|&g| {
-            let want: Vec<EntryRef> = in_cut(source.entries_at(g), cut).iter().map(|e| e.id()).collect();
+            // A frame no longer kept counts as different: the re-step from there answers `NotKept`.
+            let Some(all) = source.entries_at(g) else { return true };
+            let want: Vec<EntryRef> = in_cut(all, cut).iter().map(|e| e.id()).collect();
             self.stepped.get(&g).is_none_or(|had| *had != want)
         })
     }
@@ -507,7 +523,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.frame = k;
         let mut root = None;
         while self.frame < at {
-            let entries = in_cut(source.entries_at(self.frame), cut);
+            let entries = in_cut(source.entries_at(self.frame).ok_or(RootError::NotKept)?, cut);
             root = self.step(&entries, false);
         }
         // Stepped onto a grid frame: its root was just taken. Otherwise (a keyframe restored at the cut's frame, or a
@@ -732,6 +748,8 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         let verdict = if mine == cut.root {
             self.cv = Some((cut.cut.clone(), mine));
             self.diverged = None;
+            // Rung 1 replays from `Cv`: S3 keeps final entries from its frame on (S3 v1.2), within its cap.
+            source.keep_final_from(at.frame);
             Finalized::Agreed
         } else {
             self.diverged = Some((at, mine));
@@ -752,9 +770,14 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         if let Some(r) = self.replay.as_ref().filter(|r| r.cut.at == cut.at) {
             return r.root.ok_or(RootError::Pending);
         }
+        if self.lost == Some(cut.at) {
+            return Err(RootError::NotKept);
+        }
         let cv_root = self.cv.as_ref().map(|c| c.1).ok_or(RootError::NotKept)?;
         let cv_frame = self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame);
-        if cut.at.frame < cv_frame || !self.held.contains_key(&cv_root) {
+        // S3 v1.2: below `kept_from` the entries are gone, so a replay from `Cv` would step empty frames. Refused
+        // before anything is restored, so the live state is unchanged and the ladder goes on to rung 2.
+        if cut.at.frame < cv_frame || !self.held.contains_key(&cv_root) || cv_frame < source.kept_from() {
             return Err(RootError::NotKept);
         }
         // Check `Cv` from its records and from the restored physics itself, keeping the live state until it passes.
@@ -778,6 +801,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.forget_after(cv_frame);
         self.voted.clear();
         self.replayed = None;
+        self.lost = None;
         let root = (cut.at.frame == cv_frame).then_some(cv_root);
         self.replay = Some(Replay { cut: cut.clone(), root });
         let (mut budget, mut out) = (self.budget, Advance::default());

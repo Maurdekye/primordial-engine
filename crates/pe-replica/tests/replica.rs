@@ -19,6 +19,10 @@ use pe_seams::{
 struct Source {
     entries: BTreeMap<Frame, Vec<SignedEntry>>,
     changed: Option<Frame>,
+    /// Frames below this are trimmed (S3 v1.2's cap).
+    kept: Frame,
+    /// The newest frame the replica asked to keep final entries from.
+    asked: Option<Frame>,
 }
 
 impl Source {
@@ -29,14 +33,27 @@ impl Source {
         at.sort_by_key(|e| (e.entry.chain, e.entry.seq));
         self.changed = Some(self.changed.map_or(f, |c| c.min(f)));
     }
+
+    /// S3's cap trims everything below `frame`.
+    fn trim_below(&mut self, frame: Frame) {
+        let kept = self.kept.max(frame);
+        self.kept = kept;
+        self.entries.retain(|f, _| *f >= kept);
+    }
 }
 
 impl EntrySource for Source {
     fn final_cut(&self) -> Option<&FinalCut> {
         None
     }
-    fn entries_at(&self, frame: Frame) -> &[SignedEntry] {
-        self.entries.get(&frame).map_or(&[], Vec::as_slice)
+    fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
+        (frame >= self.kept).then(|| self.entries.get(&frame).map_or(&[][..], Vec::as_slice))
+    }
+    fn kept_from(&self) -> Frame {
+        self.kept
+    }
+    fn keep_final_from(&mut self, frame: Frame) {
+        self.asked = Some(self.asked.map_or(frame, |a| a.max(frame)));
     }
     fn take_changed_from(&mut self) -> Option<Frame> {
         self.changed.take()
@@ -388,5 +405,82 @@ fn a_re_step_off_the_live_history_counts_only_against_the_scratch() {
     a.advance(Frame(32), &mut s);
     assert_eq!(a.faults(), 1, "frame 12 stepped once, live");
     a.root_at_cut(&cut(&scene(), 3, 24), &mut s).expect("a root");
-    assert_eq!(a.faults(), 1, "the re-step's fault is the scratch's (ReplicaImpl::scratch)");
+    assert_eq!(a.faults(), 1, "the re-step's fault is the scratch's");
+    assert_eq!(a.scratch().faults, 1);
+}
+
+/// The replica of `rung_one_repairs_a_transient_fault`: `Cv` at 16, a transient fault at 20, diverged at the final cut
+/// at 32. Returns it, its source, the cut at 32 and the quorum's root there, and its own diverged root.
+fn diverged_at_32() -> (ReplicaImpl<MockWorld>, Source, Cut, Hash, Hash) {
+    let all = scene();
+    let (good, _) = reference(48);
+    let mut s = Source::default();
+    all.iter().cloned().for_each(|e| s.add(e));
+    let world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
+    world.glitch_at(Frame(20));
+    let mut config = ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133));
+    config.cut_every = K;
+    let mut bad = ReplicaImpl::new(world, config).expect("a replica");
+    bad.advance(Frame(48), &mut s);
+    let r16 = good.live_root(Frame(16)).expect("live");
+    assert_eq!(bad.finalize(&FinalCut { cut: cut(&all, 2, 16), root: r16, voters: vec![] }, &mut s), Finalized::Agreed);
+    let (c32, r32) = (cut(&all, 4, 32), good.live_root(Frame(32)).expect("live"));
+    let Finalized::Diverged { mine } = bad.finalize(&FinalCut { cut: c32.clone(), root: r32, voters: vec![] }, &mut s)
+    else {
+        panic!("the glitch shows at 32")
+    };
+    (bad, s, c32, r32, mine)
+}
+
+/// Rung 1's retention (S3 v1.2, @coordinator-opus m852013ee7d53): `finalize` asks S3 to keep final entries from
+/// `Cv`'s frame on. When S3's cap has trimmed past `Cv` anyway, `replay_to` answers `NotKept` before restoring
+/// anything, never a root from empty frames: the live state is unchanged, and the diverged root rung 2 diffs against
+/// (through `tree` and `physics_image`) stays held. The ladder goes on to rung 2 (pe-diverge, ladder.rs).
+#[test]
+fn a_replay_from_below_what_s3_keeps_is_not_kept_and_leaves_rung_2_its_root() {
+    let (mut bad, mut s, c32, _, mine) = diverged_at_32();
+    assert_eq!(s.asked, Some(Frame(16)), "Cv's frame, asked when Cv moved; the divergence did not move it");
+    let live: Vec<_> = roots(&bad, 48);
+    s.trim_below(Frame(24));
+    assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept));
+    assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept), "asked again, still no root");
+    assert_eq!((bad.frame(), roots(&bad, 48)), (Frame(48), live), "the live state is unchanged");
+    assert_eq!(bad.tree(&mine).map(|t| t.root()), Some(mine), "rung 2 diffs against my diverged root");
+    assert!(bad.physics_image(&mine).is_some());
+    // Control: with the entries since Cv kept, rung 1 cures it (rung_one_repairs_a_transient_fault).
+    let (mut kept, mut ks, c32, r32, _) = diverged_at_32();
+    assert_eq!(kept.replay_to(&c32, &mut ks), Ok(r32));
+}
+
+/// A frame `advance` must re-simulate that is no longer kept (the floor fell further behind than S3's cap) is a
+/// fault, one per frame, stepped empty: never a silent empty frame (S3 v1.2's `advance` doc).
+#[test]
+fn re_simulating_frames_no_longer_kept_counts_a_fault_for_each() {
+    let (mut a, mut s) = reference(48);
+    let root16 = a.live_root(Frame(16)).expect("live");
+    assert_eq!(
+        a.finalize(&FinalCut { cut: cut(&scene(), 2, 16), root: root16, voters: vec![] }, &mut s),
+        Finalized::Agreed
+    );
+    let f0 = a.faults();
+    s.trim_below(Frame(30));
+    s.changed = Some(Frame(26));
+    let adv = a.advance(Frame(48), &mut s);
+    let from = adv.rolled_back_to.expect("rolled back");
+    assert!(from < Frame(30));
+    assert_eq!(a.faults() - f0, 30 - from.0, "one fault per frame stepped below 30");
+}
+
+/// A rung-1 replay under way, within a small budget, that meets a frame S3 has trimmed since: it ends there, with a
+/// fault, and asked again it answers `NotKept`, so the ladder goes to rung 2.
+#[test]
+fn a_replay_that_meets_a_trimmed_frame_ends_and_answers_not_kept() {
+    let (mut bad, mut s, c32, _, _) = diverged_at_32();
+    bad.set_budget(Duration::from_millis(1));
+    assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::Pending), "two frames from Cv at 16");
+    s.trim_below(Frame(20));
+    let f0 = bad.faults();
+    bad.advance(Frame(48), &mut s);
+    assert_eq!(bad.faults() - f0, 2, "frames 18 and 19, no longer kept");
+    assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept));
 }
