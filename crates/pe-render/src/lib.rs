@@ -13,6 +13,7 @@
 //! - [`capture`]: the offscreen capture and `visible_list` (render.md 11).
 //! - [`pacing`]: the display period and the render-scale controller (render.md 10).
 //! - [`desktop_hand`]: the mouse-ray hand and its `HandFeed` (render.md 9).
+//! - [`hands`]: markers for the own hands when the view has no hand object (render.md 8, D4).
 //! - [`present`]: the frame-view slot and the per-frame presenter (render.md 3).
 //! - [`window`]: the desktop window and its loop (render.md 9, 10).
 //!
@@ -25,6 +26,7 @@ pub mod display;
 pub mod drawn_time;
 pub mod effects;
 pub mod gpu;
+pub mod hands;
 pub mod labels;
 pub mod pacing;
 pub mod pose;
