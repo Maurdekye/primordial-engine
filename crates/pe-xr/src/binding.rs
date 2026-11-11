@@ -21,11 +21,12 @@ use std::fmt;
 use ash::vk::{self, Handle};
 use openxr as xr;
 use pe_render::camera::{Camera, DepthRange, Fov as CameraFov};
-use pe_render::gpu::{GpuContext, creation_lock};
+use pe_render::gpu::{GpuContext, creation_lock, wanted_features, wanted_limits};
+use pe_render::scene::StereoTarget;
 use pe_render::{wgpu, wgpu_hal};
 use pe_seams::RigTransform;
 
-use crate::backend::EyePose;
+use crate::backend::{DepthInfo, EyePose, ImageIndex};
 use crate::real::XrInstance;
 
 type Vk = wgpu_hal::api::Vulkan;
@@ -46,23 +47,6 @@ impl std::error::Error for BindingError {}
 
 fn be(what: &'static str) -> impl Fn(String) -> BindingError {
     move |e| BindingError(format!("{what}: {e}"))
-}
-
-/// The device features pe-render wants, where the adapter offers them: timestamps for the frame's GPU time, and
-/// multiview with multisampled arrays for one-pass stereo (render.md 4, @ballpit-viz). This is
-/// `pe_render::gpu::wanted_features` until that lands on main; it then replaces this.
-pub fn wanted_features(offered: wgpu::Features) -> wgpu::Features {
-    offered & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::MULTIVIEW | wgpu::Features::MULTISAMPLE_ARRAY)
-}
-
-/// The limits pe-render asks for: wgpu's defaults, with two multiview views where the adapter offers them
-/// (`Limits::default()` has none, which refuses every two-view pass). This is `pe_render::gpu::wanted_limits`
-/// (render/xr 5508928b, @ballpit-viz) until that lands on main; it then replaces this.
-pub fn wanted_limits(offered: &wgpu::Limits) -> wgpu::Limits {
-    wgpu::Limits {
-        max_multiview_view_count: if offered.max_multiview_view_count >= 2 { 2 } else { 0 },
-        ..wgpu::Limits::default()
-    }
 }
 
 /// A GPU context made through the runtime, and what `xrCreateSession` needs to bind to it.
@@ -221,81 +205,137 @@ pub fn vulkan_format(raw: i64) -> Option<wgpu::TextureFormat> {
     }
 }
 
-/// The swapchain's images as wgpu textures, one per image, each with both eyes' layers (spec 4.2). The frame's
-/// target is the texture at its `ImageIndex`.
+/// The swapchain's images as wgpu textures, one per image, each with both eyes' layers (spec 4.2): colour, and depth
+/// when the runtime takes it. A frame's target is the textures at its image indices ([`Self::stereo`]).
 pub struct XrTargets {
     color: Vec<wgpu::Texture>,
+    depth: Vec<wgpu::Texture>,
     pub format: wgpu::TextureFormat,
     /// The swapchain's size; a frame draws into `extent` from the origin, which the projection layer's `imageRect`
     /// matches (render scale as a viewport, @ballpit-viz).
     pub size: [u32; 2],
 }
 
+/// Wrap one runtime-owned Vulkan image of 2 layers.
+///
+/// # Safety
+/// `img` must be a live swapchain image of `format` and `size` on `gpu`'s device, created with `uses`, and handed
+/// over in `state`.
+unsafe fn wrap_vulkan(
+    gpu: &GpuContext,
+    img: u64,
+    format: wgpu::TextureFormat,
+    size: [u32; 2],
+    usage: wgpu::TextureUsages,
+    uses: wgpu::TextureUses,
+    state: wgpu::TextureUses,
+) -> Result<wgpu::Texture, BindingError> {
+    let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 2 };
+    let desc = wgpu::TextureDescriptor {
+        label: Some("xr swapchain"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    };
+    let hal_desc = wgpu_hal::TextureDescriptor {
+        label: desc.label,
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: desc.dimension,
+        format,
+        usage: uses,
+        memory_flags: wgpu_hal::MemoryFlags::empty(),
+        view_formats: Vec::new(),
+    };
+    // SAFETY: the device is Vulkan (made by `vulkan_context`).
+    let hd =
+        unsafe { gpu.device.as_hal::<Vk>() }.ok_or_else(|| BindingError("the GPU context is not Vulkan".into()))?;
+    // SAFETY: the caller's contract. The runtime owns the image and its memory: an empty drop callback and external
+    // memory, so wgpu never frees either.
+    let hal = unsafe {
+        hd.texture_from_raw(
+            vk::Image::from_raw(img),
+            &hal_desc,
+            Some(Box::new(|| {})),
+            wgpu_hal::vulkan::TextureMemory::External,
+        )
+    };
+    drop(hd);
+    // SAFETY: `hal` matches `desc`, in the state the runtime hands it over in (spec 4.2).
+    Ok(unsafe { gpu.device.create_texture_from_hal::<Vk>(hal, &desc, state) })
+}
+
 impl XrTargets {
-    /// Wrap Vulkan swapchain images (`xrEnumerateSwapchainImages`), as created by `RealBackend`: 2 layers, colour
-    /// attachment and transfer source, in the colour-target state the runtime hands them over in.
+    /// Wrap Vulkan swapchain images (`xrEnumerateSwapchainImages`), as `RealBackend` creates them, 2 layers each:
+    /// colour (colour attachment and transfer source, handed over as a colour target) and, when given, depth (a
+    /// depth attachment, handed over for depth writes).
     ///
     /// # Safety
-    /// `images` must be the live swapchain's images, of `raw_format` and `size`, on `gpu`'s device; the textures must
-    /// be dropped ([`Self::release`]) before the swapchain is destroyed.
+    /// The images must be the live swapchains' images, of their raw formats and `size`, on `gpu`'s device; the
+    /// textures must be dropped ([`Self::release`]) before the swapchains are destroyed.
     pub unsafe fn vulkan(
         gpu: &GpuContext,
         images: &[u64],
         raw_format: i64,
         size: [u32; 2],
+        depth: Option<(&[u64], i64)>,
     ) -> Result<XrTargets, BindingError> {
         let format = vulkan_format(raw_format)
             .filter(|f| f.is_srgb())
             .ok_or_else(|| BindingError(format!("swapchain format {raw_format} is not one pe-render draws to")))?;
-        let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 2 };
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        let color_usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        let color_uses = wgpu::TextureUses::COLOR_TARGET | wgpu::TextureUses::COPY_SRC;
         let mut color = Vec::with_capacity(images.len());
         for &img in images {
-            let desc = wgpu::TextureDescriptor {
-                label: Some("xr swapchain"),
-                size: extent,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            };
-            let hal_desc = wgpu_hal::TextureDescriptor {
-                label: desc.label,
-                size: extent,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: desc.dimension,
-                format,
-                usage: wgpu::TextureUses::COLOR_TARGET | wgpu::TextureUses::COPY_SRC,
-                memory_flags: wgpu_hal::MemoryFlags::empty(),
-                view_formats: Vec::new(),
-            };
-            // SAFETY: the device is Vulkan (made by `vulkan_context`).
-            let hd = unsafe { gpu.device.as_hal::<Vk>() }
-                .ok_or_else(|| BindingError("the GPU context is not Vulkan".into()))?;
-            // SAFETY: the caller's contract. The runtime owns the image and its memory: an empty drop callback and
-            // external memory, so wgpu never frees either.
-            let hal = unsafe {
-                hd.texture_from_raw(
-                    vk::Image::from_raw(img),
-                    &hal_desc,
-                    Some(Box::new(|| {})),
-                    wgpu_hal::vulkan::TextureMemory::External,
-                )
-            };
-            drop(hd);
-            // SAFETY: `hal` matches `desc`; the runtime hands images over as colour targets (spec 4.2).
-            color
-                .push(unsafe { gpu.device.create_texture_from_hal::<Vk>(hal, &desc, wgpu::TextureUses::COLOR_TARGET) });
+            // SAFETY: the caller's contract.
+            color.push(unsafe {
+                wrap_vulkan(gpu, img, format, size, color_usage, color_uses, wgpu::TextureUses::COLOR_TARGET)
+            }?);
         }
-        Ok(XrTargets { color, format, size })
+        let mut depth_textures = Vec::new();
+        if let Some((images, raw)) = depth {
+            let f = vulkan_format(raw)
+                .filter(|f| *f == wgpu::TextureFormat::Depth32Float)
+                .ok_or_else(|| BindingError(format!("depth format {raw} is not one pe-render draws to")))?;
+            let w = wgpu::TextureUses::DEPTH_STENCIL_WRITE;
+            for &img in images {
+                // SAFETY: the caller's contract.
+                depth_textures
+                    .push(unsafe { wrap_vulkan(gpu, img, f, size, wgpu::TextureUsages::RENDER_ATTACHMENT, w, w) }?);
+            }
+        }
+        Ok(XrTargets { color, depth: depth_textures, format, size })
     }
 
-    /// The colour texture of the acquired image, both layers.
-    pub fn color(&self, image: usize) -> Option<&wgpu::Texture> {
-        self.color.get(image)
+    /// The colour texture of an image, both layers.
+    pub fn color(&self, image: ImageIndex) -> Option<&wgpu::Texture> {
+        self.color.get(image.0 as usize)
+    }
+
+    /// Whether depth images are wrapped (the runtime takes depth).
+    pub fn has_depth(&self) -> bool {
+        !self.depth.is_empty()
+    }
+
+    /// pe-render's target for a frame: the colour image, the depth image when there is one, and the drawn rectangle
+    /// (`None`: the whole image; clamped to it). `None` for an index outside the swapchain.
+    pub fn stereo(
+        &self,
+        image: ImageIndex,
+        depth_image: Option<ImageIndex>,
+        extent: Option<[u32; 2]>,
+    ) -> Option<StereoTarget<'_>> {
+        let [w, h] = extent.unwrap_or(self.size);
+        Some(StereoTarget {
+            color: self.color(image)?,
+            depth: depth_image.and_then(|d| self.depth.get(d.0 as usize)),
+            extent: [w.clamp(1, self.size[0]), h.clamp(1, self.size[1])],
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -309,13 +349,20 @@ impl XrTargets {
     /// Drop every wrapper, once the GPU is idle on them (review 1, L4): `FrameSink::release_swapchain` calls this,
     /// before `xrDestroySwapchain`.
     pub fn release(&mut self, gpu: &GpuContext) {
-        if self.color.is_empty() {
+        if self.color.is_empty() && self.depth.is_empty() {
             return;
         }
         // Waits until every submission so far has finished on the GPU.
         let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
         self.color.clear();
+        self.depth.clear();
     }
+}
+
+/// The depth layer's range for VR: pe-render's `DepthRange::VR`, unscaled physical metres, reverse Z (spec 4.2).
+pub fn vr_depth_info() -> DepthInfo {
+    let d = DepthRange::VR.xr_depth_info();
+    DepthInfo { min_depth: d.min_depth, max_depth: d.max_depth, near_z: d.near_z, far_z: d.far_z }
 }
 
 /// Both eyes' cameras, from the frame's eye poses (rig frame) and the rig (spec 3.2; render.md 5).
@@ -340,17 +387,11 @@ mod tests {
     }
 
     #[test]
-    fn wanted_limits_raise_only_the_multiview_views_and_only_when_offered() {
-        let offered = wgpu::Limits { max_multiview_view_count: 6, ..wgpu::Limits::default() };
-        assert_eq!(wanted_limits(&offered).max_multiview_view_count, 2);
-        assert_eq!(wanted_limits(&wgpu::Limits::default()), wgpu::Limits::default());
-    }
-
-    #[test]
-    fn wanted_features_never_asks_for_more_than_offered() {
-        let offered = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::DEPTH_CLIP_CONTROL;
-        assert_eq!(wanted_features(offered), wgpu::Features::TIMESTAMP_QUERY);
-        assert_eq!(wanted_features(wgpu::Features::empty()), wgpu::Features::empty());
+    fn the_vr_depth_layer_is_reverse_z_in_physical_metres() {
+        let d = vr_depth_info();
+        assert_eq!((d.min_depth, d.max_depth), (0.0, 1.0));
+        assert!(d.near_z > d.far_z, "reverse Z: the distance at depth 0 is the far plane");
+        assert_eq!((d.near_z, d.far_z), (100.0, 0.02));
     }
 
     #[test]
