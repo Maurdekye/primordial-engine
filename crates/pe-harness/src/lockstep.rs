@@ -55,6 +55,15 @@ pub struct LockstepAgreement {
     /// The mock's planted defect for P15's control: hand over cuts in `wants_roots` without holding what they name
     /// (the d1 defect, `VoteWithoutChainValidation`'s shape). Off by default.
     pub vote_without_holding: bool,
+    /// Retention (S3 v1.2). Off by default: every frame is kept. On, `keep_final_from(cv, floor)` trims every frame
+    /// below `cv`, the least S3 must keep.
+    pub trim_below_cv: bool,
+    /// Retention's time cap, in frames: at each tick, frames older than `now - cap` are trimmed, the floor or not.
+    pub trim_cap: Option<u64>,
+    /// The planted defect for the retention control: `kept_from` answers frame 0 whatever was trimmed. Off by default.
+    pub kept_from_lies: bool,
+    /// Frames below this are no longer kept.
+    kept: u64,
     keys: TestKeys,
     signer: TestSigner,
     me: MemberKey,
@@ -98,6 +107,10 @@ impl LockstepAgreement {
             relay: true,
             fetch: true,
             vote_without_holding: false,
+            trim_below_cv: false,
+            trim_cap: None,
+            kept_from_lies: false,
+            kept: 0,
             keys: keys.clone(),
             signer: keys.signer(i),
             me: keys.key(i),
@@ -274,6 +287,15 @@ impl LockstepAgreement {
             (1..=h.seq).all(|s| self.held.contains_key(&(h.chain, s)))
                 && self.held.get(&(h.chain, h.seq)).is_some_and(|e| e.id() == h.entry)
         })
+    }
+
+    /// Trim every frame below `f`, forward only. Held entries stay held (the agreement still knows them); only the
+    /// frames' rows go.
+    fn trim_to(&mut self, f: u64) {
+        if f > self.kept {
+            self.kept = f;
+            self.at = self.at.split_off(&f);
+        }
     }
 
     /// The last entry stamped below `f` in the contiguous held prefix of my chain: the one I submit to, or else the
@@ -529,16 +551,24 @@ impl EntrySource for LockstepAgreement {
         self.finals.last()
     }
 
-    /// It never trims (S3 v1.2): every frame is kept.
     fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
+        if frame.0 < self.kept {
+            return None;
+        }
         Some(self.at.get(&frame.0).map_or(&[], |v| v.as_slice()))
     }
 
+    /// Frame 0 unless a trim is switched on. P15's span needs no narrowing either way: the recorder counts what a
+    /// member holds itself, not through the source.
     fn kept_from(&self) -> Frame {
-        Frame(0)
+        Frame(if self.kept_from_lies { 0 } else { self.kept })
     }
 
-    fn keep_final_from(&mut self, _cv: Frame, _floor: Frame) {}
+    fn keep_final_from(&mut self, cv: Frame, _floor: Frame) {
+        if self.trim_below_cv {
+            self.trim_to(cv.0);
+        }
+    }
 
     fn take_changed_from(&mut self) -> Option<Frame> {
         self.changed.take().map(Frame)
@@ -592,6 +622,9 @@ impl Agreement for LockstepAgreement {
             self.k = k.max(1) as u64;
         }
         self.now_frame = clock.frame_at(now).map_or(0, |f| f.0);
+        if let Some(cap) = self.trim_cap {
+            self.trim_to(self.now_frame.saturating_sub(cap));
+        }
         while self.marked + self.k <= self.now_frame {
             let f = self.marked + self.k;
             let head = self.my_head_below(f);
