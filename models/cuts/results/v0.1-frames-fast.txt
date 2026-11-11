@@ -1179,3 +1179,17 @@ Action index path: 0/29/19/18/7
 ctl-notimeout            1545          5666     16       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
     no timeouts: a faulty proposer stalls the line; q = 3; entries 0=f.1a
     counterexample to "liveness: every end state has a final cut at every honest member" (4 steps as found, 0 after shrinking):
+
+# third run, the new control:
+check                  states     generated  depth   seconds  result
+== ctl-noframe
+ctl-noframe            295828       1363394     10      10.0  OK   (every behaviour of up to 10 steps) counterexample as expected: "no entry takes effect below an earlier final frame"
+    voters accept a frame not above the parent's (v0.1); q = 3; entries 0=f.1a
+    counterexample to "no entry takes effect below an earlier final frame" (10 steps as found, 7 after shrinking):
+      AdvPropose(1, Propose { block: v1@0[-,-,-,-], proot: true, tc: None, carried: 0 })
+      AdvPropose(2, Propose { block: v1@0[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Observe(1, Cert { block: v1@0[-,-,-,-], root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v1@0[-,-,-,-]>v2@3[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(2, Propose { block: v1@0[-,-,-,-]>v2@3[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Observe(1, Cert { block: v1@0[-,-,-,-]>v2@3[-,-,-,-], root: true })
