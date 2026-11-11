@@ -661,6 +661,69 @@ fn an_import_that_does_not_check_changes_nothing() {
     assert_eq!((bad.frame(), roots(&bad, 48), bad.world().root()), live, "the live state is unchanged");
 }
 
+/// An import below my floor is refused before anything changes: nothing there changes again (@chunks-reviewer's L1
+/// on 05903341).
+#[test]
+fn an_import_below_the_floor_is_not_kept() {
+    let (mut bad, mut s, _, _, _) = diverged_at_32();
+    let (mut good, mut gs) = reference(48);
+    let import = import_from(&mut good, &mut gs, &cut(&scene(), 2, 16));
+    let live = (bad.frame(), roots(&bad, 48), bad.world().root());
+    assert_eq!(bad.import_at_cut(&GroupSel::Domain, import, &mut s), Err(ImportError::NotKept));
+    assert_eq!((bad.frame(), roots(&bad, 48), bad.world().root()), live, "the live state is unchanged");
+}
+
+/// A snapshot held from before an import has the old physics world's image, which never restores into the new one
+/// (@chunks-reviewer's L2 on 05903341). Here the replica imports at 32 before that cut is final, and the cut then goes
+/// final with another root (the import was a superseded root's): the import ends, and `Cv` is still the one at 16,
+/// held from before it. Rung 1 from that `Cv` answers `NotKept` up front, not `Damaged` from a refused restore.
+#[test]
+fn a_cv_held_from_before_an_import_is_not_kept() {
+    let all = scene();
+    let (mut r, mut s) = reference(48);
+    let r16 = r.live_root(Frame(16)).expect("live");
+    assert_eq!(r.finalize(&FinalCut { cut: cut(&all, 2, 16), root: r16, voters: vec![] }, &mut s), Finalized::Agreed);
+    let (mut donor, mut ds) = reference(48);
+    let c32 = cut(&all, 4, 32);
+    let import = import_from(&mut donor, &mut ds, &c32);
+    let (mine, _) = import_until_done(&mut r, &mut s, &import, 48);
+    let superseding = FinalCut { cut: c32, root: Hash([9; 32]), voters: vec![] };
+    assert_eq!(r.finalize(&superseding, &mut s), Finalized::Diverged { mine });
+    let before = (r.faults(), r.frame(), roots(&r, 48), r.world().root());
+    assert_eq!(r.replay_to(&cut(&all, 6, 48), &mut s), Err(RootError::NotKept));
+    assert_eq!((r.faults(), r.frame(), roots(&r, 48), r.world().root()), before, "nothing changed or counted");
+}
+
+/// A root of mine held from before an import, and taken again after it, is held again with the new physics world's
+/// image (@chunks-reviewer's L2 on 05903341). Here the replica gave its root at 40, then imported its own state at 32
+/// (nothing to repair, so the same root at 40 comes again). Finalizing at 40 makes that snapshot the floor's keyframe:
+/// a late entry above it rolls back there with no fault, and rung 1 replays from it.
+#[test]
+fn a_root_taken_again_after_an_import_holds_the_new_world_s_image() {
+    let all = scene();
+    let (mut r, mut s) = reference(48);
+    let c40 = cut(&all, 5, 40);
+    let r40 = r.root_at_cut(&c40, &mut s).expect("my root at 40");
+    let (mut donor, mut ds) = reference(48);
+    let import = import_from(&mut donor, &mut ds, &cut(&all, 4, 32));
+    import_until_done(&mut r, &mut s, &import, 48);
+    assert_eq!(r.root_at_cut(&c40, &mut s), Ok(r40), "the same state again");
+    assert_eq!(r.finalize(&FinalCut { cut: c40, root: r40, voters: vec![] }, &mut s), Finalized::Agreed);
+    let keys = TestKeys::new(7, 3);
+    let late = EntryBuilder::new(&keys, 2).next(Class::Edit, Frame(42), Bytes::from(encode(&[ball(13, 2.0, 1.0)])));
+    s.add(late.clone());
+    let f0 = r.faults();
+    let adv = r.advance(Frame(48), &mut s);
+    assert_eq!((adv.rolled_back_to, r.faults()), (Some(Frame(40)), f0), "the floor's keyframe restores");
+    let mut ws = Source::default();
+    all.iter().cloned().chain([late]).for_each(|e| ws.add(e));
+    let mut w = replica();
+    w.advance(Frame(48), &mut ws);
+    assert_eq!(r.live_root(Frame(48)), w.live_root(Frame(48)), "with the late entry");
+    let clean = donor.live_root(Frame(48)).expect("live");
+    assert_eq!(r.replay_to(&cut(&all, 6, 48), &mut s), Ok(clean), "rung 1 from Cv at 40, without the late entry");
+}
+
 /// Joining: a replica with no root of its own at the cut imports the group's whole state from empty, at once (it is
 /// behind the cut, so nothing to re-simulate), then simulates on with the good replica's roots.
 #[test]
