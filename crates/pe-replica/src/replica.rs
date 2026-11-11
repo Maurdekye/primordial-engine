@@ -113,6 +113,9 @@ struct Held<S> {
     /// The canonical physics transfer, and its check hash (`physics_global`).
     transfer: Bytes,
     global: Hash,
+    /// The physics world `image` belongs to (`ReplicaImpl::epoch`). The records and the transfer serve exports from
+    /// any world, but the image restores only into its own.
+    epoch: u64,
 }
 
 /// The newest cut finalized here, and my root at it.
@@ -161,6 +164,10 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// The cut of my last import (rung 2 or joining) and my root there, until the floor reaches it. The replica
     /// keeps no history below it: its physics world is new, and older keyframes cannot be restored into it.
     imported: Option<(CutRef, Hash)>,
+    /// The physics world's generation: each import builds a new one, and an image from an older one never restores
+    /// into it. Held roots from before an import keep its number, so none of their images is ever restored
+    /// (@chunks-reviewer's L2 on 05903341).
+    epoch: u64,
     /// A replay that ended at a frame no longer kept, and what it answers when asked again: `NotKept` below the floor
     /// (abandoned), `Damaged` at or above it when its cut's root needed that frame (S2 v1.2 round 3).
     lost: Option<(CutRef, RootError)>,
@@ -231,6 +238,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             replay: None,
             replayed: None,
             imported: None,
+            epoch: 0,
             lost: None,
             stuck_at: None,
             unkept_met: None,
@@ -297,6 +305,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
     fn base_frame(&self) -> Frame {
         let floor = self.floor_frame();
         self.imported.map_or(floor, |i| floor.max(i.0.frame))
+    }
+
+    /// The held root's snapshot, if its image restores into the current physics world: not one held from before my
+    /// last import.
+    fn held_here(&self, root: &Hash) -> Option<&Held<W::Saved>> {
+        self.held.get(root).filter(|h| h.epoch == self.epoch)
     }
 
     /// Whether the live history stopped below `at`, at a frame S3 no longer keeps: no root at `at` will come.
@@ -454,13 +468,15 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// the live state goes back to the floor's held snapshot, which is the pinned keyframe there again, and the next
     /// call re-simulates from the floor to `reached`. The member keeps simulating while rung 2 goes ahead
     /// (@design-reviewer, m76a7a148f6b5). Outcomes below the floor stay as the replay left them: the replay's own up
-    /// to where it stopped, none above. False if the floor's snapshot is not held or is refused (a fault): the live
-    /// state is then unchanged, and the caller stops instead.
+    /// to where it stopped, none above. False if the floor's snapshot is not held in this physics world or is refused
+    /// (a fault): the live state is then unchanged, and the caller stops instead.
     fn abandon_replay(&mut self) -> bool {
         let Some((at, root)) = self.floor.as_ref().map(|f| (f.cut.at.frame, f.root)) else { return false };
-        let Some(h) = self.held.get(&root) else { return false };
+        let Some(key) = self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone() }) else {
+            return false;
+        };
         // `replay_to` dropped the floor's keyframe with the history it was replacing.
-        self.ring.insert(at, Key { world: h.world.clone(), image: h.image.clone() });
+        self.ring.insert(at, key);
         let cv = self.cv.as_ref().map(|c| c.0.at.frame);
         self.ring.pin([Some(at), cv].into_iter().flatten());
         if self.roll_back(at) != Some(at) {
@@ -592,7 +608,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
             // The live history stepped exactly the cut's entries, through the same frame function.
             debug_assert!(self.live.get(&at).is_none_or(|&live| live == root), "the live root at {at:?} is the cut's");
         }
-        self.held.entry(root).or_insert(held);
+        // The same root held from before my last import has the old physics world's image: this one replaces it.
+        if self.held_here(&root).is_none() {
+            self.held.insert(root, held);
+        }
         Ok(root)
     }
 
@@ -653,8 +672,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
             return Err(RootError::Damaged);
         };
         let global = Hash(transfer.check_hash().0);
-        let held =
-            Held { frame: at, world: self.world.save(), image, transfer: Bytes::from(transfer.to_bytes()), global };
+        let transfer = Bytes::from(transfer.to_bytes());
+        let held = Held { frame: at, world: self.world.save(), image, transfer, global, epoch: self.epoch };
         Ok((root, held))
     }
 
@@ -678,11 +697,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.held.retain(|h, _| keep.contains(h));
     }
 
-    /// The floor moves to the cut: its snapshot becomes the pinned keyframe there, and the history below it goes.
+    /// The floor moves to the cut: its snapshot becomes the pinned keyframe there, and the history below it goes. A
+    /// snapshot held from before my last import never enters the ring: its image is the old physics world's.
     fn move_floor(&mut self, cut: &Cut, root: Hash) {
         let at = cut.at.frame;
-        if let Some(h) = self.held.get(&root) {
-            self.ring.insert(at, Key { world: h.world.clone(), image: h.image.clone() });
+        if let Some(key) = self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone() }) {
+            self.ring.insert(at, key);
         }
         self.floor = Some(Floor { cut: cut.clone(), root });
         let cv = self.cv.as_ref().map(|c| c.0.at.frame);
@@ -916,14 +936,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         }
         let cv_root = self.cv.as_ref().map(|c| c.1).ok_or(RootError::NotKept)?;
         let cv_frame = self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame);
-        // S3 v1.2: below `kept_from` the entries are gone, so a replay from `Cv` would step empty frames. Refused
-        // before anything is restored, so the live state is unchanged and the ladder goes on to rung 2.
-        let imported_above = self.imported.is_some_and(|i| cv_frame < i.0.frame);
-        if cut.at.frame < cv_frame
-            || !self.held.contains_key(&cv_root)
-            || cv_frame < source.kept_from()
-            || imported_above
-        {
+        // S3 v1.2: below `kept_from` the entries are gone, so a replay from `Cv` would step empty frames. And a `Cv`
+        // held from before my last import has the old physics world's image, which never restores into the new one
+        // (@chunks-reviewer's L2 on 05903341). Both are refused before anything is restored, so the live state is
+        // unchanged and the ladder goes on to rung 2.
+        if cut.at.frame < cv_frame || self.held_here(&cv_root).is_none() || cv_frame < source.kept_from() {
             return Err(RootError::NotKept);
         }
         // Check `Cv` from its records and from the restored physics itself, keeping the live state until it passes.
@@ -980,9 +997,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     /// `PhysicsWorld::from_transfer` (`PhysicsCheck`), and the patched state's root against the target
     /// (`RootMismatch`). The base is my own state at the cut when I hold my root there, else the empty state; without
     /// an image, the physics is my own at the cut, or an empty world. The live state then becomes the imported one at
-    /// the cut's frame, in a new physics world: the ring starts again at the cut, and the replica keeps no history
-    /// below it. It re-simulates to the present within the budget, through the replay, answering `Pending` until it
-    /// has. The same import asked again answers its progress; it is not imported twice.
+    /// the cut's frame, in a new physics world: the ring starts again at the cut, the replica keeps no history below
+    /// it, and no image held from before is restored again. It re-simulates to the present within the budget, through
+    /// the replay, answering `Pending` until it has. The same import asked again answers its progress; it is not
+    /// imported twice. A cut below my floor answers `NotKept`.
     fn import_at_cut(
         &mut self,
         _group: &GroupSel,
@@ -995,6 +1013,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             return if running { Err(ImportError::Pending) } else { Ok(root) };
         }
         let c = cut.at.frame;
+        // Below my floor nothing changes again, and the driver never asks there (@chunks-reviewer's L1 on 05903341).
+        if c < self.floor_frame() {
+            return Err(ImportError::NotKept);
+        }
         let mine = (self.voted.get(&cut.at).copied())
             .or(self.diverged.filter(|d| d.0 == cut.at).map(|d| d.1))
             .or(self.finals.iter().find(|f| f.0 == cut.at).map(|f| f.1))
@@ -1038,9 +1060,12 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.live.insert(c, root);
         self.stepped.retain(|f, _| *f < floor);
         self.outcomes.retain(|_, (f, _)| *f < floor);
+        // A new physics world: the snapshots held from before keep their records and transfers for exports, but none
+        // of their images is restored again.
+        self.epoch += 1;
         let global = Hash(transfer.check_hash().0);
-        let held =
-            Held { frame: c, world: self.world.save(), image, transfer: Bytes::from(transfer.to_bytes()), global };
+        let transfer = Bytes::from(transfer.to_bytes());
+        let held = Held { frame: c, world: self.world.save(), image, transfer, global, epoch: self.epoch };
         self.held.insert(root, held);
         self.voted.clear();
         (self.replay, self.replayed, self.lost, self.stuck_at, self.unkept_met) = (None, None, None, None, None);
