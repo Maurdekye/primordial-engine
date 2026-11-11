@@ -40,22 +40,31 @@ mkdir -p "$dir"
 cat > "$dir/reference-transaction.new" << 'EOF'
 #!/bin/sh
 # The landing gate's trampoline, written by scripts/install_gate_hook.sh (undo: git config --unset core.hooksPath).
-# It lives outside every working tree, so no landing can change or delete it. It runs
-# scripts/hooks/reference-transaction as committed at main's old tip (at the new commit when main is
-# created), with the same argument and input. Every other update returns at once, with no process started.
+# It lives outside every working tree, so no landing can change or delete it. When main moves to another
+# commit, it runs scripts/hooks/reference-transaction as committed at main's old tip (at the new commit when
+# main is created), with the same argument and input, except that main's line names that tip as its old value:
+# for a forced update (update-ref without an old value, branch -f) git gives zeros there, which would read as
+# main being created. Every other update returns at once with no process started, and one that leaves main where
+# it is (a reset to HEAD, merge --abort, stash) after one git call.
 if [ "$1" != prepared ]; then
   while read -r _; do :; done
   exit 0
 fi
-input= from=
-while read -r old new ref; do
-  input="$input$old $new $ref
+input= old= new=
+while read -r o n r; do
+  if [ "$r" = refs/heads/main ]; then old=$o new=$n; continue; fi
+  input="$input$o $n $r
 "
-  [ "$ref" = refs/heads/main ] || continue
-  case "$new" in *[!0]*) ;; *) continue ;; esac
-  case "$old" in *[!0]*) from=$old ;; *) from=$new ;; esac
 done
-[ -n "$from" ] || exit 0
+case "$new" in *[!0]*) ;; *) exit 0 ;; esac        # main isn't moving to a commit (not in this update, or deleted)
+if tip=$(git rev-parse -q --verify refs/heads/main); then   # main's tip before this update: git holds it locked
+  [ "$tip" != "$new" ] || exit 0                      # main stays where it is: nothing lands
+  old=$tip from=$tip
+else
+  from=$new                                           # main is created
+fi
+input="$input$old $new refs/heads/main
+"
 tmp=$(mktemp -d) || { echo "gate (hook): REFUSED: no temporary folder" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 if ! git show "$from:scripts/hooks/reference-transaction" > "$tmp/hook" 2> /dev/null; then
