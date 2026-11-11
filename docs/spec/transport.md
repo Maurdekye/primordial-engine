@@ -1,9 +1,11 @@
 # pe-net: the transport
 
-Status: draft 1.5, 2026-11-11, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.6, 2026-11-11, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
-budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.2 records the user's ruling on the firewall default
+budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.6 records
+what building the Core settled: the welcome exchange and its up record (6.4), the stream kinds (3.6), and the
+Core's interface and network thread as built (7). Draft 1.2 records the user's ruling on the firewall default
 (m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
@@ -289,7 +291,12 @@ R18's failure again [@design-reviewer's High].
 
 - **A datagram:** a 1-byte format version, the acknowledgements, then items `(lane, seq, length, bytes)` with
   varint fields, then optional pe-net control records (clock samples, 5.2; rendezvous, 6.7).
-- **A stream:** a 1-byte lane, a varint seq, then the bytes to the stream's end.
+- **A stream:** a 1-byte kind, then its bytes to the stream's end. The kinds are:
+  - a lane (0-4), followed by a varint seq and the message;
+  - the hello (`0x80`), the welcome (`0x81`) and the up record (`0x82`) of 6.3-6.4, each bounded (4 KiB, 1 MiB,
+    empty).
+
+  Any other kind, a Pose on a stream, or a stream over its bound is a protocol fault (code 6).
 - **Limits:**
   - **The datagram payload** is QUIC's `max_datagram_size()`: at least 1,162 B at QUIC's minimum path MTU
     [V M0], more after path-MTU discovery.
@@ -537,6 +544,17 @@ its frame this way (seam S3).
   joiner starts from, checked against that cut's root, so an inviter can neither hide a member nor add one. The
   joiner uses the welcome's list only to start connecting, and re-checks it against the cut.
 - **Until the welcome arrives,** the joiner sends only its hello and clock records (2.3).
+- **The exchange** [found building the Core; V `pe-net/tests/core.rs`]: lane traffic is closed both ways until
+  it completes. Each side opens so that nothing is sent before the other side takes it in, because QUIC doesn't
+  order one stream against another, and a lane message on a stream, once delivered, isn't sent again:
+  - a member that admits a peer sends the welcome and opens its receive side;
+  - a side that gets a welcome opens its send side. A joiner also opens its receive side and answers with an
+    **up record**, on which the admitting member opens its send side;
+  - two members (6.7) each admit the other, so each opens its send side on the other's welcome, and no up record
+    is needed;
+  - a welcome that overtakes the member's hello is held until the hello arrives;
+  - the link is Up when both sides are open. Lane traffic arriving at a side that is still closed is a protocol
+    fault (code 6), since no correct peer sends it.
 
 ### 6.5 Link states
 
@@ -582,18 +600,26 @@ impl Core {
     pub fn new(cfg: Config, identity: Identity, seed: [u8; 32]) -> Self;     // seed: see 8
     pub fn handle_datagram(&mut self, now: HostTime, from: SocketAddr, data: &[u8]);
     pub fn handle_timeout(&mut self, now: HostTime);
-    pub fn poll_transmit(&mut self, now: HostTime) -> Option<Transmit>;   // (to, bytes)
-    pub fn poll_timeout(&self) -> Option<HostTime>;
-    pub fn dial(&mut self, now: HostTime, invite: &Invite) -> Result<(), InviteError>;
-    pub fn take_reply(&mut self, now: HostTime, reply: &Reply) -> Result<(), InviteError>;
-    pub fn admit(&mut self, peer: PeerId, welcome: Welcome);
-    pub fn refuse(&mut self, peer: PeerId, reason: Refusal);
+    pub fn poll_transmit(&mut self) -> Option<Transmit>;                  // (to, bytes)
+    pub fn poll_timeout(&mut self) -> Option<HostTime>;                   // &mut, as quinn-proto's is
+    pub fn dial(&mut self, now: HostTime, invite: &Invite);               // the app checks the expiry
+    pub fn take_reply(&mut self, now: HostTime, reply: &Reply);
+    pub fn admit(&mut self, now: HostTime, peer: PeerId, welcome: &Welcome);
+    pub fn refuse(&mut self, now: HostTime, peer: PeerId, reason: Refusal);
+    pub fn poll_lifecycle(&mut self) -> Option<Lifecycle>;                // Welcomed, Refused, Fault
+    pub fn set_member(&mut self, member: bool);                           // a member admits; a joiner waits
     // plus the Transport methods of 3.1, and the clock model of 5.7
 }
 ```
 
 - **The network thread** owns the socket and a Core. It waits on the socket until `poll_timeout`, feeds what
-  arrives, and sends what Core returns.
+  arrives, and sends what Core returns. Its time is the app's host clock (S5), passed in [V
+  `pe-net/tests/thread.rs`, real UDP on loopback].
+  - **Waking it:** the simulation thread's handle queues a command, then sends an empty datagram to the thread's
+    socket from a loopback socket of its own. The Core never sees empty datagrams.
+  - **After a send,** the Core's `poll_timeout` is now, so a new message never waits for an unrelated timer.
+  - **Link statistics** come back as messages every 100 ms rather than through a shared lock, and the handle's
+    `link` returns the latest it has taken in.
 - **To and from the simulation thread:** bounded single-producer queues for outgoing `(peer, lane, bytes)` and
   incoming `Received` and events, plus the clock model of 5.7.
 - **The simulation thread never waits on the network.** A full outgoing queue is a local fault, reported, not a
