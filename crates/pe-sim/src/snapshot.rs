@@ -195,8 +195,12 @@ impl Snapshot {
                 }
             }
             let vbytes = r.take(len.checked_mul(size_of::<RowVersion>()).ok_or(Error::Corrupt("size overflow"))?)?;
-            let versions: Vec<RowVersion> =
-                vbytes.chunks_exact(size_of::<RowVersion>()).map(bytemuck::pod_read_unaligned).collect();
+            let versions: Vec<RowVersion> = vbytes
+                .as_chunks::<{ size_of::<RowVersion>() }>()
+                .0
+                .iter()
+                .map(|c| bytemuck::pod_read_unaligned(c))
+                .collect();
             if versions.iter().any(|v| v._pad != 0) {
                 return Err(Error::Corrupt("row version padding not zero"));
             }

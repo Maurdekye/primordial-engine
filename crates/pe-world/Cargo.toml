@@ -14,6 +14,10 @@ pe-sim = { path = "../pe-sim" }
 pe-seams = { path = "../pe-seams" }
 bytemuck = { version = "1.25", features = ["derive"] }
 
+[dev-dependencies]
+pe-seams = { path = "../pe-seams", features = ["test-util"] }
+bytes.workspace = true
+
 [features]
 # Planted defects for the harness's mutation tests (pe-harness DESIGN.md 6.1): inert unless a node's configuration
 # names one, and never in a production build (the gate checks pe-app's normal edges).

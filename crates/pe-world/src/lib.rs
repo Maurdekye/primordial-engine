@@ -6,12 +6,18 @@
 //! * [`components`]: the engine's components for M1 (3.2) and their registry.
 //! * [`World`]: one world's state (5.1), with the trusted construction calls.
 //! * [`WorldSnapshot`]: the published, read-only view of one frame that WorldApi reads (9.4).
+//! * [`edit`]: the edit payload and its canonical codec (7.1); [`World::apply_edit`] applies one (7.2-7.7).
 
+mod apply;
 pub mod components;
+pub mod edit;
 mod read;
 mod world;
 
+pub use apply::Footprint;
 pub use components::BlobRef;
 pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
-pub use world::{BlobStore, Claim, DEPTH_LIMIT, DEPTH_LIMIT_MAX, GENESIS, World, WorldError};
+pub use world::{
+    BlobStore, Claim, DEPTH_LIMIT, DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, perm,
+};

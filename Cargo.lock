@@ -2073,6 +2073,7 @@ name = "pe-world"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "bytes",
  "pe-core",
  "pe-seams",
  "pe-sim",
