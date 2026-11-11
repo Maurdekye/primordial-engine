@@ -2034,6 +2034,8 @@ dependencies = [
 name = "pe-replica"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "pe-core",
  "pe-physics",
  "pe-seams",
  "pe-world",
