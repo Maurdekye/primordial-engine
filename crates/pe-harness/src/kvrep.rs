@@ -158,7 +158,10 @@ impl KvSeamReplica {
     /// "missing" from "void" there. The d1 rule is the agreement's, through `wants_roots` and `final_cut`.
     fn replay_cut(&self, mut base: KvReplica, cut: &Cut, source: &dyn EntrySource) -> Result<KvReplica, RootError> {
         while base.frame() < cut.at.frame.0 {
-            let all = source.entries_at(Frame(base.frame()));
+            let Some(all) = source.entries_at(Frame(base.frame())) else {
+                // No longer kept (S3 v1.2): below the floor only a replay from `Cv` needs it, at or above it a root.
+                return Err(if base.frame() < self.floor { RootError::NotKept } else { RootError::Damaged });
+            };
             let mine: Vec<SignedEntry> =
                 all.iter().filter(|e| cut.includes(&e.entry.chain, e.entry.seq)).cloned().collect();
             self.step(&mut base, &mine, None);
@@ -175,14 +178,15 @@ impl KvSeamReplica {
         let mut outcomes = std::mem::take(&mut self.outcomes);
         while self.live.frame() < to {
             let f = self.live.frame();
-            let entries = source.entries_at(Frame(f)).to_vec();
+            // A frame no longer kept is never stepped empty (S3 v1.2): the live state stops there.
+            let Some(entries) = source.entries_at(Frame(f)).map(<[SignedEntry]>::to_vec) else { break };
             let mut live = self.live.clone();
             self.step(&mut live, &entries, Some(&mut outcomes));
             self.live = live;
             self.starts.insert(self.live.frame(), self.live.clone());
         }
         self.outcomes = outcomes;
-        to - from
+        self.live.frame() - from
     }
 }
 
@@ -217,7 +221,8 @@ impl Replica for KvSeamReplica {
         let mut outcomes = std::mem::take(&mut self.outcomes);
         while self.live.frame() < present.0 {
             let f = self.live.frame();
-            let entries = source.entries_at(Frame(f)).to_vec();
+            // A frame no longer kept is never stepped empty (S3 v1.2): the live state stops there.
+            let Some(entries) = source.entries_at(Frame(f)).map(<[SignedEntry]>::to_vec) else { break };
             let mut live = self.live.clone();
             self.step(&mut live, &entries, Some(&mut outcomes));
             self.live = live;
@@ -252,6 +257,8 @@ impl Replica for KvSeamReplica {
     fn finalize(&mut self, cut: &FinalCut, source: &mut dyn EntrySource) -> Finalized {
         let mine = match self.root_at_cut(&cut.cut, source) {
             Ok(h) => h,
+            // A frame from the floor up is no longer kept: no root will come, rung 2 is due (S3 v1.2).
+            Err(RootError::Damaged) => return Finalized::Damaged,
             Err(_) => return Finalized::NotReady,
         };
         let f = cut.cut.at.frame.0;
@@ -287,7 +294,9 @@ impl Replica for KvSeamReplica {
         self.live = at;
         let mut outcomes = std::mem::take(&mut self.outcomes);
         while self.live.frame() < present {
-            let entries = source.entries_at(Frame(self.live.frame())).to_vec();
+            let Some(entries) = source.entries_at(Frame(self.live.frame())).map(<[SignedEntry]>::to_vec) else {
+                break;
+            };
             let mut live = self.live.clone();
             self.step(&mut live, &entries, Some(&mut outcomes));
             self.live = live;
