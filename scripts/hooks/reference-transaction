@@ -6,16 +6,18 @@
 # core.hooksPath at it. The trampoline runs this file as committed at main's old tip, so the hook, like the
 # rest of the gate's code, comes from the base: a landing can't change or delete the hook that judges it.
 # Git runs reference-transaction for every ref update in every worktree. This hook acts only when
-# refs/heads/main moves to a commit, in the "prepared" state, where a non-zero exit aborts the update:
+# refs/heads/main moves or is deleted, in the "prepared" state, where a non-zero exit aborts the update:
 # a merge, commit, reset, update-ref, or a fetch or push into this repository alike. It runs scripts/gate.sh as
 # committed at the old tip, with the old tip as the base (when main is created: the new commit's, over its
-# whole history), and refuses the update if the gate fails or can't run. Every other update returns at once,
-# and so does one that leaves main where it is (a reset to HEAD, merge --abort, stash): nothing lands.
+# whole history), and refuses the update if the gate fails or can't run. It refuses to delete main, and to move
+# it when git gives an old value but main's tip can't be read. Every other update returns at once, and so does
+# one that leaves main where it is (a reset to HEAD, merge --abort, stash, pack-refs): nothing lands.
 # The old tip is main's tip as git holds it locked, not the old value in the hook's input: git gives zeros there
 # for a forced update (update-ref without an old value, branch -f), which would read as main being created.
-#   PE_GATE=off                      skips the gate for one command, in an emergency only; report it to the
-#                                    coordinator in the same turn
-#   git config pe.gate.wrap '<cmd>'  runs the audit's cargo calls under <cmd> (the org's build-slot wrapper)
+#   PE_GATE=off                      lets one command through unchecked, a deletion of main included, in an
+#                                    emergency only; report it to the coordinator in the same turn
+#   git config pe.gate.wrap '<cmd>'  runs the audit's cargo calls under <cmd>; never a build-slot wrapper, since
+#                                    git holds main's lock meanwhile (the main clone has "nice -n 19")
 # Check a branch before merging it, so a refusal is rare: bash scripts/gate.sh --base main <branch>
 
 if [ "$1" != prepared ]; then
@@ -29,9 +31,17 @@ done
 [ -n "$hit" ] || exit 0
 set -- $hit
 old=$1 new=$2
-case "$new" in *[!0]*) ;; *) exit 0 ;; esac   # main deleted: nothing to check
-if tip=$(git rev-parse -q --verify refs/heads/main); then old=$tip; fi   # main's tip before this update
-[ "$old" != "$new" ] || exit 0                 # main stays where it is: nothing lands, nothing to check
+tip=$(git rev-parse -q --verify refs/heads/main) || tip=   # main's tip before this update: git holds it locked
+if [ -n "$tip" ]; then
+  [ "$tip" != "$new" ] || exit 0               # main stays where it is: nothing lands, nothing to check
+  case "$new" in *[!0]*) ;; *)                 # pack-refs (git gc) dropping main's loose file: see the trampoline
+    common=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$old" = "$tip" ] &&
+      [ ! -e "$common/packed-refs.lock" ] && grep -qx "$tip refs/heads/main" "$common/packed-refs" 2> /dev/null &&
+      exit 0 ;;
+  esac
+else
+  case "$old$new" in *[!0]*) ;; *) exit 0 ;; esac   # main doesn't exist and isn't created: nothing happens
+fi
 if [ "${PE_GATE:-on}" = off ]; then
   echo "gate (hook): PE_GATE=off, main moves to $new UNCHECKED: emergencies only; report it to the coordinator now" >&2
   exit 0
@@ -43,6 +53,9 @@ refuse() {
   echo "gate (hook):   (after a fast-forward or a reset: git reset --merge HEAD)" >&2
   exit 1
 }
+[ -z "$tip" ] || old=$tip                      # git gives zeros as the old value for a forced update or a deletion
+case "$new" in *[!0]*) ;; *) refuse "main can't be deleted while the gate is on (to drop the gate: git config --unset core.hooksPath)" ;; esac
+[ -n "$tip" ] || case "$old" in *[!0]*) refuse "git gives main an old tip, but main can't be read" ;; esac
 tmp=$(mktemp -d) || refuse "no temporary folder"
 trap 'rm -rf "$tmp"' EXIT
 case "$old" in *[!0]*) from=$old base="--base $old" ;; *) from=$new base=--full-history ;; esac
