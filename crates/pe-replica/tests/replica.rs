@@ -800,3 +800,20 @@ fn a_frame_applies_its_inputs_before_its_edits() {
     assert_eq!(a, b, "either agreed order");
     assert!((a[0] - by_edit[0]).abs() < 0.01 && a[2].abs() < 0.01, "the edit's place stands: {a:?}");
 }
+
+/// `agreed_state` is the world model's state at `Cv` (@engine-architect, for pe-api's
+/// `WorldSource::final_`). There is none before the first agreed finalize. A finalize that diverges leaves it at the
+/// last agreed cut, though the floor moves on, and the finalize that agrees after rung 1's repair moves it.
+#[test]
+fn the_agreed_state_is_cv_s() {
+    assert!(replica().agreed_state().is_none());
+    let (good, _) = reference(48);
+    let (mut bad, mut s, c32, r32, _) = diverged_at_32();
+    let (frame, state) = bad.agreed_state().expect("Cv at 16");
+    assert_eq!((frame, bad.floor_frame()), (Frame(16), Frame(32)), "not the floor's");
+    assert_eq!(Some(state.root()), good.live_root(Frame(16)));
+    assert_eq!(bad.replay_to(&c32, &mut s), Ok(r32));
+    assert_eq!(bad.finalize(&FinalCut { cut: c32, root: r32, voters: vec![] }, &mut s), Finalized::Agreed);
+    let (frame, state) = bad.agreed_state().expect("Cv at 32");
+    assert_eq!((frame, state.root()), (Frame(32), r32));
+}
