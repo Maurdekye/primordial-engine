@@ -226,6 +226,22 @@ Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `res
   - The stronger form, covered by h + 2 once any q - t honest members hold it, waits for votes that carry heads
     (S3 v1.1).
 
+- **Proposer choice by measurement** (condition 3; `tools/leader_sim.py`, results in `results/v0.2-leader-sim.txt`).
+  A discrete-event simulation of the same rule (chained Jolteon, cadence 50 ms, adaptive timeout 3x the slowest round
+  trip, doubling per consecutive timeout), 60 s per run, fixed link delays, no jitter. It measures speed only; safety
+  is the model's. Three rules: rotation; keep (the leader keeps the next view while its views get a QC); reputation
+  (rotation, skipping the leader of the last timed-out view, DiemBFT v4 with a window of one). [V, simulated]:
+  - **n = 2:** rotation and reputation finalize in 70 ms on 20 ms links and 300 ms with a 150 ms slow member; keep in
+    90 and 600 ms. Keep's votes must return to the same leader, so each view crosses the slow link twice. With a fixed
+    200 ms timeout keep never finalizes, while rotation and reputation still do: their timeouts fire only after the
+    member has voted.
+  - **n = 3, one slow member:** keep 90 ms, 20 cuts final per second; rotation and reputation 200 / 300 ms (p50 /
+    p95), 8.6 per second, since the slow member leads every third view.
+  - **A crashed member (n = 3 and n = 4):** rotation collapses to 2.1 and 4.0 cuts per second, with 510 and 720
+    timeouts a minute; keep and reputation stay at about 20 per second, with 0 and 4-6 timeouts.
+  - Caveat: the simulation decides each view's outcome globally, so every member derives the same leader; pe-agree
+    must derive it from the certified chain to agree in the same way.
+
 ## Not in v0
 
 - **Bounded progress** (coordinator m33c08e879042, still to add): an entry an honest member holds is covered within a
