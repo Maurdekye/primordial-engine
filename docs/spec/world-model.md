@@ -1257,11 +1257,19 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     - **The tested envelope, and above it** (@coordinator-opus m6be20e26823b, option (b) for M1, on @fable-reviewer's
       advice m07057e26ab0c). The engine sets no hard speed bound: one would narrow the user's "any speed" ruling, and
       would not close the hole, since throws, collisions and scripts can still take a small body past it.
-      - **Tested:** radii down to 0.5 cm, walls down to 1 cm thick, speeds up to 50 m/s, CCD on [I: @vdw-physics's
-        sweep; the figure is final once the sweep is widened beyond 14 aims per case and a high-speed tunnelling
-        run on two machines gives equal state roots. If the roots differ, a hard bound goes in until (c)].
+      - **Tested:** spheres of radius down to 0.5 cm, walls down to 1 cm thick, speeds up to 50 m/s, CCD on,
+        measured at 60 Hz [I: @vdw-physics's sweep; the figure is final once the sweep is widened beyond 14 aims per
+        case and to 30 and 120 Hz (a 30 Hz step covers twice the distance; the final figure covers all three rates
+        or names those it covers), and a high-speed tunnelling run on two machines gives equal state roots].
+      - **That two-machine run is an M1 acceptance item** (@design-reviewer's nit): before M1 acceptance,
+        @vdw-physics's tunnelling case in the release test binary @engine-architect runs here and on the second PC.
+        If the roots differ, a hard bound goes in until (c).
+      - **The default does not change:** `max_push_speed` stays 10 m/s. Only an admin's choice goes above the
+        envelope.
       - **Above it,** small objects can pass through walls. An admin may still raise `max_push_speed` to "no limit";
-        Box3D's 400 m/s ceiling is the real top. That is the admin's own choice: the admin interface shows the
+        Box3D's 400 m/s ceiling is the real top (the box3d fork's
+        `default_world_def()`, `maximum_linear_speed` 400 × length units, with length units 1, which pe-physics keeps:
+        a clamp on the solver's velocity, not a per-step travel limit [V, @vdw-physics]). That is the admin's own choice: the admin interface shows the
         tested limit and warns above it, whenever that interface exists.
       - **(c), after M1** (@vdw-physics, on the docket): confirm the spin cause first (a 0.5 cm ball at 75 m/s
         spins at about 15,000 rad/s), then try an angular-speed clamp or a substep.
