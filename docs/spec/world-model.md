@@ -970,7 +970,10 @@ its reason and the index of the op [I]:
   - the inverse is the undo ops in reverse order, with a `Version` precondition on the last version the
     transaction set on each row it wrote and that still exists, and the zero version on each row it left removed,
     so a revert re-adds a row only while it is still absent (@design-reviewer's Medium 2). A row the transaction
-    added and removed again leaves nothing in the inverse.
+    added and removed again leaves nothing in the inverse. A revert that re-adds a removed row is an edit adding a
+    row where there was none, so the row comes back as a new instance with a new tag, and a `RemoveRow` naming the
+    old tag is then `NoEffect`. Tags do not survive a revert, and a merge (pe-diverge) must not expect them to
+    (@design-reviewer's Low on 5b10293a).
 
 ### 7.7 Outcomes
 
