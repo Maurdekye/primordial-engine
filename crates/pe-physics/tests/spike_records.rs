@@ -100,7 +100,9 @@ fn goldens_match() {
             for ((scene, got), want) in got.iter().zip(expected.iter()) {
                 println!("RESULT golden {scene} recycle_scaling={scaling} workers={workers} {got:?}");
                 if got != want {
-                    mismatches.push(format!("{scene}, {workers} workers, recycle scaling {scaling}: got {got:?}, want {want:?}"));
+                    mismatches.push(format!(
+                        "{scene}, {workers} workers, recycle scaling {scaling}: got {got:?}, want {want:?}"
+                    ));
                 }
             }
         }
@@ -130,12 +132,8 @@ fn trace_matches_record() {
         let (want, digest) = trace_record(mode);
         for workers in WORKERS {
             let (state, world) = reference_run(config.with_workers(workers), 600);
-            let got: String = state
-                .iter()
-                .zip(&world)
-                .enumerate()
-                .map(|(i, (s, w))| format!("{i} {w:016x} {s:016x}\n"))
-                .collect();
+            let got: String =
+                state.iter().zip(&world).enumerate().map(|(i, (s, w))| format!("{i} {w:016x} {s:016x}\n")).collect();
             assert!(got == want, "trace differs from the record: {mode}, {workers} workers");
             let d = fnv_u64s(state.iter().copied().chain(world.iter().copied()));
             assert_eq!(d, digest, "trace digest, {mode}, {workers} workers");
@@ -164,7 +162,10 @@ fn images_match_record() {
                 let now: Vec<Interaction> = inputs.iter().copied().filter(|i| i.frame == f).collect();
                 g.advance(&now);
             }
-            assert!(got == want.replace("\r\n", "\n"), "images differ from the record: {mode}, {workers} workers\n{got}");
+            assert!(
+                got == want.replace("\r\n", "\n"),
+                "images differ from the record: {mode}, {workers} workers\n{got}"
+            );
             println!("RESULT images {mode} {} workers={workers} digest {:016x}", profile(), fnv_bytes(got.as_bytes()));
         }
     }
@@ -250,7 +251,10 @@ fn rollback_t1_to_t5() {
                 let transfer = pe_physics::Transfer::from_bytes(&bytes).unwrap();
                 assert_eq!(transfer.to_bytes(), bytes, "T4 transfer bytes round trip, {ctx}");
                 assert_eq!(transfer.check_hash(), confirmed, "T4 check hash independent of save history, {ctx}");
-                println!("RESULT transfer {mode} frame=300 workers={workers} check_hash {confirmed} bytes {}", bytes.len());
+                println!(
+                    "RESULT transfer {mode} frame=300 workers={workers} check_hash {confirmed} bytes {}",
+                    bytes.len()
+                );
                 // The joiner may run a different worker count.
                 let joiner = config.with_workers(9 - workers);
                 let mut other_hash = confirmed;
@@ -258,7 +262,13 @@ fn rollback_t1_to_t5() {
                 assert!(PhysicsWorld::from_transfer(joiner, &transfer, &other_hash).is_err(), "T4 unconfirmed, {ctx}");
                 let pw = PhysicsWorld::from_transfer(joiner, &transfer, &confirmed).expect("fresh restore");
                 assert_eq!(pw.check_hash().unwrap(), confirmed, "T4 joiner's check hash, {ctx}");
-                let mut g = Game { pw, objects: sim.game.objects.clone(), frame: 300, claims: sim.game.claims.clone(), seed: SEED };
+                let mut g = Game {
+                    pw,
+                    objects: sim.game.objects.clone(),
+                    frame: 300,
+                    claims: sim.game.claims.clone(),
+                    seed: SEED,
+                };
                 assert!(g.pw.all_bodies_valid(), "T4 body ids, {ctx}");
                 let hs = g.step_scripted(&inputs, FRAMES);
                 assert_eq!(first_mismatch(&hs, &reference[300..]), None, "T4 continues identically, {ctx}");

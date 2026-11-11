@@ -29,8 +29,9 @@ use pe_core::ids::ObjectId;
 use crate::error::PhysicsError;
 use crate::world::PhysicsWorld;
 
-/// BLAKE3 key-derivation context, so a body digest cannot be confused with another BLAKE3 use.
-const BODY_DIGEST_CONTEXT: &str = "Primordial Engine 2026-11-10 pe-physics body digest";
+/// The context of pe-core's commit hasher (BLAKE3 key derivation), in pe-core's "pe.…" convention, so a body digest
+/// cannot be confused with another BLAKE3 use (chunks-reviewer's note 3 on the port).
+const BODY_DIGEST_CONTEXT: &str = "pe.body";
 
 /// The 256-bit digest of one body's physics state (see the module documentation for what it covers).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -48,23 +49,23 @@ impl std::fmt::Debug for BodyDigest {
     }
 }
 
-struct Writer(blake3::Hasher);
+struct Writer(pe_core::commit::Hasher);
 
 impl Writer {
     fn u8(&mut self, v: u8) {
-        self.0.update(&[v]);
+        self.0.write(&[v]);
     }
     fn u32(&mut self, v: u32) {
-        self.0.update(&v.to_le_bytes());
+        self.0.write(&v.to_le_bytes());
     }
     fn i32(&mut self, v: i32) {
-        self.0.update(&v.to_le_bytes());
+        self.0.write(&v.to_le_bytes());
     }
     fn f32(&mut self, v: f32) {
-        self.0.update(&v.to_bits().to_le_bytes());
+        self.0.write(&v.to_bits().to_le_bytes());
     }
     fn f64(&mut self, v: f64) {
-        self.0.update(&v.to_bits().to_le_bytes());
+        self.0.write(&v.to_bits().to_le_bytes());
     }
     fn vec3(&mut self, v: Vec3) {
         self.f32(v.x);
@@ -72,8 +73,7 @@ impl Writer {
         self.f32(v.z);
     }
     fn id(&mut self, id: ObjectId) {
-        self.u32(id.creator);
-        self.u32(id.counter);
+        self.0.write(&id.to_u128().to_le_bytes());
     }
 }
 
@@ -117,7 +117,7 @@ impl PhysicsWorld {
         let mut out = Vec::with_capacity(self.bodies.len());
         for (&id, &body) in &self.bodies {
             let index = (body.index1 - 1) as usize;
-            let mut w = Writer(blake3::Hasher::new_derive_key(BODY_DIGEST_CONTEXT));
+            let mut w = Writer(pe_core::commit::Hasher::new(BODY_DIGEST_CONTEXT));
             w.id(id);
             let xf = body_get_transform(world, body);
             w.f64(xf.p.x as f64);
@@ -173,7 +173,7 @@ impl PhysicsWorld {
                     }
                 }
             }
-            out.push((id, BodyDigest(*w.0.finalize().as_bytes())));
+            out.push((id, BodyDigest(w.0.finish().0)));
         }
         Ok(out)
     }

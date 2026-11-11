@@ -41,11 +41,11 @@ impl Component for Node {
     const NAME: &'static str = "Node";
     fn fields() -> Vec<FieldDesc> {
         vec![
-            FieldDesc::new("parent", FieldKind::ObjectId, offset_of!(Node, parent), 1),
-            FieldDesc::new("first_child", FieldKind::ObjectId, offset_of!(Node, first_child), 1),
-            FieldDesc::new("last_child", FieldKind::ObjectId, offset_of!(Node, last_child), 1),
-            FieldDesc::new("prev_sibling", FieldKind::ObjectId, offset_of!(Node, prev_sibling), 1),
-            FieldDesc::new("next_sibling", FieldKind::ObjectId, offset_of!(Node, next_sibling), 1),
+            FieldDesc::new("parent", FieldKind::ObjectRef, offset_of!(Node, parent), 1),
+            FieldDesc::new("first_child", FieldKind::ObjectRef, offset_of!(Node, first_child), 1),
+            FieldDesc::new("last_child", FieldKind::ObjectRef, offset_of!(Node, last_child), 1),
+            FieldDesc::new("prev_sibling", FieldKind::ObjectRef, offset_of!(Node, prev_sibling), 1),
+            FieldDesc::new("next_sibling", FieldKind::ObjectRef, offset_of!(Node, next_sibling), 1),
         ]
     }
 }
@@ -123,7 +123,10 @@ impl SimStore {
             parent.last_child = n.prev_sibling;
         }
         self.set_node(p, parent);
-        self.set_node(id, Node { parent: ObjectId::NONE, prev_sibling: ObjectId::NONE, next_sibling: ObjectId::NONE, ..n });
+        self.set_node(
+            id,
+            Node { parent: ObjectId::NONE, prev_sibling: ObjectId::NONE, next_sibling: ObjectId::NONE, ..n },
+        );
     }
 
     fn check_move(&self, child: ObjectId, parent: Option<ObjectId>) -> Result<(), Error> {
@@ -178,7 +181,12 @@ impl SimStore {
     /// [`SimStore::set_parent`], keeping world transforms (review P21-6): the moved transforms are rewritten
     /// for their new frame, with the root chunk recomputed exactly. A move whose rewritten transforms would
     /// break the limits of [`crate::transform`] is refused, and nothing changes. Linear in the objects moved.
-    pub fn set_parent_keep_world(&mut self, child: ObjectId, parent: Option<ObjectId>, index: Option<usize>) -> Result<(), Error> {
+    pub fn set_parent_keep_world(
+        &mut self,
+        child: ObjectId,
+        parent: Option<ObjectId>,
+        index: Option<usize>,
+    ) -> Result<(), Error> {
         self.check_move(child, parent)?;
         // Only a change of frame moves world transforms; the same frame composes to the same result.
         let (old_frame, new_frame) = (self.frame_of(child), parent.and_then(|p| self.frame_or_self(p)));
