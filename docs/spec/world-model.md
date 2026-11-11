@@ -1083,7 +1083,7 @@ pub struct HandPose { pub pos: Pos, pub rot: [f32; 4], pub grip: f32, pub engage
   unexpired, with `OutOfReach` past reach (7.2), and with `Cooldown { until }` while the author's own cooldown on
   that object runs. A `Push` on an object someone else holds acts only through physics; it never moves the claim.
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
-  object until `f + 1 + COOLDOWN_SECONDS` (0.25 s); cooldowns past their `until` end. Claims and cooldowns are
+  object until `f + 1 + COOLDOWN_SECONDS` (1/6 s, as pe-session's 10 frames at 60 Hz); cooldowns past their `until` end. Claims and cooldowns are
   world tables, in the root (6, 12.11). Both limits are world settings in seconds, converted at the tick rate in
   effect when each claim or cooldown is set.
 - **What the replica gets:** `Footprint` gains the pushes (object, impulse, `at`) and the hands written, so the
