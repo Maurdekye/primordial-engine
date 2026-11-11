@@ -23,8 +23,8 @@ use box3d_rust::body::body_is_valid;
 use box3d_rust::id::{BodyId, JointId};
 use box3d_rust::joint::{joint_get_type, joint_is_valid};
 use box3d_rust::recording::{
-    deserialize_into_shell, image_world_settings, serialize_world, world_settings, GeometryKind,
-    GeometryRegistry, RecBuffer, RegistrySlot, SNAP_FLAG_VALIDATION,
+    GeometryKind, GeometryRegistry, RecBuffer, RegistrySlot, SNAP_FLAG_VALIDATION, deserialize_into_shell,
+    image_world_settings, serialize_world, world_settings,
 };
 use box3d_rust::world::World;
 use pe_core::ids::ObjectId;
@@ -485,7 +485,11 @@ impl PhysicsWorld {
     /// settings must equal it, and the worker count comes from it. The new world must save back
     /// to exactly the transfer, so no byte of it went unread: every geometry blob is used once,
     /// in order, and Box3D consumed all of its world bytes.
-    pub fn from_transfer(config: PhysicsConfig, transfer: &Transfer, confirmed: &CheckHash) -> Result<PhysicsWorld, PhysicsError> {
+    pub fn from_transfer(
+        config: PhysicsConfig,
+        transfer: &Transfer,
+        confirmed: &CheckHash,
+    ) -> Result<PhysicsWorld, PhysicsError> {
         if transfer.check_hash() != *confirmed {
             return Err(PhysicsError::BadImage("check hash differs from the confirmed one"));
         }
