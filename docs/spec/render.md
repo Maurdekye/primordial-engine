@@ -174,7 +174,7 @@ pub struct StereoTarget<'a> {
 impl Renderer {
     pub fn render_stereo(&mut self, scene: &Scene, eyes: [Camera; 2], target: &StereoTarget) -> FrameStats;
 }
-impl Camera { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max depth, near_z, far_z
+impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max depth, near_z, far_z
 ```
 
 - **`render_stereo`** draws both eyes and submits. Its work ends with the colour image transitioned back to
@@ -184,9 +184,13 @@ impl Camera { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max depth, 
 - **The render scale is a viewport:** only `extent` is drawn, so the swapchain never changes size. The projection
   layer's `imageRect` is the extent.
 - **The depth layer** (`XR_KHR_composition_layer_depth`, review L2):
-  - **Range:** `xr_depth_info` gives `min_depth` 0 and `max_depth` 1. With reverse Z, 0 lies at the far plane, so
-    `near_z` is the far plane and `far_z` the near one; `near_z > far_z` is how the extension marks reversed depth.
-    The far plane is VR's finite one (R2).
+  - **Range:** `DepthRange::xr_depth_info` gives `min_depth` 0 and `max_depth` 1. With reverse Z, 0 lies at the
+    far plane, so `near_z` is the far plane and `far_z` the near one; `near_z > far_z` is how the extension marks
+    reversed depth. The far plane is VR's finite one (R2).
+  - **Physical metres, unscaled:** the layer's distances are in its reference space. A camera at rig scale `s`
+    works in world metres (near and far times `s`), and its depth at world distance `d·s` equals the unscaled
+    range's at `d`. So the range comes from `DepthRange`, never from a scaled camera (review M1, part 2b).
+  - **Timing:** the depth resolves are inside the frame's timestamp pair.
   - **Stored:** single-sampled Depth32Float is drawn into directly, with its store op Store. With MSAA (or another
     depth format), the scene draws its own depth, and a fullscreen pass per eye writes the nearest of each
     pixel's samples into the headset's depth (wgpu resolves no depth). Nearest, so a foreground edge never takes
