@@ -6,7 +6,27 @@ license.workspace = true
 publish.workspace = true
 description = "Rendering: the window, the scene renderer drawing from frame views (S5), the display layer, the desktop hand, offscreen capture, the GPU context pe-xr uses"
 
-# Skeleton from pe-seams v0 (WS-seams). WS-render, @ballpit-viz owns this crate and its manifest; the root Cargo.toml
-# already lists it, so adding dependencies here needs no other change.
+# WS-render, @ballpit-viz owns this crate and its manifest (docs/spec/render.md 2 lists the dependencies and the
+# native boundaries).
 [dependencies]
 pe-seams = { path = "../pe-seams" }
+glam = "0.33"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.3"
+# The frame-view slot: one atomic pointer swap between the simulation and the render thread (pure Rust).
+arc-swap = "1"
+# The desktop window (render.md 10). Pure Rust; it loads the display server's libraries at run time on Linux.
+winit = "=0.30.13"
+# Encode only, pure Rust.
+png = "0.17"
+# Default features off, so no GLES (it pulls khronos-egl and a static import of opengl32.dll), no Metal or WebGPU,
+# and never static-dxc (DXC compiled in is C++). The DX12 compiler is pinned to FXC in code (gpu.rs).
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "vulkan"] }
+wgpu-hal = { version = "=30.0.1", default-features = false, features = ["dx12", "vulkan"] }
+[target.'cfg(not(windows))'.dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan"] }
+wgpu-hal = { version = "=30.0.1", default-features = false, features = ["vulkan"] }
+
+[dev-dependencies]
+pe-seams = { path = "../pe-seams", features = ["test-util"] }

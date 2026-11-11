@@ -4,34 +4,34 @@ use std::collections::BTreeMap;
 
 use box3d_rust::body::{
     body_apply_angular_impulse, body_apply_force, body_apply_force_to_center, body_apply_linear_impulse,
-    body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity,
-    body_get_linear_velocity, body_get_transform, body_get_type, body_is_awake, body_is_valid, body_reset_history,
-    body_set_angular_velocity, body_set_awake, body_set_linear_velocity, body_set_target_transform, body_set_transform,
-    create_body,
-    destroy_body,
+    body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity, body_get_linear_velocity,
+    body_get_transform, body_get_type, body_is_awake, body_is_valid, body_reset_history, body_set_angular_velocity,
+    body_set_awake, body_set_linear_velocity, body_set_target_transform, body_set_transform, create_body, destroy_body,
 };
 use box3d_rust::core::get_length_units_per_meter;
 use box3d_rust::geometry::{Capsule, Sphere};
 use box3d_rust::hull::{create_hull, make_box_hull};
 use box3d_rust::id::{BodyId, JointId};
 use box3d_rust::joint::{
-    create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
-    joint_is_valid, joint_wake_bodies, JointType, motor_joint_set_angular_velocity, motor_joint_set_linear_velocity,
+    JointType, create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
+    joint_is_valid, joint_wake_bodies, motor_joint_set_angular_velocity, motor_joint_set_linear_velocity,
 };
-use box3d_rust::math_functions::{is_normalized_quat, Pos, Quat, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform};
+use box3d_rust::math_functions::{
+    Pos, Quat, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform, is_normalized_quat,
+};
 use box3d_rust::recording::hash_world_state;
 use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_shape};
 use box3d_rust::types::{
-    default_body_def, default_distance_joint_def, default_motor_joint_def, default_shape_def,
-    default_spherical_joint_def, default_weld_joint_def, BodyType,
+    BodyType, default_body_def, default_distance_joint_def, default_motor_joint_def, default_shape_def,
+    default_spherical_joint_def, default_weld_joint_def,
 };
-use box3d_rust::world::{world_get_awake_body_count, world_set_worker_count, World};
+use box3d_rust::world::{World, world_get_awake_body_count, world_set_worker_count};
 use pe_core::ids::ObjectId;
 use pe_sim::{SimStore, Transform, WorldTransform};
 
 use crate::config::PhysicsConfig;
 use crate::desc::limits::{MAX_DAMPING, MAX_PUSH, MAX_SIZE, MAX_SPEED};
-use crate::desc::{bounded, position, unit_quat, BodyDesc, BodyKind, Geometry};
+use crate::desc::{BodyDesc, BodyKind, Geometry, bounded, position, unit_quat};
 use crate::error::PhysicsError;
 
 pub(crate) fn vec3(v: [f32; 3]) -> Vec3 {
@@ -464,7 +464,13 @@ impl PhysicsWorld {
     /// in the confirmed history every peer's world is identical there, so the reset is the same
     /// op everywhere. Touch-begin fires again for the body's contacts, and it has no warm start
     /// for one step.
-    pub fn set_state(&mut self, id: ObjectId, pose: Pose, linear: [f32; 3], angular: [f32; 3]) -> Result<(), PhysicsError> {
+    pub fn set_state(
+        &mut self,
+        id: ObjectId,
+        pose: Pose,
+        linear: [f32; 3],
+        angular: [f32; 3],
+    ) -> Result<(), PhysicsError> {
         let body = self.moving_body(id)?;
         let q = exact_rotation(&pose)?;
         bounded(&linear, MAX_SPEED, "linear velocity")?;
@@ -634,7 +640,12 @@ impl PhysicsWorld {
     }
 
     /// Set a grab's target velocities (the hand's motion relative to `a`), waking both bodies.
-    pub fn set_grab_velocity(&mut self, key: JointKey, linear: [f32; 3], angular: [f32; 3]) -> Result<(), PhysicsError> {
+    pub fn set_grab_velocity(
+        &mut self,
+        key: JointKey,
+        linear: [f32; 3],
+        angular: [f32; 3],
+    ) -> Result<(), PhysicsError> {
         self.usable()?;
         bounded(&linear, MAX_SPEED, "grab velocity")?;
         bounded(&angular, MAX_SPEED, "grab velocity")?;
@@ -663,14 +674,14 @@ impl PhysicsWorld {
     // Stepping and state
     // ---------------------------------------------------------------------------------------
 
-    /// Advance by `dt` seconds (0 < dt <= 1) in [`crate::SUBSTEPS`] sub-steps.
+    /// Advance by `dt` seconds (0 < dt <= 1) in the configuration's sub-steps ([`PhysicsConfig::sub_steps`]).
     pub fn step(&mut self, dt: f32) -> Result<(), PhysicsError> {
         self.usable()?;
         check_length_units()?;
         if !(dt.is_finite() && dt > 0.0 && dt <= 1.0) {
             return Err(PhysicsError::InvalidValue("step time"));
         }
-        self.world.step(dt, crate::config::SUBSTEPS);
+        self.world.step(dt, self.config.sub_steps);
         Ok(())
     }
 
@@ -690,8 +701,7 @@ impl PhysicsWorld {
         h.write_u64(self.box3d_hash()?);
         h.write_u64(self.bodies.len() as u64);
         for (id, body) in &self.bodies {
-            h.write_u32(id.creator);
-            h.write_u32(id.counter);
+            h.write(&id.to_u128().to_le_bytes());
             h.write_u32(body.index1 as u32);
             h.write_u32(body.generation as u32);
         }
@@ -767,7 +777,9 @@ impl PhysicsWorld {
             None => Transform { chunk: origin, pos: p, rot, scale: current.scale, _pad: 0 }.rebased(),
             Some(f) => {
                 let fw = store.world_transform(f).expect("a frame has a Transform");
-                let target = WorldTransform { pos: pe_core::coords::WorldPos::new(origin, p), rot, scale: [1.0; 3] };
+                // `origin`'s corner moved by the body's region-frame position: the wall's own operations.
+                let pos = pe_core::Pos::at_chunk(origin).ok()?.checked_add(pe_core::Offset(p)).ok()?;
+                let target = WorldTransform { pos, rot, scale: [1.0; 3] };
                 Transform { scale: current.scale, ..target.local_in(Some(&fw)) }
             }
         };

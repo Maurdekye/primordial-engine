@@ -4,10 +4,12 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Primordial Engine core: ids, fixed-step clock, deterministic math, RNG streams, hashing, canonical coordinates"
+description = "Primordial Engine core: ids, fixed-step clock, deterministic math, RNG streams, hashing, the Pos type wall, 128-bit derived ids, BLAKE3 commitments"
 
 [dependencies]
 bytemuck = { version = "1.25", features = ["derive"] }
+# Commitments (world-model.md 6.1); the pure-Rust path, so the native-code audit passes.
+blake3 = { version = "1.8", default-features = false, features = ["std", "pure"] }
 
 [dev-dependencies]
 # Reference implementation, only to check our pinned XXH64 against.

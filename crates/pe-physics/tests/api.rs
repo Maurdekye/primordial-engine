@@ -6,23 +6,24 @@ use std::sync::Arc;
 
 use pe_physics::{
     BodyDesc, BodyKind, CheckHash, Geometry, GrabSpring, JointDesc, JointKey, JointKind, ObjectId, PhysicsConfig,
-    PhysicsError,
-    PhysicsWorld, Pose, Push, ShapeDesc, Transfer, WorldImage, WriteBack,
+    PhysicsError, PhysicsWorld, Pose, Push, ShapeDesc, Transfer, WorldImage, WriteBack,
 };
 use pe_sim::{Registry, SimStore, Transform};
 
 const DT: f32 = 1.0 / 60.0;
 
 fn ball(y: f64) -> BodyDesc {
-    BodyDesc::new(BodyKind::Dynamic, [0.0, y, 0.0]).with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 }))
+    BodyDesc::new(BodyKind::Dynamic, [0.0, y, 0.0])
+        .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 }))
 }
 
 fn ground() -> BodyDesc {
-    BodyDesc::new(BodyKind::Static, [0.0, -1.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Box { half_extents: [20.0, 1.0, 20.0] }))
+    BodyDesc::new(BodyKind::Static, [0.0, -1.0, 0.0])
+        .with_shape(ShapeDesc::new(Geometry::Box { half_extents: [20.0, 1.0, 20.0] }))
 }
 
 fn id(n: u32) -> ObjectId {
-    ObjectId::new(1, n)
+    ObjectId::from_u128((1u128 << 32) | n as u128)
 }
 
 fn world(config: PhysicsConfig) -> PhysicsWorld {
@@ -62,12 +63,22 @@ fn refusals_change_nothing() {
     let mut fast = ball(3.0);
     fast.linear_velocity = [1.0e30, 0.0, 0.0];
     assert!(invalid(pw.add_body(id(2), &fast)));
-    let sphere = |radius| BodyDesc::new(BodyKind::Dynamic, [0.0; 3]).with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius }));
+    let sphere = |radius| {
+        BodyDesc::new(BodyKind::Dynamic, [0.0; 3])
+            .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius }))
+    };
     assert!(invalid(pw.add_body(id(2), &sphere(-1.0))));
     assert!(invalid(pw.add_body(id(2), &sphere(1.0e30))), "radius beyond MAX_SIZE");
-    assert!(invalid(pw.add_body(id(2), &BodyDesc { shapes: vec![ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 }).with_density(1.0e30)], ..ball(3.0) })));
-    let flat = BodyDesc::new(BodyKind::Dynamic, [0.0; 3])
-        .with_shape(ShapeDesc::new(Geometry::Hull { points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]] }));
+    assert!(invalid(pw.add_body(
+        id(2),
+        &BodyDesc {
+            shapes: vec![ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 }).with_density(1.0e30)],
+            ..ball(3.0)
+        }
+    )));
+    let flat = BodyDesc::new(BodyKind::Dynamic, [0.0; 3]).with_shape(ShapeDesc::new(Geometry::Hull {
+        points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+    }));
     assert_eq!(pw.add_body(id(2), &flat), Err(PhysicsError::BadHull));
     assert!(invalid(pw.push(id(1), Push::Impulse([f32::INFINITY, 0.0, 0.0]))));
     assert!(invalid(pw.push(id(1), Push::Force([1.0e30, 0.0, 0.0]))));
@@ -78,7 +89,15 @@ fn refusals_change_nothing() {
     // world anchor).
     let same = JointDesc::Spherical { a: id(1), b: Some(id(1)), anchor_a: [0.0; 3], anchor_b: [0.0; 3] };
     assert_eq!(pw.add_joint(JointKey(1), &same), Err(PhysicsError::SameBody));
-    let grab_self = JointDesc::Grab { a: Some(id(1)), b: id(1), anchor_a: [0.0; 3], anchor_b: [0.0; 3], max_force: 1.0, max_torque: 1.0, spring: None };
+    let grab_self = JointDesc::Grab {
+        a: Some(id(1)),
+        b: id(1),
+        anchor_a: [0.0; 3],
+        anchor_b: [0.0; 3],
+        max_force: 1.0,
+        max_torque: 1.0,
+        spring: None,
+    };
     assert_eq!(pw.add_joint(JointKey(1), &grab_self), Err(PhysicsError::SameBody));
     let to_unknown = JointDesc::Weld { a: id(9), b: None, anchor_a: [0.0; 3], anchor_b: [0.0; 3] };
     assert_eq!(pw.add_joint(JointKey(1), &to_unknown), Err(PhysicsError::NotBound(id(9))));
@@ -130,8 +149,11 @@ fn hull_bodies_and_pushes() {
     let mut pw = world(PhysicsConfig::engine());
     pw.add_body(id(1), &ground()).unwrap();
     let tetra = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.3, 0.3, 0.3]];
-    pw.add_body(id(2), &BodyDesc::new(BodyKind::Dynamic, [0.0, 2.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Hull { points: tetra })))
-        .unwrap();
+    pw.add_body(
+        id(2),
+        &BodyDesc::new(BodyKind::Dynamic, [0.0, 2.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Hull { points: tetra })),
+    )
+    .unwrap();
     pw.push(id(2), Push::ImpulseAt { impulse: [1.0, 0.0, 0.0], point: [0.0, 2.5, 0.0] }).unwrap();
     pw.push(id(2), Push::Torque([0.0, 1.0, 0.0])).unwrap();
     pw.push(id(2), Push::Force([0.0, 20.0, 0.0])).unwrap();
@@ -148,9 +170,25 @@ fn jointed() -> PhysicsWorld {
     for n in 2..6 {
         pw.add_body(id(n), &ball(n as f64)).unwrap();
     }
-    pw.add_joint(JointKey(10), &JointDesc::Spherical { a: id(2), b: Some(id(3)), anchor_a: [0.0, 0.5, 0.0], anchor_b: [0.0, -0.5, 0.0] }).unwrap();
-    pw.add_joint(JointKey(20), &JointDesc::Distance { a: id(4), b: None, anchor_a: [0.0; 3], anchor_b: [0.0, 6.0, 0.0], length: 2.0 }).unwrap();
-    let grab = JointDesc::Grab { a: None, b: id(5), anchor_a: [0.0; 3], anchor_b: [0.0; 3], max_force: 500.0, max_torque: 50.0, spring: None };
+    pw.add_joint(
+        JointKey(10),
+        &JointDesc::Spherical { a: id(2), b: Some(id(3)), anchor_a: [0.0, 0.5, 0.0], anchor_b: [0.0, -0.5, 0.0] },
+    )
+    .unwrap();
+    pw.add_joint(
+        JointKey(20),
+        &JointDesc::Distance { a: id(4), b: None, anchor_a: [0.0; 3], anchor_b: [0.0, 6.0, 0.0], length: 2.0 },
+    )
+    .unwrap();
+    let grab = JointDesc::Grab {
+        a: None,
+        b: id(5),
+        anchor_a: [0.0; 3],
+        anchor_b: [0.0; 3],
+        max_force: 500.0,
+        max_torque: 50.0,
+        spring: None,
+    };
     pw.add_joint(JointKey(30), &grab).unwrap();
     pw.set_grab_velocity(JointKey(30), [1.0, 0.0, 0.0], [0.0; 3]).unwrap();
     run(&mut pw, 30);
@@ -170,14 +208,20 @@ fn images_and_transfers_round_trip_with_joints() {
     let reference = run(&mut pw, 60);
 
     // In place. A joint added after the save is gone after the restore: its key names nothing.
-    pw.add_joint(JointKey(40), &JointDesc::Weld { a: id(2), b: Some(id(4)), anchor_a: [0.0; 3], anchor_b: [0.0; 3] }).unwrap();
+    pw.add_joint(JointKey(40), &JointDesc::Weld { a: id(2), b: Some(id(4)), anchor_a: [0.0; 3], anchor_b: [0.0; 3] })
+        .unwrap();
     pw.restore_image(&WorldImage::from_bytes(&bytes).unwrap()).unwrap();
     assert_eq!(pw.joint_kind(JointKey(40)), None);
     assert_eq!(pw.remove_joint(JointKey(40)), Err(PhysicsError::UnknownJoint(40)));
     assert_eq!(run(&mut pw, 60), reference, "in place");
 
     // Into a fresh world, at another worker count.
-    let mut fresh = PhysicsWorld::from_transfer(PhysicsConfig::engine().with_workers(3), &Transfer::from_bytes(&transfer.to_bytes()).unwrap(), &confirmed).unwrap();
+    let mut fresh = PhysicsWorld::from_transfer(
+        PhysicsConfig::engine().with_workers(3),
+        &Transfer::from_bytes(&transfer.to_bytes()).unwrap(),
+        &confirmed,
+    )
+    .unwrap();
     assert_eq!(fresh.joint_count(), 3);
     assert_eq!(fresh.joint_kind(JointKey(30)), Some(JointKind::Grab));
     assert_eq!(fresh.config().workers, 3);
@@ -224,7 +268,15 @@ fn grabs() {
     let mut pw = world(PhysicsConfig::engine());
     pw.add_body(id(1), &ground()).unwrap();
     pw.add_body(id(2), &ball(0.5)).unwrap();
-    let grab = JointDesc::Grab { a: None, b: id(2), anchor_a: [0.0, 0.5, 0.0], anchor_b: [0.0; 3], max_force: 100.0, max_torque: 10.0, spring: None };
+    let grab = JointDesc::Grab {
+        a: None,
+        b: id(2),
+        anchor_a: [0.0, 0.5, 0.0],
+        anchor_b: [0.0; 3],
+        max_force: 100.0,
+        max_torque: 10.0,
+        spring: None,
+    };
     pw.add_joint(JointKey(1), &grab).unwrap();
     let mut frames = 0;
     while pw.is_awake(id(2)).unwrap() {
@@ -246,7 +298,15 @@ fn grabs() {
         .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 }).with_density(1.0));
     pw.add_body(id(2), &light).unwrap();
     let spring = GrabSpring { hertz: 5.0, damping_ratio: 1.0, max_force: 1000.0, max_torque: 100.0 };
-    let grab = JointDesc::Grab { a: Some(id(1)), b: id(2), anchor_a: [0.0, -1.0, 0.0], anchor_b: [0.0; 3], max_force: 100.0, max_torque: 10.0, spring: Some(spring) };
+    let grab = JointDesc::Grab {
+        a: Some(id(1)),
+        b: id(2),
+        anchor_a: [0.0, -1.0, 0.0],
+        anchor_b: [0.0; 3],
+        max_force: 100.0,
+        max_torque: 10.0,
+        spring: Some(spring),
+    };
     pw.add_joint(JointKey(1), &grab).unwrap();
     run(&mut pw, 180);
     let (h, b) = (pw.pose(id(1)).unwrap().position, pw.pose(id(2)).unwrap().position);
@@ -324,11 +384,17 @@ fn hostile_transfers() {
         let mut b = bytes.clone();
         b[at] ^= 0x40;
         if let Ok(t) = Transfer::from_bytes(&b) {
-            assert!(matches!(PhysicsWorld::from_transfer(PhysicsConfig::engine(), &t, &confirmed), Err(PhysicsError::BadImage(_))));
+            assert!(matches!(
+                PhysicsWorld::from_transfer(PhysicsConfig::engine(), &t, &confirmed),
+                Err(PhysicsError::BadImage(_))
+            ));
         }
     }
     // Confirmed, but for another configuration: the settings are refused.
-    assert!(matches!(PhysicsWorld::from_transfer(PhysicsConfig::upstream(), &transfer, &confirmed), Err(PhysicsError::BadImage(_))));
+    assert!(matches!(
+        PhysicsWorld::from_transfer(PhysicsConfig::upstream(), &transfer, &confirmed),
+        Err(PhysicsError::BadImage(_))
+    ));
 
     // Tables: the image part ends with the bodies (16 bytes each: object id, Box3D id), the
     // joints (17 bytes each) and the anchor (1 + 8 bytes). Give the second object the first's
@@ -359,10 +425,10 @@ fn hostile_transfers() {
 #[test]
 fn poses_reach_the_sim_store() {
     let mut store = SimStore::new(Arc::new(Registry::new()), 7);
-    let root = store.create(1).unwrap();
-    let frame = store.create(1).unwrap();
-    let child = store.create(1).unwrap();
-    let grandchild = store.create(1).unwrap();
+    let root = new_obj(&mut store);
+    let frame = new_obj(&mut store);
+    let child = new_obj(&mut store);
+    let grandchild = new_obj(&mut store);
     store.insert(root, Transform::IDENTITY.with_scale([2.0; 3])).unwrap();
     store.insert(frame, Transform::IDENTITY.with_scale([0.5; 3])).unwrap();
     store.insert(child, Transform::local([0.0, 1.0, 0.0])).unwrap();
@@ -379,12 +445,15 @@ fn poses_reach_the_sim_store() {
     assert_eq!(pw.write_root_transforms(&mut store, origin).unwrap(), WriteBack { written: 4, refused: vec![] });
     let t = *store.get::<Transform>(root).unwrap();
     let pose = pw.pose(root).unwrap();
-    assert_eq!(t, Transform { chunk: origin, pos: pose.position, rot: pose.rotation, scale: [2.0; 3], _pad: 0 }.rebased());
+    assert_eq!(
+        t,
+        Transform { chunk: origin, pos: pose.position, rot: pose.rotation, scale: [2.0; 3], _pad: 0 }.rebased()
+    );
     for o in [frame, child, grandchild] {
         let w = store.world_transform(o).unwrap();
         let p = pw.pose(o).unwrap();
-        let want = pe_core::coords::WorldPos::new(origin, p.position);
-        let d = w.pos.sub(&want);
+        let want = pe_core::Pos::at_chunk(origin).unwrap().checked_add(pe_core::Offset(p.position)).unwrap();
+        let d = (w.pos - want).0;
         assert!(d.iter().all(|c| c.abs() < 1.0e-5), "{o:?} is {d:?} from its body");
         let dot: f32 = w.rot.iter().zip(&p.rotation).map(|(a, b)| a * b).sum();
         assert!(dot.abs() > 1.0 - 1.0e-5, "{o:?} rotation");
@@ -395,8 +464,8 @@ fn poses_reach_the_sim_store() {
     // A body whose rebased chunk is beyond the sim store's limit keeps its transform and is
     // reported; the other body is still written (review P22R-7).
     let mut store = SimStore::new(Arc::new(Registry::new()), 7);
-    let a = store.create(1).unwrap();
-    let b = store.create(1).unwrap();
+    let a = new_obj(&mut store);
+    let b = new_obj(&mut store);
     store.insert(a, Transform::IDENTITY).unwrap();
     store.insert(b, Transform::IDENTITY).unwrap();
     let mut pw = world(PhysicsConfig::engine());
@@ -517,7 +586,11 @@ fn rolled_back_peer_has_the_straight_check_hash() {
             pw.push(id(3), Push::Impulse([0.5, 2.0, 0.0])).unwrap();
         }
         if f == 12 {
-            pw.add_body(id(8), &BodyDesc::new(BodyKind::Dynamic, [1.0, 4.0, 0.0]).with_shape(ShapeDesc::new(tetra(0.6)))).unwrap();
+            pw.add_body(
+                id(8),
+                &BodyDesc::new(BodyKind::Dynamic, [1.0, 4.0, 0.0]).with_shape(ShapeDesc::new(tetra(0.6))),
+            )
+            .unwrap();
         }
         if f == 25 {
             // A shared body with a joint, destroyed after the rollback target.
@@ -540,7 +613,12 @@ fn rolled_back_peer_has_the_straight_check_hash() {
     for f in 10..30 {
         rolled.push(id(2), Push::Impulse([0.0, 3.0, 1.0])).unwrap();
         if f == 15 {
-            rolled.add_body(id(9), &BodyDesc::new(BodyKind::Dynamic, [-1.0, 3.0, 0.0]).with_shape(ShapeDesc::new(tetra(0.9)))).unwrap();
+            rolled
+                .add_body(
+                    id(9),
+                    &BodyDesc::new(BodyKind::Dynamic, [-1.0, 3.0, 0.0]).with_shape(ShapeDesc::new(tetra(0.9))),
+                )
+                .unwrap();
             rolled.remove_body(id(5)).unwrap();
         }
         if f == 25 {
@@ -550,7 +628,10 @@ fn rolled_back_peer_has_the_straight_check_hash() {
         ring.push(rolled.save_image().unwrap());
     }
     rolled.restore_image(&target).unwrap();
-    assert!(rolled.has_body(id(5)) && rolled.joint_kind(JointKey(30)) == Some(JointKind::Grab), "the destroy is undone");
+    assert!(
+        rolled.has_body(id(5)) && rolled.joint_kind(JointKey(30)) == Some(JointKind::Grab),
+        "the destroy is undone"
+    );
     for f in 10..70 {
         inputs(&mut straight, f);
         inputs(&mut rolled, f);
@@ -593,8 +674,15 @@ fn transfer_geometry_order_and_duplicates_refused() {
     let swapped = Transfer::from_bytes(&with_blobs(&second, &first)).unwrap();
     let honest = Transfer::from_bytes(&bytes).unwrap().check_hash();
     assert_ne!(swapped.check_hash(), honest);
-    assert!(matches!(PhysicsWorld::from_transfer(PhysicsConfig::engine(), &swapped, &honest), Err(PhysicsError::BadImage(_))), "swapped blobs, honest confirmation");
-    let mut other = PhysicsWorld::from_transfer(PhysicsConfig::engine(), &swapped, &swapped.check_hash()).expect("a consistent state");
+    assert!(
+        matches!(
+            PhysicsWorld::from_transfer(PhysicsConfig::engine(), &swapped, &honest),
+            Err(PhysicsError::BadImage(_))
+        ),
+        "swapped blobs, honest confirmation"
+    );
+    let mut other = PhysicsWorld::from_transfer(PhysicsConfig::engine(), &swapped, &swapped.check_hash())
+        .expect("a consistent state");
     assert_ne!(other.check_hash().unwrap(), pw.check_hash().unwrap());
     assert_ne!(run(&mut other, 30), run(&mut pw, 30), "a different state: it moves differently");
     assert!(matches!(forged(&with_blobs(&first, &first)), Err(PhysicsError::BadImage(_))), "first blob twice");
@@ -612,11 +700,18 @@ fn hull_and_shape_counts_bounded() {
         (0..n)
             .map(|i| match i {
                 0..8 => [(i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32],
-                _ => [0.5 + 0.4 * (i as f32 * 0.37).sin(), 0.5 + 0.4 * (i as f32 * 0.71).cos(), (i % 97) as f32 / 97.0 * 0.8 + 0.1],
+                _ => [
+                    0.5 + 0.4 * (i as f32 * 0.37).sin(),
+                    0.5 + 0.4 * (i as f32 * 0.71).cos(),
+                    (i % 97) as f32 / 97.0 * 0.8 + 0.1,
+                ],
             })
             .collect::<Vec<_>>()
     };
-    let hull = |n| BodyDesc::new(BodyKind::Dynamic, [0.0, 2.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Hull { points: points(n) }));
+    let hull = |n| {
+        BodyDesc::new(BodyKind::Dynamic, [0.0, 2.0, 0.0])
+            .with_shape(ShapeDesc::new(Geometry::Hull { points: points(n) }))
+    };
     pw.add_body(id(1), &hull(MAX_HULL_POINTS)).unwrap();
     assert_eq!(pw.add_body(id(2), &hull(MAX_HULL_POINTS + 1)), Err(PhysicsError::BadHull));
     let sphere = || ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.1 });
@@ -667,7 +762,11 @@ fn carried_state_lands_exactly() {
                 a.set_state(id(2), pose, vel.0, vel.1).unwrap();
             }
             b.set_state(id(2), pose, vel.0, vel.1).unwrap();
-            assert_eq!(bits(b.pose(id(2)).unwrap(), b.velocity(id(2)).unwrap()), bits(pose, vel), "exact bits, {label}");
+            assert_eq!(
+                bits(b.pose(id(2)).unwrap(), b.velocity(id(2)).unwrap()),
+                bits(pose, vel),
+                "exact bits, {label}"
+            );
             assert!(b.is_awake(id(2)).unwrap(), "carried state is awake, {label}");
             let (ra, rb) = (run(&mut a, 120), run(&mut b, 120));
             let first = ra.iter().zip(&rb).position(|(x, y)| x != y);
@@ -694,7 +793,10 @@ fn carried_state_lands_exactly() {
     let before = b.state_hash().unwrap();
     let pose = b.pose(id(2)).unwrap();
     let ok = ([0.1, 0.0, 0.0], [0.0; 3]);
-    assert!(invalid(b.set_state(id(2), Pose { rotation: [0.0, 0.0, 0.0, 1.001], ..pose }, ok.0, ok.1)), "not unit: refused, not renormalized");
+    assert!(
+        invalid(b.set_state(id(2), Pose { rotation: [0.0, 0.0, 0.0, 1.001], ..pose }, ok.0, ok.1)),
+        "not unit: refused, not renormalized"
+    );
     assert!(invalid(b.set_state(id(2), Pose { rotation: [f32::NAN, 0.0, 0.0, 1.0], ..pose }, ok.0, ok.1)));
     assert!(invalid(b.set_state(id(2), Pose { position: [f64::NAN, 0.0, 0.0], ..pose }, ok.0, ok.1)));
     assert!(invalid(b.set_state(id(2), Pose { position: [2.0e6, 0.0, 0.0], ..pose }, ok.0, ok.1)));
@@ -714,7 +816,8 @@ fn carried_state_lands_exactly() {
 fn targets_drive_hands() {
     let mut pw = world(PhysicsConfig::engine());
     pw.add_body(id(1), &ground()).unwrap();
-    let hand = BodyDesc::new(BodyKind::Kinematic, [0.0, 1.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.1 }));
+    let hand = BodyDesc::new(BodyKind::Kinematic, [0.0, 1.0, 0.0])
+        .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.1 }));
     pw.add_body(id(2), &hand).unwrap();
     // 30 degrees about y: Box3D turns a body by at most 45 degrees per step.
     let (s, c) = 15f32.to_radians().sin_cos();
@@ -890,7 +993,8 @@ fn compaction_is_invisible_to_the_simulation() {
             // Hear of the late input of frame f - late_by: roll back to before it and re-simulate.
             if f >= p.late_by && late(f - p.late_by) {
                 let r = f - p.late_by;
-                let (from, image) = p.ring.iter().rev().find(|(g, _)| *g <= r).cloned().expect("a kept image at or before the input");
+                let (from, image) =
+                    p.ring.iter().rev().find(|(g, _)| *g <= r).cloned().expect("a kept image at or before the input");
                 p.pw.restore_image(&image).unwrap();
                 rollbacks[k] += 1;
                 p.ring.retain(|(g, _)| *g <= from);
@@ -916,7 +1020,12 @@ fn compaction_is_invisible_to_the_simulation() {
     }
     // 75 unique hulls were created; uncompacted, the registry would hold every one of them.
     for p in &peers {
-        println!("RESULT compaction peer late by {}: registry at most {} blobs (75 unique hulls made), now {}", p.late_by, p.max_len, p.pw.registry_len());
+        println!(
+            "RESULT compaction peer late by {}: registry at most {} blobs (75 unique hulls made), now {}",
+            p.late_by,
+            p.max_len,
+            p.pw.registry_len()
+        );
         assert!(p.max_len < 40, "the registry stays bounded: {}", p.max_len);
     }
     assert!(compactions.iter().all(|&n| n >= 9), "{compactions:?}");
@@ -993,22 +1102,49 @@ fn carried_state_exact_across_histories() {
         let mut pw = world(PhysicsConfig::engine());
         pw.add_body(id(1), &ground()).unwrap();
         for n in 0..18u32 {
-            let (x, z, y) = ((n % 3) as f64 * 1.05 - 1.05, ((n / 3) % 3) as f64 * 1.05 - 1.05, (n / 9) as f64 * 1.1 + 0.6 + lift);
+            let (x, z, y) =
+                ((n % 3) as f64 * 1.05 - 1.05, ((n / 3) % 3) as f64 * 1.05 - 1.05, (n / 9) as f64 * 1.1 + 0.6 + lift);
             let desc = if n % 2 == 0 {
                 BodyDesc { position: [x, y, z], ..ball(0.0) }
             } else {
-                BodyDesc::new(BodyKind::Dynamic, [x, y, z]).with_shape(ShapeDesc::new(Geometry::Box { half_extents: [0.45, 0.4, 0.45] }))
+                BodyDesc::new(BodyKind::Dynamic, [x, y, z])
+                    .with_shape(ShapeDesc::new(Geometry::Box { half_extents: [0.45, 0.4, 0.45] }))
             };
             pw.add_body(id(2 + n), &desc).unwrap();
         }
         if joints == 2 {
-            pw.add_joint(JointKey(1), &JointDesc::Spherical { a: id(2), b: Some(id(3)), anchor_a: [0.525, 0.0, 0.0], anchor_b: [-0.525, 0.0, 0.0] }).unwrap();
-            pw.add_joint(JointKey(2), &JointDesc::Distance { a: id(12), b: None, anchor_a: [0.0; 3], anchor_b: [0.0, 4.0, 0.0], length: 3.0 }).unwrap();
+            pw.add_joint(
+                JointKey(1),
+                &JointDesc::Spherical {
+                    a: id(2),
+                    b: Some(id(3)),
+                    anchor_a: [0.525, 0.0, 0.0],
+                    anchor_b: [-0.525, 0.0, 0.0],
+                },
+            )
+            .unwrap();
+            pw.add_joint(
+                JointKey(2),
+                &JointDesc::Distance { a: id(12), b: None, anchor_a: [0.0; 3], anchor_b: [0.0, 4.0, 0.0], length: 3.0 },
+            )
+            .unwrap();
         }
         if joints == 1 {
             pw.add_body(id(30), &BodyDesc::new(BodyKind::Kinematic, [1.05, 4.0 + lift, 1.05])).unwrap();
             let spring = GrabSpring { hertz: 5.0, damping_ratio: 1.0, max_force: 1000.0, max_torque: 100.0 };
-            pw.add_joint(JointKey(3), &JointDesc::Grab { a: Some(id(30)), b: id(19), anchor_a: [0.0, -1.0, 0.0], anchor_b: [0.0; 3], max_force: 100.0, max_torque: 10.0, spring: Some(spring) }).unwrap();
+            pw.add_joint(
+                JointKey(3),
+                &JointDesc::Grab {
+                    a: Some(id(30)),
+                    b: id(19),
+                    anchor_a: [0.0, -1.0, 0.0],
+                    anchor_b: [0.0; 3],
+                    max_force: 100.0,
+                    max_torque: 10.0,
+                    spring: Some(spring),
+                },
+            )
+            .unwrap();
         }
         for f in 0..frames {
             if push && f == 30 {
@@ -1030,8 +1166,9 @@ fn carried_state_exact_across_histories() {
         let mut a = pile(0.0, false, at, joints);
         let mut b = pile(1.5, true, 240, joints);
         let objects: Vec<u32> = (2..20).chain((joints == 1).then_some(30)).collect();
-        let states: Vec<_> = objects.iter().map(|&n| (id(n), a.pose(id(n)).unwrap(), a.velocity(id(n)).unwrap())).collect();
-        let moving = states.iter().filter(|s| s.2 .0.iter().any(|v| v.abs() > 1e-3)).count();
+        let states: Vec<_> =
+            objects.iter().map(|&n| (id(n), a.pose(id(n)).unwrap(), a.velocity(id(n)).unwrap())).collect();
+        let moving = states.iter().filter(|s| s.2.0.iter().any(|v| v.abs() > 1e-3)).count();
         for pw in [&mut a, &mut b] {
             for (o, pose, vel) in &states {
                 pw.set_state(*o, *pose, vel.0, vel.1).unwrap();
@@ -1059,4 +1196,53 @@ fn carried_state_exact_across_histories() {
             assert_eq!(first_state, None, "state_hash, {label}");
         }
     }
+}
+
+/// A fresh object with the next test id (ids are derived by their creators; world-model.md 2.1).
+fn new_obj(store: &mut SimStore) -> ObjectId {
+    let next = store.objects().last().map_or(1, |o| o.to_u128() + 1);
+    let id = ObjectId::from_u128(next);
+    store.create(id).unwrap();
+    id
+}
+
+/// Ids with the high word set (128-bit ids, world-model.md 2.1) survive the image, the transfer and the hashes, and
+/// two worlds that differ only in an id's high word hash differently (chunks-reviewer's low on the id patch).
+#[test]
+fn ids_with_the_high_word_set_round_trip() {
+    let build = |high: u128| {
+        let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
+        let ids = [ObjectId::from_u128(3), ObjectId::from_u128(high << 64 | 1), ObjectId::from_u128(high << 64 | 2)];
+        for (i, &id) in ids.iter().enumerate() {
+            let sphere = ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 });
+            pw.add_body(id, &BodyDesc::new(BodyKind::Dynamic, [i as f64 * 2.0, 1.0, 0.0]).with_shape(sphere)).unwrap();
+        }
+        pw.step(1.0 / 60.0).unwrap();
+        (pw, ids)
+    };
+    let (mut a, ids) = build(0xfeed_0000_0000_0001);
+    let (state, check, digests) = (a.state_hash().unwrap(), a.check_hash().unwrap(), a.body_digests().unwrap());
+    assert_eq!(a.objects().collect::<Vec<_>>(), ids);
+
+    // The image: a rollback brings back the same ids and state.
+    let image = a.save_image().unwrap();
+    a.step(1.0 / 60.0).unwrap();
+    a.restore_image(&image).unwrap();
+    assert_eq!(a.objects().collect::<Vec<_>>(), ids);
+    assert_eq!((a.state_hash().unwrap(), a.check_hash().unwrap()), (state, check));
+
+    // The transfer, through its bytes: a new world with the same ids, hashes and digests.
+    let bytes = a.save_transfer().unwrap().to_bytes();
+    let b =
+        PhysicsWorld::from_transfer(PhysicsConfig::engine(), &Transfer::from_bytes(&bytes).unwrap(), &check).unwrap();
+    assert_eq!(b.objects().collect::<Vec<_>>(), ids);
+    assert_eq!((b.state_hash().unwrap(), b.check_hash().unwrap()), (state, check));
+    assert_eq!(b.body_digests().unwrap(), digests);
+
+    // Only the high word differs: every hash differs.
+    let (c, _) = build(0xbeef_0000_0000_0001);
+    assert_ne!(c.state_hash().unwrap(), state);
+    assert_ne!(c.check_hash().unwrap(), check);
+    let differ = c.body_digests().unwrap().iter().zip(&digests).filter(|(x, y)| x.1 != y.1).count();
+    assert_eq!(differ, 2, "the two bodies with a high word have other digests");
 }
