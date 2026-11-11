@@ -20,7 +20,7 @@ with WS-state, WS-render and WS-xr). Seams: crates/pe-seams (S1-S6, RULINGS.md).
 
 | Thread | Runs | Owns | Spawned with |
 |---|---|---|---|
-| Main | winit's event loop; on the desktop, pe-render's `DesktopView`: every window event is forwarded to it, `about_to_wait` requests a redraw, and `RedrawRequested` draws one frame (pacing, the desktop hand, the `Presenter`, effects, the present) | the window, the desktop GPU context, the desktop hand | the process |
+| Main | winit's event loop; on the desktop, pe-render's `DesktopView`: pe-app forwards every window event to its `window_event` (true means close) and calls its `about_to_wait`, which sets winit's control flow and requests a redraw only when it will draw; `RedrawRequested` draws one frame (pacing, the desktop hand, the `Presenter`, effects, the present) | the window, the desktop GPU context, the desktop hand | the process |
 | Simulation | the tick of section 3 | pe-agree's `Agreement`, pe-replica's `Replica` (with pe-world and pe-logic inside), pe-diverge's state | a stack of pe-logic's `Settings::thread_stack()` (`max_wasm_stack` + 2 MiB; logic.md 5.1), because it runs wasm guests. The floating-point guard holds at every guest entry (N11) |
 | Network | pe-net's `Core` over the socket (transport.md 7) | the socket, QUIC, the lanes, the rate budget, the clock | pe-net's runner |
 | XR (VR mode) | pe-xr's frame loop (xr.md 7.1); it is the render thread in VR | the OpenXR session, the XR GPU context, the hand ring | pe-xr's runner |
@@ -30,6 +30,11 @@ with WS-state, WS-render and WS-xr). Seams: crates/pe-seams (S1-S6, RULINGS.md).
 
 - **One code path for the event loop.** winit's loop must run on the main thread on some platforms (render.md 3);
   pe-app runs it there on every platform, so there is one order of events to test.
+- **The event loop never spins** (@shader-reviewer's L1 on pe-render part 2a, m22f2191207ba).
+  `DesktopView::about_to_wait` holds the rule for pe-app and pe-render's own demo loop alike: `Poll` while there is a
+  frame to draw, since each drawn frame blocks in Fifo's present; `Wait` while the window is minimized or occluded,
+  until the event that ends it; `WaitUntil` one period ahead before the first frame view and after a failed acquire,
+  since the simulation's publish does not wake winit. pe-app leaves the view's `run_for` unset.
 - **In VR mode** the main thread only pumps window events and input. The XR thread draws the eyes and, as a setting,
   the desktop mirror (render.md 10).
 - **Nothing slow runs on the simulation thread.** A self-test that takes more than a frame runs on the worker, and its
@@ -63,8 +68,10 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
 4. **The replica.** pe-replica's `Driver::drive(replica, agree, p + 1, self_test)` (WS-state, @vdw-physics,
    m7e812664fbd8; @harness-eng's DESIGN.md 3.2). `present` is exclusive, so frame `p`, whose local entries step 2 just
    submitted, is simulated. It runs `advance`, answers `wants_roots` with `root_at_cut` and `vote` (one vote per cut),
-   and passes `final_cut()` to `finalize` each time it changes. Its `DriveReport` holds the `Advance`, the votes, the
-   cuts with no root yet, and each `finalize` result.
+   and passes `final_cut()` to `finalize` each time it changes. Its `DriveReport` holds `advance`, `votes`,
+   `no_root` (the cuts with no root yet, each with its `RootError`; a `Pending` one is retried on the next call) and
+   `finalized` (each `finalize` result; `NotReady` is retried too), so the driver needs no change for S2 v1.1
+   (@vdw-physics, mc79c86c543b7).
 5. **Divergence.** pe-app drains S3's events and hands pe-diverge **one ordered list**: the events drained before
    `drive`, with each of the report's `finalize` results placed right after the `CutFinal` of its cut (first in the
    list if that `CutFinal` came in an earlier tick, because the cut's entries were late), then the events drained after
@@ -131,7 +138,7 @@ that ships is the loop the properties check.
 | pe-agree (@world-chunks) | A constructor from the member key, the line and the world config; `Agreement` (S3) |
 | pe-diverge (@diverge-eng) | Its state machine with `on_event` over the ordered list of section 3, `receive` and `tick(now, clock)`, returning its actions (Repair messages, `Revote`, `RunSelfTest`, `WriteBundle`); a repair that is pending continues on later ticks |
 | pe-net (@shader-lang) | A runner that owns the network thread and returns its two queues and a `FrameClock` handle; the invite, dial and admission calls (transport.md 6) |
-| pe-render (@ballpit-viz) | Done in part 1: `GpuContext`, `FrameSlot`, `Presenter`, the desktop hand's `HandFeed`. Still needed: a call that creates the window's surface from winit's window, and the creation lock exposed to pe-xr |
+| pe-render (@ballpit-viz) | Part 1: `GpuContext`, `FrameSlot`, `Presenter`, the desktop hand's `HandFeed`. Part 2: `window::surface_and_context(Arc<Window>)` (it takes the creation lock itself), `DesktopView` for the main thread with `window_event` and `about_to_wait`, and `gpu::creation_lock()` public for pe-xr |
 | pe-xr (@xr-eng) | A runner for the XR thread that takes the GPU context, a `FrameSlot` reader and the clock, and returns its `HandFeed` |
 | pe-api, pe-mcp (@api-eng) | The snapshot port and the edit queue; WorldApi; pe-mcp's transports started and stopped as a library |
 | pe-logic (@iter-bench) | `Settings::thread_stack()` |
@@ -153,7 +160,8 @@ so the same script is the two-process acceptance test.
   the edit queue full (each a test with a mock on the other side).
 - **No stall in a repair:** during a rung-1 replay of `W_fg`, and during a rollback of `W_fg`, every tick ends on
   time, votes and messages keep flowing, and the frame view resumes within the catch-up time the budget gives: at
-  the floor budget of two frames, a `W_fg` backlog catches up within `W_fg`.
+  the floor budget of two frames the replica gains one frame per tick, so a `W_fg` backlog catches up within `W_fg`.
+  That bound is exact, so the test allows two ticks of slack (@design-reviewer, m81f8b1342bc9).
 - **Startup without a GPU:** headless capture works, so CI runs the two-process test.
 - **Shutdown:** the leave reaches the other member, which pauses for zero frames.
 - **The two-process session** of section 6, on Windows and Linux.
