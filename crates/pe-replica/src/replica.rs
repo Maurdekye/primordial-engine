@@ -13,10 +13,18 @@
 //! state, physics image and transfer) until its cut is final or superseded; the floor's and `Cv`'s stay held.
 //!
 //! **Bounded work.** Each call steps at most the budget's frames (never fewer than two). A rollback, a re-simulation
-//! or a rung-1 replay that does not fit resumes on the next call; the results never depend on the split.
+//! or a rung-1 replay that does not fit resumes on the next call; the results never depend on the split. Two steps
+//! are not budgeted yet (@design-reviewer's Lows on 3d13ff88):
+//! - `root_at_cut`'s re-step off the live history, from the first frame whose entries differ from the cut's to the
+//!   cut's frame: at most the distance from the floor to the cut, normally one or two cut intervals;
+//! - `replay_to`'s check of `Cv`: a full tree `verify` and a physics rehash, O(world) in one call (M2's worker).
 //!
 //! **Entries below the floor.** Rung 1 replays from `Cv`, which can be older than the floor, and reads those frames'
-//! entries from the source too: S3 keeps the entries since `Cv` (6.1).
+//! entries from the source too. That assumes S3 keeps the entries since `Cv` (6.1), which the seam does not promise
+//! yet (@design-reviewer's Medium on 3d13ff88: a retention rule and `EntrySource::kept_from`, asked of WS-seams).
+//!
+//! **The d1 rule is S3's.** `root_at_cut` and `replay_to` never answer "missing entries": a cut may cover void
+//! entries that `entries_at` leaves out, so the replica cannot count them (@coordinator-opus, m8126544ad530).
 //!
 //! **Not yet here** (the M1 increments that follow): hands, grips and grab joints (3.3), carried checks (3.4), logic
 //! stages (3, steps 3 and 8), `import_at_cut` (6.2), and the view's rows beyond bodies (7).
@@ -287,16 +295,22 @@ impl<W: WorldModel> ReplicaImpl<W> {
         moved.extend(self.awake());
         moved.sort_unstable();
         moved.dedup();
+        let (mut poses, mut refused) = (Vec::with_capacity(moved.len()), Vec::new());
         for id in moved {
             let Ok(pose) = self.physics.pose(id) else {
                 self.faults += 1;
                 continue;
             };
             let within = pose.position.iter().all(|c| c.abs() <= pe_physics::limits::MAX_POSITION);
-            let pos = self.origin.checked_add(Offset(pose.position)).ok().filter(|_| within);
-            if pos.is_some_and(|pos| self.world.write_pose(id, pos, pose.rotation).is_ok()) {
-                continue;
+            match self.origin.checked_add(Offset(pose.position)).ok().filter(|_| within) {
+                Some(pos) => poses.push((id, pos, pose.rotation)),
+                None => refused.push(id),
             }
+        }
+        // One batch, so pe-world converts every pose against the frame's final parents (@world-model).
+        refused.extend(self.world.write_poses(&poses));
+        refused.sort_unstable();
+        for id in refused {
             self.stopped += 1;
             if let Some(row) = self.world.body(id) {
                 let last = Pose { position: (row.pos - self.origin).0, rotation: row.rotation };
@@ -390,25 +404,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     // ---- roots at cuts ----------------------------------------------------------------------------------------------
 
-    /// The d1 rule as far as the replica can see it: for each author, every entry the cut includes after `base` (the
-    /// floor's cut, or `Cv`'s for rung 1) is here, stamped from `base`'s frame to below the cut's.
-    fn holds_all(&self, cut: &Cut, base: Option<&Cut>, source: &dyn EntrySource) -> bool {
-        let from = base.map_or(Frame(0), |b| b.at.frame);
-        let mut seen: BTreeMap<_, (u64, u64)> = BTreeMap::new();
-        for g in from.0..cut.at.frame.0 {
-            for e in in_cut(source.entries_at(Frame(g)), cut) {
-                let s = seen.entry(e.entry.chain).or_insert((0, 0));
-                s.0 += 1;
-                s.1 = s.1.max(e.entry.seq);
-            }
-        }
-        cut.heads.iter().all(|h| {
-            let below = base.and_then(|b| b.heads.iter().find(|f| f.chain == h.chain)).map_or(0, |f| f.seq);
-            let want = h.seq.saturating_sub(below);
-            let (count, max) = seen.get(&h.chain).copied().unwrap_or((0, below));
-            want == 0 || (count == want && max == h.seq)
-        })
-    }
+    // The d1 rule (a member votes and compares only at cuts whose entries it holds) is S3's alone: `wants_roots` and
+    // `final_cut` hand over only such cuts. The replica cannot check it itself: a cut may cover void entries (late, or
+    // stamped back), which `entries_at` rightly leaves out, so counting the entries it sees would refuse such a cut
+    // for ever (@harness-eng, mcc79fdb5df77, under S3's covered-only void rule). So it never answers `MissingEntries`.
 
     /// The first frame from the floor below the cut's frame whose live entries are not exactly the cut's.
     fn first_difference(&self, cut: &Cut, source: &dyn EntrySource) -> Option<Frame> {
@@ -430,10 +429,6 @@ impl<W: WorldModel> ReplicaImpl<W> {
         }
         if self.replay.as_ref().is_some_and(|r| at > r.cut.at.frame || r.root.is_none()) {
             return Err(RootError::Pending);
-        }
-        let base = self.floor.as_ref().map(|f| f.cut.clone());
-        if !self.holds_all(cut, base.as_ref(), source) {
-            return Err(RootError::MissingEntries);
         }
         let from = self.first_difference(cut, source).unwrap_or(at);
         let (root, held) = self.state_at_cut(cut, from, source)?;
@@ -695,13 +690,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         if let Some(r) = self.replay.as_ref().filter(|r| r.cut.at == cut.at) {
             return r.root.ok_or(RootError::Pending);
         }
-        let (cv_cut, cv_root) = self.cv.clone().ok_or(RootError::NotKept)?;
-        let cv_frame = cv_cut.at.frame;
+        let cv_root = self.cv.as_ref().map(|c| c.1).ok_or(RootError::NotKept)?;
+        let cv_frame = self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame);
         if cut.at.frame < cv_frame || !self.held.contains_key(&cv_root) {
             return Err(RootError::NotKept);
-        }
-        if !self.holds_all(cut, Some(&cv_cut), &*source) {
-            return Err(RootError::MissingEntries);
         }
         // Check `Cv` from its records and from the restored physics itself, keeping the live state until it passes.
         let live = (self.world.save(), self.physics.save_image().map_err(|_| RootError::Damaged)?);

@@ -202,14 +202,17 @@ fn a_cuts_root_takes_exactly_its_entries() {
     assert_eq!(Some(root), w.live_root(Frame(32)));
     assert_eq!(a.live_root(Frame(48)), live_48, "the live state is unchanged");
     assert_eq!(a.frame(), Frame(48));
-    // A cut whose entries the live history stepped exactly: the live root. Not yet simulated, or entries missing:
-    // no root.
+    // A cut whose entries the live history stepped exactly: the live root. Not yet simulated: no root.
     let c40 = cut(&all, 5, 40);
     assert_eq!(a.root_at_cut(&c40, &mut s), Ok(a.live_root(Frame(40)).expect("live")));
     assert_eq!(a.root_at_cut(&cut(&all, 9, 56), &mut s), Err(RootError::NotYetSimulated));
-    let mut missing = Source::default();
-    all.iter().filter(|e| e.id() != all[3].id()).cloned().for_each(|e| missing.add(e));
-    assert_eq!(a.root_at_cut(&cut(&all, 6, 48), &mut missing), Err(RootError::MissingEntries));
+    // A cut that covers an entry the source leaves out (void, @harness-eng's mcc79fdb5df77) has a root, without it:
+    // that of a replica that never had the entry. The d1 rule is S3's, so the replica never refuses for this.
+    let mut voided = Source::default();
+    all.iter().filter(|e| e.id() != all[3].id()).cloned().for_each(|e| voided.add(e));
+    let mut v = replica();
+    v.advance(Frame(48), &mut voided);
+    assert_eq!(a.root_at_cut(&cut(&all, 6, 48), &mut voided), Ok(v.live_root(Frame(48)).expect("live")));
     // The roots given out are held: the tree and the physics image serve them.
     assert_eq!(a.tree(&root).map(|t| t.root()), Some(root));
     let image = a.physics_image(&root).expect("an image");
@@ -268,4 +271,32 @@ fn rung_one_repairs_a_transient_fault() {
     let kept: Vec<_> = roots(&good, 48).into_iter().filter(|r| r.0 >= 32).collect();
     assert_eq!(roots(&bad, 48), kept, "from the floor on, the roots are the good replica's");
     assert!(bad.tree(&mine).is_none(), "released once agreed");
+}
+
+/// A cut that covers only void entries stamped below the floor (@coordinator-opus, m8126544ad530): the source never
+/// shows them, and the cut still has its root, the one without them. A count of the entries it sees would refuse it.
+#[test]
+fn a_cut_covering_only_void_entries_below_the_floor_has_a_root() {
+    let (mut a, mut s) = reference(48);
+    let all = scene();
+    let root16 = a.live_root(Frame(16)).expect("live");
+    let c16 = cut(&all, 2, 16);
+    assert_eq!(a.finalize(&FinalCut { cut: c16, root: root16, voters: vec![] }, &mut s), Finalized::Agreed);
+    // A third author's entries stamped at 10 and 12, below the floor: void, so the source leaves them out.
+    let keys = TestKeys::new(7, 3);
+    let mut late = EntryBuilder::new(&keys, 2);
+    let push = Bytes::from(encode(&[MockOp::Push { id: id(10), impulse: [1.0, 0.0, 0.0] }]));
+    let (_, last) = (late.next(Class::Edit, Frame(10), push.clone()), late.next(Class::Edit, Frame(12), push));
+    // The cut at 20 covers nothing new but them: no entry of the scene is stamped in 16..20.
+    let mut c20 = cut(&all, 3, 20);
+    c20.heads.push(ChainHead {
+        chain: last.entry.chain,
+        author: last.entry.author,
+        seq: last.entry.seq,
+        entry: last.id(),
+    });
+    c20.heads.sort();
+    let (mut w, mut ws) = reference(48);
+    let want = w.root_at_cut(&cut(&all, 3, 20), &mut ws).expect("the reference's root");
+    assert_eq!(a.root_at_cut(&c20, &mut s), Ok(want));
 }
