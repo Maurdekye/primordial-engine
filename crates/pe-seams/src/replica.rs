@@ -168,10 +168,13 @@ pub trait EntrySource {
     /// it, and nothing at or below its frame changes again. It can lag the line's newest final cut
     /// ([`crate::AgreeEvent::CutFinal`]): a member that was not among a cut's voters may learn the cut is final while
     /// some of its entries are still on their way. Those entries then arrive as changes below the line's final frame
-    /// ([`EntrySource::take_changed_from`]), and the replica re-simulates them, down to its own floor.
+    /// ([`EntrySource::take_changed_from`]), and the replica re-simulates them, down to its own floor. S3 reports a
+    /// cut here only once every honest member holds what it includes ([`crate::agree`], "Dissemination before
+    /// finality").
     fn final_cut(&self) -> Option<&FinalCut>;
     /// The entries to simulate at `frame`, in agreed order: final ones, then the predicted rest. Entries voided by a
-    /// final cut are absent.
+    /// final cut are absent, and so are pending ones: stamped below the final cut's frame, and in no final cut yet
+    /// (S3 v1.1).
     fn entries_at(&self, frame: Frame) -> &[SignedEntry];
     /// The earliest frame whose entries changed since the last call, if any.
     fn take_changed_from(&mut self) -> Option<Frame>;

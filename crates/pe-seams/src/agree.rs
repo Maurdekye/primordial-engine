@@ -12,10 +12,15 @@
 //! - **Cuts** come on a fixed cadence (a duration, a world setting), carry the line id, and name per author the last
 //!   entry they include.
 //! - **Dissemination before finality** (S3 v1.1, RULINGS.md): an entry held by any honest member of a log is held by
-//!   every honest member of that log before any of them treats as final the first cut that covers or voids it. So
-//!   honest members void the same entries. An entry that only its faulty author holds is out of scope. pe-agree
-//!   relays each new entry once (the fast path), and keeps the promise by fetching what a cut names, from any voter,
-//!   before it treats the cut as final.
+//!   every honest member of that log before any of them reports the first cut that includes it through
+//!   [`EntrySource::final_cut`], or reports a verdict on it under that cut ([`AgreeEvent::Voided`]). So honest
+//!   members apply and void the same entries, at the same cut. An entry that only its faulty author holds is out of
+//!   scope. pe-agree relays each new entry once (the fast path), and keeps the promise by fetching what a cut names,
+//!   from any voter, before it reports the cut.
+//! - **Only an included entry can be void** (S3 v1.1): a cut voids the late and back-stamped entries it includes
+//!   ([`VoidReason`]). An entry stamped below a final cut's frame that no final cut includes yet is pending: it is
+//!   held but never applied, on any member, until the first cut whose head passes it voids it as
+//!   [`VoidReason::Late`]. Two different entries at one seq of a chain are a fork fault, never two pending entries.
 //! - **[`Agreement::receive`] never panics** on any bytes: bad bytes are `Err(Fault)` naming the sender, and an event.
 //! - **The `mutants` feature** with named mutations lives in pe-agree (and pe-diverge, pe-world for their rules), never
 //!   here: inert unless the node's configuration names one, and never in a production build.
@@ -58,8 +63,10 @@ pub struct CutRef {
     pub frame: Frame,
 }
 
-/// A cut: a frame `f`, and for each author the last entry included. It covers the entries stamped below `f`; an
-/// entry stamped below a final cut's frame and not covered is void. The root it is final with is in [`FinalCut`].
+/// A cut: a frame `f`, and for each author the last entry included. It covers the entries stamped below `f` that it
+/// includes; an entry it includes that is late or back-stamped is void ([`VoidReason`]). An entry stamped below a
+/// final cut's frame that the cut does not include is not void but pending, until a later cut includes it (S3 v1.1).
+/// The root it is final with is in [`FinalCut`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cut {
     pub at: CutRef,
@@ -240,7 +247,8 @@ pub enum AgreeEvent {
 /// Why an entry was voided at a cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VoidReason {
-    /// Stamped below the previous cut's frame, or below a final cut's frame and not covered.
+    /// Stamped below the previous final cut's frame: an earlier final cut did not include it, so it can no longer be
+    /// applied at its stamp.
     Late,
     /// Stamped below an earlier stamp in its author's chain.
     BackStamped,
