@@ -362,9 +362,9 @@ reparents whose parent was gone, 4.2), and, when refused or dropped, the refusal
 |---|---|
 | `queued` | Accepted by the API, not yet stepped (`wait: "none"`, or the wait ran out) |
 | `accepted` | Applied on this machine at frame F, its stamp. Others see it within about one network delay. Not final |
-| `final` | Applied by the ordered step at F, and F is final. It can no longer be undone except by a new change |
+| `final` | Applied by the ordered step at F, and a final cut covering F includes it without voiding it (never the frame alone). It can no longer be undone except by a new change |
 | `refused` | Refused, with a reason. `final: false` while this machine's check refused it before ordering or the refusal is still predicted; `final: true` once F is final |
-| `dropped` | Stamped before a final cut and not included in it: it arrived too late, past the tolerance (plan 4.4). Undone everywhere |
+| `dropped` | Voided by a final cut (late, or back-stamped; S3 v1.1), so no replica applies it: its local effect is undone everywhere. A change stamped below a final cut's frame that the cut does not include is still pending, not dropped, until a later cut includes or voids it |
 
 - An `accepted` change can still become `refused` when an earlier conflicting change from another machine arrives
   and the replica re-steps (file 14, P4). That is the stale edit seen from the loser.
