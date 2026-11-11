@@ -8,11 +8,11 @@ use std::time::Duration;
 use bytes::Bytes;
 use pe_replica::mock::{MockClock, MockOp, MockWorld, encode};
 use pe_replica::world::{BodyKind, ShapeRow};
-use pe_replica::{ReplicaConfig, ReplicaImpl};
+use pe_replica::{ReplicaConfig, ReplicaImpl, WorldModel};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
-    ChainHead, Class, Cut, CutRef, DomainId, EntrySource, FinalCut, Finalized, Frame, Hash, LineId, ObjectId, Replica,
-    RootError, SignedEntry, SimRate,
+    ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntrySource, FinalCut, Finalized, Frame, GroupSel, Hash,
+    ImportError, LineId, ObjectId, Replica, RootError, SignedEntry, SimRate,
 };
 
 /// Agreement's stand-in: entries by frame, in a fixed order (chain, then seq), whatever order they arrive in.
@@ -587,4 +587,98 @@ fn a_cut_over_frames_trimmed_above_the_floor_is_damaged_not_a_silent_stall() {
     assert_eq!((a.floor_frame(), a.faults() - f0), (Frame(0), 1), "the floor stays; one fault, not one per call");
     assert_eq!(a.root_at_cut(&cut(&scene(), 3, 24), &mut s), Err(RootError::Damaged));
     assert_eq!((a.faults() - f0, s.asked), (1, None), "nothing finalized, nothing asked");
+}
+
+/// The donor's import at its cut: every leaf as a record (nothing absent), its physics image, its root as the target.
+fn import_from(donor: &mut ReplicaImpl<MockWorld>, ds: &mut Source, cut: &Cut) -> CutImport {
+    let root = donor.root_at_cut(cut, ds).expect("the donor's root");
+    let records = donor.tree(&root).expect("held").export(&donor.world().leaves());
+    CutImport { cut: cut.clone(), target_root: root, records, absent: Vec::new(), physics: donor.physics_image(&root) }
+}
+
+/// Ask until the import has re-simulated to the present, advancing between asks; how many times it was `Pending`.
+fn import_until_done(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, import: &CutImport, present: u64) -> (Hash, u32) {
+    let mut pending = 0;
+    for _ in 0..100 {
+        match r.import_at_cut(&GroupSel::Domain, import.clone(), s) {
+            Err(ImportError::Pending) => {
+                pending += 1;
+                r.advance(Frame(present), s);
+            }
+            done => return (done.expect("the import"), pending),
+        }
+    }
+    panic!("the import never finished")
+}
+
+/// Rung 2 (S2 v1.2 round 3): a replica that diverged at 32 cannot replay from `Cv` (the entries since are trimmed),
+/// so it imports the quorum's state at 32 from a donor: checked, then re-simulated to the present in budget-sized
+/// steps (`Pending` meanwhile). Its root at 32 is then the imported one with no re-step below it, finalize agrees,
+/// and it goes on with the good replica's roots.
+#[test]
+fn rung_2_imports_the_quorum_s_state_and_finalize_agrees() {
+    let (mut bad, mut s, c32, r32, _) = diverged_at_32();
+    s.trim_below(Frame(24));
+    assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept), "rung 1 cannot: rung 2 is due");
+    let (mut good, mut gs) = reference(48);
+    let import = import_from(&mut good, &mut gs, &c32);
+    assert_eq!(import.target_root, r32);
+    bad.set_budget(Duration::from_millis(50));
+    let (root, pending) = import_until_done(&mut bad, &mut s, &import, 48);
+    assert_eq!(root, r32);
+    assert!(pending > 0, "16 frames to re-simulate at 3 a call");
+    assert_eq!(bad.import_at_cut(&GroupSel::Domain, import, &mut s), Ok(r32), "asked again, at once");
+    assert_eq!(bad.frame(), Frame(48));
+    assert_eq!(bad.root_at_cut(&c32, &mut s), Ok(r32));
+    assert_eq!(bad.finalize(&FinalCut { cut: c32, root: r32, voters: vec![] }, &mut s), Finalized::Agreed);
+    let from_32 = |r: &ReplicaImpl<MockWorld>, to| roots(r, to).into_iter().filter(|r| r.0 >= 32).collect::<Vec<_>>();
+    assert_eq!(from_32(&bad, 48), from_32(&good, 48));
+    bad.set_budget(Duration::from_secs(1));
+    bad.advance(Frame(64), &mut s);
+    good.advance(Frame(64), &mut gs);
+    assert_eq!(from_32(&bad, 64), from_32(&good, 64), "and it goes on with the good replica");
+}
+
+/// An import that does not check changes nothing: a wrong target root, and an image whose bytes are not its check
+/// hash's, are refused before the live state is touched.
+#[test]
+fn an_import_that_does_not_check_changes_nothing() {
+    let (mut bad, mut s, c32, _, _) = diverged_at_32();
+    let (mut good, mut gs) = reference(48);
+    let import = import_from(&mut good, &mut gs, &c32);
+    let live = (bad.frame(), roots(&bad, 48), bad.world().root());
+    let mut wrong_root = import.clone();
+    wrong_root.target_root = Hash([7; 32]);
+    let got = bad.import_at_cut(&GroupSel::Domain, wrong_root, &mut s);
+    assert!(matches!(got, Err(ImportError::RootMismatch { .. })), "a wrong target: {got:?}");
+    let mut bad_bytes = import.clone();
+    let image = bad_bytes.physics.as_mut().expect("an image");
+    let mut bytes = image.bytes.to_vec();
+    let at = bytes.len() / 2;
+    bytes[at] ^= 0x5a;
+    image.bytes = Bytes::from(bytes);
+    assert_eq!(bad.import_at_cut(&GroupSel::Domain, bad_bytes, &mut s), Err(ImportError::PhysicsCheck));
+    assert_eq!((bad.frame(), roots(&bad, 48), bad.world().root()), live, "the live state is unchanged");
+}
+
+/// Joining: a replica with no root of its own at the cut imports the group's whole state from empty, at once (it is
+/// behind the cut, so nothing to re-simulate), then simulates on with the good replica's roots.
+#[test]
+fn a_joiner_imports_the_whole_state_from_empty() {
+    let (mut good, mut gs) = reference(48);
+    let c32 = cut(&scene(), 4, 32);
+    let import = import_from(&mut good, &mut gs, &c32);
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    // The joiner's S3 held these entries before it joined: no change to report below its floor.
+    s.take_changed_from();
+    let mut joiner = replica();
+    assert_eq!(joiner.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(import.target_root));
+    assert_eq!(joiner.frame(), Frame(32));
+    let fc32 = FinalCut { cut: c32, root: import.target_root, voters: vec![] };
+    assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
+    joiner.advance(Frame(48), &mut s);
+    let from_32 = |r: &ReplicaImpl<MockWorld>| roots(r, 48).into_iter().filter(|r| r.0 >= 32).collect::<Vec<_>>();
+    assert_eq!(from_32(&joiner), from_32(&good));
+    assert_eq!(joiner.faults(), 0);
 }
