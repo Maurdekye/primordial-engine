@@ -269,15 +269,31 @@ mod tests {
     use super::*;
     use crate::clock::{self, LocalClock};
     use crate::standin::{EmptyReplica, SoloAgreement};
-    use pe_seams::LineId;
+    use pe_replica::mock::MockWorld;
+    use pe_replica::{ReplicaConfig, ReplicaImpl};
+    use pe_seams::{DomainId, LineId};
 
     const RATE: SimRate = SimRate::DEFAULT;
 
+    type MakeSim = fn(Arc<dyn FrameClock>, Budget) -> (Sim, Arc<FrameSlot>);
+
     fn sim(clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
-        let slot = Arc::new(FrameSlot::new());
         let replica = EmptyReplica::new(clock.clone(), Frame(0));
-        let sim =
-            Sim::new(Box::new(SoloAgreement::new(LineId::origin())), Box::new(replica), clock, slot.clone(), budget);
+        with_replica(Box::new(replica), clock, budget)
+    }
+
+    /// pe-replica's `ReplicaImpl` over its small world model, until pe-world implements `WorldModel`. The replica
+    /// takes the frame clock, so the view's `sim_time` is on the shared time base (S5), as the renderer reads it.
+    fn real(clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
+        let mut config = ReplicaConfig::new(RATE, Duration::from_millis(133));
+        config.clock = Some(clock.clone());
+        let replica = ReplicaImpl::new(MockWorld::new(DomainId(0), RATE), config).expect("a replica");
+        with_replica(Box::new(replica), clock, budget)
+    }
+
+    fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
+        let slot = Arc::new(FrameSlot::new());
+        let sim = Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, clock, slot.clone(), budget);
         (sim, slot)
     }
 
@@ -352,8 +368,17 @@ mod tests {
 
     #[test]
     fn a_tick_simulates_its_frame_and_publishes_the_view() {
+        ticks_and_publishes(sim);
+    }
+
+    #[test]
+    fn a_tick_simulates_its_frame_and_publishes_the_view_on_the_real_replica() {
+        ticks_and_publishes(real);
+    }
+
+    fn ticks_and_publishes(make: MakeSim) {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
-        let (mut s, slot) = sim(clock.clone(), Budget::new(RATE));
+        let (mut s, slot) = make(clock.clone(), Budget::new(RATE));
         let (p, report) = s.tick(clock.host_time_of(Frame(1))).expect("ticked");
         assert_eq!(p, Frame(1));
         assert!(report.advance.caught_up);
@@ -371,8 +396,17 @@ mod tests {
     /// driver, the view holds while the replica catches up, and it catches up within `W_fg` plus two ticks.
     #[test]
     fn a_backlog_of_w_fg_at_the_floor_catches_up_within_w_fg() {
+        catches_up(sim);
+    }
+
+    #[test]
+    fn a_backlog_of_w_fg_at_the_floor_catches_up_within_w_fg_on_the_real_replica() {
+        catches_up(real);
+    }
+
+    fn catches_up(make: MakeSim) {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
-        let (mut s, slot) = sim(clock.clone(), Budget::with_share(RATE, 0.0));
+        let (mut s, slot) = make(clock.clone(), Budget::with_share(RATE, 0.0));
         let w_fg = RATE.frames(Duration::from_secs(2));
         let mut ticks = 0u64;
         loop {
