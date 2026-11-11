@@ -546,15 +546,30 @@ its frame this way (seam S3).
 - **Until the welcome arrives,** the joiner sends only its hello and clock records (2.3).
 - **The exchange** [found building the Core; V `pe-net/tests/core.rs`]: lane traffic is closed both ways until
   it completes. Each side opens so that nothing is sent before the other side takes it in, because QUIC doesn't
-  order one stream against another, and a lane message on a stream, once delivered, isn't sent again:
-  - a member that admits a peer sends the welcome and opens its receive side;
-  - a side that gets a welcome opens its send side. A joiner also opens its receive side and answers with an
-    **up record**, on which the admitting member opens its send side;
-  - two members (6.7) each admit the other, so each opens its send side on the other's welcome, and no up record
-    is needed;
-  - a welcome that overtakes the member's hello is held until the hello arrives;
-  - the link is Up when both sides are open. Lane traffic arriving at a side that is still closed is a protocol
-    fault (code 6), since no correct peer sends it.
+  order one stream against another, and a lane message on a stream, once delivered, isn't sent again.
+  - **The role** comes from the app (`set_member`), fixed per connection when it is confirmed: a **member** admits
+    (raises `JoinRequest`), a **joiner** waits to be welcomed. Never from what the peer sends.
+  - **A member opens nothing before its own `admit`** [@design-reviewer's Medium on draft 1.6]. Admission (2.3)
+    is the app's decision, so a peer that passes the hello guards (none of them secret) must not get lane
+    traffic in or out before it. On `admit`, a member sends the welcome and opens its receive side.
+  - **A joiner** that gets a welcome opens both sides and answers with an **up record**, on which the member
+    that admitted it opens its send side.
+  - **Two members** (6.7) each admit the other. Each opens its send side once it has both admitted and been
+    welcomed: a welcome that arrives before its own `admit` is held. No up record is sent.
+  - **A welcome that overtakes the peer's hello** is held until the hello arrives.
+  - **The link is Up** when both sides are open. Lane traffic arriving at a side that is still closed is a
+    protocol fault (code 6), since no correct peer sends it.
+  - **`T_welcome`** [@design-reviewer's Low 1]: a connection not Up within `T_welcome` of confirmation is
+    closed: with code 8 by a member whose app hasn't decided, with code 5 by a side still waiting to be
+    admitted. Keep-alive PINGs (6.5) would otherwise keep it open for good.
+- **What each side may receive** [@design-reviewer's Low 2]. Anything else is a protocol fault (code 6):
+
+  | Record | A member may take it | A joiner may take it |
+  |---|---|---|
+  | hello | once, first | once, first |
+  | welcome | once, after the hello; held until its own `admit` | once, after the hello |
+  | up record | once, after its own `admit`, and only if it hasn't had the peer's welcome (joiners never send welcomes) | never |
+  | lane traffic | once its receive side is open (its `admit`) | once its receive side is open (the welcome) |
 
 ### 6.5 Link states
 
@@ -607,7 +622,7 @@ impl Core {
     pub fn admit(&mut self, now: HostTime, peer: PeerId, welcome: &Welcome);
     pub fn refuse(&mut self, now: HostTime, peer: PeerId, reason: Refusal);
     pub fn poll_lifecycle(&mut self) -> Option<Lifecycle>;                // Welcomed, Refused, Fault
-    pub fn set_member(&mut self, member: bool);                           // a member admits; a joiner waits
+    pub fn set_member(&mut self, member: bool);                           // the role of 6.4, per connection
     // plus the Transport methods of 3.1, and the clock model of 5.7
 }
 ```
@@ -744,6 +759,7 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | `S_max` | 0.2 % | Steering rate limit |
 | `T_pinned` | 10 s | Steering pinned at `S_max` before a `ClockFault` |
 | `T_stagger` | 0.25 s | Gap between dials to an invite's addresses |
+| `T_welcome` | 10 s | Longest from confirmation to Up before the connection is closed (6.4) |
 | `T_reply` | 3 s | No answer before the joiner shows a reply code |
 | `T_keepalive` | 0.5 s | QUIC PING when idle |
 | `T_degraded` | 1 s | Nothing heard before Degraded |
