@@ -9,7 +9,7 @@ use pe_seams::{
     Advance, AgreeEvent, AgreeStats, Agreement, Cut, CutImport, CutRef, DomainId, Entry, EntryRef, EntrySource, Fault,
     FinalCut, Finalized, Frame, FrameClock, FrameView, GroupSel, Hash, HostTime, ImportError, Lane, LineId, MemberKey,
     Outcome, Outgoing, PeerId, PhysicsImage, Pos, Replica, RigTransform, RootError, SelfTest, Signature, SignedEntry,
-    SimRate, SubmitError, Tree, ViewCounters,
+    SimRate, SubmitError, Tree, ViewCounters, VoteResult,
 };
 
 /// Agreement with one member and no peers. Its entries are final as soon as they are held, so it never makes a cut
@@ -73,7 +73,10 @@ impl Agreement for SoloAgreement {
         Vec::new()
     }
 
-    fn vote(&mut self, _: &CutRef, _: Hash, _: SelfTest) {}
+    /// The stand-in makes no cuts, so nothing is votable.
+    fn vote(&mut self, _: &CutRef, _: Hash, _: SelfTest) -> VoteResult {
+        VoteResult::NotVotable
+    }
 
     fn hold_votes_from(&mut self, _: Frame) {}
 
