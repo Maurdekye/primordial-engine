@@ -1,5 +1,17 @@
-//! pe-mcp (WS-api, @api-eng). The MCP server over WorldApi: its tools and transports, started by pe-app as a library,
-//! and the small bridge binary.
+//! `pe-mcp`: the MCP server as a thin adapter over WorldApi (`docs/spec/api.md` section 6).
 //!
-//! Specification: docs/spec/api.md. A skeleton from pe-seams v0, so the crate is a workspace member from M0; its owner
-//! fills it in. The seams it implements or uses are in `pe_seams`.
+//! - [`server::WorldServer`]: the nine tools on rmcp, with per-token scopes. It holds no world and runs no engine
+//!   loop: every call goes to a WorldApi on a blocking worker.
+//! - Transports, kept from the archived pe-mcp (`archive/crates/pe-mcp`): [`pipe`] (named pipe / Unix socket, the
+//!   default, via `pe-mcp bridge`) and [`http`] (loopback Streamable HTTP, the fallback). An in-process channel uses
+//!   [`server::Auth::Fixed`].
+//! - [`auth`]: per-session tokens, each with its scopes and its grant (member, producer label, confirm).
+//! - [`host`]: start the transports and launch a harness; pe-app calls it.
+//! - [`mock`]: a fixed in-memory WorldApi for tests and `pe-mcp serve-mock`.
+
+pub mod auth;
+pub mod host;
+pub mod http;
+pub mod mock;
+pub mod pipe;
+pub mod server;
