@@ -187,3 +187,30 @@ fn depth_limit() {
     w.insert(id(1), Protection { owner: BOB }).unwrap();
     assert_eq!(w.snapshot(Frame(0)).info(deepest).unwrap().protected_by, Some(BOB));
 }
+
+/// Padding is zero on every way in (@chunks-reviewer's M1 on world/read-v1): readers hide it, and every hash covers
+/// it, so a nonzero pad would be state no tool can see.
+#[test]
+fn padding_must_be_zero() {
+    use pe_world::components::ids;
+    let mut w = World::new(1, BlobStore::default());
+    w.create(id(1), None, ALICE, Version::GENESIS).unwrap();
+    let shape = Shape { kind: shape_kind::BOX, density: 1.0, size: [1.0; 3], ..Default::default() };
+    let bad = Shape { _pad: 0xdead_beef, ..shape };
+    // Through the typed insert and the raw one (logic, MCP, scene loading).
+    assert!(matches!(w.insert(id(1), bad), Err(WorldError::Store(pe_core::Error::InvalidValue { .. }))));
+    let mut store = w.store().clone();
+    assert!(store.insert_raw(ids::SHAPE, id(1), bytemuck::bytes_of(&bad)).is_err());
+    assert!(!w.store().has::<Shape>(id(1)));
+    // Through a loaded snapshot: flip one pad byte of a valid row in the serialized bytes.
+    w.insert(id(1), shape).unwrap();
+    let mut bytes = w.store().snapshot().to_bytes();
+    let row = bytemuck::bytes_of(&shape);
+    let at = bytes.windows(row.len()).position(|x| x == row).expect("the row is in the bytes");
+    assert!(pe_sim::Snapshot::from_bytes(&bytes, w.store().registry()).is_ok());
+    bytes[at + core::mem::offset_of!(Shape, _pad)] = 1;
+    assert!(matches!(
+        pe_sim::Snapshot::from_bytes(&bytes, w.store().registry()),
+        Err(pe_core::Error::InvalidValue { field, .. }) if field == "_pad"
+    ));
+}

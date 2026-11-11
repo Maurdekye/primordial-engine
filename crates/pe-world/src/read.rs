@@ -1,8 +1,10 @@
 //! The published, read-only view of one frame (world-model.md 9.4; pe-api's snapshot port, api.md 9.1).
 //!
 //! A [`WorldSnapshot`] shares the world's copy-on-write buffers, so taking one costs a reference per column and
-//! table, and it gives the same answers for as long as it is held. Positions never come out as plain numbers: a root's
-//! place is a [`Pos`], and anything relative is an [`Offset`] from an explicit frame (4.2).
+//! table, and it gives the same answers for as long as it is held, with one exception: blob bytes come from the
+//! machine's shared [`BlobStore`], so `name` and `blob` can go from `None` to `Some` when a blob arrives (never back,
+//! and never to different bytes). Positions never come out as plain numbers: a root's place is a [`Pos`], and
+//! anything relative is an [`Offset`] from an explicit frame (4.2).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
