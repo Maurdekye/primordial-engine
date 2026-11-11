@@ -20,6 +20,8 @@ use pe_seams::{Frame, FrameClock, LineId, RigPose, SimRate};
 
 /// The simulation thread's stack until pe-logic's `Settings::thread_stack()` is on main (app.md 1): wasmtime's
 /// default `max_wasm_stack` of 512 KiB plus 2 MiB, rounded up.
+// TODO(pe-logic): spawn with `pe_logic::Settings::thread_stack()` (`max_wasm_stack` + 2 MiB, on ws/logic) once pe-logic
+// lands, from the same `Settings` the replica runs guests with (design-reviewer's Low 1 on slice 1).
 const SIM_STACK: usize = 4 << 20;
 
 /// M1 counts and logs effects; the sound library comes later (app.md 8).
