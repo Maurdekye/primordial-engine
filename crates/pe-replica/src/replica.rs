@@ -67,7 +67,7 @@ use pe_seams::{
 
 use crate::bodies;
 use crate::ring::{Policy, Ring};
-use crate::world::{BodyStateRow, ShapePart, ShapeRow, WorldModel};
+use crate::world::{BodyStateRow, ShapePart, ShapeRow, WorldModel, apply_order};
 
 /// The replica's settings. Only `cut_every` follows from world state (the world's cut interval); the rest are local.
 #[derive(Clone)]
@@ -148,7 +148,7 @@ pub struct ReplicaImpl<W: WorldModel> {
     ring: Ring<Key<W::Saved>>,
     /// Roots at cut-grid frames of the live history, from the floor.
     live: BTreeMap<Frame, Hash>,
-    /// The ids of the entries each live frame stepped, from the floor.
+    /// The ids of the entries each live frame stepped, in apply order, from the floor.
     stepped: BTreeMap<Frame, Vec<EntryRef>>,
     outcomes: BTreeMap<EntryRef, (Frame, Outcome)>,
     held: BTreeMap<Hash, Held<W::Saved>>,
@@ -330,16 +330,18 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     // ---- one frame --------------------------------------------------------------------------------------------------
 
-    /// Step `self.frame` with these entries (replica.md 3). Live frames record their outcomes, the ids they stepped,
-    /// their roots and keyframes; a scratch frame (a root at a cut computed off the live history) records nothing.
-    /// Returns the root if the next frame is a cut frame.
+    /// Step `self.frame` with these entries, given in agreed order (replica.md 3). They apply in apply order
+    /// ([`apply_order`]: by the world model's phase, then agreed order), the one path for every step: live, in a
+    /// re-simulation, in rung 1's replay and in the re-step for a root at a cut. Live frames record their outcomes,
+    /// the ids they stepped, their roots and keyframes; a scratch frame (a root at a cut computed off the live
+    /// history) records nothing. Returns the root if the next frame is a cut frame.
     fn step(&mut self, entries: &[&SignedEntry], live: bool) -> Option<Hash> {
         let f = self.frame;
         if !pe_core::fpenv::check_and_reset() {
             self.counters.fp_resets += 1;
         }
         let mut ids = Vec::with_capacity(entries.len());
-        for e in entries {
+        for e in apply_order(entries.iter().copied(), W::phase) {
             let (outcome, fx) = self.world.apply(f, e);
             let id = e.id();
             if live {
@@ -556,12 +558,13 @@ impl<W: WorldModel> ReplicaImpl<W> {
     // stamped back), which `entries_at` rightly leaves out, so counting the entries it sees would refuse such a cut
     // for ever (@harness-eng, mcc79fdb5df77, under S3's covered-only void rule). So it never answers `MissingEntries`.
 
-    /// The first frame from the floor below the cut's frame whose live entries are not exactly the cut's.
+    /// The first frame from the floor below the cut's frame whose live entries are not exactly the cut's, compared in
+    /// apply order, the order `stepped` records.
     fn first_difference(&self, cut: &Cut, source: &dyn EntrySource) -> Option<Frame> {
         (self.base_frame().0..cut.at.frame.0).map(Frame).find(|&g| {
             // A frame no longer kept counts as different (`my_root` refuses before asking).
             let Some(all) = source.entries_at(g) else { return true };
-            let want: Vec<EntryRef> = in_cut(all, cut).iter().map(|e| e.id()).collect();
+            let want: Vec<EntryRef> = apply_order(in_cut(all, cut), W::phase).iter().map(|e| e.id()).collect();
             self.stepped.get(&g).is_none_or(|had| *had != want)
         })
     }
