@@ -55,6 +55,16 @@ pub fn wanted_features(offered: wgpu::Features) -> wgpu::Features {
     offered & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::MULTIVIEW | wgpu::Features::MULTISAMPLE_ARRAY)
 }
 
+/// The limits pe-render asks for: wgpu's defaults, with two multiview views where the adapter offers them
+/// (`Limits::default()` has none, which refuses every two-view pass). This is `pe_render::gpu::wanted_limits`
+/// (render/xr 5508928b, @ballpit-viz) until that lands on main; it then replaces this.
+pub fn wanted_limits(offered: &wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits {
+        max_multiview_view_count: if offered.max_multiview_view_count >= 2 { 2 } else { 0 },
+        ..wgpu::Limits::default()
+    }
+}
+
 /// A GPU context made through the runtime, and what `xrCreateSession` needs to bind to it.
 pub struct VulkanContext {
     pub gpu: GpuContext,
@@ -161,7 +171,7 @@ pub unsafe fn vulkan_context(xr_instance: &XrInstance, system: xr::SystemId) -> 
             drop(library);
         })
     };
-    let limits = wgpu::Limits::default();
+    let limits = wanted_limits(&exposed.capabilities.limits);
     // SAFETY: the device was created with `dev_exts` and `phd_features`, with one queue in `family`.
     let open = unsafe {
         exposed.adapter.device_from_raw(
@@ -327,6 +337,13 @@ mod tests {
         assert_eq!(vulkan_format(50), Some(wgpu::TextureFormat::Bgra8UnormSrgb));
         assert_eq!(vulkan_format(126), Some(wgpu::TextureFormat::Depth32Float));
         assert_eq!(vulkan_format(37), None, "UNORM would show the headset image too dark");
+    }
+
+    #[test]
+    fn wanted_limits_raise_only_the_multiview_views_and_only_when_offered() {
+        let offered = wgpu::Limits { max_multiview_view_count: 6, ..wgpu::Limits::default() };
+        assert_eq!(wanted_limits(&offered).max_multiview_view_count, 2);
+        assert_eq!(wanted_limits(&wgpu::Limits::default()), wgpu::Limits::default());
     }
 
     #[test]
