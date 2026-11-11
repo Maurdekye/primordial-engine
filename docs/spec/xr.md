@@ -1,11 +1,14 @@
 # pe-xr: the OpenXR session, stereo, tracked hands and frame pacing
 
-Status: draft 5, 2026-11-10, by @xr-eng (WS-xr). Draft 2 answered @shader-reviewer's review of draft 1 (M1-M5,
+Status: draft 7, 2026-11-11, by @xr-eng (WS-xr). Draft 2 answered @shader-reviewer's review of draft 1 (M1-M5,
 L1-L4); draft 3 folds in @ballpit-viz's M0 report (cf7a3bb, branch `m0/feasibility-xr`); draft 4 answers the re-review of
 draft 3 (image states at release; API version; multiview on the desktop context); draft 5 folds in @ballpit-viz's
 headset run (Quest 3 through Virtual Desktop, b35c448); draft 6 applies the user's rulings on rates (pace to
 whatever the runtime gives; a simulation rate fixed apart from the display, 60 by default and configurable per world;
-limits in seconds) and the coordinator's ruling of Vulkan first for VR on Windows. Nothing in it is built. It specifies M1's VR work in
+limits in seconds) and the coordinator's ruling of Vulkan first for VR on Windows; draft 7 answers @shader-reviewer's
+review of the first code (error policy in 3.1, the tracked hand's pose in 5.1, the ring as built in 6.2, sRGB
+formats in 4.2), and the coordinator's conditions on its three choices (me761033e3c05). The session, the hands, the ring and the real backend's session level are built (`crates/pe-xr`);
+the graphics binding is not. It specifies M1's VR work in
 `docs/refound-plan.md` (branch `docs/refound-plan`, b610464), section 3.1: "the OpenXR session, stereo through
 pe-render, tracked hands into hand entries, 90 Hz pacing"; the user has since ruled that pacing follows the
 runtime's rate (section 7.2). Seam S5 is proposed in section 8. @engine-architect (WS-seams)
@@ -131,7 +134,31 @@ FOCUSED, STOPPING, LOSS_PENDING and EXITING. What each state means for the engin
 - **Events** drive every row. pe-xr drains `xrPollEvent` once per frame while the frame loop runs (section 7.1), and
   about every 100 ms while it does not (IDLE before READY, and after STOPPING), on the XR thread [I: OpenXR has no
   blocking wait for events]. The events it handles: session state changes, instance loss pending, reference-space
-  change pending, and interaction-profile changes.
+  change pending, and interaction-profile changes. Lost events (the runtime's queue overflowed) are counted.
+- **How the session ends** is told to its caller as one of four reasons: EXITING (by choice, or the runtime's);
+  **session loss** (LOSS_PENDING or `XR_ERROR_SESSION_LOST`: the instance is still good, so a new session may be tried
+  on it after `xrGetSystem` finds the headset again); **instance loss** (`InstanceLossPending` or
+  `XR_ERROR_INSTANCE_LOST`: drop the instance and load the runtime again); or **frames failing** (below).
+- **Errors short of a loss never end VR on their own.** An error from any call inside a frame (`xrWaitFrame`,
+  `xrBeginFrame`, `xrSyncActions`, the hand and view locates, the image calls, `xrEndFrame`) closes that frame
+  cleanly: the image is released if acquired, and the frame is ended with no layers if it was begun, but `xrEndFrame`
+  is never called twice for one frame, even when it was the call that failed. The error is counted and the next
+  frame runs. The session ends only when no frame has succeeded for one second (`FRAME_ERROR_LIMIT`), counted from
+  the last successful frame in host time, so the limit holds at any display rate [I: one second is long enough to
+  ride out a runtime's hiccup, short enough that a broken session does not leave the user in a frozen headset].
+  Good and bad frames alternating therefore never end VR; that case is reported as **degraded** (a run of failures
+  beginning within a second of an earlier one is counted, and the session says it is degraded until a second passes
+  without an error). Session and instance loss still end VR at once. [R coordinator me761033e3c05, after
+  @fable-reviewer: the 1 s limit, counted from the last good frame, with the degraded report.]
+- **Ending VR never stops the world.** Whatever the reason, the world session keeps running and the desktop window
+  draws it (section 3.3); the simulation thread never waits on a failing frame, since it only reads the ring
+  (section 6.2).
+- **An invalid head pose skips the frame.** When `xrLocateViews` does not report both ORIENTATION_VALID and
+  POSITION_VALID (a moment of lost head tracking), the poses are unspecified, and a projection layer built from them
+  can be refused (`XR_ERROR_POSE_INVALID`). That frame is not drawn: the image is released and the frame ends with
+  no layers, which shows the runtime's own fallback; the frame is counted (section 9).
+- **Drawing needs VISIBLE or FOCUSED** as well as `shouldRender`; SYNCHRONIZED frames are paced and ended with no
+  layers.
 
 ### 3.2 Reference space and the rig
 
@@ -222,8 +249,11 @@ itself, with the extensions the runtime and wgpu each need. So:
   in wgpu-types 30, on Vulkan and on D3D12 with view instancing], both layers are drawn in one pass; without it, one
   pass per layer, as the M0 check does now. On Vulkan, multiview is the plan; on the D3D12 fallback, one pass per
   layer (FXC). At 120 Hz the two passes must fit the same per-period budget (section 7.3).
-- **Format:** the first sRGB format the runtime offers that pe-render can target (RGBA8 or BGRA8 sRGB).
-- **Size:** the runtime's recommended size per eye, times a render scale pe-render may lower under load (section 7).
+- **Format:** only an sRGB format, whatever order the runtime lists them in: RGBA8 sRGB first, then BGRA8 sRGB
+  (Vulkan `R8G8B8A8_SRGB`, `B8G8R8A8_SRGB`; DXGI `R8G8B8A8_UNORM_SRGB`, `B8G8R8A8_UNORM_SRGB`). pe-render writes
+  linear values and relies on the target's sRGB encoding, so a UNORM format would show the headset image too dark.
+  A runtime offering neither fails session creation with that reason.
+- **Size:** the larger of the two eyes' recommended sizes (one swapchain serves both), times a render scale pe-render may lower under load (section 7).
 - **Depth:** a second swapchain in a depth format, submitted with `XR_KHR_composition_layer_depth` when offered.
 - **Wrapping:** each swapchain image is wrapped once, at creation, with wgpu-hal's `texture_from_raw` and
   `create_texture_from_hal`, and the textures are kept for the swapchain's life [M0]. pe-xr acquires, waits for and
@@ -276,8 +306,16 @@ Every display frame, while input is focused, pe-xr samples both hands and publis
 - `sampled_at`: the host time the pose is for.
 - `tracked`: whether the pose is valid now. When false, the pose is the last valid one.
 - `pose`: the grip pose in the rig frame: position in metres and a unit quaternion in OpenXR's order (x, y, z, w),
-  `f32`.
-- `linear_velocity`, `angular_velocity`: in the rig frame, when the runtime gives them.
+  `f32`. For a controller it is the grip action space's pose. For a tracked hand it is the grip action space's pose
+  too when `XR_EXT_hand_interaction` binds the grip pose to the tracked hand (the joints then give only the curl);
+  without that extension it is the PALM joint's pose, the joint nearest the grip point. The palm and the grip pose
+  differ a little in origin and axes [I: by centimetres]; a change of source bumps `discontinuity`, so the switch
+  itself never reads as motion, but an object held by a tracked hand on a runtime without the extension sits a
+  little differently than one held by a controller. That offset is accepted for M1 [R coordinator me761033e3c05,
+  after @fable-reviewer]: it is a known difference, recorded, and its exit is the headset test (section 10.4), which
+  measures the gap. pe-xr reports which pose path is in use (`PosePath`), and the application logs it at start-up.
+- `linear_velocity`, `angular_velocity`: in the rig frame, when the runtime gives them (the grip action space gives
+  them; the joints, as pe-xr reads them, do not).
 - `grip`: 0 to 1, how closed the hand is (section 5.3).
 - `closed`: the grasp state, decided on the author's machine with hysteresis (section 5.3).
 - `discontinuity`: a counter, bumped when the pose jumps for a reason other than motion: a recentre, tracking
@@ -391,7 +429,17 @@ where to draw them.
   entry never carries a pose predicted into the future.
 - **Measured:** the age of the sample each frame used, and the size of each extrapolation (section 9).
 - **The thread.** The ring is written by the XR thread and read by the simulation thread with no lock either side
-  waits on: a fixed-size ring with a sequence counter [I].
+  waits on. As built, it is an `arc-swap` of immutable snapshots: each push builds a new snapshot of both hands'
+  samples and publishes it with one atomic swap, and a reader loads the current one. arc-swap's readers are lock-free
+  (usually wait-free) and its writers lock-free [V: arc-swap 1.9's documentation, checked by @shader-reviewer]. The
+  allocator is the one shared part that is not lock-free: two snapshots per display frame are allocated on the XR
+  thread, and the last reference to an old one may be freed on the simulation thread [I: small, at about 240
+  allocations a second]. A fixed-size ring with a sequence counter would remove it. [R coordinator me761033e3c05,
+  after @fable-reviewer:] the ring stays behind its own small type (`HandRing`, `ring.rs`), so a swap touches one
+  file. **The switch-over threshold** is any sample older than one display period. It is judged by the tail: the ring
+  records every read's sample age (how far the asked time is past the newest sample) in a lock-free histogram with
+  its exact maximum, and a run of several minutes with a build running alongside reports the max and p99.9 age with
+  the frame time. That run belongs to the headset test (section 10.4).
 
 ## 7. The frame loop and pacing
 
@@ -567,7 +615,10 @@ pe-xr reports, per second and as distributions over a run:
   display time (section 7.2);
 - for each simulation frame's hand: the sample's age, each extrapolation's length, and requests older than the ring;
 - hand tracking lost, regained, and releases forced by the grace period;
-- the display rate the runtime gave, and session state changes.
+- the display rate the runtime gave, and session state changes;
+- frames skipped for an invalid head pose, frames closed after an error short of a loss, degraded runs, and lost
+  events;
+- the hand sample's age at each read: its maximum and p99.9 (section 6.2).
 
 ## 10. Tests
 
@@ -622,7 +673,11 @@ From plan M1:
 - dropped frames, and judder under rollback;
 - the hand feel: D18b's two modes, and section 5.6's two ways to draw the own hand;
 - the hold transitions: a throw leaving the hand, and the snap at a grasp (section 5.6);
-- the grasp thresholds and the tracking-loss grace period.
+- the grasp thresholds and the tracking-loss grace period;
+- the palm-joint gap: where it applies (a runtime without `XR_EXT_hand_interaction`), the offset between the palm
+  joint and the grip pose, measured; it decides whether a fixed offset is applied (section 5.1);
+- the hand ring's tail: several minutes with a build running alongside, recording the max and p99.9 sample age and
+  the frame time; any sample older than one display period means the fixed ring replaces arc-swap (section 6.2).
 
 ## 11. Open points
 

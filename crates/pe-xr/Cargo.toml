@@ -6,8 +6,19 @@ license.workspace = true
 publish.workspace = true
 description = "OpenXR for Primordial Engine: the session, stereo through pe-render, tracked hands into hand samples, frame pacing (docs/spec/xr.md)"
 
-# Skeleton from pe-seams v0 (WS-seams). WS-xr, @xr-eng owns this crate and its manifest; the root Cargo.toml
-# already lists it, so adding dependencies here needs no other change.
+# WS-xr, @xr-eng owns this crate and its manifest; the root Cargo.toml lists it (WS-seams).
 [dependencies]
 pe-seams = { path = "../pe-seams" }
-pe-render = { path = "../pe-render" }
+# pe-render comes back with the graphics binding, which uses its GpuContext.
+# No features: not `loaded` (it would look for Khronos' C++ loader, which Windows doesn't have), and never
+# `static` or `linked`, which build or link that loader. `loader.rs` loads the runtime itself (spec 2).
+openxr = { version = "=0.22.0", default-features = false }
+libloading = "0.8"
+serde_json.workspace = true
+arc-swap = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
