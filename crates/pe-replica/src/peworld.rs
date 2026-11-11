@@ -2,20 +2,27 @@
 //! @world-model (m9249bf73037f, m20847ce60303, meef9a881048b). pe-world's side is its `replica` calls (its slice A).
 //!
 //! - **The domain:** pe-world has none, so [`PeWorld`] carries it.
-//! - **`apply`:** edits go through `World::apply_edit`, the one edit path. Its `Footprint` becomes the physics
-//!   [`Effects`] here by comparing each affected body's row before and after the entry: a body that appears is
-//!   `Created`, one that goes is `Removed`, changed shapes or fields are `Rebuilt`, and a moved world pose is
-//!   `Teleported`. A body whose shapes and pose both changed gets `Rebuilt` and then `Teleported`, since a rebuild
-//!   keeps a moving body's physics pose. Affected bodies: those of every object the entry created, removed, wrote a
-//!   row of or reparented, with each object's body being itself or its nearest ancestor with a `Body` (a compound
-//!   child's), before and after; for a `Transform` write or a reparent, those of the whole subtree.
-//! - **Entry classes:** pe-world applies edits only. It refuses an input entry until its input slice (B). Governance
-//!   and Protocol entries are `Applied` with no effects, as pe-world applies neither yet.
+//! - **`apply`:** edits go through `World::apply_edit`, the one edit path, and inputs through `World::apply_input`
+//!   (pe-world's slice B). The `Footprint` becomes the physics [`Effects`] here by comparing each affected body's row
+//!   before and after the entry: a body that appears is `Created`, one that goes is `Removed`, changed shapes or
+//!   fields are `Rebuilt`, and a moved world pose is `Teleported`. A body whose shapes and pose both changed gets
+//!   `Rebuilt` and then `Teleported`, since a rebuild keeps a moving body's physics pose. Affected bodies: those of
+//!   every object the entry created, removed, wrote a row of or reparented, with each object's body being itself or
+//!   its nearest ancestor with a `Body` (a compound child's), before and after; for a `Transform` write or a
+//!   reparent, those of the whole subtree. A hand input writes its hand's `Transform`, so it counts as one: a body
+//!   under a hand moves with it. An input's pushes become [`PushFx`], one for one.
+//! - **Entry classes:** edits and inputs as above. Governance and Protocol entries are `Applied` with no effects, as
+//!   pe-world applies neither yet.
+//! - **The order within a frame:** [`WorldModel::phase`] is pe-world's `input_phase`, so a frame's hand inputs apply
+//!   before its other entries, and a grab's reach is measured after the frame's hand movement (world-model.md 8.1).
 //! - **`end_frame(f)`:** `World::end_frame(f)`, which only expires, then the frame becomes `f + 1`.
 //!   `World::frame()` is the next frame to step, so a cut's root is taken when it equals the cut's frame.
 //! - **Until pe-world's hash tree (its slice C):** `root` is pe-world's stand-in root; `tree` gives that root and
 //!   the frame, with no nodes, records or object hashes; `import` answers `NotKept`; `empty` is a fresh world.
-//! - **Hands:** none until pe-world's input slice (B).
+//! - **Hands:** every `Hand` row, in id order. The target is the hand object's world transform, which its inputs
+//!   write (and `end_frame` writes a pending pack's next pose). The rest is the row's: `span` counts frames, and
+//!   `previous` is the input before, when there was one (@world-model, m419e8711ae50, mc69f033224d1).
+//! - **Claims:** every claim, with its hand. An agent's grab has no hand (`ObjectId::NONE`), so it gets no joint.
 //! - **The view** (S5): every object with a `Shape`, a `Light` or a `Hand`, at its world transform, with its
 //!   shape in its own units (the view's scale scales it), appearance, light, hand owner and holder. An object with no
 //!   world transform (no `Transform`, or out of range) is not drawn; a hand without a `Shape` is drawn as a
@@ -39,11 +46,11 @@ use pe_seams::{
 use pe_sim::transform::rotate;
 use pe_sim::{Component, SimStore, Transform, WorldTransform};
 use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
-use pe_world::{Footprint, World};
+use pe_world::{Footprint, World, input_phase};
 
 use crate::world::{
-    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, PhysicsSettings, ShapePart,
-    ShapeRow, WorldModel,
+    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, Phase, PhysicsSettings, PushFx,
+    ShapePart, ShapeRow, WorldModel,
 };
 
 const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -77,11 +84,20 @@ impl WorldModel for PeWorld {
         self.domain
     }
 
+    /// pe-world's `input_phase`: 0, a hand input, is `First`; anything else is `Second`.
+    fn phase(entry: &SignedEntry) -> Phase {
+        if input_phase(entry) == 0 { Phase::First } else { Phase::Second }
+    }
+
     fn apply(&mut self, frame: Frame, entry: &SignedEntry) -> (Outcome, Effects) {
         match entry.entry.class {
-            Class::Edit | Class::Input => {
+            class @ (Class::Edit | Class::Input) => {
                 let before = self.world.clone();
-                let (outcome, footprint) = self.world.apply_edit(frame, entry);
+                let (outcome, footprint) = if class == Class::Edit {
+                    self.world.apply_edit(frame, entry)
+                } else {
+                    self.world.apply_input(frame, entry)
+                };
                 let effects = match outcome {
                     Outcome::Applied { .. } => effects(&before, &self.world, &footprint),
                     _ => Effects::default(),
@@ -110,7 +126,26 @@ impl WorldModel for PeWorld {
     }
 
     fn hands(&self) -> Vec<HandRow> {
-        Vec::new()
+        let store = self.world.store();
+        let mut hands: Vec<HandRow> = store
+            .iter::<Hand>()
+            .filter_map(|(hand, h)| {
+                let at = store.world_transform(hand)?;
+                Some(HandRow {
+                    hand,
+                    owner: h.owner,
+                    target: at.pos,
+                    rotation: at.rot,
+                    grip: h.grip,
+                    engaged: h.engaged != 0,
+                    stamp: Frame(h.stamp),
+                    span: h.span,
+                    previous: (h.has_prev != 0).then_some((Frame(h.prev_stamp), h.prev_span)),
+                })
+            })
+            .collect();
+        hands.sort_unstable_by_key(|h| h.hand);
+        hands
     }
 
     fn claims(&self) -> Vec<ClaimRow> {
@@ -419,6 +454,11 @@ fn effects(before: &World, after: &World, footprint: &Footprint) -> Effects {
         touched.insert(id);
         moved.push(id);
     }
+    // A hand input writes its hand's `Transform`.
+    for &id in &footprint.hands {
+        touched.insert(id);
+        moved.push(id);
+    }
     for top in moved {
         for world in [before, after] {
             touched.extend(subtree(world, top));
@@ -443,7 +483,8 @@ fn effects(before: &World, after: &World, footprint: &Footprint) -> Effects {
             (None, None) => {}
         }
     }
-    Effects { changed, ..Effects::default() }
+    let pushes = footprint.pushes.iter().map(|p| PushFx { object: p.object, impulse: p.impulse, at: p.at }).collect();
+    Effects { changed, pushes, ..Effects::default() }
 }
 
 /// `id`'s body: itself if it has a `Body`, else its nearest ancestor with one.
