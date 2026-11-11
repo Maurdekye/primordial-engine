@@ -56,6 +56,8 @@ pub struct SeamNode<A: Agreement> {
     checked_to: u64,
     /// The highest `kept_from` seen: it never goes back.
     kept_seen: u64,
+    /// Retention's rotating probe: the next frame checked between `kept_from` and the final frame.
+    probe: u64,
     /// Cut frames already recorded as `Damaged`.
     damaged: BTreeSet<u64>,
     seen_height: u64,
@@ -116,6 +118,7 @@ impl SeamNode<LockstepAgreement> {
             voided: BTreeSet::new(),
             checked_to: 0,
             kept_seen: 0,
+            probe: 0,
             damaged: BTreeSet::new(),
             seen_height: 0,
         }
@@ -171,7 +174,8 @@ impl<A: Agreement> SeamNode<A> {
     }
 
     /// P15's retention lines (S3 v1.2): `kept_from` never goes back, and it is truthful: `entries_at` answers for
-    /// it and for the final frame's predecessor, whenever they are at or above it and below `present`. (That nothing
+    /// it, for the final frame's predecessor, and for one frame above it and below `present` that rotates each step
+    /// (design-reviewer md0cb46c5f152). (That nothing
     /// at or above the floor is trimmed except past the time cap needs the cap, which is S3's own: pe-agree's
     /// conformance target checks it.)
     fn check_retention(&mut self, present: u64) {
@@ -182,7 +186,13 @@ impl<A: Agreement> SeamNode<A> {
         }
         self.kept_seen = self.kept_seen.max(kept);
         let last = self.agree.final_cut().map(|fc| fc.cut.at.frame.0.saturating_sub(1));
-        for f in std::iter::once(kept).chain(last) {
+        // Every frame from `kept_from` to the present is promised, final or not: one more of them each step.
+        let span = present.saturating_sub(kept + 1);
+        let between = (span > 0).then(|| {
+            self.probe = (self.probe + 1) % span;
+            kept + 1 + self.probe
+        });
+        for f in std::iter::once(kept).chain(last).chain(between) {
             if f >= kept && f < present && self.agree.entries_at(Frame(f)).is_none() {
                 let detail = format!("frame {f} is at or above kept_from {kept} but no longer kept");
                 self.events.push(Ev::Breach { rule: "kept_from", detail });
