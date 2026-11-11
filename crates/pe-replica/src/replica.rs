@@ -624,14 +624,14 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
                 self.faults += 1;
             }
             let to = f.max(self.rollback_floor());
-            if to < self.frame {
-                if let Some(k) = self.roll_back(to) {
-                    out.rolled_back_to = Some(k);
-                    self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0 - k.0);
-                }
+            if let Some(k) = (to < self.frame).then(|| self.roll_back(to)).flatten() {
+                out.rolled_back_to = Some(k);
+                self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0 - k.0);
             }
         }
         self.run(present, &*source, &mut budget, &mut out);
+        // The ring's policy holds without a finalize too, so memory stays logarithmic in the unconfirmed span.
+        self.ring.trim(self.config.policy, self.frame, self.floor_frame());
         self.counters.frames_resimulated += out.resimulated;
         self.counters.corrections += u32::from(out.resimulated > 0);
         out.caught_up = self.frame >= present && self.replay.is_none();
