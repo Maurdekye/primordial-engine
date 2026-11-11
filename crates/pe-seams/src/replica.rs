@@ -132,8 +132,8 @@ pub enum Reason {
     /// A grab that would take its member past `limit`, the number of objects it may hold at once (`max_claims`;
     /// world-model.md 8.1, "Agent powers").
     TooManyClaims { limit: u32 },
-    /// A push over one of the speed-change caps on pushes; `limit` is that cap, in mm/s (world-model.md 8.1, "Agent
-    /// powers").
+    /// A push over the per-push speed-change cap (`max_push_dv`), or one whose result would exceed the speed cap
+    /// (`max_push_speed`); `limit` is that cap, in mm/s (world-model.md 8.1, "Speed-change caps on pushes").
     TooFast { limit: u32 },
     /// A grab beyond the hand's reach.
     OutOfReach,
