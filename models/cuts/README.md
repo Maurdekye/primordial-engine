@@ -204,14 +204,27 @@ Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `res
     about 1e-3.
 
 **Still to do before pe-agree's cut rules depend on the model (v0.2):**
-- **Bounded progress** (formulation by @design-reviewer, m72d5174e95f9): record per entry the chain height at which
-  every honest member held it (`all_held_at`, monotone); in the liveness profile an entry with `all_held_at = h` is
-  covered by the final chain by height h + 2. Control: a proposer that covers only its own entries. The stronger form,
-  covered by h + 2 once any q - t honest members hold it, waits for votes that carry heads (S3 v1.1). Not started.
+- **Bounded progress: done in v0.2, below.**
 - **Proposer choice** (condition 3): leader reputation (skip a member whose last view timed out) against keeping a
   proposer while its views succeed, chosen by measurement at n = 2 and n = 3. Either one gets its own control
   (condition 7).
 - The bounded n = 4 checks (n4-byz, n4-byz-chain, n3 over 4 views) have not been rerun with the frame choice.
+
+## v0.2 (in progress)
+
+- **Bounded progress** (formulation by @design-reviewer, m72d5174e95f9; results in `results/v0.2-progress.txt`). The
+  state records, per entry, the highest certified height any honest member knew when every honest member first held
+  the entry *and its earlier chain* (`all_held_at`). The property: an honest entry with `all_held_at = h` is covered
+  by the final chain by height h + 2 (the next proposal may predate the last delivery), when a protocol-following
+  member proposed the cut at h + 2. It is checked within the content heights, and on in every liveness check and in
+  n2-progress.
+  - First run: "held" without the earlier chain failed n2-progress. A member held m1.2 but not m1.1, so no valid cut
+    could include m1.2. That is a definition gap, not a protocol fault, and the chain condition fixes it.
+  - [V] n2-progress (two content cuts, timeouts free) is exhaustive at 19.0 M states, and n3-live-h2 (three honest
+    members, two authors, two content cuts) at 16.4 M. The liveness checks all still hold.
+  - Control **ctl-ownonly** (a proposer covers only its own entries) fails it.
+  - The stronger form, covered by h + 2 once any q - t honest members hold it, waits for votes that carry heads
+    (S3 v1.1).
 
 ## Not in v0
 
