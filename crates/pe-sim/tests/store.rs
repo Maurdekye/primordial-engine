@@ -352,17 +352,22 @@ fn row_versions_sit_beside_rows() {
     s.insert(a, Transform::IDENTITY).unwrap();
     assert_eq!(s.row_version(t, a), Some(RowVersion::NONE), "a new row has no edit version");
     assert_eq!(s.row_version(t, b), None);
-    let v = RowVersion { entry: [7; 32], op: 3, _pad: 0 };
+    let v = RowVersion { entry: [7; 32], op: 3, tag: [9; 16], _pad: 0 };
     assert!(s.set_row_version(t, a, v));
     assert!(!s.set_row_version(t, b, v), "no row, no version");
     // A trusted overwrite (physics write-back, logic) keeps the version.
     s.insert(a, Transform::local([1.0, 0.0, 0.0])).unwrap();
     s.get_mut::<Transform>(a).unwrap().pos[1] = 2.0;
     assert_eq!(s.row_version(t, a), Some(v));
-    // A row inserted before it shifts it, and the version stays with its row.
+    // Rows inserted after and before it (index 0, ahead of `a`) shift it, and the version stays with its row.
     s.insert(b, Transform::IDENTITY).unwrap();
-    s.insert(oid(5, 0), Transform::IDENTITY).unwrap_err();
-    assert_eq!((s.row_version(t, a), s.row_version(t, b)), (Some(v), Some(RowVersion::NONE)));
+    let first = oid(5, 0);
+    s.create(first).unwrap();
+    s.insert(first, Transform::IDENTITY).unwrap();
+    assert_eq!(
+        (s.row_version(t, first), s.row_version(t, a), s.row_version(t, b)),
+        (Some(RowVersion::NONE), Some(v), Some(RowVersion::NONE))
+    );
     // Snapshots share and serialize them; the state hash covers them.
     let snap = s.snapshot();
     let h = s.state_hash();
@@ -371,8 +376,17 @@ fn row_versions_sit_beside_rows() {
     r.restore(&back).unwrap();
     assert_eq!(r.row_version(t, a), Some(v));
     assert_eq!(r.state_hash(), h);
+    // A version's padding must be zero in serialized bytes (@chunks-reviewer's Low 2).
+    let mut bad = snap.to_bytes();
+    let at = bad.windows(32).position(|w| w == [7; 32]).expect("the version is serialized") + 32 + 4 + 16;
+    bad[at] = 1;
+    let err = pe_sim::Snapshot::from_bytes(&bad, s.registry()).map(|_| ()).unwrap_err();
+    assert!(format!("{err:?}").contains("row version padding not zero"), "{err:?}");
     assert!(s.set_row_version(t, a, RowVersion { op: 4, ..v }));
     assert_ne!(s.state_hash(), h, "the hash covers row versions");
+    assert!(s.set_row_version(t, a, RowVersion { tag: [8; 16], ..v }));
+    assert_ne!(s.state_hash(), h, "and instance tags");
+    assert_eq!(s.row_version(t, a).unwrap().tag(), u128::from_le_bytes([8; 16]));
     // Removing the row drops its version; a new row starts with none.
     s.remove::<Transform>(a).unwrap();
     s.insert(a, Transform::IDENTITY).unwrap();

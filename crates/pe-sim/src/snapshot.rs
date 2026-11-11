@@ -132,7 +132,7 @@ impl Snapshot {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(
             64 + self.objects.len() * 16
-                + self.columns.iter().map(|c| c.col.len() * (56 + c.col.size) + 40).sum::<usize>(),
+                + self.columns.iter().map(|c| c.col.len() * (16 + size_of::<RowVersion>() + c.col.size) + 40).sum::<usize>(),
         );
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&self.frame.0.to_le_bytes());
