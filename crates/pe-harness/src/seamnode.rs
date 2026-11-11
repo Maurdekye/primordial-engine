@@ -31,6 +31,14 @@ use crate::net::NodeId;
 use crate::sim::{Fault, NodeUnderTest, Out};
 use crate::trace::{EntryRef as TraceEntry, Ev, Frame as TFrame};
 
+/// Retention's rotating probe: the frame after `last` (absolute), at least `kept + 1`, wrapping back to `kept + 1` at
+/// `present`; none when no frame lies above `kept` and below `present`.
+pub fn next_probe(last: u64, kept: u64, present: u64) -> Option<u64> {
+    let next = last.max(kept) + 1;
+    let next = if next >= present { kept + 1 } else { next };
+    (next < present).then_some(next)
+}
+
 /// An agreement's entry framing, read back: the entry a message carries, if it carries one.
 pub type EntryDecoder = fn(&[u8]) -> Option<SignedEntry>;
 
@@ -56,7 +64,8 @@ pub struct SeamNode<A: Agreement> {
     checked_to: u64,
     /// The highest `kept_from` seen: it never goes back.
     kept_seen: u64,
-    /// Retention's rotating probe: the next frame checked between `kept_from` and the final frame.
+    /// Retention's rotating probe: the last frame it checked, absolute, so a moving `kept_from` doesn't make it skip
+    /// frames (design-reviewer mbd7dafb4991f).
     probe: u64,
     /// Cut frames already recorded as `Damaged`.
     damaged: BTreeSet<u64>,
@@ -187,11 +196,10 @@ impl<A: Agreement> SeamNode<A> {
         self.kept_seen = self.kept_seen.max(kept);
         let last = self.agree.final_cut().map(|fc| fc.cut.at.frame.0.saturating_sub(1));
         // Every frame from `kept_from` to the present is promised, final or not: one more of them each step.
-        let span = present.saturating_sub(kept + 1);
-        let between = (span > 0).then(|| {
-            self.probe = (self.probe + 1) % span;
-            kept + 1 + self.probe
-        });
+        let between = next_probe(self.probe, kept, present);
+        if let Some(f) = between {
+            self.probe = f;
+        }
         for f in std::iter::once(kept).chain(last).chain(between) {
             if f >= kept && f < present && self.agree.entries_at(Frame(f)).is_none() {
                 let detail = format!("frame {f} is at or above kept_from {kept} but no longer kept");
@@ -346,5 +354,26 @@ impl<A: Agreement> NodeUnderTest for SeamNode<A> {
 
     fn final_entries(&self) -> Vec<(TFrame, Vec<KvEntry>)> {
         self.log.iter().map(|(&f, e)| (f, e.clone())).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_probe;
+
+    #[test]
+    fn the_probe_visits_every_frame_while_kept_from_moves_under_it() {
+        // A steady cap: kept_from and the present each move one frame a step. An offset from kept_from would advance
+        // two frames a step and skip every other one (design-reviewer mbd7dafb4991f).
+        let (mut last, mut seen) = (0, Vec::new());
+        for step in 0..10u64 {
+            let (kept, present) = (step, step + 40);
+            last = next_probe(last, kept, present).unwrap_or(last);
+            seen.push(last);
+        }
+        assert_eq!(seen, (1..=10).collect::<Vec<u64>>());
+        // It wraps to kept + 1 at the present, and has nothing to probe when no frame lies between.
+        assert_eq!(next_probe(39, 5, 40), Some(6));
+        assert_eq!(next_probe(0, 5, 6), None);
     }
 }
