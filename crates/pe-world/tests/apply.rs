@@ -798,3 +798,24 @@ fn a_dry_run_on_a_snapshot_matches_the_live_path() {
     let label = Transaction { label: Some("x".repeat(pe_world::edit::MAX_LABEL + 1)), ..tx(vec![]) };
     assert_eq!(snap.dry_run(Frame(1), &d, &label), Outcome::Refused { op: None, reason: Reason::Malformed });
 }
+
+#[test]
+fn a_dry_run_state_reports_created_versions_from_pe_world() {
+    // api-eng m882751a0d8a5: versions of created objects come from pe-world's own touch rules.
+    let mut f = fx();
+    let (table, _, _) = table_and_ball(&mut f);
+    let snap = f.w.snapshot(Frame(0));
+    let t = tx(vec![Op::Create { new: 0, parent: Target::Existing(table), index: None, rows: vec![] }]);
+    let e = f.a.clone().next(Class::Edit, Frame(1), Bytes::from(t.encode()));
+    let d = pe_world::Draft { author: e.entry.author, line: e.entry.line, chain: e.entry.chain, seq: e.entry.seq };
+    let (o, after) = snap.dry_run_state(Frame(1), &d, &t);
+    let id = created(&o)[0];
+    let stand_in = Version { entry: d.entry(&t.encode()), op: 0 };
+    assert_eq!(after.info(id).unwrap().version, stand_in);
+    assert_eq!(after.info(table).unwrap().structural, stand_in, "the parent's structure moved too");
+    assert!(snap.info(id).is_none(), "the snapshot it ran on is unchanged");
+    // Live, the same object gets the real entry's version, read the same way.
+    let live = entry(&mut f.a, &t);
+    apply(&mut f.w, &live);
+    assert_eq!(f.w.snapshot(Frame(0)).info(id).unwrap().version, ver(&live, 0));
+}

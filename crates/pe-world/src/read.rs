@@ -80,6 +80,20 @@ impl WorldSnapshot {
         self.world.dry_run_draft(frame, draft, tx)
     }
 
+    /// [`WorldSnapshot::dry_run`], with the world after the draft as a snapshot (this one's final frame), so a
+    /// caller reads created objects' versions with [`WorldSnapshot::info`], from pe-world's own rules (api-eng
+    /// m882751a0d8a5). Those versions name the draft's stand-in entry id, so they are provisional; for a refused
+    /// draft the snapshot equals this one.
+    pub fn dry_run_state(
+        &self,
+        frame: Frame,
+        draft: &Draft,
+        tx: &Transaction,
+    ) -> (pe_seams::Outcome, Arc<WorldSnapshot>) {
+        let (outcome, w) = self.world.dry_run_draft_state(frame, draft, tx);
+        (outcome, w.snapshot(self.final_frame))
+    }
+
     pub fn frame(&self) -> Frame {
         self.store.frame()
     }

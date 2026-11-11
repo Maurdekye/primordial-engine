@@ -179,6 +179,12 @@ impl World {
     /// the outcome (`overwrote`, the inverse's preconditions) name a stand-in, [`Draft::entry`]; created ids and row
     /// tags are exact when `chain` and `seq` are the ones the signer will use.
     pub fn dry_run_draft(&self, frame: Frame, draft: &Draft, tx: &Transaction) -> Outcome {
+        self.dry_run_draft_state(frame, draft, tx).0
+    }
+
+    /// [`World::dry_run_draft`], with the scratch world after it: unchanged if the draft is refused. Its versions
+    /// name the draft's stand-in entry id.
+    pub fn dry_run_draft_state(&self, frame: Frame, draft: &Draft, tx: &Transaction) -> (Outcome, World) {
         let payload = tx.encode();
         let src = Source {
             entry: draft.entry(&payload),
@@ -188,13 +194,14 @@ impl World {
             seq: draft.seq,
         };
         let mut w = self.clone();
-        match Transaction::decode(&payload) {
+        let outcome = match Transaction::decode(&payload) {
             None => Outcome::Refused { op: None, reason: Reason::Malformed },
             Some(tx) => match w.apply_tx(frame, &src, &tx) {
                 Ok((outcome, _)) => outcome,
                 Err((op, reason)) => Outcome::Refused { op, reason },
             },
-        }
+        };
+        (outcome, w)
     }
 
     fn try_apply(&mut self, frame: Frame, entry: &SignedEntry) -> Result<(Outcome, Footprint), Refusal> {
