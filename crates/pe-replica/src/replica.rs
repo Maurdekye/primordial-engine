@@ -61,8 +61,8 @@ use bytes::Bytes;
 use pe_physics::{CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Transfer, WorldImage};
 use pe_seams::{
     Advance, Cut, CutImport, CutRef, DomainId, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameClock,
-    FrameView, GroupSel, Hash, HostTime, ImportError, ObjectClass, ObjectId, Offset, Outcome, PhysicsImage, Pos,
-    Replica, RigTransform, RootError, SignedEntry, SimRate, Tree, ViewCounters, ViewFlags, ViewObject, frames_ceil,
+    FrameView, GroupSel, Hash, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica,
+    RigTransform, RootError, SignedEntry, SimRate, Tree, ViewCounters, ViewFlags, frames_ceil,
 };
 
 use crate::bodies;
@@ -83,6 +83,9 @@ pub struct ReplicaConfig {
     /// The shared time base (S5): the view's `sim_time` is its host time of the view's frame. Required, so no replica
     /// publishes a time off that base (@design-reviewer's Low on pe-app slice 2, via @engine-architect m440144e592fc).
     pub clock: Arc<dyn FrameClock>,
+    /// The local member, whose hands the frame view marks `OWN_HAND` (S5), so the display draws them at the device's
+    /// late-latched poses. `None` for a replica with no local player (tests, a headless host).
+    pub local: Option<MemberKey>,
 }
 
 impl ReplicaConfig {
@@ -95,6 +98,7 @@ impl ReplicaConfig {
             keep_finals: Duration::from_millis(1500),
             policy: Policy::log4(rate.hz()),
             clock,
+            local: None,
         }
     }
 }
@@ -736,27 +740,23 @@ impl<W: WorldModel> ReplicaImpl<W> {
     }
 
     fn publish(&mut self) {
-        let mut objects = Vec::new();
-        for id in self.world.physical() {
-            let Some(row) = self.world.body(id) else { continue };
-            let (linear_velocity, angular_velocity) = self.physics.velocity(id).unwrap_or(([0.0; 3], [0.0; 3]));
-            objects.push(ViewObject {
-                id,
-                class: ObjectClass::World,
-                pos: row.pos,
-                rotation: row.rotation,
-                scale: [1.0; 3],
-                linear_velocity,
-                angular_velocity,
-                shape: None,
-                appearance: None,
-                light: None,
-                radius: bounding_radius(&row.shapes),
-                hand_of: None,
-                held_by: None,
-                flags: ViewFlags::default(),
-                version: None,
-            });
+        // What the model draws, with what only the replica knows: the velocities and the local member's hands.
+        let mut objects = self.world.view_objects();
+        for o in &mut objects {
+            if let Ok((linear, angular)) = self.physics.velocity(o.id) {
+                o.linear_velocity = linear;
+                o.angular_velocity = angular;
+            }
+            if let (Some(me), Some((owner, _))) = (self.config.local, o.hand_of)
+                && owner == me
+            {
+                o.flags = o.flags.with(ViewFlags::OWN_HAND);
+            }
+            if let (Some(me), Some(holder)) = (self.config.local, &o.held_by)
+                && holder.member == me
+            {
+                o.flags = o.flags.with(ViewFlags::HELD_LOCAL);
+            }
         }
         let sim_time = self.config.clock.host_time_of(self.frame);
         let mut view = empty_view(self.domain);
@@ -795,7 +795,7 @@ fn restored(config: PhysicsConfig, bytes: &[u8], global: Hash) -> Option<Physics
     PhysicsWorld::from_transfer(config, &transfer, &CheckHash(global.0)).ok()
 }
 
-fn bounding_radius(shapes: &[ShapePart]) -> f32 {
+pub(crate) fn bounding_radius(shapes: &[ShapePart]) -> f32 {
     let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     shapes
         .iter()
