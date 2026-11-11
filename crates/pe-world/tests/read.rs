@@ -37,7 +37,7 @@ fn scene() -> World {
     w.insert(id(20), Body { kind: body_kind::DYNAMIC, friction: 0.5, grabbable: 1, ..Default::default() }).unwrap();
     w.create(id(40), None, BOB, ver(3, 0)).unwrap();
     w.insert(id(40), Hand { owner: BOB, side: 1, ..Default::default() }).unwrap();
-    w.set_claim(id(20), Claim { hand: id(40), member: BOB, since: Frame(3) }).unwrap();
+    w.set_claim(id(20), Claim { hand: id(40), member: BOB, since: Frame(3), until: Frame(u64::MAX) }).unwrap();
     w.set_frame(Frame(9));
     w
 }
