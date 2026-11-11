@@ -55,6 +55,8 @@ pub enum Mutation {
     NoTimeouts,
     /// Votes carry no state root: a member whose replica diverged confirms the quorum's cut without learning it.
     VoteWithoutRoot,
+    /// A voter accepts any frame the proposer names, not only one above its parent's (v0.1).
+    NoFrameCheck,
 }
 
 #[derive(Clone, Debug)]
@@ -303,7 +305,7 @@ impl Cuts {
             return true;
         }
         let hi = block.frame();
-        if !(parent.frame() < hi && hi <= parent.frame() + FRAME_STEP_MAX) {
+        if self.mutation != Some(Mutation::NoFrameCheck) && !(parent.frame() < hi && hi <= parent.frame() + FRAME_STEP_MAX) {
             return false;
         }
         if h > self.heights {
@@ -620,7 +622,9 @@ impl Cuts {
             return vec![p + FRAMES];
         }
         let mut out = vec![p + 1, p + 2, p + FRAMES, p + FRAME_STEP_MAX];
-        out.dedup();
+        if self.mutation == Some(Mutation::NoFrameCheck) {
+            out.push(p); // not above the parent's: only the control's voters accept it
+        }
         out
     }
 
