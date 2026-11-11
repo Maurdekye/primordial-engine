@@ -248,7 +248,7 @@ fn view_appearance(a: &Appearance) -> pe_seams::Appearance {
         emissive: a.emissive,
         roughness: a.roughness,
         metalness: a.metalness,
-        material: (!a.material.is_none()).then(|| pe_seams::BlobRef(Hash(a.material.hash))),
+        material: (!a.material.is_none()).then_some(pe_seams::BlobRef(Hash(a.material.hash))),
     }
 }
 
