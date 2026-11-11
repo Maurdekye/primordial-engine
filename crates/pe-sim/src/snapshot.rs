@@ -377,9 +377,30 @@ mod tests {
         let ids = [id(1), id(2), id(3)];
         // 1 is the parent of 2 and 3, in that order.
         let good = [
-            Node { parent: none, first_child: id(2), last_child: id(3), prev_sibling: none, next_sibling: none },
-            Node { parent: id(1), first_child: none, last_child: none, prev_sibling: none, next_sibling: id(3) },
-            Node { parent: id(1), first_child: none, last_child: none, prev_sibling: id(2), next_sibling: none },
+            Node {
+                parent: none,
+                first_child: id(2),
+                last_child: id(3),
+                prev_sibling: none,
+                next_sibling: none,
+                ..Node::ROOT
+            },
+            Node {
+                parent: id(1),
+                first_child: none,
+                last_child: none,
+                prev_sibling: none,
+                next_sibling: id(3),
+                ..Node::ROOT
+            },
+            Node {
+                parent: id(1),
+                first_child: none,
+                last_child: none,
+                prev_sibling: id(2),
+                next_sibling: none,
+                ..Node::ROOT
+            },
         ];
         assert_eq!(check_forest(&ids, &good), Ok(()));
         let mut cyc = good;
