@@ -51,6 +51,7 @@ pub enum Op {
     LocateViews,
     ReleaseImage,
     EndFrame,
+    RequestExit,
 }
 
 type HandScript = Box<dyn FnMut(Hand, HostTime) -> Reading>;
@@ -270,6 +271,7 @@ impl Backend for FakeRuntime {
 
     fn request_exit(&mut self) -> Result<(), XrError> {
         self.calls.push(Call::RequestExit);
+        self.injected(Op::RequestExit)?;
         self.need_session("xrRequestExitSession");
         if !self.running {
             self.violate("xrRequestExitSession while not running");
