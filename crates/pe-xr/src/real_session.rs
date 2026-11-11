@@ -101,6 +101,20 @@ pub struct SwapchainSize {
     pub height: u32,
 }
 
+/// The depth swapchain, beside the colour one (spec 4.2).
+struct DepthChain<G: xr::Graphics> {
+    swapchain: xr::Swapchain<G>,
+    /// Its raw graphics-API format.
+    format: i64,
+    /// The image acquired this frame.
+    acquired: Option<u32>,
+}
+
+/// Whether a raw format is the 32-bit float depth format: VK_FORMAT_D32_SFLOAT (126), DXGI_FORMAT_D32_FLOAT (40).
+pub fn is_depth32(path: GraphicsPath, raw: i64) -> bool {
+    matches!((path, raw), (GraphicsPath::Vulkan, 126) | (GraphicsPath::D3D12, 40))
+}
+
 /// Everything that refers to the session. Fields drop in declaration order, which is OpenXR's teardown order: the
 /// hand trackers and spaces, then the swapchain, then the frame stream and waiter, then the session, then the
 /// actions (spec 3.1). The GPU context is not here: it outlives the session (spec 4.1).
@@ -108,6 +122,7 @@ struct Live<G: xr::Graphics> {
     trackers: Option<[xr::HandTracker; 2]>,
     grip_spaces: [xr::Space; 2],
     space: xr::Space,
+    depth: Option<DepthChain<G>>,
     swapchain: xr::Swapchain<G>,
     stream: xr::FrameStream<G>,
     waiter: xr::FrameWaiter,
@@ -118,6 +133,8 @@ struct Live<G: xr::Graphics> {
     hand_paths: [xr::Path; 2],
     hand_interaction: bool,
     size: SwapchainSize,
+    /// The swapchain's format, as its raw graphics-API value (VkFormat or DXGI_FORMAT).
+    format: i64,
     /// The last `xrWaitFrame`'s display time, exactly as the runtime gave it: `xrEndFrame` must get it back
     /// unchanged, never a value converted through host time.
     display_time: Option<(HostTime, xr::Time)>,
@@ -237,7 +254,8 @@ impl<G: xr::Graphics> RealBackend<G> {
         let swapchain = session
             .create_swapchain(&xr::SwapchainCreateInfo {
                 create_flags: xr::SwapchainCreateFlags::EMPTY,
-                usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT,
+                // Transfer source too, for the desktop mirror (render.md; @ballpit-viz).
+                usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT | xr::SwapchainUsageFlags::TRANSFER_SRC,
                 format,
                 sample_count: 1,
                 width: size.width,
@@ -247,12 +265,35 @@ impl<G: xr::Graphics> RealBackend<G> {
                 mip_count: 1,
             })
             .map_err(ce("xrCreateSwapchain"))?;
+        // Depth when the runtime takes it (XR_KHR_composition_layer_depth) and offers a format pe-render draws to:
+        // 32-bit float only for now (@ballpit-viz's preference); otherwise colour alone, which every runtime takes.
+        let depth = match formats.iter().copied().find(|&f| is_depth32(path, G::lower_format(f))) {
+            Some(f) if xr.enabled.khr_composition_layer_depth => Some(DepthChain {
+                swapchain: session
+                    .create_swapchain(&xr::SwapchainCreateInfo {
+                        create_flags: xr::SwapchainCreateFlags::EMPTY,
+                        usage_flags: xr::SwapchainUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                        format: f,
+                        sample_count: 1,
+                        width: size.width,
+                        height: size.height,
+                        face_count: 1,
+                        array_size: 2,
+                        mip_count: 1,
+                    })
+                    .map_err(ce("xrCreateSwapchain (depth)"))?,
+                format: G::lower_format(f),
+                acquired: None,
+            }),
+            _ => None,
+        };
 
         Ok(RealBackend {
             live: Some(Live {
                 trackers,
                 grip_spaces,
                 space,
+                depth,
                 swapchain,
                 stream,
                 waiter,
@@ -263,6 +304,7 @@ impl<G: xr::Graphics> RealBackend<G> {
                 hand_paths: [left, right],
                 hand_interaction,
                 size,
+                format: G::lower_format(format),
                 display_time: None,
                 views: None,
             }),
@@ -284,8 +326,23 @@ impl<G: xr::Graphics> RealBackend<G> {
         live.swapchain.enumerate_images().map_err(xr_err)
     }
 
+    /// The depth swapchain's images and raw format, when the runtime takes depth.
+    #[allow(clippy::type_complexity)]
+    pub fn depth_swapchain(&self) -> Result<Option<(Vec<G::SwapchainImage>, i64)>, XrError> {
+        let live = self.live.as_ref().ok_or(XrError::SessionLost)?;
+        match &live.depth {
+            Some(d) => Ok(Some((d.swapchain.enumerate_images().map_err(xr_err)?, d.format))),
+            None => Ok(None),
+        }
+    }
+
     pub fn swapchain_size(&self) -> Option<SwapchainSize> {
         self.live.as_ref().map(|l| l.size)
+    }
+
+    /// The swapchain's format, as its raw graphics-API value, for the binding to wrap its images in.
+    pub fn swapchain_format(&self) -> Option<i64> {
+        self.live.as_ref().map(|l| l.format)
     }
 
     /// Hand the instance back after the session was destroyed, to try a new session or drop it.
@@ -470,7 +527,16 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
         let live = self.live()?;
         let i = live.swapchain.acquire_image().map_err(xr_err)?;
         live.swapchain.wait_image(xr::Duration::INFINITE).map_err(xr_err)?;
+        if let Some(d) = &mut live.depth {
+            let j = d.swapchain.acquire_image().map_err(xr_err)?;
+            d.acquired = Some(j);
+            d.swapchain.wait_image(xr::Duration::INFINITE).map_err(xr_err)?;
+        }
         Ok(ImageIndex(i))
+    }
+
+    fn depth_image(&self) -> Option<ImageIndex> {
+        self.live.as_ref()?.depth.as_ref()?.acquired.map(ImageIndex)
     }
 
     fn locate_views(&mut self, display_time: HostTime) -> Result<Located, XrError> {
@@ -493,26 +559,65 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
     }
 
     fn release_image(&mut self) -> Result<(), XrError> {
-        self.live()?.swapchain.release_image().map_err(xr_err)
+        let live = self.live()?;
+        // The depth image first, so neither stays acquired into the next frame if one release fails.
+        if let Some(d) = &mut live.depth
+            && d.acquired.take().is_some()
+        {
+            d.swapchain.release_image().map_err(xr_err)?;
+        }
+        live.swapchain.release_image().map_err(xr_err)
     }
 
     fn end_frame(&mut self, display_time: HostTime, layers: Layers) -> Result<(), XrError> {
         let t = self.xr_time(display_time)?;
         let live = self.live()?;
         match (layers, &live.views) {
-            (Layers::Projection { .. }, Some(vs)) => {
-                // Depth (XR_KHR_composition_layer_depth) is not submitted yet: colour only.
+            (Layers::Projection { extent, depth }, Some(vs)) => {
+                // The drawn rectangle from the origin, never past the image (spec 4.2; render scale as a viewport).
+                let [w, h] = extent.unwrap_or([live.size.width, live.size.height]);
                 let rect = xr::Rect2Di {
                     offset: xr::Offset2Di { x: 0, y: 0 },
-                    extent: xr::Extent2Di { width: live.size.width as i32, height: live.size.height as i32 },
+                    extent: xr::Extent2Di {
+                        width: w.clamp(1, live.size.width) as i32,
+                        height: h.clamp(1, live.size.height) as i32,
+                    },
+                };
+                // Depth is chained to each view (XR_KHR_composition_layer_depth), from the same rectangle of that
+                // eye's layer of the depth image. The infos live until xrEndFrame returns.
+                let depth_infos: Option<[xr::sys::CompositionLayerDepthInfoKHR; 2]> = match (depth, live.depth.as_ref())
+                {
+                    (Some(d), Some(chain)) => Some(std::array::from_fn(|i| xr::sys::CompositionLayerDepthInfoKHR {
+                        ty: xr::sys::CompositionLayerDepthInfoKHR::TYPE,
+                        next: std::ptr::null(),
+                        sub_image: xr::sys::SwapchainSubImage {
+                            swapchain: chain.swapchain.as_raw(),
+                            image_rect: rect,
+                            image_array_index: i as u32,
+                        },
+                        min_depth: d.min_depth,
+                        max_depth: d.max_depth,
+                        near_z: d.near_z,
+                        far_z: d.far_z,
+                    })),
+                    _ => None,
                 };
                 let pv = |i: usize| {
-                    xr::CompositionLayerProjectionView::new().pose(vs[i].pose).fov(vs[i].fov).sub_image(
+                    let v = xr::CompositionLayerProjectionView::new().pose(vs[i].pose).fov(vs[i].fov).sub_image(
                         xr::SwapchainSubImage::new()
                             .swapchain(&live.swapchain)
                             .image_array_index(i as u32)
                             .image_rect(rect),
-                    )
+                    );
+                    match &depth_infos {
+                        Some(infos) => {
+                            let mut raw = v.into_raw();
+                            raw.next = &infos[i] as *const xr::sys::CompositionLayerDepthInfoKHR as *const _;
+                            // SAFETY: the same view with a valid depth info chained, which outlives xrEndFrame below.
+                            unsafe { xr::CompositionLayerProjectionView::from_raw(raw) }
+                        }
+                        None => v,
+                    }
                 };
                 let pvs = [pv(0), pv(1)];
                 let layer = xr::CompositionLayerProjection::new().space(&live.space).views(&pvs);

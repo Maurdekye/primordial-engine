@@ -13,6 +13,8 @@
 //! `xrDestroySession` is allowed at any time, inside a frame too, as OpenXR allows it.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::backend::{Backend, EyePose, Fov, FrameTiming, ImageIndex, Layers, Located, SessionState, XrError, XrEvent};
 use crate::hands::Reading;
@@ -72,6 +74,9 @@ pub struct FakeRuntime {
     hand_script: HandScript,
     /// Extra time to add to the next frame's display time, to fake a missed frame.
     pub skip_next_ns: i64,
+    /// Set by a test's renderer while it holds wrappers of the swapchain images: destroying the swapchain then is a
+    /// violation (review 1, L4: the wrappers go, and the GPU is idle on them, before xrDestroySwapchain).
+    pub images_held: Arc<AtomicBool>,
 
     // Protocol state.
     frames: u64,
@@ -119,6 +124,7 @@ impl FakeRuntime {
                 grip: Some(0.0),
             }),
             skip_next_ns: 0,
+            images_held: Arc::new(AtomicBool::new(false)),
             frames: 0,
             state: SessionState::Idle,
             session_exists: true,
@@ -278,6 +284,9 @@ impl Backend for FakeRuntime {
 
     fn destroy_session(&mut self) {
         self.calls.push(Call::DestroySession);
+        if self.images_held.load(Ordering::Relaxed) {
+            self.violate("the swapchain destroyed while the renderer still holds its images");
+        }
         if !self.session_exists {
             self.violate("the session destroyed twice");
         }
@@ -412,7 +421,13 @@ impl Backend for FakeRuntime {
         if self.display_time != Some(display_time) {
             self.violate(format!("xrEndFrame at {display_time:?}, not the display time {:?}", self.display_time));
         }
-        if let Layers::Projection { .. } = layers {
+        if let Layers::Projection { extent, depth } = layers {
+            if extent.is_some_and(|[w, h]| w == 0 || h == 0) {
+                self.violate("a projection layer with an empty image rectangle");
+            }
+            if depth.is_some() {
+                self.violate("a depth layer with no depth swapchain");
+            }
             if !self.should_render {
                 self.violate("a projection layer when shouldRender was false");
             }
