@@ -44,33 +44,53 @@ cat > "$dir/reference-transaction.new" << 'EOF'
 # commit, it runs scripts/hooks/reference-transaction as committed at main's old tip (at the new commit when
 # main is created), with the same argument and input, except that main's line names that tip as its old value:
 # for a forced update (update-ref without an old value, branch -f) git gives zeros there, which would read as
-# main being created. Every other update returns at once with no process started, and one that leaves main where
-# it is (a reset to HEAD, merge --abort, stash) after one git call.
+# main being created. It refuses to delete main, and to move it when git gives an old value but main's tip can't
+# be read. Every other update returns at once with no process started, and one that leaves main where it is (a
+# reset to HEAD, merge --abort, stash, pack-refs) after one or two git calls. PE_GATE=off lets one command
+# through unchecked, in an emergency only; whoever uses it reports it to the coordinator in the same turn.
 if [ "$1" != prepared ]; then
   while read -r _; do :; done
   exit 0
 fi
-input= old= new=
+refuse() {
+  if [ "${PE_GATE:-on}" = off ]; then
+    echo "gate (hook): PE_GATE=off: $1; let through UNCHECKED: emergencies only; report it to the coordinator now" >&2
+    exit 0
+  fi
+  echo "gate (hook): REFUSED: main stays where it is: $1 (to drop the gate: git config --unset core.hooksPath)" >&2
+  exit 1
+}
+input= old= new= hit=
 while read -r o n r; do
-  if [ "$r" = refs/heads/main ]; then old=$o new=$n; continue; fi
+  if [ "$r" = refs/heads/main ]; then old=$o new=$n hit=1; continue; fi
   input="$input$o $n $r
 "
 done
-case "$new" in *[!0]*) ;; *) exit 0 ;; esac        # main isn't moving to a commit (not in this update, or deleted)
-if tip=$(git rev-parse -q --verify refs/heads/main); then   # main's tip before this update: git holds it locked
-  [ "$tip" != "$new" ] || exit 0                      # main stays where it is: nothing lands
-  old=$tip from=$tip
-else
+[ -n "$hit" ] || exit 0                               # main isn't in this update
+tip=$(git rev-parse -q --verify refs/heads/main) || tip=   # main's tip before this update: git holds it locked
+if [ -z "$tip" ]; then
+  case "$old" in *[!0]*) refuse "git gives main an old tip, $old, but main can't be read" ;; esac
+  case "$new" in *[!0]*) ;; *) exit 0 ;; esac         # main doesn't exist and isn't created: nothing happens
   from=$new                                           # main is created
+else
+  [ "$tip" != "$new" ] || exit 0                      # main stays where it is: nothing lands
+  case "$new" in *[!0]*) ;; *)
+    # A deletion, unless pack-refs (git gc) is dropping main's loose file after writing main to packed-refs: then
+    # main keeps its tip, git gives that tip as the old value, and nothing holds packed-refs.lock (git takes it for
+    # every deletion before this hook runs).
+    common=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$old" = "$tip" ] &&
+      [ ! -e "$common/packed-refs.lock" ] && grep -qx "$tip refs/heads/main" "$common/packed-refs" 2> /dev/null &&
+      exit 0
+    refuse "main can't be deleted while the gate is on" ;;
+  esac
+  old=$tip from=$tip
 fi
 input="$input$old $new refs/heads/main
 "
-tmp=$(mktemp -d) || { echo "gate (hook): REFUSED: no temporary folder" >&2; exit 1; }
+tmp=$(mktemp -d) || refuse "no temporary folder"
 trap 'rm -rf "$tmp"' EXIT
-if ! git show "$from:scripts/hooks/reference-transaction" > "$tmp/hook" 2> /dev/null; then
-  echo "gate (hook): REFUSED: main stays where it is: $from has no scripts/hooks/reference-transaction (to drop the gate: git config --unset core.hooksPath)" >&2
-  exit 1
-fi
+git show "$from:scripts/hooks/reference-transaction" > "$tmp/hook" 2> /dev/null ||
+  refuse "$from has no scripts/hooks/reference-transaction"
 printf '%s' "$input" | sh "$tmp/hook" "$@"
 EOF
 chmod +x "$dir/reference-transaction.new"
