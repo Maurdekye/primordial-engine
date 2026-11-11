@@ -1051,6 +1051,45 @@ pe-world decodes and applies the `Input` class too, because inputs write world s
   them the same way.
 - **Validity:** finite values, positions in range, impulses within a world limit [I]; a failure refuses the entry.
 
+### 8.1 The input payload (r13 draft, for (B))
+
+An input entry is pe-log's envelope with class `Input` and this payload, in `edit.rs`'s codec conventions (7.6
+As built: little-endian, one-byte tags, flags 0 or 1, `u32`-counted lists, ids as `u128`; strict and total) [I]:
+
+```rust
+pub enum Input {
+    /// Frames `stamp .. stamp + poses.len() - 1 + span` of one hand (D73 (a)): pose `j` is the target at frame
+    /// `stamp + j`, each held one frame except the last, which is held `span` frames (1..=255).
+    Hand { hand: ObjectId, poses: Vec<HandPose>, span: u8 },   // 1..=16 poses
+    /// An impulse in newton seconds, in the world frame, at `at` (a world `Pos`) or the centre of mass.
+    Push { object: ObjectId, impulse: [f32; 3], at: Option<Pos> },
+    /// Claims `object` for the author's `hand` (7.2), or renews the author's claim on it.
+    Grab { object: ObjectId, hand: ObjectId },
+    /// Ends the author's claim on `object`, if it has one; otherwise changes nothing ("no effect").
+    Release { object: ObjectId },
+}
+pub struct HandPose { pub pos: Pos, pub rot: [f32; 4], pub grip: f32, pub engaged: bool }
+```
+
+- **What a hand input writes** (a trusted write: no version moves, 7.3). At each frame it covers, the pose goes
+  to the hand object's `Transform` (the target; a hand is a root with no `Body`, so physics never writes it), and
+  `grip`, `engaged`, `stamp`/`span` and the previous input's `stamp`/`span` to its `Hand` row (replica.md 3.3's
+  stream rule). It is refused with `NotYourHand` unless the author is the `Hand` row's owner, and as `Invalid`
+  for a non-finite or out-of-range value.
+- **Claims** (7.2, ported from pe-session's claims and cooldowns [V archive/v0-prototype `session/sim.rs`]). A
+  `Grab` by a hand the author owns takes the object's claim, or renews the author's own, until the frame
+  `now + CLAIM_SECONDS` (0.5 s, as pe-session's 30 frames at 60 Hz); the claim records the hand, the member, the
+  first frame (`since`) and that expiry (`until`). It is refused with `Held { by }` while someone else's claim is
+  unexpired, with `OutOfReach` past reach (7.2), and with `Cooldown { until }` while the author's own cooldown on
+  that object runs. A `Push` on an object someone else holds acts only through physics; it never moves the claim.
+- **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
+  object until `f + 1 + COOLDOWN_SECONDS` (0.25 s); cooldowns past their `until` end. Claims and cooldowns are
+  world tables, in the root (6, 12.11). Both limits are world settings in seconds, converted at the tick rate in
+  effect when each claim or cooldown is set.
+- **What the replica gets:** `Footprint` gains the pushes (object, impulse, `at`) and the hands written, so the
+  adapter builds `Effects` and `HandRow`s.
+- New seam reason [I, to ask @engine-architect]: `Reason::Cooldown { until: Frame }`.
+
 ## 9. The seams, my side
 
 Proposals to @engine-architect for pe-seams v0. Names follow the plan's appendix A where it has them.
