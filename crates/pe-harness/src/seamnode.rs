@@ -54,6 +54,10 @@ pub struct SeamNode<A: Agreement> {
     voided: BTreeSet<pe_seams::EntryRef>,
     /// Frames below the final frame whose `entries_at` P15 has checked.
     checked_to: u64,
+    /// The highest `kept_from` seen: it never goes back.
+    kept_seen: u64,
+    /// Cut frames already recorded as `Damaged`.
+    damaged: BTreeSet<u64>,
     seen_height: u64,
 }
 
@@ -111,6 +115,8 @@ impl SeamNode<LockstepAgreement> {
             held_ids: BTreeSet::new(),
             voided: BTreeSet::new(),
             checked_to: 0,
+            kept_seen: 0,
+            damaged: BTreeSet::new(),
             seen_height: 0,
         }
     }
@@ -141,13 +147,13 @@ impl<A: Agreement> SeamNode<A> {
         }
     }
 
-    /// P15's check of `entries_at` below the final frame: only entries the final cut covers, none it voided.
+    /// P15's check of `entries_at` below the final frame: only entries the final cut covers, none it voided. A frame
+    /// no longer kept (S3 v1.2) holds nothing to check.
     fn check_applied(&mut self) {
         let Some(fc) = self.agree.final_cut().cloned() else { return };
         let to = fc.cut.at.frame.0;
         for f in self.checked_to..to {
-            // A frame no longer kept (S3 v1.2) has nothing left to check.
-            for e in self.agree.entries_at(Frame(f)).unwrap_or_default() {
+            for e in self.agree.entries_at(Frame(f)).into_iter().flatten() {
                 let bad = if self.voided.contains(&e.id()) {
                     Some("a voided entry")
                 } else if !fc.cut.includes(&e.entry.chain, e.entry.seq) {
@@ -164,18 +170,46 @@ impl<A: Agreement> SeamNode<A> {
         self.checked_to = self.checked_to.max(to);
     }
 
+    /// P15's retention lines (S3 v1.2): `kept_from` never goes back, and it is truthful: `entries_at` answers for
+    /// it and for the final frame's predecessor, whenever they are at or above it and below `present`. (That nothing
+    /// at or above the floor is trimmed except past the time cap needs the cap, which is S3's own: pe-agree's
+    /// conformance target checks it.)
+    fn check_retention(&mut self, present: u64) {
+        let kept = self.agree.kept_from().0;
+        if kept < self.kept_seen {
+            let detail = format!("went back from {} to {kept}", self.kept_seen);
+            self.events.push(Ev::Breach { rule: "kept_from", detail });
+        }
+        self.kept_seen = self.kept_seen.max(kept);
+        let last = self.agree.final_cut().map(|fc| fc.cut.at.frame.0.saturating_sub(1));
+        for f in std::iter::once(kept).chain(last) {
+            if f >= kept && f < present && self.agree.entries_at(Frame(f)).is_none() {
+                let detail = format!("frame {f} is at or above kept_from {kept} but no longer kept");
+                self.events.push(Ev::Breach { rule: "kept_from", detail });
+            }
+        }
+    }
+
     /// One drive step: advance, vote on what wants a root, finalize the newest final cut.
     fn drive(&mut self, now: i64) {
         let present = Frame(self.frame_at(now) + 1);
+        self.check_retention(present.0);
         let adv = self.replica.advance(present, &mut self.agree);
         if let Some(f) = adv.rolled_back_to {
             self.events.push(Ev::RolledBack { frame: f.0 });
         }
         for cut in self.agree.wants_roots() {
             self.breach_if_lacking("wants_roots", &cut);
-            if let Ok(root) = self.replica.root_at_cut(&cut, &mut self.agree) {
-                self.events.push(Ev::ReplicaRoot { frame: cut.at.frame.0, root: root.0 });
-                self.agree.vote(&cut.at, root, self.self_test);
+            match self.replica.root_at_cut(&cut, &mut self.agree) {
+                Ok(root) => {
+                    self.events.push(Ev::ReplicaRoot { frame: cut.at.frame.0, root: root.0 });
+                    self.agree.vote(&cut.at, root, self.self_test);
+                }
+                // S3 v1.2: no root at this cut will come; rung 2 is due (M0 runs none). Recorded once per cut.
+                Err(pe_seams::RootError::Damaged) if self.damaged.insert(cut.at.frame.0) => {
+                    self.events.push(Ev::Damaged { frame: cut.at.frame.0 });
+                }
+                Err(_) => {}
             }
         }
         if let Some(fc) = self.agree.final_cut().cloned() {
@@ -197,8 +231,14 @@ impl<A: Agreement> SeamNode<A> {
                     self.finalized_height = fc.cut.at.height;
                     self.events.push(Ev::Floor { frame: fc.cut.at.frame.0 });
                 }
-                // Rung 2 is due and the floor stays (S3 v1.2): like the driver, it does not call again for this cut.
-                Finalized::Damaged => self.finalized_height = fc.cut.at.height,
+                // S3 v1.2: my root at the cut cannot be taken, and waiting will not change that. The floor stays, so
+                // there is no floor event, and the cut is not retried; rung 2 is pe-diverge's, which M0 does not run.
+                Finalized::Damaged => {
+                    self.finalized_height = fc.cut.at.height;
+                    if self.damaged.insert(fc.cut.at.frame.0) {
+                        self.events.push(Ev::Damaged { frame: fc.cut.at.frame.0 });
+                    }
+                }
             }
         }
     }

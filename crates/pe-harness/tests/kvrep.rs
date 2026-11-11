@@ -10,12 +10,16 @@ use pe_seams::{
     RootError, SignedEntry,
 };
 
-/// Entries by frame, a changed-from mark and a final cut, set by the test.
+/// Entries by frame, a changed-from mark, a final cut and a trim (S3 v1.2), set by the test.
 #[derive(Default)]
 struct Src {
     at: BTreeMap<u64, Vec<SignedEntry>>,
     changed: Option<Frame>,
     fin: Option<FinalCut>,
+    /// Frames below it are no longer kept.
+    kept: u64,
+    /// The last `keep_final_from(cv, floor)` the replica sent.
+    asked: Option<(Frame, Frame)>,
 }
 
 impl Src {
@@ -31,12 +35,17 @@ impl EntrySource for Src {
         self.fin.as_ref()
     }
     fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
+        if frame.0 < self.kept {
+            return None;
+        }
         Some(self.at.get(&frame.0).map_or(&[], |v| v.as_slice()))
     }
     fn kept_from(&self) -> Frame {
-        Frame(0)
+        Frame(self.kept)
     }
-    fn keep_final_from(&mut self, _: Frame, _: Frame) {}
+    fn keep_final_from(&mut self, cv: Frame, floor: Frame) {
+        self.asked = Some((cv, floor));
+    }
     fn take_changed_from(&mut self) -> Option<Frame> {
         self.changed.take()
     }
@@ -124,6 +133,8 @@ fn finalize_moves_the_floor_and_rollbacks_stop_there() {
     let cut = cut_over(10, &[&ea]);
     let root = r.root_at_cut(&cut, &mut src).unwrap();
     assert_eq!(r.finalize(&FinalCut { cut: cut.clone(), root, voters: vec![] }, &mut src), Finalized::Agreed);
+    // S3 v1.2's "who asks": the replica tells the source its new Cv and floor from `finalize`.
+    assert_eq!(src.asked, Some((Frame(10), Frame(10))), "finalize did not call keep_final_from");
     // An entry stamped below the floor changes nothing below it: the rollback stops at the floor.
     let mut b = EntryBuilder::new(&keys, 1);
     src.put(b.next(Class::Edit, Frame(4), set(99)));
@@ -148,6 +159,42 @@ fn finalize_with_another_root_is_a_divergence() {
     );
     // Rung 1 from Cv (genesis) reproduces my root: the fault is not transient here.
     assert_eq!(r.replay_to(&cut, &mut src), Ok(mine));
+}
+
+#[test]
+fn a_frame_no_longer_kept_from_the_floor_up_is_damaged_never_a_wait() {
+    // S3 v1.2 round 3 (@chunks-reviewer's Medium): the time cap trims from the floor (genesis) up after the live
+    // history stepped those frames, so nothing stops, but no root at a later cut can be taken again.
+    let (keys, mut r, mut src) = setup();
+    let mut a = EntryBuilder::new(&keys, 0);
+    let ea = a.next(Class::Edit, Frame(2), set(1));
+    src.put(ea.clone());
+    r.advance(Frame(15), &mut src);
+    let cut = cut_over(10, &[&ea]);
+    let root = r.root_at_cut(&cut, &mut src).unwrap();
+    src.kept = 5;
+    assert_eq!(r.root_at_cut(&cut, &mut src), Err(RootError::Damaged));
+    let fc = FinalCut { cut: cut.clone(), root, voters: vec![] };
+    assert_eq!(r.finalize(&fc, &mut src), Finalized::Damaged, "a verdict, not NotReady for ever");
+    // Rung 1 from Cv (genesis, below the trim) is refused before anything is restored.
+    let live = r.state().root_hash();
+    assert_eq!(r.replay_to(&cut, &mut src), Err(RootError::NotKept));
+    assert_eq!(r.state().root_hash(), live);
+}
+
+#[test]
+fn advance_stops_at_a_frame_no_longer_kept_and_never_steps_it_empty() {
+    let (keys, mut r, mut src) = setup();
+    let mut a = EntryBuilder::new(&keys, 0);
+    src.put(a.next(Class::Edit, Frame(2), set(1)));
+    r.advance(Frame(15), &mut src);
+    src.kept = 5;
+    // A change below the trim (S3 breaking its contract) sends advance back to frames no longer kept.
+    let mut b = EntryBuilder::new(&keys, 1);
+    src.put(b.next(Class::Edit, Frame(3), set(9)));
+    let adv = r.advance(Frame(15), &mut src);
+    assert!(!adv.caught_up, "{adv:?}");
+    assert_eq!(r.frame(), Frame(3), "it stops at the first frame no longer kept");
 }
 
 #[test]
