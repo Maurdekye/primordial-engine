@@ -196,7 +196,14 @@ pub trait WorldModel: Send {
     fn restore(&mut self, saved: &Self::Saved);
     /// The S2 tree calls on a saved root.
     fn tree<'a>(&'a self, saved: &'a Self::Saved) -> Box<dyn Tree + 'a>;
-    /// Rung 2's and a joiner's world-model part: `saved` patched from checked records (`NeedsPhysicsImage` for a
-    /// bound body without the image).
+    /// The state with no objects, no rows and empty world tables. Not genesis, which would bring the registry and the
+    /// settings along. It is only ever an import base, for an import from empty (a joiner, or a replica that answered
+    /// `Damaged` at the cut), never a state to step from (@world-model, m5442e8e58e81).
+    fn empty(&self) -> Self::Saved;
+    /// Rung 2's and a joiner's world-model part: `saved` patched from records, each checked against
+    /// `import.target_root` before anything is applied (`BadProof`), with every leaf in `import.absent` removed. The
+    /// patched state is the state at the cut's frame. It refuses a bound body that comes without the physics image
+    /// (`NeedsPhysicsImage`), and an image whose `global` is not the cut's `physics_global` record (`PhysicsCheck`;
+    /// @world-model, m5442e8e58e81).
     fn import(&self, saved: &Self::Saved, import: &pe_seams::CutImport) -> Result<Self::Saved, ImportError>;
 }
