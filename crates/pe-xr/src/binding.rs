@@ -99,8 +99,11 @@ pub unsafe fn vulkan_context(xr_instance: &XrInstance, system: xr::SystemId) -> 
     let inst_drop: wgpu_hal::DropCallback = {
         let (inst, library) = (ash_inst.clone(), xr_instance.library.clone());
         Box::new(move || {
-            // SAFETY: wgpu-hal calls this once, after its last use of the instance; the device (which holds the
-            // instance) went first.
+            // SAFETY: wgpu-hal calls this once, after its last use of the instance. The device must be destroyed
+            // before it, and is, but not by wgpu-hal's own order: `DeviceShared` drops its `Arc<InstanceShared>`
+            // before its drop guard, so the instance outlives the device only because wgpu-core's `Device` declares
+            // `raw` before `adapter` (wgpu-core 30.0.1 resource.rs:210-211) and the adapter still holds the instance
+            // (binding review L2, @shader-reviewer). Recheck this on any wgpu bump.
             unsafe { inst.destroy_instance(None) };
             drop(library);
         })
