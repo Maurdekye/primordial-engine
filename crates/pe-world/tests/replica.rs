@@ -88,3 +88,30 @@ fn write_physics_replaces_every_body_state_and_the_root_covers_the_tables() {
         x.root()
     });
 }
+
+#[test]
+fn write_poses_refuses_a_repeated_id_in_any_order() {
+    // @chunks-reviewer's Low 1 on f3f64f69: the result must not depend on the order of `poses`.
+    let id = [0.0, 0.0, 0.0, 1.0];
+    let poses = [(oid(2), at(8.0), id), (oid(1), at(7.0), id), (oid(2), at(9.0), id)];
+    let (mut a, mut b) = (world(), world());
+    let mut rev = poses;
+    rev.reverse();
+    assert_eq!(a.write_poses(&poses), [oid(2)]);
+    assert_eq!(b.write_poses(&rev), [oid(2)]);
+    assert_eq!(a.root(), b.root());
+}
+
+#[test]
+fn write_physics_keeps_wanted_rows_and_the_last_of_repeats() {
+    let mut w = world();
+    let s = |v: f32| BodyState { linear: [v, 0.0, 0.0], ..Default::default() };
+    w.write_physics(&[(oid(2), s(1.0)), (oid(1), s(2.0))], Hash([1; 32]));
+    let r = w.root();
+    let mut v = world();
+    v.write_physics(&[(oid(1), s(2.0)), (oid(2), s(9.0)), (oid(2), s(1.0))], Hash([1; 32]));
+    assert_eq!(v.root(), r, "order-independent; the last row for an id stands");
+    w.write_physics(&[(oid(1), s(3.0))], Hash([1; 32]));
+    assert_eq!(w.store().get::<BodyState>(oid(1)).unwrap().linear[0], 3.0);
+    assert!(w.store().get::<BodyState>(oid(2)).is_none());
+}

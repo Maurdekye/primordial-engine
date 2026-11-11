@@ -73,7 +73,9 @@ pub struct WorldSnapshot {
 
 impl WorldSnapshot {
     /// What the edit path would give `tx` from `draft` at this snapshot, changing nothing (7.6; api.md 9.2 step 3).
-    /// See [`World::dry_run_draft`] for what in the outcome is provisional.
+    /// See [`World::dry_run_draft`] for what in the outcome is provisional. `frame` is the frame the entry would be
+    /// applied at, which is never before this snapshot's [`WorldSnapshot::frame`]; it only dates the tombstones a
+    /// delete would leave (@chunks-reviewer's Low 2).
     pub fn dry_run(&self, frame: Frame, draft: &Draft, tx: &Transaction) -> pe_seams::Outcome {
         self.world.dry_run_draft(frame, draft, tx)
     }
