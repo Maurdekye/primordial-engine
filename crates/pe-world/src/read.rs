@@ -12,8 +12,10 @@ use std::sync::Arc;
 use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId, Offset, Pos};
 use pe_sim::{ComponentDesc, ComponentId, FieldKind, SimStore, Transform, WorldTransform};
 
+use crate::apply::Draft;
 use crate::components::{BlobRef, Name, Protection};
-use crate::world::{BlobStore, Claim, DEPTH_LIMIT_MAX};
+use crate::edit::Transaction;
+use crate::world::{BlobStore, Claim, DEPTH_LIMIT_MAX, World};
 use pe_seams::Version;
 
 /// One object as WorldApi's `query` reports it, without its component values.
@@ -64,9 +66,18 @@ pub struct WorldSnapshot {
     pub(crate) claims: Arc<BTreeMap<ObjectId, Claim>>,
     pub(crate) blobs: BlobStore,
     pub(crate) final_frame: Frame,
+    /// The whole world at this frame, for dry runs: tables the read calls do not publish (members, tombstones, the
+    /// rate, the depth limit) decide outcomes too. Copy-on-write, so holding it costs references.
+    pub(crate) world: World,
 }
 
 impl WorldSnapshot {
+    /// What the edit path would give `tx` from `draft` at this snapshot, changing nothing (7.6; api.md 9.2 step 3).
+    /// See [`World::dry_run_draft`] for what in the outcome is provisional.
+    pub fn dry_run(&self, frame: Frame, draft: &Draft, tx: &Transaction) -> pe_seams::Outcome {
+        self.world.dry_run_draft(frame, draft, tx)
+    }
+
     pub fn frame(&self) -> Frame {
         self.store.frame()
     }

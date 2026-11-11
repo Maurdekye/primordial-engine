@@ -283,6 +283,7 @@ impl World {
             claims: self.claims.clone(),
             blobs: self.blobs.clone(),
             final_frame,
+            world: self.clone(),
         })
     }
 }

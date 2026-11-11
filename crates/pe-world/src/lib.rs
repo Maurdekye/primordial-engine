@@ -14,7 +14,7 @@ pub mod edit;
 mod read;
 mod world;
 
-pub use apply::Footprint;
+pub use apply::{Draft, Footprint};
 pub use components::BlobRef;
 pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
