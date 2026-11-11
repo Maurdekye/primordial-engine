@@ -785,7 +785,8 @@ pub enum Precondition {
 - Field writes name a field by its index in the description, and give its bytes. WorldApi turns names into indices
   against the schema at the author's frame.
 - **Limits** per transaction [I, to tune]: 4,096 ops, 1 MiB of payload apart from blobs, and 65,536 created
-  objects (`MAX_NEW_OBJECTS`), counting each `Create` and every object of each `Copy`'s subtree. Over a limit is a
+  objects (`MAX_NEW_OBJECTS`), counting each `Create` and every object of each `Copy`'s subtree; `Undelete`
+  restores objects that were in the world before, so it does not count. Over a limit is a
   refusal, not a truncation; the object cap's is `TooLarge { limit }`. pe-world's constants are the one
   authority, which pe-api uses, and they are raised only with a measured reason (@coordinator-opus
   m0b9012f192f5).
@@ -973,7 +974,10 @@ its reason and the index of the op [I]:
   - `Copy` copies every row except `BodyState`, refuses a subtree that holds a `Hand`, and gives the copies the
     copier as creator. It checks, in order: the cap on its declared `size`, then the size against the subtree
     (7.1), then index overlap, protections and hands;
-  - the object cap's refusal is `Invalid` until pe-seams' `Reason::TooLarge` reaches main;
+  - a `Copy` with `size` 0 is `Invalid` (a subtree always has its root), and the object cap's refusal is
+    `TooLarge { limit: 65_536 }`;
+  - the edit payload has no format version byte. That is fine while no encoded entry outlives a build; one must
+    be added before entries are stored across builds (@chunks-reviewer's note on f1a720b2);
   - `Undelete` restores the subtree of that one delete: the delete's tombstones below the id, by their recorded
     parents and their place among their siblings at the delete, never through sibling links, which may name an
     object undeleted since (@design-reviewer's Medium 1);
