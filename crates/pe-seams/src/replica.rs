@@ -129,6 +129,9 @@ pub enum Reason {
     TooLarge { limit: u32 },
     /// The object is claimed by another hand; the first grab in the order wins (R5).
     Held { by: MemberKey },
+    /// A grab that would take its member past `limit`, the number of objects it may hold at once (`max_claims`;
+    /// world-model.md 8.1, "Agent powers").
+    TooManyClaims { limit: u32 },
     /// A grab beyond the hand's reach.
     OutOfReach,
     /// The author's cooldown on the object runs until `until`; it may grab it again from then (world-model.md 8.1).
