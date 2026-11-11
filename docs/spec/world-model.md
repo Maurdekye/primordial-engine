@@ -1029,6 +1029,8 @@ The user (mbe87e750ca35, V1): "simple protections can exist for objects the same
 - A member who is not the owner may not: `Copy` a protected object (or a subtree containing one); remove or change
   its `Protection` row. Such an op refuses its transaction with `Protected { owner }`.
 - Every other edit stays under the ordinary role permissions, so an admin can still delete a griefing object.
+- One exception (8.1, agent powers, a later slice): an admin may clear `Protection`'s lock flag, and only that
+  flag, so a departed owner's grab-and-push lock does not bind a shared object forever.
 - Later (M5): wearing, saving, exporting and fetching the assets of a protected object, under the same owner rule.
 
 ## 8. Inputs: hands, pushes and grabs
