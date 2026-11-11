@@ -258,7 +258,8 @@ R18's failure again [@design-reviewer's High].
   rides are on, and near `1 + framing + loss` on a thin link, where they're off. Both counts are pe-net's: its
   datagram bytes over its message bytes. At the IP layer, 30-byte actions can never come near 1.5: each packet
   adds about 57 B of IP, UDP, QUIC header, AEAD tag and frame header [I: 28 + about 11 with our 8-byte
-  connection ids + 16 + 2]. Section 9 tests that it stays under 1.5 with 1 % loss, over quinn on a shaped link.
+  connection ids + 16 + 2]. Section 9 tests that it stays under 1.5 with 1 % loss, over quinn on a thin shaped
+  link.
   So far that's shown only with the budget handed to the lanes: 1.30, at 2,000 B/s of pe-net datagram bytes,
   with a 30-byte action every second frame at 60 Hz and rides off [V `pe-net/src/lanes.rs`, budget set to the
   link's capacity].
@@ -634,16 +635,21 @@ Gated, unless marked:
    - Protocol and Action arrive once each at 0-30 % random loss, and at 10 % loss most need no retransmission
      round trip (each counted; that cell runs with budget to spare, so rides are on);
    - nothing is delivered twice;
-   - pe-net datagram bytes over message bytes stay under 1.5 with 1 % loss (3.3), over quinn on a shaped link (a
-     harness cell, the real budget path):
-     - **the cell:** a 32 kbit/s link (4,000 B/s of IP bytes, as a shaper counts them), one 30-byte action every
-       second frame at 60 Hz and nothing else. That's about 30 packets/s of about 100 IP bytes each, so about
-       75 % of the link before any rides [I, arithmetic; @design-reviewer]. The cell reports its measured load,
-       so a reader can tell "rides overfilled it" from "the cell overfilled it";
-     - **the queue:** it reports `srtt - base_rtt` at p50 and p99, and fails above `D_guard + 10 ms + s` at p99,
-       where `s` is one serialization time of the cell's largest packet at the link's rate (about 25 ms for
-       100 B at 4,000 B/s; measured from the packets sent, not assumed). So the cell can't pass on the ratio
-       with a deep queue;
+   - the ride gate (4.2), over quinn on shaped links (harness cells, the real budget path). Each cell sends one
+     30-byte action every second frame at 60 Hz and nothing else, with 1 % loss: about 30 packets/s of about
+     100 IP bytes, and about 134 with a ride [I, arithmetic; @design-reviewer]. Link rates count IP bytes, as a
+     shaper does. Each cell stays at least 10 % away from a full link with rides on, so it comes out the same
+     way every run. Each reports its measured load, so a reader can tell "rides overfilled it" from "the cell
+     overfilled it":
+     - **thin, the gate must close:** 28 kbit/s (3,500 B/s), about 86 % without rides and 115 % with them.
+       Gated on pe-net datagram bytes over message bytes under 1.5 (3.3);
+     - **room, the gate must stay open:** 64 kbit/s (8,000 B/s), about 38 % without rides and 50 % with them.
+       Gated on rides being on for at least 90 % of the run. The ratio is only reported (about 2, by design).
+       This catches a guard that starves rides on a link with room;
+     - **the queue, in both:** `srtt - base_rtt` at p50 and p99, failing above `D_guard + 10 ms + s` at p99,
+       where `s` is one serialization time of the cell's largest packet at the link's rate (about 30 ms for
+       100 B at 3,500 B/s; measured from the packets sent, not assumed). So no cell passes on the ratio with a
+       deep queue;
    - under a budget too small for everything, Protocol is never delayed by the lower lanes.
 2. **The budget:**
    - a thin link to one peer doesn't slow traffic to the others;
