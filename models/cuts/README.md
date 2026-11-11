@@ -169,7 +169,19 @@ Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `res
   (9.0 M states). n3-chain is still exhaustive, at 45.3 M states (v0: 13.2 M), and so is n3-sig, at 76.6 M.
   - The lock checks (ctl-nolock, n4-byz-v4, walk-n4-v4-lock) keep fixed frames (`fixed_frames()`). Their attack is
     on certificates, and the Byzantine frame choice made ctl-nolock's 18-step space too big to search in 10 minutes
-    (over 95 M states without reaching the split). With fixed frames, ctl-nolock gives its split in 30 s.
+    (over 95 M states without reaching the split). With fixed frames, ctl-nolock gives its split in 30 s. This loses
+    nothing the lock faces (@design-reviewer, m72d5174e95f9): the frame check is one more conjunct in `cut_ok`, so
+    it only removes votes and can't make a certificate that wasn't there; the Byzantine member already makes distinct
+    blocks in one view through `adversary_cuts`, so distinct frames add no new kind of equivocation; and the only new
+    honest behaviour, + K against + 2K, is one the lock attack doesn't use.
+  - **`FRAME_STEP_MAX` (parent + 2K) stands for "up to the voter's present".** It is not pe-agree's rule: a bound
+    relative to the parent would need dozens of cuts to catch up after a 10 s stall, and a link whose round trip
+    exceeds it would fall behind without limit. The upper bound's real job is to stop a proposer naming a frame in
+    the voters' future, which would void as late the honest entries stamped below it but not yet sent. The model has
+    no clock, so it can't tell that attack from honest lateness ("an honest entry is void (late)" is a witness of
+    both); it checks only that frames rise and that late is measured from them. pe-agree's rule: above the parent's
+    frame, and at most the voter's own present frame plus a small tolerance, with a harness test for a future-frame
+    proposal.
 - **n = 2** (condition 2): q = 2, t = 0, both members honest. **n2** is exhaustive (10.6 M states, two content
   cuts). Liveness has an early-timeout profile: up to P timeouts may fire before the network settles, standing for a
   timeout shorter than the round trip; after them, timeouts fire only at quiescence, as when an adaptive timeout has
@@ -192,10 +204,10 @@ Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `res
     about 1e-3.
 
 **Still to do before pe-agree's cut rules depend on the model (v0.2):**
-- **Bounded progress:** an entry held by a voter of the certificate for cut k is covered by cut k + 1 at the latest.
-  This needs votes that carry the voter's heads, and a proposal that names the votes forming its parent's certificate
-  (which voters, not only how many), so the property can say which entries the proposer was obliged to fetch. Not
-  started.
+- **Bounded progress** (formulation by @design-reviewer, m72d5174e95f9): record per entry the chain height at which
+  every honest member held it (`all_held_at`, monotone); in the liveness profile an entry with `all_held_at = h` is
+  covered by the final chain by height h + 2. Control: a proposer that covers only its own entries. The stronger form,
+  covered by h + 2 once any q - t honest members hold it, waits for votes that carry heads (S3 v1.1). Not started.
 - **Proposer choice** (condition 3): leader reputation (skip a member whose last view timed out) against keeping a
   proposer while its views succeed, chosen by measurement at n = 2 and n = 3. Either one gets its own control
   (condition 7).
