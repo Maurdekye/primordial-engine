@@ -230,7 +230,8 @@ Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `res
   A discrete-event simulation of the same rule (chained Jolteon, cadence 50 ms, adaptive timeout 3x the slowest round
   trip, doubling per consecutive timeout), 60 s per run, fixed link delays, no jitter. It measures speed only; safety
   is the model's. Three rules: rotation; keep (the leader keeps the next view while its views get a QC); reputation
-  (rotation, skipping the leader of the last timed-out view, DiemBFT v4 with a window of one). [V, simulated]:
+  (rotation, skipping the leader of the last timed-out view, DiemBFT v4 with a window of one). **Caveat: fixed link
+  delays with no jitter; it measures speed only, not safety.** [V, simulated]:
   - **n = 2:** rotation and reputation finalize in 70 ms on 20 ms links and 300 ms with a 150 ms slow member; keep in
     90 and 600 ms. Keep's votes must return to the same leader, so each view crosses the slow link twice. With a fixed
     200 ms timeout keep never finalizes, while rotation and reputation still do: their timeouts fire only after the
@@ -241,6 +242,21 @@ Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `res
     timeouts a minute; keep and reputation stay at about 20 per second, with 0 and 4-6 timeouts.
   - Caveat: the simulation decides each view's outcome globally, so every member derives the same leader; pe-agree
     must derive it from the certified chain to agree in the same way.
+  - **DECIDED: reputation** (coordinator). It matches rotation at n = 2, where keep never finalizes
+    under a short timeout, and survives a crash, where rotation collapses.
+  - **A possible later departure, not adopted:** also skip a measurably slow member. The reason to revisit it is
+    n = 3 with one slow member, where keep finalizes in 90 ms against reputation's 200 / 300 ms. It would need its own
+    control.
+- **Leader reputation in the model** (results in `results/v0.2-reputation.txt`). `leader_in(v, committed)`: rotation,
+  skipping the leader of the latest view that timed out, as the proposer's committed chain shows it (a view between
+  two consecutive committed blocks' views had no certified block; that view's leader is derived the same way from
+  the chain before it). Every member derives the same leader from the same committed prefix. On in every liveness
+  check (`live()`); the safety checks keep plain rotation, since the voting rules don't depend on who leads. The
+  Byzantine member may lead a view if any protocol-following member's chain names it.
+  - [V] All the liveness checks hold with it, including n2-live-early-h2 (two content cuts, 2 early timeouts) and
+    n3-live-h2. bound-n2-early still fails at 7 views (2P + 2 unchanged).
+  - Control **ctl-skipall** (reputation without its window: skip every member that ever timed out) fails "every
+    content cut ends final". At n = 2, once both members have a timed-out view behind a committed block, nobody leads.
 
 ## Not in v0
 

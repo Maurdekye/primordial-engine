@@ -59,6 +59,8 @@ pub enum Mutation {
     VoteWithoutRoot,
     /// An honest proposer covers only its own entries (v0.2): the bounded-progress control.
     OwnEntriesOnly,
+    /// Leader reputation without its window: skip every member whose view ever timed out, not only the last (v0.2).
+    SkipEveryTimedOut,
     /// A voter accepts any frame the proposer names, not only one above its parent's (v0.1).
     NoFrameCheck,
     /// A proposer with nothing new proposes nothing (v0.1, condition 5): the last content cut never gets its child.
@@ -133,6 +135,11 @@ pub struct Cuts {
     /// Bounded progress (v0.2, @design-reviewer): track, per entry, the highest certified height any
     /// honest member knew when every honest member first held it and its earlier chain. On in the liveness profile and the n = 2 checks.
     pub progress: bool,
+    /// Leader reputation (v0.2, coordinator; DiemBFT v4 with a window of one): rotation, skipping the
+    /// leader of the latest view that timed out, as the proposer's committed chain shows it (a view between two
+    /// consecutive committed blocks' views had no block certified). On in the liveness profile; the safety checks keep
+    /// plain rotation, since the voting rules don't depend on who leads.
+    pub reputation: bool,
 }
 
 impl Cuts {
@@ -166,7 +173,7 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true, early: 0, progress: false }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true, early: 0, progress: false, reputation: false }
     }
 
     pub fn progress(mut self) -> Self {
@@ -174,9 +181,15 @@ impl Cuts {
         self
     }
 
+    pub fn rotation(mut self) -> Self {
+        self.reputation = false;
+        self
+    }
+
     pub fn live(mut self) -> Self {
         self.liveness = true;
         self.progress = true;
+        self.reputation = true;
         self
     }
 
@@ -224,6 +237,32 @@ impl Cuts {
 
     pub fn leader(&self, view: u8) -> u8 {
         (view - 1 + self.offset) % self.n
+    }
+
+    /// The leader of view `v` as a member whose committed chain is `chain` derives it. None: nobody may lead (only
+    /// under the SkipEveryTimedOut control).
+    pub fn leader_in(&self, v: u8, chain: &Block) -> Option<u8> {
+        let rot = self.leader(v);
+        if !self.reputation {
+            return Some(rot);
+        }
+        // The leaders of the views that timed out, oldest first, each derived from the chain before it.
+        let mut bad: Vec<u8> = Vec::new();
+        let mut prev_view = 0u8;
+        for k in 0..chain.h {
+            let bv = chain.ancestor(k + 1).view();
+            let prefix = chain.ancestor(k);
+            for u in prev_view + 1..bv.min(v) {
+                if let Some(l) = self.leader_in(u, &prefix) {
+                    bad.push(l);
+                }
+            }
+            prev_view = bv;
+        }
+        if self.mutation == Some(Mutation::SkipEveryTimedOut) {
+            return (0..self.n).map(|i| (rot + i) % self.n).find(|l| !bad.contains(l));
+        }
+        Some(if bad.last() == Some(&rot) { (rot + 1) % self.n } else { rot })
     }
 
     fn hcap(&self) -> u8 {
@@ -629,7 +668,7 @@ impl Cuts {
         }
         let certified = self.certified_blocks(s);
         for v in 1..=self.views {
-            if self.leader(v) != 0 {
+            if !(0..self.n).any(|m| self.protocol(m) && self.leader_in(v, &s.m[m as usize].committed) == Some(0)) {
                 continue;
             }
             let mut tcs: Vec<Option<Cert>> = vec![None];
@@ -910,7 +949,7 @@ impl Model for Cuts {
             Action::Propose(m, wide) => {
                 let mut mm = s.m[m as usize];
                 let v = mm.view;
-                if self.leader(v) != m || v > self.views || mm.proposed >= v || mm.timed_out >= v {
+                if self.leader_in(v, &mm.committed) != Some(m) || v > self.views || mm.proposed >= v || mm.timed_out >= v {
                     return None;
                 }
                 let tc = if mm.high.block.view() + 1 == v {
@@ -1049,7 +1088,9 @@ impl Model for Cuts {
                             return true;
                         }
                         let k = fin.ancestor(h + 2);
-                        !c.protocol(c.leader(k.view())) || c.covered(&k) & (1 << e) != 0
+                        let rot = c.leader(k.view());
+                        let maybe_faulty = !c.protocol(rot) || c.reputation && !c.protocol((rot + 1) % c.n);
+                        maybe_faulty || c.covered(&k) & (1 << e) != 0
                     })
                 })
             }));
