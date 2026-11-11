@@ -12,8 +12,7 @@ use pe_seams::{
 };
 
 use crate::world::{
-    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, PhysicsSettings, PoseOutOfRange, PushFx,
-    ShapeRow, WorldModel,
+    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, PhysicsSettings, PushFx, ShapeRow, WorldModel,
 };
 
 /// Farthest a body may be from the origin, in metres: pe-physics's `MAX_POSITION`.
@@ -352,16 +351,18 @@ impl WorldModel for MockWorld {
         self.settings
     }
 
-    fn write_pose(&mut self, id: ObjectId, pos: Pos, rotation: [f32; 4]) -> Result<(), PoseOutOfRange> {
-        let p = (pos - Pos::ORIGIN).0;
-        if p.iter().any(|c| !c.is_finite() || c.abs() > RANGE) {
-            return Err(PoseOutOfRange);
+    fn write_poses(&mut self, poses: &[(ObjectId, Pos, [f32; 4])]) -> Vec<ObjectId> {
+        let mut refused = Vec::new();
+        for &(id, pos, rotation) in poses {
+            let p = (pos - Pos::ORIGIN).0;
+            if p.iter().any(|c| !c.is_finite() || c.abs() > RANGE) {
+                refused.push(id);
+            } else if let Some(b) = self.bodies.get_mut(&id) {
+                b.pos = pos;
+                b.rotation = rotation;
+            }
         }
-        if let Some(b) = self.bodies.get_mut(&id) {
-            b.pos = pos;
-            b.rotation = rotation;
-        }
-        Ok(())
+        refused
     }
 
     fn maintain_transforms(&mut self) -> u32 {
