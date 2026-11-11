@@ -32,7 +32,8 @@
 //!   forward only. S3 never trims a final entry at or above the floor except by the time cap: `T_diverge` (one
 //!   minute, the user's divergence bound, divergence.md 14) plus `T_keep`, behind the frame of this member's final
 //!   cut, in frames at the world's `SimRate`, never a fixed frame count. Below the floor it keeps from `Cv` on,
-//!   unless the time cap or a byte limit (so a busy minute can't grow without bound) trimmed past it.
+//!   unless the time cap or a byte limit (so a busy minute can't grow without bound) trimmed past it. It may trim at
+//!   any time, a running replay included: the replica copes ([`crate::Replica::advance`]), so S3 never waits for it.
 //!   [`EntrySource::kept_from`] reports what is kept, truthfully, and [`EntrySource::entries_at`] answers `None`
 //!   below it. The window serves rung 1, and a merge only while it lasts ([`Agreement::final_entries`]); the world
 //!   record on disk is separate and not bounded by it.
