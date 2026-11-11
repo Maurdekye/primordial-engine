@@ -18,6 +18,13 @@ use crate::components::BlobRef;
 
 /// The most ops a transaction may have (7.1).
 pub const MAX_OPS: usize = 4096;
+/// The most objects a transaction may create, counting each `Create` and every object of each `Copy`'s subtree (7.1;
+/// @coordinator-opus m0b9012f192f5). The one authoritative bound: pe-api uses it. Raise it only with a measured
+/// reason. Over it, the transaction is refused with `TooLarge`.
+pub const MAX_NEW_OBJECTS: usize = 65_536;
+/// The `precondition` index a `Stale` refusal carries when an op's own check failed rather than a listed
+/// precondition: a `Copy` whose source subtree no longer has the `size` its author saw (7.1).
+pub const OWN_CHECK: u32 = u32::MAX;
 /// The most bytes of row data a transaction may carry, apart from blobs (7.1).
 pub const MAX_ROW_BYTES: usize = 1 << 20;
 /// The longest `label`, in bytes (7.1).
@@ -100,9 +107,11 @@ pub enum Op {
     /// Moves `id` under `parent` at `index` (`None`: last). `keep_world` keeps its world pose; otherwise its local
     /// transform is kept (3.3).
     Reparent { id: Target, parent: Target, index: Option<u32>, keep_world: bool },
-    /// Copies `source` and its subtree under `parent`. The copies take `New` indices `new .. new + n` in depth-first
-    /// order, children in their order (7.1).
-    Copy { source: Target, new: u32, parent: Target, index: Option<u32> },
+    /// Copies `source` and its subtree under `parent`. The copies take `New` indices `new .. new + size` in
+    /// depth-first order, children in their order (7.1). `size` is the number of objects in the subtree as the author
+    /// read it. If the subtree has another size now, the indices would name other objects, so the op is refused as
+    /// `Stale` with `precondition` [`OWN_CHECK`] (@coordinator-opus mce71b99c0063).
+    Copy { source: Target, new: u32, parent: Target, index: Option<u32>, size: u32 },
     /// Restores a deleted subtree from its tombstones, with the same ids (7.5).
     Undelete { id: ObjectId },
 }
@@ -297,12 +306,13 @@ impl Transaction {
                     w.opt_u32(*index);
                     w.u8(*keep_world as u8);
                 }
-                Op::Copy { source, new, parent, index } => {
+                Op::Copy { source, new, parent, index, size } => {
                     w.u8(6);
                     w.target(*source);
                     w.u32(*new);
                     w.target(*parent);
                     w.opt_u32(*index);
+                    w.u32(*size);
                 }
                 Op::Undelete { id } => {
                     w.u8(7);
@@ -486,6 +496,7 @@ impl<'a> R<'a> {
                     new: self.u32()?,
                     parent: self.target()?,
                     index: self.opt_u32()?,
+                    size: self.u32()?,
                 },
                 7 => Op::Undelete { id: self.id()? },
                 _ => return None,

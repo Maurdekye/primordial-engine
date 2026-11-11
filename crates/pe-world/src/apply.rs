@@ -14,7 +14,9 @@ use pe_seams::{Class, FieldPath, Note, Outcome, Reason, SignedEntry, Version};
 use pe_sim::{ComponentId, Node, RowVersion, Transform};
 
 use crate::components::{Protection, SimSize, ids};
-use crate::edit::{Actor, Op, Precondition, Row, Target, Transaction, content_hash, row_tag};
+use crate::edit::{
+    Actor, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
+};
 use crate::world::{DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, depth, perm};
 
 /// What an applied entry touched, for the replica's physics effects (9.2) and the caches. Empty for a refusal.
@@ -77,6 +79,17 @@ fn invalid() -> Reason {
 
 fn invalid_field(c: ComponentId, field: u32) -> Reason {
     Reason::Invalid { field: Some(FieldPath { component: c.0, field }) }
+}
+
+/// The transaction would create more than [`MAX_NEW_OBJECTS`]. pe-seams' `Reason::TooLarge { limit }` is not on main
+/// yet (@engine-architect's e89119b6); until it is, the refusal is `Invalid` with no field.
+fn too_large() -> Reason {
+    invalid()
+}
+
+/// Refuses the op if the transaction would then have created more than [`MAX_NEW_OBJECTS`].
+fn within_cap(cx: &Cx, more: usize) -> Result<(), Reason> {
+    if cx.created.len().saturating_add(more) > MAX_NEW_OBJECTS { Err(too_large()) } else { Ok(()) }
 }
 
 fn too_deep(object: ObjectId, limit: u32) -> Reason {
@@ -298,7 +311,7 @@ impl World {
                 let id = self.live(cx, *id)?;
                 self.op_reparent(cx, i, id, *parent, *index, *keep_world)
             }
-            Op::Copy { source, new, parent, index } => self.op_copy(cx, i, *source, *new, *parent, *index),
+            Op::Copy { source, new, parent, index, size } => self.op_copy(cx, i, *source, *new, *parent, *index, *size),
             Op::Undelete { id } => self.op_undelete(cx, i, *id),
         }
     }
@@ -315,6 +328,7 @@ impl World {
         if cx.new.contains_key(&new) {
             return Err(Reason::NewIndexOverlap);
         }
+        within_cap(cx, 1)?;
         let id = ObjectId::created(cx.line, cx.author, cx.chain, cx.seq, new);
         if self.store.exists(id) || self.tombstones.contains_key(&id) {
             return Err(Reason::Exists(id));
@@ -448,6 +462,7 @@ impl World {
 
     /// `Copy` (7.1): the subtree, rows and all, as new objects with derived ids, under `parent`. A protected object
     /// (or a subtree containing one) may be copied only by its owner (7.8); hands are never copied (8).
+    #[allow(clippy::too_many_arguments)]
     fn op_copy(
         &mut self,
         cx: &mut Cx,
@@ -456,9 +471,17 @@ impl World {
         new: u32,
         parent: Target,
         index: Option<u32>,
+        size: u32,
     ) -> Result<(), Reason> {
         let src = self.live(cx, source)?;
+        // The cap on the size the author declares, before walking the subtree; the walk then confirms it.
+        within_cap(cx, size as usize)?;
         let subtree = self.store.subtree(src);
+        if subtree.len() != size as usize {
+            // The subtree changed since the author read it. No single edit is the winner (any object in it may have
+            // gained or lost children), so `current` and `winner` are zero, as for an absent row (7.6).
+            return Err(Reason::Stale { precondition: OWN_CHECK, current: GENESIS, winner: GENESIS.entry });
+        }
         let end = u32::try_from(subtree.len()).ok().and_then(|n| new.checked_add(n)).ok_or(Reason::NewIndexOverlap)?;
         if cx.new.range(new..end).next().is_some() {
             return Err(Reason::NewIndexOverlap);

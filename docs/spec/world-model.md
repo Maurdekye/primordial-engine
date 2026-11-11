@@ -737,7 +737,7 @@ pub enum Op {
     SetField { id: Target, component: ComponentId, instance: u16, field: u16, value: Bytes },
     RemoveRow { id: Target, component: ComponentId, instance: u16, tag: u128 },   // names the instance (7.6)
     Reparent { id: Target, parent: Target, index: Option<u32>, keep_world: bool },
-    Copy { source: Target, new: u32, parent: Target, index: Option<u32> },   // the subtree; templates (7.1)
+    Copy { source: Target, new: u32, parent: Target, index: Option<u32>, size: u32 },   // the subtree; templates
     Undelete { id: ObjectId },                                // restore a deleted subtree from its tombstones (7.5)
     Register { components: Vec<ComponentDesc> },             // with a script commit (WS-logic)
     CommitScript { script: ScriptId, source: SimBlobRef, toolchain: Hash, sdk: Hash, author_module: Hash,
@@ -784,8 +784,17 @@ pub enum Precondition {
   [I; an optimisation, invisible in the hash].
 - Field writes name a field by its index in the description, and give its bytes. WorldApi turns names into indices
   against the schema at the author's frame.
-- **Limits** per transaction [I, to tune]: 4,096 ops, 1 MiB of payload apart from blobs. Over the limit is a
-  refusal, not a truncation.
+- **Limits** per transaction [I, to tune]: 4,096 ops, 1 MiB of payload apart from blobs, and 65,536 created
+  objects (`MAX_NEW_OBJECTS`), counting each `Create` and every object of each `Copy`'s subtree. Over a limit is a
+  refusal, not a truncation; the object cap's is `TooLarge { limit }`. pe-world's constants are the one
+  authority, which pe-api uses, and they are raised only with a measured reason (@coordinator-opus
+  m0b9012f192f5).
+- **A copy's size** (@design-reviewer's Low 2 on pe-api, @coordinator-opus mce71b99c0063). `Copy` carries `size`,
+  the number of objects in the source subtree as the author read it. If the subtree has another size at the op,
+  its depth-first indices would name other objects than the author meant, so the op is refused as
+  `Stale { precondition: u32::MAX, .. }`, where `u32::MAX` (`OWN_CHECK`) means the op's own check. No single edit
+  is the winner (any object in the subtree may have gained or lost children), so `current` and `winner` are zero,
+  as for an absent row (7.6). The cap is checked on the declared size before the subtree is walked.
 
 ### 7.2 Rule 1: exclusive holds (grabs), the first wins
 
@@ -962,7 +971,9 @@ its reason and the index of the op [I]:
   - only instance 0 is accepted in M1; any other instance is `Invalid`;
   - `Create` carries no class: an edit makes only `World` objects (3.1);
   - `Copy` copies every row except `BodyState`, refuses a subtree that holds a `Hand`, and gives the copies the
-    copier as creator;
+    copier as creator. It checks, in order: the cap on its declared `size`, then the size against the subtree
+    (7.1), then index overlap, protections and hands;
+  - the object cap's refusal is `Invalid` until pe-seams' `Reason::TooLarge` reaches main;
   - `Undelete` restores the subtree of that one delete: the delete's tombstones below the id, by their recorded
     parents and their place among their siblings at the delete, never through sibling links, which may name an
     object undeleted since (@design-reviewer's Medium 1);
@@ -1211,3 +1222,7 @@ For the reviewers and the coordinator. None needs the user, as far as I can see 
     pe-sim's `state_hash` and `Snapshot` do not cover (`members`, `tombstones`, `rate`, `claims`, `depth_limit`;
     tombstones decide `Orphaned`, `AlreadyDeleted` and `Undelete`). The BLAKE3 root (6.2) and the world transfer
     must cover all of them, or two replicas with equal store hashes could still give different outcomes.
+12. **A child's creation moves its parent's version** (@fable-reviewer, me93a9b15ddd3). So an agent that recolours
+    `/Table` with an `ObjectVersion` precondition is refused whenever anyone adds a child to it. If that proves
+    common, the parent's own rows and its child list could carry separate versions. Measure before changing it.
+    A row `Version` precondition already avoids it.

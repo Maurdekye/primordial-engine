@@ -396,6 +396,7 @@ fn codec_is_canonical_and_total() {
             },
             Op::SetField { id: Target::New(0), component: ids::APPEARANCE, instance: 0, field: 1, value: vec![0; 12] },
             Op::RemoveRow { id: Target::New(0), component: ids::LIGHT, instance: 0, tag: 0x1234 },
+            Op::Copy { source: Target::New(0), new: 1, parent: Target::Root, index: Some(0), size: 1 },
             Op::Delete { id: Target::New(0) },
         ],
         blobs: vec![pe_world::BlobRef::of(b"x")],
@@ -449,12 +450,12 @@ fn copy_takes_derived_ids_in_depth_first_order() {
     let mut f = fx();
     let (table, ball, _) = table_and_ball(&mut f);
     let t = tx(vec![
-        Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None },
+        Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None, size: 2 },
         // The copy's indices are 0 (the table) and 1 (the ball): a Create at 1 overlaps.
         Op::Create { new: 1, parent: Target::Root, index: None, rows: vec![] },
     ]);
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &t)).0), (Some(1), Reason::NewIndexOverlap));
-    let t = tx(vec![Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None }]);
+    let t = tx(vec![Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None, size: 2 }]);
     let ids = created(&apply(&mut f.w, &entry(&mut f.a, &t)).0);
     assert_eq!(ids.len(), 2);
     let s = f.w.snapshot(Frame(0));
@@ -464,7 +465,7 @@ fn copy_takes_derived_ids_in_depth_first_order() {
     // Only the owner copies a protected object.
     let protect = tx(vec![Op::SetRow { id: Target::Existing(table), row: row(Protection { owner: f.keys.key(0) }) }]);
     created_ok(&apply(&mut f.w, &entry(&mut f.a, &protect)).0);
-    let t = tx(vec![Op::Copy { source: Target::Existing(ball), new: 0, parent: Target::Root, index: None }]);
+    let t = tx(vec![Op::Copy { source: Target::Existing(ball), new: 0, parent: Target::Root, index: None, size: 1 }]);
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.b, &t)).0).1, Reason::Protected { owner: f.keys.key(0) });
 }
 
@@ -621,7 +622,7 @@ fn protections_are_checked_per_op_and_the_first_failure_is_reported() {
     let tag = f.w.snapshot(Frame(0)).row_tag(table, "Protection").unwrap();
     let lift_and_copy = tx(vec![
         Op::RemoveRow { id: Target::Existing(table), component: ids::PROTECTION, instance: 0, tag },
-        Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None },
+        Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None, size: 2 },
     ]);
     let before = state(&f.w);
     assert_eq!(
@@ -632,7 +633,7 @@ fn protections_are_checked_per_op_and_the_first_failure_is_reported() {
     assert_eq!(f.w.snapshot(Frame(0)).protected_by(table), Some(ka));
     // Two faults: the first op's is reported.
     let two = tx(vec![
-        Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None },
+        Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None, size: 2 },
         Op::Delete { id: Target::Existing(ObjectId::from_u128(999)) },
     ]);
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.b, &two)).0), (Some(0), Reason::Protected { owner: ka }));
@@ -713,4 +714,50 @@ fn too_deep_is_its_own_reason() {
     let (op, reason) = refused(&apply(&mut f.w, &entry(&mut f.a, &t)).0);
     assert_eq!(op, Some(0));
     assert!(matches!(reason, Reason::TooDeep { limit: 1, .. }), "{reason:?}");
+}
+
+#[test]
+fn a_copy_of_a_subtree_that_changed_size_is_stale() {
+    // @coordinator-opus mce71b99c0063: `Copy` carries the size its author read; another size would shift the copies'
+    // `New` indices, so it is refused as stale by the op's own check.
+    let mut f = fx();
+    let (table, ball, _) = table_and_ball(&mut f);
+    let copy =
+        tx(vec![Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None, size: 2 }]);
+    let e = entry(&mut f.a, &copy);
+    let mut w = f.w.clone();
+    // B adds a grandchild between A's read and A's place in the order.
+    let grandchild = tx(vec![Op::Create { new: 0, parent: Target::Existing(ball), index: None, rows: vec![] }]);
+    created_ok(&apply(&mut f.w, &entry(&mut f.b, &grandchild)).0);
+    let before = state(&f.w);
+    let stale = Reason::Stale {
+        precondition: pe_world::edit::OWN_CHECK,
+        current: pe_world::GENESIS,
+        winner: pe_world::GENESIS.entry,
+    };
+    assert_eq!(refused(&apply(&mut f.w, &e).0), (Some(0), stale));
+    assert_eq!(state(&f.w), before);
+    // Without the change, the same entry applies.
+    assert_eq!(created(&apply(&mut w, &e).0).len(), 2);
+}
+
+#[test]
+fn one_transaction_creates_at_most_max_new_objects() {
+    // @coordinator-opus m0b9012f192f5: 65,536 per transaction, a Copy counted by its subtree, checked on the declared
+    // size before the subtree is walked.
+    use pe_world::edit::MAX_NEW_OBJECTS;
+    let mut f = fx();
+    let (table, _, _) = table_and_ball(&mut f);
+    let n = MAX_NEW_OBJECTS as u32;
+    let over = tx(vec![
+        Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] },
+        Op::Copy { source: Target::Existing(table), new: 1, parent: Target::Root, index: None, size: n },
+    ]);
+    // `TooLarge { limit }` once pe-seams has it on main; `Invalid` until then.
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &over)).0), (Some(1), Reason::Invalid { field: None }));
+    let at = tx(vec![Op::Copy { source: Target::Existing(table), new: 1, parent: Target::Root, index: None, size: n }]);
+    assert!(
+        matches!(refused(&apply(&mut f.w, &entry(&mut f.a, &at)).0).1, Reason::Stale { .. }),
+        "at the cap, the size check runs"
+    );
 }
