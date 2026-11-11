@@ -113,6 +113,42 @@ fn body_rows_follow_the_world_s_rows() {
     }
 }
 
+/// A body turned a quarter about y with its own box, a compound child without a `Transform` (it sits at its frame,
+/// the body) and one placed 1 m along the body's x: chunks-reviewer's probe and L1 on 48e4e521.
+#[test]
+fn a_compound_child_sits_at_its_frame_and_a_move_does_not_rebuild() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut w = genesis();
+    let k = MemberKey([1; 32]);
+    let quarter_turn = [0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2];
+    w.create(oid(2), None, k, GENESIS).expect("body");
+    w.insert(oid(2), Transform::at(pos(0.0, 2.0, 0.0)).with_rot(quarter_turn)).expect("b");
+    w.insert(oid(2), dynamic()).expect("b");
+    w.insert(oid(2), cuboid([0.5, 0.5, 0.5])).expect("b");
+    w.create(oid(3), Some(oid(2)), k, GENESIS).expect("bare child");
+    w.insert(oid(3), sphere(0.2)).expect("c");
+    w.create(oid(4), Some(oid(2)), k, GENESIS).expect("placed child");
+    w.insert(oid(4), Transform::local([1.0, 0.0, 0.0])).expect("c");
+    w.insert(oid(4), cuboid([0.1, 0.1, 0.1])).expect("c");
+    let mut pw = PeWorld::new(w, DomainId(0));
+    let built = pw.body(oid(2)).expect("the body is built");
+    let shapes: Vec<ShapeRow> = built.shapes.iter().map(|p| p.shape).collect();
+    let unturned = [0.0, 0.0, 0.0, 1.0];
+    assert_eq!(
+        shapes,
+        [
+            ShapeRow::Box { center: [0.0; 3], rotation: unturned, half_extents: [0.5; 3] },
+            ShapeRow::Sphere { center: [0.0; 3], radius: 0.2 },
+            ShapeRow::Box { center: [1.0, 0.0, 0.0], rotation: unturned, half_extents: [0.1; 3] },
+        ]
+    );
+    let moved = row(Transform::at(pos(4.0, 2.0, 0.0)).with_rot([0.0, 0.0, 0.0, 1.0]));
+    let (_, changed) = edit(&mut pw, &mut b, vec![Op::SetRow { id: Target::Existing(oid(2)), row: moved }]);
+    assert_eq!(changed, [(oid(2), Change::Teleported)], "moving and turning the body leaves its shapes as they were");
+    assert_eq!(pw.body(oid(2)).expect("moved").shapes, built.shapes);
+}
+
 /// Apply one edit at frame 1 and return its outcome and changes.
 fn edit(pw: &mut PeWorld, b: &mut EntryBuilder, ops: Vec<Op>) -> (Outcome, Vec<(ObjectId, Change)>) {
     let e = b.next(Class::Edit, Frame(1), Bytes::from(tx(ops).encode()));

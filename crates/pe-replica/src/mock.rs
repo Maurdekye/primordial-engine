@@ -424,8 +424,9 @@ impl WorldModel for MockWorld {
     }
 
     /// The mock has no inner nodes, so it checks no proofs. A record that does not decode, or names another domain or
-    /// a table, is `BadProof`. Any other difference shows as the replica's `RootMismatch`. Every mock object is a bound
-    /// body, so a record or an absent key for one needs the physics image.
+    /// a table, is `BadProof`. Since it cannot check records one by one, it checks the patched root against
+    /// `target_root` at the end: a wrong or missing record shows there as `RootMismatch` (chunks-reviewer's L2 on
+    /// 48e4e521). Every mock object is a bound body, so a record or an absent key for one needs the physics image.
     fn import(&self, saved: &MockWorld, import: &pe_seams::CutImport) -> Result<MockWorld, ImportError> {
         let mut next = saved.clone();
         for key in &import.absent {
@@ -463,6 +464,10 @@ impl WorldModel for MockWorld {
             return Err(ImportError::PhysicsCheck);
         }
         next.frame = import.cut.at.frame;
+        let got = next.root();
+        if got != import.target_root {
+            return Err(ImportError::RootMismatch { got });
+        }
         Ok(next)
     }
 }
@@ -698,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn an_import_refuses_a_bad_record_a_missing_image_and_a_wrong_global() {
+    fn an_import_refuses_bad_or_missing_records_a_missing_image_and_a_wrong_global() {
         let d = donor();
         let all = d.tree(&d).export(&d.leaves());
         let import = |records, image| d.import(&d.empty(), &import_of(&d, records, Vec::new(), image));
@@ -709,6 +714,10 @@ mod tests {
         let mut other = all.clone();
         other[3].key = LeafKey::Physics(DomainId(5));
         assert_eq!(import(other, true).err(), Some(ImportError::BadProof(3)));
+        let mut missing = all.clone();
+        missing.remove(1);
+        let got = import(missing, true).err();
+        assert!(matches!(got, Some(ImportError::RootMismatch { .. })), "a missing record: {got:?}");
         let mut wrong = import_of(&d, all, Vec::new(), true);
         wrong.physics.as_mut().expect("image").global = Hash([1; 32]);
         assert_eq!(d.import(&d.empty(), &wrong).err(), Some(ImportError::PhysicsCheck));

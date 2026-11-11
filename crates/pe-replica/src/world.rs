@@ -209,8 +209,8 @@ pub trait WorldModel: Send {
     fn empty(&self) -> Self::Saved;
     /// Rung 2's and a joiner's world-model part: `saved` patched from records, each checked against
     /// `import.target_root` before anything is applied (`BadProof`), with every leaf in `import.absent` removed. The
-    /// patched state is the state at the cut's frame. It refuses a bound body that comes without the physics image
-    /// (`NeedsPhysicsImage`), and an image whose `global` is not the cut's `physics_global` record (`PhysicsCheck`;
-    /// @world-model, m5442e8e58e81).
+    /// patched state is the state at the cut's frame. It refuses a bound body that comes in a record, or that
+    /// `absent` removes, without the physics image (`NeedsPhysicsImage`): either changes the physics. It refuses an
+    /// image whose `global` is not the cut's `physics_global` record (`PhysicsCheck`; @world-model, m5442e8e58e81).
     fn import(&self, saved: &Self::Saved, import: &pe_seams::CutImport) -> Result<Self::Saved, ImportError>;
 }
