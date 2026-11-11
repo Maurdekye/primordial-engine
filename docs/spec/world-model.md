@@ -215,8 +215,47 @@ itself is WS-diverge's (M5, "re-merging later, by choice"):
   the common ancestor. Dropping history on purpose ("share from now, without its past") is a branch from a cut with
   the history cut off, a later feature.
 
-**For M1:** the origin constant, branch entries for one preset (the ball pit) and one world made from it, line ids
-in every derivation, and the reserved `Node.born_on` field and `lines` table. Merging unrelated worlds is M5's.
+**For M1:** the origin constant, line ids in every derivation, and the reserved `Node.born_on` field and `lines`
+table. Merging unrelated worlds is M5's.
+
+### 2.4 M1's ball pit: disposable genesis code
+
+**Narrowed for M1** (@coordinator-opus m949a335461b2, option (a), with @fable-reviewer's conditions mbb99c4a64eb7).
+This replaces "branch entries for one preset (the ball pit) and one world made from it" above and the
+preset-as-a-line text of 2.1 and 2.3 for M1 only. Branch entries and preset lines come in a later slice (option (b)),
+which fixes the origin's role deliberately.
+
+- **Genesis code, not a preset line.** `pe_world::preset::ball_pit(seed, blobs, origin) -> World` builds the pit at
+  frame 0. In M1 one machine creates the world and the other joins by importing state at a cut, so only one machine
+  runs this code.
+- **Built through the edit path.** The content is one ordinary edit transaction (`Create` ops with their rows),
+  applied by the normal edit path (`dry_run_draft_state`, so encoded and decoded first). The author is world logic
+  (`LOGIC`), which holds `EDIT` only while it applies. The coordinates are a reserved line,
+  `m1_line() = BLAKE3("pe.m1.disposable" ‖ "ball-pit")`, a chain derived from the seed, and seq 0. The objects'
+  versions name the draft's stand-in entry id (9.2's `Draft::entry`).
+- **Nothing in it is the origin.** The M1 line is neither `LineId::origin()` nor a preset line, and nothing here is
+  treated as one.
+- **M1 worlds are disposable and marked.** A world made this way carries `m1_marker = Some(m1_line())`, which is in
+  its root. The save format (6, import in slice C) must carry it, so a later build recognises an M1 world and
+  refuses it or imports it as unrelated content. No M1 world is kept across the move to (b).
+- **Content only.** The pit has a root named "Ball pit" with a static floor, four static walls, a point lamp and the
+  balls (200 by default, at most 500: radius 0.06 m, **18 g each** (density 20 kg/m³, a real ball-pit ball;
+  the old prototype's 0.2 kg/m³ made them 0.18 g, lighter than air: @design-reviewer's Medium), damping 0.1
+  linear and 0.3 angular, rolling resistance 0.2, the old prototype's layout with a seed-dependent jitter). The world's physics origin is set to
+  `origin`. It has no members and no hands.
+- **Hands come from admission.** `World::admit(line, member, perms, frame, spawn)` is world logic applying a join
+  (8): it records the member's permissions and creates the member's two hands (`ObjectId::hand`, owner the member,
+  sides 0 and 1) as roots beside `spawn`. The ball pit's admin is admitted this way at frame 0, like anyone who
+  joins, with the world creator's spawn (pe-app passes the pit's `origin`) and `ADMIN | EDIT`. For anyone after
+  that, every machine must admit identically, so `perms`, `spawn` and the frame come from the agreed join record
+  (8), never from local state. The hands' versions are `GENESIS`, since no edit made them; naming the join's entry
+  instead is open until 9.2 gives the join an id (@design-reviewer's Low). A rejoin at a later frame gets two new hands (the ids
+  include the admission frame, as 8 intends); removing a leaver's hands belongs to the leave, which is not built yet,
+  so until then an M1 world never readmits a member (@chunks-reviewer's note). The avatar root that should parent the hands (3.5) is not built yet; its id derivation is open.
+- **No dependence on the preset's ids.** Tests, the harness and API examples find the pit's objects by name
+  (`preset::names`, `preset::find`), never by id.
+- **Determinism:** the same arguments give the same state root, and admitting the same member at the same frame
+  gives the same root again [V `crates/pe-world/tests/preset.rs`].
 
 ## 3. Objects and components
 

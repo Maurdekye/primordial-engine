@@ -143,6 +143,17 @@ impl WorldSnapshot {
         self.blobs.get(r)
     }
 
+    /// The governance member list (5.4) with each member's permission bits ([`crate::perm`]), in key order: what
+    /// the edit path checks at this frame. Roles are not stored, only their bits.
+    pub fn members(&self) -> impl Iterator<Item = (pe_core::MemberKey, u32)> + '_ {
+        self.world.members.iter().map(|(k, p)| (*k, *p))
+    }
+
+    /// A member's permission bits, or `None` if `who` is not a member.
+    pub fn perms(&self, who: pe_core::MemberKey) -> Option<u32> {
+        self.world.members.get(&who).copied()
+    }
+
     pub fn name(&self, id: ObjectId) -> Option<String> {
         let n = self.store.get::<Name>(id)?;
         let bytes = self.blobs.get(&n.text)?;
