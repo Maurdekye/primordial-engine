@@ -244,6 +244,8 @@ final.
     reach.
 - **Two physical machines** (by hand, once per checkpoint): the demo's script, with both machines' roots logged at
   every cut.
+  The second PC is the user's spare laptop, desktop only (U4; the user, m14ae4ed5bb9e). Each first run on it waits
+  for the coordinator's go.
 - **The user's convergence targets, on good links** (meef4f248923b, answer 8), as distributions over 20 seeds and 5
   delays:
   - the other machine sees an action within 0.25 s;
@@ -331,6 +333,10 @@ final.
 **Demo:** five players on at least three machines, in a public world.
 - A stranger joins without admin rights (Q6 of the first round). Its attempt to strip everyone's roles is refused
   (probe capture-close).
+- **Agent powers are a right the admins grant** (the user, m14ae4ed5bb9e and m9d1bad95e3f7; @item:primordial-engine/agent-actions-within-the-owning-user-s-simulatio).
+  The stranger has none, so its hand-less grab is refused and reach binds it. A granted member's agent grabs a ball
+  across the room. No agent takes an object another member holds, or one under its owner's "others can't grab or
+  push this" lock.
 - A player leaves, with no pause.
 - **Two players drop at once.**
   - The other three keep playing, and their actions show as not yet agreed.
@@ -415,6 +421,12 @@ final.
   - no byte string from one member aborts a replica (property tests);
   - a flooding member's excess entries are refused, and memory stays bounded. Control: with the rate limit removed,
     the memory test must fail.
+- **Agent powers** (world-model.md 8.1, "Agent powers"; the coordinator's sizing of 2026-11-11, 18:10Z):
+  - harness scenarios: a guest refused hand-less, a granted member grabbing across its range, an agent refused on a
+    held and on a locked object, an admin's force-release, and each per-member cap at its limit (claims, refused
+    with `TooManyClaims`; the push budget; chunkloaders);
+  - WS-world builds it in a pe-world slice after the inputs (slice B), and pe-api reports its refusals. M1 needs only
+    the default, under which admins hold the right.
 - "Fewer than 0.01% dropped on acceptable connections" (m509a0128e064) is measured, not assumed.
 
 **Size:** about 16-25:
@@ -476,6 +488,19 @@ sections 6.1-6.6):
     frequent, by measurement.
   - **Things nobody has loaded** do not run and influence nothing.
 
+**Agents within their owning user's range** (the user, m14ae4ed5bb9e; @item:primordial-engine/agent-actions-within-the-owning-user-s-simulatio):
+- **The bound.** An agent may act at any speed and distance, moving at once and grabbing objects of any size, as long
+  as the target lies within its owning user's simulation range. An agent's entries are signed by its user's member,
+  so the bound is the member's.
+  - Before M4 every machine simulates the whole world, so the bound always holds.
+  - With regions it is a check. pe-world refuses, on every machine, a hand-less input or an edit whose target lies
+    outside its member's range, computed from the agreed state at the entry's frame [I], and pe-api refuses it
+    before submitting (WS-world, WS-api).
+- **Chunkloaders.** An agent may set up a chunkloader that keeps a region loaded with nobody near it, only with its
+  owning user's approval and within its member's cap (`max_chunkloaders`: none without agent powers, a small
+  default with them). Approval by the owning user bounds nothing towards the others, so the cap is the admins'
+  (@fable-reviewer). A teleport takes the user's range with it (WS-regions).
+
 **Before anyone builds on the spectrum:** WS-state measures how closely a replayed contact impulse reproduces the
 holders' result (the coordinator's ruling, 19:36Z).
 
@@ -497,6 +522,8 @@ holders' result (the coordinator's ruling, 19:36Z).
 - A small control box out of a far player's range steers a large gate; the box's writes reach the far player as
   entries.
 - An invisible script holder has the default simulation size and is simulated by every ordinary player in range.
+- An agent grabs a ball at the far edge of its user's range at once, and its grab of a ball just outside that range
+  is refused. A chunkloader, once its user approves it, keeps a distant workshop running with nobody near it.
 
 **Acceptance:**
 - **No polling:** counters show zero scans, and a player far from everything sends nothing about it.
@@ -511,6 +538,9 @@ holders' result (the coordinator's ruling, 19:36Z).
   follows scaling, and parts take the layer of the whole.
 - **Missed time:** a frozen place re-simulated on return gives the same state on every machine, within the world's
   limit, without stalling a frame.
+- **Agents' range:** a target outside the member's range is refused on every machine and by pe-api, and one inside
+  it at any distance is applied. A chunkloader works only after its user's approval, and a member past its cap is
+  refused.
 - **A cost budget per machine,** measured at the default ratio and at 1 km.
 
 **Size:** 4-6 for the skeleton and the evidence, then 10-16 (file 11).
@@ -1012,6 +1042,14 @@ All of the user's earlier requirements still apply (m83bc23ef13ec). These are th
 | The sync model's user answers (v11): the synchronized line; publication is automatic and never the player's concern (m27cdafe8fcfa); QR (b); QH2 (c); a held paddle visible only to its holder (Q13 a) | Fields and their modes in pe-world (M1-M2), and pe-logic (M2). The org's proxy records give way to a held shared body visible per player, on the condition that only its holder sees it, as Q13 (a) has it (C9) |
 | The cross-scale answers: Q1 (c), a far player reads a large object from those near it; Q6 (c), delayed reads; Q8 (d), a giant's peers host native-scale objects; "readings ok" | M4. Q6 (c) is replaced: the delay applied only to followed objects (ma27c73c50fd4), and then the spectrum of file 16 (6.6) removed the fixed delay altogether (mbcc1c5fd8d39). Q1 (c) lives on as influence entries. WS-regions' specification states how Q8 (d) fits, and takes it to the user if it changes the answer |
 | The look for now; the Gnosarium name and theme; the built-in harness ("likely opencode") | M5. The look becomes a skin over a plain layout (file 08, A1). The harness is chosen by a short spike against a first-party agent loop, which needs an API key |
+
+### 5.3 Rulings since the plan
+
+| The user's ruling | Where it lands | When | Tested by |
+|---|---|---|---|
+| Agents may perform any action at any speed and distance, moving at once and grabbing arbitrarily large objects, as long as those objects are within their owning user's simulation range; chunkloaders that force regions to stay loaded need the owning user's approval (m14ae4ed5bb9e) | WS-world and WS-api: the range check; WS-regions: chunkloaders | M4; before it the whole world is in range | M4's demo and acceptance |
+| Agent powers are a per-member right the admins grant; admins cap claims, the push budget and chunkloaders per member; holds and locks win over an agent's grab (m9d1bad95e3f7) | WS-world (world-model.md 8.1, "Agent powers"); pe-api reports the refusals | A pe-world slice after the inputs; M3's demo | M3's acceptance |
+| The user's spare laptop may serve as M1's second PC (m14ae4ed5bb9e) | M1's two-machine run, desktop only (U4) | M1 | By hand, with the coordinator's go |
 
 ## 6. Open with the user, and excluded
 
