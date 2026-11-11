@@ -447,3 +447,66 @@ fn the_error_limit_counts_from_the_last_good_frame() {
     assert_eq!(s.counters.degraded_runs, 0, "one run of failures is not degraded, it is failing");
     no_violations(&s);
 }
+
+/// A renderer holding wrappers of the swapchain images, as the graphics binding's sink does.
+struct HoldingSink {
+    held: Arc<std::sync::atomic::AtomicBool>,
+    released: u32,
+}
+
+impl FrameSink for HoldingSink {
+    fn render(&mut self, _: &FrameRequest<'_>) -> bool {
+        true
+    }
+    fn release_swapchain(&mut self) {
+        self.released += 1;
+        self.held.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn the_renderer_releases_the_images_before_the_swapchain_is_destroyed() {
+    use std::sync::atomic::Ordering;
+    // Every way a session ends: by choice, by loss, by instance loss, by failing frames.
+    let endings: Vec<(FakeRuntime, EndReason)> = vec![
+        (FakeRuntime::new().started().at(3, XrEvent::StateChanged(SessionState::Exiting)), EndReason::Exited),
+        (FakeRuntime::new().started().failing(Op::AcquireImage, 3, XrError::SessionLost), EndReason::SessionLost),
+        (FakeRuntime::new().started().at(3, XrEvent::InstanceLossPending), EndReason::InstanceLost),
+        (
+            {
+                let mut rt = FakeRuntime::new().started();
+                for f in 1..=200 {
+                    rt.fail.push((Op::EndFrame, f, XrError::Other("XR_ERROR_RUNTIME_FAILURE".into())));
+                }
+                rt
+            },
+            EndReason::FrameErrors,
+        ),
+    ];
+    for (rt, why) in endings {
+        let held = rt.images_held.clone();
+        held.store(true, Ordering::Relaxed);
+        let (mut s, _) = session(rt);
+        let mut k = HoldingSink { held, released: 0 };
+        let steps: Vec<Step> = (0..200).map(|_| s.step(&mut k)).collect();
+        assert!(steps.contains(&Step::Ended(why)), "{why:?}");
+        assert_eq!(k.released, 1, "{why:?}: released once");
+        assert_eq!(s.backend().count(&Call::DestroySession), 1, "{why:?}");
+        no_violations(&s);
+    }
+}
+
+#[test]
+fn an_exit_before_the_session_ran_is_torn_down_by_the_application() {
+    let rt = FakeRuntime::new();
+    let held = rt.images_held.clone();
+    held.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (mut s, _) = session(rt);
+    let mut k = HoldingSink { held, released: 0 };
+    s.request_exit().unwrap();
+    assert_eq!(s.backend().count(&Call::DestroySession), 0, "not before the sink lets go");
+    s.teardown(&mut k);
+    s.teardown(&mut k);
+    assert_eq!((k.released, s.backend().count(&Call::DestroySession)), (1, 1));
+    no_violations(&s);
+}
