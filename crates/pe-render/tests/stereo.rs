@@ -168,7 +168,7 @@ fn the_headset_depth_layer_holds_the_projected_depth() {
             // Nothing is behind the top-left corner: the cleared far value, 0.
             assert_eq!(depth_at(&d, 1, 1), 0.0, "msaa {msaa}, layer {l}: the empty corner has depth");
             // And the layer's numbers describe that projection.
-            let info = eye.xr_depth_info();
+            let info = DepthRange::VR.xr_depth_info();
             assert!(info.near_z > info.far_z, "reverse Z: near_z is the far plane");
         }
     }

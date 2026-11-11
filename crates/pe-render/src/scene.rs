@@ -836,7 +836,8 @@ impl Renderer {
     /// - Only `target.extent` (from the origin) is drawn: the render scale is a viewport, so the swapchain never
     ///   changes size, and the projection layer's `imageRect` must match it.
     /// - With a depth target (`XR_KHR_composition_layer_depth`), reverse-Z depth is written into it, MSAA depth
-    ///   resolved to the nearest sample; [`Camera::xr_depth_info`] gives the layer's range (review L2).
+    ///   resolved to the nearest sample; [`crate::camera::DepthRange::xr_depth_info`] gives the layer's range
+    ///   (review L2), from the cameras' unscaled depth range.
     /// - The frame's work ends with the colour image back in COLOR_TARGET and the depth image in
     ///   DEPTH_STENCIL_WRITE, the states OpenXR handed them over in (xr.md 4.2). The runtime's image can be
     ///   released once this returns.
@@ -888,12 +889,15 @@ impl Renderer {
             xr_depth.map(|d| (0..2).map(|l| layer_view(d, l)).collect()).unwrap_or_default();
         let xr_array = xr_depth.map(array_view);
 
-        let passes = p.shadows as usize + scene_slots as usize;
+        // Every pass is inside the timestamp pair, the depth resolves too (review L2, part 2b).
+        let passes = p.shadows as usize + scene_slots as usize + if copy_depth { 2 } else { 0 };
+        let mut k = 0;
         let mut enc =
             self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pe-render stereo") });
         let ts = |k: usize| timing.and_then(|slot| self.timer.as_ref()?.writes(slot, k == 0, k + 1 == passes));
         if p.shadows {
-            stats.draws += self.shadow_pass(&mut enc, &p, shadow_slot, ts(0));
+            stats.draws += self.shadow_pass(&mut enc, &p, shadow_slot, ts(k));
+            k += 1;
         }
         let pl = &self.pipelines[&(format_key(format), samples, multiview)];
         // Multiview: one pass over the array; otherwise one pass per eye's layer.
@@ -909,13 +913,16 @@ impl Renderer {
                 extent,
                 multiview,
             };
-            stats.draws += self.scene_pass(&mut enc, &p, pl, i as u64, &pass, ts(p.shadows as usize + i));
+            stats.draws += self.scene_pass(&mut enc, &p, pl, i as u64, &pass, ts(k));
+            k += 1;
             if let (true, Some(f)) = (copy_depth, depth_format) {
                 // Per layer: a multiview pass's depth is resolved layer by layer, as single-layer views.
                 let eyes_here: &[usize] = if multiview { &[0, 1] } else { std::slice::from_ref(&i) };
                 for &e in eyes_here {
                     let src = &t.depth_layers[if multiview { e } else { 0 }];
-                    self.depth_copy(&mut enc, src, &xr_layers[e], f, samples > 1, extent);
+                    let how = DepthResolve { format: f, multisampled: samples > 1, extent };
+                    self.depth_copy(&mut enc, src, &xr_layers[e], how, ts(k));
+                    k += 1;
                     stats.draws += 1;
                 }
             }
@@ -1224,10 +1231,10 @@ impl Renderer {
         enc: &mut wgpu::CommandEncoder,
         src: &wgpu::TextureView,
         dst: &wgpu::TextureView,
-        format: wgpu::TextureFormat,
-        multisampled: bool,
-        extent: [u32; 2],
+        how: DepthResolve,
+        ts: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
+        let DepthResolve { format, multisampled, extent } = how;
         let pipeline = &self.depth_copy[&(format_key(format), multisampled)];
         let bg = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("depth resolve"),
@@ -1245,7 +1252,7 @@ impl Renderer {
                 depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }),
-            timestamp_writes: None,
+            timestamp_writes: ts,
             occlusion_query_set: None,
             multiview_mask: None,
         });
@@ -1286,6 +1293,14 @@ struct TargetUse {
     layers: u32,
     /// Our depth is read by the headset's depth resolve.
     sampled_depth: bool,
+}
+
+/// How the headset's depth is resolved: its format, whether ours is multisampled, and the drawn extent.
+#[derive(Clone, Copy)]
+struct DepthResolve {
+    format: wgpu::TextureFormat,
+    multisampled: bool,
+    extent: [u32; 2],
 }
 
 /// One scene pass's attachments.
@@ -1475,6 +1490,27 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 10);
+    }
+
+    /// Both shader variants parse, validate and compile to SPIR-V on every run, multiview included, though no
+    /// software adapter here draws it (review L1, part 2b). The multiview variant really uses `view_index`: it fails
+    /// validation without the capability.
+    #[test]
+    fn both_shader_variants_validate_and_compile_to_spirv() {
+        use wgpu::naga;
+        let compile = |src: &str, caps: naga::valid::Capabilities| -> Result<Vec<u32>, String> {
+            let m = naga::front::wgsl::parse_str(src).map_err(|e| e.emit_to_string(src))?;
+            let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps)
+                .validate(&m)
+                .map_err(|e| format!("{e:?}"))?;
+            naga::back::spv::write_vec(&m, &info, &naga::back::spv::Options::default(), None).map_err(|e| e.to_string())
+        };
+        let base = naga::valid::Capabilities::default();
+        assert!(!compile(&shader_source(false), base).expect("single-view").is_empty());
+        let mv = shader_source(true);
+        assert!(!compile(&mv, base | naga::valid::Capabilities::MULTIVIEW).expect("multiview").is_empty());
+        assert!(compile(&mv, base).is_err(), "the multiview variant does not use view_index");
+        assert!(!compile(include_str!("depth_copy.wgsl"), base).expect("depth resolve").is_empty());
     }
 
     #[test]
