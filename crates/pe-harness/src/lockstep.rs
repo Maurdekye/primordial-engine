@@ -62,6 +62,8 @@ pub struct LockstepAgreement {
     pub trim_cap: Option<u64>,
     /// The planted defect for the retention control: `kept_from` answers frame 0 whatever was trimmed. Off by default.
     pub kept_from_lies: bool,
+    /// A second retention defect: this one frame is no longer kept, whatever `kept_from` says. Off by default.
+    pub drop_frame: Option<u64>,
     /// Frames below this are no longer kept.
     kept: u64,
     keys: TestKeys,
@@ -110,6 +112,7 @@ impl LockstepAgreement {
             trim_below_cv: false,
             trim_cap: None,
             kept_from_lies: false,
+            drop_frame: None,
             kept: 0,
             keys: keys.clone(),
             signer: keys.signer(i),
@@ -552,7 +555,7 @@ impl EntrySource for LockstepAgreement {
     }
 
     fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
-        if frame.0 < self.kept {
+        if frame.0 < self.kept || self.drop_frame == Some(frame.0) {
             return None;
         }
         Some(self.at.get(&frame.0).map_or(&[], |v| v.as_slice()))
