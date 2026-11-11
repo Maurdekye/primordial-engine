@@ -769,3 +769,32 @@ fn a_copy_of_size_zero_is_invalid() {
     let t = tx(vec![Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None, size: 0 }]);
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &t)).0), (Some(0), Reason::Invalid { field: None }));
 }
+
+#[test]
+fn a_dry_run_on_a_snapshot_matches_the_live_path() {
+    // api-eng mbccab60aea54: WorldApi checks a change on the published snapshot before anything is signed.
+    let mut f = fx();
+    let (table, ball, _) = table_and_ball(&mut f);
+    let snap = f.w.snapshot(Frame(0));
+    let t = tx(vec![
+        Op::SetRow { id: Target::Existing(ball), row: row(Appearance::default()) },
+        Op::Create { new: 0, parent: Target::Existing(table), index: None, rows: vec![] },
+    ]);
+    // The draft carries the coordinates the signer will use, so created ids are exact.
+    let e = f.a.clone().next(Class::Edit, Frame(1), Bytes::from(t.encode()));
+    let d = pe_world::Draft { author: e.entry.author, line: e.entry.line, chain: e.entry.chain, seq: e.entry.seq };
+    let before = state(&f.w);
+    let dry = snap.dry_run(Frame(1), &d, &t);
+    assert_eq!(state(&f.w), before, "a dry run changes nothing");
+    let (live, _) = apply(&mut f.w, &entry(&mut f.a, &t));
+    assert_eq!(created(&dry), created(&live), "the same ids");
+    // Refusals agree too, from the snapshot even after the world moved on.
+    let bad = tx(vec![Op::Delete { id: Target::Existing(ObjectId::from_u128(999)) }]);
+    assert_eq!(
+        snap.dry_run(Frame(1), &d, &bad),
+        Outcome::Refused { op: Some(0), reason: Reason::Unknown(ObjectId::from_u128(999)) }
+    );
+    // Over a limit, a draft is Malformed exactly as an encoded entry is.
+    let label = Transaction { label: Some("x".repeat(pe_world::edit::MAX_LABEL + 1)), ..tx(vec![]) };
+    assert_eq!(snap.dry_run(Frame(1), &d, &label), Outcome::Refused { op: None, reason: Reason::Malformed });
+}

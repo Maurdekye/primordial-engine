@@ -32,6 +32,36 @@ pub struct Footprint {
     pub reparented: Vec<ObjectId>,
 }
 
+/// Where a transaction that is not signed yet would come from (a dry run, api.md 9.2): its author and the
+/// coordinates its new ids and row tags derive from (2.1, 7.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Draft {
+    pub author: MemberKey,
+    pub line: pe_core::LineId,
+    pub chain: pe_core::ChainId,
+    pub seq: u64,
+}
+
+impl Draft {
+    /// The stand-in entry id a dry run's versions name: `BLAKE3("pe.draft" ‖ line ‖ author ‖ chain ‖ seq ‖ payload)`.
+    /// It is never a real entry's id.
+    pub fn entry(&self, payload: &[u8]) -> EntryRef {
+        let mut h = pe_core::commit::Hasher::new("pe.draft");
+        h.write_hash(&self.line.0).write(&self.author.0).write_hash(&self.chain.0).write_u64(self.seq);
+        h.write_len_prefixed(payload);
+        EntryRef(h.finish())
+    }
+}
+
+/// The facts of an entry the edit path uses.
+struct Source {
+    entry: EntryRef,
+    author: MemberKey,
+    line: pe_core::LineId,
+    chain: pe_core::ChainId,
+    seq: u64,
+}
+
 /// A target after resolution.
 enum Res {
     Live(ObjectId),
@@ -142,29 +172,59 @@ impl World {
         self.clone().apply_edit(frame, entry).0
     }
 
+    /// What [`World::apply_edit`] would give `tx` from `draft`'s author and coordinates at the current state, before
+    /// it is signed, changing nothing. The same path as the live one: the transaction is encoded and decoded first,
+    /// so a limit refuses it as `Malformed` exactly as live. The entry id it would have is unknown, so versions in
+    /// the outcome (`overwrote`, the inverse's preconditions) name a stand-in, [`Draft::entry`]; created ids and row
+    /// tags are exact when `chain` and `seq` are the ones the signer will use.
+    pub fn dry_run_draft(&self, frame: Frame, draft: &Draft, tx: &Transaction) -> Outcome {
+        let payload = tx.encode();
+        let src = Source {
+            entry: draft.entry(&payload),
+            author: draft.author,
+            line: draft.line,
+            chain: draft.chain,
+            seq: draft.seq,
+        };
+        let mut w = self.clone();
+        match Transaction::decode(&payload) {
+            None => Outcome::Refused { op: None, reason: Reason::Malformed },
+            Some(tx) => match w.apply_tx(frame, &src, &tx) {
+                Ok((outcome, _)) => outcome,
+                Err((op, reason)) => Outcome::Refused { op, reason },
+            },
+        }
+    }
+
     fn try_apply(&mut self, frame: Frame, entry: &SignedEntry) -> Result<(Outcome, Footprint), Refusal> {
         let e = &entry.entry;
         if e.class != Class::Edit {
             return Err((None, Reason::Malformed));
         }
         let tx = Transaction::decode(&e.payload).ok_or((None, Reason::Malformed))?;
+        let src = Source { entry: entry.id(), author: e.author, line: e.line, chain: e.chain, seq: e.seq };
+        self.apply_tx(frame, &src, &tx)
+    }
+
+    /// The one edit path after decoding, for a signed entry and a draft alike.
+    fn apply_tx(&mut self, frame: Frame, src: &Source, tx: &Transaction) -> Result<(Outcome, Footprint), Refusal> {
         if let Actor::Agent { principal, requested_by, .. } = &tx.actor
-            && (*principal != e.author || requested_by.is_some())
+            && (*principal != src.author || requested_by.is_some())
         {
             return Err((None, invalid()));
         }
-        if !self.permits(e.author, perm::EDIT) {
+        if !self.permits(src.author, perm::EDIT) {
             return Err((None, Reason::NoPermission));
         }
         for (i, p) in tx.preconditions.iter().enumerate() {
             self.check(i as u32, p).map_err(|r| (None, r))?;
         }
         let mut cx = Cx {
-            entry: entry.id(),
-            author: e.author,
-            line: e.line,
-            chain: e.chain,
-            seq: e.seq,
+            entry: src.entry,
+            author: src.author,
+            line: src.line,
+            chain: src.chain,
+            seq: src.seq,
             frame,
             new: BTreeMap::new(),
             created: Vec::new(),
