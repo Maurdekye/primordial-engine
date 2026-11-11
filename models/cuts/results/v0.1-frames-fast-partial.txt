@@ -1,0 +1,925 @@
+check                  states     generated  depth   seconds  result
+== n3-chain
+Checking. states=1, unique=1, depth=0
+Checking. states=2902187, unique=550932, depth=32
+Checking. states=5786949, unique=1046428, depth=33
+Checking. states=8616047, unique=1531380, depth=33
+Checking. states=11362670, unique=2003746, depth=33
+Checking. states=14239365, unique=2469593, depth=33
+Checking. states=17014322, unique=2912408, depth=33
+Checking. states=19733029, unique=3378037, depth=33
+Checking. states=22288219, unique=3823370, depth=33
+Checking. states=24753440, unique=4249268, depth=33
+Checking. states=27452407, unique=4686787, depth=33
+Checking. states=30410006, unique=5135454, depth=33
+Checking. states=33144960, unique=5526073, depth=33
+Checking. states=35950379, unique=5930312, depth=33
+Checking. states=38961348, unique=6380032, depth=33
+Checking. states=41959878, unique=6843307, depth=33
+Checking. states=45338326, unique=7294171, depth=33
+Checking. states=48519699, unique=7695157, depth=33
+Checking. states=51830284, unique=8110269, depth=33
+Checking. states=55337531, unique=8543799, depth=33
+Checking. states=58876080, unique=9022944, depth=33
+Checking. states=62104621, unique=9484869, depth=33
+Checking. states=65088986, unique=9932363, depth=33
+Checking. states=67656961, unique=10336430, depth=33
+Checking. states=70524209, unique=10751042, depth=33
+Checking. states=73595867, unique=11205987, depth=33
+Checking. states=77036974, unique=11689257, depth=33
+Checking. states=80194704, unique=12146381, depth=33
+Checking. states=83066593, unique=12558352, depth=33
+Checking. states=85879287, unique=12975128, depth=33
+Checking. states=88641791, unique=13395084, depth=33
+Checking. states=91294033, unique=13794571, depth=33
+Checking. states=93966771, unique=14195142, depth=33
+Checking. states=96760533, unique=14600092, depth=33
+Checking. states=99363001, unique=14973048, depth=33
+Checking. states=102523592, unique=15393735, depth=33
+Checking. states=105777695, unique=15839896, depth=33
+Checking. states=108980047, unique=16266885, depth=33
+Checking. states=112367924, unique=16741101, depth=33
+Checking. states=115851419, unique=17187135, depth=33
+Checking. states=119531189, unique=17667956, depth=33
+Checking. states=122578151, unique=18075560, depth=33
+Checking. states=125904989, unique=18508432, depth=33
+Checking. states=129520022, unique=18967477, depth=33
+Checking. states=133231104, unique=19391907, depth=33
+Checking. states=137115240, unique=19840075, depth=33
+Checking. states=140818358, unique=20272219, depth=33
+Checking. states=144358698, unique=20653305, depth=33
+Checking. states=148084936, unique=21069388, depth=33
+Checking. states=151621497, unique=21557677, depth=33
+Checking. states=155289946, unique=22080832, depth=33
+Checking. states=159024078, unique=22605909, depth=33
+Checking. states=162484104, unique=23122411, depth=33
+Checking. states=165813385, unique=23597690, depth=33
+Checking. states=169837500, unique=24111209, depth=33
+Checking. states=173501302, unique=24597541, depth=33
+Checking. states=177242940, unique=25066336, depth=33
+Checking. states=180907601, unique=25509210, depth=33
+Checking. states=184338137, unique=25926432, depth=33
+Checking. states=188198071, unique=26363967, depth=33
+Checking. states=191751429, unique=26816457, depth=33
+Checking. states=195185223, unique=27220305, depth=33
+Checking. states=198619757, unique=27649112, depth=33
+Checking. states=201679447, unique=28045787, depth=33
+Checking. states=204681624, unique=28454293, depth=33
+Checking. states=207962808, unique=28853575, depth=33
+Checking. states=211202705, unique=29241804, depth=33
+Checking. states=213726397, unique=29548114, depth=33
+Checking. states=217117580, unique=29942723, depth=33
+Checking. states=220310545, unique=30322431, depth=33
+Checking. states=223369712, unique=30678006, depth=33
+Checking. states=226295554, unique=31006586, depth=33
+Checking. states=229331628, unique=31355510, depth=33
+Checking. states=232219902, unique=31695020, depth=33
+Checking. states=235388922, unique=32064621, depth=33
+Checking. states=238866928, unique=32433601, depth=33
+Checking. states=242286839, unique=32816794, depth=33
+Checking. states=245734225, unique=33202801, depth=33
+Checking. states=249358703, unique=33587174, depth=33
+Checking. states=253196629, unique=33984551, depth=33
+Checking. states=257021883, unique=34378582, depth=33
+Checking. states=260638403, unique=34761837, depth=33
+Checking. states=264173845, unique=35137087, depth=33
+Checking. states=267664206, unique=35555454, depth=33
+Checking. states=271388400, unique=36045303, depth=33
+Checking. states=275334113, unique=36552105, depth=33
+Checking. states=279117229, unique=36984031, depth=33
+Checking. states=282966692, unique=37431230, depth=33
+Checking. states=286704832, unique=37845352, depth=33
+Checking. states=290603634, unique=38280746, depth=33
+Checking. states=294477362, unique=38698947, depth=33
+Checking. states=298324498, unique=39111966, depth=33
+Checking. states=302449047, unique=39586140, depth=33
+Checking. states=306237305, unique=40004609, depth=33
+Checking. states=309763966, unique=40365756, depth=33
+Checking. states=313524185, unique=40779969, depth=33
+Checking. states=317403161, unique=41161210, depth=33
+Checking. states=321394781, unique=41581594, depth=33
+Checking. states=325201416, unique=42015406, depth=33
+Checking. states=329516960, unique=42528756, depth=33
+Checking. states=333658987, unique=43031201, depth=33
+Checking. states=338074301, unique=43503775, depth=33
+Checking. states=342500449, unique=43992609, depth=33
+Checking. states=346341717, unique=44396162, depth=33
+Checking. states=350520799, unique=44823563, depth=33
+Checking. states=354639122, unique=45211406, depth=33
+Done. states=355421881, unique=45281984, depth=33, sec=106
+Discovered "a cut is final" example Path[11]:
+- AdvEntry(1, 3)
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, false)
+- Deliver(1, Propose { block: v1@3[3,0,-,-], proot: true, tc: None, carried: 11 })
+- Deliver(0, Propose { block: v1@3[3,0,-,-], proot: true, tc: None, carried: 11 })
+- Observe(1, Cert { block: v1@3[3,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@3[3,0,-,-]>v2@6[3,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[3,0,-,-]>v2@6[3,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@3[3,0,-,-]>v2@6[3,0,-,-], root: true })
+- Observe(0, Cert { block: v1@3[3,0,-,-]>v2@6[3,0,-,-], root: true })
+Action index path: 0/15/0/1/5/1/7/8/8/2/11/4
+Discovered "a faulty author's entry takes effect" example Path[11]:
+- AdvEntry(1, 3)
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, false)
+- Deliver(1, Propose { block: v1@3[3,0,-,-], proot: true, tc: None, carried: 11 })
+- Deliver(0, Propose { block: v1@3[3,0,-,-], proot: true, tc: None, carried: 11 })
+- Observe(1, Cert { block: v1@3[3,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@3[3,0,-,-]>v2@6[3,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[3,0,-,-]>v2@6[3,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@3[3,0,-,-]>v2@6[3,0,-,-], root: true })
+- Observe(0, Cert { block: v1@3[3,0,-,-]>v2@6[3,0,-,-], root: true })
+Action index path: 0/15/0/1/5/1/7/8/8/2/11/4
+n3-chain             45281984     355421881     33     106.2  OK   all properties hold; examples found
+    3 members, one author-faulty with chain faults (forks, back-dates, withholds), safety; q = 2; entries 0=m1.1 1=f.1a 2=f.1b 3=f.2<
+== n3-sig
+Checking. states=1, unique=1, depth=0
+Checking. states=2789028, unique=529856, depth=32
+Checking. states=5505032, unique=1002565, depth=32
+Checking. states=8222546, unique=1510037, depth=32
+Checking. states=11104442, unique=2049134, depth=33
+Checking. states=14095157, unique=2535691, depth=33
+Checking. states=16921240, unique=3026727, depth=33
+Checking. states=19786712, unique=3493331, depth=33
+Checking. states=22726331, unique=3968974, depth=33
+Checking. states=25688999, unique=4458013, depth=33
+Checking. states=28943059, unique=4967970, depth=33
+Checking. states=31981729, unique=5433040, depth=33
+Checking. states=35123916, unique=5867792, depth=33
+Checking. states=38201226, unique=6278094, depth=33
+Checking. states=41347685, unique=6716542, depth=33
+Checking. states=43914675, unique=7082507, depth=33
+Checking. states=45183542, unique=7263651, depth=33
+Checking. states=48107685, unique=7671705, depth=33
+Checking. states=51428637, unique=8135830, depth=33
+Checking. states=54913418, unique=8617922, depth=33
+Checking. states=58469097, unique=9131752, depth=33
+Checking. states=61656009, unique=9597492, depth=33
+Checking. states=64969933, unique=10074884, depth=33
+Checking. states=68520715, unique=10556800, depth=33
+Checking. states=72085275, unique=11016137, depth=33
+Checking. states=75526029, unique=11466702, depth=33
+Checking. states=79016514, unique=11933399, depth=33
+Checking. states=82488953, unique=12387918, depth=33
+Checking. states=85878533, unique=12831519, depth=33
+Checking. states=89357375, unique=13286543, depth=33
+Checking. states=92800303, unique=13747812, depth=33
+Checking. states=96174900, unique=14176810, depth=33
+Checking. states=98837244, unique=14580749, depth=33
+Checking. states=101553767, unique=14954824, depth=33
+Checking. states=104581293, unique=15366340, depth=33
+Checking. states=107806089, unique=15795528, depth=33
+Checking. states=111121890, unique=16226200, depth=33
+Checking. states=114387118, unique=16652367, depth=33
+Checking. states=117599259, unique=17069843, depth=33
+Checking. states=120774999, unique=17481245, depth=33
+Checking. states=123859712, unique=17865172, depth=33
+Checking. states=127336242, unique=18269854, depth=33
+Checking. states=130577683, unique=18666822, depth=33
+Checking. states=134348347, unique=19074786, depth=33
+Checking. states=137528542, unique=19501255, depth=33
+Checking. states=140572547, unique=19934774, depth=33
+Checking. states=143295340, unique=20352163, depth=33
+Checking. states=146450044, unique=20758845, depth=33
+Checking. states=149650678, unique=21199360, depth=33
+Checking. states=152288764, unique=21625666, depth=33
+Checking. states=154511420, unique=21948580, depth=33
+Checking. states=157398239, unique=22367589, depth=33
+Checking. states=160948301, unique=22894549, depth=33
+Checking. states=164177384, unique=23338625, depth=33
+Checking. states=167454560, unique=23790502, depth=33
+Checking. states=170914239, unique=24234409, depth=33
+Checking. states=174512538, unique=24656908, depth=33
+Checking. states=178197015, unique=25068038, depth=33
+Checking. states=181622127, unique=25501328, depth=33
+Checking. states=184767915, unique=25920293, depth=33
+Checking. states=188031445, unique=26358174, depth=33
+Checking. states=191238962, unique=26774675, depth=33
+Checking. states=194759783, unique=27230631, depth=33
+Checking. states=198570201, unique=27683372, depth=33
+Checking. states=202393461, unique=28130125, depth=33
+Checking. states=205957105, unique=28550001, depth=33
+Checking. states=209695298, unique=29008899, depth=33
+Checking. states=212411189, unique=29357948, depth=33
+Checking. states=215206760, unique=29728121, depth=33
+Checking. states=218523205, unique=30146821, depth=33
+Checking. states=222305855, unique=30589042, depth=33
+Checking. states=225820166, unique=31001473, depth=33
+Checking. states=229059517, unique=31411386, depth=33
+Checking. states=232310394, unique=31831426, depth=33
+Checking. states=235726216, unique=32257497, depth=33
+Checking. states=239309291, unique=32689385, depth=33
+Checking. states=242663653, unique=33102768, depth=33
+Checking. states=245963577, unique=33492378, depth=33
+Checking. states=249601685, unique=33900146, depth=33
+Checking. states=253371560, unique=34333449, depth=33
+Checking. states=257177337, unique=34748683, depth=33
+Checking. states=260818835, unique=35135762, depth=33
+Checking. states=264118539, unique=35528465, depth=33
+Checking. states=267597859, unique=35928700, depth=33
+Checking. states=271290762, unique=36333729, depth=33
+Checking. states=275028906, unique=36739196, depth=33
+Checking. states=278580604, unique=37121253, depth=33
+Checking. states=282265251, unique=37501860, depth=33
+Checking. states=285788043, unique=37912710, depth=33
+Checking. states=288747475, unique=38272841, depth=33
+Checking. states=291948636, unique=38673886, depth=33
+Checking. states=294761673, unique=39101479, depth=33
+Checking. states=297403326, unique=39462041, depth=33
+Checking. states=300058580, unique=39817230, depth=33
+Checking. states=303194587, unique=40247709, depth=33
+Checking. states=306377512, unique=40666173, depth=33
+Checking. states=307910173, unique=40882640, depth=33
+Checking. states=310705357, unique=41285941, depth=33
+Checking. states=313845082, unique=41727482, depth=33
+Checking. states=319327046, unique=42526277, depth=33
+Checking. states=322164797, unique=42914790, depth=33
+Checking. states=325022404, unique=43305248, depth=33
+Checking. states=327870834, unique=43704395, depth=33
+Checking. states=331107441, unique=44122850, depth=33
+Checking. states=334184811, unique=44529616, depth=33
+Checking. states=337572366, unique=44938110, depth=33
+Checking. states=340603800, unique=45331946, depth=33
+Checking. states=343608664, unique=45711317, depth=33
+Checking. states=347153742, unique=46150518, depth=33
+Checking. states=350612067, unique=46564611, depth=33
+Checking. states=353841170, unique=46961253, depth=33
+Checking. states=356943639, unique=47322981, depth=33
+Checking. states=360173338, unique=47682928, depth=33
+Checking. states=363841202, unique=48132731, depth=33
+Checking. states=366917145, unique=48543861, depth=33
+Checking. states=369789287, unique=48933801, depth=33
+Checking. states=373032981, unique=49307299, depth=33
+Checking. states=376596814, unique=49724939, depth=33
+Checking. states=379744887, unique=50152515, depth=33
+Checking. states=383000598, unique=50572322, depth=33
+Checking. states=386290888, unique=50972914, depth=33
+Checking. states=389675620, unique=51381877, depth=33
+Checking. states=392842391, unique=51779820, depth=33
+Checking. states=396165008, unique=52204612, depth=33
+Checking. states=399641444, unique=52623469, depth=33
+Checking. states=403188654, unique=53038527, depth=33
+Checking. states=406713351, unique=53441243, depth=33
+Checking. states=410452029, unique=53851852, depth=33
+Checking. states=413969868, unique=54241929, depth=33
+Checking. states=417475728, unique=54627068, depth=33
+Checking. states=420838381, unique=55000206, depth=33
+Checking. states=424090758, unique=55357417, depth=33
+Checking. states=427390927, unique=55749828, depth=33
+Checking. states=430304403, unique=56101589, depth=33
+Checking. states=433596189, unique=56456489, depth=33
+Checking. states=437479749, unique=56824966, depth=33
+Checking. states=441196469, unique=57185186, depth=33
+Checking. states=445055005, unique=57597090, depth=33
+Checking. states=447846338, unique=57977278, depth=33
+Checking. states=450730512, unique=58338256, depth=33
+Checking. states=453341753, unique=58690779, depth=33
+Checking. states=455034927, unique=58927754, depth=33
+Checking. states=458025999, unique=59296602, depth=33
+Checking. states=461020477, unique=59659400, depth=33
+Checking. states=464049761, unique=60027766, depth=33
+Checking. states=467218135, unique=60408161, depth=33
+Checking. states=470259953, unique=60803790, depth=33
+Checking. states=473707336, unique=61233485, depth=33
+Checking. states=477253384, unique=61655723, depth=33
+Checking. states=480843481, unique=62062954, depth=33
+Checking. states=484601051, unique=62476331, depth=33
+Checking. states=488071181, unique=62890509, depth=33
+Checking. states=491727194, unique=63287751, depth=33
+Checking. states=495140510, unique=63674397, depth=33
+Checking. states=498534856, unique=64074868, depth=33
+Checking. states=501979069, unique=64467983, depth=33
+Checking. states=505345654, unique=64851166, depth=33
+Checking. states=508335348, unique=65213741, depth=33
+Checking. states=511158239, unique=65545594, depth=33
+Checking. states=514192907, unique=65863496, depth=33
+Checking. states=517533462, unique=66200324, depth=33
+Checking. states=520428941, unique=66497173, depth=33
+Checking. states=523966883, unique=66836642, depth=33
+Checking. states=527320865, unique=67189697, depth=33
+Checking. states=530485394, unique=67559486, depth=33
+Checking. states=533765290, unique=67945979, depth=33
+Checking. states=536817435, unique=68302619, depth=33
+Checking. states=540012253, unique=68656178, depth=33
+Checking. states=543370900, unique=69022325, depth=33
+Checking. states=546582529, unique=69366866, depth=33
+Checking. states=550462461, unique=69797789, depth=33
+Checking. states=553691841, unique=70152958, depth=33
+Checking. states=557041477, unique=70548121, depth=33
+Checking. states=560304277, unique=70926821, depth=33
+Checking. states=563878637, unique=71295585, depth=33
+Checking. states=567953458, unique=71681102, depth=33
+Checking. states=571649924, unique=72059701, depth=33
+Checking. states=574735025, unique=72393022, depth=33
+Checking. states=577939098, unique=72742634, depth=33
+Checking. states=581338680, unique=73082126, depth=33
+Checking. states=584721877, unique=73420572, depth=33
+Checking. states=587604946, unique=73726737, depth=33
+Checking. states=590836140, unique=74057607, depth=33
+Checking. states=593930367, unique=74392832, depth=33
+Checking. states=597152036, unique=74730276, depth=33
+Checking. states=600362690, unique=75040670, depth=33
+Checking. states=603671485, unique=75344665, depth=33
+Checking. states=607106056, unique=75669047, depth=33
+Checking. states=610285943, unique=75975791, depth=33
+Checking. states=613139356, unique=76216091, depth=33
+Checking. states=616524325, unique=76510359, depth=33
+Done. states=617897121, unique=76634368, depth=33, sec=192
+Discovered "a cut is final" example Path[11]:
+- AdvEntry(1, 1)
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, true)
+- Deliver(1, Propose { block: v1@6[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Deliver(0, Propose { block: v1@6[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Observe(1, Cert { block: v1@6[1,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[1,0,-,-]>v2@9[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@6[1,0,-,-]>v2@9[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@6[1,0,-,-]>v2@9[1,0,-,-], root: true })
+- Observe(0, Cert { block: v1@6[1,0,-,-]>v2@9[1,0,-,-], root: true })
+Action index path: 0/11/0/2/5/1/7/8/8/2/11/4
+Discovered "a faulty author's entry takes effect" example Path[11]:
+- AdvEntry(1, 1)
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, true)
+- Deliver(1, Propose { block: v1@6[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Deliver(0, Propose { block: v1@6[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Observe(1, Cert { block: v1@6[1,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[1,0,-,-]>v2@9[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@6[1,0,-,-]>v2@9[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@6[1,0,-,-]>v2@9[1,0,-,-], root: true })
+- Observe(0, Cert { block: v1@6[1,0,-,-]>v2@9[1,0,-,-], root: true })
+Action index path: 0/11/0/2/5/1/7/8/8/2/11/4
+n3-sig               76634368     617897121     33     192.5  OK   all properties hold; examples found
+    3 members, one author-faulty with signature faults (forges, replays), safety; q = 2; entries 0=m1.1 1=f.1a 2=forge(m1.1) 3=f.1@line1
+== n3-crash
+Checking. states=1, unique=1, depth=0
+Done. states=74041, unique=26884, depth=28, sec=1
+Discovered "a cut is final" example Path[15]:
+- Timeout(2)
+- Deliver(2, Entry { to: 2, e: 0 })
+- Timeout(1)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- AdvanceTc(1, Cert { block: genesis, root: true })
+- Deliver(1, Entry { to: 1, e: 1 })
+- Propose(1, false)
+- Deliver(2, Propose { block: v2@3[-,0,1,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 3 })
+- Deliver(1, Propose { block: v2@3[-,0,1,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 3 })
+- Observe(2, Cert { block: v2@3[-,0,1,-], root: true })
+- Propose(2, false)
+- Deliver(2, Propose { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], proot: true, tc: None, carried: 0 })
+- Deliver(1, Propose { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], root: true })
+- Timeout(1)
+Action index path: 0/7/4/3/6/1/0/1/6/1/8/9/9/2/4/7
+n3-crash                26884         74041     28       1.0  OK   all properties hold; examples found
+    3 members, one silent, 4 views (consensus: agreement through timeouts), safety; q = 2; entries 0=m1.1 1=m2.1
+== n3-chain-live
+Checking. states=1, unique=1, depth=0
+Done. states=150809, unique=29840, depth=28, sec=1
+Discovered "a cut is final" example Path[10]:
+- AdvEntry(1, 1)
+- Propose(0, true)
+- Deliver(1, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Deliver(0, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Observe(1, Cert { block: v1@6[3,-,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+- Observe(0, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+Action index path: 0/8/2/4/1/6/7/7/2/10/4
+Discovered "a faulty author's entry takes effect" example Path[10]:
+- AdvEntry(1, 1)
+- Propose(0, true)
+- Deliver(1, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Deliver(0, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Observe(1, Cert { block: v1@6[3,-,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+- Observe(0, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+Action index path: 0/8/2/4/1/6/7/7/2/10/4
+n3-chain-live           29840        150809     28       1.0  OK   all properties hold; examples found
+    3 members, author-faulty, chain faults, liveness; q = 2; entries 0=m1.1 1=f.1a 2=f.1b 3=f.2<
+== n3-crash-live
+Checking. states=1, unique=1, depth=0
+Done. states=73, unique=46, depth=16, sec=1
+Discovered "a cut is final" example Path[14]:
+- Deliver(2, Entry { to: 2, e: 0 })
+- Deliver(1, Entry { to: 1, e: 1 })
+- Timeout(2)
+- Timeout(1)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- AdvanceTc(1, Cert { block: genesis, root: true })
+- Propose(1, false)
+- Deliver(2, Propose { block: v2@3[-,0,1,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 3 })
+- Deliver(1, Propose { block: v2@3[-,0,1,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 3 })
+- Observe(2, Cert { block: v2@3[-,0,1,-], root: true })
+- Propose(2, false)
+- Deliver(2, Propose { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], proot: true, tc: None, carried: 0 })
+- Deliver(1, Propose { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], root: true })
+Action index path: 0/3/0/7/3/5/1/1/5/1/7/8/8/2/4
+n3-crash-live              46            73     16       1.0  OK   all properties hold; examples found
+    3 members, one silent from the start, liveness; q = 2; entries 0=m1.1 1=m2.1
+== n4-byz-live
+Checking. states=1, unique=1, depth=0
+Checking. states=1046108, unique=254061, depth=27
+Checking. states=2213383, unique=510368, depth=28
+Checking. states=3588438, unique=744605, depth=28
+Checking. states=4843635, unique=973387, depth=28
+Checking. states=6006353, unique=1195630, depth=28
+Checking. states=7541221, unique=1458475, depth=28
+Checking. states=8975358, unique=1687183, depth=28
+Checking. states=10507610, unique=1939182, depth=28
+Checking. states=12053476, unique=2176116, depth=28
+Checking. states=13773302, unique=2403685, depth=28
+Checking. states=15935165, unique=2644170, depth=28
+Checking. states=18191658, unique=2902854, depth=28
+Checking. states=20733246, unique=3132695, depth=28
+Checking. states=23329319, unique=3360406, depth=28
+Checking. states=25931785, unique=3586150, depth=28
+Checking. states=28285185, unique=3789126, depth=28
+Done. states=28953159, unique=3844600, depth=28, sec=17
+Discovered "a cut is final" example Path[12]:
+- Timeout(2)
+- Timeout(1)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- AdvanceTc(1, Cert { block: genesis, root: true })
+- Propose(1, false)
+- Deliver(2, Propose { block: v2@3[-,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 0 })
+- Deliver(1, Propose { block: v2@3[-,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 0 })
+- Observe(2, Cert { block: v2@3[-,-,-,-], root: true })
+- Propose(2, false)
+- Deliver(2, Propose { block: v2@3[-,-,-,-]>v3@6[-,-,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(1, Propose { block: v2@3[-,-,-,-]>v3@6[-,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v2@3[-,-,-,-]>v3@6[-,-,-,-], root: true })
+Action index path: 0/5/2/3/0/0/3/0/5/6/6/1/3
+Discovered "a faulty author's entry takes effect" example Path[16]:
+- AdvPropose(3, Propose { block: v1@1[0,-,-,-], proot: true, tc: None, carried: 1 })
+- AdvPropose(1, Propose { block: v1@1[0,-,-,-], proot: true, tc: None, carried: 1 })
+- AdvPropose(3, Propose { block: v1@1[-,-,-,-], proot: true, tc: None, carried: 0 })
+- Timeout(3)
+- Timeout(1)
+- AdvanceTc(3, Cert { block: genesis, root: true })
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- AdvanceTc(1, Cert { block: genesis, root: true })
+- Propose(1, false)
+- Deliver(3, Propose { block: v2@3[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- Deliver(1, Propose { block: v2@3[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- Observe(2, Cert { block: v2@3[0,-,-,-], root: true })
+- Propose(2, false)
+- Deliver(2, Propose { block: v2@3[0,-,-,-]>v3@6[0,-,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(1, Propose { block: v2@3[0,-,-,-]>v3@6[0,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v2@3[0,-,-,-]>v3@6[0,-,-,-], root: true })
+Action index path: 0/23/21/11/8/2/6/3/0/0/6/0/5/6/6/1/3
+n4-byz-live           3844600      28953159     28      17.0  OK   all properties hold; examples found
+    4 members, Byzantine, liveness; q = 3; entries 0=f.1a
+== n4-crash-live
+Checking. states=1, unique=1, depth=0
+Done. states=301, unique=130, depth=24, sec=1
+Discovered "a cut is final" example Path[21]:
+- Deliver(3, Entry { to: 3, e: 1 })
+- Deliver(3, Entry { to: 3, e: 0 })
+- Deliver(2, Entry { to: 2, e: 0 })
+- Deliver(1, Entry { to: 1, e: 1 })
+- Timeout(3)
+- Timeout(2)
+- Timeout(1)
+- AdvanceTc(3, Cert { block: genesis, root: true })
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- AdvanceTc(1, Cert { block: genesis, root: true })
+- Propose(1, false)
+- Deliver(3, Propose { block: v2@3[-,0,1,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 3 })
+- Deliver(2, Propose { block: v2@3[-,0,1,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 3 })
+- Deliver(1, Propose { block: v2@3[-,0,1,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 3 })
+- Observe(3, Cert { block: v2@3[-,0,1,-], root: true })
+- Observe(2, Cert { block: v2@3[-,0,1,-], root: true })
+- Propose(2, false)
+- Deliver(3, Propose { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], proot: true, tc: None, carried: 0 })
+- Deliver(2, Propose { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], proot: true, tc: None, carried: 0 })
+- Deliver(1, Propose { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v2@3[-,0,1,-]>v3@6[-,0,1,-], root: true })
+Action index path: 0/7/6/3/0/12/7/3/10/5/1/1/10/5/1/13/7/8/15/8/2/4
+n4-crash-live             130           301     24       1.0  OK   all properties hold; examples found
+    4 members, one silent, liveness; q = 3; entries 0=m1.1 1=m2.1
+== n3-root
+Checking. states=1, unique=1, depth=0
+Checking. states=2514947, unique=525624, depth=30
+Checking. states=5408451, unique=1015534, depth=30
+Checking. states=8028740, unique=1554572, depth=30
+Checking. states=11512455, unique=2015569, depth=30
+Done. states=13415359, unique=2275248, depth=30, sec=5
+Discovered "a cut is final" example Path[11]:
+- AdvEntry(1, 1)
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, false)
+- Deliver(1, Propose { block: v1@3[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Deliver(0, Propose { block: v1@3[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Observe(1, Cert { block: v1@3[1,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], root: true })
+- Observe(0, Cert { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], root: true })
+Action index path: 0/11/0/1/5/1/7/8/8/2/11/4
+Discovered "a diverged replica sees RootSplit" example Path[14]:
+- AdvEntry(2, 1)
+- Deliver(2, Entry { to: 2, e: 0 })
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, false)
+- Deliver(0, Propose { block: v1@3[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Deliver(1, Propose { block: v1@3[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Deliver(2, Propose { block: v1@3[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Observe(2, Cert { block: v1@3[1,0,-,-], root: true })
+- Observe(1, Cert { block: v1@3[1,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(2, Cert { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], root: true })
+- Observe(0, Cert { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], root: true })
+Action index path: 0/12/7/0/1/1/5/12/13/7/8/8/2/19/4
+Discovered "a faulty author's entry takes effect" example Path[11]:
+- AdvEntry(1, 1)
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, false)
+- Deliver(1, Propose { block: v1@3[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Deliver(0, Propose { block: v1@3[1,0,-,-], proot: true, tc: None, carried: 3 })
+- Observe(1, Cert { block: v1@3[1,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], root: true })
+- Observe(0, Cert { block: v1@3[1,0,-,-]>v2@6[1,0,-,-], root: true })
+Action index path: 0/11/0/1/5/1/7/8/8/2/11/4
+n3-root               2275248      13415359     30       5.0  OK   all properties hold; examples found
+    3 members, author-faulty, member 2's replica computes a wrong root, safety; q = 2; entries 0=m1.1 1=f.1a
+== bound-n3-byz
+Checking. states=1, unique=1, depth=0
+Checking. states=1170829, unique=227677, depth=26
+Done. states=1577109, unique=293150, depth=26, sec=2
+Discovered "a cut is final" example Path[20]:
+- AdvPropose(2, Propose { block: v1@6[0,-,-,-], proot: true, tc: None, carried: 1 })
+- AdvPropose(1, Propose { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], proot: true, tc: None, carried: 1 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Propose(2, false)
+- Timeout(2)
+- AdvPropose(2, Propose { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: v1@6[0,-,-,-], root: true })
+- Propose(1, false)
+- Observe(2, Cert { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], root: true })
+- Deliver(1, Propose { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(2, Cert { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], root: true })
+- Deliver(1, Propose { block: v3@3[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- AdvPropose(1, Propose { block: v4@3[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- Observe(1, Cert { block: v3@3[0,-,-,-], root: true })
+- Timeout(1)
+- AdvanceTc(1, Cert { block: v3@3[0,-,-,-], root: true })
+Action index path: 0/21/40/7/5/7/7/7/11/64/13/11/5/12/1/12/0/62/2/11/7
+Discovered "a faulty author's entry takes effect" example Path[20]:
+- AdvPropose(2, Propose { block: v1@6[0,-,-,-], proot: true, tc: None, carried: 1 })
+- AdvPropose(1, Propose { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], proot: true, tc: None, carried: 1 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Propose(2, false)
+- Timeout(2)
+- AdvPropose(2, Propose { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: v1@6[0,-,-,-], root: true })
+- Propose(1, false)
+- Observe(2, Cert { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], root: true })
+- Deliver(1, Propose { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(2, Cert { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], root: true })
+- Deliver(1, Propose { block: v3@3[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- AdvPropose(1, Propose { block: v4@3[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- Observe(1, Cert { block: v3@3[0,-,-,-], root: true })
+- Timeout(1)
+- AdvanceTc(1, Cert { block: v3@3[0,-,-,-], root: true })
+Action index path: 0/21/40/7/5/7/7/7/11/64/13/11/5/12/1/12/0/62/2/11/7
+Discovered "agreement" counterexample Path[19]:
+- AdvPropose(2, Propose { block: v1@6[0,-,-,-], proot: true, tc: None, carried: 1 })
+- AdvPropose(1, Propose { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], proot: true, tc: None, carried: 1 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Propose(2, false)
+- Timeout(2)
+- AdvPropose(2, Propose { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: v1@6[0,-,-,-], root: true })
+- Propose(1, false)
+- Observe(2, Cert { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], root: true })
+- Deliver(1, Propose { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(2, Cert { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], root: true })
+- Deliver(1, Propose { block: v3@3[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- AdvPropose(1, Propose { block: v3@3[0,-,-,-]>v4@6[0,-,-,-], proot: true, tc: None, carried: 1 })
+- Observe(1, Cert { block: v3@3[0,-,-,-]>v4@6[0,-,-,-], root: true })
+- Observe(1, Cert { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], root: true })
+Action index path: 0/21/40/7/5/7/7/7/11/64/13/11/5/12/1/12/0/68/4/3
+Discovered "no final frame undone" counterexample Path[19]:
+- AdvPropose(2, Propose { block: v1@6[0,-,-,-], proot: true, tc: None, carried: 1 })
+- AdvPropose(1, Propose { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], proot: true, tc: None, carried: 1 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Propose(2, false)
+- Timeout(2)
+- AdvPropose(2, Propose { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: v1@6[0,-,-,-], root: true })
+- Propose(1, false)
+- Observe(2, Cert { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], root: true })
+- Deliver(1, Propose { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(2, Cert { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], root: true })
+- Deliver(1, Propose { block: v3@3[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+- AdvPropose(1, Propose { block: v3@3[0,-,-,-]>v4@6[0,-,-,-], proot: true, tc: None, carried: 1 })
+- Observe(1, Cert { block: v3@3[0,-,-,-]>v4@6[0,-,-,-], root: true })
+- Observe(1, Cert { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], root: true })
+Action index path: 0/21/40/7/5/7/7/7/11/64/13/11/5/12/1/12/0/68/4/3
+bound-n3-byz           293150       1577109     26       2.0  OK   counterexample as expected: "agreement"
+    3 members, one Byzantine: t = 0, agreement must fail (why n >= 4); q = 2; entries 0=f.1a
+    counterexample to "agreement" (19 steps as found, 13 after shrinking):
+      AdvPropose(2, Propose { block: v1@6[0,-,-,-], proot: true, tc: None, carried: 1 })
+      AdvPropose(1, Propose { block: v1@6[0,-,-,-]>v4@9[0,-,-,-], proot: true, tc: None, carried: 1 })
+      Timeout(2)
+      AdvanceTc(2, Cert { block: genesis, root: true })
+      Timeout(2)
+      AdvanceTc(2, Cert { block: genesis, root: true })
+      Propose(2, false)
+      Propose(1, false)
+      Deliver(1, Propose { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], proot: true, tc: None, carried: 0 })
+      Observe(2, Cert { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], root: true })
+      Deliver(1, Propose { block: v3@3[0,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      AdvPropose(1, Propose { block: v3@3[0,-,-,-]>v4@6[0,-,-,-], proot: true, tc: None, carried: 1 })
+      Observe(1, Cert { block: v3@3[0,-,-,-]>v4@6[0,-,-,-], root: true })
+== ctl-d1
+Checking. states=1, unique=1, depth=0
+Checking. states=2695469, unique=500962, depth=32
+Checking. states=5457399, unique=993626, depth=32
+Checking. states=8079003, unique=1443330, depth=33
+Checking. states=10707612, unique=1887982, depth=33
+Checking. states=13693059, unique=2373968, depth=33
+Checking. states=16595665, unique=2848191, depth=33
+Checking. states=19444682, unique=3303960, depth=33
+Checking. states=22328544, unique=3763491, depth=33
+Checking. states=25030287, unique=4211642, depth=33
+Checking. states=27553929, unique=4631646, depth=33
+Checking. states=30554813, unique=5123259, depth=33
+Done. states=30643546, unique=5135324, depth=33, sec=12
+Discovered "a cut is final" example Path[21]:
+- AdvEntry(2, 3)
+- AdvEntry(1, 3)
+- AdvEntry(2, 2)
+- AdvEntry(1, 2)
+- AdvEntry(2, 1)
+- Deliver(2, Entry { to: 2, e: 0 })
+- Timeout(1)
+- Propose(0, true)
+- Deliver(2, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Timeout(2)
+- AdvanceTc(1, Cert { block: genesis, root: true })
+- Deliver(0, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Observe(2, Cert { block: v1@6[3,-,-,-], root: true })
+- Observe(1, Cert { block: v1@6[3,-,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+- Observe(0, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+Action index path: 0/16/15/14/13/12/7/6/2/10/13/13/15/7/1/14/8/9/9/2/11/4
+Discovered "a faulty author's entry takes effect" example Path[21]:
+- AdvEntry(2, 3)
+- AdvEntry(1, 3)
+- AdvEntry(2, 2)
+- AdvEntry(1, 2)
+- AdvEntry(2, 1)
+- Deliver(2, Entry { to: 2, e: 0 })
+- Timeout(1)
+- Propose(0, true)
+- Deliver(2, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Timeout(2)
+- AdvanceTc(1, Cert { block: genesis, root: true })
+- Deliver(0, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Observe(2, Cert { block: v1@6[3,-,-,-], root: true })
+- Observe(1, Cert { block: v1@6[3,-,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+- Observe(0, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+Action index path: 0/16/15/14/13/12/7/6/2/10/13/13/15/7/1/14/8/9/9/2/11/4
+Discovered "no final frame undone" counterexample Path[21]:
+- AdvEntry(2, 3)
+- AdvEntry(1, 3)
+- AdvEntry(2, 2)
+- AdvEntry(1, 2)
+- AdvEntry(2, 1)
+- Deliver(2, Entry { to: 2, e: 0 })
+- Timeout(1)
+- Propose(0, true)
+- Deliver(2, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Timeout(2)
+- AdvanceTc(1, Cert { block: genesis, root: true })
+- Deliver(0, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Observe(2, Cert { block: v1@6[3,-,-,-], root: true })
+- Observe(1, Cert { block: v1@6[3,-,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+- Observe(0, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+Action index path: 0/16/15/14/13/12/7/6/2/10/13/13/15/7/1/14/8/9/9/2/11/4
+Discovered "validity: void set the same everywhere" counterexample Path[21]:
+- AdvEntry(2, 3)
+- AdvEntry(1, 3)
+- AdvEntry(2, 2)
+- AdvEntry(1, 2)
+- AdvEntry(2, 1)
+- Deliver(2, Entry { to: 2, e: 0 })
+- Timeout(1)
+- Propose(0, true)
+- Deliver(2, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Timeout(2)
+- AdvanceTc(2, Cert { block: genesis, root: true })
+- Timeout(2)
+- AdvanceTc(1, Cert { block: genesis, root: true })
+- Deliver(0, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+- Observe(2, Cert { block: v1@6[3,-,-,-], root: true })
+- Observe(1, Cert { block: v1@6[3,-,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+- Observe(0, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+Action index path: 0/16/15/14/13/12/7/6/2/10/13/13/15/7/1/14/8/9/9/2/11/4
+ctl-d1                5135324      30643546     33      12.0  OK   counterexample as expected: "no final frame undone"
+    d1: vote without validating each chain in order; q = 2; entries 0=m1.1 1=f.1a 2=f.1b 3=f.2<
+    counterexample to "no final frame undone" (21 steps as found, 9 after shrinking):
+      AdvEntry(1, 3)
+      Propose(0, true)
+      Deliver(2, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+      Deliver(0, Propose { block: v1@6[3,-,-,-], proot: true, tc: None, carried: 10 })
+      Observe(1, Cert { block: v1@6[3,-,-,-], root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(0, Propose { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], proot: true, tc: None, carried: 0 })
+      Observe(1, Cert { block: v1@6[3,-,-,-]>v2@9[3,-,-,-], root: true })
+== ctl-unchecked
+Checking. states=1, unique=1, depth=0
+Done. states=143134, unique=45580, depth=32, sec=1
+Discovered "a cut is final" example Path[25]:
+- AdvPropose(3, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+- AdvPropose(2, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+- AdvPropose(1, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+- AdvEntry(3, 0)
+- AdvEntry(2, 0)
+- AdvEntry(1, 0)
+- Observe(2, Cert { block: v1@6[2,1,-,-], root: true })
+- Observe(3, Cert { block: v1@6[2,1,-,-], root: true })
+- Timeout(3)
+- Timeout(1)
+- Observe(1, Cert { block: v1@6[2,1,-,-], root: true })
+- Propose(1, false)
+- Deliver(2, Propose { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], proot: true, tc: None, carried: 0 })
+- Timeout(2)
+- AdvanceTc(3, Cert { block: v1@6[2,1,-,-], root: true })
+- Timeout(3)
+- AdvanceTc(2, Cert { block: v1@6[2,1,-,-], root: true })
+- Propose(2, false)
+- Timeout(2)
+- AdvanceTc(3, Cert { block: v1@6[2,1,-,-], root: true })
+- Deliver(1, Propose { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], proot: true, tc: None, carried: 0 })
+- Timeout(1)
+- Deliver(1, Propose { block: v1@6[2,1,-,-]>v3@9[2,1,-,-], proot: true, tc: Some(Cert { block: v1@6[2,1,-,-], root: true }), carried: 0 })
+- Timeout(1)
+- Observe(1, Cert { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], root: true })
+Action index path: 0/89/86/86/14/13/12/4/8/11/3/0/1/5/9/14/16/8/8/12/17/0/7/1/7/3
+Discovered "a faulty author's entry takes effect" example Path[25]:
+- AdvPropose(3, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+- AdvPropose(2, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+- AdvPropose(1, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+- AdvEntry(3, 0)
+- AdvEntry(2, 0)
+- AdvEntry(1, 0)
+- Observe(2, Cert { block: v1@6[2,1,-,-], root: true })
+- Observe(3, Cert { block: v1@6[2,1,-,-], root: true })
+- Timeout(3)
+- Timeout(1)
+- Observe(1, Cert { block: v1@6[2,1,-,-], root: true })
+- Propose(1, false)
+- Deliver(2, Propose { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], proot: true, tc: None, carried: 0 })
+- Timeout(2)
+- AdvanceTc(3, Cert { block: v1@6[2,1,-,-], root: true })
+- Timeout(3)
+- AdvanceTc(2, Cert { block: v1@6[2,1,-,-], root: true })
+- Propose(2, false)
+- Timeout(2)
+- AdvanceTc(3, Cert { block: v1@6[2,1,-,-], root: true })
+- Deliver(1, Propose { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], proot: true, tc: None, carried: 0 })
+- Timeout(1)
+- Deliver(1, Propose { block: v1@6[2,1,-,-]>v3@9[2,1,-,-], proot: true, tc: Some(Cert { block: v1@6[2,1,-,-], root: true }), carried: 0 })
+- Timeout(1)
+- Observe(1, Cert { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], root: true })
+Action index path: 0/89/86/86/14/13/12/4/8/11/3/0/1/5/9/14/16/8/8/12/17/0/7/1/7/3
+Discovered "validity: chains" counterexample Path[25]:
+- AdvPropose(3, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+- AdvPropose(2, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+- AdvPropose(1, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+- AdvEntry(3, 0)
+- AdvEntry(2, 0)
+- AdvEntry(1, 0)
+- Observe(2, Cert { block: v1@6[2,1,-,-], root: true })
+- Observe(3, Cert { block: v1@6[2,1,-,-], root: true })
+- Timeout(3)
+- Timeout(1)
+- Observe(1, Cert { block: v1@6[2,1,-,-], root: true })
+- Propose(1, false)
+- Deliver(2, Propose { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], proot: true, tc: None, carried: 0 })
+- Timeout(2)
+- AdvanceTc(3, Cert { block: v1@6[2,1,-,-], root: true })
+- Timeout(3)
+- AdvanceTc(2, Cert { block: v1@6[2,1,-,-], root: true })
+- Propose(2, false)
+- Timeout(2)
+- AdvanceTc(3, Cert { block: v1@6[2,1,-,-], root: true })
+- Deliver(1, Propose { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], proot: true, tc: None, carried: 0 })
+- Timeout(1)
+- Deliver(1, Propose { block: v1@6[2,1,-,-]>v3@9[2,1,-,-], proot: true, tc: Some(Cert { block: v1@6[2,1,-,-], root: true }), carried: 0 })
+- Timeout(1)
+- Observe(1, Cert { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], root: true })
+Action index path: 0/89/86/86/14/13/12/4/8/11/3/0/1/5/9/14/16/8/8/12/17/0/7/1/7/3
+ctl-unchecked           45580        143134     32       1.0  OK   counterexample as expected: "validity: chains"
+    accept the proposer's cut unchecked; q = 3; entries 0=f.1a 1=forge(m1.1) 2=f.1@line1
+    counterexample to "validity: chains" (25 steps as found, 7 after shrinking):
+      AdvPropose(2, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+      AdvPropose(1, Propose { block: v1@6[2,1,-,-], proot: true, tc: None, carried: 6 })
+      Observe(1, Cert { block: v1@6[2,1,-,-], root: true })
+      Propose(1, false)
+      Deliver(2, Propose { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(1, Propose { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], proot: true, tc: None, carried: 0 })
+      Observe(1, Cert { block: v1@6[2,1,-,-]>v2@9[2,1,-,-], root: true })
+== ctl-quorum
+Checking (bounded). unique=485395, visits=1859339
+ctl-quorum             485395       1859339     18      10.0  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement"
+    quorum one too small: split-brain; q = 2; entries 0=f.1a
+    counterexample to "agreement" (18 steps as found, 15 after shrinking):
+      AdvPropose(3, Propose { block: v1@6[0,-,-,-], proot: true, tc: None, carried: 1 })
+      Timeout(3)
+      Observe(1, Cert { block: v1@6[0,-,-,-], root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], proot: true, tc: None, carried: 0 })
+      Observe(1, Cert { block: v1@6[0,-,-,-]>v2@9[0,-,-,-], root: true })
+      AdvanceTc(2, Cert { block: genesis, root: true })
+      Timeout(2)
+      AdvanceTc(2, Cert { block: genesis, root: true })
+      Propose(2, false)
+      Deliver(2, Propose { block: v3@3[-,-,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 0 })
+      Observe(3, Cert { block: v3@3[-,-,-,-], root: true })
+      Propose(3, false)
+      Deliver(2, Propose { block: v3@3[-,-,-,-]>v4@6[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Observe(2, Cert { block: v3@3[-,-,-,-]>v4@6[-,-,-,-], root: true })
+== ctl-nolock
+Checking (bounded). unique=1859379, visits=10933358
+Checking (bounded). unique=3616849, visits=21578739
+Checking (bounded). unique=5623822, visits=33981807
+Checking (bounded). unique=7353841, visits=44794698
+Checking (bounded). unique=8759010, visits=54013019
+Checking (bounded). unique=10346399, visits=65908854
+Checking (bounded). unique=12064266, visits=77858900
+Checking (bounded). unique=14375354, visits=91431330
+Checking (bounded). unique=16802547, visits=105661078
+Checking (bounded). unique=19416603, visits=120324183
+Checking (bounded). unique=21409071, visits=133080028
+Checking (bounded). unique=23198122, visits=145412735
+Checking (bounded). unique=24984881, visits=157400228
+Checking (bounded). unique=26548118, visits=169363414
+Checking (bounded). unique=28204319, visits=181070592
+Checking (bounded). unique=30092409, visits=194104881
+Checking (bounded). unique=31917731, visits=207857813
+Checking (bounded). unique=33639974, visits=220109117
+Checking (bounded). unique=35431788, visits=232061253
+Checking (bounded). unique=37248910, visits=244970116
+Checking (bounded). unique=39150409, visits=258820989
+Checking (bounded). unique=41554077, visits=273867635
+Checking (bounded). unique=43758615, visits=288988874
+Terminated
