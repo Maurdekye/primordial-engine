@@ -103,7 +103,7 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
 | Rule | Where it applies | What the API does |
 |---|---|---|
 | Exclusive holds | Grabs, which are inputs, not edits | Not an API operation in M1; a held object shows `held_by` in query results |
-| A precondition on the version read | Every op that names one object, by default | The op carries `if_version`; it is refused as `stale_version` if the object's version changed |
+| A precondition on the version read | Every op that changes one object it names, by default | The op carries `if_version`; it is refused as `stale_version` if the object's version changed |
 | A plain write | `"if_version": "any"`, and ops with a `where` selector | The latest in the agreed order wins |
 
 - **An object's version** is pe-world's object version: the entry and op index of the last edit that changed any of
@@ -129,6 +129,20 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
     dropped object falls back to the base snapshot's version.
 - **Selector ops are plain writes.** A `where` op ("make the balls blue") is expanded into explicit ids on this
   machine and writes them with `if_version: "any"` (gnosarium-ux, 3.4).
+- **Explicit versions win.** An explicit `if_version` replaces the default for that object; two different explicit
+  versions for one object in one change are refused as `invalid`, naming the later op.
+- **A precondition applies to the object an op changes, not to a parent it attaches to** (coordinator
+  m8e173fe643ad, with fable-reviewer). `create`, `reparent` and `duplicate` put no precondition on the parent:
+  pe-world's own rules decide, so concurrent creates under one parent both succeed, the cycle check still applies,
+  and a create or reparent under a parent deleted earlier in the agreed order is orphaned (world-model.md 7.5).
+  Protections apply as world-model.md 7.8 defines them: they guard taking, not touching (coordinator
+  mb7d6d98f96dd, the user's Resonite-style rule). A non-owner with `edit` may add children under a protected
+  object, but not copy it, change its protection, or protect anything inside it. The object being reparented, and a duplicate's source, keep theirs.
+  - An orphaned create or reparent says so in its outcome: `orphaned`, with the new root's id and its place.
+  - Future, when someone needs it: an opt-in `parent_version` on `create`, `reparent` and `duplicate`.
+- **Unknown fields are refused, not ignored.** An op carrying a field its type doesn't take (say `if_version` on a
+  `create`) is refused as `invalid_argument`, so nothing an agent writes is silently dropped. Every JSON surface
+  that takes a transaction does this check (in M1, the MCP tools).
 
 ### 4.3 Ids, names and references
 
@@ -341,7 +355,8 @@ what each holds, so an agent can make "a box" without knowing every component a 
 
 An `Outcome`: `status`, `change` (the transaction id), `frame` (its stamp, once it has one), `final_frame`, `dry_run`
 (first, when true), `created` (each `$ref` with its id and version), `changed` (ids with their new versions), `count`
-(objects written), and, when refused or dropped, the refusal (5.3.3). Versions in it enter the connection's table.
+(objects written or created; a copy or a template counts every object it makes), `orphaned` (creates and
+reparents whose parent was gone, 4.2), and, when refused or dropped, the refusal (5.3.3). Versions in it enter the connection's table.
 
 | `status` | Meaning |
 |---|---|
@@ -374,10 +389,10 @@ One envelope for every refusal, in `apply`'s outcome, in `watch`, and in a dry r
 
 | `code` | When | Details |
 |---|---|---|
-| `stale_version` | The object's version is not the one named | `read`, `now`, `field`, `winner` with the winning value |
+| `stale_version` | The object's version is not the one named; or a `duplicate`'s source subtree changed size since the base (pe-world's own size check, `OWN_CHECK`) | `read`, `now`, `field`, `winner` with the winning value. A copy's size check names no winner: the message says the subtree copied changed, so read it again |
 | `not_found` | An id, path or `$ref` names nothing | The deleting change as `winner`, when known |
 | `ambiguous` | A path matches several objects | `matches` (at most 10) |
-| `invalid` | A value of the wrong type or out of range; an unknown component or field; a read-only field; a cycle | `field`, `rule` (from the schema), `given` |
+| `invalid` | A value of the wrong type or out of range; an unknown component or field; a read-only field; a cycle; a `duplicate` of a subtree an earlier op of the same change adds to, moves or deletes from | `field`, `rule` (from the schema), `given` |
 | `in_change` | An op names a `$ref` this transaction does not create | `ref` |
 | `too_many` | A selector matched more than `max` | `count`, `max` |
 | `not_permitted` | The world's permissions | `permission`, `role` |
@@ -628,8 +643,10 @@ one that counts (2, rule 3).
 ### 9.3 Limits
 
 A token bucket per principal (file 06, D38 re-run), defaults [I]: 20 transactions per second with a burst of 40; per
-transaction pe-world's limits, 4,096 ops after selector expansion and 1 MiB of payload apart from blobs
-(world-model.md 7.1); 4 queries and 2 long polls in flight per principal. pe-agree's per-member entry rule (plan 4.3) bounds the member as a whole, whatever its principals do.
+transaction pe-world's limits, 4,096 ops (as written and after selector expansion), 65,536 new objects (copies
+and templates count their whole subtree; pe-world owns the bound) and 1 MiB of payload apart from blobs
+(world-model.md 7.1); at most 1,000,000 objects examined by one change's `where` selectors, each distinct selector
+once [I]; 4 queries and 2 long polls in flight per principal. pe-agree's per-member entry rule (plan 4.3) bounds the member as a whole, whatever its principals do.
 
 ## 10. Principals, scopes and safety
 
