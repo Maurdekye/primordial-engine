@@ -187,8 +187,9 @@ fn hash_ignores_history_only_state() {
 /// spawns by `ObjectId::spawned`, and positions hashed through `Pos::encode`. Linux must reproduce them.
 /// Re-blessed 2026-11-11 (world/read-v1): the `Node` row grew to 192 bytes (creator, versions, `born_on`; 3.2, 7.3),
 /// and the trace hashes the store's rows. `GOLDEN_WORLD`, which hashes only the simulated poses, did not move.
-/// Re-blessed again on world/edit-v1: the trace also covers each row's edit version (3.2), all zero here.
-const GOLDEN_TRACE: u64 = 0x8484_2733_d9b6_6363;
+/// Re-blessed again on world/edit-v1: the trace also covers each row's edit version and instance tag (3.2, 7.6), all
+/// zero here.
+const GOLDEN_TRACE: u64 = 0x5cec_f855_230f_ff0f;
 const GOLDEN_WORLD: u64 = 0x10d0_04da_da21_7a97;
 
 #[test]

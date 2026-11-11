@@ -192,6 +192,12 @@ impl WorldSnapshot {
         Some(decode_row(desc, row))
     }
 
+    /// A row's instance tag (world-model.md 7.6), which a `RemoveRow` names; `None` if the object has no such row.
+    pub fn row_tag(&self, id: ObjectId, component: &str) -> Option<u128> {
+        let desc = self.component(component)?;
+        self.store.row_version(desc.id(), id).map(|v| v.tag())
+    }
+
     /// The object's world transform, or `None` if it has no `Transform` or its composed position leaves the range.
     pub fn world_transform(&self, id: ObjectId) -> Option<WorldTransform> {
         self.store.world_transform(id)

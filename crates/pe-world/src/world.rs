@@ -50,6 +50,8 @@ pub struct Tombstone {
     /// Dropped once the current frame passes this, fixed at the delete from the rate then in effect.
     pub expires: Frame,
     pub parent: Option<ObjectId>,
+    /// Its index among its parent's children at the delete: the order `Undelete` puts siblings back in.
+    pub place: u32,
     /// Its last world transform, if it had one: where an orphaned add-on is placed.
     pub world: Option<WorldTransform>,
     /// Its `Node` row as it was (links, creator, versions).
