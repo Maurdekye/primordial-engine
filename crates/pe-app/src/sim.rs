@@ -285,8 +285,7 @@ mod tests {
     /// pe-replica's `ReplicaImpl` over its small world model, until pe-world implements `WorldModel`. The replica
     /// takes the frame clock, so the view's `sim_time` is on the shared time base (S5), as the renderer reads it.
     fn real(clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
-        let mut config = ReplicaConfig::new(RATE, Duration::from_millis(133));
-        config.clock = Some(clock.clone());
+        let config = ReplicaConfig::new(RATE, Duration::from_millis(133), clock.clone());
         let replica = ReplicaImpl::new(MockWorld::new(DomainId(0), RATE), config).expect("a replica");
         with_replica(Box::new(replica), clock, budget)
     }

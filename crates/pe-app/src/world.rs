@@ -19,8 +19,7 @@ pub fn open_new(
 ) -> Result<Box<dyn Replica>, String> {
     let mut world = World::new(seed, BlobStore::default());
     world.set_rate(rate);
-    let mut config = ReplicaConfig::new(rate, cut_interval);
-    config.clock = Some(clock);
+    let config = ReplicaConfig::new(rate, cut_interval, clock);
     let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).map_err(|e| format!("{e:?}"))?;
     Ok(Box::new(replica))
 }
