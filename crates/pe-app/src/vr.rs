@@ -16,6 +16,9 @@ use pe_xr::binding::{self, XrTargets};
 use pe_xr::session::{FrameRequest, FrameSink};
 
 /// Draws each VR frame. It lives on the XR thread; the simulation thread reaches it only through the frame slot.
+///
+/// A sink serves one session: after [`FrameSink::release_swapchain`] its targets are gone and it draws nothing. A
+/// restarted session comes from a new `open_vulkan`, with a new sink (@xr-eng's L1).
 pub struct VrSink {
     slot: Arc<FrameSlot>,
     presenter: Presenter,
