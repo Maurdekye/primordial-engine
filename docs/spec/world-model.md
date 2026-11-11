@@ -1499,6 +1499,8 @@ Each is a test in pe-world, pe-sim or pe-core unless marked [I on all thresholds
 15. **Cost, measured, not gated:** the hash at a cut with 500 moving balls (leaves, body digests and the image
     hash), one deep rollback across several pending cut frames (which must hash nothing), and an edit's apply time,
     reported in the checkpoint record.
+16. **Push speed envelope** (8.1; @vdw-physics's test, not pe-world's): a high-speed tunnelling case run on two
+    machines from one release binary gives equal state roots. If they differ, a hard speed bound goes in until (c).
 
 ## 12. Open points
 
