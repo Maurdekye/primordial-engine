@@ -2176,7 +2176,11 @@ dependencies = [
 name = "pe-api"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "pe-core",
  "pe-seams",
+ "pe-sim",
+ "pe-world",
  "schemars",
  "serde_json",
 ]
