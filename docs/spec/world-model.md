@@ -1102,7 +1102,7 @@ pack is dropped and the hand keeps its last pose, with `engaged` as last sent: r
 say, never a timeout's.
 
 **Order within a frame** (M2.3, M2.4). At frame `f`, all hand inputs stamped `f` apply first, in agreed order;
-then grabs, releases and pushes, in agreed order. So a `Grab`'s reach is measured from the hand's target after
+then grabs, releases, pushes and every other entry, in agreed order (the full rule is under "As built" below). So a `Grab`'s reach is measured from the hand's target after
 `f`'s hand inputs, and a `Release` and a `Grab` by different members in one frame resolve in agreed order. The
 `now` of every input is its stamp frame, also when a late-ordered input is applied during re-simulation.
 
@@ -1111,7 +1111,7 @@ then grabs, releases and pushes, in agreed order. So a `Grab`'s reach is measure
 - **What may be claimed:** an object with a `Body`. A non-owner may grab a protected object, since 7.8 guards
   taking, not touching. The gap, named and not in this slice: a per-object "others can't grab or push this"
   setting, off by default.
-- **A `Grab`** by the author's own hand (or with `hand: None`, an agent's) takes the object's claim, or renews
+- **A `Grab`** by the author's own hand (or with `hand: None`, meant for an agent with no hand) takes the object's claim, or renews
   the author's own, until `now + claim frames`; the claim records the hand, the member, `since` (its first
   frame) and `until`. It is refused with:
   - `Held { by }` while another member's claim on the object, or on anything in its subtree, is unexpired. The
@@ -1120,7 +1120,8 @@ then grabs, releases and pushes, in agreed order. So a `Grab`'s reach is measure
     reach, so the tray's holder keeps it when someone takes the cup;
   - `OutOfReach` past reach (7.2), measured from the hand's target, since the hand's simulated body is
     pe-replica's own. A blocked hand can grab within reach of its target. A `Grab` with `hand: None` has no reach
-    check;
+    check. **Any member may send one:** an `Input` carries no actor, and an agent's entries are signed by its
+    principal's member (7.1), so pe-world cannot tell an agent from a person (@design-reviewer's slice-B M1);
   - `Cooldown { until }` while the author's own cooldown on that object runs.
 - **Implicit renewal.** Every applied hand input whose newest pose is `engaged` renews the claims held by that
   hand to `now + claim frames`. Only an applied input renews: the poses `end_frame` writes from a pack never do,
@@ -1151,7 +1152,17 @@ then grabs, releases and pushes, in agreed order. So a `Grab`'s reach is measure
   measured against that input stream's hand pose, and a hand's target must be bounded: a maximum distance from
   the member's own rig or head, and a maximum change per frame. Otherwise a modified client puts its hand next to
   anything and neither reach check bounds anything (@design-reviewer's r14 point 4, widening the ruling's (b), accepted by
-  @coordinator-opus md0052f879762). This is not optional; it gates opening a world to strangers.
+  @coordinator-opus md0052f879762). This is not optional; it gates opening a world to strangers. 
+- **Agents' actions** (user ruling m14ae4ed5bb9e, relayed by @coordinator-opus mee1bd7557579, overruling the
+  hand-less gate of me99d54f3776e; @item:primordial-engine/agent-actions-within-the-owning-user-s-simulatio). Agents
+  may perform any action at any speed and distance, moving instantly and grabbing objects of any size, as long as
+  the object lies within their owning user's simulation range. That is the one bound on an agent; agents may set up
+  "chunkloaders" that force regions loaded, only with their owning user's approval (M4 regions). The sim-range
+  check is not in slice B (@engine-architect places it in the plan). Kept from the earlier decision: an **admin
+  force-release** of any claim, and a **visible holder** on every claim, in refusals and the record.
+- **Open, before strangers: hand-less grabs.** A person can act as their own agent (an `Input` names no actor, and
+  `hand: None` skips reach for any member), so what the strangers gate needs instead is open with @coordinator-opus
+  and @fable-reviewer. Until it is settled this item stays on the gate.
 
 **What the replica gets.** `Footprint` gains the pushes (object, impulse, `at`, author). The replica reads
 `hands()` and `claims()` every frame. A refused grab's outcome names the holder (`Held { by }`), which is what
@@ -1159,6 +1170,58 @@ the display layer's "slides out of grip" cue needs (7.2).
 
 New seam reason: `Reason::Cooldown { until: Frame }` (@engine-architect, docked as
 @item:primordial-engine/pe-seams-reason-cooldown-until-frame-for-pe-worl).
+
+**As built (slice B)** [V `crates/pe-world/src/input.rs`, `tests/input.rs`]:
+- **`span` counts frames** (a correction of the text above): a pack covers `stamp ..= stamp + poses.len() - 1 +
+  hold`, so the `Hand` row's `span` is `poses.len() + hold`, as replica.md's `HandRow` reads it ("from its stamp,
+  `span` frames"); `poses.len() - 1 + hold` is the last covered frame's offset. `has_prev` is set when the row's
+  old `span` is nonzero (a hand made at admission has `span` 0).
+- **Reach** (7.2) is two world settings beside the three above [I, for review]: `reach_mm`, the hand's reach from
+  its target, default 100 mm, bound 0 - 2,000; and `slack_mm`, default 50 mm, bound 0 - 1,000. A grab is in reach
+  when the hand's target is within `reach + slack + r` of the centre of any of the object's bounding spheres; a
+  push's `at` must lie within `slack` plus the object's radius, the largest `|c − P| + r` over its spheres, from
+  its own world position `P`.
+- **Bounding spheres:** one per `Shape` on the body and on its compound children (descendants reached without
+  passing another `Body`), centred at the shape object's world position (its frame's, without a `Transform`), with
+  radius `size[0]` for a sphere, `size[0] + size[1]` for a capsule, and `|size|` (read as half extents) for a box,
+  mesh or hull, times the largest axis of its world scale.
+- **Order of checks.** `Grab`: decode, the object (`Unknown`, or `Deleted` with a tombstone), the hand
+  (`NotYourHand`), a `Body` (`Invalid`), the author's cooldown, then a renewal of the author's own claim stops
+  there; otherwise `Held` (the first claim in id order names the holder), then reach. `Push`: finite values, the
+  object, a `Body`, `Held`, `at`, the budget. A hand input: the poses' values, then the hand. A `Pos` that does not
+  decode canonically is `Malformed`: a decoded `Pos` is in range by construction.
+- A renewing `Grab` that names another of the author's hands moves the claim to it: a new hold for that hand, so
+  its reach is checked (`OutOfReach`), though not `Held` (@design-reviewer's Low 1). `until` only ever grows. A
+  hand-less claim has `hand = ObjectId::NONE`. A pack whose hand is gone is dropped at the next `end_frame`, and so
+  is a pack whose next pose cannot be placed (the hand's frame moved so the pose is out of range): nothing of that
+  pose is written, and the hand keeps the last pose and `Hand` row actually written, as past coverage
+  (@design-reviewer's ruling on @chunks-reviewer's Low 2). A hand input on a hand with no `Transform`, or whose
+  frame has no world pose, is `Invalid`; `OutOfRange` is only a pose its frame cannot hold.
+- **A mesh or hull's `size`** is the half extents of the blob's bounding box about the shape's origin
+  (@design-reviewer's ruling on its Low 2 and @chunks-reviewer's Low 3). Import writes it, and edit validation will
+  check it against the blob once blob validation exists; physics and LOD want the same box. Until then the bound
+  trusts `size`, and a zero `size` makes the object grabbable only within reach plus slack of its origin. **A `Body` with no `Shape`** has no spheres: no hand can grab it, and a push's
+  `at` must lie within the slack of its origin.
+- **A push past the budget is refused `Invalid`**, so a sender cannot tell "wait" from "wrong"; a reason of its
+  own is open (an additive `Reason` variant, @engine-architect's).
+- **The apply order of a frame** (@coordinator-opus m0d3dfd2c0674, option (a); @fable-reviewer's conditions
+  md40c940e2178 are requirements):
+  - A frame's entries apply in **phase order first, then agreed order within a phase**. The phase is
+    `pe_world::input_phase`: 0 for a hand input, 1 for any other entry, read from the class and the payload's first
+    byte. There are **exactly two phases**; another is a spec change.
+  - An author's own same-frame entries can therefore apply out of their sequence order: a `Grab` sent before a
+    hand input of the same frame applies after it, so its reach is measured after the hand moved.
+  - **The phase is part of the determinism contract.** It reads only the entry, never world state; changing it is
+    a world-format version change.
+  - **Void entries are removed before the sort.** Verdicts are computed in chain order; the sort never decides
+    which entries are void.
+  - **Hashes stay in agreed order.** Cuts, chains and the change record are unchanged; only the state root reflects
+    the apply order.
+  - **One helper, one path.** pe-replica has a single "entries of frame f in apply order" function, a stable sort
+    by `WorldModel::phase` (default 0; PeWorld returns `input_phase`), and every path that applies a frame's
+    entries uses it: `Replica::step`, rung-1 repair replay, rung-2 re-simulation, prediction, merge replay and the
+    harness oracle (@vdw-physics owns the helper and the seam). The harness tests a frame where a grab precedes a
+    hand input in the agreed order: every member and a replay measure reach after the hand moved.
 
 **Tests the slice must have** (@coordinator-opus): grabbing a held object's ancestor is refused and its child
 allowed, in both orders; two members grabbing one object in the same frame; implicit renewal surviving one void

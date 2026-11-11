@@ -74,9 +74,10 @@ pub mod shape_kind {
     pub const SPHERE: u32 = 2;
     /// `size[0]` is the radius, `size[1]` the half length of the segment along the local y axis.
     pub const CAPSULE: u32 = 3;
-    /// `mesh` is the triangle mesh, for static bodies only (3.2).
+    /// `mesh` is the triangle mesh, for static bodies only (3.2); `size` is the half extents of its bounding box about
+    /// the shape's origin (8.1).
     pub const MESH: u32 = 4;
-    /// `mesh` is a convex hull.
+    /// `mesh` is a convex hull; `size` is the half extents of its bounding box about the shape's origin (8.1).
     pub const HULL: u32 = 5;
 }
 

@@ -73,7 +73,11 @@ fn write_physics_replaces_every_body_state_and_the_root_covers_the_tables() {
     assert!(w.store().get::<BodyState>(oid(2)).is_some());
     // Tables outside the store move the root: a claim, a setting.
     let r2 = w.root();
-    w.set_claim(oid(2), Claim { hand: oid(4), member: pe_core::MemberKey([2; 32]), since: Frame(0) }).unwrap();
+    w.set_claim(
+        oid(2),
+        Claim { hand: oid(4), member: pe_core::MemberKey([2; 32]), since: Frame(0), until: Frame(u64::MAX) },
+    )
+    .unwrap();
     assert_ne!(w.root(), r2);
     assert_eq!(w.claims().map(|(o, _)| o).collect::<Vec<_>>(), [oid(2)]);
     let r3 = w.root();

@@ -12,6 +12,7 @@ use pe_seams::{SimRate, Version};
 use pe_sim::{Component, ComponentId, Node, RowVersion, SimStore, WorldTransform};
 
 use crate::components::{BlobRef, engine_registry};
+use crate::input::{InputSettings, InputTables};
 use crate::read::WorldSnapshot;
 
 /// The default hierarchy depth limit (3.3): an object may be at most this many levels below its root.
@@ -23,12 +24,14 @@ pub const DEPTH_LIMIT_MAX: u32 = 4096;
 /// edit": genesis and objects made by trusted engine code.
 pub const GENESIS: Version = Version { entry: EntryRef(Hash::ZERO), op: 0 };
 
-/// An exclusive hold (7.2): `hand`, owned by `member`, holds the object since `since`.
+/// An exclusive hold (7.2, 8.1): `hand`, owned by `member`, holds the object since `since`, until frame `until`
+/// unless renewed. `hand` is `ObjectId::NONE` for an agent's grab with no hand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Claim {
     pub hand: ObjectId,
     pub member: MemberKey,
     pub since: Frame,
+    pub until: Frame,
 }
 
 /// Permission bits of a role (5.4). M1 checks only [`perm::EDIT`].
@@ -130,6 +133,9 @@ pub struct World {
     pub(crate) origin: Pos,
     /// The domain's `physics_global` record, from the last `write_physics` (replica.md 3.4).
     pub(crate) physics_global: Hash,
+    /// The input tables (8.1): cooldowns, pending hand packs, push windows.
+    pub(crate) inputs: Arc<InputTables>,
+    pub(crate) input_settings: InputSettings,
 }
 
 impl World {
@@ -146,6 +152,8 @@ impl World {
             gravity: crate::replica::GRAVITY,
             origin: Pos::ORIGIN,
             physics_global: Hash::ZERO,
+            inputs: Arc::new(InputTables::default()),
+            input_settings: InputSettings::default(),
         }
     }
 
