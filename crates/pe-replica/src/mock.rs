@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use pe_seams::{
-    Class, DomainId, Frame, Hash, Hasher, ImportError, LeafKey, Mismatch, Node, ObjectId, Offset, Outcome, Pos, Reason,
-    Record, SignedEntry, SimRate, Tree, TreePath,
+    Class, DomainId, Frame, FrameClock, Hash, Hasher, HostTime, ImportError, LeafKey, Mismatch, Node, ObjectId, Offset,
+    Outcome, Pos, Reason, Record, SignedEntry, SimRate, Tree, TreePath,
 };
 
 use crate::world::{
@@ -181,6 +181,38 @@ fn body(kind: BodyKind, shape: ShapeRow, pos: Pos) -> BodyRow {
         bullet: false,
         may_sleep: true,
         grabbable: true,
+    }
+}
+
+/// A frame clock for tests: frame `f` starts `f / rate` seconds after `start`, rounded up to the nanosecond.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MockClock {
+    pub rate: SimRate,
+    pub start: HostTime,
+}
+
+impl MockClock {
+    /// Frame 0 at host time 0.
+    pub fn new(rate: SimRate) -> MockClock {
+        MockClock { rate, start: HostTime(0) }
+    }
+}
+
+impl FrameClock for MockClock {
+    fn rate_hz(&self) -> u32 {
+        self.rate.hz()
+    }
+
+    fn frame_at(&self, now: HostTime) -> Option<Frame> {
+        let since = i128::from(now.0) - i128::from(self.start.0);
+        let frame = since * i128::from(self.rate.hz()) / 1_000_000_000;
+        (since >= 0).then(|| Frame(u64::try_from(frame).unwrap_or(u64::MAX)))
+    }
+
+    fn host_time_of(&self, frame: Frame) -> HostTime {
+        let hz = i128::from(self.rate.hz());
+        let nanos = (i128::from(frame.0) * 1_000_000_000 + hz - 1) / hz;
+        self.start.plus_nanos(i64::try_from(nanos).unwrap_or(i64::MAX))
     }
 }
 
