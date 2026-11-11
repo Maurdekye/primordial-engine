@@ -82,8 +82,20 @@ impl<K> Ring<K> {
     /// as everywhere. They are the floor and `Cv`, both at or below the floor, and a re-simulation never starts below
     /// the floor (4.2), so in use no pinned frame is ever after `frame`.
     pub fn truncate_after(&mut self, frame: Frame) {
+        debug_assert!(
+            self.pinned.iter().all(|&p| p <= frame),
+            "a rollback to {frame:?} below a pinned frame: rung 1 uses rewind_to"
+        );
         let pinned = &self.pinned;
         self.keys.retain(|f, _| *f <= frame || pinned.contains(f));
+    }
+
+    /// Rung 1 (replica.md 6.1): the history after `frame` is rebuilt from `Cv`, which can be below the floor, so every
+    /// keyframe after it goes, pinned ones included, and those frames are no longer pinned. The next `finalize` pins
+    /// the floor again, in the rebuilt history.
+    pub fn rewind_to(&mut self, frame: Frame) {
+        self.keys.retain(|f, _| *f <= frame);
+        self.pinned.retain(|f| *f <= frame);
     }
 
     /// Never trim these frames' keyframes (the floor and `Cv`, 4.1); the set replaces the previous one.
@@ -93,35 +105,30 @@ impl<K> Ring<K> {
 
     /// Apply the policy at `present`, and drop everything below `floor` that is not pinned. The newest keyframe at or
     /// below the floor is kept too, so a re-simulation can always start at or below any frame above it.
+    ///
+    /// Past the young span, a keyframe in band `b` (age in `[young * 2^b, young * 2^(b+1))`) stays only if its frame is
+    /// a multiple of `spacing * 2^(b+1)`: two per band when `dense` is 4. That alignment only tightens as a frame ages,
+    /// so trimming at every frame keeps exactly what trimming once would (counting the newest keyframes of each band
+    /// instead thinned the old ones far below two per band when applied at every frame).
     pub fn trim(&mut self, policy: Policy, present: Frame, floor: Frame) {
         let base = self.at_or_before(floor).map(|(f, _)| f);
-        let young = policy.spacing.saturating_mul(policy.dense);
-        // Old keyframes: at most two per doubling of age past the young span, the newest of each band first.
-        let mut per_band: BTreeMap<u32, u32> = BTreeMap::new();
-        let mut drop = Vec::new();
-        for f in self.keys.keys().rev().copied() {
-            if self.pinned.contains(&f) || Some(f) == base {
-                continue;
+        let young = policy.spacing.saturating_mul(policy.dense).max(1);
+        let pinned = &self.pinned;
+        self.keys.retain(|&f, _| {
+            if pinned.contains(&f) || Some(f) == base {
+                return true;
             }
             if f < floor {
-                drop.push(f);
-                continue;
+                return false;
             }
             let age = present.0.saturating_sub(f.0);
             if age <= young {
-                continue;
+                return true;
             }
-            let band = (age / young.max(1)).ilog2();
-            let n = per_band.entry(band).or_insert(0);
-            if *n >= 2 {
-                drop.push(f);
-            } else {
-                *n += 1;
-            }
-        }
-        for f in drop {
-            self.keys.remove(&f);
-        }
+            let band = (age / young).ilog2();
+            let step = 1u64.checked_shl(band + 1).and_then(|p| policy.spacing.checked_mul(p)).unwrap_or(u64::MAX);
+            f.0.is_multiple_of(step)
+        });
     }
 }
 
@@ -165,6 +172,25 @@ mod tests {
         assert_eq!(frames[0], 0);
     }
 
+    /// Trimming at every frame keeps exactly what one trim at the end keeps, and old bands keep two each.
+    #[test]
+    fn trimming_every_frame_equals_trimming_once() {
+        let p = Policy::log4(60);
+        let (mut each, mut once) = (Ring::new(), filled(p, 1000));
+        for f in 0..1000 {
+            if p.takes(Frame(f)) {
+                each.insert(Frame(f), f);
+            }
+            each.trim(p, Frame(f + 1), Frame(0));
+        }
+        once.trim(p, Frame(1000), Frame(0));
+        let frames: Vec<u64> = each.frames().map(|f| f.0).collect();
+        assert_eq!(frames, once.frames().map(|f| f.0).collect::<Vec<_>>());
+        // Band 2 (ages 64 to 127, frames 873 to 936) keeps the multiples of 32 there: 896 and 928.
+        let band2 = frames.iter().filter(|&&f| (1000 - f) >= 64 && (1000 - f) < 128).count();
+        assert_eq!(band2, 2, "{frames:?}");
+    }
+
     #[test]
     fn the_floor_and_pinned_frames_bound_what_goes() {
         let p = Policy::log4(60);
@@ -188,14 +214,28 @@ mod tests {
         assert_eq!(r.at_or_before(Frame(39)).map(|(f, _)| f), Some(Frame(20)));
     }
 
-    /// The doc's "pinned frames are never trimmed" holds for a rollback too (chunks-reviewer's low on 58ea9345).
+    /// A rollback never goes below a pinned frame (the floor and `Cv`), and keeps them.
     #[test]
     fn a_rollback_keeps_pinned_frames() {
         let p = Policy::log4(60);
         let mut r = filled(p, 40);
-        r.pin([Frame(32)]);
+        r.pin([Frame(8), Frame(16)]);
         r.truncate_after(Frame(20));
         let frames: Vec<u64> = r.frames().map(|f| f.0).collect();
-        assert_eq!(&frames[frames.len() - 2..], [20, 32]);
+        assert_eq!(&frames[frames.len() - 3..], [12, 16, 20]);
+    }
+
+    /// Rung 1 rewinds below the floor: the pinned floor's keyframe belongs to the replaced history and goes too.
+    #[test]
+    fn a_rewind_drops_and_unpins_what_it_replaces() {
+        let p = Policy::log4(60);
+        let mut r = filled(p, 40);
+        r.pin([Frame(8), Frame(32)]);
+        r.rewind_to(Frame(8));
+        assert_eq!(r.frames().last(), Some(Frame(8)));
+        // Frame 32 is no longer pinned: a later rollback past it is not refused.
+        r.insert(Frame(32), 32);
+        r.truncate_after(Frame(12));
+        assert_eq!(r.frames().last(), Some(Frame(8)));
     }
 }
