@@ -930,6 +930,28 @@ its reason and the index of the op [I]:
   path. The ordered step, the author's local prediction and a dry run all call it, so they cannot disagree.
 - **A dry run** is the same path, run on a scratch copy of the latest state and discarded. It changes nothing and
   returns the outcome the live run would give at that state.
+- **As built** (world/edit-v1, `crates/pe-world/src/edit.rs` and `apply.rs`) [I; each to the reviewers, and the
+  multi-way ones to @coordinator-opus]:
+  - the codec is `edit.rs`'s: little-endian, one-byte tags, flags 0 or 1, `u16`-prefixed text, `u32`-prefixed bytes
+    and lists, ids as `u128`. It is strict, so every accepted payload has exactly one encoding;
+  - protections are checked at each op, against the state just before it, not in step 2, because an op may name
+    an object an earlier op of the same transaction created. Only the reason reported for a transaction with
+    several faults can differ;
+  - a `Version` or `Content` precondition on a row that does not exist compares against the all-zero version, so
+    it holds only if the author read "no row". A failed `Exists` gives `Deleted` or `Unknown`, and a failed `Absent`
+    gives `Exists`;
+  - `Content` is `BLAKE3("pe.content" ‖ the row's stored bytes)`;
+  - `RemoveRow` of a row that is not there applies and changes nothing, so two removals in a merge need no rule.
+    `SimSize` cannot be removed (3.5);
+  - a `Delete` is refused with `Held` if any object of its subtree is held, by anyone, the holder included;
+  - only instance 0 is accepted in M1; any other instance is `Invalid`;
+  - `Create` carries no class: an edit makes only `World` objects (3.1);
+  - `Copy` copies every row except `BodyState`, refuses a subtree that holds a `Hand`, and gives the copies the
+    copier as creator;
+  - `Undelete` restores the subtree of that one delete, through the tombstones' own links;
+  - the depth-limit refusal is `Invalid` until pe-seams has `Reason::TooDeep` (asked of @engine-architect);
+  - the inverse is the undo ops in reverse order, with a `Version` precondition on the last version the
+    transaction set on each row it wrote and that still exists.
 
 ### 7.7 Outcomes
 
