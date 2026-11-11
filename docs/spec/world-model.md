@@ -1086,6 +1086,17 @@ pub struct HandPose { pub pos: Pos, pub rot: [f32; 4], pub grip: f32, pub engage
   object until `f + 1 + COOLDOWN_SECONDS` (1/6 s, as pe-session's 10 frames at 60 Hz); cooldowns past their `until` end. Claims and cooldowns are
   world tables, in the root (6, 12.11). Both limits are world settings in seconds, converted at the tick rate in
   effect when each claim or cooldown is set.
+- **The pack across frames** (@vdw-physics, mf3d28eee4849). The entry applies at its stamp frame: pose 0 goes to
+  the `Transform` and `Hand` row then, and the whole pack is kept in a world table, `hand_packs` (hand -> stamp,
+  poses, span; in the root, so a rollback re-applies the same poses). `World::end_frame(f)`, after expiry, writes
+  each pending pack's pose for `f + 1` (its target, `grip` and `engaged`), so at the start of frame `f + 1` the
+  `Transform` holds that frame's target; past the last pose the last one holds until `stamp + poses.len() - 1 +
+  span`, then the pack is dropped and the hand keeps its last pose. A hand input stamped `f + 1` replaces the
+  pack when it applies. The `Hand` row's `span` is the whole coverage, `poses.len() - 1 + span`, and its
+  `prev_span` the previous input's coverage, as replica.md 3.3's stream rule reads them.
+- **Reach is measured from the hand's target** (its `Transform`), since the hand's simulated body is pe-replica's
+  own. A blocked hand can grab within reach of its target; pe-session measured from the simulated hand. It is
+  deterministic either way [I, for @design-reviewer].
 - **What the replica gets:** `Footprint` gains the pushes (object, impulse, `at`) and the hands written, so the
   adapter builds `Effects` and `HandRow`s.
 - New seam reason [I, to ask @engine-architect]: `Reason::Cooldown { until: Frame }`.
