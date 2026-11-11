@@ -144,7 +144,7 @@ impl Renderer {
             view_formats: &[],
         });
         let view = tex.create_view(&Default::default());
-        self.render_views(scene, &[EyeView { camera, color: &view, format: CAPTURE_FORMAT, size }]);
+        self.draw(scene, &[EyeView { camera, color: &view, format: CAPTURE_FORMAT, size }], false);
         let padded_row = (size[0] * 4).div_ceil(256) * 256;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("capture readback"),
