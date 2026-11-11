@@ -185,7 +185,9 @@ fn hash_ignores_history_only_state() {
 /// recorded on Windows x64; a different value on any target is a determinism bug, not a test to update.
 /// Re-blessed 2026-11-10 (world/core-v1) for a change of format on every target at once: 128-bit derived ids, logic
 /// spawns by `ObjectId::spawned`, and positions hashed through `Pos::encode`. Linux must reproduce them.
-const GOLDEN_TRACE: u64 = 0x06ab_671a_812a_ed50;
+/// Re-blessed 2026-11-11 (world/read-v1): the `Node` row grew to 192 bytes (creator, versions, `born_on`; 3.2, 7.3),
+/// and the trace hashes the store's rows. `GOLDEN_WORLD`, which hashes only the simulated poses, did not move.
+const GOLDEN_TRACE: u64 = 0xe49a_999e_bb73_a375;
 const GOLDEN_WORLD: u64 = 0x10d0_04da_da21_7a97;
 
 #[test]

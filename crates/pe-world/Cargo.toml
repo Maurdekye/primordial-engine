@@ -12,6 +12,7 @@ description = "The world model: the object tree, components and blobs, the hash 
 pe-core = { path = "../pe-core" }
 pe-sim = { path = "../pe-sim" }
 pe-seams = { path = "../pe-seams" }
+bytemuck = { version = "1.25", features = ["derive"] }
 
 [features]
 # Planted defects for the harness's mutation tests (pe-harness DESIGN.md 6.1): inert unless a node's configuration
