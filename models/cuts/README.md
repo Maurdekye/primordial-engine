@@ -174,6 +174,12 @@ Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `res
     it only removes votes and can't make a certificate that wasn't there; the Byzantine member already makes distinct
     blocks in one view through `adversary_cuts`, so distinct frames add no new kind of equivocation; and the only new
     honest behaviour, + K against + 2K, is one the lock attack doesn't use.
+  - **v0.2: every n = 4 quorum, lock and root check now uses fixed frames** (n4-byz, n4-byz-chain, n4-byz-live,
+    n4-root, n4-byz-v4b, walk-n4-v4, ctl-quorum, and the controls built on `n4`). With the Byzantine member also
+    choosing frames, n4-byz passed 454 M states at 18 steps in 33 minutes without finishing (integration run on
+    6259b77c, 2026-11-11; v0 finished at 65.7 M). The argument above covers these checks too. The Byzantine frame
+    choice keeps its own checks, n4-byz-frames and ctl-noframe, and honest proposers still choose frames in every
+    n = 2 and n = 3 check.
   - **`FRAME_STEP_MAX` (parent + 2K) stands for "up to the voter's present".** It is not pe-agree's rule: a bound
     relative to the parent would need dozens of cuts to catch up after a 10 s stall, and a link whose round trip
     exceeds it would fall behind without limit. The upper bound's real job is to stop a proposer naming a frame in
