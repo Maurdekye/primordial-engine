@@ -28,7 +28,7 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_LIGHTS: usize = 16;
 /// One view's uniform slot, a multiple of every adapter's uniform offset alignment (256).
-const SLOT: u64 = 1280;
+const SLOT: u64 = 1536;
 
 /// The appearance of an object with none (world-model.md 3.2 makes `Appearance` optional).
 pub const DEFAULT_APPEARANCE: Appearance =
@@ -158,11 +158,13 @@ pub struct RenderSettings {
     pub shadow_size: u32,
     /// The outline's width per metre of distance from the eye.
     pub outline_width: f32,
+    /// Draw both eyes in one multiview pass where the device can (render.md 5); false forces one pass per eye.
+    pub multiview: bool,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
-        RenderSettings { msaa: 4, shadow_size: 2048, outline_width: 0.004 }
+        RenderSettings { msaa: 4, shadow_size: 2048, outline_width: 0.004, multiview: true }
     }
 }
 
@@ -330,9 +332,10 @@ struct GpuLight {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Globals {
-    view_proj: [[f32; 4]; 4],
+    /// Per view: multiview's two eyes, or `[0]` alone in single-view (scene.wgsl).
+    view_proj: [[[f32; 4]; 4]; 2],
     light_vp: [[f32; 4]; 4],
-    eye: [f32; 4],
+    eye: [[f32; 4]; 2],
     key_dir: [f32; 4],
     key_color: [f32; 4],
     ambient: [f32; 4],
@@ -366,8 +369,12 @@ struct Targets {
     size: [u32; 2],
     samples: u32,
     format: wgpu::TextureFormat,
+    layers: u32,
+    sampled_depth: bool,
     msaa_color: Option<wgpu::TextureView>,
     depth: wgpu::TextureView,
+    /// Each layer of the depth, as a 2D view (the headset's depth resolve reads them).
+    depth_layers: Vec<wgpu::TextureView>,
 }
 
 /// The renderer. Owns its GPU resources; a lost context is handled by building a new `Renderer` on the new
@@ -376,10 +383,14 @@ pub struct Renderer {
     ctx: GpuContext,
     settings: RenderSettings,
     module: wgpu::ShaderModule,
+    /// The multiview variant, made when a stereo frame first needs it.
+    module_mv: Option<wgpu::ShaderModule>,
+    depth_copy_module: Option<wgpu::ShaderModule>,
+    depth_copy: BTreeMap<(u32, bool), wgpu::RenderPipeline>,
     globals_bgl: wgpu::BindGroupLayout,
     main_layout: wgpu::PipelineLayout,
     shadow_pipeline: wgpu::RenderPipeline,
-    pipelines: BTreeMap<(u32, u32), Pipelines>,
+    pipelines: BTreeMap<(u32, u32, bool), Pipelines>,
     meshes: BTreeMap<MeshKey, Mesh>,
     globals: wgpu::Buffer,
     globals_slots: u64,
@@ -390,6 +401,12 @@ pub struct Renderer {
     instance_cap: u64,
     targets: Vec<Targets>,
     timer: Option<GpuTimer>,
+}
+
+/// The scene shader, single-view or multiview (scene.wgsl's header).
+fn shader_source(multiview: bool) -> String {
+    let (param, index) = if multiview { (", @builtin(view_index) view: u32", "view") } else { ("", "0u") };
+    include_str!("scene.wgsl").replace("/*VIEW*/", param).replace("VIEW_INDEX", index)
 }
 
 fn format_key(f: wgpu::TextureFormat) -> u32 {
@@ -405,7 +422,7 @@ impl Renderer {
         let compiling = crate::gpu::creation_lock();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pe-render scene"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source(false).into()),
         });
         let globals_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
@@ -487,6 +504,9 @@ impl Renderer {
             ctx,
             settings,
             module,
+            module_mv: None,
+            depth_copy_module: None,
+            depth_copy: BTreeMap::new(),
             globals_bgl,
             main_layout,
             shadow_pipeline,
@@ -592,18 +612,26 @@ impl Renderer {
         })
     }
 
-    fn pipelines(&mut self, format: wgpu::TextureFormat, samples: u32) -> &Pipelines {
-        let key = (format_key(format), samples);
+    fn pipelines(&mut self, format: wgpu::TextureFormat, samples: u32, multiview: bool) -> &Pipelines {
+        let key = (format_key(format), samples, multiview);
         if !self.pipelines.contains_key(&key) {
             // D3D12 compiles shaders here, at pipeline creation: under the creation lock (gpu.rs).
             let _compiling = crate::gpu::creation_lock();
             let device = &self.ctx.device;
+            if multiview && self.module_mv.is_none() {
+                self.module_mv = Some(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("pe-render scene, multiview"),
+                    source: wgpu::ShaderSource::Wgsl(shader_source(true).into()),
+                }));
+            }
+            let module = if multiview { self.module_mv.as_ref().expect("made above") } else { &self.module };
+            let mask = multiview.then(|| std::num::NonZeroU32::new(0b11).expect("non-zero"));
             let make = |label, vs, fs, cull, depth_write, blend: Option<wgpu::BlendState>| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
                     layout: Some(&self.main_layout),
                     vertex: wgpu::VertexState {
-                        module: &self.module,
+                        module,
                         entry_point: Some(vs),
                         compilation_options: Default::default(),
                         buffers: &vertex_layouts(),
@@ -619,12 +647,12 @@ impl Renderer {
                     }),
                     multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
                     fragment: Some(wgpu::FragmentState {
-                        module: &self.module,
+                        module,
                         entry_point: Some(fs),
                         compilation_options: Default::default(),
                         targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
                     }),
-                    multiview_mask: None,
+                    multiview_mask: mask,
                     cache: None,
                 })
             };
@@ -671,37 +699,81 @@ impl Renderer {
         }
     }
 
-    fn target_for(&mut self, i: usize, size: [u32; 2], format: wgpu::TextureFormat, samples: u32) {
-        let fits = self.targets.get(i).is_some_and(|t| t.size == size && t.samples == samples && t.format == format);
+    fn target_for(&mut self, i: usize, size: [u32; 2], format: wgpu::TextureFormat, samples: u32, want: TargetUse) {
+        let fits = self.targets.get(i).is_some_and(|t| {
+            t.size == size
+                && t.samples == samples
+                && t.format == format
+                && t.layers == want.layers
+                && t.sampled_depth >= want.sampled_depth
+        });
         if fits {
             return;
         }
         let device = &self.ctx.device;
-        let tex = |label, format, samples| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: samples,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                })
-                .create_view(&Default::default())
+        let layers = want.layers;
+        let tex = |label, format, samples, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: layers },
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
         };
+        let all = |t: &wgpu::Texture| {
+            t.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(if layers > 1 {
+                    wgpu::TextureViewDimension::D2Array
+                } else {
+                    wgpu::TextureViewDimension::D2
+                }),
+                ..Default::default()
+            })
+        };
+        let depth_usage = if want.sampled_depth {
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+        } else {
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+        };
+        let depth_tex = tex("depth", DEPTH_FORMAT, samples, depth_usage);
         let t = Targets {
             size,
             samples,
             format,
-            msaa_color: (samples > 1).then(|| tex("msaa colour", format, samples)),
-            depth: tex("depth", DEPTH_FORMAT, samples),
+            layers,
+            sampled_depth: want.sampled_depth,
+            msaa_color: (samples > 1)
+                .then(|| all(&tex("msaa colour", format, samples, wgpu::TextureUsages::RENDER_ATTACHMENT))),
+            depth: all(&depth_tex),
+            depth_layers: (0..layers).map(|l| layer_view(&depth_tex, l)).collect(),
         };
         while self.targets.len() <= i {
-            self.targets.push(Targets { size: [0, 0], samples: 0, format, msaa_color: None, depth: t.depth.clone() });
+            self.targets.push(Targets {
+                size: [0, 0],
+                samples: 0,
+                format,
+                layers: 0,
+                sampled_depth: false,
+                msaa_color: None,
+                depth: t.depth.clone(),
+                depth_layers: Vec::new(),
+            });
         }
         self.targets[i] = t;
+    }
+
+    /// Whether this device can draw both eyes in one pass at `samples` (render.md 5): Vulkan's multiview, and with
+    /// MSAA also multisampled array textures. Otherwise one pass per eye (the D3D12 fallback under FXC).
+    pub fn multiview_available(&self, samples: u32) -> bool {
+        let f = self.ctx.device.features();
+        self.settings.multiview
+            && f.contains(wgpu::Features::MULTIVIEW)
+            && self.ctx.device.limits().max_multiview_view_count >= 2
+            && (samples <= 1 || f.contains(wgpu::Features::MULTISAMPLE_ARRAY))
     }
 
     /// Draw `scene` into every view. One instance upload serves all views. The frame is timed on the GPU where the
@@ -715,12 +787,165 @@ impl Renderer {
         let t0 = std::time::Instant::now();
         let fresh = self.timer.as_mut().and_then(|t| t.harvest(&self.ctx.device));
         let timing = if timed { self.timer.as_mut().and_then(GpuTimer::begin) } else { None };
-        let passes = self.settings.shadow_size.min(1) as usize + views.len();
         let mut stats = FrameStats { views: views.len() as u32, ..Default::default() };
         let Some(first) = views.first() else { return stats };
-        let anchor = first.camera.pose.pos;
         let samples = self.settings.msaa.max(1);
+        let p = self.prepare(scene, first.camera.pose.pos, &mut stats);
 
+        // One uniform slot per view, plus one for the shadow pass.
+        let shadow_slot = views.len() as u64;
+        self.ensure_slots(shadow_slot + 1);
+        self.write_slot(shadow_slot, &self.globals_for(&p, [p.light_vp; 2], [Vec4::ZERO; 2], false));
+        for (i, v) in views.iter().enumerate() {
+            let (vp, eye) = self.view_of(&p, &v.camera);
+            self.write_slot(i as u64, &self.globals_for(&p, [vp; 2], [eye; 2], !v.format.is_srgb()));
+        }
+        for (i, v) in views.iter().enumerate() {
+            self.target_for(i, v.size, v.format, samples, TargetUse { layers: 1, sampled_depth: false });
+        }
+        for v in views {
+            self.pipelines(v.format, samples, false);
+        }
+
+        let passes = p.shadows as usize + views.len();
+        let mut enc =
+            self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pe-render") });
+        let ts = |k: usize| timing.and_then(|slot| self.timer.as_ref()?.writes(slot, k == 0, k + 1 == passes));
+        if p.shadows {
+            stats.draws += self.shadow_pass(&mut enc, &p, shadow_slot, ts(0));
+        }
+        for (i, v) in views.iter().enumerate() {
+            let t = &self.targets[i];
+            let pass = PassTarget {
+                color: t.msaa_color.as_ref().unwrap_or(v.color),
+                resolve: t.msaa_color.as_ref().map(|_| v.color),
+                depth: &t.depth,
+                store_depth: false,
+                extent: v.size,
+                multiview: false,
+            };
+            let pl = &self.pipelines[&(format_key(v.format), samples, false)];
+            stats.draws += self.scene_pass(&mut enc, &p, pl, i as u64, &pass, ts(p.shadows as usize + i));
+        }
+        self.finish(enc, timing, fresh, t0, stats)
+    }
+
+    /// Draw `scene` for both eyes of a headset into `target`'s two array layers (render.md 5, xr.md 4.2), and submit.
+    ///
+    /// - One multiview pass where [`Renderer::multiview_available`], else one pass per eye.
+    /// - Only `target.extent` (from the origin) is drawn: the render scale is a viewport, so the swapchain never
+    ///   changes size, and the projection layer's `imageRect` must match it.
+    /// - With a depth target (`XR_KHR_composition_layer_depth`), reverse-Z depth is written into it, MSAA depth
+    ///   resolved to the nearest sample; [`crate::camera::DepthRange::xr_depth_info`] gives the layer's range
+    ///   (review L2), from the cameras' unscaled depth range.
+    /// - The frame's work ends with the colour image back in COLOR_TARGET and the depth image in
+    ///   DEPTH_STENCIL_WRITE, the states OpenXR handed them over in (xr.md 4.2). The runtime's image can be
+    ///   released once this returns.
+    pub fn render_stereo(&mut self, scene: &Scene, eyes: [Camera; 2], target: &StereoTarget<'_>) -> FrameStats {
+        let t0 = std::time::Instant::now();
+        let fresh = self.timer.as_mut().and_then(|t| t.harvest(&self.ctx.device));
+        let timing = self.timer.as_mut().and_then(GpuTimer::begin);
+        let mut stats = FrameStats { views: 2, ..Default::default() };
+        let samples = self.settings.msaa.max(1);
+        let format = target.color.format();
+        let size = [target.color.width(), target.color.height()];
+        let extent = [target.extent[0].clamp(1, size[0]), target.extent[1].clamp(1, size[1])];
+        let multiview = self.multiview_available(samples);
+        let p = self.prepare(scene, eyes[0].pose.pos, &mut stats);
+
+        // The headset's depth: drawn into directly when it is single-sampled Depth32Float like ours; otherwise
+        // drawn into our own and resolved into it.
+        let xr_depth = target.depth;
+        let direct_depth = xr_depth.is_some_and(|d| samples == 1 && d.format() == DEPTH_FORMAT);
+        let copy_depth = xr_depth.is_some() && !direct_depth;
+        let want = TargetUse { layers: if multiview { 2 } else { 1 }, sampled_depth: copy_depth };
+
+        let views: Vec<(Mat4, Vec4)> = eyes.iter().map(|c| self.view_of(&p, c)).collect();
+        let encode = !format.is_srgb();
+        let scene_slots: u64 = if multiview { 1 } else { 2 };
+        let shadow_slot = scene_slots;
+        self.ensure_slots(scene_slots + 1);
+        self.write_slot(shadow_slot, &self.globals_for(&p, [p.light_vp; 2], [Vec4::ZERO; 2], false));
+        if multiview {
+            self.write_slot(0, &self.globals_for(&p, [views[0].0, views[1].0], [views[0].1, views[1].1], encode));
+        } else {
+            for (i, (vp, eye)) in views.iter().enumerate() {
+                self.write_slot(i as u64, &self.globals_for(&p, [*vp; 2], [*eye; 2], encode));
+            }
+        }
+        let base = STEREO_TARGETS;
+        for i in 0..scene_slots as usize {
+            self.target_for(base + i, size, format, samples, want);
+        }
+        self.pipelines(format, samples, multiview);
+        let depth_format = xr_depth.map(|d| d.format());
+        if let (true, Some(f)) = (copy_depth, depth_format) {
+            self.depth_copy_pipeline(f, samples > 1);
+        }
+
+        let color_layers: Vec<wgpu::TextureView> = (0..2).map(|l| layer_view(target.color, l)).collect();
+        let color_array = array_view(target.color);
+        let xr_layers: Vec<wgpu::TextureView> =
+            xr_depth.map(|d| (0..2).map(|l| layer_view(d, l)).collect()).unwrap_or_default();
+        let xr_array = xr_depth.map(array_view);
+
+        // Every pass is inside the timestamp pair, the depth resolves too (review L2, part 2b).
+        let passes = p.shadows as usize + scene_slots as usize + if copy_depth { 2 } else { 0 };
+        let mut k = 0;
+        let mut enc =
+            self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pe-render stereo") });
+        let ts = |k: usize| timing.and_then(|slot| self.timer.as_ref()?.writes(slot, k == 0, k + 1 == passes));
+        if p.shadows {
+            stats.draws += self.shadow_pass(&mut enc, &p, shadow_slot, ts(k));
+            k += 1;
+        }
+        let pl = &self.pipelines[&(format_key(format), samples, multiview)];
+        // Multiview: one pass over the array; otherwise one pass per eye's layer.
+        for (i, layer) in color_layers.iter().enumerate().take(scene_slots as usize) {
+            let t = &self.targets[base + i];
+            let (color, depth_out) =
+                if multiview { (&color_array, xr_array.as_ref()) } else { (layer, xr_layers.get(i)) };
+            let pass = PassTarget {
+                color: t.msaa_color.as_ref().unwrap_or(color),
+                resolve: t.msaa_color.as_ref().map(|_| color),
+                depth: if direct_depth { depth_out.expect("direct depth has a target") } else { &t.depth },
+                store_depth: direct_depth || copy_depth,
+                extent,
+                multiview,
+            };
+            stats.draws += self.scene_pass(&mut enc, &p, pl, i as u64, &pass, ts(k));
+            k += 1;
+            if let (true, Some(f)) = (copy_depth, depth_format) {
+                // Per layer: a multiview pass's depth is resolved layer by layer, as single-layer views.
+                let eyes_here: &[usize] = if multiview { &[0, 1] } else { std::slice::from_ref(&i) };
+                for &e in eyes_here {
+                    let src = &t.depth_layers[if multiview { e } else { 0 }];
+                    let how = DepthResolve { format: f, multisampled: samples > 1, extent };
+                    self.depth_copy(&mut enc, src, &xr_layers[e], how, ts(k));
+                    k += 1;
+                    stats.draws += 1;
+                }
+            }
+        }
+        // Hand the images back in the states OpenXR gave them (xr.md 4.2).
+        let mut back = vec![wgpu::TextureTransition {
+            texture: target.color,
+            selector: None,
+            state: wgpu::TextureUses::COLOR_TARGET,
+        }];
+        if let Some(d) = xr_depth {
+            back.push(wgpu::TextureTransition {
+                texture: d,
+                selector: None,
+                state: wgpu::TextureUses::DEPTH_STENCIL_WRITE,
+            });
+        }
+        enc.transition_resources(std::iter::empty(), back.into_iter());
+        self.finish(enc, timing, fresh, t0, stats)
+    }
+
+    /// Instances, lights and the key light's shadow box for one frame, with the instances uploaded.
+    fn prepare(&mut self, scene: &Scene, anchor: Pos, stats: &mut FrameStats) -> Prepared {
         // Instances, grouped by mesh: opaque, then ghosts, then outlines.
         let mut opaque: BTreeMap<MeshKey, Vec<Instance>> = BTreeMap::new();
         let mut ghosts: BTreeMap<MeshKey, Vec<Instance>> = BTreeMap::new();
@@ -808,7 +1033,6 @@ impl Renderer {
         }
 
         // The key light's shadow: an orthographic box around the anchor.
-        let shadows = self.settings.shadow_size > 0;
         let e = env.shadow_extent.max(0.1);
         let light_view = glam::camera::rh::view::look_at_mat4(
             -key_dir * (2.0 * e),
@@ -817,121 +1041,236 @@ impl Renderer {
         );
         // wgpu's clip space is glam's DirectX convention: depth 0..1, +Y up.
         let light_vp = glam::camera::rh::proj::directx::orthographic(-e, e, -e, e, 0.0, 4.0 * e) * light_view;
+        Prepared {
+            ranges,
+            anchor,
+            light_vp,
+            key_dir,
+            key_color,
+            ambient: Vec3::from(env.ambient),
+            sky: env.sky,
+            lights,
+            light_count: rest.len() as u32,
+            shadows: self.settings.shadow_size > 0,
+        }
+    }
 
-        // One uniform slot per view, plus one for the shadow pass.
-        let needed = views.len() as u64 + 1;
+    /// A camera's view-projection relative to the frame's anchor, and its eye (with the outline width in `w`).
+    fn view_of(&self, p: &Prepared, cam: &Camera) -> (Mat4, Vec4) {
+        let (view_m, eye) = anchored_view(p.anchor, cam);
+        (cam.projection() * view_m, eye.extend(self.settings.outline_width))
+    }
+
+    fn globals_for(&self, p: &Prepared, view_proj: [Mat4; 2], eye: [Vec4; 2], encode_srgb: bool) -> Globals {
+        let (k, c, a) = (p.key_dir, p.key_color, p.ambient);
+        Globals {
+            view_proj: view_proj.map(|m| m.to_cols_array_2d()),
+            light_vp: p.light_vp.to_cols_array_2d(),
+            eye: eye.map(|e| e.to_array()),
+            key_dir: [k.x, k.y, k.z, if p.shadows { 1.0 } else { 0.0 }],
+            key_color: [c.x, c.y, c.z, 0.0],
+            ambient: [a.x, a.y, a.z, 0.0],
+            // A target without an sRGB format gets the transfer applied in the shader (review L1).
+            counts: [p.light_count, encode_srgb as u32, 0, 0],
+            lights: p.lights,
+        }
+    }
+
+    fn ensure_slots(&mut self, needed: u64) {
         if needed > self.globals_slots {
             self.globals_slots = needed.next_power_of_two();
             self.globals = Self::globals_buffer(&self.ctx.device, self.globals_slots);
             self.globals_bg = Self::globals_bind_group(&self.ctx.device, &self.globals_bgl, &self.globals);
         }
-        // A target without an sRGB format gets the transfer applied in the shader (review L1).
-        let base = |view_proj: Mat4, eye: Vec3, encode_srgb: bool| Globals {
-            view_proj: view_proj.to_cols_array_2d(),
-            light_vp: light_vp.to_cols_array_2d(),
-            eye: [eye.x, eye.y, eye.z, self.settings.outline_width],
-            key_dir: [key_dir.x, key_dir.y, key_dir.z, if shadows { 1.0 } else { 0.0 }],
-            key_color: [key_color.x, key_color.y, key_color.z, 0.0],
-            ambient: [env.ambient[0], env.ambient[1], env.ambient[2], 0.0],
-            counts: [rest.len() as u32, encode_srgb as u32, 0, 0],
-            lights,
-        };
-        let shadow_slot = views.len() as u64;
-        self.ctx.queue.write_buffer(
-            &self.globals,
-            shadow_slot * SLOT,
-            bytemuck::bytes_of(&base(light_vp, Vec3::ZERO, false)),
-        );
-        for (i, v) in views.iter().enumerate() {
-            let (view_m, eye) = anchored_view(anchor, &v.camera);
-            let g = base(v.camera.projection() * view_m, eye, !v.format.is_srgb());
-            self.ctx.queue.write_buffer(&self.globals, i as u64 * SLOT, bytemuck::bytes_of(&g));
-        }
-        for (i, v) in views.iter().enumerate() {
-            self.target_for(i, v.size, v.format, samples);
-        }
-        for v in views {
-            self.pipelines(v.format, samples);
-        }
+    }
 
-        let mut enc =
-            self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pe-render") });
-        let ts = |k: usize| timing.and_then(|slot| self.timer.as_ref()?.writes(slot, k == 0, k + 1 == passes));
-        if shadows {
-            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shadow"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.shadow_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: ts(0),
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            p.set_pipeline(&self.shadow_pipeline);
-            p.set_bind_group(0, &self.globals_bg, &[(shadow_slot * SLOT) as u32]);
-            p.set_vertex_buffer(1, self.instances.slice(..));
-            for (pass, k, r) in &ranges {
-                if *pass == 0 {
-                    let m = &self.meshes[k];
-                    p.set_vertex_buffer(0, m.vb.slice(..));
-                    p.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
-                    p.draw_indexed(0..m.n, 0, r.clone());
-                    stats.draws += 1;
-                }
-            }
-        }
-        let sky = env.sky;
-        for (i, v) in views.iter().enumerate() {
-            let t = &self.targets[i];
-            let pl = &self.pipelines[&(format_key(v.format), samples)];
-            let (view, resolve) = match &t.msaa_color {
-                Some(m) => (m, Some(v.color)),
-                None => (v.color, None),
-            };
-            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("scene"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: resolve,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: sky[0] as f64,
-                            g: sky[1] as f64,
-                            b: sky[2] as f64,
-                            a: 1.0,
-                        }),
-                        store: if resolve.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &t.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: ts(shadows as usize + i),
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            p.set_bind_group(0, &self.globals_bg, &[(i as u64 * SLOT) as u32]);
-            p.set_bind_group(1, &self.shadow_bg, &[]);
-            p.set_vertex_buffer(1, self.instances.slice(..));
-            for (pass, k, r) in &ranges {
-                p.set_pipeline(match pass {
-                    0 => &pl.main,
-                    1 => &pl.ghost,
-                    _ => &pl.outline,
-                });
+    fn write_slot(&self, slot: u64, g: &Globals) {
+        self.ctx.queue.write_buffer(&self.globals, slot * SLOT, bytemuck::bytes_of(g));
+    }
+
+    fn shadow_pass(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        p: &Prepared,
+        slot: u64,
+        ts: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) -> u32 {
+        let mut draws = 0;
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("shadow"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.shadow_view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: ts,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        rp.set_pipeline(&self.shadow_pipeline);
+        rp.set_bind_group(0, &self.globals_bg, &[(slot * SLOT) as u32]);
+        rp.set_vertex_buffer(1, self.instances.slice(..));
+        for (pass, k, r) in &p.ranges {
+            if *pass == 0 {
                 let m = &self.meshes[k];
-                p.set_vertex_buffer(0, m.vb.slice(..));
-                p.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
-                p.draw_indexed(0..m.n, 0, r.clone());
-                stats.draws += 1;
+                rp.set_vertex_buffer(0, m.vb.slice(..));
+                rp.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
+                rp.draw_indexed(0..m.n, 0, r.clone());
+                draws += 1;
             }
         }
+        draws
+    }
+
+    fn scene_pass(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        p: &Prepared,
+        pl: &Pipelines,
+        slot: u64,
+        t: &PassTarget<'_>,
+        ts: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) -> u32 {
+        let mut draws = 0;
+        let sky = p.sky;
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("scene"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: t.color,
+                depth_slice: None,
+                resolve_target: t.resolve,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: sky[0] as f64,
+                        g: sky[1] as f64,
+                        b: sky[2] as f64,
+                        a: 1.0,
+                    }),
+                    store: if t.resolve.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: t.depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: if t.store_depth { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: ts,
+            occlusion_query_set: None,
+            multiview_mask: t.multiview.then(|| std::num::NonZeroU32::new(0b11).expect("non-zero")),
+        });
+        rp.set_viewport(0.0, 0.0, t.extent[0] as f32, t.extent[1] as f32, 0.0, 1.0);
+        rp.set_scissor_rect(0, 0, t.extent[0], t.extent[1]);
+        rp.set_bind_group(0, &self.globals_bg, &[(slot * SLOT) as u32]);
+        rp.set_bind_group(1, &self.shadow_bg, &[]);
+        rp.set_vertex_buffer(1, self.instances.slice(..));
+        for (pass, k, r) in &p.ranges {
+            rp.set_pipeline(match pass {
+                0 => &pl.main,
+                1 => &pl.ghost,
+                _ => &pl.outline,
+            });
+            let m = &self.meshes[k];
+            rp.set_vertex_buffer(0, m.vb.slice(..));
+            rp.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
+            rp.draw_indexed(0..m.n, 0, r.clone());
+            draws += 1;
+        }
+        draws
+    }
+
+    fn depth_copy_pipeline(&mut self, format: wgpu::TextureFormat, multisampled: bool) {
+        let key = (format_key(format), multisampled);
+        if self.depth_copy.contains_key(&key) {
+            return;
+        }
+        let _compiling = crate::gpu::creation_lock();
+        let device = &self.ctx.device;
+        let module = self.depth_copy_module.get_or_insert_with(|| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("pe-render depth resolve"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("depth_copy.wgsl").into()),
+            })
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("depth resolve"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some("vs_full"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some(if multisampled { "fs_copy_ms" } else { "fs_copy_1" }),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        self.depth_copy.insert(key, pipeline);
+    }
+
+    /// Resolve one layer of our depth into one layer of the headset's.
+    fn depth_copy(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        src: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
+        how: DepthResolve,
+        ts: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) {
+        let DepthResolve { format, multisampled, extent } = how;
+        let pipeline = &self.depth_copy[&(format_key(format), multisampled)];
+        let bg = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("depth resolve"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: if multisampled { 0 } else { 1 },
+                resource: wgpu::BindingResource::TextureView(src),
+            }],
+        });
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("depth resolve"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: dst,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: ts,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        rp.set_viewport(0.0, 0.0, extent[0] as f32, extent[1] as f32, 0.0, 1.0);
+        rp.set_scissor_rect(0, 0, extent[0], extent[1]);
+        rp.set_pipeline(pipeline);
+        rp.set_bind_group(0, &bg, &[]);
+        rp.draw(0..3, 0..1);
+    }
+
+    fn finish(
+        &mut self,
+        mut enc: wgpu::CommandEncoder,
+        timing: Option<usize>,
+        fresh: Option<f64>,
+        t0: std::time::Instant,
+        mut stats: FrameStats,
+    ) -> FrameStats {
         if let (Some(slot), Some(t)) = (timing, self.timer.as_ref()) {
             t.resolve(&mut enc, slot);
         }
@@ -943,6 +1282,79 @@ impl Renderer {
         stats.cpu_record_ms = t0.elapsed().as_secs_f64() * 1e3;
         stats
     }
+}
+
+/// The targets [`Renderer::render_stereo`] keeps start at this index (below it: the desktop's and captures').
+const STEREO_TARGETS: usize = 4;
+
+/// What a set of targets must allow.
+#[derive(Clone, Copy)]
+struct TargetUse {
+    layers: u32,
+    /// Our depth is read by the headset's depth resolve.
+    sampled_depth: bool,
+}
+
+/// How the headset's depth is resolved: its format, whether ours is multisampled, and the drawn extent.
+#[derive(Clone, Copy)]
+struct DepthResolve {
+    format: wgpu::TextureFormat,
+    multisampled: bool,
+    extent: [u32; 2],
+}
+
+/// One scene pass's attachments.
+struct PassTarget<'a> {
+    color: &'a wgpu::TextureView,
+    resolve: Option<&'a wgpu::TextureView>,
+    depth: &'a wgpu::TextureView,
+    store_depth: bool,
+    extent: [u32; 2],
+    multiview: bool,
+}
+
+/// One frame's shared inputs: instance ranges, lights and the shadow box.
+struct Prepared {
+    ranges: Vec<(u8, MeshKey, std::ops::Range<u32>)>,
+    anchor: Pos,
+    light_vp: Mat4,
+    key_dir: Vec3,
+    key_color: Vec3,
+    ambient: Vec3,
+    sky: [f32; 3],
+    lights: [GpuLight; MAX_LIGHTS],
+    light_count: u32,
+    shadows: bool,
+}
+
+/// A headset's swapchain images for one frame (xr.md 4.2): two array layers each, left eye first.
+pub struct StereoTarget<'a> {
+    /// sRGB colour, wrapped in COLOR_TARGET.
+    pub color: &'a wgpu::Texture,
+    /// The depth swapchain's image, when the runtime takes depth; wrapped in DEPTH_STENCIL_WRITE.
+    pub depth: Option<&'a wgpu::Texture>,
+    /// The drawn rectangle, from the origin: the render scale (render.md 10).
+    pub extent: [u32; 2],
+}
+
+/// One array layer of a texture, as a 2D view.
+fn layer_view(t: &wgpu::Texture, layer: u32) -> wgpu::TextureView {
+    t.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        base_array_layer: layer,
+        array_layer_count: Some(1),
+        ..Default::default()
+    })
+}
+
+/// A two-layer texture as one array view (multiview).
+fn array_view(t: &wgpu::Texture) -> wgpu::TextureView {
+    t.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        base_array_layer: 0,
+        array_layer_count: Some(2),
+        ..Default::default()
+    })
 }
 
 /// An object's model matrix relative to the frame's anchor, along world axes: the f64 difference, then f32.
@@ -1078,6 +1490,27 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 10);
+    }
+
+    /// Both shader variants parse, validate and compile to SPIR-V on every run, multiview included, though no
+    /// software adapter here draws it (review L1, part 2b). The multiview variant really uses `view_index`: it fails
+    /// validation without the capability.
+    #[test]
+    fn both_shader_variants_validate_and_compile_to_spirv() {
+        use wgpu::naga;
+        let compile = |src: &str, caps: naga::valid::Capabilities| -> Result<Vec<u32>, String> {
+            let m = naga::front::wgsl::parse_str(src).map_err(|e| e.emit_to_string(src))?;
+            let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps)
+                .validate(&m)
+                .map_err(|e| format!("{e:?}"))?;
+            naga::back::spv::write_vec(&m, &info, &naga::back::spv::Options::default(), None).map_err(|e| e.to_string())
+        };
+        let base = naga::valid::Capabilities::default();
+        assert!(!compile(&shader_source(false), base).expect("single-view").is_empty());
+        let mv = shader_source(true);
+        assert!(!compile(&mv, base | naga::valid::Capabilities::MULTIVIEW).expect("multiview").is_empty());
+        assert!(compile(&mv, base).is_err(), "the multiview variant does not use view_index");
+        assert!(!compile(include_str!("depth_copy.wgsl"), base).expect("depth resolve").is_empty());
     }
 
     #[test]
