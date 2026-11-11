@@ -1150,8 +1150,8 @@ then grabs, releases and pushes, in agreed order. So a `Grab`'s reach is measure
 - **Required before any session with strangers:** a push must come from the author's own hand, within reach
   measured against that input stream's hand pose, and a hand's target must be bounded: a maximum distance from
   the member's own rig or head, and a maximum change per frame. Otherwise a modified client puts its hand next to
-  anything and neither reach check bounds anything (@design-reviewer's r14 point 4, widening the ruling's (b);
-  @coordinator-opus to confirm). This is not optional; it gates opening a world to strangers.
+  anything and neither reach check bounds anything (@design-reviewer's r14 point 4, widening the ruling's (b), accepted by
+  @coordinator-opus md0052f879762). This is not optional; it gates opening a world to strangers.
 
 **What the replica gets.** `Footprint` gains the pushes (object, impulse, `at`, author). The replica reads
 `hands()` and `claims()` every frame. A refused grab's outcome names the holder (`Held { by }`), which is what
