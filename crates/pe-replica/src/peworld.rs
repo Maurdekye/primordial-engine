@@ -16,6 +16,11 @@
 //! - **Until pe-world's hash tree (its slice C):** `root` is pe-world's stand-in root; `tree` gives that root and
 //!   the frame, with no nodes, records or object hashes; `import` answers `NotKept`; `empty` is a fresh world.
 //! - **Hands:** none until pe-world's input slice (B).
+//! - **The view** (S5): every object with a `Shape`, a `Light` or a `Hand`, at its world transform, with its
+//!   shape in its own units (the view's scale scales it), appearance, light, hand owner and holder. An object with no
+//!   world transform (no `Transform`, or out of range) is not drawn; a hand without a `Shape` is drawn as a
+//!   [`HAND_RADIUS`] sphere. A spot light is not drawn yet: pe-world's
+//!   `Light` has no cone angles, which S5's `Spot` needs.
 //!
 //! **Shapes** (replica.md 2.1): a body's shapes are its own `Shape`, then those of its compound children (the
 //! descendants reached without passing another `Body`) in id order, each placed in the body's frame and scaled by
@@ -24,20 +29,20 @@
 //! frame (world-model.md 3.3). Boxes scale per axis. A sphere or capsule under non-uniform scale, a mesh, a hull or an
 //! unknown kind cannot be built yet, and the object has no body.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use pe_seams::{
-    Class, DomainId, Frame, Hash, ImportError, LeafKey, Mismatch, Node, ObjectId, Outcome, Pos, Record, SignedEntry,
-    Tree, TreePath,
+    Class, DomainId, Frame, Hash, Holder, ImportError, LeafKey, LightKind, Mismatch, Node, ObjectClass, ObjectId,
+    Outcome, Pos, Record, SignedEntry, Tree, TreePath, ViewFlags, ViewObject,
 };
 use pe_sim::transform::rotate;
 use pe_sim::{Component, SimStore, Transform, WorldTransform};
-use pe_world::components::{Body, BodyState, Shape, body_kind, shape_kind};
+use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
 use pe_world::{Footprint, World};
 
 use crate::world::{
-    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, PhysicsSettings, ShapePart, ShapeRow,
-    WorldModel,
+    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, PhysicsSettings, ShapePart,
+    ShapeRow, WorldModel,
 };
 
 const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -119,6 +124,45 @@ impl WorldModel for PeWorld {
         PhysicsSettings { rate: s.rate, gravity: s.gravity, origin: s.origin }
     }
 
+    fn view_objects(&self) -> Vec<ViewObject> {
+        let s = self.world.store();
+        let mut ids: BTreeSet<ObjectId> = s.iter::<Shape>().map(|(id, _)| id).collect();
+        ids.extend(s.iter::<Light>().map(|(id, _)| id));
+        ids.extend(s.iter::<Hand>().map(|(id, _)| id));
+        let held: BTreeMap<ObjectId, Holder> =
+            self.world.claims().map(|(object, c)| (object, Holder { member: c.member, hand: c.hand })).collect();
+        ids.into_iter()
+            .filter_map(|id| {
+                let t = s.world_transform(id)?;
+                let hand = s.get::<Hand>(id);
+                // A hand without a shape of its own is drawn as the sphere it will push with.
+                let shape = s
+                    .get::<Shape>(id)
+                    .and_then(view_shape)
+                    .or_else(|| hand.map(|_| pe_seams::Shape::Sphere { radius: HAND_RADIUS }));
+                Some(ViewObject {
+                    id,
+                    class: ObjectClass::World,
+                    pos: t.pos,
+                    rotation: t.rot,
+                    scale: t.scale,
+                    linear_velocity: [0.0; 3],
+                    angular_velocity: [0.0; 3],
+                    radius: shape.as_ref().map_or(0.0, |sh| view_radius(sh, t.scale)),
+                    shape,
+                    appearance: s.get::<Appearance>(id).map(view_appearance),
+                    light: s.get::<Light>(id).and_then(view_light),
+                    hand_of: hand
+                        .map(|h| (h.owner, if h.side == 0 { pe_seams::Hand::Left } else { pe_seams::Hand::Right })),
+                    held_by: held.get(&id).cloned(),
+                    flags: ViewFlags::default(),
+                    // TODO(pe-world): the object's edit version, once pe-world gives one per object.
+                    version: None,
+                })
+            })
+            .collect()
+    }
+
     fn write_poses(&mut self, poses: &[(ObjectId, Pos, [f32; 4])]) -> Vec<ObjectId> {
         self.world.write_poses(poses)
     }
@@ -168,6 +212,54 @@ impl WorldModel for PeWorld {
     fn import(&self, _saved: &World, _import: &pe_seams::CutImport) -> Result<World, ImportError> {
         Err(ImportError::NotKept)
     }
+}
+
+/// pe-world's shape as the view's (S5), in the object's own units; `None` for an unknown kind or a missing mesh.
+fn view_shape(sh: &Shape) -> Option<pe_seams::Shape> {
+    match sh.kind {
+        shape_kind::BOX => Some(pe_seams::Shape::Box { half_extents: sh.size }),
+        shape_kind::SPHERE => Some(pe_seams::Shape::Sphere { radius: sh.size[0] }),
+        shape_kind::CAPSULE => Some(pe_seams::Shape::Capsule { radius: sh.size[0], half_height: sh.size[1] }),
+        shape_kind::MESH | shape_kind::HULL if !sh.mesh.is_none() => {
+            Some(pe_seams::Shape::Mesh(pe_seams::BlobRef(Hash(sh.mesh.hash))))
+        }
+        _ => None,
+    }
+}
+
+/// The bounding radius the view culls by (render.md 12): the shape's, world scale applied. A mesh's extent is in its
+/// blob, so it is never culled for now.
+fn view_radius(sh: &pe_seams::Shape, scale: [f32; 3]) -> f32 {
+    let most = scale.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+    match *sh {
+        pe_seams::Shape::Sphere { radius } => radius * most,
+        pe_seams::Shape::Capsule { radius, half_height } => (radius + half_height) * most,
+        pe_seams::Shape::Box { half_extents: h } => {
+            let (x, y, z) = (h[0] * scale[0], h[1] * scale[1], h[2] * scale[2]);
+            (x * x + y * y + z * z).sqrt()
+        }
+        pe_seams::Shape::Mesh(_) => f32::MAX,
+    }
+}
+
+fn view_appearance(a: &Appearance) -> pe_seams::Appearance {
+    pe_seams::Appearance {
+        base_color: a.base,
+        emissive: a.emissive,
+        roughness: a.roughness,
+        metalness: a.metalness,
+        material: (!a.material.is_none()).then(|| pe_seams::BlobRef(Hash(a.material.hash))),
+    }
+}
+
+/// pe-world's light as the view's. A spot light is `None` until pe-world's `Light` carries its cone angles.
+fn view_light(l: &Light) -> Option<pe_seams::Light> {
+    let kind = match l.kind {
+        light_kind::POINT => LightKind::Point,
+        light_kind::DIRECTIONAL => LightKind::Directional,
+        _ => return None,
+    };
+    Some(pe_seams::Light { kind, color: l.color, intensity: l.intensity, range: l.range })
 }
 
 /// The tree until pe-world's hash tree: the stand-in root and the frame only.
