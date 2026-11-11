@@ -11,6 +11,11 @@
 //!   can reach a quorum, [`AgreeEvent::RootSplit`]. After a repair the driver votes again ([`Agreement::vote`]).
 //! - **Cuts** come on a fixed cadence (a duration, a world setting), carry the line id, and name per author the last
 //!   entry they include.
+//! - **Dissemination before finality** (S3 v1.1, RULINGS.md): an entry held by any honest member of a log is held by
+//!   every honest member of that log before any of them treats as final the first cut that covers or voids it. So
+//!   honest members void the same entries. An entry that only its faulty author holds is out of scope. pe-agree
+//!   relays each new entry once (the fast path), and keeps the promise by fetching what a cut names, from any voter,
+//!   before it treats the cut as final.
 //! - **[`Agreement::receive`] never panics** on any bytes: bad bytes are `Err(Fault)` naming the sender, and an event.
 //! - **The `mutants` feature** with named mutations lives in pe-agree (and pe-diverge, pe-world for their rules), never
 //!   here: inert unless the node's configuration names one, and never in a production build.

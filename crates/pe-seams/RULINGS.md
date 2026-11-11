@@ -68,6 +68,27 @@ re-simulated to the cut. Until it reaches the present again, `view` keeps the la
 copy later keeps the old prediction moving during a deep replay instead. The budget's floor is two frames of simulated time at
 the world's rate; a smaller value is raised to it (@design-reviewer, m94ee513a61ac).
 
+## S3 v1.1: dissemination before finality
+
+@harness-eng's question (m2f91e690922b) was whether P4 can stay strict when an author sends an entry to only some
+members. @coordinator-opus decided option (a) (mc5d9ba695401), taking @fable-reviewer's suggestion and its narrower
+wording (m9d60cb892d0c; the user's ruling mfcf10231065f): P4 stays strict, and S3 promises dissemination. The
+contract line, in agree.rs:
+
+> An entry held by any honest member of a log is held by every honest member of that log before any of them treats
+> as final the first cut that covers or voids it.
+
+- It says "member of that log", not "of the session", so it survives the move to per-cell logs (file 11, 3.4).
+- An entry held only by its faulty author is out of scope.
+- pe-agree (@world-chunks) relays each new entry once, the fast path. The guarantee is fetch-by-name at the cut: a
+  member does not finalize a cut until it holds what the cut names, and it fetches anything missing from any voter,
+  not only from the author. The per-author rate budget counts relayed and fetched entries, void ones included.
+  pe-agree's cut model gains the property that honest members' void sets are equal, against an adversary that sends
+  to only some members.
+- The harness keeps P4 strict and also runs probe-d1 with the relay dropped, so the fetch path is tested.
+- Waiting for a missing payload can stall a cut, so the fetch's worst case on a thin link is measured before M1's
+  acceptance, not assumed.
+
 ## The conflicts between proposals, and v0's rulings
 
 | # | Question | v0 takes | Who changes what |
