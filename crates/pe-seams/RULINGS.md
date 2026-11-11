@@ -73,10 +73,17 @@ simulated time at the world's rate; a smaller value is raised to it (@design-rev
 @harness-eng's question (m2f91e690922b) was whether P4 can stay strict when an author sends an entry to only some
 members. @coordinator-opus decided option (a) (mc5d9ba695401), taking @fable-reviewer's suggestion and its narrower
 wording (m9d60cb892d0c; the user's ruling mfcf10231065f): P4 stays strict, and S3 promises dissemination. The
-contract line, in agree.rs, with "treats as final" made exact by @design-reviewer (m78ce5f6d1e5a):
+contract line, in agree.rs, with "treats as final" made exact by @design-reviewer (m78ce5f6d1e5a) and made per
+member by their Medium on 83b6d0f8 (mf7c6566d47e9):
 
-> An entry held by any honest member of a log is held by every honest member of that log before any of them reports
+> An entry held by any honest member of a log is held by each honest member of that log before that member reports
 > the first cut that includes it through `EntrySource::final_cut`, or reports a verdict on it under that cut.
+
+- The promise is per member. "Before any of them" would order members globally: it needs a barrier with acks from
+  every honest member, which no member can identify, and waiting on all n gives up liveness when one crashes.
+  Fetch-by-name delivers the per-member form, and P4 needs only that: each honest member holds what a cut includes
+  before it reports anything under the cut, so all of them report the same verdicts at the same cut. The harness
+  checks the per-member form, not a global ordering.
 
 - It says "member of that log", not "of the session", so it survives the move to per-cell logs (file 11, 3.4).
 - An entry held only by its faulty author is out of scope.
@@ -104,6 +111,23 @@ m38a3810c2a46):
 - Risks: waiting for a missing payload can stall a cut, so the fetch's worst case on a thin link is measured before
   M1's acceptance, not assumed. A long-running proposer that ignores the heads reported in votes could leave an entry
   pending; the bounded-coverage check is what shows it.
+
+**No cut without its entries.** Under covered-only voids a cut can name void entries, which `entries_at` rightly
+leaves out, so pe-replica's head check (a count of the cut's entries over [floor, cut frame) against each head's
+seq) can never pass, and the member never votes: @harness-eng's report (mba7d38d660a1) and @design-reviewer's High
+on pe-replica 3d13ff88, both reproduced. Decided by @coordinator-opus (m4fb423f7844b, @harness-eng's option 1;
+@fable-reviewer concurs, m7bed04b1a1bd):
+- The line, in agree.rs: `wants_roots` and `final_cut` never hand over a cut unless the member holds every entry it
+  names, void ones included. The d1 rule is S3's alone.
+- pe-replica drops its head check, and `RootError::MissingEntries` goes (@vdw-physics, state/replica-2). A unit case
+  covers a cut that names only void entries stamped below the floor.
+- The harness: one `EntrySource` conformance test, run against every mock now and against pe-agree once it exists;
+  a property that no member votes on a cut while lacking an entry the cut names; probe-d1 stays as the regression.
+- pe-agree and its model (@world-chunks): nothing may treat "entries in [floor, cut frame)" as "everything the cut
+  covers". pe-diverge's replay and a newcomer's catch-up carry the same risk (docket, @diverge-eng).
+- Residual risk: a driver that hands the replica a cut it didn't get from `wants_roots` (in a repair or a merge).
+  If pe-diverge ever needs that for real, an `EntrySource::holds(&Cut)` seam method gets added then, with a real
+  caller. Not now.
 
 ## The conflicts between proposals, and v0's rulings
 
