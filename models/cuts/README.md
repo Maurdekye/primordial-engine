@@ -42,11 +42,14 @@ Progress goes to stderr.
   does not extend the previous view's QC must carry a TC, and a member votes for it only if its parent is at least as
   high as the highest QC in the TC (the lock).
 - **Finality (two-chain).** A block is final when its child, proposed in the very next view, is certified.
-- **Verdicts.** Entries a final cut newly covers take effect in chain order. One is void if stamped strictly below
-  an earlier stamp in its author's chain (an equal stamp is valid, ordered by seq), or below the previous cut's
-  frame (late). An entry stamped below a final cut's frame and not covered is void. A member that lacks an earlier
-  entry of the chain holds the later one as pending: neither effective nor void, and no basis for a vote. (The
-  replica may still predict it, flagged unvalidated; the model has no replica.)
+- **Verdicts** (coordinator m33c08e879042: only a covered entry can be void). Entries a final cut newly covers take
+  effect in chain order. One is void if stamped strictly below an earlier stamp in its author's chain (an equal stamp
+  is valid, ordered by seq), or below the previous cut's frame (late). An uncovered entry stays pending: held, never
+  applied, until a cut covers it. An entry whose (author, seq) a final cut covers with another entry is void (a fork).
+  A member that lacks an earlier entry of a covered chain holds the later one as pending, and no basis for a vote.
+  (The replica may still predict it, flagged unvalidated; the model has no replica.)
+- **Fetch by name.** A member reports a cut final only once it holds every entry the cut covers; at least one honest
+  voter holds each, so the fetch succeeds. Modelled as done at the commit.
 
 The plan's "members vote with one hash in their next acknowledgement, and a quorum makes the cut final" leaves open
 how a skipped proposer is survived without two quorums for different cuts; the two-chain rule with a lock (the
@@ -82,7 +85,7 @@ needed.
 |---|---|
 | agreement | Any two honest members' final blocks are on one chain (no two different cuts final at one height) |
 | validity: chains | Every final cut's newly covered segments link to the parent's, are signed by their author for this line, and are stamped below the cut's frame |
-| validity: void set the same everywhere | Two honest members that have judged an entry against their final cuts judged it alike |
+| validity: void set the same everywhere | Per cut: any two honest members holding a cut as final reach the same verdict on every entry it covers, effective or void, with none left pending |
 | no final frame undone | Every verdict an honest member has reached is the one the whole chain gives, so later entries never change it (D-1 as a property); and final cuts only extend |
 | liveness | (liveness profile) every end state has a final cut at every honest member |
 | examples (sometimes) | a cut is final; a faulty author's entry takes effect; an honest entry is void (late) |

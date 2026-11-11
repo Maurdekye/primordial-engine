@@ -360,54 +360,81 @@ impl Cuts {
     }
 
     /// The verdicts a member with entries `known` and final block `fin` reaches: (effective, void). With `known` = every
-    /// entry this is the ground truth. A covered entry whose earlier chain is not all known is pending (in neither set),
-    /// except under the d1 mutation, which judges it alone.
+    /// entry this is the ground truth. Only a covered entry can be void (coordinator m33c08e879042): an uncovered entry
+    /// stays pending, held but never applied, until a cut covers it (then void as late if stamped before that cut's
+    /// previous frame), except a fork: an entry whose (author, seq) a final cut covers with another entry is void. A
+    /// covered entry whose earlier chain is not all known is pending too, except under the d1 mutation, which judges
+    /// it alone.
     pub fn verdicts(&self, fin: &Block, known: u16) -> (u16, u16) {
         let (mut eff, mut void) = (0u16, 0u16);
-        let top = fin.h.min(self.heights);
-        let mut covered = 0u16;
+        for k in 1..=fin.h.min(self.heights) {
+            let (e, v) = self.verdicts_at(fin, known, k);
+            eff |= e;
+            void |= v;
+        }
+        (eff, void)
+    }
+
+    /// The verdicts the cut at height `k` of `fin` decides: on the entries it newly covers, and the forks of them.
+    pub fn verdicts_at(&self, fin: &Block, known: u16, k: u8) -> (u16, u16) {
+        let (mut eff, mut void) = (0u16, 0u16);
         let d1 = self.mutation == Some(Mutation::VoteWithoutChainValidation);
-        for k in 1..=top {
-            let lo = FRAMES * (k - 1);
-            let anc = fin.ancestor(k);
-            let (pc, nc) = (anc.parent().cut(), anc.cut());
-            for a in 0..self.n as usize {
-                if nc[a] == pc[a] {
+        let lo = FRAMES * (k - 1);
+        let anc = fin.ancestor(k);
+        let (pc, nc) = (anc.parent().cut(), anc.cut());
+        for a in 0..self.n as usize {
+            if nc[a] == pc[a] {
+                continue;
+            }
+            let seg = self.segment(pc[a], nc[a]).unwrap_or_else(|| vec![nc[a]]);
+            for &x in &seg {
+                let e = &self.entries[x as usize];
+                // A fork of x: another entry this member holds at the same (author, seq).
+                for z in 0..self.entries.len() as u8 {
+                    let f = &self.entries[z as usize];
+                    if z != x && self.has(known, z) && f.author == e.author && f.seq == e.seq {
+                        void |= 1 << z;
+                    }
+                }
+                if !self.has(known, x) {
                     continue;
                 }
-                let seg = self.segment(pc[a], nc[a]).unwrap_or_else(|| vec![nc[a]]);
-                for &x in &seg {
-                    covered |= 1 << x;
-                    if !self.has(known, x) {
-                        continue;
-                    }
-                    let e = &self.entries[x as usize];
-                    // The entries before x in its author's chain, by its prev links.
-                    let mut earlier = Vec::new();
-                    let mut y = e.prev;
-                    while y != NONE {
-                        earlier.push(y);
-                        y = self.entries[y as usize].prev;
-                    }
-                    let all_known = earlier.iter().all(|&y| self.has(known, y));
-                    let ok = if all_known {
-                        e.stamp >= lo && earlier.iter().all(|&y| self.entries[y as usize].stamp <= e.stamp)
-                    } else if d1 {
-                        e.stamp >= lo
-                    } else {
-                        continue;
-                    };
-                    if ok { eff |= 1 << x } else { void |= 1 << x }
+                // The entries before x in its author's chain, by its prev links.
+                let mut earlier = Vec::new();
+                let mut y = e.prev;
+                while y != NONE {
+                    earlier.push(y);
+                    y = self.entries[y as usize].prev;
                 }
-            }
-        }
-        let frame = FRAMES * top;
-        for x in 0..self.entries.len() as u8 {
-            if self.has(known, x) && covered & (1 << x) == 0 && self.entries[x as usize].stamp < frame {
-                void |= 1 << x;
+                let all_known = earlier.iter().all(|&y| self.has(known, y));
+                let ok = if all_known {
+                    e.stamp >= lo && earlier.iter().all(|&y| self.entries[y as usize].stamp <= e.stamp)
+                } else if d1 {
+                    e.stamp >= lo
+                } else {
+                    continue;
+                };
+                if ok { eff |= 1 << x } else { void |= 1 << x }
             }
         }
         (eff, void)
+    }
+
+    /// Every entry the final block's cuts cover, by their prev links.
+    pub fn covered(&self, fin: &Block) -> u16 {
+        let mut c = 0u16;
+        for k in 1..=fin.h.min(self.heights) {
+            let anc = fin.ancestor(k);
+            let (pc, nc) = (anc.parent().cut(), anc.cut());
+            for a in 0..self.n as usize {
+                if nc[a] != pc[a] {
+                    for x in self.segment(pc[a], nc[a]).unwrap_or_else(|| vec![nc[a]]) {
+                        c |= 1 << x;
+                    }
+                }
+            }
+        }
+        c
     }
 
     fn all_entries(&self) -> u16 {
@@ -435,6 +462,12 @@ impl Cuts {
                 if mm.committed.extends(&p) {
                 } else if p.extends(&mm.committed) {
                     mm.committed = p;
+                    // Fetch by name (coordinator m33e5f610374b): a member reports a cut final only once it holds every
+                    // entry the cut covers, fetched from the voters (at least one honest voter holds each). Modelled as
+                    // done at the commit. The d1 defect finalizes without it.
+                    if self.mutation != Some(Mutation::VoteWithoutChainValidation) {
+                        mm.held |= self.covered(&p);
+                    }
                 } else {
                     mm.undone = true; // a final cut that does not extend this member's final cut
                 }
@@ -839,9 +872,21 @@ impl Model for Cuts {
                 })
             }),
             // Two honest members that have both judged an entry against their final cuts judged it the same way.
+            // Per cut (coordinator m33c08e879042): any two honest members that hold a cut as final reach the same verdict
+            // on every entry it covers, effective or void, and none is left pending (fetch by name).
             Property::always("validity: void set the same everywhere", |c: &Cuts, s: &State| {
-                let v: Vec<(u16, u16)> = (0..c.n).filter(|&m| c.honest(m)).map(|m| c.verdicts(&s.m[m as usize].committed, s.m[m as usize].held)).collect();
-                v.iter().all(|a| v.iter().all(|b| a.0 & b.1 == 0 && a.1 & b.0 == 0))
+                let hs: Vec<&Member> = (0..c.n).filter(|&m| c.honest(m)).map(|m| &s.m[m as usize]).collect();
+                hs.iter().all(|a| {
+                    hs.iter().all(|b| {
+                        let top = a.committed.h.min(b.committed.h).min(c.heights);
+                        (1..=top).all(|k| {
+                            let cov = c.covered(&a.committed.ancestor(k)) & !c.covered(&a.committed.ancestor(k - 1));
+                            let (ea, va) = c.verdicts_at(&a.committed, a.held, k);
+                            let (eb, vb) = c.verdicts_at(&b.committed, b.held, k);
+                            ea & cov == eb & cov && va & cov == vb & cov && (ea | va) & cov == cov
+                        })
+                    })
+                })
             }),
             // Every verdict an honest member has reached is the one the whole chain gives, so learning more entries never
             // changes it (D-1: a final frame never carries an entry that is later void); and final cuts only extend.
@@ -881,7 +926,8 @@ impl Model for Cuts {
                 })
             }));
         }
-        if self.honest_authors > 0 && !self.liveness {
+        // Only a covered entry can be void, so a late one needs a second content cut to cover it.
+        if self.honest_authors > 0 && !self.liveness && self.heights >= 2 {
             p.push(Property::sometimes("an honest entry is void (late)", |c: &Cuts, s: &State| {
                 (0..c.n).any(|m| c.honest(m) && {
                     let mm = &s.m[m as usize];
