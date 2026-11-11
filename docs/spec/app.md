@@ -112,7 +112,8 @@ that ships is the loop the properties check.
 **Startup**, in this order:
 1. **Configuration.** The local settings file (TOML): the member key's path, the data directory, desktop or VR,
    whether MCP is on and its transports, the network ports. The world to open, or an invite to join. World settings
-   (the simulation rate as a `SimRate`, the cut cadence as a duration, and the rest) live in the world, not here.
+   (the seed, the simulation rate as a `SimRate`, the cut cadence as a duration, and the rest) live in the world, not
+   here, so two members never open one world with different settings; a joiner takes them with the world's state.
 2. **The member key** (pe-net-crypto's identity).
 3. **GPU contexts, one at a time, on the main thread:** the XR context first in VR mode, then the window's.
    Creating contexts concurrently crashed D3D12 and WARP in 6 of 15 runs (render.md 4; @ballpit-viz); pe-render's
