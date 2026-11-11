@@ -1222,17 +1222,25 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
   - **Speed-change caps on pushes** (push tunnelling; @coordinator-opus m55af9087bf7c, @fable-reviewer
     mb724b7534c5e). The N·s budget protects heavy bodies; these protect light ones, which one budget-sized push
     would send at about 110 m/s, through walls (@design-reviewer's arithmetic on the 18 g ball).
-    - **Per push:** `|impulse| / m` may not exceed `max_push_dv`. **Per second:** the sum of `|impulse| / m` over
-      the member's applied pushes on one target, stamped in `(f − hz, f]`, may not exceed `push_dv_budget`. Both
-      sit beside `push_budget` and apply to everyone, members with agent powers included.
-    - Defaults [I, starting values to tune]: `max_push_dv` 5 m/s, `push_dv_budget` 10 m/s per member per target
-      per second, as integer mm/s settings (`u32`), bounds 0 - 1,000,000, where 0 turns pushes off. Admins may
-      raise either per member in the per-member override row, with "no limit" allowed (`u32::MAX`).
-    - **Mass** `m` is the body's mass at the applying frame, as the solver computes it: the sum over the body's
-      shapes (its own and its compound children's, as for reach) of `density × volume` with the solver's own
-      volume formulas, computed in `f64` and rounded once. pe-world computes it from the hashed `Shape` rows;
-      @vdw-physics confirms it equals the solver's mass, with a test. A push on a body that is not dynamic, or
-      whose mass is not positive and finite, is refused `Invalid`, never divided by zero.
+    - **Per push:** `|impulse| / m` may not exceed `max_push_dv`. **Speed cap** (@design-reviewer's Medium on
+      5da33763, accepted by @coordinator-opus m4ffd5ab9f31f): the push is refused if `|v + Δv|` would exceed
+      `max_push_speed`, where `v` is the body's linear velocity at the start of frame f plus the `Δv` of every push
+      on that body already applied earlier in frame f (so several pushes in one frame cannot each pass), and
+      `Δv = impulse / m`. A
+      per-second speed-change budget would bound acceleration, not speed: sustained pushing, or several members on
+      one ball, would still reach tunnelling speeds, so the speed cap replaces it (no `push_dv_budget`). The N·s
+      `push_budget` stays. All apply to everyone, members with agent powers included.
+    - Defaults [I, starting values to tune]: `max_push_dv` 5 m/s and `max_push_speed` 10 m/s, as integer mm/s
+      settings (`u32`), bounds 0 - 1,000,000, where `max_push_dv = 0` turns pushes off. Admins may raise either per
+      member in the per-member override row, with "no limit" allowed (`u32::MAX`).
+    - **Mass and velocity come from the solver** (my choice, which @coordinator-opus left open). `m` and `v` are the
+      body's mass and linear velocity in the physics state at the start of frame f, as the solver holds them: mass
+      with the body's world scale applied the solver's way (non-uniform scale included) and hull volumes from their
+      blobs, which pe-world may not hold at apply. pe-world reads them through a query the replica passes to
+      `apply_input` (a seam change, with @vdw-physics). It is deterministic because the physics state at the start
+      of frame f is the same on every machine, and the replica already holds it there. `BodyState` cannot serve:
+      it is written only at cut frames. A push on a body the solver does not hold as dynamic, or whose mass is not
+      positive and finite, is refused `Invalid`, never divided by zero.
     - **Spin: in M1 a push acts at the centre of mass** (the option @coordinator-opus left to me). A `Push` whose
       `at` is `Some` is refused `Invalid` until a later slice bounds angular speed change too. So the linear caps
       bound everything a push does. (Slice B accepts `at` within the object's radius; the agent-powers slice
@@ -1240,11 +1248,12 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     - Over either cap, the push is refused with a new additive seam reason, `TooFast { limit }`, the cap in mm/s
       (from @engine-architect, beside `TooManyClaims`; `TooLarge` would read as a size limit). A push is never
       scaled down. Refused pushes do
-      not count against either budget.
+      not count against `push_budget`.
     - Physics adds continuous collision detection against static geometry for small dynamic bodies, on the
       deterministic path (@vdw-physics's part of the decision).
-    - Tests: the largest allowed push on the lightest ball (`max_push_dv` exactly, then 1 mm/s over); the per-target
-      budget's edge; a push on a static body and on a body with zero density refused; a push with `at` refused;
+    - Tests: the largest allowed push on the lightest ball (`max_push_dv` exactly, then 1 mm/s over); the speed
+      cap's edge on a ball already moving, and repeated pushes stopping at `max_push_speed`; a scaled body's mass
+      (@vdw-physics); a push on a static body and on a body with zero density refused; a push with `at` refused;
       an admin's raised cap applied from its point in the agreed order.
   - **Tests:** a guest's hand-less grab and push are refused, and pass once an admin grants the right; a granted
     member grabs across the room; an agent's grab of a held object and of a locked object are refused, and an
