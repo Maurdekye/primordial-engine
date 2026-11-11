@@ -168,10 +168,13 @@ pub trait EntrySource {
     /// it, and nothing at or below its frame changes again. It can lag the line's newest final cut
     /// ([`crate::AgreeEvent::CutFinal`]): a member that was not among a cut's voters may learn the cut is final while
     /// some of its entries are still on their way. Those entries then arrive as changes below the line's final frame
-    /// ([`EntrySource::take_changed_from`]), and the replica re-simulates them, down to its own floor.
+    /// ([`EntrySource::take_changed_from`]), and the replica re-simulates them, down to its own floor. S3 reports a
+    /// cut here only once this member holds every entry it names, void ones included ([`crate::agree`],
+    /// "Dissemination before finality" and "No cut without its entries").
     fn final_cut(&self) -> Option<&FinalCut>;
     /// The entries to simulate at `frame`, in agreed order: final ones, then the predicted rest. Entries voided by a
-    /// final cut are absent.
+    /// final cut are absent, and so are pending ones: stamped below the final cut's frame, and in no final cut yet
+    /// (S3 v1.1).
     fn entries_at(&self, frame: Frame) -> &[SignedEntry];
     /// The earliest frame whose entries changed since the last call, if any.
     fn take_changed_from(&mut self) -> Option<Frame>;
@@ -204,9 +207,9 @@ pub enum Finalized {
     /// My root differs: I diverged at this cut. The floor moves to it (its entries are final), `Cv` stays, and a
     /// repair is due. After the repair, the driver calls [`Replica::finalize`] again for the same cut.
     Diverged { mine: Hash },
-    /// I do not hold every entry of the cut yet (the d1 rule), or I have not yet re-simulated to its frame within my
-    /// budget: nothing compared, and the floor stays. The driver calls again on a later tick. (The first case does not
-    /// happen when the driver passes [`EntrySource::final_cut`], which waits for the entries.)
+    /// I have not yet re-simulated to the cut's frame within my budget: nothing compared, and the floor stays. The
+    /// driver calls again on a later tick. (Missing entries are not a case: the driver passes
+    /// [`EntrySource::final_cut`], which S3 reports only once this member holds every entry the cut names.)
     NotReady,
 }
 
