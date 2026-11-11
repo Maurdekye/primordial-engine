@@ -2084,9 +2084,11 @@ name = "pe-xr"
 version = "0.0.0"
 dependencies = [
  "arc-swap",
+ "ash",
  "libc",
  "libloading",
  "openxr",
+ "pe-render",
  "pe-seams",
  "serde_json",
  "windows-registry",

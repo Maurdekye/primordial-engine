@@ -118,6 +118,8 @@ struct Live<G: xr::Graphics> {
     hand_paths: [xr::Path; 2],
     hand_interaction: bool,
     size: SwapchainSize,
+    /// The swapchain's format, as its raw graphics-API value (VkFormat or DXGI_FORMAT).
+    format: i64,
     /// The last `xrWaitFrame`'s display time, exactly as the runtime gave it: `xrEndFrame` must get it back
     /// unchanged, never a value converted through host time.
     display_time: Option<(HostTime, xr::Time)>,
@@ -237,7 +239,8 @@ impl<G: xr::Graphics> RealBackend<G> {
         let swapchain = session
             .create_swapchain(&xr::SwapchainCreateInfo {
                 create_flags: xr::SwapchainCreateFlags::EMPTY,
-                usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT,
+                // Transfer source too, for the desktop mirror (render.md; @ballpit-viz).
+                usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT | xr::SwapchainUsageFlags::TRANSFER_SRC,
                 format,
                 sample_count: 1,
                 width: size.width,
@@ -263,6 +266,7 @@ impl<G: xr::Graphics> RealBackend<G> {
                 hand_paths: [left, right],
                 hand_interaction,
                 size,
+                format: G::lower_format(format),
                 display_time: None,
                 views: None,
             }),
@@ -286,6 +290,11 @@ impl<G: xr::Graphics> RealBackend<G> {
 
     pub fn swapchain_size(&self) -> Option<SwapchainSize> {
         self.live.as_ref().map(|l| l.size)
+    }
+
+    /// The swapchain's format, as its raw graphics-API value, for the binding to wrap its images in.
+    pub fn swapchain_format(&self) -> Option<i64> {
+        self.live.as_ref().map(|l| l.format)
     }
 
     /// Hand the instance back after the session was destroyed, to try a new session or drop it.
