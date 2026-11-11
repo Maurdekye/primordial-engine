@@ -115,6 +115,19 @@ fn suite() -> Vec<Check> {
         Check { name: "n4-byz", model: n4(quiet), expect_fail: &[], random: false, depth: Some(18), what: "4 members, one Byzantine (equivocates votes, timeouts and proposals), safety" },
         Check { name: "n4-byz-chain", model: n4(Adversary { send: false, ..chain }), expect_fail: &[], random: false, depth: Some(14), what: "4 members, Byzantine with chain faults (fork, back-date) inside its proposals, safety; a light check (depth 16 passed 211 M states; chain faults are exhaustive at n = 3)" },
         Check { name: "n4-byz-live", model: n4(quiet).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "4 members, Byzantine, liveness" },
+        // n = 2 (v0.1, coordinator condition 2): where most sessions sit. t = 0, q = 2, both honest. Liveness with early
+        // timeouts: up to P timeouts may fire before the network settles (a timeout below the round trip, e.g. the
+        // slow member's), then only at quiescence (the adaptive timeout has grown past the round trip).
+        Check { name: "n2", model: Cuts::new(2, None, 4, 2, 1, none, 0), expect_fail: &[], random: false, depth: UNBOUNDED, what: "2 members, honest, two content cuts, safety (frames chosen by the proposer)" },
+        Check { name: "n2-live", model: Cuts::new(2, None, 4, 1, 1, none, 0).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "2 members, liveness, timeouts only once settled" },
+        // At n = 2 one early timeout spoils its view (q = 2: the member that timed out no longer votes in it), and the
+        // two-chain needs two good views in a row, so P early timeouts alternating with good views hold finality off
+        // for 2P + 1 views: live with 2P + 2 views, not with 2P + 1 (bound-n2-early).
+        Check { name: "n2-live-early", model: Cuts::new(2, None, 8, 1, 1, none, 0).live().early_timeouts(3), expect_fail: &[], random: false, depth: UNBOUNDED, what: "2 members, liveness, up to 3 timeouts before the network settles, 8 views" },
+        Check { name: "n2-live-early-o1", model: Cuts::new(2, None, 8, 1, 1, none, 1).live().early_timeouts(3), expect_fail: &[], random: false, depth: UNBOUNDED, what: "the same, member 1 leads view 1" },
+        Check { name: "bound-n2-early", model: Cuts::new(2, None, 7, 1, 1, none, 0).live().early_timeouts(3), expect_fail: &["liveness: every end state has a final cut at every honest member"], random: false, depth: UNBOUNDED, what: "2 members, 3 early timeouts, 7 views: alternating spoiled views hold finality off" },
+        // Not a rule removed: a timeout that never grows past the round trip, so timeouts may fire early in every view.
+        Check { name: "ctl-early", model: Cuts::new(2, None, 6, 1, 1, none, 0).live().early_timeouts(12), expect_fail: &["liveness: every end state has a final cut at every honest member"], random: false, depth: UNBOUNDED, what: "2 members, timeouts may always fire before delivery (no adaptive timeout)" },
         Check { name: "n4-crash-live", model: Cuts::new(4, Silent, 3, 1, 2, none, 0).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "4 members, one silent, liveness" },
         Check { name: "n4-byz-v4", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2).fixed_frames(), expect_fail: &[], random: false, depth: Some(18), what: "4 members, Byzantine leads view 3 of 4 (the lock's case), safety" },
         Check { name: "n3-root", model: n3(none).corrupt(2), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, author-faulty, member 2's replica computes a wrong root, safety" },

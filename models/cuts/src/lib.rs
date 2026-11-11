@@ -15,7 +15,9 @@ use std::fmt;
 use stateright::{Model, Property};
 
 pub const NMAX: usize = 4;
-pub const HMAX: usize = 3;
+/// Block heights the state can hold: content heights, the child that makes the last final, and up to P more empty
+/// ones in the early-timeout profile (a real chain has no cap; each spoiled view can cost one height).
+pub const HMAX: usize = 6;
 pub const NONE: u8 = u8::MAX;
 /// The cadence K, in frames. A proposer names the cut's frame (v0.1, coordinator condition 4): an honest one names its
 /// parent's frame + K, or + 2K when it catches up after a stall; a voter accepts any frame above the parent's and at
@@ -121,11 +123,15 @@ pub struct Cuts {
     /// Proposers choose the cut's frame (v0.1). Off, every cut names its parent's frame + K: for the lock checks, whose
     /// attack is on certificates, not frames, and whose bounded space grows fourfold with the Byzantine frame choice.
     pub frame_choice: bool,
+    /// Liveness profile: how many timeouts may fire before the network has settled (v0.1, condition 2). Each stands for
+    /// a timeout shorter than the round trip; an adaptive timeout that grows after each one makes them finite.
+    pub early: u8,
 }
 
 impl Cuts {
     pub fn new(n: u8, fault: Fault, views: u8, heights: u8, honest_authors: u8, adv: Adversary, offset: u8) -> Cuts {
-        assert!((3..=NMAX as u8).contains(&n) && (1..HMAX as u8).contains(&heights) && honest_authors < n && (honest_authors > 0 || fault != Fault::None));
+        // n = 2 (v0.1, coordinator condition 2): t = 0, q = 2, honest members only.
+        assert!((2..=NMAX as u8).contains(&n) && (n > 2 || fault == Fault::None) && (1..=2).contains(&heights) && honest_authors < n && (honest_authors > 0 || fault != Fault::None));
         let mut entries: Vec<EntryDef> = Vec::new();
         for a in 1..=honest_authors {
             let mut prev = NONE;
@@ -153,11 +159,16 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true, early: 0 }
     }
 
     pub fn live(mut self) -> Self {
         self.liveness = true;
+        self
+    }
+
+    pub fn early_timeouts(mut self, p: u8) -> Self {
+        self.early = p;
         self
     }
 
@@ -203,7 +214,7 @@ impl Cuts {
     }
 
     fn hcap(&self) -> u8 {
-        self.heights + 1
+        self.heights + 1 + self.early.min(HMAX as u8 - 1 - self.heights)
     }
 
     fn byz(&self) -> bool {
@@ -777,6 +788,8 @@ pub struct State {
     pub m: [Member; NMAX],
     /// Every message sent. Delivery doesn't remove one, so delay, reordering, duplication and loss are all covered.
     pub net: BTreeSet<Msg>,
+    /// Timeouts fired so far before the network settled (liveness profile with `early` > 0).
+    pub early: u8,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -810,11 +823,11 @@ impl Model for Cuts {
                 }
             }
         }
-        vec![State { m, net }]
+        vec![State { m, net, early: 0 }]
     }
 
     fn actions(&self, s: &State, acts: &mut Vec<Action>) {
-        let timeouts = self.mutation != Some(Mutation::NoTimeouts) && (!self.liveness || self.quiescent(s));
+        let timeouts = self.mutation != Some(Mutation::NoTimeouts) && (!self.liveness || s.early < self.early || self.quiescent(s));
         self.honest_actions(s, acts, timeouts);
         self.adversary_actions(s, acts);
         if self.productive_only {
@@ -845,6 +858,9 @@ impl Model for Cuts {
                 mm.timed_out = mm.view;
                 let (view, high) = (mm.view, mm.high);
                 s.net.insert(Msg::Timeout { voter: m, view, high });
+                if self.liveness && self.early > 0 && !self.quiescent(s0) {
+                    s.early += 1; // fired before the network settled
+                }
             }
             Action::AdvanceTc(m, o) => {
                 let mut mm = s.m[m as usize];
