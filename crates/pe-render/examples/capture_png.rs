@@ -1,6 +1,7 @@
 //! Write a capture of a small test scene to a PNG, on the software adapter (never the GPU):
 //! `cargo run -p pe-render --example capture_png -- out.png [cue]`. With `cue`, one ball carries the correction cue
-//! (outline and ghost), as the display layer would draw it.
+//! (outline and ghost), as the display layer would draw it. With `labels`, two balls are highlighted and four
+//! objects named, as `view_capture` with `highlight` and `label: true` draws them.
 
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let out = args.get(1).cloned().unwrap_or_else(|| "capture.png".into());
     let cue = args.iter().any(|a| a == "cue");
+    let labels = args.iter().any(|a| a == "labels");
     let ctx = GpuContext::headless(AdapterChoice::SoftwareOnly).expect("software adapter");
     eprintln!("adapter: {}", ctx.describe());
     let mut r = Renderer::new(ctx, RenderSettings::default());
@@ -62,11 +64,22 @@ fn main() {
         Fov::symmetric(1.0, 16.0 / 9.0),
         DepthRange::DESKTOP,
     );
-    let img = r
-        .capture(&s, cam, [768, 432])
+    let size = [768, 432];
+    let names: Vec<(ObjectId, String)> = if labels {
+        s.highlight(&[ObjectId::from_u128(2), ObjectId::from_u128(3)]);
+        [(2, "Red ball"), (3, "Синий шар"), (4, "Green capsule"), (5, "Gold cube (metal)")]
+            .into_iter()
+            .map(|(i, n)| (ObjectId::from_u128(i), n.to_string()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut img = r
+        .capture(&s, cam, size)
         .expect("capture")
         .wait(&r.context().device, Duration::from_secs(60))
         .expect("readback");
+    img.draw_labels(&pe_render::labels::place_labels(&s, &cam, size, &names));
     std::fs::write(&out, img.encode_png()).expect("write");
     eprintln!("wrote {out}");
 }

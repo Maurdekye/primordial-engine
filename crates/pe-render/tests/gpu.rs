@@ -8,8 +8,9 @@ use glam::DQuat;
 use pe_render::camera::{Camera, DepthRange, Fov};
 use pe_render::capture::{CaptureError, Image, visible_list};
 use pe_render::gpu::{AdapterChoice, ContextError, GpuContext};
+use pe_render::labels::place_labels;
 use pe_render::pose::WorldPose;
-use pe_render::scene::{DEFAULT_APPEARANCE, DrawItem, RenderSettings, Renderer, Scene};
+use pe_render::scene::{DEFAULT_APPEARANCE, DrawItem, HIGHLIGHT_COLOR, RenderSettings, Renderer, Scene};
 use pe_seams::{Appearance, ObjectId, Offset, Pos, Shape};
 
 fn renderer() -> Option<Renderer> {
@@ -144,6 +145,61 @@ fn the_outline_draws_around_the_silhouette() {
     let (cx, cy) = (((ball.rect[0] + ball.rect[2]) / 2.0) as usize, ((ball.rect[1] + ball.rect[3]) / 2.0) as usize);
     let i = (cy * 256 + cx) * 4;
     assert_eq!(plain.rgba[i..i + 4], lined.rgba[i..i + 4]);
+}
+
+/// `view_capture` with `highlight` and `label: true`: the highlighted ball gets an amber outline, its name is drawn
+/// beside it, light on dark, and nothing outside the outline and the label box changes. Drawn twice, identical.
+#[test]
+fn a_highlighted_object_is_outlined_and_named() {
+    let Some(mut r) = renderer() else { return };
+    let size = [768u32, 432];
+    let (mut s, cam) = scene_at(Pos::ORIGIN);
+    let plain = capture(&mut r, &s, cam, size);
+    let ball = ObjectId::from_u128(2);
+    s.highlight(&[ball, ObjectId::from_u128(99)]);
+    assert_eq!(s.items.iter().filter(|i| i.outline == Some(HIGHLIGHT_COLOR)).count(), 1);
+    let names = vec![(ball, "Red ball".to_string())];
+    let draw = |r: &mut Renderer| {
+        let mut img = capture(r, &s, cam, size);
+        let places = place_labels(&s, &cam, size, &names);
+        img.draw_labels(&places);
+        (img, places)
+    };
+    let (img, places) = draw(&mut r);
+    assert_eq!(draw(&mut r).0, img, "two labelled captures differ");
+    assert_eq!(places.len(), 1);
+    let lb = places[0].rect;
+    let v = visible_list(&s, &cam, size);
+    let br = v.iter().find(|v| v.id == ball).unwrap().rect;
+    assert!(lb[0] >= br[2], "label {lb:?} is right of the ball {br:?}");
+    let px = |im: &pe_render::capture::Image, x: u32, y: u32| {
+        let i = ((y * size[0] + x) * 4) as usize;
+        [im.rgba[i], im.rgba[i + 1], im.rgba[i + 2]]
+    };
+    let (mut amber, mut text, mut stray) = (0, 0, 0);
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            let (a, b) = (px(&plain, x, y), px(&img, x, y));
+            let (fx, fy) = (x as f32, y as f32);
+            let in_label = fx >= lb[0] && fx < lb[2] && fy >= lb[1] && fy < lb[3];
+            // The outline spreads a few pixels past the ball's box.
+            let near_ball = fx >= br[0] - 8.0 && fx < br[2] + 8.0 && fy >= br[1] - 8.0 && fy < br[3] + 8.0;
+            if in_label {
+                text += (b.iter().all(|c| *c > 220)) as u32;
+            } else if a != b {
+                if near_ball {
+                    // Amber: red well above blue.
+                    amber += (b[0] as i32 - b[2] as i32 > 80) as u32;
+                } else {
+                    stray += 1;
+                }
+            }
+        }
+    }
+    eprintln!("amber outline px {amber}, light text px {text}, stray {stray}");
+    assert!(amber > 100, "outline: {amber} amber pixels");
+    assert!(text > 30, "label text: {text} light pixels");
+    assert_eq!(stray, 0, "pixels changed away from the ball and its label");
 }
 
 #[test]
