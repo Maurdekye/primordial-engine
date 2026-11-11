@@ -267,7 +267,10 @@ g commit -q -m "a link, a submodule and a case twin"
 expect export-refusals fail "link: a symbolic link" "sub: a submodule" "readme\.MD: differs from README\.md only in case" "^gate: FAIL"
 
 # 24. The hook, through its trampoline: refuses a merge into main that fails, leaves main where it was, refuses
-#     an update-ref, lets a clean merge in, and runs the base's hook and gate when a landing changes both.
+#     an update-ref, lets a clean merge in, and runs the base's hook and gate when a landing changes both, also
+#     when it comes as a forced update (git gives the hook zeros as the old value). An update that leaves main
+#     where it is, or moves only HEAD, returns at once, even while the audit's wrapper stalls (as a build-slot
+#     wrapper does while the slots are busy): it runs no gate, so it can't hold main's lock behind one.
 new_case
 # The installer waits for the gate: while main's tip has no hook (here the repository's first commit), it refuses,
 # since the trampoline would refuse every update of main; once main is <rev>, it installs.
@@ -319,6 +322,31 @@ if [ $rc != 0 ] && [ "$(git -C "$R" rev-parse main)" = "$landed" ] && grep -q "R
   pass=$((pass + 1)); echo "test_gate: ok   hook-runs-the-base-hook (a landing that empties the hook and gate.sh is refused)"
 else
   bad=$((bad + 1)); echo "test_gate: BAD  hook-runs-the-base-hook (exit $rc)"; sed 's/^/    /' "$tmp/hook-neuter.log"
+fi
+hk update-ref refs/heads/main "$(git -C "$R" rev-parse neuter)" > "$tmp/hook-forced.log" 2>&1; rc=$?
+if [ $rc != 0 ] && [ "$(git -C "$R" rev-parse main)" = "$landed" ] && grep -q "REFUSED: main stays at $landed" "$tmp/hook-forced.log"; then
+  pass=$((pass + 1)); echo "test_gate: ok   hook-judges-a-forced-update-by-its-base (update-ref without an old value)"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  hook-judges-a-forced-update-by-its-base (exit $rc, main now $(git -C "$R" rev-parse --short main))"
+  sed 's/^/    /' "$tmp/hook-forced.log"; g update-ref refs/heads/main "$landed"
+fi
+printf '#!/bin/sh\nsleep 40\nexit 3\n' > "$tmp/stall.sh"
+git -C "$R" config pe.gate.wrap "sh '$tmp/stall.sh'"
+noop_bad=
+for c in "reset -q --hard HEAD" "reset -q --merge HEAD" "update-ref refs/heads/main $landed $landed" \
+         "checkout -q --detach" "checkout -q main"; do
+  s0=$(date +%s); timeout 120 git -C "$R" $c < /dev/null > "$tmp/hook-noop.log" 2>&1; rc=$?; s1=$(date +%s)
+  locks=$(cd "$R/.git" && ls HEAD.lock refs/heads/main.lock 2> /dev/null)
+  if [ $rc != 0 ] || [ $((s1 - s0)) -gt 15 ] || [ -n "$locks" ] || grep -q "running the landing gate" "$tmp/hook-noop.log"; then
+    noop_bad="$noop_bad
+    git $c: exit $rc in $((s1 - s0)) s${locks:+, left $locks}: $(tr '\n' ' ' < "$tmp/hook-noop.log" | cut -c1-200)"
+  fi
+done
+if [ -n "${PE_GATE_WRAP:-}" ]; then git -C "$R" config pe.gate.wrap "$PE_GATE_WRAP"; else git -C "$R" config --unset pe.gate.wrap; fi
+if [ -z "$noop_bad" ] && [ "$(git -C "$R" rev-parse main)" = "$landed" ]; then
+  pass=$((pass + 1)); echo "test_gate: ok   hook-no-op-returns-at-once (reset --hard HEAD, reset --merge HEAD, update-ref to the same value, checkouts that move only HEAD; stdin /dev/null; audit wrapper stalled)"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  hook-no-op-returns-at-once:$noop_bad"
 fi
 t0=$(date +%s); hk branch -q other "$sha"; hk branch -q -D other; t1=$(date +%s)
 echo "test_gate: note: two updates of another branch with the hook on took $((t1 - t0)) s"
