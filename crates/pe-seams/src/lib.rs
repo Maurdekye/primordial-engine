@@ -26,8 +26,9 @@
 //! **Versions.** This is v0. Items marked *provisional* in their module's documentation may change in v1, through
 //! WS-seams (@engine-architect), which also reviews every seam change. Everything else is fixed for M1.
 //!
-//! **Transition.** The id, hash and position types ([`ids`]) belong in pe-core and move there when WS-world's
-//! `world/core-v1` lands; their paths here (`pe_seams::Hash`, ...) stay the same.
+//! **The id types are pe-core's.** [`ids`] re-exports pe-core's id, hash and position types (WS-world's
+//! `world/core-v1`, main 486ecf04), under the same paths (`pe_seams::Hash`, ...). An [`ObjectId`]'s words are private:
+//! build one with `ObjectId::from_u128`, and read it with `to_u128`.
 
 pub mod agree;
 pub mod entry;
