@@ -772,6 +772,7 @@ impl Renderer {
         let f = self.ctx.device.features();
         self.settings.multiview
             && f.contains(wgpu::Features::MULTIVIEW)
+            && self.ctx.device.limits().max_multiview_view_count >= 2
             && (samples <= 1 || f.contains(wgpu::Features::MULTISAMPLE_ARRAY))
     }
 
