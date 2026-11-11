@@ -835,7 +835,6 @@ dependencies = [
  "libc",
  "libloading",
  "openxr",
- "pe-render",
  "pe-seams",
  "serde_json",
  "windows-registry",
