@@ -491,11 +491,23 @@ sections 6.1-6.6):
 **Agents within their owning user's range** (the user, m14ae4ed5bb9e; @item:primordial-engine/agent-actions-within-the-owning-user-s-simulatio):
 - **The bound.** An agent may act at any speed and distance, moving at once and grabbing objects of any size, as long
   as the target lies within its owning user's simulation range. An agent's entries are signed by its user's member,
-  so the bound is the member's.
+  and pe-world can't tell the two apart, so the bound is the member's. It binds every member's inputs and edits,
+  admins' included: any exemption would widen agents beyond the user's ruling (@coordinator-opus's decision
+  md4f167501073, with @fable-reviewer).
   - Before M4 every machine simulates the whole world, so the bound always holds.
-  - With regions it is a check. pe-world refuses, on every machine, a hand-less input or an edit whose target lies
-    outside its member's range, computed from the agreed state at the entry's frame [I], and pe-api refuses it
-    before submitting (WS-world, WS-api).
+  - With regions it is a check. pe-world refuses, on every machine, a transaction with any target outside its
+    member's range, whole, with a reason that names the range. pe-api's dry run gives the same refusal before
+    anything is submitted (WS-world, WS-api).
+  - **Agreed state only.** The range comes from the member's position as its entries set it, the range setting and
+    the approved chunkloaders, so every member reaches the same verdict at the applying frame.
+  - **The centre** is the member's avatar root (world-model.md 3.5: a `World` object made at admission, the parent of
+    its hands), which only the member's own inputs move. A member with no body, such as a desktop viewer or an
+    agent-only host, is centred wherever its avatar root stands: where admission placed it, until its own inputs
+    move it [I].
+  - **Governance acts are not bound:** removing a member, changing rights and the like, so an admin can stop a
+    griefer without travelling.
+  - **A claim whose object leaves its holder's range is dropped.**
+  - **The admin UI** offers "go to this object" and "load this region" from the record and from the world line tool.
 - **Chunkloaders.** An agent may set up a chunkloader that keeps a region loaded with nobody near it, only with its
   owning user's approval and within its member's cap (`max_chunkloaders`: none without agent powers, a small
   default with them). Approval by the owning user bounds nothing towards the others, so the cap is the admins'
@@ -538,9 +550,12 @@ holders' result (the coordinator's ruling, 19:36Z).
   follows scaling, and parts take the layer of the whole.
 - **Missed time:** a frozen place re-simulated on return gives the same state on every machine, within the world's
   limit, without stalling a frame.
-- **Agents' range:** a target outside the member's range is refused on every machine and by pe-api, and one inside
-  it at any distance is applied. A chunkloader works only after its user's approval, and a member past its cap is
-  refused.
+- **Agents' range:**
+  - a transaction with any target outside its member's range is refused whole, on every machine and by pe-api's dry
+    run, with a reason naming the range; one inside it, at any distance, is applied;
+  - an admin's edit is bound the same way, and a governance act is not;
+  - a claim whose object leaves its holder's range is dropped;
+  - a chunkloader works only after its user's approval, and a member past its cap is refused.
 - **A cost budget per machine,** measured at the default ratio and at 1 km.
 
 **Size:** 4-6 for the skeleton and the evidence, then 10-16 (file 11).
@@ -1047,7 +1062,7 @@ All of the user's earlier requirements still apply (m83bc23ef13ec). These are th
 
 | The user's ruling | Where it lands | When | Tested by |
 |---|---|---|---|
-| Agents may perform any action at any speed and distance, moving at once and grabbing arbitrarily large objects, as long as those objects are within their owning user's simulation range; chunkloaders that force regions to stay loaded need the owning user's approval (m14ae4ed5bb9e) | WS-world and WS-api: the range check; WS-regions: chunkloaders | M4; before it the whole world is in range | M4's demo and acceptance |
+| Agents may perform any action at any speed and distance, moving at once and grabbing arbitrarily large objects, as long as those objects are within their owning user's simulation range; chunkloaders that force regions to stay loaded need the owning user's approval (m14ae4ed5bb9e) | WS-world and WS-api: the range check, which binds every member's inputs and edits, admins' included, but not governance acts (@coordinator-opus, md4f167501073); WS-regions: chunkloaders | M4; before it the whole world is in range | M4's demo and acceptance |
 | Agent powers are a per-member right the admins grant; admins cap claims, the push budget and chunkloaders per member; holds and locks win over an agent's grab (m9d1bad95e3f7) | WS-world (world-model.md 8.1, "Agent powers"); pe-api reports the refusals | A pe-world slice after the inputs; M3's demo | M3's acceptance |
 | The user's spare laptop may serve as M1's second PC (m14ae4ed5bb9e) | M1's two-machine run, desktop only (U4) | M1 | By hand, with the coordinator's go |
 
