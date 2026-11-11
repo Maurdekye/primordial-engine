@@ -88,14 +88,16 @@ pub fn open_vulkan(
     let backend = unsafe { RealBackend::<xr::Vulkan>::new(instance, system, &ctx.session_info, grasp) }
         .map_err(NotOpened::Session)?;
     let images = backend.swapchain_images().map_err(|e| NotOpened::Images(format!("{e:?}")))?;
+    let depth = backend.depth_swapchain().map_err(|e| NotOpened::Images(format!("{e:?}")))?;
+    let depth = depth.as_ref().map(|(images, f)| (images.as_slice(), *f));
     let (size, format) = match (backend.swapchain_size(), backend.swapchain_format()) {
         (Some(s), Some(f)) => ([s.width, s.height], f),
         _ => return Err(NotOpened::Images("no swapchain".into())),
     };
     // SAFETY: the live swapchain's images, of its format and size, on the device they were created for; `VulkanVr`
     // drops the wrappers before the session.
-    let targets =
-        unsafe { XrTargets::vulkan(&ctx.gpu, &images, format, size) }.map_err(|e| NotOpened::Images(e.to_string()))?;
+    let targets = unsafe { XrTargets::vulkan(&ctx.gpu, &images, format, size, depth) }
+        .map_err(|e| NotOpened::Images(e.to_string()))?;
     Ok(VulkanVr { targets, session: XrSession::new(backend, ring, grasp), gpu: ctx.gpu })
 }
 
