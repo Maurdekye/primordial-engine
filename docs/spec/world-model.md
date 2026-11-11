@@ -1165,10 +1165,16 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     it; guests don't unless an admin grants it. A person acting as their own agent is the same member, so the right
     is checked on the member, never on a claimed actor (an `Input` names none).
   - **Without the right, hand-less inputs are refused** (`NoPermission`), so reach binds the member: a `Grab` with
-    `hand: None`, and a `Push` that is not from the author's own hand within reach (the push rule required before
-    strangers, above). Hand inputs are unaffected.
+    `hand: None`, and a `Push` with `hand: None`. Hand inputs are unaffected.
+  - **`Push` names its hand** (@design-reviewer's M1 on 95fc4bfc): it gains `hand: Option<ObjectId>`, as `Grab`
+    has. This is a codec change to the `Input` payload above, made in the later slice (a world-format version
+    change, like the `Protection` layout below). With a hand, the hand must be the author's own (`NotYourHand`) and
+    the push within reach: the hand's target within `reach + slack` of `at`, or of the object's bounding spheres
+    (as a grab's reach) when `at` is `None`. This is the push rule required before strangers, above. Without a
+    hand, the push needs the right.
   - **Per-member caps, set by admins:** the number of objects the member may hold at once (claims, hands
-    included; one past it is refused `TooLarge { limit }`), the member's push budget (in place of the world's
+    included; one past it is refused with a new additive seam reason, `TooMany { limit }`, from @engine-architect:
+    `TooLarge` means an edit's size), the member's push budget (in place of the world's
     `push_budget`), and the number of chunkloaders (M4).
   - **Holds and locks win.** An agent's grab never takes an object another member holds (`Held { by }`, as for any
     grab), nor one under its owner's lock: a new per-object protection flag, "others can't grab or push this",
@@ -1191,11 +1197,19 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
       7.8's owner rule and subtree reach. Only the owner sets or clears it. This changes `Protection`'s row layout,
       a world-format version change (fine before the first release).
     - *Force-release:* a new input, `Release { object, force: true }`, applied only for an admin; it ends the
-      claim with no cooldown for the holder, and its outcome names the holder it released.
+      claim, and its outcome names the holder it released. What the holder gets after it (the normal cooldown, or
+      an admin-chosen hold-off on that object) is with @coordinator-opus.
+    - *Who clears the lock* (the owner only, or an admin too, so a departed owner's lock on a shared object is not
+      permanent) is with @coordinator-opus.
+    - *Order of checks* (@design-reviewer's Low): `Grab` and `Push` check the hand (`NotYourHand`), then the right
+      (`NoPermission`), the lock (`Protected { owner }`), `Held`, the claim cap (`TooMany`, grabs only), then reach;
+      the existing cooldown, renewal, `at` and budget checks keep their places around these. A locked and held
+      object gives `Protected` everywhere.
     - *The record:* `Push` in `Footprint` gains `hand: Option<ObjectId>`.
     - Tests: a member without the right sends a hand-less grab and push and is refused; a guest granted the right
       grabs across the room; an agent's grab of a held object and of a locked object are refused; the claim cap's
-      edge (cap, cap + 1, renewal at cap); an admin force-release and the holder's next grab without a cooldown.
+      edge (cap, cap + 1, renewal at cap); an admin force-release, and the holder's next grab under whatever
+      hold-off is decided; a push with a hand, in and out of reach.
 
 **What the replica gets.** `Footprint` gains the pushes (object, impulse, `at`, author). The replica reads
 `hands()` and `claims()` every frame. A refused grab's outcome names the holder (`Held { by }`), which is what
