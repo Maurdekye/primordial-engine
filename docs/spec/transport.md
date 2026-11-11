@@ -1,11 +1,14 @@
 # pe-net: the transport
 
-Status: draft 1.6, 2026-11-11, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.7, 2026-11-11, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
 budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.6 records
 what building the Core settled: the welcome exchange and its up record (6.4), the stream kinds (3.6), and the
-Core's interface and network thread as built (7). Draft 1.2 records the user's ruling on the firewall default
+Core's interface and network thread as built (7). Draft 1.7 answers @design-reviewer's code review of pe-net v1:
+`T_welcome` ends at the first Up (6.4), duplicates from one client are settled by a value both sides hold (6.2),
+rendezvous records come only from members and are bounded (6.7), and a replaced connection's reliable messages
+are lost with it (3.2). Draft 1.2 records the user's ruling on the firewall default
 (m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
@@ -156,7 +159,8 @@ Coordinator ruling, for each of the QUIC keys, the adapter port and the provider
 - **More tests** [I; the fuzzing and the last four from @design-reviewer]:
   - Wycheproof AES-GCM vectors;
   - a handshake against a known-good QUIC implementation, in a dev-only test outside the shipped graph;
-  - fuzzing of packet parsing and the handshake (cargo-fuzz, gate tier 2);
+  - fuzzing of packet parsing and the handshake (cargo-fuzz, gate tier 2), including a crafted hello and
+    welcome in one flight, the path a hostile peer would use (@design-reviewer, before M1 acceptance);
   - that the joiner sends nothing above the transport before the welcome;
   - a QUIC key update, and the Retry token;
   - that secrets are zeroized on drop;
@@ -222,6 +226,10 @@ Rules for all lanes [I]:
   only what is sent to it.
 - **On a link going down,** the messages still queued for it are dropped, and the caller gets `LinkDown`. pe-agree
   recovers what the other side lacks through its own protocol, as it must anyway for a peer that was away.
+- **Reliable means per connection** [@design-reviewer's Low 1 on v1]. The lane state lives with the QUIC
+  connection, so when another connection to the same peer replaces it (6.2: a redial after an address change
+  that wins on the lower key), its unacknowledged Protocol and Action messages are lost, with no `LinkDown`.
+  pe-agree must tolerate this the same way: it never relies on pe-net alone for a message it needs.
 
 ### 3.3 Protocol and Action: reliable small messages over datagrams
 
@@ -511,6 +519,13 @@ its frame this way (seam S3).
     both would be closed.
   - So both sides keep the connection whose QUIC client has the lower public key (bytes compared), whichever
     finished first, and close the other. Every rendezvous (6.7) uses the same rule.
+  - **With the same client** (staggered dials) [@design-reviewer's Medium 2 on v1], the client completes a
+    handshake when the server's flight arrives and the server when the client's Finished arrives, so the two
+    sides can complete them in opposite orders. Both keep the connection with the lower **duplicate tag**: 16
+    bytes of the TLS exporter with the label `pe-net duplicate` and an empty context, which both sides derive
+    alike and which differs per connection.
+  - The loser is closed with code 0 and the detail `duplicate connection`. A side that gets that close, or
+    loses a connection while it holds another to the same peer, ends it quietly: no refusal, no `LinkDown`.
 
 ### 6.3 Hello and the connection guards
 
@@ -561,7 +576,8 @@ its frame this way (seam S3).
     protocol fault (code 6), since no correct peer sends it.
   - **`T_welcome`** [@design-reviewer's Low 1]: a connection not Up within `T_welcome` of confirmation is
     closed: with code 8 by a member whose app hasn't decided, with code 5 by a side still waiting to be
-    admitted. Keep-alive PINGs (6.5) would otherwise keep it open for good.
+    admitted. Keep-alive PINGs (6.5) would otherwise keep it open for good. It covers only the way to the
+    first Up: a link that later goes Degraded is not closed by it [@design-reviewer's High on v1].
 - **What each side may receive** [@design-reviewer's Low 2]. Anything else is a protocol fault (code 6):
 
   | Record | A member may take it | A joiner may take it |
@@ -601,6 +617,15 @@ These are the application error codes on a QUIC close. The joiner's app shows th
   peer pair (plan; file 11).
 - **The rendezvous:** a member already connected to both sends each side a rendezvous record (the other's key
   and addresses), and both send at once (2.4).
+- **Who may send one** [@design-reviewer's Medium 1 on v1]: a rendezvous starts dials to addresses a peer
+  names, so it is taken only from a member, once the link is Up. A peer is a member if it welcomed me (only
+  members send welcomes) or the app's member list names it. One from anyone else is a protocol fault (code 6).
+- **Its bounds,** so a member can't turn others into amplifiers:
+  - one set of dials per key: a key I'm connected to or already dialling is skipped (two members may introduce
+    the same pair, so this is not a fault);
+  - at most `N_rdv_dials` mesh and rendezvous dials (addresses) queued or under way at once; past that, the
+    rest of a record is dropped;
+  - more than `R_rdv` records from one peer within `T_rdv` is a protocol fault.
 - **Each of these connections** has its own hello, guards and welcome, judged from the agreed governance (2.3).
 - **M3** adds relaying through members, and hole punching through NATs.
 
@@ -759,7 +784,9 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | `S_max` | 0.2 % | Steering rate limit |
 | `T_pinned` | 10 s | Steering pinned at `S_max` before a `ClockFault` |
 | `T_stagger` | 0.25 s | Gap between dials to an invite's addresses |
-| `T_welcome` | 10 s | Longest from confirmation to Up before the connection is closed (6.4) |
+| `T_welcome` | 10 s | Longest from confirmation to the first Up before the connection is closed (6.4) |
+| `R_rdv` / `T_rdv` | 64 / 10 s | Most rendezvous records from one peer per window (6.7) |
+| `N_rdv_dials` | 64 | Most mesh and rendezvous dials queued or under way (6.7) |
 | `T_reply` | 3 s | No answer before the joiner shows a reply code |
 | `T_keepalive` | 0.5 s | QUIC PING when idle |
 | `T_degraded` | 1 s | Nothing heard before Degraded |
