@@ -25,6 +25,7 @@ pub mod display;
 pub mod drawn_time;
 pub mod effects;
 pub mod gpu;
+pub mod labels;
 pub mod pacing;
 pub mod pose;
 pub mod present;

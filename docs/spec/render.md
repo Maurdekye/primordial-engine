@@ -416,7 +416,28 @@ As agreed with @api-eng (api.md 8, mcd68d4325ea7):
   thread.
   - Measured [V M0]: 1280×720, about 40 bodies, 4.5-5.2 ms with readback on an RTX 3080 Ti; two draws give
     identical pixels.
-- **Highlight and labels:** the outline pass (section 6), and names drawn beside the object with `ab_glyph`.
+- **Highlight and labels:**
+  - **Highlight:** `Scene::highlight(ids)` gives those objects the outline pass (section 6) in amber, so a highlight
+    never reads as the correction cue's soft white.
+  - **Names:** the caller passes `(id, name)` pairs (pe-api reads the names from the snapshot). `labels::place_labels`
+    runs when the capture is recorded, with its scene and camera. Each label sits beside its object's anchor: the
+    projected circle of its bounding sphere, cut to `visible_list`'s box (that box comes from a cube around the
+    sphere, up to √3 too wide). It goes to the right, else to the left, above or below: the first spot inside the
+    image covering no other label and no other named object, failing that the first covering no label. An object
+    out of view gets no label; a name wider than the image is cut with an ellipsis.
+  - **Limit:** for a long shape (a capsule seen from the side) the bounding sphere is wider than the silhouette, so
+    its label sits further off, about 35 px for the example's capsule at 768×432. Shape-aware bounds fix it if
+    agents find it confusing.
+  - **Drawing:** `Image::draw_labels` draws them on the CPU, on the read-back image, beside the PNG encoding on the
+    worker thread, so a label never costs the render thread. White text on a dark box, blended in linear light;
+    18 px at the default 432 rows (height / 24, from 12 to 28 px).
+  - **The font:** Inter Regular, embedded with `ab_glyph` (SIL OFL 1.1, `crates/pe-render/fonts/`). It covers Latin,
+    Greek and Cyrillic; any other character shows as the missing-glyph box, never dropped silently.
+```rust
+impl Scene { pub fn highlight(&mut self, ids: &[ObjectId]); }
+pub fn place_labels(scene: &Scene, camera: &Camera, size: [u32; 2], names: &[(ObjectId, String)]) -> Vec<LabelPlace>;
+impl Image { pub fn draw_labels(&mut self, labels: &[LabelPlace]); }
+```
 - **`visible_list`:** projected bounding boxes without occlusion in M1, marked `visible_approx: true`. An id pass (an
   R32Uint target in the same draw) can follow.
 - **Headless:** a software adapter (WARP on Windows, lavapipe on Linux; plan 4.6). With no adapter,
@@ -504,6 +525,6 @@ About 6-8 engineer-weeks of M1's "renderer and VR with hands" (8-12, shared with
 | Context, window, pacing, the scene renderer over a mock frame view; camera-relative transforms | 2 | S5 v0 (mockable) |
 | The display layer and its tests, effects | 1.5 | S5's `corrected`, velocities and effect keys |
 | `render_views` for pe-xr: multiview, late-latched own hands (`render_stereo`, render/xr) | 1 | pe-xr's skeleton |
-| The offscreen capture, outline and labels, for `view_capture` | 1 | pe-api's port |
+| The offscreen capture, outline and labels, for `view_capture` (labels: render/labels) | 1 | pe-api's port |
 | The desktop hand | 0.5 | `HandFeed` in S5 |
 | Counters, harness scenarios, headset tuning | 1-1.5 | pe-harness; the coordinator's go |

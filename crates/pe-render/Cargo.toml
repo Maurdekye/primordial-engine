@@ -19,6 +19,8 @@ arc-swap = "1"
 winit = "=0.30.13"
 # Encode only, pure Rust.
 png = "0.17"
+# Capture labels (render.md 11): pure Rust. The font is fonts/Inter-Regular.ttf (SIL OFL 1.1, fonts/Inter-LICENSE.txt).
+ab_glyph = { version = "0.2.32", default-features = false, features = ["std"] }
 # Default features off, so no GLES (it pulls khronos-egl and a static import of opengl32.dll), no Metal or WebGPU,
 # and never static-dxc (DXC compiled in is C++). The DX12 compiler is pinned to FXC in code (gpu.rs).
 [target.'cfg(windows)'.dependencies]
