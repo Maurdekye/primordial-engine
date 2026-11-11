@@ -528,6 +528,41 @@ fn a_trim_below_the_floor_during_a_replay_abandons_it_and_the_member_simulates_o
     assert_eq!(bad.root_at_cut(&cut(&scene(), 5, 40), &mut s).ok(), bad.live_root(Frame(40)), "it votes again");
 }
 
+/// A replay at a cut above the floor (a root split's, with `Cv` at the floor) meets a frame at or above the floor that
+/// S3's time cap trimmed while it ran. The frame stops it as it stops `advance`, with one fault. Asked again,
+/// `replay_to` answers `Damaged` when the cut's root needs that frame, and the root it took when the frame is past the
+/// cut's (S2 v1.2 round 3, @engine-architect m0e9ba271e806).
+#[test]
+fn a_trim_at_or_above_the_floor_during_a_replay_stops_it() {
+    let agreed_at_16 = || {
+        let (mut a, mut s) = reference(48);
+        let fc16 = FinalCut { cut: cut(&scene(), 2, 16), root: a.live_root(Frame(16)).expect("live"), voters: vec![] };
+        assert_eq!(a.finalize(&fc16, &mut s), Finalized::Agreed);
+        (a, s)
+    };
+    let (c24, c32) = (cut(&scene(), 3, 24), cut(&scene(), 4, 32));
+    // The cut's root needs the frame: the replay to 32 is at 18 when the cap trims below 20.
+    let (mut a, mut s) = agreed_at_16();
+    a.set_budget(Duration::from_millis(1));
+    assert_eq!(a.replay_to(&c32, &mut s), Err(RootError::Pending), "two frames from Cv at 16");
+    s.trim_below(Frame(20));
+    let f0 = a.faults();
+    a.advance(Frame(48), &mut s);
+    assert_eq!((a.frame(), a.faults() - f0), (Frame(18), 1), "stopped, one fault");
+    assert_eq!(a.replay_to(&c32, &mut s), Err(RootError::Damaged));
+    assert_eq!(a.root_at_cut(&c24, &mut s), Err(RootError::Damaged));
+    // The frame is past the cut's: the replay to 24 took its root there and is at 26 when the cap trims below 30.
+    let (clean, _) = reference(48);
+    let (mut b, mut s) = agreed_at_16();
+    b.set_budget(Duration::from_millis(167));
+    assert_eq!(b.replay_to(&c24, &mut s).ok(), clean.live_root(Frame(24)), "ten frames from 16, past 24");
+    s.trim_below(Frame(30));
+    b.advance(Frame(48), &mut s);
+    assert_eq!(b.frame(), Frame(26));
+    assert_eq!(b.replay_to(&c24, &mut s).ok(), clean.live_root(Frame(24)), "the root it took stands");
+    assert_eq!(b.root_at_cut(&c32, &mut s), Err(RootError::Damaged));
+}
+
 /// S3's time cap trimmed frames above my floor before I finalized a cut over them (a member far behind). No root
 /// there will ever come, so `finalize` answers `Damaged` instead of `NotReady` for ever, with one fault however often
 /// it is asked. The floor stays, and `root_at_cut` answers `Damaged` too, so rung 2 is due at once (@chunks-reviewer's

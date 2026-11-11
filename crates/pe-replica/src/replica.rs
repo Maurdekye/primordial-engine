@@ -33,7 +33,8 @@
 //! - **At or above the floor, met by `advance`:** only a replica more than the time cap behind, or an S3 fault,
 //!   meets one. The live history stops there, with one fault per stop, and the view keeps the last state it
 //!   published. `root_at_cut` answers `Damaged` for any cut past that frame, and `finalize` answers
-//!   `Finalized::Damaged`, so rung 2 is due at once.
+//!   `Finalized::Damaged`, so rung 2 is due at once. A replay stops there too: `replay_to` answers `Damaged` if its
+//!   cut's root needed that frame, and otherwise the root it took below the frame.
 //! - **At or above the floor, needed for a root:** a root needs every frame from the floor to the cut's frame, to
 //!   compare with the live history and to re-step. When one of them is trimmed, `root_at_cut` and `finalize` answer
 //!   as for a stop, with one fault per such frame, not one per call (@chunks-reviewer's Medium on 3d8e9442, option
@@ -149,8 +150,9 @@ pub struct ReplicaImpl<W: WorldModel> {
     replay: Option<Replay>,
     /// The last rung-1 replay that finished, and its root: asked again, it answers at once.
     replayed: Option<(CutRef, Hash)>,
-    /// A replay that ended because a frame it had to step was no longer kept: asked again, it answers `NotKept`.
-    lost: Option<CutRef>,
+    /// A replay that ended at a frame no longer kept, and what it answers when asked again: `NotKept` below the floor
+    /// (abandoned), `Damaged` at or above it when its cut's root needed that frame (S2 v1.2 round 3).
+    lost: Option<(CutRef, RootError)>,
     /// The frame the live history stopped at because S3 no longer keeps its entries, at or above the floor: no root
     /// past it is given until the frame can be stepped (S3 v1.2).
     stuck_at: Option<Frame>,
@@ -446,7 +448,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         if self.roll_back(at) != Some(at) {
             return false;
         }
-        self.lost = self.replay.take().map(|r| r.cut.at);
+        self.lost = self.replay.take().map(|r| (r.cut.at, RootError::NotKept));
         // The replay's history below the floor goes; the next `advance` trims its keyframes there.
         self.live.retain(|f, _| *f >= at);
         self.stepped.retain(|f, _| *f >= at);
@@ -482,7 +484,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
                     self.faults += 1;
                     self.stuck_at = Some(self.frame);
                 }
-                self.lost = self.replay.take().map(|r| r.cut.at).or(self.lost);
+                // A replay stops here too: its root stands if it took it below this frame; otherwise its cut's root
+                // needs this frame, and asked again it answers `Damaged`.
+                if let Some(r) = self.replay.take() {
+                    match r.root {
+                        Some(root) => self.replayed = Some((r.cut.at, root)),
+                        None => self.lost = Some((r.cut.at, RootError::Damaged)),
+                    }
+                }
                 break;
             };
             let resimulated = self.frame < self.reached;
@@ -857,8 +866,8 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         if let Some(r) = self.replay.as_ref().filter(|r| r.cut.at == cut.at) {
             return r.root.ok_or(RootError::Pending);
         }
-        if self.lost == Some(cut.at) {
-            return Err(RootError::NotKept);
+        if let Some((_, e)) = self.lost.filter(|l| l.0 == cut.at) {
+            return Err(e);
         }
         let cv_root = self.cv.as_ref().map(|c| c.1).ok_or(RootError::NotKept)?;
         let cv_frame = self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame);
@@ -899,8 +908,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             (Some(r), _) => r.root.ok_or(RootError::Pending),
             (None, Some((_, root))) => Ok(root),
             // It met a frame no longer kept on its first stint, and ended.
-            (None, None) if self.lost == Some(cut.at) => Err(RootError::NotKept),
-            (None, None) => Err(RootError::Damaged),
+            (None, None) => Err(self.lost.filter(|l| l.0 == cut.at).map_or(RootError::Damaged, |l| l.1)),
         }
     }
 
