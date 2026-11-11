@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId};
-use pe_seams::Version;
-use pe_sim::{Component, Node, SimStore};
+use pe_seams::{SimRate, Version};
+use pe_sim::{Component, ComponentId, Node, RowVersion, SimStore, WorldTransform};
 
 use crate::components::{BlobRef, engine_registry};
 use crate::read::WorldSnapshot;
@@ -29,6 +29,33 @@ pub struct Claim {
     pub hand: ObjectId,
     pub member: MemberKey,
     pub since: Frame,
+}
+
+/// Permission bits of a role (5.4). M1 checks only [`perm::EDIT`].
+pub mod perm {
+    pub const EDIT: u32 = 1;
+    pub const ADMIN: u32 = 1 << 31;
+}
+
+/// How long a tombstone lives (7.5): the unconfirmed-play bound, in seconds.
+pub const TOMBSTONE_SECONDS: u64 = 60;
+
+/// What a delete leaves of one object of the deleted subtree (7.5), for the delete-against-add-on rule and for
+/// `Undelete`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tombstone {
+    /// The deleting edit.
+    pub by: EntryRef,
+    pub frame: Frame,
+    /// Dropped once the current frame passes this, fixed at the delete from the rate then in effect.
+    pub expires: Frame,
+    pub parent: Option<ObjectId>,
+    /// Its last world transform, if it had one: where an orphaned add-on is placed.
+    pub world: Option<WorldTransform>,
+    /// Its `Node` row as it was (links, creator, versions).
+    pub node: Node,
+    /// Its rows and their versions, in component-id order, `Node` excluded.
+    pub rows: Vec<(ComponentId, Vec<u8>, RowVersion)>,
 }
 
 /// Why a world operation was refused. Nothing was changed.
@@ -92,6 +119,10 @@ pub struct World {
     pub(crate) claims: Arc<BTreeMap<ObjectId, Claim>>,
     pub(crate) blobs: BlobStore,
     pub(crate) depth_limit: u32,
+    /// The governance members table (5.4): each member's permission bits.
+    pub(crate) members: Arc<BTreeMap<MemberKey, u32>>,
+    pub(crate) tombstones: Arc<BTreeMap<ObjectId, Tombstone>>,
+    pub(crate) rate: SimRate,
 }
 
 impl World {
@@ -102,6 +133,9 @@ impl World {
             claims: Arc::new(BTreeMap::new()),
             blobs,
             depth_limit: DEPTH_LIMIT,
+            members: Arc::new(BTreeMap::new()),
+            tombstones: Arc::new(BTreeMap::new()),
+            rate: SimRate::DEFAULT,
         }
     }
 
@@ -132,12 +166,52 @@ impl World {
         self.depth_limit = limit.clamp(1, DEPTH_LIMIT_MAX);
     }
 
+    pub fn rate(&self) -> SimRate {
+        self.rate
+    }
+
+    pub fn set_rate(&mut self, rate: SimRate) {
+        self.rate = rate;
+    }
+
+    /// Sets a member's permission bits in the governance table (trusted: genesis, governance entries). Zero removes
+    /// the member.
+    pub fn set_member(&mut self, key: MemberKey, perms: u32) {
+        let m = Arc::make_mut(&mut self.members);
+        if perms == 0 {
+            m.remove(&key);
+        } else {
+            m.insert(key, perms);
+        }
+    }
+
+    /// Whether `who` holds every bit of `perms` (plan S2's `permits`; 5.4).
+    pub fn permits(&self, who: MemberKey, perms: u32) -> bool {
+        self.members.get(&who).is_some_and(|&p| p & perms == perms)
+    }
+
+    pub fn tombstone(&self, id: ObjectId) -> Option<&Tombstone> {
+        self.tombstones.get(&id)
+    }
+
     /// Creates an object under `parent` (last among its children), or as a root. Trusted: genesis, tests, and
     /// `apply` once it has checked the entry. The object and structural versions both start at `version`.
     pub fn create(
         &mut self,
         id: ObjectId,
         parent: Option<ObjectId>,
+        creator: MemberKey,
+        version: Version,
+    ) -> Result<(), WorldError> {
+        self.create_at(id, parent, None, creator, version)
+    }
+
+    /// [`World::create`] at `index` among the parent's children (`None` or past the end: last).
+    pub fn create_at(
+        &mut self,
+        id: ObjectId,
+        parent: Option<ObjectId>,
+        index: Option<usize>,
         creator: MemberKey,
         version: Version,
     ) -> Result<(), WorldError> {
@@ -157,7 +231,7 @@ impl World {
         }
         self.store.create(id)?;
         if let Some(p) = parent
-            && let Err(e) = self.store.set_parent(id, Some(p), None)
+            && let Err(e) = self.store.set_parent(id, Some(p), index)
         {
             // Unreachable for a fresh root under an existing parent; undo so a refusal changes nothing.
             let _ = self.store.destroy(id);
