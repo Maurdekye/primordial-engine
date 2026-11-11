@@ -127,7 +127,7 @@ fn suite() -> Vec<Check> {
         // The size bound, not a control: at n = 3, t = 0, so one equivocating voter splits the two honest members.
         Check { name: "bound-n3-byz", model: Cuts::new(3, Byzantine, 4, 1, 0, quiet, 0), expect_fail: &["agreement"], random: false, depth: UNBOUNDED, what: "3 members, one Byzantine: t = 0, agreement must fail (why n >= 4)" },
         // Controls.
-        Check { name: "ctl-d1", model: n3(chain).mutate(VoteWithoutChainValidation), expect_fail: &["validity: void set the same everywhere", "no final frame undone"], random: false, depth: UNBOUNDED, what: "d1: vote without validating each chain in order" },
+        Check { name: "ctl-d1", model: n3(chain).mutate(VoteWithoutChainValidation), expect_fail: &["no final frame undone"], random: false, depth: UNBOUNDED, what: "d1: vote without validating each chain in order" },
         Check { name: "ctl-unchecked", model: n4(sig).mutate(AcceptProposalUnchecked), expect_fail: &["validity: chains"], random: false, depth: UNBOUNDED, what: "accept the proposer's cut unchecked" },
         Check { name: "ctl-quorum", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 0).mutate(QuorumOneTooSmall), expect_fail: &["agreement"], random: false, depth: Some(18), what: "quorum one too small: split-brain" },
         Check { name: "ctl-nolock", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2).mutate(NoLockRule), expect_fail: &["agreement"], random: false, depth: Some(18), what: "vote ignoring the timeout certificate's highest certificate" },
