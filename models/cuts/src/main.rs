@@ -195,11 +195,13 @@ fn main() {
         }
     }
     let mut bad = 0;
+    let mut ran = 0;
     println!("{:<16} {:>12} {:>13} {:>6} {:>9}  result", "check", "states", "generated", "depth", "seconds");
     for c in suite() {
         if !filters.is_empty() && !filters.iter().any(|f| c.name == f.as_str()) {
             continue;
         }
+        ran += 1;
         let names: Vec<(&'static str, bool)> = c.model.properties().iter().map(|p| (p.name, format!("{:?}", p.expectation) == "Sometimes")).collect();
         let entries: Vec<String> = c.model.entries.iter().enumerate().map(|(i, e)| format!("{i}={}", e.name)).collect();
         let t0 = Instant::now();
@@ -291,4 +293,5 @@ fn main() {
         println!("{bad} check(s) did not meet their expectation");
         std::process::exit(1);
     }
+    println!("all {ran} check(s) met their expectation");
 }

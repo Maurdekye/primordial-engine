@@ -216,7 +216,57 @@ Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `res
   (condition 7).
 - The bounded n = 4 checks (n4-byz, n4-byz-chain, n3 over 4 views) have not been rerun with the frame choice.
 
-## v0.2 (in progress)
+## v0.2
+
+**Full run** at abdc8de3 (rebased as 96ee0c93), by @integrator-2 on 2026-11-11, 4 threads, idle priority: all 40
+checks met their expectation, and all 14 controls and bounds gave their counterexamples. Raw output with the shrunk
+traces: `results/v0.2-full.txt`. [V] Against v0: frames chosen by the proposer grew the n = 3 spaces (n3-chain 13.2 M
+to 45.3 M states, n3-chain-h2 69.4 M to 282.9 M), and the n = 4 quorum, lock and root checks, which keep fixed
+frames, are unchanged (n4-byz 65.7 M).
+
+| Check | Configuration | States | Generated | Depth | Seconds | Result |
+|---|---|---:|---:|---:|---:|---|
+| n3-chain | 3 members, one author-faulty with chain faults (forks, back-dates, withholds), safety | 45,281,984 | 355,421,881 | 33 | 135.2 | OK: all properties hold; examples found |
+| n3-sig | 3 members, one author-faulty with signature faults (forges, replays), safety | 76,634,368 | 617,897,121 | 33 | 249.9 | OK: all properties hold; examples found |
+| n3-crash | 3 members, one silent, 4 views (consensus: agreement through timeouts), safety | 26,884 | 74,041 | 28 | 1.0 | OK: all properties hold; examples found |
+| n3-author-v4 | 3 members, author-faulty, 4 views (consensus; its full space passed 110 M states), safety | 253,085,709 | 1,250,085,750 | 20 | 1157.1 | OK: (every behaviour of up to 20 steps) all properties hold; examples found |
+| n3-chain-live | 3 members, author-faulty, chain faults, liveness | 233,634 | 784,805 | 28 | 1.1 | OK: all properties hold; examples found |
+| n3-crash-live | 3 members, one silent from the start, liveness | 46 | 73 | 16 | 1.0 | OK: all properties hold; examples found |
+| n3-chain-h2 | 3 members, author-faulty, chain faults, two content cuts deep, safety (depth 20 passed 247 M states without finishing) | 282,896,018 | 2,081,416,516 | 16 | 1427.3 | OK: (every behaviour of up to 16 steps) all properties hold; examples found |
+| n4-byz | 4 members, one Byzantine (equivocates votes, timeouts and proposals), safety | 65,689,946 | 356,782,136 | 18 | 312.8 | OK: (every behaviour of up to 18 steps) all properties hold; examples found |
+| n4-byz-chain | 4 members, Byzantine with chain faults (fork, back-date) inside its proposals, safety; a light check (depth 16 passed 211 M states; chain faults are exhaustive at n = 3) | 70,270,241 | 390,790,641 | 14 | 250.2 | OK: (every behaviour of up to 14 steps) all properties hold; examples found |
+| n4-byz-live | 4 members, Byzantine, liveness | 228,864 | 825,480 | 27 | 2.2 | OK: all properties hold; examples found |
+| n2 | 2 members, honest, two content cuts, safety (frames chosen by the proposer) | 10,589,788 | 34,261,590 | 38 | 29.0 | OK: all properties hold; examples found |
+| n2-live | 2 members, liveness, timeouts only once settled | 224 | 342 | 20 | 1.0 | OK: all properties hold; examples found |
+| n2-live-early | 2 members, liveness, up to 3 timeouts before the network settles, 8 views | 1,019,164 | 1,661,000 | 45 | 8.0 | OK: all properties hold; examples found |
+| n2-live-early-o1 | the same, member 1 leads view 1 | 349,156 | 569,062 | 45 | 3.0 | OK: all properties hold; examples found |
+| bound-n2-early | 2 members, 3 early timeouts, 7 views: alternating spoiled views hold finality off | 176,138 | 294,647 | 41 | 2.0 | OK: counterexample as expected: "liveness: every end state has a final cut at every honest member" |
+| n2-live-h2 | 2 members, liveness, two content cuts: both end final | 859 | 1,517 | 25 | 1.0 | OK: all properties hold; examples found |
+| ctl-skipempty | a proposer with nothing new proposes nothing | 301 | 467 | 24 | 1.0 | OK: counterexample as expected: "liveness: every content cut ends final" |
+| n2-progress | 2 members, two content cuts, bounded progress (timeouts free) | 18,958,658 | 58,168,142 | 37 | 57.1 | OK: all properties hold; examples found |
+| n3-live-h2 | 3 members, honest, two authors, two content cuts, liveness and bounded progress | 16,421,414 | 38,251,317 | 40 | 130.1 | OK: all properties hold; examples found |
+| ctl-ownonly | a proposer covers only its own entries | 114,131 | 343,077 | 30 | 1.0 | OK: counterexample as expected: "progress: an entry all hold at h is covered by h + 2" |
+| n2-live-early-h2 | 2 members, two content cuts, 2 early timeouts, leader reputation | 368,248 | 595,333 | 44 | 4.0 | OK: all properties hold; examples found |
+| ctl-skipall | reputation without its window: skip every member that ever timed out | 6,738 | 10,774 | 41 | 1.0 | OK: counterexample as expected: "liveness: every content cut ends final" |
+| ctl-early | 2 members, timeouts may always fire before delivery (no adaptive timeout) | 1,547 | 2,908 | 30 | 1.0 | OK: counterexample as expected: "liveness: every end state has a final cut at every honest member" |
+| n4-crash-live | 4 members, one silent, liveness | 130 | 301 | 24 | 1.0 | OK: all properties hold; examples found |
+| n4-byz-v4 | 4 members, Byzantine leads view 3 of 4 (the lock's case), safety | 216,739,069 | 1,803,875,044 | 18 | 1520.1 | OK: (every behaviour of up to 18 steps) all properties hold; examples found |
+| n3-root | 3 members, author-faulty, member 2's replica computes a wrong root, safety | 2,275,248 | 13,415,359 | 30 | 7.3 | OK: all properties hold; examples found |
+| n4-root | 4 members, Byzantine, member 3's replica computes a wrong root, safety | 23,060,008 | 119,376,207 | 18 | 110.1 | OK: (every behaviour of up to 18 steps) all properties hold; examples found |
+| n4-byz-v4b | twin of ctl-quorum: 4 members, Byzantine leads view 1 of 4, safety | 89,681,578 | 438,588,360 | 18 | 443.0 | OK: (every behaviour of up to 18 steps) all properties hold; examples found |
+| walk-n4-v4 | twin of ctl-quorum, unmutated, random walks for 120 s | 56,562,141 | 56,562,141 | 46 | 120.2 | OK: (random walks) all properties hold; examples found |
+| walk-n4-v4-lock | twin of ctl-nolock, unmutated, random walks for 120 s | 53,438,086 | 53,438,086 | 45 | 121.9 | OK: (random walks) all properties hold; examples found |
+| bound-n3-byz | 3 members, one Byzantine: t = 0, agreement must fail (why n >= 4) | 302,419 | 1,616,142 | 26 | 3.0 | OK: counterexample as expected: "agreement" |
+| ctl-d1 | d1: vote without validating each chain in order | 1,376,315 | 7,928,287 | 32 | 5.2 | OK: counterexample as expected: "no final frame undone" |
+| ctl-unchecked | accept the proposer's cut unchecked | 490,866 | 2,667,663 | 38 | 4.0 | OK: counterexample as expected: "validity: chains" |
+| ctl-quorum | quorum one too small: split-brain | 85,788 | 284,661 | 18 | 10.0 | OK: (every behaviour of up to 18 steps) counterexample as expected: "agreement" |
+| ctl-nolock | vote ignoring the timeout certificate's highest certificate | 5,222,379 | 28,523,861 | 18 | 40.0 | OK: (every behaviour of up to 18 steps) counterexample as expected: "agreement" |
+| n4-byz-frames | twin of ctl-noframe: 4 members, Byzantine leads view 1 and names any frame from parent + 1 to + 2K | 9,004,284 | 50,385,881 | 12 | 50.0 | OK: (every behaviour of up to 12 steps) all properties hold; examples found |
+| ctl-noframe | voters accept a frame not above the parent's (v0.1) | 286,169 | 1,309,090 | 10 | 10.0 | OK: (every behaviour of up to 10 steps) counterexample as expected: "no entry takes effect below an earlier final frame" |
+| ctl-nosig | no own-hands / world-id signature check | 86,489 | 364,695 | 32 | 1.0 | OK: counterexample as expected: "validity: chains" |
+| ctl-noroot | votes carry no root: a diverged replica confirms without learning it | 110,230 | 418,505 | 33 | 1.0 | OK: counterexample as expected: "root: a diverged replica learns it at the cut" |
+| ctl-notimeout | no timeouts: a faulty proposer stalls the line | 1,509 | 4,119 | 16 | 1.0 | OK: counterexample as expected: "liveness: every end state has a final cut at every honest member" |
+
 
 - **Bounded progress** (formulation by @design-reviewer; results in `results/v0.2-progress.txt`). The
   state records, per entry, the highest certified height any honest member knew when every honest member first held
