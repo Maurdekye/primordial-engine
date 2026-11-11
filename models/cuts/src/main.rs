@@ -136,6 +136,11 @@ fn suite() -> Vec<Check> {
         Check { name: "n2-progress", model: Cuts::new(2, None, 4, 2, 1, none, 0).progress(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "2 members, two content cuts, bounded progress (timeouts free)" },
         Check { name: "n3-live-h2", model: Cuts::new(3, None, 5, 2, 2, none, 0).live(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, honest, two authors, two content cuts, liveness and bounded progress" },
         Check { name: "ctl-ownonly", model: Cuts::new(2, None, 4, 2, 1, none, 0).progress().mutate(OwnEntriesOnly), expect_fail: &["progress: an entry all hold at h is covered by h + 2"], random: false, depth: UNBOUNDED, what: "a proposer covers only its own entries" },
+        // Bounded progress under a fault (@design-reviewer's v0.2 Medium): three content heights, so a faulty or silent
+        // proposer's cut can come first and the next protocol member's cut must recover the entry.
+        Check { name: "n3-silent-progress", model: Cuts::new(3, Silent, 6, 3, 1, none, 0).progress(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, one silent, one honest author, three content heights, bounded progress" },
+        Check { name: "n4-byz-progress", model: Cuts::new(4, Byzantine, 5, 3, 1, quiet, 0).fixed_frames().progress(), expect_fail: &[], random: false, depth: Some(20), what: "4 members, Byzantine proposer that may leave the honest entry out, three content heights, bounded progress" },
+        Check { name: "ctl-skipafterfaulty", model: Cuts::new(4, Byzantine, 5, 3, 1, quiet, 0).fixed_frames().progress().mutate(SkipAfterFaulty), expect_fail: &["progress: an entry all hold at h is covered by h + 2"], random: false, depth: Some(20), what: "after a faulty proposer's cut, a proposer adds nothing" },
         // Leader reputation (v0.2): on in every liveness check. Its control skips every member that ever timed out, so
         // at n = 2 after both have, nobody leads and the second content cut never gets its child.
         Check { name: "n2-live-early-h2", model: Cuts::new(2, None, 8, 2, 1, none, 0).live().early_timeouts(2), expect_fail: &[], random: false, depth: UNBOUNDED, what: "2 members, two content cuts, 2 early timeouts, leader reputation" },
@@ -273,7 +278,18 @@ fn main() {
         let done = if c.random { " (random walks)".to_string() } else if let Some(d) = depth { format!(" (every behaviour of up to {d} steps)") } else if capped { " (STOPPED AT THE CAP: not exhaustive)".to_string() } else { String::new() };
         println!("{:<16} {:>12} {:>13} {:>6} {:>9.1}  {}{} {}", c.name, ch.unique, ch.total, ch.depth, secs, if ok { "OK  " } else { "FAIL" }, done, verdict.join("; "));
         println!("    {}; q = {}; entries {}", c.what, q, entries.join(" "));
-        if !c.expect_fail.is_empty() {
+        if c.expect_fail.is_empty() {
+            // An unexpected counterexample: print it shrunk too.
+            for (p, sometimes) in &names {
+                if let (false, Some(path)) = (*sometimes, found.get(p)) {
+                    let short = shrink(&model, p, path.clone());
+                    println!("    counterexample to \"{p}\" ({} steps as found, {} after shrinking):", path.len(), short.len());
+                    for a in &short {
+                        println!("      {a:?}");
+                    }
+                }
+            }
+        } else {
             for p in c.expect_fail {
                 if let Some(path) = found.get(p) {
                     let short = shrink(&model, p, path.clone());
