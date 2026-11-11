@@ -32,6 +32,7 @@ done
 set -- $hit
 old=$1 new=$2
 tip=$(git rev-parse -q --verify refs/heads/main) || tip=   # main's tip before this update: git holds it locked
+unreadable=
 if [ -n "$tip" ]; then
   [ "$tip" != "$new" ] || exit 0               # main stays where it is: nothing lands, nothing to check
   case "$new" in *[!0]*) ;; *)                 # pack-refs (git gc) dropping main's loose file: see the trampoline
@@ -39,11 +40,15 @@ if [ -n "$tip" ]; then
       [ ! -e "$common/packed-refs.lock" ] && grep -qx "$tip refs/heads/main" "$common/packed-refs" 2> /dev/null &&
       exit 0 ;;
   esac
-else
+elif common=$(git rev-parse --path-format=absolute --git-common-dir) && [ ! -f "$common/refs/heads/main" ] &&
+     ! grep -q ' refs/heads/main$' "$common/packed-refs" 2> /dev/null; then
   case "$old$new" in *[!0]*) ;; *) exit 0 ;; esac   # main doesn't exist and isn't created: nothing happens
+else
+  unreadable=1                                 # main is there (a loose file or a packed line) but can't be read
 fi
 if [ "${PE_GATE:-on}" = off ]; then
-  echo "gate (hook): PE_GATE=off, main moves to $new UNCHECKED: emergencies only; report it to the coordinator now" >&2
+  case "$new" in *[!0]*) what="main moves to $new" ;; *) what="main is deleted" ;; esac
+  echo "gate (hook): PE_GATE=off, $what UNCHECKED: emergencies only; report it to the coordinator now" >&2
   exit 0
 fi
 
@@ -54,8 +59,10 @@ refuse() {
   exit 1
 }
 [ -z "$tip" ] || old=$tip                      # git gives zeros as the old value for a forced update or a deletion
-case "$new" in *[!0]*) ;; *) refuse "main can't be deleted while the gate is on (to drop the gate: git config --unset core.hooksPath)" ;; esac
-[ -n "$tip" ] || case "$old" in *[!0]*) refuse "git gives main an old tip, but main can't be read" ;; esac
+drop="to drop the gate: git config --unset core.hooksPath"
+[ -z "$unreadable" ] || refuse "main is there, but its tip can't be read ($drop)"
+case "$new" in *[!0]*) ;; *) refuse "deleting main is refused while the gate is on ($drop)" ;; esac
+[ -n "$tip" ] || case "$old" in *[!0]*) refuse "git gives main an old tip, but its tip can't be read" ;; esac
 tmp=$(mktemp -d) || refuse "no temporary folder"
 trap 'rm -rf "$tmp"' EXIT
 case "$old" in *[!0]*) from=$old base="--base $old" ;; *) from=$new base=--full-history ;; esac

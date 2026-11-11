@@ -93,7 +93,8 @@ and are never built. The secret scan of the whole history finds nothing.
   through at once, and so does one that leaves main where it is (a reset to HEAD, `merge --abort`, a stash).
   It refuses to delete main (`branch -D`, `update-ref -d`, renaming it), except when `pack-refs` (run by
   `git gc`) drops main's loose file after writing main to `packed-refs`, which keeps main's tip. It also refuses
-  a move it can't judge: git gives an old value for main, but main's tip can't be read.
+  a move it can't judge: main's tip can't be read, though git gives an old value for it or main is there (a
+  loose file or a packed line).
   * Enable it once per clone: `bash scripts/install_gate_hook.sh`. It writes a small trampoline into git's own
     folder (`.git/pe-gate-hooks/`), outside every working tree, and points `core.hooksPath` at it. The trampoline
     runs the hook as committed at main's old tip, and the hook runs that tip's gate. So no landing can change or

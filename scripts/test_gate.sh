@@ -354,7 +354,7 @@ del_bad=
 for c in "update-ref -d refs/heads/main" "update-ref -d refs/heads/main $landed" "branch -m main renamed"; do
   hk $c < /dev/null > "$tmp/hook-del.log" 2>&1; rc=$?
   if [ $rc = 0 ] || [ "$(git -C "$R" rev-parse -q --verify refs/heads/main)" != "$landed" ] ||
-     ! grep -q "can't be deleted" "$tmp/hook-del.log"; then
+     ! grep -q "REFUSED: deleting main" "$tmp/hook-del.log"; then
     del_bad="$del_bad
     git $c: exit $rc: $(tr '\n' ' ' < "$tmp/hook-del.log" | cut -c1-200)"
     g update-ref refs/heads/main "$landed"; g symbolic-ref HEAD refs/heads/main; g branch -q -D renamed 2> /dev/null
@@ -378,22 +378,25 @@ if [ $rc = 0 ] && [ "$(git -C "$R" rev-parse main)" = "$landed" ] && grep -qx "$
 else
   bad=$((bad + 1)); echo "test_gate: BAD  hook-lets-pack-refs-pack-main (exit $rc)"; sed 's/^/    /' "$tmp/hook-pack.log"
 fi
-# The trampoline and the hook, run as git runs them but with a git that can't read main: given an old value for
-# main, they refuse rather than judge the update as main's creation.
+# The trampoline and the hook, run as git runs them but with a git that can't read main (which is there, packed):
+# a move that git gives an old value for, and a forced update (zeros), are refused rather than judged as main's
+# creation.
 mkdir -p "$tmp/shim"
 printf '#!/bin/sh\ncase "$*" in "rev-parse -q --verify refs/heads/main") exit 1 ;; esac\nexec "%s" "$@"\n' "$(type -P git)" > "$tmp/shim/git"
 chmod +x "$tmp/shim/git"
-nowhere=$(printf 'f%.0s' $(seq 1 ${#landed}))
+nowhere=$(printf 'f%.0s' $(seq 1 ${#landed})) zeros=$(printf '0%.0s' $(seq 1 ${#landed}))
 read_bad=
 for h in "$(git -C "$R" config --get core.hooksPath)/reference-transaction" "$R/scripts/hooks/reference-transaction"; do
-  (cd "$R" && printf '%s %s refs/heads/main\n' "$landed" "$nowhere" | PATH="$tmp/shim:$PATH" sh "$h" prepared) > "$tmp/hook-read.log" 2>&1; rc=$?
-  if [ $rc = 0 ] || ! grep -q "can't be read" "$tmp/hook-read.log"; then
-    read_bad="$read_bad
-    $h: exit $rc: $(tr '\n' ' ' < "$tmp/hook-read.log" | cut -c1-200)"
-  fi
+  for o in "$landed" "$zeros"; do
+    (cd "$R" && printf '%s %s refs/heads/main\n' "$o" "$nowhere" | PATH="$tmp/shim:$PATH" sh "$h" prepared) > "$tmp/hook-read.log" 2>&1; rc=$?
+    if [ $rc = 0 ] || ! grep -q "can't be read" "$tmp/hook-read.log"; then
+      read_bad="$read_bad
+    $h, old $(printf '%s' "$o" | cut -c1-10): exit $rc: $(tr '\n' ' ' < "$tmp/hook-read.log" | cut -c1-200)"
+    fi
+  done
 done
 if [ -z "$read_bad" ]; then
-  pass=$((pass + 1)); echo "test_gate: ok   hook-refuses-when-main-cannot-be-read (the trampoline and the hook)"
+  pass=$((pass + 1)); echo "test_gate: ok   hook-refuses-when-main-cannot-be-read (the trampoline and the hook; a move with an old value, and a forced update)"
 else
   bad=$((bad + 1)); echo "test_gate: BAD  hook-refuses-when-main-cannot-be-read:$read_bad"
 fi
