@@ -43,8 +43,8 @@ pub fn pile_world(config: PhysicsConfig, side: usize, layers: usize) -> (Physics
                     1 => Geometry::Sphere { center: [0.0; 3], radius: 0.45 },
                     _ => Geometry::Capsule { center1: [-0.3, 0.0, 0.0], center2: [0.3, 0.0, 0.0], radius: 0.25 },
                 };
-                let desc = BodyDesc::new(BodyKind::Dynamic, position)
-                    .with_shape(ShapeDesc::new(geometry).with_density(1.0));
+                let desc =
+                    BodyDesc::new(BodyKind::Dynamic, position).with_shape(ShapeDesc::new(geometry).with_density(1.0));
                 let id = pile_object(n);
                 pw.add_body(id, &desc).unwrap();
                 objects.push(id);
@@ -146,7 +146,8 @@ impl Game {
             if i.body as usize >= self.objects.len() {
                 continue;
             }
-            let claimed = matches!(self.claims.get(&i.body), Some(&(owner, until)) if owner != i.peer && until > self.frame);
+            let claimed =
+                matches!(self.claims.get(&i.body), Some(&(owner, until)) if owner != i.peer && until > self.frame);
             if !claimed {
                 self.pw.push(self.objects[i.body as usize], Push::Impulse(i.impulse)).unwrap();
                 self.claims.insert(i.body, (i.peer, self.frame + CLAIM_FRAMES));
