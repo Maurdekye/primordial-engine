@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId};
+use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId, Pos};
 use pe_seams::{SimRate, Version};
 use pe_sim::{Component, ComponentId, Node, RowVersion, SimStore, WorldTransform};
 
@@ -125,6 +125,11 @@ pub struct World {
     pub(crate) members: Arc<BTreeMap<MemberKey, u32>>,
     pub(crate) tombstones: Arc<BTreeMap<ObjectId, Tombstone>>,
     pub(crate) rate: SimRate,
+    /// World settings the physics takes (replica.md 8.1).
+    pub(crate) gravity: [f32; 3],
+    pub(crate) origin: Pos,
+    /// The domain's `physics_global` record, from the last `write_physics` (replica.md 3.4).
+    pub(crate) physics_global: Hash,
 }
 
 impl World {
@@ -138,6 +143,9 @@ impl World {
             members: Arc::new(BTreeMap::new()),
             tombstones: Arc::new(BTreeMap::new()),
             rate: SimRate::DEFAULT,
+            gravity: crate::replica::GRAVITY,
+            origin: Pos::ORIGIN,
+            physics_global: Hash::ZERO,
         }
     }
 

@@ -12,12 +12,14 @@ mod apply;
 pub mod components;
 pub mod edit;
 mod read;
+mod replica;
 mod world;
 
 pub use apply::{Draft, Footprint};
 pub use components::BlobRef;
 pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
+pub use replica::{GRAVITY, Settings};
 pub use world::{
     BlobStore, Claim, DEPTH_LIMIT, DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, perm,
 };
