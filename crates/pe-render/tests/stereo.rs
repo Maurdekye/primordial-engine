@@ -2,6 +2,9 @@
 //! (WARP on Windows, lavapipe on Linux). Never on the user's GPU: with no software adapter the tests report
 //! themselves skipped (stderr) and pass. WARP under FXC has no multiview, so there the two-pass path is tested and
 //! the multiview comparison skips; lavapipe runs it.
+//!
+//! `PE_RENDER_TEST_HARDWARE=1` runs them on the best hardware adapter instead, which is how multiview is checked on
+//! a real GPU. Set it only for a run the coordinator has approved.
 
 use std::time::Duration;
 
@@ -16,7 +19,12 @@ use pe_seams::{Appearance, ObjectId, Offset, Pos, Shape};
 const SIZE: [u32; 2] = [192, 160];
 
 fn renderer(settings: RenderSettings) -> Option<Renderer> {
-    match GpuContext::headless(AdapterChoice::SoftwareOnly) {
+    let choice = if std::env::var("PE_RENDER_TEST_HARDWARE").as_deref() == Ok("1") {
+        AdapterChoice::Any
+    } else {
+        AdapterChoice::SoftwareOnly
+    };
+    match GpuContext::headless(choice) {
         Ok(ctx) => {
             eprintln!("adapter: {}", ctx.describe());
             Some(Renderer::new(ctx, settings))
