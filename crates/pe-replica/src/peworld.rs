@@ -19,7 +19,8 @@
 //! - **The view** (S5): every object with a `Shape`, a `Light` or a `Hand`, at its world transform, with its
 //!   shape in its own units (the view's scale scales it), appearance, light, hand owner and holder. An object with no
 //!   world transform (no `Transform`, or out of range) is not drawn; a hand without a `Shape` is drawn as a
-//!   [`HAND_RADIUS`] sphere. A spot light is not drawn yet: pe-world's
+//!   [`HAND_RADIUS`] sphere. A compound child without a body of its own is published with no velocity (nothing in
+//!   M1's ball pit is compound). A spot light is not drawn yet: pe-world's
 //!   `Light` has no cone angles, which S5's `Spot` needs.
 //!
 //! **Shapes** (replica.md 2.1): a body's shapes are its own `Shape`, then those of its compound children (the
@@ -32,8 +33,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use pe_seams::{
-    Class, DomainId, Frame, Hash, Holder, ImportError, LeafKey, LightKind, Mismatch, Node, ObjectClass, ObjectId,
-    Outcome, Pos, Record, SignedEntry, Tree, TreePath, ViewFlags, ViewObject,
+    Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LeafKey, LightKind, Mismatch, Node, ObjectClass,
+    ObjectId, Outcome, Pos, Record, SignedEntry, Tree, TreePath, Version, ViewFlags, ViewObject,
 };
 use pe_sim::transform::rotate;
 use pe_sim::{Component, SimStore, Transform, WorldTransform};
@@ -134,12 +135,18 @@ impl WorldModel for PeWorld {
         ids.into_iter()
             .filter_map(|id| {
                 let t = s.world_transform(id)?;
-                let hand = s.get::<Hand>(id);
+                // pe-world writes a hand's side as 0 or 1; any other value is a bad row, drawn as no hand.
+                let hand = s.get::<Hand>(id).filter(|h| h.side <= 1);
+                let own = s.get::<Shape>(id).filter(|sh| view_shape(sh).is_some());
                 // A hand without a shape of its own is drawn as the sphere it will push with.
-                let shape = s
-                    .get::<Shape>(id)
-                    .and_then(view_shape)
-                    .or_else(|| hand.map(|_| pe_seams::Shape::Sphere { radius: HAND_RADIUS }));
+                let shape =
+                    own.and_then(view_shape).or_else(|| hand.map(|_| pe_seams::Shape::Sphere { radius: HAND_RADIUS }));
+                let radius = match (own, hand) {
+                    (Some(sh), _) => shape_radius(sh, t.scale),
+                    (None, Some(_)) => HAND_RADIUS * largest(t.scale),
+                    (None, None) => 0.0,
+                };
+                let node = s.node(id);
                 Some(ViewObject {
                     id,
                     class: ObjectClass::World,
@@ -148,7 +155,7 @@ impl WorldModel for PeWorld {
                     scale: t.scale,
                     linear_velocity: [0.0; 3],
                     angular_velocity: [0.0; 3],
-                    radius: shape.as_ref().map_or(0.0, |sh| view_radius(sh, t.scale)),
+                    radius,
                     shape,
                     appearance: s.get::<Appearance>(id).map(view_appearance),
                     light: s.get::<Light>(id).and_then(view_light),
@@ -156,8 +163,8 @@ impl WorldModel for PeWorld {
                         .map(|h| (h.owner, if h.side == 0 { pe_seams::Hand::Left } else { pe_seams::Hand::Right })),
                     held_by: held.get(&id).cloned(),
                     flags: ViewFlags::default(),
-                    // TODO(pe-world): the object's edit version, once pe-world gives one per object.
-                    version: None,
+                    // The last edit that changed anything about the object (world-model.md 7.3).
+                    version: Some(Version { entry: EntryRef(Hash(node.version_entry)), op: node.version_op }),
                 })
             })
             .collect()
@@ -227,19 +234,21 @@ fn view_shape(sh: &Shape) -> Option<pe_seams::Shape> {
     }
 }
 
-/// The bounding radius the view culls by (render.md 12): the shape's, world scale applied. A mesh's extent is in its
-/// blob, so it is never culled for now.
-fn view_radius(sh: &pe_seams::Shape, scale: [f32; 3]) -> f32 {
-    let most = scale.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
-    match *sh {
-        pe_seams::Shape::Sphere { radius } => radius * most,
-        pe_seams::Shape::Capsule { radius, half_height } => (radius + half_height) * most,
-        pe_seams::Shape::Box { half_extents: h } => {
-            let (x, y, z) = (h[0] * scale[0], h[1] * scale[1], h[2] * scale[2]);
+/// The bounding radius the view culls by (render.md 12): the shape's, world scale applied. A mesh's or a hull's
+/// `size` is the half extents of its bounding box (world-model.md 8.1), so it is bounded like a box.
+fn shape_radius(sh: &Shape, scale: [f32; 3]) -> f32 {
+    match sh.kind {
+        shape_kind::SPHERE => sh.size[0] * largest(scale),
+        shape_kind::CAPSULE => (sh.size[0] + sh.size[1]) * largest(scale),
+        _ => {
+            let (x, y, z) = (sh.size[0] * scale[0], sh.size[1] * scale[1], sh.size[2] * scale[2]);
             (x * x + y * y + z * z).sqrt()
         }
-        pe_seams::Shape::Mesh(_) => f32::MAX,
     }
+}
+
+fn largest(scale: [f32; 3]) -> f32 {
+    scale.iter().fold(0.0_f32, |m, s| m.max(s.abs()))
 }
 
 fn view_appearance(a: &Appearance) -> pe_seams::Appearance {

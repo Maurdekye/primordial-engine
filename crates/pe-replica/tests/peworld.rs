@@ -299,6 +299,11 @@ fn the_view_draws_shapes_and_appearances_and_marks_the_local_members_hands() {
         w.insert(id, Hand { owner, side, ..Hand::default() }).expect("hand row");
     }
     w.set_claim(oid(2), pe_world::Claim { hand: oid(3), member: me, since: Frame(0) }).expect("held");
+    // A box I hold hand-less (an agent's grab): not HELD_LOCAL, since no tracked hand draws it.
+    w.create(oid(5), None, me, GENESIS).expect("box");
+    w.insert(oid(5), Transform::at(pos(1.0, 0.5, 0.0))).expect("box transform");
+    w.insert(oid(5), cuboid([0.1, 0.1, 0.1])).expect("box shape");
+    w.set_claim(oid(5), pe_world::Claim { hand: ObjectId::NONE, member: me, since: Frame(0) }).expect("held");
     let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
     config.local = Some(me);
     let mut r = ReplicaImpl::new(PeWorld::new(w, DomainId(0)), config).expect("a replica");
@@ -320,6 +325,10 @@ fn the_view_draws_shapes_and_appearances_and_marks_the_local_members_hands() {
     let theirs = drawn(oid(4));
     assert_eq!(theirs.hand_of, Some((other, pe_seams::Hand::Left)));
     assert_eq!(theirs.flags, pe_seams::ViewFlags::default());
+    let boxed = drawn(oid(5));
+    assert_eq!(boxed.held_by, Some(pe_seams::Holder { member: me, hand: ObjectId::NONE }));
+    assert!(!boxed.flags.contains(pe_seams::ViewFlags::HELD_LOCAL), "a hand-less hold is not drawn from tracking");
+    assert!(ball.version.is_some(), "every drawn object carries its edit version");
 }
 
 /// A late entry whose ball lands on an earlier ball marks the earlier ball `CORRECTED` in the next view (S5): the

@@ -759,8 +759,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
             {
                 o.flags = o.flags.with(ViewFlags::OWN_HAND);
             }
+            // Only a hold by one of the local member's own hands: a hand-less hold (an agent's) has no tracked hand
+            // to be drawn from, so it stays corrected like any other object.
             if let (Some(me), Some(holder)) = (self.config.local, &o.held_by)
                 && holder.member == me
+                && holder.hand != ObjectId::NONE
             {
                 o.flags = o.flags.with(ViewFlags::HELD_LOCAL);
             }
@@ -812,7 +815,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// A re-simulation has come back to the last published frame: every drawn object whose pose there differs from
     /// the published one was rewritten by a replay, a repair or a merge, and the next publication marks it
     /// `CORRECTED` (S5). The re-simulation is deterministic, so an unchanged object compares equal bit for bit. An
-    /// object new since the publication is not a correction.
+    /// object new since the publication is not a correction. A rung-2 import at a cut at or past the last published
+    /// frame re-simulates nothing below it, so its changes are not marked and the display snaps; imports are at a
+    /// final cut below the present, so this is rare (@vdw-physics's note).
     fn note_corrections(&mut self) {
         let published: BTreeMap<ObjectId, (Pos, [f32; 4])> =
             self.view.objects.iter().map(|o| (o.id, (o.pos, o.rotation))).collect();
