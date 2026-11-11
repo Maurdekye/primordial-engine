@@ -90,15 +90,21 @@ and are never built. The secret scan of the whole history finds nothing.
   `--full-history` in the same change. The new version applies from the next landing.
 * **The hook,** `scripts/hooks/reference-transaction`, refuses any update of main whose new commit fails the
   gate: a merge, a commit, a reset, `update-ref`, or a fetch or push into the repository. Other ref updates pass
-  through at once.
+  through at once, and so does one that leaves main where it is (a reset to HEAD, `merge --abort`, a stash).
   * Enable it once per clone: `bash scripts/install_gate_hook.sh`. It writes a small trampoline into git's own
     folder (`.git/pe-gate-hooks/`), outside every working tree, and points `core.hooksPath` at it. The trampoline
     runs the hook as committed at main's old tip, and the hook runs that tip's gate. So no landing can change or
-    delete the hook that judges it.
+    delete the hook that judges it. The old tip is read from main as git holds it locked: for a forced update
+    (`update-ref` without an old value, `branch -f`) git gives the hook zeros as the old value.
   * The installer runs only once the gate is on main, since the trampoline refuses every update of main while
     main's tip has no hook. It and the gate need git 2.40 or later: an older git ignores `GIT_ATTR_SOURCE`.
   * Undo: `git config --unset core.hooksPath`.
-  * Optionally, run the audit under the org's build-slot wrapper: `git config pe.gate.wrap 'bash "<team folder>/heavy.sh"'`.
+  * The hook holds main's lock while the gate runs, so it must never wait for a build slot: the main clone has
+    `git config pe.gate.wrap "nice -n 19"` (idle priority, no slot; the audit builds nothing). Run the check
+    before merging under the build-slot wrapper instead (`PE_GATE_WRAP='bash "<team folder>/heavy.sh"'`).
+  * Give the merge a long tool timeout, and never wrap it in `timeout`: that kills git but not the hook, and
+    leaves the checkout half-applied. A git killed by other means leaves `.git/HEAD.lock` and
+    `.git/refs/heads/main.lock` behind; remove them only once no git process runs in the clone.
   * When it refuses a merge in the main checkout, main is unchanged. `git merge --abort` puts the checkout back;
     after a fast-forward or a reset, use `git reset --merge HEAD`.
   * `PE_GATE=off` skips it for one command, in an emergency only. Whoever uses it reports it to the coordinator
@@ -108,7 +114,7 @@ and are never built. The secret scan of the whole history finds nothing.
   GitHub runs the workflow file as the landing has it, so the gate's NOTE lists a change to it.
 * **The self-test,** `bash scripts/test_gate.sh`, takes about 20 minutes; run it as one build-slot job
   (`bash "<team folder>/heavy.sh" bash scripts/test_gate.sh`). In a throwaway clone it runs the gate as the hook
-  does, in 30 checks:
+  does, in 32 checks:
   * secrets in eleven ways: in the tree, only in the history, only in a message, behind an inline
     `gitleaks:allow`, a pe-app member key file, under an `export-ignore` path, in a file marked `-diff`, added
     only by a merge, behind a committed `.gitleaksignore` or one in the folder the gate runs from, and a session
@@ -121,7 +127,9 @@ and are never built. The secret scan of the whole history finds nothing.
     over, one that adds its own exception has it applied, a committed gitleaks binary is refused, a committed
     cargo configuration isn't applied, and the export refuses a symbolic link, a submodule and a case twin;
   * the hook: the installer waits until main has the gate; the hook refuses a merge and an update-ref, lets a
-    clean merge in, and runs the base's hook and gate when a landing empties both.
+    clean merge in, runs the base's hook and gate when a landing empties both, also when it comes as a forced
+    update, and returns at once from a reset to HEAD, `reset --merge`, a same-value `update-ref` and a
+    checkout that moves only HEAD, while the audit's wrapper stalls.
 
   Run it after changing the gate.
 
