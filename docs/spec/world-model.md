@@ -1203,6 +1203,10 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     - The lock refuses grab and push inputs only, not physics: a thrown object can still knock a locked one over.
       To make an object immovable, make its body static.
     - Another member's object parented under a locked subtree can still be taken out by its own owner.
+    - **Locking does not leave others' holds alive** (@design-reviewer's nit on fac22bf6) [I]: a claim by another
+      member on a locked object is not renewed, neither by a renewing `Grab` (refused `Protected { owner }`, so the
+      lock is checked before the renewal path returns) nor implicitly by an engaged hand input. It ends at its
+      `until`, at most `claim_ms` after the lock.
   - **Admin force-release:** an admin-only `Release { object, force: true }` ends any member's claim. Admin status
     is checked at the applying frame. It is recorded with the admin as author, and its outcome names the holder,
     who is told who released the object. The holder then gets the normal grab cooldown, so they cannot simply
