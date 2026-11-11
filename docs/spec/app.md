@@ -87,7 +87,8 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    the replica's budget (below).
 6. **Publish.** `FrameSlot::publish(replica.view())`, the snapshot port, and the effects queue.
 7. **Wait** until `clock.host_time_of(p + 1)`, or until the inbox or the edit queue wakes the thread, whichever is
-   first.
+   first. Before frame 0 the wait is at least one frame period, since `host_time_of` means nothing while the clock
+   converges; the network thread wakes the simulation thread when it converges.
 
 **Bounded work per tick.** A deep rollback, or a repair's replay of up to `W_fg` (2 s, 120-240 frames), done in one
 tick would stall the simulation for hundreds of milliseconds, and with it agreement's votes and messages for every
