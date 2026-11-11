@@ -62,6 +62,12 @@ impl World {
             poses.iter().map(|&(id, p, r)| (depth(&self.store, id), id, p, r)).collect();
         order.sort_by_key(|&(d, id, ..)| (d, id));
         let mut refused = Vec::new();
+        // An id given twice is refused, both times, so the result never depends on the order of `poses`
+        // (@chunks-reviewer's Low 1).
+        let mut repeated: Vec<ObjectId> = order.windows(2).filter(|w| w[0].1 == w[1].1).map(|w| w[0].1).collect();
+        repeated.dedup();
+        order.retain(|&(_, id, ..)| repeated.binary_search(&id).is_err());
+        refused.extend(repeated);
         for (_, id, pos, rot) in order {
             let Some(old) = self.store.get::<Transform>(id).copied() else {
                 refused.push(id);
@@ -91,13 +97,27 @@ impl World {
 
     /// At a cut frame, before the root (replica.md 3.4): every bound body's `BodyState`, and the domain's
     /// `physics_global`. It replaces every `BodyState` row: an object missing from `rows` has none afterwards. A
-    /// trusted write. Rows for objects that do not exist are skipped.
+    /// trusted write. Rows for objects that do not exist are skipped; of repeated ids, the last row stands.
+    ///
+    /// Linear in the bodies (@chunks-reviewer's Medium on f3f64f69, which measured the first version quadratic):
+    /// rows are written in id order, so existing rows are overwritten in place and new ones mostly append, and the
+    /// rows no longer wanted are removed from the highest id down, so no removal shifts the rows after it.
     pub fn write_physics(&mut self, rows: &[(ObjectId, BodyState)], global: Hash) {
-        let old: Vec<ObjectId> = self.store.iter::<BodyState>().map(|(id, _)| id).collect();
-        for id in old {
+        let mut want: Vec<(ObjectId, BodyState)> = rows.to_vec();
+        want.sort_by_key(|&(id, _)| id);
+        want.reverse();
+        want.dedup_by_key(|&mut (id, _)| id); // keeps the last row given for an id
+        want.reverse();
+        let gone: Vec<ObjectId> = self
+            .store
+            .iter::<BodyState>()
+            .map(|(id, _)| id)
+            .filter(|id| want.binary_search_by_key(id, |&(w, _)| w).is_err())
+            .collect();
+        for id in gone.into_iter().rev() {
             let _ = self.store.remove_raw(crate::components::ids::BODY_STATE, id);
         }
-        for &(id, row) in rows {
+        for (id, row) in want {
             if self.store.exists(id) {
                 let _ = self.store.insert(id, row);
             }
@@ -126,6 +146,8 @@ impl World {
     /// `BLAKE3("pe.root.v0" ‖ …)` over the store's state hash (frame, seed, objects, every column and row version)
     /// and every world table pe-world keeps (claims, members, tombstones, the rate, the depth limit, the settings,
     /// `physics_global`), so equal roots mean equal outcomes from here (12.11). Deterministic on every machine.
+    /// Its strength for the store is that of the 64-bit `state_hash` inside it: enough against accidents, not
+    /// against an adversary, until the tree lands (@chunks-reviewer's Low 3).
     pub fn root(&self) -> Hash {
         let mut h = Hasher::new("pe.root.v0");
         h.write_u64(self.store.state_hash());
