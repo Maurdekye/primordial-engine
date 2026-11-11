@@ -99,22 +99,18 @@ impl World {
     /// `physics_global`. It replaces every `BodyState` row: an object missing from `rows` has none afterwards. A
     /// trusted write. Rows for objects that do not exist are skipped; of repeated ids, the last row stands.
     ///
-    /// Linear in the bodies (@chunks-reviewer's Medium on f3f64f69, which measured the first version quadratic):
-    /// rows are written in id order, so existing rows are overwritten in place and new ones mostly append, and the
-    /// rows no longer wanted are removed from the highest id down, so no removal shifts the rows after it.
+    /// Linear in the bodies, whatever joins or leaves (@chunks-reviewer's Medium on f3f64f69 and 4397b403, which
+    /// measured the earlier versions quadratic under churn): every old row is removed from the highest id down, so
+    /// each removal takes the last row, and the wanted rows are then inserted in ascending id order, so each insert
+    /// appends. `BodyState` is never edited, so no row version is lost by not overwriting in place.
     pub fn write_physics(&mut self, rows: &[(ObjectId, BodyState)], global: Hash) {
         let mut want: Vec<(ObjectId, BodyState)> = rows.to_vec();
         want.sort_by_key(|&(id, _)| id);
         want.reverse();
         want.dedup_by_key(|&mut (id, _)| id); // keeps the last row given for an id
         want.reverse();
-        let gone: Vec<ObjectId> = self
-            .store
-            .iter::<BodyState>()
-            .map(|(id, _)| id)
-            .filter(|id| want.binary_search_by_key(id, |&(w, _)| w).is_err())
-            .collect();
-        for id in gone.into_iter().rev() {
+        let old: Vec<ObjectId> = self.store.iter::<BodyState>().map(|(id, _)| id).collect();
+        for id in old.into_iter().rev() {
             let _ = self.store.remove_raw(crate::components::ids::BODY_STATE, id);
         }
         for (id, row) in want {
