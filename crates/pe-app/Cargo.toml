@@ -6,8 +6,7 @@ license.workspace = true
 publish.workspace = true
 description = "The application: threads, wiring, invites, configuration, the demo script"
 
-# Skeleton from pe-seams v0 (WS-seams). WS-app, @engine-architect owns this crate and its manifest; the root Cargo.toml
-# already lists it, so adding dependencies here needs no other change.
+# WS-app, @engine-architect owns this crate and its manifest (docs/spec/app.md 5 lists what it needs from each crate).
 [dependencies]
 pe-seams = { path = "../pe-seams", features = ["world-api"] }
 pe-world = { path = "../pe-world" }
@@ -21,3 +20,7 @@ pe-mcp = { path = "../pe-mcp" }
 pe-render = { path = "../pe-render" }
 pe-xr = { path = "../pe-xr" }
 pe-diverge = { path = "../pe-diverge" }
+
+# The host clock reads CLOCK_MONOTONIC there (src/clock.rs); on Windows it reads QPC, which needs no crate.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
