@@ -3,19 +3,23 @@
 //!
 //! It is stored as the built-in [`Node`] component, an intrusive doubly linked list of siblings with
 //! fixed-size rows, so it snapshots and hashes like any other column. Every live object has a `Node`
-//! row; only this module writes them.
+//! row; only this module writes its links (pe-world sets the creator, the versions and `born_on`).
 //!
 //! Traversal order is a function of the state alone: roots in id order, then depth-first with children
 //! in list order.
 
 use bytemuck::{Pod, Zeroable};
 use core::mem::offset_of;
-use pe_core::{Error, ObjectId};
+use pe_core::{Error, MemberKey, ObjectId};
 
 use crate::registry::{Component, ComponentId, FieldDesc, FieldKind};
 use crate::store::SimStore;
 
-/// Hierarchy links. [`ObjectId::NONE`] means "none".
+/// Hierarchy links, and the object's own record (world-model.md 3.2, 7.3, 7.8). [`ObjectId::NONE`] means "none".
+/// 192 bytes, no implicit padding.
+///
+/// The hierarchy API keeps the links; pe-world sets the rest. Versions are an edit's `EntryRef` bytes and the op's
+/// index in its transaction; all zero means "never written by an edit" (genesis).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct Node {
@@ -24,6 +28,18 @@ pub struct Node {
     pub last_child: ObjectId,
     pub prev_sibling: ObjectId,
     pub next_sibling: ObjectId,
+    /// Who created or imported the object: the author of its creating entry (7.8).
+    pub creator: MemberKey,
+    /// The object version (7.3): the last edit that changed anything about the object.
+    pub version_entry: [u8; 32],
+    /// The structural version (7.3): the last edit that created it, reparented it or changed its children.
+    pub structural_entry: [u8; 32],
+    pub version_op: u32,
+    pub structural_op: u32,
+    /// The line the object was born on, an index into the `lines` table (2.3).
+    pub born_on: u32,
+    /// Always zero.
+    pub _pad: u32,
 }
 
 impl Node {
@@ -33,6 +49,13 @@ impl Node {
         last_child: ObjectId::NONE,
         prev_sibling: ObjectId::NONE,
         next_sibling: ObjectId::NONE,
+        creator: MemberKey([0; 32]),
+        version_entry: [0; 32],
+        structural_entry: [0; 32],
+        version_op: 0,
+        structural_op: 0,
+        born_on: 0,
+        _pad: 0,
     };
 }
 
@@ -46,6 +69,13 @@ impl Component for Node {
             FieldDesc::new("last_child", FieldKind::ObjectRef, offset_of!(Node, last_child), 1),
             FieldDesc::new("prev_sibling", FieldKind::ObjectRef, offset_of!(Node, prev_sibling), 1),
             FieldDesc::new("next_sibling", FieldKind::ObjectRef, offset_of!(Node, next_sibling), 1),
+            FieldDesc::new("creator", FieldKind::MemberKey, offset_of!(Node, creator), 1),
+            FieldDesc::new("version_entry", FieldKind::EntryRef, offset_of!(Node, version_entry), 1),
+            FieldDesc::new("structural_entry", FieldKind::EntryRef, offset_of!(Node, structural_entry), 1),
+            FieldDesc::new("version_op", FieldKind::U32, offset_of!(Node, version_op), 1),
+            FieldDesc::new("structural_op", FieldKind::U32, offset_of!(Node, structural_op), 1),
+            FieldDesc::new("born_on", FieldKind::U32, offset_of!(Node, born_on), 1),
+            FieldDesc::new("_pad", FieldKind::U32, offset_of!(Node, _pad), 1),
         ]
     }
 }
@@ -73,6 +103,23 @@ impl SimStore {
 
     fn set_node(&mut self, id: ObjectId, n: Node) {
         self.put_row(ComponentId::NODE, id, bytemuck::bytes_of(&n));
+    }
+
+    /// Sets an object's record fields (creator, versions, `born_on`) from `record`, keeping its links. Returns whether
+    /// the object exists. pe-world's call; the hierarchy never reads these fields.
+    pub fn set_node_record(&mut self, id: ObjectId, record: &Node) -> bool {
+        let Some(&n) = self.get::<Node>(id) else { return false };
+        let links = Node {
+            parent: n.parent,
+            first_child: n.first_child,
+            last_child: n.last_child,
+            prev_sibling: n.prev_sibling,
+            next_sibling: n.next_sibling,
+            _pad: 0,
+            ..*record
+        };
+        self.set_node(id, links);
+        true
     }
 
     pub fn parent(&self, id: ObjectId) -> Option<ObjectId> {

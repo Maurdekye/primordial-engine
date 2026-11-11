@@ -1435,6 +1435,7 @@ dependencies = [
 name = "pe-world"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "pe-core",
  "pe-seams",
  "pe-sim",
