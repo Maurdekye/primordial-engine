@@ -20,6 +20,7 @@ impl FrameSink for Sink {
         self.frames.push((f.timing.predicted_display_time.0, f.timing.predicted_display_period_ns));
         self.draw
     }
+    fn release_swapchain(&mut self) {}
 }
 
 fn sink() -> Sink {
@@ -371,6 +372,7 @@ fn the_renderer_gets_the_hands_at_the_display_time() {
             self.0.push(f.hands);
             true
         }
+        fn release_swapchain(&mut self) {}
     }
     // The right hand moves along X at 1 m/s of host time; the drawn pose must be the display time's.
     let rt = FakeRuntime::new().started().hands(|hand, at| Reading {
@@ -519,6 +521,7 @@ fn depth_is_submitted_only_with_a_depth_image_and_the_drawn_rect_goes_with_the_l
             assert_eq!(f.depth_image, None, "the fake runtime takes no depth");
             true
         }
+        fn release_swapchain(&mut self) {}
         fn extent(&self) -> Option<[u32; 2]> {
             Some([1600, 1400])
         }

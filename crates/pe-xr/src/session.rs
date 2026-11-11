@@ -55,7 +55,9 @@ pub trait FrameSink {
     /// The session is about to be destroyed, its swapchain with it: drop every wrapper of the swapchain's images and
     /// wait until the GPU is idle on them before returning (review 1, L4; spec 4.3). Called once, before
     /// `xrDestroySwapchain`.
-    fn release_swapchain(&mut self) {}
+    /// Required, with no default, so a sink cannot forget it (binding review L1): a sink that holds no images
+    /// implements it empty.
+    fn release_swapchain(&mut self);
 }
 
 /// Why a session ended.
