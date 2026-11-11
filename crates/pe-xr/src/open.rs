@@ -52,12 +52,46 @@ impl fmt::Display for NotOpened {
 
 impl std::error::Error for NotOpened {}
 
-/// VR on Vulkan, open. Its parts drop in OpenXR's order: the image wrappers (after the GPU is idle on them), then the
-/// session and its swapchain, then the GPU context, whose device and instance hold the runtime library to the end.
-pub struct VulkanVr {
+/// VR on Vulkan, split for the XR thread (app.md 4): pe-app moves the session to the XR loop, the image wrappers
+/// into its frame sink and the GPU context into pe-render's `Renderer`, which the sink owns.
+///
+/// The fields are declared in OpenXR's teardown order, which is the order they drop in when this is dropped whole.
+/// Once split, the order is the holder's, and it must be the same (spec 4.1):
+/// 1. the image wrappers, after the GPU is idle on them: `XrTargets::release`, which the session's teardown calls
+///    through `FrameSink::release_swapchain` on every way it ends (`Step::Ended`);
+/// 2. the session, with its swapchains;
+/// 3. the GPU context, whose device and instance hold the runtime library to the end.
+///
+/// So an XR thread that owns both should drop the session explicitly before the sink, rather than leave it to
+/// the order its captures happen to drop in.
+pub struct VrParts {
     pub targets: XrTargets,
     pub session: XrSession<RealBackend<xr::Vulkan>>,
     pub gpu: GpuContext,
+}
+
+/// VR on Vulkan, open. Dropped whole, it releases the image wrappers (after the GPU is idle on them), then drops the
+/// session and its swapchain, then the GPU context. [`VulkanVr::into_parts`] splits it for the XR thread.
+pub struct VulkanVr(Option<VrParts>);
+
+impl VulkanVr {
+    /// The parts, for a holder that keeps the teardown order itself (see [`VrParts`]).
+    pub fn into_parts(mut self) -> VrParts {
+        self.0.take().expect("a VulkanVr holds its parts until it is split or dropped")
+    }
+}
+
+impl std::ops::Deref for VulkanVr {
+    type Target = VrParts;
+    fn deref(&self) -> &VrParts {
+        self.0.as_ref().expect("a VulkanVr holds its parts until it is split or dropped")
+    }
+}
+
+impl std::ops::DerefMut for VulkanVr {
+    fn deref_mut(&mut self) -> &mut VrParts {
+        self.0.as_mut().expect("a VulkanVr holds its parts until it is split or dropped")
+    }
 }
 
 // VR opens on the main thread, before the window's context, and moves to the XR thread (app.md 4, @engine-architect
@@ -65,13 +99,17 @@ pub struct VulkanVr {
 const _: fn() = || {
     fn send<T: Send>() {}
     send::<VulkanVr>();
+    send::<VrParts>();
     send::<RealBackend<xr::Vulkan>>();
 };
 
 impl Drop for VulkanVr {
     fn drop(&mut self) {
-        // The swapchain goes with the session, right after this: the GPU must be done with its images first (L4).
-        self.targets.release(&self.gpu);
+        // The swapchain goes with the session, right after this (the fields' declared order): the GPU must be done
+        // with its images first (L4). Nothing to do once split: the holder keeps the order.
+        if let Some(p) = &mut self.0 {
+            p.targets.release(&p.gpu);
+        }
     }
 }
 
@@ -106,7 +144,7 @@ pub fn open_vulkan(
     // drops the wrappers before the session.
     let targets = unsafe { XrTargets::vulkan(&ctx.gpu, &images, format, size, depth) }
         .map_err(|e| NotOpened::Images(e.to_string()))?;
-    Ok(VulkanVr { targets, session: XrSession::new(backend, ring, grasp), gpu: ctx.gpu })
+    Ok(VulkanVr(Some(VrParts { targets, session: XrSession::new(backend, ring, grasp), gpu: ctx.gpu })))
 }
 
 #[cfg(test)]
