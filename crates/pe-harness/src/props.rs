@@ -334,6 +334,9 @@ pub fn defaults(t: &Trace, replay: &BTreeMap<(Line, Frame), Hash>) -> Vec<Violat
 }
 
 /// P15. Every `Breach` the recorder saw on an honest node (DESIGN.md 5, P15).
+///
+/// The recorder counts an entry held once `receive` returns Ok: an agreement that drops a valid entry without refusing
+/// it is a false negative here (DESIGN.md 13).
 pub fn p15_source_contract(t: &Trace) -> Vec<Violation> {
     t.records
         .iter()

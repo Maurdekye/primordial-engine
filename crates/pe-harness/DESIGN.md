@@ -673,10 +673,18 @@ Every cargo job here runs through `heavy.sh`, in my own worktree with its own ta
 - **When the capture-close and twosilent5 parts can pass** (9.2, 9.3): this follows WS-world's and WS-agree's M1
   scopes.
 - **P4 and dissemination: settled** (@coordinator-opus me16a12755f58, with @fable-reviewer). P4 stays strict. S3
-  promises that an entry held by any honest member of a log is held by every honest member of it before any of them
-  treats as final the first cut that covers or voids it: relay as the fast path, fetch-by-name at the cut as the
-  guarantee. probe-d1 runs each variant with the relay and with fetch alone, plus a control with neither (it must
+  promises, per member (S3 v1.1, df4743b7), that an entry held by any honest member of a log is held by each honest
+  member of that log before that member reports the first cut that includes it through `EntrySource::final_cut`, or
+  reports a verdict on it under that cut; it is no barrier across members. Relay is the fast path, fetch-by-name at
+  the cut the guarantee. probe-d1 runs each variant with the relay and with fetch alone, plus a control with neither (it must
   stall). **Only a covered entry can be void** (mccb3d2b98d1c): an uncovered entry is held, never applied, and the
   first cut that covers it decides. So the control twin covers k+2 at the first cut past its stamp (k+1 early); with
   k+1 late, a later cut would cover k+2 below the previous cut's frame, and it would be late.
+- **P15's span and its blind spot** (design-reviewer m79514864335e, L1): the recorder checks seqs 1..=head of every
+  head a cut names. S3 asks only for what a cut newly includes (after the previous final cut's head); the two agree
+  while nothing trims. When the mock gains `kept_from` and a trim (S3 v1.2), narrow the check, or P15 fires falsely.
+  The recorder counts an entry held once `receive` returns Ok, so an agreement that drops a valid entry without
+  refusing it (a rate budget, say) is a false negative here.
+- **Re-finalize after repair** (L3): `drive` never calls `finalize` again for a cut that returned `Diverged`. Right
+  with no repair in M0; when pe-diverge joins SeamNode, the driver re-finalizes after a repair, as S2 has it.
 - **P5's default bound** (2 s) and **P7's memory bound:** first values, to be set from measurements.
