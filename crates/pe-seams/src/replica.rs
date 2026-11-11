@@ -119,6 +119,8 @@ pub enum Reason {
     OutOfRange,
     /// A reparent that would make a cycle.
     Cycle,
+    /// An op would put an object deeper than the world's depth limit (world-model.md 3.3).
+    TooDeep { object: ObjectId, limit: u32 },
     /// The object is claimed by another hand; the first grab in the order wins (R5).
     Held { by: MemberKey },
     /// A grab beyond the hand's reach.
