@@ -291,6 +291,12 @@ mod tests {
         with_replica(Box::new(replica), clock, budget)
     }
 
+    /// pe-replica's replica over a new, empty pe-world world, as the binary opens it.
+    fn on_pe_world(clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
+        let replica = crate::world::open_new(0, RATE, Duration::from_millis(133), clock.clone()).expect("a replica");
+        with_replica(replica, clock, budget)
+    }
+
     fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
         let slot = Arc::new(FrameSlot::new());
         let sim = Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, clock, slot.clone(), budget);
@@ -376,6 +382,11 @@ mod tests {
         ticks_and_publishes(real);
     }
 
+    #[test]
+    fn a_tick_simulates_its_frame_and_publishes_the_view_on_pe_world() {
+        ticks_and_publishes(on_pe_world);
+    }
+
     fn ticks_and_publishes(make: MakeSim) {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let (mut s, slot) = make(clock.clone(), Budget::new(RATE));
@@ -402,6 +413,11 @@ mod tests {
     #[test]
     fn a_backlog_of_w_fg_at_the_floor_catches_up_within_w_fg_on_the_real_replica() {
         catches_up(real);
+    }
+
+    #[test]
+    fn a_backlog_of_w_fg_at_the_floor_catches_up_within_w_fg_on_pe_world() {
+        catches_up(on_pe_world);
     }
 
     fn catches_up(make: MakeSim) {
