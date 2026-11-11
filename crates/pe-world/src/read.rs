@@ -13,7 +13,8 @@ use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId, Offset, Pos};
 use pe_sim::{ComponentDesc, ComponentId, FieldKind, SimStore, Transform, WorldTransform};
 
 use crate::components::{BlobRef, Name, Protection};
-use crate::world::{BlobStore, Claim, DEPTH_LIMIT_MAX, Version};
+use crate::world::{BlobStore, Claim, DEPTH_LIMIT_MAX};
+use pe_seams::Version;
 
 /// One object as WorldApi's `query` reports it, without its component values.
 #[derive(Clone, Debug, PartialEq)]

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId};
+use pe_seams::Version;
 use pe_sim::{Component, Node, SimStore};
 
 use crate::components::{BlobRef, engine_registry};
@@ -18,17 +19,9 @@ pub const DEPTH_LIMIT: u32 = 256;
 /// The largest depth limit a world may set (3.3).
 pub const DEPTH_LIMIT_MAX: u32 = 4096;
 
-/// A row's or an object's version (7.3): the edit that last wrote it and the op's index in its transaction.
-/// [`Version::GENESIS`] (all zero) means "never written by an edit".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Version {
-    pub entry: EntryRef,
-    pub op: u32,
-}
-
-impl Version {
-    pub const GENESIS: Version = Version { entry: EntryRef(Hash::ZERO), op: 0 };
-}
+/// A row's or an object's version (7.3) is the seam's [`Version`]. This one (all zero) means "never written by an
+/// edit": genesis and objects made by trusted engine code.
+pub const GENESIS: Version = Version { entry: EntryRef(Hash::ZERO), op: 0 };
 
 /// An exclusive hold (7.2): `hand`, owned by `member`, holds the object since `since`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
