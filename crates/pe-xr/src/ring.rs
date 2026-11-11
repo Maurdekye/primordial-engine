@@ -36,6 +36,65 @@ pub struct RingCounters {
     /// Extrapolations cut short at the one-period limit.
     pub extrapolation_clamped: AtomicU64,
     pub older_than_ring: AtomicU64,
+    /// The age of the newest sample at each read: how far the asked time is past it (0 when the read falls inside
+    /// the ring). Its tail decides whether this arc-swap ring is kept (spec 6.2): any age above one display period,
+    /// in a run of minutes with a build alongside, means the fixed ring replaces it.
+    pub sample_age: AgeHistogram,
+}
+
+/// Width of one [`AgeHistogram`] bucket: 0.25 ms.
+pub const AGE_BUCKET_NS: i64 = 250_000;
+/// Buckets up to 64 ms; older ages land in the last.
+const AGE_BUCKETS: usize = 256;
+
+/// A lock-free histogram of sample ages, with the exact maximum: both sides only ever add, so readers on any thread
+/// and the simulation thread's writes never wait on each other.
+#[derive(Debug)]
+pub struct AgeHistogram {
+    buckets: [AtomicU64; AGE_BUCKETS],
+    max_ns: AtomicI64,
+}
+
+impl Default for AgeHistogram {
+    fn default() -> Self {
+        AgeHistogram { buckets: std::array::from_fn(|_| AtomicU64::new(0)), max_ns: AtomicI64::new(0) }
+    }
+}
+
+impl AgeHistogram {
+    pub fn record(&self, age_ns: i64) {
+        let age = age_ns.max(0);
+        let i = ((age / AGE_BUCKET_NS) as usize).min(AGE_BUCKETS - 1);
+        self.buckets[i].fetch_add(1, Ordering::Relaxed);
+        self.max_ns.fetch_max(age, Ordering::Relaxed);
+    }
+
+    pub fn count(&self) -> u64 {
+        self.buckets.iter().map(|b| b.load(Ordering::Relaxed)).sum()
+    }
+
+    pub fn max_ns(&self) -> i64 {
+        self.max_ns.load(Ordering::Relaxed)
+    }
+
+    /// The age at or under which a fraction `q` of the reads fell (`0.999` for p99.9), as the upper edge of its
+    /// bucket, so never under the truth; capped at the maximum. `None` before any read.
+    pub fn quantile_ns(&self, q: f64) -> Option<i64> {
+        let counts: Vec<u64> = self.buckets.iter().map(|b| b.load(Ordering::Relaxed)).collect();
+        let total: u64 = counts.iter().sum();
+        if total == 0 {
+            return None;
+        }
+        let want = ((q.clamp(0.0, 1.0) * total as f64).ceil() as u64).max(1);
+        let mut seen = 0;
+        for (i, c) in counts.iter().enumerate() {
+            seen += c;
+            if seen >= want {
+                return Some(((i as i64 + 1) * AGE_BUCKET_NS).min(self.max_ns()));
+            }
+        }
+        Some(self.max_ns())
+    }
 }
 
 pub struct HandRing {
@@ -124,6 +183,7 @@ impl HandFeed for HandRing {
             self.counters.older_than_ring.fetch_add(1, Ordering::Relaxed);
             return Some(HandInput { sampled_at: at, ..*first });
         }
+        self.counters.sample_age.record(at.0 - last.sampled_at.0);
         if at >= last.sampled_at {
             let dt_ns = at.0 - last.sampled_at.0;
             if dt_ns == 0 || !last.tracked {
@@ -244,6 +304,39 @@ mod tests {
         r.push(lost);
         assert_eq!(r.hand_at(Hand::Right, t(5.0)).unwrap().pose.position[0], 0.3);
         assert_eq!(r.counters.extrapolated.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_sample_age_histogram_keeps_the_tail() {
+        let h = AgeHistogram::default();
+        assert_eq!(h.quantile_ns(0.999), None);
+        for _ in 0..9_990 {
+            h.record(100_000); // 0.1 ms
+        }
+        for _ in 0..10 {
+            h.record(9_000_000); // 9 ms: the 0.1 % tail
+        }
+        h.record(-5); // a read inside the ring
+        assert_eq!(h.count(), 10_001);
+        assert_eq!(h.max_ns(), 9_000_000);
+        assert_eq!(h.quantile_ns(0.5), Some(AGE_BUCKET_NS));
+        assert_eq!(h.quantile_ns(0.999), Some(AGE_BUCKET_NS), "10 of 10 001 is under 0.1 %");
+        h.record(9_000_000);
+        h.record(9_000_000);
+        assert_eq!(h.quantile_ns(0.999), Some(9_000_000), "capped at the maximum, inside its bucket");
+        h.record(1_000_000_000);
+        assert_eq!(h.max_ns(), 1_000_000_000, "past the last bucket, the maximum is still exact");
+    }
+
+    #[test]
+    fn reads_record_the_newest_samples_age() {
+        let r = HandRing::new(DEFAULT_WINDOW_NS, 8_333_333);
+        r.push(sample(1000.0, 0.0, None));
+        r.push(sample(1008.0, 0.0, None));
+        r.hand_at(Hand::Right, HostTime(1_004_000_000)); // inside: age 0
+        r.hand_at(Hand::Right, HostTime(1_011_000_000)); // 3 ms past the newest
+        assert_eq!(r.counters.sample_age.count(), 2);
+        assert_eq!(r.counters.sample_age.max_ns(), 3_000_000);
     }
 
     #[test]

@@ -58,6 +58,28 @@ fn state(s: xr::SessionState) -> Option<SessionState> {
     })
 }
 
+/// Where a tracked hand's pose comes from (spec 5.1). Controllers always use the grip action space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PosePath {
+    /// XR_EXT_hand_interaction binds the grip pose to the tracked hand: tracked hands and controllers agree.
+    GripSpace,
+    /// No XR_EXT_hand_interaction: the palm joint. A known gap of centimetres from the grip pose, accepted for M1;
+    /// its exit is the headset test (spec 5.1, 10.4).
+    PalmJoint,
+}
+
+impl std::fmt::Display for PosePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PosePath::GripSpace => write!(f, "tracked-hand pose: the grip action space (XR_EXT_hand_interaction)"),
+            PosePath::PalmJoint => write!(
+                f,
+                "tracked-hand pose: the palm joint (no XR_EXT_hand_interaction; a known gap from the grip pose,                  accepted for M1 until the headset test)"
+            ),
+        }
+    }
+}
+
 /// The rank of a swapchain format the runtime offers, as its raw value on `path`: `Some` only for the sRGB 8-bit
 /// colour formats pe-render draws to, lower first (spec 4.2).
 pub fn srgb_rank(path: GraphicsPath, raw: i64) -> Option<u8> {
@@ -108,6 +130,8 @@ pub struct RealBackend<G: xr::Graphics> {
     grasp: GraspConfig,
     /// Interaction profiles the runtime refused to bind, with its reason (for the log).
     pub binding_warnings: Vec<String>,
+    /// Where a tracked hand's pose comes from; the application logs it at start-up (spec 5.1).
+    pub pose_path: PosePath,
     /// Declared last, so it drops after the session.
     xr: XrInstance,
 }
@@ -245,6 +269,7 @@ impl<G: xr::Graphics> RealBackend<G> {
             events: xr::EventDataBuffer::new(),
             grasp,
             binding_warnings,
+            pose_path: if hand_interaction { PosePath::GripSpace } else { PosePath::PalmJoint },
             xr,
         })
     }

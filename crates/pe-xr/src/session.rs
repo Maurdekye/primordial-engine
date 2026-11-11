@@ -11,7 +11,8 @@
 //!
 //! **Errors** (spec 3.1). A lost session or instance ends the session at once. Any other error in a frame is survived:
 //! the frame is closed cleanly (the image released, the frame ended with no layer) and counted, and the session ends
-//! only if frames keep failing for [`FRAME_ERROR_LIMIT`]. One bad frame never ends the user's VR.
+//! only if no frame has succeeded for [`FRAME_ERROR_LIMIT`]. One bad frame never ends the user's VR, nor do good and
+//! bad frames alternating (that is reported as degraded).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -80,6 +81,10 @@ pub struct Counters {
     pub invalid_view_frames: u64,
     /// Frames closed after an error other than a loss.
     pub frame_errors: u64,
+    /// Runs of failing frames that began within [`FRAME_ERROR_LIMIT`] of an earlier failure, with good frames
+    /// between them: the session limps rather than fails (good and bad frames alternating), so it is never ended
+    /// for it, but it is reported as degraded.
+    pub degraded_runs: u64,
     /// A predicted display time more than 1.5 periods after the previous one.
     pub missed_frames: u64,
     pub state_changes: u64,
@@ -96,8 +101,12 @@ pub struct XrSession<B: Backend> {
     hands: [HandState; 2],
     ring: Arc<HandRing>,
     last_display_time: Option<HostTime>,
-    /// When the current run of failing frames began.
-    failing_since: Option<HostTime>,
+    /// The last frame that ran without an error (or when the session began running). The session ends for errors
+    /// only when no frame has succeeded for [`FRAME_ERROR_LIMIT`] since it.
+    last_good: Option<HostTime>,
+    /// The last frame error, and whether the frame before the current one succeeded.
+    last_error_at: Option<HostTime>,
+    previous_failed: bool,
     pub last_error: Option<XrError>,
     pub counters: Counters,
 }
@@ -120,7 +129,9 @@ impl<B: Backend> XrSession<B> {
             hands: [HandState::new(Hand::Left, grasp), HandState::new(Hand::Right, grasp)],
             ring,
             last_display_time: None,
-            failing_since: None,
+            last_good: None,
+            last_error_at: None,
+            previous_failed: false,
             last_error: None,
             counters: Counters::default(),
         }
@@ -128,6 +139,12 @@ impl<B: Backend> XrSession<B> {
 
     pub fn state(&self) -> SessionState {
         self.state
+    }
+
+    /// Whether a frame has failed within the last [`FRAME_ERROR_LIMIT`]: the session runs, but degraded (for the
+    /// log and the counters, spec 3.1).
+    pub fn degraded(&self) -> bool {
+        self.last_error_at.is_some_and(|t| self.backend.now().secs_since(t) < FRAME_ERROR_LIMIT.as_secs_f64())
     }
 
     pub fn backend(&self) -> &B {
@@ -189,7 +206,8 @@ impl<B: Backend> XrSession<B> {
                 self.backend.begin_session()?;
                 self.running = true;
                 self.last_display_time = None;
-                self.failing_since = None;
+                self.last_good = Some(self.backend.now());
+                self.previous_failed = false;
             }
             SessionState::Stopping if self.running => {
                 self.backend.end_session()?;
@@ -246,7 +264,8 @@ impl<B: Backend> XrSession<B> {
         let mut progress = FrameProgress::default();
         match self.frame(sink, &mut progress) {
             Ok(()) => {
-                self.failing_since = None;
+                self.last_good = Some(self.backend.now());
+                self.previous_failed = false;
                 Step::Frame
             }
             Err(e @ (XrError::SessionLost | XrError::InstanceLost)) => self.fail(e),
@@ -267,8 +286,15 @@ impl<B: Backend> XrSession<B> {
             let _ = self.backend.end_frame(display, Layers::None);
         }
         let now = self.backend.now();
-        let since = *self.failing_since.get_or_insert(now);
-        if now.secs_since(since) >= FRAME_ERROR_LIMIT.as_secs_f64() {
+        let limit = FRAME_ERROR_LIMIT.as_secs_f64();
+        // A new run of failures soon after an earlier one, with good frames between: degraded, never ended for it.
+        if !self.previous_failed && self.last_error_at.is_some_and(|t| now.secs_since(t) < limit) {
+            self.counters.degraded_runs += 1;
+        }
+        self.last_error_at = Some(now);
+        self.previous_failed = true;
+        let since = *self.last_good.get_or_insert(now);
+        if now.secs_since(since) >= limit {
             self.end(EndReason::FrameErrors);
             return Step::Ended(EndReason::FrameErrors);
         }
@@ -278,6 +304,9 @@ impl<B: Backend> XrSession<B> {
     fn frame(&mut self, sink: &mut dyn FrameSink, progress: &mut FrameProgress) -> Result<(), XrError> {
         // Steps 1 and 2.
         let timing = self.backend.wait_frame()?;
+        // If xrBeginFrame fails short of a loss after xrWaitFrame succeeded, OpenXR may block the next xrWaitFrame
+        // until a frame is begun, and the loop would stall there. That takes a runtime fault or a call-order bug
+        // (review 1 recheck, nit); the session still ends by the error limit only if xrWaitFrame returns.
         self.backend.begin_frame()?;
         progress.began = true;
         self.counters.display_frames += 1;
