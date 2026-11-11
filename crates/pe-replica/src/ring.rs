@@ -105,35 +105,30 @@ impl<K> Ring<K> {
 
     /// Apply the policy at `present`, and drop everything below `floor` that is not pinned. The newest keyframe at or
     /// below the floor is kept too, so a re-simulation can always start at or below any frame above it.
+    ///
+    /// Past the young span, a keyframe in band `b` (age in `[young * 2^b, young * 2^(b+1))`) stays only if its frame is
+    /// a multiple of `spacing * 2^(b+1)`: two per band when `dense` is 4. That alignment only tightens as a frame ages,
+    /// so trimming at every frame keeps exactly what trimming once would (counting the newest keyframes of each band
+    /// instead thinned the old ones far below two per band when applied at every frame).
     pub fn trim(&mut self, policy: Policy, present: Frame, floor: Frame) {
         let base = self.at_or_before(floor).map(|(f, _)| f);
-        let young = policy.spacing.saturating_mul(policy.dense);
-        // Old keyframes: at most two per doubling of age past the young span, the newest of each band first.
-        let mut per_band: BTreeMap<u32, u32> = BTreeMap::new();
-        let mut drop = Vec::new();
-        for f in self.keys.keys().rev().copied() {
-            if self.pinned.contains(&f) || Some(f) == base {
-                continue;
+        let young = policy.spacing.saturating_mul(policy.dense).max(1);
+        let pinned = &self.pinned;
+        self.keys.retain(|&f, _| {
+            if pinned.contains(&f) || Some(f) == base {
+                return true;
             }
             if f < floor {
-                drop.push(f);
-                continue;
+                return false;
             }
             let age = present.0.saturating_sub(f.0);
             if age <= young {
-                continue;
+                return true;
             }
-            let band = (age / young.max(1)).ilog2();
-            let n = per_band.entry(band).or_insert(0);
-            if *n >= 2 {
-                drop.push(f);
-            } else {
-                *n += 1;
-            }
-        }
-        for f in drop {
-            self.keys.remove(&f);
-        }
+            let band = (age / young).ilog2();
+            let step = 1u64.checked_shl(band + 1).and_then(|p| policy.spacing.checked_mul(p)).unwrap_or(u64::MAX);
+            f.0.is_multiple_of(step)
+        });
     }
 }
 
@@ -175,6 +170,25 @@ mod tests {
         assert!(frames.len() >= 4 + 8, "{} keyframes: {frames:?}", frames.len());
         // Frame 0, the newest at or below the floor, is kept: a re-simulation can always start.
         assert_eq!(frames[0], 0);
+    }
+
+    /// Trimming at every frame keeps exactly what one trim at the end keeps, and old bands keep two each.
+    #[test]
+    fn trimming_every_frame_equals_trimming_once() {
+        let p = Policy::log4(60);
+        let (mut each, mut once) = (Ring::new(), filled(p, 1000));
+        for f in 0..1000 {
+            if p.takes(Frame(f)) {
+                each.insert(Frame(f), f);
+            }
+            each.trim(p, Frame(f + 1), Frame(0));
+        }
+        once.trim(p, Frame(1000), Frame(0));
+        let frames: Vec<u64> = each.frames().map(|f| f.0).collect();
+        assert_eq!(frames, once.frames().map(|f| f.0).collect::<Vec<_>>());
+        // Band 2 (ages 64 to 127, frames 873 to 936) keeps the multiples of 32 there: 896 and 928.
+        let band2 = frames.iter().filter(|&&f| (1000 - f) >= 64 && (1000 - f) < 128).count();
+        assert_eq!(band2, 2, "{frames:?}");
     }
 
     #[test]

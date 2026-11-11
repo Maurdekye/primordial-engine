@@ -4,6 +4,7 @@
 //! nothing, and the root covers every row, the physics rows and the frame.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use pe_seams::{
     Class, DomainId, Frame, Hash, Hasher, ImportError, LeafKey, Mismatch, Node, ObjectId, Offset, Outcome, Pos, Reason,
@@ -193,6 +194,9 @@ pub struct MockWorld {
     bodies: BTreeMap<ObjectId, BodyRow>,
     physics: BTreeMap<ObjectId, BodyStateRow>,
     global: Hash,
+    /// A one-shot fault for repair tests, shared by every save of this world, so restoring a snapshot does not arm
+    /// it again: at the end of the frame it names, the lowest static body's row moves by a millimetre.
+    glitch: Arc<Mutex<Option<Frame>>>,
 }
 
 impl MockWorld {
@@ -204,7 +208,14 @@ impl MockWorld {
             bodies: BTreeMap::new(),
             physics: BTreeMap::new(),
             global: Hash::ZERO,
+            glitch: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Arm the one-shot fault at the end of `frame`: a transient corruption, as from a bad memory bit, that a replay
+    /// does not repeat.
+    pub fn glitch_at(&self, frame: Frame) {
+        *self.glitch.lock().unwrap_or_else(|e| e.into_inner()) = Some(frame);
     }
 
     /// A body's position, as plain numbers from the origin.
@@ -312,6 +323,13 @@ impl WorldModel for MockWorld {
 
     fn end_frame(&mut self, frame: Frame) {
         self.frame = Frame(frame.0.saturating_add(1));
+        let fire = {
+            let mut armed = self.glitch.lock().unwrap_or_else(|e| e.into_inner());
+            (*armed == Some(frame)).then(|| armed.take()).is_some()
+        };
+        if let Some(b) = fire.then(|| self.bodies.values_mut().find(|b| b.kind == BodyKind::Static)).flatten() {
+            b.pos = b.pos.checked_add(Offset([0.001, 0.0, 0.0])).unwrap_or(b.pos);
+        }
     }
 
     fn body(&self, id: ObjectId) -> Option<BodyRow> {
