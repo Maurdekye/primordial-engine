@@ -103,7 +103,12 @@ fn edits_alone_and_combined() {
             field: 2, // roughness (fields sorted by offset: base, emissive, roughness, ...)
             value: 0.25f32.to_le_bytes().to_vec(),
         },
-        Op::RemoveRow { id: Target::Existing(ball), component: ids::BODY, instance: 0 },
+        Op::RemoveRow {
+            id: Target::Existing(ball),
+            component: ids::BODY,
+            instance: 0,
+            tag: s.row_tag(ball, "Body").unwrap(),
+        },
         Op::Reparent { id: Target::Existing(ball), parent: Target::Root, index: None, keep_world: true },
     ]);
     let e1 = entry(&mut f.a, &t);
@@ -327,7 +332,9 @@ fn holds_permissions_and_protections() {
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &protect(kb))).0).1, Reason::Protected { owner: ka });
     created_ok(&apply(&mut f.w, &entry(&mut f.a, &protect(ka))).0);
     // Nobody else may remove it, or add one inside the protected subtree.
-    let unprotect = tx(vec![Op::RemoveRow { id: Target::Existing(table), component: ids::PROTECTION, instance: 0 }]);
+    let tag = f.w.snapshot(Frame(0)).row_tag(table, "Protection").unwrap();
+    let unprotect =
+        tx(vec![Op::RemoveRow { id: Target::Existing(table), component: ids::PROTECTION, instance: 0, tag }]);
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.b, &unprotect)).0).1, Reason::Protected { owner: ka });
     let inner = tx(vec![Op::SetRow { id: Target::Existing(ball), row: row(Protection { owner: kb }) }]);
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.b, &inner)).0).1, Reason::Protected { owner: ka });
@@ -388,7 +395,7 @@ fn codec_is_canonical_and_total() {
                 keep_world: true,
             },
             Op::SetField { id: Target::New(0), component: ids::APPEARANCE, instance: 0, field: 1, value: vec![0; 12] },
-            Op::RemoveRow { id: Target::New(0), component: ids::LIGHT, instance: 0 },
+            Op::RemoveRow { id: Target::New(0), component: ids::LIGHT, instance: 0, tag: 0x1234 },
             Op::Delete { id: Target::New(0) },
         ],
         blobs: vec![pe_world::BlobRef::of(b"x")],
@@ -530,4 +537,180 @@ fn tombstones_expire_after_a_minute() {
     // After expiry an op naming the id is refused as unknown, and an add-on no longer orphans.
     let add = tx(vec![Op::Create { new: 0, parent: Target::Existing(table), index: None, rows: vec![] }]);
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.b, &add)).0).1, Reason::Unknown(table));
+}
+
+fn notes(o: &Outcome) -> Vec<Note> {
+    match o {
+        Outcome::Applied { notes, .. } => notes.clone(),
+        r => panic!("refused: {r:?}"),
+    }
+}
+
+#[test]
+fn the_holder_may_delete_what_it_holds() {
+    // @coordinator-opus m6d5969e46cb1, option (b): a hold by anyone but the author refuses a delete; the author's own
+    // holds end with it, so a VR player can delete what they hold without letting go first.
+    let mut f = fx();
+    let (table, ball, _) = table_and_ball(&mut f);
+    let (ka, kb) = (f.keys.key(0), f.keys.key(1));
+    let hand = created(
+        &apply(
+            &mut f.w,
+            &entry(&mut f.a, &tx(vec![Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] }])),
+        )
+        .0,
+    )[0];
+    f.w.set_claim(ball, Claim { hand, member: kb, since: Frame(0) }).unwrap();
+    let del = tx(vec![Op::Delete { id: Target::Existing(table) }]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &del)).0).1, Reason::Held { by: kb }, "B holds it");
+    f.w.set_claim(ball, Claim { hand, member: ka, since: Frame(0) }).unwrap();
+    let (o, fp) = apply(&mut f.w, &entry(&mut f.a, &del));
+    created_ok(&o);
+    assert_eq!(fp.removed, [table, ball]);
+    assert!(f.w.snapshot(Frame(0)).claim(ball).is_none(), "the holder's claim ends with the object");
+    // Pose edits stay refused for everyone while held, the holder included (7.2).
+    let (_, ball2, _) = table_and_ball(&mut f);
+    f.w.set_claim(ball2, Claim { hand, member: ka, since: Frame(0) }).unwrap();
+    let pose = tx(vec![Op::SetRow { id: Target::Existing(ball2), row: row(Transform::IDENTITY) }]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &pose)).0).1, Reason::Held { by: ka });
+}
+
+#[test]
+fn a_stale_remove_cannot_take_out_a_later_instance() {
+    // @coordinator-opus m6d5969e46cb1, (a): a remove names the instance (its tag), and one already gone notes
+    // "no effect" instead of refusing.
+    let mut f = fx();
+    let (_, ball, _) = table_and_ball(&mut f);
+    let read = f.w.snapshot(Frame(0)).row_tag(ball, "Body").unwrap();
+    let remove = tx(vec![Op::RemoveRow { id: Target::Existing(ball), component: ids::BODY, instance: 0, tag: read }]);
+    // B removes the body, then adds a new one.
+    created_ok(&apply(&mut f.w, &entry(&mut f.b, &remove)).0);
+    let add = tx(vec![Op::SetRow { id: Target::Existing(ball), row: row(Body::default()) }]);
+    created_ok(&apply(&mut f.w, &entry(&mut f.b, &add)).0);
+    let later = f.w.snapshot(Frame(0)).row_tag(ball, "Body").unwrap();
+    assert_ne!(later, read, "a new addition, a new tag");
+    // A's remove, built on the old read, arrives late: it changes nothing and says so.
+    let before = state(&f.w);
+    let (o, fp) = apply(&mut f.w, &entry(&mut f.a, &remove));
+    assert_eq!(notes(&o), [Note::NoEffect { op: 0 }]);
+    assert!(fp.rows.is_empty());
+    assert_eq!(state(&f.w), before);
+    assert!(f.w.store().get::<Body>(ball).is_some());
+    // An overwrite keeps the tag, so a remove read before it still applies.
+    let red =
+        tx(vec![Op::SetRow { id: Target::Existing(ball), row: row(Body { friction: 0.25, ..Default::default() }) }]);
+    created_ok(&apply(&mut f.w, &entry(&mut f.b, &red)).0);
+    assert_eq!(f.w.snapshot(Frame(0)).row_tag(ball, "Body"), Some(later));
+    let current = tx(vec![Op::RemoveRow { id: Target::Existing(ball), component: ids::BODY, instance: 0, tag: later }]);
+    assert!(notes(&apply(&mut f.w, &entry(&mut f.a, &current)).0).is_empty());
+    assert!(f.w.store().get::<Body>(ball).is_none());
+    // A remove of a row that is not there is "no effect" too, even on a held object.
+    f.w.set_claim(ball, Claim { hand: ball, member: f.keys.key(1), since: Frame(0) }).unwrap();
+    assert_eq!(notes(&apply(&mut f.w, &entry(&mut f.a, &current)).0), [Note::NoEffect { op: 0 }]);
+}
+
+#[test]
+fn protections_are_checked_per_op_and_the_first_failure_is_reported() {
+    // @coordinator-opus m6d5969e46cb1, (a): all or nothing; the reason is the first failing op's. A transaction that
+    // lifts a protection in one op and relies on it in a later op passes only if its author may lift it.
+    let mut f = fx();
+    let (table, _, _) = table_and_ball(&mut f);
+    let ka = f.keys.key(0);
+    let protect = tx(vec![Op::SetRow { id: Target::Existing(table), row: row(Protection { owner: ka }) }]);
+    created_ok(&apply(&mut f.w, &entry(&mut f.a, &protect)).0);
+    let tag = f.w.snapshot(Frame(0)).row_tag(table, "Protection").unwrap();
+    let lift_and_copy = tx(vec![
+        Op::RemoveRow { id: Target::Existing(table), component: ids::PROTECTION, instance: 0, tag },
+        Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None },
+    ]);
+    let before = state(&f.w);
+    assert_eq!(
+        refused(&apply(&mut f.w, &entry(&mut f.b, &lift_and_copy)).0),
+        (Some(0), Reason::Protected { owner: ka })
+    );
+    assert_eq!(state(&f.w), before, "nothing applied");
+    assert_eq!(f.w.snapshot(Frame(0)).protected_by(table), Some(ka));
+    // Two faults: the first op's is reported.
+    let two = tx(vec![
+        Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None },
+        Op::Delete { id: Target::Existing(ObjectId::from_u128(999)) },
+    ]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.b, &two)).0), (Some(0), Reason::Protected { owner: ka }));
+    // The owner may lift it, so the same transaction applies.
+    let ids = created(&apply(&mut f.w, &entry(&mut f.a, &lift_and_copy)).0);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(f.w.snapshot(Frame(0)).protected_by(table), None);
+}
+
+#[test]
+fn undelete_after_a_child_was_undeleted_restores_the_other_siblings() {
+    // @design-reviewer's Medium 1 on 40789d71.
+    let mut f = fx();
+    let (table, b1, _) = table_and_ball(&mut f);
+    let more = tx(vec![
+        Op::Create { new: 0, parent: Target::Existing(table), index: None, rows: vec![] },
+        Op::Create { new: 1, parent: Target::Existing(table), index: None, rows: vec![] },
+    ]);
+    let ids = created(&apply(&mut f.w, &entry(&mut f.a, &more)).0);
+    let (b2, b3) = (ids[0], ids[1]);
+    created_ok(&apply(&mut f.w, &entry(&mut f.a, &tx(vec![Op::Delete { id: Target::Existing(table) }]))).0);
+    created_ok(&apply(&mut f.w, &entry(&mut f.a, &tx(vec![Op::Undelete { id: b1 }]))).0);
+    assert_eq!(f.w.snapshot(Frame(0)).parent(b1), None, "back as a root, its parent still gone");
+    let (_, fp) = apply(&mut f.w, &entry(&mut f.a, &tx(vec![Op::Undelete { id: table }])));
+    assert_eq!(fp.created, [table, b2, b3]);
+    assert_eq!(f.w.snapshot(Frame(0)).children(table), [b2, b3]);
+    assert!(f.w.tombstone(b2).is_none() && f.w.tombstone(b3).is_none());
+}
+
+#[test]
+fn reverting_a_remove_never_overwrites_a_later_row() {
+    // @design-reviewer's Medium 2 on 40789d71.
+    let mut f = fx();
+    let (_, ball, _) = table_and_ball(&mut f);
+    let tag = f.w.snapshot(Frame(0)).row_tag(ball, "Body").unwrap();
+    let remove = tx(vec![Op::RemoveRow { id: Target::Existing(ball), component: ids::BODY, instance: 0, tag }]);
+    let (o, _) = apply(&mut f.w, &entry(&mut f.a, &remove));
+    let inv = inverse(&o);
+    assert!(inv.preconditions.iter().any(|p| matches!(p,
+        Precondition::Version { id, component, is, .. } if *id == ball && *component == ids::BODY && *is == pe_world::GENESIS)));
+    // At once, the revert re-adds the body.
+    let mut w = f.w.clone();
+    created_ok(&apply(&mut w, &entry(&mut f.a.clone(), &inv)).0);
+    assert!(w.store().get::<Body>(ball).is_some());
+    // After B adds one, the revert is stale instead of replacing B's.
+    let heavy = Body { friction: 0.75, ..Default::default() };
+    created_ok(
+        &apply(&mut f.w, &entry(&mut f.b, &tx(vec![Op::SetRow { id: Target::Existing(ball), row: row(heavy) }]))).0,
+    );
+    assert!(matches!(refused(&apply(&mut f.w, &entry(&mut f.a, &inv)).0).1, Reason::Stale { .. }));
+    assert_eq!(f.w.store().get::<Body>(ball), Some(&heavy));
+    // Add then remove in one transaction: its inverse has nothing to do for that row.
+    let light = pe_world::components::Light::default();
+    let t = tx(vec![
+        Op::SetRow { id: Target::Existing(ball), row: row(light) },
+        Op::RemoveRow { id: Target::Existing(ball), component: ids::LIGHT, instance: 0, tag: row_tag_of(&f, 0) },
+    ]);
+    let e = entry(&mut f.a, &t);
+    let (o, _) = apply(&mut f.w, &e);
+    assert!(notes(&o).is_empty(), "the remove found the row its own transaction added");
+    assert!(f.w.store().get_raw(ids::LIGHT, ball).is_none());
+    let inv = inverse(&o);
+    assert!(inv.ops.is_empty() && inv.preconditions.is_empty(), "{inv:?}");
+}
+
+/// The tag a row added by op `op` of member A's next entry gets: computable before signing (7.6).
+fn row_tag_of(f: &Fx, op: u32) -> u128 {
+    let next = f.a.clone().next(Class::Edit, Frame(1), Bytes::new());
+    pe_world::edit::row_tag(next.entry.line, next.entry.author, next.entry.chain, next.entry.seq, op)
+}
+
+#[test]
+fn too_deep_is_its_own_reason() {
+    let mut f = fx();
+    f.w.set_depth_limit(1);
+    let (_, ball, _) = table_and_ball(&mut f);
+    let t = tx(vec![Op::Create { new: 0, parent: Target::Existing(ball), index: None, rows: vec![] }]);
+    let (op, reason) = refused(&apply(&mut f.w, &entry(&mut f.a, &t)).0);
+    assert_eq!(op, Some(0));
+    assert!(matches!(reason, Reason::TooDeep { limit: 1, .. }), "{reason:?}");
 }

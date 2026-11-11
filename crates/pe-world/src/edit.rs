@@ -86,58 +86,25 @@ pub struct Row {
 pub enum Op {
     /// Creates object `new` (its id derives from the entry and `new`, 2.1) under `parent`, at `index` among its
     /// children (`None`: last), with `rows`.
-    Create {
-        new: u32,
-        parent: Target,
-        index: Option<u32>,
-        rows: Vec<Row>,
-    },
+    Create { new: u32, parent: Target, index: Option<u32>, rows: Vec<Row> },
     /// Deletes the object and its subtree (7.5).
-    Delete {
-        id: Target,
-    },
+    Delete { id: Target },
     /// Adds or overwrites a row.
-    SetRow {
-        id: Target,
-        row: Row,
-    },
+    SetRow { id: Target, row: Row },
     /// Sets one field, by its index in the component's description (fields sorted by offset), to `value`.
-    SetField {
-        id: Target,
-        component: ComponentId,
-        instance: u16,
-        field: u16,
-        value: Vec<u8>,
-    },
+    SetField { id: Target, component: ComponentId, instance: u16, field: u16, value: Vec<u8> },
     /// Removes one component instance: the row at `component` and `instance`, if its instance tag is `tag`
     /// ([`row_tag`]). If that instance is already gone (no row, or a row added again since, with another tag), the op
     /// changes nothing and its outcome notes "no effect" (7.6), so a stale remove cannot take out a later row.
-    RemoveRow {
-        id: Target,
-        component: ComponentId,
-        instance: u16,
-        tag: u128,
-    },
+    RemoveRow { id: Target, component: ComponentId, instance: u16, tag: u128 },
     /// Moves `id` under `parent` at `index` (`None`: last). `keep_world` keeps its world pose; otherwise its local
     /// transform is kept (3.3).
-    Reparent {
-        id: Target,
-        parent: Target,
-        index: Option<u32>,
-        keep_world: bool,
-    },
+    Reparent { id: Target, parent: Target, index: Option<u32>, keep_world: bool },
     /// Copies `source` and its subtree under `parent`. The copies take `New` indices `new .. new + n` in depth-first
     /// order, children in their order (7.1).
-    Copy {
-        source: Target,
-        new: u32,
-        parent: Target,
-        index: Option<u32>,
-    },
+    Copy { source: Target, new: u32, parent: Target, index: Option<u32> },
     /// Restores a deleted subtree from its tombstones, with the same ids (7.5).
-    Undelete {
-        id: ObjectId,
-    },
+    Undelete { id: ObjectId },
 }
 
 /// The instance tag of a row that op `op` of an entry adds (7.6): `BLAKE3("pe.row" ‖ line ‖ author ‖ chain ‖ seq ‖

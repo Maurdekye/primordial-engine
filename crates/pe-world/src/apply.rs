@@ -83,9 +83,19 @@ fn too_deep(object: ObjectId, limit: u32) -> Reason {
     Reason::TooDeep { object, limit }
 }
 
-/// Op `i` changed nothing (7.6): a `RemoveRow` of an instance already gone. pe-seams has no `Note::NoEffect` yet
-/// (asked of @engine-architect, m48a126a4d778); until it does, the op applies with no note.
-fn no_effect(_cx: &mut Cx, _i: u32) {}
+/// Op `i` changed nothing (7.6): a `RemoveRow` of an instance already gone.
+fn no_effect(cx: &mut Cx, i: u32) {
+    cx.notes.push(Note::NoEffect { op: i });
+}
+
+/// Whether an undo op writes or removes row `c` of `id`.
+fn row_undo(op: &Op, id: ObjectId, c: ComponentId) -> bool {
+    match op {
+        Op::SetRow { id: Target::Existing(x), row } => *x == id && row.component == c,
+        Op::RemoveRow { id: Target::Existing(x), component, .. } => *x == id && *component == c,
+        _ => false,
+    }
+}
 
 fn version(entry: EntryRef, op: u32) -> Version {
     Version { entry, op }
@@ -383,7 +393,19 @@ impl World {
             Frame(cx.frame.0.saturating_add(self.rate.frames(std::time::Duration::from_secs(TOMBSTONE_SECONDS))));
         let registry = self.store.registry().clone();
         let mut stones = Vec::with_capacity(doomed.len());
+        // `doomed` is depth-first with children in order, so counting per parent gives each child's place.
+        let mut places: BTreeMap<ObjectId, u32> = BTreeMap::new();
         for &d in &doomed {
+            let up = self.store.parent(d);
+            let place = match up {
+                Some(p) if d == o => self.store.children(p).position(|c| c == o).unwrap_or(0) as u32,
+                Some(p) => {
+                    let n = places.entry(p).or_insert(0);
+                    *n += 1;
+                    *n - 1
+                }
+                None => 0,
+            };
             let rows = registry
                 .iter()
                 .filter(|desc| desc.id() != ComponentId::NODE)
@@ -396,7 +418,8 @@ impl World {
                 by: cx.entry,
                 frame: cx.frame,
                 expires,
-                parent: self.store.parent(d),
+                parent: up,
+                place,
                 world: self.store.world_transform(d),
                 node: self.store.node(d),
                 rows,
@@ -519,9 +542,19 @@ impl World {
             return Err(Reason::Exists(id));
         }
         let root = self.tombstones.get(&id).cloned().ok_or(Reason::Unknown(id))?;
-        // The subtree, parents first, children in their old order, through the tombstones' own links. Bounded by
-        // the number of tombstones, so corrupt links cannot loop.
+        // The subtree, parents first, children in their old order: the same delete's tombstones below `id`, through
+        // their recorded parents and places, never through sibling links, which may name an object undeleted since
+        // (@design-reviewer's Medium 1). Bounded by the number of tombstones, so corrupt records cannot loop.
         let limit = self.tombstones.len();
+        let mut kids: BTreeMap<ObjectId, Vec<(u32, ObjectId)>> = BTreeMap::new();
+        for (&x, t) in self.tombstones.iter() {
+            if x != id
+                && t.by == root.by
+                && let Some(p) = t.parent
+            {
+                kids.entry(p).or_default().push((t.place, x));
+            }
+        }
         let mut order = Vec::new();
         let mut stack = vec![id];
         while let Some(x) = stack.pop() {
@@ -529,16 +562,10 @@ impl World {
                 return Err(invalid());
             }
             order.push(x);
-            let mut kids = Vec::new();
-            let mut c = self.tombstones[&x].node.first_child;
-            while let Some(t) = c.some().and_then(|c| self.tombstones.get(&c)).filter(|t| t.by == root.by) {
-                kids.push(c);
-                if kids.len() > limit {
-                    return Err(invalid());
-                }
-                c = t.node.next_sibling;
+            if let Some(v) = kids.get_mut(&x) {
+                v.sort_unstable();
+                stack.extend(v.iter().rev().map(|&(_, c)| c));
             }
-            stack.extend(kids.into_iter().rev());
         }
         let parent = root.parent.filter(|&p| self.store.exists(p));
         let orphaned = root.parent.is_some() && parent.is_none();
@@ -694,12 +721,9 @@ impl World {
         if !creating {
             cx.undo.push(match prior {
                 Some(bytes) => Op::SetRow { id: Target::Existing(id), row: Row { component: c, instance: 0, bytes } },
-                None => Op::RemoveRow {
-                    id: Target::Existing(id),
-                    component: c,
-                    instance: 0,
-                    tag: u128::from_le_bytes(tag),
-                },
+                None => {
+                    Op::RemoveRow { id: Target::Existing(id), component: c, instance: 0, tag: u128::from_le_bytes(tag) }
+                }
             });
             cx.undo_pre.insert((id, c), version(cx.entry, i));
         }
@@ -743,10 +767,24 @@ impl World {
         if c == ids::PROTECTION {
             self.check_protection_write(cx.author, id, None)?;
         }
-        if let Some(bytes) = self.store.get_raw(c, id).map(<[u8]>::to_vec) {
+        let added_here = cx.undo.iter().rposition(|op| {
+            matches!(op, Op::RemoveRow { id: Target::Existing(x), component, tag: t, .. }
+                if *x == id && *component == c && *t == before.tag())
+        });
+        if let Some(at) = added_here {
+            // This transaction added the row and now removes it: nothing it did to the row since needs undoing.
+            let tail: Vec<Op> = cx.undo.split_off(at).into_iter().filter(|op| !row_undo(op, id, c)).collect();
+            cx.undo.extend(tail);
+        } else if let Some(bytes) = self.store.get_raw(c, id).map(<[u8]>::to_vec) {
             cx.undo.push(Op::SetRow { id: Target::Existing(id), row: Row { component: c, instance: 0, bytes } });
         }
-        cx.undo_pre.remove(&(id, c));
+        // The inverse re-adds the row only while it is still absent, so a revert never overwrites a row someone added
+        // since (@design-reviewer's Medium 2).
+        if cx.undo.iter().any(|op| row_undo(op, id, c)) {
+            cx.undo_pre.insert((id, c), GENESIS);
+        } else {
+            cx.undo_pre.remove(&(id, c));
+        }
         self.store.remove_raw(c, id).map_err(|e| self.store_reason(c, e))?;
         if before.edited() {
             cx.overwrote.push(from_row_version(before));

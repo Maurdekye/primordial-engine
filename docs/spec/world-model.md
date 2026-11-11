@@ -735,7 +735,7 @@ pub enum Op {
     Delete { id: Target },                                    // the object and its subtree
     SetRow { id: Target, component: ComponentId, instance: u16, row: Bytes },   // add or overwrite
     SetField { id: Target, component: ComponentId, instance: u16, field: u16, value: Bytes },
-    RemoveRow { id: Target, component: ComponentId, instance: u16 },
+    RemoveRow { id: Target, component: ComponentId, instance: u16, tag: u128 },   // names the instance (7.6)
     Reparent { id: Target, parent: Target, index: Option<u32>, keep_world: bool },
     Copy { source: Target, new: u32, parent: Target, index: Option<u32> },   // the subtree; templates (7.1)
     Undelete { id: ObjectId },                                // restore a deleted subtree from its tombstones (7.5)
@@ -804,7 +804,10 @@ pub enum Precondition {
   (@design-reviewer's r5 Low 3). It is deterministic, and it stops a grab joint yanking an object across the world.
 - **Holds protect what the holder feels** [I, after @design-reviewer's Low 6]. The display rule is that a player's
   hands and what they hold are never corrected (plan M1; file 14, 4.1). So, while an object is held:
-  - a `Delete` of it, or of any ancestor of it, is refused with `Held { by }`;
+  - a `Delete` of it, or of any ancestor of it, by anyone but the holder is refused with `Held { by }`. The
+    holder's own delete applies and ends its hold, so a VR player can delete what they hold without letting go
+    first (@coordinator-opus m6d5969e46cb1: option (b), since a release is an input, not an edit op, and cannot
+    join the delete in one transaction);
   - an edit that writes its `Transform`, `Body` or `Shape`, or reparents it, is refused with `Held { by }`;
   - every other edit passes: an agent may recolour a held ball. WorldApi reports the refusal as `held` (@api-eng's
     O5).
@@ -817,6 +820,10 @@ pub enum Precondition {
 - **What a version is.** Every component row has a version: the `EntryRef` of the last *edit* that wrote it, with
   the op's index. Every object also has a structural version: the last edit that created it, reparented it or changed
   its children. Row versions sit beside their rows and the structural version in `Node` (3.2), so both are in the hash.
+- **The instance tag** (@coordinator-opus m6d5969e46cb1, after @fable-reviewer). Beside each row's version sits a
+  128-bit tag that names one addition of the row: `BLAKE3("pe.row" ‖ line ‖ author ‖ chain ‖ seq ‖ op)[..16]` of the
+  edit op that added it where there was none, the coordinates `ObjectId::created` uses (2.1), so an author can name a
+  row its own transaction adds. Overwrites keep it; a row no edit added has tag 0. `RemoveRow` names it (7.6).
 - **The object version** (@api-eng's O1) is the last edit that changed anything about the object: any of its rows,
   its parent or its children. It is also kept in `Node`, and it is what an `ObjectVersion` precondition checks, so
   an agent that read a whole object can ask "nobody edited it since". Row versions are the finer option.
@@ -917,14 +924,18 @@ Checked in order, at the entry's place in the agreed order. The first failure re
 its reason and the index of the op [I]:
 
 1. **Decoding.** The payload decodes canonically; limits hold.
-2. **Permission.** The author holds `EDIT` (5.4), and no op breaks a protection (7.8). Governance is in the hashed state, so every machine gives the same
-   answer (plan S2's `permits`).
-3. **Preconditions** (7.3).
-4. **Each op:** its targets exist (or orphan, 7.5); the components are registered; the rows have the right size and
-   valid values; positions are in range (4.3); no cycle; `Hand` rows are not written by edits (they are inputs);
-   `Node`, `BodyState` and row versions are never written by edits.
+2. **The actor and permission.** An agent's `principal` is the author (7.1), and the author holds `EDIT` (5.4).
+   Governance is in the hashed state, so every machine gives the same answer (plan S2's `permits`).
+3. **Preconditions** (7.3), against the state just before the transaction.
+4. **Each op, in order,** against the state just before it, which includes the earlier ops of the same
+   transaction: its targets exist (or orphan, 7.5); no protection is broken (7.8) and no hold (7.2); the components
+   are registered; the rows have the right size and valid values; positions are in range (4.3); no cycle; the depth
+   limit holds (3.3); `Hand` rows are not written by edits (they are inputs); `Node`, `BodyState` and row versions
+   are never written by edits. Protections and holds are checked here rather than in step 2 because an op may name
+   an object an earlier op created, or lift a protection a later op relies on; a transaction that does the latter
+   passes only if its author may lift that protection (@coordinator-opus m6d5969e46cb1).
 5. **All or nothing.** The ops apply to a copy-on-write working state; any failure discards it. Nothing outside the
-   transaction sees a partial result.
+   transaction sees a partial result, and the reported reason is the first failing op's, in order.
 
 - **One pure function** (@api-eng's O4). `World::apply(state, frame, entry) -> (state', Outcome)` is the only edit
   path. The ordered step, the author's local prediction and a dry run all call it, so they cannot disagree.
@@ -934,24 +945,32 @@ its reason and the index of the op [I]:
   multi-way ones to @coordinator-opus]:
   - the codec is `edit.rs`'s: little-endian, one-byte tags, flags 0 or 1, `u16`-prefixed text, `u32`-prefixed bytes
     and lists, ids as `u128`. It is strict, so every accepted payload has exactly one encoding;
-  - protections are checked at each op, against the state just before it, not in step 2, because an op may name
-    an object an earlier op of the same transaction created. Only the reason reported for a transaction with
-    several faults can differ;
-  - a `Version` or `Content` precondition on a row that does not exist compares against the all-zero version, so
-    it holds only if the author read "no row". A failed `Exists` gives `Deleted` or `Unknown`, and a failed `Absent`
-    gives `Exists`;
+  - a `Version` precondition on a row that does not exist compares against the all-zero version, so it holds only
+    if the author read "no row". Its `Stale` then reports `current` and `winner` as zero, which means "absent": once
+    a row is gone, the world keeps no record of who removed it (the remove's outcome listed it in `overwrote`). A
+    `Content` precondition cannot express absence and always fails on a missing row; `Version` with the zero
+    version does that (@design-reviewer's Lows 1 and 2). A failed `Exists` gives `Deleted` or `Unknown`, and a
+    failed `Absent` gives `Exists`;
   - `Content` is `BLAKE3("pe.content" ‖ the row's stored bytes)`;
-  - `RemoveRow` of a row that is not there applies and changes nothing, so two removals in a merge need no rule.
-    `SimSize` cannot be removed (3.5);
-  - a `Delete` is refused with `Held` if any object of its subtree is held, by anyone, the holder included;
+  - `RemoveRow` names the instance by its tag (7.3). If that instance is gone (no row, or a row added again since,
+    with another tag), the op applies, changes nothing and notes `NoEffect { op }`, so a stale remove cannot take
+    out a later row, and two removals in a merge need no rule. The no-effect check comes first, so a remove of an
+    absent row is never refused as held or protected. `SimSize` cannot be removed (3.5);
+  - deleting an object already deleted behaves the same way, noting `AlreadyDeleted` (7.5);
+  - a `Delete` is refused with `Held` if any object of its subtree is held by anyone but the author; the author's
+    own holds on the subtree end with it (7.2);
   - only instance 0 is accepted in M1; any other instance is `Invalid`;
   - `Create` carries no class: an edit makes only `World` objects (3.1);
   - `Copy` copies every row except `BodyState`, refuses a subtree that holds a `Hand`, and gives the copies the
     copier as creator;
-  - `Undelete` restores the subtree of that one delete, through the tombstones' own links;
-  - the depth-limit refusal is `Invalid` until pe-seams has `Reason::TooDeep` (asked of @engine-architect);
+  - `Undelete` restores the subtree of that one delete: the delete's tombstones below the id, by their recorded
+    parents and their place among their siblings at the delete, never through sibling links, which may name an
+    object undeleted since (@design-reviewer's Medium 1);
+  - the depth-limit refusal is `TooDeep { object, limit }`;
   - the inverse is the undo ops in reverse order, with a `Version` precondition on the last version the
-    transaction set on each row it wrote and that still exists.
+    transaction set on each row it wrote and that still exists, and the zero version on each row it left removed,
+    so a revert re-adds a row only while it is still absent (@design-reviewer's Medium 2). A row the transaction
+    added and removed again leaves nothing in the inverse.
 
 ### 7.7 Outcomes
 
@@ -968,7 +987,7 @@ pub enum Outcome {
   created, and an `Undelete` of what it deleted (within the tombstone window; 7.5).
   WorldApi's one-step revert submits it as a new transaction, with `Version` preconditions on the versions this one
   set, so a revert after someone else's edit is refused as stale rather than undoing their work.
-- `Note` includes `Orphaned { deleted_by }` and `AlreadyDeleted { by }`.
+- `Note` includes `Orphaned { deleted_by }`, `AlreadyDeleted { by }` and `NoEffect { op }` (7.6).
 
 Outcomes are a function of the state and the entry, so every machine computes the same ones, and a replay gives them
 again. They are not themselves hashed: the state they produce is.
@@ -1185,3 +1204,7 @@ For the reviewers and the coordinator. None needs the user, as far as I can see 
 8. **The per-body physics digest** (6.3, 9.2): agreed with @vdw-physics, with `physics_global` as the full image
    hash and no per-body setter.
 9. **Ids of logic spawns** (2.1) are WS-logic's to confirm.
+11. **For the hash-tree slice** (@chunks-reviewer, on world/edit-v1): apply outcomes depend on World tables that
+    pe-sim's `state_hash` and `Snapshot` do not cover (`members`, `tombstones`, `rate`, `claims`, `depth_limit`;
+    tombstones decide `Orphaned`, `AlreadyDeleted` and `Undelete`). The BLAKE3 root (6.2) and the world transfer
+    must cover all of them, or two replicas with equal store hashes could still give different outcomes.
