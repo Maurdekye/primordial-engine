@@ -1,7 +1,8 @@
 //! A small world model for pe-replica's tests and the harness, until pe-world exists: objects that are spheres or
 //! boxes, created, removed, teleported and pushed by edit entries in a tiny test codec. It implements
 //! [`WorldModel`] the way replica.md 8.1 asks of pe-world: every entry is all or nothing, refused entries change
-//! nothing, and the root covers every row, the physics rows and the frame.
+//! nothing, and the root covers every row, the physics rows and the frame. Input entries carry the same codec, and
+//! within a frame they apply before the edits (two phases, as pe-world's hand inputs do).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -13,8 +14,8 @@ use pe_seams::{
 };
 
 use crate::world::{
-    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, PhysicsSettings, PushFx, ShapePart, ShapeRow,
-    WorldModel,
+    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, Phase, PhysicsSettings, PushFx, ShapePart,
+    ShapeRow, WorldModel,
 };
 
 /// Farthest a body may be from the origin, in metres: pe-physics's `MAX_POSITION`.
@@ -345,6 +346,11 @@ impl WorldModel for MockWorld {
 
     fn domain(&self) -> DomainId {
         self.domain
+    }
+
+    /// Two phases, the mock's stand-in for pe-world's hand-first order: a frame's inputs apply before its edits.
+    fn phase(entry: &SignedEntry) -> Phase {
+        if entry.entry.class == Class::Input { Phase::First } else { Phase::Second }
     }
 
     fn apply(&mut self, _frame: Frame, entry: &SignedEntry) -> (Outcome, Effects) {
