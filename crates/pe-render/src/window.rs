@@ -84,8 +84,10 @@ fn recreate_surface(g: &mut Gfx) -> bool {
     };
     match made {
         Ok(s) => {
-            s.configure(&g.renderer.context().device, &g.config);
-            g.surface = s;
+            // Drop the old surface and its swapchain before configuring the new one: on Vulkan, two swapchains on one
+            // window can fail with VK_ERROR_NATIVE_WINDOW_IN_USE_KHR (recheck nit, part 2a).
+            drop(std::mem::replace(&mut g.surface, s));
+            g.surface.configure(&g.renderer.context().device, &g.config);
             true
         }
         Err(_) => false,
