@@ -30,9 +30,13 @@ impl EntrySource for Src {
     fn final_cut(&self) -> Option<&FinalCut> {
         self.fin.as_ref()
     }
-    fn entries_at(&self, frame: Frame) -> &[SignedEntry] {
-        self.at.get(&frame.0).map_or(&[], |v| v.as_slice())
+    fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
+        Some(self.at.get(&frame.0).map_or(&[], |v| v.as_slice()))
     }
+    fn kept_from(&self) -> Frame {
+        Frame(0)
+    }
+    fn keep_final_from(&mut self, _: Frame, _: Frame) {}
     fn take_changed_from(&mut self) -> Option<Frame> {
         self.changed.take()
     }

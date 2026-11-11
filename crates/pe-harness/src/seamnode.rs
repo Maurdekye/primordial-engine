@@ -146,7 +146,8 @@ impl<A: Agreement> SeamNode<A> {
         let Some(fc) = self.agree.final_cut().cloned() else { return };
         let to = fc.cut.at.frame.0;
         for f in self.checked_to..to {
-            for e in self.agree.entries_at(Frame(f)) {
+            // A frame no longer kept (S3 v1.2) has nothing left to check.
+            for e in self.agree.entries_at(Frame(f)).unwrap_or_default() {
                 let bad = if self.voided.contains(&e.id()) {
                     Some("a voided entry")
                 } else if !fc.cut.includes(&e.entry.chain, e.entry.seq) {
@@ -196,6 +197,8 @@ impl<A: Agreement> SeamNode<A> {
                     self.finalized_height = fc.cut.at.height;
                     self.events.push(Ev::Floor { frame: fc.cut.at.frame.0 });
                 }
+                // Rung 2 is due and the floor stays (S3 v1.2): like the driver, it does not call again for this cut.
+                Finalized::Damaged => self.finalized_height = fc.cut.at.height,
             }
         }
     }
