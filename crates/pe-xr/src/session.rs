@@ -173,14 +173,34 @@ impl<B: Backend> XrSession<B> {
         &mut self.backend
     }
 
-    /// Leave VR by choice: `xrRequestExitSession`, then STOPPING, IDLE and EXITING arrive as events.
+    /// Leave VR by choice: `xrRequestExitSession`, then STOPPING, IDLE and EXITING arrive as events. If the request
+    /// fails (`XR_ERROR_SESSION_NOT_RUNNING` from a `running` that is one event behind is enough), the session ends
+    /// here, as `Exited` or as the loss the error names, and the error is returned: the next [`Self::step`] answers
+    /// `Ended` and tears down, so a caller that asks once can never be left with a session that keeps running.
     pub fn request_exit(&mut self) -> Result<(), XrError> {
         if self.running {
-            self.backend.request_exit()
+            let r = self.backend.request_exit();
+            if let Err(e) = &r {
+                let why = match e {
+                    XrError::SessionLost => EndReason::SessionLost,
+                    XrError::InstanceLost => EndReason::InstanceLost,
+                    XrError::Other(_) => EndReason::Exited,
+                };
+                self.last_error = Some(e.clone());
+                self.end(why);
+            }
+            r
         } else {
             self.end(EndReason::Exited);
             Ok(())
         }
+    }
+
+    /// End the session now, without waiting for the runtime: for a caller whose exit request the runtime accepted but
+    /// never followed with STOPPING (a deadline on quitting). The next [`Self::step`] answers `Ended(Exited)` and tears
+    /// down; `xrDestroySession` is valid in any state. Nothing happens if the session already ended.
+    pub fn abandon(&mut self) {
+        self.end(EndReason::Exited);
     }
 
     fn hands_absent(&mut self) {
