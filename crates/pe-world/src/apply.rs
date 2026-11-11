@@ -51,6 +51,17 @@ struct Cx {
     overwrote: Vec<Version>,
     notes: Vec<Note>,
     fp: Footprint,
+    /// The inverse's ops, in the order the changes were made (reversed at the end), and its `Version`
+    /// preconditions: the last version this transaction set on each row it wrote (7.7).
+    undo: Vec<Op>,
+    undo_pre: BTreeMap<(ObjectId, ComponentId), Version>,
+}
+
+impl Cx {
+    /// Objects that are gone after this op can carry no precondition in the inverse.
+    fn forget(&mut self, gone: &[ObjectId]) {
+        self.undo_pre.retain(|(id, _), _| !gone.contains(id));
+    }
 }
 
 type Refusal = (Option<u32>, Reason);
@@ -131,6 +142,8 @@ impl World {
             overwrote: Vec::new(),
             notes: Vec::new(),
             fp: Footprint::default(),
+            undo: Vec::new(),
+            undo_pre: BTreeMap::new(),
         };
         let mut work = self.clone();
         for (i, op) in tx.ops.iter().enumerate() {
@@ -138,7 +151,23 @@ impl World {
             work.op(&mut cx, i, op).map_err(|r| (Some(i), r))?;
         }
         *self = work;
-        let outcome = Outcome::Applied { created: cx.created, overwrote: cx.overwrote, notes: cx.notes, inverse: None };
+        let inverse = Transaction {
+            actor: tx.actor.clone(),
+            label: None,
+            preconditions: cx
+                .undo_pre
+                .iter()
+                .map(|(&(id, component), &is)| Precondition::Version { id, component, instance: 0, is })
+                .collect(),
+            ops: cx.undo.into_iter().rev().collect(),
+            blobs: Vec::new(),
+        };
+        let outcome = Outcome::Applied {
+            created: cx.created,
+            overwrote: cx.overwrote,
+            notes: cx.notes,
+            inverse: Some(bytes::Bytes::from(inverse.encode())),
+        };
         Ok((outcome, cx.fp))
     }
 
@@ -252,6 +281,8 @@ impl World {
                 let id = self.live(cx, *id)?;
                 self.op_reparent(cx, i, id, *parent, *index, *keep_world)
             }
+            Op::Copy { source, new, parent, index } => self.op_copy(cx, i, *source, *new, *parent, *index),
+            Op::Undelete { id } => self.op_undelete(cx, i, *id),
         }
     }
 
@@ -317,6 +348,7 @@ impl World {
         self.touch(id, v, true);
         cx.created.push(id);
         cx.fp.created.push(id);
+        cx.undo.push(Op::Delete { id: Target::Existing(id) });
         Ok(())
     }
 
@@ -372,8 +404,195 @@ impl World {
         if let Some(p) = parent {
             self.touch(p, version(cx.entry, i), true);
         }
+        cx.forget(&doomed);
+        cx.undo.push(Op::Undelete { id: o });
         cx.fp.removed.extend_from_slice(&doomed);
         Ok(())
+    }
+
+    /// `Copy` (7.1): the subtree, rows and all, as new objects with derived ids, under `parent`. A protected object
+    /// (or a subtree containing one) may be copied only by its owner (7.8); hands are never copied (8).
+    fn op_copy(
+        &mut self,
+        cx: &mut Cx,
+        i: u32,
+        source: Target,
+        new: u32,
+        parent: Target,
+        index: Option<u32>,
+    ) -> Result<(), Reason> {
+        let src = self.live(cx, source)?;
+        let subtree = self.store.subtree(src);
+        let end = u32::try_from(subtree.len()).ok().and_then(|n| new.checked_add(n)).ok_or(Reason::NewIndexOverlap)?;
+        if cx.new.range(new..end).next().is_some() {
+            return Err(Reason::NewIndexOverlap);
+        }
+        if let Some(owner) = self.protected_by(src)
+            && owner != cx.author
+        {
+            return Err(Reason::Protected { owner });
+        }
+        for &x in &subtree {
+            if let Some(p) = self.store.get::<Protection>(x)
+                && p.owner != cx.author
+            {
+                return Err(Reason::Protected { owner: p.owner });
+            }
+            if self.store.get_raw(ids::HAND, x).is_some() {
+                return Err(invalid_field(ids::HAND, u32::MAX));
+            }
+        }
+        let (parent, orphan_base) = match self.resolve(cx, parent)? {
+            Res::Root => (None, None),
+            Res::Live(p) => (Some(p), None),
+            Res::Gone { id: p, by } => {
+                let root = ObjectId::created(cx.line, cx.author, cx.chain, cx.seq, new);
+                cx.notes.push(Note::Orphaned { object: root, deleted_by: by });
+                (None, Some(self.tombstones.get(&p).and_then(|t| t.world)))
+            }
+        };
+        if let Some(p) = parent
+            && depth(&self.store, p) + 1 + self.height(src) > self.depth_limit
+        {
+            return Err(too_deep());
+        }
+        let v = version(cx.entry, i);
+        let rv = RowVersion { entry: v.entry.0.0, op: v.op, _pad: 0 };
+        let registry = self.store.registry().clone();
+        let mut map: BTreeMap<ObjectId, ObjectId> = BTreeMap::new();
+        for (j, &x) in subtree.iter().enumerate() {
+            let k = new + j as u32;
+            let id = ObjectId::created(cx.line, cx.author, cx.chain, cx.seq, k);
+            if self.store.exists(id) || self.tombstones.contains_key(&id) {
+                return Err(Reason::Exists(id));
+            }
+            let (p, at) = if j == 0 {
+                (parent, index.map(|x| x as usize))
+            } else {
+                (self.store.parent(x).and_then(|q| map.get(&q).copied()), None)
+            };
+            self.create_at(id, p, at, cx.author, v).map_err(|_| invalid())?;
+            for desc in registry.iter().filter(|d| d.id() != ComponentId::NODE && d.id() != ids::BODY_STATE) {
+                let c = desc.id();
+                let Some(row) = self.store.get_raw(c, x).map(<[u8]>::to_vec) else { continue };
+                let row = match (j, orphan_base) {
+                    (0, Some(Some(w))) if c == ComponentId::TRANSFORM => {
+                        let t: Transform = read_pod(&row).ok_or_else(invalid)?;
+                        let placed = w.compose(&t).ok_or(Reason::OutOfRange)?;
+                        bytemuck::bytes_of(&placed.local_in(None)).to_vec()
+                    }
+                    _ => row,
+                };
+                self.store.insert_raw(c, id, &row).map_err(|e| self.store_reason(c, e))?;
+                self.store.set_row_version(c, id, rv);
+            }
+            map.insert(x, id);
+            cx.new.insert(k, id);
+            cx.created.push(id);
+            cx.fp.created.push(id);
+        }
+        if let Some(p) = parent {
+            self.touch(p, v, true);
+        }
+        cx.undo.push(Op::Delete { id: Target::Existing(map[&src]) });
+        Ok(())
+    }
+
+    /// `Undelete` (7.5): the deleted subtree back from its tombstones, with the same ids, rows and row versions, under
+    /// its old parent at its old place (or as a root, orphaned, if that parent is gone too). Each restored object's
+    /// object and structural versions move to this op.
+    fn op_undelete(&mut self, cx: &mut Cx, i: u32, id: ObjectId) -> Result<(), Reason> {
+        if self.store.exists(id) {
+            return Err(Reason::Exists(id));
+        }
+        let root = self.tombstones.get(&id).cloned().ok_or(Reason::Unknown(id))?;
+        // The subtree, parents first, children in their old order, through the tombstones' own links. Bounded by
+        // the number of tombstones, so corrupt links cannot loop.
+        let limit = self.tombstones.len();
+        let mut order = Vec::new();
+        let mut stack = vec![id];
+        while let Some(x) = stack.pop() {
+            if order.len() > limit {
+                return Err(invalid());
+            }
+            order.push(x);
+            let mut kids = Vec::new();
+            let mut c = self.tombstones[&x].node.first_child;
+            while let Some(t) = c.some().and_then(|c| self.tombstones.get(&c)).filter(|t| t.by == root.by) {
+                kids.push(c);
+                if kids.len() > limit {
+                    return Err(invalid());
+                }
+                c = t.node.next_sibling;
+            }
+            stack.extend(kids.into_iter().rev());
+        }
+        let parent = root.parent.filter(|&p| self.store.exists(p));
+        let orphaned = root.parent.is_some() && parent.is_none();
+        if orphaned {
+            let by = root.parent.and_then(|p| self.tombstones.get(&p)).map_or(root.by, |t| t.by);
+            cx.notes.push(Note::Orphaned { object: id, deleted_by: by });
+        }
+        let index = parent.map(|p| {
+            let prev = root.node.prev_sibling;
+            self.store.children(p).position(|c| c == prev).map_or(0, |k| k + 1)
+        });
+        if let Some(p) = parent {
+            let height = order.iter().map(|x| self.stone_depth(id, *x)).max().unwrap_or(0);
+            if depth(&self.store, p) + 1 + height > self.depth_limit {
+                return Err(too_deep());
+            }
+        }
+        let v = version(cx.entry, i);
+        for &x in &order {
+            let t = self.tombstones[&x].clone();
+            let (p, at) = if x == id { (parent, index) } else { (t.parent, None) };
+            self.create_at(x, p, at, t.node.creator, v).map_err(|_| invalid())?;
+            let mut n = self.store.node(x);
+            n.born_on = t.node.born_on;
+            self.store.set_node_record(x, &n);
+            for (c, bytes, rv) in &t.rows {
+                let bytes = match root.world {
+                    Some(w) if x == id && orphaned && *c == ComponentId::TRANSFORM => {
+                        bytemuck::bytes_of(&w.local_in(None)).to_vec()
+                    }
+                    _ => bytes.clone(),
+                };
+                self.store.insert_raw(*c, x, &bytes).map_err(|e| self.store_reason(*c, e))?;
+                self.store.set_row_version(*c, x, *rv);
+            }
+        }
+        let stones = Arc::make_mut(&mut self.tombstones);
+        for x in &order {
+            stones.remove(x);
+        }
+        if let Some(p) = parent {
+            self.touch(p, v, true);
+        }
+        cx.fp.created.extend_from_slice(&order);
+        cx.undo.push(Op::Delete { id: Target::Existing(id) });
+        Ok(())
+    }
+
+    /// How many levels `x` sits below `top` in the tombstones' recorded parents.
+    fn stone_depth(&self, top: ObjectId, x: ObjectId) -> u32 {
+        let mut d = 0;
+        let mut at = x;
+        while at != top && d <= DEPTH_LIMIT_MAX {
+            match self.tombstones.get(&at).and_then(|t| t.parent) {
+                Some(p) => at = p,
+                None => break,
+            }
+            d += 1;
+        }
+        d
+    }
+
+    /// Ends a frame (7.2, 7.5): drops the tombstones whose expiry frame has passed.
+    pub fn end_frame(&mut self, frame: Frame) {
+        if self.tombstones.values().any(|t| t.expires <= frame) {
+            Arc::make_mut(&mut self.tombstones).retain(|_, t| t.expires > frame);
+        }
     }
 
     /// The whole row with one field replaced.
@@ -455,7 +674,15 @@ impl World {
             self.check_protection_write(cx.author, id, Some(p.owner))?;
         }
         let before = self.store.row_version(c, id);
+        let prior = self.store.get_raw(c, id).map(<[u8]>::to_vec);
         self.store.insert_raw(c, id, bytes).map_err(|e| self.store_reason(c, e))?;
+        if !creating {
+            cx.undo.push(match prior {
+                Some(bytes) => Op::SetRow { id: Target::Existing(id), row: Row { component: c, instance: 0, bytes } },
+                None => Op::RemoveRow { id: Target::Existing(id), component: c, instance: 0 },
+            });
+            cx.undo_pre.insert((id, c), version(cx.entry, i));
+        }
         if !creating
             && let Some(v) = before
             && v != RowVersion::NONE
@@ -492,6 +719,10 @@ impl World {
             // Removing an absent row changes nothing, so a merge of two removals needs no rule of its own.
             return Ok(());
         };
+        if let Some(bytes) = self.store.get_raw(c, id).map(<[u8]>::to_vec) {
+            cx.undo.push(Op::SetRow { id: Target::Existing(id), row: Row { component: c, instance: 0, bytes } });
+        }
+        cx.undo_pre.remove(&(id, c));
         self.store.remove_raw(c, id).map_err(|e| self.store_reason(c, e))?;
         if before != RowVersion::NONE {
             cx.overwrote.push(from_row_version(before));
@@ -531,6 +762,13 @@ impl World {
             }
         }
         let old = self.store.parent(id);
+        let old_index = old.and_then(|p| self.store.children(p).position(|c| c == id)).map(|x| x as u32);
+        cx.undo.push(Op::Reparent {
+            id: Target::Existing(id),
+            parent: old.map_or(Target::Root, Target::Existing),
+            index: old_index,
+            keep_world,
+        });
         let index = index.map(|x| x as usize);
         let r = if keep_world {
             self.store.set_parent_keep_world(id, parent, index)
