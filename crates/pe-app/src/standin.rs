@@ -31,9 +31,16 @@ impl EntrySource for SoloAgreement {
         None
     }
 
-    fn entries_at(&self, frame: Frame) -> &[SignedEntry] {
-        self.entries.get(&frame).map_or(&[], Vec::as_slice)
+    fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
+        Some(self.entries.get(&frame).map_or(&[], Vec::as_slice))
     }
+
+    /// The stand-in keeps every entry (S3 v1.2): it never trims.
+    fn kept_from(&self) -> Frame {
+        Frame(0)
+    }
+
+    fn keep_final_from(&mut self, _cv: Frame, _floor: Frame) {}
 
     fn take_changed_from(&mut self) -> Option<Frame> {
         self.changed_from.take()
