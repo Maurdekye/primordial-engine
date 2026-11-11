@@ -194,12 +194,18 @@ impl Sim {
         }
     }
 
-    /// When the next tick is due: the start of the frame after `ticked`, or of frame 0, but never sooner than a
-    /// millisecond from `now` while the clock has no frame yet.
+    /// When the next tick is due: the start of the frame after `ticked`, or of frame 0, but never sooner than one
+    /// frame period from `now` while the clock has no frame yet. With pe-net's clock model, `host_time_of(Frame(0))`
+    /// means nothing until the clock converges (transport.md 5.4), so a shorter floor would wake the thread many
+    /// times a frame for the whole convergence. Once pe-net's runner is wired, it ends the wait early through the
+    /// thread's [`Waker`] when the clock converges.
     fn next_due(&self, ticked: Option<Frame>, now: HostTime) -> HostTime {
         match ticked {
             Some(p) => self.clock.host_time_of(Frame(p.0 + 1)),
-            None => self.clock.host_time_of(Frame(0)).max(now.plus(Duration::from_millis(1))),
+            None => {
+                let period = Duration::from_nanos(1_000_000_000 / u64::from(self.clock.rate_hz()));
+                self.clock.host_time_of(Frame(0)).max(now.plus(period))
+            }
         }
     }
 }
@@ -263,15 +269,31 @@ mod tests {
     use super::*;
     use crate::clock::{self, LocalClock};
     use crate::standin::{EmptyReplica, SoloAgreement};
-    use pe_seams::LineId;
+    use pe_replica::mock::MockWorld;
+    use pe_replica::{ReplicaConfig, ReplicaImpl};
+    use pe_seams::{DomainId, LineId};
 
     const RATE: SimRate = SimRate::DEFAULT;
 
+    type MakeSim = fn(Arc<dyn FrameClock>, Budget) -> (Sim, Arc<FrameSlot>);
+
     fn sim(clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
-        let slot = Arc::new(FrameSlot::new());
         let replica = EmptyReplica::new(clock.clone(), Frame(0));
-        let sim =
-            Sim::new(Box::new(SoloAgreement::new(LineId::origin())), Box::new(replica), clock, slot.clone(), budget);
+        with_replica(Box::new(replica), clock, budget)
+    }
+
+    /// pe-replica's `ReplicaImpl` over its small world model, until pe-world implements `WorldModel`. The replica
+    /// takes the frame clock, so the view's `sim_time` is on the shared time base (S5), as the renderer reads it.
+    fn real(clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
+        let mut config = ReplicaConfig::new(RATE, Duration::from_millis(133));
+        config.clock = Some(clock.clone());
+        let replica = ReplicaImpl::new(MockWorld::new(DomainId(0), RATE), config).expect("a replica");
+        with_replica(Box::new(replica), clock, budget)
+    }
+
+    fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
+        let slot = Arc::new(FrameSlot::new());
+        let sim = Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, clock, slot.clone(), budget);
         (sim, slot)
     }
 
@@ -312,15 +334,51 @@ mod tests {
         assert!(s.tick(HostTime(epoch.0 - 1)).is_none());
         assert_eq!(s.stats().before_frame_0, 1);
         assert!(slot.newest().is_none(), "nothing published before frame 0");
-        // The next tick is due at frame 0, but never sooner than a millisecond away.
+        // The next tick is due at frame 0, but never sooner than one frame period away.
+        let period = 1_000_000_000 / i64::from(RATE.hz());
         assert_eq!(s.next_due(None, HostTime(epoch.0 - 2_000_000_000)), epoch);
-        assert_eq!(s.next_due(None, HostTime(epoch.0 - 1)), HostTime(epoch.0 - 1 + 1_000_000));
+        assert_eq!(s.next_due(None, HostTime(epoch.0 - 1)), HostTime(epoch.0 - 1 + period));
+    }
+
+    /// A clock still converging: no frame yet, and a frame 0 that would already have started.
+    struct Converging;
+
+    impl FrameClock for Converging {
+        fn rate_hz(&self) -> u32 {
+            RATE.hz()
+        }
+        fn frame_at(&self, _: HostTime) -> Option<Frame> {
+            None
+        }
+        fn host_time_of(&self, _: Frame) -> HostTime {
+            HostTime(0)
+        }
+    }
+
+    /// design-reviewer's Low on slice 1: while the clock converges, the thread waits a frame period between ticks,
+    /// not a millisecond.
+    #[test]
+    fn a_converging_clock_ticks_once_a_period() {
+        let (mut s, slot) = sim(Arc::new(Converging), Budget::new(RATE));
+        let now = HostTime(9_000_000_000);
+        assert!(s.tick(now).is_none());
+        assert_eq!(s.next_due(None, now), HostTime(now.0 + 1_000_000_000 / i64::from(RATE.hz())));
+        assert!(slot.newest().is_none());
     }
 
     #[test]
     fn a_tick_simulates_its_frame_and_publishes_the_view() {
+        ticks_and_publishes(sim);
+    }
+
+    #[test]
+    fn a_tick_simulates_its_frame_and_publishes_the_view_on_the_real_replica() {
+        ticks_and_publishes(real);
+    }
+
+    fn ticks_and_publishes(make: MakeSim) {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
-        let (mut s, slot) = sim(clock.clone(), Budget::new(RATE));
+        let (mut s, slot) = make(clock.clone(), Budget::new(RATE));
         let (p, report) = s.tick(clock.host_time_of(Frame(1))).expect("ticked");
         assert_eq!(p, Frame(1));
         assert!(report.advance.caught_up);
@@ -338,8 +396,17 @@ mod tests {
     /// driver, the view holds while the replica catches up, and it catches up within `W_fg` plus two ticks.
     #[test]
     fn a_backlog_of_w_fg_at_the_floor_catches_up_within_w_fg() {
+        catches_up(sim);
+    }
+
+    #[test]
+    fn a_backlog_of_w_fg_at_the_floor_catches_up_within_w_fg_on_the_real_replica() {
+        catches_up(real);
+    }
+
+    fn catches_up(make: MakeSim) {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
-        let (mut s, slot) = sim(clock.clone(), Budget::with_share(RATE, 0.0));
+        let (mut s, slot) = make(clock.clone(), Budget::with_share(RATE, 0.0));
         let w_fg = RATE.frames(Duration::from_secs(2));
         let mut ticks = 0u64;
         loop {

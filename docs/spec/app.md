@@ -87,7 +87,8 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    the replica's budget (below).
 6. **Publish.** `FrameSlot::publish(replica.view())`, the snapshot port, and the effects queue.
 7. **Wait** until `clock.host_time_of(p + 1)`, or until the inbox or the edit queue wakes the thread, whichever is
-   first.
+   first. Before frame 0 the wait is at least one frame period, since `host_time_of` means nothing while the clock
+   converges; the network thread wakes the simulation thread when it converges.
 
 **Bounded work per tick.** A deep rollback, or a repair's replay of up to `W_fg` (2 s, 120-240 frames), done in one
 tick would stall the simulation for hundreds of milliseconds, and with it agreement's votes and messages for every
@@ -134,7 +135,7 @@ that ships is the loop the properties check.
 
 | Crate | Needs |
 |---|---|
-| pe-replica (@vdw-physics) | A constructor from a world config and a seed; `Driver::drive` over `&mut dyn Replica` and `&mut dyn Agreement` (section 3, step 4); the per-call budget of section 3 |
+| pe-replica (@vdw-physics) | A constructor from a world config and a seed, taking the frame clock (`ReplicaConfig::clock`, so the view's `sim_time` is on the shared time base); `Driver::drive` over `&mut dyn Replica` and `&mut dyn Agreement` (section 3, step 4); the per-call budget of section 3 |
 | pe-agree (@world-chunks) | A constructor from the member key, the line and the world config; `Agreement` (S3) |
 | pe-diverge (@diverge-eng) | Its state machine with `on_event` over the ordered list of section 3, `receive` and `tick(now, clock)`, returning its actions (Repair messages, `Revote`, `RunSelfTest`, `WriteBundle`); a repair that is pending continues on later ticks |
 | pe-net (@shader-lang) | A runner that owns the network thread and returns its two queues and a `FrameClock` handle; the invite, dial and admission calls (transport.md 6) |
