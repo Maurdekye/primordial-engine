@@ -131,7 +131,7 @@ fn every_frame_waits_begins_and_ends_in_order_with_one_layer() {
                 Call::ReadHand(Hand::Left),
                 Call::ReadHand(Hand::Right),
                 Call::ReleaseImage,
-                Call::EndFrame(Layers::Projection { with_depth: false }),
+                Call::EndFrame(Layers::Projection { extent: None, depth: None }),
             ]
         )
     };
@@ -508,5 +508,29 @@ fn an_exit_before_the_session_ran_is_torn_down_by_the_application() {
     s.teardown(&mut k);
     s.teardown(&mut k);
     assert_eq!((k.released, s.backend().count(&Call::DestroySession)), (1, 1));
+    no_violations(&s);
+}
+
+#[test]
+fn depth_is_submitted_only_with_a_depth_image_and_the_drawn_rect_goes_with_the_layer() {
+    struct DepthSink;
+    impl FrameSink for DepthSink {
+        fn render(&mut self, f: &FrameRequest<'_>) -> bool {
+            assert_eq!(f.depth_image, None, "the fake runtime takes no depth");
+            true
+        }
+        fn extent(&self) -> Option<[u32; 2]> {
+            Some([1600, 1400])
+        }
+        fn depth(&self) -> Option<crate::backend::DepthInfo> {
+            Some(crate::backend::DepthInfo { min_depth: 0.0, max_depth: 1.0, near_z: 100.0, far_z: 0.02 })
+        }
+    }
+    let (mut s, _) = session(FakeRuntime::new().started());
+    for _ in 0..3 {
+        assert_eq!(s.step(&mut DepthSink), Step::Frame);
+    }
+    let layer = Call::EndFrame(Layers::Projection { extent: Some([1600, 1400]), depth: None });
+    assert_eq!(s.backend().count(&layer), 3);
     no_violations(&s);
 }

@@ -421,7 +421,13 @@ impl Backend for FakeRuntime {
         if self.display_time != Some(display_time) {
             self.violate(format!("xrEndFrame at {display_time:?}, not the display time {:?}", self.display_time));
         }
-        if let Layers::Projection { .. } = layers {
+        if let Layers::Projection { extent, depth } = layers {
+            if extent.is_some_and(|[w, h]| w == 0 || h == 0) {
+                self.violate("a projection layer with an empty image rectangle");
+            }
+            if depth.is_some() {
+                self.violate("a depth layer with no depth swapchain");
+            }
             if !self.should_render {
                 self.violate("a projection layer when shouldRender was false");
             }
