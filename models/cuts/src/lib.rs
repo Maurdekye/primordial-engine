@@ -116,6 +116,9 @@ pub struct Cuts {
     /// honestly, but its votes carry the wrong root.
     pub corrupt: Option<u8>,
     pub entries: Vec<EntryDef>,
+    /// Proposers choose the cut's frame (v0.1). Off, every cut names its parent's frame + K: for the lock checks, whose
+    /// attack is on certificates, not frames, and whose bounded space grows fourfold with the Byzantine frame choice.
+    pub frame_choice: bool,
 }
 
 impl Cuts {
@@ -148,11 +151,16 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true }
     }
 
     pub fn live(mut self) -> Self {
         self.liveness = true;
+        self
+    }
+
+    pub fn fixed_frames(mut self) -> Self {
+        self.frame_choice = false;
         self
     }
 
@@ -547,7 +555,9 @@ impl Cuts {
                 }
             }
             acts.push(Action::Propose(m, false));
-            acts.push(Action::Propose(m, true));
+            if self.frame_choice {
+                acts.push(Action::Propose(m, true));
+            }
             if with_timeouts {
                 acts.push(Action::Timeout(m));
             }
@@ -606,7 +616,7 @@ impl Cuts {
     /// 2K above it. Beyond the content heights only K: the frame no longer bears on any verdict.
     fn adversary_frames(&self, parent: &Block) -> Vec<u8> {
         let p = parent.frame();
-        if parent.h + 1 > self.heights {
+        if parent.h + 1 > self.heights || !self.frame_choice {
             return vec![p + FRAMES];
         }
         let mut out = vec![p + 1, p + 2, p + FRAMES, p + FRAME_STEP_MAX];
