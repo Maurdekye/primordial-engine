@@ -143,7 +143,6 @@ struct Live<G: xr::Graphics> {
 
 pub struct RealBackend<G: xr::Graphics> {
     live: Option<Live<G>>,
-    events: xr::EventDataBuffer,
     grasp: GraspConfig,
     /// Interaction profiles the runtime refused to bind, with its reason (for the log).
     pub binding_warnings: Vec<String>,
@@ -308,7 +307,6 @@ impl<G: xr::Graphics> RealBackend<G> {
                 display_time: None,
                 views: None,
             }),
-            events: xr::EventDataBuffer::new(),
             grasp,
             binding_warnings,
             pose_path: if hand_interaction { PosePath::GripSpace } else { PosePath::PalmJoint },
@@ -427,8 +425,11 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
     }
 
     fn poll_event(&mut self) -> Result<Option<XrEvent>, XrError> {
+        // A buffer per call, not a field: openxr's buffer holds a raw `next` pointer, which would make the backend
+        // (and pe-app's VulkanVr) not `Send`, and it moves to the XR thread (app.md 4). 4 KB on the stack.
+        let mut buf = xr::EventDataBuffer::new();
         loop {
-            let ev = self.xr.instance.poll_event(&mut self.events).map_err(xr_err)?;
+            let ev = self.xr.instance.poll_event(&mut buf).map_err(xr_err)?;
             let Some(ev) = ev else { return Ok(None) };
             let mapped = match ev {
                 xr::Event::SessionStateChanged(s) => state(s.state()).map(XrEvent::StateChanged),
