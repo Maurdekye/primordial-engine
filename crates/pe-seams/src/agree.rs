@@ -27,13 +27,15 @@
 //!   every entry after the head the previous final cut named, up to the head this cut names. The d1 rule is S3's
 //!   alone. The replica can't check it, because a cut may include void entries that [`EntrySource::entries_at`]
 //!   rightly leaves out, so it relies on this line.
-//! - **Retention for rung 1** (S3 v1.2): S3 keeps final entries from the later of two frames: the frame the replica
-//!   asks for ([`EntrySource::keep_final_from`], `Cv`'s frame, forward only) and a cap. The cap is `T_diverge` (one
+//! - **Retention for rung 1** (S3 v1.2): the replica tells S3 what it still needs
+//!   ([`EntrySource::keep_final_from`]): `Cv`'s frame, for rung 1's replay, and its floor, for re-simulation, both
+//!   forward only. S3 never trims a final entry at or above the floor except by the time cap: `T_diverge` (one
 //!   minute, the user's divergence bound, divergence.md 14) plus `T_keep`, behind the frame of this member's final
-//!   cut, in frames at the world's `SimRate`, never a fixed frame count; and a byte limit, so a busy minute can't
-//!   grow without bound. [`EntrySource::kept_from`] reports what is kept, truthfully, and
-//!   [`EntrySource::entries_at`] answers `None` below it. The window serves rung 1 only: the world record on disk is
-//!   separate and not bounded by it.
+//!   cut, in frames at the world's `SimRate`, never a fixed frame count. Below the floor it keeps from `Cv` on,
+//!   unless the time cap or a byte limit (so a busy minute can't grow without bound) trimmed past it.
+//!   [`EntrySource::kept_from`] reports what is kept, truthfully, and [`EntrySource::entries_at`] answers `None`
+//!   below it. The window serves rung 1, and a merge only while it lasts ([`Agreement::final_entries`]); the world
+//!   record on disk is separate and not bounded by it.
 //! - **[`Agreement::receive`] never panics** on any bytes: bad bytes are `Err(Fault)` naming the sender, and an event.
 //! - **The `mutants` feature** with named mutations lives in pe-agree (and pe-diverge, pe-world for their rules), never
 //!   here: inert unless the node's configuration names one, and never in a production build.
@@ -311,7 +313,10 @@ pub trait Agreement: EntrySource + Send {
 
     /// The final log between two final cuts, in agreed order: the fault bundle and the merge read it here, never from
     /// a node's internals; rung 1's replay reads the same log through [`EntrySource::entries_at`]. `None` when the
-    /// log from `from` is no longer kept ([`EntrySource::kept_from`], S3 v1.2).
+    /// log from `from` is no longer kept ([`EntrySource::kept_from`], S3 v1.2). The window keeps the log since `Cv`
+    /// for up to `T_diverge`, which covers a split healed within `T_diverge` (divergence.md 9 and 11.1), unless the
+    /// byte limit trimmed it sooner. Where a merge's base and log come from beyond that (the split point's log, or
+    /// the world record, M3) is settled with the merge engine (M2); this window promises nothing more.
     fn final_entries(&self, from: &CutRef, to: &CutRef) -> Option<Vec<SignedEntry>>;
 
     /// The members, sorted by key.

@@ -162,9 +162,24 @@ Two choices the decision left to the seam (@engine-architect):
   pe-replica, and three unlanded branches fix a line or two at their next merge (@vdw-physics's count over every
   local branch). It also covers `advance`, which a check inside `replay_to` alone would miss: a replica whose floor
   falls further behind than the cap counts a fault instead of stepping empty frames silently.
-- **Who asks:** the replica, from `finalize`, through `EntrySource::keep_final_from(frame)`, whenever `Cv` moves. It
-  is the only call that moves `Cv`, it already holds the source, and it covers pe-diverge's calls to `finalize` after
-  a repair, which run outside the driver. So there is no `Cv` accessor on `Replica` and no driver call each tick.
+- **Who asks:** the replica, from `finalize`, through `EntrySource::keep_final_from(cv, floor)`, whenever `Cv` or the
+  floor moves. It is the only call that moves either, it already holds the source, and it covers pe-diverge's calls
+  to `finalize` after a repair, which run outside the driver. So there is no `Cv` accessor on `Replica` and no driver
+  call each tick.
+
+Round 2, on @design-reviewer's Medium and Low on 27425a53 (mf7ad557d2c10):
+- **The floor is never trimmed** except by the time cap. The byte limit had no lower bound, and the replica
+  re-simulates every frame from its floor, so a busy minute could have broken ordinary rollback, not only rung 1. So
+  the replica also gives S3 its floor, and S3 never trims at or above it except by the time cap. It is the floor, not
+  this member's final cut, because the floor lags the final cut while the replica catches up (`finalize` answers
+  `NotReady` until it has re-simulated to the cut), and a trim between the two would break that catch-up.
+- **A trimmed frame stops `advance`.** Only a replica that fell more than the time cap behind its final cut, or an S3
+  fault, meets one. The replica never steps it empty: it stops there and counts the fault, and `root_at_cut` answers
+  `Damaged` for any cut past it, so rung 2 is due at once (pe-diverge acts on it). Stopping was @design-reviewer's
+  pick: a state known to be incomplete is never shown or voted.
+- **The merge's log:** the window keeps the log since `Cv` for up to `T_diverge`, which covers a split healed within
+  `T_diverge` (divergence.md 9 and 11.1), unless the byte limit trimmed it sooner. Beyond that, where a merge's base
+  and log come from is settled with the merge engine (M2); `final_entries` promises nothing more.
 
 Folded in: @design-reviewer's two Lows on S3 v1.1 round 3 (m91523df37dd3): "No cut without its entries" now asks
 only for the entries a cut newly includes (after the previous final cut's head, up to this cut's), which a member can

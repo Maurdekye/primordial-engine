@@ -44,7 +44,7 @@ impl EntrySource for Agree {
     fn kept_from(&self) -> Frame {
         Frame(0)
     }
-    fn keep_final_from(&mut self, _: Frame) {}
+    fn keep_final_from(&mut self, _: Frame, _: Frame) {}
     fn take_changed_from(&mut self) -> Option<Frame> {
         None
     }
