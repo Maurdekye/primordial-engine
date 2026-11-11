@@ -537,3 +537,30 @@ fn depth_is_submitted_only_with_a_depth_image_and_the_drawn_rect_goes_with_the_l
     assert_eq!(s.backend().count(&layer), 3);
     no_violations(&s);
 }
+
+#[test]
+fn a_failed_exit_request_ends_the_session_so_one_request_always_reaches_ended() {
+    // A `running` flag one event behind the runtime is enough for XR_ERROR_SESSION_NOT_RUNNING (design-reviewer
+    // m9aae6f069635): before this, the session kept stepping `Frame` and pe-app's quit waited for good.
+    let e = XrError::Other("XR_ERROR_SESSION_NOT_RUNNING".into());
+    let (mut s, _) = session(FakeRuntime::new().started().failing(Op::RequestExit, 3, e.clone()));
+    let mut k = sink();
+    assert_eq!(run(&mut s, &mut k, 3), vec![Step::Frame; 3]);
+    assert_eq!(s.request_exit(), Err(e.clone()));
+    assert_eq!(run(&mut s, &mut k, 2), vec![Step::Ended(EndReason::Exited); 2]);
+    assert_eq!(s.backend().count(&Call::DestroySession), 1);
+    assert_eq!(s.last_error, Some(e));
+    no_violations(&s);
+}
+
+#[test]
+fn abandon_ends_a_running_session_at_the_next_step_and_tears_down_once() {
+    let (mut s, _) = session(FakeRuntime::new().started());
+    let mut k = sink();
+    assert_eq!(run(&mut s, &mut k, 3), vec![Step::Frame; 3]);
+    s.abandon();
+    assert_eq!(run(&mut s, &mut k, 2), vec![Step::Ended(EndReason::Exited); 2]);
+    assert_eq!(s.backend().count(&Call::DestroySession), 1);
+    assert_eq!(s.backend().count(&Call::WaitFrame), 3, "no frame after the session was abandoned");
+    no_violations(&s);
+}
