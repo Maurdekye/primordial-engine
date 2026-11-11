@@ -23,9 +23,17 @@
 //!   held but never applied, on any member, until the first cut whose head passes it voids it as
 //!   [`VoidReason::Late`]. Two different entries at one seq of a chain are a fork fault, never two pending entries.
 //! - **No cut without its entries** (S3 v1.1): [`Agreement::wants_roots`] and [`EntrySource::final_cut`] never hand
-//!   over a cut unless this member holds every entry it names, void ones included: for each author, every entry up
-//!   to the head the cut names. The d1 rule is S3's alone. The replica can't check it, because a cut may include
-//!   void entries that [`EntrySource::entries_at`] rightly leaves out, so it relies on this line.
+//!   over a cut unless this member holds every entry it newly includes, void ones among them: for each author,
+//!   every entry after the head the previous final cut named, up to the head this cut names. The d1 rule is S3's
+//!   alone. The replica can't check it, because a cut may include void entries that [`EntrySource::entries_at`]
+//!   rightly leaves out, so it relies on this line.
+//! - **Retention for rung 1** (S3 v1.2): S3 keeps final entries from the later of two frames: the frame the replica
+//!   asks for ([`EntrySource::keep_final_from`], `Cv`'s frame, forward only) and a cap. The cap is `T_diverge` (one
+//!   minute, the user's divergence bound, divergence.md 14) plus `T_keep`, behind the frame of this member's final
+//!   cut, in frames at the world's `SimRate`, never a fixed frame count; and a byte limit, so a busy minute can't
+//!   grow without bound. [`EntrySource::kept_from`] reports what is kept, truthfully, and
+//!   [`EntrySource::entries_at`] answers `None` below it. The window serves rung 1 only: the world record on disk is
+//!   separate and not bounded by it.
 //! - **[`Agreement::receive`] never panics** on any bytes: bad bytes are `Err(Fault)` naming the sender, and an event.
 //! - **The `mutants` feature** with named mutations lives in pe-agree (and pe-diverge, pe-world for their rules), never
 //!   here: inert unless the node's configuration names one, and never in a production build.
@@ -301,8 +309,9 @@ pub trait Agreement: EntrySource + Send {
     /// Release the hold placed at `frame`.
     fn release_votes_from(&mut self, frame: Frame);
 
-    /// The final log between two final cuts, in agreed order: rung 1's replay, the fault bundle and the merge read it
-    /// here, never from a node's internals.
+    /// The final log between two final cuts, in agreed order: the fault bundle and the merge read it here, never from
+    /// a node's internals; rung 1's replay reads the same log through [`EntrySource::entries_at`]. `None` when the
+    /// log from `from` is no longer kept ([`EntrySource::kept_from`], S3 v1.2).
     fn final_entries(&self, from: &CutRef, to: &CutRef) -> Option<Vec<SignedEntry>>;
 
     /// The members, sorted by key.
