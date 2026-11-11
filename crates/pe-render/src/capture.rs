@@ -6,7 +6,8 @@
 //!   records and submits, and [`PendingCapture::poll`] collects the image on a later frame, so a capture never
 //!   stalls a present. [`PendingCapture::wait`] blocks, for tests and headless use.
 //! - **`visible_list`:** projected bounding boxes without occlusion, so `visible_approx` is always true in M1.
-//! - Labels beside objects (`ab_glyph`) are not drawn yet.
+//! - **Highlight and labels:** [`Scene::highlight`] outlines objects before the draw; [`crate::labels`] places their
+//!   names when the capture is recorded and draws them on the read-back image.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};

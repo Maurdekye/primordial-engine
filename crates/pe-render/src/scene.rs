@@ -92,8 +92,20 @@ pub struct Scene {
 
 /// The cue's outline colour: a soft white, so it reads on any base colour without flashing.
 const CUE_COLOR: [f32; 3] = [0.95, 0.95, 1.0];
+/// A capture's highlight (`view_capture`'s `highlight`): a saturated amber, unlike the cue's soft white, linear RGBA.
+pub const HIGHLIGHT_COLOR: [f32; 4] = [1.0, 0.45, 0.02, 1.0];
 
 impl Scene {
+    /// Outline these objects for a capture (`highlight`, render.md 11). Ids not in the scene are ignored: the
+    /// caller reports those, since only it knows whether they exist elsewhere.
+    pub fn highlight(&mut self, ids: &[ObjectId]) {
+        for it in &mut self.items {
+            if ids.contains(&it.id) {
+                it.outline = Some(HIGHLIGHT_COLOR);
+            }
+        }
+    }
+
     /// The view at its simulated poses, the display layer bypassed: what the world holds (render.md 11).
     pub fn simulated(view: &FrameView) -> Scene {
         let mut s = Scene::default();
