@@ -19,7 +19,7 @@ fn world() -> World {
     let mut w = World::new(1, BlobStore::default());
     let k = pe_core::MemberKey([1; 32]);
     for (id, parent) in [(1, None), (2, Some(1)), (3, Some(1)), (4, None)] {
-        w.create(oid(id), parent.map(oid), k).unwrap();
+        w.create(oid(id), parent.map(oid), k, pe_world::GENESIS).unwrap();
     }
     w.insert(oid(1), Transform::at(at(5.0))).unwrap();
     w.insert(oid(2), Transform::local([0.0, 1.0, 0.0])).unwrap();
