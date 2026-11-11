@@ -1224,9 +1224,10 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     would send at about 110 m/s, through walls (@design-reviewer's arithmetic on the 18 g ball).
     - **Per push:** `|impulse| / m` may not exceed `max_push_dv`. **Speed cap** (@design-reviewer's Medium on
       5da33763, accepted by @coordinator-opus m4ffd5ab9f31f): the push is refused if `|v + Δv|` would exceed
-      `max_push_speed`, where `v` is the body's linear velocity at the start of frame f plus the `Δv` of every push
-      on that body already applied earlier in frame f (so several pushes in one frame cannot each pass), and
-      `Δv = impulse / m`. A
+      `max_push_speed`, where `v` is the solver's linear velocity when the push applies and `Δv = impulse / m`.
+      That `v` already includes earlier pushes of frame f, because pe-replica's `step` hands each applied entry's
+      push to the solver as the entry applies (`bodies::push` right after `apply`), so they are not added again
+      and several pushes in one frame cannot each pass (@design-reviewer, pe-replica `step` at ce6b8936). A
       per-second speed-change budget would bound acceleration, not speed: sustained pushing, or several members on
       one ball, would still reach tunnelling speeds, so the speed cap replaces it (no `push_dv_budget`). The N·s
       `push_budget` stays. All apply to everyone, members with agent powers included.
@@ -1234,11 +1235,13 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
       settings (`u32`), bounds 0 - 1,000,000, where `max_push_dv = 0` turns pushes off. Admins may raise either per
       member in the per-member override row, with "no limit" allowed (`u32::MAX`).
     - **Mass and velocity come from the solver** (my choice, which @coordinator-opus left open). `m` and `v` are the
-      body's mass and linear velocity in the physics state at the start of frame f, as the solver holds them: mass
+      body's mass and its current linear velocity in the solver when the push applies (frame f's physics state
+      plus that frame's earlier pushes, as above): mass
       with the body's world scale applied the solver's way (non-uniform scale included) and hull volumes from their
       blobs, which pe-world may not hold at apply. pe-world reads them through a query the replica passes to
       `apply_input` (a seam change, with @vdw-physics). It is deterministic because the physics state at the start
-      of frame f is the same on every machine, and the replica already holds it there. `BodyState` cannot serve:
+      of frame f and the agreed order of its pushes are the same on every machine, and the replica holds the solver
+      there. `BodyState` cannot serve:
       it is written only at cut frames. A push on a body the solver does not hold as dynamic, or whose mass is not
       positive and finite, is refused `Invalid`, never divided by zero.
     - **Spin: in M1 a push acts at the centre of mass** (the option @coordinator-opus left to me). A `Push` whose
@@ -1252,7 +1255,8 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     - Physics adds continuous collision detection against static geometry for small dynamic bodies, on the
       deterministic path (@vdw-physics's part of the decision).
     - Tests: the largest allowed push on the lightest ball (`max_push_dv` exactly, then 1 mm/s over); the speed
-      cap's edge on a ball already moving, and repeated pushes stopping at `max_push_speed`; a scaled body's mass
+      cap's edge on a ball already moving, and repeated pushes stopping at `max_push_speed`; two pushes on one ball
+      in one frame, each under `max_push_dv`, whose sum crosses `max_push_speed` (the second refused); a scaled body's mass
       (@vdw-physics); a push on a static body and on a body with zero density refused; a push with `at` refused;
       an admin's raised cap applied from its point in the agreed order.
   - **Tests:** a guest's hand-less grab and push are refused, and pass once an admin grants the right; a granted
