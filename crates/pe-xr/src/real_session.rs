@@ -209,7 +209,7 @@ impl<G: xr::Graphics> RealBackend<G> {
             .filter_map(|f| srgb_rank(path, G::lower_format(f)).map(|r| (r, f)))
             .min_by_key(|(r, _)| *r)
             .map(|(_, f)| f)
-            .ok_or_else(|| CreateError("no swapchain format pe-render can draw to".into()))?;
+            .ok_or_else(|| CreateError("the runtime offers no sRGB 8-bit colour format (spec 4.2)".into()))?;
         let swapchain = session
             .create_swapchain(&xr::SwapchainCreateInfo {
                 create_flags: xr::SwapchainCreateFlags::EMPTY,
