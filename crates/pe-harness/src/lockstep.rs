@@ -529,9 +529,16 @@ impl EntrySource for LockstepAgreement {
         self.finals.last()
     }
 
-    fn entries_at(&self, frame: Frame) -> &[SignedEntry] {
-        self.at.get(&frame.0).map_or(&[], |v| v.as_slice())
+    /// It never trims (S3 v1.2): every frame is kept.
+    fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
+        Some(self.at.get(&frame.0).map_or(&[], |v| v.as_slice()))
     }
+
+    fn kept_from(&self) -> Frame {
+        Frame(0)
+    }
+
+    fn keep_final_from(&mut self, _cv: Frame, _floor: Frame) {}
 
     fn take_changed_from(&mut self) -> Option<Frame> {
         self.changed.take().map(Frame)

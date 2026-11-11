@@ -84,8 +84,10 @@ pub enum Outcome {
     },
 }
 
-/// Something an applied entry did that its author may want to know.
+/// Something an applied entry did that its author may want to know. Like [`Reason`], the list grows, so it is
+/// `non_exhaustive` (@design-reviewer's idea; @world-model, whose pe-world only builds and compares notes, agreed).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Note {
     /// A child it created or reparented under an object deleted earlier in the order became a root
     /// (world-model.md 7.5).
@@ -178,8 +180,23 @@ pub trait EntrySource {
     fn final_cut(&self) -> Option<&FinalCut>;
     /// The entries to simulate at `frame`, in agreed order: final ones, then the predicted rest. Entries voided by a
     /// final cut are absent, and so are pending ones: stamped below the final cut's frame, and in no final cut yet
-    /// (S3 v1.1).
-    fn entries_at(&self, frame: Frame) -> &[SignedEntry];
+    /// (S3 v1.1). `None` when `frame` is below [`EntrySource::kept_from`]: its entries are no longer kept, which is
+    /// never the same as a frame kept and empty, `Some(&[])` (S3 v1.2).
+    fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]>;
+    /// The earliest frame whose entries are still kept (S3 v1.2): [`EntrySource::entries_at`] is complete for every
+    /// frame at or above it, and answers `None` below it. It passes the `floor` last given to
+    /// [`EntrySource::keep_final_from`] only through the time cap, for a replica that fell more than `T_diverge` plus
+    /// `T_keep` behind this member's final cut; below the floor it can pass `cv` through either cap ([`crate::agree`],
+    /// "Retention for rung 1"). A source that never trims answers `Frame(0)`.
+    fn kept_from(&self) -> Frame;
+    /// What the replica still needs (S3 v1.2), given from [`Replica::finalize`] whenever `Cv` or the floor moves:
+    /// `cv`, `Cv`'s frame, for rung 1's replay ([`Replica::replay_to`]), and `floor`, its floor's frame, for
+    /// re-simulation ([`Replica::advance`]). Each only moves forward: a lower frame changes nothing, and so does a
+    /// frame below what is already trimmed, which [`EntrySource::kept_from`] then reports truthfully. S3 never trims
+    /// at or above `floor` except by the time cap, and below it keeps from `cv` unless a cap trimmed past it, so a
+    /// member that stays diverged pins only its own memory, and only for a bounded time. Before the first call, both
+    /// are frame 0.
+    fn keep_final_from(&mut self, cv: Frame, floor: Frame);
     /// The earliest frame whose entries changed since the last call, if any.
     fn take_changed_from(&mut self) -> Option<Frame>;
     /// When an entry arrived on this machine, if it came from the network: for "play a new effect only if its cause
@@ -213,8 +230,16 @@ pub enum Finalized {
     Diverged { mine: Hash },
     /// I have not yet re-simulated to the cut's frame within my budget: nothing compared, and the floor stays. The
     /// driver calls again on a later tick. (Missing entries are not a case: the driver passes
-    /// [`EntrySource::final_cut`], which S3 reports only once this member holds every entry the cut names.)
+    /// [`EntrySource::final_cut`], which S3 reports only once this member holds every entry the cut names. Nor is a
+    /// frame no longer kept: that is [`Finalized::Damaged`].)
     NotReady,
+    /// I cannot take my root at the cut, and waiting will not change that: [`RootError::Damaged`], such as a frame
+    /// from my floor up to the cut's frame that is no longer kept (S3 v1.2). The fault is counted; nothing is
+    /// compared, `Cv` and the floor stay, and the driver does not call again for this cut. Rung 2 is due at once:
+    /// the same trigger as `RootError::Damaged` from [`Replica::root_at_cut`], so pe-diverge has one, not two. I hold
+    /// no root of my own at the cut, so rung 2 imports the group's whole state there ([`Replica::import_at_cut`]).
+    /// After the repair, the driver calls [`Replica::finalize`] again for the same cut, as after `Diverged`.
+    Damaged,
 }
 
 /// Why [`Replica::root_at_cut`] or [`Replica::replay_to`] has no root.
@@ -224,12 +249,18 @@ pub enum Finalized {
 /// cut may cover void entries that [`EntrySource::entries_at`] rightly leaves out (@coordinator-opus, m8126544ad530).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootError {
-    /// The state needed is no longer kept: the cut's frame is below my floor, or (for a replay) `Cv`'s state is gone.
+    /// The state needed is no longer kept: the cut's frame is below my floor, which is benign; or, for a replay,
+    /// `Cv`'s state is gone, or S3 no longer keeps entries the replay needs below my floor
+    /// ([`EntrySource::kept_from`] passed `Cv`, before the replay or while it ran, S3 v1.2), and rung 2 is next.
     NotKept,
     /// The cut's frame is past what I have simulated.
     NotYetSimulated,
-    /// The saved state at `Cv` failed its full rehash, from its records or from the restored physics itself: rung 2
-    /// is due at once.
+    /// Rung 2 is due at once, since waiting will not cure it: the saved state at `Cv` failed its full rehash, from
+    /// its records or from the restored physics itself; or (S3 v1.2) a frame from my floor up to the cut's frame is
+    /// no longer kept, whether [`Replica::advance`] stopped short of the cut at it or had stepped it before the trim.
+    /// Only S3's time cap trims there, for a replica more than `T_diverge` plus `T_keep` behind its final cut, or a
+    /// fault in S3. [`Replica::finalize`] answers [`Finalized::Damaged`] for the same condition. A frame below the
+    /// floor that a replay needs is [`RootError::NotKept`] instead ([`Replica::replay_to`]).
     Damaged,
     /// The work did not fit in this call's budget ([`Replica::set_budget`]) and is under way: call again with the
     /// same cut on a later tick.
@@ -509,7 +540,17 @@ pub trait Replica: Send {
     /// Re-simulate from the earliest changed frame, never below the replica's own floor (the last cut it finalized,
     /// which can be older than the line's newest final cut), then step new frames up to `present`, exclusive, within
     /// the budget ([`Advance::caught_up`]). Never waits for the network: an entry not held yet is simply absent. Never
-    /// aborts on input.
+    /// aborts on input. A frame it must step that is no longer kept ([`EntrySource::entries_at`] answers `None`) is
+    /// never stepped empty (S3 v1.2):
+    /// - **Below the floor**, which only a pending replay reaches (rung 1 replays from `Cv`, and either of S3's caps
+    ///   may trim there at any time): the replay is abandoned, which is no fault. The replica goes back to its floor's
+    ///   state, which it always holds, and re-simulates on from there within the budget, as if the replay had never
+    ///   run. [`Replica::replay_to`] answers [`RootError::NotKept`] for the replay's cut, and the ladder goes on to
+    ///   rung 2 while the member keeps simulating.
+    /// - **At or above the floor** (only S3's time cap trims there, for a replica more than `T_diverge` plus `T_keep`
+    ///   behind its final cut, or S3 broke its contract): the replica stops at that frame and counts the fault once.
+    ///   A root at any cut past it is then [`RootError::Damaged`], and [`Replica::finalize`] answers
+    ///   [`Finalized::Damaged`], so rung 2 is due at once.
     fn advance(&mut self, present: Frame, source: &mut dyn EntrySource) -> Advance;
 
     /// An entry's outcome at the frame it was last simulated.
@@ -523,13 +564,22 @@ pub trait Replica: Send {
     /// The source's final cut changed, or a repair at that cut ended: compare my root at it with the quorum's. The
     /// only call that moves `Cv` and the floor. Agreed: the cut becomes the floor and `Cv`, and older state is
     /// released beyond what is kept. Diverged: the floor moves, `Cv` stays, and my own root at the cut stays held
-    /// (rung 2 diffs against it, through [`Replica::tree`]) until a later call agrees.
+    /// (rung 2 diffs against it, through [`Replica::tree`]) until a later call agrees. Damaged: nothing moves, and
+    /// rung 2 is due ([`Finalized::Damaged`]). When `Cv` or the floor moves, it tells the source with
+    /// [`EntrySource::keep_final_from`] (S3 v1.2).
     fn finalize(&mut self, cut: &FinalCut, source: &mut dyn EntrySource) -> Finalized;
 
     /// Repair rung 1 (divergence.md 4.1), at a final cut or at a cut not final yet: restore `Cv`, verify it from its
     /// records and from the restored physics itself, replay to the cut with exactly its entries, and take my root
     /// there; then re-simulate on to the present with the source's entries, which becomes the live state whatever
-    /// the root. Returns my root at the cut. Moves neither `Cv` nor the floor, and uses no network.
+    /// the root. Returns my root at the cut. Moves neither `Cv` nor the floor, and uses no network. The cut is one
+    /// this member holds in full: its [`EntrySource::final_cut`], or a cut it voted on from
+    /// [`crate::Agreement::wants_roots`], such as a root split's ("No cut without its entries" in [`crate::agree`]).
+    /// When `Cv`'s frame is below [`EntrySource::kept_from`], it answers [`RootError::NotKept`] before restoring
+    /// anything: the live state is unchanged, and the ladder goes on to rung 2 (S3 v1.2). S3 may trim further while
+    /// the replay runs. Below the floor, the replay is then abandoned as [`Replica::advance`] says, and this call, or
+    /// the next for the same cut, answers `NotKept` too. At or above the floor, the frame stops the replay as it
+    /// stops `advance`, and the answer is [`RootError::Damaged`] if the cut's root needs that frame.
     fn replay_to(&mut self, cut: &Cut, source: &mut dyn EntrySource) -> Result<Hash, RootError>;
 
     /// A root this replica holds, for pe-world's tree calls: the floor, `Cv`, the final cuts within `T_keep`, my own
@@ -542,7 +592,11 @@ pub trait Replica: Send {
 
     /// Rung 2's and a joiner's receiver: replace the group's state at the cut by the imported parts, each checked
     /// against the target root before anything is applied, then re-simulate on to the present. Returns my root at
-    /// the cut afterwards. Moves neither `Cv` nor the floor. `group` is `Domain` in M1.
+    /// the cut afterwards, which [`Replica::root_at_cut`] and [`Replica::finalize`] then take as my root there, with
+    /// no re-step of the frames below the cut. Moves neither `Cv` nor the floor. `group` is `Domain` in M1. When I
+    /// hold no root of my own at the cut (a joiner, or a replica that answered [`Finalized::Damaged`] or
+    /// [`RootError::Damaged`] there), the import is the group's whole state at the cut, and replaces it from empty,
+    /// so `absent` has nothing to remove (S3 v1.2).
     fn import_at_cut(
         &mut self,
         group: &GroupSel,
@@ -551,7 +605,9 @@ pub trait Replica: Send {
     ) -> Result<Hash, ImportError>;
 
     /// The newest published frame view (S5): published once per frame, after the replica reached the present, never
-    /// during a re-simulation or while catching up within the budget.
+    /// during a re-simulation or while catching up within the budget. The same `Arc` until the view changes: pe-app
+    /// hands a view to the renderer only when `Arc::ptr_eq` says it is new, so a replica that rebuilds the `Arc` on
+    /// every call costs a hand-over per tick.
     fn view(&self) -> Arc<FrameView>;
 }
 

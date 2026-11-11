@@ -19,6 +19,12 @@ use pe_seams::{
 struct Source {
     entries: BTreeMap<Frame, Vec<SignedEntry>>,
     changed: Option<Frame>,
+    /// Frames below this are trimmed (S3 v1.2's caps).
+    kept: Frame,
+    /// A frame at or above `kept` that answers `None` anyway: an S3 fault.
+    withheld: Option<Frame>,
+    /// What the replica last said it needs, `(cv, floor)`, each forward only.
+    asked: Option<(Frame, Frame)>,
 }
 
 impl Source {
@@ -29,14 +35,28 @@ impl Source {
         at.sort_by_key(|e| (e.entry.chain, e.entry.seq));
         self.changed = Some(self.changed.map_or(f, |c| c.min(f)));
     }
+
+    /// S3's cap trims everything below `frame`.
+    fn trim_below(&mut self, frame: Frame) {
+        let kept = self.kept.max(frame);
+        self.kept = kept;
+        self.entries.retain(|f, _| *f >= kept);
+    }
 }
 
 impl EntrySource for Source {
     fn final_cut(&self) -> Option<&FinalCut> {
         None
     }
-    fn entries_at(&self, frame: Frame) -> &[SignedEntry] {
-        self.entries.get(&frame).map_or(&[], Vec::as_slice)
+    fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
+        (frame >= self.kept && self.withheld != Some(frame))
+            .then(|| self.entries.get(&frame).map_or(&[][..], Vec::as_slice))
+    }
+    fn kept_from(&self) -> Frame {
+        self.kept
+    }
+    fn keep_final_from(&mut self, cv: Frame, floor: Frame) {
+        self.asked = Some(self.asked.map_or((cv, floor), |(c, f)| (c.max(cv), f.max(floor))));
     }
     fn take_changed_from(&mut self) -> Option<Frame> {
         self.changed.take()
@@ -388,5 +408,178 @@ fn a_re_step_off_the_live_history_counts_only_against_the_scratch() {
     a.advance(Frame(32), &mut s);
     assert_eq!(a.faults(), 1, "frame 12 stepped once, live");
     a.root_at_cut(&cut(&scene(), 3, 24), &mut s).expect("a root");
-    assert_eq!(a.faults(), 1, "the re-step's fault is the scratch's (ReplicaImpl::scratch)");
+    assert_eq!(a.faults(), 1, "the re-step's fault is the scratch's");
+    assert_eq!(a.scratch().faults, 1);
+}
+
+/// The replica of `rung_one_repairs_a_transient_fault`: `Cv` at 16, a transient fault at 20, diverged at the final cut
+/// at 32. Returns it, its source, the cut at 32 and the quorum's root there, and its own diverged root.
+fn diverged_at_32() -> (ReplicaImpl<MockWorld>, Source, Cut, Hash, Hash) {
+    let all = scene();
+    let (good, _) = reference(48);
+    let mut s = Source::default();
+    all.iter().cloned().for_each(|e| s.add(e));
+    let world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
+    world.glitch_at(Frame(20));
+    let mut config = ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133));
+    config.cut_every = K;
+    let mut bad = ReplicaImpl::new(world, config).expect("a replica");
+    bad.advance(Frame(48), &mut s);
+    let r16 = good.live_root(Frame(16)).expect("live");
+    assert_eq!(bad.finalize(&FinalCut { cut: cut(&all, 2, 16), root: r16, voters: vec![] }, &mut s), Finalized::Agreed);
+    let (c32, r32) = (cut(&all, 4, 32), good.live_root(Frame(32)).expect("live"));
+    let Finalized::Diverged { mine } = bad.finalize(&FinalCut { cut: c32.clone(), root: r32, voters: vec![] }, &mut s)
+    else {
+        panic!("the glitch shows at 32")
+    };
+    (bad, s, c32, r32, mine)
+}
+
+/// Rung 1's retention (S3 v1.2, @coordinator-opus m852013ee7d53): `finalize` tells S3 what it still needs, `Cv`'s
+/// frame and the floor's. When a cap has trimmed past `Cv` anyway, `replay_to` answers `NotKept` before restoring
+/// anything, never a root from empty frames: the live state is unchanged, and the diverged root rung 2 diffs against
+/// (through `tree` and `physics_image`) stays held. The ladder goes on to rung 2 (pe-diverge, ladder.rs).
+#[test]
+fn a_replay_from_below_what_s3_keeps_is_not_kept_and_leaves_rung_2_its_root() {
+    let (mut bad, mut s, c32, _, mine) = diverged_at_32();
+    assert_eq!(s.asked, Some((Frame(16), Frame(32))), "Cv's frame, and the floor's, which the divergence moved");
+    let live: Vec<_> = roots(&bad, 48);
+    s.trim_below(Frame(24));
+    assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept));
+    assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept), "asked again, still no root");
+    assert_eq!((bad.frame(), roots(&bad, 48)), (Frame(48), live), "the live state is unchanged");
+    assert_eq!(bad.tree(&mine).map(|t| t.root()), Some(mine), "rung 2 diffs against my diverged root");
+    assert!(bad.physics_image(&mine).is_some());
+    // Control: with the entries since Cv kept, rung 1 cures it (rung_one_repairs_a_transient_fault).
+    let (mut kept, mut ks, c32, r32, _) = diverged_at_32();
+    assert_eq!(kept.replay_to(&c32, &mut ks), Ok(r32));
+}
+
+/// A frame at or above the floor that `advance` must re-simulate and S3 no longer keeps (its time cap, for a replica
+/// far behind its final cut) is never stepped empty (S3 v1.2 round 2): the live history stops there, with one fault
+/// however many calls follow, and the view keeps the last state it published. `root_at_cut` answers `Damaged` for any
+/// cut past the stop, even one it gave a root for before, and so does `finalize`, so rung 2 is due at once.
+#[test]
+fn a_frame_at_or_above_the_floor_no_longer_kept_stops_advance() {
+    let (mut a, mut s) = reference(48);
+    let (c32, c40) = (cut(&scene(), 4, 32), cut(&scene(), 5, 40));
+    let r32 = a.live_root(Frame(32)).expect("live");
+    assert!(a.root_at_cut(&c40, &mut s).is_ok(), "a root at 40, before the trim");
+    let root16 = a.live_root(Frame(16)).expect("live");
+    let fc16 = FinalCut { cut: cut(&scene(), 2, 16), root: root16, voters: vec![] };
+    assert_eq!(a.finalize(&fc16, &mut s), Finalized::Agreed);
+    assert_eq!(s.asked, Some((Frame(16), Frame(16))));
+    let (f0, shown) = (a.faults(), a.view().frame);
+    s.trim_below(Frame(30));
+    s.changed = Some(Frame(26));
+    let adv = a.advance(Frame(48), &mut s);
+    let from = adv.rolled_back_to.expect("rolled back");
+    assert!((Frame(16)..Frame(30)).contains(&from));
+    assert_eq!((a.frame(), adv.resimulated, adv.caught_up), (from, 0, false), "stopped at the first frame");
+    for _ in 0..3 {
+        a.advance(Frame(48), &mut s);
+    }
+    assert_eq!((a.frame(), a.faults() - f0), (from, 1), "one fault per stop, not one per call");
+    assert_eq!(a.view().frame, shown, "the view keeps the last state published");
+    assert_eq!(a.root_at_cut(&c40, &mut s), Err(RootError::Damaged), "no root past the stop, not even the one given");
+    assert_eq!(a.finalize(&FinalCut { cut: c32, root: r32, voters: vec![] }, &mut s), Finalized::Damaged);
+    assert_eq!((a.floor_frame(), a.faults() - f0), (Frame(16), 1));
+}
+
+/// An S3 fault: a frame at or above `kept_from` answers `None`. The live history stops there, as for a trim. When S3
+/// answers for it again, the replica steps on with no further fault and gives roots past it again.
+#[test]
+fn a_stop_ends_when_s3_answers_for_the_frame_again() {
+    let (clean, _) = reference(48);
+    let (mut a, mut s) = reference(48);
+    let f0 = a.faults();
+    s.withheld = Some(Frame(28));
+    s.changed = Some(Frame(26));
+    a.advance(Frame(48), &mut s);
+    assert_eq!((a.frame(), a.faults() - f0), (Frame(28), 1));
+    let c32 = cut(&scene(), 4, 32);
+    assert_eq!(a.root_at_cut(&c32, &mut s), Err(RootError::Damaged));
+    s.withheld = None;
+    assert!(a.advance(Frame(48), &mut s).caught_up);
+    assert_eq!((roots(&a, 48), a.faults() - f0), (roots(&clean, 48), 1));
+    assert_eq!(a.root_at_cut(&c32, &mut s).ok(), clean.live_root(Frame(32)));
+}
+
+/// A running replay meets a frame below the floor that S3's byte cap trimmed after the replay began (S3 may trim
+/// there at any time). The replay is abandoned, with no fault, and asked again it answers `NotKept`, so the ladder
+/// goes to rung 2. The member does not freeze below its floor: the live state goes back to the floor, which is still
+/// kept, and simulates on from there (@design-reviewer's Medium on b3c2d18f and 3d8e9442, m76a7a148f6b5).
+#[test]
+fn a_trim_below_the_floor_during_a_replay_abandons_it_and_the_member_simulates_on() {
+    let (mut bad, mut s, c32, _, mine) = diverged_at_32();
+    let before = roots(&bad, 48);
+    bad.set_budget(Duration::from_millis(1));
+    assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::Pending), "two frames from Cv at 16");
+    s.trim_below(Frame(20));
+    let f0 = bad.faults();
+    let adv = bad.advance(Frame(48), &mut s);
+    assert_eq!((bad.frame(), adv.caught_up, bad.faults() - f0), (Frame(32), false, 0), "back on the floor");
+    assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept));
+    bad.set_budget(Duration::from_secs(1));
+    assert!(bad.advance(Frame(48), &mut s).caught_up);
+    assert_eq!(roots(&bad, 48), before, "re-simulated from the floor: the history it had before the replay");
+    assert_eq!(bad.faults() - f0, 0);
+    assert_eq!(bad.tree(&mine).map(|t| t.root()), Some(mine), "rung 2 still diffs against my diverged root");
+    assert_eq!(bad.root_at_cut(&cut(&scene(), 5, 40), &mut s).ok(), bad.live_root(Frame(40)), "it votes again");
+}
+
+/// A replay at a cut above the floor (a root split's, with `Cv` at the floor) meets a frame at or above the floor that
+/// S3's time cap trimmed while it ran. The frame stops it as it stops `advance`, with one fault. Asked again,
+/// `replay_to` answers `Damaged` when the cut's root needs that frame, and the root it took when the frame is past the
+/// cut's (S2 v1.2 round 3, @engine-architect m0e9ba271e806).
+#[test]
+fn a_trim_at_or_above_the_floor_during_a_replay_stops_it() {
+    let agreed_at_16 = || {
+        let (mut a, mut s) = reference(48);
+        let fc16 = FinalCut { cut: cut(&scene(), 2, 16), root: a.live_root(Frame(16)).expect("live"), voters: vec![] };
+        assert_eq!(a.finalize(&fc16, &mut s), Finalized::Agreed);
+        (a, s)
+    };
+    let (c24, c32) = (cut(&scene(), 3, 24), cut(&scene(), 4, 32));
+    // The cut's root needs the frame: the replay to 32 is at 18 when the cap trims below 20.
+    let (mut a, mut s) = agreed_at_16();
+    a.set_budget(Duration::from_millis(1));
+    assert_eq!(a.replay_to(&c32, &mut s), Err(RootError::Pending), "two frames from Cv at 16");
+    s.trim_below(Frame(20));
+    let f0 = a.faults();
+    a.advance(Frame(48), &mut s);
+    assert_eq!((a.frame(), a.faults() - f0), (Frame(18), 1), "stopped, one fault");
+    assert_eq!(a.replay_to(&c32, &mut s), Err(RootError::Damaged));
+    assert_eq!(a.root_at_cut(&c24, &mut s), Err(RootError::Damaged));
+    // The frame is past the cut's: the replay to 24 took its root there and is at 26 when the cap trims below 30.
+    let (clean, _) = reference(48);
+    let (mut b, mut s) = agreed_at_16();
+    b.set_budget(Duration::from_millis(167));
+    assert_eq!(b.replay_to(&c24, &mut s).ok(), clean.live_root(Frame(24)), "ten frames from 16, past 24");
+    s.trim_below(Frame(30));
+    b.advance(Frame(48), &mut s);
+    assert_eq!(b.frame(), Frame(26));
+    assert_eq!(b.replay_to(&c24, &mut s).ok(), clean.live_root(Frame(24)), "the root it took stands");
+    assert_eq!(b.root_at_cut(&c32, &mut s), Err(RootError::Damaged));
+}
+
+/// S3's time cap trimmed frames above my floor before I finalized a cut over them (a member far behind). No root
+/// there will ever come, so `finalize` answers `Damaged` instead of `NotReady` for ever, with one fault however often
+/// it is asked. The floor stays, and `root_at_cut` answers `Damaged` too, so rung 2 is due at once (@chunks-reviewer's
+/// probe on 3d8e9442, zz_probe_cap_trim.rs; option (a) by @coordinator-opus, ma30cdfd63b94).
+#[test]
+fn a_cut_over_frames_trimmed_above_the_floor_is_damaged_not_a_silent_stall() {
+    let (clean, _) = reference(48);
+    let quorum = clean.live_root(Frame(24)).expect("live");
+    let (mut a, mut s) = reference(48);
+    s.trim_below(Frame(5));
+    let f0 = a.faults();
+    let fc = FinalCut { cut: cut(&scene(), 3, 24), root: quorum, voters: vec![] };
+    for _ in 0..3 {
+        assert_eq!(a.finalize(&fc, &mut s), Finalized::Damaged);
+        a.advance(Frame(48), &mut s);
+    }
+    assert_eq!((a.floor_frame(), a.faults() - f0), (Frame(0), 1), "the floor stays; one fault, not one per call");
+    assert_eq!(a.root_at_cut(&cut(&scene(), 3, 24), &mut s), Err(RootError::Damaged));
+    assert_eq!((a.faults() - f0, s.asked), (1, None), "nothing finalized, nothing asked");
 }
