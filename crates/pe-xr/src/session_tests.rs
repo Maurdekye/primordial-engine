@@ -409,3 +409,41 @@ fn nothing_is_drawn_while_the_session_is_only_synchronized() {
     assert_eq!(s.backend().count(&Call::EndFrame(Layers::None)), 3);
     no_violations(&s);
 }
+
+#[test]
+fn good_and_bad_frames_alternating_never_end_the_session_but_are_degraded() {
+    // Every other frame fails, for about 3.3 s at 120 Hz: the limit counts from the last good frame, so it is never
+    // reached.
+    let mut rt = FakeRuntime::new().started();
+    for f in (1..=400).step_by(2) {
+        rt.fail.push((Op::AcquireImage, f, XrError::Other("XR_ERROR_RUNTIME_FAILURE".into())));
+    }
+    let (mut s, ring) = session(rt);
+    let mut k = sink();
+    assert!(run(&mut s, &mut k, 400).iter().all(|x| *x == Step::Frame));
+    assert_eq!(s.counters.frame_errors, 200);
+    assert_eq!(s.counters.degraded_runs, 199, "each run of failures after the first, within a second of the last");
+    assert!(s.degraded());
+    assert!(ring.hand_at(Hand::Right, s.backend().now_for_test()).is_some(), "hands still flowing");
+    // A clean second clears it.
+    run(&mut s, &mut k, 130);
+    assert!(!s.degraded());
+    assert_eq!(s.backend().count(&Call::DestroySession), 0);
+    no_violations(&s);
+}
+
+#[test]
+fn the_error_limit_counts_from_the_last_good_frame() {
+    // Good frames up to frame 49, then every frame fails: the session ends a second after frame 49's success, not a
+    // second after the first failure, whatever the first failure's time.
+    let mut rt = FakeRuntime::new().started();
+    for f in 50..=300 {
+        rt.fail.push((Op::EndFrame, f, XrError::Other("XR_ERROR_RUNTIME_FAILURE".into())));
+    }
+    let (mut s, _) = session(rt);
+    let steps = run(&mut s, &mut sink(), 300);
+    let end = steps.iter().position(|x| *x == Step::Ended(EndReason::FrameErrors)).expect("ended");
+    assert!((48 + 119..=48 + 122).contains(&end), "{end}");
+    assert_eq!(s.counters.degraded_runs, 0, "one run of failures is not degraded, it is failing");
+    no_violations(&s);
+}
