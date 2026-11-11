@@ -314,7 +314,7 @@ fn holds_permissions_and_protections() {
     let mut f = fx();
     let (table, ball, _) = table_and_ball(&mut f);
     let (ka, kb) = (f.keys.key(0), f.keys.key(1));
-    f.w.set_claim(ball, Claim { hand: table, member: kb, since: Frame(0) }).unwrap();
+    f.w.set_claim(ball, Claim { hand: table, member: kb, since: Frame(0), until: Frame(u64::MAX) }).unwrap();
     // While held: delete of it or an ancestor, and pose edits, are refused; a recolour passes.
     let del = entry(&mut f.a, &tx(vec![Op::Delete { id: Target::Existing(table) }]));
     assert_eq!(refused(&apply(&mut f.w, &del).0).1, Reason::Held { by: kb });
@@ -561,17 +561,17 @@ fn the_holder_may_delete_what_it_holds() {
         )
         .0,
     )[0];
-    f.w.set_claim(ball, Claim { hand, member: kb, since: Frame(0) }).unwrap();
+    f.w.set_claim(ball, Claim { hand, member: kb, since: Frame(0), until: Frame(u64::MAX) }).unwrap();
     let del = tx(vec![Op::Delete { id: Target::Existing(table) }]);
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &del)).0).1, Reason::Held { by: kb }, "B holds it");
-    f.w.set_claim(ball, Claim { hand, member: ka, since: Frame(0) }).unwrap();
+    f.w.set_claim(ball, Claim { hand, member: ka, since: Frame(0), until: Frame(u64::MAX) }).unwrap();
     let (o, fp) = apply(&mut f.w, &entry(&mut f.a, &del));
     created_ok(&o);
     assert_eq!(fp.removed, [table, ball]);
     assert!(f.w.snapshot(Frame(0)).claim(ball).is_none(), "the holder's claim ends with the object");
     // Pose edits stay refused for everyone while held, the holder included (7.2).
     let (_, ball2, _) = table_and_ball(&mut f);
-    f.w.set_claim(ball2, Claim { hand, member: ka, since: Frame(0) }).unwrap();
+    f.w.set_claim(ball2, Claim { hand, member: ka, since: Frame(0), until: Frame(u64::MAX) }).unwrap();
     let pose = tx(vec![Op::SetRow { id: Target::Existing(ball2), row: row(Transform::IDENTITY) }]);
     assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &pose)).0).1, Reason::Held { by: ka });
 }
@@ -606,7 +606,7 @@ fn a_stale_remove_cannot_take_out_a_later_instance() {
     assert!(notes(&apply(&mut f.w, &entry(&mut f.a, &current)).0).is_empty());
     assert!(f.w.store().get::<Body>(ball).is_none());
     // A remove of a row that is not there is "no effect" too, even on a held object.
-    f.w.set_claim(ball, Claim { hand: ball, member: f.keys.key(1), since: Frame(0) }).unwrap();
+    f.w.set_claim(ball, Claim { hand: ball, member: f.keys.key(1), since: Frame(0), until: Frame(u64::MAX) }).unwrap();
     assert_eq!(notes(&apply(&mut f.w, &entry(&mut f.a, &current)).0), [Note::NoEffect { op: 0 }]);
 }
 

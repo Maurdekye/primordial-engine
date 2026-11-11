@@ -7,16 +7,19 @@
 //! * [`World`]: one world's state (5.1), with the trusted construction calls.
 //! * [`WorldSnapshot`]: the published, read-only view of one frame that WorldApi reads (9.4).
 //! * [`edit`]: the edit payload and its canonical codec (7.1); [`World::apply_edit`] applies one (7.2-7.7).
+//! * [`input`]: the input payload (8.1); [`World::apply_input`] applies one, and [`World::end_frame`] expires claims.
 
 mod apply;
 pub mod components;
 pub mod edit;
+pub mod input;
 mod read;
 mod replica;
 mod world;
 
-pub use apply::{Draft, Footprint};
+pub use apply::{Draft, Footprint, Push};
 pub use components::BlobRef;
+pub use input::{HandPose, Input, InputSettings, input_phase};
 pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
 pub use replica::{GRAVITY, Settings};

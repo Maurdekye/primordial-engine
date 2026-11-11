@@ -20,7 +20,7 @@ use crate::edit::{
 use crate::world::{DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, depth, perm};
 
 /// What an applied entry touched, for the replica's physics effects (9.2) and the caches. Empty for a refusal.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Footprint {
     /// Created, in op order.
     pub created: Vec<ObjectId>,
@@ -31,6 +31,19 @@ pub struct Footprint {
     /// Reparented, in op order, each with whether its world pose was kept (`keep_world`, or forced by an orphaning,
     /// 7.5); if not, its local transform was kept and its world pose moved.
     pub reparented: Vec<(ObjectId, bool)>,
+    /// Pushes an input applied (8.1), with their author.
+    pub pushes: Vec<Push>,
+    /// Hands whose target and `Hand` row an input wrote (8.1).
+    pub hands: Vec<ObjectId>,
+}
+
+/// An applied push (8.1): an impulse in newton seconds, in the world frame, at `at` or the centre of mass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Push {
+    pub object: ObjectId,
+    pub impulse: [f32; 3],
+    pub at: Option<pe_core::Pos>,
+    pub author: MemberKey,
 }
 
 /// Where a transaction that is not signed yet would come from (a dry run, api.md 9.2): its author and the
@@ -722,8 +735,10 @@ impl World {
         d
     }
 
-    /// Ends a frame (7.2, 7.5): drops the tombstones whose expiry frame has passed.
+    /// Ends a frame (7.2, 7.5, 8.1): expires claims and cooldowns, writes each pending hand pack's pose for
+    /// `frame + 1`, and drops the tombstones whose expiry frame has passed.
     pub fn end_frame(&mut self, frame: Frame) {
+        self.end_frame_inputs(frame);
         if self.tombstones.values().any(|t| t.expires <= frame) {
             Arc::make_mut(&mut self.tombstones).retain(|_, t| t.expires > frame);
         }
