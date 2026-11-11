@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::backend::{Backend, EyePose, FrameTiming, ImageIndex, Layers, SessionState, XrError, XrEvent};
+use crate::backend::{Backend, DepthInfo, EyePose, FrameTiming, ImageIndex, Layers, SessionState, XrError, XrEvent};
 use crate::hands::{GraspConfig, HandState};
 use crate::ring::HandRing;
 use crate::seam::{Hand, HostTime, RigPose};
@@ -32,6 +32,9 @@ pub struct FrameRequest<'a> {
     pub timing: FrameTiming,
     pub eyes: &'a [EyePose; 2],
     pub image: ImageIndex,
+    /// The depth image acquired with it, when the runtime takes depth; draw depth into it and say so with
+    /// [`FrameSink::depth`].
+    pub depth_image: Option<ImageIndex>,
     /// The local player's hands located at the display time, for drawing only: `None` when absent or not tracked.
     pub hands: [Option<RigPose>; 2],
 }
@@ -39,9 +42,15 @@ pub struct FrameRequest<'a> {
 pub trait FrameSink {
     /// Draw and submit. Return `false` if nothing was drawn, so the frame ends with no layers.
     fn render(&mut self, frame: &FrameRequest<'_>) -> bool;
-    /// Whether depth is submitted with the projection layer.
-    fn submits_depth(&self) -> bool {
-        false
+    /// The rectangle drawn this frame, from the origin (render scale as a viewport): the projection layer's
+    /// `imageRect`. `None`: the whole image.
+    fn extent(&self) -> Option<[u32; 2]> {
+        None
+    }
+    /// The depth layer's range, when this frame's depth was drawn into `FrameRequest::depth_image`. Submitted only
+    /// when there was a depth image.
+    fn depth(&self) -> Option<DepthInfo> {
+        None
     }
     /// The session is about to be destroyed, its swapchain with it: drop every wrapper of the swapchain's images and
     /// wait until the GPU is idle on them before returning (review 1, L4; spec 4.3). Called once, before
@@ -376,9 +385,11 @@ impl<B: Backend> XrSession<B> {
                 } else {
                     [None, None]
                 };
-                let drawn = sink.render(&FrameRequest { timing, eyes: &located.eyes, image, hands });
+                let depth_image = self.backend.depth_image();
+                let drawn = sink.render(&FrameRequest { timing, eyes: &located.eyes, image, depth_image, hands });
                 if drawn {
-                    layers = Layers::Projection { with_depth: sink.submits_depth() };
+                    let depth = sink.depth().filter(|_| depth_image.is_some());
+                    layers = Layers::Projection { extent: sink.extent(), depth };
                 }
             } else {
                 // Head tracking lost for a moment: never draw or submit unspecified poses.
