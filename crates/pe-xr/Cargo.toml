@@ -9,7 +9,10 @@ description = "OpenXR for Primordial Engine: the session, stereo through pe-rend
 # WS-xr, @xr-eng owns this crate and its manifest; the root Cargo.toml lists it (WS-seams).
 [dependencies]
 pe-seams = { path = "../pe-seams" }
-# pe-render comes back with the graphics binding, which uses its GpuContext.
+# The graphics binding hands pe-render its GpuContext; wgpu and wgpu-hal come through pe-render's re-exports.
+pe-render = { path = "../pe-render" }
+# Vulkan's types and its run-time loader (`loaded`, never `linked`: native_allow.txt's ash line), as wgpu-hal uses.
+ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
 # No features: not `loaded` (it would look for Khronos' C++ loader, which Windows doesn't have), and never
 # `static` or `linked`, which build or link that loader. `loader.rs` loads the runtime itself (spec 2).
 openxr = { version = "=0.22.0", default-features = false }

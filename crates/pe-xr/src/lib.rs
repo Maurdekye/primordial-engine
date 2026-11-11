@@ -17,12 +17,14 @@
 //! - [`seam`]: stand-ins for pe-seams v0's S5 types (spec 8.1), until pe-seams lands.
 
 pub mod backend;
+pub mod binding;
 pub mod clock;
 pub mod fake;
 pub mod guard;
 pub mod hands;
 pub mod loader;
 pub mod math;
+pub mod open;
 pub mod real;
 pub mod real_session;
 pub mod ring;

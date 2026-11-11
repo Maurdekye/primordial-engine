@@ -79,13 +79,24 @@ pub struct Located {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageIndex(pub u32);
 
+/// The depth layer's range (`XR_KHR_composition_layer_depth`): what the depth values mean, in metres of the
+/// reference space. pe-render's is `DepthRange::xr_depth_info()`: reverse Z, so `near_z > far_z`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthInfo {
+    pub min_depth: f32,
+    pub max_depth: f32,
+    pub near_z: f32,
+    pub far_z: f32,
+}
+
 /// What `xrEndFrame` submits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Layers {
     /// No layers: `shouldRender` was false, or the frame was not drawn.
     None,
-    /// One projection layer from the acquired image, with its depth when `with_depth`.
-    Projection { with_depth: bool },
+    /// One projection layer from the acquired image. `extent`: the rectangle drawn, from the origin (render scale
+    /// as a viewport), `None` for the whole image. `depth`: the frame's depth image went with it, with this range.
+    Projection { extent: Option<[u32; 2]>, depth: Option<DepthInfo> },
 }
 
 pub trait Backend {
@@ -110,6 +121,10 @@ pub trait Backend {
     fn read_hand(&mut self, hand: Hand, at: HostTime) -> Reading;
     /// Acquire, then wait for, this frame's swapchain image.
     fn acquire_image(&mut self) -> Result<ImageIndex, XrError>;
+    /// The depth image acquired with the colour image, when the runtime takes depth (spec 4.2).
+    fn depth_image(&self) -> Option<ImageIndex> {
+        None
+    }
     /// `xrLocateViews` at the display time, with the view state's validity.
     fn locate_views(&mut self, display_time: HostTime) -> Result<Located, XrError>;
     /// Release the image, after the frame's work was submitted.
