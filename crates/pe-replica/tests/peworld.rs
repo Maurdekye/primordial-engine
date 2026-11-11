@@ -2,15 +2,17 @@
 //! edits, and the replica stepping the real world with rollback.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use pe_replica::mock::MockClock;
 use pe_replica::world::{BodyKind, Change, ShapeRow, WorldModel};
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
-    Class, DomainId, EntrySource, FinalCut, Frame, Hash, MemberKey, ObjectId, Offset, Outcome, Pos, Replica,
-    SignedEntry,
+    Class, DomainId, EntrySource, FinalCut, Frame, FrameClock, Hash, HostTime, MemberKey, ObjectId, Offset, Outcome,
+    Pos, Replica, SignedEntry,
 };
 use pe_sim::Transform;
 use pe_world::components::{Body, Name, Shape, body_kind, shape_kind};
@@ -234,8 +236,11 @@ fn scene() -> Vec<SignedEntry> {
     vec![first, second]
 }
 
+/// The shared time base: frame 0 well after host time 0, so a view time off this base shows.
+const CLOCK: MockClock = MockClock { rate: pe_seams::SimRate::DEFAULT, start: HostTime(1_234_567_891) };
+
 fn replica() -> ReplicaImpl<PeWorld> {
-    let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133));
+    let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
     config.cut_every = K;
     ReplicaImpl::new(PeWorld::new(genesis(), DomainId(0)), config).expect("a replica")
 }
@@ -256,6 +261,8 @@ fn the_replica_steps_the_real_world_and_rolls_back_to_the_same_roots() {
     assert_eq!(a.faults(), 0);
     let world = a.world().world();
     assert_eq!(world.frame(), Frame(64), "World::frame() is the next frame to step");
+    let view = a.view();
+    assert_eq!(view.sim_time, CLOCK.host_time_of(view.frame), "the view's time is on the clock's base (S5)");
     let balls: Vec<ObjectId> = world.physical().into_iter().filter(|&id| id != oid(1)).collect();
     assert_eq!(balls.len(), 2);
     let y = world.store().world_transform(balls[0]).expect("a ball").pos;
