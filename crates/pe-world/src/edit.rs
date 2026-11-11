@@ -140,39 +140,39 @@ pub fn content_hash(row: &[u8]) -> Hash {
 
 // ---- encoding ------------------------------------------------------------------------------------------------------
 
-struct W(Vec<u8>);
+pub(crate) struct W(pub(crate) Vec<u8>);
 
 impl W {
-    fn u8(&mut self, v: u8) {
+    pub(crate) fn u8(&mut self, v: u8) {
         self.0.push(v);
     }
-    fn u16(&mut self, v: u16) {
+    pub(crate) fn u16(&mut self, v: u16) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn u32(&mut self, v: u32) {
+    pub(crate) fn u32(&mut self, v: u32) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn u128(&mut self, v: u128) {
+    pub(crate) fn u128(&mut self, v: u128) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn raw(&mut self, b: &[u8]) {
+    pub(crate) fn raw(&mut self, b: &[u8]) {
         self.0.extend_from_slice(b);
     }
-    fn len(&mut self, n: usize) {
+    pub(crate) fn len(&mut self, n: usize) {
         self.u32(u32::try_from(n).unwrap_or(u32::MAX));
     }
-    fn bytes(&mut self, b: &[u8]) {
+    pub(crate) fn bytes(&mut self, b: &[u8]) {
         self.len(b.len());
         self.raw(b);
     }
-    fn text(&mut self, s: &str) {
+    pub(crate) fn text(&mut self, s: &str) {
         self.u16(u16::try_from(s.len()).unwrap_or(u16::MAX));
         self.raw(s.as_bytes());
     }
-    fn id(&mut self, id: ObjectId) {
+    pub(crate) fn id(&mut self, id: ObjectId) {
         self.u128(id.to_u128());
     }
-    fn opt_u32(&mut self, v: Option<u32>) {
+    pub(crate) fn opt_u32(&mut self, v: Option<u32>) {
         match v {
             None => self.u8(0),
             Some(x) => {
@@ -181,11 +181,11 @@ impl W {
             }
         }
     }
-    fn version(&mut self, v: &Version) {
+    pub(crate) fn version(&mut self, v: &Version) {
         self.raw(&v.entry.0.0);
         self.u32(v.op);
     }
-    fn target(&mut self, t: Target) {
+    pub(crate) fn target(&mut self, t: Target) {
         match t {
             Target::Existing(id) => {
                 self.u8(0);
@@ -338,13 +338,13 @@ impl Transaction {
 
 // ---- decoding ------------------------------------------------------------------------------------------------------
 
-struct R<'a> {
-    b: &'a [u8],
-    row_bytes: usize,
+pub(crate) struct R<'a> {
+    pub(crate) b: &'a [u8],
+    pub(crate) row_bytes: usize,
 }
 
 impl<'a> R<'a> {
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+    pub(crate) fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         if n > self.b.len() {
             return None;
         }
@@ -352,43 +352,43 @@ impl<'a> R<'a> {
         self.b = t;
         Some(h)
     }
-    fn arr<const N: usize>(&mut self) -> Option<[u8; N]> {
+    pub(crate) fn arr<const N: usize>(&mut self) -> Option<[u8; N]> {
         self.take(N)?.try_into().ok()
     }
-    fn u8(&mut self) -> Option<u8> {
+    pub(crate) fn u8(&mut self) -> Option<u8> {
         Some(self.take(1)?[0])
     }
-    fn flag(&mut self) -> Option<bool> {
+    pub(crate) fn flag(&mut self) -> Option<bool> {
         match self.u8()? {
             0 => Some(false),
             1 => Some(true),
             _ => None,
         }
     }
-    fn u16(&mut self) -> Option<u16> {
+    pub(crate) fn u16(&mut self) -> Option<u16> {
         Some(u16::from_le_bytes(self.arr()?))
     }
-    fn u32(&mut self) -> Option<u32> {
+    pub(crate) fn u32(&mut self) -> Option<u32> {
         Some(u32::from_le_bytes(self.arr()?))
     }
-    fn u128(&mut self) -> Option<u128> {
+    pub(crate) fn u128(&mut self) -> Option<u128> {
         Some(u128::from_le_bytes(self.arr()?))
     }
-    fn id(&mut self) -> Option<ObjectId> {
+    pub(crate) fn id(&mut self) -> Option<ObjectId> {
         ObjectId::from_u128(self.u128()?).some()
     }
-    fn component(&mut self) -> Option<ComponentId> {
+    pub(crate) fn component(&mut self) -> Option<ComponentId> {
         Some(ComponentId(self.u128()?))
     }
-    fn key(&mut self) -> Option<MemberKey> {
+    pub(crate) fn key(&mut self) -> Option<MemberKey> {
         Some(MemberKey(self.arr()?))
     }
     /// A count of items each at least `min` bytes long, so a count can never ask for more than the bytes left.
-    fn count(&mut self, min: usize, max: usize) -> Option<usize> {
+    pub(crate) fn count(&mut self, min: usize, max: usize) -> Option<usize> {
         let n = self.u32()? as usize;
         (n <= max && n.checked_mul(min)? <= self.b.len()).then_some(n)
     }
-    fn bytes(&mut self) -> Option<Vec<u8>> {
+    pub(crate) fn bytes(&mut self) -> Option<Vec<u8>> {
         let n = self.u32()? as usize;
         self.row_bytes = self.row_bytes.checked_add(n)?;
         if self.row_bytes > MAX_ROW_BYTES {
@@ -396,20 +396,20 @@ impl<'a> R<'a> {
         }
         Some(self.take(n)?.to_vec())
     }
-    fn text(&mut self, max: usize) -> Option<String> {
+    pub(crate) fn text(&mut self, max: usize) -> Option<String> {
         let n = self.u16()? as usize;
         if n > max {
             return None;
         }
         String::from_utf8(self.take(n)?.to_vec()).ok()
     }
-    fn opt_u32(&mut self) -> Option<Option<u32>> {
+    pub(crate) fn opt_u32(&mut self) -> Option<Option<u32>> {
         Some(if self.flag()? { Some(self.u32()?) } else { None })
     }
-    fn version(&mut self) -> Option<Version> {
+    pub(crate) fn version(&mut self) -> Option<Version> {
         Some(Version { entry: EntryRef(Hash(self.arr()?)), op: self.u32()? })
     }
-    fn target(&mut self) -> Option<Target> {
+    pub(crate) fn target(&mut self) -> Option<Target> {
         Some(match self.u8()? {
             0 => Target::Existing(self.id()?),
             1 => Target::New(self.u32()?),
@@ -418,7 +418,7 @@ impl<'a> R<'a> {
         })
     }
 
-    fn transaction(&mut self) -> Option<Transaction> {
+    pub(crate) fn transaction(&mut self) -> Option<Transaction> {
         let actor = match self.u8()? {
             0 => Actor::Person,
             1 => {

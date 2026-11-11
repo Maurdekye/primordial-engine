@@ -69,30 +69,33 @@ impl World {
         order.retain(|&(_, id, ..)| repeated.binary_search(&id).is_err());
         refused.extend(repeated);
         for (_, id, pos, rot) in order {
-            let Some(old) = self.store.get::<Transform>(id).copied() else {
-                refused.push(id);
-                continue;
-            };
-            let frame = self.store.frame_of(id);
-            let frame_world = match frame {
-                Some(f) => match self.store.world_transform(f) {
-                    Some(w) => Some(w),
-                    None => {
-                        refused.push(id);
-                        continue;
-                    }
-                },
-                None => None,
-            };
-            let placed = WorldTransform { pos, rot: quat_normalize(rot), scale: old.scale };
-            let mut local = placed.local_in(frame_world.as_ref());
-            local.scale = old.scale;
-            if local.validate(frame.is_some()).is_err() || self.store.insert(id, local).is_err() {
+            if !self.place(id, pos, rot) {
                 refused.push(id);
             }
         }
         refused.sort_unstable();
         refused
+    }
+
+    /// Writes `id`'s world pose: converted to a local transform against its frame's world pose, keeping its local
+    /// scale exactly. A trusted write: row versions do not move. False, writing nothing, if it has no `Transform` or
+    /// its frame cannot hold the pose in range (4.3).
+    pub(crate) fn place(&mut self, id: ObjectId, pos: Pos, rot: [f32; 4]) -> bool {
+        let Some(old) = self.store.get::<Transform>(id).copied() else {
+            return false;
+        };
+        let frame = self.store.frame_of(id);
+        let frame_world = match frame {
+            Some(f) => match self.store.world_transform(f) {
+                Some(w) => Some(w),
+                None => return false,
+            },
+            None => None,
+        };
+        let placed = WorldTransform { pos, rot: quat_normalize(rot), scale: old.scale };
+        let mut local = placed.local_in(frame_world.as_ref());
+        local.scale = old.scale;
+        local.validate(frame.is_some()).is_ok() && self.store.insert(id, local).is_ok()
     }
 
     /// At a cut frame, before the root (replica.md 3.4): every bound body's `BodyState`, and the domain's
@@ -141,7 +144,8 @@ impl World {
     /// The root of the current state. A STAND-IN until the BLAKE3 tree (6.2) replaces it behind this call:
     /// `BLAKE3("pe.root.v0" ‖ …)` over the store's state hash (frame, seed, objects, every column and row version)
     /// and every world table pe-world keeps (claims, members, tombstones, the rate, the depth limit, the settings,
-    /// `physics_global`), so equal roots mean equal outcomes from here (12.11). Deterministic on every machine.
+    /// `physics_global`, the input tables and settings of 8.1), so equal roots mean equal outcomes from here (12.11).
+    /// Deterministic on every machine.
     /// Its strength for the store is that of the 64-bit `state_hash` inside it: enough against accidents, not
     /// against an adversary, until the tree lands (@chunks-reviewer's Low 3).
     pub fn root(&self) -> Hash {
@@ -150,6 +154,7 @@ impl World {
         h.write_u64(self.claims.len() as u64);
         for (o, c) in self.claims.iter() {
             h.write_u128(o.to_u128()).write_u128(c.hand.to_u128()).write(&c.member.0).write_u64(c.since.0);
+            h.write_u64(c.until.0);
         }
         h.write_u64(self.members.len() as u64);
         for (k, p) in self.members.iter() {
@@ -180,6 +185,39 @@ impl World {
         h.write_u32(self.rate.hz()).write_u32(self.depth_limit);
         h.write(bytemuck::cast_slice(&self.gravity)).write(&origin);
         h.write_hash(&self.physics_global);
+        self.hash_inputs(&mut h);
         h.finish()
+    }
+
+    /// The input tables and settings (8.1), for the root.
+    fn hash_inputs(&self, h: &mut Hasher) {
+        let s = self.input_settings;
+        h.write_u32(s.claim_ms).write_u32(s.cooldown_ms).write_u32(s.push_budget).write_u32(s.reach_mm);
+        h.write_u32(s.slack_mm);
+        let t = &self.inputs;
+        h.write_u64(t.cooldowns.len() as u64);
+        for ((m, o), u) in t.cooldowns.iter() {
+            h.write(&m.0).write_u128(o.to_u128()).write_u64(u.0);
+        }
+        h.write_u64(t.packs.len() as u64);
+        for (hand, p) in t.packs.iter() {
+            h.write_u128(hand.to_u128()).write_u64(p.stamp.0).write_u8(p.hold).write_u64(p.poses.len() as u64);
+            for q in &p.poses {
+                let mut b = Vec::new();
+                q.pos.encode(&mut b);
+                h.write(&b);
+                for v in q.rot.iter().chain([&q.grip]) {
+                    h.write(&v.to_le_bytes());
+                }
+                h.write_u8(u8::from(q.engaged));
+            }
+        }
+        h.write_u64(t.pushes.len() as u64);
+        for (m, q) in t.pushes.iter() {
+            h.write(&m.0).write_u64(q.len() as u64);
+            for (f, n) in q {
+                h.write_u64(f.0).write_u64(n.to_bits());
+            }
+        }
     }
 }
