@@ -65,29 +65,45 @@ messages with it, for hundreds of milliseconds. So the replica re-simulates at m
 whether it reached the present; `root_at_cut` and `replay_to` return `RootError::Pending`, `import_at_cut`
 `ImportError::Pending`, to be called again on a later tick; `finalize` returns `NotReady` until the replica has
 re-simulated to the cut. Until it reaches the present again, `view` keeps the last view published there. M2's second
-copy later keeps the old prediction moving during a deep replay instead. The budget's floor is two frames of simulated time at
-the world's rate; a smaller value is raised to it (@design-reviewer, m94ee513a61ac).
+copy later keeps the old prediction moving during a deep replay instead. The budget's floor is two frames of
+simulated time at the world's rate; a smaller value is raised to it (@design-reviewer, m94ee513a61ac).
 
-## S3 v1.1: dissemination before finality
+## S3 v1.1: dissemination before finality, and only an included entry can be void
 
 @harness-eng's question (m2f91e690922b) was whether P4 can stay strict when an author sends an entry to only some
 members. @coordinator-opus decided option (a) (mc5d9ba695401), taking @fable-reviewer's suggestion and its narrower
 wording (m9d60cb892d0c; the user's ruling mfcf10231065f): P4 stays strict, and S3 promises dissemination. The
-contract line, in agree.rs:
+contract line, in agree.rs, with "treats as final" made exact by @design-reviewer (m78ce5f6d1e5a):
 
-> An entry held by any honest member of a log is held by every honest member of that log before any of them treats
-> as final the first cut that covers or voids it.
+> An entry held by any honest member of a log is held by every honest member of that log before any of them reports
+> the first cut that includes it through `EntrySource::final_cut`, or reports a verdict on it under that cut.
 
 - It says "member of that log", not "of the session", so it survives the move to per-cell logs (file 11, 3.4).
 - An entry held only by its faulty author is out of scope.
 - pe-agree (@world-chunks) relays each new entry once, the fast path. The guarantee is fetch-by-name at the cut: a
   member does not finalize a cut until it holds what the cut names, and it fetches anything missing from any voter,
   not only from the author. The per-author rate budget counts relayed and fetched entries, void ones included.
-  pe-agree's cut model gains the property that honest members' void sets are equal, against an adversary that sends
-  to only some members.
-- The harness keeps P4 strict and also runs probe-d1 with the relay dropped, so the fetch path is tested.
-- Waiting for a missing payload can stall a cut, so the fetch's worst case on a thin link is measured before M1's
-  acceptance, not assumed.
+
+**Only an included entry can be void.** @design-reviewer's High on the first text (m78ce5f6d1e5a): fetch-by-name
+can't deliver an uncovered void, an entry stamped below a final cut's frame that no cut names, so the line promised
+what its means can't keep. Decided by @coordinator-opus (md533d3f04a9f, option 1, with @fable-reviewer's conditions,
+m38a3810c2a46):
+- The uncovered-void rule is gone. An uncovered entry stays pending, and the first cut whose head passes it voids it
+  as `Late`. That cut names it, so fetch-by-name delivers it, and every honest member voids it at the same cut.
+- The contract line: an uncovered entry stamped below a final cut's frame is held but never applied, on any member
+  (`EntrySource::entries_at` leaves it out).
+- Two different entries at one seq of a chain are the existing fork fault, never two pending entries.
+- pe-agree: votes carry the voter's chain heads beyond the cut, so the next proposer learns what it lacks and fetches
+  it; the per-author rate budget counts held, uncovered entries, with a small per-author cap. The old prompt verdict
+  may stay as a local display hint only, never as a trace event P4 compares.
+- pe-agree's cut model: `verdicts` and the README rule change to match; the property names the deciding cut (equal
+  void sets per cut on honest members), tested with an adversary that sends to some members only and with a lost
+  relay; and a check that an entry an honest member holds is covered within a fixed number of cuts.
+- The harness keeps P4 per cut. probe-d1 with the relay dropped expects the entry covered, and voided by a later cut
+  on every honest member.
+- Risks: waiting for a missing payload can stall a cut, so the fetch's worst case on a thin link is measured before
+  M1's acceptance, not assumed. A long-running proposer that ignores the heads reported in votes could leave an entry
+  pending; the bounded-coverage check is what shows it.
 
 ## The conflicts between proposals, and v0's rulings
 
