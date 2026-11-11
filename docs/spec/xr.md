@@ -195,6 +195,13 @@ itself, with the extensions the runtime and wgpu each need. So:
 - **pe-render accepts a context from outside** in either case.
 - **The context outlives the session.** It is re-created only after `xrDestroySession` (section 3.1), never while a
   session holds its device and queue. The order of teardown is swapchains, then session, then context.
+- **As built** (`binding::vulkan_context`, Vulkan): the runtime creates the VkInstance and VkDevice with wgpu-hal's
+  extensions; wgpu-hal adopts both, with pe-render's `wanted_features` and `wanted_limits` (two multiview views where
+  offered). Instance, adapter and device are made under `pe_render::gpu::creation_lock`, one at a time in the process
+  (render.md 4). wgpu-hal destroys the device and instance in drop callbacks that each hold the runtime's library,
+  so the library is unloaded only after both. `open::open_vulkan` does the whole of it in one call and returns
+  `NotOpened` with the reason when VR stays on the desktop (no runtime, the guard, headset absent, a binding or
+  session error).
 - **One backend per process, and on Windows it is Vulkan** (the window alone picks Vulkan here anyway [V: M0
   report]). On the Vulkan path the runtime creates the VkInstance and VkDevice, so a context pe-render made by itself
   cannot be reused for VR:
@@ -254,10 +261,20 @@ itself, with the extensions the runtime and wgpu each need. So:
   linear values and relies on the target's sRGB encoding, so a UNORM format would show the headset image too dark.
   A runtime offering neither fails session creation with that reason.
 - **Size:** the larger of the two eyes' recommended sizes (one swapchain serves both), times a render scale pe-render may lower under load (section 7).
-- **Depth:** a second swapchain in a depth format, submitted with `XR_KHR_composition_layer_depth` when offered.
+- **Depth:** a second swapchain, 2 layers, in `D32_SFLOAT` (DXGI `D32_FLOAT`), created when
+  `XR_KHR_composition_layer_depth` is enabled and that format is offered; otherwise colour alone. Its image is
+  acquired and released with the colour image, and an `XrCompositionLayerDepthInfoKHR` is chained to each projection
+  view, from the same rectangle of that eye's layer, with pe-render's `DepthRange::VR.xr_depth_info()`: unscaled
+  physical metres and reverse Z (`nearZ > farZ`). Depth is submitted only for a frame whose depth pe-render drew.
+- **The drawn rectangle:** pe-render draws into `extent` from the origin (the render scale as a viewport, so the
+  swapchain never changes size), and the projection layer's `imageRect` is that rectangle, clamped to the image.
 - **Wrapping:** each swapchain image is wrapped once, at creation, with wgpu-hal's `texture_from_raw` and
   `create_texture_from_hal`, and the textures are kept for the swapchain's life [M0]. pe-xr acquires, waits for and
-  releases images; pe-render only draws into the view it is handed.
+  releases images; pe-render only draws into the view it is handed. As built: `XrTargets` holds the wrappers and
+  gives pe-render its `StereoTarget` per frame (`stereo(image, depth_image, extent)`); pe-app's `FrameSink` glue
+  calls `render_stereo` with it (@engine-architect, app.md). Before `xrDestroySwapchain` the session calls
+  `FrameSink::release_swapchain`, which idles the GPU and drops the wrappers (`XrTargets::release`), on every way a
+  session ends (review 1, L4).
   - D3D12: the initial state given to wgpu is COLOR_TARGET, because OpenXR hands D3D12 colour images over in
     RENDER_TARGET state and wants them back in it [M0; the headset run checks it].
   - Vulkan: wrapped with `TextureMemory::External` and an empty drop callback, so the runtime keeps ownership [M0].
