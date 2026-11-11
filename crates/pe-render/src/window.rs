@@ -459,6 +459,7 @@ impl DesktopView {
         }
         self.last_present = Some(p);
         let done = (self.cfg.clock)();
+        self.cfg.presenter.drawn(done, &stats, self.pacer.quality());
         self.pacer.presented(done);
         if let Some(q) = self.pacer.frame_done(done, cpu, stats.gpu_ms.map(|ms| Duration::from_secs_f64(ms / 1e3))) {
             self.report.quality_changes += 1;
