@@ -81,10 +81,9 @@ fn invalid_field(c: ComponentId, field: u32) -> Reason {
     Reason::Invalid { field: Some(FieldPath { component: c.0, field }) }
 }
 
-/// The transaction would create more than [`MAX_NEW_OBJECTS`]. pe-seams' `Reason::TooLarge { limit }` is not on main
-/// yet (@engine-architect's e89119b6); until it is, the refusal is `Invalid` with no field.
+/// The transaction would create more than [`MAX_NEW_OBJECTS`].
 fn too_large() -> Reason {
-    invalid()
+    Reason::TooLarge { limit: MAX_NEW_OBJECTS as u32 }
 }
 
 /// Refuses the op if the transaction would then have created more than [`MAX_NEW_OBJECTS`].
@@ -474,6 +473,10 @@ impl World {
         size: u32,
     ) -> Result<(), Reason> {
         let src = self.live(cx, source)?;
+        if size == 0 {
+            // A subtree always has its root: a size of 0 is a malformed op, not a stale one.
+            return Err(invalid());
+        }
         // The cap on the size the author declares, before walking the subtree; the walk then confirms it.
         within_cap(cx, size as usize)?;
         let subtree = self.store.subtree(src);

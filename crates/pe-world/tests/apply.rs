@@ -753,11 +753,19 @@ fn one_transaction_creates_at_most_max_new_objects() {
         Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] },
         Op::Copy { source: Target::Existing(table), new: 1, parent: Target::Root, index: None, size: n },
     ]);
-    // `TooLarge { limit }` once pe-seams has it on main; `Invalid` until then.
-    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &over)).0), (Some(1), Reason::Invalid { field: None }));
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &over)).0), (Some(1), Reason::TooLarge { limit: n }));
     let at = tx(vec![Op::Copy { source: Target::Existing(table), new: 1, parent: Target::Root, index: None, size: n }]);
     assert!(
         matches!(refused(&apply(&mut f.w, &entry(&mut f.a, &at)).0).1, Reason::Stale { .. }),
         "at the cap, the size check runs"
     );
+}
+
+#[test]
+fn a_copy_of_size_zero_is_invalid() {
+    // @chunks-reviewer's note on f1a720b2: a subtree always has its root.
+    let mut f = fx();
+    let (table, _, _) = table_and_ball(&mut f);
+    let t = tx(vec![Op::Copy { source: Target::Existing(table), new: 0, parent: Target::Root, index: None, size: 0 }]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &t)).0), (Some(0), Reason::Invalid { field: None }));
 }
