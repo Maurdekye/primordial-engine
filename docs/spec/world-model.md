@@ -277,7 +277,8 @@ in every derivation, and the reserved `Node.born_on` field and `lines` table. Me
 - **No string kind, no list kind.** Variable-length data is a blob [I, from file 04 A1]. A name is a `BlobRef` to
   UTF-8 bytes. A list of objects is children, or a blob. That keeps rows fixed-size, which is what makes them cheap
   to copy, hash and roll back.
-- **Engine components for M1** [I; each is one row, the exact fields are in the code and the schema]:
+- **Engine components for M1** [I; each is one row, the exact fields are in the code and the schema:
+  `crates/pe-world/src/components.rs`, reserved ids 3 to 11 after pe-sim's `Node` (1) and `Transform` (2)]:
 
   | Component | Holds | Who writes it |
   |---|---|---|
@@ -1063,6 +1064,12 @@ outcomes (7.7), and the edit history by version. Two points for WS-api [I]:
 - **One-step revert** (C11): an applied transaction's outcome, with the prior rows it replaced, is enough to build
   its inverse as a new transaction with preconditions on the versions it set. The world model keeps the prior rows
   in the outcome for that.
+- **The read side is built** (world/read-v1, agreed with @api-eng m87250005adbd): `World::snapshot` gives an
+  `Arc<WorldSnapshot>` that shares the world's copy-on-write buffers, with `roots` and `all` in id order, `children` in
+  their order, `info` (name, parent, object and structural versions, creator, `held_by`, `protected_by`, component
+  types), `fields` decoded by name (padding hidden; a `Transform`'s place is one `pos` field, a `Pos` for a root and an
+  `Offset` in its frame's space otherwise), `world_transform`, `offset_in(id, frame)` and `distance`. pe-app adapts
+  it to pe-api's port.
 
 ## 10. Changes to pe-core and pe-sim, and their tests
 

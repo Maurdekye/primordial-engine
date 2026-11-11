@@ -190,10 +190,20 @@ impl ComponentDesc {
         self.schema_hash
     }
 
-    /// The first field of `row` that holds a non-finite float or a bool other than 0 or 1.
+    /// The first field of `row` that holds a non-finite float, a bool other than 0 or 1, an invalid `Pos`, or a
+    /// nonzero byte in a padding field (a field whose name starts with `_`). Padding must be zero because readers
+    /// hide it while every hash covers it: a nonzero pad would be state no tool can see (@chunks-reviewer's M1 on
+    /// world/read-v1). Inserts, `check_values` and `Snapshot::from_bytes` all call this.
     pub fn invalid_field(&self, row: &[u8]) -> Option<&str> {
         debug_assert_eq!(row.len(), self.size());
         for f in &self.fields {
+            if f.name.starts_with('_') {
+                let end = f.end().map_or(row.len(), |e| (e as usize).min(row.len()));
+                if row.get(f.offset as usize..end).is_none_or(|b| b.iter().any(|&x| x != 0)) {
+                    return Some(&f.name);
+                }
+                continue;
+            }
             let w = f.kind.size() as usize;
             for k in 0..f.count as usize {
                 let b = &row[f.offset as usize + k * w..][..w];
@@ -390,5 +400,9 @@ mod tests {
         row[4..8].copy_from_slice(&1.0f32.to_le_bytes());
         row[8] = 2;
         assert_eq!(d.invalid_field(&row), Some("flag"));
+        row[8] = 1;
+        assert_eq!(d.invalid_field(&row), None);
+        row[11] = 0x80;
+        assert_eq!(d.invalid_field(&row), Some("_pad"), "padding must be zero");
     }
 }
