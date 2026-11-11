@@ -12,15 +12,20 @@
 //! - **Cuts** come on a fixed cadence (a duration, a world setting), carry the line id, and name per author the last
 //!   entry they include.
 //! - **Dissemination before finality** (S3 v1.1, RULINGS.md): an entry held by any honest member of a log is held by
-//!   every honest member of that log before any of them reports the first cut that includes it through
-//!   [`EntrySource::final_cut`], or reports a verdict on it under that cut ([`AgreeEvent::Voided`]). So honest
-//!   members apply and void the same entries, at the same cut. An entry that only its faulty author holds is out of
-//!   scope. pe-agree relays each new entry once (the fast path), and keeps the promise by fetching what a cut names,
-//!   from any voter, before it reports the cut.
+//!   each honest member of that log before that member reports the first cut that includes it through
+//!   [`EntrySource::final_cut`], or reports a verdict on it under that cut ([`AgreeEvent::Voided`]). The promise is
+//!   per member, not a barrier: one honest member may report a cut while another is still fetching its entries. So
+//!   honest members apply and void the same entries, at the same cut. An entry that only its faulty author holds is
+//!   out of scope. pe-agree relays each new entry once (the fast path), and keeps the promise by fetching what a cut
+//!   names, from any voter, before it reports the cut.
 //! - **Only an included entry can be void** (S3 v1.1): a cut voids the late and back-stamped entries it includes
 //!   ([`VoidReason`]). An entry stamped below a final cut's frame that no final cut includes yet is pending: it is
 //!   held but never applied, on any member, until the first cut whose head passes it voids it as
 //!   [`VoidReason::Late`]. Two different entries at one seq of a chain are a fork fault, never two pending entries.
+//! - **No cut without its entries** (S3 v1.1): [`Agreement::wants_roots`] and [`EntrySource::final_cut`] never hand
+//!   over a cut unless this member holds every entry it names, void ones included: for each author, every entry up
+//!   to the head the cut names. The d1 rule is S3's alone. The replica can't check it, because a cut may include
+//!   void entries that [`EntrySource::entries_at`] rightly leaves out, so it relies on this line.
 //! - **[`Agreement::receive`] never panics** on any bytes: bad bytes are `Err(Fault)` naming the sender, and an event.
 //! - **The `mutants` feature** with named mutations lives in pe-agree (and pe-diverge, pe-world for their rules), never
 //!   here: inert unless the node's configuration names one, and never in a production build.
@@ -173,7 +178,7 @@ pub enum AgreeEvent {
         self_test: SelfTest,
     },
     /// A cut is final on the line, with the root a quorum computed for itself, and who voted for it. The replica's
-    /// source reports it as its final cut only once this member holds every entry it includes
+    /// source reports it as its final cut only once this member holds every entry it names, void ones included
     /// ([`EntrySource::final_cut`]).
     CutFinal {
         cut: CutRef,
@@ -281,7 +286,8 @@ pub trait Agreement: EntrySource + Send {
     /// Advance on local time. The frame comes from `clock`. Returns what to send.
     fn tick(&mut self, now: HostTime, clock: &dyn FrameClock) -> Vec<Outgoing>;
 
-    /// The cuts this member should vote on now: it holds every entry each includes (the d1 rule). The driver
+    /// The cuts this member should vote on now: it holds every entry each one names, void ones included (the d1
+    /// rule, S3's alone: "No cut without its entries" in [`crate::agree`]). The driver
     /// answers each with [`Agreement::vote`], from [`crate::Replica::root_at_cut`].
     fn wants_roots(&self) -> Vec<Cut>;
 
