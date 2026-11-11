@@ -151,6 +151,36 @@ pub struct BodyStateRow {
     pub digest: [u8; 32],
 }
 
+// ---- the order within a frame --------------------------------------------------------------------------------------
+
+/// Where an entry applies within its frame (world-model.md 8.1; @coordinator-opus's apply-order ruling,
+/// mf12426b9ee0a): every `First` entry before every `Second` one, and within a phase in agreed order. There are
+/// exactly two phases: another is a seam and spec change. pe-world's `input_phase` is 0 for a hand input (`First`) and
+/// 1 for anything else (`Second`), so a grab's reach is measured after its frame's hand movement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Phase {
+    /// Applies first: pe-world's hand inputs. The default, so a model without phases applies in agreed order.
+    #[default]
+    First,
+    /// Applies after every `First` entry of its frame.
+    Second,
+}
+
+/// A frame's entries in apply order: a stable sort by `phase`, so within a phase they keep their agreed order, and
+/// none is dropped. It is the only path by which anything applies a frame's entries: the replica's step (live, in a
+/// re-simulation, in rung 1's replay and in the re-step for a root at a cut) and the harness's oracle. Void entries are
+/// removed before it. Hashes (the cut, the chains, the change record) stay in agreed order, and only the state root
+/// reflects this one: an author's own entries in one frame can apply out of their sequence order.
+pub fn apply_order<'a>(
+    entries: impl IntoIterator<Item = &'a SignedEntry>,
+    phase: impl Fn(&SignedEntry) -> Phase,
+) -> Vec<&'a SignedEntry> {
+    let mut order: Vec<&SignedEntry> = entries.into_iter().collect();
+    // Stable: `sort_unstable_by_key` could reorder the entries of one phase.
+    order.sort_by_key(|e| phase(e));
+    order
+}
+
 // ---- the trait -----------------------------------------------------------------------------------------------------
 
 /// pe-world, as the replica drives it (replica.md 3 and 8.1). Every call is deterministic in the state and its
@@ -164,7 +194,17 @@ pub trait WorldModel: Send {
 
     // the step
 
-    /// Stage 1, once per entry in agreed order: the outcome, and for an applied entry its physics effects.
+    /// The entry's phase within its frame ([`apply_order`]). It reads only the entry, never the state. It is part of
+    /// the determinism contract, so changing it is a world-format change. The default leaves every entry `First`, so a
+    /// model without phases applies its frames in agreed order.
+    fn phase(_entry: &SignedEntry) -> Phase
+    where
+        Self: Sized,
+    {
+        Phase::First
+    }
+    /// Stage 1, once per entry in apply order ([`apply_order`]): the outcome, and for an applied entry its physics
+    /// effects.
     fn apply(&mut self, frame: Frame, entry: &SignedEntry) -> (Outcome, Effects);
     /// Claims and cooldowns expire at `frame + 1` (world-model.md 7.2).
     fn end_frame(&mut self, frame: Frame);
