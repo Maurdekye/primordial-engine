@@ -125,6 +125,8 @@ pub enum Reason {
     Cycle,
     /// An op would put an object deeper than the world's depth limit (world-model.md 3.3).
     TooDeep { object: ObjectId, limit: u32 },
+    /// The transaction would create more objects than one edit may (world-model.md 7.1).
+    TooLarge { limit: u32 },
     /// The object is claimed by another hand; the first grab in the order wins (R5).
     Held { by: MemberKey },
     /// A grab beyond the hand's reach.
