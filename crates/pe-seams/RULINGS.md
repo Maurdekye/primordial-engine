@@ -181,6 +181,40 @@ Round 2, on @design-reviewer's Medium and Low on 27425a53 (mf7ad557d2c10):
   `T_diverge` (divergence.md 9 and 11.1), unless the byte limit trimmed it sooner. Beyond that, where a merge's base
   and log come from is settled with the merge engine (M2); `final_entries` promises nothing more.
 
+Round 3, on @design-reviewer's Medium on b3c2d18f (md4714b88e7e6) and @chunks-reviewer's Medium on pe-replica
+3d8e9442 (ma8374fb3871a), decided as one round by @coordinator-opus (m006a09f4aee6); pe-replica's side as
+@vdw-physics laid it out (m842b8e67c946):
+- **A trim below the floor during a running replay sends the member back to its floor.** `replay_to` checks
+  `kept_from()` once, at the start; a budgeted replay then runs for several ticks, and either cap may trim below the
+  floor at any time. Stopping there would hold the live state, and the view with it, below the floor until rung 2's
+  import ends, although everything from the floor up is still kept. So the replay is abandoned, which is no fault:
+  the replica goes back to its floor's state (always held), re-simulates on from there within the budget as if the
+  replay had never run, and `replay_to` answers `NotKept` for its cut. Rung 2 goes ahead while the member keeps
+  simulating (@design-reviewer's fix). "Stop and count" stays for a frame at or above the floor, counted once per
+  stop.
+- **`Finalized::Damaged`.** Once the time cap trims at or above the floor, `finalize` could never take my root at
+  the cut and answered `NotReady` for ever, so the driver retried silently and no rung ran (@chunks-reviewer's probe:
+  the live history had stepped those frames before the trim, so nothing stopped). Now the root's check of the frames
+  from the floor up to the cut counts the fault and answers `RootError::Damaged`, and `finalize` answers
+  `Finalized::Damaged`: nothing is compared, `Cv` and the floor stay, the driver stops retrying (it already does for
+  any verdict but `NotReady`), and rung 2 is due at once. It is the same condition as `Damaged` from `root_at_cut`,
+  so pe-diverge has one rung-2 trigger, not two. @coordinator-opus's option (a); (b) and (c) were rejected for
+  @chunks-reviewer's reasons. The name is @engine-architect's. `NotKept` from `root_at_cut` keeps its plain, benign
+  meaning: a cut below my floor.
+- **Rung 2 without a root of mine** (@engine-architect's choice, flagged to @coordinator-opus): after `Damaged` the
+  replica holds no root of its own at the cut, so rung 2 has nothing to diff against (divergence.md 4.2, step 2). It
+  imports the group's whole state at the cut, as for a joiner, and `import_at_cut` replaces the group's state from
+  empty when it holds no root of mine at the cut. pe-diverge already fetches everything, and names nothing absent,
+  when it has no tree of mine (ws/diverge e333635f). The other way, diffing against the floor's root, would need the
+  receiver to know which base the records patch: a new `CutImport` field. Either way, afterwards my root at the cut
+  is the import's, for `root_at_cut` and `finalize`, with no re-step of the frames below it, so the next `finalize`
+  agrees instead of meeting the trimmed frames again.
+- `Finalized` stays exhaustive, so every caller has to handle `Damaged`. On main the only caller, pe-replica's
+  driver, needs no change. At their next merge, pe-diverge's ladder (ws/diverge) and the harness's seamnode
+  (harness/m0) each add one arm.
+- Folded in: `Note` is `#[non_exhaustive]`, like `Reason` (@design-reviewer's idea; @world-model, whose pe-world only
+  builds and compares notes, agreed, m1053f29a86e3).
+
 Folded in: @design-reviewer's two Lows on S3 v1.1 round 3 (m91523df37dd3): "No cut without its entries" now asks
 only for the entries a cut newly includes (after the previous final cut's head, up to this cut's), which a member can
 still meet once the window trims; and `replay_to`'s cut is one this member holds in full, its final cut or a cut it
