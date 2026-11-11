@@ -38,9 +38,13 @@ impl EntrySource for Agree {
     fn final_cut(&self) -> Option<&FinalCut> {
         self.final_cut.as_ref()
     }
-    fn entries_at(&self, _: Frame) -> &[SignedEntry] {
-        &self.none
+    fn entries_at(&self, _: Frame) -> Option<&[SignedEntry]> {
+        Some(&self.none)
     }
+    fn kept_from(&self) -> Frame {
+        Frame(0)
+    }
+    fn keep_final_from(&mut self, _: Frame, _: Frame) {}
     fn take_changed_from(&mut self) -> Option<Frame> {
         None
     }
