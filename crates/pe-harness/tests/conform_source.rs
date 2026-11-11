@@ -215,3 +215,15 @@ fn a_time_cap_past_the_floor_is_damaged_never_a_wait_and_keeps_the_contract() {
     let vs = props::p15_source_contract(&r.trace);
     assert!(vs.is_empty(), "{vs:#?}");
 }
+
+#[test]
+fn p15_bites_on_a_frame_dropped_above_kept_from() {
+    // A source that keeps kept_from and the final frame's predecessor but not frame 20 (no cut ends at 21, and the
+    // replica stalls there, so finals stop at 18): the rotating probe up to the present finds it (md0cb46c5f152).
+    let keys = TestKeys::new(41, 3);
+    let nodes = lockstep_with(&keys, 3, |a| a.drop_frame = Some(20));
+    let sc = Scenario::new(41, 2 * SEC).at(frame_at(10), 1, Op::Set { obj: OBJ, field: 0, value: 4 });
+    let r = run(&sc, nodes);
+    let vs = props::p15_source_contract(&r.trace);
+    assert!(vs.iter().any(|v| v.detail.contains("frame 20 is at or above kept_from")), "{vs:#?}");
+}
