@@ -1153,16 +1153,49 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
   the member's own rig or head, and a maximum change per frame. Otherwise a modified client puts its hand next to
   anything and neither reach check bounds anything (@design-reviewer's r14 point 4, widening the ruling's (b), accepted by
   @coordinator-opus md0052f879762). This is not optional; it gates opening a world to strangers. 
-- **Agents' actions** (user ruling m14ae4ed5bb9e, relayed by @coordinator-opus mee1bd7557579, overruling the
-  hand-less gate of me99d54f3776e; @item:primordial-engine/agent-actions-within-the-owning-user-s-simulatio). Agents
-  may perform any action at any speed and distance, moving instantly and grabbing objects of any size, as long as
-  the object lies within their owning user's simulation range. That is the one bound on an agent; agents may set up
-  "chunkloaders" that force regions loaded, only with their owning user's approval (M4 regions). The sim-range
-  check is not in slice B (@engine-architect places it in the plan). Kept from the earlier decision: an **admin
-  force-release** of any claim, and a **visible holder** on every claim, in refusals and the record.
-- **Open, before strangers: hand-less grabs.** A person can act as their own agent (an `Input` names no actor, and
-  `hand: None` skips reach for any member), so what the strangers gate needs instead is open with @coordinator-opus
-  and @fable-reviewer. Until it is settled this item stays on the gate.
+- **Agent powers** (user rulings m14ae4ed5bb9e and m9d1bad95e3f7, relayed by @coordinator-opus mee1bd7557579 and
+  m7bc8058b37db, overruling the hand-less gate of me99d54f3776e;
+  @item:primordial-engine/agent-actions-within-the-owning-user-s-simulatio). This settles the strangers-gate item on
+  hand-less grabs.
+  - **What an agent may do.** Any action at any speed and distance, moving instantly and grabbing objects of any
+    size, as long as the object lies within its owning user's simulation range. That is the one bound on where an
+    agent acts. Agents may set up "chunkloaders" that force regions loaded, only with their owning user's approval
+    (M4 regions). The sim-range check is not in slice B (@engine-architect places it in the plan).
+  - **Agent powers are a per-member right, granted by the world's admins.** Admins and the members they trust have
+    it; guests don't unless an admin grants it. A person acting as their own agent is the same member, so the right
+    is checked on the member, never on a claimed actor (an `Input` names none).
+  - **Without the right, hand-less inputs are refused** (`NoPermission`), so reach binds the member: a `Grab` with
+    `hand: None`, and a `Push` that is not from the author's own hand within reach (the push rule required before
+    strangers, above). Hand inputs are unaffected.
+  - **Per-member caps, set by admins:** the number of objects the member may hold at once (claims, hands
+    included; one past it is refused `TooLarge { limit }`), the member's push budget (in place of the world's
+    `push_budget`), and the number of chunkloaders (M4).
+  - **Holds and locks win.** An agent's grab never takes an object another member holds (`Held { by }`, as for any
+    grab), nor one under its owner's lock: a new per-object protection flag, "others can't grab or push this",
+    beside 7.8's `Protection`. Under the lock, any other member's grab or push, hand or hand-less, is refused
+    `Protected { owner }`.
+  - **Kept:** an **admin force-release** of any claim, and a **visible holder** on every claim, in refusals and the
+    record. **Hand-less actions are shown as such:** a hand-less claim has `hand = ObjectId::NONE`, and an applied
+    push records whether it came from a hand.
+  - **Not in slice B.** In B any member may send hand-less inputs and there is no lock, cap or force-release; B
+    stays off the strangers gate's list of done items. The sizing below is for a later slice.
+  - **Sizing for the later slice** [I, proposal for review; multi-way points go to @coordinator-opus]:
+    - *The right:* a permission bit `perm::AGENT` in the role table (5.4) gives the default (the admin role has it,
+      Guest doesn't), and a per-member override row in governance, written only by admins, grants or withdraws it
+      for one member. Checked in `apply_input`'s permission step, before reach.
+    - *The caps:* the same per-member row carries `max_claims`, `push_budget` and `max_chunkloaders`. An absent
+      field takes the world setting: new settings `max_claims` (proposed default 4, bound 1 - 64) and
+      `max_chunkloaders` (M4), and the existing `push_budget`. The claim cap counts the member's rows in the claims
+      table at the grab's frame; a renewal does not count again.
+    - *The lock:* a flag field in `Protection` (`flags: u32`, bit 0 = no grab or push by others), so it inherits
+      7.8's owner rule and subtree reach. Only the owner sets or clears it. This changes `Protection`'s row layout,
+      a world-format version change (fine before the first release).
+    - *Force-release:* a new input, `Release { object, force: true }`, applied only for an admin; it ends the
+      claim with no cooldown for the holder, and its outcome names the holder it released.
+    - *The record:* `Push` in `Footprint` gains `hand: Option<ObjectId>`.
+    - Tests: a member without the right sends a hand-less grab and push and is refused; a guest granted the right
+      grabs across the room; an agent's grab of a held object and of a locked object are refused; the claim cap's
+      edge (cap, cap + 1, renewal at cap); an admin force-release and the holder's next grab without a cooldown.
 
 **What the replica gets.** `Footprint` gains the pushes (object, impulse, `at`, author). The replica reads
 `hands()` and `claims()` every frame. A refused grab's outcome names the holder (`Held { by }`), which is what
