@@ -56,6 +56,8 @@ pub enum Obj {
 pub enum ROp {
     Create {
         new: u32,
+        /// The objects it makes: 1, or a template's subtree (pe-world's `Copy.size`).
+        size: u32,
         parent: Obj,
         name: String,
         template: Option<ObjectId>,
@@ -85,6 +87,8 @@ pub enum ROp {
         source: Obj,
         new: u32,
         parent: Obj,
+        /// The source subtree's size as resolved (pe-world refuses a mismatch as `Stale` with `OWN_CHECK`).
+        size: u32,
     },
     Delete {
         target: Obj,
@@ -108,6 +112,8 @@ pub struct Resolved {
     pub new_count: u32,
     /// Objects written (api.md's `count`).
     pub count: u64,
+    /// For each op in `ops`, the index of the transaction's op it came from (a `where` expands one into many).
+    pub op_of: Vec<u32>,
 }
 
 fn refusal(code: RefusalCode, op: usize, message: impl Into<String>) -> Box<Refusal> {
@@ -158,6 +164,7 @@ struct Ctx<'a> {
     /// Preconditions in first-use order, each marked explicit or default (M1).
     pre: Vec<(ObjectId, Version, bool)>,
     ops: Vec<ROp>,
+    op_of: Vec<u32>,
     count: u64,
     /// New indices that are scripts, not objects (Low 7).
     scripts: BTreeSet<u32>,
@@ -424,6 +431,7 @@ impl Ctx<'_> {
 
     fn push(&mut self, i: usize, op: ROp) -> Result<(), Box<Refusal>> {
         self.ops.push(op);
+        self.op_of.push(i as u32);
         if self.ops.len() > OPS_MAX {
             let mut f =
                 refusal(RefusalCode::TooLarge, i, format!("The change has more than {OPS_MAX} edits once expanded."));
@@ -500,6 +508,7 @@ pub fn resolve_tx(
         next_new: 0,
         pre: vec![],
         ops: vec![],
+        op_of: vec![],
         count: 0,
         scripts: BTreeSet::new(),
         selected: BTreeMap::new(),
@@ -524,7 +533,10 @@ pub fn resolve_tx(
                 let new = c.new_ref(i, as_ref.as_ref(), parent, size)?;
                 c.grown.insert(parent);
                 c.count += size as u64; // every object it makes, as for a duplicate
-                c.push(i, ROp::Create { new, parent, name: name.clone(), template, components: components.clone() })?;
+                c.push(
+                    i,
+                    ROp::Create { new, size, parent, name: name.clone(), template, components: components.clone() },
+                )?;
             }
             Op::Set { target, field, value, fields } => {
                 let mut fs: BTreeMap<String, Json> = fields.clone().unwrap_or_default();
@@ -594,7 +606,7 @@ pub fn resolve_tx(
                 let new = c.new_ref(i, as_ref.as_ref(), parent, size)?;
                 c.grown.insert(parent);
                 c.count += size as u64;
-                c.push(i, ROp::Copy { source: src, new, parent })?;
+                c.push(i, ROp::Copy { source: src, new, parent, size })?;
             }
             Op::Delete { target } => {
                 for o in c.targets(i, target, true)? {
@@ -628,6 +640,7 @@ pub fn resolve_tx(
         refs: c.refs,
         new_count: c.next_new,
         count: c.count,
+        op_of: c.op_of,
     })
 }
 
@@ -675,7 +688,7 @@ mod tests {
         assert_eq!(r.new_count, 2);
         assert_eq!(r.ops.len(), 1 + 3 + 1 + 1 + 1);
         assert!(matches!(r.ops[0], ROp::Create { new: 0, template: Some(_), parent: Obj::Existing(_), .. }));
-        assert!(matches!(r.ops[4], ROp::Copy { source: Obj::New(0), new: 1, parent: Obj::Existing(_) }));
+        assert!(matches!(r.ops[4], ROp::Copy { source: Obj::New(0), new: 1, parent: Obj::Existing(_), size: 1 }));
         // Preconditions: only the deleted lamp. The table is the create's parent (none, M2 (a)); the balls are plain
         // writes.
         assert_eq!(r.preconditions.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [oid(2)]);
@@ -956,7 +969,7 @@ mod tests {
             {"op": "create", "parent": "$box", "name": "Lid"},
             {"op": "duplicate", "id": "$box"}
         ]));
-        assert!(matches!(r.ops[2], ROp::Copy { source: Obj::New(0), new: 2, .. }));
+        assert!(matches!(r.ops[2], ROp::Copy { source: Obj::New(0), new: 2, size: 2, .. }));
         assert_eq!(r.new_count, 4);
     }
 

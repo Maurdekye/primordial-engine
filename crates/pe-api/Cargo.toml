@@ -9,6 +9,10 @@ description = "WorldApi (seam S6): one typed in-process API over the live world,
 # WS-api (@api-eng) owns this crate and its manifest; the root Cargo.toml lists it (pe-seams v0).
 [dependencies]
 pe-seams = { path = "../pe-seams", features = ["world-api"] }
+pe-core = { path = "../pe-core" }
+pe-world = { path = "../pe-world" }
+pe-sim = { path = "../pe-sim" }
+bytemuck = "1.25"
 serde_json.workspace = true
 schemars.workspace = true
 
