@@ -194,12 +194,18 @@ impl Sim {
         }
     }
 
-    /// When the next tick is due: the start of the frame after `ticked`, or of frame 0, but never sooner than a
-    /// millisecond from `now` while the clock has no frame yet.
+    /// When the next tick is due: the start of the frame after `ticked`, or of frame 0, but never sooner than one
+    /// frame period from `now` while the clock has no frame yet. With pe-net's clock model, `host_time_of(Frame(0))`
+    /// means nothing until the clock converges (transport.md 5.4), so a shorter floor would wake the thread many
+    /// times a frame for the whole convergence. Once pe-net's runner is wired, it ends the wait early through the
+    /// thread's [`Waker`] when the clock converges.
     fn next_due(&self, ticked: Option<Frame>, now: HostTime) -> HostTime {
         match ticked {
             Some(p) => self.clock.host_time_of(Frame(p.0 + 1)),
-            None => self.clock.host_time_of(Frame(0)).max(now.plus(Duration::from_millis(1))),
+            None => {
+                let period = Duration::from_nanos(1_000_000_000 / u64::from(self.clock.rate_hz()));
+                self.clock.host_time_of(Frame(0)).max(now.plus(period))
+            }
         }
     }
 }
@@ -312,9 +318,36 @@ mod tests {
         assert!(s.tick(HostTime(epoch.0 - 1)).is_none());
         assert_eq!(s.stats().before_frame_0, 1);
         assert!(slot.newest().is_none(), "nothing published before frame 0");
-        // The next tick is due at frame 0, but never sooner than a millisecond away.
+        // The next tick is due at frame 0, but never sooner than one frame period away.
+        let period = 1_000_000_000 / i64::from(RATE.hz());
         assert_eq!(s.next_due(None, HostTime(epoch.0 - 2_000_000_000)), epoch);
-        assert_eq!(s.next_due(None, HostTime(epoch.0 - 1)), HostTime(epoch.0 - 1 + 1_000_000));
+        assert_eq!(s.next_due(None, HostTime(epoch.0 - 1)), HostTime(epoch.0 - 1 + period));
+    }
+
+    /// A clock still converging: no frame yet, and a frame 0 that would already have started.
+    struct Converging;
+
+    impl FrameClock for Converging {
+        fn rate_hz(&self) -> u32 {
+            RATE.hz()
+        }
+        fn frame_at(&self, _: HostTime) -> Option<Frame> {
+            None
+        }
+        fn host_time_of(&self, _: Frame) -> HostTime {
+            HostTime(0)
+        }
+    }
+
+    /// design-reviewer's Low on slice 1: while the clock converges, the thread waits a frame period between ticks,
+    /// not a millisecond.
+    #[test]
+    fn a_converging_clock_ticks_once_a_period() {
+        let (mut s, slot) = sim(Arc::new(Converging), Budget::new(RATE));
+        let now = HostTime(9_000_000_000);
+        assert!(s.tick(now).is_none());
+        assert_eq!(s.next_due(None, now), HostTime(now.0 + 1_000_000_000 / i64::from(RATE.hz())));
+        assert!(slot.newest().is_none());
     }
 
     #[test]
