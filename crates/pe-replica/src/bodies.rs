@@ -39,7 +39,9 @@ fn shape(s: &ShapeRow, row: &BodyRow) -> ShapeDesc {
         }
         // pe-physics's box is centred on its body, unturned. A compound child's box, offset or turned, becomes the
         // hull of its eight corners: the same solid, and the same on every replica.
-        ShapeRow::Box { center, rotation, half_extents } => Geometry::Hull { points: corners(center, rotation, half_extents) },
+        ShapeRow::Box { center, rotation, half_extents } => {
+            Geometry::Hull { points: corners(center, rotation, half_extents) }
+        }
     };
     let mut shape = ShapeDesc::new(geometry)
         .with_density(row.density)
