@@ -141,6 +141,22 @@ pub struct ReplicaImpl<W: WorldModel> {
     faults: u64,
     /// Bodies stopped at their last valid pose because the step took them out of range (3, step 7).
     stopped: u64,
+    /// What re-steps off the live history counted, kept apart from the live counts (@chunks-reviewer's L1 on
+    /// 40f9cca4): a fault in a frame both histories step is counted once against the live history.
+    scratch: Scratch,
+    /// The outcomes of the last re-step off the live history: a re-base on the floor takes them for `[g, floor)`.
+    scratch_outcomes: BTreeMap<EntryRef, (Frame, Outcome)>,
+    /// Spans `[g, floor)` that a `finalize` re-based on the cut-exact floor: S3's change report inside one is expected
+    /// once, at the next `advance` (@design-reviewer, m46c0d79ab4ad).
+    excused: Vec<(Frame, Frame)>,
+}
+
+/// What re-steps off the live history (`root_at_cut`'s scratch) counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Scratch {
+    pub faults: u64,
+    pub stopped: u64,
+    pub fp_resets: u32,
 }
 
 impl<W: WorldModel> ReplicaImpl<W> {
@@ -183,6 +199,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             counters: ViewCounters::default(),
             faults: 0,
             stopped: 0,
+            scratch: Scratch::default(),
+            scratch_outcomes: BTreeMap::new(),
+            excused: Vec::new(),
         };
         if r.is_cut_frame(Frame(0)) {
             let root = r.take_root();
@@ -207,6 +226,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// Bodies stopped because the step took them out of range.
     pub fn stopped(&self) -> u64 {
         self.stopped
+    }
+
+    /// What re-steps off the live history counted: never part of [`Self::faults`] or [`Self::stopped`].
+    pub fn scratch(&self) -> Scratch {
+        self.scratch
     }
 
     /// The live root at a cut-grid frame, if it has been taken and is still kept.
@@ -253,6 +277,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
             let id = e.id();
             if live {
                 self.outcomes.insert(id, (f, outcome));
+            } else {
+                self.scratch_outcomes.insert(id, (f, outcome));
             }
             ids.push(id);
             if !fx.is_empty() {
@@ -357,11 +383,13 @@ impl<W: WorldModel> ReplicaImpl<W> {
     fn roll_back(&mut self, to: Frame) -> Option<Frame> {
         let ReplicaImpl { ring, world, physics, .. } = self;
         let (k, key) = ring.at_or_before(to)?;
-        world.restore(&key.world);
+        // Physics first: it refuses a bad image before writing anything, so a refusal leaves the world and the
+        // physics at the same frame (@chunks-reviewer's L2 on 40f9cca4).
         if physics.restore_image(&key.image).is_err() {
             self.faults += 1;
             return None;
         }
+        world.restore(&key.world);
         self.frame = k;
         self.ring.truncate_after(k);
         self.forget_after(k);
@@ -449,7 +477,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
         source: &dyn EntrySource,
     ) -> Result<(Hash, Held<W::Saved>), RootError> {
         let live = (self.world.save(), self.physics.save_image().map_err(|_| RootError::Damaged)?, self.frame);
+        let tally = (self.faults, self.stopped, self.counters.fp_resets);
+        self.scratch_outcomes.clear();
         let result = self.scratch_to(cut, from.min(cut.at.frame), source);
+        // What the re-step counted is the scratch's: the live counts stay as they were (L1).
+        self.scratch.faults += self.faults - tally.0;
+        self.scratch.stopped += self.stopped - tally.1;
+        self.scratch.fp_resets += self.counters.fp_resets - tally.2;
+        (self.faults, self.stopped, self.counters.fp_resets) = tally;
         self.world.restore(&live.0);
         if self.physics.restore_image(&live.1).is_err() {
             self.faults += 1;
@@ -522,6 +557,24 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.stepped.retain(|f, _| *f >= at);
         let oldest = self.finals.front().map_or(at, |f| f.0.frame);
         self.outcomes.retain(|_, (f, _)| *f >= oldest);
+    }
+
+    /// The floor just moved over live frames that stepped other entries than the cut's, from `g` on: a late entry the
+    /// cut did not cover, voided as the cut went final, often by my own vote inside `drive`. The live state goes back
+    /// to the floor's cut-exact snapshot at once, with the cut-exact root and outcomes below the floor, and the next
+    /// call re-simulates to `reached`. S3's change report inside `[g, floor)` is then expected, and excused once
+    /// (@chunks-reviewer's M1 on 40f9cca4, option (a) by @coordinator-opus, mb9b8ce2ae8da).
+    fn rebase_on_floor(&mut self, g: Frame, root: Hash) {
+        let at = self.floor_frame();
+        if let Some(k) = self.roll_back(at) {
+            self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0 - k.0);
+        }
+        self.live.insert(at, root);
+        // finalize's my_root just re-stepped `[k, at)` with exactly the cut's entries, k at or before g.
+        self.outcomes.retain(|_, (f, _)| *f < g);
+        let scratch = std::mem::take(&mut self.scratch_outcomes);
+        self.outcomes.extend(scratch.into_iter().filter(|(_, (f, _))| (g..at).contains(f)));
+        self.excused.push((g, at));
     }
 
     fn publish(&mut self) {
@@ -613,8 +666,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     fn advance(&mut self, present: Frame, source: &mut dyn EntrySource) -> Advance {
         let mut out = Advance::default();
         let mut budget = self.budget;
+        // A span a finalize re-based excuses one report, the first after it; unused, it lapses here.
+        let excused = std::mem::take(&mut self.excused);
         if let Some(f) = source.take_changed_from() {
-            if f < self.floor_frame() {
+            let expected = excused.iter().any(|&(g, floor)| (g..floor).contains(&f));
+            if f < self.floor_frame() && !expected {
                 // A protocol fault (4.2): reported, and not acted on below the floor.
                 self.faults += 1;
             }
@@ -667,6 +723,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         let Ok(mine) = self.my_root(&cut.cut, &*source) else {
             return Finalized::NotReady;
         };
+        // Whether the live history below the cut's frame stepped exactly the cut's entries, asked before the floor
+        // moves past those frames.
+        let differs = self.first_difference(&cut.cut, &*source);
         self.voted.retain(|c, _| c.height > at.height);
         self.finals.retain(|f| f.0 != at);
         self.finals.push_back((at, mine));
@@ -679,6 +738,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             Finalized::Diverged { mine }
         };
         self.move_floor(&cut.cut, mine);
+        if let Some(g) = differs {
+            self.rebase_on_floor(g, mine);
+        }
         self.release();
         verdict
     }

@@ -300,3 +300,93 @@ fn a_cut_covering_only_void_entries_below_the_floor_has_a_root() {
     let want = w.root_at_cut(&cut(&all, 3, 20), &mut ws).expect("the reference's root");
     assert_eq!(a.root_at_cut(&c20, &mut s), Ok(want));
 }
+
+/// The reference replica at 48, with a third author's entry stamped at 20 that the cut at 24 does not cover.
+fn with_late_entry_at_20() -> (ReplicaImpl<MockWorld>, Source, SignedEntry) {
+    let (mut a, mut s) = reference(48);
+    let keys = TestKeys::new(7, 3);
+    let late = EntryBuilder::new(&keys, 2).next(Class::Edit, Frame(20), Bytes::from(encode(&[ball(13, 2.0, 1.0)])));
+    s.add(late.clone());
+    a.advance(Frame(48), &mut s);
+    (a, s, late)
+}
+
+/// S3 voids the late entry as the cut at 24 goes final, and reports a change from `reported`.
+fn void(s: &mut Source, late: &SignedEntry, reported: Frame) {
+    s.entries.get_mut(&late.entry.stamp).expect("stamped").retain(|e| e.id() != late.id());
+    s.changed = Some(reported);
+}
+
+/// A late entry above the floor that the cut does not cover is voided as the cut goes final (often by the vote that
+/// completes the quorum, inside `drive`), and S3 reports the change below the new floor (@chunks-reviewer's M1 on
+/// 40f9cca4, from its probe). `finalize` re-bases the live state on the cut-exact floor at once (option (a),
+/// @coordinator-opus mb9b8ce2ae8da), and the report inside [g, floor) is excused, once.
+#[test]
+fn a_late_entry_voided_as_the_cut_goes_final_is_no_fault_and_leaves_no_wrong_state() {
+    let (clean, _) = reference(48);
+    let quorum = clean.live_root(Frame(24)).expect("live");
+    let (mut a, mut s, late) = with_late_entry_at_20();
+    let f0 = a.faults();
+    void(&mut s, &late, Frame(20));
+    assert_eq!(
+        a.finalize(&FinalCut { cut: cut(&scene(), 3, 24), root: quorum, voters: vec![] }, &mut s),
+        Finalized::Agreed
+    );
+    // Straight after finalize the live state is the cut-exact floor: the roots and the outcome that held the void
+    // entry are gone, and the cut's entries in [g, floor) have the cut-exact history's outcomes.
+    assert_eq!((a.frame(), a.live_root(Frame(24)), a.live_root(Frame(32))), (Frame(24), Some(quorum), None));
+    assert_eq!(a.outcome(&late.id()), None);
+    let teleport = scene()[5].id();
+    assert_eq!(a.outcome(&teleport).map(|o| o.0), Some(Frame(21)));
+    assert_eq!(a.outcome(&teleport), clean.outcome(&teleport));
+    // The next call re-simulates to the present, and S3's report inside [g, floor) is no fault.
+    let adv = a.advance(Frame(48), &mut s);
+    assert_eq!(a.faults(), f0, "a report inside [g, floor) is expected");
+    assert_eq!((adv.rolled_back_to, adv.resimulated), (None, 24));
+    for f in [24, 32, 40, 48] {
+        assert_eq!(a.live_root(Frame(f)), clean.live_root(Frame(f)), "frame {f}");
+    }
+    // Once: the same report again is a fault.
+    s.changed = Some(Frame(20));
+    a.advance(Frame(48), &mut s);
+    assert_eq!(a.faults(), f0 + 1);
+}
+
+/// The excuse covers only the span the finalize re-based: a change report below the floor outside [g, floor) is
+/// still a protocol fault, and is not acted on (@design-reviewer, m46c0d79ab4ad).
+#[test]
+fn a_change_below_the_floor_outside_the_rebased_span_is_still_a_fault() {
+    let (clean, _) = reference(48);
+    let quorum = clean.live_root(Frame(24)).expect("live");
+    let (mut a, mut s, late) = with_late_entry_at_20();
+    let f0 = a.faults();
+    void(&mut s, &late, Frame(5));
+    assert_eq!(
+        a.finalize(&FinalCut { cut: cut(&scene(), 3, 24), root: quorum, voters: vec![] }, &mut s),
+        Finalized::Agreed
+    );
+    a.advance(Frame(48), &mut s);
+    assert_eq!(a.faults(), f0 + 1);
+    assert_eq!(a.live_root(Frame(48)), clean.live_root(Frame(48)));
+}
+
+/// A fault in a frame that both the live history and a re-step off it step counts once against the live history; the
+/// re-step's count is the scratch's (@chunks-reviewer's L1 on 40f9cca4).
+#[test]
+fn a_re_step_off_the_live_history_counts_only_against_the_scratch() {
+    let mut world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
+    world.fault_transforms_at(Frame(12));
+    let mut config = ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133));
+    config.cut_every = K;
+    let mut a = ReplicaImpl::new(world, config).expect("a replica");
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    // A third author's push at 10, which the cut at 24 does not cover: the cut's root is re-stepped from before 10.
+    let keys = TestKeys::new(7, 3);
+    let push = Bytes::from(encode(&[MockOp::Push { id: id(10), impulse: [0.2, 0.0, 0.0] }]));
+    s.add(EntryBuilder::new(&keys, 2).next(Class::Edit, Frame(10), push));
+    a.advance(Frame(32), &mut s);
+    assert_eq!(a.faults(), 1, "frame 12 stepped once, live");
+    a.root_at_cut(&cut(&scene(), 3, 24), &mut s).expect("a root");
+    assert_eq!(a.faults(), 1, "the re-step's fault is the scratch's (ReplicaImpl::scratch)");
+}
