@@ -54,7 +54,7 @@
 //! stages (3, steps 3 and 8), and the view's rows beyond bodies (7).
 
 use core::time::Duration;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -196,6 +196,9 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// Spans `[g, floor)` that a `finalize` re-based on the cut-exact floor: S3's change report inside one is expected
     /// once, at the next `advance` (@design-reviewer).
     excused: Vec<(Frame, Frame)>,
+    /// Drawn objects whose pose at the last published frame a re-simulation rewrote (a replay, a repair or a merge):
+    /// the next publication marks them `CORRECTED` (S5), then forgets them.
+    corrected: BTreeSet<ObjectId>,
 }
 
 /// What re-steps off the live history (`root_at_cut`'s scratch) counted.
@@ -254,6 +257,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             scratch: Scratch::default(),
             scratch_outcomes: BTreeMap::new(),
             excused: Vec::new(),
+            corrected: BTreeSet::new(),
         };
         if r.is_cut_frame(Frame(0)) {
             let root = r.take_root();
@@ -536,6 +540,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             };
             let resimulated = self.frame < self.reached;
             let root = self.step(&entries, true);
+            if resimulated && self.frame == self.view.frame {
+                self.note_corrections();
+            }
             // Stepped past the frame it had stopped at: S3 answers for it again.
             self.stuck_at = self.stuck_at.filter(|&f| f >= self.frame);
             *budget -= 1;
@@ -757,7 +764,13 @@ impl<W: WorldModel> ReplicaImpl<W> {
             {
                 o.flags = o.flags.with(ViewFlags::HELD_LOCAL);
             }
+            // The local member's hands and what they hold are drawn from tracking, never corrected (S5).
+            let local = o.flags.contains(ViewFlags::OWN_HAND) || o.flags.contains(ViewFlags::HELD_LOCAL);
+            if !local && self.corrected.contains(&o.id) {
+                o.flags = o.flags.with(ViewFlags::CORRECTED);
+            }
         }
+        self.corrected.clear();
         let sim_time = self.config.clock.host_time_of(self.frame);
         let mut view = empty_view(self.domain);
         view.frame = self.frame;
@@ -793,6 +806,22 @@ fn in_cut<'s>(all: &'s [SignedEntry], cut: &Cut) -> Vec<&'s SignedEntry> {
 fn restored(config: PhysicsConfig, bytes: &[u8], global: Hash) -> Option<PhysicsWorld> {
     let transfer = Transfer::from_bytes(bytes).ok()?;
     PhysicsWorld::from_transfer(config, &transfer, &CheckHash(global.0)).ok()
+}
+
+impl<W: WorldModel> ReplicaImpl<W> {
+    /// A re-simulation has come back to the last published frame: every drawn object whose pose there differs from
+    /// the published one was rewritten by a replay, a repair or a merge, and the next publication marks it
+    /// `CORRECTED` (S5). The re-simulation is deterministic, so an unchanged object compares equal bit for bit. An
+    /// object new since the publication is not a correction.
+    fn note_corrections(&mut self) {
+        let published: BTreeMap<ObjectId, (Pos, [f32; 4])> =
+            self.view.objects.iter().map(|o| (o.id, (o.pos, o.rotation))).collect();
+        for o in self.world.view_objects() {
+            if published.get(&o.id).is_some_and(|&shown| shown != (o.pos, o.rotation)) {
+                self.corrected.insert(o.id);
+            }
+        }
+    }
 }
 
 pub(crate) fn bounding_radius(shapes: &[ShapePart]) -> f32 {

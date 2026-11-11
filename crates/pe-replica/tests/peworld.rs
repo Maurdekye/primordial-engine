@@ -321,3 +321,30 @@ fn the_view_draws_shapes_and_appearances_and_marks_the_local_members_hands() {
     assert_eq!(theirs.hand_of, Some((other, pe_seams::Hand::Left)));
     assert_eq!(theirs.flags, pe_seams::ViewFlags::default());
 }
+
+/// A late entry whose ball lands on an earlier ball marks the earlier ball `CORRECTED` in the next view (S5): the
+/// replay rewrote its pose at the last published frame. The floor, which nothing moved, is not marked, the late
+/// ball is new rather than corrected, and nothing is marked without a replay.
+#[test]
+fn a_replay_that_moves_a_ball_marks_it_corrected() {
+    let mut entries = scene();
+    let late = entries.pop().expect("two entries");
+    let mut s = Source::default();
+    entries.into_iter().for_each(|e| s.add(e));
+    let mut r = replica();
+    r.advance(Frame(64), &mut s);
+    let corrected = |r: &ReplicaImpl<PeWorld>| -> Vec<ObjectId> {
+        let view = r.view();
+        view.objects.iter().filter(|o| o.flags.contains(pe_seams::ViewFlags::CORRECTED)).map(|o| o.id).collect()
+    };
+    assert_eq!(corrected(&r), Vec::<ObjectId>::new(), "no replay, no correction");
+    let first = r.view().objects.iter().map(|o| o.id).find(|&id| id != oid(1)).expect("the first ball");
+
+    s.add(late);
+    let adv = r.advance(Frame(65), &mut s);
+    assert!(adv.rolled_back_to.is_some(), "{adv:?}");
+    assert_eq!(corrected(&r), [first], "only the first ball, which the late one landed on");
+
+    r.advance(Frame(66), &mut s);
+    assert_eq!(corrected(&r), Vec::<ObjectId>::new(), "a correction is marked once");
+}
