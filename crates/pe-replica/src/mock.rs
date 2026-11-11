@@ -196,6 +196,8 @@ pub struct MockWorld {
     /// A one-shot fault for repair tests, shared by every save of this world, so restoring a snapshot does not arm
     /// it again: at the end of the frame it names, the lowest static body's row moves by a millimetre.
     glitch: Arc<Mutex<Option<Frame>>>,
+    /// A frame whose every step reports one repaired transform (a fault, 3.1), for the fault counts' tests.
+    transform_fault: Option<Frame>,
 }
 
 impl MockWorld {
@@ -208,7 +210,13 @@ impl MockWorld {
             physics: BTreeMap::new(),
             global: Hash::ZERO,
             glitch: Arc::new(Mutex::new(None)),
+            transform_fault: None,
         }
+    }
+
+    /// Every step of `frame`, live or re-stepped, reports one repaired transform: a fault each time it is stepped.
+    pub fn fault_transforms_at(&mut self, frame: Frame) {
+        self.transform_fault = Some(frame);
     }
 
     /// Arm the one-shot fault at the end of `frame`: a transient corruption, as from a bad memory bit, that a replay
@@ -366,7 +374,8 @@ impl WorldModel for MockWorld {
     }
 
     fn maintain_transforms(&mut self) -> u32 {
-        0
+        // Called before `end_frame`, so `frame` is the frame being stepped.
+        u32::from(self.transform_fault == Some(self.frame))
     }
 
     fn write_physics(&mut self, rows: &[(ObjectId, BodyStateRow)], global: Hash) {
