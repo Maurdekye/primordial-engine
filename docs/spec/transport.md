@@ -1,9 +1,9 @@
 # pe-net: the transport
 
-Status: draft 1.4, 2026-11-11, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.5, 2026-11-11, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
-budget (@design-reviewer's review of 1.3). Draft 1.2 records the user's ruling on the firewall default
+budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.2 records the user's ruling on the firewall default
 (m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
@@ -255,10 +255,13 @@ R18's failure again [@design-reviewer's High].
   instead, at the stream priority of its lane. That covers, for example, an edit carrying a small simulation blob
   (up to 1 MiB, `docs/spec/world-model.md`).
 - **The cost:** wire bytes over payload bytes stay near `1 + (r - 1) × (share of small messages) + loss` while
-  rides are on, and near `1 + framing + loss` on a thin link, where they're off. Section 9 tests that it stays
-  under 1.5 on a 16 kbit/s link with 1 % loss, over quinn on a shaped link. So far that's shown only with the
-  budget handed to the lanes at the link's capacity: 1.30, with a 30-byte action every second frame at 60 Hz and
-  rides off [V `pe-net/src/lanes.rs`, budget set to the link's capacity].
+  rides are on, and near `1 + framing + loss` on a thin link, where they're off. Both counts are pe-net's: its
+  datagram bytes over its message bytes. At the IP layer, 30-byte actions can never come near 1.5: each packet
+  adds about 57 B of IP, UDP, QUIC header, AEAD tag and frame header [I: 28 + about 11 with our 8-byte
+  connection ids + 16 + 2]. Section 9 tests that it stays under 1.5 with 1 % loss, over quinn on a shaped link.
+  So far that's shown only with the budget handed to the lanes: 1.30, at 2,000 B/s of pe-net datagram bytes,
+  with a 30-byte action every second frame at 60 Hz and rides off [V `pe-net/src/lanes.rs`, budget set to the
+  link's capacity].
 
 ### 3.4 Pose: newest only
 
@@ -336,7 +339,7 @@ statistics. The harness reports nothing else to it.
 - **The ride gate:** rides (3.3) are optional bytes, so they need a sign that the link has room. `cwnd / srtt`
   alone isn't one: quinn's Cubic doesn't grow the window while the sender is application-limited (quinn-proto
   0.11.19 `cubic.rs`, `on_ack`), and even its 2,400-byte minimum over an 80 ms srtt reads 30,000 B/s, fifteen
-  times a 16 kbit/s link [@design-reviewer's Medium on draft 1.3; S]. Rides are on only while both hold:
+  times a 16 kbit/s link (2,000 B/s) [@design-reviewer's Medium on draft 1.3; S]. Rides are on only while both hold:
   - **the delay guard (4.3):** `srtt - base_rtt` is under `D_guard`. Once it reaches `D_guard`, rides stay off
     until it is back under `D_guard / 2`. Without that band they would flap: rides build the queue, which stops
     them, which drains it [I]. This catches a thin link once its queue reaches about `D_guard`;
@@ -348,7 +351,11 @@ statistics. The harness reports nothing else to it.
     leaves half the budget for poses, retransmissions and the low lanes [I].
 - **What the gate doesn't see:** an AQM router (fq_codel, CAKE) keeps the queue short and drops instead, so the
   delay guard may never fire, and random loss looks like congestion loss. The loss-only cells of section 9
-  measure what rides cost there [I; open].
+  measure what rides cost there; for M1 that's enough [@design-reviewer]. **Exit (open, N5):** if those cells
+  show rides raising loss more than they save, a loss-aware rule comes before sessions with strangers, for
+  example rides off for a few seconds to compare the loss.
+- **Jitter:** on Wi-Fi, `srtt - base_rtt` often swings past `D_guard`, so the guard turns rides off where they
+  help most. 9.7 measures the share of time rides are on, with a jitter cell; no rule change yet [I].
 
 ### 4.3 The delay guard for the low lanes
 
@@ -627,10 +634,16 @@ Gated, unless marked:
    - Protocol and Action arrive once each at 0-30 % random loss, and at 10 % loss most need no retransmission
      round trip (each counted; that cell runs with budget to spare, so rides are on);
    - nothing is delivered twice;
-   - wire bytes over payload bytes stay under 1.5 on a 16 kbit/s link with 1 % loss (3.3), over quinn on a
-     shaped link (a harness cell, the real budget path). The cell also reports the queueing delay
-     (`srtt - base_rtt` at p50 and p99) and fails above `D_guard + 10 ms` at p99, so it can't pass on the ratio
-     with a deep queue;
+   - pe-net datagram bytes over message bytes stay under 1.5 with 1 % loss (3.3), over quinn on a shaped link (a
+     harness cell, the real budget path):
+     - **the cell:** a 32 kbit/s link (4,000 B/s of IP bytes, as a shaper counts them), one 30-byte action every
+       second frame at 60 Hz and nothing else. That's about 30 packets/s of about 100 IP bytes each, so about
+       75 % of the link before any rides [I, arithmetic; @design-reviewer]. The cell reports its measured load,
+       so a reader can tell "rides overfilled it" from "the cell overfilled it";
+     - **the queue:** it reports `srtt - base_rtt` at p50 and p99, and fails above `D_guard + 10 ms + s` at p99,
+       where `s` is one serialization time of the cell's largest packet at the link's rate (about 25 ms for
+       100 B at 4,000 B/s; measured from the packets sent, not assumed). So the cell can't pass on the ratio
+       with a deep queue;
    - under a budget too small for everything, Protocol is never delayed by the lower lanes.
 2. **The budget:**
    - a thin link to one peer doesn't slow traffic to the others;
@@ -665,7 +678,10 @@ Gated, unless marked:
    - action latency over 20 seeds by 5 delays, against the user's target that the other machine sees an action
      within 0.25 s on good links (meef4f248923b);
    - Cubic with the guard against BBR, on delay cells and loss-only cells;
-   - on the loss-only (AQM) cells, what rides cost and save: loss with rides on against off (4.2).
+   - on the loss-only (AQM) cells, what rides cost and save, with rides on against off (4.2): the loss rate
+     and the number of actions that needed a retransmission round trip. The net of the two decides;
+   - the share of time rides are on, including one jitter cell (Wi-Fi-like `srtt` swings past `D_guard`, where
+     rides help most), to learn whether the band of 4.2 is too tight.
 
 ## 10. Parameters
 
@@ -714,6 +730,8 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 - **N4. Per-entry signatures against link authentication:** review file 01 proposes that the encrypted link
   authenticates the sender and only every Kth entry is signed. S1 signs every entry in M1. The proposal is the
   user's call, and not for M1.
+- **N5. Redundant rides on AQM links** (4.2): the gate can't tell congestion loss from random loss. M1 measures
+  it (9.7); a loss-aware rule comes before sessions with strangers if rides raise loss more than they save.
 
 ## 12. What pe-net needs from the others
 
