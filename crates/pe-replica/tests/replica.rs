@@ -2,10 +2,11 @@
 //! logic yet, the budget, roots at cuts, finalize and rung 1.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use pe_replica::mock::{MockOp, MockWorld, encode};
+use pe_replica::mock::{MockClock, MockOp, MockWorld, encode};
 use pe_replica::world::{BodyKind, ShapeRow};
 use pe_replica::{ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
@@ -102,7 +103,8 @@ fn scene() -> Vec<SignedEntry> {
 
 fn replica() -> ReplicaImpl<MockWorld> {
     let world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
-    let mut config = ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133));
+    let mut config =
+        ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133), Arc::new(MockClock::new(SimRate::DEFAULT)));
     config.cut_every = K;
     ReplicaImpl::new(world, config).expect("a replica")
 }
@@ -271,7 +273,8 @@ fn rung_one_repairs_a_transient_fault() {
     all.iter().cloned().for_each(|e| s.add(e));
     let world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
     world.glitch_at(Frame(20));
-    let mut config = ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133));
+    let mut config =
+        ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133), Arc::new(MockClock::new(SimRate::DEFAULT)));
     config.cut_every = K;
     let mut bad = ReplicaImpl::new(world, config).expect("a replica");
     bad.advance(Frame(48), &mut s);
@@ -396,7 +399,8 @@ fn a_change_below_the_floor_outside_the_rebased_span_is_still_a_fault() {
 fn a_re_step_off_the_live_history_counts_only_against_the_scratch() {
     let mut world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
     world.fault_transforms_at(Frame(12));
-    let mut config = ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133));
+    let mut config =
+        ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133), Arc::new(MockClock::new(SimRate::DEFAULT)));
     config.cut_every = K;
     let mut a = ReplicaImpl::new(world, config).expect("a replica");
     let mut s = Source::default();
@@ -421,7 +425,8 @@ fn diverged_at_32() -> (ReplicaImpl<MockWorld>, Source, Cut, Hash, Hash) {
     all.iter().cloned().for_each(|e| s.add(e));
     let world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
     world.glitch_at(Frame(20));
-    let mut config = ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133));
+    let mut config =
+        ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133), Arc::new(MockClock::new(SimRate::DEFAULT)));
     config.cut_every = K;
     let mut bad = ReplicaImpl::new(world, config).expect("a replica");
     bad.advance(Frame(48), &mut s);

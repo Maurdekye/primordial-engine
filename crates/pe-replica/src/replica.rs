@@ -73,20 +73,21 @@ pub struct ReplicaConfig {
     pub keep_finals: Duration,
     /// The keyframe ring's policy.
     pub policy: Policy,
-    /// The shared time base, for the view's `sim_time`. Without one, `sim_time` is the frame's simulated time since
-    /// frame 0 (tests and the harness).
-    pub clock: Option<Arc<dyn FrameClock>>,
+    /// The shared time base (S5): the view's `sim_time` is its host time of the view's frame. Required, so no replica
+    /// publishes a time off that base (@design-reviewer's Low on pe-app slice 2, via @engine-architect m440144e592fc).
+    pub clock: Arc<dyn FrameClock>,
 }
 
 impl ReplicaConfig {
-    /// The defaults at `rate`, with the cut interval agreed with WS-agree (a world setting, 3.5's rule for frames).
-    pub fn new(rate: SimRate, cut_interval: Duration) -> ReplicaConfig {
+    /// The defaults at `rate`, with the cut interval agreed with WS-agree (a world setting, 3.5's rule for frames),
+    /// on the shared time base `clock`.
+    pub fn new(rate: SimRate, cut_interval: Duration, clock: Arc<dyn FrameClock>) -> ReplicaConfig {
         ReplicaConfig {
             physics: PhysicsConfig::engine(),
             cut_every: frames_ceil(cut_interval, rate.hz()).max(1),
             keep_finals: Duration::from_millis(1500),
             policy: Policy::log4(rate.hz()),
-            clock: None,
+            clock,
         }
     }
 }
@@ -702,13 +703,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 version: None,
             });
         }
-        let sim_time = match &self.config.clock {
-            Some(clock) => clock.host_time_of(self.frame),
-            None => {
-                let nanos = u128::from(self.frame.0) * 1_000_000_000 / u128::from(self.rate.hz());
-                HostTime::default().plus_nanos(i64::try_from(nanos).unwrap_or(i64::MAX))
-            }
-        };
+        let sim_time = self.config.clock.host_time_of(self.frame);
         let mut view = empty_view(self.domain);
         view.frame = self.frame;
         view.sim_time = sim_time;
