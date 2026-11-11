@@ -1080,7 +1080,7 @@ arithmetic at the tick rate in effect when the claim or cooldown is set, so ever
 |---|---|---|---|
 | `claim_ms` | 500 | 100 - 5,000 | 30 frames (pe-session's `CLAIM_FRAMES`) |
 | `cooldown_ms` | 166 | 0 - 2,000 | 10 frames (pe-session's `CLAIM_COOLDOWN`) |
-| `push_budget` | 2.0 N·s per member per second | 0 - 1,000; 0 turns remote push off | |
+| `push_budget` | 2,000 mN·s per member per second (a `u32` of mN·s, not ms) | 0 - 1,000,000; 0 turns remote push off | |
 
 **Validity.** Every value is finite and every `Pos` in range (4.3). A pose's rotation must have a norm within
 `1 ± 1e-3` and is stored normalized by `quat_normalize` (deterministic); `grip` is in [0, 1]. A failure refuses
@@ -1115,13 +1115,16 @@ then grabs, releases and pushes, in agreed order. So a `Grab`'s reach is measure
   the author's own, until `now + claim frames`; the claim records the hand, the member, `since` (its first
   frame) and `until`. It is refused with:
   - `Held { by }` while another member's claim on the object, or on anything in its subtree, is unexpired. The
-    reverse is allowed: a lamp on a table someone holds may be grabbed (a cup off a carried tray);
+    reverse is allowed: a lamp on a table someone holds may be grabbed (a cup off a carried tray). A `Grab` that
+    renews the author's own unexpired claim checks only ownership of the hand and the cooldown, never `Held` or
+    reach, so the tray's holder keeps it when someone takes the cup;
   - `OutOfReach` past reach (7.2), measured from the hand's target, since the hand's simulated body is
     pe-replica's own. A blocked hand can grab within reach of its target. A `Grab` with `hand: None` has no reach
     check;
   - `Cooldown { until }` while the author's own cooldown on that object runs.
 - **Implicit renewal.** Every applied hand input whose newest pose is `engaged` renews the claims held by that
-  hand to `now + claim frames`. The object drops only when a claim really expires with no valid renewal before
+  hand to `now + claim frames`. Only an applied input renews: the poses `end_frame` writes from a pack never do,
+  so a long `hold` cannot keep a disconnected holder's claim alive. The object drops only when a claim really expires with no valid renewal before
   it: one void renewal followed by a good one within the claim keeps the grip. A client sends an engaged hand's
   input at least every third of `claim_ms`, even when it is still, so a held grip is never left to lapse. There
   is no automatic re-grab after a drop.
@@ -1134,12 +1137,21 @@ then grabs, releases and pushes, in agreed order. So a `Grab`'s reach is measure
 
 **Pushes** (@coordinator-opus md6eb506d0fce).
 - **In M1 a push needs no hand and no reach.** It is bounded by a budget per member per second: the sum of
-  `|impulse|` over a member's pushes stamped in the last second (by frame) may not exceed `push_budget`; a push
-  that would is refused as `Invalid`. `push_budget = 0` turns remote push off.
-- A push on an object another member holds is refused `Held { by }`.
+  `|impulse|` (the `f32` norm computed in `f64`, correctly rounded, so deterministic) over the member's applied
+  pushes stamped in `(f − hz, f]` may not exceed `push_budget`; a push that would is refused as `Invalid`, and
+  refused pushes do not count. The per-member window is a world table, in the root. `push_budget = 0` turns
+  remote push off.
+- **`at` is bounded** (@design-reviewer's r14 Medium): it must lie within the object's bounding radius (from
+  `Shape`, as reach uses) plus the reach slack, else the push is `Invalid`. Otherwise a tiny impulse far away
+  would give an unbounded torque, inside the linear budget.
+- A push on an object another member holds is refused `Held { by }`. That covers the held object itself only; a
+  push on the table under a held lamp acts through physics.
 - Every applied push is recorded with its author in the outcome and the history, so admins can see who did it.
 - **Required before any session with strangers:** a push must come from the author's own hand, within reach
-  measured against that input stream's hand pose. This is not optional; it gates opening a world to strangers.
+  measured against that input stream's hand pose, and a hand's target must be bounded: a maximum distance from
+  the member's own rig or head, and a maximum change per frame. Otherwise a modified client puts its hand next to
+  anything and neither reach check bounds anything (@design-reviewer's r14 point 4, widening the ruling's (b);
+  @coordinator-opus to confirm). This is not optional; it gates opening a world to strangers.
 
 **What the replica gets.** `Footprint` gains the pushes (object, impulse, `at`, author). The replica reads
 `hands()` and `claims()` every frame. A refused grab's outcome names the holder (`Held { by }`), which is what
@@ -1150,7 +1162,9 @@ New seam reason: `Reason::Cooldown { until: Frame }` (@engine-architect, docked 
 
 **Tests the slice must have** (@coordinator-opus): grabbing a held object's ancestor is refused and its child
 allowed, in both orders; two members grabbing one object in the same frame; implicit renewal surviving one void
-renewal; a disconnected holder's claim expiring and freeing the subtree; the push budget and `push_budget = 0`.
+renewal; a disconnected holder's claim expiring and freeing the subtree, with a long-`hold` pack not renewing it;
+the tray's holder renewing while someone takes the cup; the push budget and `push_budget = 0`; a push with `at`
+outside the bound.
 
 ## 9. The seams, my side
 
