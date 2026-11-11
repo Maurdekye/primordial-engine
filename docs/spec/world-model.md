@@ -1254,6 +1254,17 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
       not count against `push_budget`.
     - Physics adds continuous collision detection against static geometry for small dynamic bodies, on the
       deterministic path (@vdw-physics's part of the decision).
+    - **The tested envelope, and above it** (@coordinator-opus m6be20e26823b, option (b) for M1, on @fable-reviewer's
+      advice m07057e26ab0c). The engine sets no hard speed bound: one would narrow the user's "any speed" ruling, and
+      would not close the hole, since throws, collisions and scripts can still take a small body past it.
+      - **Tested:** radii down to 0.5 cm, walls down to 1 cm thick, speeds up to 50 m/s, CCD on [I: @vdw-physics's
+        sweep; the figure is final once the sweep is widened beyond 14 aims per case and a high-speed tunnelling
+        run on two machines gives equal state roots. If the roots differ, a hard bound goes in until (c)].
+      - **Above it,** small objects can pass through walls. An admin may still raise `max_push_speed` to "no limit";
+        Box3D's 400 m/s ceiling is the real top. That is the admin's own choice: the admin interface shows the
+        tested limit and warns above it, whenever that interface exists.
+      - **(c), after M1** (@vdw-physics, on the docket): confirm the spin cause first (a 0.5 cm ball at 75 m/s
+        spins at about 15,000 rad/s), then try an angular-speed clamp or a substep.
     - Tests: the largest allowed push on the lightest ball (`max_push_dv` exactly, then 1 mm/s over); the speed
       cap's edge on a ball already moving, and repeated pushes stopping at `max_push_speed`; two pushes on one ball
       in one frame, each under `max_push_dv`, whose sum crosses `max_push_speed` (the second refused); a scaled body's mass
