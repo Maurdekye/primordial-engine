@@ -481,8 +481,12 @@ impl PhysicsWorld {
 
     /// A new world from a transfer (a joiner's path). Refused unless the transfer's check hash
     /// is `confirmed`, the check hash the session confirmed for that state: only then is the
-    /// donor's data trusted. `config` must be the world's configuration; the transfer's
-    /// settings must equal it, and the worker count comes from it. The new world must save back
+    /// donor's data trusted. `config` must be the world's configuration: the Box3D settings the
+    /// transfer carries must equal it, and the worker count comes from it. The sub-step count is
+    /// not in the transfer, so it is not checked here: it follows the world's tick rate, a world
+    /// setting that every root covers, so the caller builds `config` from the session's agreed
+    /// rate (`with_tick_rate`), and a wrong rate shows as a different root at the first cut
+    /// (chunks-reviewer's low on 721879f4). The new world must save back
     /// to exactly the transfer, so no byte of it went unread: every geometry blob is used once,
     /// in order, and Box3D consumed all of its world bytes.
     pub fn from_transfer(
