@@ -113,6 +113,11 @@ pub struct FinalCut {
 /// the member whose guard passed (divergence.md 5, step 2). A verdict names the split it was run for (S3 v1.3; L4',
 /// @coordinator-opus): a verdict from an earlier split episode never counts for this one, and a member
 /// picks only once every voter in the split holds a verdict whose [`SelfTest::split`] is that split's cut.
+///
+/// A member runs the self-test once per split episode, and its verdict is final for that split. A second, different
+/// verdict from one member for one split is equivocation ([`FaultKind::Equivocation`]): agreement shows that member
+/// as `Failed` and reports the fault, so `Failed` wins whatever order the verdicts arrive in, and every member's
+/// pick is the same (@design-reviewer's Medium on S3 v1.3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SelfTest {
     #[default]
@@ -171,7 +176,8 @@ pub enum FaultKind {
     WrongLine,
     /// From, or naming, a key that is not a member.
     NotMember,
-    /// Two different entries at one (chain id, seq): proof against the author.
+    /// Two different entries at one (chain id, seq), or two different self-test verdicts from one member for one
+    /// split ([`SelfTest`]): proof against the author.
     Equivocation,
     /// Beyond the author's entry rate.
     RateExceeded,
@@ -231,11 +237,12 @@ pub enum AgreeEvent {
     /// voter's self-test verdict, for the tie rule at n = 2 (divergence.md 5).
     ///
     /// Emitted again whenever a voter's verdict for this split arrives, by vote or by self-test report, with every
-    /// voter's newest verdict: the latest one agreement accepted for this split, so a voter that sends `Passed` and
-    /// then `Failed` shows `Failed`. The newest `RootSplit` for a cut supersedes the earlier ones (S3 v1.3), so whatever
-    /// counts splits counts distinct cuts. A report never changes a vote: roots count only from votes, a report changes
-    /// only the verdict shown here, it is signed over (line, the split cut, the verdict), and one from a member that
-    /// did not vote on the cut is ignored (@world-chunks).
+    /// voter's verdict for this split. A verdict is final for its split ([`SelfTest`]); a second, different one from the
+    /// same member is equivocation, shown as `Failed`, so every member shows the same verdicts whatever order they
+    /// arrive in. The newest `RootSplit` for a cut supersedes the earlier ones (S3 v1.3), so whatever counts splits
+    /// counts distinct cuts. A report never changes a vote: roots count only from votes, a report changes only the
+    /// verdict shown here, it is signed over (line, the split cut, the verdict), and one from a member that did not
+    /// vote on the cut is ignored (@world-chunks).
     RootSplit {
         cut: CutRef,
         roots: Vec<(Hash, Vec<(MemberKey, SelfTest)>)>,
