@@ -155,6 +155,52 @@ ctl-notimeout`. The bounded n = 4 checks take 1-17 minutes each and are for mile
 - **The n = 3 bound** (13 steps): the same split with a quorum of 2 at t = 0. One equivocating voter at n = 3 is
   beyond what the quorum rule tolerates; it is why Byzantine members are modelled at n >= 4 only.
 
+## v0.1 (coordinator conditions mc42c566ac995, @design-reviewer m39910929728c)
+
+Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `results/v0.1-frames-fast.txt` (n3-sig at
+65792c74) and `results/v0.1-n2.txt`.
+
+- **The proposer names each cut's frame** (condition 4). In v0 the cut at height h had frame 3h. Now an honest
+  proposer names its parent's frame + K or + 2K (catching up after a stall), and the Byzantine proposer names + 1, + 2,
+  + K or + 2K. A voter accepts a frame above the parent's and at most 2K above it. A cut covers stamps below its own
+  frame, and an entry it covers is late if it is stamped below the parent's frame. A new property: frames only rise
+  along a final chain, and nothing takes effect below an earlier final frame. Its control, **ctl-noframe** (voters
+  accept any frame), breaks it in 7 steps; its twin **n4-byz-frames** holds for every behaviour up to 12 steps
+  (9.0 M states). n3-chain is still exhaustive, at 45.3 M states (v0: 13.2 M), and so is n3-sig, at 76.6 M.
+  - The lock checks (ctl-nolock, n4-byz-v4, walk-n4-v4-lock) keep fixed frames (`fixed_frames()`). Their attack is
+    on certificates, and the Byzantine frame choice made ctl-nolock's 18-step space too big to search in 10 minutes
+    (over 95 M states without reaching the split). With fixed frames, ctl-nolock gives its split in 30 s.
+- **n = 2** (condition 2): q = 2, t = 0, both members honest. **n2** is exhaustive (10.6 M states, two content
+  cuts). Liveness has an early-timeout profile: up to P timeouts may fire before the network settles, standing for a
+  timeout shorter than the round trip; after them, timeouts fire only at quiescence, as when an adaptive timeout has
+  grown past the round trip.
+  - **Measured:** at n = 2 one early timeout spoils its view, because the member that timed out no longer votes in
+    it and q = 2. The two-chain needs two good views in a row, so P early timeouts alternating with good views hold
+    finality off. With P = 3 the model is live in 8 views (2P + 2; n2-live-early, both leader offsets) and not in 7
+    (**bound-n2-early**: certificates only in views 1, 3, 5 and 7).
+  - **ctl-early** (early timeouts in every view, i.e. a timeout that never adapts) never finalizes. So at n = 2
+    the adaptive timeout is needed for liveness at all, not only for speed.
+  - The early profile lets blocks go P heights above the content (HMAX 6): a real chain has no height cap, and each
+    spoiled view can cost a height.
+- **The last cut needs a child** (condition 5): a liveness property, "every content cut ends final" (n2-live-h2,
+  two content cuts). Its control, **ctl-skipempty** (a proposer with nothing new proposes nothing), fails it.
+- **README notes from the review:**
+  - Fetch by name is modelled as atomic at the commit. That is sound for safety: every voter checked the segment,
+    and q >= t + 1 means at least one honest voter holds each entry. But the model can't fail on dissemination
+    itself, so the fetch protocol and its thin-link worst case belong to pe-agree and the harness.
+  - States are identified by 64-bit fingerprints, as in Stateright. At 2.2e8 states the chance of a collision is
+    about 1e-3.
+
+**Still to do before pe-agree's cut rules depend on the model (v0.2):**
+- **Bounded progress:** an entry held by a voter of the certificate for cut k is covered by cut k + 1 at the latest.
+  This needs votes that carry the voter's heads, and a proposal that names the votes forming its parent's certificate
+  (which voters, not only how many), so the property can say which entries the proposer was obliged to fetch. Not
+  started.
+- **Proposer choice** (condition 3): leader reputation (skip a member whose last view timed out) against keeping a
+  proposer while its views succeed, chosen by measurement at n = 2 and n = 3. Either one gets its own control
+  (condition 7).
+- The bounded n = 4 checks (n4-byz, n4-byz-chain, n3 over 4 views) have not been rerun with the frame choice.
+
 ## Not in v0
 
 - **Bounded progress** (coordinator m33c08e879042, still to add): an entry an honest member holds is covered within a
