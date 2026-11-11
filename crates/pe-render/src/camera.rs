@@ -34,6 +34,17 @@ impl Fov {
     }
 }
 
+/// A depth layer's range, as `XrCompositionLayerDepthInfoKHR` takes it (see [`Camera::xr_depth_info`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct XrDepthInfo {
+    pub min_depth: f32,
+    pub max_depth: f32,
+    /// The distance, in metres, at `min_depth`.
+    pub near_z: f32,
+    /// The distance, in metres, at `max_depth`.
+    pub far_z: f32,
+}
+
 /// Near and far for a view, in metres at rig scale 1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DepthRange {
@@ -108,6 +119,19 @@ impl Camera {
     }
 
     /// The view's volume, for the display layer's "in view" test and culling.
+    /// The numbers for this view's `XrCompositionLayerDepthInfoKHR` (review L2): depth values span 0 to 1, and
+    /// with reverse Z the value 0 lies at the far plane, so `near_z` (the distance at `min_depth`) is the far plane
+    /// and `far_z` the near one. `near_z > far_z` is how XR_KHR_composition_layer_depth marks reversed depth; an
+    /// infinite far plane gives `near_z = +inf` (VR keeps a finite one until a runtime is shown to take it, R2).
+    pub fn xr_depth_info(&self) -> XrDepthInfo {
+        XrDepthInfo {
+            min_depth: 0.0,
+            max_depth: 1.0,
+            near_z: self.far.map_or(f32::INFINITY, |f| f as f32),
+            far_z: self.near as f32,
+        }
+    }
+
     pub fn volume(&self) -> ViewVolume {
         let [tl, tr, tu, td] = self.fov.tans();
         let p = |v: DVec3| v.normalize();
@@ -164,6 +188,25 @@ mod tests {
 
     fn cam_at(p: Pos) -> Camera {
         Camera::placed(WorldPose { pos: p, rot: DQuat::IDENTITY }, Fov::symmetric(1.0, 16.0 / 9.0), DepthRange::DESKTOP)
+    }
+
+    #[test]
+    fn the_xr_depth_info_matches_the_projection() {
+        let rig = RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 2.0 };
+        let cam = Camera::of_eye(&rig, &RigPose::IDENTITY, Fov::symmetric(1.5, 1.0), DepthRange::VR);
+        let info = cam.xr_depth_info();
+        assert_eq!((info.min_depth, info.max_depth), (0.0, 1.0));
+        // At rig scale 2, VR's near and far (0.02 m, 100 m) are 0.04 m and 200 m.
+        assert!((info.far_z - 0.04).abs() < 1e-6 && (info.near_z - 200.0).abs() < 1e-3, "{info:?}");
+        let depth_at = |d: f32| {
+            let c = cam.projection() * glam::Vec4::new(0.0, 0.0, -d, 1.0);
+            c.z / c.w
+        };
+        // The layer says min_depth is at near_z and max_depth at far_z: the projection must agree.
+        assert!((depth_at(info.near_z) - info.min_depth).abs() < 1e-5);
+        assert!((depth_at(info.far_z) - info.max_depth).abs() < 1e-5);
+        let desktop = Camera::of_eye(&rig, &RigPose::IDENTITY, Fov::symmetric(1.5, 1.0), DepthRange::DESKTOP);
+        assert_eq!(desktop.xr_depth_info().near_z, f32::INFINITY);
     }
 
     #[test]
