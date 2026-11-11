@@ -7,7 +7,7 @@
 use pe_physics::{BodyDesc, BodyKind as PhysicsKind, Geometry, PhysicsError, PhysicsWorld, Pose, Push, ShapeDesc};
 use pe_seams::{ObjectId, Pos};
 
-use crate::world::{BodyKind, BodyRow, Change, PushFx, ShapeRow, WorldModel};
+use crate::world::{BodyKind, BodyRow, Change, PushFx, ShapePart, ShapeRow, WorldModel};
 
 const IDENTITY: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
@@ -24,14 +24,14 @@ pub fn desc(row: &BodyRow, origin: Pos) -> BodyDesc {
     d.gravity_scale = row.gravity_scale;
     d.bullet = row.bullet;
     d.enable_sleep = row.may_sleep;
-    for s in &row.shapes {
-        d = d.with_shape(shape(s, row));
+    for part in &row.shapes {
+        d = d.with_shape(shape(part, row));
     }
     d
 }
 
-fn shape(s: &ShapeRow, row: &BodyRow) -> ShapeDesc {
-    let geometry = match *s {
+fn shape(part: &ShapePart, row: &BodyRow) -> ShapeDesc {
+    let geometry = match part.shape {
         ShapeRow::Sphere { center, radius } => Geometry::Sphere { center, radius },
         ShapeRow::Capsule { center1, center2, radius } => Geometry::Capsule { center1, center2, radius },
         ShapeRow::Box { center, rotation, half_extents } if center == [0.0; 3] && rotation == IDENTITY => {
@@ -44,7 +44,7 @@ fn shape(s: &ShapeRow, row: &BodyRow) -> ShapeDesc {
         }
     };
     let mut shape = ShapeDesc::new(geometry)
-        .with_density(row.density)
+        .with_density(part.density)
         .with_friction(row.friction)
         .with_restitution(row.restitution);
     shape.rolling_resistance = row.rolling_resistance;
