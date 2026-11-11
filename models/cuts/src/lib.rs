@@ -57,6 +57,8 @@ pub enum Mutation {
     NoTimeouts,
     /// Votes carry no state root: a member whose replica diverged confirms the quorum's cut without learning it.
     VoteWithoutRoot,
+    /// An honest proposer covers only its own entries (v0.2): the bounded-progress control.
+    OwnEntriesOnly,
     /// A voter accepts any frame the proposer names, not only one above its parent's (v0.1).
     NoFrameCheck,
     /// A proposer with nothing new proposes nothing (v0.1, condition 5): the last content cut never gets its child.
@@ -128,6 +130,9 @@ pub struct Cuts {
     /// Liveness profile: how many timeouts may fire before the network has settled (v0.1, condition 2). Each stands for
     /// a timeout shorter than the round trip; an adaptive timeout that grows after each one makes them finite.
     pub early: u8,
+    /// Bounded progress (v0.2, @design-reviewer): track, per entry, the highest certified height any
+    /// honest member knew when every honest member first held it and its earlier chain. On in the liveness profile and the n = 2 checks.
+    pub progress: bool,
 }
 
 impl Cuts {
@@ -161,11 +166,17 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true, early: 0 }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true, early: 0, progress: false }
+    }
+
+    pub fn progress(mut self) -> Self {
+        self.progress = true;
+        self
     }
 
     pub fn live(mut self) -> Self {
         self.liveness = true;
+        self.progress = true;
         self
     }
 
@@ -349,7 +360,7 @@ impl Cuts {
 
     /// An honest proposer's cut at the child of `parent`: for each author, the longest linked, signed chain it holds,
     /// stamped below the frame `hi`. Returns the cut and the entries the proposal carries.
-    fn build_cut(&self, parent: &Block, held: u16, hi: u8) -> ([u8; NMAX], u16) {
+    fn build_cut(&self, me: u8, parent: &Block, held: u16, hi: u8) -> ([u8; NMAX], u16) {
         let mut cut = parent.cut();
         let h = parent.h + 1;
         let mut carried = 0u16;
@@ -357,6 +368,9 @@ impl Cuts {
             return (cut, 0);
         }
         for a in 0..self.n as usize {
+            if self.mutation == Some(Mutation::OwnEntriesOnly) && a != me as usize {
+                continue;
+            }
             loop {
                 let next = (0..self.entries.len() as u8).find(|&x| {
                     let e = &self.entries[x as usize];
@@ -464,6 +478,23 @@ impl Cuts {
             }
         }
         c
+    }
+
+    fn note_held(&self, s: &mut State) {
+        if !self.progress {
+            return;
+        }
+        let honest: Vec<u8> = (0..self.n).filter(|&m| self.honest(m)).collect();
+        let h_now = honest.iter().map(|&m| s.m[m as usize].high.block.h).max().unwrap_or(0);
+        // Held with its whole earlier chain (an entry past a hole can't be covered yet). Entries come in chain order,
+        // so a predecessor is judged first.
+        for e in 0..self.entries.len() {
+            let prev = self.entries[e].prev;
+            let chain_ok = prev == NONE || s.all_held_at[prev as usize] != NONE;
+            if s.all_held_at[e] == NONE && chain_ok && honest.iter().all(|&m| self.has(s.m[m as usize].held, e as u8)) {
+                s.all_held_at[e] = h_now;
+            }
+        }
     }
 
     fn all_entries(&self) -> u16 {
@@ -792,6 +823,9 @@ pub struct State {
     pub net: BTreeSet<Msg>,
     /// Timeouts fired so far before the network settled (liveness profile with `early` > 0).
     pub early: u8,
+    /// Per entry: the highest certified height an honest member knew when every honest member first held it (NONE
+    /// until then, and always NONE unless the model tracks progress).
+    pub all_held_at: [u8; 16],
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -825,7 +859,9 @@ impl Model for Cuts {
                 }
             }
         }
-        vec![State { m, net, early: 0 }]
+        let mut s = State { m, net, early: 0, all_held_at: [NONE; 16] };
+        self.note_held(&mut s);
+        vec![s]
     }
 
     fn actions(&self, s: &State, acts: &mut Vec<Action>) {
@@ -895,7 +931,7 @@ impl Model for Cuts {
                     return None; // beyond the content heights the frame bears on no verdict: K only
                 }
                 let frame = parent.frame() + if wide { FRAME_STEP_MAX } else { FRAMES };
-                let (cut, carried) = self.build_cut(&parent, mm.held, frame);
+                let (cut, carried) = self.build_cut(m, &parent, mm.held, frame);
                 if self.mutation == Some(Mutation::SkipEmptyCut) && cut == parent.cut() {
                     return None;
                 }
@@ -908,6 +944,7 @@ impl Model for Cuts {
                 s.m[to as usize].held |= 1 << e;
             }
         }
+        self.note_held(&mut s);
         if s == *s0 { None } else { Some(s) }
     }
 
@@ -996,6 +1033,25 @@ impl Model for Cuts {
             // height ends final.
             p.push(Property::always("liveness: every content cut ends final", |c: &Cuts, s: &State| {
                 (0..c.n).filter(|&m| c.honest(m)).all(|m| s.m[m as usize].committed.h >= c.heights) || !c.honest_stuck(s)
+            }));
+        }
+        if self.progress {
+            // Bounded progress: an honest entry every honest member held while the highest certified height was h is
+            // covered by the final chain by height h + 2 (the next proposal may predate the last delivery), when an
+            // honest member proposed the cut at h + 2. Checked within the content heights.
+            p.push(Property::always("progress: an entry all hold at h is covered by h + 2", |c: &Cuts, s: &State| {
+                (0..c.n).filter(|&m| c.honest(m)).all(|m| {
+                    let fin = s.m[m as usize].committed;
+                    (0..c.entries.len()).all(|e| {
+                        let h = s.all_held_at[e];
+                        let def = &c.entries[e];
+                        if h == NONE || def.signer == c.faulty() && c.fault != Fault::None || h + 2 > c.heights || fin.h < h + 2 {
+                            return true;
+                        }
+                        let k = fin.ancestor(h + 2);
+                        !c.protocol(c.leader(k.view())) || c.covered(&k) & (1 << e) != 0
+                    })
+                })
             }));
         }
         if self.corrupt.is_some() {
