@@ -8,8 +8,11 @@
 #                      (more lines add up)
 #     needs <text>     what the command needs installed, shown before it runs
 #     run <command>    one shell command line, run with bash -c
+#     expect <regex>   an extended regex that a line of the command's output must match for the check to pass,
+#                      besides exit 0: a test filter that matches no test (renamed, ignored) then fails
 #
-# Lines starting with # are comments.
+# Lines starting with # are comments. A check's command runs the landing's own code: a landing that changes what
+# a check runs (its test, or the files the test reads) changes the check, and is read as such.
 
 check lamp-bytes
   why   a script module's fuel counts follow its bytes, so a change that alters the bytes of a script build (a
@@ -18,4 +21,5 @@ check lamp-bytes
   when  crates/pe-logic/** crates/pe-sdk/**
   when  rust-toolchain rust-toolchain.toml **/.cargo/config **/.cargo/config.toml Cargo.lock
   needs the wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown)
-  run   cargo test -p pe-logic --locked --test lamp the_module_is_the_same_bytes_from_any_folder_and_from_a_warm_cache
+  run   cargo test -p pe-logic --locked --test lamp -- --exact the_module_is_the_same_bytes_from_any_folder_and_from_a_warm_cache
+  expect ^test result: ok\. 1 passed;

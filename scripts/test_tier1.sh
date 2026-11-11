@@ -3,8 +3,10 @@
 # has one check, with a command that leaves a marker, and checks that a landing touching the check's paths
 # triggers it and runs it, one that doesn't touch them doesn't, a landing that drops the check from its own table
 # still runs it (the table comes from the base), so does one whose runner would skip it (the runner hands over to
-# the base's copy), a failing command fails the run, --run refuses a checkout that isn't at the landing, a base
-# without a table uses the landing's with a NOTE, and a malformed table is an error.
+# the base's copy), a failing command fails the run and so does one that exits 0 without its expected output,
+# --run refuses a checkout that isn't at the landing, has uncommitted changes or untracked files under a
+# triggered check's paths (and doesn't mind them elsewhere), a base without a table uses the landing's with a
+# NOTE, and a malformed table is an error.
 # It runs no cargo, so it needs no build slot.
 #
 #   bash scripts/test_tier1.sh [<rev>]          (default HEAD; <rev> must have scripts/tier1.sh)
@@ -24,9 +26,10 @@ g() { git -C "$R" -c user.name="tier1 test" -c user.email="tier1-test@example.in
 g checkout -q --detach "$sha" || die "checkout failed"
 export TIER1_TEST_OUT="$tmp/out"
 mkdir -p "$TIER1_TEST_OUT"
-table() {  # $1: the command's exit code
+table() {  # $1: the command's exit code, $2: what it prints (the check expects "marker-ok")
   printf '%s\n' '# a test table' 'check marker' '  why  the test' '  when docs/zz-tier1/** **/zz-cfg.toml' \
-    '  needs nothing' "  run  echo ran > \"\$TIER1_TEST_OUT/marker\"; exit $1"
+    '  needs nothing' "  run  echo ran > \"\$TIER1_TEST_OUT/marker\"; echo ${2:-marker-ok}; exit $1" \
+    '  expect ^marker-ok$'
 }
 table 0 > "$R/scripts/tier1_checks.txt"; g add -A; g commit -q -m "base: one check"; base=$(g rev-parse HEAD)
 branch() { g checkout -q -f --detach "$base"; }
@@ -43,6 +46,9 @@ skipper=$(commit "a runner that would skip its checks after the hand-over")
 branch; mkdir -p "$R/sub"; echo x > "$R/sub/zz-cfg.toml"; nested=$(commit "nested glob")
 branch; table 3 > "$R/scripts/tier1_checks.txt"; g add -A; g commit -q -m "failing base"; fbase=$(g rev-parse HEAD)
 mkdir -p "$R/docs/zz-tier1"; echo f > "$R/docs/zz-tier1/f.md"; failing=$(commit "touches, under a failing check")
+branch; table 0 "0 tests ran" > "$R/scripts/tier1_checks.txt"; g add -A; g commit -q -m "a check that runs nothing"
+ebase=$(g rev-parse HEAD)
+mkdir -p "$R/docs/zz-tier1"; echo e > "$R/docs/zz-tier1/e.md"; empty=$(commit "touches, under a check that runs nothing")
 g checkout -q -f --detach "$sha"; g rm -q scripts/tier1_checks.txt; g commit -q -m "no table"; notab=$(g rev-parse HEAD)
 table 0 > "$R/scripts/tier1_checks.txt"; mkdir -p "$R/docs/zz-tier1"; echo n > "$R/docs/zz-tier1/n.md"
 newtab=$(commit "brings the table")
@@ -81,6 +87,7 @@ expect table-from-the-base "$dropper" "$base" run 0 "marker: triggered" "marker:
 expect runner-from-the-base "$skipper" "$base" run 0 "marker: PASS" "!skipped everything" marker
 expect glob-spans-folders "$nested" "$base" run 0 "triggered by 1 path\(s\): sub/zz-cfg.toml" marker
 expect failing-check-fails "$failing" "$fbase" run 1 "marker: FAIL \(exit 3\)" "0 passed, 1 failed" marker
+expect exit-0-without-expected-output-fails "$empty" "$ebase" run 1 "marker: FAIL \(exit 0, but no line of its output matches" marker
 expect base-without-table "$newtab" "$notab" run 0 "NOTE: .* has no scripts/tier1_checks.txt yet" "marker: PASS" marker
 expect malformed-table "$overmal" "$malformed" list 2 "unknown keyword 'wen'"
 # --run with the checkout elsewhere: tier1.sh refuses rather than test the wrong tree.
@@ -91,5 +98,23 @@ if [ $rc = 2 ] && grep -q "needs the checkout at" "$tmp/out.log"; then
 else
   bad=$((bad + 1)); echo "test_tier1: BAD  run-needs-the-landing-checked-out (exit $rc)"; sed 's/^/    /' "$tmp/out.log"
 fi
+# --run tests the landing as committed: it refuses uncommitted changes, and untracked files under a triggered
+# check's paths, and doesn't mind untracked files elsewhere.
+dirty_case() {  # name, the exit code wanted, the regex its output must match, then the command that dirties
+  local name=$1 want=$2 re=$3; shift 3
+  g checkout -q -f --detach "$touches"; rm -f "$TIER1_TEST_OUT/marker"
+  (cd "$R" && "$@")
+  (cd "$R" && bash scripts/tier1.sh --base "$base" --run "$touches") > "$tmp/out.log" 2>&1; local rc=$?
+  if [ $rc = "$want" ] && grep -qE -- "$re" "$tmp/out.log"; then
+    pass=$((pass + 1)); echo "test_tier1: ok   $name (exit $rc)"
+  else
+    bad=$((bad + 1)); echo "test_tier1: BAD  $name (exit $rc, wanted $want)"; sed 's/^/    /' "$tmp/out.log"
+  fi
+  g clean -qfd > /dev/null; g checkout -q -f --detach "$touches"
+}
+dirty_case run-refuses-uncommitted-changes 2 "uncommitted changes" sh -c 'echo dirty >> README.md'
+dirty_case run-refuses-untracked-under-a-check 2 "untracked files under check marker's paths" \
+  sh -c 'echo stray > docs/zz-tier1/stray.md'
+dirty_case run-allows-untracked-elsewhere 0 "marker: PASS" sh -c 'echo note > zz-notes.txt'
 echo "test_tier1: $pass ok, $bad bad"
 [ $bad = 0 ]

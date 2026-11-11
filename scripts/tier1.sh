@@ -8,7 +8,10 @@
 # <rev> (default HEAD) is the landing; --base (default main) is the commit it lands on. It lists the checks that
 # the landing's diff (the tree of <base> against the tree of <rev>, renames as a deletion and an addition)
 # triggers, with the paths that trigger them. With --run it also runs each triggered check's command from the
-# root of the checkout, which must be at <rev>; every triggered check runs, and each result prints.
+# root of the checkout, which must be at <rev> with no uncommitted change, and no untracked file under a triggered
+# check's paths; every triggered check runs, and each result prints. A check passes when its command exits 0 and,
+# if the check has an `expect` line, a line of the command's output matches that regex (so a test filter that
+# matches no test can't pass).
 # The table and this script come from the base, like the gate's code (it hands over to the base's copy at once),
 # so a landing can't drop or skip a check it triggers; a change to either applies from the next landing. When the
 # base has no table yet, the landing's own is used, with a NOTE.
@@ -49,8 +52,8 @@ else
   exit 0
 fi
 
-# The table: "check <name>" starts a check; "why", "when", "needs" and "run" lines belong to the last one.
-names=() whens=() needs=() runs=()
+# The table: "check <name>" starts a check; "why", "when", "needs", "run" and "expect" lines belong to the last one.
+names=() whens=() needs=() runs=() expects=()
 n=-1 lineno=0
 while IFS= read -r line || [ -n "$line" ]; do
   lineno=$((lineno + 1))
@@ -62,7 +65,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   rest=${line#*"$key"}; rest=${rest#"${rest%%[![:space:]]*}"}
   if [ "$key" = check ]; then
     [ $# = 1 ] || die "$table line $lineno: 'check' takes one name"
-    n=$((n + 1)); names[n]=$1; whens[n]= needs[n]= runs[n]=
+    n=$((n + 1)); names[n]=$1; whens[n]= needs[n]= runs[n]= expects[n]=
     continue
   fi
   [ $n -ge 0 ] || die "$table line $lineno: '$key' before the first 'check'"
@@ -72,7 +75,9 @@ while IFS= read -r line || [ -n "$line" ]; do
     when) whens[n]="${whens[n]} $rest" ;;
     needs) needs[n]="${needs[n]:+${needs[n]}; }$rest" ;;
     run) [ -z "${runs[n]}" ] || die "$table line $lineno: check ${names[n]} has two 'run' lines"; runs[n]=$rest ;;
-    *) die "$table line $lineno: unknown keyword '$key' (check, why, when, needs, run)" ;;
+    expect) [ -z "${expects[n]}" ] || die "$table line $lineno: check ${names[n]} has two 'expect' lines"
+      expects[n]=$rest ;;
+    *) die "$table line $lineno: unknown keyword '$key' (check, why, when, needs, run, expect)" ;;
   esac
 done <<< "$tab"
 for i in "${!names[@]}"; do
@@ -84,6 +89,11 @@ if [ $run = 1 ]; then
   [ "$(git rev-parse HEAD)" = "$sha" ] || die "--run needs the checkout at $(short "$sha"); HEAD is $(short HEAD)"
   top=$(git rev-parse --show-toplevel) || die "--run needs a working tree"
   cd "$top" || die "can't enter $top"
+  dirty=$(git status --porcelain --untracked-files=no) || die "git status failed"
+  [ -z "$dirty" ] || die "--run needs the landing as committed; the checkout has uncommitted changes:
+$(printf '%s\n' "$dirty" | head -5)"
+  out=$(mktemp) || die "no temporary file"
+  trap 'rm -f "$out"' EXIT
 fi
 wrap=(); if [ -n "${PE_TIER1_WRAP:-}" ]; then eval "wrap=($PE_TIER1_WRAP)"; fi
 
@@ -104,13 +114,18 @@ for i in "${!names[@]}"; do
   count=$(printf '%s\n' "$paths" | wc -l | tr -d ' ')
   echo "tier1: ${names[i]}: triggered by $count path(s): $(printf '%s\n' "$paths" | head -3 | tr '\n' ' ')"
   [ $run = 1 ] || { echo "tier1:   run: ${runs[i]}"; continue; }
+  stray=$(git -c core.quotepath=off status --porcelain --untracked-files=all -- "${specs[@]}" | sed -n 's/^?? //p')
+  [ -z "$stray" ] || die "untracked files under check ${names[i]}'s paths would be tested with the landing:
+$(printf '%s\n' "$stray" | head -5)"
   [ -z "${needs[i]}" ] || echo "tier1:   needs: ${needs[i]}"
   echo "tier1:   running: ${runs[i]}"
-  ${wrap[@]+"${wrap[@]}"} bash -c "${runs[i]}"; rc=$?
-  if [ $rc = 0 ]; then
-    passed=$((passed + 1)); echo "tier1: ${names[i]}: PASS"
-  else
+  ${wrap[@]+"${wrap[@]}"} bash -c "${runs[i]}" 2>&1 | tee "$out"; rc=${PIPESTATUS[0]}
+  if [ "$rc" != 0 ]; then
     failed=$((failed + 1)); echo "tier1: ${names[i]}: FAIL (exit $rc)"
+  elif [ -n "${expects[i]}" ] && ! grep -qE -- "${expects[i]}" "$out"; then
+    failed=$((failed + 1)); echo "tier1: ${names[i]}: FAIL (exit 0, but no line of its output matches: ${expects[i]})"
+  else
+    passed=$((passed + 1)); echo "tier1: ${names[i]}: PASS"
   fi
 done
 if [ $run = 0 ]; then
