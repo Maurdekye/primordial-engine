@@ -36,7 +36,8 @@ pub struct Node {
     pub structural_entry: [u8; 32],
     pub version_op: u32,
     pub structural_op: u32,
-    /// The line the object was born on, an index into the `lines` table (2.3).
+    /// The line the object was born on, an index into the `lines` table (2.3). TODO(pe-world, with the `lines`
+    /// table): a loaded state whose `born_on` is past the table's end is refused (@chunks-reviewer's Low 1).
     pub born_on: u32,
     /// Always zero.
     pub _pad: u32,

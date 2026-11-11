@@ -206,7 +206,8 @@ impl World {
     }
 
     /// The published view of this frame (S6 reads it, api.md 9.1): structural sharing, so it costs a reference per
-    /// column and table, and it never changes while held. `final_frame` is the newest final frame the caller knows.
+    /// column and table, and its state never changes while held (only a blob arriving in the shared [`BlobStore`] can
+    /// turn a `None` name or blob into `Some`). `final_frame` is the newest final frame the caller knows.
     pub fn snapshot(&self, final_frame: Frame) -> Arc<WorldSnapshot> {
         Arc::new(WorldSnapshot {
             store: self.store.clone(),
