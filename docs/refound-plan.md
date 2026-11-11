@@ -501,9 +501,18 @@ sections 6.1-6.6):
   - **Agreed state only.** The range comes from the member's position as its entries set it, the range setting and
     the approved chunkloaders, so every member reaches the same verdict at the applying frame.
   - **The centre** is the member's avatar root (world-model.md 3.5: a `World` object made at admission, the parent of
-    its hands), which only the member's own inputs move. A member with no body, such as a desktop viewer or an
-    agent-only host, is centred wherever its avatar root stands: where admission placed it, until its own inputs
-    move it [I].
+    its hands), and it follows the member wherever the member moves, teleports included. A member with no body,
+    such as a desktop viewer or an agent-only host, is centred wherever its avatar root stands, which is where
+    admission placed it until it moves [I].
+  - **The protection is the agent-powers right, not the bound** (@coordinator-opus's decision mc7012792d9c0, with
+    @fable-reviewer). An agent's locomotion input is just a locomotion input, so the bound can't keep an agent from
+    moving its user next to a target. The bound is about where a machine simulates, and loading a place and
+    appearing there is consistent with it.
+    - The agent interface (pe-api, MCP) offers no "move my user" action (locomotion, a teleport, or a bodiless
+      member's view position) unless the owning user switches it on locally. It is a client setting, off by
+      default, and nothing in the world depends on it.
+    - A world that wants no teleporting, or a speed limit, would get it as a locomotion setting for everyone: a
+      separate feature, not tied to agent powers and not scheduled.
   - **Governance acts are not bound:** removing a member, changing rights and the like, so an admin can stop a
     griefer without travelling.
   - **A claim whose object leaves its holder's range is dropped.**
