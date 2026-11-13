@@ -15,6 +15,10 @@ use crate::apply::Footprint;
 use crate::components::{BlobRef, Body, Light, SimSize, ids};
 use crate::world::{TOMBSTONE_SECONDS, World};
 
+pub use crate::source::{
+    MAX_SEGMENT, MAX_SOURCE_BYTES, SOURCE_MAGIC, SourceError, check_source, pack_source, path_ok, source_files,
+};
+
 /// A script's stable asset id (logic.md 6.1), the modules table's key.
 pub type AssetId = [u8; 32];
 

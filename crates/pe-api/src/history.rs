@@ -195,15 +195,8 @@ mod tests {
         let snap = w.snapshot(pe_core::Frame(0));
         let f = pe_sim::FieldDesc::new("hp", pe_sim::FieldKind::U32, 0, 1);
         let d = pe_sim::ComponentDesc::new(pe_sim::ComponentId(0x7000_0000_0000_0001), "Health", vec![f]).unwrap();
-        let commit = Op::CommitScript {
-            script: [0xab; 32],
-            base: None,
-            source: pe_world::components::BlobRef { hash: [1; 32], len: 3 },
-            toolchain: Hash([2; 32]),
-            sdk: Hash([3; 32]),
-            author_module: Hash([4; 32]),
-            activate_at: 9,
-        };
+        let src = b"src".to_vec().into();
+        let commit = Op::commit_script([0xab; 32], None, src, Hash([2; 32]), Hash([3; 32]), Hash([4; 32]), 9);
         let tx = Transaction {
             actor: pe_world::edit::Actor::Person,
             label: None,
