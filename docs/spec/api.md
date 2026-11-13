@@ -260,6 +260,13 @@ kept".
 While this machine is catching up (a joiner watches first and acts once caught up, file 14 S4), `apply` refuses
 with `not_ready`.
 
+**Verdicts on a diverged replica** (coordinator; with @engine-architect's S5 change and pe-replica's
+producer of `changes`, not yet built):
+- `final_frame` is the frame of the replica's agreed cut: a verdict at or below it is final and agrees with every
+  honest replica, and it never goes backwards.
+- `session` carries `health`, read from the view, never inferred from two frame numbers: `agreed`, or
+  `{"repairing": {"since": frame}}`. `watch`'s `session` items report each change of it.
+
 ### 5.2 `query`
 
 Reads one snapshot. `Query`:
@@ -428,7 +435,10 @@ A change feed with a cursor. `Filter`:
 - `changes`: edits by anyone: `{change, by, producer, label, frame, final, created: [...], deleted: [...],
   reparented: [...], set: [{id, field, value?}]}`. Values are included only for fields `fields` names, or 500
   recoloured balls would flood the agent.
-- `mine`: status changes of this caller's own transactions, with the refusal envelope (always on).
+- `mine`: status changes of this caller's own transactions, with the refusal envelope (always on). After a repair
+  (5.1), each affected change of the caller's resolves once, explicitly, as `unknown` with `repaired_at` (the cut
+  it was repaired to), never left pending: whether it happened is not known, so the agent re-reads the state by
+  query. A client matching on status must handle `unknown`.
 - `session`: members joining and leaving, this machine catching up, and the newest final frame when it moves.
 - `motion`: off by default. **Simulation is not a change**: bodies moving and logic-written fields do not appear in
   `changes`. An agent that wants motion queries poses. `motion: {"every_ms": 250}` with a `where` of at most 16 ids
