@@ -832,7 +832,9 @@ fn reference_in(world: MockWorld, to: u64) -> (ReplicaImpl<MockWorld>, Source) {
     (r, s)
 }
 
-/// A world whose gravity and origin are not the defaults, imported by a default joiner (@coordinator-opus, item 6). The joiner's new physics world takes them from the imported world, not from its own
+/// A world whose gravity and origin are not the defaults, imported by a default joiner (@coordinator-opus, item 6). Besides the rate, which a joiner never adopts (the next test), gravity and origin are every
+/// simulation setting an M1 world may choose (world-model.md 6.6), so this is item 6's "every setting non-default"
+/// test for the replica. The joiner's new physics world takes them from the imported world, not from its own
 /// construction, so the import checks and the joiner steps on with the host's roots. When a transient fault then
 /// diverges the joiner, rung 1's replay re-simulates with the imported settings and agrees with the host again. An
 /// import without the config record keeps the joiner's own settings, and the root check refuses it.
