@@ -2217,6 +2217,7 @@ dependencies = [
 name = "pe-diverge"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "pe-seams",
 ]
 
