@@ -1345,12 +1345,21 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
   a physics body changes the simulation, so every peer reads it from the world, never from a local toggle; and the
   user switches it within a session, so it is not a frozen config item (6.6). It is a **personal comfort choice,
   per member, on the hand**, like a VR turning mode: `Hand.mode`, 0 = physical only while engaged (the default),
-  1 = always physical within reach. Only the hand's owner changes it, with a `HandMode` input (`NotYourHand`
-  otherwise), applied at the input's frame like any input, so a replay applies it identically; it is a field of
-  the `Hand` row, so it is in the hand's leaf hash, and an import carries it. A mode change has no physics
-  footprint: pe-replica reads `World::hand_mode(hand)` each frame when it places hand bodies. A world-wide admin
-  cap may come later if a world needs one, not in M1. pe-app gives the user a key or controller binding to flip
-  their own mode (@engine-architect).
+  1 = always physical within reach (the grab reach of this section's **Reach** bullet: `reach_mm` from the hand's
+  target, plus `slack_mm`). Only the hand's owner changes it, with a `HandMode` input (`NotYourHand` otherwise),
+  applied at the input's frame like any input, so a replay applies it identically; it is a field of the `Hand`
+  row, so it is in the hand's leaf hash, and an import carries it. A world-wide admin cap may come later if a
+  world needs one, not in M1. pe-app gives the user a key or controller binding to flip their own mode
+  (@engine-architect).
+  - **No physics footprint, so no cache** (@design-reviewer's point 1 on 31e565a4): hand bodies are rebuilt from
+    the `Hand` rows and `World::hand_mode(hand)` inside the deterministic step at each frame, never cached across a
+    rollback or a rung-1 replay, and never read from the view or a local setting. The hand-body work adds a test:
+    a mode flip, a rollback across it, and roots equal to a straight run.
+  - **A hand body's contact speed is capped like a push** (point 2): a pose input can move a hand any distance in
+    one frame, and a kinematic body moved that way would sweep balls at Δpos/dt, past the push envelope above. So
+    a hand body's contact speed is bounded by `max_push_speed`, and a pose jump past the cap moves the body
+    without collision; flipping to mode 1 with the hand inside a pile must not push the overlapped objects apart
+    violently. How is the hand-body spec's (@vdw-physics); this is the bound it starts from.
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
   object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
   expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).
