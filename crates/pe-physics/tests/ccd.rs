@@ -5,12 +5,13 @@
 //! `finalize_bodies`); bullets get one against dynamic bodies too. These tests pin that setting in the engine's world
 //! and hold the M1 ball pit to it. They never switch it on themselves, so a change that turned it off would fail them.
 //! - A pit ball at the push caps' top speed (world-model.md 8.1: at most 5 m/s per push, 10 m/s in all) stays in
-//!   the pit, aimed at each wall, into each corner, straight down, and down into each seam where a wall meets the
-//!   floor.
+//!   the pit, whatever it is aimed at: 73 aims along the floor, level in flight, straight down, and down into the
+//!   seams where the walls meet the floor.
 //! - Much smaller balls stay in too, against the pit's walls and against 1 cm walls, at the top speed and at 50 m/s
 //!   (`max_push_speed` can be raised to no limit). At Box3D's own top linear speed, 400 m/s, a small ball rolling
 //!   along the floor can go through a wall: the measurement scans the speeds between.
-//! - The same scene, run twice, gives the same state hash every frame.
+//! - The same scene, run twice, gives the same state hash every frame, both within the tested speeds and above them,
+//!   where small balls go through 1 cm walls. Each prints its hash, to compare across machines.
 //!
 //! "Stays in the pit" means a ball never passes through a wall or the floor. A push aimed upwards at the cap can carry
 //! a ball over the 1.2 m walls, which is ordinary play.
@@ -22,6 +23,8 @@
 use pe_physics::{BodyDesc, BodyKind, Geometry, ObjectId, PhysicsConfig, PhysicsWorld, ShapeDesc};
 
 const DT: f32 = 1.0 / 60.0;
+/// The world rates the user allows (30 to 120 Hz, mc8dc9e5a6ffb): its ends and the default.
+const RATES: [u32; 3] = [30, 60, 120];
 /// The engine's gravity (`PhysicsConfig::engine`), m/s², for aiming a fall at a seam.
 const G: f64 = 10.0;
 /// The push caps' top speed (world-model.md 8.1, `max_push_speed`), m/s.
@@ -64,24 +67,32 @@ fn pit(pw: &mut PhysicsWorld, half_thickness: f32) {
     }
 }
 
-/// Where a ball of radius `r` starts, and its velocity, for each aim at `speed`:
-/// - along the floor from the pit's centre, at each wall and into each corner;
+/// Where a ball of radius `r` starts, and its velocity, for each aim at `speed` (73 aims, @coordinator-opus's wider
+/// sweep, ma8ef3248b5d4):
+/// - 32 directions along the floor from the pit's centre, rolling, every 11.25°;
+/// - 16 directions level from 0.3 m up, in flight and not spinning, every 22.5°;
 /// - straight down from 1 m;
-/// - down at 45° from above the pit's centre, into the seam where each wall meets the floor, and down along the
-///   diagonal into one corner's seam, starting high enough that the fall under gravity lands it there.
+/// - down at 30°, 45° and 60° below level, towards each wall's middle and each corner, starting high enough that the
+///   fall under gravity lands the ball in the seam where the wall meets the floor (in the corner, both walls').
 fn aims(r: f64, speed: f64) -> Vec<([f64; 3], [f32; 3])> {
-    let mut out = Vec::new();
-    for d in WALLS.into_iter().chain(CORNERS) {
-        let n = d[0].hypot(d[1]);
-        out.push(([0.0, r, 0.0], [(speed * d[0] / n) as f32, 0.0, (speed * d[1] / n) as f32]));
-    }
+    let level = |angle: f64, height: f64| {
+        let (c, s) = (angle.cos(), angle.sin());
+        ([0.0, height, 0.0], [(speed * c) as f32, 0.0, (speed * s) as f32])
+    };
+    let tau = std::f64::consts::TAU;
+    let mut out: Vec<([f64; 3], [f32; 3])> = (0..32).map(|k| level(tau * f64::from(k) / 32.0, r)).collect();
+    out.extend((0..16).map(|k| level(tau * f64::from(k) / 16.0, 0.3)));
     out.push(([0.0, 1.0, 0.0], [0.0, -speed as f32, 0.0]));
-    let seams = WALLS.into_iter().map(|d| (d, 2.0f64.sqrt())).chain([([1.0, 1.0], 3.0f64.sqrt())]);
-    for (d, n) in seams {
-        let along = speed / n;
-        let t = (PIT_W - r) / along;
-        let start = [0.0, r + along * t + 0.5 * G * t * t, 0.0];
-        out.push((start, [(along * d[0]) as f32, -along as f32, (along * d[1]) as f32]));
+    for degrees in [30.0f64, 45.0, 60.0] {
+        let (along, down) = (speed * degrees.to_radians().cos(), speed * degrees.to_radians().sin());
+        for d in WALLS.into_iter().chain(CORNERS) {
+            let n = d[0].hypot(d[1]);
+            let (dx, dz) = (d[0] / n, d[1] / n);
+            // The ball meets a wall's inner face when its centre is `r` short of it, along the larger component.
+            let t = (PIT_W - r) / (along * dx.abs().max(dz.abs()));
+            let start = [0.0, r + down * t + 0.5 * G * t * t, 0.0];
+            out.push((start, [(along * dx) as f32, -down as f32, (along * dz) as f32]));
+        }
     }
     out
 }
@@ -99,11 +110,11 @@ struct Fate {
     through: bool,
 }
 
-/// One ball of radius `r`, from `start` at `velocity`, stepped for two seconds in a pit with walls of
+/// One ball of radius `r`, from `start` at `velocity`, stepped for two seconds at `hz` in a pit with walls of
 /// `half_thickness`. `ccd_off` switches continuous collision off, for the measurement only; otherwise the world is
-/// the engine's, untouched.
-fn run(r: f64, (start, velocity): ([f64; 3], [f32; 3]), half_thickness: f32, ccd_off: bool) -> Fate {
-    let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
+/// the engine's at that rate, untouched.
+fn run(hz: u32, r: f64, (start, velocity): ([f64; 3], [f32; 3]), half_thickness: f32, ccd_off: bool) -> Fate {
+    let mut pw = PhysicsWorld::new(PhysicsConfig::engine().with_tick_rate(hz).unwrap()).unwrap();
     if ccd_off {
         pw.raw_mut().enable_continuous(false);
     }
@@ -114,8 +125,8 @@ fn run(r: f64, (start, velocity): ([f64; 3], [f32; 3]), half_thickness: f32, ccd
     let outer = PIT_W + 2.0 * f64::from(half_thickness);
     let mut fate = Fate { far: 0.0, low: f64::MAX, depth: 0.0, through: false };
     let mut p = start;
-    for _ in 0..120 {
-        pw.step(DT).unwrap();
+    for _ in 0..2 * hz {
+        pw.step(1.0 / hz as f32).unwrap();
         p = pw.pose(id(9)).unwrap().position;
         let side = p[0].abs().max(p[2].abs());
         fate.far = fate.far.max(side);
@@ -140,11 +151,14 @@ fn the_engine_s_world_has_continuous_collision_on() {
 /// never passes a wall's inner face, and it never sinks into the floor.
 #[test]
 fn a_pit_ball_at_the_push_cap_stays_in_the_pit() {
-    for (k, aim) in aims(BALL_R, TOP_SPEED).into_iter().enumerate() {
-        let Fate { far, low, through, .. } = run(BALL_R, aim, WALL_T, false);
-        assert!(!through, "aim {k} {aim:?}: it went through");
-        assert!(far < PIT_W, "aim {k} {aim:?}: its centre reached {far:.3} m (the inner face is at {PIT_W} m)");
-        assert!(low > -0.01, "aim {k} {aim:?}: it sank to {low:.3} m");
+    for hz in RATES {
+        for (k, aim) in aims(BALL_R, TOP_SPEED).into_iter().enumerate() {
+            let Fate { far, low, through, .. } = run(hz, BALL_R, aim, WALL_T, false);
+            let case = format!("{hz} Hz, aim {k} {aim:?}");
+            assert!(!through, "{case}: it went through");
+            assert!(far < PIT_W, "{case}: its centre reached {far:.3} m (the inner face is at {PIT_W} m)");
+            assert!(low > -0.01, "{case}: it sank to {low:.3} m");
+        }
     }
 }
 
@@ -155,10 +169,10 @@ fn a_pit_ball_at_the_push_cap_stays_in_the_pit() {
 fn small_fast_balls_stay_in() {
     for r in [0.02, 0.01, 0.005] {
         for half_thickness in [WALL_T, 0.005] {
-            for speed in [TOP_SPEED, 50.0] {
+            for (hz, speed) in RATES.into_iter().flat_map(|hz| [(hz, TOP_SPEED), (hz, 50.0)]) {
                 for (k, aim) in aims(r, speed).into_iter().enumerate() {
-                    let fate = run(r, aim, half_thickness, false);
-                    let case = format!("radius {r}, wall {half_thickness}, {speed} m/s, aim {k} {aim:?}");
+                    let fate = run(hz, r, aim, half_thickness, false);
+                    let case = format!("{hz} Hz, radius {r}, wall {half_thickness}, {speed} m/s, aim {k} {aim:?}");
                     assert!(
                         !fate.through,
                         "{case}: it went through (reached {:.3} m, low {:.3} m)",
@@ -202,23 +216,69 @@ fn continuous_collision_is_deterministic() {
     println!("continuous_collision_is_deterministic: {}", all.finalize().to_hex());
 }
 
+/// Above the tested speeds the same holds: the same scene gives the same state hash every frame, though small balls
+/// go through 1 cm walls (@coordinator-opus's two-machine check of the push-speed decision, ma8ef3248b5d4 and
+/// md5f76e886277). Thirty balls of 0.5 and 1 cm roll along the floor at 100 m/s, fanned out at the walls. At least
+/// one ends outside the pit, so the hash covers going through. It prints the hash of all 120 frames' hashes, to
+/// compare across machines.
+#[test]
+fn going_through_above_the_tested_speeds_is_deterministic() {
+    let run = || {
+        let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
+        pit(&mut pw, 0.005);
+        for i in 0..30u32 {
+            let angle = f64::from(i) * std::f64::consts::TAU / 30.0;
+            let (c, s) = (angle.cos(), angle.sin());
+            let r = if i % 2 == 0 { 0.005 } else { 0.01 };
+            let desc = BodyDesc::new(BodyKind::Dynamic, [0.3 * c, r, 0.3 * s])
+                .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: r as f32 }))
+                .with_velocity([(100.0 * c) as f32, 0.0, (100.0 * s) as f32], [0.0; 3]);
+            pw.add_body(id(200 + i), &desc).unwrap();
+        }
+        let hashes: Vec<u64> = (0..120)
+            .map(|_| {
+                pw.step(DT).unwrap();
+                pw.state_hash().unwrap()
+            })
+            .collect();
+        let outside = (0..30u32)
+            .filter(|&i| {
+                let p = pw.pose(id(200 + i)).unwrap().position;
+                p[0].abs().max(p[2].abs()) >= PIT_W
+            })
+            .count();
+        (hashes, outside)
+    };
+    let ((a, outside), (b, _)) = (run(), run());
+    assert_eq!(a, b);
+    assert!(outside > 0, "no ball went through: the scene no longer covers going through");
+    let all = a.iter().fold(blake3::Hasher::new(), |mut h, x| {
+        h.update(&x.to_le_bytes());
+        h
+    });
+    let hash = all.finalize().to_hex();
+    println!("going_through_above_the_tested_speeds_is_deterministic: {hash} ({outside} of 30 outside)");
+}
+
 /// A measurement, not a check: with continuous collision on and off, for each ball, wall and speed, which aims went
 /// through and the deepest any ball pressed into a wall or the floor. Run it with
 /// `cargo test -p pe-physics --test ccd -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn measure_with_and_without_continuous_collision() {
-    for ccd_off in [false, true] {
+    let runs = RATES.into_iter().map(|hz| (hz, false)).chain([(60, true)]);
+    for (hz, ccd_off) in runs {
         for r in [BALL_R, 0.02, 0.01, 0.005] {
             for half_thickness in [WALL_T, 0.005] {
                 for speed in [TOP_SPEED, 50.0, 75.0, 100.0, 150.0, 200.0, 300.0, BOX3D_TOP_SPEED] {
                     let fates: Vec<Fate> =
-                        aims(r, speed).into_iter().map(|a| run(r, a, half_thickness, ccd_off)).collect();
+                        aims(r, speed).into_iter().map(|a| run(hz, r, a, half_thickness, ccd_off)).collect();
                     let through: Vec<usize> = (0..fates.len()).filter(|&k| fates[k].through).collect();
                     let depth = fates.iter().map(|f| f.depth).fold(0.0, f64::max);
                     let ccd = if ccd_off { "off" } else { "on" };
-                    let case = format!("CCD {ccd}, radius {r}, wall {half_thickness}, {speed} m/s");
-                    println!("{case}: through {through:?} of {}, deepest {depth:.4} m", fates.len());
+                    let case = format!("{hz} Hz, CCD {ccd}, radius {r}, wall {half_thickness}, {speed} m/s");
+                    let n = through.len();
+                    println!("{case}: {n} of {} through {through:?}, deepest {depth:.4} m", fates.len());
                 }
             }
         }
