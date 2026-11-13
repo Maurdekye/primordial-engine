@@ -15,15 +15,17 @@
 //! - **D4:** `own_error` stays 0. Each member's views mark its own hands `OWN_HAND`.
 //! - **Both drawn-time rules,** X8 (a) (the default) and (b), each also with a reader stall of 300 ms at 3 s, past the
 //!   slot's 250 ms span, so the presenter meets a gap (render.md 3; @coordinator-opus's ruling).
-//! - **The counters of section 13** are printed per delay, measured, for the report.
+//! - **The counters of section 13** are printed per delay, measured, for the report. Their maxima (`miss max`,
+//!   `visEr max`) come from the run's deliberate teleports, not from prediction: a push edit's lift of a ball (about
+//!   2.6 m) and another member's hand moved above its ball (up to about 3.5 m), blended in view (measured 2026-11-13).
+//!   Quote the means and counts, or say so.
 //!
 //! What the run can't show yet, stated so that nobody reads more into it:
 //! - **Pushes are edits** that lift a ball from the pile to 0.9 m above it, up to 2.7 m away (pe_harness::ballpit).
 //!   Under X8 (a) the lift is a change of prediction like any other, so the layer blends it (over `T_fast`) and cues
-//!   it, for the pusher too. Under X8 (b) a lift not marked `CORRECTED` is drawn as the jump it is. A hand push
-//!   replaces the edit once PeWorld applies hand inputs (@vdw-physics), and these numbers change then.
-//! - **No notices:** pe-replica publishes `changes` empty until @engine-architect's producer lands, so the notices
-//!   are wired but see nothing here; present.rs's tests cover them over a batch and a gap.
+//!   it, for the pusher too. Under X8 (b) a lift not marked `CORRECTED` is drawn as the jump it is. pe-harness's
+//!   hand pushes (c47991be) run alongside them: an impulse on a ball, after the pusher's hand moves above it.
+//! - **Notices aren't checked here:** present.rs's and notices.rs's tests cover them over a batch and a gap.
 //!
 //! The quick test runs 1 seed × 5 delays in release (2 in a debug build). The full grid, 20 seeds × 5 delays, is
 //! `--ignored`; run it in release. Effects played and stopped at gaps are printed (`eff`, `effSt`); a played effect
