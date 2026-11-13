@@ -148,6 +148,9 @@ pub struct RealBackend<G: xr::Graphics> {
     pub binding_warnings: Vec<String>,
     /// Where a tracked hand's pose comes from; the application logs it at start-up (spec 5.1).
     pub pose_path: PosePath,
+    /// The reference space chosen (spec 3.2): "STAGE", "LOCAL_FLOOR" or "LOCAL"; the application logs it at
+    /// start-up. In LOCAL the floor is not at y = 0 (the origin is at the head's starting pose).
+    pub reference_space: &'static str,
     /// Declared last, so it drops after the session.
     xr: XrInstance,
 }
@@ -220,6 +223,15 @@ impl<G: xr::Graphics> RealBackend<G> {
             .find(|k| offered.contains(k))
             .unwrap_or(xr::ReferenceSpaceType::LOCAL);
         let space = session.create_reference_space(kind, xr::Posef::IDENTITY).map_err(ce("reference space"))?;
+        let reference_space = match kind {
+            xr::ReferenceSpaceType::STAGE => "STAGE",
+            xr::ReferenceSpaceType::LOCAL_FLOOR => "LOCAL_FLOOR",
+            _ => "LOCAL",
+        };
+        if crate::diag::enabled() {
+            let offered: Vec<String> = offered.iter().map(|k| format!("{k:?}")).collect();
+            crate::diag::emit(&format!("reference space {reference_space} (offered: {})", offered.join(", ")));
+        }
 
         let trackers = if xr.enabled.ext_hand_tracking && instance.supports_hand_tracking(system).unwrap_or(false) {
             Some([
@@ -310,6 +322,7 @@ impl<G: xr::Graphics> RealBackend<G> {
             grasp,
             binding_warnings,
             pose_path: if hand_interaction { PosePath::GripSpace } else { PosePath::PalmJoint },
+            reference_space,
             xr,
         })
     }

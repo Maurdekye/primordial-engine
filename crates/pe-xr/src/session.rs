@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::backend::{Backend, DepthInfo, EyePose, FrameTiming, ImageIndex, Layers, SessionState, XrError, XrEvent};
+use crate::diag::{self, Diag};
 use crate::hands::{GraspConfig, HandState};
 use crate::ring::HandRing;
 use crate::seam::{Hand, HostTime, RigPose};
@@ -126,6 +127,8 @@ pub struct XrSession<B: Backend> {
     previous_failed: bool,
     pub last_error: Option<XrError>,
     pub counters: Counters,
+    /// The opt-in diagnostic log (`PE_XR_LOG=1`, [`crate::diag`]).
+    diag: Diag,
 }
 
 /// How far a frame got, so an error can close it cleanly.
@@ -152,6 +155,7 @@ impl<B: Backend> XrSession<B> {
             previous_failed: false,
             last_error: None,
             counters: Counters::default(),
+            diag: Diag::from_env(),
         }
     }
 
@@ -225,6 +229,9 @@ impl<B: Backend> XrSession<B> {
     /// [`Self::request_exit`] before the session ran).
     pub fn teardown(&mut self, sink: &mut dyn FrameSink) {
         if self.ended.is_some() && !self.destroyed {
+            if let Some(line) = self.diag.ended(self.ended, &self.counters) {
+                diag::emit(&line);
+            }
             sink.release_swapchain();
             self.backend.destroy_session();
             self.destroyed = true;
@@ -248,6 +255,9 @@ impl<B: Backend> XrSession<B> {
         let was = self.state;
         self.state = s;
         self.counters.state_changes += 1;
+        if let Some(line) = self.diag.state(was, s, self.backend.now().0) {
+            diag::emit(&line);
+        }
         if was == SessionState::Focused && s != SessionState::Focused {
             self.hands_absent();
         }
@@ -407,6 +417,12 @@ impl<B: Backend> XrSession<B> {
                 } else {
                     [None, None]
                 };
+                if let Some(line) = self.diag.first_eyes(&located.eyes, timing.predicted_display_period_ns) {
+                    diag::emit(&line);
+                }
+                for line in self.diag.first_hands(&hands) {
+                    diag::emit(&line);
+                }
                 let depth_image = self.backend.depth_image();
                 let drawn = sink.render(&FrameRequest { timing, eyes: &located.eyes, image, depth_image, hands });
                 if drawn {

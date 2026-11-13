@@ -683,6 +683,12 @@ The user may be in VR on this PC. So:
 
 ### 10.4 On the headset, by hand (with the coordinator's go; recorded)
 
+What a headset run records, beyond the user's sighting: with `PE_XR_LOG=1`, pe-xr writes to standard error, whichever
+application drives the session, the reference space chosen and those offered, each session state change, the first
+drawn frame's eyes and display period, the first tracked pose of each hand (or that none was tracked while drawn),
+and the end reason with the counters at teardown (`crate::diag`). It is off by default and changes nothing the
+session does.
+
 From plan M1:
 - the frame time per period, at the rate Virtual Desktop gives, with 500 balls and one remote hand at 60 ms one-way
   delay, on Vulkan and on the D3D12 fallback;
