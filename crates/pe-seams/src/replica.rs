@@ -689,6 +689,15 @@ pub trait Replica: Send {
         None
     }
 
+    /// The world model's read-only snapshot of the state at `Cv`, the newest final cut this replica matched, and that
+    /// cut's frame: exactly the cut's entries, never a prediction, and left alone by rollbacks, replays and imports.
+    /// pe-app answers pe-api's `final_()` with it, so it never lags the final frame (api.md 9.1). `None` before the
+    /// first agreed finalize, and from a model without snapshots, the default (@coordinator-opus m926ccfeb16e9;
+    /// S2 v1.7).
+    fn agreed_snapshot(&self) -> Option<(Frame, Arc<dyn Any + Send + Sync>)> {
+        None
+    }
+
     /// The frames from which this replica can't yet simulate as the author did, so this machine must not vote for a
     /// cut at or past them: the `activate_at` of each script activation whose module it lacks, or holds but has not
     /// yet replayed past `activate_at` (logic.md 6.2); and after a repair import, for each module the imported rows
