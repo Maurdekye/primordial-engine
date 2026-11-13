@@ -124,6 +124,7 @@ fn view_at(clock: &dyn FrameClock, frame: Frame) -> Arc<FrameView> {
         domain: DomainId(0),
         sim_time: clock.host_time_of(frame),
         final_frame: None,
+        health: pe_seams::Health::Agreed,
         local_rig: RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
         objects: Vec::new(),
         effects: Vec::new(),

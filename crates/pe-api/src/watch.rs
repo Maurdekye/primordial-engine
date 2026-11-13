@@ -69,7 +69,7 @@ struct Touched {
 fn touched(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSnapshot) -> Touched {
     let made: &[pe_core::ObjectId] = match outcome {
         WorldOutcome::Applied { created, .. } => created,
-        WorldOutcome::Refused { .. } => &[],
+        WorldOutcome::Refused { .. } | WorldOutcome::Unknown { .. } | WorldOutcome::Dropped { .. } => &[],
     };
     let mut t = Touched { created: made.iter().map(|id| ObjectId::from(*id)).collect(), ..Default::default() };
     let at = |x: &Target| match x {
@@ -102,7 +102,7 @@ fn touched(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSnapsho
 pub fn touched_ids(tx: Option<&Transaction>, outcome: &WorldOutcome) -> Vec<ObjectId> {
     let made: &[pe_core::ObjectId] = match outcome {
         WorldOutcome::Applied { created, .. } => created,
-        WorldOutcome::Refused { .. } => &[],
+        WorldOutcome::Refused { .. } | WorldOutcome::Unknown { .. } | WorldOutcome::Dropped { .. } => &[],
     };
     let mut ids: Vec<ObjectId> = made.iter().map(|i| ObjectId::from(*i)).collect();
     let at = |x: &Target| match x {
@@ -209,6 +209,10 @@ pub fn mine(
     let mut o = Outcome {
         dry_run: false,
         status,
+        repaired_at: step.and_then(|s| match &s.outcome {
+            WorldOutcome::Unknown { repaired_at } => Some(repaired_at.frame.0),
+            _ => None,
+        }),
         is_final,
         change: Some(change),
         frame: step.map(|s| s.frame.0).or(frame),

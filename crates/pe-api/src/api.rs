@@ -107,6 +107,7 @@ fn refused_outcome(snap: &WorldSnapshot, f: Refusal) -> Outcome {
     Outcome {
         dry_run: false,
         status: Status::Refused,
+        repaired_at: None,
         is_final: false,
         change: None,
         frame: None,
@@ -302,6 +303,7 @@ impl<S: WorldSource> Api<S> {
         let outcome_refused = |f: Box<pe_seams::world_api::Refusal>| Outcome {
             dry_run: opts.mode == Mode::DryRun,
             status: pe_seams::world_api::Status::Refused,
+            repaired_at: None,
             is_final: false,
             change: None,
             frame: None,
@@ -448,6 +450,14 @@ impl<S: WorldSource> Api<S> {
                         o.count = 0;
                         o.refusal = Some(map_refusal(snap, &e, *op, reason));
                     }
+                    Some(pe_seams::Outcome::Unknown { repaired_at }) => {
+                        o.status = Status::Unknown;
+                        o.repaired_at = Some(repaired_at.frame.0);
+                    }
+                    Some(pe_seams::Outcome::Dropped { .. }) => {
+                        o.count = 0;
+                        o.status = Status::Dropped;
+                    }
                 }
                 o
             }
@@ -568,6 +578,10 @@ impl<S: WorldSource> Api<S> {
                     frame,
                     is_final: f.is_final || f.status == Status::Final,
                     status: f.status,
+                    repaired_at: match &step.outcome {
+                        pe_seams::Outcome::Unknown { repaired_at } => Some(repaired_at.frame.0),
+                        _ => None,
+                    },
                     summary: summary(tx.as_ref(), &step.outcome, &snap),
                 },
             ));
@@ -713,6 +727,8 @@ impl<S: WorldSource> Api<S> {
                             pe_seams::Outcome::Refused { .. } => {
                                 (Status::Refused, fate.is_some_and(|x| x.status == Status::Refused && x.is_final))
                             }
+                            pe_seams::Outcome::Unknown { .. } => (Status::Unknown, false),
+                            pe_seams::Outcome::Dropped { .. } => (Status::Dropped, false),
                         };
                         out.push(Said::Mine(Box::new(mine(
                             change,
@@ -873,6 +889,7 @@ impl<S: WorldSource> Api<S> {
             tick_hz: facts.tick_hz,
             link: facts.link,
             caught_up: facts.caught_up,
+            health: pe_seams::world_api::SessionHealth::Agreed,
             kept,
             limits: Limits {
                 tx_per_s: self.rate.per_s as u32,
