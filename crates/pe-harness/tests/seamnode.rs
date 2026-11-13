@@ -130,3 +130,43 @@ fn a_back_dated_entry_is_voided_by_the_same_cut_on_every_member() {
     assert!(first.is_some_and(|(_, h)| h > 1), "decided by a cut after the one it missed: {by:?}");
     assert!(by.iter().all(|&(_, b, reason)| b == first && reason == VoidReason::Late as u16), "{by:?}");
 }
+
+/// A hand input in the key-value world: an `Add` is signed as `Class::Input`, everything else as an edit.
+fn adds_are_inputs(op: &Op) -> Class {
+    if matches!(op, Op::Add { .. }) { Class::Input } else { Class::Edit }
+}
+
+#[test]
+fn a_frame_with_an_input_and_an_edit_applies_inputs_first_live_and_in_replay() {
+    // Coordinator med231a27fe7e: phase first, then agreed order. In one frame an edit sets 4 and an input adds 1.
+    // Inputs first gives 4; agreed order with the edit first would give 5. Each member's side is tried as the editor,
+    // so the edit precedes the input in agreed order in at least one of the two runs. Every member ends at 4, and
+    // the reference log, replayed offline, reaches the same roots (P2: live = replay).
+    let t = Template::AllAdmin;
+    for (editor, adder) in [(1, 2), (2, 1)] {
+        let sc = Scenario::new(5, 2 * SEC).at(frame_at(10), editor, Op::Set { obj: 10, field: 0, value: 4 }).at(
+            frame_at(10),
+            adder,
+            Op::Add { obj: 10, field: 0, delta: 1 },
+        );
+        let ns = nodes(3, &t, &[10])
+            .into_iter()
+            .map(|(id, n)| (id, n.with_order(adds_are_inputs, pe_harness::kvrep::inputs_first)))
+            .collect();
+        let r = run(&sc, ns);
+        let vs = check(&r, 3, &t, &[10]);
+        assert!(vs.is_empty(), "editor {editor}: {vs:#?}");
+        let log = reference_log(&r);
+        let row: Vec<&Op> = log.iter().flat_map(|(_, e)| e.iter().map(|k| &k.op)).collect();
+        assert_eq!(row.len(), 2, "both entries are final: {log:?}");
+        assert!(matches!(row[0], Op::Add { .. }), "the log replays the input first: {row:?}");
+        let ids: Vec<NodeId> = (1..=3).collect();
+        let mut kv = KvReplica::new(&ids, &t, &[10]);
+        let by_frame: BTreeMap<_, _> = log.iter().map(|(f, e)| (*f, e.as_slice())).collect();
+        let last = by_frame.keys().next_back().copied().unwrap_or(0);
+        while kv.frame() < last {
+            kv.step(by_frame.get(&(kv.frame() + 1)).copied().unwrap_or(&[]));
+        }
+        assert_eq!(kv.field(10, 0), Some(4), "editor {editor}: the edit applies last");
+    }
+}

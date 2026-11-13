@@ -25,6 +25,8 @@ use pe_seams::{
 
 use crate::clock::SessionClock;
 use crate::kv::{KvEntry, Op, Template};
+use pe_replica::Phase;
+
 use crate::kvrep::{KvSeamReplica, payload};
 use crate::lockstep::LockstepAgreement;
 use crate::net::NodeId;
@@ -70,6 +72,8 @@ pub struct SeamNode<A: Agreement> {
     /// Cut frames already recorded as `Damaged`.
     damaged: BTreeSet<u64>,
     seen_height: u64,
+    /// The class each scenario input is signed with (`Class::Edit` unless `with_order` says otherwise).
+    class_of: fn(&Op) -> Class,
 }
 
 /// The node id of member `key`: its place in key order, from 1.
@@ -130,7 +134,17 @@ impl SeamNode<LockstepAgreement> {
             probe: 0,
             damaged: BTreeSet::new(),
             seen_height: 0,
+            class_of: |_| Class::Edit,
         }
+    }
+
+    /// A two-phase world: each scenario input is signed with `class_of`'s class, and the replica applies a frame's
+    /// entries in `phase` order (coordinator med231a27fe7e). Both read only the entry, as the ruling requires.
+    #[must_use]
+    pub fn with_order(mut self, class_of: fn(&Op) -> Class, phase: fn(&SignedEntry) -> Phase) -> Self {
+        self.class_of = class_of;
+        self.replica = self.replica.with_phase(phase);
+        self
     }
 }
 
@@ -267,8 +281,14 @@ impl<A: Agreement> SeamNode<A> {
         let mut h = Hasher::new("pe.harness.cut");
         h.write_u64(cut.height).write_u64(cut.frame.0);
         let entries = self.agree.final_entries(&self.last_final, &cut).unwrap_or_default();
+        // The cut's hash in agreed order; the log P2 replays in apply order, as the replica stepped them.
+        // `entries` spans every frame since the last final cut, so this sort spans frames too (a later frame's
+        // input moves ahead of an earlier frame's edit). It is right only because each entry then goes into its
+        // own frame's row and the sort is stable: every row keeps its frame's phase order. Never flatten this.
         for e in &entries {
             h.write_hash(&e.id().0);
+        }
+        for e in pe_replica::apply_order(&entries, self.replica.phase()) {
             let author = node_of(&self.keys, &e.entry.author);
             let ops = crate::mock::decode(&e.entry.payload).map(|(_, _, ops)| ops).unwrap_or_default();
             let row = self.log.entry(e.entry.stamp.0 + 1).or_default();
@@ -284,7 +304,7 @@ impl<A: Agreement> NodeUnderTest for SeamNode<A> {
     fn input(&mut self, now: i64, op: Op) {
         let stamp = Frame(self.frame_at(now));
         let mut b = self.builder.clone();
-        let entry = b.next_unsigned(Class::Edit, stamp, payload(&[op]));
+        let entry = b.next_unsigned((self.class_of)(&op), stamp, payload(&[op]));
         if let Ok(signed) = self.agree.submit(entry) {
             self.held.insert((signed.entry.chain, signed.entry.seq));
             self.held_ids.insert(signed.id());
