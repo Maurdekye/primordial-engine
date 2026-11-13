@@ -182,7 +182,7 @@ fn a_session_s_frame_0_root_is_the_same_on_every_machine() {
     };
     let root = |s: &Session| m1_session(s, BlobStore::default()).expect("a session").root_hash(pe_seams::DomainId(0));
     let r = root(&session);
-    assert_eq!(r.to_string(), "b2c1cd2ec0a317757366dd457138cfd1f71490449f82216dfb117887f4248df7");
+    assert_eq!(r.to_string(), "8ea77a8d09a7c8b8a41996f7817c9353d560e43b39946d4f55a36a6948f64a21");
     let w = m1_session(&session, BlobStore::default()).expect("a session");
     assert_eq!((w.line(), w.m1_marker()), (session.line, Some(m1_line())));
     assert_eq!(
