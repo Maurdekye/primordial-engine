@@ -27,6 +27,8 @@ struct Source {
     withheld: Option<Frame>,
     /// What the replica last said it needs, `(cv, floor)`, each forward only.
     asked: Option<(Frame, Frame)>,
+    /// S3's verdicts on the entries final cuts voided (S2 v1.5's `void_reason`).
+    voided: BTreeMap<EntryRef, VoidReason>,
 }
 
 impl Source {
@@ -62,6 +64,9 @@ impl EntrySource for Source {
     }
     fn take_changed_from(&mut self) -> Option<Frame> {
         self.changed.take()
+    }
+    fn void_reason(&self, entry: &EntryRef) -> Option<VoidReason> {
+        self.voided.get(entry).copied()
     }
 }
 
@@ -1068,4 +1073,80 @@ fn after_rung_two_each_affected_entry_reads_unknown_exactly_once() {
             _ => assert_eq!(reader.told.get(&id), None, "the entry at {f} is past final_frame"),
         }
     }
+}
+
+/// A replica that had the scene and `extra` from the start, run to `to`: the quorum's roots for a cut over them.
+fn clean_with(extra: &[SignedEntry], to: u64) -> ReplicaImpl<MockWorld> {
+    let mut s = Source::default();
+    scene().into_iter().chain(extra.iter().cloned()).for_each(|e| s.add(e));
+    let mut r = replica();
+    r.advance(Frame(to), &mut s);
+    r
+}
+
+/// A replica over the scene and `extra`, run to 48 and read from its first view.
+fn stepped_with(extra: &[SignedEntry]) -> (ReplicaImpl<MockWorld>, Source, Reader) {
+    let mut s = Source::default();
+    scene().into_iter().chain(extra.iter().cloned()).for_each(|e| s.add(e));
+    let mut a = replica();
+    let mut reader = Reader::default();
+    a.advance(Frame(48), &mut s);
+    reader.read(&a);
+    (a, s, reader)
+}
+
+/// S3 voids `e` at the cut going final: absent from `entries_at` from then on, with `reason` if the cut includes it.
+fn s3_voids(s: &mut Source, e: &SignedEntry, reason: Option<VoidReason>) {
+    s.entries.get_mut(&e.entry.stamp).expect("stamped").retain(|x| x.id() != e.id());
+    if let Some(r) = reason {
+        s.voided.insert(e.id(), r);
+    }
+    s.changed = Some(e.entry.stamp);
+}
+
+/// A dropped entry reads S3's reason (@design-reviewer's Medium on f13cd045): the cut at 24 includes a back-stamped
+/// entry (seq 2 stamped 16, after seq 1 stamped 18), S3 voids it as `BackStamped`, and the record copies that.
+#[test]
+fn a_dropped_entry_reads_the_reason_s3_voided_it_for() {
+    let keys = TestKeys::new(7, 3);
+    let mut x = EntryBuilder::new(&keys, 2);
+    let first = x.next(Class::Edit, Frame(18), Bytes::from(encode(&[ball(14, 2.0, 1.0)])));
+    let back = x.next(Class::Edit, Frame(16), Bytes::from(encode(&[ball(15, -2.0, 1.0)])));
+    let quorum = clean_with(std::slice::from_ref(&first), 48).live_root(Frame(24)).expect("live");
+    let (mut a, mut s, mut reader) = stepped_with(&[first.clone(), back.clone()]);
+    assert!(matches!(reader.newest[&back.id()].outcome, Outcome::Applied { .. }), "stepped live");
+    let mut all = scene();
+    all.extend([first.clone(), back.clone()]);
+    let c24 = cut(&all, 3, 24);
+    assert!(c24.includes(&back.entry.chain, back.entry.seq), "the cut includes the back-stamped entry");
+    s3_voids(&mut s, &back, Some(VoidReason::BackStamped));
+    assert_eq!(a.finalize(&FinalCut { cut: c24, root: quorum, voters: vec![] }, &mut s), Finalized::Agreed);
+    a.advance(Frame(49), &mut s);
+    reader.read(&a);
+    assert_eq!(reader.final_frame, Some(Frame(24)));
+    assert_eq!(reader.told.get(&back.id()), Some(&Outcome::Dropped { reason: VoidReason::BackStamped }));
+    assert!(matches!(reader.told.get(&first.id()), Some(Outcome::Applied { .. })), "its chain's first entry applies");
+}
+
+/// A pending entry reads `Late` whatever this replica saw of its chain (@design-reviewer's e1/e2 case on f13cd045):
+/// seq 2 is stamped 20 after seq 1 at 28, so the cut at 24 can't include seq 1, nor seq 2. S3 holds seq 2 pending,
+/// and voids it as `Late` once a later cut includes both, since judge tests late first. Every honest replica says
+/// `Late`, whether or not its present had reached 28 and stepped seq 1.
+#[test]
+fn a_pending_entry_reads_late_whatever_this_replica_saw_of_its_chain() {
+    let keys = TestKeys::new(7, 3);
+    let mut y = EntryBuilder::new(&keys, 2);
+    let e1 = y.next(Class::Edit, Frame(28), Bytes::from(encode(&[ball(14, 2.0, 1.0)])));
+    let e2 = y.next(Class::Edit, Frame(20), Bytes::from(encode(&[ball(15, -2.0, 1.0)])));
+    let quorum = reference(48).0.live_root(Frame(24)).expect("live");
+    let (mut a, mut s, mut reader) = stepped_with(&[e1.clone(), e2.clone()]);
+    assert!(reader.newest.contains_key(&e1.id()) && reader.newest.contains_key(&e2.id()), "both stepped live");
+    let c24 = cut(&scene(), 3, 24);
+    assert!(!c24.includes(&e2.entry.chain, e2.entry.seq), "pending: the cut can't include it");
+    s3_voids(&mut s, &e2, None);
+    assert_eq!(a.finalize(&FinalCut { cut: c24, root: quorum, voters: vec![] }, &mut s), Finalized::Agreed);
+    a.advance(Frame(49), &mut s);
+    reader.read(&a);
+    assert_eq!(reader.told.get(&e2.id()), Some(&Outcome::Dropped { reason: VoidReason::Late }));
+    assert_eq!(reader.told.get(&e1.id()), None, "28 is past final_frame");
 }

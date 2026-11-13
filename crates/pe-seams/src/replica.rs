@@ -86,13 +86,15 @@ pub enum Outcome {
     /// In the final order, but this replica cannot know the verdict: it stepped the entry on a state that diverged,
     /// and a rung-2 import at `repaired_at` replaced that state without re-stepping it. One per entry of the cut's
     /// order from my last agreed cut up to `repaired_at`, recorded before `final_frame` passes it (S2 v1.5;
-    /// @coordinator-opus). Not pending: the entry happened, and only its result is unknown here.
+    /// @coordinator-opus). Where S3 no longer keeps a frame, only the entries I recorded there get
+    /// one, since the others can't be listed; I never told a verdict for those. Not pending: the entry happened, and
+    /// only its result is unknown here.
     /// Fetching the true verdicts from the repair source comes after M1.
     Unknown { repaired_at: CutRef },
     /// Not in the final order: this replica stepped the entry, but a final cut voided it, or left it out below its
-    /// frame, so it is pending until a void (S3). `reason` is `Late` for an entry S3 still holds, and `BackStamped` for
-    /// one S3 has predicted absent (an earlier stamp of its chain is later). Recorded before `final_frame` passes the
-    /// entry's frame (S2 v1.5; @coordinator-opus).
+    /// frame, so it is pending until a void (S3). `reason` is S3's ([`EntrySource::void_reason`]), and `Late` for a
+    /// pending entry, as S3 voids it later. Recorded before `final_frame` passes the entry's frame (S2 v1.5;
+    /// @coordinator-opus).
     Dropped { reason: VoidReason },
 }
 
@@ -221,6 +223,15 @@ pub trait EntrySource {
     fn keep_final_from(&mut self, cv: Frame, floor: Frame);
     /// The earliest frame whose entries changed since the last call, if any.
     fn take_changed_from(&mut self) -> Option<Frame>;
+    /// S3's verdict on an entry a final cut it has reported voided: [`crate::AgreeEvent::Voided`]'s reason. The
+    /// replica's [`Outcome::Dropped`] record copies it, so every honest member gives one entry the same reason (S2
+    /// v1.5; @design-reviewer's Medium on f13cd045). `None` for an entry no final cut has voided (yet): a pending one
+    /// reads `Late`, which is how S3 voids it once a later cut includes it, since judge tests late first and its
+    /// stamp is then below that cut's previous final frame. A source that never voids keeps this default.
+    fn void_reason(&self, entry: &EntryRef) -> Option<VoidReason> {
+        let _ = entry;
+        None
+    }
     /// When an entry arrived on this machine, if it came from the network: for "play a new effect only if its cause
     /// arrived recently" (divergence.md D6).
     fn arrived_at(&self, _entry: &EntryRef) -> Option<HostTime> {
