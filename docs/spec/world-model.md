@@ -1359,9 +1359,30 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     a mode flip, a rollback across it, and roots equal to a straight run.
   - **A hand body's contact speed is capped like a push** (point 2): a pose input can move a hand any distance in
     one frame, and a kinematic body moved that way would sweep balls at Δpos/dt, past the push envelope above. So
-    a hand body's contact speed is bounded by `max_push_speed`, and a pose jump past the cap moves the body
-    without collision; flipping to mode 1 with the hand inside a pile must not push the overlapped objects apart
-    violently. How is the hand-body spec's (@vdw-physics); this is the bound it starts from.
+    a hand body's contact speed is bounded by `max_push_speed`; flipping to mode 1 with the hand inside a pile must
+    not push the overlapped objects apart violently. How is the hand-body spec's (@vdw-physics); this is the bound
+    it starts from.
+  - **A hand moving faster than the cap moves at the cap** (@coordinator-opus, option (b)): its body
+    trails the target and catches up, so it still pushes and throws at up to `max_push_speed`; there is no cliff
+    where hard throws begin. Hard throws top out at the cap, 10 m/s by default and adjustable (8.1's pushes). The
+    cap limits the motion of the hand **and everything it holds**: a wrist turn that would carry a held object
+    faster than the cap is slowed too (@design-reviewer's Low on 0913f962).
+  - **Only a teleport skips collision:** the body is placed at its target without collision, carrying what the
+    hand holds, when the target moves farther than the teleport distance in one frame (a tracking glitch or a
+    teleport) **or the body trails its target by more than it** (@design-reviewer's Medium on 0913f962). The second
+    bounds the lag: a hand kept faster than the cap never trails by more than the teleport distance, so the body
+    never sweeps through the scene far from the hand everyone sees. For a held object the separation is measured
+    from where the hand would carry it. **A hand held steadily above the cap cycles:** it trails, is placed, and
+    trails again (at 15 m/s the lag grows by 5 m/s and reaches 0.5 m in about 0.1 s), so its contacts come in
+    bursts, and each placement carries what it holds without collision and gives it no velocity from the jump.
+    That keeps "nothing moves faster than the cap"; tests expect bursts, not a continuous push (@design-reviewer,
+    approving r2).
+  - **The teleport distance** is `max(0.5 m, 2 · max_push_speed / rate)` [I, 0.5 m a starting value to tune]: at
+    least twice the cap's distance per frame at the world's rate, so a band of trailing remains at any rate (at
+    20 Hz and 10 m/s the cap alone is 0.5 m a frame).
+  - **Tests (hand-body work):** a target at 1.5× the cap for 2 s, with a held object: the body never trails by more
+    than the teleport distance, and nothing it touches moves faster than the cap; a fast wrist turn with an object
+    held 0.5 m out stays under the cap; a one-frame jump past the teleport distance places hand and held object.
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
   object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
   expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).
