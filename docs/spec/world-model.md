@@ -1374,7 +1374,11 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     teleport) **or the body trails its target by more than it** (@design-reviewer's Medium on 0913f962). The second
     bounds the lag: a hand kept faster than the cap never trails by more than the teleport distance, so the body
     never sweeps through the scene far from the hand everyone sees. For a held object the separation is measured
-    from where the hand would carry it.
+    from where the hand would carry it. **A hand held steadily above the cap cycles:** it trails, is placed, and
+    trails again (at 15 m/s the lag grows by 5 m/s and reaches 0.5 m in about 0.1 s), so its contacts come in
+    bursts, and each placement carries what it holds without collision and gives it no velocity from the jump.
+    That keeps "nothing moves faster than the cap"; tests expect bursts, not a continuous push (@design-reviewer,
+    approving r2).
   - **The teleport distance** is `max(0.5 m, 2 · max_push_speed / rate)` [I, 0.5 m a starting value to tune]: at
     least twice the cap's distance per frame at the world's rate, so a band of trailing remains at any rate (at
     20 Hz and 10 m/s the cap alone is 0.5 m a frame).
