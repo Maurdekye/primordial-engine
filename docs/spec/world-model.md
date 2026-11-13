@@ -1380,6 +1380,19 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
   - **The teleport distance** is `max(0.5 m, 2 · max_push_speed / rate)` [I, 0.5 m a starting value to tune]: at
     least twice the cap's distance per frame at the world's rate, so a band of trailing remains at any rate (at
     20 Hz and 10 m/s the cap alone is 0.5 m a frame).
+  - **As measured** (@vdw-physics, ws/hands 0eebdfca, 60 Hz, 18 g pit balls [V]): "the cap" holds up to the
+    physics engine's push-out:
+    - **Swept objects** reach up to 10.48 m/s: a body driven at exactly the cap that penetrates is pushed out at
+      Box3D's contact speed (3 m/s). The bound tests assert is `max_push_speed` plus the contact speed.
+    - **A held object in a sustained overrun** peaks at 11.8 m/s: after each placement the hold's spring catches up
+      and overshoots (about 13 % for a velocity step). A known excess, to fix with the spring's overshoot after a
+      block (vdw-physics's docket), not a change to this rule.
+    - **Throws** leave at the hand's speed up to the cap (4, 8, 11, 14 m/s give 4.00, 8.23, 10.43, 10.67 m/s). **The
+      0.5 m edge:** a throw faster than about twice the cap over a long travel trails past the teleport distance
+      and is placed in its release frame, leaving nearly at rest (20 m/s over 1.33 m: 0.56 m behind, leaves at
+      0.66 m/s). M1 keeps 0.5 m (@coordinator-opus): such throws are rare, and 1.0 m would let a
+      body run up to 1 m behind the hand everyone sees. If the touch test finds the dead throw, the teleport
+      distance is the knob.
   - **Tests (hand-body work):** a target at 1.5× the cap for 2 s, with a held object: the body never trails by more
     than the teleport distance, and nothing it touches moves faster than the cap; a fast wrist turn with an object
     held 0.5 m out stays under the cap; a one-frame jump past the teleport distance places hand and held object.
