@@ -1,6 +1,7 @@
 //! pe-app's binary (docs/spec/app.md). It runs a world alone: the simulation thread, with the stand-in agreement
-//! (`pe_app::standin`) and pe-replica's replica over a new, empty pe-world world (`pe_app::world`), drawn in VR or in
-//! the window on the main thread. The network, MCP, configuration and invites join as their crates land.
+//! (`pe_app::standin`) and pe-replica's replica over M1's ball pit with this machine's member admitted
+//! (`pe_app::world`), drawn in VR, where the member's hands follow the headset's tracking, or in the window on the
+//! main thread. The network, MCP, configuration and invites join as their crates land.
 //!
 //! `pe-app [--vr] [--seconds <n>]`. `--vr` turns VR on, as the configuration will (pe-xr's headset guard): VR opens
 //! first, and pe-app goes to the desktop when VR does not open or when its session ends. `--seconds` ends the run
@@ -84,7 +85,7 @@ fn main() {
     let host = clock::shared();
     let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
     let slot = Arc::new(FrameSlot::new());
-    let replica = match world::open_new(WORLD_SEED, rate, CUT_INTERVAL, frames.clone()) {
+    let replica = match world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, CUT_INTERVAL, frames.clone()) {
         Ok(r) => r,
         Err(e) => fail(&format!("the replica did not start: {e}")),
     };
