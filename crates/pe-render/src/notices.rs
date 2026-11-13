@@ -77,6 +77,9 @@ pub struct Line {
 #[derive(Clone, Debug)]
 struct Shown {
     text: String,
+    /// A cooldown line: when the cooldown ends. Its seconds are counted when drawn, and all cooldown refusals share
+    /// the one line (review Low on ab323229).
+    cooldown_end: Option<HostTime>,
     /// The refused entries this line tells (a void of one of them retracts it from the line).
     entries: Vec<EntryRef>,
     count: u32,
@@ -191,7 +194,8 @@ impl Notices {
             match self.refusal_text(&rec, view) {
                 Some(text) => {
                     self.remember(rec.entry, Told::Refusal);
-                    self.tell(text, Some(rec.entry), now);
+                    let cooldown_end = self.cooldown_end(&rec, view, now);
+                    self.tell_line(text, cooldown_end, Some(rec.entry), now);
                 }
                 None => self.remember(rec.entry, Told::Silent),
             }
@@ -229,7 +233,11 @@ impl Notices {
             .map(|s| {
                 let left = s.until.secs_since(now);
                 let alpha = if fade > 0.0 { (left / fade).clamp(0.0, 1.0) } else { 1.0 };
-                let text = if s.count > 1 { format!("{} (×{})", s.text, s.count) } else { s.text.clone() };
+                let text = match s.cooldown_end {
+                    Some(end) => cooldown_text(end.secs_since(now)),
+                    None => s.text.clone(),
+                };
+                let text = if s.count > 1 { format!("{text} (×{})", s.count) } else { text };
                 Line { text, alpha: alpha as f32 }
             })
             .collect()
@@ -246,18 +254,30 @@ impl Notices {
     }
 
     fn tell(&mut self, text: String, entry: Option<EntryRef>, now: HostTime) {
+        self.tell_line(text, None, entry, now);
+    }
+
+    /// Show a line, or refresh the one showing the same text (any cooldown line, for a cooldown) and count it up.
+    fn tell_line(&mut self, text: String, cooldown_end: Option<HostTime>, entry: Option<EntryRef>, now: HostTime) {
         let until = now.plus_nanos((self.settings.life_s * 1e9) as i64);
         self.told_total += 1;
         self.shown.retain(|s| s.until.0 > now.0);
-        if let Some(i) = self.shown.iter().position(|s| s.text == text) {
+        let same = |s: &Shown| match (s.cooldown_end, cooldown_end) {
+            (Some(_), Some(_)) => true,
+            (None, None) => s.text == text,
+            _ => false,
+        };
+        if let Some(i) = self.shown.iter().position(same) {
             let mut s = self.shown.remove(i).expect("found");
             s.count += 1;
             s.until = until;
+            s.cooldown_end = cooldown_end;
+            s.text = text;
             s.entries.extend(entry);
             self.shown.push_back(s);
             return;
         }
-        self.shown.push_back(Shown { text, entries: entry.into_iter().collect(), count: 1, until });
+        self.shown.push_back(Shown { text, cooldown_end, entries: entry.into_iter().collect(), count: 1, until });
         while self.shown.len() > self.settings.max_lines.max(1) {
             self.shown.pop_front();
         }
@@ -292,6 +312,13 @@ impl Notices {
     }
 
     /// The words for a refusal, or `None` when it needs none: a grab lost to a hand in view.
+    /// A cooldown's end in host time: its frames left past the telling view's frame, from `now`.
+    fn cooldown_end(&self, rec: &StepRecord, view: &FrameView, now: HostTime) -> Option<HostTime> {
+        let Outcome::Refused { reason: Reason::Cooldown { until }, .. } = &rec.outcome else { return None };
+        let frames = until.0.saturating_sub(view.frame.0);
+        Some(now.plus_nanos((frames as f64 / self.sim_rate_hz as f64 * 1e9) as i64))
+    }
+
     fn refusal_text(&self, rec: &StepRecord, view: &FrameView) -> Option<String> {
         let Outcome::Refused { reason, .. } = &rec.outcome else { return None };
         let what = match rec.class {
@@ -315,11 +342,11 @@ impl Notices {
             }
             Reason::Protected { owner } => format!("Refused: {} protects it.", inside(&self.name(owner))),
             Reason::NoPermission => "Refused: you don't have permission for that.".to_string(),
-            // Counted from the frame of the view that tells it, not the frame the grab was stepped at.
+            // Counted from the frame of the view that tells it, not the frame the grab was stepped at; with the
+            // finality delay it may already have ended (review L2).
+            // `lines` redraws it as the cooldown runs down (see `cooldown_end`).
             Reason::Cooldown { until } => {
-                let frames = until.0.saturating_sub(view.frame.0);
-                let secs = frames.div_ceil(self.sim_rate_hz as u64).max(1);
-                format!("You can grab it again in {secs} s.")
+                cooldown_text(until.0.saturating_sub(view.frame.0) as f64 / self.sim_rate_hz as f64)
             }
             Reason::TooFast { .. } => "Your push was refused: too fast.".to_string(),
             Reason::OutOfReach => "Out of reach.".to_string(),
@@ -329,6 +356,15 @@ impl Notices {
                 None => format!("Your {what} was refused."),
             },
         })
+    }
+}
+
+/// A cooldown with `left` seconds to go, counted up to whole seconds: "now" once it has ended.
+fn cooldown_text(left: f64) -> String {
+    if left <= 0.0 {
+        "You can grab it again now.".to_string()
+    } else {
+        format!("You can grab it again in {} s.", left.ceil() as u64)
     }
 }
 
@@ -431,15 +467,49 @@ pub fn window_text_px(window_height: u32) -> f32 {
 }
 
 /// The strip in the window: centred at the bottom, at its pixel size on screen, 3 % of the height above the bottom
-/// edge. Placed in front of `cam` (ten times its near plane, so it is never clipped), facing it.
+/// edge, its corners on whole pixels so the text stays sharp (review nit). Placed in front of `cam` (ten times its
+/// near plane, so it is never clipped), facing it.
 pub fn window_overlay(cam: &Camera, window: [u32; 2], image: Arc<OverlayImage>) -> Overlay {
     let d = cam.near * 10.0;
     let [tl, tr, tu, td] = [cam.fov.left, cam.fov.right, cam.fov.up, cam.fov.down].map(|a| (a as f64).tan());
-    let visible_h = d * (tu - td);
-    let per_px = visible_h / window[1].max(1) as f64;
-    let size = [image.width as f64 * per_px, image.height as f64 * per_px];
-    let centre = DVec3::new(d * (tl + tr) / 2.0, d * td + 0.03 * visible_h + size[1] / 2.0, -d);
-    Overlay { image, pose: cam.pose.moved(cam.pose.rot * centre), size: size.map(|v| v as f32) }
+    let (ww, wh) = (window[0].max(1) as f64, window[1].max(1) as f64);
+    let (w, h) = (image.width as f64, image.height as f64);
+    // The strip's pixel rectangle: left and bottom edges on whole pixels.
+    let x0 = ((ww - w) / 2.0).floor();
+    let y1 = wh - (0.03 * wh).round();
+    let (cx, cy) = (x0 + w / 2.0, y1 - h / 2.0);
+    // Pixels to the view plane at distance d, per axis.
+    let (per_x, per_y) = (d * (tr - tl) / ww, d * (tu - td) / wh);
+    let centre = DVec3::new(d * tl + cx * per_x, d * tu - cy * per_y, -d);
+    let size = [(w * per_x) as f32, (h * per_y) as f32];
+    Overlay { image, pose: cam.pose.moved(cam.pose.rot * centre), size }
+}
+
+/// The strip's image, rebuilt only when the lines change. A fading line's alpha is rounded to 1/16, so a fade
+/// rebuilds the image 16 times, not every display frame.
+#[derive(Default)]
+pub struct StripCache {
+    key: Option<(Vec<Line>, u32)>,
+    image: Option<Arc<OverlayImage>>,
+}
+
+impl StripCache {
+    /// The image for `lines` at `px`, or `None` with no lines.
+    pub fn get(&mut self, lines: &[Line], px: f32) -> Option<Arc<OverlayImage>> {
+        if lines.is_empty() {
+            self.key = None;
+            self.image = None;
+            return None;
+        }
+        let rounded: Vec<Line> =
+            lines.iter().map(|l| Line { text: l.text.clone(), alpha: (l.alpha * 16.0).ceil() / 16.0 }).collect();
+        let key = (rounded, px.to_bits());
+        if self.key.as_ref() != Some(&key) {
+            self.image = strip(&key.0, px).map(Arc::new);
+            self.key = Some(key);
+        }
+        self.image.clone()
+    }
 }
 
 /// Where a notice sits in the headset (render.md R11).
@@ -779,7 +849,42 @@ mod tests {
     fn a_cooldown_counts_from_the_telling_view() {
         let mut n = notices();
         n.observe(&view(100, Some(100), vec![input(1, 90, Reason::Cooldown { until: Frame(161) })]), t(0));
+        // One that ended while the refusal waited for finality (review L2).
         assert_eq!(texts(&mut n, t(0)), ["You can grab it again in 2 s."]);
+        n.observe(&view(200, Some(200), vec![input(2, 150, Reason::Cooldown { until: Frame(180) })]), t(10));
+        // It shares the line, which now says so.
+        assert_eq!(texts(&mut n, t(10)), ["You can grab it again now. (×2)"]);
+    }
+
+    /// A held grab against a cooldown is one line, not a scroll, and its seconds count down (review Low on ab323229).
+    #[test]
+    fn cooldown_refusals_share_one_line_that_counts_down() {
+        let mut n = notices();
+        n.observe(&view(100, Some(100), vec![input(1, 90, Reason::Cooldown { until: Frame(220) })]), t(0));
+        assert_eq!(texts(&mut n, t(0)), ["You can grab it again in 2 s."]);
+        assert_eq!(texts(&mut n, t(1100)), ["You can grab it again in 1 s."], "the same line, counting down");
+        n.observe(&view(130, Some(130), vec![input(2, 125, Reason::Cooldown { until: Frame(220) })]), t(500));
+        n.observe(&view(160, Some(160), vec![input(3, 155, Reason::Cooldown { until: Frame(230) })]), t(1000));
+        // The newest refusal sets the end: frame 230 is 70 frames past view 160's, so 1.167 s after 1.0 s.
+        assert_eq!(texts(&mut n, t(1100)), ["You can grab it again in 2 s. (×3)"]);
+        assert_eq!(texts(&mut n, t(2100)), ["You can grab it again in 1 s. (×3)"]);
+        assert_eq!(texts(&mut n, t(2200)), ["You can grab it again now. (×3)"]);
+        // Another refusal is its own line beside it.
+        n.observe(&view(170, Some(170), vec![input(4, 165, Reason::OutOfReach)]), t(2300));
+        assert_eq!(texts(&mut n, t(2300)), ["You can grab it again now. (×3)", "Out of reach."]);
+    }
+
+    #[test]
+    fn the_strip_cache_rebuilds_only_when_the_lines_change() {
+        let mut c = StripCache::default();
+        let line = |alpha: f32| vec![Line { text: "Out of reach.".into(), alpha }];
+        let a = c.get(&line(1.0), 20.0).expect("a line");
+        assert!(Arc::ptr_eq(&a, &c.get(&line(1.0), 20.0).unwrap()), "same lines: the same image");
+        // Within one sixteenth of a fade: the same image; past it, a new one.
+        let b = c.get(&line(0.97), 20.0).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert!(!Arc::ptr_eq(&b, &c.get(&line(0.9), 20.0).unwrap()));
+        assert!(c.get(&[], 20.0).is_none());
     }
 
     #[test]
