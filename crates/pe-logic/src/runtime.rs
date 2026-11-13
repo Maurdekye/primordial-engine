@@ -244,6 +244,27 @@ impl Fault {
     pub fn is_deterministic(&self) -> bool {
         !matches!(self, Fault::HostStack)
     }
+
+    /// The fault's kind as the world records it in the script's modules row (3.6; world-model's codec reads this
+    /// table). Stable: a code is never reused or renumbered. None for [`Fault::HostStack`], which is never world state.
+    pub fn code(&self) -> Option<u8> {
+        Some(match self {
+            Fault::Fuel { .. } => 1,
+            Fault::Depth { .. } => 2,
+            Fault::Unreachable => 3,
+            Fault::OutOfBounds => 4,
+            Fault::DivideByZero => 5,
+            Fault::IntegerOverflow => 6,
+            Fault::BadConversion => 7,
+            Fault::IndirectCall => 8,
+            Fault::BadPointer => 9,
+            Fault::Status(_) => 10,
+            Fault::InvalidRow { .. } => 11,
+            Fault::BadCommand(_) => 12,
+            Fault::Other(_) => 13,
+            Fault::HostStack => return None,
+        })
+    }
 }
 
 /// One live instance. Between frames, [`Instance::reset`] brings it back to its state just after instantiation.

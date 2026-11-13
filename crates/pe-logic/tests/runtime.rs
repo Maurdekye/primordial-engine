@@ -448,3 +448,28 @@ fn weight_one_recursion_trips_the_depth_meter_before_the_native_stack() {
         assert_eq!(r, Err(Fault::Depth { limit: s.meter.depth_limit }));
     });
 }
+
+#[test]
+fn fault_codes_are_the_published_table() {
+    // world-model's modules row stores these numbers (logic.md 3.6): a change here is a format change.
+    let table = [
+        (Fault::Fuel { budget: 1 }, Some(1)),
+        (Fault::Depth { limit: 1 }, Some(2)),
+        (Fault::Unreachable, Some(3)),
+        (Fault::OutOfBounds, Some(4)),
+        (Fault::DivideByZero, Some(5)),
+        (Fault::IntegerOverflow, Some(6)),
+        (Fault::BadConversion, Some(7)),
+        (Fault::IndirectCall, Some(8)),
+        (Fault::BadPointer, Some(9)),
+        (Fault::Status(3), Some(10)),
+        (Fault::InvalidRow { component: "C".into(), field: "f".into() }, Some(11)),
+        (Fault::BadCommand("x".into()), Some(12)),
+        (Fault::Other("trap".into()), Some(13)),
+        (Fault::HostStack, None),
+    ];
+    for (f, code) in table {
+        assert_eq!(f.code(), code, "{f:?}");
+        assert_eq!(f.code().is_some(), f.is_deterministic(), "{f:?}");
+    }
+}
