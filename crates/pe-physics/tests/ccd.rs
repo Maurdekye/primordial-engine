@@ -18,11 +18,12 @@
 //!
 //! The pit's measurements mirror pe-world's preset (crates/pe-world/src/preset.rs): `BALL_R` and `BALL_DENSITY`, the
 //! inner half width `PIT_W` and the walls' half height `WALL_H`, its walls' 0.1 m half thickness and its floor box.
-//! A change there should change them here.
+//! A change there should change them here. The tests run under `PhysicsConfig::engine`'s gravity, 10 m/s², and the
+//! seam aims are solved for it (`G`). pe-world's default of 9.81 m/s² replaces it in the replica, which changes
+//! nothing here; change `G` only with the config it mirrors (@design-reviewer's L2 on 1cda443e).
 
 use pe_physics::{BodyDesc, BodyKind, Geometry, ObjectId, PhysicsConfig, PhysicsWorld, ShapeDesc};
 
-const DT: f32 = 1.0 / 60.0;
 /// The world rates the user allows (30 to 120 Hz, mc8dc9e5a6ffb): its ends and the default.
 const RATES: [u32; 3] = [30, 60, 120];
 /// The engine's gravity (`PhysicsConfig::engine`), m/s², for aiming a fall at a seam.
@@ -184,80 +185,61 @@ fn small_fast_balls_stay_in() {
     }
 }
 
-/// The same scene gives the same state hash every frame: thirty 1 cm balls at the top speed, fanned out at walls 1 cm
-/// thick, each meeting one within a few frames. It prints the hash of all 120 frames' hashes, to compare across
-/// machines and targets: `cargo test --release -p pe-physics --test ccd -- --nocapture`.
-#[test]
-fn continuous_collision_is_deterministic() {
-    let hashes = || {
-        let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
-        pit(&mut pw, 0.005);
-        for i in 0..30u32 {
-            let angle = f64::from(i) * std::f64::consts::TAU / 30.0;
-            let (c, s) = (angle.cos(), angle.sin());
-            let desc = BodyDesc::new(BodyKind::Dynamic, [0.3 * c, 0.01, 0.3 * s])
-                .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.01 }))
-                .with_velocity([(TOP_SPEED * c) as f32, 0.0, (TOP_SPEED * s) as f32], [0.0; 3]);
-            pw.add_body(id(100 + i), &desc).unwrap();
-        }
-        (0..120)
-            .map(|_| {
-                pw.step(DT).unwrap();
-                pw.state_hash().unwrap()
-            })
-            .collect::<Vec<u64>>()
-    };
-    let (a, b) = (hashes(), hashes());
-    assert_eq!(a, b);
-    let all = a.iter().fold(blake3::Hasher::new(), |mut h, x| {
-        h.update(&x.to_le_bytes());
-        h
-    });
-    println!("continuous_collision_is_deterministic: {}", all.finalize().to_hex());
+/// Thirty balls fanned out from 0.3 m around the pit's centre, rolling at `speed` at walls 1 cm thick, stepped for two
+/// seconds at `hz` with the engine's sub-steps for that rate. Each ball's radius comes from its index. It returns the
+/// BLAKE3 of every frame's state hash, and how many balls end outside the pit.
+fn fan(hz: u32, speed: f64, radius: impl Fn(u32) -> f64, first_id: u32) -> (blake3::Hash, usize) {
+    let mut pw = PhysicsWorld::new(PhysicsConfig::engine().with_tick_rate(hz).unwrap()).unwrap();
+    pit(&mut pw, 0.005);
+    for i in 0..30u32 {
+        let angle = f64::from(i) * std::f64::consts::TAU / 30.0;
+        let (c, s, r) = (angle.cos(), angle.sin(), radius(i));
+        let desc = BodyDesc::new(BodyKind::Dynamic, [0.3 * c, r, 0.3 * s])
+            .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: r as f32 }))
+            .with_velocity([(speed * c) as f32, 0.0, (speed * s) as f32], [0.0; 3]);
+        pw.add_body(id(first_id + i), &desc).unwrap();
+    }
+    let mut all = blake3::Hasher::new();
+    for _ in 0..2 * hz {
+        pw.step(1.0 / hz as f32).unwrap();
+        all.update(&pw.state_hash().unwrap().to_le_bytes());
+    }
+    let outside = (0..30u32)
+        .filter(|&i| {
+            let p = pw.pose(id(first_id + i)).unwrap().position;
+            p[0].abs().max(p[2].abs()) >= PIT_W
+        })
+        .count();
+    (all.finalize(), outside)
 }
 
-/// Above the tested speeds the same holds: the same scene gives the same state hash every frame, though small balls
-/// go through 1 cm walls (@coordinator-opus's two-machine check of the push-speed decision, ma8ef3248b5d4 and
-/// md5f76e886277). Thirty balls of 0.5 and 1 cm roll along the floor at 100 m/s, fanned out at the walls. At least
-/// one ends outside the pit, so the hash covers going through. It prints the hash of all 120 frames' hashes, to
-/// compare across machines.
+/// The same scene gives the same state hash every frame, at each rate: thirty 1 cm balls at the top speed, each
+/// meeting a wall within a few frames. The engine takes a different sub-step path at each rate (8, 4 and 2 sub-steps).
+/// It prints one hash per rate, to compare across machines and targets
+/// (`cargo test --release -p pe-physics --test ccd -- --nocapture deterministic`; @design-reviewer's L1 on 1cda443e).
+#[test]
+fn continuous_collision_is_deterministic() {
+    for hz in RATES {
+        let (a, b) = (fan(hz, TOP_SPEED, |_| 0.01, 100), fan(hz, TOP_SPEED, |_| 0.01, 100));
+        assert_eq!(a, b, "at {hz} Hz");
+        println!("continuous_collision_is_deterministic at {hz} Hz: {}", a.0.to_hex());
+    }
+}
+
+/// Above the tested speeds the same holds, at each rate: the same scene gives the same state hash every frame, though
+/// small balls go through 1 cm walls (@coordinator-opus's two-machine check of the push-speed decision, ma8ef3248b5d4
+/// and md5f76e886277). Thirty balls of 0.5 and 1 cm roll at the walls at 100 m/s, or 200 m/s at 30 Hz, where nothing
+/// goes through below 150 m/s. At least one ball ends outside the pit at each rate, so the hash covers going through.
 #[test]
 fn going_through_above_the_tested_speeds_is_deterministic() {
-    let run = || {
-        let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
-        pit(&mut pw, 0.005);
-        for i in 0..30u32 {
-            let angle = f64::from(i) * std::f64::consts::TAU / 30.0;
-            let (c, s) = (angle.cos(), angle.sin());
-            let r = if i % 2 == 0 { 0.005 } else { 0.01 };
-            let desc = BodyDesc::new(BodyKind::Dynamic, [0.3 * c, r, 0.3 * s])
-                .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: r as f32 }))
-                .with_velocity([(100.0 * c) as f32, 0.0, (100.0 * s) as f32], [0.0; 3]);
-            pw.add_body(id(200 + i), &desc).unwrap();
-        }
-        let hashes: Vec<u64> = (0..120)
-            .map(|_| {
-                pw.step(DT).unwrap();
-                pw.state_hash().unwrap()
-            })
-            .collect();
-        let outside = (0..30u32)
-            .filter(|&i| {
-                let p = pw.pose(id(200 + i)).unwrap().position;
-                p[0].abs().max(p[2].abs()) >= PIT_W
-            })
-            .count();
-        (hashes, outside)
-    };
-    let ((a, outside), (b, _)) = (run(), run());
-    assert_eq!(a, b);
-    assert!(outside > 0, "no ball went through: the scene no longer covers going through");
-    let all = a.iter().fold(blake3::Hasher::new(), |mut h, x| {
-        h.update(&x.to_le_bytes());
-        h
-    });
-    let hash = all.finalize().to_hex();
-    println!("going_through_above_the_tested_speeds_is_deterministic: {hash} ({outside} of 30 outside)");
+    let radius = |i: u32| if i.is_multiple_of(2) { 0.005 } else { 0.01 };
+    for (hz, speed) in [(30, 200.0), (60, 100.0), (120, 100.0)] {
+        let (a, b) = (fan(hz, speed, radius, 200), fan(hz, speed, radius, 200));
+        assert_eq!(a, b, "at {hz} Hz");
+        let (hash, outside) = (a.0.to_hex(), a.1);
+        assert!(outside > 0, "at {hz} Hz no ball went through: the scene no longer covers going through");
+        println!("going_through_above_the_tested_speeds_is_deterministic at {hz} Hz: {hash} ({outside} of 30 outside)");
+    }
 }
 
 /// A measurement, not a check: with continuous collision on and off, for each ball, wall and speed, which aims went
