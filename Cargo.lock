@@ -2190,6 +2190,7 @@ dependencies = [
 name = "pe-app"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "libc",
  "pe-agree",
  "pe-api",
