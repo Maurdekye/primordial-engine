@@ -472,3 +472,39 @@ fn cached_hashes_go_stale_on_every_write() {
     assert_eq!(s.stale_hashes(), None);
     assert_eq!(s.cached_hash(b), None);
 }
+
+/// A script's tag (world-model.md 7.9): a zero-size component registered in a live world, with empty rows, whose
+/// registration a restore of an earlier snapshot undoes, and which survives a snapshot's bytes.
+#[test]
+fn a_zero_size_component_registers_live_and_rolls_back() {
+    use pe_sim::registry::ComponentDesc;
+    use pe_sim::snapshot::Snapshot;
+    let tag = ComponentId(1u128 << 40);
+    let desc = ComponentDesc::new(tag, "pe.tag", vec![]).unwrap();
+    assert_eq!(desc.size(), 0);
+    let mut s = new_store();
+    let a = s.mk(1);
+    let before = s.snapshot();
+    assert!(s.insert_raw(tag, a, &[]).is_err(), "not registered yet");
+    s.register(desc.clone()).unwrap();
+    s.register(desc.clone()).unwrap(); // the same description again is a no-op
+    let other = ComponentDesc::new(tag, "pe.tag2", vec![]).unwrap();
+    assert!(s.register(other).is_err(), "another description under the same id");
+    assert!(s.register(ComponentDesc::new(ComponentId(7), "low", vec![]).unwrap()).is_err(), "engine space");
+    s.insert_raw(tag, a, &[]).unwrap();
+    assert_eq!(s.get_raw(tag, a), Some(&[][..]));
+    assert!(s.insert_raw(tag, a, &[0]).is_err(), "a tag row is empty");
+    let tagged = s.snapshot();
+    // Bytes round-trip with the zero-size column.
+    let parsed = Snapshot::from_bytes(&tagged.to_bytes(), s.registry()).unwrap();
+    assert_eq!(parsed.state_hash(), tagged.state_hash());
+    // Restoring the earlier snapshot drops the row and the registration; restoring the later one brings both back.
+    s.restore(&before).unwrap();
+    assert!(s.registry().get(tag).is_none());
+    assert_eq!(s.get_raw(tag, a), None);
+    s.restore(&parsed).unwrap();
+    assert!(s.registry().get(tag).is_some());
+    assert_eq!(s.get_raw(tag, a), Some(&[][..]));
+    assert!(s.remove_raw(tag, a).unwrap());
+    assert_eq!(s.get_raw(tag, a), None);
+}
