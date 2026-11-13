@@ -250,14 +250,6 @@ pub trait WorldModel: Send {
     fn scripted(&self) -> bool {
         false
     }
-    /// Whether the entry is a code commit, read from the entry alone, like [`WorldModel::phase`]: one may add a
-    /// modules row, so a replica without a runner refuses to step its frame.
-    fn commits_code(_entry: &SignedEntry) -> bool
-    where
-        Self: Sized,
-    {
-        false
-    }
     /// One logic stage of `frame` (`stage` is `LogicPrePhysics` or `LogicPostPhysics`), run by `runner` over the
     /// scripts the modules table lists (crate::logic): what they changed, as physics effects, and what they emitted.
     /// A model without scripts, the default, does nothing.

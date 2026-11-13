@@ -56,7 +56,6 @@ use pe_seams::{
 use pe_sim::transform::rotate;
 use pe_sim::{Component, ComponentId, SimStore, Transform, WorldTransform};
 use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
-use pe_world::edit::{Op, Transaction};
 use pe_world::{Footprint, World, input_phase};
 
 use crate::logic::{ScriptRow, ScriptRunner, StageWorld};
@@ -138,16 +137,6 @@ impl WorldModel for PeWorld {
 
     fn scripted(&self) -> bool {
         !self.world.modules().is_empty()
-    }
-
-    /// An edit whose transaction has a `CommitScript` op activating at or before the entry's frame, whether or not it
-    /// applies: its script could run in that frame. One that activates later only adds a row, and a replica without a
-    /// runner stops at the next frame, once the row is there (@engine-architect's Low 5 on 4ac9019f).
-    fn commits_code(entry: &SignedEntry) -> bool {
-        let stamp = entry.entry.stamp.0;
-        let now = |o: &Op| matches!(o, Op::CommitScript { activate_at, .. } if *activate_at <= stamp);
-        entry.entry.class == Class::Edit
-            && Transaction::decode(&entry.entry.payload).is_some_and(|t| t.ops.iter().any(now))
     }
 
     /// pe-world's hooks around the runner: `World::logic_stage` hands it the store, the guard, the faulted assets and

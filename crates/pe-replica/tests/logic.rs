@@ -44,33 +44,31 @@ fn keys() -> TestKeys {
     TestKeys::new(5, 2)
 }
 
-/// The version hash V of the mover's one version, which its tag's id derives from.
+/// The mover's source archive (logic.md 4.1a): a commit carries it, and checks it, in the entry.
+fn archive() -> Bytes {
+    pe_world::script::pack_source(&[("src/lib.rs", b"// the mover\n".as_slice())]).expect("an archive").into()
+}
+
+/// The version hash V of the mover's one version, which its tag's id derives from: its archive's hash.
 fn v1() -> Hash {
-    Hash([1; 32])
+    Hash(BlobRef::of(&archive()).hash)
 }
 
 fn tag() -> ComponentId {
     tag_desc(&v1()).id()
 }
 
-/// The mover's code commit, stamped `at` and activating there.
+/// The mover's code commit, stamped `at`: pending until a quorum attests it (logic.md 6.2a), and with one member its
+/// author is that quorum, so it activates at the end of frame `at` and the mover runs from the next frame.
 fn commit(b: &mut EntryBuilder, at: u64) -> SignedEntry {
     commit_activating(b, at, at)
 }
 
-/// The mover's code commit, stamped `at` and activating at `activate_at`.
+/// The mover's code commit, stamped `at`, with `activate_at` (pe-world refuses one that isn't the stamp).
 fn commit_activating(b: &mut EntryBuilder, at: u64, activate_at: u64) -> SignedEntry {
     let t = tx(vec![
         Op::Register { components: vec![tag_desc(&v1())] },
-        Op::CommitScript {
-            script: ASSET,
-            base: None,
-            source: BlobRef { hash: v1().0, len: 10 },
-            toolchain: Hash([1; 32]),
-            sdk: Hash([2; 32]),
-            author_module: MODULE,
-            activate_at,
-        },
+        Op::commit_script(ASSET, None, archive(), Hash([1; 32]), Hash([2; 32]), MODULE, activate_at),
     ]);
     b.next(Class::Edit, Frame(at), Bytes::from(t.encode()))
 }
@@ -102,11 +100,13 @@ fn floor_and_ball() -> World {
 }
 
 /// The floor and ball, the mover committed at frame 0 and its tag on the ball: a world with a script from the start.
+/// The commit activates at the end of frame 0 (6.2a), so the mover runs from frame 1.
 fn scripted() -> World {
     let mut w = floor_and_ball();
     let keys = keys();
     let mut b = EntryBuilder::new(&keys, 0);
     applied(&w.apply_edit(Frame(0), &commit(&mut b, 0)).0);
+    assert_eq!(w.end_frame(Frame(0)).activated.len(), 1, "the one member is its quorum");
     let tag_row = Row { component: tag(), instance: 0, bytes: vec![] };
     applied(
         &w.apply_edit(Frame(0), &edit(&mut b, 0, vec![Op::SetRow { id: Target::Existing(oid(BALL)), row: tag_row }])).0,
@@ -244,20 +244,21 @@ fn keys_of(view: &FrameView) -> Vec<EffectKey> {
 }
 
 /// A script runs in both logic stages: what it writes before the physics reaches the body (the ball moves 1 cm along x
-/// each frame while it falls), and what it emits after reaches the view once, as S5 script effects.
+/// each frame while it falls), and what it emits after reaches the view once, as S5 script effects. It runs from frame
+/// 1: its commit activated at the end of frame 0 (logic.md 6.2a).
 #[test]
 fn scripts_run_around_the_physics_and_their_events_become_effects() {
     let mut s = Source::default();
     let mut r = replica_of(scripted()).with_runner(mover());
     r.advance(Frame(30), &mut s);
     assert_eq!((r.frame(), r.faults()), (Frame(30), 0));
-    assert!((ball_x(&r) - 0.30).abs() < 1e-4, "moved 30 times: {}", ball_x(&r));
+    assert!((ball_x(&r) - 0.29).abs() < 1e-4, "moved 29 times, in frames 1 to 29: {}", ball_x(&r));
     let body = r.physics().pose(oid(BALL)).expect("the ball's body").position;
-    assert!((body[0] - 0.30).abs() < 1e-4, "the body follows the script's moves: {body:?}");
+    assert!((body[0] - 0.29).abs() < 1e-4, "the body follows the script's moves: {body:?}");
     let view = r.view();
-    assert_eq!(keys_of(&view), (0..30).map(ping).collect::<Vec<_>>());
-    for (f, e) in view.effects.iter().enumerate() {
-        assert_eq!(e.data, Bytes::from((f as u64).to_le_bytes().to_vec()));
+    assert_eq!(keys_of(&view), (1..30).map(ping).collect::<Vec<_>>());
+    for (e, f) in view.effects.iter().zip(1u64..) {
+        assert_eq!(e.data, Bytes::from(f.to_le_bytes().to_vec()));
         assert!(!e.own && !e.resimulated && e.trigger_arrived.is_none());
     }
     assert!(view.retracted.is_empty());
@@ -303,7 +304,7 @@ fn a_rollback_replays_the_scripts_to_the_same_roots_and_carries_each_effect_once
     assert_eq!(roots(&r, 40), roots(&a, 40));
     assert_eq!(r.faults(), 0);
     let second = keys_of(&r.view());
-    assert_eq!(first, (0..30).map(ping).collect::<Vec<_>>());
+    assert_eq!(first, (1..30).map(ping).collect::<Vec<_>>());
     assert_eq!(second, (30..40).map(ping).collect::<Vec<_>>(), "the replayed frames' pings were carried already");
     assert!(r.view().retracted.is_empty());
 }
@@ -342,8 +343,6 @@ fn without_a_runner_a_world_with_scripts_is_not_stepped() {
     assert_eq!(r.runner_identity(), None);
 }
 
-/// Without a runner, a replica steps a world without scripts up to the frame of a code commit and stops there. With
-/// one, the script runs from the commit's frame.
 /// The runner's identity and its modules reach S2's provided methods (v1.7) through `dyn Replica`, as the hello and a
 /// fault bundle ask for them, not only through the concrete type (@engine-architect's Low 4 on 4ac9019f). Without a
 /// runner, both are `None`.
@@ -357,44 +356,52 @@ fn the_runner_s_identity_and_modules_reach_s2_through_dyn_replica() {
     assert_eq!((without.runner_identity(), without.module(&MODULE)), (None, None));
 }
 
+/// Without a runner, a replica steps a world without scripts through the frame of a code commit, which only makes it
+/// pending, and stops at the next frame: with one member the commit activates at the end of its frame, and its script
+/// would run from the next (logic.md 6.2a). With a runner, the script runs from there, once its tag is on the ball.
 #[test]
-fn without_a_runner_the_replica_stops_at_a_code_commit() {
+fn without_a_runner_the_replica_stops_once_a_code_commit_activates() {
     let keys = keys();
-    let mut b = EntryBuilder::new(&keys, 0);
-    let mut s = Source::default();
-    s.add(commit(&mut b, 5));
-    let tag_row = Row { component: tag(), instance: 0, bytes: vec![] };
-    s.add(edit(&mut b, 5, vec![Op::SetRow { id: Target::Existing(oid(BALL)), row: tag_row }]));
+    let entries = || {
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut s = Source::default();
+        s.add(commit(&mut b, 5));
+        let tag_row = Row { component: tag(), instance: 0, bytes: vec![] };
+        s.add(edit(&mut b, 6, vec![Op::SetRow { id: Target::Existing(oid(BALL)), row: tag_row }]));
+        s
+    };
+    let mut s = entries();
     let mut bare = replica_of(floor_and_ball());
     bare.advance(Frame(10), &mut s);
-    assert_eq!((bare.frame(), bare.faults()), (Frame(5), 1));
+    assert_eq!((bare.frame(), bare.faults()), (Frame(6), 1));
+    assert_eq!(bare.world().world().modules()[&ASSET].activate_at, Frame(6));
 
-    let mut s2 = Source::default();
-    let mut b2 = EntryBuilder::new(&keys, 0);
-    s2.add(commit(&mut b2, 5));
-    let tag_row = Row { component: tag(), instance: 0, bytes: vec![] };
-    s2.add(edit(&mut b2, 5, vec![Op::SetRow { id: Target::Existing(oid(BALL)), row: tag_row }]));
+    let mut s = entries();
     let mut r = replica_of(floor_and_ball()).with_runner(mover());
-    r.advance(Frame(10), &mut s2);
+    r.advance(Frame(10), &mut s);
     assert_eq!((r.frame(), r.faults()), (Frame(10), 0));
-    assert!((ball_x(&r) - 0.05).abs() < 1e-4, "moved from frame 5: {}", ball_x(&r));
-    assert_eq!(keys_of(&r.view()), (5..10).map(ping).collect::<Vec<_>>());
+    assert!((ball_x(&r) - 0.04).abs() < 1e-4, "moved in frames 6 to 9: {}", ball_x(&r));
+    assert_eq!(keys_of(&r.view()), (6..10).map(ping).collect::<Vec<_>>());
 }
 
-/// A code commit whose script could not run in its frame doesn't stop a replica without a runner there
-/// (@engine-architect's Low 5 on 4ac9019f). pe-world requires a commit to activate at its own frame and refuses one
-/// that activates later, so no row appears and the replica steps on. (One that activates at its frame stops a replica
-/// without a runner even if pe-world refuses it for another reason: only applying it would tell.)
+/// Without a runner, a replica steps through a pending code commit: only an active modules row needs a runner (logic.md
+/// 6.2a). With two members the author's own attestation is not a quorum, so the commit at 5 stays pending until the
+/// second member's attestation at 12 activates it at that frame's end, and the replica stops at 13, the first frame
+/// its script would run in. A commit pe-world refuses, here one activating after its stamp, never stops it.
 #[test]
-fn without_a_runner_a_commit_activating_later_does_not_stop_the_replica() {
+fn without_a_runner_a_pending_commit_does_not_stop_the_replica_until_it_activates() {
     let keys = keys();
-    let mut b = EntryBuilder::new(&keys, 0);
+    let (mut author, mut voter) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
     let mut s = Source::default();
-    s.add(commit_activating(&mut b, 5, 15));
-    let mut bare = replica_of(floor_and_ball());
-    bare.advance(Frame(10), &mut s);
-    assert_eq!((bare.frame(), bare.faults()), (Frame(10), 0));
-    assert!(bare.world().world().modules().is_empty(), "refused");
+    s.add(commit_activating(&mut author, 3, 9));
+    s.add(commit(&mut author, 5));
+    s.add(edit(&mut voter, 12, vec![Op::AttestBuild { script: ASSET, version: v1(), module: MODULE }]));
+    let mut bare = replica_of(world);
+    bare.advance(Frame(20), &mut s);
+    assert_eq!((bare.frame(), bare.faults()), (Frame(13), 1));
+    assert_eq!(bare.world().world().modules()[&ASSET].activate_at, Frame(13));
 }
 
 /// A script's move of an object without a body reaches the physics of the bodies beneath it (@engine-architect's
@@ -414,6 +421,7 @@ fn a_script_moving_a_parent_without_a_body_carries_the_bodies_beneath_it() {
     let keys = keys();
     let mut b = EntryBuilder::new(&keys, 0);
     applied(&w.apply_edit(Frame(0), &commit(&mut b, 0)).0);
+    assert_eq!(w.end_frame(Frame(0)).activated.len(), 1, "active from frame 1 (6.2a)");
     let tag_row = Row { component: tag(), instance: 0, bytes: vec![] };
     let tagged = edit(&mut b, 0, vec![Op::SetRow { id: Target::Existing(oid(PARENT)), row: tag_row }]);
     applied(&w.apply_edit(Frame(0), &tagged).0);
@@ -421,7 +429,7 @@ fn a_script_moving_a_parent_without_a_body_carries_the_bodies_beneath_it() {
     r.advance(Frame(10), &mut Source::default());
     assert_eq!((r.frame(), r.faults()), (Frame(10), 0));
     let at = r.physics().pose(oid(PLATFORM)).expect("the platform's body").position;
-    assert!((at[0] - 3.10).abs() < 1e-4, "the platform's body went with its parent: {at:?}");
+    assert!((at[0] - 3.09).abs() < 1e-4, "the platform's body went with its parent, frames 1 to 9: {at:?}");
 }
 
 /// Each object carrying the script's tag emits `pop` after the physics and is removed in the same stage.
@@ -469,8 +477,8 @@ impl ScriptRunner for Popper {
 #[test]
 fn an_event_from_an_object_the_stage_removed_plays_where_it_was() {
     let mut r = replica_of(scripted()).with_runner(Box::new(Popper));
-    r.advance(Frame(1), &mut Source::default());
-    assert_eq!((r.frame(), r.faults()), (Frame(1), 0));
+    r.advance(Frame(2), &mut Source::default());
+    assert_eq!((r.frame(), r.faults()), (Frame(2), 0), "the popper first runs at frame 1");
     assert!(!r.world().world().store().exists(oid(BALL)), "popped");
     let view = r.view();
     assert_eq!(view.effects.len(), 1);
@@ -501,7 +509,7 @@ fn a_script_whose_module_is_missing_does_not_run_and_is_counted() {
     assert_eq!((r.frame(), r.faults()), (Frame(10), 0));
     assert!(ball_x(&r).abs() < 1e-9, "never moved");
     assert!(r.view().effects.is_empty());
-    assert_eq!(r.script_counts().missing, 20, "two stages a frame for ten frames");
+    assert_eq!(r.script_counts().missing, 18, "two stages a frame, frames 1 to 9");
 }
 
 /// A script's fault is world state: the world refuses a held object's pose from a script, the call faults, the
@@ -517,7 +525,7 @@ fn a_script_fault_is_world_state_and_stops_the_script() {
     r.advance(Frame(16), &mut s);
     assert_eq!(r.faults(), 0);
     let row = &r.world().world().modules()[&ASSET];
-    assert_eq!(row.faulted, Some((Frame(0), REFUSED)));
+    assert_eq!(row.faulted, Some((Frame(1), REFUSED)), "its first frame");
     assert!(ball_x(&r).abs() < 1e-9, "the held ball was never moved");
     assert!(r.view().effects.is_empty(), "faulted before its first ping");
 
@@ -565,9 +573,9 @@ fn cut_at(entries: &[SignedEntry], height: u64, frame: u64) -> Cut {
     Cut { at: CutRef { line: LineId::origin(), height, frame: Frame(frame) }, heads: heads.into_values().collect() }
 }
 
-/// Without a runner, a cut's root that needs a code commit's frame re-stepped is not computed: the re-step stops at
-/// the commit and answers `NotYetSimulated`, and the live state and counts stay as they were (the scratch counts the
-/// fault).
+/// Without a runner, a cut's root that needs a code commit's frames re-stepped is not computed: the re-step stops the
+/// frame after the commit, where it activated (6.2a), and answers `NotYetSimulated`, and the live state and counts stay
+/// as they were (the scratch counts the fault).
 #[test]
 fn without_a_runner_a_cut_root_across_a_code_commit_is_not_computed() {
     let keys = keys();
@@ -584,7 +592,7 @@ fn without_a_runner_a_cut_root_across_a_code_commit_is_not_computed() {
 }
 
 /// The scratch's stops and the live history's are counted apart (@engine-architect's Low 2 on 4ac9019f): after a cut's
-/// root stopped at a late code commit off the live history, the live loop rolls back to the commit and stops there
+/// root stopped at a late code commit off the live history, the live loop rolls back to the commit and stops after it
 /// too, with its own fault. A cut above that stop then answers `NotYetSimulated`, since its root won't come, not
 /// `Pending` (the review's nit).
 #[test]
@@ -600,14 +608,15 @@ fn without_a_runner_the_scratch_and_the_live_history_count_their_stops_apart() {
     assert_eq!(r.root_at_cut(&cut, &mut s), Err(RootError::NotYetSimulated));
     assert_eq!((r.frame(), r.faults(), r.scratch().faults), (Frame(20), 0, 1));
     r.advance(Frame(30), &mut s);
-    assert_eq!((r.frame(), r.faults(), r.scratch().faults), (Frame(5), 1, 1));
+    assert_eq!((r.frame(), r.faults(), r.scratch().faults), (Frame(6), 1, 1));
     r.advance(Frame(30), &mut s);
     assert_eq!(r.faults(), 1, "one fault per stop");
     assert_eq!(r.root_at_cut(&cut, &mut s), Err(RootError::NotYetSimulated));
 }
 
 /// A stop is over once the live history passes it, so a later stop at the same frame counts again (Low 2): the code
-/// commit at frame 5 is withdrawn, the replica steps on past it, and a second commit there stops it again.
+/// commit at frame 5 is withdrawn, the replica steps on past it, and a second commit there stops it again, each time
+/// at 6, where the commit activated.
 #[test]
 fn without_a_runner_a_stop_passed_and_met_again_counts_again() {
     let keys = keys();
@@ -616,14 +625,14 @@ fn without_a_runner_a_stop_passed_and_met_again_counts_again() {
     s.add(commit(&mut b, 5));
     let mut r = replica_of(floor_and_ball());
     r.advance(Frame(10), &mut s);
-    assert_eq!((r.frame(), r.faults()), (Frame(5), 1));
+    assert_eq!((r.frame(), r.faults()), (Frame(6), 1));
     s.entries.clear();
     s.changed = Some(Frame(5));
     r.advance(Frame(10), &mut s);
     assert_eq!((r.frame(), r.faults()), (Frame(10), 1));
     s.add(commit(&mut b, 5));
     r.advance(Frame(20), &mut s);
-    assert_eq!((r.frame(), r.faults()), (Frame(5), 2));
+    assert_eq!((r.frame(), r.faults()), (Frame(6), 2));
 }
 
 /// The mover, but the first time it runs frame 20 it also emits `glitch` from the ball after the physics and moves it
@@ -687,7 +696,7 @@ fn rung_one_carries_each_effect_once_and_retracts_what_a_glitch_emitted() {
     let kind = EffectKind::Script(event_kind(&ASSET, "glitch"));
     let glitch = EffectKey { frame: Frame(20), cause: EffectCause::Logic, object: oid(BALL), kind, ordinal: 0 };
     let first = keys_of(&bad.view());
-    assert!(first.contains(&glitch) && first.len() == 49, "48 pings and the glitch: {first:?}");
+    assert!(first.contains(&glitch) && first.len() == 48, "47 pings, from frame 1, and the glitch: {first:?}");
     let (c16, c32) = (cut_at(&[], 1, 16), cut_at(&[], 2, 32));
     let (r16, r32) = (good.live_root(Frame(16)).expect("at 16"), good.live_root(Frame(32)).expect("at 32"));
     let agreed = bad.finalize(&FinalCut { cut: c16, root: r16, voters: vec![] }, &mut s);
@@ -722,7 +731,7 @@ fn a_floor_re_based_over_a_late_entry_carries_the_effects_of_the_frames_it_re_ba
     let mut a = replica_of(scripted()).with_runner(mover());
     a.advance(Frame(48), &mut s);
     applied(&a.outcome(&late.id()).expect("stepped").1);
-    assert_eq!(keys_of(&a.view()), (0..20).map(ping).collect::<Vec<_>>(), "no ball from 20");
+    assert_eq!(keys_of(&a.view()), (1..20).map(ping).collect::<Vec<_>>(), "no ball from 20");
     // S3 voids the late entry as the cut at 24 goes final, and reports the change.
     s.entries.clear();
     s.changed = Some(Frame(20));
@@ -763,14 +772,14 @@ fn a_rung_two_import_retracts_what_the_views_carried_below_its_cut() {
     let mut bad =
         replica_of(scripted()).with_runner(Box::new(Glitching { inner: Mover { holds: MODULE }, glitched: false }));
     bad.advance(Frame(48), &mut s);
-    assert_eq!(keys_of(&bad.view()).len(), 49, "48 pings and the glitch");
+    assert_eq!(keys_of(&bad.view()).len(), 48, "47 pings, from frame 1, and the glitch");
     assert_eq!(bad.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(import.target_root));
     bad.advance(Frame(49), &mut s);
     let after = bad.view();
     assert_eq!(keys_of(&after), [ping(48)], "the replay from the cut carried nothing twice");
     let kind = EffectKind::Script(event_kind(&ASSET, "glitch"));
     let glitch = EffectKey { frame: Frame(20), cause: EffectCause::Logic, object: oid(BALL), kind, ordinal: 0 };
-    let below: BTreeSet<EffectKey> = (0..32).map(ping).chain([glitch]).collect();
+    let below: BTreeSet<EffectKey> = (1..32).map(ping).chain([glitch]).collect();
     assert_eq!(after.retracted.iter().copied().collect::<BTreeSet<_>>(), below);
     assert_eq!(after.retracted.len(), below.len(), "each once");
     let from_32 = |r: &ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 32).collect::<Vec<_>>();
@@ -869,8 +878,13 @@ mod lamp {
     }
 
     /// The lamp's version hash V, which its ids derive from: any fixed hash will do here.
+    /// The source archive the lamp's and the tally's commits carry (logic.md 4.1a): the fixtures' one version.
+    fn source() -> Bytes {
+        pe_world::script::pack_source(&[("src/lib.rs", b"// a fixture\n".as_slice())]).expect("an archive").into()
+    }
+
     fn v() -> Hash {
-        Hash([12; 32])
+        Hash(BlobRef::of(&source()).hash)
     }
 
     /// The lamp's module hash and its own components (Blink, Glow) under V.
@@ -912,17 +926,10 @@ mod lamp {
         components.extend(descs.iter().cloned());
         let commit = tx(vec![
             Op::Register { components },
-            Op::CommitScript {
-                script: LAMP,
-                base: None,
-                source: BlobRef { hash: v().0, len: 10 },
-                toolchain: Hash([1; 32]),
-                sdk: Hash([2; 32]),
-                author_module: *module,
-                activate_at: 0,
-            },
+            Op::commit_script(LAMP, None, source(), Hash([1; 32]), Hash([2; 32]), *module, 0),
         ]);
         applied(&w.apply_edit(Frame(0), &b.next(Class::Edit, Frame(0), Bytes::from(commit.encode()))).0);
+        assert_eq!(w.end_frame(Frame(0)).activated.len(), 1, "active from frame 1 (6.2a)");
         for (k, &n) in LAMPS.iter().enumerate() {
             w.create(oid(n), None, MemberKey([1; 32]), GENESIS).expect("a lamp");
             w.insert(oid(n), Transform::at(pos(k as f64, 2.0, 0.0))).expect("its transform");
@@ -1012,17 +1019,10 @@ mod lamp {
             components.extend(descs.iter().cloned());
             let commit = tx(vec![
                 Op::Register { components },
-                Op::CommitScript {
-                    script: TALLY,
-                    base: None,
-                    source: BlobRef { hash: v().0, len: 10 },
-                    toolchain: Hash([1; 32]),
-                    sdk: Hash([2; 32]),
-                    author_module: module,
-                    activate_at: 0,
-                },
+                Op::commit_script(TALLY, None, source(), Hash([1; 32]), Hash([2; 32]), module, 0),
             ]);
             applied(&w.apply_edit(Frame(0), &b.next(Class::Edit, Frame(0), Bytes::from(commit.encode()))).0);
+            assert_eq!(w.end_frame(Frame(0)).activated.len(), 1, "active from frame 1 (6.2a)");
             for (k, n) in (90u128..93).enumerate() {
                 w.create(oid(n), None, MemberKey([1; 32]), GENESIS).expect("a counter");
                 let counter: Vec<u8> = [k as u32, 3].iter().flat_map(|x| x.to_le_bytes()).collect();
@@ -1137,17 +1137,10 @@ mod lamp {
             components.extend(descs.iter().cloned());
             let commit = tx(vec![
                 Op::Register { components },
-                Op::CommitScript {
-                    script: TALLY,
-                    base: None,
-                    source: BlobRef { hash: v().0, len: 10 },
-                    toolchain: Hash([1; 32]),
-                    sdk: Hash([2; 32]),
-                    author_module: module,
-                    activate_at: 0,
-                },
+                Op::commit_script(TALLY, None, source(), Hash([1; 32]), Hash([2; 32]), module, 0),
             ]);
             applied(&w.apply_edit(Frame(0), &b.next(Class::Edit, Frame(0), Bytes::from(commit.encode()))).0);
+            assert_eq!(w.end_frame(Frame(0)).activated.len(), 1, "active from frame 1 (6.2a)");
             for n in [SPAWNER, TROUBLE] {
                 w.create(oid(n), None, MemberKey([1; 32]), GENESIS).expect("an object");
                 w.insert(oid(n), Transform::at(pos(0.0, 3.0, n as f64 - 80.0))).expect("its transform");
@@ -1171,11 +1164,11 @@ mod lamp {
             r.advance(Frame(3), &mut Source::default());
             assert_eq!((r.frame(), r.faults(), r.script_counts().missing), (Frame(3), 0, 0));
             let row = r.world().world().modules()[&TALLY].clone();
-            assert!(row.faulted.is_some_and(|(f, _)| f == Frame(0)), "{:?}", row.faulted);
+            assert!(row.faulted.is_some_and(|(f, _)| f == Frame(1)), "its first frame: {:?}", row.faulted);
             assert_eq!(r.script_counts().host_faults, 0);
             let view = r.view();
             let kind = EffectKind::Script(event_kind(&TALLY, "spawned"));
-            let key = EffectKey { frame: Frame(0), cause: EffectCause::Logic, object: oid(SPAWNER), kind, ordinal: 0 };
+            let key = EffectKey { frame: Frame(1), cause: EffectCause::Logic, object: oid(SPAWNER), kind, ordinal: 0 };
             assert_eq!(keys_of(&view), [key]);
             assert_eq!(view.effects[0].data, Bytes::from(0u32.to_le_bytes().to_vec()));
             assert_eq!(r.world().world().store().objects().len(), objects + 1, "the child");
@@ -1191,7 +1184,7 @@ mod lamp {
             r.advance(Frame(10), &mut s);
             assert_eq!((r.frame(), r.faults()), (Frame(10), 0));
             assert_eq!(LAMPS.map(|n| intensity(&r, n)), [0.0; 3]);
-            assert_eq!(r.script_counts().missing, 20, "one per stage");
+            assert_eq!(r.script_counts().missing, 18, "one per stage, frames 1 to 9");
         });
     }
 }
