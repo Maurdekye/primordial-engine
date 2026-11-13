@@ -63,6 +63,9 @@ const K_RENDEZVOUS: u8 = 0x83;
 /// The datagram payload before quinn reports one (QUIC's minimum path MTU, transport.md 3.6).
 const MIN_DGRAM: usize = 1162;
 
+/// `T_idle` for M1 (transport.md 6.5, 10): 30 s, the longest outage a session survives.
+pub const T_IDLE_M1: Duration = Duration::from_secs(30);
+
 /// transport.md 10, the parts the Core uses so far.
 #[derive(Clone)]
 pub struct Config {
@@ -82,7 +85,8 @@ pub struct Config {
     pub t_welcome: Duration,
     /// `T_stagger`: the gap between dials to an invite's addresses.
     pub t_stagger: Duration,
-    /// `T_keepalive` and `T_idle` (6.5).
+    /// `T_keepalive` and `T_idle` (6.5). `T_idle` is how long a silent link survives: an outage shorter than it
+    /// resumes on the same connection; a longer one closes the link, and in M1 nothing redials.
     pub t_keepalive: Duration,
     pub t_idle: Duration,
     /// `N_streams_in`: incoming streams open at once per peer.
@@ -109,7 +113,9 @@ impl Config {
             t_welcome: Duration::from_secs(10),
             t_stagger: Duration::from_millis(250),
             t_keepalive: Duration::from_millis(500),
-            t_idle: Duration::from_secs(5),
+            // M1 (@coordinator-opus m47dee2c21d3a): 30 s, so Wi-Fi or Tailscale hiccups don't end a session while
+            // pe-agree has no return. Shorter again once a member can return (model v1).
+            t_idle: T_IDLE_M1,
             n_streams_in: 64,
             n_dgram_buf: 4,
             w_send: 64 * 1024,
@@ -502,8 +508,15 @@ impl Core {
             due
         };
         for (_, addr, pin, token) in due {
-            if self.peers.get(&pin).and_then(|h| self.conns.get(h)).is_some_and(|c| c.state != LinkState::Connecting) {
-                continue; // already connected: the first confirmed dial won (6.2)
+            // Already connected: the first confirmed dial won (6.2). A connection closed here and still draining
+            // (a refusal, `T_welcome`) is not a connection (@engine-architect's Low 1 on net/app-net f7d31a31).
+            if self
+                .peers
+                .get(&pin)
+                .and_then(|h| self.conns.get(h))
+                .is_some_and(|c| c.state != LinkState::Connecting && !c.closed)
+            {
+                continue;
             }
             if let Some((h, q)) = self.connect(t, addr, &pin) {
                 let mut hello = self.cfg.hello.clone();
@@ -784,9 +797,12 @@ impl Core {
         let client = |c: &Conn| if c.q.side().is_client() { key(&me) } else { key(&peer) };
         let mine = client(c);
         let my_tag = dup_tag(&c.q);
+        // A connection I've closed (a refusal, `T_welcome`, a guard) stands for nothing: a fresh one from the same
+        // peer must never lose the contest to it, or it would be left neither refused nor welcomed.
         if let Some(&other) = self.peers.get(&peer)
             && other != h
             && let Some(o) = self.conns.get(&other)
+            && !o.closed
         {
             // Two connections to one peer (6.2): keep the one whose client has the lower key. With the same
             // client (staggered dials), the lower duplicate tag, a TLS exporter value both sides derive alike;

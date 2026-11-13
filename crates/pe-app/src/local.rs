@@ -34,6 +34,11 @@ impl Chain {
         self.me
     }
 
+    /// The chain's id, and the seq of the last entry agreement took (0 before the first).
+    pub fn head(&self) -> (ChainId, u64) {
+        (self.id, self.next - 1)
+    }
+
     /// The chain's next entry, unsigned: `Agreement::submit` signs it.
     pub fn entry(&self, domain: DomainId, stamp: Frame, class: Class, payload: Vec<u8>) -> Entry {
         Entry {

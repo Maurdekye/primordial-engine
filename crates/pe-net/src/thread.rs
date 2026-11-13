@@ -64,6 +64,10 @@ pub enum Output {
 /// The host clock, shared with the simulation (seam S5).
 pub type HostClock = Arc<dyn Fn() -> HostTime + Send + Sync>;
 
+/// Called on the network thread when it has queued messages or events for the handle, once per batch, so the
+/// simulation thread can wake rather than wait out its frame (app.md 3 step 7). It must be cheap and never block.
+pub type Arrival = Arc<dyn Fn() + Send + Sync>;
+
 /// The simulation thread's end.
 pub struct NetHandle {
     /// The frame clock the simulation reads without crossing a thread (5.7).
@@ -75,6 +79,11 @@ pub struct NetHandle {
     life_dropped: Arc<AtomicU64>,
     join: Option<JoinHandle<io::Result<()>>>,
     events: Vec<NetEvent>,
+    /// Messages `events` took off the queue, which `poll` serves first: reliable lanes deliver each message once,
+    /// so the handle never drops one. A caller that only calls `events` (a join loop) thus takes messages past the
+    /// channel's backpressure: this grows at the incoming rate, bounded in practice by the join window and the
+    /// peer's link budget (3.3).
+    received: VecDeque<Received>,
     stats: BTreeMap<PeerId, LinkStats>,
 }
 
@@ -142,6 +151,17 @@ impl NetHandle {
     /// Start the network thread on `socket`. `queue` bounds each direction, in messages (sized for `T_queue` of
     /// traffic, 10).
     pub fn spawn(core: Core, socket: UdpSocket, clock: HostClock, queue: usize) -> io::Result<Self> {
+        Self::spawn_with(core, socket, clock, queue, None)
+    }
+
+    /// As [`NetHandle::spawn`], calling `arrival` whenever messages or events reach the handle's queue.
+    pub fn spawn_with(
+        core: Core,
+        socket: UdpSocket,
+        clock: HostClock,
+        queue: usize,
+        arrival: Option<Arrival>,
+    ) -> io::Result<Self> {
         let frame_clock = core.frame_clock();
         let local = socket.local_addr()?;
         let wake_to = match local.ip() {
@@ -160,7 +180,7 @@ impl NetHandle {
         let dropped = life_dropped.clone();
         let join = std::thread::Builder::new()
             .name("pe-net".into())
-            .spawn(move || run(core, socket, clock, cmd_rx, out_tx, (life_tx, queue, dropped)))?;
+            .spawn(move || run(core, socket, clock, cmd_rx, (out_tx, arrival), (life_tx, queue, dropped)))?;
         Ok(Self {
             frame_clock,
             waker: Waker { cmd, socket: waker, to: wake_to },
@@ -169,6 +189,7 @@ impl NetHandle {
             life_dropped,
             join: Some(join),
             events: Vec::new(),
+            received: VecDeque::new(),
             stats: BTreeMap::new(),
         })
     }
@@ -196,12 +217,16 @@ impl NetHandle {
         self.life_dropped.load(Ordering::Relaxed)
     }
 
-    /// Take outputs off the queue until a message arrives (`until_received`) or none are left.
+    /// Take outputs off the queue until a message arrives (`until_received`) or none are left. Without
+    /// `until_received`, messages are kept, in order, for `poll`.
     fn pump(&mut self, until_received: bool) -> Option<Received> {
+        if until_received && let Some(r) = self.received.pop_front() {
+            return Some(r);
+        }
         while let Ok(o) = self.out.try_recv() {
             match o {
                 Output::Received(r) if until_received => return Some(r),
-                Output::Received(_) => {}
+                Output::Received(r) => self.received.push_back(r),
                 Output::Event(e) => self.events.push(e),
                 Output::Stats(p, s) => {
                     self.stats.insert(p, s);
@@ -251,7 +276,7 @@ fn run(
     socket: UdpSocket,
     clock: HostClock,
     cmds: Receiver<Command>,
-    out: SyncSender<Output>,
+    (out, arrival): (SyncSender<Output>, Option<Arrival>),
     (life, life_cap, life_dropped): (SyncSender<Lifecycle>, usize, Arc<AtomicU64>),
 ) -> io::Result<()> {
     let mut buf = vec![0u8; 65_536];
@@ -311,15 +336,20 @@ fn run(
             }
         }
         // A full outgoing queue waits here: the simulation thread is behind, and nothing is dropped.
+        let mut arrived = false;
         while let Some(o) = backlog.pop_front() {
+            let news = matches!(o, Output::Received(_) | Output::Event(_));
             match out.try_send(o) {
-                Ok(()) => {}
+                Ok(()) => arrived |= news,
                 Err(TrySendError::Full(o)) => {
                     backlog.push_front(o);
                     break;
                 }
                 Err(TrySendError::Disconnected(_)) => return Ok(()),
             }
+        }
+        if arrived && let Some(a) = &arrival {
+            a();
         }
         let wait = core
             .poll_timeout()

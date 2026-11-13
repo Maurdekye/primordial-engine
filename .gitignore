@@ -24,3 +24,6 @@ scripts/publish_allow.local
 
 # Gate tools (scripts/install_gitleaks.sh puts the pinned scanner here)
 /.tools/
+
+# Identity seeds (pe-app --identity); the default lives in the per-user data folder, never a checkout
+*.seed

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use pe_net::core::{Config, Core, Lifecycle};
 use pe_net::lifecycle::{CloseCode, Hello, Refusal, Welcome};
-use pe_net::thread::{Command, HostClock, NetHandle};
+use pe_net::thread::{Arrival, Command, HostClock, NetHandle};
 use pe_net_crypto::identity::{Identity, Invite};
 use pe_seams::{HostTime, Lane, MemberKey, NetEvent, Transport};
 
@@ -86,6 +86,58 @@ fn a_joiner_connects_over_loopback_and_messages_flow() {
         a.events();
         a.link(kb).state == pe_seams::LinkState::Up && a.link(kb).srtt_ns > 0
     }));
+    a.stop().unwrap();
+    b.stop().unwrap();
+}
+
+#[test]
+fn events_never_drop_a_received_message_and_poll_serves_them_in_order() {
+    // Reliable lanes deliver each message once (5.1), so `events`, which drains the whole queue, must keep the
+    // messages it passes for `poll` (engine-architect's review of net/app-net f7d31a31).
+    let start = Instant::now();
+    let clock: HostClock = Arc::new(move || HostTime(start.elapsed().as_nanos() as i64));
+    let (ia, ib) = (Identity::from_seed(&[1; 32]), Identity::from_seed(&[2; 32]));
+    let (ka, kb) = (MemberKey(ia.public()), MemberKey(ib.public()));
+    let sa = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let sb = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr_a = sa.local_addr().unwrap();
+    let ca = Core::new(Config::new(hello(), true), ia, [1; 32]).unwrap();
+    let cb = Core::new(Config::new(hello(), false), ib, [2; 32]).unwrap();
+    let mut a = NetHandle::spawn(ca, sa, clock.clone(), 4096).unwrap();
+    let mut b = NetHandle::spawn(cb, sb, clock, 4096).unwrap();
+    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a] };
+    assert!(b.command(Command::Dial(invite)));
+    let mut a_events = Vec::new();
+    assert!(until(|| {
+        a_events.extend(a.events());
+        a_events.iter().any(|e| matches!(e, NetEvent::JoinRequest { peer, .. } if *peer == kb))
+    }));
+    let welcome = Welcome { line: [9; 32], epoch_ns: 0, rate_hz: 60, members: vec![], agree: vec![] };
+    assert!(a.command(Command::Admit { peer: kb, welcome }));
+    let mut welcomed = false;
+    assert!(until(|| {
+        while let Some(l) = b.poll_lifecycle() {
+            welcomed |= matches!(l, Lifecycle::Welcomed { peer, .. } if peer == ka);
+        }
+        welcomed
+    }));
+
+    const N: u32 = 50;
+    for i in 0..N {
+        b.send(ka, Lane::Action, Bytes::from(i.to_le_bytes().to_vec()));
+    }
+    // `events` runs before every `poll` round, as in the simulation's step 1, so before the fix it drained (and
+    // dropped) whatever had arrived while the test slept.
+    let mut seen = Vec::new();
+    assert!(until(|| {
+        a.events();
+        while let Some(r) = a.poll() {
+            assert_eq!((r.from, r.lane), (kb, Lane::Action));
+            seen.push(u32::from_le_bytes(r.bytes[..].try_into().unwrap()));
+        }
+        seen.len() >= N as usize
+    }));
+    assert_eq!(seen, (0..N).collect::<Vec<_>>(), "every message, once, in order");
     a.stop().unwrap();
     b.stop().unwrap();
 }
@@ -225,6 +277,47 @@ fn unpolled_lifecycle_outcomes_are_capped_and_a_welcome_survives() {
         ctl_b.lifecycle_dropped()
     );
     assert!(ctl_b.lifecycle_dropped() >= (N - 7) as u64);
+    a.stop().unwrap();
+    b.stop().unwrap();
+}
+
+#[test]
+fn the_arrival_callback_fires_when_messages_reach_the_handle() {
+    // app.md 3 step 7: the network thread wakes the simulation thread when something arrives.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let start = Instant::now();
+    let clock: HostClock = Arc::new(move || HostTime(start.elapsed().as_nanos() as i64));
+    let (ia, ib) = (Identity::from_seed(&[1; 32]), Identity::from_seed(&[2; 32]));
+    let (ka, kb) = (MemberKey(ia.public()), MemberKey(ib.public()));
+    let sa = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let sb = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr_a = sa.local_addr().unwrap();
+    let ca = Core::new(Config::new(hello(), true), ia, [1; 32]).unwrap();
+    let cb = Core::new(Config::new(hello(), false), ib, [2; 32]).unwrap();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let w = woken.clone();
+    let arrival: Arrival = Arc::new(move || {
+        w.fetch_add(1, Ordering::Relaxed);
+    });
+    let mut a = NetHandle::spawn_with(ca, sa, clock.clone(), 4096, Some(arrival)).unwrap();
+    let mut b = NetHandle::spawn(cb, sb, clock, 4096).unwrap();
+    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a] };
+    assert!(b.command(Command::Dial(invite)));
+    // The join request is an event on a's handle: it wakes.
+    assert!(until(|| woken.load(Ordering::Relaxed) > 0));
+    let mut joined = false;
+    assert!(until(|| {
+        joined |= a.events().iter().any(|e| matches!(e, NetEvent::JoinRequest { peer, .. } if *peer == kb));
+        joined
+    }));
+    let welcome = Welcome { line: [9; 32], epoch_ns: 0, rate_hz: 60, members: vec![], agree: vec![] };
+    assert!(a.command(Command::Admit { peer: kb, welcome }));
+    assert!(until(|| matches!(b.poll_lifecycle(), Some(Lifecycle::Welcomed { .. }))));
+    // A message wakes it again.
+    let before = woken.load(Ordering::Relaxed);
+    b.send(ka, Lane::Action, Bytes::from_static(b"wake"));
+    assert!(until(|| woken.load(Ordering::Relaxed) > before));
+    assert!(until(|| a.poll().is_some_and(|r| r.bytes == Bytes::from_static(b"wake"))));
     a.stop().unwrap();
     b.stop().unwrap();
 }
