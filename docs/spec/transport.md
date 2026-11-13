@@ -523,7 +523,9 @@ its frame this way (seam S3).
     handshake when the server's flight arrives and the server when the client's Finished arrives, so the two
     sides can complete them in opposite orders. Both keep the connection with the lower **duplicate tag**: 16
     bytes of the TLS exporter with the label `pe-net duplicate` and an empty context, which both sides derive
-    alike and which differs per connection.
+    alike and which differs per connection. With quinn-proto this is rare [V, measured by a Core test]: the
+    client closes the duplicate it completes second before its Finished leaves, so the server never completes
+    it. The tag keeps the choice from depending on that timing.
   - The loser is closed with code 0 and the detail `duplicate connection`. A side that gets that close, or
     loses a connection while it holds another to the same peer, ends it quietly: no refusal, no `LinkDown`.
 
