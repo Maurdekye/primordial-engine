@@ -722,7 +722,7 @@ mod tests {
     }
 
     fn rec(n: u8, author: MemberKey, class: Class, frame: u64, outcome: Outcome) -> StepRecord {
-        StepRecord { entry: entry(n), author, class, frame: Frame(frame), outcome }
+        StepRecord { entry: entry(n), author, class, frame: Frame(frame), outcome, rekeyed: Default::default() }
     }
 
     fn input(n: u8, frame: u64, reason: Reason) -> StepRecord {

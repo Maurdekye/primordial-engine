@@ -18,11 +18,20 @@ pub struct SoloAgreement {
     line: LineId,
     entries: BTreeMap<Frame, Vec<SignedEntry>>,
     changed_from: Option<Frame>,
+    /// Tests only: what [`Agreement::backlogged`] answers. A member alone has no budget, so it is never backlogged.
+    #[cfg(test)]
+    pub(crate) backlog: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SoloAgreement {
     pub fn new(line: LineId) -> SoloAgreement {
-        SoloAgreement { line, entries: BTreeMap::new(), changed_from: None }
+        SoloAgreement {
+            line,
+            entries: BTreeMap::new(),
+            changed_from: None,
+            #[cfg(test)]
+            backlog: Arc::default(),
+        }
     }
 }
 
@@ -50,6 +59,11 @@ impl EntrySource for SoloAgreement {
 impl Agreement for SoloAgreement {
     fn line(&self) -> LineId {
         self.line
+    }
+
+    #[cfg(test)]
+    fn backlogged(&self) -> bool {
+        self.backlog.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Kept for the replica, unsigned: nothing leaves this machine, and nothing here checks a signature.
