@@ -17,7 +17,7 @@ use crate::components::{Hand, Light, Protection, SimSize, ids};
 use crate::edit::{
     Actor, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
 };
-use crate::script::{AssetId, MAX_REKEY_ROWS, ModuleRow, RekeyReport};
+use crate::script::{AssetId, MAX_REKEY_ROWS, MAX_SOURCE_BYTES, ModuleRow, RekeyReport, check_source};
 use crate::world::{DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, depth, perm};
 
 /// What an applied entry touched, for the replica's physics effects (9.2) and the caches. Empty for a refusal.
@@ -259,6 +259,18 @@ impl World {
             Op::CommitScript { script, source, .. } => Some((*script, Hash(source.hash))),
             _ => None,
         });
+        // The commit's source before any op, so its `Register` is judged against a valid version (logic.md 4.1a;
+        // @coordinator-opus): its size from the length alone, then its form, on the bytes the entry
+        // carries. A malformed one is refused, and the old version keeps running.
+        if let Some(c) = commit
+            && let Op::CommitScript { source, archive, .. } = &tx.ops[c]
+        {
+            let c = c as u32;
+            if source.len > u64::from(MAX_SOURCE_BYTES) {
+                return Err((Some(c), Reason::TooLarge { limit: MAX_SOURCE_BYTES }));
+            }
+            check_source(archive).map_err(|_| (Some(c), invalid()))?;
+        }
         let mut cx = Cx {
             entry: src.entry,
             author: src.author,
@@ -282,6 +294,14 @@ impl World {
             work.op(&mut cx, i, op).map_err(|r| (Some(i), r))?;
         }
         *self = work;
+        // An applied commit's source goes into the machine's store, on every machine that applies it, so each can
+        // build the version (5.3; @coordinator-opus). A refused edit stores nothing; what a rollback
+        // leaves behind is store garbage, pruned with the store.
+        if let Some(c) = commit
+            && let Op::CommitScript { archive, .. } = &tx.ops[c]
+        {
+            self.blobs().put(archive);
+        }
         let inverse = Transaction {
             actor: tx.actor.clone(),
             label: None,
@@ -420,7 +440,7 @@ impl World {
                 cx.registered = Some(components.clone());
                 Ok(())
             }
-            Op::CommitScript { script, base, source, toolchain, sdk, author_module, activate_at } => {
+            Op::CommitScript { script, base, source, toolchain, sdk, author_module, activate_at, .. } => {
                 let row = ModuleRow {
                     version: version(cx.entry, i),
                     source: *source,

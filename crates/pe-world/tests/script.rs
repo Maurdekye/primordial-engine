@@ -8,7 +8,7 @@ use pe_seams::{Class, CutImport, DomainId, LeafKey, Outcome, PhysicsImage, Reaso
 use pe_sim::{ComponentDesc, ComponentId, FieldDesc, FieldKind, Transform};
 use pe_world::components::{Hand, Light, ids};
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
-use pe_world::script::{ModuleRow, TAG_NAME, script_component_id, tag_desc};
+use pe_world::script::{ModuleRow, TAG_NAME, pack_source, script_component_id, tag_desc};
 use pe_world::tree::table;
 use pe_world::{BlobRef, BlobStore, Claim, Footprint, LogicReport, World, perm};
 
@@ -37,8 +37,16 @@ fn blink_fields(src: u8) -> Vec<FieldDesc> {
     }
 }
 
+/// Source version `src`'s archive (logic.md 4.1a): a crate whose `lib.rs` names the version.
+fn archive(src: u8) -> bytes::Bytes {
+    let lib = format!("// blink, source version {src}\n");
+    let files: [(&str, &[u8]); 1] = [("src/lib.rs", lib.as_bytes())];
+    pack_source(&files).unwrap().into()
+}
+
+/// V, source version `src`'s hash.
 fn v_of(src: u8) -> Hash {
-    Hash([src; 32])
+    Hash(BlobRef::of(&archive(src)).hash)
 }
 
 fn blink(src: u8) -> ComponentDesc {
@@ -53,15 +61,7 @@ fn tag(src: u8) -> ComponentId {
 fn commit(asset: [u8; 32], base: Option<pe_seams::Version>, src: u8, toolchain: u8) -> Transaction {
     tx(vec![
         Op::Register { components: vec![tag_desc(&v_of(src)), blink(src)] },
-        Op::CommitScript {
-            script: asset,
-            base,
-            source: BlobRef { hash: v_of(src).0, len: 10 },
-            toolchain: Hash([toolchain; 32]),
-            sdk: Hash([2; 32]),
-            author_module: Hash([3; 32]),
-            activate_at: 1,
-        },
+        Op::commit_script(asset, base, archive(src), Hash([toolchain; 32]), Hash([2; 32]), Hash([3; 32]), 1),
     ])
 }
 
@@ -359,4 +359,68 @@ fn a_joiner_imports_the_scripts_registry_and_modules() {
     assert_eq!(got.modules(), target.modules());
     assert_eq!(got.script_asset(blink(1).id()), Some(ASSET));
     assert_eq!(got.store().get_raw(blink(1).id(), oid(LAMP)), target.store().get_raw(blink(1).id(), oid(LAMP)));
+}
+
+/// A commit whose source archive is over the cap or not canonical is refused, and the old version keeps running
+/// (logic.md 4.1a; @coordinator-opus): the size first, from the length, then the form.
+#[test]
+fn a_commit_with_a_bad_source_is_refused_and_the_old_version_stays() {
+    let mut f = fx();
+    with_v1(&mut f);
+    let before = (f.w.root(), f.w.modules()[&ASSET].clone());
+    let base = Some(f.w.modules()[&ASSET].version);
+    let with = |archive: Vec<u8>| {
+        let mut t = commit(ASSET, base, 2, 1);
+        let src = Bytes::from(archive);
+        t.ops[1] = Op::commit_script(ASSET, base, src, Hash([1; 32]), Hash([2; 32]), Hash([3; 32]), 1);
+        t
+    };
+    let raw = |files: &[(&[u8], &[u8])]| {
+        let mut out = b"pe.src.v0".to_vec();
+        for (p, b) in files {
+            for part in [*p, *b] {
+                out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+                out.extend_from_slice(part);
+            }
+        }
+        out
+    };
+    let cap = pe_world::script::MAX_SOURCE_BYTES;
+    let over = raw(&[(b"src/lib.rs", "/".repeat(cap as usize - 26).as_bytes())]);
+    assert_eq!(refused(&run(&mut f.w, &mut f.a, &with(over))), Reason::TooLarge { limit: cap });
+    // Over the cap and malformed besides: the size is checked first.
+    let over_bad = raw(&[(b"src/A.rs", "/".repeat(cap as usize).as_bytes())]);
+    assert_eq!(refused(&run(&mut f.w, &mut f.a, &with(over_bad))), Reason::TooLarge { limit: cap });
+    // A case-collision pair, and an archive with no lib.rs.
+    let pair = raw(&[(b"src/A.rs", b""), (b"src/a.rs", b""), (b"src/lib.rs", b"")]);
+    assert!(matches!(refused(&run(&mut f.w, &mut f.a, &with(pair))), Reason::Invalid { .. }));
+    let no_lib = raw(&[(b"src/a.rs", b"")]);
+    assert!(matches!(refused(&run(&mut f.w, &mut f.a, &with(no_lib))), Reason::Invalid { .. }));
+    assert_eq!((f.w.root(), f.w.modules()[&ASSET].clone()), before, "nothing changed");
+    assert_eq!(row(&f.w, blink(1).id()), Some(f32s(&[2.0, 0.5])), "version 1's rows stay");
+    // The same commit with its canonical source applies, and the machine keeps the source.
+    ok(&run(&mut f.w, &mut f.a, &commit(ASSET, base, 2, 1)));
+    let m = &f.w.modules()[&ASSET];
+    assert_eq!(m.v(), v_of(2));
+    assert_eq!(f.w.blobs().get(&m.source).as_deref(), Some(&archive(2)[..]));
+}
+
+/// Machine B, with its own blob store, applies machine A's signed commit: B's store then holds the source, so B can
+/// build the version (5.3; @coordinator-opus). A refused commit stores nothing.
+#[test]
+fn another_machine_holds_the_source_after_applying_the_commit() {
+    // Two machines: each fx() builds the same world on its own, empty store.
+    let mut a_keys = fx().a;
+    let mut b_world = fx().w;
+    let t = commit(ASSET, None, 1, 1);
+    let e: SignedEntry = a_keys.next(Class::Edit, Frame(1), Bytes::from(t.encode()));
+    let src = BlobRef::of(&archive(1));
+    assert_eq!(b_world.blobs().get(&src), None);
+    assert!(matches!(b_world.apply_edit(Frame(1), &e).0, Outcome::Applied { .. }));
+    assert_eq!(b_world.blobs().get(&src).as_deref(), Some(&archive(1)[..]));
+    // A refused commit (the same asset again, as new) leaves B's store without its source.
+    let again = commit(ASSET, None, 2, 1);
+    let e2: SignedEntry = a_keys.next(Class::Edit, Frame(1), Bytes::from(again.encode()));
+    assert!(matches!(b_world.apply_edit(Frame(1), &e2).0, Outcome::Refused { .. }));
+    assert_eq!(b_world.blobs().get(&BlobRef::of(&archive(2))), None);
 }
