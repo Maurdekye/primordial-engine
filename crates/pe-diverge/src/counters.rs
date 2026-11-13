@@ -24,6 +24,13 @@ pub struct Counters {
     pub busy_rotations: u64,
     /// Leaves marked repeatedly diverging.
     pub repeated_divergence: u64,
+    /// Times the ladder stopped after repairs failed again and again (4.3).
+    pub repairs_stuck: u64,
+    /// Diverged final cuts compared while the ladder was stopped, with no rung run.
+    pub stuck_skipped: u64,
+    /// Repairs toward a final cut overtaken by a newer one, in a row since the last cure or agreeing cut: a gauge,
+    /// not a total. It tells "too big to fetch within `w_fg`" (4.2) from "unlucky once" (@design-reviewer, Low).
+    pub overtaken_in_a_row: u64,
     pub root_splits: u64,
     pub root_splits_ended: u64,
     pub bundles_written: u64,
