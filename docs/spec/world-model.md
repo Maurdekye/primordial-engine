@@ -1292,18 +1292,25 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     - **The tested envelope, and above it** (@coordinator-opus, option (b) for M1, on @fable-reviewer's
       advice). The engine sets no hard speed bound: one would narrow the user's "any speed" ruling, and
       would not close the hole, since throws, collisions and scripts can still take a small body past it.
-      - **Tested** [V, @vdw-physics's widened sweep, physics/ccd 1cda443e, 73 aims per case]: spheres of radius
-        down to 0.5 cm against walls down to 1 cm thick, at 30, 60 and 120 Hz, CCD on: nothing passes through at
-        50 m/s or less (deepest press-in 1.3 cm). The first speeds at which a ball goes through are 150 m/s at
-        30 Hz and 75 m/s at 60 and 120 Hz; why higher rates go through at lower speeds is open, for (c). The figure
-        is final once the high-speed tunnelling run on two machines gives equal state roots.
+      - **Tested** [V, @vdw-physics's widened sweep, physics/ccd 1cda443e, 73 aims per case]: spheres of radius down to
+        0.5 cm against walls down to 1 cm thick, at 30, 60 and 120 Hz, CCD on: nothing fails at 50 m/s or less, at any
+        tested rate, size or wall thickness (deepest press-in 1.3 cm). Above that, two failures, classed apart by
+        @vdw-physics's rerun: small balls can **tunnel** through thin (1 cm) walls (or end embedded in
+        them), from 150 m/s at 30 Hz and 75 m/s at 60 and 120 Hz; against the pit's 20 cm walls they never pass through,
+        up to Box3D's 400 m/s cap, but small balls (2 cm and under) can end **embedded** in the wall or floor, from 200
+        m/s at 30 Hz and 75 m/s at 60 and 120 Hz. No ball is deflected over the 1.2 m walls. The pit's 6 cm ball never
+        embeds and tunnels only at 120 Hz, at 400 m/s, through 1 cm walls. Why higher rates fail at lower speeds has a
+        mechanism [V, per-step trace]: time of impact leaves the ball at the wall at full speed, the next step's new
+        contact is soft, and higher rates have fewer sub-steps per step (8 at 30 Hz, 2 at 120 Hz) to push it back before
+        the next collision pass, which with a thin wall picks the far face. The figure is final once the high-speed
+        tunnelling run on two machines gives equal state roots.
       - **That two-machine run is an M1 acceptance item** (@design-reviewer's nit): before M1 acceptance,
         @vdw-physics's tunnelling case in the release test binary @engine-architect runs here and on the second PC.
         If the roots differ, a hard bound goes in until (c).
       - **The default does not change:** `max_push_speed` stays 10 m/s. Only an admin's choice goes above the
         envelope.
-      - **Above it,** small objects can pass through walls. An admin may still raise `max_push_speed` to "no limit";
-        Box3D's 400 m/s ceiling is the real top (the box3d fork's
+      - **Above it,** small objects can pass through thin walls or end embedded in thick ones. An admin may still
+        raise `max_push_speed` to "no limit"; Box3D's 400 m/s ceiling is the real top (the box3d fork's
         `default_world_def()`, `maximum_linear_speed` 400 × length units, with length units 1, which pe-physics keeps:
         a clamp on the solver's velocity, not a per-step travel limit [V, @vdw-physics]). That is the admin's own choice: the admin interface shows the
         tested limit and warns above it, whenever that interface exists.
