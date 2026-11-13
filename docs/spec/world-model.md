@@ -963,12 +963,12 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     strictly ascending (the tag among them) ‖ activate_at u64 ‖ faulted (a byte 0, or 1 ‖ frame u64 ‖ kind u8)`. V is
     `source.hash`, stored once (@chunks-reviewer's L1). Decoding is strict: a repeated or out-of-order id, a faulted
     byte other than 0 or 1, or a kind that is not one of pe-logic's `Fault::code()` values 1 to 13 (logic.md 3.6) does
-    not decode; `HostStack` has no code, since it is one machine's own fault and never world state. The pending
-    commit is `version entry (32) ‖ op u32 ‖ author (32) ‖ source (hash 32 ‖ len u64) ‖ toolchain (32) ‖ sdk (32) ‖
+    not decode; `HostStack` has no code, since it is one machine's own fault and never world state. The pending commit
+    is `version entry (32) ‖ op u32 ‖ author (32) ‖ source (hash 32 ‖ len u64) ‖ toolchain (32) ‖ sdk (32) ‖
     author_module (32) ‖ count u32 ‖ component ids (u128 LE, ascending) ‖ c u64 ‖ D u64 ‖ count u32 ‖ voters (32 each,
     ascending) ‖ count u32 ‖ attestations (voter 32 ‖ stamp u64, ascending, voters only) ‖ void u8 (0 none, 1
-    Unattested, 2 RekeyBlockedAtActivation, 3 RekeyTooLarge) ‖ its frame u64 if not 0`. A world with no scripts has no
-    entries, so its root is unchanged.
+    Unattested, 2 RekeyBlockedAtActivation, 3 RekeyTooLarge, 4 AuthorRevokedAtActivation) ‖ its frame u64 if not 0`. A
+    world with no scripts has no entries, so its root is unchanged.
   - governance: key the member key (32); value the permission bits `u32`;
   - claims: key the object id; value `hand u128 ‖ member (32) ‖ since u64 ‖ until u64`;
   - cooldowns: key `member (32) ‖ object id`; value `until u64`;
@@ -1413,16 +1413,17 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
     signed entry stays in the log as the evidence. A counted one records the voter and its stamp.
   - **`end_frame(f)` activates, then voids** (in asset order). A pending commit with at least `q` counted
     attestations, so `F` is the `q`-th smallest counted stamp, activates at the end of `F`: the re-key below, its
-    limits judged again for the author, and then the asset's row (version = the commit, the hashes, the component
-    ids, `activate_at = F + 1`, no faulted mark), so the new version runs from `F + 1`. A re-key now over
-    `MAX_REKEY_ROWS`, or now losing data on an object its committer may not edit, voids the commit instead, as
-    `RekeyTooLarge` or `RekeyBlockedAtActivation`. Otherwise a commit at its deadline `f == D` is voided as
-    `Unattested`. Activation is tested first, so a quorum completed at `D` activates. A voided commit keeps its
-    record (the frame and why) until the asset's next commit replaces it, and the old version stays bound.
-    `end_frame` returns what it did (`FrameEnd`: each activation with its re-key report, each void with its kind,
-    each named by asset and commit), which pe-replica publishes as S5's `FrameView.activations`. **A known limit:**
-    any member holding an affected object can void another's commit anywhere in `c..F`, where today's rule allowed
-    it only at `c`.
+    limits judged again for the author, who must still hold `EDIT`, and then the asset's row (version = the commit,
+    the hashes, the component ids, `activate_at = F + 1`, no faulted mark), so the new version runs from `F + 1`. A
+    re-key now over `MAX_REKEY_ROWS`, or now losing data on an object its committer may not edit, voids the commit
+    instead, as `RekeyTooLarge` or `RekeyBlockedAtActivation`, and an author who has lost `EDIT` since the commit
+    voids it as `AuthorRevokedAtActivation`: revoking someone's rights stops their pending code too (@coordinator-opus
+    m41d775f5d9f9). Otherwise a commit at its deadline `f == D` is voided as `Unattested`. Activation is tested first,
+    so a quorum completed at `D` activates. A voided commit keeps its record (the frame and why) until the asset's
+    next commit replaces it, and the old version stays bound. `end_frame` returns what it did (`FrameEnd`: each
+    activation with its re-key report, each void with its kind, each named by asset and commit), which pe-replica
+    publishes as S5's `FrameView.activations`. **A known limit:** any member holding an affected object can void
+    another's commit anywhere in `c..F`, where today's rule allowed it only at `c`.
   - **The deadline** is `attest_window(len, hz) = ceil(2 · T_module · hz)` frames, `T_module = W_fg + len / R_thin +
     T_build` in integer milliseconds (2 s, 1,000 B/s, 20 s; divergence.md 4.2, @iter-bench md6045bca63d9): the
     lamp's 1,213 bytes give 2,786 frames at 60 Hz, the 256 KiB cap 34,098.

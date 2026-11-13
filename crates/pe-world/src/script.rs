@@ -162,6 +162,9 @@ pub enum VoidKind {
     RekeyBlockedAtActivation = 2,
     /// At `F` its re-key would move more than [`MAX_REKEY_ROWS`] rows.
     RekeyTooLarge = 3,
+    /// At `F` its author no longer holds `EDIT`: revoking someone's rights stops their pending code too
+    /// (@coordinator-opus m41d775f5d9f9).
+    AuthorRevokedAtActivation = 4,
 }
 
 impl VoidKind {
@@ -170,6 +173,7 @@ impl VoidKind {
             1 => Some(VoidKind::Unattested),
             2 => Some(VoidKind::RekeyBlockedAtActivation),
             3 => Some(VoidKind::RekeyTooLarge),
+            4 => Some(VoidKind::AuthorRevokedAtActivation),
             _ => None,
         }
     }
@@ -417,7 +421,8 @@ pub struct LogicReport {
 }
 
 /// What a re-key does or would do (7.9): the objects it moves rows on, the row count, the losses and the objects
-/// whose losses block the commit.
+/// whose losses block the commit. `objects` and `blocked` are in id order, each object once, live and tombstoned
+/// objects alike (a tombstone's rows are re-keyed too).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RekeyReport {
     pub objects: Vec<ObjectId>,
