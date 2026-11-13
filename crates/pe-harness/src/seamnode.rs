@@ -42,8 +42,33 @@ pub fn next_probe(last: u64, kept: u64, present: u64) -> Option<u64> {
     (next < present).then_some(next)
 }
 
-/// An agreement's entry framing, read back: the entry a message carries, if it carries one.
-pub type EntryDecoder = fn(&[u8]) -> Option<SignedEntry>;
+/// An agreement's entry framing, read back: the entries a message carries, if any.
+pub type EntryDecoder = fn(&[u8]) -> Vec<SignedEntry>;
+
+/// The lockstep mock's entry framing, read back.
+fn lockstep_entries(bytes: &[u8]) -> Vec<SignedEntry> {
+    LockstepAgreement::decode_entry_message(bytes).into_iter().collect()
+}
+
+/// pe-agree's entry framing, read back: an `Entries` message's entries (an author's own, a relay or a fetch's answer).
+/// The recorder counts them held once `receive` accepts the message; pe-agree may still drop one (its per-author
+/// budget), so P15 can miss a vote on such an entry, never report a false one.
+pub fn agree_entries(bytes: &[u8]) -> Vec<SignedEntry> {
+    match pe_agree::codec::decode(bytes) {
+        Ok(pe_agree::codec::Wire::Entries(v)) => v,
+        _ => Vec::new(),
+    }
+}
+
+/// A pe-agree configuration for a harness session over `keys`: line origin, genesis at frame 0, a cut every
+/// `cadence_ns`, view timeouts from 300 ms to 5 s (as pe-agree's own node tests), everything else pe-agree's default.
+pub fn agree_config(keys: &TestKeys, cadence_ns: i64) -> pe_agree::NodeConfig {
+    let line = pe_seams::LineId::origin();
+    let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+    let mut cfg = pe_agree::NodeConfig::new(line, keys.sorted_keys(), genesis);
+    cfg.timing = pe_agree::core::Timing { cadence_ns, min_timeout_ns: 300_000_000, max_timeout_ns: 5_000_000_000 };
+    cfg
+}
 
 /// Where a node records its replica's frame views: each new publication, with the host time it was read at.
 pub type ViewSink = Arc<Mutex<Vec<(i64, Arc<FrameView>)>>>;
@@ -104,6 +129,9 @@ impl NodeReplica for pe_replica::ReplicaImpl<pe_replica::PeWorld> {
     }
 }
 
+/// An agreement's named safety counter, as SeamNode reads it (`check_counter`).
+type Counter<A> = (&'static str, fn(&A) -> u64);
+
 pub struct SeamNode<A: Agreement, R: NodeReplica = KvSeamReplica> {
     pub agree: A,
     pub replica: R,
@@ -139,6 +167,21 @@ pub struct SeamNode<A: Agreement, R: NodeReplica = KvSeamReplica> {
     /// Where each new publication of the replica's view goes, if anywhere (`record_views`).
     views: Option<ViewSink>,
     last_view: Option<Arc<FrameView>>,
+    /// Cuts reported final whose entries this member doesn't hold yet (`final_entries` answers `None`), in order,
+    /// with their roots. pe-agree reports a cut final before its entries arrive; the lockstep mock never does.
+    pending_final: std::collections::VecDeque<(CutRef, pe_seams::Hash)>,
+    /// Whether `void_reason` may answer `None` for a voided entry: pe-agree, until it implements S2 v1.5's method.
+    void_reason_missing_ok: bool,
+    /// S3's `entries_for_cut` answers for each cut handed over in `wants_roots`, frame by frame from the last absorbed
+    /// final cut up to the cut's frame, as entry ids in order: P15 holds them to the final log if the cut goes final.
+    answers: BTreeMap<CutRef, Vec<(u64, Vec<pe_seams::EntryRef>)>>,
+    /// The final log's entry ids by frame, from the oldest frame an outstanding answer covers.
+    final_ids: BTreeMap<u64, Vec<pe_seams::EntryRef>>,
+    /// An agreement's own safety counter, read after every tick: a P15 breach whenever it rises. pe-agree's is
+    /// `Core::shared_cuts`, cuts it won't answer for because two held blocks carry them under different parents
+    /// (world-chunks, agree/void 4ca4f9b1). `None` for agreements without one.
+    counter: Option<Counter<A>>,
+    counter_seen: u64,
     /// Where the final cuts and entries go, if anywhere (`record_final`).
     finals: Option<FinalSink>,
 }
@@ -184,23 +227,58 @@ impl SeamNode<LockstepAgreement> {
 impl<R: NodeReplica> SeamNode<LockstepAgreement, R> {
     /// Node `id` (from 1, in key order) of a lockstep session over `keys`, cutting every `cadence_ns`, over `replica`.
     pub fn lockstep_over(keys: &TestKeys, id: NodeId, replica: R, rate: SimRate, cadence_ns: i64) -> Self {
-        let sorted = keys.sorted_keys();
-        let key = sorted[(id as usize).saturating_sub(1)];
-        let i = (0..keys.len()).find(|&j| keys.key(j) == key).unwrap_or(0);
+        let i = key_index(keys, id);
         let agree = LockstepAgreement::new(keys, i, cadence_ns);
         let genesis = agree.genesis();
+        SeamNode::over(agree, keys, i, genesis, replica, rate, lockstep_entries)
+    }
+}
+
+impl<R: NodeReplica> SeamNode<pe_agree::Node, R> {
+    /// Node `id` (from 1, in key order) of a pe-agree session over `keys`, configured by `cfg` (its members must be
+    /// `keys`'s, sorted: [`agree_config`] gives them), over `replica`.
+    pub fn agree_over(keys: &TestKeys, id: NodeId, cfg: pe_agree::NodeConfig, replica: R, rate: SimRate) -> Self {
+        let i = key_index(keys, id);
+        let genesis = cfg.genesis.at;
+        let agree = pe_agree::Node::new(cfg, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+        let mut node = SeamNode::over(agree, keys, i, genesis, replica, rate, agree_entries);
+        // TODO(harness-eng): drop once pe-agree implements `void_reason` (world-chunks).
+        node.void_reason_missing_ok = true;
+        node.counter = Some(("shared_cuts", |a| a.core().shared_cuts()));
+        node
+    }
+}
+
+/// The index in `keys` of node `id`, the `id`-th member in key order (from 1).
+fn key_index(keys: &TestKeys, id: NodeId) -> usize {
+    let sorted = keys.sorted_keys();
+    let key = sorted[(id as usize).saturating_sub(1)];
+    (0..keys.len()).find(|&j| keys.key(j) == key).unwrap_or(0)
+}
+
+impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
+    /// A node over `agree`, whose member is `keys`'s `i`-th key, from the line's genesis cut `genesis`.
+    fn over(
+        agree: A,
+        keys: &TestKeys,
+        i: usize,
+        genesis: CutRef,
+        replica: R,
+        rate: SimRate,
+        decode: EntryDecoder,
+    ) -> Self {
         SeamNode {
             agree,
             replica,
             clock: SessionClock { rate, start: HostTime(0) },
             builder: EntryBuilder::new(keys, i),
-            keys: sorted,
+            keys: keys.sorted_keys(),
             last_final: genesis,
             finalized_height: 0,
             log: BTreeMap::new(),
             events: Vec::new(),
             self_test: SelfTest::NotRun,
-            decode: Some(LockstepAgreement::decode_entry_message),
+            decode: Some(decode),
             held: BTreeSet::new(),
             held_ids: BTreeSet::new(),
             voided: BTreeSet::new(),
@@ -214,6 +292,12 @@ impl<R: NodeReplica> SeamNode<LockstepAgreement, R> {
             views: None,
             last_view: None,
             finals: None,
+            pending_final: std::collections::VecDeque::new(),
+            void_reason_missing_ok: false,
+            answers: BTreeMap::new(),
+            final_ids: BTreeMap::new(),
+            counter: None,
+            counter_seen: 0,
         }
     }
 }
@@ -269,6 +353,61 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
             self.held_ids.insert(signed.id());
             self.builder = b;
         }
+    }
+
+    /// Records S3's `entries_for_cut` answers for a cut handed over for roots, once per cut.
+    fn record_answers(&mut self, cut: &Cut) {
+        if self.answers.contains_key(&cut.at) {
+            return;
+        }
+        // From the lowest frame S3 still answers for, not the last final cut (design-reviewer's Low on 4eba171a): a
+        // pipelining S3's late entries are stamped below the previous final cut, and an answer that wrongly holds one
+        // there must be compared too.
+        let rec = (self.agree.kept_from().0..cut.at.frame.0)
+            .filter_map(|f| {
+                let ids = self.agree.entries_for_cut(cut, Frame(f))?.iter().map(SignedEntry::id).collect();
+                Some((f, ids))
+            })
+            .collect();
+        self.answers.insert(cut.at, rec);
+    }
+
+    /// P15's `entries_for_cut` line (S3 v1.4): what S3 answered for `cut` while it was out for roots must be exactly
+    /// what the final log holds at each of those frames now that it is final, same entries in the same order. That
+    /// includes frames below the previous final cut, which another cut finalized while this one was out (a pipelining
+    /// S3's late entries live there). Answers for cuts at or below this height are dropped: such a cut is final now,
+    /// or never will be.
+    fn check_answers(&mut self, cut: CutRef, entries: &[SignedEntry]) {
+        for e in entries {
+            self.final_ids.entry(e.entry.stamp.0).or_default().push(e.id());
+        }
+        let rec = self.answers.remove(&cut);
+        self.answers.retain(|c, _| c.height > cut.height);
+        if let Some(rec) = rec {
+            for (f, ids) in &rec {
+                let got = self.final_ids.get(f).map_or(&[][..], Vec::as_slice);
+                if got != ids.as_slice() {
+                    let detail = format!(
+                        "cut {}/{} at frame {f}: answered {} entries for roots, the final log holds {}",
+                        cut.height,
+                        cut.frame.0,
+                        ids.len(),
+                        got.len()
+                    );
+                    self.events.push(Ev::Breach { rule: "entries_for_cut", detail });
+                }
+            }
+        }
+        // Keep the final log's ids as far back as an outstanding answer reaches, or a future one can (`kept_from` only
+        // moves forward).
+        let oldest = self
+            .answers
+            .values()
+            .filter_map(|r| r.first().map(|x| x.0))
+            .min()
+            .unwrap_or(cut.frame.0)
+            .min(self.agree.kept_from().0);
+        self.final_ids = self.final_ids.split_off(&oldest);
     }
 
     /// Records a cut, final or voted, for the offline replay.
@@ -370,6 +509,7 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
         }
         for cut in self.agree.wants_roots() {
             self.breach_if_lacking("wants_roots", &cut);
+            self.record_answers(&cut);
             self.record_cut(&cut, false);
             match self.replica.root_at_cut(&cut, &mut self.agree) {
                 Ok(root) => {
@@ -395,13 +535,25 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
                 self.breach_if_lacking("final_cut", &fc.cut);
             }
         }
+        // Take the agreement's events, and absorb final cuts into the final log, before the replica finalizes: its
+        // `keep_final_from` lets S3 trim below `Cv`, and `final_entries` from the last absorbed cut must still answer.
+        self.pump();
         if let Some(fc) = self.agree.final_cut().cloned()
             && fc.cut.at.height > self.finalized_height
         {
             match self.replica.finalize(&fc, &mut self.agree) {
                 Finalized::NotReady => {}
-                Finalized::Agreed | Finalized::Diverged { .. } => {
+                // The root the replica compared, as its last root at the cut's frame: P1 holds every honest member's
+                // root there to the cut's, voter or not (a quorum agreement finalizes members that never voted), and
+                // a member that voted the quorum's root but re-simulates to another by finalize is caught here.
+                Finalized::Agreed => {
                     self.finalized_height = fc.cut.at.height;
+                    self.events.push(Ev::ReplicaRoot { frame: fc.cut.at.frame.0, root: fc.root.0 });
+                    self.events.push(Ev::Floor { frame: fc.cut.at.frame.0 });
+                }
+                Finalized::Diverged { mine } => {
+                    self.finalized_height = fc.cut.at.height;
+                    self.events.push(Ev::ReplicaRoot { frame: fc.cut.at.frame.0, root: mine.0 });
                     self.events.push(Ev::Floor { frame: fc.cut.at.frame.0 });
                 }
                 // S3 v1.2: my root at the cut cannot be taken, and waiting will not change that. The floor stays, so
@@ -414,13 +566,79 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
                 }
             }
         }
+        self.check_counter();
+    }
+
+    /// Breaches once each time the agreement's safety counter (`counter`) rises.
+    fn check_counter(&mut self) {
+        let Some((rule, read)) = self.counter else { return };
+        let n = read(&self.agree);
+        if n > self.counter_seen {
+            let detail = format!("rose from {} to {n}", self.counter_seen);
+            self.counter_seen = n;
+            self.events.push(Ev::Breach { rule, detail });
+        }
+    }
+
+    /// Takes the agreement's events into the recorder's buffer (the trace's seam events), then absorbs the pending
+    /// final cuts it can.
+    fn pump(&mut self) {
+        for e in self.agree.events() {
+            match e {
+                AgreeEvent::CutFinal { cut, root, .. } => {
+                    self.pending_final.push_back((cut, root));
+                    self.absorb_pending();
+                }
+                AgreeEvent::Voided { entry, author, reason, cut } => {
+                    self.voided.insert(entry);
+                    if self.decode.is_some() && !self.held_ids.contains(&entry) {
+                        // A verdict on an entry this member does not hold (S3 v1.1, per member).
+                        let detail = format!("void of an entry not held, under cut {}", cut.height);
+                        self.events.push(Ev::Breach { rule: "verdict", detail });
+                    }
+                    // S2 v1.5: `void_reason` answers the reason the void was reported with. pe-agree doesn't implement
+                    // it yet (`void_reason_missing_ok`, world-chunks): it may answer `None`, never
+                    // another reason.
+                    let said = self.agree.void_reason(&entry);
+                    if said != Some(reason) && !(said.is_none() && self.void_reason_missing_ok) {
+                        let detail = format!("void_reason answers {said:?} for an entry voided {reason:?}");
+                        self.events.push(Ev::Breach { rule: "void_reason", detail });
+                    }
+                    self.events.push(Ev::Voided {
+                        entry: TraceEntry { author: node_of(&self.keys, &author), seq: trace_seq(&entry) },
+                        by: Some((0, cut.height)),
+                        reason: reason as u16,
+                    });
+                }
+                AgreeEvent::Refused { entry, author, kind } => self.events.push(Ev::Refused {
+                    entry: TraceEntry { author: node_of(&self.keys, &author), seq: trace_seq(&entry) },
+                    reason: fault_code(kind),
+                }),
+                AgreeEvent::Paused { at } => self.events.push(Ev::Paused { frame: at.0 }),
+                // Faults reach the trace from `receive`'s result; the rest is not in the local trace yet.
+                _ => {}
+            }
+        }
+        self.absorb_pending();
+    }
+
+    /// Absorbs the pending final cuts, oldest first, while this member holds their entries; each becomes `Ev::Final`
+    /// then. A cut reported final is recorded only once its entries are in the final log, so P2 never replays a log
+    /// with a final cut's entries missing.
+    fn absorb_pending(&mut self) {
+        while let Some(&(cut, root)) = self.pending_final.front() {
+            let Some(entries) = self.agree.final_entries(&self.last_final, &cut) else { break };
+            self.pending_final.pop_front();
+            self.check_answers(cut, &entries);
+            let hash = self.absorb_final(cut, entries);
+            self.events.push(Ev::Final { line: 0, height: cut.height, frame: cut.frame.0, cut: hash.0, root: root.0 });
+        }
     }
 
     /// The cut's hash over its final entries since the previous final cut, which also extends the final log.
-    fn absorb_final(&mut self, cut: CutRef) -> pe_seams::Hash {
+    fn absorb_final(&mut self, cut: CutRef, entries: Vec<SignedEntry>) -> pe_seams::Hash {
         let mut h = Hasher::new("pe.harness.cut");
         h.write_u64(cut.height).write_u64(cut.frame.0);
-        let entries = self.agree.final_entries(&self.last_final, &cut).unwrap_or_default();
         // The cut's hash in agreed order; the log P2 replays in apply order, as the replica stepped them.
         // `entries` spans every frame since the last final cut, so this sort spans frames too (a later frame's
         // input moves ahead of an earlier frame's edit). It is right only because each entry then goes into its
@@ -459,10 +677,12 @@ impl<A: Agreement, R: NodeReplica> NodeUnderTest for SeamNode<A, R> {
             .receive(peer, Lane::Action, bytes, HostTime(now))
             .map_err(|f| Fault { author: f.author.map_or(from, |a| node_of(keys, &a)), reason: fault_code(f.kind) });
         if r.is_ok()
-            && let Some(e) = self.decode.and_then(|d| d(bytes))
+            && let Some(d) = self.decode
         {
-            self.held.insert((e.entry.chain, e.entry.seq));
-            self.held_ids.insert(e.id());
+            for e in d(bytes) {
+                self.held.insert((e.entry.chain, e.entry.seq));
+                self.held_ids.insert(e.id());
+            }
         }
         r
     }
@@ -482,44 +702,9 @@ impl<A: Agreement, R: NodeReplica> NodeUnderTest for SeamNode<A, R> {
     }
 
     fn drain(&mut self) -> Vec<Ev> {
-        let mut out = Vec::new();
-        for e in self.agree.events() {
-            match e {
-                AgreeEvent::CutFinal { cut, root, .. } => {
-                    let hash = self.absorb_final(cut);
-                    out.push(Ev::Final { line: 0, height: cut.height, frame: cut.frame.0, cut: hash.0, root: root.0 });
-                }
-                AgreeEvent::Voided { entry, author, reason, cut } => out.push({
-                    self.voided.insert(entry);
-                    if self.decode.is_some() && !self.held_ids.contains(&entry) {
-                        // A verdict on an entry this member does not hold (S3 v1.1, per member).
-                        let detail = format!("void of an entry not held, under cut {}", cut.height);
-                        self.events.push(Ev::Breach { rule: "verdict", detail });
-                    }
-                    // S2 v1.5: `void_reason` answers the reason the void was reported with.
-                    let said = self.agree.void_reason(&entry);
-                    if said != Some(reason) {
-                        let detail = format!("void_reason answers {said:?} for an entry voided {reason:?}");
-                        self.events.push(Ev::Breach { rule: "void_reason", detail });
-                    }
-                    Ev::Voided {
-                        entry: TraceEntry { author: node_of(&self.keys, &author), seq: trace_seq(&entry) },
-                        by: Some((0, cut.height)),
-                        reason: reason as u16,
-                    }
-                }),
-                AgreeEvent::Refused { entry, author, kind } => out.push(Ev::Refused {
-                    entry: TraceEntry { author: node_of(&self.keys, &author), seq: trace_seq(&entry) },
-                    reason: fault_code(kind),
-                }),
-                AgreeEvent::Paused { at } => out.push(Ev::Paused { frame: at.0 }),
-                // Faults reach the trace from `receive`'s result; the rest is not in the local trace yet.
-                _ => {}
-            }
-        }
+        self.pump();
         self.check_applied();
-        out.append(&mut self.events);
-        out
+        std::mem::take(&mut self.events)
     }
 
     fn final_entries(&self) -> Vec<(TFrame, Vec<KvEntry>)> {
