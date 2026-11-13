@@ -28,6 +28,7 @@
 #![no_std]
 
 pub mod component;
+pub mod engine;
 pub mod guest;
 pub mod layout;
 pub mod manifest;

@@ -181,7 +181,36 @@ pe_sdk::system! {
     }
 }
 
+pe_sdk::system! {
+    /// Writes an engine component on the objects it is attached to (logic.md 3.2, 3.3).
+    fn brighten(stage: PostPhysics, read: [], write: [l: pe_sdk::engine::Light]) |_ctx, me| {
+        me.l.intensity += 1.0;
+    }
+}
+
+pe_sdk::component! {
+    /// Asks `beacon` for one create of an engine component, which v0 refuses.
+    pub struct Beacon { n: u32 }
+}
+
+pe_sdk::system! {
+    fn beacon(stage: PostPhysics, read: [], write: [b: Beacon], creates: true) |ctx, me| {
+        if me.b.n != 0 {
+            me.b.n = 0;
+            let light = pe_sdk::engine::Light {
+                kind: 0,
+                intensity: 1.0,
+                range: 1.0,
+                color: [1.0; 3],
+                inner_angle: 0.0,
+                outer_angle: 0.0,
+            };
+            ctx.create(&light)?;
+        }
+    }
+}
+
 pe_sdk::script!(
-    components: [Counter, Doubled, Spawner, Child, Dice, Trouble, Sneak, Peeked, Wide],
-    systems: [count, double, spawn, reap, roll, trouble, sneak, peek, widen],
+    components: [Counter, Doubled, Spawner, Child, Dice, Trouble, Sneak, Peeked, Wide, pe_sdk::engine::Light, Beacon],
+    systems: [count, double, spawn, reap, roll, trouble, sneak, peek, widen, brighten, beacon],
 );
