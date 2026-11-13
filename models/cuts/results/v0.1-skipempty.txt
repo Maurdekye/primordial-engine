@@ -1,0 +1,151 @@
+check                  states     generated  depth   seconds  result
+== n2-live
+Done. states=240, unique=146, depth=20, sec=1
+Discovered "a cut is final" example Path[9]:
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, false)
+- Deliver(1, Propose { block: v1@3[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Deliver(0, Propose { block: v1@3[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Observe(1, Cert { block: v1@3[-,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(0, Cert { block: v1@3[-,0,-,-]>v2@6[-,0,-,-], root: true })
+Action index path: 0/0/1/4/1/6/7/7/2/4
+n2-live                   146           240     20       1.0  OK   all properties hold; examples found
+    2 members, liveness, timeouts only once settled; q = 2; entries 0=m1.1
+== n2-live-early
+Done. states=1013998, unique=609818, depth=45, sec=5
+Discovered "a cut is final" example Path[25]:
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, false)
+- Deliver(1, Propose { block: v1@3[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Deliver(0, Propose { block: v1@3[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Observe(1, Cert { block: v1@3[-,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@3[-,0,-,-]>v2@6[-,0,-,-], root: true })
+- Observe(0, Cert { block: v1@3[-,0,-,-]>v2@6[-,0,-,-], root: true })
+- Propose(0, false)
+- Deliver(1, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-]>v4@12[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-]>v4@12[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(1, Cert { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-]>v4@12[-,0,-,-], root: true })
+- Observe(0, Cert { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-]>v4@12[-,0,-,-], root: true })
+- Propose(0, false)
+- Deliver(1, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-]>v4@12[-,0,-,-]>v5@15[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Deliver(0, Propose { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-]>v4@12[-,0,-,-]>v5@15[-,0,-,-], proot: true, tc: None, carried: 0 })
+- Observe(0, Cert { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-]>v4@12[-,0,-,-]>v5@15[-,0,-,-], root: true })
+- Timeout(0)
+- Observe(1, Cert { block: v1@3[-,0,-,-]>v2@6[-,0,-,-]>v3@9[-,0,-,-]>v4@12[-,0,-,-]>v5@15[-,0,-,-], root: true })
+Action index path: 0/0/1/5/1/7/8/8/2/11/4/5/11/3/15/16/14/4/19/8/9/17/5/10/13/23
+n2-live-early          609818       1013998     45       5.0  OK   all properties hold; examples found
+    2 members, liveness, up to 3 timeouts before the network settles, 8 views; q = 2; entries 0=m1.1
+== n2-live-h2
+Done. states=887, unique=459, depth=25, sec=1
+Discovered "a cut is final" example Path[11]:
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, true)
+- Deliver(1, Propose { block: v1@6[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Deliver(0, Propose { block: v1@6[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Observe(1, Cert { block: v1@6[-,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], proot: true, tc: None, carried: 2 })
+- Deliver(0, Propose { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], proot: true, tc: None, carried: 2 })
+- Observe(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+- Propose(0, false)
+- Deliver(0, Propose { block: v1@6[-,0,-,-]>v2@9[-,1,-,-]>v3@12[-,1,-,-], proot: true, tc: None, carried: 0 })
+Action index path: 0/0/3/5/2/7/8/8/3/5/6/4
+n2-live-h2                459           887     25       1.0  OK   all properties hold; examples found
+    2 members, liveness, two content cuts: both end final; q = 2; entries 0=m1.1 1=m1.2
+== ctl-skipempty
+Done. states=307, unique=187, depth=24, sec=1
+Discovered "a cut is final" example Path[9]:
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, true)
+- Deliver(1, Propose { block: v1@6[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Deliver(0, Propose { block: v1@6[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Observe(1, Cert { block: v1@6[-,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], proot: true, tc: None, carried: 2 })
+- Deliver(0, Propose { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], proot: true, tc: None, carried: 2 })
+- Observe(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+Action index path: 0/0/3/5/2/7/8/8/3/5
+Discovered "liveness: every content cut ends final" counterexample Path[22]:
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, true)
+- Deliver(1, Propose { block: v1@6[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Deliver(0, Propose { block: v1@6[-,0,-,-], proot: true, tc: None, carried: 1 })
+- Observe(1, Cert { block: v1@6[-,0,-,-], root: true })
+- Propose(1, false)
+- Deliver(1, Propose { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], proot: true, tc: None, carried: 2 })
+- Deliver(0, Propose { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], proot: true, tc: None, carried: 2 })
+- Observe(1, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+- Observe(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+- Timeout(1)
+- Timeout(0)
+- AdvanceTc(1, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+- AdvanceTc(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+- Timeout(1)
+- Timeout(0)
+- AdvanceTc(1, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+- AdvanceTc(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+- Timeout(1)
+- Timeout(0)
+- AdvanceTc(1, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+- AdvanceTc(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+Action index path: 0/0/3/5/2/7/8/8/3/11/5/15/8/13/6/15/8/13/6/15/8/13/6
+Discovered "liveness: every end state has a final cut at every honest member" counterexample Path[23]:
+- Deliver(0, Entry { to: 0, e: 1 })
+- Deliver(0, Entry { to: 0, e: 0 })
+- Propose(0, true)
+- Deliver(1, Propose { block: v1@6[-,1,-,-], proot: true, tc: None, carried: 3 })
+- Deliver(0, Propose { block: v1@6[-,1,-,-], proot: true, tc: None, carried: 3 })
+- Observe(1, Cert { block: v1@6[-,1,-,-], root: true })
+- Observe(0, Cert { block: v1@6[-,1,-,-], root: true })
+- Timeout(1)
+- Timeout(0)
+- AdvanceTc(1, Cert { block: v1@6[-,1,-,-], root: true })
+- AdvanceTc(0, Cert { block: v1@6[-,1,-,-], root: true })
+- Timeout(1)
+- Timeout(0)
+- AdvanceTc(1, Cert { block: v1@6[-,1,-,-], root: true })
+- AdvanceTc(0, Cert { block: v1@6[-,1,-,-], root: true })
+- Timeout(1)
+- Timeout(0)
+- AdvanceTc(1, Cert { block: v1@6[-,1,-,-], root: true })
+- AdvanceTc(0, Cert { block: v1@6[-,1,-,-], root: true })
+- Timeout(1)
+- Timeout(0)
+- AdvanceTc(1, Cert { block: v1@6[-,1,-,-], root: true })
+- AdvanceTc(0, Cert { block: v1@6[-,1,-,-], root: true })
+Action index path: 0/1/0/3/5/2/7/3/11/6/9/4/11/6/9/4/11/6/9/4/11/6/9/4
+ctl-skipempty             187           307     24       1.0  OK   counterexample as expected: "liveness: every content cut ends final"
+    a proposer with nothing new proposes nothing; q = 2; entries 0=m1.1 1=m1.2
+    counterexample to "liveness: every content cut ends final" (22 steps as found, 22 after shrinking):
+      Deliver(0, Entry { to: 0, e: 0 })
+      Propose(0, true)
+      Deliver(1, Propose { block: v1@6[-,0,-,-], proot: true, tc: None, carried: 1 })
+      Deliver(0, Propose { block: v1@6[-,0,-,-], proot: true, tc: None, carried: 1 })
+      Observe(1, Cert { block: v1@6[-,0,-,-], root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], proot: true, tc: None, carried: 2 })
+      Deliver(0, Propose { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], proot: true, tc: None, carried: 2 })
+      Observe(1, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+      Observe(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+      AdvanceTc(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+      AdvanceTc(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })
+      AdvanceTc(0, Cert { block: v1@6[-,0,-,-]>v2@9[-,1,-,-], root: true })

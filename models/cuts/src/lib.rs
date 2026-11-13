@@ -15,10 +15,16 @@ use std::fmt;
 use stateright::{Model, Property};
 
 pub const NMAX: usize = 4;
-pub const HMAX: usize = 3;
+/// Block heights the state can hold: content heights, the child that makes the last final, and up to P more empty
+/// ones in the early-timeout profile (a real chain has no cap; each spoiled view can cost one height).
+pub const HMAX: usize = 6;
 pub const NONE: u8 = u8::MAX;
-/// Frames per cut: the cut at height h covers stamps below `FRAMES * h`.
+/// The cadence K, in frames. A proposer names the cut's frame (v0.1, coordinator condition 4): an honest one names its
+/// parent's frame + K, or + 2K when it catches up after a stall; a voter accepts any frame above the parent's and at
+/// most 2K above it. A cut covers stamps below its own frame; an entry it covers stamped below its parent's frame is late.
 pub const FRAMES: u8 = 3;
+/// The furthest a cut's frame may be named above its parent's.
+pub const FRAME_STEP_MAX: u8 = 2 * FRAMES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {
@@ -51,6 +57,17 @@ pub enum Mutation {
     NoTimeouts,
     /// Votes carry no state root: a member whose replica diverged confirms the quorum's cut without learning it.
     VoteWithoutRoot,
+    /// An honest proposer covers only its own entries (v0.2): the bounded-progress control.
+    OwnEntriesOnly,
+    /// Leader reputation without its window: skip every member whose view ever timed out, not only the last (v0.2).
+    SkipEveryTimedOut,
+    /// After a faulty proposer's cut, a proposer still leaves out the entries carried over from before it (it adds
+    /// nothing): the bounded-progress control for recovery after a faulty proposer.
+    SkipAfterFaulty,
+    /// A voter accepts any frame the proposer names, not only one above its parent's (v0.1).
+    NoFrameCheck,
+    /// A proposer with nothing new proposes nothing (v0.1, condition 5): the last content cut never gets its child.
+    SkipEmptyCut,
 }
 
 #[derive(Clone, Debug)]
@@ -112,11 +129,26 @@ pub struct Cuts {
     /// honestly, but its votes carry the wrong root.
     pub corrupt: Option<u8>,
     pub entries: Vec<EntryDef>,
+    /// Proposers choose the cut's frame (v0.1). Off, every cut names its parent's frame + K: for the lock checks, whose
+    /// attack is on certificates, not frames, and whose bounded space grows fourfold with the Byzantine frame choice.
+    pub frame_choice: bool,
+    /// Liveness profile: how many timeouts may fire before the network has settled (v0.1, condition 2). Each stands for
+    /// a timeout shorter than the round trip; an adaptive timeout that grows after each one makes them finite.
+    pub early: u8,
+    /// Bounded progress (v0.2, @design-reviewer m72d5174e95f9): track, per entry, the highest certified height any
+    /// honest member knew when every honest member first held it and its earlier chain. On in the liveness profile and the n = 2 checks.
+    pub progress: bool,
+    /// Leader reputation (v0.2, coordinator m15ca8d144c33; DiemBFT v4 with a window of one): rotation, skipping the
+    /// leader of the latest view that timed out, as the proposer's committed chain shows it (a view between two
+    /// consecutive committed blocks' views had no block certified). On in the liveness profile; the safety checks keep
+    /// plain rotation, since the voting rules don't depend on who leads.
+    pub reputation: bool,
 }
 
 impl Cuts {
     pub fn new(n: u8, fault: Fault, views: u8, heights: u8, honest_authors: u8, adv: Adversary, offset: u8) -> Cuts {
-        assert!((3..=NMAX as u8).contains(&n) && (1..HMAX as u8).contains(&heights) && honest_authors < n && (honest_authors > 0 || fault != Fault::None));
+        // n = 2 (v0.1, coordinator condition 2): t = 0, q = 2, honest members only.
+        assert!((2..=NMAX as u8).contains(&n) && (n > 2 || fault == Fault::None) && (1..=3).contains(&heights) && honest_authors < n && (honest_authors > 0 || fault != Fault::None));
         let mut entries: Vec<EntryDef> = Vec::new();
         for a in 1..=honest_authors {
             let mut prev = NONE;
@@ -144,11 +176,33 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true, early: 0, progress: false, reputation: false }
+    }
+
+    pub fn progress(mut self) -> Self {
+        self.progress = true;
+        self
+    }
+
+    pub fn rotation(mut self) -> Self {
+        self.reputation = false;
+        self
     }
 
     pub fn live(mut self) -> Self {
         self.liveness = true;
+        self.progress = true;
+        self.reputation = true;
+        self
+    }
+
+    pub fn early_timeouts(mut self, p: u8) -> Self {
+        self.early = p;
+        self
+    }
+
+    pub fn fixed_frames(mut self) -> Self {
+        self.frame_choice = false;
         self
     }
 
@@ -188,8 +242,50 @@ impl Cuts {
         (view - 1 + self.offset) % self.n
     }
 
+    /// The leader of view `v` as a member whose committed chain is `chain` derives it. None: nobody may lead (only
+    /// under the SkipEveryTimedOut control).
+    pub fn leader_in(&self, v: u8, chain: &Block) -> Option<u8> {
+        let rot = self.leader(v);
+        if !self.reputation {
+            return Some(rot);
+        }
+        // The leaders of the views that timed out, oldest first, each derived from the chain before it.
+        let mut bad: Vec<u8> = Vec::new();
+        let mut prev_view = 0u8;
+        for k in 0..chain.h {
+            let bv = chain.ancestor(k + 1).view();
+            let prefix = chain.ancestor(k);
+            for u in prev_view + 1..bv.min(v) {
+                if let Some(l) = self.leader_in(u, &prefix) {
+                    bad.push(l);
+                }
+            }
+            prev_view = bv;
+        }
+        if self.mutation == Some(Mutation::SkipEveryTimedOut) {
+            return (0..self.n).map(|i| (rot + i) % self.n).find(|l| !bad.contains(l));
+        }
+        Some(if bad.last() == Some(&rot) { (rot + 1) % self.n } else { rot })
+    }
+
+    /// The block final within `b`'s own certified chain (option (b), @design-reviewer m.. Q2): the highest ancestor
+    /// x below `b` whose child in that chain was proposed in the very next view. A proposal's parent is certified, and
+    /// so is each of its ancestors, so proposer and voters derive the leader from the same data, whatever each has
+    /// committed itself.
+    pub fn committed_in(&self, b: &Block) -> Block {
+        let mut k = b.h;
+        while k >= 2 {
+            let (x, child) = (b.ancestor(k - 1), b.ancestor(k));
+            if child.view() == x.view() + 1 {
+                return x;
+            }
+            k -= 1;
+        }
+        Block::GENESIS
+    }
+
     fn hcap(&self) -> u8 {
-        self.heights + 1
+        self.heights + 1 + self.early.min(HMAX as u8 - 1 - self.heights)
     }
 
     fn byz(&self) -> bool {
@@ -290,10 +386,13 @@ impl Cuts {
         if self.mutation == Some(Mutation::AcceptProposalUnchecked) {
             return true;
         }
+        let hi = block.frame();
+        if self.mutation != Some(Mutation::NoFrameCheck) && !(parent.frame() < hi && hi <= parent.frame() + FRAME_STEP_MAX) {
+            return false;
+        }
         if h > self.heights {
             return nc == pc;
         }
-        let hi = FRAMES * h;
         for a in 0..self.n as usize {
             if nc[a] == pc[a] {
                 continue;
@@ -318,16 +417,21 @@ impl Cuts {
     }
 
     /// An honest proposer's cut at the child of `parent`: for each author, the longest linked, signed chain it holds,
-    /// stamped below the frame. Returns the cut and the entries the proposal carries.
-    fn build_cut(&self, parent: &Block, held: u16) -> ([u8; NMAX], u16) {
+    /// stamped below the frame `hi`. Returns the cut and the entries the proposal carries.
+    fn build_cut(&self, me: u8, parent: &Block, held: u16, hi: u8) -> ([u8; NMAX], u16) {
         let mut cut = parent.cut();
         let h = parent.h + 1;
         let mut carried = 0u16;
         if h > self.heights {
             return (cut, 0);
         }
-        let hi = FRAMES * h;
+        if self.mutation == Some(Mutation::SkipAfterFaulty) && parent.h > 0 && !self.protocol(parent.proposer()) {
+            return (cut, 0);
+        }
         for a in 0..self.n as usize {
+            if self.mutation == Some(Mutation::OwnEntriesOnly) && a != me as usize {
+                continue;
+            }
             loop {
                 let next = (0..self.entries.len() as u8).find(|&x| {
                     let e = &self.entries[x as usize];
@@ -379,8 +483,8 @@ impl Cuts {
     pub fn verdicts_at(&self, fin: &Block, known: u16, k: u8) -> (u16, u16) {
         let (mut eff, mut void) = (0u16, 0u16);
         let d1 = self.mutation == Some(Mutation::VoteWithoutChainValidation);
-        let lo = FRAMES * (k - 1);
         let anc = fin.ancestor(k);
+        let lo = anc.parent().frame();
         let (pc, nc) = (anc.parent().cut(), anc.cut());
         for a in 0..self.n as usize {
             if nc[a] == pc[a] {
@@ -437,6 +541,23 @@ impl Cuts {
         c
     }
 
+    fn note_held(&self, s: &mut State) {
+        if !self.progress {
+            return;
+        }
+        let honest: Vec<u8> = (0..self.n).filter(|&m| self.honest(m)).collect();
+        let h_now = honest.iter().map(|&m| s.m[m as usize].high.block.h).max().unwrap_or(0);
+        // Held with its whole earlier chain (an entry past a hole can't be covered yet). Entries come in chain order,
+        // so a predecessor is judged first.
+        for e in 0..self.entries.len() {
+            let prev = self.entries[e].prev;
+            let chain_ok = prev == NONE || s.all_held_at[prev as usize] != NONE;
+            if s.all_held_at[e] == NONE && chain_ok && honest.iter().all(|&m| self.has(s.m[m as usize].held, e as u8)) {
+                s.all_held_at[e] = h_now;
+            }
+        }
+    }
+
     fn all_entries(&self) -> u16 {
         ((1u32 << self.entries.len()) - 1) as u16
     }
@@ -488,7 +609,9 @@ impl Cuts {
             }
         }
         let lock_ok = p.view() + 1 == v || tc.is_some_and(|t| p.view() >= t.block.view()) || self.mutation == Some(Mutation::NoLockRule);
-        if v == mm.view && v > mm.voted && v > mm.timed_out && v <= self.views && lock_ok && self.cut_ok(&block, mm.held) {
+        // The voter's leader check, derived from the proposal's own certified chain (option (b)).
+        let leader_ok = self.leader_in(v, &self.committed_in(&p)) == Some(block.proposer());
+        if leader_ok && v == mm.view && v > mm.voted && v > mm.timed_out && v <= self.views && lock_ok && self.cut_ok(&block, mm.held) {
             mm.voted = v;
             s.net.insert(Msg::Vote { voter: m, block, root: self.own_root(m) });
         }
@@ -540,7 +663,10 @@ impl Cuts {
                     acts.push(Action::AdvanceTc(m, o));
                 }
             }
-            acts.push(Action::Propose(m));
+            acts.push(Action::Propose(m, false));
+            if self.frame_choice {
+                acts.push(Action::Propose(m, true));
+            }
             if with_timeouts {
                 acts.push(Action::Timeout(m));
             }
@@ -566,17 +692,18 @@ impl Cuts {
         }
         let certified = self.certified_blocks(s);
         for v in 1..=self.views {
-            if self.leader(v) != 0 {
-                continue;
-            }
+
             let mut tcs: Vec<Option<Cert>> = vec![None];
             if v > 1 {
                 tcs.extend(self.tc_maxima(s, v - 1).into_iter().map(Some));
             }
             for pc in certified.iter().filter(|c| c.block.view() < v && c.block.h < self.hcap()) {
                 let parent = &pc.block;
-                for cut in self.adversary_cuts(parent) {
-                    let block = parent.child(v, cut);
+                if self.leader_in(v, &self.committed_in(parent)) != Some(0) {
+                    continue;
+                }
+                for (cut, frame) in self.adversary_cuts(parent).into_iter().flat_map(|c| self.adversary_frames(parent).into_iter().map(move |f| (c, f))) {
+                    let block = parent.child(v, frame, cut, 0);
                     let mut carried = 0u16;
                     for a in 0..self.n as usize {
                         let mut x = cut[a];
@@ -593,6 +720,20 @@ impl Cuts {
                 }
             }
         }
+    }
+
+    /// The frames the Byzantine proposer names at the child of `parent`: one step, two (between the honest stamps), K and
+    /// 2K above it. Beyond the content heights only K: the frame no longer bears on any verdict.
+    fn adversary_frames(&self, parent: &Block) -> Vec<u8> {
+        let p = parent.frame();
+        if parent.h + 1 > self.heights || !self.frame_choice {
+            return vec![p + FRAMES];
+        }
+        let mut out = vec![p + 1, p + 2, p + FRAMES, p + FRAME_STEP_MAX];
+        if self.mutation == Some(Mutation::NoFrameCheck) {
+            out.push(p); // not above the parent's: only the control's voters accept it
+        }
+        out
     }
 
     /// The Byzantine proposer's cuts at the child of `parent`: per author, keep the parent's or name any entry that
@@ -623,15 +764,29 @@ impl Cuts {
 pub struct Block {
     pub h: u8,
     pub views: [u8; HMAX],
+    /// frames[k]: the frame the proposer named for the cut at height k + 1.
+    pub frames: [u8; HMAX],
     /// cuts[k][a]: the last entry of author a covered at height k + 1 (cumulative), or NONE.
     pub cuts: [[u8; NMAX]; HMAX],
+    /// proposers[k]: who proposed the cut at height k + 1 (v0.2, @design-reviewer m.. bounded progress, and the
+    /// voter's leader check).
+    pub proposers: [u8; HMAX],
 }
 
 impl Block {
-    pub const GENESIS: Block = Block { h: 0, views: [0; HMAX], cuts: [[NONE; NMAX]; HMAX] };
+    pub const GENESIS: Block =
+        Block { h: 0, views: [0; HMAX], frames: [0; HMAX], cuts: [[NONE; NMAX]; HMAX], proposers: [NONE; HMAX] };
+
+    pub fn proposer(&self) -> u8 {
+        if self.h == 0 { NONE } else { self.proposers[self.h as usize - 1] }
+    }
 
     pub fn view(&self) -> u8 {
         if self.h == 0 { 0 } else { self.views[self.h as usize - 1] }
+    }
+
+    pub fn frame(&self) -> u8 {
+        if self.h == 0 { 0 } else { self.frames[self.h as usize - 1] }
     }
 
     pub fn cut(&self) -> [u8; NMAX] {
@@ -643,16 +798,20 @@ impl Block {
         if b.h > 0 {
             let k = b.h as usize - 1;
             b.views[k] = 0;
+            b.frames[k] = 0;
             b.cuts[k] = [NONE; NMAX];
+            b.proposers[k] = NONE;
             b.h -= 1;
         }
         b
     }
 
-    pub fn child(&self, view: u8, cut: [u8; NMAX]) -> Block {
+    pub fn child(&self, view: u8, frame: u8, cut: [u8; NMAX], proposer: u8) -> Block {
         let mut b = *self;
         let k = b.h as usize;
+        b.proposers[k] = proposer;
         b.views[k] = view;
+        b.frames[k] = frame;
         b.cuts[k] = cut;
         b.h += 1;
         b
@@ -668,7 +827,7 @@ impl Block {
 
     /// Is `a` this block or one of its ancestors?
     pub fn extends(&self, a: &Block) -> bool {
-        a.h <= self.h && (0..a.h as usize).all(|k| a.views[k] == self.views[k] && a.cuts[k] == self.cuts[k])
+        a.h <= self.h && (0..a.h as usize).all(|k| a.views[k] == self.views[k] && a.frames[k] == self.frames[k] && a.cuts[k] == self.cuts[k] && a.proposers[k] == self.proposers[k])
     }
 }
 
@@ -680,7 +839,7 @@ impl fmt::Debug for Block {
         let parts: Vec<String> = (0..self.h as usize)
             .map(|k| {
                 let c: Vec<String> = self.cuts[k].iter().map(|&x| if x == NONE { "-".into() } else { x.to_string() }).collect();
-                format!("v{}[{}]", self.views[k], c.join(","))
+                format!("v{}m{}@{}[{}]", self.views[k], self.proposers[k], self.frames[k], c.join(","))
             })
             .collect();
         write!(f, "{}", parts.join(">"))
@@ -736,6 +895,11 @@ pub struct State {
     pub m: [Member; NMAX],
     /// Every message sent. Delivery doesn't remove one, so delay, reordering, duplication and loss are all covered.
     pub net: BTreeSet<Msg>,
+    /// Timeouts fired so far before the network settled (liveness profile with `early` > 0).
+    pub early: u8,
+    /// Per entry: the highest certified height an honest member knew when every honest member first held it (NONE
+    /// until then, and always NONE unless the model tracks progress).
+    pub all_held_at: [u8; 16],
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -746,7 +910,8 @@ pub enum Action {
     Timeout(u8),
     /// A member forms a timeout certificate for its view, adopting the given certificate from it.
     AdvanceTc(u8, Cert),
-    Propose(u8),
+    /// A leader proposes; true names the frame 2K above the parent's (catching up), false K above.
+    Propose(u8, bool),
     AdvEntry(u8, u8),
     AdvPropose(u8, Msg),
 }
@@ -768,11 +933,13 @@ impl Model for Cuts {
                 }
             }
         }
-        vec![State { m, net }]
+        let mut s = State { m, net, early: 0, all_held_at: [NONE; 16] };
+        self.note_held(&mut s);
+        vec![s]
     }
 
     fn actions(&self, s: &State, acts: &mut Vec<Action>) {
-        let timeouts = self.mutation != Some(Mutation::NoTimeouts) && (!self.liveness || self.quiescent(s));
+        let timeouts = self.mutation != Some(Mutation::NoTimeouts) && (!self.liveness || s.early < self.early || self.quiescent(s));
         self.honest_actions(s, acts, timeouts);
         self.adversary_actions(s, acts);
         if self.productive_only {
@@ -803,6 +970,9 @@ impl Model for Cuts {
                 mm.timed_out = mm.view;
                 let (view, high) = (mm.view, mm.high);
                 s.net.insert(Msg::Timeout { voter: m, view, high });
+                if self.liveness && self.early > 0 && !self.quiescent(s0) {
+                    s.early += 1; // fired before the network settled
+                }
             }
             Action::AdvanceTc(m, o) => {
                 let mut mm = s.m[m as usize];
@@ -811,10 +981,10 @@ impl Model for Cuts {
                 mm.view = mm.view.max(v + 1);
                 s.m[m as usize] = mm;
             }
-            Action::Propose(m) => {
+            Action::Propose(m, wide) => {
                 let mut mm = s.m[m as usize];
                 let v = mm.view;
-                if self.leader(v) != m || v > self.views || mm.proposed >= v || mm.timed_out >= v {
+                if v > self.views || mm.proposed >= v || mm.timed_out >= v {
                     return None;
                 }
                 let tc = if mm.high.block.view() + 1 == v {
@@ -828,11 +998,21 @@ impl Model for Cuts {
                     Some(t)
                 };
                 let (parent, proot) = (mm.high.block, mm.high.root);
+                if self.leader_in(v, &self.committed_in(&parent)) != Some(m) {
+                    return None;
+                }
                 if parent.h >= self.hcap() {
                     return None;
                 }
-                let (cut, carried) = self.build_cut(&parent, mm.held);
-                let block = parent.child(v, cut);
+                if wide && parent.h >= self.heights {
+                    return None; // beyond the content heights the frame bears on no verdict: K only
+                }
+                let frame = parent.frame() + if wide { FRAME_STEP_MAX } else { FRAMES };
+                let (cut, carried) = self.build_cut(m, &parent, mm.held, frame);
+                if self.mutation == Some(Mutation::SkipEmptyCut) && cut == parent.cut() {
+                    return None;
+                }
+                let block = parent.child(v, frame, cut, m);
                 mm.proposed = v;
                 s.m[m as usize] = mm;
                 s.net.insert(Msg::Propose { block, proot, tc, carried });
@@ -841,6 +1021,7 @@ impl Model for Cuts {
                 s.m[to as usize].held |= 1 << e;
             }
         }
+        self.note_held(&mut s);
         if s == *s0 { None } else { Some(s) }
     }
 
@@ -864,7 +1045,7 @@ impl Model for Cuts {
                                 || c.segment(pc[a], nc[a]).is_some_and(|seg| {
                                     seg.iter().all(|&x| {
                                         let e = &c.entries[x as usize];
-                                        e.author as usize == a && e.signed_ok() && e.stamp < FRAMES * k
+                                        e.author as usize == a && e.signed_ok() && e.stamp < anc.frame()
                                     })
                                 })
                         })
@@ -898,6 +1079,20 @@ impl Model for Cuts {
                     !mm.undone && eff & tv == 0 && void & te == 0
                 })
             }),
+            // Nothing takes effect below a frame an earlier final cut named (v0.1: frames are the proposer's): frames
+            // only rise, and every effective entry a cut covers is stamped at or above every earlier cut's frame.
+            Property::always("no entry takes effect below an earlier final frame", |c: &Cuts, s: &State| {
+                (0..c.n).filter(|&m| c.honest(m)).all(|m| {
+                    let mm = &s.m[m as usize];
+                    let fin = mm.committed;
+                    (1..=fin.h).all(|k| fin.ancestor(k).frame() > fin.ancestor(k - 1).frame())
+                        && (1..=fin.h.min(c.heights)).all(|k| {
+                            let floor = (0..k).map(|j| fin.ancestor(j).frame()).max().unwrap_or(0);
+                            let eff = c.verdicts_at(&fin, mm.held, k).0;
+                            (0..c.entries.len()).all(|x| eff & (1 << x) == 0 || c.entries[x].stamp >= floor)
+                        })
+                })
+            }),
             // A member never holds a final cut whose quorum root differs from its own without knowing it (RootSplit).
             Property::always("root: a diverged replica learns it at the cut", |c: &Cuts, s: &State| {
                 (0..c.n).filter(|&m| c.honest(m)).all(|m| {
@@ -910,6 +1105,39 @@ impl Model for Cuts {
         if self.liveness {
             p.push(Property::always("liveness: every end state has a final cut at every honest member", |c: &Cuts, s: &State| {
                 (0..c.n).filter(|&m| c.honest(m)).all(|m| s.m[m as usize].committed.h >= 1) || !c.honest_stuck(s)
+            }));
+            // The last cut needs a child (condition 5): when content stops, an empty cut still follows, so every content
+            // height ends final.
+            p.push(Property::always("liveness: every content cut ends final", |c: &Cuts, s: &State| {
+                (0..c.n).filter(|&m| c.honest(m)).all(|m| s.m[m as usize].committed.h >= c.heights) || !c.honest_stuck(s)
+            }));
+        }
+        if self.progress {
+            // Bounded progress (@design-reviewer's fix to v0.2): an honest entry every honest member held (with its
+            // earlier chain) while the highest certified height any honest member knew was h is covered by the first
+            // final cut at height h + 2 or above that a protocol-following member proposed and whose frame is above the
+            // entry's stamp (n3-silent-progress found the stamp gap: m1.3, stamped 7, can't be in a cut at frame 6). A faulty proposer's cuts
+            // are skipped, not excused: the next honest cut must recover the entry. Within the content heights.
+            p.push(Property::always("progress: an entry all hold at h is covered by h + 2", |c: &Cuts, s: &State| {
+                (0..c.n).filter(|&m| c.honest(m)).all(|m| {
+                    let fin = s.m[m as usize].committed;
+                    (0..c.entries.len()).all(|e| {
+                        let h = s.all_held_at[e];
+                        let def = &c.entries[e];
+                        if h == NONE || def.signer == c.faulty() && c.fault != Fault::None {
+                            return true;
+                        }
+                        // The first final cut at height h + 2 or above, within the content heights, that a
+                        // protocol-following member proposed.
+                        let top = fin.h.min(c.heights);
+                        // A cut covers only entries stamped below its frame, so an entry stamped later waits for one.
+                        let due = |k: u8| fin.ancestor(k).frame() > def.stamp;
+                        match (h + 2..=top).find(|&k| c.protocol(fin.ancestor(k).proposer()) && due(k)) {
+                            Some(k) => c.covered(&fin.ancestor(k)) & (1 << e) != 0,
+                            None => true,
+                        }
+                    })
+                })
             }));
         }
         if self.corrupt.is_some() {
