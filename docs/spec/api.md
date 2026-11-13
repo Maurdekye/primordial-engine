@@ -260,12 +260,13 @@ kept".
 While this machine is catching up (a joiner watches first and acts once caught up, file 14 S4), `apply` refuses
 with `not_ready`.
 
-**Verdicts on a diverged replica** (coordinator; with @engine-architect's S5 change and pe-replica's
-producer of `changes`, not yet built):
-- `final_frame` is the frame of the replica's agreed cut: a verdict at or below it is final and agrees with every
-  honest replica, and it never goes backwards.
+**Verdicts on a diverged replica** (coordinator; S5 v1.5):
+- `final_frame` is the frame of the replica's agreed cut: the verdict of a change stamped below it is final and
+  agrees with every honest replica, and it never goes backwards. A cut at frame `f` covers the changes stamped
+  below `f` (S3), so a change stamped at `final_frame` itself is not yet final.
 - `session` carries `health`, read from the view, never inferred from two frame numbers: `agreed`, or
-  `{"repairing": {"since": frame}}`. `watch`'s `session` items report each change of it.
+  `{"repairing": {"since": frame}}`. `watch`'s `session` items report each change of it as `health_changed`:
+  `repairing` before the rest of its view's news, `agreed` after the repair's verdicts.
 
 ### 5.2 `query`
 
@@ -370,9 +371,10 @@ reparents whose parent was gone, 4.2), and, when refused or dropped, the refusal
 |---|---|
 | `queued` | Accepted by the API, not yet stepped (`wait: "none"`, or the wait ran out) |
 | `accepted` | Applied on this machine at frame F, its stamp. Others see it within about one network delay. Not final |
-| `final` | Applied by the ordered step at F, and a final cut covering F includes it without voiding it (never the frame alone). It can no longer be undone except by a new change |
-| `refused` | Refused, with a reason. `final: false` while this machine's check refused it before ordering or the refusal is still predicted; `final: true` once F is final |
-| `dropped` | Voided by a final cut (late, or back-stamped; S3 v1.1), so no replica applies it: its local effect is undone everywhere. A change stamped below a final cut's frame that the cut does not include is still pending, not dropped, until a later cut includes or voids it |
+| `final` | Applied by the ordered step at F, a final cut covering F includes it without voiding it (never the frame alone), and `final_frame` (5.1) is past F, so this machine's verdict is the quorum's. It can no longer be undone except by a new change |
+| `refused` | Refused, with a reason. `final: false` while this machine's check refused it before ordering or the refusal is still predicted; `final: true` once a final cut includes it and `final_frame` is past F |
+| `dropped` | Voided by a final cut (late, or back-stamped; S3 v1.1), or recorded by the replica as left out of the final order, so no replica applies it: its local effect is undone everywhere. Whichever says it first is told; the other adds nothing. A change stamped below a final cut's frame that the cut does not include is still pending, not dropped, until a later cut includes or voids it |
+| `unknown` | In the final order, but stepped here on a state a repair replaced (5.1): whether it happened is not known here. `repaired_at` names the cut's frame; re-read the state by query. Final: it never changes again |
 
 - An `accepted` change can still become `refused` when an earlier conflicting change from another machine arrives
   and the replica re-steps (file 14, P4). That is the stale edit seen from the loser.
@@ -439,7 +441,8 @@ A change feed with a cursor. `Filter`:
   (5.1), each affected change of the caller's resolves once, explicitly, as `unknown` with `repaired_at` (the cut
   it was repaired to), never left pending: whether it happened is not known, so the agent re-reads the state by
   query. A client matching on status must handle `unknown`.
-- `session`: members joining and leaving, this machine catching up, and the newest final frame when it moves.
+- `session`: members joining and leaving, this machine catching up, the newest final frame when it moves, and the
+  replica's health when it changes (`health_changed`, 5.1).
 - `motion`: off by default. **Simulation is not a change**: bodies moving and logic-written fields do not appear in
   `changes`. An agent that wants motion queries poses. `motion: {"every_ms": 250}` with a `where` of at most 16 ids
   adds sampled poses of those objects [I].
@@ -483,7 +486,8 @@ Behaviour:
 - Without a type: the list of component types `{type, summary}` and the world's templates `{name, summary}`, and the
   schema `version`. Small on purpose.
 - With a type: a JSON Schema per field, with `x-` annotations standard validators ignore (gnosarium-ux 3.2):
-  `x-unit` (`m`, `deg`, `kg`, `s`, `srgb`, …); `x-sync` (`synced`, or `unsynced` when M2 brings per-player fields; the
+  `x-unit` (the registry's unit in its canonical spelling, world-model.md 3.6: `m`, `kg/m^3`, `1/s`, `rad`, …; absent
+  for a field without one); `x-sync` (`synced`, or `unsynced` when M2 brings per-player fields; the
   inspector marks unsynchronized fields with a shape, Q12); `x-protected` (part of a protection); `x-read-only` (the
   engine writes it; an edit is refused as `invalid`).
 - With a template: what it holds.
@@ -651,7 +655,7 @@ Rules, agreed with @ballpit-viz (WS-render writes them into pe-render's spec):
    prediction. It never waits on pe-api.
 6. The outcome appears in that frame's change record; an `apply` waiting on the transaction returns it.
 7. Agreement orders the entry; every machine's replica steps it; the status becomes `final`, `refused` or `dropped`
-   when its frame is final.
+   when its frame is final, or `unknown` if a repair replaced the state it was stepped on (5.1).
 
 Step 3 checks against the base and step 5 against the present: the present wins. The replica's ordered check is the
 one that counts (2, rule 3).

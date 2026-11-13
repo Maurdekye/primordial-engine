@@ -701,7 +701,7 @@ impl<S: WorldSource> Api<S> {
                         out.push(Said::Mine(Box::new(o)));
                     }
                 }
-                FeedItem::Stepped { step, undid, owner } => {
+                FeedItem::Stepped { step, undid, status, is_final, owner } => {
                     let change = TxId::from(step.entry);
                     let own = is_mine(owner.as_ref(), change);
                     let applied = matches!(step.outcome, pe_seams::Outcome::Applied { .. });
@@ -719,18 +719,9 @@ impl<S: WorldSource> Api<S> {
                         }
                     }
                     if own {
-                        let fate = self.log.get(change);
-                        let (status, is_final) = match &step.outcome {
-                            pe_seams::Outcome::Applied { .. } => (Status::Accepted, false),
-                            pe_seams::Outcome::Refused { .. } => {
-                                (Status::Refused, fate.is_some_and(|x| x.status == Status::Refused && x.is_final))
-                            }
-                            pe_seams::Outcome::Unknown { .. } => (Status::Unknown, false),
-                            pe_seams::Outcome::Dropped { .. } => (Status::Dropped, false),
-                        };
                         out.push(Said::Mine(Box::new(mine(
                             change,
-                            (status, is_final),
+                            (*status, *is_final),
                             Some(step),
                             None,
                             owner.as_ref(),
@@ -886,7 +877,7 @@ impl<S: WorldSource> Api<S> {
             tick_hz: facts.tick_hz,
             link: facts.link,
             caught_up: facts.caught_up,
-            health: pe_seams::world_api::SessionHealth::Agreed,
+            health: crate::changes::session_health(self.log.health()),
             kept,
             limits: Limits {
                 tx_per_s: self.rate.per_s as u32,
@@ -1303,6 +1294,9 @@ mod tests {
         let head = pe_seams::ChainHead { chain: pe_core::ChainId(Hash([1; 32])), author: ALICE, seq: 1, entry };
         a.log.confirm_cut(&pe_seams::Cut { at, heads: vec![head] }, &[]);
         let f = a.log.get(entry.into()).unwrap();
+        assert_eq!((f.status, f.is_final), (Status::Refused, false), "final once the final frame passes it");
+        a.log.record(&[], Some(7));
+        let f = a.log.get(entry.into()).unwrap();
         assert_eq!((f.status, f.is_final), (Status::Refused, true));
         // A full queue is rate_limited with a retry time.
         a.apply(&c, tx(json!([])), &none).unwrap();
@@ -1332,6 +1326,7 @@ mod tests {
         let at = pe_seams::CutRef { line: LineId(Hash([0; 32])), height: 1, frame: CoreFrame(6) };
         let head = pe_seams::ChainHead { chain, author: ALICE, seq: 3, entry };
         a.log.confirm_cut(&pe_seams::Cut { at, heads: vec![head] }, &[]);
+        a.log.record(&[], Some(6));
         assert_eq!(a.log.get(entry.into()).unwrap().status, Status::Final);
     }
 
@@ -1384,6 +1379,7 @@ mod tests {
         let at = pe_seams::CutRef { line: LineId(Hash([0; 32])), height: 1, frame: CoreFrame(6) };
         let head = pe_seams::ChainHead { chain, author: ALICE, seq: 3, entry };
         a.log.confirm_cut(&pe_seams::Cut { at, heads: vec![head] }, &[]);
+        a.log.record(&[], Some(6));
         let w = a.watch(&c, &f, Some(&first.cursor), Duration::ZERO).unwrap();
         let st: Vec<_> = w.mine.iter().map(|o| (o.status, o.change)).collect();
         let ch = Some(TxId::from(entry));
@@ -1402,6 +1398,100 @@ mod tests {
         other.principal = "someone-else".into();
         let o = a.watch(&other, &f, Some(&first.cursor), Duration::ZERO).unwrap();
         assert_eq!((o.changes.len(), o.mine.len()), (1, 0));
+    }
+
+    /// One of this caller's changes, submitted and stepped (applied) at frame 4 as `entry`, chain 1 seq 3; and a
+    /// cursor from before it.
+    fn own_change(a: &Api<Src>, c: &Caller, e: u8) -> (EntryRef, Cursor) {
+        let first = a.watch(c, &Filter::default(), None, Duration::ZERO).unwrap().cursor;
+        let none = ApplyOpts { wait: Wait::None, ..Default::default() };
+        a.apply(c, tx(json!([{"op": "create", "parent": "/Table", "name": "Cup"}])), &none).unwrap();
+        let chain = pe_core::ChainId(Hash([1; 32]));
+        let entry = edit_entry(
+            e,
+            vec![pe_world::edit::Op::Create {
+                new: 0,
+                parent: pe_world::edit::Target::Existing(id(10)),
+                index: None,
+                rows: vec![],
+            }],
+        );
+        for (t, _) in a.queue.drain(4) {
+            a.queue.settle(t, Receipt::Submitted { change: entry.into(), frame: 4, chain, seq: 3 });
+        }
+        a.log.record(&[stepped(entry, ALICE, 4, applied(vec![id(10)]))], None);
+        (entry, first)
+    }
+
+    fn cut_at(frame: u64, entry: EntryRef) -> pe_seams::Cut {
+        let at = pe_seams::CutRef { line: LineId(Hash([0; 32])), height: 1, frame: CoreFrame(frame) };
+        let head = pe_seams::ChainHead { chain: pe_core::ChainId(Hash([1; 32])), author: ALICE, seq: 3, entry };
+        pe_seams::Cut { at, heads: vec![head] }
+    }
+
+    // Coordinator: health from the view, in session and on watch; after a repair, each affected change
+    // of the caller's resolves once, explicitly, as unknown with repaired_at.
+    #[test]
+    fn watch_tells_the_health_and_a_repaired_change_once_as_unknown() {
+        let a = api();
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let (entry, first) = own_change(&a, &c, 4);
+        assert_eq!(a.session(&c).health, pe_seams::world_api::SessionHealth::Agreed);
+        let repairing = pe_seams::Health::Repairing { since: CoreFrame(3) };
+        a.log.publish(&[], Some(2), repairing);
+        assert_eq!(a.session(&c).health, pe_seams::world_api::SessionHealth::Repairing { since: 3 });
+        // The quorum's cut includes it, but the final frame waits: no verdict is told while repairing.
+        a.log.confirm_cut(&cut_at(6, entry), &[]);
+        let cut = pe_seams::CutRef { line: LineId(Hash([0; 32])), height: 2, frame: CoreFrame(6) };
+        let unknown = pe_seams::Outcome::Unknown { repaired_at: cut };
+        a.log.publish(&[stepped(entry, ALICE, 4, unknown)], Some(6), pe_seams::Health::Agreed);
+        a.log.publish(&[], Some(9), pe_seams::Health::Agreed);
+        let w = a.watch(&c, &Filter::default(), Some(&first), Duration::ZERO).unwrap();
+        let st: Vec<_> = w.mine.iter().map(|o| (o.status, o.is_final, o.repaired_at)).collect();
+        assert_eq!(
+            st,
+            vec![(Status::Queued, false, None), (Status::Accepted, false, None), (Status::Unknown, true, Some(6))]
+        );
+        use pe_seams::world_api::SessionHealth as H;
+        assert_eq!(
+            w.session,
+            vec![
+                // Repairing comes before the rest of its view's news.
+                SessionEvent::HealthChanged { health: H::Repairing { since: 3 } },
+                SessionEvent::Final { frame: 2 },
+                SessionEvent::HealthChanged { health: H::Agreed },
+                SessionEvent::Final { frame: 6 },
+                SessionEvent::Final { frame: 9 },
+            ]
+        );
+        assert_eq!(a.session(&c).health, H::Agreed);
+    }
+
+    // Coordinator: the replica's Dropped and the cut's void say the same thing; whichever comes first
+    // is told, once, with one retraction.
+    #[test]
+    fn a_void_and_the_replicas_dropped_record_are_told_once() {
+        for void_first in [true, false] {
+            let a = api();
+            let c = caller(&[Scope::Read, Scope::Edit]);
+            let (entry, first) = own_change(&a, &c, 4);
+            let dropped = pe_seams::Outcome::Dropped { reason: pe_seams::VoidReason::Late };
+            let void = || a.log.confirm_cut(&cut_at(6, entry), &[entry]);
+            let record = || a.log.record(&[stepped(entry, ALICE, 4, dropped.clone())], Some(6));
+            if void_first {
+                void();
+                record();
+            } else {
+                record();
+                void();
+            }
+            let w = a.watch(&c, &Filter::default(), Some(&first), Duration::ZERO).unwrap();
+            let st: Vec<_> = w.mine.iter().map(|o| (o.status, o.is_final)).collect();
+            let want = vec![(Status::Queued, false), (Status::Accepted, false), (Status::Dropped, true)];
+            assert_eq!(st, want, "void first: {void_first}");
+            let retracted: Vec<_> = w.changes.iter().map(|ch| ch.retracted).collect();
+            assert_eq!(retracted, vec![false, true], "void first: {void_first}");
+        }
     }
 
     #[test]
