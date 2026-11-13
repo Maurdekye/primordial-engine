@@ -334,6 +334,7 @@ mod tests {
             class: Class::Input,
             frame: Frame(3),
             outcome: Outcome::Refused { op: None, reason: Reason::OutOfReach },
+            rekeyed: Default::default(),
         }];
         let v = Arc::new(v);
         for _ in 0..3 {
@@ -383,6 +384,7 @@ mod tests {
             class: Class::Input,
             frame: Frame(f),
             outcome: Outcome::Refused { op: None, reason: Reason::OutOfReach },
+            rekeyed: Default::default(),
         };
         let with = |f: u64, fin: Option<u64>, changes: Vec<StepRecord>| {
             let mut v = (*view(f)).clone();

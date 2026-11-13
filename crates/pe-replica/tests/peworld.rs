@@ -1786,3 +1786,69 @@ fn a_trailing_placement_carries_a_held_box_sliding_along_the_floor() {
     assert_eq!(held_by(&r, BALL), Some(oid(HAND)));
     assert_eq!(r.faults(), 0);
 }
+
+/// A script commit names the objects it re-keyed in its step record (S5 v1.6, `StepRecord::rekeyed`;
+/// @coordinator-opus): the set pe-world's footprint reports, in id order, so WorldApi's `watch` and
+/// history can name them. Every other record has none.
+#[test]
+fn a_script_commit_s_record_names_the_objects_it_re_keyed() {
+    use pe_sim::{ComponentDesc, FieldDesc, FieldKind};
+    use pe_world::BlobRef;
+    use pe_world::script::{script_component_id, tag_desc};
+    const ASSET: [u8; 32] = [7; 32];
+    let version = |src: u8| Hash([src; 32]);
+    let fields = |src: u8| {
+        let f32f = |n: &str, at| FieldDesc::new(n, FieldKind::F32, at, 1);
+        if src == 1 { vec![f32f("period", 0)] } else { vec![f32f("period", 0), f32f("red", 4)] }
+    };
+    let blink = |src: u8| {
+        let id = script_component_id(&version(src), "Blink", fields(src)).expect("an id");
+        ComponentDesc::new(id, "Blink", fields(src)).expect("a description")
+    };
+    let commit = |base, src: u8, at: u64| {
+        tx(vec![
+            Op::Register { components: vec![tag_desc(&version(src)), blink(src)] },
+            Op::CommitScript {
+                script: ASSET,
+                base,
+                source: BlobRef { hash: version(src).0, len: 10 },
+                toolchain: Hash([1; 32]),
+                sdk: Hash([2; 32]),
+                author_module: Hash([3; 32]),
+                activate_at: at,
+            },
+        ])
+    };
+    let lamps = [oid(21), oid(20)];
+    let set = |id: ObjectId, component, bytes: Vec<u8>| Op::SetRow {
+        id: Target::Existing(id),
+        row: Row { component, instance: 0, bytes },
+    };
+    let mut world = genesis();
+    for (i, &l) in lamps.iter().enumerate() {
+        world.create(l, None, keys().key(0), GENESIS).expect("a lamp");
+        world.insert(l, Transform::at(pos(i as f64, 0.5, 0.0))).expect("its transform");
+    }
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    // Version 1 at frame 1, attached to both lamps; version 2 at frame 3 re-keys their rows.
+    let first = b.next(Class::Edit, Frame(1), Bytes::from(commit(None, 1, 1).encode()));
+    let tag = tag_desc(&version(1)).id();
+    let attach =
+        lamps.iter().flat_map(|&l| [set(l, tag, vec![]), set(l, blink(1).id(), 2.0f32.to_le_bytes().to_vec())]);
+    let attach = b.next(Class::Edit, Frame(1), Bytes::from(tx(attach.collect()).encode()));
+    let mut scratch = world.clone();
+    assert!(matches!(scratch.apply_edit(Frame(1), &first).0, Outcome::Applied { .. }), "version 1 commits");
+    let base = scratch.modules()[&ASSET].version;
+    let second = b.next(Class::Edit, Frame(3), Bytes::from(commit(Some(base), 2, 3).encode()));
+    let (r, _) = reference_of(world, &[first.clone(), attach.clone(), second.clone()], 6);
+    let record = |e: &SignedEntry| {
+        r.view().changes.iter().rev().find(|c| c.entry == e.id()).cloned().expect("a record of the entry")
+    };
+    let rekeyed = record(&second);
+    assert!(matches!(rekeyed.outcome, Outcome::Applied { .. }), "version 2 commits: {:?}", rekeyed.outcome);
+    let mut want = lamps.to_vec();
+    want.sort();
+    assert_eq!(&rekeyed.rekeyed[..], &want[..], "both lamps, in id order");
+    assert!(record(&first).rekeyed.is_empty() && record(&attach).rekeyed.is_empty(), "no other record has any");
+}

@@ -1270,6 +1270,7 @@ mod tests {
                         class: pe_seams::Class::Edit,
                         frame: CoreFrame(5),
                         outcome,
+                        rekeyed: Default::default(),
                     };
                     log.record(&[step], Some(2));
                     settled += 1;
@@ -1289,6 +1290,7 @@ mod tests {
             class: pe_seams::Class::Edit,
             frame: CoreFrame(6),
             outcome: pe_seams::Outcome::Refused { op: Some(0), reason: pe_seams::Reason::NoPermission },
+            rekeyed: Default::default(),
         };
         a.log.record(&[step], Some(6));
         let at = pe_seams::CutRef { line: LineId(Hash([0; 32])), height: 1, frame: CoreFrame(7) };
@@ -1321,8 +1323,14 @@ mod tests {
         }
         let outcome =
             pe_seams::Outcome::Applied { created: vec![id(99)], overwrote: vec![], notes: vec![], inverse: None };
-        let step =
-            pe_seams::StepRecord { entry, author: ALICE, class: pe_seams::Class::Edit, frame: CoreFrame(5), outcome };
+        let step = pe_seams::StepRecord {
+            entry,
+            author: ALICE,
+            class: pe_seams::Class::Edit,
+            frame: CoreFrame(5),
+            outcome,
+            rekeyed: Default::default(),
+        };
         a.log.record(&[step], None);
         let at = pe_seams::CutRef { line: LineId(Hash([0; 32])), height: 1, frame: CoreFrame(6) };
         let head = pe_seams::ChainHead { chain, author: ALICE, seq: 3, entry };
@@ -1347,7 +1355,14 @@ mod tests {
     }
 
     fn stepped(entry: EntryRef, author: MemberKey, frame: u64, outcome: pe_seams::Outcome) -> pe_seams::StepRecord {
-        pe_seams::StepRecord { entry, author, class: pe_seams::Class::Edit, frame: CoreFrame(frame), outcome }
+        pe_seams::StepRecord {
+            entry,
+            author,
+            class: pe_seams::Class::Edit,
+            frame: CoreFrame(frame),
+            outcome,
+            rekeyed: Default::default(),
+        }
     }
 
     fn applied(created: Vec<pe_core::ObjectId>) -> pe_seams::Outcome {
