@@ -180,13 +180,41 @@ fn edit_writable(c: ComponentId) -> bool {
 /// What [`World::end_frame`] did to scripts (logic.md 6.2a), in asset order, each commit named by its asset and its
 /// version (the commit's entry and op): the commits activated, with their re-key's report, and the commits voided,
 /// with why. The report is `None` when no re-key was needed, so no object changed: a script's first version (no
-/// rows to move) or a same-source commit (a toolchain or SDK change, the same components). pe-replica publishes
-/// them as S5's `FrameView.activations` (@coordinator-opus m8602abb4b37e).
+/// rows to move) or a same-source commit (a toolchain or SDK change, the same components). A void's [`Blocked`] is
+/// `Some` only for `RekeyBlockedAtActivation`, naming the objects as the commit-time refusal does (@engine-architect
+/// mff789a2ce246). pe-replica publishes them as S5's `FrameView.activations` (@coordinator-opus m8602abb4b37e).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FrameEnd {
     pub activated: Vec<(AssetId, Version, Option<RekeyReport>)>,
-    pub voided: Vec<(AssetId, Version, VoidKind)>,
+    pub voided: Vec<(AssetId, Version, VoidKind, Option<Blocked>)>,
 }
+
+/// The objects that block a re-key (7.9), in id order: the first [`REKEY_BLOCKED_NAMED`], and how many more. One
+/// helper for both reports of a block, `Reason::RekeyBlocked` at the commit and a `RekeyBlockedAtActivation` void,
+/// so the cap and the order can't drift apart.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Blocked {
+    pub objects: Vec<ObjectId>,
+    pub more: u32,
+}
+
+impl Blocked {
+    /// `blocked` must be in id order, as [`RekeyReport::blocked`] is.
+    pub fn of(blocked: &[ObjectId]) -> Self {
+        let named = blocked.len().min(REKEY_BLOCKED_NAMED);
+        let more = u32::try_from(blocked.len() - named).unwrap_or(u32::MAX);
+        Blocked { objects: blocked[..named].to_vec(), more }
+    }
+}
+
+/// `RekeyBlocked` for the objects `blocked` (in id order): the first [`REKEY_BLOCKED_NAMED`], and how many more.
+fn rekey_blocked(blocked: &[ObjectId]) -> Reason {
+    let Blocked { objects, more } = Blocked::of(blocked);
+    Reason::RekeyBlocked { objects, more }
+}
+
+/// How many blocking objects a `RekeyBlocked` refusal names (7.9; @coordinator-opus m028c4bf1d412).
+pub const REKEY_BLOCKED_NAMED: usize = 16;
 
 /// Rows a holder feels: refused while the object is held (7.2).
 fn held_rows(c: ComponentId) -> bool {
@@ -513,15 +541,16 @@ impl World {
             .collect();
         for a in due {
             let p = self.pending[&a].clone();
-            let done = if p.attested_by_quorum() { self.activate(a, &p, frame) } else { Err(VoidKind::Unattested) };
+            let done =
+                if p.attested_by_quorum() { self.activate(a, &p, frame) } else { Err((VoidKind::Unattested, None)) };
             match done {
                 Ok(report) => {
                     Arc::make_mut(&mut self.pending).remove(&a);
                     out.activated.push((a, p.version, report));
                 }
-                Err(kind) => {
+                Err((kind, blocked)) => {
                     Arc::make_mut(&mut self.pending).get_mut(&a).expect("present").void = Some((frame, kind));
-                    out.voided.push((a, p.version, kind));
+                    out.voided.push((a, p.version, kind, blocked));
                 }
             }
         }
@@ -530,11 +559,16 @@ impl World {
 
     /// Makes `p` asset `a`'s current version at the end of `frame` (`F`): the re-key of 7.9, judged again now for
     /// its author, then the row, which runs from `frame + 1`. All or nothing: an author who no longer holds `EDIT`,
-    /// or a re-key that is now blocked or too large, voids the commit instead.
-    fn activate(&mut self, a: AssetId, p: &PendingCommit, frame: Frame) -> Result<Option<RekeyReport>, VoidKind> {
+    /// or a re-key that is now blocked or too large, voids the commit instead; a block names its objects.
+    fn activate(
+        &mut self,
+        a: AssetId,
+        p: &PendingCommit,
+        frame: Frame,
+    ) -> Result<Option<RekeyReport>, (VoidKind, Option<Blocked>)> {
         // An author whose `EDIT` was revoked since the commit: their pending code stops too.
         if !self.permits(p.author, perm::EDIT) {
-            return Err(VoidKind::AuthorRevokedAtActivation);
+            return Err((VoidKind::AuthorRevokedAtActivation, None));
         }
         let mut report = None;
         if let Some(m) = self.modules.get(&a).cloned()
@@ -544,20 +578,20 @@ impl World {
             let new: Option<Vec<_>> = p.components.iter().map(|c| reg.get(*c).cloned()).collect();
             // Unreachable: the commit registered every one of them, and registered ids are never removed.
             debug_assert!(new.is_some(), "a pending commit's components are registered");
-            let new = new.ok_or(VoidKind::RekeyBlockedAtActivation)?;
+            let new = new.ok_or((VoidKind::RekeyBlockedAtActivation, None))?;
             let (r, moves) = self.rekey_plan(&m.components, &new, p.author);
             if r.rows > MAX_REKEY_ROWS {
-                return Err(VoidKind::RekeyTooLarge);
+                return Err((VoidKind::RekeyTooLarge, None));
             }
             if !r.blocked.is_empty() {
-                return Err(VoidKind::RekeyBlockedAtActivation);
+                return Err((VoidKind::RekeyBlockedAtActivation, Some(Blocked::of(&r.blocked))));
             }
             // Unreachable once the plan has passed: its moves name rows it just read. Mapped to a void, not a panic,
             // but debug builds flag it so a future failure is not taken for a block.
             let mut w = self.clone();
             let moved = w.apply_rekey(moves, p.version.entry, p.version.op);
             debug_assert!(moved.is_ok(), "a planned re-key applies: {moved:?}");
-            moved.map_err(|_| VoidKind::RekeyBlockedAtActivation)?;
+            moved.map_err(|_| (VoidKind::RekeyBlockedAtActivation, None))?;
             *self = w;
             report = Some(r);
         }
@@ -614,9 +648,9 @@ impl World {
                     if report.rows > MAX_REKEY_ROWS {
                         return Err(Reason::TooLarge { limit: MAX_REKEY_ROWS });
                     }
-                    // `RekeyBlocked { objects, more }` once pe-seams has it (asked of @engine-architect).
+                    // The first 16 blocking objects in id order, and how many more (S2 v1.6).
                     if !report.blocked.is_empty() {
-                        return Err(invalid());
+                        return Err(rekey_blocked(&report.blocked));
                     }
                 }
                 ids
