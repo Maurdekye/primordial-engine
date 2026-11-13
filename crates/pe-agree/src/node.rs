@@ -139,7 +139,7 @@ pub struct RateBudget {
 impl NodeConfig {
     /// The budget at the world's frame rate: `entries_per_frame × rate_hz × budget_slack + extra_per_s` entries per
     /// second, a burst of `burst_s` of that and a pending cap of `pending_s`, each at least its floor. With the
-    /// defaults: 255/s, 127 and 1,020 at 60 Hz; 480/s, 240 and 1,920 at 120 Hz; the floors (150/s, 75, 600) at 30 Hz.
+    /// defaults: 255/s, 127 and 1,020 at 60 Hz; 480/s, 240 and 1,920 at 120 Hz; at 30 Hz the rate's floor applies: 150/s, a burst of 75 and 600 pending.
     /// Every member must use the same settings, or some would refuse an honest member's entries.
     pub fn rate_budget(&self, rate_hz: u32) -> RateBudget {
         let per_frame = self.entries_per_frame as f64 * rate_hz as f64 * self.budget_slack;
