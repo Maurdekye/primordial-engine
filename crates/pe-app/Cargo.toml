@@ -21,6 +21,11 @@ pe-render = { path = "../pe-render" }
 pe-xr = { path = "../pe-xr" }
 pe-diverge = { path = "../pe-diverge" }
 
+# The two-member test: pe-seams's test keys, and Bytes for its in-process Transport.
+[dev-dependencies]
+pe-seams = { path = "../pe-seams", features = ["world-api", "test-util"] }
+bytes.workspace = true
+
 # The host clock reads CLOCK_MONOTONIC there (src/clock.rs); on Windows it reads QPC, which needs no crate.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
