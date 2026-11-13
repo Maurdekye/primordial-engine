@@ -19,6 +19,7 @@ pub mod input;
 pub mod preset;
 mod read;
 mod replica;
+pub mod script;
 pub mod tree;
 mod world;
 
@@ -28,6 +29,7 @@ pub use input::{HandPose, Input, InputSettings, input_phase};
 pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
 pub use replica::{GRAVITY, Settings};
+pub use script::{EngineComponent, LogicReport, ModuleRow, RekeyReport, script_component_id};
 pub use tree::WorldTree;
 pub use world::{
     BlobStore, Claim, DEPTH_LIMIT, DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, perm,

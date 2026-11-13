@@ -32,9 +32,11 @@ struct SnapColumn {
     col: Column,
 }
 
-/// A copy of a store's state at one frame.
+/// A copy of a store's state at one frame, its registry included: a component registered after the snapshot
+/// (world-model.md 7.9) is gone again after a restore.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    registry: Arc<Registry>,
     frame: Frame,
     seed: u64,
     objects: Arc<Vec<ObjectId>>,
@@ -70,6 +72,7 @@ impl SimStore {
     /// A snapshot of the current state. O(columns): buffers are shared, not copied.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            registry: Arc::clone(&self.registry),
             frame: self.frame,
             seed: self.seed,
             objects: Arc::clone(&self.objects),
@@ -86,15 +89,20 @@ impl SimStore {
         }
     }
 
-    /// Restores a snapshot of this world. Fails, leaving the store unchanged, if a component's schema
-    /// differs from the registry's.
+    /// Restores a snapshot of this world, its registry with it, so a registration since the snapshot is undone and
+    /// one before it comes back. Fails, leaving the store unchanged, if the snapshot's registry and this store's give
+    /// one id two descriptions (a snapshot of another world), or a column's schema is not its registry's.
     pub fn restore(&mut self, s: &Snapshot) -> Result<(), Error> {
+        if let Some(d) = s.registry.iter().find(|d| self.registry.get(d.id()).is_some_and(|m| m != *d)) {
+            return Err(Error::SchemaMismatch { component: d.id().0 });
+        }
         for c in &s.columns {
-            match self.registry.get(c.id) {
+            match s.registry.get(c.id) {
                 Some(d) if d.schema_hash() == c.schema_hash => {}
                 _ => return Err(Error::SchemaMismatch { component: c.id.0 }),
             }
         }
+        self.registry = Arc::clone(&s.registry);
         self.frame = s.frame;
         self.seed = s.seed;
         self.objects = Arc::clone(&s.objects);
@@ -194,7 +202,8 @@ impl Snapshot {
                 return Err(Error::Corrupt("column ids not sorted, empty, or not live objects"));
             }
             let data = r.take(len.checked_mul(size).ok_or(Error::Corrupt("size overflow"))?)?;
-            for (i, row) in data.chunks_exact(size).enumerate() {
+            // A zero-size component's rows are all empty (and have no field to check).
+            for (i, row) in data.chunks_exact(size.max(1)).enumerate().filter(|_| size > 0) {
                 if let Some(f) = desc.invalid_field(row) {
                     return Err(Error::InvalidValue { component: id.0, object: ids[i], field: f.to_string() });
                 }
@@ -243,7 +252,7 @@ impl Snapshot {
                 }
             }
         }
-        Ok(Snapshot { frame, seed, objects: Arc::new(objects), columns })
+        Ok(Snapshot { registry: Arc::new(registry.clone()), frame, seed, objects: Arc::new(objects), columns })
     }
 }
 

@@ -41,7 +41,32 @@ fn id_be(id: ObjectId) -> [u8; 16] {
     id.to_u128().to_be_bytes()
 }
 
-fn kind_code(k: FieldKind) -> u8 {
+/// The field kind a frozen 6.6 code names, if any.
+pub(crate) fn kind_of_code(c: u8) -> Option<FieldKind> {
+    const ALL: [FieldKind; 18] = [
+        FieldKind::U8,
+        FieldKind::U16,
+        FieldKind::U32,
+        FieldKind::U64,
+        FieldKind::I8,
+        FieldKind::I16,
+        FieldKind::I32,
+        FieldKind::I64,
+        FieldKind::F32,
+        FieldKind::F64,
+        FieldKind::Bool,
+        FieldKind::ObjectRef,
+        FieldKind::BlobRef,
+        FieldKind::SimBlobRef,
+        FieldKind::Pos,
+        FieldKind::MemberKey,
+        FieldKind::EntryRef,
+        FieldKind::Hash,
+    ];
+    ALL.into_iter().find(|&k| kind_code(k) == c)
+}
+
+pub(crate) fn kind_code(k: FieldKind) -> u8 {
     match k {
         FieldKind::U8 => 0,
         FieldKind::U16 => 1,
@@ -66,7 +91,7 @@ fn kind_code(k: FieldKind) -> u8 {
 
 /// A component description's bytes (6.6): `lp(name) ‖ row size ‖ field count ‖ per field, in offset order: lp(name)
 /// ‖ kind ‖ offset ‖ count ‖ lp(unit)`. pe-sim keeps fields sorted by offset.
-fn desc_bytes(d: &ComponentDesc) -> Vec<u8> {
+pub(crate) fn desc_bytes(d: &ComponentDesc) -> Vec<u8> {
     let mut b = Vec::new();
     lp(&mut b, d.name().as_bytes());
     b.extend_from_slice(&(d.size() as u32).to_le_bytes());
@@ -268,9 +293,16 @@ impl World {
             table::REGISTRY => {
                 for d in self.store.registry().iter() {
                     let desc = desc_bytes(d);
-                    let mut v = Hash::of("pe.schema", &desc).0.to_vec();
+                    // The registering script asset, zero for an engine component (6.6, slice D).
+                    let mut v = self.script_ids.get(&d.id()).copied().unwrap_or([0; 32]).to_vec();
+                    v.extend_from_slice(&Hash::of("pe.schema", &desc).0);
                     v.extend_from_slice(&desc);
                     e.push((d.id().0.to_be_bytes().to_vec(), v));
+                }
+            }
+            table::MODULES => {
+                for (a, m) in self.modules.iter() {
+                    e.push((a.to_vec(), m.to_bytes()));
                 }
             }
             table::GOVERNANCE => {
@@ -348,7 +380,7 @@ impl World {
                     e.push((m.0.to_vec(), v));
                 }
             }
-            // Lines and modules: no rows in M1 yet.
+            // Lines: no rows in M1 yet.
             _ => {}
         }
         e.sort();
