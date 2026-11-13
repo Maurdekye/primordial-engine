@@ -734,3 +734,36 @@ fn under_interpolation_a_correction_inside_a_gaps_batch_still_blends() {
     assert!(cued, "the late push is cued");
     assert!(dist(prev, b) < 1e-6, "the ball reaches B");
 }
+
+/// At a gap, an effect that was playing and final before it plays on; one not yet final, whose retraction may have
+/// been in the lost views, stops (render.md D6 and 3; @coordinator-opus).
+#[test]
+fn a_gap_stops_only_effects_whose_retraction_may_be_lost() {
+    use pe_render::effects::EffectGate;
+    let mut gate = EffectGate::new(EffectSettings::default());
+    let keyed = |frame: u64, ordinal: u32| {
+        let mut e = effect(frame, true, false, None);
+        e.key.ordinal = ordinal;
+        e
+    };
+    // Frame 10's effect plays and goes final (final_frame 20); frame 24's plays, not yet final.
+    let mut v = with_effects(10, vec![keyed(10, 0)], vec![]);
+    v.final_frame = Some(Frame(5));
+    assert_eq!(plays(&gate.take(&v, 60, frame_time(10, 60))), 1);
+    let mut v = with_effects(24, vec![keyed(24, 1)], vec![]);
+    v.final_frame = Some(Frame(20));
+    assert_eq!(plays(&gate.take(&v, 60, frame_time(24, 60))), 1);
+    // A gap; the newest view lists neither.
+    let mut newest = with_effects(60, vec![], vec![]);
+    newest.final_frame = Some(Frame(55));
+    let stops: Vec<EffectKey> = gate
+        .gap(&newest)
+        .into_iter()
+        .filter_map(|c| match c {
+            EffectCommand::Stop(k) => Some(k),
+            EffectCommand::Play(_) => None,
+        })
+        .collect();
+    assert_eq!(stops, vec![keyed(24, 1).key], "only the effect that wasn't final before the gap stops");
+    assert_eq!(gate.counters().gap_stops, 1);
+}

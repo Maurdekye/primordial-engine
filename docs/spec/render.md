@@ -94,8 +94,12 @@ Numbers marked [I] are starting values, tuned at the M1 headset test.
   - **A gap** is a batch that doesn't start where the reader's last one ended: views lost to the span (a hitch), or
     taken by another reader (a handoff between the window and the XR thread). Then the display layer blends every
     object from where it was drawn to the frame's target, by D3's rules with the cue, once the whole batch is in. The
-    effect gate stops every played effect the newest view doesn't list, and the notices drop what they hold pending
-    (8.1).
+    notices drop what they hold pending (8.1). The effect gate keeps every played effect of a frame below the
+    `final_frame` of the last view it took before the gap: those were final, so no lost view can have retracted them,
+    and a sustained one plays on (@coordinator-opus). It stops the newer ones, whose retraction may
+    have been lost, unless the newest view lists them. S5 lists effects as emitted, not what is on, so a reader can
+    know no more. A "what's on" field in S5 would be needed once a sustained effect kind exists; M1's six kinds are
+    events. pe-world's views carry no effects yet, so test 6 counts them (0) and display_layer.rs tests the rule.
   - **One reader at a time.** If two ever run at once, each gets its own queue (`FrameSlot::reader()`, not built).
   - `Presenter::frame` (one view, the newest) stays for tests and for callers not yet on batches; it reads nothing
     published between its calls.
