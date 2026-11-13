@@ -144,13 +144,44 @@ impl NodeConfig {
     /// (@engine-architect m8e5846cff93e). The quorum rule is fixed in code. Local settings (the cut lag, fetch retry,
     /// retention, relay) are left out too: members may differ there.
     pub fn consensus_hash(&self) -> Hash {
+        // Every field named, none skipped with `..`: a new field doesn't compile until it is classified as
+        // must-match (hashed) or local (@design-reviewer m08ffc71b27c6). Add it to the test's lists too.
+        let NodeConfig {
+            // Carried by the genesis record itself; the line derives from it.
+            line: _,
+            members: _,
+            genesis: _,
+            // Must match.
+            timing,
+            frame_tolerance_s,
+            entries_per_frame,
+            extra_per_s,
+            budget_slack,
+            burst_s,
+            pending_s,
+            min_rate_per_s,
+            min_burst,
+            min_pending,
+            // Local.
+            cut_lag_s: _,
+            cut_lag_floor_s: _,
+            cut_lag_cap_s: _,
+            cut_lag_margin_s: _,
+            fetch_retry_ns: _,
+            keep_s: _,
+            keep_bytes: _,
+            relay: _,
+            #[cfg(feature = "mutants")]
+                mutation: _,
+        } = self;
         let mut h = Hasher::new("pe.agree.consensus.v1");
-        h.write_u64(self.frame_tolerance_s.to_bits());
-        h.write_u64(self.entries_per_frame as u64).write_u64(self.extra_per_s as u64);
-        h.write_u64(self.budget_slack.to_bits()).write_u64(self.burst_s.to_bits()).write_u64(self.pending_s.to_bits());
-        h.write_u64(self.min_rate_per_s as u64).write_u64(self.min_burst as u64).write_u64(self.min_pending as u64);
-        let t = &self.timing;
-        h.write_u64(t.cadence_ns as u64).write_u64(t.min_timeout_ns as u64).write_u64(t.max_timeout_ns as u64);
+        h.write_u64(frame_tolerance_s.to_bits());
+        h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
+        h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
+        h.write_u64(*min_rate_per_s as u64).write_u64(*min_burst as u64).write_u64(*min_pending as u64);
+        h.write_u64(timing.cadence_ns as u64)
+            .write_u64(timing.min_timeout_ns as u64)
+            .write_u64(timing.max_timeout_ns as u64);
         h.finish()
     }
 
