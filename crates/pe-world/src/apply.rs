@@ -178,9 +178,10 @@ fn edit_writable(c: ComponentId) -> bool {
 }
 
 /// What [`World::end_frame`] did to scripts (logic.md 6.2a), in asset order, each commit named by its asset and its
-/// version (the commit's entry and op): the commits activated, with their re-key's report (`None` for a first
-/// version or a same-source commit), and the commits voided, with why. pe-replica publishes them as S5's
-/// `FrameView.activations` (@coordinator-opus).
+/// version (the commit's entry and op): the commits activated, with their re-key's report, and the commits voided,
+/// with why. The report is `None` when no re-key was needed, so no object changed: a script's first version (no
+/// rows to move) or a same-source commit (a toolchain or SDK change, the same components). pe-replica publishes
+/// them as S5's `FrameView.activations` (@coordinator-opus).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FrameEnd {
     pub activated: Vec<(AssetId, Version, Option<RekeyReport>)>,
@@ -528,9 +529,13 @@ impl World {
     }
 
     /// Makes `p` asset `a`'s current version at the end of `frame` (`F`): the re-key of 7.9, judged again now for
-    /// its author, then the row, which runs from `frame + 1`. All or nothing: a re-key that is now blocked or too
-    /// large voids the commit instead.
+    /// its author, then the row, which runs from `frame + 1`. All or nothing: an author who no longer holds `EDIT`,
+    /// or a re-key that is now blocked or too large, voids the commit instead.
     fn activate(&mut self, a: AssetId, p: &PendingCommit, frame: Frame) -> Result<Option<RekeyReport>, VoidKind> {
+        // An author whose `EDIT` was revoked since the commit: their pending code stops too.
+        if !self.permits(p.author, perm::EDIT) {
+            return Err(VoidKind::AuthorRevokedAtActivation);
+        }
         let mut report = None;
         if let Some(m) = self.modules.get(&a).cloned()
             && m.v() != p.v()
@@ -547,8 +552,12 @@ impl World {
             if !r.blocked.is_empty() {
                 return Err(VoidKind::RekeyBlockedAtActivation);
             }
+            // Unreachable once the plan has passed: its moves name rows it just read. Mapped to a void, not a panic,
+            // but debug builds flag it so a future failure is not taken for a block.
             let mut w = self.clone();
-            w.apply_rekey(moves, p.version.entry, p.version.op).map_err(|_| VoidKind::RekeyBlockedAtActivation)?;
+            let moved = w.apply_rekey(moves, p.version.entry, p.version.op);
+            debug_assert!(moved.is_ok(), "a planned re-key applies: {moved:?}");
+            moved.map_err(|_| VoidKind::RekeyBlockedAtActivation)?;
             *self = w;
             report = Some(r);
         }

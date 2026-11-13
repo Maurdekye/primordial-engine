@@ -599,6 +599,24 @@ fn a_rekey_blocked_by_the_time_of_activation_voids_the_commit() {
     assert_eq!(row(&f.w, blink(1).id()), Some(f32s(&[2.0, 0.5])), "nothing re-keyed");
 }
 
+/// An author whose `EDIT` is revoked between the commit and `F`: the commit is voided at `F`, the old version
+/// stays (@coordinator-opus).
+#[test]
+fn an_author_revoked_before_activation_voids_the_commit() {
+    let mut f = fx();
+    with_v1(&mut f);
+    let base = f.w.modules()[&ASSET].version;
+    let t = commit(ASSET, Some(base), 2, 1);
+    ok(&run(&mut f.w, &mut f.a, &t));
+    let ka = pe_seams::test_util::TestKeys::new(1, 3).key(0);
+    f.w.set_member(ka, perm::AGENT);
+    ok(&run(&mut f.w, &mut f.b, &attest_of(&t)));
+    let pv = f.w.pending()[&ASSET].version;
+    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![(ASSET, pv, VoidKind::AuthorRevokedAtActivation)]);
+    assert_eq!(f.w.modules()[&ASSET].version, base);
+    assert_eq!(row(&f.w, blink(1).id()), Some(f32s(&[2.0, 0.5])), "nothing re-keyed");
+}
+
 /// The modules table's value round-trips with a pending commit, attested and voided ones included.
 #[test]
 fn an_attestation_round_trips() {
