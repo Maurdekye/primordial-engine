@@ -2236,6 +2236,7 @@ dependencies = [
  "blake3",
  "bytemuck",
  "bytes",
+ "pe-agree",
  "pe-replica",
  "pe-seams",
  "pe-sim",
