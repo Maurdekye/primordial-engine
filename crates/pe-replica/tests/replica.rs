@@ -12,7 +12,7 @@ use pe_replica::{Phase, ReplicaConfig, ReplicaImpl, WorldModel, apply_order};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
     ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntrySource, FinalCut, Finalized, Frame, GroupSel, Hash,
-    ImportError, LineId, ObjectId, Replica, RootError, SignedEntry, SimRate,
+    ImportError, LeafKey, LineId, ObjectId, Offset, Pos, Replica, RootError, SignedEntry, SimRate,
 };
 
 /// Agreement's stand-in: entries by frame, in a fixed order (chain, then seq), whatever order they arrive in.
@@ -816,4 +816,77 @@ fn the_agreed_state_is_cv_s() {
     assert_eq!(bad.finalize(&FinalCut { cut: c32, root: r32, voters: vec![] }, &mut s), Finalized::Agreed);
     let (frame, state) = bad.agreed_state().expect("Cv at 32");
     assert_eq!((frame, state.root()), (Frame(32), r32));
+}
+
+// ---- the world's settings on import (world-model.md 6.6; @coordinator-opus) --------------------------
+
+/// A replica of `world`, at its rate, that had every entry from the start, run to `to`.
+fn reference_in(world: MockWorld, to: u64) -> (ReplicaImpl<MockWorld>, Source) {
+    let rate = world.settings().rate;
+    let mut config = ReplicaConfig::new(rate, Duration::from_millis(133), Arc::new(MockClock::new(rate)));
+    config.cut_every = K;
+    let mut r = ReplicaImpl::new(world, config).expect("a replica");
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    r.advance(Frame(to), &mut s);
+    (r, s)
+}
+
+/// A world whose gravity and origin are not the defaults, imported by a default joiner (@coordinator-opus, item 6). The joiner's new physics world takes them from the imported world, not from its own
+/// construction, so the import checks and the joiner steps on with the host's roots. When a transient fault then
+/// diverges the joiner, rung 1's replay re-simulates with the imported settings and agrees with the host again. An
+/// import without the config record keeps the joiner's own settings, and the root check refuses it.
+#[test]
+fn a_joiner_takes_gravity_and_origin_from_the_world_it_imports_and_rung_one_agrees_with_the_host() {
+    let origin = Pos::ORIGIN.checked_add(Offset([40.0, 0.0, -25.0])).expect("an origin");
+    let host_world = MockWorld::new(DomainId(0), SimRate::DEFAULT).with_settings([0.0, -3.0, 0.0], origin);
+    let (mut host, mut hs) = reference_in(host_world, 64);
+    let c32 = cut(&scene(), 4, 32);
+    let import = import_from(&mut host, &mut hs, &c32);
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    // The joiner's S3 held these entries before it joined: no change to report below its floor.
+    s.take_changed_from();
+    let mut joiner = replica();
+    let before = (joiner.frame(), joiner.world().root());
+    let mut no_config = import.clone();
+    no_config.records.retain(|r| r.key != LeafKey::Config);
+    let got = joiner.import_at_cut(&GroupSel::Domain, no_config, &mut s);
+    assert!(matches!(got, Err(ImportError::RootMismatch { .. })), "my own settings are not the world's: {got:?}");
+    assert_eq!((joiner.frame(), joiner.world().root()), before, "the live state is unchanged");
+    assert_eq!(joiner.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(import.target_root));
+    assert_eq!(joiner.world().settings(), host.world().settings(), "the host's gravity and origin");
+    let fc32 = FinalCut { cut: c32, root: import.target_root, voters: vec![] };
+    assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
+    joiner.world().glitch_at(Frame(36));
+    joiner.advance(Frame(48), &mut s);
+    let (c40, r40) = (cut(&scene(), 5, 40), host.live_root(Frame(40)).expect("live"));
+    let fc40 = FinalCut { cut: c40.clone(), root: r40, voters: vec![] };
+    let Finalized::Diverged { mine } = joiner.finalize(&fc40, &mut s) else { panic!("the glitch shows at 40") };
+    assert_ne!(mine, r40);
+    assert_eq!(joiner.replay_to(&c40, &mut s), Ok(r40), "rung 1 re-simulates with the imported settings");
+    assert_eq!(joiner.finalize(&fc40, &mut s), Finalized::Agreed);
+    joiner.advance(Frame(64), &mut s);
+    let from_40 = |r: &ReplicaImpl<MockWorld>| roots(r, 64).into_iter().filter(|r| r.0 >= 40).collect::<Vec<_>>();
+    assert_eq!(from_40(&joiner), from_40(&host), "the host's roots from the repaired cut on");
+    assert_eq!(joiner.faults(), 0);
+}
+
+/// A world runs at one rate (@coordinator-opus, item 3): a 30 Hz world's state imported by a 60 Hz
+/// joiner is `RateMismatch`, a fault to report and never a rate to adopt, and the joiner's live state is unchanged.
+#[test]
+fn an_import_of_a_world_at_another_rate_is_refused_and_changes_nothing() {
+    let thirty = SimRate::new(30).expect("30 Hz");
+    let (mut host, mut hs) = reference_in(MockWorld::new(DomainId(0), thirty), 48);
+    let c32 = cut(&scene(), 4, 32);
+    let import = import_from(&mut host, &mut hs, &c32);
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    let mut joiner = replica();
+    joiner.advance(Frame(8), &mut s);
+    let live = (joiner.frame(), roots(&joiner, 8), joiner.world().root());
+    let got = joiner.import_at_cut(&GroupSel::Domain, import, &mut s);
+    assert_eq!(got, Err(ImportError::RateMismatch { world: thirty, mine: SimRate::DEFAULT }));
+    assert_eq!((joiner.frame(), roots(&joiner, 8), joiner.world().root()), live, "the live state is unchanged");
+    assert_eq!(joiner.world().settings().rate, SimRate::DEFAULT);
 }
