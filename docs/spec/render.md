@@ -307,6 +307,10 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
     that pose times the S5 grip offset (xr.md 5.6, X1). "Draw where simulated" is the other setting.
   - On the desktop the own hand is drawn at its current input pose (the mouse ray now, section 9): the desktop's
     late-latch, never extrapolated or corrected. A held object follows it at the grip offset.
+  - **Markers** (`hands::markers`): when the frame view has no own-hand object to move (no simulation, as in pe-xr's
+    smoke run, or before the session publishes the local member's hand bodies), each tracked hand is drawn as a
+    4 × 6 × 12 cm block along its pose's Z with a 12 cm pointer out of the −Z face, blue for the left hand and
+    orange for the right, sized in the rig frame. They carry `ObjectId::NONE`, so no highlight or label lands on them.
   - **When a hold ends** (released, thrown, or undone because a race was lost), the object enters the display layer
     with its last drawn pose and velocity. Its offset is set from there and blends; a lost grab also plays its short
     cue (D7).
