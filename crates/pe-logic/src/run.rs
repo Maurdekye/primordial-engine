@@ -331,6 +331,11 @@ pub struct StageReport {
     /// Column bytes copied in, and skipped because the area held them unchanged.
     pub copied_in: u64,
     pub skipped_in: u64,
+    /// Batches run, and the host's merge-walk steps over sorted column ids to find the bound objects and their rows:
+    /// host work fuel does not meter, so it is linear in the bound columns' lengths per call, whatever batch size the
+    /// script declares (shader-reviewer, 569cf551).
+    pub batches: u32,
+    pub join_steps: u64,
     /// Times the floating-point environment had changed at a guest entry and was restored (5.2b; N11). Local,
     /// not world state.
     pub fp_resets: u32,
@@ -576,10 +581,15 @@ fn call_system(
     settings: RunSettings,
     report: &mut StageReport,
 ) -> Result<(Rows, Vec<Cmd>), Fault> {
-    let objects = bound_objects(store, &plan.bound);
+    let objects = bound_objects(store, &plan.bound, &mut report.join_steps);
     if objects.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
+    // Each bound object's row index in each bound column, by one merge walk per column per call; each batch takes its
+    // slice (the store does not change during the call). A walk per batch from row 0 would grow with the square of
+    // the objects, at a batch size the script chooses.
+    let indices: Vec<Vec<usize>> =
+        plan.bound.iter().map(|b| row_indices(store.column_raw(b.id).0, &objects, &mut report.join_steps)).collect();
     let registry = store.registry().clone();
     let base = script.manifest.batch_addr as usize;
     let frame = store.frame();
@@ -615,17 +625,27 @@ fn call_system(
             let at = plan.ids_at as usize + 16 * k;
             area[at..at + 16].copy_from_slice(&bytes_of(id));
         }
-        for (b, &at) in plan.bound.iter().zip(&plan.columns) {
+        // Where this batch's rows sit in each bound column: batches are consecutive slices of `objects`.
+        let lo = batch_no * plan.rows;
+        let places: Vec<Place> = indices.iter().map(|ix| place(&ix[lo..lo + chunk.len()])).collect();
+        report.batches += 1;
+        for ((b, &at), pl) in plan.bound.iter().zip(&plan.columns).zip(&places) {
             let bytes = b.size * chunk.len();
             let held = Resident { at, id: b.id, bytes };
             if same_ids && script.resident.contains(&held) {
                 report.skipped_in += bytes as u64;
                 continue;
             }
-            for (k, &id) in chunk.iter().enumerate() {
-                let row = store.get_raw(b.id, id).expect("bound objects have every bound row");
-                let at = at as usize + b.size * k;
-                area[at..at + b.size].copy_from_slice(row);
+            let col = store.column_raw(b.id).1;
+            let at = at as usize;
+            match pl {
+                // The chunk's rows are one run of the column: one copy.
+                Place::Run(first) => area[at..at + bytes].copy_from_slice(&col[first * b.size..][..bytes]),
+                Place::Rows(ix) => {
+                    for (k, &i) in ix.iter().enumerate() {
+                        area[at + b.size * k..][..b.size].copy_from_slice(&col[i * b.size..][..b.size]);
+                    }
+                }
             }
             report.copied_in += bytes as u64;
         }
@@ -648,20 +668,50 @@ fn call_system(
 
         // Read back: the changed rows of the write columns, each validated, and the commands.
         let area = &script.inst.memory()[base..base + script.manifest.batch_cap as usize];
-        for (b, &at) in plan.bound.iter().zip(&plan.columns) {
+        for ((b, &at), pl) in plan.bound.iter().zip(&plan.columns).zip(&places) {
             if b.access != Access::Write {
                 continue;
             }
             let desc = registry.get(b.id).expect("bound at bind");
-            for (k, &id) in chunk.iter().enumerate() {
-                let new = &area[at as usize + b.size * k..][..b.size];
-                if store.get_raw(b.id, id) == Some(new) {
+            let col = store.column_raw(b.id).1;
+            let (at, n) = (at as usize, chunk.len());
+            let old_row = |k: usize| -> &[u8] {
+                let i = match pl {
+                    Place::Run(first) => first + k,
+                    Place::Rows(ix) => ix[k],
+                };
+                &col[i * b.size..][..b.size]
+            };
+            // Rows whose bytes may have changed: with a run, whole 256-byte blocks that compare equal are skipped
+            // (3.3a: one memcmp per unchanged block); otherwise every row is compared.
+            let mut changed = Vec::new();
+            match pl {
+                Place::Run(first) => {
+                    let (new, old) = (&area[at..at + n * b.size], &col[first * b.size..][..n * b.size]);
+                    let mut k = 0;
+                    for start in (0..new.len()).step_by(WRITE_BLOCK) {
+                        let end = (start + WRITE_BLOCK).min(new.len());
+                        if new[start..end] == old[start..end] {
+                            continue;
+                        }
+                        k = k.max(start / b.size);
+                        while k < n && k * b.size < end {
+                            changed.push(k);
+                            k += 1;
+                        }
+                    }
+                }
+                Place::Rows(_) => changed.extend(0..n),
+            }
+            for k in changed {
+                let new = &area[at + b.size * k..][..b.size];
+                if new == old_row(k) {
                     continue;
                 }
                 if let Some(field) = desc.invalid_field(new) {
                     return Err(Fault::InvalidRow { component: desc.name().into(), field: field.into() });
                 }
-                rows.push((b.id, id, new.to_vec()));
+                rows.push((b.id, chunk[k], new.to_vec()));
             }
         }
         let len = u32::from_le_bytes(area[CMD_LEN_AT..CMD_LEN_AT + 4].try_into().unwrap());
@@ -686,13 +736,62 @@ fn call_system(
     Ok((rows, cmds))
 }
 
-/// The store's objects with every bound component, in id order.
-fn bound_objects(store: &SimStore, bound: &[Bound]) -> Vec<ObjectId> {
-    let Some(first) = bound.iter().min_by_key(|b| store.count(b.id)) else { return Vec::new() };
-    if store.count(first.id) == 0 {
-        return Vec::new();
+/// The write-back's comparison block (logic.md 3.3a, measured: 256 B blocks against 0.62-0.68 ms by row).
+const WRITE_BLOCK: usize = 256;
+
+/// Where a batch's objects sit in one column: one run starting at a row index, or each row's index.
+enum Place<'a> {
+    Run(usize),
+    Rows(&'a [usize]),
+}
+
+/// A batch's row indices in one column (strictly increasing): one run if they are contiguous.
+fn place(ix: &[usize]) -> Place<'_> {
+    match ix.first() {
+        Some(&first) if ix.last() == Some(&(first + ix.len() - 1)) => Place::Run(first),
+        _ => Place::Rows(ix),
     }
-    store.objects().iter().copied().filter(|&id| bound.iter().all(|b| store.get_raw(b.id, id).is_some())).collect()
+}
+
+/// The row index of each of `objects` (sorted, every one with a row here) in a column whose sorted ids are `ids`: one
+/// merge walk, its steps added to `steps`. The check is one compare per row, kept in release: a broken invariant
+/// would otherwise copy another object's row.
+fn row_indices(ids: &[ObjectId], objects: &[ObjectId], steps: &mut u64) -> Vec<usize> {
+    let mut ix = Vec::with_capacity(objects.len());
+    let mut i = 0;
+    for &id in objects {
+        while ids[i] < id {
+            i += 1;
+        }
+        assert_eq!(ids[i], id, "bound objects have every bound row");
+        ix.push(i);
+        i += 1;
+    }
+    *steps += i as u64;
+    ix
+}
+
+/// The store's objects with every bound component, in id order: the smallest bound column's ids, filtered by a merge
+/// walk through each other bound column (N12).
+fn bound_objects(store: &SimStore, bound: &[Bound], steps: &mut u64) -> Vec<ObjectId> {
+    let Some(first) = bound.iter().min_by_key(|b| store.count(b.id)) else { return Vec::new() };
+    let mut out: Vec<ObjectId> = store.column_raw(first.id).0.to_vec();
+    *steps += out.len() as u64;
+    for b in bound {
+        if b.id == first.id || out.is_empty() {
+            continue;
+        }
+        let ids = store.column_raw(b.id).0;
+        let mut j = 0;
+        out.retain(|&id| {
+            while j < ids.len() && ids[j] < id {
+                j += 1;
+            }
+            j < ids.len() && ids[j] == id
+        });
+        *steps += j as u64;
+    }
+    out
 }
 
 fn spawned_by(store: &SimStore, mark: ComponentId, id: ObjectId) -> Option<ScriptKey> {

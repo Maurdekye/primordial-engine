@@ -118,8 +118,15 @@ A trap or a bad status discards the whole call: no row and no command of it is a
 - **A system call is all its batches.** Host functions read the store as it was when the call began, so the rows
   and commands of every batch are held until the last batch returns, then the rows are written and the commands
   applied, in batch order. A fault in any batch discards all of it.
-- **Changed rows** are found row by row against the store and validated with the store's own check
-  (`ComponentDesc::invalid_field`); the 256 B block comparison of 3.3a waits for raw column access in pe-sim (N12).
+- **Changed rows** are found against the store through `SimStore::column_raw` (N12, on main 18b60fde): when a
+  batch's objects are one run of the column, 256-byte blocks that compare equal are skipped (3.3a) and only rows in
+  differing blocks are compared; otherwise each row is compared at its index. Changed rows are validated with the
+  store's own check (`ComponentDesc::invalid_field`). The bound objects are a merge join of the bound columns'
+  sorted ids, and their row indices one merge walk per column per call, sliced per batch: host work fuel does not
+  meter stays linear in the columns' lengths whatever batch size the script declares (`StageReport::join_steps`;
+  @shader-reviewer). Copy-in is one copy per column when the rows are one run [V `tests/run.rs`,
+  `the_write_back_finds_exactly_the_changed_rows...`, `a_change_only_in_the_tail_of_a_row_that_straddles...`,
+  `finding_rows_is_one_merge_walk...`].
   A row that refers to an object that no longer exists is not refused: the store does not refuse one either.
 - **Command records** name the row that gave them (its index in the batch). A create's id is pe-core's
   `ObjectId::spawned(line, row's object, frame, n)`, `n` counting that object's creations in the frame across both
@@ -303,7 +310,7 @@ A peer process never panics on anything a module does [I; a test in 10.3].
   every time [I; the test below compares a warm rebuild with a clean one]. Decided (a), incremental off for every
   build, by @coordinator-opus on @fable-reviewer's advice (mcda7c814aebf), with conditions: every output-affecting
   setting is pinned rather than left to a default (below); the identity test also runs across two OSes (Windows and
-  Linux; a follow-up); and it runs in the landing gate (with @provenance-eng). The edit-time cost is to be measured
+  Linux, `scripts/iter_bench_xos.sh`, below); and it runs in the landing gate (with @provenance-eng). The edit-time cost is to be measured
   in a clean window; a noisy run on 2026-11-11 could not separate the two modes.
 - **Pinned, nothing left to a default or to the machine:** the profile keys above plus debug assertions and
   overflow checks off and no rpath; `-C target-cpu=mvp` with exactly the features of 5.3
@@ -324,6 +331,22 @@ A peer process never panics on anything a module does [I; a test in 10.3].
   `the_module_is_the_same_bytes...`: the lamp built from two copies of the sources at different places and depths,
   each with its own target directory, and rebuilt warm after a change and its undo, gives the same bytes and module
   hash, and no folder name is left in it; without pe-sdk's remap the two copies give 9,585 and 9,569 bytes.]
+- **Across OSes, every source file is remapped whole on Windows.** A folder remap keeps the host's separator below
+  the folder: from main 3353d65f the lamp built on Windows and on Linux (WSL, the same rustc 1.99.0 b940084d7 and
+  LLVM 23.1.1) gave 9,473 bytes each but sha256 d71f7a24 and aaf59021, 3 bytes apart, all in panic locations in
+  the data section: `/pe-sdk\src\guest.rs` and `src\lib.rs` against `/pe-sdk/src/guest.rs` and `src/lib.rs` [V
+  `scripts/iter_bench_xos.sh`, log in `spikes/out/iter-bench/logic-v0/xos/`]. The build now remaps, on Windows, each
+  file under pe-sdk's and the script's `src` (sources and `include!`d files) to its forward-slash name (the script's also by the relative path
+  cargo passes), and the Windows lamp became aaf59021, Linux's bytes [V]; the identity test refuses a `\` beside
+  `src` in a module (it fails without the remap). A module brought in with `#[path]` from outside `src` is not
+  covered; the module-hash comparison (6.2) reports it as a build fault, not a desync, which @coordinator-opus
+  accepted (m2dbeac2cdda2). The flags grow with the file count: 301 files
+  make 114,652 characters on Windows, past the 32,767 a Windows variable is said to hold, and the build still works
+  and gives the same module (std passes its own environment block; cargo moves a long rustc command line into an
+  argument file) [V `tests/lamp.rs`, `a_script_with_many_files_builds_the_same_module`; @shader-reviewer's Low,
+  refuted by measurement]. Alternative not taken (same ruling: not worth leaving the pinned stable toolchain): rustc's
+  `-Z location-detail=none` drops file names from panic locations altogether, but is unstable (needs
+  `RUSTC_BOOTSTRAP` on the pinned stable toolchain).
 - The build runs as a child process at idle priority, one at a time per machine, in its own target directory per
   world.
 - **Reproducibility is a requirement, not an assumption:** two machines' builds of one source must give the same
@@ -691,7 +714,7 @@ To agree with @engine-architect (seams) and the owners named.
 | N9 | WS-ci | `audit_native.py`'s allowlist covers wasmtime's tree with the patch, on Linux and macOS | 5.4 |
 | N11 | WS-state | The floating-point guard (FTZ/DAZ, rounding) runs on the thread that runs wasm, at every entry into a guest (5.2b) | Non-NaN results depend on it |
 | N10 | WS-render, S5 | Events emitted by scripts reach the frame view once, not once per replay (plan M1: effects fire once) | 3.3 step 3 |
-| N12 | WS-world (pe-sim) | Raw column access by `ComponentId`: the sorted ids and the row bytes, read-only (asked 2026-11-11) | The bound-object join and the 256 B block write-back of 3.3a; v0 goes row by row through `get_raw` |
+| N12 | WS-world (pe-sim) | Raw column access by `ComponentId`: the sorted ids and the row bytes, read-only. **Done:** `SimStore::column_raw`, main 18b60fde; the runner uses it | The bound-object join and the 256 B block write-back of 3.3a |
 | N13 | WS-world (pe-world) | Where a script's components are registered in a live world (the store's registry is fixed at `SimStore::new`), and the runner's hook in the replica's two logic stages, with its report turned into `Effects` (created, destroyed, written rows). The spawn mark's id reserved; no edit writes or removes the mark, and `Copy`, paste and import drop it. The world's destroy keeps its effects in the store, since the runner undoes by restoring the store | 3.3, 3.5, 3.6, N1, N5 |
 
 ## 10. M1 and M2

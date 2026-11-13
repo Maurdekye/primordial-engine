@@ -177,6 +177,11 @@ fn the_module_is_the_same_bytes_from_any_folder_and_from_a_warm_cache() {
     for needle in ["second copy", "target-a", "repro", "pe-logic"] {
         assert!(!text.contains(needle), "{needle:?} is in the module");
     }
+    // Source paths use `/` whatever the host, so Windows and Linux build the same bytes (iter_bench_xos.sh found
+    // `\` in pe-sdk's and the script's panic locations).
+    for needle in ["src\\", "\\src"] {
+        assert!(!text.contains(needle), "{needle:?} is in the module: a host path separator");
+    }
     // The hash every machine compares (6.2 step 3) is the same for both.
     let s = Settings::default();
     let e = runtime::engine(&s).unwrap();
@@ -232,7 +237,7 @@ fn a_script_crate_outside_the_rules_is_refused_before_it_builds() {
 #[test]
 fn a_script_may_not_choose_its_own_pe_sdk() {
     // A crate named pe-sdk elsewhere, which could carry a build script: refused before cargo runs (shader-reviewer,
-    // round 2). The same script against the engine's pe-sdk is accepted by the check.
+    // round 2). Building against the engine's pe-sdk is what every lamp and tally build here does.
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("fake-sdk");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("pe-sdk/src")).unwrap();
@@ -255,4 +260,30 @@ fn a_script_may_not_choose_its_own_pe_sdk() {
         Err(pe_logic::build::BuildError::Manifest(m)) => assert!(m.contains("engine's pe-sdk"), "{m}"),
         other => panic!("expected a refusal, got {:?}", other.map(|b| b.len())),
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn a_script_with_many_files_builds_the_same_module() {
+    // On Windows each file under src adds path remaps to the flags, which travel in one environment variable. 301
+    // files make 114,652 characters (measured), past the 32,767 a Windows variable is said to hold; the build still
+    // works and gives the lamp's own bytes (shader-reviewer's Low, refuted by measurement).
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("many-files");
+    let lamp = lamp_under(&root);
+    let pad = lamp.join("src").join("padding");
+    std::fs::create_dir_all(&pad).unwrap();
+    for k in 0..300 {
+        std::fs::write(pad.join(format!("a_file_that_is_never_compiled_{k:03}.txt")), "").unwrap();
+    }
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("many-files-target");
+    let _ = std::fs::remove_dir_all(&target);
+    let many =
+        pe_logic::build::build(&lamp, &root.join("crates/pe-sdk"), &target, true).unwrap_or_else(|e| panic!("{e}"));
+    let plain_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("few-files");
+    let plain = lamp_under(&plain_root);
+    let plain_target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("few-files-target");
+    let _ = std::fs::remove_dir_all(&plain_target);
+    let few = pe_logic::build::build(&plain, &plain_root.join("crates/pe-sdk"), &plain_target, true)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(many == few, "{} vs {} bytes", many.len(), few.len());
 }
