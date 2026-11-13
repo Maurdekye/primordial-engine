@@ -118,7 +118,7 @@ impl EmptyReplica {
     }
 }
 
-fn view_at(clock: &dyn FrameClock, frame: Frame) -> Arc<FrameView> {
+pub(crate) fn view_at(clock: &dyn FrameClock, frame: Frame) -> Arc<FrameView> {
     Arc::new(FrameView {
         frame,
         domain: DomainId(0),
