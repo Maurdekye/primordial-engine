@@ -21,7 +21,16 @@ use pe_seams::{
     SignedEntry, Tree, ViewCounters,
 };
 
+use pe_replica::{Phase, apply_order};
+
 use crate::kv::{self, KvEntry, KvReplica, Op, Template};
+
+/// A two-phase world like pe-replica's `MockWorld`: a frame's `Class::Input` entries apply before the rest. It reads
+/// only the entry, never state (coordinator).
+#[must_use]
+pub fn inputs_first(e: &SignedEntry) -> Phase {
+    if e.entry.class == pe_seams::Class::Input { Phase::First } else { Phase::Second }
+}
 
 /// An entry payload carrying `ops`, in the mock's codec.
 pub fn payload(ops: &[Op]) -> bytes::Bytes {
@@ -60,6 +69,9 @@ pub struct KvSeamReplica {
     view: Arc<FrameView>,
     /// S2 v1.1's budget, kept and unused (see `set_budget`).
     budget: std::time::Duration,
+    /// The in-frame apply order (coordinator): every frame's entries go through pe-replica's
+    /// `apply_order` with this phase. Every entry is `First` by default, which keeps the agreed order.
+    phase: fn(&SignedEntry) -> Phase,
 }
 
 impl KvSeamReplica {
@@ -80,7 +92,20 @@ impl KvSeamReplica {
             dirty_from: None,
             view: Arc::new(Self::empty_view(0)),
             budget: std::time::Duration::MAX,
+            phase: |_| Phase::First,
         }
+    }
+
+    /// The same replica with a two-phase world, or any other phase function (the order tests use it).
+    #[must_use]
+    pub fn with_phase(mut self, phase: fn(&SignedEntry) -> Phase) -> Self {
+        self.phase = phase;
+        self
+    }
+
+    /// This replica's phase function: the order its own frames apply in, and so the order P2's replay must use.
+    pub fn phase(&self) -> fn(&SignedEntry) -> Phase {
+        self.phase
     }
 
     fn empty_view(frame: u64) -> FrameView {
@@ -108,7 +133,8 @@ impl KvSeamReplica {
         &self.live
     }
 
-    /// Steps `state` one frame with `entries`, recording outcomes if asked.
+    /// Steps `state` one frame with `entries`, in apply order (the one path every replay and advance takes),
+    /// recording outcomes if asked.
     fn step(
         &self,
         state: &mut KvReplica,
@@ -118,7 +144,7 @@ impl KvSeamReplica {
         let frame = Frame(state.frame());
         let mut batch = Vec::new();
         let mut results: Vec<(EntryRef, Option<Op>)> = Vec::new();
-        for e in entries {
+        for e in apply_order(entries, self.phase) {
             let author = self.member(&e.entry.author);
             match decode(&e.entry.payload) {
                 Some(ops) => {
