@@ -31,6 +31,9 @@ pub struct Counters {
     /// Repairs toward a final cut overtaken by a newer one, in a row since the last cure or agreeing cut: a gauge,
     /// not a total. It tells "too big to fetch within `w_fg`" (4.2) from "unlucky once" (@design-reviewer, Low).
     pub overtaken_in_a_row: u64,
+    /// Divergences whose bundles go without replay evidence (6), counted once per `Cv`: `Cv`'s state or the entries
+    /// from it no longer kept, or the state over `evidence_max_bytes`. The capture is not tried again for that `Cv`.
+    pub evidence_skipped: u64,
     pub root_splits: u64,
     pub root_splits_ended: u64,
     pub bundles_written: u64,

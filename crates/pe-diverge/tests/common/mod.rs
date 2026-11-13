@@ -691,22 +691,47 @@ impl Replica for Mock {
     }
 }
 
-/// No entries: the mock steps on its own rules. It holds the newest final cut, set when the net decides one, unless
-/// the peer is made to lag on finality.
+/// The mock steps on its own rules, whatever the entries. It holds the newest final cut, set when the net decides
+/// one, unless the peer is made to lag on finality. A test may give it entries by frame, which only the bundle's
+/// evidence reads (divergence.md 6), and a `kept_from` below which `entries_at` answers `None`.
 #[derive(Default)]
 pub struct NoEntries {
     pub final_cut: Option<FinalCut>,
+    pub entries: BTreeMap<u64, Vec<SignedEntry>>,
+    pub kept_from: u64,
+}
+
+/// An entry stamped for `stamp`, told apart by `n`: only its bytes matter here (it is never verified).
+pub fn entry(stamp: u64, n: u8) -> SignedEntry {
+    SignedEntry {
+        entry: pe_seams::Entry {
+            line: LineId(Hash([1; 32])),
+            author: MemberKey([n; 32]),
+            chain: pe_seams::ChainId::new(LineId(Hash([1; 32])), MemberKey([n; 32]), [n; 32]),
+            seq: 1,
+            prev: None,
+            nonce: Some([n; 32]),
+            domain: DOMAIN,
+            stamp: Frame(stamp),
+            class: pe_seams::Class::Input,
+            payload: Bytes::from(vec![n; 4]),
+        },
+        sig: Signature([n; 64]),
+    }
 }
 
 impl EntrySource for NoEntries {
     fn final_cut(&self) -> Option<&FinalCut> {
         self.final_cut.as_ref()
     }
-    fn entries_at(&self, _frame: Frame) -> Option<&[SignedEntry]> {
-        Some(&[])
+    fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
+        if frame.0 < self.kept_from {
+            return None;
+        }
+        Some(self.entries.get(&frame.0).map_or(&[][..], |v| v.as_slice()))
     }
     fn kept_from(&self) -> Frame {
-        Frame(0)
+        Frame(self.kept_from)
     }
     fn keep_final_from(&mut self, _cv: Frame, _floor: Frame) {}
     fn take_changed_from(&mut self) -> Option<Frame> {

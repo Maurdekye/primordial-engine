@@ -14,10 +14,12 @@
 
 pub mod bundle;
 pub mod counters;
+pub mod evidence;
 pub mod ladder;
 pub mod msg;
 pub mod split;
 
 pub use bundle::FaultBundle;
 pub use counters::Counters;
+pub use evidence::CvState;
 pub use ladder::{Action, Config, Diverge, Mutant};
