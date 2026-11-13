@@ -233,6 +233,11 @@ pub struct ReplicaImpl<W: WorldModel> {
     played: BTreeMap<Frame, BTreeSet<EffectKey>>,
     /// The frames stepped live since the last publication, whose effects the next view compares.
     fx_stepped: BTreeSet<Frame>,
+    /// Keys a view carried for frames a history off the live steps replaced (a rung-2 import), retracted in the next
+    /// view (@engine-architect's Low 3 on 4ac9019f).
+    retract: Vec<EffectKey>,
+    /// The script events of the frames `root_at_cut`'s scratch re-stepped, for a rebase on that history.
+    scratch_events: BTreeMap<Frame, Vec<(ScriptEvent, Pos)>>,
     script_counts: ScriptCounts,
 }
 
@@ -317,6 +322,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
             fx: BTreeMap::new(),
             played: BTreeMap::new(),
             fx_stepped: BTreeSet::new(),
+            retract: Vec::new(),
+            scratch_events: BTreeMap::new(),
             script_counts: ScriptCounts::default(),
         };
         if r.is_cut_frame(Frame(0)) {
@@ -494,7 +501,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let next = Frame(f.0 + 1);
         self.frame = next;
         let root = self.is_cut_frame(next).then(|| self.take_root());
-        if live {
+        if !live {
+            self.scratch_events.insert(f, events);
+        } else {
             self.note_events(f, events, resimulated);
             self.stepped.insert(f, ids);
             if let Some(root) = root {
@@ -509,7 +518,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
     }
 
     /// One logic stage (crate::logic): the runner over the world's scripts, then the physics effects of what they
-    /// changed, acted on as an entry's are. Only a live step adds to the script counts and keeps the events.
+    /// changed, acted on as an entry's are. Only a live step adds to the script counts.
     fn logic(&mut self, f: Frame, stage: Stage, live: bool, events: &mut Vec<(ScriptEvent, Pos)>) {
         let Some(runner) = self.runner.as_deref_mut() else { return };
         if !self.world.scripted() {
@@ -524,8 +533,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
         if live {
             self.script_counts.host_faults += u64::from(out.host_faults);
             self.script_counts.missing += out.missing.len() as u64;
-            events.extend(out.events);
         }
+        events.extend(out.events);
     }
 
     /// Keeps frame `f`'s script effects from its live step (S5 `EffectKind::Script`): their keys are the same in every
@@ -554,7 +563,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// no view has carried yet, and the keys of carried ones its latest step no longer produced (`retracted`). Frames
     /// below the base frame, which no rollback reaches, are forgotten.
     fn frame_effects(&mut self) -> (Vec<Effect>, Vec<EffectKey>) {
-        let (mut effects, mut retracted) = (Vec::new(), Vec::new());
+        let (mut effects, mut retracted) = (Vec::new(), std::mem::take(&mut self.retract));
         for f in std::mem::take(&mut self.fx_stepped) {
             let now = self.fx.remove(&f).unwrap_or_default();
             let played = self.played.entry(f).or_default();
@@ -565,8 +574,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         }
         // Every frame stepped since the last view was in `fx_stepped`: nothing is left to keep.
         debug_assert!(self.fx.is_empty(), "every frame with effects was stepped since the last view");
+        // Rung 1 replays from Cv, which may be below the base frame, and compares what it steps with what was carried.
         let base = self.base_frame();
-        self.played = self.played.split_off(&base);
+        let keep = self.cv.as_ref().map_or(base, |c| c.0.at.frame.min(base));
+        self.played = self.played.split_off(&keep);
         self.played.retain(|_, keys| !keys.is_empty());
         (effects, retracted)
     }
@@ -837,6 +848,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let live = (self.world.save(), self.physics.save_image().map_err(|_| RootError::Damaged)?, self.frame);
         let tally = (self.faults, self.stopped, self.counters.fp_resets);
         self.scratch_records.clear();
+        self.scratch_events.clear();
         let result = self.scratch_to(cut, from.min(cut.at.frame), source);
         // What the re-step counted is the scratch's: the live counts stay as they were (L1).
         self.scratch.faults += self.faults - tally.0;
@@ -947,6 +959,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
         for (id, (r, seen)) in scratch.into_iter().filter(|(_, (r, _))| (g..at).contains(&r.frame)) {
             self.outcomes.insert(id, (r.frame, r.outcome.clone()));
             self.note(r, seen);
+        }
+        // Their effects too: the next view compares them with what it carried there, as a replay's (Low 3).
+        let mut events = std::mem::take(&mut self.scratch_events);
+        for f in (g.0..at.0).map(Frame) {
+            self.note_events(f, events.remove(&f).unwrap_or_default(), true);
         }
         self.excused.push((g, at));
     }
@@ -1430,6 +1447,13 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.voted.clear();
         (self.replay, self.replayed, self.lost, self.stuck_at, self.unkept_met) = (None, None, None, None, None);
         (self.refused_at, self.scratch_refused_at) = (None, None);
+        // Below the cut, the imported history replaced mine: what the views carried there is retracted (Low 3).
+        let c = cut.at.frame;
+        let kept = self.played.split_off(&c);
+        let replaced = std::mem::replace(&mut self.played, kept);
+        self.retract.extend(replaced.into_values().flatten());
+        self.fx = self.fx.split_off(&c);
+        self.fx_stepped = self.fx_stepped.split_off(&c);
         self.imported = Some((cut.at, root));
         if self.frame >= self.reached {
             self.replayed = Some((cut.at, root));
