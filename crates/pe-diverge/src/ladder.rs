@@ -282,8 +282,24 @@ struct Evidence {
     state: Bytes,
     entries: Vec<Bytes>,
     upto: Frame,
-    /// The heads of the cut at `upto`, the bundle's `cut_heads`.
-    to_heads: Vec<ChainHead>,
+    /// The cut the entries were last extended to, and its heads, a bundle's `cut_heads`. The evidence goes only to a
+    /// bundle whose `cut` is that cut (@shader-reviewer on 18198b28 and 076bb902: the argument that they always
+    /// match, made a check).
+    to: Option<(CutRef, Vec<ChainHead>)>,
+}
+
+/// A bundle's replay evidence: `state_at_cv`, `entries`, `cut_heads`.
+type EvidenceParts = (Bytes, Vec<Bytes>, Vec<ChainHead>);
+
+impl Evidence {
+    /// The state, entries and heads for a bundle at `cut`, all three together, if the evidence was last extended to
+    /// `cut`; otherwise none of them, since entries extended to another cut would replay to a wrong root at `cut`.
+    fn for_cut(&self, cut: CutRef) -> Option<EvidenceParts> {
+        match &self.to {
+            Some((at, heads)) if *at == cut => Some((self.state.clone(), self.entries.clone(), heads.clone())),
+            _ => None,
+        }
+    }
 }
 
 /// The ladder stopped (4.3).
@@ -922,6 +938,19 @@ impl Diverge {
         self.evidence.as_ref().filter(|e| Some(e.key) == self.cv)
     }
 
+    /// A bundle's evidence from [`Evidence::for_cut`]: evidence extended to another cut than the bundle's is left out
+    /// and counted (`evidence_skipped`), so a broken argument shows instead of giving a quietly wrong replay.
+    fn parts(&mut self, found: Option<Option<EvidenceParts>>) -> EvidenceParts {
+        match found {
+            Some(Some(parts)) => parts,
+            Some(None) => {
+                self.counters.evidence_skipped += 1;
+                EvidenceParts::default()
+            }
+            None => EvidenceParts::default(),
+        }
+    }
+
     /// `Cv` moved to an agreed cut.
     fn set_cv(&mut self, cut: &Cut, root: Hash) {
         self.cv = Some((cut.at, root));
@@ -964,7 +993,7 @@ impl Diverge {
                     physics,
                 };
                 let state = state.encode().ok().filter(|b| b.len() <= max)?;
-                Some(Evidence { key, state, entries: Vec::new(), upto: cut.at.frame, to_heads: Vec::new() })
+                Some(Evidence { key, state, entries: Vec::new(), upto: cut.at.frame, to: None })
             }),
         };
         // The entries stamped from `Cv`'s frame up to the cut's: what a replay from `Cv` steps.
@@ -973,7 +1002,7 @@ impl Diverge {
                 ev.entries.extend(source.entries_at(Frame(f))?.iter().map(|e| Bytes::from(e.encode())));
             }
             ev.upto = upto;
-            ev.to_heads = to.heads.clone();
+            ev.to = Some((to.at, to.heads.clone()));
             Some(ev)
         });
         if ev.is_none() {
@@ -1447,6 +1476,7 @@ impl Diverge {
         // The evidence goes with the repair it was captured for, and only that one (@design-reviewer, Medium): the
         // cure's bundle takes it, and nothing after it needs it.
         let ev = self.evidence.take_if(|e| rep.evidence && Some(e.key) == rep.from_cv);
+        let (state_at_cv, entries, cut_heads) = self.parts(ev.map(|e| e.for_cut(cut)));
         self.bundle(FaultBundle {
             cv: rep.from_cv,
             cut,
@@ -1459,9 +1489,9 @@ impl Diverge {
             rung: 2,
             sources: rep.sources[..=rep.src.min(rep.sources.len() - 1)].to_vec(),
             nanos_taken: taken,
-            state_at_cv: ev.as_ref().map(|e| e.state.clone()).unwrap_or_default(),
-            cut_heads: ev.as_ref().map(|e| e.to_heads.clone()).unwrap_or_default(),
-            entries: ev.map(|e| e.entries).unwrap_or_default(),
+            state_at_cv,
+            cut_heads,
+            entries,
             ..FaultBundle::default()
         });
         self.note_recurrence(cut, &differing, now);
@@ -1556,16 +1586,17 @@ impl Diverge {
             differing: key.leaves.clone(),
             why: named.join("; "),
         });
+        // Root splits' failures never reach here (`refused`), so the evidence of the current `Cv` is this one's.
+        let (state_at_cv, entries, cut_heads) = self.parts(self.evidence_at_cv().map(|e| e.for_cut(cut)));
         self.bundle(FaultBundle {
             cv: self.cv,
             cut,
             differing: key.leaves.clone(),
             rung: key.rung,
             stuck: named,
-            // Root splits' failures never reach here (`refused`), so the evidence of the current `Cv` is this one's.
-            state_at_cv: self.evidence_at_cv().map(|e| e.state.clone()).unwrap_or_default(),
-            entries: self.evidence_at_cv().map(|e| e.entries.clone()).unwrap_or_default(),
-            cut_heads: self.evidence_at_cv().map(|e| e.to_heads.clone()).unwrap_or_default(),
+            state_at_cv,
+            entries,
+            cut_heads,
             ..FaultBundle::default()
         });
         self.stuck = Some(Stuck { any: sticky, key, probe_at: None });
@@ -1803,5 +1834,33 @@ fn leaves_under(tree: Option<&dyn Tree>, path: &TreePath, out: &mut BTreeSet<Lea
             }
             _ => stack.extend(children(&p, &node).into_iter().map(|c| c.0)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pe_seams::{LineId, MemberKey};
+
+    #[test]
+    fn evidence_goes_whole_and_only_to_the_cut_it_was_extended_to() {
+        let line = LineId(Hash([1; 32]));
+        let c = CutRef { line, height: 3, frame: Frame(24) };
+        let head = ChainHead {
+            chain: pe_seams::ChainId(Hash([2; 32])),
+            author: MemberKey([3; 32]),
+            seq: 5,
+            entry: pe_seams::EntryRef(Hash([4; 32])),
+        };
+        let mut ev =
+            Evidence { key: (c, Hash::ZERO), state: Bytes::new(), entries: Vec::new(), upto: c.frame, to: None };
+        ev.state = Bytes::from_static(&[7; 4]);
+        ev.entries = vec![Bytes::from_static(&[8; 3])];
+        assert_eq!(ev.for_cut(c), None, "nothing extended yet: no evidence");
+        ev.to = Some((c, vec![head]));
+        assert_eq!(ev.for_cut(c), Some((ev.state.clone(), ev.entries.clone(), vec![head])));
+        assert_eq!(ev.for_cut(CutRef { height: 4, ..c }), None, "another height: none of it");
+        assert_eq!(ev.for_cut(CutRef { line: LineId(Hash([9; 32])), ..c }), None, "another line: none of it");
+        assert_eq!(ev.for_cut(CutRef { frame: Frame(32), ..c }), None, "another frame: none of it");
     }
 }

@@ -399,7 +399,10 @@ Written on every repair past rung 1, and on every root split (file 14, 4.6).
   tables, the objects), and the physics image (pe-diverge's `CvState`, its own format version);
 - every entry from `Cv` to `C`, with signatures: those stamped from `Cv`'s frame up to `C`'s, as the entry source
   serves them, each `SignedEntry::encode`d, and `C`'s heads. The source can hold entries stamped below `C` that only
-  a later cut includes; a replay leaves them out of `C` and of every frame's cut;
+  a later cut includes; a replay leaves them out of `C` and of every frame's cut. The state, the entries and the heads
+  go together, and only to a bundle whose `C` is the cut the evidence was last extended to; otherwise the bundle
+  carries none of them, and `evidence_skipped` counts it [shader-reviewer on 18198b28 and 076bb902: a bundle's `C`
+  is always that cut, now checked, not argued];
 - **script modules** [C]: the runner's identity (`Replica::runner_identity`, canonical bytes, 11.1),
   and the metered bytes of every module that the state at `Cv` or an entry up to `C` names (`Replica::module`),
   each under its hash. They are taken in order of (`activate_at`, hash) until the evidence reaches `B_evidence`,
@@ -474,7 +477,7 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `busy_rotations` | Sources left after `N_busy` `Busy` answers in a row: over budget, not faulty | pe-diverge |
 | `repeated_divergence` | Objects marked repeatedly diverging | pe-diverge |
 | `repairs_stuck`, `stuck_skipped` | Times the ladder stopped (4.3); diverged final cuts compared while stopped, with no rung run | pe-diverge |
-| `evidence_skipped` | Divergences whose bundles go without replay evidence (6), once per `Cv` | pe-diverge |
+| `evidence_skipped` | Divergences whose bundles go without replay evidence (6), once per `Cv`, and each bundle whose `C` is not the cut its evidence was extended to | pe-diverge |
 | `overtaken_in_a_row` | A gauge: repairs toward a final cut overtaken by a newer one, in a row since the last cure or agreeing cut. It tells a world too big to fetch within `W_fg` (4.2) from one unlucky repair | pe-diverge |
 | `root_splits` | Root-split episodes (distinct split cuts, not `RootSplit` events), and how each ended | pe-diverge |
 | `bundles_written` | Bundles written | pe-diverge |
