@@ -22,6 +22,7 @@ pub mod schedule;
 pub mod snapshot;
 mod store;
 pub mod transform;
+pub mod unit;
 
 pub use column::RowVersion;
 pub use hierarchy::Node;
@@ -30,3 +31,4 @@ pub use schedule::{Schedule, SystemFn, TickCtx};
 pub use snapshot::Snapshot;
 pub use store::SimStore;
 pub use transform::{Transform, WorldTransform};
+pub use unit::canonical_unit;

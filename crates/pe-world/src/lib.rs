@@ -8,15 +8,18 @@
 //! * [`WorldSnapshot`]: the published, read-only view of one frame that WorldApi reads (9.4).
 //! * [`edit`]: the edit payload and its canonical codec (7.1); [`World::apply_edit`] applies one (7.2-7.7).
 //! * [`preset`]: M1's disposable ball pit, and member admission ([`World::admit`]).
+//! * [`tree`]: the hash tree (6): object records, the world tables, the trie, and the S2 `Tree` calls.
 //! * [`input`]: the input payload (8.1); [`World::apply_input`] applies one, and [`World::end_frame`] expires claims.
 
 mod apply;
 pub mod components;
 pub mod edit;
+mod import;
 pub mod input;
 pub mod preset;
 mod read;
 mod replica;
+pub mod tree;
 mod world;
 
 pub use apply::{Draft, Footprint, Push};
@@ -25,6 +28,7 @@ pub use input::{HandPose, Input, InputSettings, input_phase};
 pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
 pub use replica::{GRAVITY, Settings};
+pub use tree::WorldTree;
 pub use world::{
     BlobStore, Claim, DEPTH_LIMIT, DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, perm,
 };

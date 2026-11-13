@@ -189,7 +189,9 @@ fn hash_ignores_history_only_state() {
 /// and the trace hashes the store's rows. `GOLDEN_WORLD`, which hashes only the simulated poses, did not move.
 /// Re-blessed again on world/edit-v1: the trace also covers each row's edit version and instance tag (3.2, 7.6), all
 /// zero here.
-const GOLDEN_TRACE: u64 = 0x5cec_f855_230f_ff0f;
+/// Re-blessed on world/tree: a field's unit is part of its description (world-model.md 3.6), so `Transform`'s schema
+/// hash, which the trace's state hashes cover, moved with `pos` in m. `GOLDEN_WORLD` did not move.
+const GOLDEN_TRACE: u64 = 0xfc2e_96e4_8880_2200;
 const GOLDEN_WORLD: u64 = 0x10d0_04da_da21_7a97;
 
 #[test]

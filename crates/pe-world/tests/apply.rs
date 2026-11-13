@@ -5,7 +5,7 @@ use pe_core::{Frame, ObjectId, Offset, Pos};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{Class, Note, Outcome, Reason, SignedEntry, Version};
 use pe_sim::{ComponentId, Transform};
-use pe_world::components::{Appearance, Body, Protection, ids};
+use pe_world::components::{Appearance, Body, Light, Protection, ids, light_kind};
 use pe_world::edit::{Actor, Op, Precondition, Row, Target, Transaction, content_hash};
 use pe_world::{BlobStore, Claim, Footprint, World, perm};
 
@@ -818,4 +818,44 @@ fn a_dry_run_state_reports_created_versions_from_pe_world() {
     let live = entry(&mut f.a, &t);
     apply(&mut f.w, &live);
     assert_eq!(f.w.snapshot(Frame(0)).info(id).unwrap().version, ver(&live, 0));
+}
+
+/// 3.2's `Light`: a spot light's angles within 0 <= inner <= outer <= pi/2; other kinds' angles exactly 0.
+#[test]
+fn light_angles_are_checked_on_edit() {
+    let mut f = fx();
+    let (_, ball, _) = table_and_ball(&mut f);
+    let spot = Light {
+        kind: light_kind::SPOT,
+        intensity: 1.0,
+        range: 5.0,
+        color: [1.0; 3],
+        inner_angle: 0.2,
+        outer_angle: 0.5,
+    };
+    let point = Light { kind: light_kind::POINT, inner_angle: 0.0, outer_angle: 0.0, ..spot };
+    for (l, field) in [
+        (spot, None),
+        (point, None),
+        (Light { inner_angle: 0.6, ..spot }, Some(5)),
+        (Light { outer_angle: 1.6, ..spot }, Some(5)),
+        (Light { inner_angle: -0.1, ..spot }, Some(4)),
+        (Light { inner_angle: f32::NAN, ..spot }, Some(4)),
+        (Light { outer_angle: 0.3, ..point }, Some(5)),
+        (Light { inner_angle: -0.0, ..point }, Some(4)),
+    ] {
+        let e = entry(&mut f.a, &tx(vec![Op::SetRow { id: pe_world::edit::Target::Existing(ball), row: row(l) }]));
+        let (o, _) = apply(&mut f.w, &e);
+        match field {
+            None => assert!(matches!(o, Outcome::Applied { .. }), "{l:?}: {o:?}"),
+            Some(i) => {
+                let (_, r) = refused(&o);
+                assert_eq!(
+                    r,
+                    Reason::Invalid { field: Some(pe_seams::FieldPath { component: ids::LIGHT.0, field: i }) },
+                    "{l:?}"
+                );
+            }
+        }
+    }
 }
