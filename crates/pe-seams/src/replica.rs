@@ -34,6 +34,7 @@
 //! background replay (a fork at a frame, per-group restore and step, the per-frame footprint).
 
 use core::time::Duration;
+use std::any::Any;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -678,7 +679,64 @@ pub trait Replica: Send {
     /// hands a view to the renderer only when `Arc::ptr_eq` says it is new, so a replica that rebuilds the `Arc` on
     /// every call costs a hand-over per tick.
     fn view(&self) -> Arc<FrameView>;
+
+    /// The world model's own read-only snapshot of the live state, at [`Replica::frame`], for in-process readers
+    /// that know the model: pe-app downcasts pe-world's `Arc<WorldSnapshot>` and hands it to pe-api once per published
+    /// view (api.md 9.1, 11). Opaque here, since pe-seams doesn't know the model; the view stays render-only. Cheap by
+    /// structural sharing, and unchanged while held. `None` from a model without one, the default (@coordinator-opus
+    /// m22babe2c6375; S2 v1.7).
+    fn world_snapshot(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        None
+    }
+
+    /// The world model's read-only snapshot of the state at `Cv`, the newest final cut this replica matched, and that
+    /// cut's frame: exactly the cut's entries, never a prediction, and left alone by rollbacks, replays and imports.
+    /// pe-app answers pe-api's `final_()` with it, so it never lags the final frame (api.md 9.1). `None` before the
+    /// first agreed finalize, and from a model without snapshots, the default (@coordinator-opus m926ccfeb16e9;
+    /// S2 v1.7).
+    fn agreed_snapshot(&self) -> Option<(Frame, Arc<dyn Any + Send + Sync>)> {
+        None
+    }
+
+    /// The frames from which this replica can't yet simulate as the author did, so this machine must not vote for a
+    /// cut at or past them: the `activate_at` of each script activation whose module it lacks, or holds but has not
+    /// yet replayed past `activate_at` (logic.md 6.2); and after a repair import, for each module the imported rows
+    /// name that it lacks, the import's cut frame or the row's `activate_at` if later (divergence.md 4.2). An import
+    /// resets the list to what the imported state requires. Level-triggered: the driver reconciles it with S3's
+    /// `hold_votes_from` and `release_votes_from` once a tick, after the advance and before any vote, so a partial
+    /// advance, a rollback that removes a commit, or a rebuilt replica never leaves a hold behind. Readiness changes
+    /// only whether this machine may vote: activation stays at the row's frame. Empty by default (@coordinator-opus
+    /// meaa5b7bf57e9; S2 v1.7).
+    fn vote_holds(&self) -> Vec<Frame> {
+        Vec::new()
+    }
+
+    /// The identity of the script runner this replica steps with ([`RunnerIdentity`]): the hello compares it, and a
+    /// fault bundle records it so that an offline replay refuses another runner (divergence.md 6). `None` without a
+    /// runner, the default; such a replica refuses, locally, to step a world with module rows (@coordinator-opus
+    /// meaa5b7bf57e9; S2 v1.7).
+    fn runner_identity(&self) -> Option<RunnerIdentity> {
+        None
+    }
+
+    /// The metered bytes of a module this replica holds, which a row's `author_module` hashes
+    /// (`Hash::of("pe.logic.module", bytes)`, logic.md 6.2), for a fault bundle (divergence.md 6). `None` when it
+    /// doesn't hold it, the default (S2 v1.7).
+    fn module(&self, _hash: &Hash) -> Option<Bytes> {
+        None
+    }
 }
+
+/// A script runner's identity, as canonical bytes rather than a hash, so that a refusal can say what differed (S2 v1.7;
+/// divergence.md 6, 11.1). It covers the runner's own build, not the app's: the wasmtime version; every wasmtime
+/// setting that can change a result (the enabled proposals, relaxed SIMD among them, and NaN canonicalization); the
+/// fuel and limit settings; the instrumentation pass's and the ABI's versions; and pe-logic's result version, a
+/// constant pe-logic bumps on any change that can alter a result, since a crate's version doesn't move with its code.
+/// pe-logic produces the bytes, so whoever adds a setting keeps the identity complete in the same place (@vdw-physics's
+/// Low on v1.8). Two runners with equal bytes run every module alike (@coordinator-opus meaa5b7bf57e9,
+/// @fable-reviewer m46630a61ded7).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RunnerIdentity(pub Bytes);
 
 #[cfg(test)]
 mod tests {

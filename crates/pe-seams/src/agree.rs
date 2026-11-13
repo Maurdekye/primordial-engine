@@ -254,7 +254,10 @@ pub enum AgreeEvent {
         cut: CutRef,
         roots: Vec<(Hash, Vec<(MemberKey, SelfTest)>)>,
     },
-    /// A final cut voided an entry (late, or stamped below its author's previous stamp).
+    /// A final cut voided an entry (late, or stamped below its author's previous stamp). Queued no later than the call
+    /// in which [`EntrySource::final_cut`] first reports `cut`, so a driver that acts when `final_cut` moves has the
+    /// cut's voids already drained, while a `CutFinal` event may come a tick or more before them (S3 v1.6;
+    /// @design-reviewer's Medium on app.md draft 5).
     Voided {
         entry: EntryRef,
         author: MemberKey,

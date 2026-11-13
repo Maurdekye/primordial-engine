@@ -5,6 +5,7 @@
 //! When pe-world lands, `pe_world::World` implements it (or the trait gives way to pe-world's own API, if
 //! @world-model reshapes it), and the row types below become pe-world's.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use pe_seams::{
@@ -270,6 +271,17 @@ pub trait WorldModel: Send {
                 })
             })
             .collect()
+    }
+
+    /// The model's read-only snapshot of its live state, for [`pe_seams::Replica::world_snapshot`]: `final_frame` is
+    /// the frame of the replica's last agreed cut. `None` by default, for a model without one (the mock).
+    fn snapshot(&self, _final_frame: Frame) -> Option<Arc<dyn Any + Send + Sync>> {
+        None
+    }
+
+    /// A saved state's read-only snapshot, for [`pe_seams::Replica::agreed_snapshot`]. `None` by default.
+    fn snapshot_of(_saved: &Self::Saved, _final_frame: Frame) -> Option<Arc<dyn Any + Send + Sync>> {
+        None
     }
 
     // what the replica writes
