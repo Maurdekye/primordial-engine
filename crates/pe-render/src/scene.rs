@@ -1110,7 +1110,10 @@ impl Renderer {
                     let rel = offset_vec(l.pose.pos - anchor);
                     let (k, outer, inner) = match kind {
                         LightKind::Point => (0.0, -1.0, -1.0),
-                        LightKind::Spot { inner_angle, outer_angle } => (1.0, outer_angle.cos(), inner_angle.cos()),
+                        LightKind::Spot { inner_angle, outer_angle } => {
+                            let (outer, inner) = spot_edges(inner_angle, outer_angle);
+                            (1.0, outer, inner)
+                        }
                         LightKind::Directional => (2.0, -1.0, -1.0),
                     };
                     let score =
@@ -1708,9 +1711,42 @@ fn box_mesh() -> (Vec<Vertex>, Vec<u32>) {
     (v, idx)
 }
 
+/// The gap the shader's cone falloff keeps between its edges' cosines.
+const SPOT_EDGE_GAP: f32 = 1e-4;
+
+/// A spot light's cone as the shader's `smoothstep(outer, inner, cos)` takes it: the cosines of the outer and inner
+/// angles, the inner at least [`SPOT_EDGE_GAP`] above the outer. WGSL leaves `smoothstep` undefined for equal edges
+/// (a NaN on some GPUs), and pe-world allows a hard-edged cone, inner == outer, down to 0 == 0 (@design-reviewer's Low
+/// on ws/spot-lights). The cone keeps its outer edge; a hard edge becomes a 1e-4 ramp inside it.
+fn spot_edges(inner_angle: f32, outer_angle: f32) -> (f32, f32) {
+    let outer = outer_angle.cos();
+    (outer, inner_angle.cos().max(outer + SPOT_EDGE_GAP))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WGSL's smoothstep, as scene.wgsl uses it for the cone.
+    fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+        let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    /// A hard-edged spot (inner == outer, 0 == 0 too) keeps its edges apart, so the falloff is defined everywhere;
+    /// a soft one is unchanged.
+    #[test]
+    fn spot_edges_never_meet() {
+        for a in [0.0f32, 0.1, 0.5, 1.0, std::f32::consts::FRAC_PI_2] {
+            let (outer, inner) = spot_edges(a, a);
+            assert!(inner - outer >= SPOT_EDGE_GAP * 0.99, "angle {a}: {outer} {inner}");
+            for cd in [-1.0f32, 0.0, outer - 1e-3, outer, outer + 5e-5, inner, 1.0] {
+                assert!(smoothstep(outer, inner, cd).is_finite(), "angle {a}, cos {cd}");
+            }
+            assert_eq!(smoothstep(outer, inner, outer - 1e-3), 0.0, "outside the cone: dark");
+        }
+        assert_eq!(spot_edges(0.2, 0.6), (0.6f32.cos(), 0.2f32.cos()), "a soft cone as it was");
+    }
 
     fn winding_outward((v, idx): (Vec<Vertex>, Vec<u32>)) {
         let mut checked = 0;
