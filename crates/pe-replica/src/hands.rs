@@ -28,7 +28,15 @@
 //!     and rotation relative to the hand, with no velocity too (@design-reviewer's Low on cc037c10). So a body never
 //!     trails its target by more than the teleport distance, and a hand kept faster than the cap trails, is placed
 //!     and trails again: its contacts come in bursts. Only the claimed object moves: other bodies resting on it
-//!     (cups on a held tray) stay where they were.
+//!     (cups on a held tray) stay where they were. A **trailing** placement (the body was slowed by the cap in the
+//!     last frame, so it is catching up, not jumping) carries a held object only where no static geometry lies in its
+//!     way ([`PhysicsWorld::static_in_way`]), so a held object never passes through a wall: one left behind stays
+//!     where it is, held by its spring (@coordinator-opus m51d8feaf4aa5). A real teleport carries it through.
+//! - **A hold's spring is bounded** ([`reaches`], world-model.md 8.1): for each step it sees at most the error the
+//!   room under the cap leaves, `(max_push_speed - v_hold) / k`, so a held object kept from its place comes back no
+//!   faster than the cap, and one that lags a hand at the cap catches up when the hand slows; the part of the error
+//!   that holds the object up may always be [`HOLD_SUPPORT_MARGIN`] times the spring's sag. The bound moves the
+//!   joint's anchor on the hand for the step only ([`PhysicsWorld::step_holding`]), so it is never in an image.
 //! - **After the span, with no newer input:** if the input came as part of a stream (within its predecessor's span
 //!   plus [`COAST`]), the body coasts at its last velocity, at most [`COAST_SPEED`], until [`COAST`] after the span;
 //!   then it goes back to the hand's target by the same rule as within a span, and stays there, so it never parks
@@ -45,8 +53,8 @@
 use std::time::Duration;
 
 use pe_physics::{
-    BodyDesc, BodyKind, Geometry, GrabSpring, JointDesc, JointKey, JointKind, PhysicsError, PhysicsWorld, Pose,
-    ShapeDesc,
+    BodyDesc, BodyKind, Geometry, GrabSpring, HoldReach, JointDesc, JointKey, JointKind, PhysicsError, PhysicsWorld,
+    Pose, ShapeDesc,
 };
 use pe_seams::Hasher;
 use pe_seams::{Frame, ObjectId, Pos, SimRate, frames_ceil};
@@ -90,6 +98,15 @@ pub const GRAB: GrabSpring = GrabSpring { hertz: 5.0, damping_ratio: 1.0, max_fo
 /// it was grabbed at relative to the hand.
 pub const GRAB_TORQUE: f32 = 100.0;
 
+/// The grab spring's angular frequency, 1/s: `2 pi` times [`GRAB`]'s hertz. Its static sag under gravity `g` is
+/// `g / OMEGA^2` (measured: 9.9 mm at 9.81 m/s^2, at 30, 60 and 120 Hz).
+pub const OMEGA: f64 = 2.0 * std::f64::consts::PI * GRAB.hertz as f64;
+/// How many times its static sag a hold's spring may see of the error that holds its object up, whatever the hand's
+/// speed (world-model.md 8.1's `s_min`): 3, so the spring can lift twice the object's weight beyond holding it
+/// (@design-reviewer m3193baf04827). Measured with it: a held ball stays 1.0 cm below its place while the hand
+/// overruns the cap sideways for 2 s, and moves at most 0.24 m/s over the cap with the hand overrunning upwards.
+pub const HOLD_SUPPORT_MARGIN: f64 = 3.0;
+
 /// Whether `hand`'s body is physical this frame.
 pub fn is_physical(hand: &HandRow, holding: bool) -> bool {
     hand.mode == hand_mode::ALWAYS_WITHIN_REACH || hand.engaged || holding
@@ -97,7 +114,8 @@ pub fn is_physical(hand: &HandRow, holding: bool) -> bool {
 
 /// Bring the hand bodies in line with the world model's hands, before a frame's step: a body for every physical
 /// hand, driven towards its target, and no other body that the world model does not list as physical. `hands` is
-/// the world model's [`WorldModel::hands`], in id order. Returns the number of refused physics calls (faults, 3.1).
+/// the world model's [`WorldModel::hands`], in id order. Returns the number of refused physics calls (faults, 3.1),
+/// and each grab's reach for the step ([`reaches`]), for [`PhysicsWorld::step_holding`].
 pub fn sync<W: WorldModel + ?Sized>(
     world: &W,
     physics: &mut PhysicsWorld,
@@ -105,7 +123,7 @@ pub fn sync<W: WorldModel + ?Sized>(
     origin: Pos,
     rate: SimRate,
     frame: Frame,
-) -> u64 {
+) -> (u64, Vec<(JointKey, HoldReach)>) {
     let claims = world.claims();
     let holding: Vec<ObjectId> = {
         let mut ids: Vec<ObjectId> = claims.iter().map(|c| c.hand).filter(|&h| h != ObjectId::NONE).collect();
@@ -123,7 +141,7 @@ pub fn sync<W: WorldModel + ?Sized>(
         .objects()
         .filter(|id| bodies.binary_search(id).is_err() && !physical_hands.iter().any(|h| h.hand == *id))
         .collect();
-    let mut faults = 0;
+    let mut faults: u64 = 0;
     for id in stale {
         faults += u64::from(physics.remove_body(id).is_err());
     }
@@ -132,7 +150,37 @@ pub fn sync<W: WorldModel + ?Sized>(
             claims.iter().filter(|c| c.hand == hand.hand && physics.has_body(c.object)).map(|c| c.object).collect();
         faults += u64::from(drive(physics, hand, &held, origin, rate, frame).is_err());
     }
-    faults + grabs(physics, &claims, &bodies)
+    faults += grabs(physics, &claims, &bodies);
+    (faults, reaches(physics, &claims, 1.0 / rate.hz() as f32, world.settings().gravity))
+}
+
+/// How far from its place each held object's spring sees it in this frame's step, m, for
+/// [`PhysicsWorld::step_holding`]: world-model.md 8.1's hold bound (@coordinator-opus m51d8feaf4aa5, md1fd92002792,
+/// me854800b7b54). The spring asks for a speed of about [`PhysicsWorld::grab_spring_rate`] (`k`) times the error it
+/// sees, relative to the hand, so the error is bounded by the room the hand's own speed at the hold (`v_hold`, its
+/// turn included) leaves under [`MAX_HAND_PUSH_SPEED`]: `(max_push_speed - v_hold) / k`. A held object kept from its
+/// place (pinned by a wall) comes back no faster than the cap however far it was kept, and one that lags a hand moving
+/// at the cap catches up only once the hand slows. The part of the error that holds the object up against gravity may
+/// be at least [`HOLD_SUPPORT_MARGIN`] times the spring's static sag, `g / OMEGA^2`, so a held object never sags out
+/// of the hand; in a world without gravity that floor is 0. Every grab joint of `claims`, keyed once.
+pub fn reaches(physics: &PhysicsWorld, claims: &[ClaimRow], dt: f32, gravity: [f32; 3]) -> Vec<(JointKey, HoldReach)> {
+    let per_metre = f64::from(physics.grab_spring_rate(GRAB, dt));
+    let g = f64::from((gravity[0] * gravity[0] + gravity[1] * gravity[1] + gravity[2] * gravity[2]).sqrt());
+    let support = HOLD_SUPPORT_MARGIN * g / (OMEGA * OMEGA);
+    let mut out: Vec<(JointKey, HoldReach)> = Vec::with_capacity(claims.len());
+    for c in claims {
+        let key = grab_key(c.object);
+        if physics.joint_kind(key) != Some(JointKind::Grab) || out.iter().any(|&(k, _)| k == key) {
+            continue;
+        }
+        let speed = match (physics.velocity(c.hand), physics.pose(c.hand), physics.grab_anchor(key)) {
+            (Ok((v, w)), Ok(hand), Ok(anchor)) => point_speed(v, w, rotate(hand.rotation, anchor)),
+            _ => 0.0,
+        };
+        let reach = (MAX_HAND_PUSH_SPEED - speed).max(0.0) / per_metre;
+        out.push((key, HoldReach { reach: reach as f32, against_gravity: reach.max(support) as f32 }));
+    }
+    out
 }
 
 /// One physical hand's body for `frame`: made at its target if it has none, else driven, coasting or holding.
@@ -177,10 +225,19 @@ fn drive(
         .map(|(_, at, to)| distance(at.position, to.position))
         .fold(distance(now.position, target.position), f64::max);
     if farthest > teleport_distance(rate) {
+        // A body slowed by the cap in the last frame trails its target, so this is a trailing placement: it carries a
+        // held object only where no static geometry lies in its way, so a held object never passes through a wall
+        // (@coordinator-opus m51d8feaf4aa5); one left behind stays where it is, held by its spring. A body that was
+        // not slowed reached its target, so the move is the target's own jump, a teleport, which carries what the
+        // hand holds through whatever lies between (world-model.md 8.1).
+        let trailing = was_slowed(physics, hand.hand, &now, &carried)?;
         // Placed, not swept, with no velocity: a body placed into others while moving would hit them at its speed
         // plus the push-out (measured: 14.8 m/s at a 10 m/s cap when velocities were kept).
         physics.set_state(hand.hand, target, [0.0; 3], [0.0; 3])?;
         for (object, _, to) in carried {
+            if trailing && physics.static_in_way(object, &to)? {
+                continue;
+            }
             physics.set_state(object, to, [0.0; 3], [0.0; 3])?;
         }
         return Ok(());
@@ -188,6 +245,29 @@ fn drive(
     let cap = MAX_HAND_PUSH_SPEED * f64::from(dt);
     let to = if farthest > cap { towards(&now, &target, cap / farthest) } else { target };
     physics.set_target(hand.hand, to, dt, true)
+}
+
+/// Whether the hand's body moved at the cap in the last frame, at itself or at a held object (`carried`: each held
+/// object, where it is, where the hand would carry it): then it was slowed, and trails its target. A kinematic body
+/// keeps the velocity its last move gave it until the next, so this reads only the physics state, which a rollback
+/// restores. A margin of 0.1 % keeps a move at exactly the cap counted through rounding.
+fn was_slowed(
+    physics: &PhysicsWorld,
+    hand: ObjectId,
+    now: &Pose,
+    carried: &[(ObjectId, Pose, Pose)],
+) -> Result<bool, PhysicsError> {
+    let (v, w) = physics.velocity(hand)?;
+    let limit = 0.999 * MAX_HAND_PUSH_SPEED;
+    let fast = |r: [f32; 3]| point_speed(v, w, r) >= limit;
+    Ok(fast([0.0; 3])
+        || carried.iter().any(|(_, at, _)| fast([0usize, 1, 2].map(|i| (at.position[i] - now.position[i]) as f32))))
+}
+
+/// The speed of the point `r` from a body's origin, for the body's linear and angular velocity `v` and `w`.
+fn point_speed(v: [f32; 3], w: [f32; 3], r: [f32; 3]) -> f64 {
+    let at = [v[0] + w[1] * r[2] - w[2] * r[1], v[1] + w[2] * r[0] - w[0] * r[2], v[2] + w[0] * r[1] - w[1] * r[0]];
+    f64::from((at[0] * at[0] + at[1] * at[1] + at[2] * at[2]).sqrt())
 }
 
 /// The pose a fraction `f` of the way from `from` to `to`: the position along the straight line, the rotation along
