@@ -10,8 +10,8 @@
 //! - **When a hand is physical** is its mode (D18b, per member; @coordinator-opus mb9721962f21f, m04577af18680):
 //!   "closed hand" ([`hand_mode::CLOSED_HAND`], the default) while the hand is closed (its input's `engaged`, the
 //!   grasp); "always within reach" ([`hand_mode::ALWAYS_WITHIN_REACH`]) always. A hand that holds something stays
-//!   physical, so its grab has a body to hold by. A hand that is not physical has no body, so it passes through
-//!   everything.
+//!   physical, so its grab has a body to hold by; so an open hand that holds something still pushes what it touches,
+//!   by design. A hand that is not physical has no body, so it passes through everything.
 //! - **A body that appears** (a hand closes, or its mode flips to always) is placed at its target, not swept there,
 //!   and overlapping bodies are pushed out by Box3D's soft contacts at the world's contact speed (3 m/s), so a flip
 //!   inside a pile moves its balls apart gently instead of throwing them (8.1).
@@ -24,13 +24,22 @@
 //!   then it goes back to the hand's target by the same rule as within a span, and stays there, so it never parks
 //!   away from the hand everyone sees. Only the frames in the hand's row decide, so a re-simulation repeats them
 //!   (3.3, D52).
+//! - **Grabs mirror the claims** (3.3; world-model.md 7.2), after the hands are driven: a claim by a hand with a body
+//!   on an object with one gets a grab joint from the hand to the object, keyed from the object's id, which holds
+//!   the object where it was in the hand when the joint was made, by a motor with a spring ([`GRAB`]); a grab joint
+//!   whose claim has gone is removed. An agent's grab has no hand, so it gets no joint. The joints are in the physics
+//!   image, so a rollback restores them with the bodies.
 
 use std::time::Duration;
 
-use pe_physics::{BodyDesc, BodyKind, Geometry, PhysicsError, PhysicsWorld, Pose, ShapeDesc};
+use pe_physics::{
+    BodyDesc, BodyKind, Geometry, GrabSpring, JointDesc, JointKey, JointKind, PhysicsError, PhysicsWorld, Pose,
+    ShapeDesc,
+};
+use pe_seams::Hasher;
 use pe_seams::{Frame, ObjectId, Pos, SimRate, frames_ceil};
 
-use crate::world::{HAND_RADIUS, HandRow, WorldModel};
+use crate::world::{ClaimRow, HAND_RADIUS, HandRow, WorldModel};
 
 /// D18b's two modes, as pe-world's `Hand.mode` holds them (world-model.md 8.1).
 pub mod hand_mode {
@@ -48,6 +57,11 @@ pub const COAST_SPEED: f32 = 3.0;
 /// `max_push_speed`, at its default until pe-world holds the setting).
 pub const MAX_HAND_PUSH_SPEED: f64 = 10.0;
 
+/// A grab's motor and spring: the joint drives the object towards the hand's motion with at most 1,000 N and
+/// 100 N m, and springs it back to its place in the hand at 5 Hz, critically damped. M1's defaults, as pe-physics's
+/// grab tests use them, until the user's verdict on hand feel at the headset test (inferred).
+pub const GRAB: GrabSpring = GrabSpring { hertz: 5.0, damping_ratio: 1.0, max_force: 1000.0, max_torque: 100.0 };
+
 /// Whether `hand`'s body is physical this frame.
 pub fn is_physical(hand: &HandRow, holding: bool) -> bool {
     hand.mode == hand_mode::ALWAYS_WITHIN_REACH || hand.engaged || holding
@@ -64,8 +78,9 @@ pub fn sync<W: WorldModel + ?Sized>(
     rate: SimRate,
     frame: Frame,
 ) -> u64 {
+    let claims = world.claims();
     let holding: Vec<ObjectId> = {
-        let mut ids: Vec<ObjectId> = world.claims().iter().map(|c| c.hand).filter(|&h| h != ObjectId::NONE).collect();
+        let mut ids: Vec<ObjectId> = claims.iter().map(|c| c.hand).filter(|&h| h != ObjectId::NONE).collect();
         ids.sort_unstable();
         ids.dedup();
         ids
@@ -87,7 +102,7 @@ pub fn sync<W: WorldModel + ?Sized>(
     for hand in physical_hands {
         faults += u64::from(drive(physics, hand, origin, rate, frame).is_err());
     }
-    faults
+    faults + grabs(physics, &claims, &bodies)
 }
 
 /// One physical hand's body for `frame`: made at its target if it has none, else driven, coasting or holding.
@@ -131,4 +146,60 @@ fn drive(
 /// world model. `hands` is in id order.
 pub fn is_hand(hands: &[HandRow], id: ObjectId) -> bool {
     hands.binary_search_by_key(&id, |h| h.hand).is_ok()
+}
+
+/// The key of the grab joint that holds `object`: one per object, as a claim is (world-model.md 7.2).
+pub fn grab_key(object: ObjectId) -> JointKey {
+    let mut h = Hasher::new("pe-replica.grab");
+    h.write_u128(object.to_u128());
+    let bytes = h.finish().0;
+    JointKey(u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")))
+}
+
+/// The grab joints for `claims`, after the hands are driven: one for each claim by a hand with a body on an object
+/// with one, and none other. `bodies` are the world model's physical objects, in id order: every object a grab
+/// joint can hold, so probing their keys finds every grab joint (a removed body takes its joints with it).
+fn grabs(physics: &mut PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId]) -> u64 {
+    let mut faults = 0;
+    let held = |id: ObjectId| claims.iter().find(|c| c.object == id && c.hand != ObjectId::NONE).map(|c| c.hand);
+    for &object in bodies {
+        let key = grab_key(object);
+        let joint = physics.joint_kind(key);
+        let hand = held(object).filter(|&hand| physics.has_body(hand) && physics.has_body(object));
+        match (joint, hand) {
+            (Some(JointKind::Grab), None) => faults += u64::from(physics.remove_joint(key).is_err()),
+            (None, Some(hand)) => faults += u64::from(hold(physics, key, hand, object).is_err()),
+            _ => {}
+        }
+    }
+    faults
+}
+
+/// A grab joint from `hand` to `object`, holding the object where it is now in the hand.
+fn hold(physics: &mut PhysicsWorld, key: JointKey, hand: ObjectId, object: ObjectId) -> Result<(), PhysicsError> {
+    let h = physics.pose(hand)?;
+    let o = physics.pose(object)?;
+    let offset = [o.position[0] - h.position[0], o.position[1] - h.position[1], o.position[2] - h.position[2]];
+    let anchor_a = inverse_rotate(h.rotation, offset.map(|c| c as f32));
+    let desc = JointDesc::Grab {
+        a: Some(hand),
+        b: object,
+        anchor_a,
+        anchor_b: [0.0; 3],
+        max_force: GRAB.max_force,
+        max_torque: GRAB.max_torque,
+        spring: Some(GRAB),
+    };
+    physics.add_joint(key, &desc)
+}
+
+/// `v` turned by the inverse of the unit quaternion `q` (x, y, z, w): into `q`'s frame.
+fn inverse_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let u = [-q[0], -q[1], -q[2]];
+    let w = q[3];
+    let cross =
+        |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let t = cross(u, v).map(|c| 2.0 * c);
+    let ut = cross(u, t);
+    [v[0] + w * t[0] + ut[0], v[1] + w * t[1] + ut[1], v[2] + w * t[2] + ut[2]]
 }

@@ -869,8 +869,8 @@ fn a_streamed_hand_coasts_for_100_ms_after_its_span_then_goes_back_to_the_hand()
         r.advance(Frame(f), &mut s);
         xs.push(r.physics().pose(oid(HAND)).expect("the hand's body").position[0]);
     }
-    // xs[k] is the body's x after frame 4 + k: it reached 0.10 at frame 4, coasts through frames 5 to 10 to 0.40, and is
-    // back at 0.10 after frame 11 (a 30 cm return in one frame is faster than a hand pushes, so it is placed).
+    // xs[k] is the body's x after frame 4 + k: it reached 0.10 at frame 4, coasts through frames 5 to 10 to 0.40,
+    // and is back at 0.10 after frame 11 (a 30 cm return in one frame is faster than a hand pushes, so it is placed).
     let step = |k: usize| xs[k + 1] - xs[k];
     assert!((0..5).all(|k| (step(k) - 0.05).abs() < 1e-3), "it coasts at 3 m/s: {xs:?}");
     assert!((xs[6] - 0.40).abs() < 1e-3, "six frames of coast: {xs:?}");
@@ -880,4 +880,81 @@ fn a_streamed_hand_coasts_for_100_ms_after_its_span_then_goes_back_to_the_hand()
     assert!((at(&r, HAND)[0] - 0.10).abs() < 1e-6, "the world's hand stays at its input: {:?}", at(&r, HAND));
     assert!(r.world().world().store().get::<BodyState>(oid(HAND)).is_none(), "no BodyState row for a hand");
     assert_eq!(r.faults(), 0);
+}
+
+/// A hand input with one pose per point, closed or open.
+fn hand_at(points: &[[f64; 3]], closed: bool) -> Input {
+    let pose = |p: &[f64; 3]| HandPose {
+        pos: pos(p[0], p[1], p[2]),
+        rot: [0.0, 0.0, 0.0, 1.0],
+        grip: if closed { 1.0 } else { 0.0 },
+        engaged: closed,
+    };
+    Input::Hand { hand: oid(HAND), poses: points.iter().map(pose).collect(), hold: 0 }
+}
+
+/// Grabs mirror the claims (replica.md 3.3; world-model.md 7.2): a closed hand that grabs the ball holds it by a
+/// joint, so the ball rises with the hand, without the hand's own body pushing it away (a grab's two bodies don't
+/// collide), and falls once released, when the joint goes. An agent's hand-less grab is a claim with no joint.
+#[test]
+fn a_hand_holds_what_it_grabs_until_it_lets_go() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    let rest = 2.0 - 0.1 - f64::from(pe_replica::world::HAND_RADIUS);
+    let lift: Vec<[f64; 3]> = (0..32).map(|k| [rest, 0.1 + 0.9 * f64::from(k + 1) / 32.0, 0.0]).collect();
+    s.add(input(&mut b, 2, &hand_at(&[[rest, 0.1, 0.0]; 8], true)));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    s.add(input(&mut b, 10, &hand_at(&lift[..16], true)));
+    s.add(input(&mut b, 26, &hand_at(&lift[16..], true)));
+    s.add(input(&mut b, 46, &Input::Release { object: oid(BALL) }));
+    let mut r = replica_of(with_hand_and_ball());
+    r.advance(Frame(44), &mut s);
+    assert_eq!(r.world().claims().iter().map(|c| (c.object, c.hand)).collect::<Vec<_>>(), [(oid(BALL), oid(HAND))]);
+    assert_eq!(r.physics().joint_count(), 1, "the claim's grab joint");
+    let held = at(&r, BALL);
+    assert!(held[1] > 0.7, "the ball rose with the hand: {held:?}");
+    assert!((held[0] - 2.0).abs() < 0.1, "held where the hand took it, not pushed off: {held:?}");
+    r.advance(Frame(110), &mut s);
+    assert!(r.world().claims().is_empty() && r.physics().joint_count() == 0, "released: no claim, no joint");
+    let dropped = at(&r, BALL);
+    assert!(dropped[1] < 0.2, "the ball fell once released: {dropped:?}");
+    assert_eq!(r.faults(), 0);
+
+    // An agent's grab has no hand: a claim, and no joint.
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    s.add(input(&mut b, 2, &Input::Grab { object: oid(BALL), hand: None }));
+    let mut r = replica_of(with_hand_and_ball());
+    r.advance(Frame(8), &mut s);
+    let claims: Vec<_> = r.world().claims().iter().map(|c| (c.object, c.hand)).collect();
+    assert_eq!(claims, [(oid(BALL), ObjectId::NONE)], "an agent's claim");
+    assert_eq!(r.physics().joint_count(), 0, "with no joint");
+}
+
+/// A grab joint is in the physics image like the bodies (replica.md 3.3): a grab that arrives late rolls back to
+/// before it, the joint is made at the same frame as on a replica that had it all along, and the roots are equal.
+#[test]
+fn a_grab_that_arrives_late_rolls_back_to_the_same_roots() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let rest = 2.0 - 0.1 - f64::from(pe_replica::world::HAND_RADIUS);
+    let lift: Vec<[f64; 3]> = (0..16).map(|k| [rest, 0.1 + 0.05 * f64::from(k + 1), 0.0]).collect();
+    let hold = input(&mut b, 2, &hand_at(&[[rest, 0.1, 0.0]; 8], true));
+    let grab = input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) });
+    let up = input(&mut b, 10, &hand_at(&lift, true));
+    let mut all = Source::default();
+    [hold.clone(), grab.clone(), up.clone()].into_iter().for_each(|e| all.add(e));
+    let mut a = replica_of(with_hand_and_ball());
+    a.advance(Frame(48), &mut all);
+    let mut late = Source::default();
+    [hold, up].into_iter().for_each(|e| late.add(e));
+    let mut c = replica_of(with_hand_and_ball());
+    c.advance(Frame(30), &mut late);
+    late.add(grab);
+    let adv = c.advance(Frame(48), &mut late);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 6), "the late grab rolls back: {adv:?}");
+    assert_eq!(roots(&c, 48), roots(&a, 48));
+    assert!(at(&a, BALL)[1] > 0.5, "the grab lifted the ball: {:?}", at(&a, BALL));
+    assert_eq!((a.faults(), c.faults()), (0, 0));
 }
