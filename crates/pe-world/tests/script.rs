@@ -219,6 +219,7 @@ fn a_new_version_rekeys_rows_and_supersedes_the_old_ids() {
     assert_eq!(r.1.rekey, None, "the commit's entry re-keys nothing (6.2a)");
     let rk = rekeyed(&end);
     assert_eq!((rk.objects, rk.rows, rk.losses.is_empty()), (vec![oid(LAMP)], 2, true));
+    f.w.verify_tree_cache(DomainId(1)).expect("the tree cache stays true after an activation's re-key");
     assert_eq!(row(&f.w, blink(1).id()), None, "the old rows moved");
     assert_eq!(row(&f.w, tag(1)), None);
     assert_eq!(row(&f.w, tag(2)), Some(vec![]), "the tag moved too");
@@ -523,6 +524,7 @@ fn a_commit_is_pending_until_a_quorum_attests_it() {
     ok(&run_at(&mut f.w, &mut f.b, &attest_of(&t), 2));
     assert!(f.w.modules().is_empty(), "not before the frame's end");
     assert_eq!(f.w.end_frame(Frame(2)).activated, vec![(ASSET, p.version, None)]);
+    f.w.verify_tree_cache(DomainId(1)).unwrap();
     assert!(f.w.pending().is_empty());
     let m = &f.w.modules()[&ASSET];
     assert_eq!((m.version, m.v(), m.activate_at), (p.version, v_of(1), Frame(3)));
@@ -576,6 +578,7 @@ fn an_unattested_commit_is_voided_at_its_deadline_unless_the_quorum_completes_th
     ok(&run_at(&mut g, &mut b2, &attest_of(&t), d.0));
     let end = g.end_frame(d);
     assert!(end.voided.is_empty() && end.activated.len() == 1, "{end:?}");
+    g.verify_tree_cache(DomainId(1)).expect("the tree cache stays true after an activation's re-key");
 }
 
 /// The re-key is judged again at `F` (logic.md 6.2a): an object the committer may not edit, held by another member

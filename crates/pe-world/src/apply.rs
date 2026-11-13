@@ -537,6 +537,8 @@ impl World {
         {
             let reg = self.store.registry();
             let new: Option<Vec<_>> = p.components.iter().map(|c| reg.get(*c).cloned()).collect();
+            // Unreachable: the commit registered every one of them, and registered ids are never removed.
+            debug_assert!(new.is_some(), "a pending commit's components are registered");
             let new = new.ok_or(VoidKind::RekeyBlockedAtActivation)?;
             let (r, moves) = self.rekey_plan(&m.components, &new, p.author);
             if r.rows > MAX_REKEY_ROWS {

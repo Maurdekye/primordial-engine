@@ -959,7 +959,7 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     strictly ascending (the tag among them) ‖ activate_at u64 ‖ faulted (a byte 0, or 1 ‖ frame u64 ‖ kind u8)`. V is
     `source.hash`, stored once (@chunks-reviewer's L1). Decoding is strict: a repeated or out-of-order id, a faulted
     byte other than 0 or 1, or a kind that is not one of pe-logic's `Fault::code()` values 1 to 13 (logic.md 3.6) does
-    not decode; `HostStack` has no code, since it is one machine's own fault and never world state;. The pending
+    not decode; `HostStack` has no code, since it is one machine's own fault and never world state. The pending
     commit is `version entry (32) ‖ op u32 ‖ author (32) ‖ source (hash 32 ‖ len u64) ‖ toolchain (32) ‖ sdk (32) ‖
     author_module (32) ‖ count u32 ‖ component ids (u128 LE, ascending) ‖ c u64 ‖ D u64 ‖ count u32 ‖ voters (32 each,
     ascending) ‖ count u32 ‖ attestations (voter 32 ‖ stamp u64, ascending, voters only) ‖ void u8 (0 none, 1
