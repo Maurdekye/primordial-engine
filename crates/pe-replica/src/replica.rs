@@ -68,8 +68,9 @@ use pe_seams::{
 };
 
 use crate::bodies;
+use crate::hands;
 use crate::ring::{Policy, Ring};
-use crate::world::{BodyStateRow, PhysicsSettings, ShapePart, ShapeRow, WorldModel, apply_order};
+use crate::world::{BodyStateRow, HandRow, PhysicsSettings, ShapePart, ShapeRow, WorldModel, apply_order};
 
 /// The replica's settings. Only `cut_every` follows from world state (the world's cut interval); the rest are local.
 #[derive(Clone)]
@@ -308,6 +309,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
         &self.world
     }
 
+    /// The physics world, for reads (tests, diagnostics).
+    pub fn physics(&self) -> &PhysicsWorld {
+        &self.physics
+    }
+
     /// Faults counted so far.
     pub fn faults(&self) -> u64 {
         self.faults
@@ -411,9 +417,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 }
             }
         }
-        let awake_before = self.awake();
+        // The hand bodies for this frame, rebuilt from the world model's hands and the physics state (3.3).
+        let hands = self.world.hands();
+        self.faults += hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f);
+        let awake_before = self.awake(&hands);
         self.faults += u64::from(self.physics.step(self.dt).is_err());
-        self.write_back(awake_before);
+        self.write_back(awake_before, &hands);
         self.faults += u64::from(self.world.maintain_transforms());
         self.world.end_frame(f);
         let next = Frame(f.0 + 1);
@@ -432,16 +441,18 @@ impl<W: WorldModel> ReplicaImpl<W> {
         root
     }
 
-    fn awake(&self) -> Vec<ObjectId> {
-        self.physics.objects().filter(|&id| self.physics.is_awake(id).unwrap_or(false)).collect()
+    /// The awake bodies of world objects: hand bodies are the replica's own (3.3).
+    fn awake(&self, hands: &[HandRow]) -> Vec<ObjectId> {
+        let awake = |id: &ObjectId| self.physics.is_awake(*id).unwrap_or(false);
+        self.physics.objects().filter(|id| awake(id) && !hands::is_hand(hands, *id)).collect()
     }
 
     /// Step 7: every body that moved writes its pose into the world model, in id order. A body awake before or after
     /// the step moved (one that fell asleep at the end of it too); static and sleeping bodies did not. A pose out of
     /// range is not written: the body stops at its last valid pose, the one its row still holds.
-    fn write_back(&mut self, awake_before: Vec<ObjectId>) {
+    fn write_back(&mut self, awake_before: Vec<ObjectId>, hands: &[HandRow]) {
         let mut moved = awake_before;
-        moved.extend(self.awake());
+        moved.extend(self.awake(hands));
         moved.sort_unstable();
         moved.dedup();
         let (mut poses, mut refused) = (Vec::with_capacity(moved.len()), Vec::new());
@@ -479,8 +490,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     fn physics_rows(&mut self) -> Result<(Vec<(ObjectId, BodyStateRow)>, Hash), PhysicsError> {
         let digests = self.physics.body_digests()?;
+        // Hand bodies are the replica's own: the world model has no `Body` for them, so no `BodyState` row either.
+        // `physics_global` still covers them.
+        let hands = self.world.hands();
         let mut rows = Vec::with_capacity(digests.len());
-        for (id, digest) in digests {
+        for (id, digest) in digests.into_iter().filter(|(id, _)| !hands::is_hand(&hands, *id)) {
             let (linear, angular) = self.physics.velocity(id)?;
             let awake = self.physics.is_awake(id)?;
             let sleep_time = self.sleep_time(id);

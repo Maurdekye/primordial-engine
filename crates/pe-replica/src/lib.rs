@@ -14,6 +14,7 @@
 
 pub mod bodies;
 pub mod drive;
+pub mod hands;
 pub mod mock;
 pub mod peworld;
 pub mod replica;
