@@ -9,9 +9,10 @@
 //!   pushes replace them once PeWorld applies hand inputs (@vdw-physics).
 //! - **Views:** pe-replica's view publish, with `ReplicaConfig::local` set to each member's key, so a member's views
 //!   mark its own hands `OWN_HAND` (and what they hold `HELD_LOCAL`), and objects a re-simulation moved `CORRECTED`.
-//! - **Checked:** P1, P3, P4, P6, P8 and P15 from the trace. P2 needs an offline replay over pe-world, not built yet.
+//! - **Checked:** P1, P3, P4, P6, P8 and P15 from the trace, and P2 against a straight replay of the final log
+//!   through a fresh member's replica ([`crate::s2replay`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,8 +27,10 @@ use crate::clock::{MS, Nanos, SEC, SessionClock};
 use crate::net::{LinkCfg, NodeId};
 use crate::props::{self, Violation};
 use crate::rng::{self, Purpose};
-use crate::seamnode::{SeamNode, ViewSink};
+use crate::s2replay;
+use crate::seamnode::{FinalLog, FinalSink, SeamNode, ViewSink};
 use crate::sim::{Run, Scenario, run as run_scenario};
+use crate::trace::Ev;
 
 /// The run's simulation rate.
 pub const HZ: u32 = 60;
@@ -134,19 +137,45 @@ pub struct BallPitRun {
     pub views: BTreeMap<NodeId, Vec<(Nanos, Arc<FrameView>)>>,
     /// The balls, by index (`Ball <i>`).
     pub balls: Vec<ObjectId>,
+    /// What each member saw become final: P2's replay input.
+    pub finals: BTreeMap<NodeId, FinalLog>,
+    /// The world every member opened, and a member's key: P2's replay opens a fresh replica from them.
+    pub genesis: World,
+    pub replay_as: MemberKey,
 }
 
 impl BallPitRun {
-    /// The properties a ball-pit run must keep: P1, P3, P4, P6, P8 and P15.
+    /// The properties a ball-pit run must keep: P1, P2, P3, P4, P6, P8 and P15.
     pub fn violations(&self) -> Vec<Violation> {
         let t = &self.run.trace;
         let mut out = props::p1_agreement(t);
+        out.extend(props::p2_live_equals_replay(t, &self.replay()));
         out.extend(props::p3_no_final_undone(t));
         out.extend(props::p4_voids(t));
         out.extend(props::p6_no_abort(t));
         out.extend(props::p8_no_pause(t));
         out.extend(props::p15_source_contract(t));
         out
+    }
+
+    /// P2's replay: the honest members' longest final log, stepped straight through by a fresh replica over the
+    /// genesis world, with its root at every frame an honest member saw final. Empty if the replica can't be built.
+    pub fn replay(&self) -> BTreeMap<(crate::trace::Line, crate::trace::Frame), crate::trace::Hash> {
+        let t = &self.run.trace;
+        let frames: BTreeSet<u64> = t
+            .records
+            .iter()
+            .filter(|r| t.honest.contains(&r.node))
+            .filter_map(|r| match r.ev {
+                Ev::Final { frame, .. } => Some(frame),
+                _ => None,
+            })
+            .collect();
+        let logs: Vec<FinalLog> =
+            self.finals.iter().filter(|(n, _)| t.honest.contains(n)).map(|(_, l)| l.clone()).collect();
+        replica(self.genesis.clone(), self.replay_as)
+            .map(|r| s2replay::replay(r, &s2replay::reference(&logs), &frames))
+            .unwrap_or_default()
     }
 
     /// The newest frame every member published a view of, with each member's newest view of it.
@@ -175,6 +204,7 @@ pub fn run(cfg: &BallPit) -> Option<BallPitRun> {
         .collect::<Option<_>>()?;
     let rate = SimRate::new(HZ)?;
     let mut sinks: BTreeMap<NodeId, ViewSink> = BTreeMap::new();
+    let mut final_sinks: BTreeMap<NodeId, FinalSink> = BTreeMap::new();
     let mut nodes = BTreeMap::new();
     let sorted = keys.sorted_keys();
     for id in 1..=cfg.members {
@@ -182,6 +212,9 @@ pub fn run(cfg: &BallPit) -> Option<BallPitRun> {
         let key = *sorted.get(id as usize - 1)?;
         let mut node = SeamNode::lockstep_over(&keys, id, replica(world.clone(), key)?, rate, CADENCE_NS)
             .record_views(sink.clone());
+        let fs = FinalSink::default();
+        node = node.record_final(fs.clone());
+        final_sinks.insert(id, fs);
         for p in cfg.pushes.iter().filter(|p| p.member == id) {
             let ball = *balls.get(p.ball)?;
             node = node.submit_at(p.at as i64, Class::Edit, push_payload(ball, p.to));
@@ -199,5 +232,9 @@ pub fn run(cfg: &BallPit) -> Option<BallPitRun> {
             (id, vs.into_iter().map(|(t, v)| (t as Nanos, v)).collect())
         })
         .collect();
-    Some(BallPitRun { run, views, balls })
+    let finals = final_sinks
+        .into_iter()
+        .map(|(id, s)| (id, s.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default()))
+        .collect();
+    Some(BallPitRun { run, views, balls, finals, genesis: world, replay_as: *sorted.first()? })
 }
