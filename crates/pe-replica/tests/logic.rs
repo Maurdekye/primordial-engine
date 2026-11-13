@@ -897,6 +897,87 @@ mod lamp {
         });
     }
 
+    /// pe-logic's runner conforms where its copy-in skip (`RunSettings::skip_unchanged`, on by default) fires and its
+    /// input changes every frame (@engine-architect's question, m4cf41f37c926): in tally, `count` writes `Counter`
+    /// and `double`, the next system of the same stage, binds the same objects and reads it, so the column `count`
+    /// wrote back is not copied in again. The skip trusts only what this stage's calls left in the area: a replay from
+    /// a saved store runs as the first run did, and the copies skipped show in the report.
+    #[test]
+    fn the_logic_runner_conforms_where_its_copy_in_skip_fires() {
+        big_stack(|| {
+            const TALLY: [u8; 32] = [14; 32];
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/tally");
+            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
+            let wasm = pe_logic::build::build(&dir, &pe_logic::build::engine_sdk(), &target, true)
+                .unwrap_or_else(|e| panic!("{e}"));
+            let s = Settings::default();
+            let script = Script::load(&runtime::engine(&s).unwrap(), s, &wasm).unwrap();
+            let module = script.module_hash();
+            let m = run::read_manifest(&script).unwrap();
+            let desc = |c: &pe_logic::manifest::Component| {
+                let fields = run::component_desc(c, ComponentId(0)).unwrap().fields().to_vec();
+                run::component_desc(c, script_component_id(&v(), &c.name, fields).unwrap()).unwrap()
+            };
+            let descs: Vec<ComponentDesc> =
+                m.components.iter().filter(|c| !c.name.starts_with("pe.")).map(desc).collect();
+            let id_of = |name: &str| descs.iter().find(|d| d.name() == name).expect("a tally component").id();
+            let mut w = floor_and_ball();
+            let keys = keys();
+            let mut b = EntryBuilder::new(&keys, 0);
+            let mut components = vec![tag_desc(&v())];
+            components.extend(descs.iter().cloned());
+            let commit = tx(vec![
+                Op::Register { components },
+                Op::CommitScript {
+                    script: TALLY,
+                    base: None,
+                    source: BlobRef { hash: v().0, len: 10 },
+                    toolchain: Hash([1; 32]),
+                    sdk: Hash([2; 32]),
+                    author_module: module,
+                    activate_at: 0,
+                },
+            ]);
+            applied(&w.apply_edit(Frame(0), &b.next(Class::Edit, Frame(0), Bytes::from(commit.encode()))).0);
+            for (k, n) in (90u128..93).enumerate() {
+                w.create(oid(n), None, MemberKey([1; 32]), GENESIS).expect("a counter");
+                let counter: Vec<u8> = [k as u32, 3].iter().flat_map(|x| x.to_le_bytes()).collect();
+                let set = |component, bytes| Op::SetRow {
+                    id: Target::Existing(oid(n)),
+                    row: Row { component, instance: 0, bytes },
+                };
+                let ops = vec![
+                    set(id_of("Counter"), counter),
+                    set(id_of("Doubled"), vec![0; 8]),
+                    set(tag_desc(&v()).id(), vec![]),
+                ];
+                applied(&w.apply_edit(Frame(0), &edit(&mut b, 0, ops)).0);
+            }
+            let mut fx = fixture_of(&w);
+            fx.frames = 12;
+            let make = move || {
+                let mut r = runner(false);
+                r.insert(&wasm).expect("the tally loads");
+                Box::new(r) as Box<dyn ScriptRunner>
+            };
+            conformance(&make, &fx).expect("pe-logic's runner conforms with its copy-in skip");
+            // The skip fired: pe-logic's own report of the same stage, outside the replica, counts the bytes skipped.
+            let mut logic = run::Logic::new(RunSettings::default());
+            let own: Vec<ComponentId> = descs.iter().map(|d| d.id()).collect();
+            let table: Vec<run::EngineComponent<'_>> = (pe_world::script::ENGINE_COMPONENTS.iter())
+                .map(|e| run::EngineComponent { name: e.name, id: e.id, scripts_may_write: e.scripts_may_write })
+                .collect();
+            let bound =
+                run::Loaded::bind(Hash(TALLY), script, m, &own, tag_desc(&v()).id(), &table, w.store().registry());
+            logic.insert(bound.expect("tally binds"));
+            let mut store = w.store().clone();
+            let none = BTreeSet::new();
+            let ctx = &mut run::StageCtx::new(LineId::origin(), 60, pe_sdk::layout::Stage::PrePhysics, &none);
+            let report = logic.run_stage(&mut store, ctx);
+            assert!(report.skipped_in > 0, "the skip fired: {report:?}");
+        });
+    }
+
     /// The lamp runs in the replica's frame: after frames 0 to 29 each lamp's glow is what its rule gives at frame 29
     /// (t = 29/60 s, on while (t + phase) mod 1 s < 0.5 s): on, off, off. The runner's identity is pe-logic's.
     #[test]
