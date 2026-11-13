@@ -54,6 +54,7 @@
 //! stages (3, steps 3 and 8), and the view's rows beyond bodies (7).
 
 use core::time::Duration;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -369,14 +370,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.stuck_at.is_some_and(|f| at > f)
     }
 
-    /// The entries frame `f` steps: the source's, or exactly the cut's below a replay's cut frame. `None` when the
-    /// source no longer keeps the frame's entries (S3 v1.2).
-    fn entries_for<'s>(&self, source: &'s dyn EntrySource, f: Frame) -> Option<Vec<&'s SignedEntry>> {
-        let all = source.entries_at(f)?;
-        Some(match &self.replay {
-            Some(r) if f < r.cut.at.frame => in_cut(all, &r.cut),
-            _ => all.iter().collect(),
-        })
+    /// The entries frame `f` steps: the source's, or below a replay's cut frame exactly what S3 answers for that cut
+    /// ([`EntrySource::entries_for_cut`], S3 v1.4). `None` when the source no longer keeps the frame's entries (S3
+    /// v1.2).
+    fn entries_for<'s>(&self, source: &'s dyn EntrySource, f: Frame) -> Option<Cow<'s, [SignedEntry]>> {
+        match &self.replay {
+            Some(r) if f < r.cut.at.frame => source.entries_for_cut(&r.cut, f).map(Cow::Owned),
+            _ => source.entries_at(f).map(Cow::Borrowed),
+        }
     }
 
     // ---- one frame --------------------------------------------------------------------------------------------------
@@ -584,7 +585,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 break;
             };
             let resimulated = self.frame < self.reached;
-            let root = self.step(&entries, true);
+            let root = self.step(&entries.iter().collect::<Vec<_>>(), true);
             if resimulated && self.frame == self.view.frame {
                 self.note_corrections();
             }
@@ -619,8 +620,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
     fn first_difference(&self, cut: &Cut, source: &dyn EntrySource) -> Option<Frame> {
         (self.base_frame().0..cut.at.frame.0).map(Frame).find(|&g| {
             // A frame no longer kept counts as different (`my_root` refuses before asking).
-            let Some(all) = source.entries_at(g) else { return true };
-            let want: Vec<EntryRef> = apply_order(in_cut(all, cut), W::phase).iter().map(|e| e.id()).collect();
+            let Some(all) = source.entries_for_cut(cut, g) else { return true };
+            let want: Vec<EntryRef> = apply_order(&all, W::phase).iter().map(|e| e.id()).collect();
             self.stepped.get(&g).is_none_or(|had| *had != want)
         })
     }
@@ -717,8 +718,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.frame = k;
         let mut root = None;
         while self.frame < at {
-            let entries = in_cut(source.entries_at(self.frame).ok_or(RootError::NotKept)?, cut);
-            root = self.step(&entries, false);
+            let entries = source.entries_for_cut(cut, self.frame).ok_or(RootError::NotKept)?;
+            root = self.step(&entries.iter().collect::<Vec<_>>(), false);
         }
         // Stepped onto a grid frame: its root was just taken. Otherwise (a keyframe restored at the cut's frame, or a
         // cut off the grid) take it here; at a grid keyframe the rows are already written, so nothing changes.
@@ -834,9 +835,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 let (author, class) = (seen.author, seen.class);
                 StepRecord { entry, author, class, frame: f, outcome: Outcome::Dropped { reason } }
             };
-            match source.entries_at(f) {
-                Some(held) => {
-                    let order = in_cut(held, cut);
+            match source.entries_for_cut(cut, f) {
+                Some(order) => {
                     if repaired {
                         records.extend(order.iter().map(|e| unknown(e.id(), e.entry.author, e.entry.class, f)));
                     }
@@ -915,11 +915,6 @@ fn empty_view(domain: DomainId) -> FrameView {
         counters: ViewCounters::default(),
         changes: Vec::new(),
     }
-}
-
-/// The entries of `all` the cut includes, in their order.
-fn in_cut<'s>(all: &'s [SignedEntry], cut: &Cut) -> Vec<&'s SignedEntry> {
-    all.iter().filter(|e| cut.includes(&e.entry.chain, e.entry.seq)).collect()
 }
 
 /// The physics configuration for a world with `settings`, stepped at `rate`: the engine's configuration with the

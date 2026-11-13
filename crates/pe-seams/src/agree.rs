@@ -27,6 +27,13 @@
 //!   every entry after the head the previous final cut named, up to the head this cut names. The d1 rule is S3's
 //!   alone. The replica can't check it, because a cut may include void entries that [`EntrySource::entries_at`]
 //!   rightly leaves out, so it relies on this line.
+//! - **A cut's root is a function of the cut and its ancestry** (S3 v1.4; @coordinator-opus, after
+//!   @harness-eng's pipelined-void repro): for every cut handed over for roots, and every final cut,
+//!   [`crate::EntrySource::entries_for_cut`] answers exactly what the final log yields at that cut were it final:
+//!   the same entries, verdicts and order. A cut handed over while its parent is in flight therefore leaves out the
+//!   entries it includes only to void them (stamped below the parent's frame and not in it), so the root a quorum
+//!   certifies is the one the final log replays to. Nothing speculative enters [`crate::EntrySource::entries_at`]
+//!   or the pending set; two candidates at one height each get their own answer.
 //! - **Retention for rung 1** (S3 v1.2): the replica tells S3 what it still needs
 //!   ([`EntrySource::keep_final_from`]): `Cv`'s frame, for rung 1's replay, and its floor, for re-simulation, both
 //!   forward only. S3 never trims a final entry at or above the floor except by the time cap: `T_diverge` (one
