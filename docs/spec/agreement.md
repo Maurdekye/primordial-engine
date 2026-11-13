@@ -62,14 +62,64 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     pe-app builds its `Node` from the world config, every peer runs the same compiled defaults, and the connection
     guard refuses a different build. The wiring must land before members can run different builds or worlds can
     change the settings (@design-reviewer's Low 2; @engine-architect).
-  - **Open (Low 1):** a stall longer than the burst leaves refusal holes that never heal. At 120 Hz a
-    3 s stall flushes 720 entries into a burst of 240, and the member gets nothing final afterwards (test
-    `a_stalled_uplink_flushing_three_seconds_of_hands_at_120_hz`, ignored until the fix; docket
-    pe-agree-a-stall-longer-than-the-burst-must-not-c).
-  - An author past its budget loses more than the excess: a refused entry leaves a hole in its chain, and its later
-    entries wait until a cut names them. In one run of the flood test (twice the budget at 120 Hz) 485 of the flooder's 9,608
-    entries became final in 10 s. An honest stall fits: a 1 s uplink stall at 120 Hz flushes 240 entries, inside the
-    burst, and none were refused (the entries stamped during the stall are late and void anyway).
+  - **The budget delays a valid entry but never loses it** (coordinator, on @fable-reviewer's; @design-reviewer's Low 1). Before, a refused entry left a hole in its author's chain
+    that nothing fetched back: at 120 Hz a 3 s stall's flush (720 entries into a burst of 240) cut the member off for
+    good. Now:
+    - **Defer, don't refuse.** An entry that passes every check but is over its author's budget waits in the author's
+      queue, in chain order, capped at the pending cap in entries and `defer_bytes` in bytes. It is admitted as the
+      budget refills, and relayed only then. While an author has entries waiting, a new one waits behind them. A full
+      queue makes room by dropping its latest entry, with no fault (the refetch brings it back); only an entry later
+      than all of them is refused, `RateExceeded`, the one fault the budget reports. Waiting entries are never named
+      in a vote's heads, since only held entries are.
+    - **Checks are capped too:** per sender and author, twice the rate, with a burst of twice (pending cap + burst).
+      Past it an entry is dropped unchecked, with no fault, so a flood can't burn a peer's CPU on signatures. An entry
+      dropped unchecked raises nothing, so its gap shows only once a later checked entry or a vote's heads name a seq
+      past it; that works while the author votes (@engine-architect's nit).
+    - **Range refetch.** For each chain with a hole (a seq beyond its linked head seen, in a checked entry or a vote's
+      heads, and the next one neither held nor waiting) that has lasted 150 ms, the member asks for just the gap,
+      `FetchRange { author, chain, from_seq, count }`, of the author first and of everyone on a retry, with the retry
+      doubling. The wait keeps an entry merely reordered in flight from being fetched twice; a gap that moves (the
+      chain still growing) restarts it. The answer is charged to the budget like any entry. Refusals, unchecked drops
+      and network loss heal the same way.
+      - **Serving is budgeted** per requester, at one author's rate and burst across all the chains it asks for:
+        an answer is cut short to what the requester's bucket holds, and the requester asks again. A member asking
+        over and over, for any chains, gets back about one author's stream in all (measured [V]: 1,199 entries in
+        2 s across three authors' chains against a bound of 1,200, where 512,000 were asked for; @design-reviewer's
+        Medium 2 and later Low 1). An honest requester recovering from its own stall
+        asks each author for its own chain first, and each server keeps a separate bucket for it. Answers go on the
+        Action lane: they are signed entries, as urgent for their author as live ones; if contention shows in a
+        measurement, the fix is pe-net's order within the lane, fresh before refetched (@engine-architect).
+      - **A vote's heads are a claim, not evidence.** Only a checked entry, which only its author can sign, raises
+        what a member knows of a chain for good. A seq named only by a vote's heads is asked for, and forgotten once
+        its asks run out unanswered (five, about 15 s); that voter's claims on that chain are then ignored until the
+        chain's checked seq reaches the forgotten claim. An honest voter answers its own claim, so only an
+        unreachable or lying voter is ignored, and the entries still come by relay and cuts. At most four chains per
+        author are tracked from votes alone, given-up ones included, so fabricated chain ids can't grow the maps
+        (@design-reviewer's Low 1). Measured [V]: a claim of seq 2^60 on an honest chain is asked for 13 times
+        (one ask, then four retries to three peers) and never again.
+    - **Filling a hole is exempt from the pending cap**, though not from the tokens: an entry that extends the linked
+      head while entries beyond it are held. Otherwise a cap full of entries behind a hole could never drain. A hole
+      fills once, so an author's held entries stay within about twice the cap.
+    - **Pacing at the author.** `Node::backlog()` is the author's unacknowledged backlog: its own entries beyond the
+      head a quorum holds, counting itself and, for each other member, the head of the author's chain that member's
+      latest verified vote names (at least the final cut's). Entries younger than the vote cadence plus the timeout
+      floor (0.4 s at the defaults) aren't counted, since no vote can name them yet, and nothing is counted until a
+      quorum's worth of peers have named the chain once (the session's first cut lag). While the backlog is over the
+      burst (`Node::backlogged()`), pe-app makes no new hand entries; they would be refused or void as late. Edits and
+      other inputs are never held back this way. pe-agree itself never re-sends an entry; a transport that buffers
+      across an outage flushes at once, and the queue and the refetch absorb that.
+      - **Not the entries beyond the final cut** (`Node::unfinal_own()`, kept as a diagnostic): that grows with the
+        cut lag, about 400 entries at three a frame and 120 Hz with the lag at its 1 s cap, over the burst of 244, so
+        it paced healthy members (@design-reviewer's Medium 1). Measured [V, 2 seeds, 8 s]: the old rule would pace
+        880 of 960 frames per member, the backlog none. Votes name heads beyond the cut they vote on, so the backlog
+        doesn't grow with the lag. It does grow during a view change with no votes: past the grace plus a burst's
+        worth of entries (about 1.4 s at two hands and 120 Hz), hand entries pause until votes resume.
+    - Measured [V, pe-agree sim, 120 Hz, two hands a frame, seeds 31-33]: with pacing, stalls of 1, 3 and 10 s give no
+      refusal and no fault, and the member's entries are final again from the stall's end. In every stall run, paced
+      or not, every peer's copy of the member's chain links through every entry it made up to 2 s before the end
+      (asserted: nothing is lost; @design-reviewer's Low 3). Unpaced (seed 31): a 3 s
+      stall gives no refusal and no fault; a 10 s stall gives 31-34 refusals per peer, and the entries are final
+      again 7 s after it. A flooder at twice the budget gets about 1,500 of its 9,600 entries final in 10 s.
 - **Retention.** Final entries are kept from the later of the driver's Cv frame and a cap: the one-minute divergence
   bound plus a margin, as a duration converted with the world's SimRate, and limited in bytes. `kept_from()` says
   where the log is complete; below it `entries_at` answers "not kept", never an empty set (coordinator).
@@ -253,8 +303,14 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     guess, and counts it (`Core::shared_cuts`, asserted 0 in pe-agree's sims; the harness should assert it too). If it
     ever fires, or after M1, `Cut` should name its parent or block (a seam change for @engine-architect;
     @design-reviewer, @harness-eng).
-  - The log and its index (`ChainLog`, `by_ref`) grow for the whole session; pruning them is open work. The root
-    cache is versioned by an insert counter, so a prune can't bring back a stale answer.
+  - The log and its indexes (`ChainLog`, `by_ref`, `arrived`) grow for the whole session; pruning them is open work.
+    The root cache is versioned by an insert counter, so a prune can't bring back a stale answer. The range index
+    (`by_seq`) is pruned with the kept frames: each chain's rows for entries stamped below `kept_from` go, since no
+    honest member asks that far back by range (@design-reviewer's Low 2, @engine-architect's Low 1).
+  - Open (@design-reviewer, not blocking): a Byzantine voter can fill an author's four vote-only
+    claim slots with fabricated chain ids until checked entries reach them; a genuinely new chain of that author is
+    then not claimable from votes until one of its entries arrives directly, which is fine while entries are
+    broadcast.
 
 ## 6. Mutations (feature `mutants`, never in production state)
 
