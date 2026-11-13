@@ -131,26 +131,41 @@ that ships is the loop the properties check.
 
 pe-api reaches the world through ports that pe-app implements (api.md 3, 9). The simulation thread feeds them, and
 the MCP thread's handlers read them (@coordinator-opus m7af16ffc372e, m22babe2c6375).
-- **The snapshot port** (pe-api's `WorldSource`, pe-app's `ApiWorld`): each tick that publishes a new view also takes
-  `Replica::world_snapshot()` (S2 v1.7; pe-world's `Arc<WorldSnapshot>`, downcast) and keeps it by frame, for the
-  last 2 s (api.md 9.1's retention). The kept snapshots at or above each advance's `rolled_back_to` are dropped, and
-  all of them on a repair, so none belongs to a timeline the replica replaced (D2; @api-eng's requirement on
-  v1.8). `latest()` is the newest; `final_()` the newest kept at or below the final frame, which may lag the final
-  frame by a few frames after a catch-up, since a catch-up publishes only its last frame; `at(f)` the one kept at
-  `f`, if any.
+- **The snapshot port** (pe-api's `WorldSource`, pe-app's `ApiWorld`):
+  - `latest()` and `at(f)`: each tick that publishes a new view also takes `Replica::world_snapshot()` (S2 v1.7;
+    pe-world's `Arc<WorldSnapshot>`, downcast) and keeps it by frame, for the last 2 s (api.md 9.1's retention).
+    A snapshot at frame f is the state before f is stepped. The kept snapshots above each advance's
+    `rolled_back_to`, the frame of the state the replica restored, are dropped, and all of them on a repair, so none
+    belongs to a timeline the replica replaced (D2; @api-eng's requirement on v1.8; @design-reviewer's Low 1).
+    `latest()` is the newest; `at(f)` the one kept at `f`, if any.
+  - `final_()`: `Replica::agreed_snapshot()` (S2 v1.7), the world at Cv, the newest final cut this replica matched:
+    exactly that cut's entries, never a prediction, and left alone by rollbacks, replays and imports. So it never
+    lags the final frame and survives a stall or a repair. Before the first agreed cut it is the frame-0 snapshot
+    taken at startup, final by genesis (@coordinator-opus m926ccfeb16e9, replacing D2 for `final_()`; @api-eng's M2).
 - **The change record:** with each new view, `ChangeLog::publish(changes, final_frame, health)` from the view. When
-  agreement's final cut moves, one `ChangeLog::confirm_cut(cut, voided)`, with the entries of every `Voided` event
-  drained since the last one, so an entry a cut includes and voids is never shown final.
+  agreement's final cut moves (S3's `EntrySource::final_cut`, never the `CutFinal` event, whose voids may come a
+  tick or more later), one `ChangeLog::confirm_cut(cut, voided)`, with the entries of every `Voided` event drained
+  since the last one, so an entry a cut includes and voids is never shown final. It relies on S3's ordering: a cut's
+  `Voided` events are queued no later than the call in which `final_cut` first reports the cut (pe-agree queues them
+  and then moves `final_cut`, in one call [V node.rs]; @design-reviewer's Medium on draft 5).
 - **The edit port:** step 2 takes at most one `Submission` a frame from pe-api's `EditQueue`, makes an `Edit` entry
-  on the member's chain from its transaction (pe-world's codec) and submits it, then settles the ticket:
-  `Receipt::Submitted { change, frame, chain, seq }`, or `Receipt::Refused` with agreement's reason. Edits are
-  never paced. The queue's wake wakes the simulation thread (step 7).
-- **What else `ApiWorld` answers:** `draft_for` from the member's chain id and next seq as step 2 last left them;
-  `edit(entry)` from an index of the edit entries the views' change records name, each decoded once and kept while
-  pe-api's change stream keeps its record (60 s); `put_blobs` into the machine's blob store, which every world and
-  snapshot on the machine shares; `member_name` a short form of the key, until members have names; `head_of` none in
-  M1, which has no head object, so `"me"` is refused by name; and `session()` from the line, the members whose links
-  step 1 reports up, the link, the last advance's `caught_up`, the world's rate and `agents_move_user` (off).
+  on the member's chain from its transaction (pe-world's codec) and submits it, first in the frame, before the hand
+  entries, so that a dry run made while the queue was empty names the seq the edit then gets (@api-eng's L1). It
+  settles the ticket: `Receipt::Submitted { change, frame, chain, seq }`, or `Receipt::Refused` with agreement's
+  reason. Edits are never paced. The queue's wake wakes the simulation thread (step 7).
+- **What else `ApiWorld` answers:**
+  - `draft_for`: the member's chain id and next seq, as step 2 last left them.
+  - `edit(entry)`: an index of the edit entries the views' change records name, each decoded once and kept as long
+    as pe-api's `ChangeLog` holds the entry, oldest dropped first, up to 10,000 entries (`changes::CAPACITY`) and 64
+    MiB of payloads [I]. `history`, `revert` and `watch` read it; past either cap, history describes an older change
+    without its contents (@api-eng's M1, @design-reviewer's Low 2).
+  - `put_blobs`: into the machine's blob store, which every world and snapshot on the machine shares.
+  - `member_name`: a short form of the key, until members have names.
+  - `head_of`: none in M1, which has no head object, so `"me"` is refused by name. That also leaves the rule that
+    agents don't move their user (api.md 10.6) with nothing to protect: re-check it when heads arrive (@api-eng's
+    L3).
+  - `session()`: the line; this machine's member and those whose links step 1 reports up, each once (@api-eng's
+    L2); the link; the last advance's `caught_up`; the world's rate; and `agents_move_user` (off).
 - **The MCP thread:** pe-mcp's `host::start` over `Api::new(ApiWorld, queue, log)` as an `Arc<dyn WorldApi>`, on a
   tokio runtime of 2 workers, with the pipe or loopback HTTP transport or both, and optionally the agent's command
   line (`--mcp-pipe`, `--mcp-http`, `--agent`). The token store is the one `host::start` makes; its tokens are
