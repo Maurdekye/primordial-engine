@@ -2276,8 +2276,12 @@ dependencies = [
 name = "pe-net"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "pe-net",
  "pe-net-crypto",
  "pe-seams",
+ "quinn-proto",
+ "rustls",
 ]
 
 [[package]]

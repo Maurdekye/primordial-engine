@@ -11,3 +11,14 @@ description = "Transport (seam S4): direct QUIC connections from an invite, five
 [dependencies]
 pe-seams = { path = "../pe-seams" }
 pe-net-crypto = { path = "../pe-net-crypto" }
+bytes = "1"
+quinn-proto = { version = "0.11.19", default-features = false }
+rustls = { version = "0.23.46", default-features = false, features = ["std"] }
+
+[features]
+# Test and fuzz hooks (`Core::testing_send_record`); never in a build that ships.
+testing = []
+
+[dev-dependencies]
+# The tests send crafted records through the hooks.
+pe-net = { path = ".", features = ["testing"] }
