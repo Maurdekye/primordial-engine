@@ -224,7 +224,14 @@ pub enum EffectKind {
     EditApplied,
     EditRefused,
     ContactBegin,
-    /// An event a script declared (logic.md 3.2), by its registered kind.
+    /// An event a script declared (logic.md 3.2). The number is the first 8 bytes, little-endian, of
+    /// `Hash::of("pe.script.event", asset ‖ name)`: the script's 32-byte asset id, then the UTF-8 name of the event
+    /// type as its system's `emits` list declares it. So it stays the same when a script reorders that list, and for
+    /// every system that emits it (@coordinator-opus; S5 v1.7). Such an effect's cause is
+    /// [`EffectCause::Logic`]; its `object` is the emitting object, `at` that object's world position after the stage,
+    /// `data` the event's bytes, `own` false, and `ordinal` counts that object's events of this kind in the frame, in
+    /// stage order. A re-simulated one has no `trigger_arrived`, so it is never played (D6), though it can be
+    /// retracted.
     Script(u64),
 }
 
