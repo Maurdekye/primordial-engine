@@ -11,9 +11,9 @@ use pe_replica::mock::MockClock;
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl, ScriptRunner, event_kind};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
-    ChainHead, Class, Cut, CutRef, DomainId, EffectCause, EffectKey, EffectKind, EntrySource, FinalCut, Frame,
-    FrameView, Hash, HostTime, LineId, MemberKey, ObjectId, Offset, Outcome, Pos, Replica, RootError, SignedEntry,
-    Stage,
+    ChainHead, Class, Cut, CutImport, CutRef, DomainId, EffectCause, EffectKey, EffectKind, EntrySource, FinalCut,
+    Frame, FrameView, GroupSel, Hash, HostTime, LeafKey, LineId, MemberKey, ObjectId, Offset, Outcome, Pos, Replica,
+    RootError, SignedEntry, Stage,
 };
 use pe_sim::{Component, ComponentId, SimStore, Transform};
 use pe_world::components::{Body, Shape, body_kind, shape_kind};
@@ -689,6 +689,77 @@ fn rung_one_carries_each_effect_once_and_retracts_what_a_glitch_emitted() {
     let after = bad.view();
     assert_eq!(keys_of(&after), [ping(49)], "every replayed ping was carried already");
     assert_eq!(after.retracted, [glitch]);
+    let from_32 = |r: &ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 32).collect::<Vec<_>>();
+    assert_eq!(from_32(&bad), from_32(&good));
+}
+
+/// A late entry the final cut leaves out was stepped live: as the cut goes final, `finalize` re-bases the live state on
+/// the cut-exact floor (`rebase_on_floor`), and the next view compares the frames it re-based with what the views
+/// carried there, as a replay's (@engine-architect's Low 3 on 4ac9019f). Here the late entry deleted the ball at 20, so
+/// the live history had no ping from 20 on, and the cut-exact history has one each frame.
+#[test]
+fn a_floor_re_based_over_a_late_entry_carries_the_effects_of_the_frames_it_re_based() {
+    let mut clean = replica_of(scripted()).with_runner(mover());
+    clean.advance(Frame(48), &mut Source::default());
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let late = edit(&mut b, 20, vec![Op::Delete { id: Target::Existing(oid(BALL)) }]);
+    let mut s = Source::default();
+    s.add(late.clone());
+    let mut a = replica_of(scripted()).with_runner(mover());
+    a.advance(Frame(48), &mut s);
+    applied(&a.outcome(&late.id()).expect("stepped").1);
+    assert_eq!(keys_of(&a.view()), (0..20).map(ping).collect::<Vec<_>>(), "no ball from 20");
+    // S3 voids the late entry as the cut at 24 goes final, and reports the change.
+    s.entries.clear();
+    s.changed = Some(Frame(20));
+    let fc24 = FinalCut { cut: cut_at(&[], 3, 24), root: clean.live_root(Frame(24)).expect("at 24"), voters: vec![] };
+    assert_eq!(a.finalize(&fc24, &mut s), pe_seams::Finalized::Agreed);
+    a.advance(Frame(48), &mut s);
+    let view = a.view();
+    assert_eq!(keys_of(&view), (20..48).map(ping).collect::<Vec<_>>(), "the re-based frames' pings, then the rest");
+    assert!(view.effects.iter().all(|e| e.resimulated), "every frame from 20 was stepped before");
+    assert!(view.retracted.is_empty());
+    let from_24 = |r: &ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 24).collect::<Vec<_>>();
+    assert_eq!(from_24(&a), from_24(&clean));
+    assert_eq!(a.faults(), 0, "S3's report inside [20, 24) is excused");
+}
+
+/// The donor's whole state at `cut`, as a full-state fetch asks for it: every object, every table and the config
+/// record, with their proofs, and the physics image (as tests/peworld.rs builds it).
+fn full_import(donor: &mut ReplicaImpl<PeWorld>, s: &mut Source, cut: &Cut) -> CutImport {
+    let root = donor.root_at_cut(cut, s).expect("the donor's root");
+    let mut keys: Vec<LeafKey> =
+        donor.world().world().store().objects().iter().map(|&id| LeafKey::Object(id)).collect();
+    keys.extend((0..pe_world::tree::table::COUNT as u8).map(LeafKey::Table));
+    keys.push(LeafKey::Config);
+    let records = donor.tree(&root).expect("held").export(&keys);
+    CutImport { cut: cut.clone(), target_root: root, records, absent: Vec::new(), physics: donor.physics_image(&root) }
+}
+
+/// A rung-2 import replaces my history below its cut: the next view retracts what the views carried there, the
+/// glitch's event with the rest, and the replay from the cut to my present carries nothing twice (@engine-architect's
+/// Low 3 on 4ac9019f).
+#[test]
+fn a_rung_two_import_retracts_what_the_views_carried_below_its_cut() {
+    let mut s = Source::default();
+    let mut good = replica_of(scripted()).with_runner(mover());
+    good.advance(Frame(32), &mut s);
+    let import = full_import(&mut good, &mut s, &cut_at(&[], 4, 32));
+    good.advance(Frame(49), &mut s);
+    let mut bad =
+        replica_of(scripted()).with_runner(Box::new(Glitching { inner: Mover { holds: MODULE }, glitched: false }));
+    bad.advance(Frame(48), &mut s);
+    assert_eq!(keys_of(&bad.view()).len(), 49, "48 pings and the glitch");
+    assert_eq!(bad.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(import.target_root));
+    bad.advance(Frame(49), &mut s);
+    let after = bad.view();
+    assert_eq!(keys_of(&after), [ping(48)], "the replay from the cut carried nothing twice");
+    let kind = EffectKind::Script(event_kind(&ASSET, "glitch"));
+    let glitch = EffectKey { frame: Frame(20), cause: EffectCause::Logic, object: oid(BALL), kind, ordinal: 0 };
+    let below: BTreeSet<EffectKey> = (0..32).map(ping).chain([glitch]).collect();
+    assert_eq!(after.retracted.iter().copied().collect::<BTreeSet<_>>(), below);
+    assert_eq!(after.retracted.len(), below.len(), "each once");
     let from_32 = |r: &ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 32).collect::<Vec<_>>();
     assert_eq!(from_32(&bad), from_32(&good));
 }
