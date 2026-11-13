@@ -8,17 +8,21 @@
 //! - **The counters** (render.md 13): the presenter takes the display layer's counters every frame into its
 //!   [`RenderCounters`], so `DisplayLayer::counters` reads only the current frame's; the caller reports each draw
 //!   ([`Presenter::drawn`]) and each capture event, and pe-app reads [`Presenter::counters`].
+//! - **The notices** (render.md 8.1): with [`Presenter::set_notices`], each new view's `changes` feed them, pe-app
+//!   hands in agreement events ([`Presenter::agreement`]), and each [`PresentedFrame`] carries the lines to show.
+//!   The caller turns them into `Scene::overlay` (`notices::StripCache`, then `window_overlay` or `Panel::place`).
 
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
-use pe_seams::FrameView;
+use pe_seams::{AgreeEvent, FrameView, HostTime};
 
 use crate::LocalPresentation;
 use crate::camera::Camera;
 use crate::counters::{CaptureEvent, RenderCounters};
 use crate::display::{DisplayFrame, DisplayLayer, DisplaySettings, FrameInput};
 use crate::effects::{EffectCommand, EffectGate, EffectSettings};
+use crate::notices::{Line, Notices};
 use crate::pacing::Quality;
 use crate::scene::{Environment, FrameStats, Scene};
 
@@ -50,6 +54,8 @@ pub struct PresentedFrame {
     pub display: DisplayFrame,
     /// Plays and stops for the sinks: sounds to pe-app, haptics to pe-xr; particles are pe-render's.
     pub effects: Vec<EffectCommand>,
+    /// The notices to show this frame, oldest first (empty without [`Presenter::set_notices`]).
+    pub notices: Vec<Line>,
 }
 
 /// The display layer and the effect gate, on the render thread. Survives a lost GPU context.
@@ -60,6 +66,7 @@ pub struct Presenter {
     sim_rate_hz: u32,
     last: Option<Arc<FrameView>>,
     counters: RenderCounters,
+    notices: Option<Notices>,
 }
 
 impl Presenter {
@@ -77,6 +84,7 @@ impl Presenter {
             sim_rate_hz,
             last: None,
             counters: RenderCounters::new(),
+            notices: None,
         }
     }
 
@@ -103,6 +111,22 @@ impl Presenter {
         self.counters.drawn(at, stats, quality);
     }
 
+    /// Tell the local player's notices from here on (render.md 8.1).
+    pub fn set_notices(&mut self, notices: Notices) {
+        self.notices = Some(notices);
+    }
+
+    pub fn notices_mut(&mut self) -> Option<&mut Notices> {
+        self.notices.as_mut()
+    }
+
+    /// An agreement event from pe-app: voids of the local member's entries become notices.
+    pub fn agreement(&mut self, e: &AgreeEvent, now: HostTime) {
+        if let Some(n) = &mut self.notices {
+            n.agreement(e, now);
+        }
+    }
+
     /// Report a capture's progress (the capture port, render.md 11).
     pub fn capture_event(&mut self, at: pe_seams::HostTime, e: CaptureEvent) {
         self.counters.capture(at, e);
@@ -118,13 +142,17 @@ impl Presenter {
         // `take` also releases what is due; between arrivals, only the waits run.
         let effects = if self.last.as_ref().is_none_or(|l| !Arc::ptr_eq(l, view)) {
             self.last = Some(view.clone());
+            if let Some(n) = &mut self.notices {
+                n.observe(view, local.display_time);
+            }
             self.effects.take(view, self.sim_rate_hz, local.display_time)
         } else {
             self.effects.due(local.display_time)
         };
+        let notices = self.notices.as_mut().map(|n| n.lines(local.display_time)).unwrap_or_default();
         let mut scene = Scene::displayed(view, &display);
         scene.environment = self.environment;
-        PresentedFrame { scene, display, effects }
+        PresentedFrame { scene, display, effects, notices }
     }
 }
 
@@ -169,5 +197,32 @@ mod tests {
         assert_eq!(run.display.views_taken, 1);
         assert_eq!(run.display.display_frames, 3);
         assert_eq!(run.view_age_ms.count, 3);
+    }
+
+    /// Notices: each new view's `changes` feed them once, and every presented frame carries the lines.
+    #[test]
+    fn presented_frames_carry_the_notices() {
+        use crate::notices::NoticeSettings;
+        use pe_seams::{Class, EntryRef, Hash, MemberKey, Outcome, Reason, StepRecord};
+        let me = MemberKey([1; 32]);
+        let mut p = Presenter::new(DisplaySettings::default(), EffectSettings::default(), Environment::default(), 60);
+        let local = LocalPresentation { display_time: HostTime::from_millis(50), hands: [None, None] };
+        assert!(p.frame(&view(1), &local, &[]).notices.is_empty(), "no notices set");
+        p.set_notices(Notices::new(NoticeSettings::default(), me, 60));
+        let mut v = (*view(4)).clone();
+        v.final_frame = Some(Frame(4));
+        v.changes = vec![StepRecord {
+            entry: EntryRef(Hash([9; 32])),
+            author: me,
+            class: Class::Input,
+            frame: Frame(3),
+            outcome: Outcome::Refused { op: None, reason: Reason::OutOfReach },
+        }];
+        let v = Arc::new(v);
+        for _ in 0..3 {
+            let f = p.frame(&v, &local, &[]);
+            assert_eq!(f.notices.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["Out of reach."]);
+        }
+        assert_eq!(p.notices_mut().unwrap().told_total(), 1, "the view was read once");
     }
 }

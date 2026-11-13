@@ -315,12 +315,12 @@ impl Notices {
             }
             Reason::Protected { owner } => format!("Refused: {} protects it.", inside(&self.name(owner))),
             Reason::NoPermission => "Refused: you don't have permission for that.".to_string(),
-            // Counted from the frame of the view that tells it, not the frame the grab was stepped at.
-            Reason::Cooldown { until } => {
-                let frames = until.0.saturating_sub(view.frame.0);
-                let secs = frames.div_ceil(self.sim_rate_hz as u64).max(1);
-                format!("You can grab it again in {secs} s.")
-            }
+            // Counted from the frame of the view that tells it, not the frame the grab was stepped at; with the
+            // finality delay it may already have ended (review L2).
+            Reason::Cooldown { until } => match until.0.saturating_sub(view.frame.0) {
+                0 => "You can grab it again now.".to_string(),
+                frames => format!("You can grab it again in {} s.", frames.div_ceil(self.sim_rate_hz as u64)),
+            },
             Reason::TooFast { .. } => "Your push was refused: too fast.".to_string(),
             Reason::OutOfReach => "Out of reach.".to_string(),
             Reason::TooManyClaims { limit } => format!("You can hold {limit} things at once."),
@@ -431,15 +431,49 @@ pub fn window_text_px(window_height: u32) -> f32 {
 }
 
 /// The strip in the window: centred at the bottom, at its pixel size on screen, 3 % of the height above the bottom
-/// edge. Placed in front of `cam` (ten times its near plane, so it is never clipped), facing it.
+/// edge, its corners on whole pixels so the text stays sharp (review nit). Placed in front of `cam` (ten times its
+/// near plane, so it is never clipped), facing it.
 pub fn window_overlay(cam: &Camera, window: [u32; 2], image: Arc<OverlayImage>) -> Overlay {
     let d = cam.near * 10.0;
     let [tl, tr, tu, td] = [cam.fov.left, cam.fov.right, cam.fov.up, cam.fov.down].map(|a| (a as f64).tan());
-    let visible_h = d * (tu - td);
-    let per_px = visible_h / window[1].max(1) as f64;
-    let size = [image.width as f64 * per_px, image.height as f64 * per_px];
-    let centre = DVec3::new(d * (tl + tr) / 2.0, d * td + 0.03 * visible_h + size[1] / 2.0, -d);
-    Overlay { image, pose: cam.pose.moved(cam.pose.rot * centre), size: size.map(|v| v as f32) }
+    let (ww, wh) = (window[0].max(1) as f64, window[1].max(1) as f64);
+    let (w, h) = (image.width as f64, image.height as f64);
+    // The strip's pixel rectangle: left and bottom edges on whole pixels.
+    let x0 = ((ww - w) / 2.0).floor();
+    let y1 = wh - (0.03 * wh).round();
+    let (cx, cy) = (x0 + w / 2.0, y1 - h / 2.0);
+    // Pixels to the view plane at distance d, per axis.
+    let (per_x, per_y) = (d * (tr - tl) / ww, d * (tu - td) / wh);
+    let centre = DVec3::new(d * tl + cx * per_x, d * tu - cy * per_y, -d);
+    let size = [(w * per_x) as f32, (h * per_y) as f32];
+    Overlay { image, pose: cam.pose.moved(cam.pose.rot * centre), size }
+}
+
+/// The strip's image, rebuilt only when the lines change. A fading line's alpha is rounded to 1/16, so a fade
+/// rebuilds the image 16 times, not every display frame.
+#[derive(Default)]
+pub struct StripCache {
+    key: Option<(Vec<Line>, u32)>,
+    image: Option<Arc<OverlayImage>>,
+}
+
+impl StripCache {
+    /// The image for `lines` at `px`, or `None` with no lines.
+    pub fn get(&mut self, lines: &[Line], px: f32) -> Option<Arc<OverlayImage>> {
+        if lines.is_empty() {
+            self.key = None;
+            self.image = None;
+            return None;
+        }
+        let rounded: Vec<Line> =
+            lines.iter().map(|l| Line { text: l.text.clone(), alpha: (l.alpha * 16.0).ceil() / 16.0 }).collect();
+        let key = (rounded, px.to_bits());
+        if self.key.as_ref() != Some(&key) {
+            self.image = strip(&key.0, px).map(Arc::new);
+            self.key = Some(key);
+        }
+        self.image.clone()
+    }
 }
 
 /// Where a notice sits in the headset (render.md R11).
@@ -779,7 +813,22 @@ mod tests {
     fn a_cooldown_counts_from_the_telling_view() {
         let mut n = notices();
         n.observe(&view(100, Some(100), vec![input(1, 90, Reason::Cooldown { until: Frame(161) })]), t(0));
-        assert_eq!(texts(&mut n, t(0)), ["You can grab it again in 2 s."]);
+        // One that ended while the refusal waited for finality (review L2).
+        n.observe(&view(200, Some(200), vec![input(2, 150, Reason::Cooldown { until: Frame(180) })]), t(10));
+        assert_eq!(texts(&mut n, t(10)), ["You can grab it again in 2 s.", "You can grab it again now."]);
+    }
+
+    #[test]
+    fn the_strip_cache_rebuilds_only_when_the_lines_change() {
+        let mut c = StripCache::default();
+        let line = |alpha: f32| vec![Line { text: "Out of reach.".into(), alpha }];
+        let a = c.get(&line(1.0), 20.0).expect("a line");
+        assert!(Arc::ptr_eq(&a, &c.get(&line(1.0), 20.0).unwrap()), "same lines: the same image");
+        // Within one sixteenth of a fade: the same image; past it, a new one.
+        let b = c.get(&line(0.97), 20.0).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert!(!Arc::ptr_eq(&b, &c.get(&line(0.9), 20.0).unwrap()));
+        assert!(c.get(&[], 20.0).is_none());
     }
 
     #[test]
