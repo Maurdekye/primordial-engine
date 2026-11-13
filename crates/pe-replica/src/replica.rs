@@ -54,15 +54,15 @@
 //! stages (3, steps 3 and 8), and the view's rows beyond bodies (7).
 
 use core::time::Duration;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use bytes::Bytes;
 use pe_physics::{CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Transfer, WorldImage};
 use pe_seams::{
     Advance, Cut, CutImport, CutRef, DomainId, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameClock,
-    FrameView, GroupSel, Hash, HostTime, ImportError, ObjectClass, ObjectId, Offset, Outcome, PhysicsImage, Pos,
-    Replica, RigTransform, RootError, SignedEntry, SimRate, Tree, ViewCounters, ViewFlags, ViewObject, frames_ceil,
+    FrameView, GroupSel, Hash, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica,
+    RigTransform, RootError, SignedEntry, SimRate, Tree, ViewCounters, ViewFlags, frames_ceil,
 };
 
 use crate::bodies;
@@ -83,6 +83,9 @@ pub struct ReplicaConfig {
     /// The shared time base (S5): the view's `sim_time` is its host time of the view's frame. Required, so no replica
     /// publishes a time off that base (@design-reviewer's Low on pe-app slice 2, via @engine-architect).
     pub clock: Arc<dyn FrameClock>,
+    /// The local member, whose hands the frame view marks `OWN_HAND` (S5), so the display draws them at the device's
+    /// late-latched poses. `None` for a replica with no local player (tests, a headless host).
+    pub local: Option<MemberKey>,
 }
 
 impl ReplicaConfig {
@@ -95,6 +98,7 @@ impl ReplicaConfig {
             keep_finals: Duration::from_millis(1500),
             policy: Policy::log4(rate.hz()),
             clock,
+            local: None,
         }
     }
 }
@@ -192,6 +196,9 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// Spans `[g, floor)` that a `finalize` re-based on the cut-exact floor: S3's change report inside one is expected
     /// once, at the next `advance` (@design-reviewer).
     excused: Vec<(Frame, Frame)>,
+    /// Drawn objects whose pose at the last published frame a re-simulation rewrote (a replay, a repair or a merge):
+    /// the next publication marks them `CORRECTED` (S5), then forgets them.
+    corrected: BTreeSet<ObjectId>,
 }
 
 /// What re-steps off the live history (`root_at_cut`'s scratch) counted.
@@ -250,6 +257,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             scratch: Scratch::default(),
             scratch_outcomes: BTreeMap::new(),
             excused: Vec::new(),
+            corrected: BTreeSet::new(),
         };
         if r.is_cut_frame(Frame(0)) {
             let root = r.take_root();
@@ -532,6 +540,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             };
             let resimulated = self.frame < self.reached;
             let root = self.step(&entries, true);
+            if resimulated && self.frame == self.view.frame {
+                self.note_corrections();
+            }
             // Stepped past the frame it had stopped at: S3 answers for it again.
             self.stuck_at = self.stuck_at.filter(|&f| f >= self.frame);
             *budget -= 1;
@@ -736,28 +747,33 @@ impl<W: WorldModel> ReplicaImpl<W> {
     }
 
     fn publish(&mut self) {
-        let mut objects = Vec::new();
-        for id in self.world.physical() {
-            let Some(row) = self.world.body(id) else { continue };
-            let (linear_velocity, angular_velocity) = self.physics.velocity(id).unwrap_or(([0.0; 3], [0.0; 3]));
-            objects.push(ViewObject {
-                id,
-                class: ObjectClass::World,
-                pos: row.pos,
-                rotation: row.rotation,
-                scale: [1.0; 3],
-                linear_velocity,
-                angular_velocity,
-                shape: None,
-                appearance: None,
-                light: None,
-                radius: bounding_radius(&row.shapes),
-                hand_of: None,
-                held_by: None,
-                flags: ViewFlags::default(),
-                version: None,
-            });
+        // What the model draws, with what only the replica knows: the velocities and the local member's hands.
+        let mut objects = self.world.view_objects();
+        for o in &mut objects {
+            if let Ok((linear, angular)) = self.physics.velocity(o.id) {
+                o.linear_velocity = linear;
+                o.angular_velocity = angular;
+            }
+            if let (Some(me), Some((owner, _))) = (self.config.local, o.hand_of)
+                && owner == me
+            {
+                o.flags = o.flags.with(ViewFlags::OWN_HAND);
+            }
+            // Only a hold by one of the local member's own hands: a hand-less hold (an agent's) has no tracked hand
+            // to be drawn from, so it stays corrected like any other object.
+            if let (Some(me), Some(holder)) = (self.config.local, &o.held_by)
+                && holder.member == me
+                && holder.hand != ObjectId::NONE
+            {
+                o.flags = o.flags.with(ViewFlags::HELD_LOCAL);
+            }
+            // The local member's hands and what they hold are drawn from tracking, never corrected (S5).
+            let local = o.flags.contains(ViewFlags::OWN_HAND) || o.flags.contains(ViewFlags::HELD_LOCAL);
+            if !local && self.corrected.contains(&o.id) {
+                o.flags = o.flags.with(ViewFlags::CORRECTED);
+            }
         }
+        self.corrected.clear();
         let sim_time = self.config.clock.host_time_of(self.frame);
         let mut view = empty_view(self.domain);
         view.frame = self.frame;
@@ -795,7 +811,25 @@ fn restored(config: PhysicsConfig, bytes: &[u8], global: Hash) -> Option<Physics
     PhysicsWorld::from_transfer(config, &transfer, &CheckHash(global.0)).ok()
 }
 
-fn bounding_radius(shapes: &[ShapePart]) -> f32 {
+impl<W: WorldModel> ReplicaImpl<W> {
+    /// A re-simulation has come back to the last published frame: every drawn object whose pose there differs from
+    /// the published one was rewritten by a replay, a repair or a merge, and the next publication marks it
+    /// `CORRECTED` (S5). The re-simulation is deterministic, so an unchanged object compares equal bit for bit. An
+    /// object new since the publication is not a correction. A rung-2 import at a cut at or past the last published
+    /// frame re-simulates nothing below it, so its changes are not marked and the display snaps; imports are at a
+    /// final cut below the present, so this is rare (@vdw-physics's note).
+    fn note_corrections(&mut self) {
+        let published: BTreeMap<ObjectId, (Pos, [f32; 4])> =
+            self.view.objects.iter().map(|o| (o.id, (o.pos, o.rotation))).collect();
+        for o in self.world.view_objects() {
+            if published.get(&o.id).is_some_and(|&shown| shown != (o.pos, o.rotation)) {
+                self.corrected.insert(o.id);
+            }
+        }
+    }
+}
+
+pub(crate) fn bounding_radius(shapes: &[ShapePart]) -> f32 {
     let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     shapes
         .iter()

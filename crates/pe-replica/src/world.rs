@@ -5,7 +5,10 @@
 //! When pe-world lands, `pe_world::World` implements it (or the trait gives way to pe-world's own API, if
 //! @world-model reshapes it), and the row types below become pe-world's.
 
-use pe_seams::{DomainId, Frame, Hash, ImportError, MemberKey, ObjectId, Outcome, Pos, SignedEntry, SimRate, Tree};
+use pe_seams::{
+    DomainId, Frame, Hash, ImportError, MemberKey, ObjectClass, ObjectId, Outcome, Pos, SignedEntry, SimRate, Tree,
+    ViewFlags, ViewObject,
+};
 
 // ---- what an applied entry or a logic stage changed ----------------------------------------------------------------
 
@@ -104,6 +107,11 @@ pub struct BodyRow {
     pub may_sleep: bool,
     pub grabbable: bool,
 }
+
+/// A hand's radius in metres: the sphere a hand without a `Shape` of its own is drawn as (S5), and the body it will
+/// push with once the replica steps hand inputs. pe-session's `HAND_R` (archive/crates/pe-session/src/session/
+/// sim.rs:29), until avatars give hands a look of their own.
+pub const HAND_RADIUS: f32 = 0.09;
 
 /// A hand's row (world-model.md 8): what its owner's newest input set.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -219,6 +227,40 @@ pub trait WorldModel: Send {
     /// The claims, in the held objects' id order.
     fn claims(&self) -> Vec<ClaimRow>;
     fn settings(&self) -> PhysicsSettings;
+
+    // what the frame view draws (S5)
+
+    /// What the frame view draws, once per publication (S5): every object with something to draw, in id order, at
+    /// its world pose and scale, with its shape, appearance, light, bounding radius, hand owner, holder and edit
+    /// version. The model leaves the velocities zero and the flags empty: the replica fills the velocities from its
+    /// physics and marks the local member's hands `OWN_HAND` ([`crate::ReplicaConfig::local`]). The default draws
+    /// each physical body at its pose with its bounding radius and nothing else, which is all a model without
+    /// visuals (the mock) can say.
+    fn view_objects(&self) -> Vec<ViewObject> {
+        self.physical()
+            .into_iter()
+            .filter_map(|id| {
+                let row = self.body(id)?;
+                Some(ViewObject {
+                    id,
+                    class: ObjectClass::World,
+                    pos: row.pos,
+                    rotation: row.rotation,
+                    scale: [1.0; 3],
+                    linear_velocity: [0.0; 3],
+                    angular_velocity: [0.0; 3],
+                    shape: None,
+                    appearance: None,
+                    light: None,
+                    radius: crate::replica::bounding_radius(&row.shapes),
+                    hand_of: None,
+                    held_by: None,
+                    flags: ViewFlags::default(),
+                    version: None,
+                })
+            })
+            .collect()
+    }
 
     // what the replica writes
 
