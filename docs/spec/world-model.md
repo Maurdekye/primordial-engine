@@ -1458,7 +1458,8 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
     commit, with the objects that would block.
   - **The refusal names the objects:** a commit whose re-key is blocked is refused as `Reason::RekeyBlocked {
     objects, more }` (S2 v1.6): the first 16 blocking objects in id order, and how many more. At activation a block
-    voids the commit instead (`RekeyBlockedAtActivation`, logic.md 6.2a), since no entry is there to refuse.
+    voids the commit instead (`RekeyBlockedAtActivation`, logic.md 6.2a), since no entry is there to refuse; the
+    void names the objects the same way (`FrameEnd`'s `Blocked`, built by the same helper).
 
 ## 8. Inputs: hands, pushes and grabs
 

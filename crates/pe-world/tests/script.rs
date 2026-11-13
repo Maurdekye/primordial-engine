@@ -10,7 +10,7 @@ use pe_world::components::{Hand, Light, ids};
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
 use pe_world::script::{ModuleRow, TAG_NAME, attest_window, pack_source, quorum, script_component_id, tag_desc};
 use pe_world::tree::table;
-use pe_world::{BlobRef, BlobStore, Claim, Footprint, FrameEnd, LogicReport, VoidKind, World, perm};
+use pe_world::{BlobRef, BlobStore, Blocked, Claim, Footprint, FrameEnd, LogicReport, VoidKind, World, perm};
 
 const ASSET: [u8; 32] = [7; 32];
 const OTHER: [u8; 32] = [8; 32];
@@ -558,7 +558,7 @@ fn an_unattested_commit_is_voided_at_its_deadline_unless_the_quorum_completes_th
     assert_eq!(f.w.end_frame(Frame(d.0 - 1)), FrameEnd::default());
     let root = f.w.root();
     let pv = f.w.pending()[&ASSET].version;
-    assert_eq!(f.w.end_frame(d).voided, vec![(ASSET, pv, VoidKind::Unattested)]);
+    assert_eq!(f.w.end_frame(d).voided, vec![(ASSET, pv, VoidKind::Unattested, None)]);
     assert_ne!(f.w.root(), root, "the void is recorded in the root");
     assert_eq!(f.w.pending()[&ASSET].void, Some((d, VoidKind::Unattested)));
     assert_eq!(f.w.modules()[&ASSET].version, base, "the old version stays");
@@ -594,7 +594,8 @@ fn a_rekey_blocked_by_the_time_of_activation_voids_the_commit() {
     f.w.set_claim(oid(LAMP), Claim { hand: oid(HAND), member: kb, since: Frame(1), until: Frame(1000) }).unwrap();
     ok(&run(&mut f.w, &mut f.b, &attest_of(&t)));
     let pv = f.w.pending()[&ASSET].version;
-    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![(ASSET, pv, VoidKind::RekeyBlockedAtActivation)]);
+    let blocked = Some(Blocked { objects: vec![oid(LAMP)], more: 0 });
+    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![(ASSET, pv, VoidKind::RekeyBlockedAtActivation, blocked)]);
     assert_eq!(f.w.modules()[&ASSET].version, base);
     assert_eq!(row(&f.w, blink(1).id()), Some(f32s(&[2.0, 0.5])), "nothing re-keyed");
 }
@@ -612,7 +613,7 @@ fn an_author_revoked_before_activation_voids_the_commit() {
     f.w.set_member(ka, perm::AGENT);
     ok(&run(&mut f.w, &mut f.b, &attest_of(&t)));
     let pv = f.w.pending()[&ASSET].version;
-    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![(ASSET, pv, VoidKind::AuthorRevokedAtActivation)]);
+    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![(ASSET, pv, VoidKind::AuthorRevokedAtActivation, None)]);
     assert_eq!(f.w.modules()[&ASSET].version, base);
     assert_eq!(row(&f.w, blink(1).id()), Some(f32s(&[2.0, 0.5])), "nothing re-keyed");
 }
