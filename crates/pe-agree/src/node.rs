@@ -90,6 +90,10 @@ pub struct NodeConfig {
     pub min_rate_per_s: u32,
     pub min_burst: u32,
     pub min_pending: usize,
+    /// The cut interval (world settings), seconds: every cut's frame is a multiple of it in frames at the world's rate
+    /// ([`NodeConfig::cut_every`]), so a replica's live root and keyframes, kept on the same grid, serve every vote
+    /// without re-stepping (@engine-architect m1a122523d255). Voters refuse a cut off the grid.
+    pub cut_interval_s: f64,
     /// The byte limit on one author's entries waiting for its budget (they are delayed, never lost, up to this and to
     /// the pending cap in entries).
     pub defer_bytes: usize,
@@ -123,6 +127,7 @@ impl NodeConfig {
             min_burst: 60,
             min_pending: 600,
             defer_bytes: 2 << 20,
+            cut_interval_s: 0.1,
             #[cfg(feature = "mutants")]
             mutation: None,
         }
@@ -168,6 +173,8 @@ impl NodeConfig {
             min_pending,
             // Two members with different queue sizes disagree on whether an honest author's flush is a fault.
             defer_bytes,
+            // Members with different grids refuse each other's cuts.
+            cut_interval_s,
             // Local.
             cut_lag_s: _,
             cut_lag_floor_s: _,
@@ -180,17 +187,24 @@ impl NodeConfig {
             #[cfg(feature = "mutants")]
                 mutation: _,
         } = self;
-        // v2: defer_bytes joined the set (the stall fix).
-        let mut h = Hasher::new("pe.agree.consensus.v2");
+        // v2: defer_bytes joined the set (the stall fix); v3: cut_interval_s (the cut grid).
+        let mut h = Hasher::new("pe.agree.consensus.v3");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
         h.write_u64(*min_rate_per_s as u64).write_u64(*min_burst as u64).write_u64(*min_pending as u64);
-        h.write_u64(*defer_bytes as u64);
+        h.write_u64(*defer_bytes as u64).write_u64(cut_interval_s.to_bits());
         h.write_u64(timing.cadence_ns as u64)
             .write_u64(timing.min_timeout_ns as u64)
             .write_u64(timing.max_timeout_ns as u64);
         h.finish()
+    }
+
+    /// The cut grid at the world's frame rate: every cut's frame is a multiple of this many frames (at least 1). The
+    /// replica takes live roots and keeps keyframes on the same grid. 6 frames at 60 Hz, 9 at 90, 12 at 120 with the
+    /// default 0.1 s.
+    pub fn cut_every(&self, rate_hz: u32) -> u64 {
+        (self.cut_interval_s * rate_hz as f64).round().max(1.0) as u64
     }
 
     /// The budget at the world's frame rate: `entries_per_frame × rate_hz × budget_slack + extra_per_s` entries per
@@ -1196,7 +1210,11 @@ impl Node {
         if self.core.mutated(Mutation::AcceptProposalUnchecked) {
             return Some((p, Check::Ok));
         }
-        let mut c = cuts::check(&self.log, &parent.cut, &p.block.cut, present, self.tolerance_frames());
+        let mut c = if p.block.cut.at.frame.0 % self.cfg.cut_every(self.rate_hz) != 0 {
+            Check::Reject(cuts::Reject::OffGrid)
+        } else {
+            cuts::check(&self.log, &parent.cut, &p.block.cut, present, self.tolerance_frames())
+        };
         // The d1 rule counts from the previous final cut, not the parent: every entry the cut's uncommitted ancestry
         // includes must be held too, or the root can't be the final log's (the pipelined-void fix).
         if matches!(c, Check::Ok) {
@@ -1610,7 +1628,9 @@ impl Agreement for Node {
         self.core.tick(now, self.signer.as_ref());
         let lag = self.cut_lag_frames();
         if let (Some(lead), Some(present)) = (self.core.lead(), self.present) {
-            let frame = Frame(present.0.saturating_sub(lag));
+            // On the grid: the latest grid frame at or below the present less the lag.
+            let k = self.cfg.cut_every(self.rate_hz);
+            let frame = Frame(present.0.saturating_sub(lag) / k * k);
             if now >= lead.not_before && frame > lead.parent.frame() {
                 let cut = cuts::build(&self.log, &lead.parent.cut, frame);
                 self.core.propose(cut, now, self.signer.as_ref(), self.verifier.as_ref());
