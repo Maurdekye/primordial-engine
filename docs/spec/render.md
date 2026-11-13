@@ -363,6 +363,12 @@ advice). Only the local member's own **Input-class** entries: grabs, pushes and 
     views', carry the final verdict of every entry at or below its `final_frame`, including entries re-stepped inside
     `finalize`. Otherwise a grab refused on the predicted line and applied in the final order would be told as
     refused. Nothing on main fills `changes` yet; a test goes with the producer.
+  - **After a repair** (@coordinator-opus's ruling md020c9c6ad95): `final_frame` is the agreed cut's frame, so a
+    told verdict agrees with every honest replica and is never taken back. Entries a repair can't decide arrive as
+    `Outcome::Unknown { repaired_at }` before `final_frame` passes them. The player gets one line per repair, not per
+    entry: "Resynced. Some of your last actions may not have happened." A view whose health is `Repairing` for more
+    than about 1.5 s shows "Resyncing…" until it is `Agreed`. Both come with @engine-architect's seam change and
+    pe-replica's producer of `changes`, and are built then.
   - **Not handled in M1:** S3's `AgreeEvent::Refused` (an entry refused before ordering: a bad signature, the wrong
     line, a rate limit). A grab predicted as refused would be told with the predicted reason, and one predicted as
     applied would be undone with no words. Treating it like a void is the likely fix, a product call after M1.
@@ -401,8 +407,9 @@ player", the local member "you"):
   rounded up.
 
 **How long.** A notice shows for 5 s and fades out over its last 0.5 s. Up to 3 lines show, newest at the bottom;
-a fourth pushes the oldest out. The same text again while it shows refreshes it and counts up ("(×3)"), so a held
-grab button against a cooldown is one line, not a scroll.
+a fourth pushes the oldest out. The same text again while it shows refreshes it and counts up ("(×3)"). All cooldown
+refusals share one line, whose seconds count down as it shows (to "now" once the cooldown ends; the newest refusal
+sets the end), so a held grab button against a cooldown is one line, not a scroll.
 
 **Where.**
 - **The window:** a strip centred at the bottom, 3 % of the height above the edge, text 1/30 of the window's height

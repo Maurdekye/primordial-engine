@@ -77,6 +77,9 @@ pub struct Line {
 #[derive(Clone, Debug)]
 struct Shown {
     text: String,
+    /// A cooldown line: when the cooldown ends. Its seconds are counted when drawn, and all cooldown refusals share
+    /// the one line (review Low on ab323229).
+    cooldown_end: Option<HostTime>,
     /// The refused entries this line tells (a void of one of them retracts it from the line).
     entries: Vec<EntryRef>,
     count: u32,
@@ -191,7 +194,8 @@ impl Notices {
             match self.refusal_text(&rec, view) {
                 Some(text) => {
                     self.remember(rec.entry, Told::Refusal);
-                    self.tell(text, Some(rec.entry), now);
+                    let cooldown_end = self.cooldown_end(&rec, view, now);
+                    self.tell_line(text, cooldown_end, Some(rec.entry), now);
                 }
                 None => self.remember(rec.entry, Told::Silent),
             }
@@ -229,7 +233,11 @@ impl Notices {
             .map(|s| {
                 let left = s.until.secs_since(now);
                 let alpha = if fade > 0.0 { (left / fade).clamp(0.0, 1.0) } else { 1.0 };
-                let text = if s.count > 1 { format!("{} (×{})", s.text, s.count) } else { s.text.clone() };
+                let text = match s.cooldown_end {
+                    Some(end) => cooldown_text(end.secs_since(now)),
+                    None => s.text.clone(),
+                };
+                let text = if s.count > 1 { format!("{text} (×{})", s.count) } else { text };
                 Line { text, alpha: alpha as f32 }
             })
             .collect()
@@ -246,18 +254,30 @@ impl Notices {
     }
 
     fn tell(&mut self, text: String, entry: Option<EntryRef>, now: HostTime) {
+        self.tell_line(text, None, entry, now);
+    }
+
+    /// Show a line, or refresh the one showing the same text (any cooldown line, for a cooldown) and count it up.
+    fn tell_line(&mut self, text: String, cooldown_end: Option<HostTime>, entry: Option<EntryRef>, now: HostTime) {
         let until = now.plus_nanos((self.settings.life_s * 1e9) as i64);
         self.told_total += 1;
         self.shown.retain(|s| s.until.0 > now.0);
-        if let Some(i) = self.shown.iter().position(|s| s.text == text) {
+        let same = |s: &Shown| match (s.cooldown_end, cooldown_end) {
+            (Some(_), Some(_)) => true,
+            (None, None) => s.text == text,
+            _ => false,
+        };
+        if let Some(i) = self.shown.iter().position(same) {
             let mut s = self.shown.remove(i).expect("found");
             s.count += 1;
             s.until = until;
+            s.cooldown_end = cooldown_end;
+            s.text = text;
             s.entries.extend(entry);
             self.shown.push_back(s);
             return;
         }
-        self.shown.push_back(Shown { text, entries: entry.into_iter().collect(), count: 1, until });
+        self.shown.push_back(Shown { text, cooldown_end, entries: entry.into_iter().collect(), count: 1, until });
         while self.shown.len() > self.settings.max_lines.max(1) {
             self.shown.pop_front();
         }
@@ -292,6 +312,13 @@ impl Notices {
     }
 
     /// The words for a refusal, or `None` when it needs none: a grab lost to a hand in view.
+    /// A cooldown's end in host time: its frames left past the telling view's frame, from `now`.
+    fn cooldown_end(&self, rec: &StepRecord, view: &FrameView, now: HostTime) -> Option<HostTime> {
+        let Outcome::Refused { reason: Reason::Cooldown { until }, .. } = &rec.outcome else { return None };
+        let frames = until.0.saturating_sub(view.frame.0);
+        Some(now.plus_nanos((frames as f64 / self.sim_rate_hz as f64 * 1e9) as i64))
+    }
+
     fn refusal_text(&self, rec: &StepRecord, view: &FrameView) -> Option<String> {
         let Outcome::Refused { reason, .. } = &rec.outcome else { return None };
         let what = match rec.class {
@@ -317,10 +344,10 @@ impl Notices {
             Reason::NoPermission => "Refused: you don't have permission for that.".to_string(),
             // Counted from the frame of the view that tells it, not the frame the grab was stepped at; with the
             // finality delay it may already have ended (review L2).
-            Reason::Cooldown { until } => match until.0.saturating_sub(view.frame.0) {
-                0 => "You can grab it again now.".to_string(),
-                frames => format!("You can grab it again in {} s.", frames.div_ceil(self.sim_rate_hz as u64)),
-            },
+            // `lines` redraws it as the cooldown runs down (see `cooldown_end`).
+            Reason::Cooldown { until } => {
+                cooldown_text(until.0.saturating_sub(view.frame.0) as f64 / self.sim_rate_hz as f64)
+            }
             Reason::TooFast { .. } => "Your push was refused: too fast.".to_string(),
             Reason::OutOfReach => "Out of reach.".to_string(),
             Reason::TooManyClaims { limit } => format!("You can hold {limit} things at once."),
@@ -329,6 +356,15 @@ impl Notices {
                 None => format!("Your {what} was refused."),
             },
         })
+    }
+}
+
+/// A cooldown with `left` seconds to go, counted up to whole seconds: "now" once it has ended.
+fn cooldown_text(left: f64) -> String {
+    if left <= 0.0 {
+        "You can grab it again now.".to_string()
+    } else {
+        format!("You can grab it again in {} s.", left.ceil() as u64)
     }
 }
 
@@ -814,8 +850,28 @@ mod tests {
         let mut n = notices();
         n.observe(&view(100, Some(100), vec![input(1, 90, Reason::Cooldown { until: Frame(161) })]), t(0));
         // One that ended while the refusal waited for finality (review L2).
+        assert_eq!(texts(&mut n, t(0)), ["You can grab it again in 2 s."]);
         n.observe(&view(200, Some(200), vec![input(2, 150, Reason::Cooldown { until: Frame(180) })]), t(10));
-        assert_eq!(texts(&mut n, t(10)), ["You can grab it again in 2 s.", "You can grab it again now."]);
+        // It shares the line, which now says so.
+        assert_eq!(texts(&mut n, t(10)), ["You can grab it again now. (×2)"]);
+    }
+
+    /// A held grab against a cooldown is one line, not a scroll, and its seconds count down (review Low on ab323229).
+    #[test]
+    fn cooldown_refusals_share_one_line_that_counts_down() {
+        let mut n = notices();
+        n.observe(&view(100, Some(100), vec![input(1, 90, Reason::Cooldown { until: Frame(220) })]), t(0));
+        assert_eq!(texts(&mut n, t(0)), ["You can grab it again in 2 s."]);
+        assert_eq!(texts(&mut n, t(1100)), ["You can grab it again in 1 s."], "the same line, counting down");
+        n.observe(&view(130, Some(130), vec![input(2, 125, Reason::Cooldown { until: Frame(220) })]), t(500));
+        n.observe(&view(160, Some(160), vec![input(3, 155, Reason::Cooldown { until: Frame(230) })]), t(1000));
+        // The newest refusal sets the end: frame 230 is 70 frames past view 160's, so 1.167 s after 1.0 s.
+        assert_eq!(texts(&mut n, t(1100)), ["You can grab it again in 2 s. (×3)"]);
+        assert_eq!(texts(&mut n, t(2100)), ["You can grab it again in 1 s. (×3)"]);
+        assert_eq!(texts(&mut n, t(2200)), ["You can grab it again now. (×3)"]);
+        // Another refusal is its own line beside it.
+        n.observe(&view(170, Some(170), vec![input(4, 165, Reason::OutOfReach)]), t(2300));
+        assert_eq!(texts(&mut n, t(2300)), ["You can grab it again now. (×3)", "Out of reach."]);
     }
 
     #[test]
