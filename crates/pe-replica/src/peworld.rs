@@ -45,7 +45,9 @@
 //! frame (world-model.md 3.3). Boxes scale per axis. A sphere or capsule under non-uniform scale, a mesh, a hull or an
 //! unknown kind cannot be built yet, and the object has no body.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use pe_seams::{
     Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LightKind, ObjectClass, ObjectId, Outcome, Pos,
@@ -174,6 +176,11 @@ impl WorldModel for PeWorld {
     fn settings(&self) -> PhysicsSettings {
         let s = self.world.settings();
         PhysicsSettings { rate: s.rate, gravity: s.gravity, origin: s.origin }
+    }
+
+    fn snapshot(&self, final_frame: Frame) -> Option<Arc<dyn Any + Send + Sync>> {
+        let snap: Arc<dyn Any + Send + Sync> = self.world.snapshot(final_frame);
+        Some(snap)
     }
 
     fn view_objects(&self) -> Vec<ViewObject> {

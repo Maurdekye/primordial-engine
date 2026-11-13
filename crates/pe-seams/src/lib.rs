@@ -55,7 +55,7 @@ pub use ids::{
 };
 pub use replica::{
     Advance, CutImport, EntrySource, FieldPath, Finalized, GroupSel, ImportError, LeafKey, Mismatch, Nibbles, Node,
-    Note, Outcome, PhysicsImage, Reason, Record, Replica, RootError, Stage, Tree, TreePath, Version,
+    Note, Outcome, PhysicsImage, Reason, Record, Replica, RootError, RunnerIdentity, Stage, Tree, TreePath, Version,
 };
 pub use time::{HostTime, SimRate, frames_ceil};
 pub use trace::{DivergeEvent, Rung, TraceEvent};

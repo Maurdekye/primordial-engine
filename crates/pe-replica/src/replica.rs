@@ -1314,4 +1314,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     fn view(&self) -> Arc<FrameView> {
         self.view.clone()
     }
+
+    fn world_snapshot(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        // The final frame the view names: the last agreed cut's, or the genesis cut's before any.
+        self.world.snapshot(self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame))
+    }
 }
