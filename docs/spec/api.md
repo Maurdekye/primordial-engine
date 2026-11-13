@@ -641,6 +641,19 @@ Rules, agreed with @ballpit-viz (mcd68d4325ea7; WS-render writes them into pe-re
   their inverses (5.5).
 - pe-api keeps the newest published value, the newest final one, and those of the last 2 s (a parameter) for `at`,
   `base` and dry runs. A handler holds its snapshot only for the call.
+- The snapshot is S2's `Replica::world_snapshot`, pe-world's `WorldSnapshot` at the replica's frame, which pe-app
+  downcasts once per published view (S2 v1.7; @coordinator-opus m22babe2c6375). pe-app takes it only when it
+  publishes a new view (`Arc::ptr_eq` on `view()` says it is new), and S2 publishes a view only once the replica has
+  reached the present, never mid-catch-up, so every kept snapshot is of the tip. The frame view stays render-only.
+- `final` (and `at`) answer from the kept snapshots, so `final` is the newest kept snapshot at or below the newest
+  final frame: after a catch-up it may lag that frame by a few frames (the 2026-11-13 pe-api snapshot decision,
+  m22babe2c6375, D2 (a)). Its frame is in the result, as for every read.
+- A kept snapshot belongs to the timeline it was taken on. pe-app drops the kept snapshots at or above each
+  advance's `rolled_back_to` (S2's `Advance`: the earliest frame it re-stepped, which also covers a late hand or
+  input entry that leaves no change record), and all of them on a `Diverged` or `Damaged` finalize or a repair
+  (rung 1's replay or rung 2's import) (app.md, pe-api's wiring). Otherwise `final` could answer a state the agreed
+  cut never had. Until a fresh snapshot is kept, `final` lags further, and `at` for the dropped frames answers
+  `snapshot_gone`.
 - The change stream behind `watch` and the history index are built from the change records. The stream keeps the
   last 60 s or 100,000 items, whichever is less; history keeps the session's changes within a memory cap (parameters)
   [I].
@@ -776,8 +789,8 @@ advice m82fcb9fcc6d0):
   S3 and S5 types and pe-world's snapshot, and only pe-api and pe-app see them.
 - **From the other seams, all accepted:**
   - **beside S5**: a per-frame change record, the edit entries stepped with outcomes and inverse ops, newest verdict
-    winning (9.1), published with the frame view and the world-model snapshot. S5's `ViewObject` carries each
-    object's edit version and its simulated pose as a `Pos`;
+    winning (9.1), published with the frame view and the world-model snapshot (`Replica::world_snapshot`, S2
+    v1.7). S5's `ViewObject` carries each object's edit version and its simulated pose as a `Pos`;
   - **S2**: `World::apply(frame, &entry) -> Outcome`, `Applied { created, overwrote, notes, inverse }` or
     `Refused { op, reason }` (5.5);
   - **S3**: `submit` is called by the simulation thread with the payload pe-api built; pe-api never calls S3;
