@@ -612,3 +612,77 @@ fn a_cut_s_root_leaves_every_leaf_cached_and_true() {
     assert!(objects.iter().all(|&id| world.store().cached_hash(id).is_some()), "every leaf is cached at the cut");
     assert!(world.verify_tree_cache(DomainId(0)).is_ok(), "and every cached leaf is its rows' hash");
 }
+
+/// Every world setting (world-model.md 6.6), none at its default, imported through PeWorld by a joiner that has only
+/// the welcome's rate (app.md 4, step 4; @coordinator-opus m1eb5e9623174): the seed, the line and its M1 marker,
+/// pe-agree's settings, the rate (90 Hz), the depth limit, gravity, the origin and the input settings. The joiner's
+/// config record is then the host's byte for byte, and through the hand moves, a grab, a push and a release after the
+/// cut, which read the input settings (reach, slack, claims, the push budget), the joiner's roots stay the host's.
+#[test]
+fn a_joiner_takes_every_world_setting_from_the_real_world_it_imports() {
+    let rate = pe_seams::SimRate::new(90).expect("90 Hz");
+    let line = pe_world::preset::m1_line();
+    let keys = keys();
+    let mut world = pe_world::preset::ball_pit_with(9, BlobStore::default(), Pos::ORIGIN, 6);
+    let [left, _] =
+        world.admit(line, keys.key(0), perm::ADMIN | perm::EDIT, Frame(0), pos(0.0, 0.5, 0.0)).expect("admitted");
+    world.set_rate(rate);
+    world.set_depth_limit(12);
+    world.set_gravity([0.5, -4.0, 0.25]);
+    world.set_origin(Pos::ORIGIN.checked_add(Offset([-30.0, 2.0, 12.0])).expect("an origin"));
+    world.set_agree_settings(b"pe-agree's settings, opaque to pe-world");
+    let input_settings =
+        pe_world::InputSettings { claim_ms: 900, cooldown_ms: 300, push_budget: 5_000, reach_mm: 450, slack_mm: 60 };
+    world.set_input_settings(input_settings).expect("valid input settings");
+    assert_ne!(input_settings, pe_world::InputSettings::default());
+    let ball = world
+        .physical()
+        .into_iter()
+        .find(|&id| world.store().get::<Body>(id).is_some_and(|b| b.kind == body_kind::DYNAMIC))
+        .expect("a ball");
+    let at = world.store().world_transform(ball).expect("placed").pos;
+    let near = |dy: f64| at.checked_add(Offset([0.0, dy, 0.0])).expect("in range");
+    // The left hand goes to the ball and stays over it; after the cut it grabs, pushes and releases the ball.
+    let mut b = EntryBuilder::on_line(&keys, 0, line);
+    let mut entries = Vec::new();
+    for f in (4..60).step_by(4) {
+        let pose = HandPose { pos: near(0.15), rot: [0.0, 0.0, 0.0, 1.0], grip: 0.8, engaged: f >= 36 };
+        entries.push(input(&mut b, f, &Input::Hand { hand: left, poses: vec![pose], hold: 3 }));
+        match f {
+            40 => entries.push(input(&mut b, f, &Input::Grab { object: ball, hand: Some(left) })),
+            44 => entries.push(input(&mut b, f, &Input::Push { object: ball, impulse: [0.2, 0.3, 0.0], at: None })),
+            52 => entries.push(input(&mut b, f, &Input::Release { object: ball })),
+            _ => {}
+        }
+    }
+    let config = || {
+        let mut c = ReplicaConfig::new(rate, Duration::from_millis(133), Arc::new(MockClock { rate, ..CLOCK }));
+        c.cut_every = K;
+        c
+    };
+    let mut host = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config()).expect("the host");
+    let mut hs = Source::default();
+    entries.iter().cloned().for_each(|e| hs.add(e));
+    host.advance(Frame(32), &mut hs);
+    let c32 = cut_at(&entries, 4, 32);
+    let import = full_import(&mut host, &mut hs, &c32);
+    let mut s = Source::default();
+    entries.iter().cloned().for_each(|e| s.add(e));
+    s.take_changed_from();
+    // A joiner with nothing but the welcome's rate: a bare world (engine registry, default settings) at that rate.
+    let mut bare = World::new(0, host.world().world().blobs().clone());
+    bare.set_rate(rate);
+    let mut joiner = ReplicaImpl::new(PeWorld::new(bare, DomainId(0)), config()).expect("the joiner");
+    let record = |r: &ReplicaImpl<PeWorld>| r.world().world().config_bytes();
+    assert_ne!(record(&joiner), record(&host), "a default joiner");
+    assert_eq!(joiner.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(import.target_root));
+    assert_eq!(record(&joiner), record(&host), "every setting is the host's");
+    assert_eq!(joiner.world().world().input_settings(), input_settings);
+    assert_eq!(joiner.world().world().m1_marker(), Some(line));
+    let fc32 = FinalCut { cut: c32, root: import.target_root, voters: vec![] };
+    assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
+    host.advance(Frame(64), &mut hs);
+    joiner.advance(Frame(64), &mut s);
+    assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64), "the host's roots through the grab, push and release");
+    assert_eq!((joiner.faults(), host.faults()), (0, 0));
+}
