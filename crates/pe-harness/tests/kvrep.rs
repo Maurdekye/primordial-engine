@@ -206,3 +206,28 @@ fn a_malformed_payload_is_refused_and_nothing_panics() {
     r.advance(Frame(3), &mut src);
     assert!(matches!(r.outcome(&bad.id()), Some((_, Outcome::Refused { reason: Reason::Malformed, .. }))));
 }
+
+#[test]
+fn a_frame_applies_in_phase_order_on_every_path() {
+    // Coordinator: phase first, then agreed order. The edit is first in agreed order, the input second;
+    // the input applies first, so the edit's value is the one left, live and in a root at the cut alike.
+    let (keys, r, mut src) = setup();
+    let mut r = r.with_phase(pe_harness::kvrep::inputs_first);
+    let mut a = EntryBuilder::new(&keys, 0);
+    let mut b = EntryBuilder::new(&keys, 1);
+    let edit = a.next(Class::Edit, Frame(3), set(1));
+    let input = b.next(Class::Input, Frame(3), set(2));
+    src.put(edit.clone());
+    src.put(input.clone());
+    r.advance(Frame(10), &mut src);
+    assert_eq!(r.state().field(10, 0), Some(1), "the input applies before the edit");
+    // The root at a cut over both replays the frame the same way.
+    let cut = cut_over(5, &[&edit, &input]);
+    let root = r.root_at_cut(&cut, &mut src).unwrap();
+    let (_, mut agreed, mut src2) = setup();
+    src2.put(input.clone());
+    src2.put(edit.clone());
+    agreed.advance(Frame(10), &mut src2);
+    assert_eq!(agreed.state().field(10, 0), Some(1));
+    assert_eq!(root, agreed.root_at_cut(&cut, &mut src2).unwrap(), "same root as with the input first in agreed order");
+}
