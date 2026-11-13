@@ -11,7 +11,7 @@ use pe_seams::{LeafKey, Version};
 use pe_sim::{ComponentDesc, FieldDesc, FieldKind, Transform};
 
 use crate::components::BodyState;
-use crate::script::{ModuleRow, script_component_id, tag_desc};
+use crate::script::{ModuleRow, PendingCommit, script_component_id, tag_desc};
 use crate::tree::table;
 use crate::{BlobRef, BlobStore, Claim, GENESIS, World, perm};
 
@@ -30,11 +30,20 @@ pub enum Kind {
     ModuleVersion,
     /// A body's physics state (a `BodyState` row: velocities, sleep and digest).
     BodyState,
+    /// A pending commit's attestations (6.2a), hashed in the modules table beside the current row.
+    PendingAttestation,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] =
-        [Kind::Field, Kind::Governance, Kind::Claim, Kind::LogicState, Kind::ModuleVersion, Kind::BodyState];
+    pub const ALL: [Kind; 7] = [
+        Kind::Field,
+        Kind::Governance,
+        Kind::Claim,
+        Kind::LogicState,
+        Kind::ModuleVersion,
+        Kind::BodyState,
+        Kind::PendingAttestation,
+    ];
 }
 
 /// The asset of [`five_kinds`]' script.
@@ -42,7 +51,7 @@ pub const ASSET: [u8; 32] = [0xA5; 32];
 
 /// A small world with something of every [`Kind`], built by trusted construction: two members, an object with a
 /// `Transform` and a `BodyState`, a hand holding it (a claim), and a script version (its modules row, tag and one component with a
-/// row on the object).
+/// row on the object) with a next version pending, attested by its author.
 pub fn five_kinds() -> World {
     let (a, b) = (MemberKey([1; 32]), MemberKey([2; 32]));
     let (lamp, hand) = (ObjectId::from_u128(100), ObjectId::from_u128(101));
@@ -86,7 +95,22 @@ pub fn five_kinds() -> World {
         activate_at: Frame(1),
         faulted: None,
     };
+    let pending = PendingCommit {
+        version: Version { entry: EntryRef(Hash([10; 32])), op: 1 },
+        author: a,
+        source: BlobRef { hash: [8; 32], len: 64 },
+        toolchain: module.toolchain,
+        sdk: module.sdk,
+        author_module: module.author_module,
+        components: module.components.clone(),
+        commit_frame: Frame(5),
+        deadline: Frame(1205),
+        voters: vec![a, b],
+        attested: vec![(a, Frame(5))],
+        void: None,
+    };
     Arc::make_mut(&mut w.modules).insert(ASSET, module);
+    Arc::make_mut(&mut w.pending).insert(ASSET, pending);
     w
 }
 
@@ -98,7 +122,8 @@ pub fn five_kinds() -> World {
 /// - `LogicState`: the first row of the first sized script component, in modules order, has its first byte's lowest
 ///   bit flipped (a finite `f32` stays finite);
 /// - `ModuleVersion`: the first modules row's version names the next op of its entry;
-/// - `BodyState`: the first body's linear velocity gains 1 mm/s along x.
+/// - `BodyState`: the first body's linear velocity gains 1 mm/s along x;
+/// - `PendingAttestation`: the first pending commit's last attestation is dropped.
 pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
     match kind {
         Kind::Field => {
@@ -140,6 +165,11 @@ pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
             b.linear[0] += 0.001;
             w.store.insert(id, b).ok()?;
             Some(LeafKey::Object(id))
+        }
+        Kind::PendingAttestation => {
+            let asset = *w.pending.iter().find(|(_, p)| !p.attested.is_empty())?.0;
+            Arc::make_mut(&mut w.pending).get_mut(&asset)?.attested.pop();
+            Some(LeafKey::Table(table::MODULES))
         }
     }
 }
