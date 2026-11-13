@@ -11,8 +11,9 @@ use pe_replica::world::{BodyKind, Change, Phase, ShapeRow, WorldModel};
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
-    Class, DomainId, EntrySource, FinalCut, Frame, FrameClock, Hash, HostTime, MemberKey, ObjectId, Offset, Outcome,
-    Pos, Reason, Replica, SignedEntry,
+    ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntrySource, FinalCut, Finalized, Frame, FrameClock, GroupSel,
+    Hash, HostTime, ImportError, LeafKey, LineId, MemberKey, ObjectId, Offset, Outcome, Pos, Reason, Replica,
+    SignedEntry,
 };
 use pe_sim::Transform;
 use pe_world::components::{Appearance, Body, Hand, Name, Shape, body_kind, shape_kind};
@@ -462,4 +463,136 @@ fn hands_follow_their_inputs() {
     assert!(matches!(outcome, Outcome::Applied { .. }) && effects.is_empty(), "no body under the hand");
     let h = pw.hands()[0];
     assert_eq!((h.target, h.stamp, h.span, h.previous), (pos(2.0, 0.1, 0.0), Frame(5), 1, Some((Frame(3), 4))));
+}
+
+// ---- import through pe-world's tree (slice C, world-model.md 6.5 and 6.6) -------------------------------------------
+
+/// The scene's two drops, then a third ball dropped at frame 40, all from the editor, in one chain.
+fn scene_and_a_drop_at_40() -> Vec<SignedEntry> {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let drop = |x: f64, y: f64| {
+        let rows = vec![row(Transform::at(pos(x, y, 0.0))), row(dynamic()), row(sphere(0.25))];
+        Bytes::from(tx(vec![Op::Create { new: 0, parent: Target::Root, index: None, rows }]).encode())
+    };
+    vec![
+        b.next(Class::Edit, Frame(2), drop(0.0, 1.0)),
+        b.next(Class::Edit, Frame(5), drop(0.3, 2.0)),
+        b.next(Class::Edit, Frame(40), drop(-0.4, 1.5)),
+    ]
+}
+
+fn config() -> ReplicaConfig {
+    let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
+    config.cut_every = K;
+    config
+}
+
+/// A replica of `world` that had all of `entries` from the start, run to `to`.
+fn reference_of(world: World, entries: &[SignedEntry], to: u64) -> (ReplicaImpl<PeWorld>, Source) {
+    let mut r = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config()).expect("a replica");
+    let mut s = Source::default();
+    entries.iter().cloned().for_each(|e| s.add(e));
+    r.advance(Frame(to), &mut s);
+    (r, s)
+}
+
+/// A joiner's replica before import: a bare world with the engine registry and default settings (S2 v1.3).
+fn joiner_of(host: &ReplicaImpl<PeWorld>) -> ReplicaImpl<PeWorld> {
+    let bare = World::new(0, host.world().world().blobs().clone());
+    ReplicaImpl::new(PeWorld::new(bare, DomainId(0)), config()).expect("a replica")
+}
+
+/// The cut at `frame`: per author, the last entry stamped below it.
+fn cut_at(entries: &[SignedEntry], height: u64, frame: u64) -> Cut {
+    let mut heads: BTreeMap<_, ChainHead> = BTreeMap::new();
+    for e in entries.iter().filter(|e| e.entry.stamp.0 < frame) {
+        let h = ChainHead { chain: e.entry.chain, author: e.entry.author, seq: e.entry.seq, entry: e.id() };
+        if heads.get(&h.chain).is_none_or(|old| old.seq < h.seq) {
+            heads.insert(h.chain, h);
+        }
+    }
+    Cut { at: CutRef { line: LineId::origin(), height, frame: Frame(frame) }, heads: heads.into_values().collect() }
+}
+
+/// The donor's whole state at `cut`, as a full-state fetch asks for it: every object, every table and the config
+/// record, with their proofs, and the physics image. No object is created or removed after the cut in these scenes
+/// before the donor's present, so the live world's objects are the cut's.
+fn full_import(donor: &mut ReplicaImpl<PeWorld>, s: &mut Source, cut: &Cut) -> CutImport {
+    let root = donor.root_at_cut(cut, s).expect("the donor's root");
+    let mut keys: Vec<LeafKey> =
+        donor.world().world().store().objects().iter().map(|&id| LeafKey::Object(id)).collect();
+    keys.extend((0..pe_world::tree::table::COUNT as u8).map(LeafKey::Table));
+    keys.push(LeafKey::Config);
+    let records = donor.tree(&root).expect("held").export(&keys);
+    CutImport { cut: cut.clone(), target_root: root, records, absent: Vec::new(), physics: donor.physics_image(&root) }
+}
+
+fn from(r: &ReplicaImpl<PeWorld>, at: u64, to: u64) -> Vec<(u64, Hash)> {
+    roots(r, to).into_iter().filter(|r| r.0 >= at).collect()
+}
+
+/// A joiner imports the real world at a cut from empty, through pe-world's tree (world-model.md 6.5): every record is
+/// checked against the agreed root, so a record changed on the way is refused and changes nothing. The checked
+/// import's root is the host's, finalize agrees, and the joiner steps on with the host's roots.
+#[test]
+fn a_joiner_imports_the_real_world_through_pe_world_s_tree() {
+    let entries = scene();
+    let (mut host, mut hs) = reference_of(genesis(), &entries, 32);
+    let c32 = cut_at(&entries, 4, 32);
+    let import = full_import(&mut host, &mut hs, &c32);
+    let mut s = Source::default();
+    entries.iter().cloned().for_each(|e| s.add(e));
+    // The joiner's S3 held these entries before it joined: no change to report below its floor.
+    s.take_changed_from();
+    let mut joiner = joiner_of(&host);
+    let before = (joiner.frame(), joiner.world().root());
+    let mut tampered = import.clone();
+    let i = tampered.records.iter().position(|r| matches!(r.key, LeafKey::Object(_))).expect("an object record");
+    let mut bytes = tampered.records[i].bytes.to_vec();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    tampered.records[i].bytes = Bytes::from(bytes);
+    let got = joiner.import_at_cut(&GroupSel::Domain, tampered, &mut s);
+    assert!(matches!(got, Err(ImportError::BadProof(_))), "a changed record: {got:?}");
+    assert_eq!((joiner.frame(), joiner.world().root()), before, "the live state is unchanged");
+    assert_eq!(joiner.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(import.target_root));
+    let fc32 = FinalCut { cut: c32, root: import.target_root, voters: vec![] };
+    assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
+    host.advance(Frame(64), &mut hs);
+    joiner.advance(Frame(64), &mut s);
+    assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64));
+    assert_eq!(joiner.faults(), 0);
+}
+
+/// Non-default gravity and origin, imported through PeWorld by a default joiner (@coordinator-opus,
+/// item 6): the config record sets the joiner's world's settings, and the replica builds the new physics world from
+/// them. When an entry then arrives late, the joiner rolls back into that physics world and re-simulates with the
+/// imported settings, and its roots stay the host's.
+#[test]
+fn a_joiner_takes_gravity_and_origin_from_the_real_world_it_imports() {
+    let entries = scene_and_a_drop_at_40();
+    let mut world = genesis();
+    world.set_gravity([0.0, -3.0, 0.0]);
+    world.set_origin(Pos::ORIGIN.checked_add(Offset([40.0, 0.0, -25.0])).expect("an origin"));
+    let (mut host, mut hs) = reference_of(world, &entries, 32);
+    let c32 = cut_at(&entries, 4, 32);
+    let import = full_import(&mut host, &mut hs, &c32);
+    let (late, early) = entries.split_last().expect("three entries");
+    let mut s = Source::default();
+    early.iter().cloned().for_each(|e| s.add(e));
+    s.take_changed_from();
+    let mut joiner = joiner_of(&host);
+    assert_ne!(joiner.world().world().settings(), host.world().world().settings(), "a default joiner");
+    assert_eq!(joiner.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(import.target_root));
+    assert_eq!(joiner.world().world().settings(), host.world().world().settings(), "the host's gravity and origin");
+    let fc32 = FinalCut { cut: c32, root: import.target_root, voters: vec![] };
+    assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
+    joiner.advance(Frame(48), &mut s);
+    s.add(late.clone());
+    let adv = joiner.advance(Frame(64), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 40), "the late drop rolls back: {adv:?}");
+    host.advance(Frame(64), &mut hs);
+    assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64), "the host's roots, the late drop included");
+    assert_eq!(joiner.faults(), 0);
 }
