@@ -32,10 +32,10 @@ Inputs: `docs/refound-plan.md` (b610464), review files 03, 11 (3.2, 3.5), 13 (Pa
 ## 1. The model in one paragraph
 
 A **script** is an asset: Rust source, stored as a content-addressed blob tree in the world model, attached to
-objects through a `Script` component. Each machine compiles it with the pinned toolchain into a wasm module, then
+an object by giving it the script's **tag**, a zero-size component every script has (3.2). Each machine compiles it with the pinned toolchain into a wasm module, then
 runs a deterministic **instrumentation pass** that injects fuel and call-depth metering into the module's bytes.
 The module exports **systems**. Each system declares the component types it reads and writes. Once per frame the
-engine runs each system once over every object bound to it, handing it the matching rows in one batch and taking
+engine runs each system once over every object that carries the script's tag and the components it binds, handing it the matching rows in one batch and taking
 back the rows it wrote. **Nothing in the module's memory survives a frame:** the instance is reset to its initial
 image before each frame, so all lasting state is component data in the store, and rollback, hashing, saving and
 merging of logic are the store's (file 11, 3.5; file 03, A1). A code commit is an ordinary edit entry with a base
@@ -48,7 +48,7 @@ version and an agreed frame.
 | **Script** | An asset: a source blob tree (one crate) plus its declared manifest. Identified by an `AssetId`; each commit makes a new `ScriptVersion` (the hash of its source tree) |
 | **Module** | The wasm bytes a machine built from one script version, after instrumentation. Local to the machine: never sent, never stored in the world (Q3c). Its hash is reported for comparison only |
 | **System** | One exported function of a module, with a declared signature (section 3.2) |
-| **Binding** | The `Script` component on an object, naming the script and its version. A system runs over the objects that have the binding and every component it declares as bound input |
+| **Tag** | The zero-size component each script version has implicitly, named `pe.tag`, its id made like its other components' (6.1). Attaching a script to an object is adding its tag; detaching is removing it, and the script's other rows stay. A system runs over the objects that carry the tag and every component it binds. An object may carry any number of scripts' tags (@coordinator-opus m3abd64580972, @fable-reviewer's shape m1711da962a3b) |
 | **Instance** | One wasmtime instance of one module in one domain (one domain per world until M4). Reset to its initial image every frame |
 
 One script runs over many objects in one call. That is the "many small scripts on objects" shape the rulings imply
@@ -77,8 +77,22 @@ One script runs over many objects in one call. That is the "many small scripts o
 Per module:
 - the ABI version and the SDK version;
 - the **components the script declares**: name, fields (name, kind, count), as the store's `ComponentDesc` already
-  describes them [V `crates/pe-sim/src/registry.rs:80-172`]. Their ids are assigned by the world model, scoped to
-  the script asset, so two scripts cannot collide on a name;
+  describes them [V `crates/pe-sim/src/registry.rs:80-172`]. Their ids are assigned by the world model from the
+  script version's content hash (6.1), so two scripts cannot collide on a name;
+- implicitly, not in the manifest: the script's **tag** (section 2). Every system binds it as well as its declared
+  components, without the module seeing it: the runner joins the tag's column into each system's bound objects and
+  never copies it in (`Loaded::bind` takes the tag's id after the declared ones) [V `tests/run.rs`,
+  `only_objects_carrying_the_tag_run_the_script...`]. A system may therefore bind only engine components and still
+  runs only where the script is attached;
+- **engine components** it binds, named `pe.<Name>` (`pe_sdk::engine::{Light, Transform}`, byte-for-byte copies of the
+  engine's; a script's own names are identifiers, so the two cannot collide). Scripts may write engine components
+  (@coordinator-opus mcb505a8e97cf): the world exports a table of the engine components scripts may bind, each with
+  its id and a "scripts may write" mark (world-model.md 3.2: `Transform`, `Light`, `Appearance` writable). `Loaded::bind`
+  refuses a `pe.` name the table leaves out, a layout that differs from the registry's description (size, and each
+  field's name, kind, offset and count), and a `write` the mark does not allow; reading any listed one is allowed.
+  v0's SDK ships `Light` and `Transform`; `Appearance`, writable in the table, comes when a script needs it (its
+  `BlobRef` field has no SDK kind yet) (@design-reviewer)
+  [V `tests/run.rs`, `binding_checks_the_engine_table_and_the_layout`, `the_sdk_engine_components_are_the_engine_layouts`];
 - per system:
   - `name`, `stage` (3.5) and `mode`: `shared` (default) or `per_player` (section 7, M2);
   - `bound`: the components every bound object must have, each `read` or `write`;
@@ -118,6 +132,12 @@ A trap or a bad status discards the whole call: no row and no command of it is a
 - **A system call is all its batches.** Host functions read the store as it was when the call began, so the rows
   and commands of every batch are held until the last batch returns, then the rows are written and the commands
   applied, in batch order. A fault in any batch discards all of it.
+- **Engine rows a script wrote** pass the world's edit checks as well as the store's field check: `StageCtx::validate`
+  (pe-world's `World::check_script_row`: the edit rules, held pose, no author, since attaching the tag carried the
+  owner's consent). With no check given, a call that writes an engine row faults (fail closed; @shader-reviewer).
+  A refusal faults the call as `InvalidRow` with the world's reason, and nothing is clamped
+  (@coordinator-opus mcb505a8e97cf) [V `tests/run.rs`, `an_engine_row_the_world_refuses_faults_the_call`,
+  `a_script_writes_an_engine_component_only_where_it_is_attached`].
 - **Changed rows** are found against the store through `SimStore::column_raw` (N12, on main 18b60fde): when a
   batch's objects are one run of the column, 256-byte blocks that compare equal are skipped (3.3a) and only rows in
   differing blocks are compared; otherwise each row is compared at its index. Changed rows are validated with the
@@ -130,27 +150,37 @@ A trap or a bad status discards the whole call: no row and no command of it is a
   A row that refers to an object that no longer exists is not refused: the store does not refuse one either.
 - **Command records** name the row that gave them (its index in the batch). A create's id is pe-core's
   `ObjectId::spawned(line, row's object, frame, n)`, `n` counting that object's creations in the frame across both
-  logic stages; the new object is a root with the one component the record carries, and the **spawn mark** (below).
+  logic stages; the new object is a root with the one component the record carries, which must be one of the script's own (v0:
+  an engine row on a new object would need the world's check before the object exists; a create of one faults the
+  call), and the script's **tag** (below)
+  [V `tests/run.rs`, `what_a_script_creates_carries_its_tag`].
   Events go to the stage's report with the emitting object, for the events stage.
-- **A script destroys only what it spawned** (decided for M1, @coordinator-opus mfe83e04db541, with @fable-reviewer;
-  [V `tests/run.rs`]):
-  - Every object a script creates gets a spawn mark, a row naming the script (`run::spawn_mark_desc`: one 32-byte
-    `script` field). A destroy of an object whose mark does not name the script faults the call. So giving
-    someone's object one of the script's components (an edit can) does not make it the script's to destroy: of
-    the coordinator's two ways to close that hole, this is the one chosen, because it needs no edit-permission rule
-    and no later script command (attach, write to another object) can reopen it. **WS-world keeps the mark out of
-    every edit's reach** (no edit writes or removes it) and reserves its id (N13). **A `Copy`, a paste or an import
-    drops the mark** (@world-model mb693c44abc05): a member's copy of a spawn is the member's, not the script's.
-  - The mark names the script's **stable asset id**, the same for every version (`run::ScriptKey`, the `modules`
-    row of 6.1), never a version's hash: a new version can still destroy what an earlier version spawned.
-  - The mark names the asset, not a binding: any object running the same script asset may destroy any spawn of that
-    asset, wherever it is and whoever placed it. That is the useful rule, since a spawn often destroys itself.
-  - **Holds and locks win:** the world passes a guard; a destroy whose subtree holds an object the guard names is
+- **A script destroys only objects carrying its tag** (@coordinator-opus m3abd64580972, replacing the spawn mark of
+  mfe83e04db541; [V `tests/run.rs`, `a_script_destroys_only_objects_carrying_its_tag`]):
+  - What the script created carries its tag, and so does every object an editor attached it to. A destroy of an
+    object without the tag faults the call. Giving someone's object one of the script's components (an edit can)
+    does not make it the script's: the tag decides. **Adding or removing a script's tag needs the same right as
+    editing the object** (world-model.md 7.9), so a script cannot be attached to someone else's object to gain the
+    destroy right over it.
+  - The tag belongs to one version (6.1); a commit re-keys every row of the old version, tags included, so a new
+    version can destroy what an earlier one created.
+  - A script's destroy goes through `SimStore::destroy` (the runner undoes a refused destroy and every command of a
+    faulting call by restoring the store), and the runner reports every object it removed (`StageReport::removed`)
+    as well as the orphans. The world then writes a tombstone for each removed object from its stage-start state,
+    so `Undelete` and the delete-order rule hold for script destroys too (@coordinator-opus m4549fa743302;
+    world-model.md 9.2a).
+  - **Holds and locks win:** the world passes a guard; a destroy that would **remove** an object the guard names is
     refused, reported in `StageReport::refused`, and is not a fault (a player grabbing a spawn must not kill its
-    script). The object stays.
-  - **The orphan rule** (world-model.md 7.5): objects beneath the destroyed spawn that the script did not spawn are
-    not taken. Each topmost one becomes a root in place, keeping its world pose and what is beneath it
-    (`StageReport::orphaned`).
+    script). An untagged descendant is orphaned, not removed, so a hold on it (or on what is beneath it) does not
+    stop the destroy (@design-reviewer m52c574e02ece) [V `tests/run.rs`, `a_hold_on_an_orphan_does_not_stop...`].
+  - **Copy, paste and import keep the tag** (it is an ordinary row): a copy runs the script, and the script may
+    destroy it. That reverses the spawn mark's rule (copies dropped the mark), and is what a copier usually wants;
+    detaching the copy is removing its tag (@design-reviewer).
+  - **The orphan rule** (world-model.md 7.5): objects beneath the destroyed one that do not carry the script's tag
+    are not taken, nor is anything beneath them. Each surviving object whose parent is removed becomes a root in
+    place, keeping its world pose and what is beneath it (`StageReport::orphaned`); an untagged object under a
+    surviving parent stays where it is [V `tests/run.rs`, `an_untagged_object_under_a_surviving_parent...`,
+    @shader-reviewer].
   - The world passes its own destroy (tombstones), or `SimStore::destroy` is used. A destroy of an object already
     gone does nothing. The orphaning and the destroy are one step: if the world refuses the destroy, or an orphan
     cannot be made a root, the store goes back to its copy-on-write snapshot from before the step, and the refusal
@@ -262,7 +292,10 @@ divide by zero, a bad status, an invalid written row, a command buffer overflow,
   access before the depth meter fires: the stack sits below the data and grows down past address 0 [V pe-logic
   `tests/run.rs`, `sink`]. Recursion with no frame in memory hits the depth meter [V, `dive`]. Both are the same on
   every machine, since the module's bytes fix every frame's size.
-- The script's binding is marked **faulted at frame F** in the store, with the fault's kind. That is world state:
+- The script is marked **faulted at frame F** in its `modules` row (6.1), keyed by asset like every fault, with the
+  fault's kind as `runtime::Fault::code` numbers it (1 Fuel, 2 Depth, 3 Unreachable, 4 OutOfBounds, 5 DivideByZero,
+  6 IntegerOverflow, 7 BadConversion, 8 IndirectCall, 9 BadPointer, 10 Status, 11 InvalidRow, 12 BadCommand,
+  13 Other; never renumbered; `HostStack` has no code, being local) [V `tests/runtime.rs`, `fault_codes...`]. That is world state:
   hashed, rolled back, replayed and shown in the inspector (D14d, extended to every trap, as file 03 proposed).
   In v0 the runner reports the fault and runs no more of the script's systems that frame; the caller passes the
   set of faulted scripts in at each stage and keeps it as world state (N4), so the runner itself holds nothing
@@ -590,16 +623,21 @@ CommitScript {
 
 The world's `modules` table holds one row per script asset: the version (source tree as a `SimBlobRef`), the
 toolchain and SDK hashes, `author_module` as a plain hash, the declared components, `activate_at` and the faulted
-mark. A compiled module is never a blob and never in world state (Q3c). Component ids are
-`BLAKE3("pe.component" ‖ script asset id ‖ name ‖ schema hash)`, so a commit with an unchanged schema keeps its
-ids and rows with no migration. Objects a system spawns get `BLAKE3("pe.spawn" ‖ world ‖ spawner ‖ frame ‖ n)`,
+mark. A compiled module is never a blob and never in world state (Q3c). Component ids, the tag's included, are
+`u128::from_le_bytes(BLAKE3("pe.component" ‖ V ‖ name ‖ schema hash)[..16])`, where **V is the content hash of one
+script version** (its source tree hash; @coordinator-opus m3abd64580972, world-model.md 3.2). A commit therefore
+**re-keys** every row of the old version's components, tags included, to the new version's ids, in the commit's own
+transaction, so no frame sees half-moved rows (world-model.md 7.9; fields map by name and kind). The same operation
+on one copy is a future per-copy fork. The runner never hashes ids: the world hands them to `Loaded::bind`.
+The `modules` row stays keyed by the stable asset id (`run::ScriptKey`), which orders scripts within a stage and
+keys faults. Objects a system spawns get `BLAKE3("pe.spawn" ‖ world ‖ spawner ‖ frame ‖ n)`,
 where `n` counts the spawner's *applied* spawns in that frame (a discarded call does not advance it).
 
 - **Conflict rule:** a precondition edit (file 11, 3.2). A second commit on the same base is refused with the
   reason and the winning version; the author has the 10 s seat to rebase (R7).
-- **Attaching a script** to an object is a plain edit that sets a `Script` component; it needs no compile if the
-  machine already has that version's module.
-- The new version, the activation frame and each binding's version are **world state**, inside the hash tree,
+- **Attaching a script** to an object is a plain edit that adds the script's tag, under the object's edit right; it
+  needs no compile if the machine already has that version's module.
+- The new version, the activation frame and which objects carry which tag are **world state**, inside the hash tree,
   so two machines that disagree on which code ran find it at the next cut.
 
 ### 6.2 What each machine does
@@ -609,7 +647,15 @@ where `n` counts the spawner's *applied* spawns in that frame (a discarded call 
    (stale base, no permission) the author's view rolls back.
 2. **Every other machine**, on receiving the entry:
    - fetches the source blobs, starts its own build, and keeps simulating with the old module as a prediction
-     (Q3a: objects keep running the old code);
+     (Q3a: objects keep running the old code). At `activate_at` the world re-keys the script's rows to the new
+     version's ids (6.1), so the old module is bound **under ids derived from the new version's V**, with the new
+     tag: every component whose schema the edit left alone has the same id either way, so a logic-only edit keeps
+     running the old code on the re-keyed rows, then jumps when the build is ready (@coordinator-opus
+     mdc202526c56f). **Known limit of Q3a:** if the edit changed a component's schema, the old module cannot bind
+     under the new ids (its declared description is not registered there), and the script pauses on that machine
+     until its build is ready, about 0.5-1.3 s for a small script [I, 6.3]. Either way those frames are predictions,
+     replayed from `activate_at` [V `tests/activation.rs`, `a_logic_only_edit_keeps_running...`,
+     `a_schema_edit_pauses...`; red: bound under the old version's ids, the logic-only case froze];
    - **does not vote for any cut at or past `activate_at`** until its build is ready, because it cannot yet
      compute those frames (needs S3, section 9);
    - when the build is ready and the module validates: if the agreed frame is within the replay window (a
@@ -706,7 +752,7 @@ To agree with @engine-architect (seams) and the owners named.
 | N1 | WS-seams, S2 | The replica calls logic at fixed stage points (3.5), with the store, the frame and the domain; logic returns rows and commands applied through the store | The frame order is a seam property |
 | N2 | WS-seams, S2 | A replica can hold two modules for one script at once (old, new) and roll back to a named frame on a build-ready event | 6.2, 6.4 |
 | N3 | WS-seams, S3 | A way to say "do not vote for cuts at or past frame F yet" (a vote hold), and to release it | 6.2 step 2 |
-| N4 | WS-world | `CommitScript` (agreed, world-model r7) as an edit payload with a precondition; a `Script` binding component; source as a blob tree; script-scoped component ids; a `faulted` mark in the binding; a `Pos` field kind | 3.2, 3.6, 6.1, 8 |
+| N4 | WS-world | `CommitScript` (agreed, world-model r7) as an edit payload with a precondition; each version's tag (3.2) and the re-key of 6.1; source as a blob tree; script-scoped component ids; a `faulted` mark in the `modules` row (3.6); a `Pos` field kind | 3.2, 3.6, 6.1, 8 |
 | N5 | WS-world | Component descriptions registered at run time, versioned by frame (already planned: plan 2.1) | A commit can add components |
 | N6 | WS-state | The stage order of 3.5 | Logic before and after physics |
 | N7 | WS-api | `code.check` (build and validate, diagnostics as data), `code.commit`, and for M2 `code.test`. WS-logic provides the backend calls; WS-api the MCP tools | The agent's edit in M1 |
@@ -715,7 +761,7 @@ To agree with @engine-architect (seams) and the owners named.
 | N11 | WS-state | The floating-point guard (FTZ/DAZ, rounding) runs on the thread that runs wasm, at every entry into a guest (5.2b) | Non-NaN results depend on it |
 | N10 | WS-render, S5 | Events emitted by scripts reach the frame view once, not once per replay (plan M1: effects fire once) | 3.3 step 3 |
 | N12 | WS-world (pe-sim) | Raw column access by `ComponentId`: the sorted ids and the row bytes, read-only. **Done:** `SimStore::column_raw`, main 18b60fde; the runner uses it | The bound-object join and the 256 B block write-back of 3.3a |
-| N13 | WS-world (pe-world) | Where a script's components are registered in a live world (the store's registry is fixed at `SimStore::new`), and the runner's hook in the replica's two logic stages, with its report turned into `Effects` (created, destroyed, written rows). The spawn mark's id reserved; no edit writes or removes the mark, and `Copy`, paste and import drop it. The world's destroy keeps its effects in the store, since the runner undoes by restoring the store | 3.3, 3.5, 3.6, N1, N5 |
+| N13 | WS-world (pe-world) | Where a script's components are registered in a live world (the store's registry is fixed at `SimStore::new`), and the runner's hook in the replica's two logic stages, with its report turned into `Effects` (created, destroyed, written rows). No spawn mark (replaced by the tag, m3abd64580972); tag add and remove under the object's edit right. The world's destroy keeps its effects in the store, since the runner undoes by restoring the store | 3.3, 3.5, 3.6, N1, N5 |
 
 ## 10. M1 and M2
 
@@ -758,7 +804,7 @@ As the plan's M2, with the items left above and the toy of the plan (button, bin
   by depth at the same depth, under two different `max_wasm_stack` settings and on both CPUs.
 - **Instance reset:** a script that keeps a counter in a static gives the same result with and without random
   rollbacks (because the counter is reset every frame), and the SDK documents why statics are useless.
-- **Faults:** each trap kind of 3.6 discards the call, marks the binding, is identical after a replay, and never
+- **Faults:** each trap kind of 3.6 discards the call, marks the script's modules row, is identical after a replay, and never
   panics the process.
 - **Validation:** modules importing anything outside `pe`, using a refused feature, or defining the injected names
   are refused with a structured error.
@@ -803,7 +849,7 @@ linker (5.2a). The `Light` component is the engine's; `Blink` is declared by the
 use pe_sdk::prelude::*;
 
 pe_sdk::component! {
-    /// Saved in the world, visible in the inspector and to MCP. Ids derive from the script asset id (6.1).
+    /// Saved in the world, visible in the inspector and to MCP. Ids derive from the version's content hash (6.1).
     pub struct Blink { period: f32, phase: f32, near: f32 }
 }
 

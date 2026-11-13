@@ -50,18 +50,32 @@ impl Default for RunSettings {
     }
 }
 
+/// An engine component a script may bind (logic.md 3.2; world-model.md 7.9): its name in a manifest (`pe.Light`, as
+/// `pe_sdk::engine` declares it), its id, and whether scripts may write it. The world exports the table; a script may
+/// bind no engine component the table leaves out, and may write one only where it carries its tag (every bound object
+/// does) and the table allows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineComponent<'a> {
+    pub name: &'a str,
+    pub id: ComponentId,
+    pub scripts_may_write: bool,
+}
+
+/// The world's edit checks for one engine row a script wrote (logic.md 3.3; world-model.md 7.9): the component, the
+/// object and the bytes; `Err` names the refused field or the reason, and faults the call.
+pub type Validate<'a> = &'a dyn Fn(ComponentId, ObjectId, &[u8]) -> Result<(), String>;
+
+/// Same size and fields (name, kind, offset, count) as the engine's description: the SDK's copy of an engine
+/// component must be byte-for-byte the engine's.
+fn same_layout(engine: &ComponentDesc, declared: &ComponentDesc) -> bool {
+    let key = |f: &FieldDesc| (f.name.clone(), f.kind, f.offset, f.count);
+    engine.size() == declared.size() && engine.fields().iter().map(key).eq(declared.fields().iter().map(key))
+}
+
 /// The store's description of a component a script declares, under the id the world model assigned it.
 pub fn component_desc(c: &manifest::Component, id: ComponentId) -> Result<ComponentDesc, pe_core::Error> {
     let fields = c.fields.iter().map(|f| FieldDesc::new(&f.name, sim_kind(f.kind), f.offset as usize, f.count));
     ComponentDesc::new(id, &c.name, fields.collect())
-}
-
-/// The spawn mark: the store's description of the row the runner puts on every object a script creates, naming the
-/// script. A script may destroy only objects whose mark names it (3.3), so the world keeps this component out of
-/// every edit's reach: no edit may write or remove it [I: WS-world reserves the id].
-pub fn spawn_mark_desc(id: ComponentId) -> ComponentDesc {
-    ComponentDesc::new(id, "Spawned", vec![FieldDesc::new("script", pe_sim::FieldKind::Hash, 0, 1)])
-        .expect("one 32-byte field")
 }
 
 fn sim_kind(k: FieldKind) -> pe_sim::FieldKind {
@@ -176,30 +190,73 @@ struct Resident {
 /// instance.
 pub struct Loaded {
     key: ScriptKey,
+    /// The script's tag (logic.md 3.2): an object runs the script while it carries the tag, every system binds it
+    /// implicitly, every object the script creates gets it, and the script may destroy only objects carrying it.
+    tag: ComponentId,
+    /// The tag's row size in the registry (zero once pe-sim takes zero-field components); a create writes zeros.
+    tag_size: usize,
     script: Script,
     manifest: Manifest,
     components: Vec<ComponentId>,
     plans: Vec<Plan>,
     inst: Instance,
+    /// The engine components the script binds (3.2): never created by a command; their written rows go through the
+    /// world's edit checks.
+    engine: Vec<ComponentId>,
     /// What the area holds from the last accepted call this stage, for the copy-in skip.
     resident: Vec<Resident>,
     resident_ids: Vec<ObjectId>,
 }
 
 impl Loaded {
-    /// Bind `script` (whose manifest is `manifest`, from [`read_manifest`]) with its components under `ids`, in the
-    /// manifest's order. Every one must already be in `registry` with the description [`component_desc`] gives.
+    /// Bind `script` (whose manifest is `manifest`, from [`read_manifest`]) with its own components under `own_ids`,
+    /// in the manifest's order, its tag under `tag`, and the engine components it names (`pe.` names) from `engine`.
+    /// Every one must already be in `registry`: each own component with the description [`component_desc`] gives,
+    /// each engine component with the layout the script declared, the tag under the world's description (3.2).
     pub fn bind(
         key: ScriptKey,
         script: Script,
         manifest: Manifest,
-        ids: &[ComponentId],
+        own_ids: &[ComponentId],
+        tag: ComponentId,
+        engine: &[EngineComponent<'_>],
         registry: &Registry,
     ) -> Result<Loaded, BindError> {
-        if ids.len() != manifest.components.len() {
-            return Err(BindError(format!("{} ids for {} components", ids.len(), manifest.components.len())));
+        let own = manifest.components.iter().filter(|c| !c.name.starts_with(manifest::ENGINE_PREFIX)).count();
+        if own_ids.len() != own {
+            return Err(BindError(format!("{} ids for {own} components", own_ids.len())));
         }
+        // One id per manifest component: the script's own in order, the engine's from the table.
+        let mut next_own = own_ids.iter();
+        let mut ids = Vec::with_capacity(manifest.components.len());
+        let mut engine_ids = Vec::new();
+        for c in &manifest.components {
+            if !c.name.starts_with(manifest::ENGINE_PREFIX) {
+                ids.push(*next_own.next().expect("counted above"));
+                continue;
+            }
+            let Some(e) = engine.iter().find(|e| e.name == c.name) else {
+                return Err(BindError(format!("{} is not an engine component scripts may bind", c.name)));
+            };
+            let declared = component_desc(c, e.id).map_err(|e| BindError(format!("component {}: {e}", c.name)))?;
+            if !registry.get(e.id).is_some_and(|have| same_layout(have, &declared)) {
+                return Err(BindError(format!("{}: the layout differs from the engine's", c.name)));
+            }
+            ids.push(e.id);
+            engine_ids.push(e.id);
+        }
+        let ids = ids.as_slice();
+        if ids.contains(&tag) {
+            return Err(BindError("the tag's id is one of the declared components' ids".into()));
+        }
+        let Some(tag_desc) = registry.get(tag) else {
+            return Err(BindError("the script's tag is not registered".into()));
+        };
+        let tag_size = tag_desc.size();
         for (c, &id) in manifest.components.iter().zip(ids) {
+            if engine_ids.contains(&id) {
+                continue;
+            }
             let want = component_desc(c, id).map_err(|e| BindError(format!("component {}: {e}", c.name)))?;
             if registry.get(id) != Some(&want) {
                 return Err(BindError(format!("component {} is not registered as declared", c.name)));
@@ -230,6 +287,10 @@ impl Loaded {
                 if bound.iter().any(|b: &Bound| b.id == id) {
                     return Err(BindError(format!("system {}: {name} is bound twice", s.name)));
                 }
+                if *access == Access::Write && engine.iter().find(|e| e.id == id).is_some_and(|e| !e.scripts_may_write)
+                {
+                    return Err(BindError(format!("system {}: scripts may not write {name}", s.name)));
+                }
                 bound.push(Bound { id, access: *access, size });
             }
             if bound.is_empty() {
@@ -259,6 +320,9 @@ impl Loaded {
         }
         Ok(Loaded {
             key,
+            engine: engine_ids,
+            tag,
+            tag_size,
             script,
             manifest,
             components: ids.to_vec(),
@@ -316,9 +380,12 @@ pub struct StageReport {
     /// Objects created, in order, each with its spawner (the bound object whose row created it): the world sizes a
     /// new object from its spawner's world scale (world-model.md 3.5).
     pub created: Vec<(ObjectId, ObjectId)>,
-    /// Objects destroyed by command (each with what it spawned beneath it), in order.
+    /// The objects destroy commands named, in order (each removed with the tagged objects beneath it).
     pub destroyed: Vec<ObjectId>,
-    /// Objects that were beneath a destroyed one but not spawned by its script: made roots in place.
+    /// Every object the destroys removed, in order, for the world's tombstones (world-model.md 9.2a).
+    pub removed: Vec<ObjectId>,
+    /// Objects beneath a destroyed one that did not carry the script's tag: made roots in place, with what is
+    /// beneath them.
     pub orphaned: Vec<ObjectId>,
     /// Destroys that did not happen (a hold or a lock on the subtree, 3.3): not faults; the object stays.
     pub refused: Vec<(ObjectId, Refused)>,
@@ -347,6 +414,7 @@ impl StageReport {
         self.written.extend(part.written);
         self.created.extend(part.created);
         self.destroyed.extend(part.destroyed);
+        self.removed.extend(part.removed);
         self.orphaned.extend(part.orphaned);
         self.refused.extend(part.refused);
         self.events.extend(part.events);
@@ -381,11 +449,14 @@ pub struct StageCtx<'a> {
     /// store:** the runner undoes a refused destroy, and every command of a call that faults, by restoring the store
     /// (3.3, 3.6), and cannot undo anything kept elsewhere.
     pub destroy: Option<&'a mut WorldDestroy>,
+    /// The world's edit checks for engine rows a script wrote (3.3). None: a call that writes an engine row faults
+    /// (fail closed).
+    pub validate: Option<Validate<'a>>,
 }
 
 impl<'a> StageCtx<'a> {
     pub fn new(line: LineId, rate_hz: u32, stage: Stage, faulted: &'a BTreeSet<ScriptKey>) -> StageCtx<'a> {
-        StageCtx { line, rate_hz, stage, faulted, guard: None, destroy: None }
+        StageCtx { line, rate_hz, stage, faulted, guard: None, destroy: None, validate: None }
     }
 }
 
@@ -458,7 +529,6 @@ enum Cmd {
 pub struct Logic {
     scripts: Vec<Loaded>,
     settings: RunSettings,
-    spawn_mark: ComponentId,
     frame: Option<Frame>,
     /// Objects created per spawner this frame (pe-core `ObjectId::spawned`'s `n`).
     spawns: BTreeMap<ObjectId, u32>,
@@ -467,19 +537,9 @@ pub struct Logic {
 }
 
 impl Logic {
-    /// A world's logic. `spawn_mark` is the id under which `registry` holds [`spawn_mark_desc`].
-    pub fn new(settings: RunSettings, spawn_mark: ComponentId, registry: &Registry) -> Result<Logic, BindError> {
-        if registry.get(spawn_mark) != Some(&spawn_mark_desc(spawn_mark)) {
-            return Err(BindError("the spawn mark is not registered".into()));
-        }
-        Ok(Logic {
-            scripts: Vec::new(),
-            settings,
-            spawn_mark,
-            frame: None,
-            spawns: BTreeMap::new(),
-            faulted_now: BTreeSet::new(),
-        })
+    /// A world's logic, with no script bound yet.
+    pub fn new(settings: RunSettings) -> Logic {
+        Logic { scripts: Vec::new(), settings, frame: None, spawns: BTreeMap::new(), faulted_now: BTreeSet::new() }
     }
 
     /// Add a bound script. Scripts run in key order; a key already present is replaced.
@@ -529,7 +589,7 @@ impl Logic {
                 if plan.stage != stage {
                     continue;
                 }
-                let outcome = call_system(script, &plan, store, rate_hz, self.spawn_mark, settings, &mut report);
+                let outcome = call_system(script, &plan, store, rate_hz, settings, ctx.validate, &mut report);
                 let fault = match outcome {
                     Ok((rows, cmds)) if rows.is_empty() && cmds.is_empty() => None,
                     Ok((rows, cmds)) => {
@@ -539,7 +599,8 @@ impl Logic {
                         let creates = cmds.iter().any(|c| matches!(c, Cmd::Create { .. }));
                         let spawns = creates.then(|| self.spawns.clone());
                         let mut part = StageReport::default();
-                        let mut a = Apply { spawns: &mut self.spawns, spawn_mark: self.spawn_mark, report: &mut part };
+                        let tag = (script.tag, script.tag_size);
+                        let mut a = Apply { spawns: &mut self.spawns, tag, report: &mut part };
                         match a.apply(key, &plan, store, ctx, rows, cmds) {
                             Ok(()) => {
                                 report.absorb(part);
@@ -577,11 +638,14 @@ fn call_system(
     plan: &Plan,
     store: &SimStore,
     rate_hz: u32,
-    spawn_mark: ComponentId,
     settings: RunSettings,
+    validate: Option<Validate<'_>>,
     report: &mut StageReport,
 ) -> Result<(Rows, Vec<Cmd>), Fault> {
-    let objects = bound_objects(store, &plan.bound, &mut report.join_steps);
+    // The tag is bound implicitly: only objects carrying it run the script (3.2). It is joined, never copied in.
+    let mut join: Vec<ComponentId> = plan.bound.iter().map(|b| b.id).collect();
+    join.push(script.tag);
+    let objects = bound_objects(store, &join, &mut report.join_steps);
     if objects.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -711,6 +775,17 @@ fn call_system(
                 if let Some(field) = desc.invalid_field(new) {
                     return Err(Fault::InvalidRow { component: desc.name().into(), field: field.into() });
                 }
+                // An engine row passes the world's edit checks too, as an edit's would; a refusal faults the call
+                // and nothing is clamped (coordinator mcb505a8e97cf).
+                // Fail closed: with no world check, an engine row is refused, never written unchecked (shader-reviewer).
+                if script.engine.contains(&b.id) {
+                    let check = validate.ok_or_else(|| Fault::InvalidRow {
+                        component: desc.name().into(),
+                        field: "no world check (StageCtx::validate) for an engine row".into(),
+                    })?;
+                    check(b.id, chunk[k], new)
+                        .map_err(|r| Fault::InvalidRow { component: desc.name().into(), field: r })?;
+                }
                 rows.push((b.id, chunk[k], new.to_vec()));
             }
         }
@@ -719,7 +794,7 @@ fn call_system(
             return Err(Fault::BadCommand(format!("command length {len} of {}", plan.cmd_cap)));
         }
         let buf = &area[plan.cmd_at as usize..][..len as usize];
-        parse_commands(script, plan, store, spawn_mark, chunk, buf, &mut cmds)?;
+        parse_commands(script, plan, store, chunk, buf, &mut cmds)?;
 
         // The write columns, compared row by row above, now equal the store for these ids once the call's rows are
         // written (all or none of them). The read columns are not trusted: nothing stops a script from writing
@@ -773,15 +848,15 @@ fn row_indices(ids: &[ObjectId], objects: &[ObjectId], steps: &mut u64) -> Vec<u
 
 /// The store's objects with every bound component, in id order: the smallest bound column's ids, filtered by a merge
 /// walk through each other bound column (N12).
-fn bound_objects(store: &SimStore, bound: &[Bound], steps: &mut u64) -> Vec<ObjectId> {
-    let Some(first) = bound.iter().min_by_key(|b| store.count(b.id)) else { return Vec::new() };
-    let mut out: Vec<ObjectId> = store.column_raw(first.id).0.to_vec();
+fn bound_objects(store: &SimStore, bound: &[ComponentId], steps: &mut u64) -> Vec<ObjectId> {
+    let Some(&first) = bound.iter().min_by_key(|&&c| store.count(c)) else { return Vec::new() };
+    let mut out: Vec<ObjectId> = store.column_raw(first).0.to_vec();
     *steps += out.len() as u64;
-    for b in bound {
-        if b.id == first.id || out.is_empty() {
+    for &c in bound {
+        if c == first || out.is_empty() {
             continue;
         }
-        let ids = store.column_raw(b.id).0;
+        let ids = store.column_raw(c).0;
         let mut j = 0;
         out.retain(|&id| {
             while j < ids.len() && ids[j] < id {
@@ -794,15 +869,10 @@ fn bound_objects(store: &SimStore, bound: &[Bound], steps: &mut u64) -> Vec<Obje
     out
 }
 
-fn spawned_by(store: &SimStore, mark: ComponentId, id: ObjectId) -> Option<ScriptKey> {
-    store.get_raw(mark, id).map(|r| Hash(r.try_into().expect("32 bytes")))
-}
-
 fn parse_commands(
     script: &Loaded,
     plan: &Plan,
     store: &SimStore,
-    spawn_mark: ComponentId,
     chunk: &[ObjectId],
     mut buf: &[u8],
     out: &mut Vec<Cmd>,
@@ -829,6 +899,9 @@ fn parse_commands(
                 let k = script.manifest.components.iter().position(|c| c.name.as_bytes() == name);
                 let Some(k) = k else { return bad("create: not a component the script declares".into()) };
                 let component = script.components[k];
+                if script.engine.contains(&component) {
+                    return bad("create: an engine component (v0: a create carries one of the script's own)".into());
+                }
                 let desc = store.registry().get(component).expect("bound at bind");
                 let row = &p[8 + name_len as usize..];
                 if row.len() != desc.size() {
@@ -845,10 +918,10 @@ fn parse_commands(
                 }
                 let Ok(id) = <[u8; 16]>::try_from(p) else { return bad("destroy: payload".into()) };
                 let id = object_of(id);
-                // A script destroys only what it spawned (3.3; coordinator-opus mfe83e04db541). An object already
-                // gone is left to the apply step, where it does nothing.
-                if store.exists(id) && spawned_by(store, spawn_mark, id) != Some(script.key) {
-                    return bad("destroy: the script did not spawn the object".into());
+                // A script destroys only objects carrying its tag (3.3; coordinator-opus m3abd64580972): what it created,
+                // and what an editor attached it to. An object already gone is left to the apply step.
+                if store.exists(id) && store.get_raw(script.tag, id).is_none() {
+                    return bad("destroy: the object does not carry the script's tag".into());
                 }
                 out.push(Cmd::Destroy(id));
             }
@@ -872,7 +945,8 @@ fn parse_commands(
 /// Applying one call's rows and commands.
 struct Apply<'r> {
     spawns: &'r mut BTreeMap<ObjectId, u32>,
-    spawn_mark: ComponentId,
+    /// The script's tag and its row size.
+    tag: (ComponentId, usize),
     report: &'r mut StageReport,
 }
 
@@ -900,11 +974,11 @@ impl Apply<'_> {
                     *n += 1;
                     let other = |e: pe_core::Error| Fault::Other(format!("create: {e}"));
                     store.create(id).map_err(other)?;
-                    store.insert_raw(self.spawn_mark, id, &key.0).map_err(other)?;
+                    store.insert_raw(self.tag.0, id, &vec![0; self.tag.1]).map_err(other)?;
                     store.insert_raw(component, id, &row).map_err(other)?;
                     self.report.created.push((id, spawner));
                 }
-                Cmd::Destroy(id) => self.destroy(key, store, ctx, id),
+                Cmd::Destroy(id) => self.destroy(store, ctx, id),
                 Cmd::Emit { index, object, bytes } => {
                     let e = Event { script: key, system: plan.name.clone(), index, object, bytes };
                     self.report.events.push(e);
@@ -914,29 +988,43 @@ impl Apply<'_> {
         Ok(())
     }
 
-    /// Destroy what the script spawned at and beneath `id` (3.3). Refused whole if the guard holds any object of the
-    /// subtree. Objects beneath it that the script did not spawn are not taken: each topmost one becomes a root in
-    /// place (the orphan rule, world-model.md 7.5), with what is beneath it.
-    fn destroy(&mut self, key: ScriptKey, store: &mut SimStore, ctx: &mut StageCtx<'_>, id: ObjectId) {
+    /// Destroy what carries the script's tag at and beneath `id` (3.3). Refused whole if the guard holds any object
+    /// of the subtree. Objects beneath it without the tag are not taken: each topmost one becomes a root in place
+    /// (the orphan rule, world-model.md 7.5), with what is beneath it.
+    fn destroy(&mut self, store: &mut SimStore, ctx: &mut StageCtx<'_>, id: ObjectId) {
         // Already gone (an earlier command this frame) is not an error: the same on every machine.
         if !store.exists(id) {
             return;
         }
         let subtree = store.subtree(id);
+        let foreign: BTreeSet<ObjectId> =
+            subtree.iter().copied().filter(|&x| store.get_raw(self.tag.0, x).is_none()).collect();
+        // What survives: each object without the tag, with everything beneath it (the orphan rule). The subtree lists
+        // a parent before its children, so one pass finds it. The rest is what the destroy removes.
+        let mut kept = BTreeSet::new();
+        for &x in &subtree {
+            if x != id && (foreign.contains(&x) || store.parent(x).is_some_and(|p| kept.contains(&p))) {
+                kept.insert(x);
+            }
+        }
+        let removed: Vec<ObjectId> = subtree.iter().copied().filter(|x| !kept.contains(x)).collect();
+        // The guard covers what would be removed; an orphan keeps its place and its holder (world-model.md 9.2a,
+        // @design-reviewer m52c574e02ece).
         if let Some(guard) = ctx.guard
-            && let Some(&g) = subtree.iter().find(|&&x| guard(x))
+            && let Some(&g) = removed.iter().find(|&&x| guard(x))
         {
             self.report.refused.push((id, Refused::Guarded(g)));
             return;
         }
-        let foreign: BTreeSet<ObjectId> =
-            subtree.iter().copied().filter(|&x| spawned_by(store, self.spawn_mark, x) != Some(key)).collect();
         // The orphaning and the destroy are one step: a refusal of either undoes both (design-reviewer m6ff8571e295a).
         let snapshot = store.clone();
         let mut orphaned = Vec::new();
         let mut refusal = None;
         for &x in &subtree {
-            let top = foreign.contains(&x) && store.parent(x).is_none_or(|p| !foreign.contains(&p));
+            // An orphan survives and its parent does not: made a root in place, with what is beneath it. An untagged
+            // object under a surviving parent stays where it is (shader-reviewer on 53daefdf: A tagged > B untagged >
+            // C tagged > D untagged keeps D under C).
+            let top = kept.contains(&x) && store.parent(x).is_some_and(|p| !kept.contains(&p));
             if top {
                 if let Err(e) = store.set_parent_keep_world(x, None, None) {
                     refusal = Some(Refused::Orphan(x, e.to_string()));
@@ -955,6 +1043,7 @@ impl Apply<'_> {
         match refusal {
             None => {
                 self.report.orphaned.extend(orphaned);
+                self.report.removed.extend(removed);
                 self.report.destroyed.push(id);
             }
             Some(r) => {

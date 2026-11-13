@@ -21,3 +21,7 @@ wasmtime.workspace = true
 # itself uses, so the lock keeps one copy of each.
 wasmparser = { version = "=0.261.0", default-features = false, features = ["std", "validate", "features", "simd"] }
 wasm-encoder = { version = "=0.261.0", default-features = false, features = ["std", "wasmparser"] }
+
+[dev-dependencies]
+# Tests only: the engine components a script may bind are checked against pe-world's own descriptions (logic.md 3.2).
+pe-world = { path = "../pe-world" }

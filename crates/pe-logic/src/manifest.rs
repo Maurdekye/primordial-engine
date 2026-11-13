@@ -75,8 +75,19 @@ impl Reader<'_> {
     fn str(&mut self) -> Result<String, ManifestError> {
         let n = self.count(256, "bytes in a name")? as usize;
         let s = std::str::from_utf8(self.take(n)?).map_err(|_| ManifestError("a name is not UTF-8".into()))?;
-        if s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if !is_ident(s) {
             return Err(ManifestError(format!("{s:?} is not a name")));
+        }
+        Ok(s.to_string())
+    }
+
+    /// A component's name: an identifier (the script's own), or `pe.` and an identifier (an engine component, which
+    /// `pe_sdk::engine` declares; logic.md 3.2). A script's own name can never contain a `.`.
+    fn component_name(&mut self) -> Result<String, ManifestError> {
+        let n = self.count(256, "bytes in a name")? as usize;
+        let s = std::str::from_utf8(self.take(n)?).map_err(|_| ManifestError("a name is not UTF-8".into()))?;
+        if !is_ident(s.strip_prefix(ENGINE_PREFIX).unwrap_or(s)) {
+            return Err(ManifestError(format!("{s:?} is not a component name")));
         }
         Ok(s.to_string())
     }
@@ -97,7 +108,7 @@ pub fn decode(b: &[u8]) -> Result<Manifest, ManifestError> {
     }
     let mut components = Vec::new();
     for _ in 0..r.count(256, "components")? {
-        let name = r.str()?;
+        let name = r.component_name()?;
         let size = r.u32()?;
         let align = r.u32()?;
         let mut fields = Vec::new();
@@ -130,7 +141,7 @@ pub fn decode(b: &[u8]) -> Result<Manifest, ManifestError> {
         };
         let mut bound = Vec::new();
         for _ in 0..r.count(MAX_BOUND as u32, "bound components")? {
-            let c = r.str()?;
+            let c = r.component_name()?;
             let a = match r.u8()? {
                 0 => Access::Read,
                 1 => Access::Write,
@@ -143,7 +154,7 @@ pub fn decode(b: &[u8]) -> Result<Manifest, ManifestError> {
         }
         let mut reads_other = Vec::new();
         for _ in 0..r.count(64, "reads")? {
-            reads_other.push(r.str()?);
+            reads_other.push(r.component_name()?);
         }
         let mut emits = Vec::new();
         for _ in 0..r.count(64, "events")? {
@@ -164,6 +175,13 @@ pub fn decode(b: &[u8]) -> Result<Manifest, ManifestError> {
 
 /// The store's layout rules, checked here so a bad declaration is refused at submission: fields inside the row,
 /// aligned to their kind, not overlapping, and no padding (a row is exactly its fields, so its bytes are defined).
+/// The prefix of an engine component's name in a manifest (`pe.Light`): `pe_sdk::engine` declares them.
+pub const ENGINE_PREFIX: &str = "pe.";
+
+fn is_ident(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn check_layout(name: &str, size: u32, align: u32, fields: &[Field]) -> Result<(), ManifestError> {
     let bad = |m: String| Err(ManifestError(format!("component {name}: {m}")));
     if !align.is_power_of_two() || align > 16 || !size.is_multiple_of(align) {

@@ -2251,6 +2251,7 @@ dependencies = [
  "pe-sdk",
  "pe-seams",
  "pe-sim",
+ "pe-world",
  "wasm-encoder",
  "wasmparser",
  "wasmtime",
