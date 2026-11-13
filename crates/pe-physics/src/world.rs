@@ -11,7 +11,7 @@ use box3d_rust::body::{
 };
 use box3d_rust::core::get_length_units_per_meter;
 use box3d_rust::geometry::{Capsule, ShapeType, Sphere};
-use box3d_rust::hull::{create_hull, get_hull_planes, make_box_hull};
+use box3d_rust::hull::{create_hull, get_hull_points, make_box_hull};
 use box3d_rust::id::{BodyId, JointId, ShapeId};
 use box3d_rust::joint::{
     JointType, create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
@@ -145,10 +145,11 @@ pub struct GrabSpring {
 /// How far from its place a grab's spring may see its object in one step ([`PhysicsWorld::step_holding`]), m.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HoldReach {
-    /// In every direction but against gravity.
+    /// The most error the spring sees.
     pub reach: f32,
-    /// Against gravity: the part of the error that pulls the object up, which holds it up.
-    pub against_gravity: f32,
+    /// The upward part of the error (against gravity, which holds the object up) the spring keeps seeing, up to this
+    /// much, where `reach` would cut it: its support.
+    pub support: f32,
 }
 
 /// A joint between two bound objects (or one object and the world, `b = None`). Anchors are
@@ -210,8 +211,9 @@ pub struct PhysicsWorld {
 const MAX_WORKERS: i32 = 32;
 
 /// A shape as a capsule for [`PhysicsWorld::static_in_way`], in its body's frame: its two centres and its radius. A
-/// sphere or capsule is itself; a hull is the largest capsule inside it about its centre, along the longest side of
-/// its bounding box (its radius the centre's distance to the nearest face, its length as far as every face allows).
+/// sphere or capsule is itself; a hull is the smallest capsule about its centre, along the longest side of its
+/// bounding box, that holds every one of its points (@coordinator-opus mc74fcfa211f2: it errs towards a held object
+/// not being carried, the side the wall ruling chose, so a hull passing close by a wall's edge may be held back).
 /// `None` for shapes pe-physics never makes.
 fn mover_of(world: &World, shape: ShapeId) -> Option<(Vec3, Vec3, f32)> {
     match shape_get_type(world, shape) {
@@ -226,25 +228,27 @@ fn mover_of(world: &World, shape: ShapeId) -> Option<(Vec3, Vec3, f32)> {
         ShapeType::Hull => {
             let hull = shape_get_hull(world, shape)?;
             let c = hull.center;
-            let planes = get_hull_planes(hull);
-            let depth = |n: Vec3, offset: f32| offset - (n.x * c.x + n.y * c.y + n.z * c.z);
-            let radius = planes.iter().map(|p| depth(p.normal, p.offset)).fold(f32::INFINITY, f32::min);
-            if !(radius.is_finite() && radius > 0.0) {
-                return None;
-            }
             let (lo, hi) = (hull.aabb.lower_bound, hull.aabb.upper_bound);
             let half = [0.5 * (hi.x - lo.x), 0.5 * (hi.y - lo.y), 0.5 * (hi.z - lo.z)];
             let axis = (1..3).fold(0, |a, i| if half[i] > half[a] { i } else { a });
+            // Each point's place along the axis from the centre, and its distance from the axis.
+            let parts: Vec<(f32, f32)> = get_hull_points(hull)
+                .iter()
+                .map(|p| {
+                    let d = [p.x - c.x, p.y - c.y, p.z - c.z];
+                    let off: f32 = (0..3).filter(|&i| i != axis).map(|i| d[i] * d[i]).sum();
+                    (d[axis], off.sqrt())
+                })
+                .collect();
+            let radius = parts.iter().map(|&(_, r)| r).fold(0.0_f32, f32::max);
+            if !(radius.is_finite() && radius > 0.0) {
+                return None;
+            }
+            // Long enough that every point is within `radius` of the segment.
+            let length =
+                parts.iter().map(|&(t, r)| t.abs() - (radius * radius - r * r).max(0.0).sqrt()).fold(0.0_f32, f32::max);
             let mut u = [0.0_f32; 3];
             u[axis] = 1.0;
-            let mut length = half[axis];
-            for p in planes {
-                let along = (p.normal.x * u[0] + p.normal.y * u[1] + p.normal.z * u[2]).abs();
-                if along > 1.0e-6 {
-                    length = length.min((depth(p.normal, p.offset) - radius) / along);
-                }
-            }
-            let length = length.max(0.0);
             let end = |k: f32| Vec3 { x: c.x + k * u[0], y: c.y + k * u[1], z: c.z + k * u[2] };
             Some((end(-length), end(length), radius))
         }
@@ -252,11 +256,15 @@ fn mover_of(world: &World, shape: ShapeId) -> Option<(Vec3, Vec3, f32)> {
     }
 }
 
-/// The part of `v` beyond `reach`: zero if `v` is within it.
-fn beyond(v: Vec3, reach: f32) -> Vec3 {
+/// `v` shortened to at most `reach` along its own direction (`v` itself if it is within it).
+fn within(v: Vec3, reach: f32) -> Vec3 {
     let length = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
-    let k = if length > reach { 1.0 - reach / length } else { 0.0 };
-    Vec3 { x: v.x * k, y: v.y * k, z: v.z * k }
+    if length > reach {
+        let k = reach / length;
+        Vec3 { x: v.x * k, y: v.y * k, z: v.z * k }
+    } else {
+        v
+    }
 }
 
 fn check_length_units() -> Result<(), PhysicsError> {
@@ -758,19 +766,21 @@ impl PhysicsWorld {
     }
 
     /// Advance by `dt` like [`PhysicsWorld::step`], with each listed grab's spring seeing at most its [`HoldReach`] of
-    /// error during the step. The error, from the object's anchor to its place on `a`, is split into its part along
-    /// gravity and the rest, and each part is shortened: the part against gravity (pulling the object up) to
-    /// `against_gravity`, everything else to `reach`. A grab whose object is farther from its place pulls it as if it
-    /// were that far, in the same direction and through the same point of the object, so the speed the spring gives
-    /// it is bounded (an object kept from its place, pinned by a wall say, comes back as if from its reach away),
-    /// while the part against gravity keeps what the spring needs to hold the object up. For the step the
+    /// error during the step (world-model.md 8.1's hold bound). The error `e`, from the object's anchor to its place
+    /// on `a`, is shortened to `reach` along its own direction, then its upward part (against gravity) is raised back
+    /// to `min(up(e), support)` if shortening took it below that: `e' = e1 + max(0, min(up(e), support) - up(e1))`
+    /// upwards, with `e1` the shortened error and `up(x)` the part of `x` against gravity. So the spring sees at most
+    /// `reach + support` in any direction, and keeps what it needs to hold the object up. A grab whose object is
+    /// farther from its place pulls it as if it were that far, through the same point of the object, so the speed
+    /// the spring gives it is bounded (an object kept from its place, pinned by a wall say, comes back as if from its
+    /// reach away). For the step the
     /// spring's anchor on `a` is moved that much towards the object, its position only, and put back after it, so
     /// between steps every grab keeps the anchor it was made with (its object's place on `a`): images, digests and
     /// rollbacks never see a moved one, and the bound is a function of the state at the step's start. `a`'s anchor is
     /// moved rather than the object's because `a` is the hand's kinematic body (or the world anchor), which no joint
     /// force moves, so the object is still pulled through its own anchor, with no turn from the move. In a world
-    /// without gravity the whole error takes `reach`. `reaches` names grab joints, each at most once, with reaches in
-    /// `0..=MAX_SIZE`; a refusal changes nothing.
+    /// without gravity there is no support: `e' = e1`. `reaches` names grab joints, each at most once, with reach and
+    /// support in `0..=MAX_SIZE`; a refusal changes nothing.
     pub fn step_holding(&mut self, dt: f32, reaches: &[(JointKey, HoldReach)]) -> Result<(), PhysicsError> {
         self.usable()?;
         check_length_units()?;
@@ -789,7 +799,7 @@ impl PhysicsWorld {
         let mut moved = Vec::new();
         for &(key, reach) in reaches {
             let valid = |r: f32| r.is_finite() && (0.0..=MAX_SIZE).contains(&r);
-            if !(valid(reach.reach) && valid(reach.against_gravity)) {
+            if !(valid(reach.reach) && valid(reach.support)) {
                 return Err(PhysicsError::InvalidValue("grab reach"));
             }
             let joint = *self.joints.get(&key).ok_or(PhysicsError::UnknownJoint(key.0))?;
@@ -802,19 +812,16 @@ impl PhysicsWorld {
             let place = transform_world_point(xa, home.p);
             let anchor_b = transform_world_point(xb, joint_get_local_frame_b(&self.world, joint.id).p);
             let error = sub_pos(place, anchor_b);
-            // The error's part along gravity, and whether it pulls the object up (against gravity).
-            let (along, across, up) = match down {
-                Some(d) => {
-                    let t = error.x * d.x + error.y * d.y + error.z * d.z;
-                    let along = Vec3 { x: t * d.x, y: t * d.y, z: t * d.z };
-                    (along, Vec3 { x: error.x - along.x, y: error.y - along.y, z: error.z - along.z }, t < 0.0)
-                }
-                None => (Vec3 { x: 0.0, y: 0.0, z: 0.0 }, error, false),
-            };
-            let a = beyond(along, if up { reach.against_gravity } else { reach.reach });
-            let c = beyond(across, reach.reach);
-            if a.x != 0.0 || a.y != 0.0 || a.z != 0.0 || c.x != 0.0 || c.y != 0.0 || c.z != 0.0 {
-                let excess = inv_rotate_vector(xa.q, Vec3 { x: a.x + c.x, y: a.y + c.y, z: a.z + c.z });
+            // The error shortened to `reach`, then its upward part raised back towards the support (8.1).
+            let mut seen = within(error, reach.reach);
+            if let Some(d) = down {
+                let up = |v: Vec3| (-(v.x * d.x + v.y * d.y + v.z * d.z)).max(0.0);
+                let raise = (up(error).min(reach.support) - up(seen)).max(0.0);
+                seen = Vec3 { x: seen.x - raise * d.x, y: seen.y - raise * d.y, z: seen.z - raise * d.z };
+            }
+            if seen != error {
+                let cut = Vec3 { x: error.x - seen.x, y: error.y - seen.y, z: error.z - seen.z };
+                let excess = inv_rotate_vector(xa.q, cut);
                 let p = Vec3 { x: home.p.x - excess.x, y: home.p.y - excess.y, z: home.p.z - excess.z };
                 moved.push((joint.id, home, BoxTransform { p, q: home.q }));
             }

@@ -1687,3 +1687,102 @@ fn a_held_ball_kept_above_the_cap_for_two_seconds_trails_and_stays_up() {
         assert_eq!(r.faults(), 0);
     }
 }
+
+const SHELF: u128 = 71;
+const UPPER: u128 = 72;
+
+fn add_static(w: &mut World, id: u128, center: [f64; 3], half: [f32; 3]) {
+    let k = keys().key(0);
+    w.create(oid(id), None, k, GENESIS).expect("static box");
+    w.insert(oid(id), Transform::at(pos(center[0], center[1], center[2]))).expect("its transform");
+    w.insert(oid(id), Body { friction: 0.6, ..Body::default() }).expect("its body");
+    w.insert(oid(id), cuboid(half)).expect("its shape");
+}
+
+/// A ball pinned in a corner at 45 degrees from its place, then released with the hand still (@design-reviewer's
+/// Medium on 9d3a0270). `below`: the ball under a ceiling against the wall, its place up and beyond (the hand carried 1
+/// m up and 1 m past); otherwise the ball on a shelf against a wall above it, its place down and beyond. At 1 s both
+/// obstacles are deleted. The ball's top speed after.
+fn diagonal(below: bool) -> f64 {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let y0 = if below { 0.03 } else { 1.03 };
+    let start = [2.08, y0, 0.0];
+    let to = [3.08, if below { 1.03 } else { 0.03 }, 0.0];
+    let mut s = Source::default();
+    path_inputs(&mut b, HAND, 60, 2, 150, &move |t| lerp(start, to, (t - 0.17) / 0.5))
+        .into_iter()
+        .for_each(|e| s.add(e));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    let delete =
+        tx(vec![Op::Delete { id: Target::Existing(oid(SHELF)) }, Op::Delete { id: Target::Existing(oid(UPPER)) }]);
+    s.add(b.next(Class::Edit, Frame(60), Bytes::from(delete.encode())));
+    let mut world = with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.2, y0, 0.0], pit_ball())]);
+    if below {
+        add_static(&mut world, SHELF, [1.9, 0.35, 0.0], [0.35, 0.05, 1.0]);
+        add_static(&mut world, UPPER, [2.30, 0.5, 0.0], [0.05, 0.5, 1.0]);
+    } else {
+        add_static(&mut world, SHELF, [1.9, 0.95, 0.0], [0.35, 0.05, 1.0]);
+        add_static(&mut world, UPPER, [2.30, 1.5, 0.0], [0.05, 0.5, 1.0]);
+    }
+    let mut r = replica_of(world);
+    r.advance(Frame(60), &mut s);
+    let pinned = at(&r, BALL);
+    assert!(pinned[0] < 2.23, "pinned against the wall: {pinned:?}");
+    let mut top = 0.0_f64;
+    while r.frame().0 < 150 {
+        let next = r.frame().0 + 1;
+        r.advance(Frame(next), &mut s);
+        top = top.max(ball_speed(&r, BALL));
+    }
+    assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.01, "back in its place: {:?}", at(&r, BALL));
+    assert_eq!(r.faults(), 0);
+    top
+}
+
+/// The 45 degree pins (world-model.md 8.1): a ball pinned below and beside its place, or above and beside it, comes
+/// back with the hand still at no more than the cap plus the support's excess (k s_min, 0.44 m/s at 60 Hz; above,
+/// gravity also pulls it down, by about g times its return); measured 8.39 and 8.57 m/s. Cut part by part, as on
+/// 9d3a0270, the spring would see sqrt(2) times the reach: about 12 m/s by the linear model [I].
+#[test]
+fn a_ball_pinned_at_45_degrees_from_its_place_comes_back_under_the_cap() {
+    let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
+    let below = diagonal(true);
+    let above = diagonal(false);
+    println!("RESULT 45 degree pins: below and beside {below:.2} m/s, above and beside {above:.2} m/s");
+    assert!(below > 5.0 && below < cap + 0.5, "below and beside: {below} m/s");
+    assert!(above > 5.0 && above < cap + 0.5, "above and beside: {above} m/s");
+}
+
+/// A trailing placement still carries a held box sliding along the floor (@design-reviewer mf010317f5855): the box's
+/// enclosing capsule overlaps the floor more than the box does, and the mover cast passes it because the move goes
+/// along the floor, not into it. Each time the hand's body is placed, the box moves with it.
+#[test]
+fn a_trailing_placement_carries_a_held_box_sliding_along_the_floor() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let start = [-6.0 - 0.05 - f64::from(pe_replica::world::HAND_RADIUS), 0.05, 0.0];
+    let mut s = Source::default();
+    path_inputs(&mut b, HAND, 60, 2, 90, &move |t| [start[0] + 15.0 * (t - 0.2).clamp(0.0, 1.0), 0.05, 0.0])
+        .into_iter()
+        .for_each(|e| s.add(e));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    let box_shape = Shape { kind: shape_kind::BOX, density: 200.0, size: [0.05, 0.05, 0.15], ..Shape::default() };
+    let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [-6.0, 0.05, 0.0], box_shape)]));
+    r.advance(Frame(12), &mut s);
+    let (mut placements, mut carried) = (0, 0);
+    while r.frame().0 < 72 {
+        let hand = r.physics().pose(oid(HAND)).expect("the hand's body").position;
+        let held = at(&r, BALL);
+        let next = r.frame().0 + 1;
+        r.advance(Frame(next), &mut s);
+        if distance(r.physics().pose(oid(HAND)).expect("the hand's body").position, hand) > 0.3 {
+            placements += 1;
+            carried += usize::from(distance(at(&r, BALL), held) > 0.3);
+        }
+    }
+    assert!(placements > 0, "the hand's body was placed");
+    assert_eq!(carried, placements, "and the box went with it every time");
+    assert_eq!(held_by(&r, BALL), Some(oid(HAND)));
+    assert_eq!(r.faults(), 0);
+}

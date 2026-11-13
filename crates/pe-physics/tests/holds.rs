@@ -69,7 +69,7 @@ fn bits(v: [f32; 3]) -> [u32; 3] {
 /// fast. After every step the grab's anchor is the one it was made with, to the bit.
 #[test]
 fn a_bounded_hold_pulls_as_if_its_object_were_at_the_bound() {
-    let reach = HoldReach { reach: 0.5, against_gravity: 0.5 };
+    let reach = HoldReach { reach: 0.5, support: 0.0 };
     let mut far = holding(weightless(), [0.0; 3], [-2.0, 0.0, 0.0], [0.0; 3]);
     let mut near = holding(weightless(), [0.0; 3], [-0.5, 0.0, 0.0], [0.0; 3]);
     let mut free = holding(weightless(), [0.0; 3], [-2.0, 0.0, 0.0], [0.0; 3]);
@@ -106,8 +106,7 @@ fn a_hold_keeps_its_support_against_gravity() {
     let config = PhysicsConfig { gravity: [0.0, -9.81, 0.0], ..PhysicsConfig::engine() };
     let mut held = holding(config, [0.0, 2.0, 0.0], [0.0, 1.5, 0.0], [0.0, -0.5, 0.0]);
     let mut dropped = holding(config, [0.0, 2.0, 0.0], [0.0, 1.5, 0.0], [0.0, -0.5, 0.0]);
-    let (support, none) =
-        (HoldReach { reach: 0.0, against_gravity: 0.03 }, HoldReach { reach: 0.0, against_gravity: 0.0 });
+    let (support, none) = (HoldReach { reach: 0.0, support: 0.03 }, HoldReach { reach: 0.0, support: 0.0 });
     let mut sag = 0.0_f64;
     for _ in 0..60 {
         held.step_holding(DT, &[(KEY, support)]).unwrap();
@@ -129,13 +128,13 @@ fn step_holding_refusals_change_nothing() {
     pw.add_body(id(3), &pit_ball([1.0, 0.0, 0.0])).unwrap();
     let weld = JointDesc::Weld { a: id(3), b: None, anchor_a: [0.0; 3], anchor_b: [1.0, 0.0, 0.0] };
     pw.add_joint(JointKey(8), &weld).unwrap();
-    let fine = HoldReach { reach: 0.5, against_gravity: 0.5 };
+    let fine = HoldReach { reach: 0.5, support: 0.0 };
     let before = (pw.state_hash().unwrap(), bits(pw.grab_anchor(KEY).unwrap()));
     let refusals = [
         pw.step_holding(DT, &[(KEY, fine), (KEY, fine)]),
-        pw.step_holding(DT, &[(KEY, HoldReach { reach: f32::NAN, against_gravity: 0.5 })]),
-        pw.step_holding(DT, &[(KEY, HoldReach { reach: 0.5, against_gravity: -0.1 })]),
-        pw.step_holding(DT, &[(KEY, HoldReach { reach: 1.0e9, against_gravity: 0.5 })]),
+        pw.step_holding(DT, &[(KEY, HoldReach { reach: f32::NAN, support: 0.5 })]),
+        pw.step_holding(DT, &[(KEY, HoldReach { reach: 0.5, support: -0.1 })]),
+        pw.step_holding(DT, &[(KEY, HoldReach { reach: 1.0e9, support: 0.5 })]),
         pw.step_holding(DT, &[(KEY, fine), (JointKey(99), fine)]),
         pw.step_holding(DT, &[(KEY, fine), (JointKey(8), fine)]),
         pw.step_holding(0.0, &[(KEY, fine)]),
@@ -207,4 +206,22 @@ fn static_geometry_in_the_way_of_a_move() {
     let skew = Pose { position: [0.0, 0.5, 0.0], rotation: [0.0, 0.0, 0.0, 2.0] };
     assert!(matches!(pw.static_in_way(id(3), &skew), Err(PhysicsError::InvalidValue(_))));
     assert_eq!(pw.static_in_way(id(99), &to([0.0; 3])), Err(PhysicsError::NotBound(id(99))));
+}
+
+/// A diagonal error is cut by its length, not part by part (@design-reviewer's Medium on 9d3a0270): a ball 2 m from
+/// its place at 45 degrees below and beside it, its spring bounded at 0.5 m, is pulled as a ball 0.5 m from its place
+/// along the same diagonal is (the same velocity after a step). Cut part by part, it would see 0.71 m.
+#[test]
+fn a_diagonal_error_is_cut_by_its_length() {
+    let config = PhysicsConfig { gravity: [0.0, -9.81, 0.0], ..PhysicsConfig::engine() };
+    let reach = HoldReach { reach: 0.5, support: 0.03 };
+    let d = std::f64::consts::FRAC_1_SQRT_2;
+    let mut far = holding(config, [0.0, 3.0, 0.0], [-2.0 * d, 3.0 - 2.0 * d, 0.0], [0.0; 3]);
+    let mut near = holding(config, [0.0, 3.0, 0.0], [-0.5 * d, 3.0 - 0.5 * d, 0.0], [0.0; 3]);
+    far.step_holding(DT, &[(KEY, reach)]).unwrap();
+    near.step_holding(DT, &[(KEY, reach)]).unwrap();
+    let (vf, vn) = (far.velocity(id(2)).unwrap().0, near.velocity(id(2)).unwrap().0);
+    let gap = (0..3).map(|i| (vf[i] - vn[i]).powi(2)).sum::<f32>().sqrt();
+    let size = vn.iter().map(|c| c * c).sum::<f32>().sqrt();
+    assert!(gap <= 1e-4 * size, "{vf:?} vs {vn:?}");
 }
