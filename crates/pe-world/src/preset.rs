@@ -11,7 +11,7 @@
 
 use pe_core::commit::Hasher;
 use pe_core::{ChainId, Frame, Hash, LineId, MemberKey, ObjectId, Offset, Pos};
-use pe_seams::Outcome;
+use pe_seams::{Outcome, SimRate};
 use pe_sim::{Component, Transform};
 
 use crate::apply::Draft;
@@ -103,6 +103,48 @@ pub fn ball_pit_on(line: LineId, seed: u64, blobs: BlobStore, origin: Pos, balls
     assert!(matches!(outcome, Outcome::Applied { .. }), "the ball-pit transaction was refused: {outcome:?}");
     w.set_member(MemberKey::LOGIC, 0);
     w
+}
+
+/// What M1's session genesis is built from ([`m1_session`]): the ball pit's arguments, and the settings and members a
+/// session's genesis record carries (pe-app's `genesis`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Session {
+    pub seed: u64,
+    /// The pit's floor top and the domain's physics origin, as for [`ball_pit_with`].
+    pub origin: Pos,
+    pub balls: usize,
+    /// The session's line: [`genesis_line`] of its genesis record without the root, never [`m1_line`].
+    pub line: LineId,
+    pub rate: SimRate,
+    /// Metres per second squared, in the world frame.
+    pub gravity: [f32; 3],
+    /// pe-agree's settings record (6.6, config item 4), opaque here. M1's genesis passes pe-agree's 32-byte
+    /// `NodeConfig::consensus_hash`, so in M1 config item 4 holds that hash.
+    pub agree: Vec<u8>,
+    /// Every member with its permission bits ([`perm`]), in any order; they are admitted in key order. The genesis
+    /// record decides the bits (pe-app maps each member's role to them), so a change to them moves the root.
+    pub members: Vec<(MemberKey, u32)>,
+}
+
+/// M1's session genesis with every member at frame 0: the interim until a join from a cut exists (@coordinator-opus
+/// mb725d083d0ce). The ball pit of [`ball_pit_on`] on the session's line ([`genesis_line`]), at its rate, with its
+/// gravity and pe-agree's settings record. Each member is admitted at frame 0 with its permission bits through
+/// [`World::admit`] (the function a join entry calls), in key order, standing 0.6 m apart just outside the pit's near
+/// wall. Deterministic: the same `Session` gives the same world and the same root on every machine, which is what a
+/// second machine checks against its record before it starts. A key listed twice is refused (`WorldError::Duplicate`,
+/// from its second admission).
+pub fn m1_session(s: &Session, blobs: BlobStore) -> Result<World, crate::WorldError> {
+    let mut w = ball_pit_on(s.line, s.seed, blobs, s.origin, s.balls);
+    w.set_rate(s.rate);
+    w.set_gravity(s.gravity);
+    w.set_agree_settings(&s.agree);
+    let mut members = s.members.clone();
+    members.sort_by_key(|m| m.0);
+    for (i, &(m, perms)) in members.iter().enumerate() {
+        let feet = s.origin.checked_add(Offset([0.6 * i as f64, 0.0, 1.5])).unwrap_or(s.origin);
+        w.admit(s.line, m, perms, Frame(0), feet)?;
+    }
+    Ok(w)
 }
 
 /// The coordinates the preset's ids derive from (2.1): world logic on `line`, with a chain from the seed.
