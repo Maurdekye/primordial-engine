@@ -16,11 +16,12 @@
 //! the replay counts frames stepped, and the cut at frame `f` covers the entries stamped below `f`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
-    AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, FaultKind, Finalized, Frame, FrameClock, Hasher, HostTime,
-    Lane, MemberKey, Replica, SelfTest, SignedEntry, SimRate,
+    AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, FaultKind, Finalized, Frame, FrameClock, FrameView, Hasher,
+    HostTime, Lane, MemberKey, Replica, SelfTest, SignedEntry, SimRate,
 };
 
 use crate::clock::SessionClock;
@@ -44,9 +45,40 @@ pub fn next_probe(last: u64, kept: u64, present: u64) -> Option<u64> {
 /// An agreement's entry framing, read back: the entry a message carries, if it carries one.
 pub type EntryDecoder = fn(&[u8]) -> Option<SignedEntry>;
 
-pub struct SeamNode<A: Agreement> {
+/// Where a node records its replica's frame views: each new publication, with the host time it was read at.
+pub type ViewSink = Arc<Mutex<Vec<(i64, Arc<FrameView>)>>>;
+
+/// What a [`SeamNode`] needs from its replica beyond S2: the order its frames apply in, and what an entry adds to
+/// P2's reference log.
+pub trait NodeReplica: Replica {
+    /// The phase function the replica applies each frame's entries in (coordinator med231a27fe7e).
+    fn phase(&self) -> fn(&SignedEntry) -> Phase;
+    /// The key-value ops an entry adds to the reference log P2 replays over [`KvReplica`](crate::kv::KvReplica).
+    /// A replica with no key-value oracle (pe-world's) adds none, and its runs leave P2 unchecked.
+    fn log_ops(&self, entry: &SignedEntry) -> Vec<Op>;
+}
+
+impl NodeReplica for KvSeamReplica {
+    fn phase(&self) -> fn(&SignedEntry) -> Phase {
+        KvSeamReplica::phase(self)
+    }
+    fn log_ops(&self, entry: &SignedEntry) -> Vec<Op> {
+        crate::mock::decode(&entry.entry.payload).map(|(_, _, ops)| ops).unwrap_or_default()
+    }
+}
+
+impl NodeReplica for pe_replica::ReplicaImpl<pe_replica::PeWorld> {
+    fn phase(&self) -> fn(&SignedEntry) -> Phase {
+        <pe_replica::PeWorld as pe_replica::WorldModel>::phase
+    }
+    fn log_ops(&self, _entry: &SignedEntry) -> Vec<Op> {
+        Vec::new()
+    }
+}
+
+pub struct SeamNode<A: Agreement, R: NodeReplica = KvSeamReplica> {
     pub agree: A,
-    pub replica: KvSeamReplica,
+    pub replica: R,
     clock: SessionClock,
     builder: EntryBuilder,
     /// Member keys in node-id order: node `i` is `keys[i - 1]`.
@@ -74,6 +106,11 @@ pub struct SeamNode<A: Agreement> {
     seen_height: u64,
     /// The class each scenario input is signed with (`Class::Edit` unless `with_order` says otherwise).
     class_of: fn(&Op) -> Class,
+    /// Raw entries this node submits on its own, by host time (`submit_at`): inputs that are not key-value ops.
+    script: Vec<(i64, Class, Vec<u8>)>,
+    /// Where each new publication of the replica's view goes, if anywhere (`record_views`).
+    views: Option<ViewSink>,
+    last_view: Option<Arc<FrameView>>,
 }
 
 /// The node id of member `key`: its place in key order, from 1.
@@ -109,6 +146,14 @@ impl SeamNode<LockstepAgreement> {
         rate: SimRate,
         cadence_ns: i64,
     ) -> Self {
+        let replica = KvSeamReplica::new(keys.sorted_keys(), template, objects);
+        SeamNode::lockstep_over(keys, id, replica, rate, cadence_ns)
+    }
+}
+
+impl<R: NodeReplica> SeamNode<LockstepAgreement, R> {
+    /// Node `id` (from 1, in key order) of a lockstep session over `keys`, cutting every `cadence_ns`, over `replica`.
+    pub fn lockstep_over(keys: &TestKeys, id: NodeId, replica: R, rate: SimRate, cadence_ns: i64) -> Self {
         let sorted = keys.sorted_keys();
         let key = sorted[(id as usize).saturating_sub(1)];
         let i = (0..keys.len()).find(|&j| keys.key(j) == key).unwrap_or(0);
@@ -116,7 +161,7 @@ impl SeamNode<LockstepAgreement> {
         let genesis = agree.genesis();
         SeamNode {
             agree,
-            replica: KvSeamReplica::new(sorted.clone(), template, objects),
+            replica,
             clock: SessionClock { rate, start: HostTime(0) },
             builder: EntryBuilder::new(keys, i),
             keys: sorted,
@@ -135,9 +180,32 @@ impl SeamNode<LockstepAgreement> {
             damaged: BTreeSet::new(),
             seen_height: 0,
             class_of: |_| Class::Edit,
+            script: Vec::new(),
+            views: None,
+            last_view: None,
         }
     }
+}
 
+impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
+    /// This node submits `payload` as a `class` entry, stamped with its frame at host time `at`, on its first tick at
+    /// or after `at`: how a scenario gives a node inputs that are not key-value ops (pe-world's edits).
+    #[must_use]
+    pub fn submit_at(mut self, at: i64, class: Class, payload: Vec<u8>) -> Self {
+        let i = self.script.partition_point(|s| s.0 <= at);
+        self.script.insert(i, (at, class, payload));
+        self
+    }
+
+    /// This node records each new publication of its replica's view in `sink`, after the tick that made it.
+    #[must_use]
+    pub fn record_views(mut self, sink: ViewSink) -> Self {
+        self.views = Some(sink);
+        self
+    }
+}
+
+impl<A: Agreement> SeamNode<A, KvSeamReplica> {
     /// A two-phase world: each scenario input is signed with `class_of`'s class, and the replica applies a frame's
     /// entries in `phase` order (coordinator med231a27fe7e). Both read only the entry, as the ruling requires.
     #[must_use]
@@ -148,9 +216,34 @@ impl SeamNode<LockstepAgreement> {
     }
 }
 
-impl<A: Agreement> SeamNode<A> {
+impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
     fn frame_at(&self, now: i64) -> u64 {
         self.clock.frame_at(HostTime(now)).map_or(0, |f| f.0)
+    }
+
+    /// Signs and submits one entry stamped with this node's frame at `now`; a refused one is dropped.
+    fn submit(&mut self, now: i64, class: Class, payload: bytes::Bytes) {
+        let stamp = Frame(self.frame_at(now));
+        let mut b = self.builder.clone();
+        let entry = b.next_unsigned(class, stamp, payload);
+        if let Ok(signed) = self.agree.submit(entry) {
+            self.held.insert((signed.entry.chain, signed.entry.seq));
+            self.held_ids.insert(signed.id());
+            self.builder = b;
+        }
+    }
+
+    /// Records the replica's view if it was published again since the last one recorded.
+    fn record_view(&mut self, now: i64) {
+        let Some(sink) = &self.views else { return };
+        let v = self.replica.view();
+        if self.last_view.as_ref().is_some_and(|l| Arc::ptr_eq(l, &v)) {
+            return;
+        }
+        if let Ok(mut s) = sink.lock() {
+            s.push((now, Arc::clone(&v)));
+        }
+        self.last_view = Some(v);
     }
 
     /// The (chain, seq) positions `cut` names that this member does not hold, by the recorder's count.
@@ -290,7 +383,7 @@ impl<A: Agreement> SeamNode<A> {
         }
         for e in pe_replica::apply_order(&entries, self.replica.phase()) {
             let author = node_of(&self.keys, &e.entry.author);
-            let ops = crate::mock::decode(&e.entry.payload).map(|(_, _, ops)| ops).unwrap_or_default();
+            let ops = self.replica.log_ops(e);
             let row = self.log.entry(e.entry.stamp.0 + 1).or_default();
             row.extend(ops.into_iter().map(|op| KvEntry { author, op }));
         }
@@ -300,16 +393,10 @@ impl<A: Agreement> SeamNode<A> {
     }
 }
 
-impl<A: Agreement> NodeUnderTest for SeamNode<A> {
+impl<A: Agreement, R: NodeReplica> NodeUnderTest for SeamNode<A, R> {
     fn input(&mut self, now: i64, op: Op) {
-        let stamp = Frame(self.frame_at(now));
-        let mut b = self.builder.clone();
-        let entry = b.next_unsigned((self.class_of)(&op), stamp, payload(&[op]));
-        if let Ok(signed) = self.agree.submit(entry) {
-            self.held.insert((signed.entry.chain, signed.entry.seq));
-            self.held_ids.insert(signed.id());
-            self.builder = b;
-        }
+        let class = (self.class_of)(&op);
+        self.submit(now, class, payload(&[op]));
     }
 
     fn receive(&mut self, now: i64, from: NodeId, bytes: &[u8]) -> Result<(), Fault> {
@@ -331,8 +418,14 @@ impl<A: Agreement> NodeUnderTest for SeamNode<A> {
     }
 
     fn tick(&mut self, now: i64) -> Vec<Out> {
+        let due = self.script.partition_point(|s| s.0 <= now);
+        let due: Vec<_> = self.script.drain(..due).collect();
+        for (_, class, bytes) in due {
+            self.submit(now, class, bytes.into());
+        }
         let outs = self.agree.tick(HostTime(now), &self.clock);
         self.drive(now);
+        self.record_view(now);
         outs.into_iter()
             .map(|o| Out { to: node_of(&self.keys, &o.to), lane: o.lane, bytes: o.bytes.to_vec() })
             .collect()

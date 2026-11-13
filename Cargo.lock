@@ -2226,9 +2226,12 @@ name = "pe-harness"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "bytemuck",
  "bytes",
  "pe-replica",
  "pe-seams",
+ "pe-sim",
+ "pe-world",
 ]
 
 [[package]]

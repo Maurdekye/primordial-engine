@@ -11,5 +11,8 @@ description = "Deterministic session harness: network model, scenario runner, pr
 [dependencies]
 pe-seams = { path = "../pe-seams", features = ["test-util"] }
 pe-replica = { path = "../pe-replica" }
+pe-world = { path = "../pe-world" }
+pe-sim = { path = "../pe-sim" }
+bytemuck = "1.25"
 blake3.workspace = true
 bytes.workspace = true
