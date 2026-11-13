@@ -207,6 +207,26 @@ pub trait EntrySource {
     /// (S3 v1.1). `None` when `frame` is below [`EntrySource::kept_from`]: its entries are no longer kept, which is
     /// never the same as a frame kept and empty, `Some(&[])` (S3 v1.2).
     fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]>;
+    /// The entries to simulate at `frame` for a root at `cut`, or for a replay to it: exactly what the final log
+    /// would hold at `frame` were `cut` final, with the same entries, the same verdicts (late, back-stamped, forks)
+    /// and the same order (S3 v1.4; @coordinator-opus mcb04c0edcf83, after @harness-eng's pipelined-void repro).
+    /// It is a function of the cut and its ancestry only: for a cut whose parent is not final yet it applies the
+    /// verdicts that parent will reach, and two cuts at one height each get their own answer. Nothing in it is
+    /// local state about cuts in flight. `cut` is a final cut or one from [`crate::Agreement::wants_roots`]; at or
+    /// above its frame the answer is [`EntrySource::entries_at`]'s. `None` when `frame` is below
+    /// [`EntrySource::kept_from`].
+    ///
+    /// The default, `entries_at` filtered by [`Cut::includes`], is right only while `entries_at` already leaves out
+    /// every entry the cut voids: an S3 that hands a cut over for roots only once its parent is final, as the
+    /// lockstep harness does. An S3 that hands cuts over before their parents are final (pipelining) must override
+    /// it (@design-reviewer).
+    fn entries_for_cut(&self, cut: &Cut, frame: Frame) -> Option<Vec<SignedEntry>> {
+        let all = self.entries_at(frame)?;
+        if frame >= cut.at.frame {
+            return Some(all.to_vec());
+        }
+        Some(all.iter().filter(|e| cut.includes(&e.entry.chain, e.entry.seq)).cloned().collect())
+    }
     /// The earliest frame whose entries are still kept (S3 v1.2): [`EntrySource::entries_at`] is complete for every
     /// frame at or above it, and answers `None` below it. It passes the `floor` last given to
     /// [`EntrySource::keep_final_from`] only through the time cap, for a replica that fell more than `T_diverge` plus
@@ -599,7 +619,9 @@ pub trait Replica: Send {
 
     /// My root at the cut's frame with exactly the cut's entries in effect (divergence.md 3.1): what I vote with,
     /// and what I compare once the cut is final. If my prediction holds other entries below the cut's frame, the
-    /// replica computes the root without them; its live state is unchanged.
+    /// replica computes the root without them; its live state is unchanged. The entries in effect, frame by frame
+    /// and in order, are what [`EntrySource::entries_for_cut`] answers for the cut (S3 v1.4): one the cut includes
+    /// but its ancestry voids is not among them.
     fn root_at_cut(&mut self, cut: &Cut, source: &mut dyn EntrySource) -> Result<Hash, RootError>;
 
     /// The source's final cut changed, or a repair at that cut ended: compare my root at it with the quorum's. The
@@ -611,7 +633,7 @@ pub trait Replica: Send {
     fn finalize(&mut self, cut: &FinalCut, source: &mut dyn EntrySource) -> Finalized;
 
     /// Repair rung 1 (divergence.md 4.1), at a final cut or at a cut not final yet: restore `Cv`, verify it from its
-    /// records and from the restored physics itself, replay to the cut with exactly its entries, and take my root
+    /// records and from the restored physics itself, replay to the cut with exactly its entries ([`EntrySource::entries_for_cut`]), and take my root
     /// there; then re-simulate on to the present with the source's entries, which becomes the live state whatever
     /// the root. Returns my root at the cut. Moves neither `Cv` nor the floor, and uses no network. The cut is one
     /// this member holds in full: its [`EntrySource::final_cut`], or a cut it voted on from
