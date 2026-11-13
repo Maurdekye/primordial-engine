@@ -718,8 +718,11 @@ pub trait Replica: Send {
 /// A script runner's identity, as canonical bytes rather than a hash, so that a refusal can say what differed (S2 v1.7;
 /// divergence.md 6, 11.1). It covers the runner's own build, not the app's: the wasmtime version; every wasmtime
 /// setting that can change a result (the enabled proposals, relaxed SIMD among them, and NaN canonicalization); the
-/// fuel and limit settings; the instrumentation pass's version; and pe-logic's version. Two runners with equal bytes
-/// run every module alike (@coordinator-opus, @fable-reviewer).
+/// fuel and limit settings; the instrumentation pass's and the ABI's versions; and pe-logic's result version, a
+/// constant pe-logic bumps on any change that can alter a result, since a crate's version doesn't move with its code.
+/// pe-logic produces the bytes, so whoever adds a setting keeps the identity complete in the same place (@vdw-physics's
+/// Low on v1.8). Two runners with equal bytes run every module alike (@coordinator-opus,
+/// @fable-reviewer).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RunnerIdentity(pub Bytes);
 
