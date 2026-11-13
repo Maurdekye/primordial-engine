@@ -193,7 +193,8 @@ pub struct Loaded {
     /// The script's tag (logic.md 3.2): an object runs the script while it carries the tag, every system binds it
     /// implicitly, every object the script creates gets it, and the script may destroy only objects carrying it.
     tag: ComponentId,
-    /// The tag's row size in the registry (zero once pe-sim takes zero-field components); a create writes zeros.
+    /// The tag's row size in the registry: zero for the world's tag (pe-world `tag_desc`); a create writes that
+    /// many zeros.
     tag_size: usize,
     script: Script,
     manifest: Manifest,

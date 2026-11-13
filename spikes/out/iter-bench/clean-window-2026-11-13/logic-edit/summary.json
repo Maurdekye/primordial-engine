@@ -1,0 +1,81 @@
+{
+ "meta": {
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "reps": 10,
+  "profile": [
+   "profile.release.opt-level=3",
+   "profile.release.lto=false",
+   "profile.release.codegen-units=16",
+   "profile.release.incremental=false",
+   "profile.release.panic=\"abort\"",
+   "profile.release.debug=false",
+   "profile.release.strip=\"symbols\"",
+   "profile.release.debug-assertions=false",
+   "profile.release.overflow-checks=false",
+   "profile.release.rpath=false",
+   "target.wasm32-unknown-unknown.linker=\"rust-lld\""
+  ],
+  "codegen": [
+   "-C",
+   "target-cpu=mvp",
+   "-C",
+   "target-feature=+bulk-memory,+multivalue,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext",
+   "-C",
+   "link-arg=-zstack-size=65536"
+  ],
+  "heavy_prio": "normal",
+  "start": "2026-11-13T06:53:43Z",
+  "end": "2026-11-13T06:53:52Z"
+ },
+ "modes": {
+  "inc-on": {
+   "edit_to_built_s": {
+    "median": 0.2653,
+    "min": 0.2638,
+    "max": 0.3058,
+    "n": 10
+   },
+   "noop_s": {
+    "median": 0.1326,
+    "min": 0.1314,
+    "max": 0.1332,
+    "n": 3
+   }
+  },
+  "inc-off": {
+   "edit_to_built_s": {
+    "median": 0.3469,
+    "min": 0.334,
+    "max": 0.3741,
+    "n": 10
+   },
+   "noop_s": {
+    "median": 0.1342,
+    "min": 0.134,
+    "max": 0.1515,
+    "n": 3
+   }
+  }
+ },
+ "load": {
+  "instrument_ms": {
+   "median": 0.905,
+   "min": 0.856,
+   "max": 0.994,
+   "n": 19
+  },
+  "compile_ms": {
+   "median": 4.107,
+   "min": 3.867,
+   "max": 4.533,
+   "n": 19
+  },
+  "instantiate_ms": {
+   "median": 0.107,
+   "min": 0.087,
+   "max": 0.119,
+   "n": 19
+  },
+  "bytes": 17797
+ }
+}
