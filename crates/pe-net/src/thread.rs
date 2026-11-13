@@ -8,6 +8,11 @@
 //!   loopback socket of its own, so the thread doesn't sleep through new work. The Core never sees empty
 //!   datagrams.
 //! - **Link statistics** come back as messages every `STATS_EVERY`, so no lock is shared.
+//! - **The control end:** [`NetHandle::control`] splits off a [`NetControl`] that issues commands and takes the
+//!   lifecycle's outcomes (6.3-6.6) on a channel of their own, so the handle itself can live on as the
+//!   simulation's `Transport` while the app's network code keeps admission and dialling (app.md 3). Lifecycle
+//!   outcomes are not ordered relative to the handle's messages and events. If the control end is dropped,
+//!   later outcomes are discarded; the thread runs on.
 //! - **Time** is the app's host clock (seam S5), passed in, so pe-net and the simulation agree on `HostTime`.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -44,12 +49,11 @@ pub enum Command {
     Stop,
 }
 
-/// What comes back.
+/// What comes back on the handle's queue (lifecycle outcomes have their own, see [`NetControl`]).
 #[derive(Debug)]
 pub enum Output {
     Received(Received),
     Event(NetEvent),
-    Lifecycle(Lifecycle),
     Stats(PeerId, LinkStats),
 }
 
@@ -60,14 +64,56 @@ pub type HostClock = Arc<dyn Fn() -> HostTime + Send + Sync>;
 pub struct NetHandle {
     /// The frame clock the simulation reads without crossing a thread (5.7).
     pub frame_clock: Arc<crate::clock::SharedClock>,
-    cmd: SyncSender<Command>,
+    waker: Waker,
     out: Receiver<Output>,
-    waker: UdpSocket,
-    wake_to: SocketAddr,
+    /// The lifecycle channel, until [`NetHandle::control`] takes it.
+    life: Option<Receiver<Lifecycle>>,
     join: Option<JoinHandle<io::Result<()>>>,
     events: Vec<NetEvent>,
-    lifecycle: VecDeque<Lifecycle>,
     stats: BTreeMap<PeerId, LinkStats>,
+}
+
+/// Queues a command and wakes the thread.
+struct Waker {
+    cmd: SyncSender<Command>,
+    socket: UdpSocket,
+    to: SocketAddr,
+}
+
+impl Waker {
+    fn command(&self, c: Command) -> bool {
+        match self.cmd.try_send(c) {
+            Ok(()) => {
+                let _ = self.socket.send_to(&[], self.to);
+                true
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
+        }
+    }
+
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self { cmd: self.cmd.clone(), socket: self.socket.try_clone()?, to: self.to })
+    }
+}
+
+/// The app's control end of the network thread, split off the handle by [`NetHandle::control`]: it issues
+/// commands (dial, admit, refuse, clock members) and takes the lifecycle's outcomes. `Send`, so it can live on
+/// whichever thread decides admission.
+pub struct NetControl {
+    waker: Waker,
+    life: Receiver<Lifecycle>,
+}
+
+impl NetControl {
+    /// Queue a command and wake the thread. `false` if the queue is full (a local fault).
+    pub fn command(&mut self, c: Command) -> bool {
+        self.waker.command(c)
+    }
+
+    /// The lifecycle's next outcome (6.3-6.6), if any.
+    pub fn poll_lifecycle(&mut self) -> Option<Lifecycle> {
+        self.life.try_recv().ok()
+    }
 }
 
 impl NetHandle {
@@ -87,37 +133,37 @@ impl NetHandle {
         ))?;
         let (cmd, cmd_rx) = sync_channel(queue);
         let (out_tx, out) = sync_channel(queue);
+        let (life_tx, life) = sync_channel(queue);
         let join = std::thread::Builder::new()
             .name("pe-net".into())
-            .spawn(move || run(core, socket, clock, cmd_rx, out_tx))?;
+            .spawn(move || run(core, socket, clock, cmd_rx, out_tx, life_tx))?;
         Ok(Self {
             frame_clock,
-            cmd,
+            waker: Waker { cmd, socket: waker, to: wake_to },
             out,
-            waker,
-            wake_to,
+            life: Some(life),
             join: Some(join),
             events: Vec::new(),
-            lifecycle: VecDeque::new(),
             stats: BTreeMap::new(),
         })
     }
 
     /// Queue a command and wake the thread. `false` if the queue is full (a local fault).
     pub fn command(&mut self, c: Command) -> bool {
-        match self.cmd.try_send(c) {
-            Ok(()) => {
-                let _ = self.waker.send_to(&[], self.wake_to);
-                true
-            }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
-        }
+        self.waker.command(c)
     }
 
-    /// The lifecycle's outcomes (6.3-6.6) since the last call.
+    /// The lifecycle's next outcome (6.3-6.6), while the handle still has the lifecycle channel; `None` after
+    /// [`NetHandle::control`] has taken it.
     pub fn poll_lifecycle(&mut self) -> Option<Lifecycle> {
-        self.pump(false);
-        self.lifecycle.pop_front()
+        self.life.as_ref()?.try_recv().ok()
+    }
+
+    /// Split off the control end: commands, and from now on the lifecycle's outcomes. `None` if it was taken
+    /// already. The handle keeps its own command path (it still sends) and stays the `Transport`.
+    pub fn control(&mut self) -> io::Result<Option<NetControl>> {
+        let Some(life) = self.life.take() else { return Ok(None) };
+        Ok(Some(NetControl { waker: self.waker.try_clone()?, life }))
     }
 
     /// Take outputs off the queue until a message arrives (`until_received`) or none are left.
@@ -127,7 +173,6 @@ impl NetHandle {
                 Output::Received(r) if until_received => return Some(r),
                 Output::Received(_) => {}
                 Output::Event(e) => self.events.push(e),
-                Output::Lifecycle(l) => self.lifecycle.push_back(l),
                 Output::Stats(p, s) => {
                     self.stats.insert(p, s);
                 }
@@ -138,8 +183,8 @@ impl NetHandle {
 
     /// Stop the thread and wait for it.
     pub fn stop(mut self) -> io::Result<()> {
-        let _ = self.cmd.send(Command::Stop);
-        let _ = self.waker.send_to(&[], self.wake_to);
+        let _ = self.waker.cmd.send(Command::Stop);
+        let _ = self.waker.socket.send_to(&[], self.waker.to);
         match self.join.take().map(JoinHandle::join) {
             Some(Ok(r)) => r,
             Some(Err(_)) => Err(io::Error::other("the network thread panicked")),
@@ -177,9 +222,12 @@ fn run(
     clock: HostClock,
     cmds: Receiver<Command>,
     out: SyncSender<Output>,
+    life: SyncSender<Lifecycle>,
 ) -> io::Result<()> {
     let mut buf = vec![0u8; 65_536];
     let mut backlog: VecDeque<Output> = VecDeque::new();
+    let mut life_backlog: VecDeque<Lifecycle> = VecDeque::new();
+    let mut life_open = true;
     let mut next_stats = clock();
     loop {
         let now = clock();
@@ -208,7 +256,23 @@ fn run(
         }
         backlog.extend(core.events().into_iter().map(Output::Event));
         while let Some(l) = core.poll_lifecycle() {
-            backlog.push_back(Output::Lifecycle(l));
+            if life_open {
+                life_backlog.push_back(l);
+            }
+        }
+        // Lifecycle outcomes wait for a full channel; with the control end gone, they are discarded.
+        while let Some(l) = life_backlog.pop_front() {
+            match life.try_send(l) {
+                Ok(()) => {}
+                Err(TrySendError::Full(l)) => {
+                    life_backlog.push_front(l);
+                    break;
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    life_open = false;
+                    life_backlog.clear();
+                }
+            }
         }
         if now >= next_stats {
             next_stats = now.plus(STATS_EVERY);

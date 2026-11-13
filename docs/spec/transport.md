@@ -673,6 +673,12 @@ impl Core {
   - **After a send,** the Core's `poll_timeout` is now, so a new message never waits for an unrelated timer.
   - **Link statistics** come back as messages every 100 ms rather than through a shared lock, and the handle's
     `link` returns the latest it has taken in.
+  - **The control end:** `NetHandle::control()` splits off a `NetControl` (`Send`) that issues commands (dial,
+    admit, refuse, the clock members) and from then on takes the lifecycle's outcomes, on a channel of their own.
+    The handle goes into the simulation as its `Transport` (app.md 3), and the app's network code keeps the
+    control end. Join requests and link events stay on the handle's queue, where the simulation drains them.
+    Lifecycle outcomes aren't ordered relative to those. With the control end dropped, later outcomes are
+    discarded and the thread runs on [V `pe-net/tests/thread.rs`].
 - **To and from the simulation thread:** bounded single-producer queues for outgoing `(peer, lane, bytes)` and
   incoming `Received` and events, plus the clock model of 5.7.
 - **The simulation thread never waits on the network.** A full outgoing queue is a local fault, reported, not a
