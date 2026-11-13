@@ -131,6 +131,13 @@ pub fn map_refusal(snap: &WorldSnapshot, e: &WorldEdit, op: Option<u32>, reason:
             f
         }
         Reason::OutOfReach | Reason::NotYourHand => refusal(RefusalCode::NotPermitted, api_op, "Not yours to move."),
+        // world-model.md 8.1: the author's own cooldown on the object; retryable from `until`.
+        Reason::Cooldown { until } => {
+            let mut f = refusal(RefusalCode::NotReady, api_op, "You let go of it a moment ago; wait a little.");
+            f.details = Some(json!({ "until_frame": until.0 }));
+            f.next = Some(format!("Try again from frame {}.", until.0));
+            f
+        }
         // `Reason` is `#[non_exhaustive]` in pe-seams, so this crate must keep a wildcard; a new reason lands here
         // as `invalid` with its name in the message until it gets its own arm.
         _ => refusal(RefusalCode::Invalid, api_op, format!("The world refused this change ({reason:?}).")),
@@ -256,8 +263,25 @@ mod tests {
         let (s, v) = world();
         let tx: ApiTx = serde_json::from_value(json!({ "label": "t", "ops": ops })).unwrap();
         let r = resolve_tx(&v, &tx, seen).map_err(|e| e.message).unwrap();
-        let e = to_world(&r, Actor::Person, &s).map_err(|e| format!("{e:?}")).unwrap();
+        let e = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
         dry_run(&s, &r, &e, &draft(author))
+    }
+
+    #[test]
+    fn a_cooldown_is_not_ready_until_its_frame() {
+        let (snap, _) = world();
+        let tx = pe_world::edit::Transaction {
+            actor: pe_world::edit::Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops: vec![],
+            blobs: vec![],
+        };
+        let e = WorldEdit { tx, blobs: vec![], op_of: vec![] };
+        let f = map_refusal(&snap, &e, None, &Reason::Cooldown { until: pe_core::Frame(42) });
+        assert_eq!(f.code, RefusalCode::NotReady);
+        assert_eq!(f.details.unwrap()["until_frame"], 42);
+        assert!(f.next.unwrap().contains("42"));
     }
 
     #[test]

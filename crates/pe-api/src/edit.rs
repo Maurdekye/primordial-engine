@@ -11,14 +11,18 @@
 //! "not yet", so nothing is ever sent wrong.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use pe_seams::world_api::{ApiError, ErrorCode, Json, MemberId, ObjectBrief, ObjectId, Refusal, RefusalCode, Version};
+use pe_core::{Offset, Pos};
+use pe_seams::world_api::{
+    ApiError, ErrorCode, Json, MemberId, ObjRef, ObjectBrief, ObjectId, Refusal, RefusalCode, Version,
+};
 use pe_sim::FieldKind;
 use pe_world::edit::{Actor, Op, Precondition, Row, Target, Transaction};
 use pe_world::{BlobRef, WorldSnapshot};
 
 use crate::resolve::{Obj, ROp, Resolved};
-use crate::world::parse_version;
+use crate::world::{WorldView, parse_version};
 
 fn target(o: Obj) -> Target {
     match o {
@@ -127,8 +131,27 @@ fn set_field(snap: &WorldSnapshot, i: usize, id: Target, key: &str, v: &Json) ->
         Unmapped::Refused(f)
     };
     let (comp, field) = key.split_once('.').ok_or_else(|| bad(format!("{key:?} isn't Component.field.")))?;
-    if comp == "Transform" && (field == "position" || field == "pos" || field == "chunk") {
-        return Err(not_yet(i, "setting Transform.position"));
+    // Rotations are written as the stored quaternion, from either form (api.md 4.4).
+    if comp == "Transform" && (field == "rotation_deg" || field == "rotation_quat") {
+        let n: Option<Vec<f64>> = v.as_array().and_then(|a| a.iter().map(Json::as_f64).collect());
+        let q = match (field, n.as_deref()) {
+            ("rotation_deg", Some(&[x, y, z])) if [x, y, z].iter().all(|f| f.is_finite()) => {
+                crate::world::quat_from_euler_deg([x, y, z])
+            }
+            ("rotation_quat", Some(&[x, y, z, w])) => {
+                let l = (x * x + y * y + z * z + w * w).sqrt();
+                if !(l.is_finite() && l > 1e-6) {
+                    return Err(bad(format!("{key} must not be zero.")));
+                }
+                [x / l, y / l, z / l, w / l].map(|c| c as f32)
+            }
+            ("rotation_deg", _) => return Err(bad(format!("{key} takes [x, y, z] in degrees."))),
+            _ => return Err(bad(format!("{key} takes [x, y, z, w]."))),
+        };
+        return set_field(snap, i, id, "Transform.rot", &serde_json::json!(q));
+    }
+    if comp == "Transform" && (field == "pos" || field == "chunk") {
+        return Err(bad("Set Transform.position, in a named frame, rather than the stored pos and chunk.".into()));
     }
     let desc = snap.component(comp).ok_or_else(|| bad(format!("There is no component {comp:?}.")))?;
     let (index, f) = desc
@@ -151,6 +174,210 @@ fn set_field(snap: &WorldSnapshot, i: usize, id: Target, key: &str, v: &Json) ->
         }
     }
     Ok(Op::SetField { id, component: desc.id(), instance: 0, field: index as u16, value: bytes })
+}
+
+/// What earlier ops of the same change do to placements, so a position is never converted against a frame they
+/// change (@chunks-reviewer's Medium on 6f508e18). Positions convert against the base snapshot (api.md 4.4), so a
+/// write whose frame, or `relative_to` object, an earlier op moves or re-frames is `not_yet` rather than wrong.
+#[derive(Default)]
+struct Dirty {
+    /// Objects whose Transform an earlier op writes, adds or removes, or which it re-parents.
+    moved: std::collections::HashSet<(bool, u128)>,
+    /// Objects whose frame an earlier op changes: re-parented, or gaining or losing a Transform.
+    reframed: std::collections::HashSet<(bool, u128)>,
+}
+
+fn tkey(t: Target) -> Option<(bool, u128)> {
+    match t {
+        Target::Existing(o) => Some((false, o.to_u128())),
+        Target::New(k) => Some((true, u128::from(k))),
+        Target::Root => None,
+    }
+}
+
+impl Dirty {
+    /// `o` or any of its ancestors in the base snapshot is moved earlier in the change.
+    fn chain_moved(&self, snap: &WorldSnapshot, o: pe_core::ObjectId) -> bool {
+        std::iter::successors(Some(o), |x| snap.parent(*x)).any(|a| self.moved.contains(&(false, a.to_u128())))
+    }
+
+    /// `o` or any of its ancestors in the base snapshot is re-framed earlier in the change.
+    fn chain_reframed(&self, snap: &WorldSnapshot, o: pe_core::ObjectId) -> bool {
+        std::iter::successors(Some(o), |x| snap.parent(*x)).any(|a| self.reframed.contains(&(false, a.to_u128())))
+    }
+
+    fn note(&mut self, op: &ROp) {
+        let mut mark = |t: &Obj, reframe: bool| {
+            if let Some(k) = tkey(target(*t)) {
+                self.moved.insert(k);
+                if reframe {
+                    self.reframed.insert(k);
+                }
+            }
+        };
+        match op {
+            ROp::Reparent { target: t, .. } => mark(t, true),
+            ROp::Set { target: t, fields } if fields.keys().any(|k| k.starts_with("Transform.")) => mark(t, false),
+            ROp::Add { target: t, component, .. } | ROp::Remove { target: t, component }
+                if component == "Transform" =>
+            {
+                mark(t, true)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The nearest ancestor of `id` with a `Transform`: its frame (pe-sim), or `None` for a root placement.
+fn frame_of(snap: &WorldSnapshot, id: pe_core::ObjectId) -> Option<pe_core::ObjectId> {
+    let mut at = snap.parent(id);
+    while let Some(p) = at {
+        if snap.info(p).is_some_and(|i| i.types.iter().any(|t| t == "Transform")) {
+            return Some(p);
+        }
+        at = snap.parent(p);
+    }
+    None
+}
+
+/// Where an object sits for a position write: its frame (`None`: a root placement) and its parent in the base
+/// snapshot, where the walk for earlier ops starts. A new object's parent is its create's or copy's (@chunks-reviewer's
+/// Low on c783ed96: walking from the frame misses a Transform-less parent in between).
+#[derive(Clone, Copy)]
+struct Place {
+    frame: Option<pe_core::ObjectId>,
+    parent: Option<pe_core::ObjectId>,
+}
+
+/// Three finite numbers.
+fn num3(j: Option<&Json>) -> Option<[f64; 3]> {
+    let a = j?.as_array()?;
+    let v: Vec<f64> = a.iter().map(Json::as_f64).collect::<Option<_>>()?;
+    <[f64; 3]>::try_from(v).ok().filter(|x| x.iter().all(|f| f.is_finite()))
+}
+
+/// `Transform.position` = `v` on `id` (api.md 4.4), as pe-world field writes carrying the frame-relative value: a
+/// child's `pos` in its frame, or a root's exact `chunk` and `pos`. `place` is `id`'s frame and parent. The
+/// value is an exact `{"pos": {"chunk": ["i", "j", "k"], "offset": [x, y, z]}}`, or `{"relative_to": f, "offset":
+/// [x, y, z]}` with `f` one of `"parent"` (the default; refused for a root), an object or `"me"` (in its space:
+/// rotation and scale applied, the inverse of what a query reports), or `"world_origin"`. Converted here, on the
+/// author's machine, with pe-sim's own `compose` and `local_in`.
+fn set_position(
+    view: &WorldView,
+    snap: &WorldSnapshot,
+    i: usize,
+    id: Target,
+    place: Place,
+    v: &Json,
+    dirty: &Dirty,
+) -> Result<Vec<Op>, Unmapped> {
+    use pe_sim::transform::{POS_LIMIT, ROOT_CHUNK_LIMIT};
+    let frame = place.frame;
+    use pe_sim::{Transform, WorldTransform};
+    let bad = |message: String| {
+        let mut f = refusal(RefusalCode::Invalid, message);
+        f.op = Some(i as u32);
+        f.field = Some("Transform.position".into());
+        if let Target::Existing(o) = id {
+            f.object = snap.info(o).map(|x| ObjectBrief { id: o.into(), name: x.name.unwrap_or_default() });
+        }
+        Unmapped::Refused(f)
+    };
+    let range = || bad("That position is outside the world's range.".into());
+    if let Target::Existing(o) = id
+        && !snap.info(o).is_some_and(|x| x.types.iter().any(|t| t == "Transform"))
+    {
+        let name = snap.name(o).unwrap_or_else(|| "This object".into());
+        return Err(bad(format!("{name} has no Transform; add one first.")));
+    }
+    let desc = snap.component("Transform").ok_or_else(|| bad("The world has no Transform component.".into()))?;
+    let index = |n: &str| desc.fields().iter().position(|f| f.name == n).map(|x| x as u16);
+    let (Some(chunk_i), Some(pos_i)) = (index("chunk"), index("pos")) else {
+        return Err(bad("This world's Transform has no chunk and pos.".into()));
+    };
+    let unit = |pos: [f64; 3]| Transform { chunk: [0; 3], pos, rot: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3], _pad: 0 };
+    enum Want {
+        /// An offset in `id`'s own frame, as stored.
+        Local([f64; 3]),
+        World(Pos),
+    }
+    let want = if let Some(p) = v.get("pos") {
+        let chunk: Option<Vec<i64>> = p
+            .get("chunk")
+            .and_then(Json::as_array)
+            .and_then(|a| a.iter().map(|c| c.as_str().and_then(|s| s.parse().ok()).or_else(|| c.as_i64())).collect());
+        let (Some(chunk), Some(offset)) = (chunk.and_then(|c| <[i64; 3]>::try_from(c).ok()), num3(p.get("offset")))
+        else {
+            return Err(bad(
+                "An exact pos is {\"chunk\": [\"i\", \"j\", \"k\"], \"offset\": [x, y, z]} (chunk indices as strings)."
+                    .into(),
+            ));
+        };
+        Want::World(Pos::at_chunk(chunk).and_then(|c| c.checked_add(Offset(offset))).map_err(|_| range())?)
+    } else {
+        let Some(off) = num3(v.get("offset")) else {
+            return Err(bad(
+                "A position is {\"relative_to\": frame, \"offset\": [x, y, z]} or an exact {\"pos\": ...}.".into(),
+            ));
+        };
+        match v.get("relative_to").and_then(Json::as_str).unwrap_or("parent") {
+            "parent" => match frame {
+                Some(_) => Want::Local(off),
+                None => {
+                    let name = match id {
+                        Target::Existing(o) => snap.name(o).unwrap_or_else(|| "This object".into()),
+                        _ => "The new object".into(),
+                    };
+                    return Err(bad(format!("{name} has no parent; name a frame.")));
+                }
+            },
+            "world_origin" => Want::World(Pos::ORIGIN.checked_add(Offset(off)).map_err(|_| range())?),
+            r if r.starts_with('$') => {
+                return Err(not_yet(i, "a position relative to an object made in this change"));
+            }
+            r => {
+                let Some(Some(f)) = view.frame_of(&ObjRef(r.into())) else {
+                    return Err(bad(format!("relative_to {r:?} names no single object.")));
+                };
+                if dirty.chain_moved(snap, f) {
+                    return Err(not_yet(i, "a position relative to an object an earlier op in this change moves"));
+                }
+                let fw = snap.world_transform(f).ok_or_else(|| bad(format!("{r} has no place in the world.")))?;
+                Want::World(fw.compose(&unit(off)).ok_or_else(range)?.pos)
+            }
+        }
+    };
+    // An earlier op that re-frames the object (re-parents it or an ancestor, or adds or removes a Transform on the
+    // way) makes any write wrong; one that only moves the frame matters only to a value converted from the world
+    // (@chunks-reviewer's optional Low on c783ed96).
+    let reframed = tkey(id).is_some_and(|k| dirty.reframed.contains(&k))
+        || place.parent.is_some_and(|p| dirty.chain_reframed(snap, p));
+    let moved = place.parent.is_some_and(|p| dirty.chain_moved(snap, p));
+    if reframed || (moved && matches!(want, Want::World(_))) {
+        return Err(not_yet(i, "a position for an object whose frame an earlier op in this change moves or changes"));
+    }
+    let (chunk, pos) = match (want, frame) {
+        (Want::Local(off), _) => ([0; 3], off),
+        (Want::World(p), None) => {
+            let t = WorldTransform { pos: p, rot: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] }.local_in(None);
+            (t.chunk, t.pos)
+        }
+        (Want::World(p), Some(f)) => {
+            let fw = snap.world_transform(f).ok_or_else(|| bad("Its frame has no place in the world.".into()))?;
+            ([0; 3], WorldTransform { pos: p, rot: fw.rot, scale: fw.scale }.local_in(Some(&fw)).pos)
+        }
+    };
+    if pos.iter().any(|x| !x.is_finite() || x.abs() > POS_LIMIT) || chunk.iter().any(|c| c.abs() > ROOT_CHUNK_LIMIT) {
+        return Err(range());
+    }
+    let mut ops = vec![];
+    if frame.is_none() {
+        let value = chunk.iter().flat_map(|c| c.to_le_bytes()).collect();
+        ops.push(Op::SetField { id, component: desc.id(), instance: 0, field: chunk_i, value });
+    }
+    let value = pos.iter().flat_map(|x| x.to_le_bytes()).collect();
+    ops.push(Op::SetField { id, component: desc.id(), instance: 0, field: pos_i, value });
+    Ok(ops)
 }
 
 /// A whole row of `component` for `t`: zeros, then each given field encoded at its offset.
@@ -209,7 +436,30 @@ pub enum Unmapped {
 }
 
 /// pe-world's payload for a resolved change, from `actor`, with values encoded through `snap`'s schema.
-pub fn to_world(r: &Resolved, actor: Actor, snap: &WorldSnapshot) -> Result<WorldEdit, Unmapped> {
+/// `me` is the caller's head object, for positions given relative to `"me"`.
+pub fn to_world(
+    r: &Resolved,
+    actor: Actor,
+    snap: &Arc<WorldSnapshot>,
+    me: Option<ObjectId>,
+) -> Result<WorldEdit, Unmapped> {
+    let view = WorldView::new(snap.clone(), me);
+    // Each new object's frame, for a position set in the same change: its create's parent (or that parent's own
+    // frame). A copy's inner objects, or a parent created in this change, have no known frame yet.
+    let mut new_place: std::collections::HashMap<u32, Place> = Default::default();
+    let has_transform = |o: pe_core::ObjectId| snap.info(o).is_some_and(|i| i.types.iter().any(|t| t == "Transform"));
+    let place_for = |t: Target, new_place: &std::collections::HashMap<u32, Place>| match t {
+        Target::Existing(o) => Some(Place { frame: frame_of(snap, o), parent: snap.parent(o) }),
+        Target::New(k) => new_place.get(&k).copied(),
+        Target::Root => None,
+    };
+    // A new object's place under `parent`, when that is known before the change runs.
+    let place_under = |parent: Target| match parent {
+        Target::Existing(p) if has_transform(p) => Some(Place { frame: Some(p), parent: Some(p) }),
+        Target::Existing(p) => Some(Place { frame: frame_of(snap, p), parent: Some(p) }),
+        Target::Root => Some(Place { frame: None, parent: None }),
+        Target::New(_) => None,
+    };
     let mut blob_refs: Vec<BlobRef> = vec![];
     let mut blobs: Vec<Vec<u8>> = vec![];
     let mut preconditions = Vec::with_capacity(r.preconditions.len());
@@ -220,7 +470,13 @@ pub fn to_world(r: &Resolved, actor: Actor, snap: &WorldSnapshot) -> Result<Worl
     let mut ops = Vec::with_capacity(r.ops.len());
     let mut op_of: Vec<u32> = Vec::with_capacity(r.ops.len());
     let mut prev = 0u32;
+    let mut dirty = Dirty::default();
+    let mut last: Option<&ROp> = None;
     for (i, op) in r.ops.iter().enumerate() {
+        // What the previous op did to placements (done here, so `continue` arms count too).
+        if let Some(p) = last.replace(op) {
+            dirty.note(p);
+        }
         // The ops the previous resolved op pushed came from its source op (done here, so `continue` arms count too).
         op_of.resize(ops.len(), prev);
         prev = r.op_of.get(i).copied().unwrap_or(i as u32);
@@ -230,16 +486,33 @@ pub fn to_world(r: &Resolved, actor: Actor, snap: &WorldSnapshot) -> Result<Worl
                 Op::Reparent { id: target(*t), parent: target(*parent), index: *index, keep_world: *keep_world }
             }
             ROp::Copy { source, new, parent, size } => {
+                if let Some(p) = place_under(target(*parent)) {
+                    new_place.insert(*new, p);
+                }
                 Op::Copy { source: target(*source), new: *new, parent: target(*parent), index: None, size: *size }
             }
             ROp::Set { target: t, fields } => {
-                // One SetField per field, in field-name order (the map's), all on the same object.
+                // One SetField per field, in field-name order (the map's), all on the same object; a position is
+                // converted to the object's frame first.
                 for (k, v) in fields {
-                    ops.push(set_field(snap, i, target(*t), k, v)?);
+                    if k == "Transform.position" {
+                        let Some(place) = place_for(target(*t), &new_place) else {
+                            return Err(not_yet(
+                                i,
+                                "setting the position of an object inside a copy made in this change",
+                            ));
+                        };
+                        ops.extend(set_position(&view, snap, i, target(*t), place, v, &dirty)?);
+                    } else {
+                        ops.push(set_field(snap, i, target(*t), k, v)?);
+                    }
                 }
                 continue;
             }
             ROp::Create { new, size, parent, name, template, components } => {
+                if let Some(p) = place_under(target(*parent)) {
+                    new_place.insert(*new, p);
+                }
                 let (name_row, r) = name_row(snap, i, name)?;
                 if !blob_refs.contains(&r) {
                     blob_refs.push(r);
@@ -262,7 +535,14 @@ pub fn to_world(r: &Resolved, actor: Actor, snap: &WorldSnapshot) -> Result<Worl
                         ops.push(Op::SetRow { id: me, row: name_row });
                         for (c, fields) in components {
                             for (k, v) in fields {
-                                ops.push(set_field(snap, i, me, &format!("{c}.{k}"), v)?);
+                                if (c.as_str(), k.as_str()) == ("Transform", "position") {
+                                    let Some(place) = new_place.get(new).copied() else {
+                                        return Err(not_yet(i, "a position under a parent made in this change"));
+                                    };
+                                    ops.extend(set_position(&view, snap, i, me, place, v, &dirty)?);
+                                } else {
+                                    ops.push(set_field(snap, i, me, &format!("{c}.{k}"), v)?);
+                                }
                             }
                         }
                     }
@@ -323,6 +603,11 @@ mod tests {
 
     /// A Table (root) with a Lamp and a Ball under it; the Ball has a Body. Plus a Shelf root.
     fn world() -> (Arc<WorldSnapshot>, WorldView) {
+        world_with(|_| {})
+    }
+
+    /// [`world`], with `more` run on it before the snapshot.
+    fn world_with(more: impl FnOnce(&mut World)) -> (Arc<WorldSnapshot>, WorldView) {
         let mut w = World::new(7, BlobStore::default());
         for (n, name, parent) in
             [(10, "Table", None), (20, "Lamp", Some(10)), (30, "Ball", Some(10)), (40, "Shelf", None)]
@@ -337,6 +622,7 @@ mod tests {
             w.insert(id(n), Name { text }).unwrap();
         }
         w.insert(id(30), Body { kind: body_kind::DYNAMIC, friction: 0.5, grabbable: 1, ..Default::default() }).unwrap();
+        more(&mut w);
         w.set_frame(Frame(9));
         let s = w.snapshot(Frame(9));
         (s.clone(), WorldView::new(s, None))
@@ -344,6 +630,162 @@ mod tests {
 
     fn resolved(v: &WorldView, ops: Json) -> Resolved {
         resolve_tx(v, &tx(ops), &|_| None).map_err(|e| e.message).unwrap()
+    }
+
+    /// The f64 or i64 triple a SetField writes.
+    fn f3(op: &Op) -> [f64; 3] {
+        let Op::SetField { value, .. } = op else { panic!("{op:?}") };
+        let v: Vec<f64> = value.chunks(8).map(|b| f64::from_le_bytes(b.try_into().unwrap())).collect();
+        v.try_into().unwrap()
+    }
+    fn i3(op: &Op) -> [i64; 3] {
+        let Op::SetField { value, .. } = op else { panic!("{op:?}") };
+        let v: Vec<i64> = value.chunks(8).map(|b| i64::from_le_bytes(b.try_into().unwrap())).collect();
+        v.try_into().unwrap()
+    }
+    fn near(a: [f64; 3], b: [f64; 3]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9)
+    }
+    fn set_pos(s: &Arc<WorldSnapshot>, v: &WorldView, obj: &str, value: Json) -> Result<Vec<Op>, Unmapped> {
+        let r = resolved(v, json!([{"op": "set", "id": obj, "field": "Transform.position", "value": value}]));
+        to_world(&r, Actor::Person, s, None).map(|e| e.tx.ops)
+    }
+
+    #[test]
+    fn a_position_is_written_in_the_objects_own_frame() {
+        let (s, v) = world();
+        // A child, in its parent's frame: stored as given.
+        let ops = set_pos(&s, &v, "/Table/Lamp", json!({"relative_to": "parent", "offset": [0.0, 2.0, 0.0]})).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(f3(&ops[0]), [0.0, 2.0, 0.0]);
+        // A child, at the Shelf (Table at x=10, Shelf at x=40): 30 m along the Table's x.
+        let ops = set_pos(&s, &v, "/Table/Lamp", json!({"relative_to": "/Shelf", "offset": [0.0, 0.0, 0.0]})).unwrap();
+        assert!(near(f3(&ops[0]), [30.0, 0.0, 0.0]), "{:?}", f3(&ops[0]));
+        // A root, from the world origin: its exact chunk and offset, together.
+        let ops = set_pos(&s, &v, "/Table", json!({"relative_to": "world_origin", "offset": [5.0, 0.0, 0.0]})).unwrap();
+        assert_eq!(ops.len(), 2);
+        let p = Pos::at_chunk(i3(&ops[0])).unwrap().checked_add(Offset(f3(&ops[1]))).unwrap();
+        assert!(near((p - Pos::ORIGIN).0, [5.0, 0.0, 0.0]));
+        // A root, as an exact pos.
+        let shelf = Pos::ORIGIN.checked_add(Offset([40.0, 0.0, 0.0])).unwrap();
+        let c = shelf.chunk_index();
+        let exact = json!({"pos": {"chunk": c.map(|x| x.to_string()), "offset": [1.0, 2.0, 3.0]}});
+        let ops = set_pos(&s, &v, "/Shelf", exact).unwrap();
+        assert_eq!(i3(&ops[0]), c);
+        assert!(near(f3(&ops[1]), [1.0, 2.0, 3.0]));
+        // A root has no parent frame.
+        let e = set_pos(&s, &v, "/Table", json!({"offset": [0.0, 0.0, 0.0]}));
+        assert!(matches!(e, Err(Unmapped::Refused(f)) if f.message.contains("has no parent")));
+        // Bad shapes and the stored fields themselves are refused as invalid.
+        assert!(matches!(set_pos(&s, &v, "/Table/Lamp", json!({"offset": [1.0]})), Err(Unmapped::Refused(_))));
+        let r =
+            resolved(&v, json!([{"op": "set", "id": "/Table", "field": "Transform.pos", "value": [0.0, 0.0, 0.0]}]));
+        assert!(
+            matches!(to_world(&r, Actor::Person, &s, None), Err(Unmapped::Refused(f)) if f.code == RefusalCode::Invalid)
+        );
+    }
+
+    #[test]
+    fn a_rotation_is_written_as_the_stored_quaternion_from_either_form() {
+        let (s, v) = world();
+        let set = |field: &str, value: Json| {
+            let r = resolved(&v, json!([{"op": "set", "id": "/Table/Lamp", "field": field, "value": value}]));
+            to_world(&r, Actor::Person, &s, None).map(|e| e.tx.ops)
+        };
+        let quat = |op: &Op| -> (u16, Vec<f32>) {
+            let Op::SetField { field, value, .. } = op else { panic!("{op:?}") };
+            (*field, value.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect())
+        };
+        let rot_index = s.component("Transform").unwrap().fields().iter().position(|f| f.name == "rot").unwrap();
+        let (field, q) = quat(&set("Transform.rotation_deg", json!([0.0, 90.0, 0.0])).unwrap()[0]);
+        assert_eq!(field as usize, rot_index);
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((q[1] - h).abs() < 1e-6 && (q[3] - h).abs() < 1e-6 && q[0].abs() < 1e-6 && q[2].abs() < 1e-6, "{q:?}");
+        assert!(matches!(set("Transform.rotation_deg", json!([1.0, 2.0])), Err(Unmapped::Refused(_))));
+        assert!(matches!(set("Transform.rotation_quat", json!([0.0, 0.0, 0.0, 0.0])), Err(Unmapped::Refused(_))));
+        let (_, q) = quat(&set("Transform.rotation_quat", json!([0.0, 0.0, 0.0, 2.0])).unwrap()[0]);
+        assert_eq!(q, vec![0.0, 0.0, 0.0, 1.0], "normalized");
+    }
+
+    #[test]
+    fn a_position_is_not_yet_when_an_earlier_op_moves_its_frame() {
+        let (s, v) = world();
+        let not_yet = |ops: Json| {
+            let r = resolved(&v, ops);
+            matches!(to_world(&r, Actor::Person, &s, None), Err(Unmapped::Failed(e)) if e.code == ErrorCode::Internal)
+        };
+        let at = json!({"relative_to": "world_origin", "offset": [5.0, 0.0, 0.0]});
+        // Re-parented first, then placed.
+        assert!(not_yet(json!([
+            {"op": "reparent", "id": "/Table/Lamp", "parent": "/Shelf"},
+            {"op": "set", "id": "/Table/Lamp", "field": "Transform.position", "value": at}
+        ])));
+        // Its frame moved first.
+        assert!(not_yet(json!([
+            {"op": "set", "id": "/Table", "field": "Transform.position", "value": at},
+            {"op": "set", "id": "/Table/Lamp", "field": "Transform.position", "value": at}
+        ])));
+        // Relative to an object moved first, or made in this change.
+        assert!(not_yet(json!([
+            {"op": "set", "id": "/Shelf", "field": "Transform.position", "value": at},
+            {"op": "set", "id": "/Table/Lamp", "field": "Transform.position", "value": {"relative_to": "/Shelf", "offset": [0.0, 0.0, 0.0]}}
+        ])));
+        assert!(not_yet(json!([
+            {"op": "create", "as": "$c", "parent": "/Shelf", "name": "c"},
+            {"op": "set", "id": "/Table/Lamp", "field": "Transform.position", "value": {"relative_to": "$c", "offset": [0.0, 0.0, 0.0]}}
+        ])));
+        // A new object under a Transform-less parent (its frame: the Table), whose parent is re-parented first.
+        let (s2, v2) = world_with(|w| {
+            let text = w.blobs().put(b"Group");
+            w.create(id(50), Some(id(10)), ALICE, ver(50, 0)).unwrap();
+            w.insert(id(50), Name { text }).unwrap();
+        });
+        let r = resolved(
+            &v2,
+            json!([
+                {"op": "create", "as": "$cup", "parent": "/Table/Group", "name": "Cup"},
+                {"op": "reparent", "id": "/Table/Group", "parent": "/Shelf"},
+                {"op": "set", "id": "$cup", "field": "Transform.position", "value": {"relative_to": "parent", "offset": [0.0, 1.0, 0.0]}}
+            ]),
+        );
+        assert!(
+            matches!(to_world(&r, Actor::Person, &s2, None), Err(Unmapped::Failed(e)) if e.code == ErrorCode::Internal)
+        );
+        // A frame that only moved leaves a parent-relative write right: it is stored as given.
+        let r = resolved(
+            &v,
+            json!([
+                {"op": "set", "id": "/Table", "field": "Transform.position", "value": at},
+                {"op": "set", "id": "/Table/Lamp", "field": "Transform.position", "value": {"relative_to": "parent", "offset": [0.0, 1.0, 0.0]}}
+            ]),
+        );
+        let ops = to_world(&r, Actor::Person, &s, None).unwrap().tx.ops;
+        assert_eq!(f3(ops.last().unwrap()), [0.0, 1.0, 0.0]);
+        // A later op, or an unrelated earlier one, is fine.
+        let r = resolved(
+            &v,
+            json!([
+                {"op": "set", "id": "/Table/Lamp", "field": "Transform.position", "value": at},
+                {"op": "set", "id": "/Shelf", "field": "Transform.position", "value": at}
+            ]),
+        );
+        assert!(to_world(&r, Actor::Person, &s, None).is_ok());
+    }
+
+    #[test]
+    fn a_new_object_is_placed_in_its_parents_frame_in_the_same_change() {
+        let (s, v) = world();
+        let r = resolved(
+            &v,
+            json!([
+                {"op": "create", "as": "$cup", "parent": "/Table", "name": "Cup"},
+                {"op": "set", "id": "$cup", "field": "Transform.position", "value": {"relative_to": "/Shelf", "offset": [0.0, 1.0, 0.0]}}
+            ]),
+        );
+        let ops = to_world(&r, Actor::Person, &s, None).unwrap().tx.ops;
+        let last = ops.last().unwrap();
+        assert!(matches!(last, Op::SetField { id: Target::New(0), .. }));
+        assert!(near(f3(last), [30.0, 1.0, 0.0]));
     }
 
     #[test]
@@ -357,7 +799,7 @@ mod tests {
                 {"op": "delete", "id": "/Table/Ball"},
             ]),
         );
-        let w = to_world(&r, Actor::Person, &s).map_err(|e| format!("{e:?}")).unwrap().tx;
+        let w = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap().tx;
         assert_eq!(w.label.as_deref(), Some("edit things"));
         let e = |n: u128| Target::Existing(id(n));
         assert_eq!(
@@ -388,7 +830,7 @@ mod tests {
             &v,
             json!([{"op": "set", "id": "/Table/Ball", "fields": {"Body.friction": 0.25, "Body.grabbable": false}}]),
         );
-        let w = to_world(&r, Actor::Person, &s).map_err(|e| format!("{e:?}")).unwrap().tx;
+        let w = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap().tx;
         let desc = s.component("Body").unwrap();
         let idx = |n: &str| desc.fields().iter().position(|f| f.name == n).unwrap() as u16;
         let fr = &desc.fields()[idx("friction") as usize];
@@ -420,7 +862,7 @@ mod tests {
             &v,
             json!([{"op": "create", "as": "$cup", "parent": "/Table", "name": "Cup", "components": {"Body": {"friction": 0.25}}}]),
         );
-        let e = to_world(&r, Actor::Person, &s).map_err(|e| format!("{e:?}")).unwrap();
+        let e = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
         let cup = BlobRef::of(b"Cup");
         assert_eq!(e.tx.blobs, [cup]);
         assert_eq!(e.blobs, [b"Cup".to_vec()]);
@@ -443,7 +885,7 @@ mod tests {
             &v2,
             json!([{"op": "create", "parent": "/Floor", "name": "Red box", "template": "box", "components": {"Body": {"friction": 0.9}}}]),
         );
-        let e = to_world(&r, Actor::Person, &s2).map_err(|e| format!("{e:?}")).unwrap();
+        let e = to_world(&r, Actor::Person, &s2, None).map_err(|e| format!("{e:?}")).unwrap();
         let src = Target::Existing(id(2));
         assert_eq!(
             e.tx.ops[0],
@@ -465,7 +907,7 @@ mod tests {
                 {"op": "remove", "id": "/Table/Ball", "component": "Body"},
             ]),
         );
-        let w = to_world(&r, Actor::Person, &s).map_err(|e| format!("{e:?}")).unwrap().tx;
+        let w = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap().tx;
         let desc = s.component("Body").unwrap();
         let Op::SetRow { id: t, row } = &w.ops[0] else { panic!("{:?}", w.ops[0]) };
         assert_eq!(
@@ -480,7 +922,7 @@ mod tests {
         // A component the object lacks is not_found.
         let r = resolved(&v, json!([{"op": "remove", "id": "/Table/Lamp", "component": "Body"}]));
         assert!(
-            matches!(to_world(&r, Actor::Person, &s), Err(Unmapped::Refused(f)) if f.code == RefusalCode::NotFound)
+            matches!(to_world(&r, Actor::Person, &s, None), Err(Unmapped::Refused(f)) if f.code == RefusalCode::NotFound)
         );
     }
 
@@ -503,7 +945,7 @@ mod tests {
         let (s, v) = world();
         let refused = |ops: Json, field: &str| {
             let r = resolved(&v, ops);
-            match to_world(&r, Actor::Person, &s) {
+            match to_world(&r, Actor::Person, &s, None) {
                 Err(Unmapped::Refused(f)) => {
                     assert_eq!(
                         (f.code, f.op, f.field.as_deref()),
@@ -525,18 +967,17 @@ mod tests {
         let failed = |ops: Json| {
             let r = resolved(&v, ops);
             assert!(
-                matches!(to_world(&r, Actor::Person, &s), Err(Unmapped::Failed(e)) if e.code == ErrorCode::Internal)
+                matches!(to_world(&r, Actor::Person, &s, None), Err(Unmapped::Failed(e)) if e.code == ErrorCode::Internal)
             );
         };
         failed(
             json!([{"op": "create", "parent": "/Table", "name": "x", "components": {"Transform": {"scale": [1, 1, 1]}}}]),
         );
-        failed(
-            json!([{"op": "set", "id": "/Table/Ball", "field": "Transform.position", "value": {"relative_to": "parent", "offset": [0, 2, 0]}}]),
-        );
         // A version this API didn't give out.
         let m = crate::query::mem::Mem::pit(0);
         let r = resolve_tx(&m, &tx(json!([{"op": "delete", "id": "/Table"}])), &|_| None).unwrap();
-        assert!(matches!(to_world(&r, Actor::Person, &s), Err(Unmapped::Refused(f)) if f.code == RefusalCode::Invalid));
+        assert!(
+            matches!(to_world(&r, Actor::Person, &s, None), Err(Unmapped::Refused(f)) if f.code == RefusalCode::Invalid)
+        );
     }
 }

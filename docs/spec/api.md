@@ -166,7 +166,11 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
   result that uses it says so, so a transcript shows when an agent worked in absolute coordinates (gnosarium-ux 4;
   file 17, 7).
   - A write in any frame but `"parent"` is converted to the parent's frame on the author's machine, against the base
-    snapshot; the entry carries the parent-relative value.
+    snapshot; the entry carries the parent-relative value. So a position whose object or an ancestor an earlier op of
+    the same change re-parents (or gives or takes a `Transform`), whose frame or `relative_to` object an earlier op
+    moves (a `"parent"`-relative write excepted: it is stored as given), or whose `relative_to` is a `$ref` made in
+    the change, is refused as not yet available rather than converted against a frame that no longer holds; set it in
+    a second change [I].
   - A query result gives positions in the frame the query asks for (`"frame"`, default `"parent"`).
 - **A root object has no parent** (U4, agreed with @world-model and @gnosarium-ux). Its `Transform` holds an exact
   `Pos` (world-model.md 4.4):
@@ -248,8 +252,8 @@ table of versions seen (4.2). `ApiError` is a failure of the call itself (6.3); 
 The caller's principal, member, producer label, the permissions its role has (in the role system's words, so an
 agent can tell in advance what will be refused). In M1 roles follow world-model.md 5.4 (coordinator, U3): a private
 world's creator is its only admin; friends join as Guest, a role with `EDIT`; the confidants of the world's admins
-join as admins. Every admin is a co-owner; there is no world-owner field (10.5). Also: the world's line id and name; the
-members present; the local frame, the newest final frame and the tick rate; the link state in the
+join as admins. Every admin is a co-owner; there is no world-owner field (10.5). Also: the world's line id and name; every
+member of the world with its role, each marked whether it is here; the local frame, the newest final frame and the tick rate; the link state in the
 player's words (`fine`, `thin`, `some actions dropped`, `catching up`, `watching only`; file 08, A6); the player's
 scale; the API's limits (9.3); and `kept`, whether an admin of the world is present (file 18, 2.2; gnosarium-ux
 draft 6). The user ruled (file 18, 6-7): a session with no admin keeps nothing unless an admin joins before it ends,
@@ -421,7 +425,8 @@ sends nothing. It does not step physics or logic: what a new body then does is a
 ### 5.4 `watch`
 
 A change feed with a cursor. `Filter`:
-- `where`: a selector, as in a query, narrowing everything below to those objects. With ids, a filter costs a lookup
+- `where`: a selector, as in a query, narrowing everything below to those objects. It is matched once per call
+  against the newest snapshot, so an object deleted before the call is named by its id [I]. With ids, a filter costs a lookup
   per change, so an inspector may keep one open per selected object (inspector.md 7, ask 2).
 - `changes`: edits by anyone: `{change, by, producer, label, frame, final, created: [...], deleted: [...],
   reparented: [...], set: [{id, field, value?}]}`. Values are included only for fields `fields` names, or 500
@@ -432,6 +437,9 @@ A change feed with a cursor. `Filter`:
   `changes`. An agent that wants motion queries poses. `motion: {"every_ms": 250}` with a `where` of at most 16 ids
   adds sampled poses of those objects [I].
 - `final_only: true` holds changes back until final, at the cost of about one cut's delay.
+- **In M1** finality is decided only for this machine's own changes (`mine`), from the final cuts (5.3.2), so a
+  `changes` item's `final` is always false, and `final_only` and `motion` are refused as `invalid_argument` (not yet
+  available). A per-entry decision for everyone's changes needs each stepped entry's chain and seq (later).
 
 Behaviour:
 - **Cursor**: an opaque position in this process's change stream. Without one, `watch` returns a cursor for "now"
@@ -472,7 +480,8 @@ Behaviour:
   inspector marks unsynchronized fields with a shape, Q12); `x-protected` (part of a protection); `x-read-only` (the
   engine writes it; an edit is refused as `invalid`).
 - With a template: what it holds.
-- `version` is a hash of the registry, which is versioned by frame (plan 2.1); a logic edit can add a component type
+- `version` is a hash of the registry and of the template list (so `since` notices a template added, removed or
+  renamed), which is versioned by frame (plan 2.1); a logic edit can add a component type
   (section 7). `schema` with `since: <version>` returns `unchanged` when it matches. A schema change also appears in
   `watch` (`session`).
 
@@ -667,6 +676,12 @@ A token maps to one principal: a name, the member it acts for, its scopes, its p
 connection; gnosarium-ux open point 6), and the option `confirm` (off by default, C11), which holds each transaction
 for the owner's approval in pe-app before step 4 of 9.2. Rights never come from arguments.
 
+**`confirm` is not built in M1** (coordinator m5fb5f11331eb). Until it is, a live `apply` or `revert` on a `confirm`
+token is refused `not_permitted` ("Confirmation isn't available yet; ask the owner to issue a token without it"),
+and dry runs still answer: it fails closed, never applying without the approval the token promises. Open for when it
+is built: a held status in S6, pe-app's approval port and UI, and what an unanswered approval does (refuse at
+`apply`'s deadline, or stay held past it and report through `watch`).
+
 ### 10.3 Secrets
 
 - The member's secret key is held by pe-app, never in a harness's environment, and never written where a harness's
@@ -699,6 +714,36 @@ holds the rule (world-model.md 7.8); the API reports it:
 The user (19:50-19:51Z, via @fable-reviewer): there is no separate "world ownership" state; every admin is a
 co-owner. So no API result has a world-owner field: `session` reports members and roles only, and history shows
 members. The `confirm` option of 10.2 holds a transaction for the person whose agent it is, not for a world owner.
+
+### 10.6 Agents don't move their user unless the user allows it
+
+The ruling (coordinator mb98c4a76ff1b; refound-plan's range bound): the agent interface offers no "move my user"
+action (locomotion, a teleport, or a bodiless member's view position) unless the owning user switches it on locally.
+It is a client setting of that user ("let agents move me"), off by default, and nothing in the world depends on it.
+pe-app reports it in `SessionFacts::agents_move_user`. With it off (coordinator m106fcbebab88, on @fable-reviewer's
+advice m82fcb9fcc6d0):
+
+- **"The user"** is the caller's avatar root, every tracked node under it (the head and both hands: the objects
+  whose `Hand` row the caller owns), and all of the root's ancestors (a vehicle, a folder). The head's own
+  descendants and the root's other children are not part of it.
+- **Refused** `not_permitted`, naming the op and the setting, for an `apply` or `revert` from an agent token
+  (producer `agent`); a dry run refuses the same way, since the change itself is what isn't allowed:
+  - a write, add or removal of a `Transform` on any object of the set;
+  - a write, add or removal of a `Body` or `Shape` on it, which would move it through physics (velocity,
+    `BodyState`, is not writable by edits at all);
+  - re-parenting any object of the set;
+  - deleting any object of the set. Deleting an ancestor is refused too: pe-world's `Delete` destroys the whole
+    subtree (world-model.md 7.5), so it would delete the user's avatar with it, and the orphan rule covers only
+    edits made under an already-deleted parent.
+  - Hand-less grabs and pushes aimed at the set are to be refused the same way; they are not API operations in M1.
+- **Not covered:** physical contact, such as a ball pushed into the user or a platform they stand on without being
+  parented to it, and components that drive a `Transform` from logic. The check covers direct writes and inputs only.
+- **A local courtesy, not a protection.** pe-api checks it on the owner's machine, against the ancestry as that
+  machine sees it when the change is made. Nothing checks it at the ordered step, and a modified client skips it.
+- **Only the caller's own user.** Moving other players is a matter for world rights and protections (10.4).
+- **A person's own tools** (producer `hand`) are not agents, so the inspector and editor move their user as before.
+- **A member with no head object** leaves this inert: a bodiless member's view is moved only by pe-app, so any
+  pe-app control that lets an agent move that view checks the same `agents_move_user` setting.
 
 ## 11. Seam S6 in pe-seams
 
