@@ -55,6 +55,8 @@ struct Inner {
     next: u64,
     pending: VecDeque<(Ticket, Submission)>,
     receipts: HashMap<Ticket, (Receipt, Instant)>,
+    /// Who submitted each waiting ticket through the API, until it settles (for `watch`'s `mine`).
+    owners: HashMap<Ticket, crate::changes::Owner>,
 }
 
 pub struct EditQueue {
@@ -72,7 +74,12 @@ impl EditQueue {
     pub fn new(capacity: usize, wake: impl Fn() + Send + Sync + 'static) -> Self {
         assert!(capacity > 0);
         EditQueue {
-            inner: Mutex::new(Inner { next: 1, pending: VecDeque::new(), receipts: HashMap::new() }),
+            inner: Mutex::new(Inner {
+                next: 1,
+                pending: VecDeque::new(),
+                receipts: HashMap::new(),
+                owners: HashMap::new(),
+            }),
             settled: Condvar::new(),
             capacity,
             wake: Box::new(wake),
@@ -91,6 +98,11 @@ impl EditQueue {
 
     /// Hands a change to the simulation thread. Never blocks.
     pub fn submit(&self, s: Submission) -> Result<Ticket, Full> {
+        self.submit_as(s, None)
+    }
+
+    /// `submit`, remembering who submitted it, so the change log can tell `watch` it is that caller's own.
+    pub fn submit_as(&self, s: Submission, owner: Option<crate::changes::Owner>) -> Result<Ticket, Full> {
         let t = {
             let mut g = self.lock();
             if g.pending.len() >= self.capacity {
@@ -100,6 +112,9 @@ impl EditQueue {
             let t = Ticket(g.next);
             g.next += 1;
             g.pending.push_back((t, s));
+            if let Some(o) = owner {
+                g.owners.insert(t, o);
+            }
             t
         };
         (self.wake)();
@@ -115,8 +130,9 @@ impl EditQueue {
 
     /// Simulation side: what became of a drained ticket.
     pub fn settle(&self, t: Ticket, r: Receipt) {
+        let owner = self.lock().owners.remove(&t);
         if let (Receipt::Submitted { change, frame, chain, seq }, Some(log)) = (&r, self.log.get()) {
-            log.track(*change, *chain, *seq, *frame);
+            log.track(*change, *chain, *seq, *frame, owner);
         }
         let now = Instant::now();
         let mut g = self.lock();
