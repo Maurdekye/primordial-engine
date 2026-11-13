@@ -926,13 +926,16 @@ fn a_stalled_uplink_flushing_three_seconds_of_hands_at_120_hz() {
     assert!(recovered.is_some_and(|n| n <= 2), "member 0 not final again within 2 s of the stall: {recovered:?}");
 }
 
+/// One change to a node's settings.
+type Change = Box<dyn Fn(&mut NodeConfig)>;
+
 #[test]
 fn the_consensus_hash_covers_exactly_the_must_match_settings() {
     // For the M1 interim's genesis record (coordinator).
     let keys = TestKeys::new(3, 2);
     let base = NodeConfig::new(LineId::origin(), keys.sorted_keys(), genesis_cut());
     let h = base.consensus_hash();
-    let changes: Vec<(&str, Box<dyn Fn(&mut NodeConfig)>)> = vec![
+    let changes: Vec<(&str, Change)> = vec![
         ("frame_tolerance_s", Box::new(|c| c.frame_tolerance_s = 0.2)),
         ("entries_per_frame", Box::new(|c| c.entries_per_frame = 4)),
         ("extra_per_s", Box::new(|c| c.extra_per_s = 31)),
@@ -951,7 +954,7 @@ fn the_consensus_hash_covers_exactly_the_must_match_settings() {
         f(&mut c);
         assert_ne!(c.consensus_hash(), h, "{what} must change the hash");
     }
-    let locals: Vec<(&str, Box<dyn Fn(&mut NodeConfig)>)> = vec![
+    let locals: Vec<(&str, Change)> = vec![
         ("cut_lag_s", Box::new(|c| c.cut_lag_s = 0.5)),
         ("fetch_retry_ns", Box::new(|c| c.fetch_retry_ns += 1)),
         ("keep_s", Box::new(|c| c.keep_s = 1.0)),
