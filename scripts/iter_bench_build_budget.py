@@ -30,6 +30,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from iter_bench_logic_edit import flags_from_build_rs  # noqa: E402
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cargo_output import target_dir
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WASM = "wasm32-unknown-unknown"
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -127,7 +130,7 @@ def main():
             TEMPLATE.format(deps=deps))
         mine = []
         for r in range(reps):
-            tgt = os.path.join(work, "target-%s-%d" % (name, r))
+            tgt = target_dir(ROOT, "build-budget/" + os.path.basename(out) + "/%s-%d" % (name, r))
             env = dict(os.environ)
             env.pop("RUSTFLAGS", None)
             env.update({"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(codegen), "CARGO_INCREMENTAL": "0",

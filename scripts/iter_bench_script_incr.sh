@@ -16,7 +16,7 @@ log="$out/incr.log"
 {
   echo "# $(date -u +%FT%TZ) $(rustc -V) runs=$runs"
   for inc in true false; do
-    tgt="$work/target-$inc"
+    tgt="$(python "$wt/scripts/cargo_output.py" "$wt" "script-incr/$(basename "$out")/$inc")"
     build() {
       cargo rustc --release --lib --target wasm32-unknown-unknown --manifest-path "$work/tally/Cargo.toml" \
         --offline --message-format=short \

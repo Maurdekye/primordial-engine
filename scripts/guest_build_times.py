@@ -19,6 +19,9 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cargo_output import target_dir
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 W = "--target wasm32-unknown-unknown"
 # (module, workspace, cargo arguments, edited file, original line, edited line)
@@ -83,7 +86,8 @@ def main():
     print(f"RESULT guest build times on {label} ({rustc}; {os.cpu_count()} logical CPUs, jobs {jobs}); seconds, wall clock")
     print("RESULT | module | cold (fresh target) | no-op | one-line edit, min / max of %d |" % (2 * reps))
     print("RESULT |---|---|---|---|")
-    tmp = tempfile.mkdtemp(prefix="pe-guest-times-")
+    os.makedirs(target_dir(ROOT, "guest-times"), exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix="pe-guest-times-", dir=target_dir(ROOT, "guest-times"))
     try:
         for i, (name, ws, args, path, a, b) in enumerate(MODULES):
             env = env_for(os.path.join(tmp, f"t{i}"))  # every row starts cold

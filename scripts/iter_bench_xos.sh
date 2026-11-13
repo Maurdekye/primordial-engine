@@ -16,7 +16,7 @@ lamp_rel=tmp/repro/target-a/wasm32-unknown-unknown/release/lamp.wasm
 
 windows() {
   local tgt wt
-  tgt="$(pwd)/spikes/iter-bench/target/xos-win"
+  tgt="$(python scripts/cargo_output.py "$(pwd)" "xos-win-$(date +%s)-$$")"
   wt="$(mktemp -d)"
   git worktree add -q --detach "$wt" "$full"
   { echo "# $(date -u +%FT%TZ) windows rev=$full"

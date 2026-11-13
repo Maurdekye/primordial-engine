@@ -19,11 +19,14 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cargo_output import target_dir
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(ROOT, "spikes", "iter-bench")
 OUT = os.path.join(ROOT, "spikes", "out", "iter-bench")
-HOST = os.path.join(BENCH, "target", "host", "release", "iter-host.exe")
-TIMER = os.path.join(BENCH, "target", "tools", "release", "rustc-timer.exe")
+HOST = os.path.join(target_dir(ROOT, "iter-bench/host"), "release", "iter-host.exe")
+TIMER = os.path.join(target_dir(ROOT, "iter-bench/tools"), "release", "rustc-timer.exe")
 WASM = "wasm32-unknown-unknown"
 NATIVE = "x86_64-pc-windows-msvc"
 
@@ -127,7 +130,7 @@ def main():
     reps = int(args[args.index("--reps") + 1]) if "--reps" in args else 8
     guests = os.path.abspath(args[args.index("--guests") + 1]) if "--guests" in args else os.path.join(BENCH, "guests")
     tag = args[args.index("--tag") + 1] if "--tag" in args else ""
-    tgt_dir = os.path.join(BENCH, "target", "guests" if not tag else "guests-" + tag)
+    tgt_dir = target_dir(ROOT, "iter-bench/guests" if not tag else "iter-bench/guests-" + tag)
     os.makedirs(OUT, exist_ok=True)
     out_path = os.path.join(OUT, f"loop-{which}{'-' + tag if tag else ''}.jsonl")
     outf = open(out_path, "w", encoding="utf-8", newline="\n")
