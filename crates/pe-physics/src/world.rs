@@ -14,7 +14,8 @@ use box3d_rust::hull::{create_hull, make_box_hull};
 use box3d_rust::id::{BodyId, JointId};
 use box3d_rust::joint::{
     JointType, create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
-    joint_is_valid, joint_wake_bodies, motor_joint_set_angular_velocity, motor_joint_set_linear_velocity,
+    joint_get_body_a, joint_get_body_b, joint_is_valid, joint_wake_bodies, motor_joint_set_angular_velocity,
+    motor_joint_set_linear_velocity,
 };
 use box3d_rust::math_functions::{
     Pos, Quat, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform, is_normalized_quat,
@@ -637,6 +638,18 @@ impl PhysicsWorld {
     /// The kind of the joint under `key`.
     pub fn joint_kind(&self, key: JointKey) -> Option<JointKind> {
         self.joints.get(&key).map(|j| j.kind)
+    }
+
+    /// The objects the joint under `key` joins, its `a` end and then its `b` end, as it was made: `None` for an end
+    /// at the world anchor (a joint made with `b = None`, or a grab with `a = None`). `None` if there is no such
+    /// joint, or while the world is poisoned.
+    pub fn joint_objects(&self, key: JointKey) -> Option<(Option<ObjectId>, Option<ObjectId>)> {
+        if self.poisoned {
+            return None;
+        }
+        let joint = self.joints.get(&key)?;
+        let object = |body: BodyId| self.bodies.iter().find(|&(_, &b)| b == body).map(|(&id, _)| id);
+        Some((object(joint_get_body_a(&self.world, joint.id)), object(joint_get_body_b(&self.world, joint.id))))
     }
 
     /// Set a grab's target velocities (the hand's motion relative to `a`), waking both bodies.

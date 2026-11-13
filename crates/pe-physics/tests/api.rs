@@ -315,6 +315,27 @@ fn grabs() {
     assert!(h[0] > 2.9 && gap < 0.1, "hand {h:?}, ball {b:?}, gap {gap}");
 }
 
+/// A joint reports the objects it joins as it was made, an end at the world anchor as `None`, through an image
+/// restore and into a fresh world by a transfer (pe-replica moves a grab to its claim's new hand by it).
+#[test]
+fn joints_report_the_objects_they_join() {
+    let mut pw = jointed();
+    assert_eq!(pw.joint_objects(JointKey(10)), Some((Some(id(2)), Some(id(3)))));
+    assert_eq!(pw.joint_objects(JointKey(20)), Some((Some(id(4)), None)));
+    assert_eq!(pw.joint_objects(JointKey(30)), Some((None, Some(id(5)))));
+    assert_eq!(pw.joint_objects(JointKey(99)), None);
+    let image = pw.save_image().unwrap();
+    let transfer = pw.save_transfer().unwrap();
+    pw.remove_joint(JointKey(10)).unwrap();
+    assert_eq!(pw.joint_objects(JointKey(10)), None);
+    pw.restore_image(&image).unwrap();
+    assert_eq!(pw.joint_objects(JointKey(10)), Some((Some(id(2)), Some(id(3)))));
+    let fresh = PhysicsWorld::from_transfer(PhysicsConfig::engine(), &transfer, &transfer.check_hash()).unwrap();
+    assert_eq!(fresh.joint_objects(JointKey(30)), Some((None, Some(id(5)))));
+    pw.remove_body(id(3)).unwrap();
+    assert_eq!(pw.joint_objects(JointKey(10)), None, "a removed body takes its joints");
+}
+
 /// Images from elsewhere: refused before anything is written when their settings differ, and
 /// a world poisoned by a failed restore refuses everything until a good image is restored.
 #[test]
