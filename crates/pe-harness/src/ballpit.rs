@@ -234,7 +234,7 @@ pub struct BallPitRun {
 }
 
 impl BallPitRun {
-    /// The properties a ball-pit run must keep: P1, P2, P3, P4, P6, P8 and P15.
+    /// The properties a ball-pit run must keep: P1, P2, P3, P4, P6, P8, P15 and P16.
     pub fn violations(&self) -> Vec<Violation> {
         let t = &self.run.trace;
         let mut out = props::p1_agreement(t);
@@ -244,6 +244,24 @@ impl BallPitRun {
         out.extend(props::p6_no_abort(t));
         out.extend(props::p8_no_pause(t));
         out.extend(props::p15_source_contract(t));
+        out.extend(self.p16());
+        out
+    }
+
+    /// P16 (`changes`): each member's change records against its own final log, then final verdicts across members,
+    /// over the longest final log.
+    pub fn p16(&self) -> Vec<Violation> {
+        let mut out = Vec::new();
+        let mut verdicts = BTreeMap::new();
+        for (&n, vs) in &self.views {
+            let log = self.finals.get(&n).map_or(&[][..], |l| l.entries.as_slice());
+            let (ver, vio) = crate::changes::p16_member(n, vs, log);
+            out.extend(vio);
+            verdicts.insert(n, ver);
+        }
+        let longest = self.finals.values().map(|l| l.entries.as_slice()).max_by_key(|e| e.len()).unwrap_or(&[]);
+        let end = self.views.values().filter_map(|vs| vs.last().map(|x| x.0)).max().unwrap_or(0);
+        out.extend(crate::changes::p16_agree(end, &verdicts, longest));
         out
     }
 

@@ -496,6 +496,12 @@ impl<A: Agreement, R: NodeReplica> NodeUnderTest for SeamNode<A, R> {
                         let detail = format!("void of an entry not held, under cut {}", cut.height);
                         self.events.push(Ev::Breach { rule: "verdict", detail });
                     }
+                    // S2 v1.5: `void_reason` answers the reason the void was reported with.
+                    let said = self.agree.void_reason(&entry);
+                    if said != Some(reason) {
+                        let detail = format!("void_reason answers {said:?} for an entry voided {reason:?}");
+                        self.events.push(Ev::Breach { rule: "void_reason", detail });
+                    }
                     Ev::Voided {
                         entry: TraceEntry { author: node_of(&self.keys, &author), seq: trace_seq(&entry) },
                         by: Some((0, cut.height)),
