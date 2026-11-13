@@ -596,3 +596,19 @@ fn a_joiner_takes_gravity_and_origin_from_the_real_world_it_imports() {
     assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64), "the host's roots, the late drop included");
     assert_eq!(joiner.faults(), 0);
 }
+
+/// Each cut's root warms pe-world's leaf cache (world-model.md 6.4; @chunks-reviewer's Low on 5e7effd2): right after a
+/// cut every object's leaf is cached, so the next root rehashes only what changed, and every cached leaf is still the
+/// hash of its rows.
+#[test]
+fn a_cut_s_root_leaves_every_leaf_cached_and_true() {
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    let mut r = replica();
+    r.advance(Frame(64), &mut s);
+    let world = r.world().world();
+    let objects = world.store().objects();
+    assert_eq!(objects.len(), 3, "the floor and two balls");
+    assert!(objects.iter().all(|&id| world.store().cached_hash(id).is_some()), "every leaf is cached at the cut");
+    assert!(world.verify_tree_cache(DomainId(0)).is_ok(), "and every cached leaf is its rows' hash");
+}
