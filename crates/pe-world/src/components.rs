@@ -286,7 +286,20 @@ pub struct Hand {
     pub grip: f32,
     pub engaged: u8,
     pub has_prev: u8,
-    pub _pad: [u8; 6],
+    /// How the hand takes part in physics ([`hand_mode`]), its owner's choice (8.1): set only by the owner's
+    /// `HandMode` input.
+    pub mode: u8,
+    pub _pad: [u8; 5],
+}
+
+/// A hand's mode (8.1, D18b; @coordinator-opus ma93ce7600de1): a personal comfort choice, per member, on the hand.
+pub mod hand_mode {
+    /// "Closed hand": physical only while the hand is closed (its input's `engaged`, the grasp). The default.
+    pub const CLOSED_HAND: u8 = 0;
+    /// "Always within reach": always physical within reach.
+    pub const WITHIN_REACH: u8 = 1;
+    /// The largest valid mode.
+    pub const MAX: u8 = WITHIN_REACH;
 }
 
 impl Component for Hand {
@@ -303,7 +316,8 @@ impl Component for Hand {
             "grip": grip, F32, 1;
             "engaged": engaged, Bool, 1;
             "has_prev": has_prev, Bool, 1;
-            "_pad": _pad, U8, 6;
+            "mode": mode, U8, 1;
+            "_pad": _pad, U8, 5;
         ]
     }
 }
