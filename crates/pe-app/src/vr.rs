@@ -11,10 +11,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pe_render::gpu::GpuContext;
-use pe_render::present::{FrameSlot, Presenter};
+use pe_render::present::{Batch, FrameSlot, Presenter};
 use pe_render::scene::{RenderSettings, Renderer};
 use pe_render::window::EffectSink;
 use pe_render::{DisplayHand, LocalPresentation};
+use pe_seams::FrameView;
 use pe_xr::backend::{Backend, DepthInfo};
 use pe_xr::binding::{self, XrTargets};
 use pe_xr::guard::Guard;
@@ -29,7 +30,7 @@ use pe_xr::session::{EndReason, FrameRequest, FrameSink, Step, XrSession};
 /// A sink serves one session: after [`FrameSink::release_swapchain`] its targets are gone and it draws nothing. A
 /// restarted session comes from a new `open_vulkan`, with a new sink (@xr-eng's L1).
 pub struct VrSink {
-    slot: Arc<FrameSlot>,
+    views: ViewReader,
     presenter: Presenter,
     /// Built on the GPU context pe-xr made through the runtime (`VulkanVr`).
     renderer: Renderer,
@@ -50,7 +51,29 @@ impl VrSink {
         effects: Box<dyn EffectSink + Send>,
         extent: Option<[u32; 2]>,
     ) -> VrSink {
-        VrSink { slot, presenter, renderer, targets, effects, extent }
+        VrSink { views: ViewReader::new(slot), presenter, renderer, targets, effects, extent }
+    }
+}
+
+/// What a display frame reads from the frame slot (render.md 3): every view published since the last frame, once and
+/// in order, and the newest of them, which the cameras use. An empty batch keeps the last view, so the frame draws it
+/// again. A slot has one reader: views taken here are gone for anyone else.
+pub struct ViewReader {
+    slot: Arc<FrameSlot>,
+    last: Option<Arc<FrameView>>,
+}
+
+impl ViewReader {
+    pub fn new(slot: Arc<FrameSlot>) -> ViewReader {
+        ViewReader { slot, last: None }
+    }
+
+    /// The views since the last call and the newest view, or `None` before the first view.
+    pub fn take(&mut self) -> Option<(Batch, Arc<FrameView>)> {
+        let batch = self.slot.take();
+        let view = batch.views.last().cloned().or_else(|| self.last.clone())?;
+        self.last = Some(view.clone());
+        Some((batch, view))
     }
 }
 
@@ -65,18 +88,24 @@ fn local_presentation(frame: &FrameRequest<'_>) -> LocalPresentation {
 
 impl FrameSink for VrSink {
     /// Nothing is drawn before the first view, or for an image outside the swapchain: the frame ends with no layers.
+    ///
+    /// Every view published since the last frame feeds the display layer, the effects and the notices
+    /// (`Presenter::frame_batch`, render.md 3) before the target is checked, so an image outside the swapchain skips a
+    /// drawing, never a view.
     fn render(&mut self, frame: &FrameRequest<'_>) -> bool {
-        let Some(view) = self.slot.newest() else {
-            return false;
-        };
-        let Some(target) = self.targets.stereo(frame.image, frame.depth_image, self.extent) else {
+        let Some((batch, view)) = self.views.take() else {
             return false;
         };
         let cameras = binding::eye_cameras(&view.local_rig, frame.eyes);
-        let presented = self.presenter.frame(&view, &local_presentation(frame), &cameras);
+        let Some(presented) = self.presenter.frame_batch(&batch, &local_presentation(frame), &cameras) else {
+            return false;
+        };
         for c in &presented.effects {
             self.effects.command(c);
         }
+        let Some(target) = self.targets.stereo(frame.image, frame.depth_image, self.extent) else {
+            return false;
+        };
         self.renderer.render_stereo(&presented.scene, cameras, &target);
         true
     }
@@ -327,7 +356,29 @@ mod tests {
     use pe_render::display::DisplaySettings;
     use pe_render::effects::{EffectCommand, EffectSettings};
     use pe_render::scene::Environment;
-    use pe_seams::{HostTime, RigPose, SimRate};
+    use pe_seams::{Frame, FrameClock, HostTime, RigPose, SimRate};
+
+    /// The VR sink's reading (render.md 3): every view published since the last frame, once and in order, with the
+    /// newest for the cameras; an empty batch keeps the last view; nothing before the first view.
+    #[test]
+    fn the_sink_reads_every_view_once_and_keeps_the_last_for_an_empty_batch() {
+        let clock = crate::clock::LocalClock::new(HostTime(0), SimRate::DEFAULT);
+        let view = |f: u64| crate::standin::view_at(&clock as &dyn FrameClock, Frame(f));
+        let slot = Arc::new(FrameSlot::new());
+        let mut views = ViewReader::new(slot.clone());
+        assert!(views.take().is_none(), "nothing before the first view");
+        slot.publish(view(1));
+        slot.publish(view(2));
+        let (b, newest) = views.take().expect("views");
+        assert_eq!(b.views.iter().map(|v| v.frame.0).collect::<Vec<_>>(), [1, 2], "both, in order");
+        assert_eq!(newest.frame, Frame(2));
+        let (b, newest) = views.take().expect("the last view");
+        assert!(b.views.is_empty(), "taken once");
+        assert_eq!(newest.frame, Frame(2), "an empty batch keeps the last view");
+        slot.publish(view(3));
+        let (b, newest) = views.take().expect("views");
+        assert_eq!((b.first, b.views.len(), newest.frame), (2, 1, Frame(3)), "numbered on from the last batch");
+    }
     use pe_xr::backend::{EyePose, Fov, FrameTiming, ImageIndex, XrError};
     use pe_xr::fake::{Call, FakeRuntime, Op};
     use pe_xr::loader::NoRuntime;
