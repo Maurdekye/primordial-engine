@@ -1,0 +1,32 @@
+# start 2026-11-10T20:20:47Z Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+rustc 1.99.0 (b940084d7 2026-09-28)
+cargo 1.99.0 (5f94df478 2026-08-27)
+# which cc gcc: /usr/bin/cc /usr/bin/gcc 
+## patched wasmtime, CC=/bin/false (expected to build)
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+    Finished `release` profile [optimized] target(s) in 1m 16s
+exit=0
+## objects in the patched build directories (expect none):
+## traps on Linux
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":4096,"max_wasm_stack":1048576,"deepest_ok":1023,"expected":1023,"trap":"Some(UnreachableCodeReached) depth_global=4100"}
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":4096,"max_wasm_stack":8388608,"deepest_ok":1023,"expected":1023,"trap":"Some(UnreachableCodeReached) depth_global=4100"}
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":65536,"max_wasm_stack":1048576,"deepest_ok":16383,"expected":16383,"trap":"Some(UnreachableCodeReached) depth_global=65540"}
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":65536,"max_wasm_stack":8388608,"deepest_ok":16383,"expected":16383,"trap":"Some(UnreachableCodeReached) depth_global=65540"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":4096,"max_wasm_stack":1048576,"deepest_ok":59,"expected":59,"trap":"Some(UnreachableCodeReached) depth_global=4148"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":4096,"max_wasm_stack":8388608,"deepest_ok":59,"expected":59,"trap":"Some(UnreachableCodeReached) depth_global=4148"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":65536,"max_wasm_stack":1048576,"deepest_ok":962,"expected":962,"trap":"Some(UnreachableCodeReached) depth_global=65552"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":65536,"max_wasm_stack":8388608,"deepest_ok":962,"expected":962,"trap":"Some(UnreachableCodeReached) depth_global=65552"}
+{"kind":"fuel_trap","budget":1000000,"loop_iterations":166666,"fuel_left":-3,"trapped":true,"identical_3_runs":true}
+{"kind":"refuse","case":"import outside pe","result":Some("import from module \"wasi_snapshot_preview1\": only \"pe\" is allowed")}
+## patched wasmtime with debug-builtins (expected to FAIL with the PE compile_error)
+   Compiling wasmtime v50.0.1 (<repo>/.worktrees/logic/crates/pe-logic/vendor/wasmtime-50.0.1)
+error: the Primordial Engine copy of wasmtime has no C helpers: the `debug-builtins` feature is not available
+   --> <repo>/.worktrees/logic/crates/pe-logic/vendor/wasmtime-50.0.1/build.rs:114:1
+error: could not compile `wasmtime` (build script) due to 1 previous error
+exit=101
+## cargo tree: is cc anywhere in the patched graph? (expect nothing)
+warning: nothing to print.
+
+To find dependencies that require specific target platforms, try to use option `--target all` first, and then narrow your search scope accordingly.
+# end 2026-11-10T20:22:06Z

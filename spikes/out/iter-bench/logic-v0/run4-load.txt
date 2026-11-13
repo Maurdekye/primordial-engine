@@ -1,0 +1,5 @@
+# run4 2026-11-10T20:02:47Z other heavy holders at start:
+chunks-reviewer:20168 hb 2026-11-10T20:00:24Z bash <notes> <notes>
+vdw-physics:20626 hb 2026-11-10T20:01:46Z cargo test -q -p pe-physics
+# end 2026-11-10T20:05:09Z:
+world-chunks:22053 hb 2026-11-10T20:05:09Z cargo build --release

@@ -2240,7 +2240,12 @@ dependencies = [
 name = "pe-logic"
 version = "0.1.0"
 dependencies = [
+ "pe-core",
+ "pe-sdk",
  "pe-seams",
+ "pe-sim",
+ "wasm-encoder",
+ "wasmparser",
  "wasmtime",
 ]
 

@@ -1,0 +1,4 @@
+# run2 2026-11-10T19:58:21Z other heavy holders at start:
+shader-lang:18565 hb 2026-11-10T19:58:05Z cargo build --release --target x86_64-unknown-linux-musl --config target.x86_64-unknown-linux-musl.linker="rust-lld"
+# end 2026-11-10T19:58:55Z:
+world-chunks:18782 hb 2026-11-10T19:58:25Z bash target/guard.sh target/run2.txt --threads 4 --max-states 1500000000 ctl-unchecked n4-byz n4-byz-chain ctl-quorum ctl-nolock bound-n3-byz

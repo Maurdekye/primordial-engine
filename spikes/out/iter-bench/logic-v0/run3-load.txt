@@ -1,0 +1,4 @@
+# run3 2026-11-10T19:59:15Z other heavy holders at start:
+provenance-eng:19157 hb 2026-11-10T19:59:01Z python -I C:/Users/<user>/AppData/Local/Temp/tmp.CGmqb1ZjJ3/tree/scripts/audit_native.py --check --tree C:/Users/<user>/AppData/Local/Temp/tmp.CGmqb1ZjJ3/tree --md C:/Users/<user>/AppData/Local/Temp/tmp.CGmqb1ZjJ3/native-audit.md
+# end 2026-11-10T19:59:50Z:
+world-chunks:19613 hb 2026-11-10T19:59:46Z cargo build --release

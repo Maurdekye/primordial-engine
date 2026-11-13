@@ -1,0 +1,10 @@
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":4096,"max_wasm_stack":1048576,"deepest_ok":1023,"expected":1023,"trap":"Some(UnreachableCodeReached) depth_global=4100"}
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":4096,"max_wasm_stack":8388608,"deepest_ok":1023,"expected":1023,"trap":"Some(UnreachableCodeReached) depth_global=4100"}
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":65536,"max_wasm_stack":1048576,"deepest_ok":16383,"expected":16383,"trap":"Some(UnreachableCodeReached) depth_global=65540"}
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":65536,"max_wasm_stack":8388608,"deepest_ok":16383,"expected":16383,"trap":"Some(UnreachableCodeReached) depth_global=65540"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":4096,"max_wasm_stack":1048576,"deepest_ok":59,"expected":59,"trap":"Some(UnreachableCodeReached) depth_global=4148"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":4096,"max_wasm_stack":8388608,"deepest_ok":59,"expected":59,"trap":"Some(UnreachableCodeReached) depth_global=4148"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":65536,"max_wasm_stack":1048576,"deepest_ok":962,"expected":962,"trap":"Some(UnreachableCodeReached) depth_global=65552"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":65536,"max_wasm_stack":8388608,"deepest_ok":962,"expected":962,"trap":"Some(UnreachableCodeReached) depth_global=65552"}
+{"kind":"fuel_trap","budget":1000000,"loop_iterations":166666,"fuel_left":-3,"trapped":true,"identical_3_runs":true}
+{"kind":"refuse","case":"import outside pe","result":Some("import from module \"wasi_snapshot_preview1\": only \"pe\" is allowed")}

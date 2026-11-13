@@ -1,0 +1,18 @@
+# Builds and runs the patched vendored wasmtime (crates/pe-logic/vendor) on this host: JIT a module that
+# traps and one that returns, through Cranelift. Own workspace so the repo root workspace is untouched.
+[package]
+name = "vendorcheck"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wasmtime = { version = "=50.0.1", default-features = false, features = ["std", "runtime", "cranelift", "wat"] }
+
+[patch.crates-io]
+wasmtime = { path = "../../../../crates/pe-logic/vendor/wasmtime-50.0.1" }
+
+[profile.release]
+debug = false

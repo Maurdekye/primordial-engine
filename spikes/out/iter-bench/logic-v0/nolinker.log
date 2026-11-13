@@ -1,0 +1,23 @@
+# 2026-11-10T20:05:38Z CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=pe-no-such-linker.exe; rustc rustc 1.99.0 (b940084d7 2026-09-28)
+## 1. spikes/wasm-guests logic-v1 (no build.rs, no proc macro), release, wasm32
+error: package ID specification `logic-v1` did not match any packages
+
+help: a package with a similar name exists: `logic_v1`
+exit=101
+ls: cannot access '<repo>/spikes/iter-bench/target/nolinker/a/wasm32-unknown-unknown/release/*.wasm': No such file or directory
+## 2. control: with-buildrs (has build.rs)
+   Compiling with-buildrs v0.0.0 (<repo>\.worktrees\logic\spikes\iter-bench\logic-v0\nolinker\with-buildrs)
+error: linker `pe-no-such-linker.exe` not found
+note: the msvc targets depend on the msvc linker but `link.exe` was not found
+error: could not compile `with-buildrs` (build script) due to 1 previous error
+exit=101
+## 1b. rerun with the package name logic_v1
+   Compiling logic_v1 v0.0.1 (<repo>\.worktrees\logic\spikes\wasm-guests\logic-v1)
+    Finished `release` profile [optimized] target(s) in 1.38s
+exit=0
+-rw-r--r-- 2 <user> 197610 508 Nov 10 22:05 <repo>/spikes/iter-bench/target/nolinker/a/wasm32-unknown-unknown/release/logic_v1.wasm
+## 3. the 6.4k-line benchmark guest logic_wasm, rel-fast, fresh target dir
+   Compiling logic_wasm v0.0.1 (<repo>\.worktrees\logic\spikes\iter-bench\guests\logic_wasm)
+    Finished `rel-fast` profile [optimized] target(s) in 3.62s
+exit=0
+-rw-r--r-- 2 <user> 197610 207950 Nov 10 22:05 <repo>/spikes/iter-bench/target/nolinker/c/wasm32-unknown-unknown/rel-fast/logic_wasm.wasm

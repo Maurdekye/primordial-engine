@@ -1,0 +1,5 @@
+# run2 2026-11-10T21:26:59Z cmd: spikes/iter-bench/target/logic-v0/release/logic-probe.exe cols spikes/iter-bench/target/cols_guest/wasm32-unknown-unknown/release/cols_guest.wasm ; holders at start:
+api-eng:66288 hb 2026-11-10T21:26:42Z cargo test --offline --test zz_sizes -- --nocapture
+shader-lang:64283 hb 2026-11-10T21:26:45Z cargo test --release --features insecure-deterministic-rng --test quic a_seeded
+# end 2026-11-10T21:27:21Z:
+api-eng:66288 hb 2026-11-10T21:26:42Z cargo test --offline --test zz_sizes -- --nocapture
