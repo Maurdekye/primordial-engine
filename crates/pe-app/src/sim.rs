@@ -16,9 +16,10 @@ use std::time::{Duration, Instant};
 
 use pe_render::present::FrameSlot;
 use pe_replica::{DriveReport, Driver};
-use pe_seams::{Agreement, Frame, FrameClock, FrameView, HostTime, Replica, SelfTest, SimRate};
+use pe_seams::{Agreement, Frame, FrameClock, FrameView, HandFeed, HostTime, MemberKey, Replica, SelfTest, SimRate};
 
 use crate::clock::HostClock;
+use crate::local::{self, Chain};
 
 /// The replica's per-call budget (app.md 3; S2 v1.1), in simulated time. It is never below two frames at the world's
 /// rate, because real time adds a frame per tick and a budget of one frame never catches up. Above that floor it
@@ -97,6 +98,9 @@ pub struct SimStats {
     pub unsent: u64,
     /// S3's events, drained each tick. pe-diverge takes them once it lands.
     pub events: u64,
+    /// The local player's hand inputs agreement took, and those it refused (step 2).
+    pub inputs: u64,
+    pub inputs_refused: u64,
     pub votes: u64,
     pub finalized: u64,
 }
@@ -115,6 +119,14 @@ pub struct Sim {
     /// Ticks into the current hold.
     hold: Option<u64>,
     stats: SimStats,
+    /// The local player: this member's chain, and the hands step 2 reads. `None` runs no local input.
+    local: Option<Local>,
+}
+
+/// The local player's chain and hand feed (app.md 3, step 2).
+struct Local {
+    chain: Chain,
+    hands: Arc<dyn HandFeed>,
 }
 
 impl Sim {
@@ -138,7 +150,15 @@ impl Sim {
             published: None,
             hold: None,
             stats: SimStats::default(),
+            local: None,
         }
+    }
+
+    /// The local player `me`: a new chain on agreement's line from `nonce` (`local::chain_nonce`), and the hands
+    /// whose inputs step 2 submits each tick.
+    pub fn with_local(mut self, me: MemberKey, nonce: [u8; 32], hands: Arc<dyn HandFeed>) -> Sim {
+        self.local = Some(Local { chain: Chain::new(self.agree.line(), me, nonce), hands });
+        self
     }
 
     pub fn stats(&self) -> &SimStats {
@@ -156,6 +176,15 @@ impl Sim {
             self.stats.before_frame_0 += 1;
             return None;
         };
+        // 2. Local input: both hands at frame `p`'s host time, through the newest view's rig, one input entry each.
+        // Before the first view the hands' objects are not known yet, so nothing goes in.
+        if let (Some(l), Some(view)) = (&mut self.local, &self.published) {
+            let at = self.clock.host_time_of(p);
+            let domain = self.replica.domain();
+            let (took, refused) = local::submit_hands(&mut l.chain, &*l.hands, view, at, p, domain, &mut *self.agree);
+            self.stats.inputs += u64::from(took);
+            self.stats.inputs_refused += u64::from(refused);
+        }
         // 3. Agreement's time. Its messages go to the network's outbox once pe-net's runner is wired.
         self.stats.unsent += self.agree.tick(now, &*self.clock).len() as u64;
         // 4. The replica, through pe-replica's driver. `present` is exclusive, so frame `p` is simulated.
@@ -318,6 +347,53 @@ mod tests {
             v.objects.iter().filter(|o| o.flags.contains(ViewFlags::OWN_HAND)).map(|o| o.hand_of).collect();
         assert_eq!(hands.len(), 2, "{hands:?}");
         assert!(hands.contains(&Some((me, Hand::Left))) && hands.contains(&Some((me, Hand::Right))), "{hands:?}");
+    }
+
+    /// Both of the local player's hands, tracked and open, at fixed rig-frame poses either side of `centre`.
+    struct StillHands([f32; 3]);
+
+    impl pe_seams::HandFeed for StillHands {
+        fn hand_at(&self, hand: pe_seams::Hand, at: HostTime) -> Option<pe_seams::HandInput> {
+            let x = if hand == pe_seams::Hand::Left { -0.2 } else { 0.2 };
+            Some(pe_seams::HandInput {
+                hand,
+                source: pe_seams::HandSource::Tracked,
+                sampled_at: at,
+                tracked: true,
+                pose: pe_seams::RigPose {
+                    position: [self.0[0] + x, self.0[1], self.0[2]],
+                    orientation: [0.0, 0.0, 0.0, 1.0],
+                },
+                linear_velocity: None,
+                angular_velocity: None,
+                grip: 0.0,
+                closed: false,
+                discontinuity: 0,
+            })
+        }
+    }
+
+    /// Step 2 (app.md 3; xr.md 5.2): with the local player's hands fed, each tick submits one input entry per tracked
+    /// hand on this member's chain, and the hand objects move to the fed poses in the world, through the rig (at the
+    /// origin for now), which is where a second machine sees them.
+    #[test]
+    fn the_local_players_hands_move_to_their_fed_poses() {
+        use pe_seams::{Hand, Offset, Pos};
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let mut s = s.with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])));
+        for f in 1..=4 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        assert_eq!((s.stats().inputs, s.stats().inputs_refused), (6, 0), "two a tick once the first view is out");
+        let v = slot.newest().expect("published");
+        for (side, x) in [(Hand::Left, -0.2), (Hand::Right, 0.2)] {
+            let o = v.objects.iter().find(|o| o.hand_of == Some((me, side))).expect("the hand");
+            let want = Pos::ORIGIN.checked_add(Offset([x, 1.0, -0.4])).expect("in range");
+            let d = (o.pos - want).0;
+            assert!(d.iter().all(|c| c.abs() < 1e-4), "{side:?} is {d:?} off");
+        }
     }
 
     fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
