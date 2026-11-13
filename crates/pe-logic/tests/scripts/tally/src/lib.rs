@@ -168,7 +168,20 @@ pe_sdk::system! {
     }
 }
 
+pe_sdk::component! {
+    /// 24-byte rows, which do not divide the write-back's 256-byte blocks: row 10 straddles the first boundary.
+    pub struct Wide { flag: u64, b: u64, tail: u64 }
+}
+
+pe_sdk::system! {
+    fn widen(stage: PostPhysics, read: [], write: [w: Wide]) |_ctx, me| {
+        if me.w.flag != 0 {
+            me.w.tail += 1;
+        }
+    }
+}
+
 pe_sdk::script!(
-    components: [Counter, Doubled, Spawner, Child, Dice, Trouble, Sneak, Peeked],
-    systems: [count, double, spawn, reap, roll, trouble, sneak, peek],
+    components: [Counter, Doubled, Spawner, Child, Dice, Trouble, Sneak, Peeked, Wide],
+    systems: [count, double, spawn, reap, roll, trouble, sneak, peek, widen],
 );

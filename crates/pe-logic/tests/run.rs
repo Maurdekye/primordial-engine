@@ -413,3 +413,81 @@ fn a_column_a_script_declared_read_is_copied_in_again_whatever_it_wrote_there() 
         assert_eq!(u32s(&w.row("Peeked", o).unwrap()), [5], "peek saw the store's row, not the forged write");
     });
 }
+
+#[test]
+fn the_write_back_finds_exactly_the_changed_rows_in_runs_and_gaps() {
+    big_stack(|| {
+        // 1000 objects whose counter steps by 0, but for two: only their rows change, though the 256-byte blocks
+        // around them hold many unchanged rows (column_raw, N12).
+        let mut w = World::new(RunSettings::default());
+        for k in 1..=1000u128 {
+            let step = if k == 500 || k == 777 { 1 } else { 0 };
+            if k == 3 {
+                // A gap in the first rows: `double`'s first batch is not one run of the Counter column.
+                w.object(k, &[("Counter", counter(7, step))]);
+            } else {
+                w.object(k, &[("Counter", counter(7, step)), ("Doubled", le(&[14], &[8]))]);
+            }
+        }
+        // A gap: objects with a Counter and no Doubled, so `double`'s batch is not one run of the Counter column.
+        for k in [2000u128, 2002] {
+            w.object(k, &[("Counter", counter(1, 1))]);
+        }
+        w.object(2001, &[("Counter", counter(3, 0)), ("Doubled", le(&[0], &[8]))]);
+        let (pre, _) = w.frame(1);
+        assert!(pre.faults.is_empty(), "{pre:?}");
+        let c = w.id("Counter");
+        let d = w.id("Doubled");
+        let o = ObjectId::from_u128;
+        let mut want =
+            vec![(c, o(500)), (c, o(777)), (c, o(2000)), (c, o(2002)), (d, o(500)), (d, o(777)), (d, o(2001))];
+        let mut got = pre.written.clone();
+        want.sort();
+        got.sort();
+        assert_eq!(got, want);
+        assert_eq!(u64s(&w.row("Doubled", o(2001)).unwrap()), [6]);
+        assert_eq!(u32s(&w.row("Counter", o(2002)).unwrap()), [2, 1]);
+        assert_eq!(w.row("Doubled", o(2000)), None);
+        assert_eq!(w.row("Doubled", o(3)), None);
+        assert_eq!(u64s(&w.row("Doubled", o(4)).unwrap()), [14]);
+    });
+}
+
+#[test]
+fn a_change_only_in_the_tail_of_a_row_that_straddles_a_block_is_written() {
+    big_stack(|| {
+        // Wide rows are 24 bytes: row 10 holds bytes 240..264 of the batch's column, across the first 256-byte
+        // boundary, and its `tail` (bytes 256..264) is the only change: block 0 compares equal, block 1 does not
+        // (shader-reviewer on 569cf551).
+        let mut w = World::new(RunSettings::default());
+        for k in 1..=40u128 {
+            let flag = u64::from(k == 11);
+            w.object(k, &[("Wide", le(&[flag, 5, 0], &[8, 8, 8]))]);
+        }
+        let (_, post) = w.frame(1);
+        assert!(post.faults.is_empty(), "{post:?}");
+        let o = ObjectId::from_u128;
+        assert_eq!(post.written, vec![(w.id("Wide"), o(11))]);
+        assert_eq!(u64s(&w.row("Wide", o(11)).unwrap()), [1, 5, 1]);
+        assert_eq!(u64s(&w.row("Wide", o(12)).unwrap()), [0, 5, 0]);
+    });
+}
+
+#[test]
+fn finding_rows_is_one_merge_walk_per_column_per_call_whatever_the_batches() {
+    big_stack(|| {
+        // Enough objects for several batches of `count` and `double`. Linear: `count` walks Counter twice (the bound
+        // objects, then their rows), `double` walks Counter and Doubled twice each: 6 N steps. A walk per batch
+        // from row 0 adds about N (B - 1) / 2 steps per column (shader-reviewer on 569cf551).
+        const N: u128 = 6000;
+        let mut w = World::new(RunSettings::default());
+        for k in 1..=N {
+            w.object(k, &[("Counter", counter(1, 1)), ("Doubled", le(&[2], &[8]))]);
+        }
+        let (pre, _) = w.frame(1);
+        assert!(pre.faults.is_empty(), "{pre:?}");
+        assert!(pre.batches >= 6, "want several batches per system: {}", pre.batches);
+        assert!(pre.join_steps <= 6 * N as u64, "{} steps for {N} objects", pre.join_steps);
+        assert_eq!(u64s(&w.row("Doubled", ObjectId::from_u128(N)).unwrap()), [4]);
+    });
+}

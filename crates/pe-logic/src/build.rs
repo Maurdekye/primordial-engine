@@ -178,6 +178,25 @@ fn canonical(p: &Path) -> PathBuf {
     s.strip_prefix(r"\\?\").map(PathBuf::from).unwrap_or(c)
 }
 
+/// Every file under `dir/src` (sources, and anything `include!` may bring in), relative to `dir`, in a stable order.
+fn src_files(dir: &Path) -> Vec<PathBuf> {
+    fn walk(root: &Path, at: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(root.join(at)) else { return };
+        for e in entries.flatten() {
+            let rel = at.join(e.file_name());
+            match e.file_type() {
+                Ok(t) if t.is_dir() => walk(root, &rel, out),
+                Ok(t) if t.is_file() => out.push(rel),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, Path::new("src"), &mut out);
+    out.sort();
+    out
+}
+
 /// The pe-sdk of the engine's own source tree, for callers that build from it (tests, the dev engine).
 pub fn engine_sdk() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("pe-sdk")
@@ -219,6 +238,32 @@ pub fn build(crate_dir: &Path, sdk: &Path, target_dir: &Path, offline: bool) -> 
     if let Some(h) = cargo_home {
         rustflags.push(format!("--remap-path-prefix={}=/cargo", h.display()));
     }
+    // Below a remapped folder the host's separator survives: Windows wrote `/pe-sdk\src\guest.rs` and `src\lib.rs`
+    // into panic locations where Linux writes `/pe-sdk/src/guest.rs` and `src/lib.rs`, so the same script built to
+    // different bytes on the two (3 bytes of the lamp, scripts/iter_bench_xos.sh). On Windows every file under
+    // `src` (sources and `include!`d files) is therefore remapped whole to its forward-slash name, after the folders, so it wins; the script's
+    // own files also by the relative path cargo hands rustc. A module brought in from elsewhere with `#[path]` is
+    // not covered: its bytes may then differ by OS, which the module hash comparison (6.2) reports as a build fault.
+    if cfg!(windows) {
+        for (dir, to) in [(sdk_dir.as_path(), "/pe-sdk"), (crate_dir, "/script")] {
+            let mut forms = vec![canonical(dir), lexical(dir)];
+            forms.dedup();
+            for rel in src_files(dir) {
+                let fwd: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                let fwd = fwd.join("/");
+                for f in &forms {
+                    rustflags.push(format!("--remap-path-prefix={}={to}/{fwd}", f.join(&rel).display()));
+                }
+                if to == "/script" {
+                    rustflags.push(format!("--remap-path-prefix={}={fwd}", rel.display()));
+                }
+            }
+        }
+    }
+    // The per-file remaps make the flags long on Windows (114,652 characters for 301 files, measured): no 32,767-
+    // character cap applies, because std passes its own environment block to CreateProcessW and cargo moves a long
+    // rustc command line into an argument file [V `tests/lamp.rs`, `a_script_with_many_files_builds...`].
+    let encoded = rustflags.join("\u{1f}");
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.arg("rustc")
         .arg("--release")
@@ -236,7 +281,7 @@ pub fn build(crate_dir: &Path, sdk: &Path, target_dir: &Path, offline: bool) -> 
     }
     cmd.arg("--").arg("-F").arg("unsafe_code");
     // The flags go through CARGO_ENCODED_RUSTFLAGS (0x1f-separated), so paths with spaces survive.
-    cmd.env("CARGO_ENCODED_RUSTFLAGS", rustflags.join("\u{1f}"))
+    cmd.env("CARGO_ENCODED_RUSTFLAGS", encoded)
         .env_remove("RUSTFLAGS")
         // The environment can override a profile: CARGO_INCREMENTAL beats `incremental`, and a wrapper (sccache and
         // the like) sits between cargo and rustc. CARGO_ENCODED_RUSTFLAGS already beats every other flags source.
