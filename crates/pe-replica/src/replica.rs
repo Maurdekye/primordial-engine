@@ -299,6 +299,16 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.floor.as_ref().map_or(Frame(0), |f| f.cut.at.frame)
     }
 
+    /// The world model's state at `Cv`, the newest final cut whose root this replica matched, and that cut's frame
+    /// (@engine-architect, m2900ddc05c01, for pe-api's `WorldSource::final_`). `None` before the first agreed finalize.
+    /// It is not the floor's: the floor moves to a final cut I diverged at too. It is exactly the cut's entries, never
+    /// a prediction. A rollback, a replay or an import leaves it as it is, and only a finalize that answers `Agreed`
+    /// moves it.
+    pub fn agreed_state(&self) -> Option<(Frame, &W::Saved)> {
+        let (cut, root) = self.cv.as_ref()?;
+        self.held.get(root).map(|h| (cut.at.frame, &h.world))
+    }
+
     fn is_cut_frame(&self, f: Frame) -> bool {
         f.0.is_multiple_of(self.config.cut_every) || self.replay.as_ref().is_some_and(|r| r.cut.at.frame == f)
     }
