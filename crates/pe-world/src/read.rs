@@ -143,6 +143,12 @@ impl WorldSnapshot {
         self.blobs.get(r)
     }
 
+    /// The machine's blob store, which every world and snapshot on the machine shares: pe-app's `put_blobs` puts a
+    /// change's blobs into it before the change is queued (api.md 9.2; app.md 3.1).
+    pub fn blob_store(&self) -> &BlobStore {
+        &self.blobs
+    }
+
     /// The governance member list (5.4) with each member's permission bits ([`crate::perm`]), in key order: what
     /// the edit path checks at this frame. Roles are not stored, only their bits.
     pub fn members(&self) -> impl Iterator<Item = (pe_core::MemberKey, u32)> + '_ {

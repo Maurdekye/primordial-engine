@@ -12,6 +12,7 @@
 //! The binary (`src/main.rs`) runs a world alone on the desktop. The network, VR, MCP, configuration and invites join
 //! as their crates land.
 
+pub mod api;
 pub mod clock;
 pub mod genesis;
 pub mod local;
