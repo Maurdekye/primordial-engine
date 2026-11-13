@@ -307,12 +307,45 @@ frames, are unchanged (n4-byz 65.7 M).
   skipping the leader of the latest view that timed out, as the proposer's committed chain shows it (a view between
   two consecutive committed blocks' views had no certified block; that view's leader is derived the same way from
   the chain before it). Every member derives the same leader from the same committed prefix. On in every liveness
-  check (`live()`); the safety checks keep plain rotation, since the voting rules don't depend on who leads. The
-  Byzantine member may lead a view if any protocol-following member's chain names it.
+  check (`live()`); the safety checks keep plain rotation. That loses nothing (@design-reviewer, Q2): the vote rule
+  is one vote per view plus the lock and the cut checks, so the most a leader rule can cause is two proposals in one
+  view, when members disagree on the leader. A Byzantine leader that equivocates already produces exactly that, and
+  n4-byz covers it. The Byzantine member may lead a view if any protocol-following member's chain names it.
   - [V] All the liveness checks hold with it, including n2-live-early-h2 (two content cuts, 2 early timeouts) and
     n3-live-h2. bound-n2-early still fails at 7 views (2P + 2 unchanged).
   - Control **ctl-skipall** (reputation without its window: skip every member that ever timed out) fails "every
     content cut ends final". At n = 2, once both members have a timed-out view behind a committed block, nobody leads.
+
+### v0.2 fix (@design-reviewer, mbd55865e1a49)
+
+Results in `results/v0.2-fix.txt`. The review found the bounded-progress precondition hid cases. A cut was excused
+when its rotation leader wasn't protocol-following, without checking who proposed it. Every fault check also had one
+content height, so `h + 2` excused every entry.
+
+- **The proposer is on `Block`** (`Block::proposer`; `Path::proposers[k]`).
+- **The property, restated:** an honest entry that every honest member held (with its earlier chain) at certified
+  height h is covered by **the first final cut at height h + 2 or above that a protocol member proposed, with a
+  frame above the entry's stamp**. A faulty proposer's cut is no longer an excuse: the property checks that the next
+  protocol member's cut recovers the entry.
+  - The stamp condition is a definition gap that n3-silent-progress found: m1.3, stamped 7, can't be in a cut at
+    frame 6 under any rule.
+  - `h_now`, the height an entry is "held at", is the *highest* certified height any honest member knows. That is the
+    weakest choice, a deadline that comes as late as possible.
+- **The leader, option (b):** derived from the commits the proposal itself certifies (`committed_in`: the highest
+  ancestor whose child in the proposal's certified chain was proposed in the very next view), as DiemBFT v4 does.
+  Proposer and voters compute it from the same data, whatever each has committed itself. **Voters check it**
+  (`leader_ok` in the vote rule), so the model now sees a proposal refused for naming the wrong leader.
+- **Checks with a fault and three content heights** [V]:
+  - **n3-silent-progress** (3 members, one silent, one honest author, three content heights): exhaustive, 34.0 M
+    states, 167 s, all properties hold.
+  - **n4-byz-progress** (4 members, Byzantine proposer that may leave the honest entry out, three content heights,
+    fixed frames): depth bound 15, the length of the control's shrunk counterexample. **Not finished locally:** the
+    run stopped at the 540 s timeout with 35.3 M states and no violation. The full-suite run will give its row.
+  - **walk-n4-progress** (the same configuration, random walks for 120 s): 13.8 M states, depth up to 53, all
+    properties hold.
+- **Control ctl-skipafterfaulty** (after a faulty proposer's cut, a proposer adds nothing, so entries carried over
+  from before it stay out): fails the property, 7.8 M states at depth bound 20, a 15-step counterexample after
+  shrinking. ctl-ownonly still fails it (16 steps after shrinking).
 
 ## Not in v0
 

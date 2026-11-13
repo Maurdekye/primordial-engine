@@ -1,0 +1,56 @@
+# v0.2 fix (design-reviewer mbd55865e1a49), runs on 2026-11-13, release, 4 threads, heavy.sh, idle priority
+# tree: bb593bfe + the depth/walk edits in this commit
+## target/r3.txt
+check                  states     generated  depth   seconds  result
+n3-silent-progress     33990397     103576896     46     166.8  OK   all properties hold; examples found
+    3 members, one silent, one honest author, three content heights, bounded progress; q = 2; entries 0=m1.1 1=m1.2 2=m1.3
+all 1 check(s) met their expectation
+## target/r4.txt
+check                  states     generated  depth   seconds  result
+ctl-ownonly             94424        281057     30       1.0  OK   counterexample as expected: "progress: an entry all hold at h is covered by h + 2"
+    a proposer covers only its own entries; q = 2; entries 0=m1.1 1=m1.2
+    counterexample to "progress: an entry all hold at h is covered by h + 2" (24 steps as found, 16 after shrinking):
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Deliver(0, Entry { to: 0, e: 1 })
+      Propose(1, false)
+      Deliver(1, Propose { block: v2m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v2m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Observe(0, Cert { block: v2m1@3[-,0,-,-], root: true })
+      Propose(0, true)
+      Deliver(1, Propose { block: v2m1@3[-,0,-,-]>v3m0@9[-,0,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(0, Propose { block: v2m1@3[-,0,-,-]>v3m0@9[-,0,-,-], proot: true, tc: None, carried: 0 })
+      Observe(1, Cert { block: v2m1@3[-,0,-,-]>v3m0@9[-,0,-,-], root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v2m1@3[-,0,-,-]>v3m0@9[-,0,-,-]>v4m1@12[-,0,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(0, Propose { block: v2m1@3[-,0,-,-]>v3m0@9[-,0,-,-]>v4m1@12[-,0,-,-], proot: true, tc: None, carried: 0 })
+      Observe(0, Cert { block: v2m1@3[-,0,-,-]>v3m0@9[-,0,-,-]>v4m1@12[-,0,-,-], root: true })
+ctl-skipafterfaulty      7823280     115880118     20     140.0  OK   (every behaviour of up to 20 steps) counterexample as expected: "progress: an entry all hold at h is covered by h + 2"
+    after a faulty proposer's cut, a proposer adds nothing; q = 3; entries 0=m1.1 1=m1.2 2=m1.3 3=f.1a
+    counterexample to "progress: an entry all hold at h is covered by h + 2" (20 steps as found, 15 after shrinking):
+      AdvPropose(2, Propose { block: v5m0@3[3,0,-,-], proot: true, tc: None, carried: 9 })
+      Deliver(2, Entry { to: 2, e: 1 })
+      Deliver(2, Entry { to: 2, e: 2 })
+      Deliver(3, Entry { to: 3, e: 0 })
+      AdvPropose(2, Propose { block: v1m0@3[-,-,-,-], proot: true, tc: None, carried: 0 })
+      AdvPropose(3, Propose { block: v1m0@3[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Observe(1, Cert { block: v1m0@3[-,-,-,-], root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v1m0@3[-,-,-,-]>v2m1@6[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(2, Propose { block: v1m0@3[-,-,-,-]>v2m1@6[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Observe(2, Cert { block: v1m0@3[-,-,-,-]>v2m1@6[-,-,-,-], root: true })
+      Propose(2, false)
+      Deliver(1, Propose { block: v1m0@3[-,-,-,-]>v2m1@6[-,-,-,-]>v3m2@9[3,2,-,-], proot: true, tc: None, carried: 15 })
+      Deliver(2, Propose { block: v1m0@3[-,-,-,-]>v2m1@6[-,-,-,-]>v3m2@9[3,2,-,-], proot: true, tc: None, carried: 15 })
+      Observe(1, Cert { block: v1m0@3[-,-,-,-]>v2m1@6[-,-,-,-]>v3m2@9[3,2,-,-], root: true })
+all 2 check(s) met their expectation
+## target/r6.txt
+check                  states     generated  depth   seconds  result
+walk-n4-progress     13772357      13772357     53     120.1  OK   (random walks) all properties hold; examples found
+    twin of ctl-skipafterfaulty, unmutated, random walks for 120 s; q = 3; entries 0=m1.1 1=m1.2 2=m1.3 3=f.1a
+all 1 check(s) met their expectation
+## target/r7.txt
+check                  states     generated  depth   seconds  result
+## r7 (n4-byz-progress, depth 15): stopped by timeout 540 s, unfinished; last progress line:
+Checking (bounded). unique=35282799, visits=660211617

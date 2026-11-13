@@ -139,7 +139,8 @@ fn suite() -> Vec<Check> {
         // Bounded progress under a fault (@design-reviewer's v0.2 Medium): three content heights, so a faulty or silent
         // proposer's cut can come first and the next protocol member's cut must recover the entry.
         Check { name: "n3-silent-progress", model: Cuts::new(3, Silent, 6, 3, 1, none, 0).progress(), expect_fail: &[], random: false, depth: UNBOUNDED, what: "3 members, one silent, one honest author, three content heights, bounded progress" },
-        Check { name: "n4-byz-progress", model: Cuts::new(4, Byzantine, 5, 3, 1, quiet, 0).fixed_frames().progress(), expect_fail: &[], random: false, depth: Some(20), what: "4 members, Byzantine proposer that may leave the honest entry out, three content heights, bounded progress" },
+        Check { name: "n4-byz-progress", model: Cuts::new(4, Byzantine, 5, 3, 1, quiet, 0).fixed_frames().progress(), expect_fail: &[], random: false, depth: Some(15), what: "4 members, Byzantine proposer that may leave the honest entry out, three content heights, bounded progress" },
+        Check { name: "walk-n4-progress", model: Cuts::new(4, Byzantine, 5, 3, 1, quiet, 0).fixed_frames().progress(), expect_fail: &[], random: true, depth: UNBOUNDED, what: "twin of ctl-skipafterfaulty, unmutated, random walks for 120 s" },
         Check { name: "ctl-skipafterfaulty", model: Cuts::new(4, Byzantine, 5, 3, 1, quiet, 0).fixed_frames().progress().mutate(SkipAfterFaulty), expect_fail: &["progress: an entry all hold at h is covered by h + 2"], random: false, depth: Some(20), what: "after a faulty proposer's cut, a proposer adds nothing" },
         // Leader reputation (v0.2): on in every liveness check. Its control skips every member that ever timed out, so
         // at n = 2 after both have, nobody leads and the second content cut never gets its child.
