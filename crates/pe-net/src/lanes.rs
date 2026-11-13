@@ -451,10 +451,17 @@ impl Link {
         Some(out)
     }
 
+    /// Only a message that has been transmitted can be acknowledged: an ack (replayed, or from a peer acking
+    /// ahead) never drops one still queued (found by the sequence fuzz target, @design-reviewer's ask).
     fn apply_acks(&mut self, i: usize, next: u64, ranges: &[(u64, u64)]) {
         let pend = &mut self.pending[i];
-        let acked: Vec<u64> =
-            pend.keys().copied().filter(|s| *s < next || ranges.iter().any(|(a, b)| (*a..*b).contains(s))).collect();
+        let acked: Vec<u64> = pend
+            .iter()
+            .filter(|(s, p)| {
+                p.first_sent.is_some() && (**s < next || ranges.iter().any(|(a, b)| (*a..*b).contains(*s)))
+            })
+            .map(|(s, _)| *s)
+            .collect();
         for s in acked {
             pend.remove(&s);
         }
@@ -612,6 +619,26 @@ mod tests {
         let d = a.poll_datagram(ms(30), MAX, true).unwrap();
         assert_eq!(b.on_datagram(ms(30), &d).unwrap().messages.len(), 1);
         assert_eq!(b.on_datagram(ms(31), &d).unwrap().messages.len(), 0);
+    }
+
+    #[test]
+    fn an_ack_never_drops_a_message_not_yet_transmitted() {
+        // Found by the sequence fuzz target: an ack covering seqs this side has queued but not sent (replayed,
+        // or from a peer acking ahead) used to drop them unsent.
+        let (mut a, mut b) = (Link::new(LaneParams::default()), Link::new(LaneParams::default()));
+        for i in 0..4u8 {
+            a.send(Lane::Protocol, Bytes::from(vec![i; 40]), MAX).unwrap();
+        }
+        assert_eq!(deliver(&mut a, &mut b, ms(0), false).len(), 4);
+        let ack = b.poll_datagram(ms(20), MAX, true).expect("b acknowledges seqs 0..4");
+        let mut c = Link::new(LaneParams::default());
+        c.set_open(false, true); // before the welcome: c queues, sends nothing
+        c.send(Lane::Protocol, Bytes::from_static(b"queued"), MAX).unwrap();
+        c.on_datagram(ms(21), &ack).unwrap();
+        assert_eq!(c.queued(ms(21)).0[0], 6, "the queued message survives an ack of its seq");
+        // The same ack still clears a's transmitted messages.
+        a.on_datagram(ms(21), &ack).unwrap();
+        assert_eq!(a.queued(ms(21)).0[0], 0);
     }
 
     #[test]
