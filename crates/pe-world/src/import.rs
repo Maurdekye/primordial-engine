@@ -10,7 +10,7 @@ use pe_sim::{ComponentDesc, ComponentId, FieldKind, RowVersion, WorldTransform};
 
 use crate::components::ids;
 use crate::input::{HandPose, InputSettings, Pack};
-use crate::script::{AssetId, ModuleRow};
+use crate::script::AssetId;
 use crate::tree::{schema_hash, table, table_hash, table_record};
 use crate::world::{Claim, Tombstone, World};
 
@@ -484,11 +484,19 @@ impl World {
                 }
             }
             table::MODULES => {
-                let mut m = BTreeMap::new();
+                let (mut m, mut p) = (BTreeMap::new(), BTreeMap::new());
                 for (k, v) in entries {
-                    m.insert(<AssetId>::try_from(k).ok()?, ModuleRow::from_bytes(v)?);
+                    let a = <AssetId>::try_from(k).ok()?;
+                    let (current, pending) = crate::script::modules_value_from(v)?;
+                    if let Some(c) = current {
+                        m.insert(a, c);
+                    }
+                    if let Some(c) = pending {
+                        p.insert(a, c);
+                    }
                 }
                 self.modules = Arc::new(m);
+                self.pending = Arc::new(p);
             }
             table::GOVERNANCE => {
                 let mut m = BTreeMap::new();

@@ -386,13 +386,13 @@ which fixes the origin's role deliberately.
   small fixed values below 2^32. A script's component gets `u128::from_le_bytes(BLAKE3("pe.component" ‖ V ‖ name ‖
   schema hash)[..16])` (the schema hash is 6.6's BLAKE3 hash of the description, which has no id in it, so the
   derivation is not circular: pe-sim's own XXH64 schema hash covers the id and is not used here; @iter-bench
-  ma47f902e5901), where **V is the content hash of one script version**, the hash of its source tree
-  (@coordinator-opus mf9dbcfe481ea and me5689a5c645c, @iter-bench m6402c933f295), not the stable asset id: this
-  supersedes r7's asset-keyed ids. Every version has its own ids, and a commit **re-keys** the old version's rows to
-  the new ones in its own transaction (7.9); a future per-copy fork is the same operation on one copy's rows. An id
-  below 2^32 is engine space and is refused at `Register` (a chance of 2^-96). Two commits on two branches can never
-  give one id two meanings: the same id means the same description everywhere. `Register` of an id already registered
-  with the same description is a no-op; with a different one (a collision) it refuses the transaction.
+  ma47f902e5901), where **V is the content hash of one script version**, the hash of its source archive (one blob,
+  logic.md 4.1a; @coordinator-opus mf9dbcfe481ea and me5689a5c645c, @iter-bench m6402c933f295), not the stable asset
+  id: this supersedes r7's asset-keyed ids. Every version has its own ids, and a commit **re-keys** the old version's
+  rows to the new ones in its own transaction (7.9); a future per-copy fork is the same operation on one copy's rows.
+  An id below 2^32 is engine space and is refused at `Register` (a chance of 2^-96). Two commits on two branches can
+  never give one id two meanings: the same id means the same description everywhere. `Register` of an id already
+  registered with the same description is a no-op; with a different one (a collision) it refuses the transaction.
 
 ### 3.3 Hierarchy and transforms
 
@@ -425,12 +425,17 @@ which fixes the origin's role deliberately.
   - **Display blobs** (a mesh to draw, textures, names, materials) may be missing. The entry applies, the `BlobRef`
     is stored as given, and the hash stays exact. Only drawing waits: a mesh is drawn as its bounding box. Shared
     simulation never reads a display blob, so no two machines can compute differently because of one.
-  - **Simulation blobs** (a collision hull, a script's source tree, anything shared logic or physics reads) are
+  - **Simulation blobs** (a collision hull, a script's source archive, anything shared logic or physics reads) are
     part of the entry for agreement. Small ones (up to 1 MiB, which covers hulls) travel *inside* the edit entry, so
-    any machine that has the entry has the bytes. Larger ones follow the rule of a late entry: a machine that lacks
-    the bytes at the entry's frame simulates as if that change had not arrived yet, which is a prediction, and
-    rewinds and replays from that frame when the bytes arrive. It does not vote for a cut that includes the entry
-    until it holds the bytes. Nobody waits; only that machine's view lags.
+    any machine that has the entry has the bytes. A script's source always does: `CommitScript` carries the archive
+    itself, at most `MAX_SOURCE_BYTES` (7.9), and applying the commit puts it into the machine's blob store, on every
+    machine, so each can build the version; a refused commit stores nothing, and what a rollback leaves behind is
+    store garbage, pruned with the store (@coordinator-opus m3b68151991e0). Other blobs travel as references only so
+    far: a transaction's `blobs` list names them, and their bytes reach other machines by fetch (display blobs may be
+    missing, above) [I, the general in-entry carriage of hulls is not built]. Larger ones follow the rule of a late
+    entry: a machine that lacks the bytes at the entry's frame simulates as if that change had not arrived yet, which
+    is a prediction, and rewinds and replays from that frame when the bytes arrive. It does not vote for a cut that
+    includes the entry until it holds the bytes. Nobody waits; only that machine's view lags.
   - **A compiled module is never a blob** (@iter-bench, under Q3c [U mf7daea6446ca]: no machine runs another's
     build). The script's source is the simulation blob; each machine builds its own module from it, a local
     product that is never stored in the world, sent or fetched. Activation after each machine's own compile is
@@ -655,7 +660,7 @@ World
 
 - **Registry:** as 3.2.
 - **Modules** (@iter-bench's layout, WS-logic): one row per script asset id, holding
-  - the version: the source tree, a `SimBlobRef`;
+  - the version: the source archive (logic.md 4.1a), a `SimBlobRef`;
   - the toolchain and SDK hashes;
   - the author's module hash, as a plain 32-byte `Hash` field: advisory, for mismatch reports, never a blob
     reference;
@@ -951,13 +956,19 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     numbering is frozen: U8 0, U16 1, U32 2, U64 3, I8 4, I16 5, I32 6, I64 7, F32 8, F64 9, Bool 10, ObjectRef 11,
     BlobRef 12, SimBlobRef 13, Pos 14, MemberKey 15, EntryRef 16, Hash 17; a new kind takes the next number;
   - lines: no entries in M1;
-  - modules (slice D): key the script asset id (32); value `version entry (32) ‖ version op u32 ‖ source (hash 32 ‖
-    len u64) ‖ toolchain (32) ‖ sdk (32) ‖ author_module (32) ‖ component count u32 ‖ the version's component ids,
-    u128 each, strictly ascending (the tag among them) ‖ activate_at u64 ‖ faulted (a byte 0, or 1 ‖ frame u64 ‖
-    kind u8)`. V is `source.hash`, stored once (@chunks-reviewer's L1). Decoding is strict: a repeated or
-    out-of-order id, a faulted byte other than 0 or 1, or a kind that is not one of pe-logic's `Fault::code()`
-    values 1 to 13 (logic.md 3.6) does not decode; `HostStack` has no code, since it is one machine's own fault and
-    never world state;
+  - modules (slice D; pending commits since logic.md 6.2a): key the script asset id (32); value `flags u8` (bit 0: a
+    current row, bit 1: a pending commit; at least one), then `u32 len ‖ current row` if present, then the pending
+    commit if present. The current row is `version entry (32) ‖ version op u32 ‖ source (hash 32 ‖ len u64) ‖
+    toolchain (32) ‖ sdk (32) ‖ author_module (32) ‖ component count u32 ‖ the version's component ids, u128 each,
+    strictly ascending (the tag among them) ‖ activate_at u64 ‖ faulted (a byte 0, or 1 ‖ frame u64 ‖ kind u8)`. V is
+    `source.hash`, stored once (@chunks-reviewer's L1). Decoding is strict: a repeated or out-of-order id, a faulted
+    byte other than 0 or 1, or a kind that is not one of pe-logic's `Fault::code()` values 1 to 13 (logic.md 3.6) does
+    not decode; `HostStack` has no code, since it is one machine's own fault and never world state. The pending commit
+    is `version entry (32) ‖ op u32 ‖ author (32) ‖ source (hash 32 ‖ len u64) ‖ toolchain (32) ‖ sdk (32) ‖
+    author_module (32) ‖ count u32 ‖ component ids (u128 LE, ascending) ‖ c u64 ‖ D u64 ‖ count u32 ‖ voters (32 each,
+    ascending) ‖ count u32 ‖ attestations (voter 32 ‖ stamp u64, ascending, voters only) ‖ void u8 (0 none, 1
+    Unattested, 2 RekeyBlockedAtActivation, 3 RekeyTooLarge, 4 AuthorRevokedAtActivation) ‖ its frame u64 if not 0`. A
+    world with no scripts has no entries, so its root is unchanged.
   - governance: key the member key (32); value the permission bits `u32`;
   - claims: key the object id; value `hand u128 ‖ member (32) ‖ since u64 ‖ until u64`;
   - cooldowns: key `member (32) ‖ object id`; value `until u64`;
@@ -1359,23 +1370,68 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
   may be below 2^32 (`Invalid` otherwise). An id already registered with the same description and asset is a
   no-op; with another description or asset, the transaction is refused (a collision). The registry is a world
   table (5.4), rolled back like the rest; registered ids are never removed in M1.
-- **`CommitScript { script, base, source, toolchain, sdk, author_module, activate_at }`** needs `EDIT`.
+- **`CommitScript { script, base, source, archive, toolchain, sdk, author_module, activate_at }`** needs `EDIT`.
+  - **The source comes first, before any op of the transaction** (logic.md 4.1a; @coordinator-opus m9f5e6b2ce690,
+    m043445294e6a). `archive` is the version's source, a canonical archive, carried inside the entry; `source` is
+    its reference, derived from it when the entry is decoded (only the archive is encoded), so the two never
+    disagree. Over `MAX_SOURCE_BYTES` (256 KiB) the transaction is refused `TooLarge { limit }`, judged from the
+    length alone; then `pe_world::script::check_source` must accept the bytes, or it is refused `Invalid`. Either
+    way nothing changes and the old version keeps running. `check_source` is consensus code: what it accepts
+    decides which commits apply, so it changes only with pe-world's apply rules, and its tests pin accept and
+    refuse on exact bytes (a case-collision pair, a reserved name, a non-ASCII segment, `..`, a duplicate,
+    unsorted order, an archive over the cap). pe-logic's build service runs the same function before it unpacks.
+    The rules are 4.1a's: the magic `pe.src.v0`, files in strictly ascending byte order of path, every path `src/`
+    then segments of 1 to 64 bytes of `[a-z0-9_]`, the file segment a 1-61-byte stem plus `.rs`, a whole path at
+    most 128 bytes and 8 segments, `src` included (so it unpacks inside Windows's `MAX_PATH`), no Windows
+    reserved stem, `src/lib.rs` present, every file UTF-8 (`Cargo.toml` is not in the archive: the build service
+    writes it from one template).
+  - **The bytes come from the entry on every path that applies a commit:** live, a re-simulation after a late
+    entry, rung 1's replay, and pe-diverge's bundle replay all hold the entry and so the archive. Nothing may move
+    the source out of the entry without moving this check with it.
   - `activate_at` must equal the entry's frame stamp (logic.md 6.1); anything else is `Invalid`.
   - `base: None` makes a new script and is refused as `Stale` if the asset has a row. `base: Some(v)` must equal
     the row's version, or the op is refused as `Stale { precondition: OWN_CHECK, current, winner }`, with the row's
     version as `current` and its entry as `winner`: the loser rebases (R7).
-  - **V is the source tree's hash** (`source.hash`). A commit whose V any other asset has ever had is refused as
+  - **V is the source archive's hash** (`source.hash`). A commit whose V any other asset has ever had is refused as
     `Invalid` ("same version as asset X"), since the two would share every id, tag included (ruled,
     me5689a5c645c item 2 and m028c4bf1d412: any V it ever had; to revisit with logic on objects, where a copy is a
     reference). The check is exact and costs no history: V's tag id is registered, under another asset.
   - **V equal to the base's V** (a toolchain or SDK change only) re-keys nothing and moves no row version: the op
     only rewrites the modules row (m83562b197235, L4).
-  - The op writes the asset's modules row (6.6): version = this entry and op, the hashes, the component ids,
-    `activate_at`, and no faulted mark.
+  - **The op writes a pending commit, not the row** (logic.md 6.2a; @coordinator-opus mce3f4443f229,
+    m8b7038c226ea): version = this entry and op, the author, the source, the hashes, the component ids, `c` = this
+    frame, the deadline `D = c + attest_window(source.len, hz)`, the voters at `c` (the governance members now, in
+    key order; `q` is the quorum over their count), and the author's own attestation stamped `c` if the author is a
+    voter. Nothing re-keys and nothing runs yet. A second commit to the asset while one is pending is refused
+    `Stale`, with the pending commit's entry as `winner`. The re-key's limits (`MAX_REKEY_ROWS`, the loss rule) are
+    judged now, so the author hears at once, and again at activation.
+  - **`AttestBuild { script, version, module }`** is a voter's statement that its build of the pending V passed
+    every check of logic.md 6.2 step 3 and gave `module`. It is the only op of its transaction, with no
+    preconditions, and needs no `EDIT`, only a place among the pending commit's voters. It is refused `Stale` if no
+    commit of that V is pending (none, another V, activated or voided), and `Invalid` for a module other than the
+    registered `author_module`, a non-voter's, or a voter's second. A refused attestation changes nothing; its
+    signed entry stays in the log as the evidence. A counted one records the voter and its stamp.
+  - **`end_frame(f)` activates, then voids** (in asset order). A pending commit with at least `q` counted
+    attestations, so `F` is the `q`-th smallest counted stamp, activates at the end of `F`: the re-key below, its
+    limits judged again for the author, who must still hold `EDIT`, and then the asset's row (version = the commit,
+    the hashes, the component ids, `activate_at = F + 1`, no faulted mark), so the new version runs from `F + 1`. A
+    re-key now over `MAX_REKEY_ROWS`, or now losing data on an object its committer may not edit, voids the commit
+    instead, as `RekeyTooLarge` or `RekeyBlockedAtActivation`, and an author who has lost `EDIT` since the commit
+    voids it as `AuthorRevokedAtActivation`: revoking someone's rights stops their pending code too (@coordinator-opus
+    m41d775f5d9f9). Otherwise a commit at its deadline `f == D` is voided as `Unattested`. Activation is tested first,
+    so a quorum completed at `D` activates. A voided commit keeps its record (the frame and why) until the asset's
+    next commit replaces it, and the old version stays bound. `end_frame` returns what it did (`FrameEnd`: each
+    activation with its re-key report, each void with its kind, each named by asset and commit), which pe-replica
+    publishes as S5's `FrameView.activations`. **A known limit:** any member holding an affected object can void
+    another's commit anywhere in `c..F`, where today's rule allowed it only at `c`.
+  - **The deadline** is `attest_window(len, hz) = ceil(2 · T_module · hz)` frames, `T_module = W_fg + len / R_thin +
+    T_build` in integer milliseconds (2 s, 1,000 B/s, 20 s; divergence.md 4.2, @iter-bench md6045bca63d9): the
+    lamp's 1,213 bytes give 2,786 frames at 60 Hz, the 256 KiB cap 34,098.
 - **Re-keying** (ruled, me5689a5c645c item 1; m028c4bf1d412). A commit with a base whose V differs moves every row
   of the old version's components to the new version's same-named component, object by object, **the tag rows
-  included** (or every attached object would detach), in the commit's own transaction, so no frame sees half-moved
-  rows. Each moved row takes the commit as its row version, so an edit that read the old row is stale.
+  included** (or every attached object would detach), at the commit's activation (`end_frame(F)`, logic.md 6.2a),
+  all at once, so no frame sees half-moved rows. Each moved row takes the commit as its row version, so an edit that
+  read the old row is stale.
   - **Field mapping**, deterministic and identical on every peer: a field with the same name, kind, `count` and
     unit copies its value; a new field, or a same-name field whose kind, count or unit changed, starts at zero
     (a unit is meaning, never copied silently: m83562b197235, L3); a dropped field is gone; a component whose name

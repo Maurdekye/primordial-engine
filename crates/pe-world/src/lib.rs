@@ -20,16 +20,17 @@ pub mod preset;
 mod read;
 mod replica;
 pub mod script;
+mod source;
 pub mod tree;
 mod world;
 
-pub use apply::{Draft, Footprint, Push};
+pub use apply::{Draft, Footprint, FrameEnd, Push};
 pub use components::BlobRef;
 pub use input::{HandPose, Input, InputSettings, input_phase};
 pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
 pub use replica::{GRAVITY, Settings};
-pub use script::{EngineComponent, LogicReport, ModuleRow, RekeyReport, script_component_id};
+pub use script::{EngineComponent, LogicReport, ModuleRow, PendingCommit, RekeyReport, VoidKind, script_component_id};
 pub use tree::WorldTree;
 pub use world::{
     BlobStore, Claim, DEPTH_LIMIT, DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, perm,

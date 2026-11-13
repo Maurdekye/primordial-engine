@@ -1828,16 +1828,21 @@ fn a_trailing_placement_carries_a_held_box_sliding_along_the_floor() {
     assert_eq!(r.faults(), 0);
 }
 
-/// A script commit names the objects it re-keyed in its step record (S5 v1.6, `StepRecord::rekeyed`;
-/// @coordinator-opus m9c8e32e955a0): the set pe-world's footprint reports, in id order, so WorldApi's `watch` and
-/// history can name them. Every other record has none.
+/// A script commit's re-key happens when it activates, at the end of a frame (logic.md 6.2a), so no step record
+/// names re-keyed objects any more (`StepRecord::rekeyed` stays empty until S5's `FrameView.activations` replaces it;
+/// @coordinator-opus m9dae7344d1af). With one member the commit is its own quorum and activates at the end of its
+/// frame: the replica's world then runs version 2, with both lamps' rows moved onto its ids.
 #[test]
-fn a_script_commit_s_record_names_the_objects_it_re_keyed() {
+fn a_script_commit_activates_at_its_frame_s_end_and_no_record_names_the_re_key() {
     use pe_sim::{ComponentDesc, FieldDesc, FieldKind};
     use pe_world::BlobRef;
-    use pe_world::script::{script_component_id, tag_desc};
+    use pe_world::script::{pack_source, script_component_id, tag_desc};
     const ASSET: [u8; 32] = [7; 32];
-    let version = |src: u8| Hash([src; 32]);
+    let archive = |src: u8| -> bytes::Bytes {
+        let lib = format!("// blink {src}\n");
+        pack_source(&[("src/lib.rs", lib.as_bytes())]).expect("an archive").into()
+    };
+    let version = |src: u8| Hash(BlobRef::of(&archive(src)).hash);
     let fields = |src: u8| {
         let f32f = |n: &str, at| FieldDesc::new(n, FieldKind::F32, at, 1);
         if src == 1 { vec![f32f("period", 0)] } else { vec![f32f("period", 0), f32f("red", 4)] }
@@ -1849,15 +1854,7 @@ fn a_script_commit_s_record_names_the_objects_it_re_keyed() {
     let commit = |base, src: u8, at: u64| {
         tx(vec![
             Op::Register { components: vec![tag_desc(&version(src)), blink(src)] },
-            Op::CommitScript {
-                script: ASSET,
-                base,
-                source: BlobRef { hash: version(src).0, len: 10 },
-                toolchain: Hash([1; 32]),
-                sdk: Hash([2; 32]),
-                author_module: Hash([3; 32]),
-                activate_at: at,
-            },
+            Op::commit_script(ASSET, base, archive(src), Hash([1; 32]), Hash([2; 32]), Hash([3; 32]), at),
         ])
     };
     let lamps = [oid(21), oid(20)];
@@ -1872,24 +1869,30 @@ fn a_script_commit_s_record_names_the_objects_it_re_keyed() {
     }
     let keys = keys();
     let mut b = EntryBuilder::new(&keys, 0);
-    // Version 1 at frame 1, attached to both lamps; version 2 at frame 3 re-keys their rows.
+    // Version 1 at frame 1 (active from 2), attached to both lamps at 2; version 2 at frame 3 re-keys their rows
+    // when it activates, at the end of frame 3.
     let first = b.next(Class::Edit, Frame(1), Bytes::from(commit(None, 1, 1).encode()));
     let tag = tag_desc(&version(1)).id();
     let attach =
         lamps.iter().flat_map(|&l| [set(l, tag, vec![]), set(l, blink(1).id(), 2.0f32.to_le_bytes().to_vec())]);
-    let attach = b.next(Class::Edit, Frame(1), Bytes::from(tx(attach.collect()).encode()));
+    let attach = b.next(Class::Edit, Frame(2), Bytes::from(tx(attach.collect()).encode()));
     let mut scratch = world.clone();
     assert!(matches!(scratch.apply_edit(Frame(1), &first).0, Outcome::Applied { .. }), "version 1 commits");
+    assert_eq!(scratch.end_frame(Frame(1)).activated.len(), 1, "its author is its quorum");
     let base = scratch.modules()[&ASSET].version;
     let second = b.next(Class::Edit, Frame(3), Bytes::from(commit(Some(base), 2, 3).encode()));
     let (r, _) = reference_of(world, &[first.clone(), attach.clone(), second.clone()], 6);
     let record = |e: &SignedEntry| {
         r.view().changes.iter().rev().find(|c| c.entry == e.id()).cloned().expect("a record of the entry")
     };
-    let rekeyed = record(&second);
-    assert!(matches!(rekeyed.outcome, Outcome::Applied { .. }), "version 2 commits: {:?}", rekeyed.outcome);
-    let mut want = lamps.to_vec();
-    want.sort();
-    assert_eq!(&rekeyed.rekeyed[..], &want[..], "both lamps, in id order");
-    assert!(record(&first).rekeyed.is_empty() && record(&attach).rekeyed.is_empty(), "no other record has any");
+    for e in [&first, &attach, &second] {
+        let c = record(e);
+        assert!(matches!(c.outcome, Outcome::Applied { .. }), "{:?}", c.outcome);
+        assert!(c.rekeyed.is_empty(), "no step record names a re-key since 6.2a");
+    }
+    let w = r.world().world();
+    assert_eq!(w.modules()[&ASSET].version, pe_world::Version { entry: second.id(), op: 1 }, "version 2 runs");
+    for l in lamps {
+        assert!(w.store().get_raw(blink(2).id(), l).is_some() && w.store().get_raw(blink(1).id(), l).is_none());
+    }
 }

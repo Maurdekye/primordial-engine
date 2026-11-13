@@ -15,6 +15,11 @@ use crate::apply::Footprint;
 use crate::components::{BlobRef, Body, Light, SimSize, ids};
 use crate::world::{TOMBSTONE_SECONDS, World};
 
+pub use crate::source::{
+    MAX_PATH, MAX_SEGMENT, MAX_SEGMENTS, MAX_SOURCE_BYTES, SOURCE_MAGIC, SourceError, check_source, pack_source,
+    path_ok, source_files,
+};
+
 /// A script's stable asset id (logic.md 6.1), the modules table's key.
 pub type AssetId = [u8; 32];
 
@@ -32,7 +37,7 @@ pub const SCRIPT_ID_FLOOR: u128 = 1 << 32;
 pub struct ModuleRow {
     /// The commit that wrote it.
     pub version: Version,
-    /// The source tree; its hash is the version hash V.
+    /// The source archive (logic.md 4.1a); its hash is the version hash V.
     pub source: BlobRef,
     pub toolchain: Hash,
     pub sdk: Hash,
@@ -126,6 +131,231 @@ impl ModuleRow {
     }
 }
 
+/// Divergence.md 4.2's wait for one module, its fixed parts, in milliseconds (logic.md 6.2a item 4; @iter-bench
+/// md6045bca63d9): the foreground wait `W_fg` and the build time `T_build`.
+pub const W_FG_MS: u64 = 2_000;
+pub const T_BUILD_MS: u64 = 20_000;
+/// The thin links' rate `R_thin`, in bytes per second.
+pub const R_THIN: u64 = 1_000;
+
+/// How many frames after its commit frame `c` a pending commit is voided if no quorum has attested it (logic.md
+/// 6.2a item 4): `ceil(2 · T_module · hz)`, with `T_module = W_fg + len / R_thin + T_build` from the source's length,
+/// all in integer milliseconds. The lamp's 1,213 bytes give 2,786 frames at 60 Hz (46.4 s); the 256 KiB cap gives
+/// 34,098 (568.3 s).
+pub fn attest_window(source_len: u64, hz: u32) -> u64 {
+    let t_module_ms = W_FG_MS + source_len.saturating_mul(1_000) / R_THIN + T_BUILD_MS;
+    (2 * t_module_ms * u64::from(hz)).div_ceil(1_000)
+}
+
+/// The quorum over `n` voters (agreement.md): `t = floor((n - 1) / 3)`, `q = floor((n + t) / 2) + 1`.
+pub fn quorum(n: usize) -> usize {
+    let t = n.saturating_sub(1) / 3;
+    (n + t) / 2 + 1
+}
+
+/// Why a pending commit was voided (logic.md 6.2a), recorded with the frame for the author.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoidKind {
+    /// No quorum attested it by its deadline.
+    Unattested = 1,
+    /// At `F` its re-key would lose data on an object its committer may not edit (7.9's loss rule).
+    RekeyBlockedAtActivation = 2,
+    /// At `F` its re-key would move more than [`MAX_REKEY_ROWS`] rows.
+    RekeyTooLarge = 3,
+    /// At `F` its author no longer holds `EDIT`: revoking someone's rights stops their pending code too
+    /// (@coordinator-opus m41d775f5d9f9).
+    AuthorRevokedAtActivation = 4,
+}
+
+impl VoidKind {
+    fn from_u8(b: u8) -> Option<VoidKind> {
+        match b {
+            1 => Some(VoidKind::Unattested),
+            2 => Some(VoidKind::RekeyBlockedAtActivation),
+            3 => Some(VoidKind::RekeyTooLarge),
+            4 => Some(VoidKind::AuthorRevokedAtActivation),
+            _ => None,
+        }
+    }
+}
+
+/// A script's pending commit (logic.md 6.2a; 7.9): the version a `CommitScript` wrote, which runs nowhere until a
+/// quorum of the voters at its commit frame has attested its module. Kept, once voided, as the record of why, until
+/// the asset's next commit replaces it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingCommit {
+    /// The commit (its entry and op), which becomes the row's version at activation.
+    pub version: Version,
+    /// Who committed it: the re-key's loss rule is judged for them, at the commit and again at `F`.
+    pub author: MemberKey,
+    pub source: BlobRef,
+    pub toolchain: Hash,
+    pub sdk: Hash,
+    pub author_module: Hash,
+    /// The new version's component ids, strictly ascending, its tag among them.
+    pub components: Vec<ComponentId>,
+    /// `c`, the commit's frame.
+    pub commit_frame: Frame,
+    /// `D`: voided at `end_frame(D)` if not activated by then.
+    pub deadline: Frame,
+    /// The voters at `c` (the governance members then), in key order; the quorum is over them.
+    pub voters: Vec<MemberKey>,
+    /// The counted attestations, one per voter, in key order, each with its stamp. The author's own is the commit's.
+    pub attested: Vec<(MemberKey, Frame)>,
+    /// Set when voided: the frame and why. A voided commit no longer counts attestations.
+    pub void: Option<(Frame, VoidKind)>,
+}
+
+impl PendingCommit {
+    /// The version hash V it would bring.
+    pub fn v(&self) -> Hash {
+        Hash(self.source.hash)
+    }
+
+    /// Whether a quorum of its voters has attested it.
+    pub fn attested_by_quorum(&self) -> bool {
+        self.attested.len() >= quorum(self.voters.len())
+    }
+
+    fn write(&self, b: &mut Vec<u8>) {
+        b.extend_from_slice(&self.version.entry.0.0);
+        b.extend_from_slice(&self.version.op.to_le_bytes());
+        b.extend_from_slice(&self.author.0);
+        b.extend_from_slice(&self.source.hash);
+        b.extend_from_slice(&self.source.len.to_le_bytes());
+        b.extend_from_slice(&self.toolchain.0);
+        b.extend_from_slice(&self.sdk.0);
+        b.extend_from_slice(&self.author_module.0);
+        b.extend_from_slice(&(self.components.len() as u32).to_le_bytes());
+        for c in &self.components {
+            b.extend_from_slice(&c.0.to_le_bytes());
+        }
+        b.extend_from_slice(&self.commit_frame.0.to_le_bytes());
+        b.extend_from_slice(&self.deadline.0.to_le_bytes());
+        b.extend_from_slice(&(self.voters.len() as u32).to_le_bytes());
+        for k in &self.voters {
+            b.extend_from_slice(&k.0);
+        }
+        b.extend_from_slice(&(self.attested.len() as u32).to_le_bytes());
+        for (k, f) in &self.attested {
+            b.extend_from_slice(&k.0);
+            b.extend_from_slice(&f.0.to_le_bytes());
+        }
+        match self.void {
+            None => b.push(0),
+            Some((f, k)) => {
+                b.push(k as u8);
+                b.extend_from_slice(&f.0.to_le_bytes());
+            }
+        }
+    }
+
+    fn read(r: &mut Rd) -> Option<PendingCommit> {
+        let entry = EntryRef(Hash(r.arr()?));
+        let op = u32::from_le_bytes(r.arr()?);
+        let author = MemberKey(r.arr()?);
+        let source = BlobRef { hash: r.arr()?, len: u64::from_le_bytes(r.arr()?) };
+        let toolchain = Hash(r.arr()?);
+        let sdk = Hash(r.arr()?);
+        let author_module = Hash(r.arr()?);
+        let n = u32::from_le_bytes(r.arr()?) as usize;
+        if n > r.0.len() / 16 {
+            return None;
+        }
+        let mut components = Vec::with_capacity(n);
+        for _ in 0..n {
+            let c = ComponentId(u128::from_le_bytes(r.arr()?));
+            if components.last().is_some_and(|l: &ComponentId| *l >= c) {
+                return None;
+            }
+            components.push(c);
+        }
+        let commit_frame = Frame(u64::from_le_bytes(r.arr()?));
+        let deadline = Frame(u64::from_le_bytes(r.arr()?));
+        let n = u32::from_le_bytes(r.arr()?) as usize;
+        if n > r.0.len() / 32 {
+            return None;
+        }
+        let mut voters: Vec<MemberKey> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let k = MemberKey(r.arr()?);
+            if voters.last().is_some_and(|l| l.0 >= k.0) {
+                return None;
+            }
+            voters.push(k);
+        }
+        let n = u32::from_le_bytes(r.arr()?) as usize;
+        if n > r.0.len() / 40 {
+            return None;
+        }
+        let mut attested: Vec<(MemberKey, Frame)> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let k = MemberKey(r.arr()?);
+            let f = Frame(u64::from_le_bytes(r.arr()?));
+            if attested.last().is_some_and(|(l, _)| l.0 >= k.0) || !voters.contains(&k) {
+                return None;
+            }
+            attested.push((k, f));
+        }
+        let void = match r.arr::<1>()?[0] {
+            0 => None,
+            k => {
+                let kind = VoidKind::from_u8(k)?;
+                Some((Frame(u64::from_le_bytes(r.arr()?)), kind))
+            }
+        };
+        Some(PendingCommit {
+            version: Version { entry, op },
+            author,
+            source,
+            toolchain,
+            sdk,
+            author_module,
+            components,
+            commit_frame,
+            deadline,
+            voters,
+            attested,
+            void,
+        })
+    }
+}
+
+/// The modules table's value for one asset (6.6, logic.md 6.2a): its current row, its pending commit, or both.
+/// `flags u8` (bit 0: current, bit 1: pending; at least one), then `u32 len ‖ current row` if present, then the
+/// pending commit if present. Strict: anything else does not decode.
+pub(crate) fn modules_value(current: Option<&ModuleRow>, pending: Option<&PendingCommit>) -> Vec<u8> {
+    let mut b = vec![u8::from(current.is_some()) | (u8::from(pending.is_some()) << 1)];
+    if let Some(m) = current {
+        let row = m.to_bytes();
+        b.extend_from_slice(&(row.len() as u32).to_le_bytes());
+        b.extend_from_slice(&row);
+    }
+    if let Some(p) = pending {
+        p.write(&mut b);
+    }
+    b
+}
+
+/// The inverse of [`modules_value`].
+pub(crate) fn modules_value_from(b: &[u8]) -> Option<(Option<ModuleRow>, Option<PendingCommit>)> {
+    let mut r = Rd(b);
+    let flags = r.arr::<1>()?[0];
+    if flags == 0 || flags > 3 {
+        return None;
+    }
+    let current = if flags & 1 != 0 {
+        let n = u32::from_le_bytes(r.arr()?) as usize;
+        let (row, rest) = r.0.split_at_checked(n)?;
+        r.0 = rest;
+        Some(ModuleRow::from_bytes(row)?)
+    } else {
+        None
+    };
+    let pending = if flags & 2 != 0 { Some(PendingCommit::read(&mut r)?) } else { None };
+    r.0.is_empty().then_some((current, pending))
+}
+
 struct Rd<'a>(&'a [u8]);
 
 impl Rd<'_> {
@@ -191,7 +421,8 @@ pub struct LogicReport {
 }
 
 /// What a re-key does or would do (7.9): the objects it moves rows on, the row count, the losses and the objects
-/// whose losses block the commit.
+/// whose losses block the commit. `objects` and `blocked` are in id order, each object once, live and tombstoned
+/// objects alike (a tombstone's rows are re-keyed too).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RekeyReport {
     pub objects: Vec<ObjectId>,
@@ -244,6 +475,12 @@ impl World {
     /// The modules table (5.4): each script asset's row.
     pub fn modules(&self) -> &BTreeMap<AssetId, ModuleRow> {
         &self.modules
+    }
+
+    /// The modules table's pending commits (logic.md 6.2a): versions waiting for a quorum's attestations, and the
+    /// voided ones, kept as their record until the asset's next commit. None of them runs.
+    pub fn pending(&self) -> &BTreeMap<AssetId, PendingCommit> {
+        &self.pending
     }
 
     /// The asset that registered script component `c`, if it is one.
