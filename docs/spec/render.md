@@ -400,9 +400,14 @@ advice). Only the local member's own **Input-class** entries: grabs, pushes and 
   - **After a repair** (@coordinator-opus's ruling): `final_frame` is the agreed cut's frame, so a
     told verdict agrees with every honest replica and is never taken back. Entries a repair can't decide arrive as
     `Outcome::Unknown { repaired_at }` before `final_frame` passes them. The player gets one line per repair, not per
-    entry: "Resynced. Some of your last actions may not have happened." A view whose health is `Repairing` for more
-    than about 1.5 s shows "Resyncing…" until it is `Agreed`. Both come with @engine-architect's seam change and
-    pe-replica's producer of `changes`, and are built then.
+    entry, and only when an entry of theirs is among them: "Resynced. Some of your last actions may not have
+    happened." A refusal of such an entry still pending is never told.
+  - **Resyncing:** while the views' `health` is `Repairing` for longer than `resync_after_s` (1.5 s), a status line
+    "Resyncing…" shows above the other lines, until a view says `Agreed`.
+- **Dropped** (S2 v1.5, @coordinator-opus's ruling): an entry the replica stepped and a final cut left
+  out arrives as `Outcome::Dropped { reason }` before `final_frame` passes its frame. It is told as a void, at once,
+  in the void's words, and only once whether it comes as a record or as S3's `Voided`. A refusal of it already told
+  is replaced; one still pending goes.
   - **Not handled in M1:** S3's `AgreeEvent::Refused` (an entry refused before ordering: a bad signature, the wrong
     line, a rate limit). A grab predicted as refused would be told with the predicted reason, and one predicted as
     applied would be undone with no words. Treating it like a void is the likely fix, a product call after M1.
