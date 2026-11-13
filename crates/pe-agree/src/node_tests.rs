@@ -121,14 +121,22 @@ impl Sim {
     }
 
     fn with(n: u32, seed: u64, f: impl Fn(&mut NodeConfig)) -> Sim {
+        Sim::with_each(n, seed, |_, c| f(c))
+    }
+
+    /// Each member's config set apart (a member with different settings).
+    fn with_each(n: u32, seed: u64, f: impl Fn(usize, &mut NodeConfig)) -> Sim {
         let keys = TestKeys::new(seed, n);
         let line = LineId::origin();
         let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
         let mut cfg = NodeConfig::new(line, keys.sorted_keys(), genesis);
         cfg.timing = Timing { cadence_ns: 100 * MS, min_timeout_ns: 300 * MS, max_timeout_ns: 5_000 * MS };
-        f(&mut cfg);
         let nodes = (0..n as usize)
-            .map(|i| Node::new(cfg.clone(), Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0)))
+            .map(|i| {
+                let mut cfg = cfg.clone();
+                f(i, &mut cfg);
+                Node::new(cfg, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0))
+            })
             .collect();
         let builders = (0..n as usize).map(|i| EntryBuilder::new(&keys, i)).collect();
         Sim {
@@ -507,6 +515,8 @@ fn a_leader_naming_its_present_voids_honest_entries_in_flight() {
         c.cut_lag_floor_s = 0.0;
         c.cut_lag_cap_s = 0.0;
         c.cut_lag_margin_s = 0.0;
+        // A grid of one frame: rounding down to a coarser grid is itself a lag of up to the interval.
+        c.cut_interval_s = 0.0;
     };
     let mut s = Sim::with(4, 1, no_lag);
     s.run(4_000);
@@ -863,6 +873,7 @@ fn the_consensus_hash_covers_exactly_the_must_match_settings() {
         ("min_burst", Box::new(|c| c.min_burst = 61)),
         ("min_pending", Box::new(|c| c.min_pending = 601)),
         ("defer_bytes", Box::new(|c| c.defer_bytes += 1)),
+        ("cut_interval_s", Box::new(|c| c.cut_interval_s = 0.2)),
         ("cadence", Box::new(|c| c.timing.cadence_ns += 1)),
         ("min timeout", Box::new(|c| c.timing.min_timeout_ns += 1)),
         ("max timeout", Box::new(|c| c.timing.max_timeout_ns += 1)),
@@ -1427,4 +1438,63 @@ fn backlogged_answers_through_the_agreement_trait() {
     assert!(s.nodes[0].backlogged(), "member 0 not backlogged 1.5 s into its stall: the test doesn't bite");
     let a: &dyn Agreement = &s.nodes[0];
     assert!(a.backlogged(), "Agreement::backlogged doesn't reach Node::backlogged");
+}
+
+// The cut grid (@engine-architect): every cut's frame is a multiple of the world's cut interval in
+// frames, so the replica's live root serves every vote.
+
+/// The frames of the cuts member `i` saw become final.
+fn final_frames(s: &Sim, i: usize) -> Vec<u64> {
+    s.events[i]
+        .iter()
+        .filter_map(|e| if let AgreeEvent::CutFinal { cut, .. } = e { Some(cut.frame.0) } else { None })
+        .collect()
+}
+
+#[test]
+fn every_final_cut_is_on_the_grid_at_60_90_and_120_hz() {
+    for (rate, k) in [(60, 6), (90, 9), (120, 12)] {
+        let mut s = Sim::new(4, 71);
+        s.clock = Clock(rate);
+        s.per_frame = vec![Some((2, 0)); 4];
+        s.run(5_000);
+        s.assert_same_final_log();
+        assert_eq!(s.nodes[0].config().cut_every(rate), k);
+        let frames = final_frames(&s, 1);
+        eprintln!("{rate} Hz: {} final cuts, last at frame {:?}", frames.len(), frames.last());
+        assert!(frames.len() >= 30, "{rate} Hz: only {} final cuts in 5 s", frames.len());
+        assert!(frames.iter().all(|f| f % k == 0), "{rate} Hz: a final cut off the grid of {k}: {frames:?}");
+    }
+}
+
+#[test]
+fn a_cut_off_the_grid_gets_no_honest_vote() {
+    // Member 0 runs a 0.15 s interval (9 frames at 60 Hz) against the others' 0.1 s (6 frames). Its cuts at 9, 27, 45,
+    // ... are off the honest grid and refused; those at multiples of 18 are on both and may pass. The line stays live.
+    let mut s = Sim::with_each(4, 72, |i, c| {
+        if i == 0 {
+            c.cut_interval_s = 0.15;
+        }
+    });
+    s.run(6_000);
+    s.assert_same_final_log();
+    let proposed_off: Vec<u64> = s.events[1]
+        .iter()
+        .filter_map(|e| if let AgreeEvent::Proposed { cut, .. } = e { Some(cut.frame.0) } else { None })
+        .filter(|f| f % 6 != 0)
+        .collect();
+    for i in 1..4 {
+        let frames = final_frames(&s, i);
+        assert!(frames.len() >= 20, "member {i}: only {} final cuts", frames.len());
+        assert!(frames.iter().all(|f| f % 6 == 0), "member {i}: a final cut off the honest grid: {frames:?}");
+        // What the name claims (@engine-architect's nit): no honest member votes for an off-grid cut, final or not.
+        let voted_off: Vec<u64> = s.events[i]
+            .iter()
+            .filter_map(|e| if let AgreeEvent::Voted { cut, .. } = e { Some(cut.frame.0) } else { None })
+            .filter(|f| f % 6 != 0)
+            .collect();
+        assert!(voted_off.is_empty(), "member {i} voted for off-grid cuts at {voted_off:?}");
+    }
+    eprintln!("off-grid proposals seen by member 1: {}; final cuts {}", proposed_off.len(), final_frames(&s, 1).len());
+    assert!(!proposed_off.is_empty(), "member 0 never proposed off the grid: the test doesn't bite");
 }
