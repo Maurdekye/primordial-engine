@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use pe_replica::logic::LogicRunner;
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::TestKeys;
 use pe_seams::{Class, DomainId, Frame, FrameView, HostTime, MemberKey, ObjectId, Pos, SimRate};
@@ -200,13 +201,17 @@ pub fn genesis(seed: u64, balls: usize, keys: &TestKeys) -> Option<World> {
     Some(w)
 }
 
-/// Member `local`'s replica over `world`, at [`HZ`], cutting every [`CADENCE_NS`], on the session's time base.
+/// Member `local`'s replica over `world`, at [`HZ`], cutting every [`CADENCE_NS`], on the session's time base, with
+/// pe-logic's runner for the world's scripts, as pe-app builds it. A thread that steps it through a script needs the
+/// runner's `thread_stack()`.
 pub fn replica(world: World, local: MemberKey) -> Option<ReplicaImpl<PeWorld>> {
     let rate = SimRate::new(HZ)?;
     let clock = Arc::new(SessionClock { rate, start: HostTime(0) });
     let mut config = ReplicaConfig::new(rate, Duration::from_nanos(CADENCE_NS as u64), clock);
     config.local = Some(local);
-    ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).ok()
+    let runner = LogicRunner::with_defaults().ok()?;
+    let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).ok()?;
+    Some(replica.with_runner(Box::new(runner)))
 }
 
 /// The edit that lifts `ball` to `to`, relative to the pit's root.
