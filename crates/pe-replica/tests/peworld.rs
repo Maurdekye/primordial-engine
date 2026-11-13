@@ -287,6 +287,26 @@ fn the_replica_steps_the_real_world_and_rolls_back_to_the_same_roots() {
 /// The frame view draws pe-world's objects (S5): the floor's box, a ball's sphere and colour, the ball held by the
 /// local member's right hand (`HELD_LOCAL`), that hand as a `HAND_RADIUS` sphere marked `OWN_HAND`, and another
 /// member's hand, which is neither.
+/// pe-api's snapshot is the live world at the replica's frame (S2 v1.7, `Replica::world_snapshot`; @coordinator-opus): the balls the scene's edits drop at frames 2 and 5 appear in it as the replica passes them, and
+/// before any cut is agreed the final frame it names is the genesis cut's.
+#[test]
+fn the_world_snapshot_is_the_live_world_at_the_replica_s_frame() {
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    let mut r = replica();
+    let objects_at = |r: &mut ReplicaImpl<PeWorld>, s: &mut Source, to: u64| {
+        r.advance(Frame(to), s);
+        let snap = r.world_snapshot().expect("PeWorld has one");
+        let snap = snap.downcast::<pe_world::WorldSnapshot>().expect("pe-world's snapshot");
+        assert_eq!(snap.frame(), r.frame(), "at the replica's frame");
+        assert_eq!(snap.final_frame(), Frame(0), "no cut agreed yet");
+        snap.all().len()
+    };
+    let before = objects_at(&mut r, &mut s, 1);
+    assert_eq!(objects_at(&mut r, &mut s, 3), before + 1, "the first ball, dropped at frame 2");
+    assert_eq!(objects_at(&mut r, &mut s, 10), before + 2, "and the second, at frame 5");
+}
+
 #[test]
 fn the_view_draws_shapes_and_appearances_and_marks_the_local_members_hands() {
     let (me, other) = (keys().key(0), keys().key(1));
