@@ -6,6 +6,7 @@
 
 use crate::agree::{AgreeEvent, CutRef};
 use crate::ids::{Frame, Hash};
+use crate::replica::LeafKey;
 
 /// A repair rung (divergence.md 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,6 +37,17 @@ pub enum DivergeEvent {
     /// Diverged again soon after a repair: the fault is not transient.
     RepeatedDivergence {
         cut: CutRef,
+    },
+    /// The ladder stopped: repairs kept failing on the same inputs (S3.8 v1.4; @coordinator-opus m23b0df2d6170 item
+    /// 5, @diverge-eng m6af17d607031). `rung` and `why` are the last failure, as in [`DivergeEvent::RungFailed`], and
+    /// `differing` names the leaves that still differ. pe-diverge raises it once per stop, beside a fault bundle, and
+    /// pe-app shows it to the user as it shows [`DivergeEvent::RepeatedDivergence`]. Cuts are still compared; when
+    /// repair starts again is pe-diverge's stop rule (@diverge-eng, for divergence.md 4.3).
+    RepairStuck {
+        cut: CutRef,
+        rung: Rung,
+        differing: Vec<LeafKey>,
+        why: String,
     },
     RootSplitStarted {
         cut: CutRef,

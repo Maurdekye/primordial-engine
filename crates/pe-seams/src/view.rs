@@ -266,7 +266,17 @@ pub struct ViewCounters {
 }
 
 /// An entry stepped, with its outcome: the change record beside S5 (api.md 9.1), for WorldApi's `apply`, `watch` and
-/// history. A re-stepped entry appears again; the newest verdict wins.
+/// history. A re-stepped entry appears again; the newest verdict wins, and within one view a later record of the same
+/// entry is the newer one.
+///
+/// **Complete at the final frame** (S5 v1.4; @ballpit-viz md5e264073e68, after @shader-reviewer's L1 on render.md
+/// 8.1). A view's `changes`, with those of the views before it, hold the final verdict of every entry at or below
+/// that view's `final_frame`, as the newest record of that entry. That includes entries re-stepped while finalizing
+/// (the replica's own root check and its rebase onto the floor), so no record reaches a view after that view's
+/// `final_frame` has passed its entry. pe-render's notices and WorldApi's `watch` tell a verdict once `final_frame`
+/// reaches its entry, and rely on this. The one exception is a repair: a replica whose root diverged computed some
+/// verdicts on the wrong state. The entries a repair re-steps appear again, and the newest still wins; an import does
+/// not re-step the entries at or below its cut, so their records stand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepRecord {
     pub entry: EntryRef,
@@ -294,7 +304,8 @@ pub struct FrameView {
     /// Keys of effects a replay removed: a sustained effect stops, faded.
     pub retracted: Vec<EffectKey>,
     pub counters: ViewCounters,
-    /// The entries stepped since the last publication, with their outcomes.
+    /// The entries stepped since the last publication, with their outcomes; complete at `final_frame` (see
+    /// [`StepRecord`]).
     pub changes: Vec<StepRecord>,
 }
 
