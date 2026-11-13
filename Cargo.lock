@@ -2191,6 +2191,7 @@ name = "pe-app"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "getrandom 0.4.3",
  "libc",
  "pe-agree",
  "pe-api",
