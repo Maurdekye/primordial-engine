@@ -8,8 +8,9 @@
 //!   the pit, whatever it is aimed at: 73 aims along the floor, level in flight, straight down, and down into the
 //!   seams where the walls meet the floor.
 //! - Much smaller balls stay in too, against the pit's walls and against 1 cm walls, at the top speed and at 50 m/s
-//!   (`max_push_speed` can be raised to no limit). At Box3D's own top linear speed, 400 m/s, a small ball rolling
-//!   along the floor can go through a wall: the measurement scans the speeds between.
+//!   (`max_push_speed` can be raised to no limit). Faster, up to Box3D's own top linear speed of 400 m/s, a small
+//!   ball can tunnel through a thin wall or end embedded in a thick one: the measurement scans the speeds between and
+//!   tells the outcomes apart.
 //! - The same scene, run twice, gives the same state hash every frame, both within the tested speeds and above them,
 //!   where small balls go through 1 cm walls. Each prints its hash, to compare across machines.
 //!
@@ -107,8 +108,21 @@ struct Fate {
     /// The deepest it got into a wall or the floor, its surface past the face, while it was stopped there.
     depth: f64,
     /// It went through: its centre got past a wall's outer face or below the floor's bottom, or it ended outside
-    /// the pit.
+    /// the pit. `went` says which.
     through: bool,
+    went: Went,
+}
+
+/// How a ball left the pit, if it did. The first of these to happen decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Went {
+    Stayed,
+    /// Its centre got past a wall's outer face below the wall's top, or below the floor's bottom.
+    Tunnelled,
+    /// It got past a wall's outer face with its bottom above the wall's top: deflected up and over, which is play.
+    OverTheTop,
+    /// It ended inside a wall or the floor: its centre past a wall's inner face, or below the floor's top.
+    Embedded,
 }
 
 /// One ball of radius `r`, from `start` at `velocity`, stepped for two seconds at `hz` in a pit with walls of
@@ -124,7 +138,8 @@ fn run(hz: u32, r: f64, (start, velocity): ([f64; 3], [f32; 3]), half_thickness:
     pw.add_body(id(9), &BodyDesc::new(BodyKind::Dynamic, start).with_shape(shape).with_velocity(velocity, [0.0; 3]))
         .unwrap();
     let outer = PIT_W + 2.0 * f64::from(half_thickness);
-    let mut fate = Fate { far: 0.0, low: f64::MAX, depth: 0.0, through: false };
+    let top = 2.0 * f64::from(WALL_H);
+    let mut fate = Fate { far: 0.0, low: f64::MAX, depth: 0.0, through: false, went: Went::Stayed };
     let mut p = start;
     for _ in 0..2 * hz {
         pw.step(1.0 / hz as f32).unwrap();
@@ -133,9 +148,16 @@ fn run(hz: u32, r: f64, (start, velocity): ([f64; 3], [f32; 3]), half_thickness:
         fate.far = fate.far.max(side);
         fate.low = fate.low.min(p[1] - r);
         fate.depth = fate.depth.max(side + r - PIT_W).max(r - p[1]);
-        fate.through |= side > outer || p[1] < -1.0;
+        if fate.went == Went::Stayed && p[1] < -1.0 {
+            fate.went = Went::Tunnelled;
+        } else if fate.went == Went::Stayed && side > outer {
+            fate.went = if p[1] - r > top { Went::OverTheTop } else { Went::Tunnelled };
+        }
     }
-    fate.through |= p[0].abs().max(p[2].abs()) >= PIT_W || p[1] < 0.0;
+    if fate.went == Went::Stayed && (p[0].abs().max(p[2].abs()) >= PIT_W || p[1] < 0.0) {
+        fate.went = Went::Embedded;
+    }
+    fate.through = fate.went != Went::Stayed;
     fate
 }
 
@@ -242,9 +264,17 @@ fn going_through_above_the_tested_speeds_is_deterministic() {
     }
 }
 
-/// A measurement, not a check: with continuous collision on and off, for each ball, wall and speed, which aims went
-/// through and the deepest any ball pressed into a wall or the floor. Run it with
-/// `cargo test -p pe-physics --test ccd -- --ignored --nocapture`.
+/// A measurement, not a check: with continuous collision on and off, for each ball, wall and speed, how many aims
+/// tunnelled (which ones), went over the top or ended embedded, and the deepest any ball pressed into a wall or the
+/// floor. Run it with `cargo test -p pe-physics --test ccd -- --ignored --nocapture`.
+///
+/// Measured with CCD on (@vdw-physics, 2026-11-13): nothing leaves the pit at 50 m/s or less, and nothing goes over
+/// the top. Small balls tunnel only through 1 cm walls, from 150 m/s at 30 Hz and 75 m/s at 60 and 120 Hz; the pit
+/// ball only at 120 Hz and 400 m/s. Against the pit's 20 cm walls nothing tunnels up to 400 m/s, but balls of 2 cm
+/// and less can end embedded in a wall or the floor, from 200 m/s at 30 Hz and 75 m/s at 60 and 120 Hz. Higher rates
+/// fail at lower speeds because Box3D's time of impact leaves a ball at the wall at full speed, the next step's new
+/// contact is soft, and fewer sub-steps per step leave less time to push the ball back before the next collision
+/// pass, which can pick a thin wall's far face.
 #[test]
 #[ignore]
 fn measure_with_and_without_continuous_collision() {
@@ -255,12 +285,19 @@ fn measure_with_and_without_continuous_collision() {
                 for speed in [TOP_SPEED, 50.0, 75.0, 100.0, 150.0, 200.0, 300.0, BOX3D_TOP_SPEED] {
                     let fates: Vec<Fate> =
                         aims(r, speed).into_iter().map(|a| run(hz, r, a, half_thickness, ccd_off)).collect();
-                    let through: Vec<usize> = (0..fates.len()).filter(|&k| fates[k].through).collect();
+                    let tunnelled: Vec<usize> =
+                        (0..fates.len()).filter(|&k| fates[k].went == Went::Tunnelled).collect();
+                    let count = |went: Went| fates.iter().filter(|f| f.went == went).count();
+                    let (over, embedded) = (count(Went::OverTheTop), count(Went::Embedded));
                     let depth = fates.iter().map(|f| f.depth).fold(0.0, f64::max);
                     let ccd = if ccd_off { "off" } else { "on" };
                     let case = format!("{hz} Hz, CCD {ccd}, radius {r}, wall {half_thickness}, {speed} m/s");
-                    let n = through.len();
-                    println!("{case}: {n} of {} through {through:?}, deepest {depth:.4} m", fates.len());
+                    let n = tunnelled.len();
+                    println!(
+                        "{case}: of {}, {n} tunnelled {tunnelled:?}, {over} over the top, {embedded} embedded, deepest \
+                         {depth:.4} m",
+                        fates.len()
+                    );
                 }
             }
         }
