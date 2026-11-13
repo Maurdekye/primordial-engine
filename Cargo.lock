@@ -2219,8 +2219,12 @@ dependencies = [
 name = "pe-diverge"
 version = "0.0.0"
 dependencies = [
+ "bytemuck",
  "bytes",
+ "pe-replica",
  "pe-seams",
+ "pe-sim",
+ "pe-world",
 ]
 
 [[package]]
