@@ -298,12 +298,14 @@ fn the_view_draws_shapes_and_appearances_and_marks_the_local_members_hands() {
         w.insert(id, Transform::at(pos(0.3, 1.2, 0.0))).expect("hand transform");
         w.insert(id, Hand { owner, side, ..Hand::default() }).expect("hand row");
     }
-    w.set_claim(oid(2), pe_world::Claim { hand: oid(3), member: me, since: Frame(0) }).expect("held");
+    w.set_claim(oid(2), pe_world::Claim { hand: oid(3), member: me, since: Frame(0), until: Frame(1_000) })
+        .expect("held");
     // A box I hold hand-less (an agent's grab): not HELD_LOCAL, since no tracked hand draws it.
     w.create(oid(5), None, me, GENESIS).expect("box");
     w.insert(oid(5), Transform::at(pos(1.0, 0.5, 0.0))).expect("box transform");
     w.insert(oid(5), cuboid([0.1, 0.1, 0.1])).expect("box shape");
-    w.set_claim(oid(5), pe_world::Claim { hand: ObjectId::NONE, member: me, since: Frame(0) }).expect("held");
+    w.set_claim(oid(5), pe_world::Claim { hand: ObjectId::NONE, member: me, since: Frame(0), until: Frame(1_000) })
+        .expect("held");
     let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
     config.local = Some(me);
     let mut r = ReplicaImpl::new(PeWorld::new(w, DomainId(0)), config).expect("a replica");
