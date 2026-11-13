@@ -140,16 +140,21 @@ impl WorldModel for PeWorld {
         !self.world.modules().is_empty()
     }
 
-    /// An edit whose transaction has a `CommitScript` op, whether or not it applies.
+    /// An edit whose transaction has a `CommitScript` op activating at or before the entry's frame, whether or not it
+    /// applies: its script could run in that frame. One that activates later only adds a row, and a replica without a
+    /// runner stops at the next frame, once the row is there (@engine-architect's Low 5 on 4ac9019f).
     fn commits_code(entry: &SignedEntry) -> bool {
+        let stamp = entry.entry.stamp.0;
+        let now = |o: &Op| matches!(o, Op::CommitScript { activate_at, .. } if *activate_at <= stamp);
         entry.entry.class == Class::Edit
-            && Transaction::decode(&entry.entry.payload)
-                .is_some_and(|t| t.ops.iter().any(|o| matches!(o, Op::CommitScript { .. })))
+            && Transaction::decode(&entry.entry.payload).is_some_and(|t| t.ops.iter().any(now))
     }
 
     /// pe-world's hooks around the runner: `World::logic_stage` hands it the store, the guard, the faulted assets and
     /// the row check; `World::after_logic` records what it reported and gives the footprint, whose physics effects are
-    /// found as an entry's are (module doc). Each event is placed at its object's world position after the stage.
+    /// found as an entry's are (module doc), with every `Transform` write and removal the runner reported. Each event
+    /// is placed at its object's world position after the stage, or where it was at the stage's start if the stage
+    /// removed it.
     fn logic_stage(&mut self, frame: Frame, stage: Stage, runner: &mut dyn ScriptRunner) -> LogicFx {
         let scripts: Vec<ScriptRow> = self
             .world
@@ -172,12 +177,27 @@ impl WorldModel for PeWorld {
             let world = StageWorld { frame, line, rate_hz, guard, faulted, check };
             runner.run_stage(stage, &scripts, store, &world)
         });
-        let footprint = self.world.after_logic(frame, &out.report);
+        let mut footprint = self.world.after_logic(frame, &out.report);
+        // `after_logic` names a moved or removed object only if it has a body. The physics needs the rest too: a moved
+        // parent without one carries the bodies beneath it, and a removed shape changes its owner's body
+        // (@engine-architect's Medium on 4ac9019f).
+        for &(c, o) in &out.report.written {
+            if c == Transform::ID && !footprint.rows.contains(&(o, c)) {
+                footprint.rows.push((o, c));
+            }
+        }
+        for &o in &out.report.removed {
+            if !footprint.removed.contains(&o) {
+                footprint.removed.push(o);
+            }
+        }
         let effects = effects(&before, &self.world, &footprint);
-        let store = self.world.store();
+        let (now, then) = (self.world.store(), before.store());
         let events = (out.events.into_iter())
             .map(|e| {
-                let at = store.world_transform(e.object).map_or(Pos::ORIGIN, |t| t.pos);
+                // An emitter the stage removed plays where it was at the stage's start.
+                let t = now.world_transform(e.object).or_else(|| then.world_transform(e.object));
+                let at = t.map_or(Pos::ORIGIN, |t| t.pos);
                 (e, at)
             })
             .collect();

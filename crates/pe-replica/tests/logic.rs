@@ -55,6 +55,11 @@ fn tag() -> ComponentId {
 
 /// The mover's code commit, stamped `at` and activating there.
 fn commit(b: &mut EntryBuilder, at: u64) -> SignedEntry {
+    commit_activating(b, at, at)
+}
+
+/// The mover's code commit, stamped `at` and activating at `activate_at`.
+fn commit_activating(b: &mut EntryBuilder, at: u64, activate_at: u64) -> SignedEntry {
     let t = tx(vec![
         Op::Register { components: vec![tag_desc(&v1())] },
         Op::CommitScript {
@@ -64,7 +69,7 @@ fn commit(b: &mut EntryBuilder, at: u64) -> SignedEntry {
             toolchain: Hash([1; 32]),
             sdk: Hash([2; 32]),
             author_module: MODULE,
-            activate_at: at,
+            activate_at,
         },
     ]);
     b.next(Class::Edit, Frame(at), Bytes::from(t.encode()))
@@ -361,6 +366,116 @@ fn without_a_runner_the_replica_stops_at_a_code_commit() {
     assert_eq!((r.frame(), r.faults()), (Frame(10), 0));
     assert!((ball_x(&r) - 0.05).abs() < 1e-4, "moved from frame 5: {}", ball_x(&r));
     assert_eq!(keys_of(&r.view()), (5..10).map(ping).collect::<Vec<_>>());
+}
+
+/// A code commit whose script could not run in its frame doesn't stop a replica without a runner there
+/// (@engine-architect's Low 5 on 4ac9019f). pe-world requires a commit to activate at its own frame and refuses one
+/// that activates later, so no row appears and the replica steps on. (One that activates at its frame stops a replica
+/// without a runner even if pe-world refuses it for another reason: only applying it would tell.)
+#[test]
+fn without_a_runner_a_commit_activating_later_does_not_stop_the_replica() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    s.add(commit_activating(&mut b, 5, 15));
+    let mut bare = replica_of(floor_and_ball());
+    bare.advance(Frame(10), &mut s);
+    assert_eq!((bare.frame(), bare.faults()), (Frame(10), 0));
+    assert!(bare.world().world().modules().is_empty(), "refused");
+}
+
+/// A script's move of an object without a body reaches the physics of the bodies beneath it (@engine-architect's
+/// Medium on 4ac9019f): the mover carries a parent with no body, and the static platform beneath it goes along.
+#[test]
+fn a_script_moving_a_parent_without_a_body_carries_the_bodies_beneath_it() {
+    const PARENT: u128 = 90;
+    const PLATFORM: u128 = 91;
+    let mut w = floor_and_ball();
+    w.create(oid(PARENT), None, MemberKey([1; 32]), GENESIS).expect("a parent");
+    w.insert(oid(PARENT), Transform::at(pos(0.0, 0.0, 0.0))).expect("its transform");
+    w.create(oid(PLATFORM), Some(oid(PARENT)), MemberKey([1; 32]), GENESIS).expect("a platform");
+    w.insert(oid(PLATFORM), Transform::at(pos(3.0, 2.0, 0.0))).expect("its transform");
+    w.insert(oid(PLATFORM), Body { friction: 0.6, ..Body::default() }).expect("a static body");
+    let slab = Shape { kind: shape_kind::BOX, density: 500.0, size: [1.0, 0.1, 1.0], ..Shape::default() };
+    w.insert(oid(PLATFORM), slab).expect("its shape");
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    applied(&w.apply_edit(Frame(0), &commit(&mut b, 0)).0);
+    let tag_row = Row { component: tag(), instance: 0, bytes: vec![] };
+    let tagged = edit(&mut b, 0, vec![Op::SetRow { id: Target::Existing(oid(PARENT)), row: tag_row }]);
+    applied(&w.apply_edit(Frame(0), &tagged).0);
+    let mut r = replica_of(w).with_runner(mover());
+    r.advance(Frame(10), &mut Source::default());
+    assert_eq!((r.frame(), r.faults()), (Frame(10), 0));
+    let at = r.physics().pose(oid(PLATFORM)).expect("the platform's body").position;
+    assert!((at[0] - 3.10).abs() < 1e-4, "the platform's body went with its parent: {at:?}");
+}
+
+/// Each object carrying the script's tag emits `pop` after the physics and is removed in the same stage.
+struct Popper;
+
+impl ScriptRunner for Popper {
+    fn identity(&self) -> Bytes {
+        Bytes::from_static(b"the test popper, version 1")
+    }
+
+    fn holds(&self, module: &Hash) -> bool {
+        *module == MODULE
+    }
+
+    fn module(&self, _: &Hash) -> Option<Bytes> {
+        None
+    }
+
+    fn run_stage(
+        &mut self,
+        stage: Stage,
+        scripts: &[ScriptRow],
+        store: &mut SimStore,
+        _: &StageWorld<'_>,
+    ) -> StageOutcome {
+        let mut out = StageOutcome::default();
+        if stage != Stage::LogicPostPhysics {
+            return out;
+        }
+        for s in scripts {
+            for object in store.column_raw(tag_desc(&s.version).id()).0.to_vec() {
+                let event =
+                    ScriptEvent { asset: s.asset, system: "popper".into(), name: "pop".into(), object, bytes: vec![] };
+                out.events.push(event);
+                store.destroy(object).expect("removed");
+                out.report.removed.push(object);
+            }
+        }
+        out
+    }
+}
+
+/// An event whose emitter the stage removed plays where the emitter was at the stage's start, not at the origin
+/// (@engine-architect's Low 1 on 4ac9019f).
+#[test]
+fn an_event_from_an_object_the_stage_removed_plays_where_it_was() {
+    let mut r = replica_of(scripted()).with_runner(Box::new(Popper));
+    r.advance(Frame(1), &mut Source::default());
+    assert_eq!((r.frame(), r.faults()), (Frame(1), 0));
+    assert!(!r.world().world().store().exists(oid(BALL)), "popped");
+    let view = r.view();
+    assert_eq!(view.effects.len(), 1);
+    let at = (view.effects[0].at - Pos::ORIGIN).0;
+    assert!(at[0].abs() < 1e-6 && (at[1] - 1.0).abs() < 0.01, "where the ball was: {at:?}");
+}
+
+/// `event_kind`'s known answer, so that a change to it or to the hash it reads shows (@engine-architect's test gap):
+/// the first 8 bytes, little-endian, of `Hash::of("pe.script.event", asset ++ name)`.
+#[test]
+fn event_kind_has_its_known_answer() {
+    assert_eq!(event_kind(&ASSET, "ping"), 9_909_364_129_443_047_667);
+    let mut b = ASSET.to_vec();
+    b.extend_from_slice(b"ping");
+    let h = Hash::of("pe.script.event", &b);
+    assert_eq!(event_kind(&ASSET, "ping"), u64::from_le_bytes(h.0[..8].try_into().unwrap()));
+    assert_ne!(event_kind(&ASSET, "ping"), event_kind(&ASSET, "pong"));
+    assert_ne!(event_kind(&ASSET, "ping"), event_kind(&[8; 32], "ping"));
 }
 
 /// A script whose module this machine lacks does not run here, and each skipped run is counted: a build fault on
