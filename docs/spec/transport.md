@@ -678,9 +678,16 @@ impl Core {
   - **The control end:** `NetHandle::control()` splits off a `NetControl` (`Send`) that issues commands (dial,
     admit, refuse, the clock members) and from then on takes the lifecycle's outcomes, on a channel of their own.
     The handle goes into the simulation as its `Transport` (app.md 3), and the app's network code keeps the
-    control end. Join requests and link events stay on the handle's queue, where the simulation drains them.
-    Lifecycle outcomes aren't ordered relative to those. With the control end dropped, later outcomes are
-    discarded and the thread runs on [V `pe-net/tests/thread.rs`].
+    control end inside the simulation's `NetHook`: it sees each join request and link event as the simulation
+    drains them from the handle, admits or refuses through the control end, and polls the lifecycle once a
+    tick (app.md 3). So admission runs on the simulation thread, next to the agreed governance. Lifecycle
+    outcomes aren't ordered relative to the handle's events. With the control end dropped, later outcomes,
+    `Fault`s included, are discarded and the thread runs on [V `pe-net/tests/thread.rs`].
+  - **A bounded lifecycle backlog:** `Refused` and `Fault` can be caused by anyone who connects, so outcomes
+    nobody takes are held up to the queue size beyond the channel. Past that, the oldest `Refused` or `Fault`
+    is dropped first, and every drop is counted (`lifecycle_dropped`). `Welcomed` and `ClockReady` happen once
+    each per connection and survive [V: 16 refusals and a welcome, unpolled, with queue 4: 8 kept, the welcome
+    among them, 11 dropped].
 - **To and from the simulation thread:** bounded single-producer queues for outgoing `(peer, lane, bytes)` and
   incoming `Received` and events, plus the clock model of 5.7.
 - **The simulation thread never waits on the network.** A full outgoing queue is a local fault, reported, not a
