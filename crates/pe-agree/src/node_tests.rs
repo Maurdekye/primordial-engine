@@ -55,6 +55,9 @@ fn root(cut: &Cut) -> Hash {
     h.finish()
 }
 
+/// A cut handed out for roots, with what `entries_for_cut` answered for each frame below it.
+type Rooted = (Cut, Vec<(Frame, Vec<EntryRef>)>);
+
 struct Sim {
     keys: TestKeys,
     nodes: Vec<Node>,
@@ -89,6 +92,16 @@ struct Sim {
     flooder: Option<usize>,
     /// Errors `receive` returned (only with a flooder).
     refused: usize,
+    /// Per member: each cut handed out for roots, with what `entries_for_cut` answered for every frame from the
+    /// member's final frame up to the cut's (the pipelined-void property, coordinator m90c32fc9ceb2).
+    rooted: Vec<Vec<Rooted>>,
+    /// The deepest pipeline a member rooted a cut on (blocks above its final cut).
+    max_depth: usize,
+    /// A member whose every outgoing message is held until [`Sim::release`].
+    holding: Option<usize>,
+    held: Vec<(usize, usize, Lane, Bytes)>,
+    /// Every message sent before this time (ns) is lost.
+    blackout_until: i64,
 }
 
 impl Sim {
@@ -120,6 +133,11 @@ impl Sim {
             stall: None,
             flooder: None,
             refused: 0,
+            rooted: vec![Vec::new(); n as usize],
+            max_depth: 0,
+            holding: None,
+            held: Vec::new(),
+            blackout_until: 0,
             seq: 0,
             now: 0,
             rng: Rng(seed),
@@ -142,7 +160,11 @@ impl Sim {
             {
                 continue;
             }
-            if self.cut_off.is_some_and(|k| i == k || j == k) {
+            if self.cut_off.is_some_and(|k| i == k || j == k) || self.now < self.blackout_until {
+                continue;
+            }
+            if self.holding == Some(i) {
+                self.held.push((i, j, o.lane, o.bytes));
                 continue;
             }
             let mut sent = self.now;
@@ -158,6 +180,18 @@ impl Sim {
             let at = sent + (self.rng.range(a, b) + self.rng.range(c, d)) / 2 * MS;
             self.seq += 1;
             self.net.insert((at, self.seq), (i, j, o.lane, o.bytes));
+        }
+    }
+
+    /// Send everything the held member queued, each with a fresh delay.
+    fn release(&mut self) {
+        self.holding = None;
+        for (i, j, lane, bytes) in std::mem::take(&mut self.held) {
+            let (a, b) = self.delay[i];
+            let (c, d) = self.delay[j];
+            let at = self.now + (self.rng.range(a, b) + self.rng.range(c, d)) / 2 * MS;
+            self.seq += 1;
+            self.net.insert((at, self.seq), (i, j, lane, bytes));
         }
     }
 
@@ -190,6 +224,18 @@ impl Sim {
         let out = self.nodes[i].tick(now, &clock);
         self.deliver_out(i, out);
         for cut in self.nodes[i].wants_roots() {
+            let from = self.nodes[i].final_cut().map_or(Frame(0), |c| c.cut.at.frame);
+            let answer = (from.0..cut.at.frame.0)
+                .map(|f| {
+                    let v = self.nodes[i].entries_for_cut(&cut, Frame(f)).expect("a rooted cut's entries are held");
+                    (Frame(f), v.iter().map(|e| e.id()).collect())
+                })
+                .collect();
+            let depth = self.nodes[i].rooting_depth(&cut).expect("a rooted cut descends from the final cut");
+            self.max_depth = self.max_depth.max(depth);
+            if !self.rooted[i].iter().any(|(c, _)| *c == cut) {
+                self.rooted[i].push((cut.clone(), answer));
+            }
             let first = self.nodes[i].vote(&cut.at, root(&cut), SelfTest::NotRun);
             let again = self.nodes[i].vote(&cut.at, root(&cut), SelfTest::NotRun);
             self.vote_results.push((first, again));
@@ -241,6 +287,32 @@ impl Sim {
             count += a.map_or(0, |v| v.len());
         }
         count
+    }
+
+    /// Every cut a member rooted that became final: what it answered for the root is exactly the final log there.
+    /// Returns how many rooted cuts were checked and how many entries they voided below their own frame.
+    fn assert_roots_match_the_final_log(&self) -> (usize, usize) {
+        let (mut checked, mut voided) = (0, 0);
+        for i in 0..self.nodes.len() {
+            let finals: Vec<CutRef> = self.events[i]
+                .iter()
+                .filter_map(|e| if let AgreeEvent::CutFinal { cut, .. } = e { Some(*cut) } else { None })
+                .collect();
+            for (cut, answer) in &self.rooted[i] {
+                if !finals.contains(&cut.at) {
+                    continue;
+                }
+                checked += 1;
+                for (f, ids) in answer {
+                    let Some(fin) = self.nodes[i].entries_at(*f) else { continue };
+                    let fin: Vec<EntryRef> = fin.iter().map(|e| e.id()).collect();
+                    assert_eq!(*ids, fin, "member {i}: root of {:?} at frame {f:?} differs from the final log", cut.at);
+                }
+            }
+            voided += self.voids(i).len();
+            assert_eq!(self.nodes[i].core().shared_cuts(), 0, "member {i} looked up a cut held under two parents");
+        }
+        (checked, voided)
     }
 
     fn voids(&self, i: usize) -> Vec<(EntryRef, VoidReason, CutRef)> {
@@ -971,4 +1043,159 @@ fn a_stalled_uplink_flushing_three_seconds_of_hands_at_120_hz() {
         s.voids(1).len()
     );
     assert!(recovered.is_some_and(|n| n <= 2), "member 0 not final again within 2 s of the stall: {recovered:?}");
+}
+
+// The pipelined-void fix (@harness-eng m365a498e6849; coordinator m90c32fc9ceb2): the entries a cut is rooted with are
+// exactly what the final log yields at that cut once it is final.
+
+#[test]
+fn a_rooted_cut_is_simulated_with_exactly_its_final_entries() {
+    // Late entries (an author stamping 1 s in the past), a member cut off for 2 s, and a slow link: each makes cuts
+    // void entries they include while the cut before them is still in flight.
+    let mut runs: Vec<(&str, Sim)> = Vec::new();
+    for seed in 1..=3 {
+        let mut s = Sim::new(4, 100 + seed);
+        s.stamp_lag[3] = 30 + 10 * seed;
+        runs.push(("late author", s));
+        let mut s = Sim::new(4, 200 + seed);
+        s.partition = Some((2, 1_000, 3_000));
+        s.stamp_lag[2] = 12;
+        runs.push(("partition", s));
+        let mut s = Sim::new(3, 300 + seed);
+        s.delay[1] = (60, 140);
+        s.stamp_lag[1] = 9;
+        runs.push(("slow link", s));
+    }
+    for (what, mut s) in runs {
+        s.run(5_000);
+        s.assert_same_final_log();
+        let (checked, voided) = s.assert_roots_match_the_final_log();
+        assert!(checked > 20, "{what}: only {checked} rooted cuts became final");
+        eprintln!("{what}: {checked} rooted cuts checked, {voided} voids");
+    }
+}
+
+/// The cuts some member rooted that never became final, each with the final cut at its height, where the final one
+/// makes effective an entry stamped below the abandoned cut's frame that the abandoned cut did not include: an entry
+/// the abandoned cut's frame must not void.
+fn abandoned_cuts(s: &Sim) -> (usize, usize) {
+    let finals: BTreeMap<u64, CutRef> = s.events[0]
+        .iter()
+        .filter_map(|e| if let AgreeEvent::CutFinal { cut, .. } = e { Some((cut.height, *cut)) } else { None })
+        .collect();
+    let (mut abandoned, mut below) = (0, 0);
+    let mut seen = Vec::new();
+    for i in 0..s.nodes.len() {
+        for (cut, _) in &s.rooted[i] {
+            let Some(fin) = finals.get(&cut.at.height) else { continue };
+            if *fin == cut.at || seen.contains(&cut.at) {
+                continue;
+            }
+            seen.push(cut.at);
+            abandoned += 1;
+            for f in fin.frame.0.saturating_sub(60)..cut.at.frame.0.min(fin.frame.0) {
+                let Some(v) = s.nodes[0].entries_at(Frame(f)) else { continue };
+                if v.iter().any(|e| !cut.includes(&e.entry.chain, e.entry.seq)) {
+                    below += 1;
+                    break;
+                }
+            }
+        }
+    }
+    (abandoned, below)
+}
+
+#[test]
+fn rooted_cuts_match_through_pipelines_abandoned_cuts_and_orphans() {
+    // The coordinator's cases (m90c32fc9ceb2), each shown to happen and checked by the root = final log property:
+    // a pipeline two or more deep; a cut abandoned at a view change whose replacement includes an entry stamped below
+    // the abandoned cut's frame; and a block reaching a member before its parent.
+    let (mut depth, mut abandoned, mut below, mut orphans, mut checked) = (0, 0, 0, 0, 0);
+    for seed in 1..=16u64 {
+        let mut s = Sim::new(4, 400 + seed);
+        // A jittery link reorders proposals; a member cut off while it collects votes abandons the cut voted on; a
+        // lagging author keeps entries in flight below the abandoned cut's frame.
+        s.delay[1] = (2, 180);
+        s.stamp_lag[3] = 4;
+        let start = 900 + 37 * seed as i64;
+        s.partition = Some(((seed % 4) as usize, start, start + 500));
+        s.run(3_000);
+        s.assert_same_final_log();
+        checked += s.assert_roots_match_the_final_log().0;
+        depth = depth.max(s.max_depth);
+        let (a, b) = abandoned_cuts(&s);
+        abandoned += a;
+        below += b;
+        orphans += (0..4).map(|i| s.nodes[i].core().orphans_adopted()).sum::<u64>();
+    }
+    eprintln!(
+        "checked {checked}, deepest pipeline {depth}, abandoned {abandoned} ({below} with an entry below), orphans {orphans}"
+    );
+    assert!(depth >= 2, "no pipeline two deep (deepest {depth})");
+    assert!(below >= 1, "no abandoned cut whose replacement includes an entry below its frame ({abandoned} abandoned)");
+    assert!(orphans >= 1, "no block reached a member before its parent");
+}
+
+#[test]
+fn an_abandoned_cuts_replacement_applies_an_entry_below_its_frame() {
+    // The coordinator's scripted case (m1fd241111a15). Member 3's uplink is held, so entries it stamps go unseen.
+    // Once some member roots a cut A whose frame is past the hold, a blackout loses A's votes, so A is never certified
+    // and is abandoned at the view change. Member 3's held entries are then released, and the replacement B, at A's
+    // height on A's parent, includes some stamped below A's frame. They are effective under B (B's parent is
+    // older), so every member's root for B must apply them, and it must match the final log.
+    for seed in 1..=4u64 {
+        let mut s = Sim::new(4, 500 + seed);
+        s.run(1_000);
+        s.holding = Some(3);
+        let hold_frame = Clock(60).frame_at(HostTime(s.now)).unwrap();
+        let hold_from = s.submitted[3].len();
+        let mut abandoned: Option<Cut> = None;
+        while s.now < 3_000 * MS && abandoned.is_none() {
+            let next = s.now / MS + 1;
+            s.run(next);
+            abandoned = (0..3)
+                .find_map(|i| s.rooted[i].last().map(|r| r.0.clone()).filter(|c| c.at.frame.0 > hold_frame.0 + 8));
+        }
+        let a = abandoned.expect("a cut past the hold was rooted");
+        s.net.clear();
+        s.blackout_until = s.now + 60 * MS;
+        let next = s.now / MS + 60;
+        s.run(next);
+        s.release();
+        s.run(6_000);
+        s.assert_same_final_log();
+        let (checked, _) = s.assert_roots_match_the_final_log();
+        let fin = s.events[0]
+            .iter()
+            .find_map(|e| match e {
+                AgreeEvent::CutFinal { cut, .. } if cut.height == a.at.height => Some(*cut),
+                _ => None,
+            })
+            .expect("a cut final at the abandoned height");
+        assert_ne!(fin, a.at, "seed {seed}: the cut was not abandoned");
+        // A held entry of member 3, stamped below A's frame, A didn't include, effective in the final log.
+        let held = &s.submitted[3][hold_from..];
+        let below: Vec<Frame> = (hold_frame.0..a.at.frame.0)
+            .map(Frame)
+            .filter(|f| {
+                s.nodes[0].entries_at(*f).is_some_and(|v| {
+                    v.iter().any(|e| held.contains(&e.id()) && !a.includes(&e.entry.chain, e.entry.seq))
+                })
+            })
+            .collect();
+        assert!(!below.is_empty(), "seed {seed}: no held entry below A's frame {:?} became final", a.at.frame);
+        // Held entries stamped below the parent of the cut that first includes them are rightly late; none is
+        // voided otherwise.
+        assert!(s.voids(0).iter().filter(|v| held.contains(&v.0)).all(|v| v.1 == VoidReason::Late));
+        // Every member rooted the replacement, so its root over those entries was checked against the final log.
+        for i in 0..3 {
+            assert!(s.rooted[i].iter().any(|r| r.0.at == fin), "seed {seed}: member {i} never rooted the replacement");
+        }
+        eprintln!(
+            "seed {seed}: abandoned {:?}, replacement {:?}, held entries final below A's frame at {} frames, {checked} roots checked",
+            a.at,
+            fin,
+            below.len()
+        );
+    }
 }
