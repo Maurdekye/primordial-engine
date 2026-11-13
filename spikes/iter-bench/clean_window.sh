@@ -12,7 +12,7 @@ WT=.worktrees/logic
 O=spikes/out/iter-bench/clean-window
 mkdir -p "$O"
 LOG="$O/window.log"
-export CARGO_TARGET_DIR="$PWD/spikes/iter-bench/target/clean-window"
+export CARGO_TARGET_DIR="$(python scripts/cargo_output.py "$PWD" "iter-bench/clean-window")"
 
 state() {
   echo "# $1 $(date -u +%FT%TZ)"
