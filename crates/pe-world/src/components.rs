@@ -294,12 +294,12 @@ pub struct Hand {
 
 /// A hand's mode (8.1, D18b; @coordinator-opus ma93ce7600de1): a personal comfort choice, per member, on the hand.
 pub mod hand_mode {
-    /// Physical only while engaged (the default).
-    pub const ENGAGED: u8 = 0;
-    /// Always physical within reach.
-    pub const ALWAYS: u8 = 1;
+    /// "Closed hand": physical only while the hand is closed (its input's `engaged`, the grasp). The default.
+    pub const CLOSED_HAND: u8 = 0;
+    /// "Always within reach": always physical within reach.
+    pub const WITHIN_REACH: u8 = 1;
     /// The largest valid mode.
-    pub const MAX: u8 = ALWAYS;
+    pub const MAX: u8 = WITHIN_REACH;
 }
 
 impl Component for Hand {

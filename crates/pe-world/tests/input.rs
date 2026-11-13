@@ -116,8 +116,8 @@ fn the_codec_is_strict_and_round_trips() {
         grab(TRAY, HAND_A),
         Input::Grab { object: oid(TRAY), hand: None },
         Input::Release { object: oid(CUP) },
-        Input::HandMode { hand: oid(HAND_A), mode: hand_mode::ALWAYS },
-        Input::HandMode { hand: oid(HAND_A), mode: hand_mode::ENGAGED },
+        Input::HandMode { hand: oid(HAND_A), mode: hand_mode::WITHIN_REACH },
+        Input::HandMode { hand: oid(HAND_A), mode: hand_mode::CLOSED_HAND },
     ];
     for i in &all {
         let b = i.encode();
@@ -128,7 +128,7 @@ fn the_codec_is_strict_and_round_trips() {
         assert_eq!(Input::decode(&b[..b.len() - 1]), None, "truncated");
     }
     assert_eq!(Input::decode(&[5]), None, "unknown tag");
-    let mut mode = Input::HandMode { hand: oid(HAND_A), mode: hand_mode::ALWAYS }.encode();
+    let mut mode = Input::HandMode { hand: oid(HAND_A), mode: hand_mode::WITHIN_REACH }.encode();
     *mode.last_mut().unwrap() = hand_mode::MAX + 1;
     assert_eq!(Input::decode(&mode), None, "a mode past the last");
     let mut flag = Input::Grab { object: oid(TRAY), hand: None }.encode();
@@ -421,18 +421,18 @@ fn hand_inputs_sort_before_the_frames_other_entries() {
 #[test]
 fn only_a_hands_owner_sets_its_mode_and_it_is_hashed() {
     let mut f = fx();
-    assert_eq!(f.w.hand_mode(oid(HAND_A)), Some(hand_mode::ENGAGED), "the default");
+    assert_eq!(f.w.hand_mode(oid(HAND_A)), Some(hand_mode::CLOSED_HAND), "the default");
     assert_eq!(f.w.hand_mode(oid(TRAY)), None, "not a hand");
     let before = f.w.root();
-    let always = |h| Input::HandMode { hand: oid(h), mode: hand_mode::ALWAYS };
+    let always = |h| Input::HandMode { hand: oid(h), mode: hand_mode::WITHIN_REACH };
     assert_eq!(refused(&input(&mut f.w, 0, &mut f.b, always(HAND_A))), Reason::NotYourHand);
     assert_eq!(refused(&input(&mut f.w, 0, &mut f.a, always(TRAY))), Reason::NotYourHand);
     assert_eq!(f.w.root(), before, "a refusal changes nothing");
     let r = input(&mut f.w, 0, &mut f.a, always(HAND_A));
     ok(&r);
     assert_eq!(r.1, Footprint::default(), "a mode change has no physics footprint; the replica reads the mode");
-    assert_eq!(f.w.hand_mode(oid(HAND_A)), Some(hand_mode::ALWAYS));
-    assert_eq!(f.w.hand_mode(oid(HAND_B)), Some(hand_mode::ENGAGED), "per member, per hand");
+    assert_eq!(f.w.hand_mode(oid(HAND_A)), Some(hand_mode::WITHIN_REACH));
+    assert_eq!(f.w.hand_mode(oid(HAND_B)), Some(hand_mode::CLOSED_HAND), "per member, per hand");
     let after = f.w.root();
     assert_ne!(after, before, "the mode is in the hand's leaf");
     // The same mode again changes nothing.
@@ -446,5 +446,5 @@ fn only_a_hands_owner_sets_its_mode_and_it_is_hashed() {
     ok(&input(&mut g.w, 0, &mut g.a, always(HAND_A)));
     assert_eq!(g.w.root(), after);
     ok(&input(&mut f.w, 1, &mut f.a, hand(HAND_A, vec![pose(0.5, true)], 0)));
-    assert_eq!(f.w.hand_mode(oid(HAND_A)), Some(hand_mode::ALWAYS));
+    assert_eq!(f.w.hand_mode(oid(HAND_A)), Some(hand_mode::WITHIN_REACH));
 }

@@ -1346,9 +1346,11 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
 - **A hand's mode** (D18b; @coordinator-opus ma93ce7600de1, after @vdw-physics m7a559f785a77). Whether a hand has
   a physics body changes the simulation, so every peer reads it from the world, never from a local toggle; and the
   user switches it within a session, so it is not a frozen config item (6.6). It is a **personal comfort choice,
-  per member, on the hand**, like a VR turning mode: `Hand.mode`, 0 = physical only while engaged (the default),
-  1 = always physical within reach (the grab reach of this section's **Reach** bullet: `reach_mm` from the hand's
-  target, plus `slack_mm`). Only the hand's owner changes it, with a `HandMode` input (`NotYourHand` otherwise),
+  per member, on the hand**, like a VR turning mode: `Hand.mode`, 0 = **closed hand**: physical only while the
+  hand is closed (its input's `engaged`, the grasp; the default), 1 = **always within reach**: always physical
+  within reach (the grab reach of this section's **Reach** bullet: `reach_mm` from the hand's target, plus
+  `slack_mm`). The labels are @coordinator-opus's (m33b81fdefd5d), so nobody reads mode 0 as D18b's swept reach
+  test; pe-app's binding shows them. Only the hand's owner changes it, with a `HandMode` input (`NotYourHand` otherwise),
   applied at the input's frame like any input, so a replay applies it identically; it is a field of the `Hand`
   row, so it is in the hand's leaf hash, and an import carries it. A world-wide admin cap may come later if a
   world needs one, not in M1. pe-app gives the user a key or controller binding to flip their own mode
