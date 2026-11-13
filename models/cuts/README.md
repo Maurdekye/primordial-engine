@@ -340,7 +340,14 @@ content height, so `h + 2` excused every entry.
     states, 167 s, all properties hold.
   - **n4-byz-progress** (4 members, Byzantine proposer that may leave the honest entry out, three content heights,
     fixed frames): depth bound 15, the length of the control's shrunk counterexample. **Not finished locally:** the
-    run stopped at the 540 s timeout with 35.3 M states and no violation. The full-suite run will give its row.
+    run stopped at the 540 s timeout with 35.3 M states and no violation. **Not finished in the full-suite run
+    either** [V, @integrator-2's job]: stopped at the job's 2 h limit with 429.2 M
+    unique states, 9.26 B visits and 8.5 GiB, no violation. So this row is a bounded search, not a proof: no
+    violation in what was searched. The suite now gives it a 1,800 s budget (`budget_s`; `--budget S` overrides),
+    and its row says UNFINISHED; the run's last line counts it ("...; 1 of them UNFINISHED at a time budget"). Its
+    examples are all found well inside the budget (in 40 s at 3 threads). **walk-n4-progress carries the rest:** the
+    same configuration, unmutated, by random walks to depth 53, and the control ctl-skipafterfaulty shows the
+    property bites at this size (@design-reviewer's condition).
   - **walk-n4-progress** (the same configuration, random walks for 120 s): 13.8 M states, depth up to 53, all
     properties hold.
 - **Control ctl-skipafterfaulty** (after a faulty proposer's cut, a proposer adds nothing, so entries carried over
