@@ -882,15 +882,22 @@ fn a_streamed_hand_coasts_for_100_ms_after_its_span_then_goes_back_to_the_hand()
     assert_eq!(r.faults(), 0);
 }
 
-/// A hand input with one pose per point, closed or open.
-fn hand_at(points: &[[f64; 3]], closed: bool) -> Input {
+/// A hand input for `hand` with one pose per point, turned by `rot`, closed or open.
+fn hand_of(hand: u128, points: &[[f64; 3]], rot: [f32; 4], closed: bool) -> Input {
     let pose = |p: &[f64; 3]| HandPose {
         pos: pos(p[0], p[1], p[2]),
-        rot: [0.0, 0.0, 0.0, 1.0],
+        rot,
         grip: if closed { 1.0 } else { 0.0 },
         engaged: closed,
     };
-    Input::Hand { hand: oid(HAND), poses: points.iter().map(pose).collect(), hold: 0 }
+    Input::Hand { hand: oid(hand), poses: points.iter().map(pose).collect(), hold: 0 }
+}
+
+const UNTURNED: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+/// A hand input for the hand with one pose per point, closed or open.
+fn hand_at(points: &[[f64; 3]], closed: bool) -> Input {
+    hand_of(HAND, points, UNTURNED, closed)
 }
 
 /// Grabs mirror the claims (replica.md 3.3; world-model.md 7.2): a closed hand that grabs the ball holds it by a
@@ -957,4 +964,239 @@ fn a_grab_that_arrives_late_rolls_back_to_the_same_roots() {
     assert_eq!(roots(&c, 48), roots(&a, 48));
     assert!(at(&a, BALL)[1] > 0.5, "the grab lifted the ball: {:?}", at(&a, BALL));
     assert_eq!((a.faults(), c.faults()), (0, 0));
+}
+
+// ---- what a hand holds: handoffs, jumps and the grab's spring (@design-reviewer's Medium and Low on cc037c10) -------
+
+const RIGHT: u128 = HAND + 1;
+const NEXT: u128 = BALL + 1;
+const BESIDE: u128 = BALL + 2;
+
+/// Genesis, with the editor's hands at their points and dynamic balls (id, centre, shape).
+fn with_hands_and_balls(hands: &[(u128, [f64; 3])], balls: &[(u128, [f64; 3], Shape)]) -> World {
+    let k = keys().key(0);
+    let mut w = genesis();
+    for &(h, p) in hands {
+        w.create(oid(h), None, k, GENESIS).expect("hand");
+        w.insert(oid(h), Transform::at(pos(p[0], p[1], p[2]))).expect("hand transform");
+        w.insert(oid(h), Hand { owner: k, ..Hand::default() }).expect("hand row");
+    }
+    for &(b, p, shape) in balls {
+        w.create(oid(b), None, k, GENESIS).expect("ball");
+        w.insert(oid(b), Transform::at(pos(p[0], p[1], p[2]))).expect("ball transform");
+        w.insert(oid(b), dynamic()).expect("ball body");
+        w.insert(oid(b), shape).expect("ball shape");
+    }
+    w
+}
+
+/// The ball pit's ball: 3 cm in radius, 18 g.
+fn pit_ball() -> Shape {
+    Shape { kind: shape_kind::SPHERE, density: 160.0, size: [0.03, 0.0, 0.0], ..Shape::default() }
+}
+
+fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
+}
+
+/// The hand whose grab joint holds `id`, if one does.
+fn held_by(r: &ReplicaImpl<PeWorld>, id: u128) -> Option<ObjectId> {
+    r.physics().joint_objects(pe_replica::hands::grab_key(oid(id))).and_then(|(hand, _)| hand)
+}
+
+/// The handoff: the left hand grabs the ball at frame 6, the right takes it over by a renewing grab at frame 10, and
+/// only the right moves, lifting it 0.9 m from frame 12 to 43; the left opens at frame 46.
+fn handoff() -> (World, Vec<SignedEntry>) {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    let (left, right) = ([2.0 - 0.1 - hr, 0.1, 0.0], [2.0 + 0.1 + hr, 0.1, 0.0]);
+    let lift: Vec<[f64; 3]> = (0..32).map(|k| [right[0], 0.1 + 0.9 * f64::from(k + 1) / 32.0, 0.0]).collect();
+    let top = [right[0], 1.0, 0.0];
+    let entries = vec![
+        input(&mut b, 2, &hand_of(HAND, &[left; 8], UNTURNED, true)),
+        input(&mut b, 2, &hand_of(RIGHT, &[right; 8], UNTURNED, true)),
+        input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }),
+        input(&mut b, 10, &Input::Grab { object: oid(BALL), hand: Some(oid(RIGHT)) }),
+        input(&mut b, 12, &hand_of(RIGHT, &lift[..16], UNTURNED, true)),
+        input(&mut b, 28, &hand_of(RIGHT, &lift[16..], UNTURNED, true)),
+        input(&mut b, 44, &hand_of(RIGHT, &[top; 16], UNTURNED, true)),
+        input(&mut b, 46, &hand_of(HAND, &[left], UNTURNED, false)),
+        input(&mut b, 60, &hand_of(RIGHT, &[top; 16], UNTURNED, true)),
+    ];
+    let world = with_hands_and_balls(&[(HAND, left), (RIGHT, right)], &[(BALL, [2.0, 0.1, 0.0], sphere(0.1))]);
+    (world, entries)
+}
+
+/// A renewing grab that names another of its author's hands moves the claim to it (world-model.md 7.2), and the
+/// grab joint moves with it (@design-reviewer's Medium on cc037c10): after the handoff only the right hand moves, and
+/// the ball rises with it. Once the left hand opens, losing its body, the ball stays in the right.
+#[test]
+fn a_grab_handed_to_the_other_hand_follows_that_hand() {
+    let (world, entries) = handoff();
+    let mut s = Source::default();
+    entries.into_iter().for_each(|e| s.add(e));
+    let mut r = replica_of(world);
+    r.advance(Frame(44), &mut s);
+    assert_eq!(r.world().claims().iter().map(|c| c.hand).collect::<Vec<_>>(), [oid(RIGHT)]);
+    assert_eq!(held_by(&r, BALL), Some(oid(RIGHT)), "the joint moved with the claim");
+    assert!(at(&r, BALL)[1] > 0.9, "the ball rose with the right hand: {:?}", at(&r, BALL));
+    r.advance(Frame(70), &mut s);
+    assert!(!r.physics().has_body(oid(HAND)), "the open left hand has no body");
+    assert_eq!(held_by(&r, BALL), Some(oid(RIGHT)));
+    assert!(at(&r, BALL)[1] > 0.9, "the ball stays in the right hand: {:?}", at(&r, BALL));
+    assert_eq!(r.faults(), 0);
+}
+
+/// A hand holding a pit ball, which rests against two others, jumps 1 m along x in one frame at frame 12, through one
+/// of them.
+fn jump_holding() -> (World, Vec<SignedEntry>) {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let start = [2.0 - 0.03 - f64::from(pe_replica::world::HAND_RADIUS), 0.03, 0.0];
+    let to = [start[0] + 1.0, 0.03, 0.0];
+    let entries = vec![
+        input(&mut b, 2, &hand_at(&[start; 10], true)),
+        input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }),
+        input(&mut b, 12, &hand_at(&[to; 10], true)),
+    ];
+    let balls = [
+        (BALL, [2.0, 0.03, 0.0], pit_ball()),
+        (NEXT, [2.06, 0.03, 0.0], pit_ball()),
+        (BESIDE, [2.0, 0.03, 0.06], pit_ball()),
+    ];
+    (with_hands_and_balls(&[(HAND, start)], &balls), entries)
+}
+
+/// What a hand holds jumps with it (@design-reviewer's Low on cc037c10; world-model.md 8.1's cap): after the 1 m
+/// jump the held ball is where the hand's move took it, keeping its place in the hand, and neither of the balls it
+/// rested against moves. Pulled across, it would hit the one in its path far faster than the cap; left behind (as on
+/// cc037c10), it would stay held 1 m from the hand.
+#[test]
+fn a_hand_that_jumps_carries_what_it_holds_without_hitting_anything() {
+    let (world, entries) = jump_holding();
+    let mut s = Source::default();
+    entries.into_iter().for_each(|e| s.add(e));
+    let mut r = replica_of(world);
+    r.advance(Frame(12), &mut s);
+    assert_eq!(held_by(&r, BALL), Some(oid(HAND)));
+    let top = fastest(&mut r, &mut s, &[NEXT, BESIDE], 40);
+    assert!(top < 0.5, "neither of the others moves: {top} m/s");
+    let ball = at(&r, BALL);
+    assert!(distance(ball, [3.0, 0.03, 0.0]) < 0.01, "the ball jumped with the hand, keeping its place: {ball:?}");
+    assert_eq!(r.faults(), 0);
+}
+
+/// A hand holding a pit ball `offset` out along x turns 90 degrees about y in one frame at frame 12, with a second
+/// ball on the held one's arc. The top speed of the second ball, where the held one ends, and its turned place.
+fn turn_holding(offset: f64) -> (f64, [f64; 3], [f64; 3]) {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    let hand = [2.0, 0.03, 0.0];
+    let turned = [0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2];
+    s.add(input(&mut b, 2, &hand_at(&[hand; 10], true)));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    s.add(input(&mut b, 12, &hand_of(HAND, &[hand; 10], turned, true)));
+    let mid = offset * std::f64::consts::FRAC_1_SQRT_2;
+    let balls = [(BALL, [2.0 + offset, 0.03, 0.0], pit_ball()), (NEXT, [2.0 + mid, 0.03, -mid], pit_ball())];
+    let mut r = replica_of(with_hands_and_balls(&[(HAND, hand)], &balls));
+    r.advance(Frame(12), &mut s);
+    assert_eq!(held_by(&r, BALL), Some(oid(HAND)));
+    let top = fastest(&mut r, &mut s, &[NEXT], 40);
+    assert_eq!(r.faults(), 0);
+    (top, at(&r, BALL), [2.0, 0.03, -offset])
+}
+
+/// A turn that would take a held object faster than the cap is a jump too (@design-reviewer's Low on cc037c10): with
+/// the ball 15 cm out, a 90-degree turn in one frame would move it 21 cm (13 m/s). It is put at its turned place, and
+/// the ball on its arc stays where it is. On cc037c10 it swung at 7 m/s and ended 4 cm out of place.
+#[test]
+fn a_fast_turn_carries_what_the_hand_holds_instead_of_swinging_it() {
+    let (top, ball, place) = turn_holding(0.15);
+    assert!(top < 0.5, "the ball on the arc stays: {top} m/s");
+    assert!(distance(ball, place) < 0.01, "the held ball is at its turned place: {ball:?}, {place:?}");
+}
+
+/// A held object springs back to its place in the hand ([`pe_replica::hands::GRAB`]): with the ball 10 cm out the
+/// same turn is no jump (14 cm, 8.5 m/s), so the hand turns and the spring brings the ball round after it, to within
+/// 1 cm of its turned place, pushing the ball on its arc at less than the cap. On cc037c10 the joint's velocity drive
+/// cancelled the spring, and the ball was left 3.8 cm out.
+#[test]
+fn a_held_object_springs_back_to_its_place_in_the_hand() {
+    let (top, ball, place) = turn_holding(0.1);
+    assert!(top < pe_replica::hands::MAX_HAND_PUSH_SPEED, "the ball on the arc is pushed under the cap: {top} m/s");
+    assert!(distance(ball, place) < 0.01, "the held ball is back at its place: {ball:?}, {place:?}");
+}
+
+/// Handoffs and carried jumps are functions of the claims and the physics image, so an entry that arrives late
+/// rolls back to the same roots as a replica that had it all along: the renewing grab that hands the ball over, and
+/// the jump that carries it.
+#[test]
+fn a_late_handoff_and_a_late_jump_roll_back_to_the_same_roots() {
+    let run = |make: fn() -> (World, Vec<SignedEntry>), late: usize| {
+        let (world, entries) = make();
+        let mut all = Source::default();
+        entries.iter().cloned().for_each(|e| all.add(e));
+        let mut a = replica_of(world);
+        a.advance(Frame(56), &mut all);
+        let (world, _) = make();
+        let mut some = Source::default();
+        entries.iter().enumerate().filter(|&(k, _)| k != late).for_each(|(_, e)| some.add(e.clone()));
+        let mut c = replica_of(world);
+        c.advance(Frame(36), &mut some);
+        some.add(entries[late].clone());
+        let adv = c.advance(Frame(56), &mut some);
+        assert!(adv.rolled_back_to.is_some_and(|f| f <= entries[late].entry.stamp), "rolled back: {adv:?}");
+        assert_eq!(roots(&c, 56), roots(&a, 56));
+        assert_eq!((a.faults(), c.faults()), (0, 0));
+    };
+    run(handoff, 3);
+    run(jump_holding, 2);
+}
+
+/// A held object keeps the rotation it was grabbed at, relative to the hand ([`pe_replica::hands::GRAB_TORQUE`]): a
+/// box resting at 30 degrees about y is grabbed 15 cm from the hand's centre, lifted 30 cm, then turned with the
+/// hand by 30 degrees, 3 a frame, and ends at 60. An angular spring would turn it to the hand's own rotation (30),
+/// and with no angular drive it would stay at 30.
+#[test]
+fn a_held_object_keeps_the_rotation_it_was_grabbed_at() {
+    const BOX: u128 = BALL + 3;
+    let about_y = |degrees: f64| {
+        let h = (degrees.to_radians() / 2.0) as f32;
+        [0.0, h.sin(), 0.0, h.cos()]
+    };
+    let half = 0.04;
+    let start = [2.0 - 0.15, half, 0.0];
+    let top = [start[0], half + 0.3, 0.0];
+    let lift: Vec<[f64; 3]> = (0..16).map(|k| [start[0], half + 0.3 * f64::from(k + 1) / 16.0, 0.0]).collect();
+    let turn: Vec<HandPose> = (1..=10)
+        .map(|k| HandPose {
+            pos: pos(top[0], top[1], top[2]),
+            rot: about_y(3.0 * f64::from(k)),
+            grip: 1.0,
+            engaged: true,
+        })
+        .collect();
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(BOX), hand: Some(oid(HAND)) }));
+    s.add(input(&mut b, 10, &hand_at(&lift, true)));
+    s.add(input(&mut b, 26, &Input::Hand { hand: oid(HAND), poses: turn, hold: 16 }));
+    let mut w = with_hands_and_balls(&[(HAND, start)], &[]);
+    let k = keys.key(0);
+    w.create(oid(BOX), None, k, GENESIS).expect("box");
+    w.insert(oid(BOX), Transform { rot: about_y(30.0), ..Transform::at(pos(2.0, half, 0.0)) }).expect("box transform");
+    w.insert(oid(BOX), dynamic()).expect("box body");
+    w.insert(oid(BOX), cuboid([half as f32; 3])).expect("box shape");
+    let mut r = replica_of(w);
+    r.advance(Frame(52), &mut s);
+    assert_eq!(held_by(&r, BOX), Some(oid(HAND)));
+    let q = r.physics().pose(oid(BOX)).expect("the box's body").rotation;
+    let degrees = 2.0 * f64::from(q[1]).atan2(f64::from(q[3])).to_degrees();
+    assert!((degrees - 60.0).abs() < 2.0, "the box turned with the hand, keeping its 30 degrees: {degrees} ({q:?})");
+    assert!(q[0].abs() < 0.02 && q[2].abs() < 0.02, "and did not tip: {q:?}");
+    assert_eq!(r.faults(), 0);
 }
