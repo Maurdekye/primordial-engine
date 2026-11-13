@@ -296,6 +296,30 @@ mod tests {
         with_replica(replica, clock, budget)
     }
 
+    fn in_the_ball_pit(clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, Duration::from_millis(133), clock.clone()).expect("pit");
+        with_replica(replica, clock, budget)
+    }
+
+    /// M1's ball pit opens with this machine's member admitted: the first view draws every ball as a sphere, and the
+    /// member's two hands marked as the local player's (`OWN_HAND`), so VR draws them where the headset tracks them.
+    #[test]
+    fn the_ball_pit_opens_with_its_balls_and_my_hands() {
+        use pe_seams::{Hand, Shape, ViewFlags};
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (mut s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        let v = slot.newest().expect("published");
+        let ball = Some(Shape::Sphere { radius: pe_world::preset::BALL_R as f32 });
+        assert_eq!(v.objects.iter().filter(|o| o.shape == ball).count(), pe_world::preset::BALLS);
+        let me = crate::world::DEV_MEMBER;
+        let hands: Vec<_> =
+            v.objects.iter().filter(|o| o.flags.contains(ViewFlags::OWN_HAND)).map(|o| o.hand_of).collect();
+        assert_eq!(hands.len(), 2, "{hands:?}");
+        assert!(hands.contains(&Some((me, Hand::Left))) && hands.contains(&Some((me, Hand::Right))), "{hands:?}");
+    }
+
     fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
         let slot = Arc::new(FrameSlot::new());
         let sim = Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, clock, slot.clone(), budget);
