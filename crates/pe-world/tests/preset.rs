@@ -6,7 +6,9 @@ use pe_core::{Frame, MemberKey, Offset, Pos};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{Class, Outcome};
 use pe_world::components::{Body, Hand, Shape, SimSize, body_kind, shape_kind};
-use pe_world::preset::{BALLS, MAX_BALLS, ball_pit, ball_pit_on, ball_pit_with, find, genesis_line, m1_line, names};
+use pe_world::preset::{
+    BALLS, MAX_BALLS, Session, ball_pit, ball_pit_on, ball_pit_with, find, genesis_line, m1_line, m1_session, names,
+};
 use pe_world::{BlobStore, HandPose, Input, World, WorldError, perm};
 
 fn origin() -> Pos {
@@ -158,4 +160,43 @@ fn an_interim_session_builds_the_pit_on_its_genesis_line() {
 #[should_panic(expected = "never on the origin's line")]
 fn no_pit_is_built_on_the_origins_line() {
     ball_pit_on(pe_core::LineId::origin(), 1, BlobStore::default(), origin(), BALLS);
+}
+
+/// M1's session genesis (the two-member interim, @coordinator-opus): the same `Session` gives the same
+/// frame-0 root on every machine, which a second machine checks against its genesis record before it starts. The
+/// constant is the root on Windows; the same test cross-built for x86_64-unknown-linux-musl and run under WSL gives it
+/// too. The members' order doesn't change it; the line, which a session derives from its record, does (the hands' ids
+/// carry it), and so does each setting.
+#[test]
+fn a_session_s_frame_0_root_is_the_same_on_every_machine() {
+    let session = Session {
+        seed: 7,
+        origin: Pos::ORIGIN,
+        balls: BALLS,
+        line: pe_core::LineId(pe_core::Hash([9; 32])),
+        rate: pe_seams::SimRate::DEFAULT,
+        gravity: pe_world::GRAVITY,
+        agree: b"pe-agree's consensus settings".to_vec(),
+        members: vec![MemberKey([2; 32]), MemberKey([1; 32])],
+    };
+    let root = |s: &Session| m1_session(s, BlobStore::default()).expect("a session").root_hash(pe_seams::DomainId(0));
+    let r = root(&session);
+    assert_eq!(r.to_string(), "81107a69daa46690b951ae98d9a6dad8309a329da99464ba240f485d3eaa6262");
+    let w = m1_session(&session, BlobStore::default()).expect("a session");
+    assert_eq!((w.line(), w.m1_marker()), (session.line, Some(m1_line())));
+    let mut reordered = session.clone();
+    reordered.members.reverse();
+    assert_eq!(root(&reordered), r, "members in any order");
+    let changed: [fn(&mut Session); 5] = [
+        |s| s.line = pe_core::LineId(pe_core::Hash([8; 32])),
+        |s| s.seed = 8,
+        |s| s.rate = pe_seams::SimRate::new(90).expect("90 Hz"),
+        |s| s.gravity = [0.0, -3.0, 0.0],
+        |s| s.agree = b"other settings".to_vec(),
+    ];
+    for (i, change) in changed.iter().enumerate() {
+        let mut s = session.clone();
+        change(&mut s);
+        assert_ne!(root(&s), r, "change {i} is in the root");
+    }
 }
