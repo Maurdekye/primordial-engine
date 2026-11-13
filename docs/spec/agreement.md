@@ -147,6 +147,19 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   cadence that is a duration in the world's settings. A cut includes, for each author, its chain up to the head it
   names, all stamped below its frame; it extends its parent's heads. An entry a cut covers that is stamped below the
   parent's frame is late, and void.
+- **The cut grid** (@engine-architect). Every cut's frame is a multiple of the world's cut interval
+  (`cut_interval_s`, 0.1 s) in frames at the world's rate (`NodeConfig::cut_every`: 6 frames at 60 Hz, 9 at 90, 12 at
+  120; at least 1), counted from frame 0. The leader names the latest grid frame at or below its present less the lag,
+  and proposes only when that is above the parent's; a voter refuses a cut off the grid (`Reject::OffGrid`), and its
+  view times out like any refused proposal. The replica takes live roots and keeps keyframes on the same grid, so
+  every vote reuses the live root instead of re-stepping from a keyframe: pe-app gives the replica
+  `NodeConfig::cut_every` as its `cut_every`, so one function decides both grids (@engine-architect). Rounding down adds up to one interval less
+  a frame to the lag. A cut may still skip grid frames (one cut catches up after a stall); the grid fixes where cuts
+  can fall, not that each grid frame gets one. The cadence (`Timing::cadence_ns`) stays the floor between a block
+  and its child's proposal; with the interval at least the cadence, the grid is what spaces cuts.
+  Measured [V, pe-agree sim, 4 members, two hands a frame, 5 s]: every final cut on the grid at 60, 90 and 120 Hz
+  (40-41 final cuts each); a member running a 0.15 s interval against the others' 0.1 s has its off-grid proposal
+  refused, and the line stays live (41 final cuts in 6 s, all on the honest grid).
 - **The frame a voter accepts:** above its parent's frame, and at most the voter's own present frame plus a small
   tolerance (a world setting). Never a bound relative to the parent (@design-reviewer, coordinator): with one, a 10 s stall would need dozens of cuts to catch up. The upper bound stops a proposer naming
   a frame in the voters' future, which would void as late every honest entry stamped below it but not yet sent. The
@@ -232,7 +245,10 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   origin line's id is public, so a member can grind a key: about N frames of advantage against one chosen victim
   costs about 2^N keys, and the rank is predictable anyway. Not seeded from admission (choice (b) not built).
 - **Settings** (with @engine-architect): pe-agree owns its settings record's format and version (the
-  cadence, the lag's floor, cap and margin, the frame tolerance, the timeouts' floor and ceiling, the retention caps);
+  cadence, the cut interval, the lag's floor, cap and margin, the frame tolerance, the timeouts' floor and ceiling,
+  the rate budget's fields, the retention caps); `NodeConfig::consensus_hash` covers the ones every member must
+  share (v3: the cadence and timeouts, the frame tolerance, the rate budget's fields, `defer_bytes` and the cut
+  interval);
   the bytes live in the world, hashed into the root. A change is an agreed entry and takes effect from the first cut
   that includes it, so every member switches at the same cut.
 
