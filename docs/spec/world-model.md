@@ -1506,12 +1506,26 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     carry it this frame**, from where it is, keeping its offset in the hand. **A held object never passes through a
     wall** (@coordinator-opus): pinned against one, its carried move stays the hand's own small move, so
     it is never placed; the bare kinematic hand may pass through, the held object stays pinned by the hold's spring,
-    and springs back when the way clears. A real teleport (the target jumping past the teleport distance) still
+    and springs back when the way clears. **A trailing placement carries a held object only if no static geometry lies
+    between** where the object is and where the placement would put it (@coordinator-opus, option (b),
+    after @vdw-physics measured a pinned ball carried through a 10 cm wall by an overrunning hand's placement): a ray
+    test against static shapes only, from the object's centre along its carried move, whose yes/no answer does not
+    depend on query order; if it hits, the object stays where it is, held by the spring, and the hand goes on. A ray
+    from the centre, not a swept shape, is the M1 test [I]: an opening narrower than the object passes the ray, and
+    the solver's push-out settles the overlap. A real teleport (the target jumping past the teleport distance) still
     carries it at its current offset, through whatever lies between. **A hand held steadily above the cap cycles:** it
     trails, is placed, and trails again (at 15 m/s the lag grows by 5 m/s and reaches 0.5 m in about 0.1 s), so its
     contacts come in bursts, and each placement carries what it holds without collision and gives it no velocity from
     the jump. That keeps "nothing moves faster than the cap" (plus the solver's push-out, below); tests expect bursts,
     not a continuous push (@design-reviewer, approving r2).
+  - **The hold's spring is bounded, speed-aware** (@coordinator-opus, decision 2): the spring that
+    pulls a held object to its place in the hand sees a separation of at most `(max_push_speed − v_hold) / k`, where
+    `v_hold` is the hand's own speed at the hold and `k` Box3D's spring rate at the world's rate (14.7 per second at
+    60 Hz, 15.2 at 120 Hz), recomputed every frame from the current state. So a held object never exceeds the cap
+    to catch up: it trails a hand kept above the cap and catches up once the hand slows, and a pinned object springs
+    back at most at the cap (8.2-9.0 m/s measured, against 10-50 m/s unbounded, held back 1-6 m). How is the
+    hand-body spec's (@vdw-physics: the hand-side anchor moved towards the object for the step only, so images,
+    digests and rollbacks see the original anchor).
   - **The teleport distance** is `max(0.5 m, 2 · max_push_speed / rate)` [I, 0.5 m a starting value to tune]: at
     least twice the cap's distance per frame at the world's rate, so a band of trailing remains at any rate (at
     20 Hz and 10 m/s the cap alone is 0.5 m a frame).
@@ -1519,9 +1533,9 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     physics engine's push-out:
     - **Swept objects** reach up to 10.48 m/s: a body driven at exactly the cap that penetrates is pushed out at
       Box3D's contact speed (3 m/s). The bound tests assert is `max_push_speed` plus the contact speed.
-    - **A held object in a sustained overrun** peaks at 11.8 m/s: after each placement the hold's spring catches up
-      and overshoots (about 13 % for a velocity step). A known excess, to fix with the spring's overshoot after a
-      block (vdw-physics's docket), not a change to this rule.
+    - **A held object in a sustained overrun** peaked at 11.8 m/s with the hold's spring unbounded (its overshoot
+      after each placement); the speed-aware bound below brings it to 9.9 m/s (9.97 at 120 Hz) [V @vdw-physics,
+      ws/hold-reach]. Throws from an 11 or 14 m/s hand then leave at about 9.3 or 9.5 m/s.
     - **Throws** leave at the hand's speed up to the cap (4, 8, 11, 14 m/s give 4.00, 8.23, 10.43, 10.67 m/s). **The
       0.5 m edge:** a throw at hand speed `v` over the cap trails by about `(1 − cap/v) · travel`, and once that
       passes the teleport distance it is placed in its release frame, leaving nearly at rest: 20 m/s over 1.33 m (0.56
@@ -1533,7 +1547,9 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     than the teleport distance, and nothing it touches moves faster than the cap plus the solver's push-out speed
     (Box3D's contact speed, above); a fast wrist turn with an object held 0.5 m out stays under the cap; a one-frame
     jump past the teleport distance places hand and held object; a ball held pinned against a static wall, the hand 1
-    m past it, then the way cleared: never placed through it (@vdw-physics's follow-up).
+    m past it, then the way cleared: never placed through it, and it springs back at most at the cap; a hand
+    overrunning the cap past a wall with a ball pinned on the near side: the ball is never carried through
+    (@vdw-physics's follow-up).
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
   object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
   expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).
