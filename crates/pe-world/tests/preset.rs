@@ -6,7 +6,7 @@ use pe_core::{Frame, MemberKey, Offset, Pos};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{Class, Outcome};
 use pe_world::components::{Body, Hand, Shape, SimSize, body_kind, shape_kind};
-use pe_world::preset::{BALLS, MAX_BALLS, ball_pit, ball_pit_with, find, m1_line, names};
+use pe_world::preset::{BALLS, MAX_BALLS, ball_pit, ball_pit_on, ball_pit_with, find, genesis_line, m1_line, names};
 use pe_world::{BlobStore, HandPose, Input, World, WorldError, perm};
 
 fn origin() -> Pos {
@@ -133,4 +133,29 @@ fn the_largest_pit_builds_and_the_count_is_clamped() {
     assert_eq!(ball_pit_with(3, BlobStore::default(), origin(), MAX_BALLS + 100).root(), w.root());
     let one = ball_pit_with(3, BlobStore::default(), origin(), 0);
     assert_eq!(one.snapshot(Frame(0)).children(find(&one, names::ROOT).unwrap()).len(), 7);
+}
+
+#[test]
+fn an_interim_session_builds_the_pit_on_its_genesis_line() {
+    // world-model.md 2.4, interim sessions: the line is the hash of the genesis record without its root.
+    let line = genesis_line(b"a genesis record");
+    assert_ne!(line, genesis_line(b"another genesis record"), "two sessions never share a line");
+    assert_ne!(line, m1_line());
+    assert_ne!(line, pe_core::LineId::origin());
+    let a = ball_pit_on(line, 1, BlobStore::default(), origin(), BALLS);
+    assert_eq!(a.line(), line);
+    assert_eq!(a.m1_marker(), Some(m1_line()), "still marked an M1 world");
+    assert_eq!(a.root(), ball_pit_on(line, 1, BlobStore::default(), origin(), BALLS).root(), "deterministic");
+    // The pit's object ids derive from the line, so another line gives other ids and another root.
+    let b = ball_pit_on(genesis_line(b"another genesis record"), 1, BlobStore::default(), origin(), BALLS);
+    assert_ne!(find(&a, "Ball 0"), find(&b, "Ball 0"));
+    assert_ne!(a.root(), b.root());
+    // The M1 default is unchanged: ball_pit_with is ball_pit_on with m1_line().
+    assert_eq!(pit(1).root(), ball_pit_on(m1_line(), 1, BlobStore::default(), origin(), BALLS).root());
+}
+
+#[test]
+#[should_panic(expected = "never on the origin's line")]
+fn no_pit_is_built_on_the_origins_line() {
+    ball_pit_on(pe_core::LineId::origin(), 1, BlobStore::default(), origin(), BALLS);
 }
