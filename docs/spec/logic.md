@@ -31,7 +31,7 @@ Inputs: `docs/refound-plan.md` (b610464), review files 03, 11 (3.2, 3.5), 13 (Pa
 
 ## 1. The model in one paragraph
 
-A **script** is an asset: Rust source, stored as a content-addressed blob tree in the world model, attached to
+A **script** is an asset: Rust source, stored as one content-addressed blob in the world model (4.1a), attached to
 an object by giving it the script's **tag**, a zero-size component every script has (3.2). Each machine compiles it with the pinned toolchain into a wasm module, then
 runs a deterministic **instrumentation pass** that injects fuel and call-depth metering into the module's bytes.
 The module exports **systems**. Each system declares the component types it reads and writes. Once per frame the
@@ -45,7 +45,7 @@ version and an agreed frame.
 
 | Term | What it is |
 |---|---|
-| **Script** | An asset: a source blob tree (one crate) plus its declared manifest. Identified by an `AssetId`; each commit makes a new `ScriptVersion` (the hash of its source tree) |
+| **Script** | An asset: a source blob (one crate, 4.1a) plus its declared manifest. Identified by an `AssetId`; each commit makes a new `ScriptVersion` (the hash of its source blob) |
 | **Module** | The wasm bytes a machine built from one script version, after instrumentation. Local to the machine: never sent, never stored in the world (Q3c). Its hash is reported for comparison only |
 | **System** | One exported function of a module, with a declared signature (section 3.2) |
 | **Tag** | The zero-size component each script version has implicitly, named `pe.tag`, its id made like its other components' (6.1). Attaching a script to an object is adding its tag; detaching is removing it, and the script's other rows stay. A system runs over the objects that carry the tag and every component it binds. An object may carry any number of scripts' tags (@coordinator-opus, @fable-reviewer's shape) |
@@ -328,6 +328,81 @@ A peer process never panics on anything a module does [I; a test in 10.3].
   The script's `pe-sdk` path must lead to the engine's own pe-sdk, the folder the caller of `build::build` names;
   otherwise a script could have another crate named pe-sdk built, with a build script or a procedural macro
   (@shader-reviewer, round 2) [V `tests/lamp.rs`, `a_script_may_not_choose_its_own_pe_sdk`].
+
+### 4.1a The source: one blob, with its size in the row and a cap (R-L1)
+
+For divergence.md 10's R-L1 (@diverge-eng; @coordinator-opus). The cap's number is decided
+(@coordinator-opus); the rest is for @design-reviewer.
+Without a size the repair can see, a dishonest source stretches a rung-2 repair's `T_module` wait up to a blob's
+64 MiB (18.6 hours at the thin links' 1 KB/s). Both halves of R-L1, because each is cheap:
+
+- **Size in the row: the source is one blob, not a tree.** A script version's source is a single blob, a canonical
+  archive of the crate. The `modules` row and `CommitScript` already name it by `SimBlobRef`, hash and `u64` length
+  (world-model.md 3.4, pe-world `ModuleRow::source`), so the row then gives the whole source's size before any byte
+  is fetched. The length cannot lie: a fetch reads exactly that many bytes and checks them against the hash, so a
+  peer that sends more or fewer fails the check like any corrupt blob. V, the version, stays the blob's hash.
+  Divergence.md 4.2's per-level deadline (nodes naming their children's lengths) is then not needed: `T_module` is
+  known from the rows alone.
+- **The archive, so that the same crate gives the same V everywhere:** the bytes `"pe.src.v0"`, then for each file,
+  in byte order of its path, `lp(path) ‖ lp(bytes)`, where `lp` is a `u32` little-endian length and the path is
+  relative to the crate root and `/`-separated, with no duplicate. Only the crate's `src/**.rs` files are in it.
+  **`Cargo.toml` is not** (@design-reviewer's Low on c66e6cd5): it is the one free-form file, and the cheapest way
+  to commit a build fault on purpose (a path, git or registry dependency, a `build =` key, features, another
+  edition). The build service writes it from one fixed template, with the package name `script`, edition 2024 and
+  the engine's pe-sdk as the only dependency, so 4.1's manifest rules hold by construction. The build service unpacks it into a fresh folder and
+  builds there (4.2), so no path of the author's machine enters the module. **Refused at apply** (@coordinator-opus, option A of @world-model's): one pure function, `pe_world::script::check_source(&[u8])`,
+  checks the format and the path rule below. `CommitScript` calls it on the source, which under the cap always rides
+  inside the entry, and refuses an archive that is not canonical (bad magic or lengths, unsorted, a duplicate, a
+  path outside the rules) as `Invalid`; the old version keeps running. pe-logic's build service calls the same
+  function before unpacking. Refusing at build instead would make a malformed commit a build fault on every
+  machine, which under 6.2 step 3 stops finality for the whole world past `activate_at`.
+- **Paths that unpack the same on every filesystem** (@design-reviewer). Otherwise one V could build
+  different crates: `src/A.rs` and `src/a.rs` are one file on Windows and on macOS by default, names that differ
+  only by Unicode normalization collide on macOS, and Windows refuses or rewrites reserved names and some
+  characters. So every path is `src/` followed by directory segments and a file segment. A directory segment is 1 to 64
+  bytes of `[a-z0-9_]`; a file segment is a stem of 1 to 61 bytes of `[a-z0-9_]` and then `.rs`, 64 bytes at most
+  with the extension (no bare `.rs`). No
+  segment's stem may be a Windows reserved name (`con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`). That is
+  also the shape a Rust module name takes, so no real script loses anything [I]. ASCII only and lower case only,
+  so no two allowed paths collide after case folding or normalization.
+- **A cap: `MAX_SOURCE_BYTES` = 256 KiB** in v0, `pe_world::script::MAX_SOURCE_BYTES` (@world-model). `CommitScript` with a longer `source.len` is refused `TooLarge { limit }`, checked first, from the
+  length alone, without opening the blob; pe-logic's build service imports the same constant. It bounds the wait
+  for one module at `W_fg + 262 s + T_build` = 284 s with divergence.md's `R_thin` = 1 KB/s and `T_build` = 20 s. And it keeps every source under the 1 MiB limit
+  for simulation blobs that travel inside their edit entry (world-model.md 3.4), so a machine that received the
+  commit entry has the source. A machine that gets the `modules` rows through an import (a rung-2 repair) and not
+  the entry still fetches the blob by hash; that is the wait `T_module` covers, sized from the rows' lengths
+  (@diverge-eng).
+- **The cost on a thin link [I]** (@design-reviewer's Low): a source inside its commit entry crosses the author's
+  link before the author's later entries, so a 256 KiB commit at 1 KB/s delays the author's own chain by about
+  262 s, and their hand entries meanwhile arrive late or void. The 1 MiB in-entry rule already allowed this; the cap
+  makes 256 KiB the largest case. The alternative is to send sources on the bulk lane by reference, as blobs over
+  1 MiB already go, so that the entry stays small and only the build waits. For @coordinator-opus to decide whether
+  M1 cares; M1's edit is the 1.2 KB lamp (about 1 s).
+
+Sizes, crate `Cargo.toml` plus `src/**.rs`, so slightly above the archive's [V, `wc -c` on 2026-11-13]:
+
+| script | bytes | fits 256 KiB | at 1 KB/s (1,000 B/s) |
+|---|---|---|---|
+| lamp (pe-logic tests) | 1,213 | yes | 1.2 s |
+| tally (pe-logic tests) | 6,881 | yes | 7 s |
+| benchmark guest, 6.4k lines (`spikes/iter-bench/guests/logic_mono`) | 188,993 | yes | 189 s |
+| benchmark guest, about 18k lines (`guests-x3`) | 518,019 | no | 518 s |
+| benchmark guest, about 45k lines (`guests-x8`) | 1,342,178 | no | 1,342 s |
+
+**Decided: 256 KiB** (@coordinator-opus), to be revisited if real games hit it; a larger game
+splits into several scripts. 256 KiB holds about 8,900 lines at the 6.4k-line guest's 29.5 bytes per line, much more than M1's
+agent-authored edit needs (the lamp is 1.2 KB). It still leaves the slowest honest single-module repair at under
+5 minutes on the thinnest link. The alternatives considered:
+- **64 KiB:** a 88 s worst case, but it refuses the 6.4k-line benchmark guest, our only measured
+  "realistic" logic.
+- **1 MiB:** about 35,000 lines, with an 18-minute worst case. It is the in-entry limit, so nothing larger could
+  travel inside a commit anyway.
+
+A script bigger than the cap is split into several scripts, or waits for a later version of this rule (M2: a
+per-world setting, or a source that depends on a shared library asset). Not built yet: the archive codec and the
+cap check (pe-logic's build service takes a folder today; pe-world's `CommitScript` takes any length).
+@world-model adds `MAX_SOURCE_BYTES`, `check_source` and their tests (over the cap; a case-collision pair) to
+pe-world; pe-logic's build service then packs a crate into the archive and unpacks it through `check_source`.
 
 ### 4.2 The build
 
@@ -612,7 +687,7 @@ CommitScript {
     script: AssetId,            // the script asset
     base: Option<ScriptVersion>,// the version the author edited; refused if stale (R7: the loser rebases).
                                 // None means a new script, refused as Stale if the script exists
-    source: Hash,               // root of the source blob tree; the blobs travel by hash on the bulk lane
+    source: SimBlobRef,         // the source blob (4.1a): hash and length, at most MAX_SOURCE_BYTES
     toolchain: Hash,            // D75
     sdk: Version,
     author_module: Hash,        // the author's built module, for comparison only, never fetched (Q3c)
@@ -621,11 +696,11 @@ CommitScript {
 }
 ```
 
-The world's `modules` table holds one row per script asset: the version (source tree as a `SimBlobRef`), the
+The world's `modules` table holds one row per script asset: the version (the source blob as a `SimBlobRef`, 4.1a), the
 toolchain and SDK hashes, `author_module` as a plain hash, the declared components, `activate_at` and the faulted
 mark. A compiled module is never a blob and never in world state (Q3c). Component ids, the tag's included, are
 `u128::from_le_bytes(BLAKE3("pe.component" ‖ V ‖ name ‖ schema hash)[..16])`, where **V is the content hash of one
-script version** (its source tree hash; @coordinator-opus, world-model.md 3.2). A commit therefore
+script version** (its source blob's hash; @coordinator-opus, world-model.md 3.2). A commit therefore
 **re-keys** every row of the old version's components, tags included, to the new version's ids, in the commit's own
 transaction, so no frame sees half-moved rows (world-model.md 7.9; fields map by name and kind). The same operation
 on one copy is a future per-copy fork. The runner never hashes ids: the world hands them to `Loaded::bind`.
@@ -671,13 +746,105 @@ where `n` counts the spawner's *applied* spawns in that frame (a discarded call 
    On a build fault the machine keeps predicting with the old module, never votes for a cut at or past
    `activate_at`, and reports the fault with both hashes. It cannot follow the world past that frame until the
    cause is fixed (for example by fetching the pinned toolchain, D75), so it lags; it never computes a state of its
-   own. **For @design-reviewer:** if the author's build is the odd one, every other machine faults and finality
-   stops past `activate_at` while play continues on predictions. That needs reproducible builds, which 4.2 makes a
-   requirement and M2 tests on four platforms; a rule for that case (for example, refusing a commit whose module
-   hash a quorum does not reproduce) is open.
+   own. If the author's build is the odd one (a module nobody reproduces, or a source that does not compile),
+   every other machine faults, and with activation at the commit's own frame finality would stop for the whole
+   world. 6.2a's proposal closes that: a module activates only once a quorum has attested that it built it.
 
 From the replica's side a pending module is the same thing as a late entry: the frames since `activate_at` are a
 prediction until it arrives [I; file 13, A.4].
+
+### 6.2a Activation by attestation (a proposal, for @design-reviewer and @coordinator-opus)
+
+**The problem** (@coordinator-opus): with activation at the commit's own frame, one author with
+commit rights can stop finality for everyone. A source that does not compile, or an `author_module` hash the author
+did not build from that source, is a build fault on every other machine (6.2 step 3); none of them can compute
+frames past `activate_at`, so no cut past it reaches a quorum. 4.1a's `check_source` removes the cheapest forms (a
+malformed archive, a hostile `Cargo.toml`); a compile error in a `.rs` file remains. **Requirements:** no single
+author can stop finality, and the outcome is identical on every machine.
+
+**The rule** (@fable-reviewer's attestation, with a deadline, as @design-reviewer suggested):
+
+1. **A commit is pending, not active.** `CommitScript` writes the new version into the asset's modules row as
+   *pending* (V, hashes, declared components, the commit's frame `c`, its deadline). It re-keys nothing yet. Every
+   machine keeps running the current version.
+2. **Attestations are entries.** A voting member whose build of the pending version passes all of 6.2 step 3's
+   checks against the row posts `AttestBuild { script, version: V, module: Hash }`, an entry stamped with its frame
+   like any other. The commit counts as its author's attestation if the author votes.
+3. **Activation frame `F`:** the least frame `f` such that at least `q` distinct voters at `c` have a counted
+   attestation stamped at or before `f` (agreement.md: `t = floor((n-1)/3)`, `q = floor((n+t)/2) + 1`, over the
+   voters at `c`); that is, the `q`-th smallest stamp among the counted attestations, one per voter
+   (@design-reviewer's Medium: by stamps, not by log order, which need not be monotone in stamps).
+   At `F` the world performs the activation: the re-key of 6.1 and the row's switch from pending to current, in one
+   transaction. So the state at a frame depends only on entries stamped at or before it, and every machine computes
+   the same `F` from the final log. An epoch change between `c` and `F` does not reset the count; `F` may fall in
+   the next epoch.
+   **Which attestations count:** its version is the row's pending V; its module equals the registered
+   `author_module` (a different hash counts for nothing and is logged as evidence); its stamp is at or after `c`;
+   its author is a voter at `c` (a non-voter's is ignored); one per voter; none once the commit is active or void;
+   a late one is void by the ordinary rule.
+4. **The deadline:** if no frame `f <= c + ceil(2 T_module * hz)` qualifies as `F`, the world voids the commit at
+   that frame: the row's pending part is cleared, the current version stays bound, and the row records the fault
+   (`Unattested`, with the frame) for the author. `T_module = W_fg + source.len / R_thin + T_build` is divergence.md
+   4.2's wait for one module, computed from the row's length (4.1a), so a larger source gets a longer deadline: the
+   lamp 23 s, so 46 s; a 256 KiB source 284 s, so 568 s [I; the factor 2 is a margin,
+   accepted by @coordinator-opus].
+5. **One build budget everywhere** (@design-reviewer's Low 2, adopted by @coordinator-opus): the
+   build service runs every build under the same caps, and a machine attests only a build that stayed within them.
+   Otherwise a source crafted to build only on big or fast machines could activate with the help of `t` faulty
+   attesters while smaller honest machines cannot follow. Proposed: **1 GiB peak committed memory** for the whole
+   build (cargo, rustc and rust-lld together, a Windows job object's `JobMemoryLimit`, a cgroup's `memory.max` on
+   Linux [I]) and **60 s wall time**. Measured on this desktop, clean builds with the service's flags, n=3,
+   median [min-max] [V shared machine, idle priority, `spikes/out/iter-bench/build-budget/`,
+   `scripts/iter_bench_build_budget.py`]:
+
+   | guest | source | peak, whole build | peak, largest process | wall |
+   |---|---|---|---|---|
+   | lamp (with pe-sdk) | 780 B | 105.6 MiB [105.6-105.9] | 99.6 MiB | 0.52 s [0.51-0.60] |
+   | 6.4k-line guest (`logic_mono`) | 188,839 B | 148.5 MiB [148.5-149.1] | 142.3 MiB | 1.28 s [1.25-1.56] |
+
+   1 GiB is about 7 times the 6.4k-line guest's peak, and 60 s about 47 times its build time, so a machine ten
+   times slower than this desktop still has a margin of 4.7 [I]. A wall-time cap is the one part that is not the
+   same on every machine. A slow machine that exceeds it only withholds its own attestation, and the deadline
+   (item 4) bounds the rest. Neither cap is built yet.
+6. **A second commit while one is pending** is refused as `Stale` with the pending entry as `winner`: the author
+   waits for activation or the void [I; the simplest v0 rule, kept for 6.5].
+
+**Why it meets the requirements [I]:**
+- Before `F`, every machine runs the current version, which they all have, so finality never waits on the new
+  build. After `F`, at least `q` voters have the module, so a quorum can compute and vote. A slow or broken minority
+  only holds its own vote, as today.
+- `q` attestations include at least `q - t >= t + 1` honest members (`q = 3`, `t = 1` at `n = 4`), so the module was
+  built by an honest member. `t` faulty members attesting to a module nobody can build cannot reach `q`.
+- A module nobody reproduces is never attested, so it never activates; the deadline voids it, and the void is a
+  function of the final log alone, identical everywhere.
+
+**What changes for the author: (i), provisional, pending the user** (@coordinator-opus, asking the
+user through @liaison-opus, since it reads Q3 differently). Q3 has the
+agreed frame equal to the commit's stamp, with the author running the new code at once. Under this rule, the agreed
+frame is `F`, after a quorum has built. Two ways to show it to the author:
+- **(i) Run at once, as a prediction** (built to, provisionally): the author's machine runs the new module from `c`, as now, and
+  when `F` is known, replays from `c`: the current code until `F`, the new code after. The author sees the edit at
+  once, then one correction, of about the time from `c` to `F`. For the lamp that is the quorum's build plus an
+  entry's latency, about 0.5-2 s [I: 0.35 s build, 6.3]. Other machines replay from `F`, as they replay from
+  `activate_at` today.
+- **(ii) Wait for `F`:** no correction, but the edit shows only after the quorum has built, about 0.5-2 s later.
+
+The lamp's `c` to `F` is to be measured on this desktop and on the second PC once attestation is built (pe-world
+and pe-replica); the 0.5-2 s above is inferred.
+
+**Not chosen:**
+- **A deadline alone,** with activation at `c`: it voids a module a slow quorum would have built, and finality
+  still stops until the deadline.
+- **Voiding retroactively,** keeping activation at `c` unless the deadline passes without a quorum: the state at
+  frames after `c` would then depend on entries stamped after them, which no other part of the world does.
+
+**Needs from others:**
+- @world-model: the pending row, `AttestBuild`, activation and the re-key at `F`, and the void at the deadline. The
+  re-key moves from the commit's transaction to `F`'s.
+- @engine-architect (S3): the voter set at `c` and `q` for the count.
+- @diverge-eng: `T_module` from the row, which 4.1a already provides.
+
+The runner needs nothing new: the lagging binding of 6.2 step 2 applies from `F` instead of `activate_at`.
 
 ### 6.3 Costs, from measured numbers
 
@@ -751,7 +918,7 @@ To agree with @engine-architect (seams) and the owners named.
 | N1 | WS-seams, S2 | The replica calls logic at fixed stage points (3.5), with the store, the frame and the domain; logic returns rows and commands applied through the store | The frame order is a seam property |
 | N2 | WS-seams, S2 | A replica can hold two modules for one script at once (old, new) and roll back to a named frame on a build-ready event | 6.2, 6.4 |
 | N3 | WS-seams, S3 | A way to say "do not vote for cuts at or past frame F yet" (a vote hold), and to release it | 6.2 step 2 |
-| N4 | WS-world | `CommitScript` (agreed, world-model r7) as an edit payload with a precondition; each version's tag (3.2) and the re-key of 6.1; source as a blob tree; script-scoped component ids; a `faulted` mark in the `modules` row (3.6); a `Pos` field kind | 3.2, 3.6, 6.1, 8 |
+| N4 | WS-world | `CommitScript` (agreed, world-model r7) as an edit payload with a precondition; each version's tag (3.2) and the re-key of 6.1; the source as one blob of at most `MAX_SOURCE_BYTES`, refused `TooLarge` above it (4.1a); script-scoped component ids; a `faulted` mark in the `modules` row (3.6); a `Pos` field kind | 3.2, 3.6, 6.1, 8 |
 | N5 | WS-world | Component descriptions registered at run time, versioned by frame (already planned: plan 2.1) | A commit can add components |
 | N6 | WS-state | The stage order of 3.5 | Logic before and after physics |
 | N7 | WS-api | `code.check` (build and validate, diagnostics as data), `code.commit`, and for M2 `code.test`. WS-logic provides the backend calls; WS-api the MCP tools | The agent's edit in M1 |

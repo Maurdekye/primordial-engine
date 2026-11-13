@@ -1,0 +1,75 @@
+{
+ "meta": {
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "reps": 3,
+  "profile": [
+   "profile.release.opt-level=3",
+   "profile.release.lto=false",
+   "profile.release.codegen-units=16",
+   "profile.release.incremental=false",
+   "profile.release.panic=\"abort\"",
+   "profile.release.debug=false",
+   "profile.release.strip=\"symbols\"",
+   "profile.release.debug-assertions=false",
+   "profile.release.overflow-checks=false",
+   "profile.release.rpath=false",
+   "target.wasm32-unknown-unknown.linker=\"rust-lld\""
+  ],
+  "codegen": [
+   "-C",
+   "target-cpu=mvp",
+   "-C",
+   "target-feature=+bulk-memory,+multivalue,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext",
+   "-C",
+   "link-arg=-zstack-size=65536"
+  ],
+  "heavy_prio": "idle",
+  "jobs": "3",
+  "start": "2026-11-13T07:47:42Z",
+  "end": "2026-11-13T07:47:48Z"
+ },
+ "guests": {
+  "lamp": {
+   "wall_s": {
+    "median": 0.523,
+    "min": 0.505,
+    "max": 0.602,
+    "n": 3
+   },
+   "peak_job_mib": {
+    "median": 105.6,
+    "min": 105.6,
+    "max": 105.9,
+    "n": 3
+   },
+   "peak_process_mib": {
+    "median": 99.6,
+    "min": 99.6,
+    "max": 99.7,
+    "n": 3
+   },
+   "src_bytes": 780
+  },
+  "guest6k": {
+   "wall_s": {
+    "median": 1.277,
+    "min": 1.248,
+    "max": 1.561,
+    "n": 3
+   },
+   "peak_job_mib": {
+    "median": 148.5,
+    "min": 148.5,
+    "max": 149.1,
+    "n": 3
+   },
+   "peak_process_mib": {
+    "median": 142.3,
+    "min": 142.2,
+    "max": 142.7,
+    "n": 3
+   },
+   "src_bytes": 188839
+  }
+ }
+}
