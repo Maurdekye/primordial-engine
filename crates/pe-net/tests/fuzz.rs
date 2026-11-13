@@ -350,8 +350,19 @@ fn fuzz_the_lane_datagrams() {
     });
 }
 
+/// A message payload that names its place in the sender's order: an 8-byte tag (the send count), then noise.
+fn tagged(r: &mut Rng, i: usize, max: usize) -> Bytes {
+    let mut b = (i as u64).to_be_bytes().to_vec();
+    b.extend(r.some(max));
+    Bytes::from(b)
+}
+
+fn tag_of(b: &Bytes) -> Option<u64> {
+    Some(u64::from_be_bytes(b.get(..8)?.try_into().ok()?))
+}
+
 /// Real datagrams from a sender to a receiver, in order: messages on every lane and clock records, with the
-/// receiver's acks interleaved (taken from the receiver as it would answer).
+/// receiver's acks interleaved (taken from the receiver as it would answer). Payloads are `tagged`.
 fn a_session(r: &mut Rng, n: usize) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let mut tx = Link::new(LaneParams::default());
     tx.set_open(true, true);
@@ -360,8 +371,7 @@ fn a_session(r: &mut Rng, n: usize) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let (mut fwd, mut back) = (Vec::new(), Vec::new());
     for i in 0..n {
         let lane = [Lane::Protocol, Lane::Action, Lane::Pose][r.below(3)];
-        let len = r.below(600);
-        let _ = tx.send(lane, Bytes::from(r.bytes(len)), 1200);
+        let _ = tx.send(lane, tagged(r, i, 600), 1200);
         if r.below(4) == 0 {
             tx.send_control(Control::ClockPing { t1: i as i64 });
         }
@@ -382,6 +392,9 @@ fn fuzz_datagram_sequences_across_link_states() {
     // @design-reviewer: seeded sequences, not single calls. A receiver goes closed, receive-only, open, closed
     // again (the welcome exchange and a close, 6.4), and is fed a real session's datagrams replayed, reordered,
     // duplicated, dropped and mutated, while it sends and takes acks. No panic, and a closed side never delivers.
+    // Under replay (@design-reviewer's second Low): each real Protocol or Action message is delivered at most
+    // once; real poses only newer than the last (Pose is latest-wins; no lane is ordered, 3.2); and no ack drops
+    // a message that was never transmitted (before the link first opens for sending, nothing queued may go).
     let mut r = Rng(seed() ^ 5);
     for case in 0..cases(200) {
         let n = 20 + r.below(40);
@@ -390,19 +403,36 @@ fn fuzz_datagram_sequences_across_link_states() {
         let mut l = Link::new(LaneParams::default());
         let states = [(false, false), (false, true), (true, true), (false, false)];
         let mut now = 0i64;
+        let (mut once, mut last_pose) = (std::collections::BTreeSet::new(), None);
         let res = catch_unwind(AssertUnwindSafe(|| {
             for (si, (send, recv)) in states.iter().enumerate() {
                 l.set_open(*send, *recv);
                 for _ in 0..10 + r.below(40) {
                     now += r.below(30) as i64;
-                    let d = match r.below(6) {
+                    let pick = r.below(6);
+                    let d = match pick {
                         0 => fwd[r.below(fwd.len())].clone(),
                         1 if !back.is_empty() => back[r.below(back.len())].clone(),
                         2 => mutate(&mut r, &all),
                         _ => fwd[(now as usize / 7) % fwd.len()].clone(),
                     };
+                    let queued = |l: &Link| l.queued(t(now)).0[..2].iter().sum::<u64>();
+                    let before = queued(&l);
                     if let Ok(inc) = l.on_datagram(t(now), &d) {
                         assert!(*recv || inc.messages.is_empty(), "case {case}: state {si} delivered while closed");
+                        // A mutated datagram may carry a forged seq, so only real ones are traced.
+                        for (lane, b) in inc.messages.iter().filter(|_| pick != 2) {
+                            let tag = tag_of(b).expect("a real payload is tagged");
+                            if *lane == Lane::Pose {
+                                assert!(last_pose.is_none_or(|p| tag > p), "case {case}: an older pose delivered");
+                                last_pose = Some(tag);
+                            } else {
+                                assert!(once.insert(tag), "case {case}: {lane:?} message {tag} delivered twice");
+                            }
+                        }
+                    }
+                    if si < 2 {
+                        assert!(queued(&l) >= before, "case {case}: an ack dropped a message never transmitted");
                     }
                     if r.below(3) == 0 {
                         let len = r.below(300);
