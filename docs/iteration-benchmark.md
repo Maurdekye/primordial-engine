@@ -166,7 +166,11 @@ the `tally` test script: n=10 one-constant edits per mode, timed from the source
 | incremental on | 0.265 [0.264-0.306] | 0.133 |
 | incremental off (the service's setting) | 0.347 [0.334-0.374] | 0.134 |
 
-* Incremental off costs 0.08 s per edit (+31 %) here. The 2026-11-11 run on a shared machine at idle priority
+* Incremental off costs 0.08 s per edit (+31 %) here, while it made no difference to the split rel-fast loop above.
+  They are different guests and profiles: `tally` is one small crate built with the service's flags, the split loop
+  a 6.4k-line guest of several crates on `rel-fast`. Why incremental helps one and not the other is not explained
+  [I; a candidate, not measured: in one small crate, incremental reuses the codegen units the edit leaves alone].
+* The inc-on maximum (0.306 s) is rep 0, the first build after switching modes; reps 1-9 are 0.264-0.272 s. The 2026-11-11 run on a shared machine at idle priority
   (3.4 s on, 5.4 s off, `logic-v0/incr/incr.log`) was dominated by load.
 * `-Z time-passes`, one sample per mode: rustc total 0.186 s (off) and 0.213 s (on), `run_linker` 0.042-0.043 s
   (`time-passes-*.txt`). One sample each, so the on/off order there means nothing.
