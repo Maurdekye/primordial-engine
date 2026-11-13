@@ -804,10 +804,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// `final_frame` is about to pass every frame below `to` (S5 v1.5).
     ///
-    /// - **Dropped.** Each entry I recorded there that `cut`'s order leaves out gets a `Dropped` record. Its reason is
-    ///   `BackStamped` if I recorded an earlier entry of its chain stamped later, which S3 voids it for; otherwise
-    ///   `Late`, as every dropped entry of an honest author is: the cut left it out below its frame, and only a late
-    ///   void ends that.
+    /// - **Dropped.** Each entry I recorded there that `cut`'s order leaves out gets a `Dropped` record, with S3's
+    ///   reason ([`EntrySource::void_reason`]), or `Late` for one no cut has voided yet, as S3 will void it.
     /// - **Unknown,** after a rung-2 import (`unknown_from`): each entry of the cut's order from that frame up gets an
     ///   `Unknown` record, since I stepped it on the wrong state, or not at all.
     ///
@@ -816,11 +814,6 @@ impl<W: WorldModel> ReplicaImpl<W> {
     fn settle(&mut self, cut: &Cut, to: Frame, source: &dyn EntrySource, unknown_from: Option<Frame>) {
         let rest = self.recorded.split_off(&to);
         let mine = std::mem::replace(&mut self.recorded, rest);
-        let back_stamped = |f: Frame, e: &Seen| {
-            mine.range(Frame(f.0 + 1)..)
-                .chain(self.recorded.iter())
-                .any(|(_, at)| at.values().any(|x| x.chain == e.chain && x.seq < e.seq))
-        };
         let kept = source.kept_from();
         let frames: BTreeSet<Frame> = (mine.keys().copied())
             .chain(unknown_from.into_iter().flat_map(|u| (u.max(kept).0..to.0).map(Frame)))
@@ -837,7 +830,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             let here = mine.get(&f).into_iter().flatten();
             let repaired = unknown_from.is_some_and(|u| f >= u);
             let dropped = |entry: EntryRef, seen: &Seen| {
-                let reason = if back_stamped(f, seen) { VoidReason::BackStamped } else { VoidReason::Late };
+                let reason = source.void_reason(&entry).unwrap_or(VoidReason::Late);
                 let (author, class) = (seen.author, seen.class);
                 StepRecord { entry, author, class, frame: f, outcome: Outcome::Dropped { reason } }
             };
