@@ -11,6 +11,7 @@
 //! and a file segment. `Cargo.toml` is not in it: the build service writes it from one template (logic.md 4.1a,
 //! @design-reviewer's Low mad71ca06567b), so no manifest an author writes can make a build fail or differ. Every segment is 1 to 64 bytes of `[a-z0-9_]`, the file
 //! segment's ending `.rs` included (so its stem is 1 to 61 bytes), and no segment's stem is a Windows reserved name.
+//! A whole path is at most [`MAX_PATH`] (128) bytes and [`MAX_SEGMENTS`] (8) segments, `src` included.
 //! ASCII lower case only, so no two allowed paths collide after case folding or Unicode normalization.
 //! `src/lib.rs` must be present, and every file is UTF-8: anything else could never build, and an
 //! archive no machine builds would be a build fault everywhere (logic.md 6.2 step 3).
@@ -24,6 +25,12 @@ pub const SOURCE_MAGIC: &[u8] = b"pe.src.v0";
 
 /// The longest path segment, in bytes, a file segment's `.rs` included.
 pub const MAX_SEGMENT: usize = 64;
+
+/// The longest path, in bytes, and the most segments in it, `src` included: unpacked under the build service's folder,
+/// a path stays well inside Windows's 260-character `MAX_PATH`, so no machine's build fails on its OS alone
+/// (@design-reviewer's Medium on 1babd1b7).
+pub const MAX_PATH: usize = 128;
+pub const MAX_SEGMENTS: usize = 8;
 
 /// Why bytes are not a canonical source archive. pe-world refuses such a commit as `Invalid`; the variant is for
 /// messages and tests.
@@ -62,9 +69,9 @@ impl std::fmt::Display for SourceError {
 impl std::error::Error for SourceError {}
 
 /// Windows's reserved device names, which no segment's stem may be.
-const RESERVED: [&str; 22] = [
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2",
-    "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+const RESERVED: [&str; 24] = [
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt0",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
 fn segment_ok(s: &str) -> bool {
@@ -87,6 +94,9 @@ fn take<'a>(rest: &mut &'a [u8]) -> Result<&'a [u8], SourceError> {
 
 /// Whether `path` is a portable source path (the module doc).
 pub fn path_ok(path: &str) -> bool {
+    if path.len() > MAX_PATH || path.split('/').count() > MAX_SEGMENTS {
+        return false;
+    }
     let Some(rest) = path.strip_prefix("src/") else { return false };
     let mut segs: Vec<&str> = rest.split('/').collect();
     let Some(file) = segs.pop() else { return false };

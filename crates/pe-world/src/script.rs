@@ -16,7 +16,8 @@ use crate::components::{BlobRef, Body, Light, SimSize, ids};
 use crate::world::{TOMBSTONE_SECONDS, World};
 
 pub use crate::source::{
-    MAX_SEGMENT, MAX_SOURCE_BYTES, SOURCE_MAGIC, SourceError, check_source, pack_source, path_ok, source_files,
+    MAX_PATH, MAX_SEGMENT, MAX_SEGMENTS, MAX_SOURCE_BYTES, SOURCE_MAGIC, SourceError, check_source, pack_source,
+    path_ok, source_files,
 };
 
 /// A script's stable asset id (logic.md 6.1), the modules table's key.
@@ -36,7 +37,7 @@ pub const SCRIPT_ID_FLOOR: u128 = 1 << 32;
 pub struct ModuleRow {
     /// The commit that wrote it.
     pub version: Version,
-    /// The source tree; its hash is the version hash V.
+    /// The source archive (logic.md 4.1a); its hash is the version hash V.
     pub source: BlobRef,
     pub toolchain: Hash,
     pub sdk: Hash,
