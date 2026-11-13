@@ -49,6 +49,18 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   pending, including those that end up void, with a small cap on pending entries per author. Only entries a cut this
   member is checking or finalizing names are solicited and pass without a token; entries named only by a vote's heads
   are not (section 4).
+  - **It follows the world's frame rate,** so an honest player's per-frame inputs pass at any rate. World settings,
+    the same on every member: `entries_per_frame` (3: two hands plus one for poses and other per-frame inputs),
+    `extra_per_s` (30, for edits and governance) and `budget_slack` (1.25). The rate is `entries_per_frame × rate ×
+    budget_slack + extra_per_s` entries a second, the burst half a second of it and the pending cap four seconds,
+    each at least today's floors (150/s, 60, 600). That is 255/s, 127 and 1,020 at 60 Hz, and 480/s, 240 and 1,920
+    at 120 Hz. pe-app sends two hand entries per frame and paces its edit queue to at most one entry per frame on
+    the same chain (@engine-architect m216ee6ef5fc2). The world's rate is frozen for a session, so the budget never
+    changes under a member.
+  - An author past its budget loses more than the excess: a refused entry leaves a hole in its chain, and its later
+    entries wait until a cut names them. In one run of the flood test (twice the budget at 120 Hz) 485 of the flooder's 9,608
+    entries became final in 10 s. An honest stall fits: a 1 s uplink stall at 120 Hz flushes 240 entries, inside the
+    burst, and none were refused (the entries stamped during the stall are late and void anyway).
 - **Retention.** Final entries are kept from the later of the driver's Cv frame and a cap: the one-minute divergence
   bound plus a margin, as a duration converted with the world's SimRate, and limited in bytes. `kept_from()` says
   where the log is complete; below it `entries_at` answers "not kept", never an empty set (coordinator m01e5762d1fcc).
