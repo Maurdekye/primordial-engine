@@ -39,7 +39,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::agree::{Cut, FinalCut};
+use crate::agree::{Cut, CutRef, FinalCut, VoidReason};
 use crate::entry::{DomainId, SignedEntry};
 use crate::ids::{EntryRef, Frame, Hash, Hasher, MemberKey, ObjectId};
 use crate::time::{HostTime, SimRate};
@@ -64,7 +64,8 @@ pub struct FieldPath {
 }
 
 /// What every machine computes for an entry at its place in the agreed order (world-model.md 7.7). Outcomes are a
-/// function of the state and the entry; they are not hashed, the state they produce is.
+/// function of the state and the entry; they are not hashed, the state they produce is. `Unknown` and `Dropped` are
+/// the replica's, in its change records (S5's `StepRecord`); the world model never returns them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Applied {
@@ -82,6 +83,19 @@ pub enum Outcome {
         op: Option<u32>,
         reason: Reason,
     },
+    /// In the final order, but this replica cannot know the verdict: it stepped the entry on a state that diverged,
+    /// and a rung-2 import at `repaired_at` replaced that state without re-stepping it. One per entry of the cut's
+    /// order from my last agreed cut up to `repaired_at`, recorded before `final_frame` passes it (S2 v1.5;
+    /// @coordinator-opus). Where S3 no longer keeps a frame, only the entries I recorded there get
+    /// one, since the others can't be listed; I never told a verdict for those. Not pending: the entry happened, and
+    /// only its result is unknown here.
+    /// Fetching the true verdicts from the repair source comes after M1.
+    Unknown { repaired_at: CutRef },
+    /// Not in the final order: this replica stepped the entry, but a final cut voided it, or left it out below its
+    /// frame, so it is pending until a void (S3). `reason` is S3's ([`EntrySource::void_reason`]), and `Late` for a
+    /// pending entry, as S3 voids it later. Recorded before `final_frame` passes the entry's frame (S2 v1.5;
+    /// @coordinator-opus).
+    Dropped { reason: VoidReason },
 }
 
 /// Something an applied entry did that its author may want to know. Like [`Reason`], the list grows, so it is
@@ -209,6 +223,15 @@ pub trait EntrySource {
     fn keep_final_from(&mut self, cv: Frame, floor: Frame);
     /// The earliest frame whose entries changed since the last call, if any.
     fn take_changed_from(&mut self) -> Option<Frame>;
+    /// S3's verdict on an entry a final cut it has reported voided: [`crate::AgreeEvent::Voided`]'s reason. The
+    /// replica's [`Outcome::Dropped`] record copies it, so every honest member gives one entry the same reason (S2
+    /// v1.5; @design-reviewer's Medium on f13cd045). `None` for an entry no final cut has voided (yet): a pending one
+    /// reads `Late`, which is how S3 voids it once a later cut includes it, since judge tests late first and its
+    /// stamp is then below that cut's previous final frame. A source that never voids keeps this default.
+    fn void_reason(&self, entry: &EntryRef) -> Option<VoidReason> {
+        let _ = entry;
+        None
+    }
     /// When an entry arrived on this machine, if it came from the network: for "play a new effect only if its cause
     /// arrived recently" (divergence.md D6).
     fn arrived_at(&self, _entry: &EntryRef) -> Option<HostTime> {

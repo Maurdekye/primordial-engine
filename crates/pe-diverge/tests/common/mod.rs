@@ -681,6 +681,7 @@ impl Replica for Mock {
             domain: DOMAIN,
             sim_time: HostTime(self.now as i64 * NS_PER_FRAME),
             final_frame: self.cv.map(Frame),
+            health: pe_seams::Health::Agreed,
             local_rig: RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
             objects: Vec::new(),
             effects: Vec::new(),
