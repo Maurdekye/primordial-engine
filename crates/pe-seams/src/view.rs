@@ -309,11 +309,9 @@ pub struct StepRecord {
     /// The frame it was stepped at.
     pub frame: Frame,
     pub outcome: Outcome,
-    /// The objects a script commit re-keyed (world-model.md 7.9): every object, tombstoned ones included, with a row of
-    /// the old version, moved onto the new version's ids or dropped, in id order (@world-model's nit). Empty for every
-    /// other record. WorldApi's `watch` and history
-    /// name them from here (S5 v1.6; @coordinator-opus m9c8e32e955a0, for @api-eng m31bc6eb586ee). At most
-    /// pe-world's `MAX_REKEY_ROWS` of them; the set is shared across re-publications, never copied.
+    /// Empty since logic.md 6.2a, whose re-key happens when a version activates, at the end of a frame and not in any
+    /// entry's step (pe-world's FrameEnd). Removed in the seam version that adds FrameView.activations
+    /// (@coordinator-opus m9dae7344d1af).
     pub rekeyed: Arc<[ObjectId]>,
 }
 
