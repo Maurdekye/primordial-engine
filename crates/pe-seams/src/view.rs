@@ -200,7 +200,8 @@ pub struct ViewObject {
     pub hand_of: Option<(MemberKey, Hand)>,
     pub held_by: Option<Holder>,
     pub flags: ViewFlags,
-    /// The object's edit version, so a UI can show "changed by the agent".
+    /// The object's edit version, so a UI can show "changed by the agent"; `None` for an object no edit has written
+    /// (genesis, or trusted engine code).
     pub version: Option<Version>,
 }
 
@@ -269,18 +270,25 @@ pub struct ViewCounters {
 /// history. A re-stepped entry appears again; the newest verdict wins, and within one view a later record of the same
 /// entry is the newer one.
 ///
-/// **Complete at the final frame** (S5 v1.4; @ballpit-viz md5e264073e68, after @shader-reviewer's L1 on render.md
-/// 8.1). A view's `changes`, with those of the views before it, hold this replica's verdict of every entry at or
-/// below that view's `final_frame`, as the newest record of that entry. That includes entries re-stepped while
-/// finalizing (the replica's own root check and its rebase onto the floor), so no record reaches a view after that
-/// view's `final_frame` has passed its entry. pe-render's notices and WorldApi's `watch` tell a verdict once
-/// `final_frame` reaches its entry, and rely on this.
+/// **Complete at the final frame** (S5 v1.4 and v1.5; @ballpit-viz md5e264073e68, after @shader-reviewer's L1 on
+/// render.md 8.1; @coordinator-opus md52a099ab4c1 and m3cb7caa9343e). A view's `changes`, with those of the views
+/// before it, hold the final verdict of every entry stamped below that view's `final_frame` (a cut at frame `f` covers
+/// the entries stamped below `f`; S3), as the newest record of that entry, and no record of an entry reaches a view
+/// whose `final_frame` is past its frame. pe-render's notices and WorldApi's `watch` tell a verdict once `final_frame`
+/// passes its entry's frame, and rely on this. It holds
+/// because `final_frame` is my last agreed cut, which a diverged replica does not move, and because the replica
+/// records, before `final_frame` passes them:
+/// - the entries it re-steps while finalizing (its own root check, and its rebase onto the floor);
+/// - after a rung-1 repair, the entries the replay re-stepped from my last agreed cut;
+/// - after a rung-2 import at a cut, one [`Outcome::Unknown`] for each entry of the cut's order from my last agreed
+///   cut up to the cut: they were stepped on the wrong state, and this replica cannot know their verdicts;
+/// - one [`Outcome::Dropped`] for each entry it stepped that the final order leaves out (voided, or pending below a
+///   final cut, which only a void ends).
 ///
-/// **Not on a replica whose root diverged** (@design-reviewer's Medium on v1.4, m321e1f758d97; the remedy is open with
-/// @coordinator-opus). `final_frame` is the floor, and the floor also moves to a final cut where my root differed. The
-/// entries between the last cut my root matched (`Cv`) and that cut were stepped on the wrong state, so their verdicts
-/// may be wrong. A rung-1 repair re-steps them, and its records reach a later view, after `final_frame` has passed
-/// them; a rung-2 import does not re-step them, and nothing corrects their records.
+/// A reader can rely on this only if it takes every view, in order. pe-app feeds WorldApi's `ChangeLog` at each
+/// publication on the simulation thread, and pe-render's queue hands the render thread every view since its last
+/// read. After a gap the queue marks (an overflow, or a new reader), the reader drops what it held per entry, so it
+/// never tells a verdict whose newer record it skipped (@coordinator-opus mde0ea3d44512).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepRecord {
     pub entry: EntryRef,
@@ -291,6 +299,19 @@ pub struct StepRecord {
     pub outcome: Outcome,
 }
 
+/// This replica's standing with the quorum, so a reader never infers it from two frame numbers (S5 v1.5;
+/// @coordinator-opus md52a099ab4c1, on @fable-reviewer's advice).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Health {
+    /// My root matched at my newest final cut, so `final_frame` moves with the final cuts.
+    #[default]
+    Agreed,
+    /// My root differed from the quorum's at the final cut at frame `since`, or could not be computed there (rung 2
+    /// is due), and no later final cut has agreed: a repair is under way, and `final_frame` waits at my last agreed
+    /// cut. pe-render shows "resyncing" once this lasts about 1-2 s; agents see it in WorldApi's session.
+    Repairing { since: Frame },
+}
+
 /// The frame view.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameView {
@@ -299,8 +320,13 @@ pub struct FrameView {
     pub domain: DomainId,
     /// The host time of this frame on the shared time base.
     pub sim_time: HostTime,
-    /// The newest final frame.
+    /// The frame of my last agreed cut (`Cv`): the newest final cut at which my root matched the quorum's. The verdict of
+    /// an entry stamped below it is final and agrees with every honest replica's; an entry at this frame is not covered
+    /// yet. It never goes backwards, and while `health` is `Repairing` it waits (S5 v1.5). `None` until my root first
+    /// matches at a final cut.
     pub final_frame: Option<Frame>,
+    /// Whether my root agrees with the quorum's, or a repair is under way (S5 v1.5).
+    pub health: Health,
     pub local_rig: RigTransform,
     /// Sorted by id.
     pub objects: Vec<ViewObject>,

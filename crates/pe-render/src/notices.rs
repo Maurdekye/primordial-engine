@@ -682,6 +682,7 @@ mod tests {
             domain: DomainId::default(),
             sim_time: HostTime(0),
             final_frame: final_frame.map(Frame),
+            health: pe_seams::Health::Agreed,
             local_rig: RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
             objects: vec![],
             effects: vec![],

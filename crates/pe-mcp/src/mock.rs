@@ -93,6 +93,7 @@ impl MockWorld {
         Outcome {
             dry_run: false,
             status: Status::Refused,
+            repaired_at: None,
             is_final: false,
             change: None,
             frame: None,
@@ -144,6 +145,7 @@ impl WorldApi for MockWorld {
             tick_hz: 60,
             link: Link::Fine,
             caught_up: true,
+            health: pe_seams::world_api::SessionHealth::Agreed,
             kept: true,
             limits: Limits {
                 tx_per_s: 20,
@@ -257,6 +259,7 @@ impl WorldApi for MockWorld {
         Ok(Outcome {
             dry_run: dry,
             status: Status::Accepted,
+            repaired_at: None,
             is_final: false,
             change: (!dry).then_some(TxId([7; 32])),
             frame: (!dry).then(|| self.frame()),
@@ -311,6 +314,7 @@ impl WorldApi for MockWorld {
                 frame: self.frame(),
                 is_final: false,
                 status: Status::Accepted,
+                repaired_at: None,
                 summary: l.clone(),
             })
             .collect();

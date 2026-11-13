@@ -11,8 +11,9 @@ use pe_replica::world::{BodyKind, ShapeRow};
 use pe_replica::{Phase, ReplicaConfig, ReplicaImpl, WorldModel, apply_order};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
-    ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntrySource, FinalCut, Finalized, Frame, GroupSel, Hash,
-    ImportError, LeafKey, LineId, ObjectId, Offset, Pos, Replica, RootError, SignedEntry, SimRate,
+    ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameView,
+    GroupSel, Hash, Health, ImportError, LeafKey, LineId, ObjectId, Offset, Outcome, Pos, Replica, RootError,
+    SignedEntry, SimRate, StepRecord, VoidReason,
 };
 
 /// Agreement's stand-in: entries by frame, in a fixed order (chain, then seq), whatever order they arrive in.
@@ -26,6 +27,8 @@ struct Source {
     withheld: Option<Frame>,
     /// What the replica last said it needs, `(cv, floor)`, each forward only.
     asked: Option<(Frame, Frame)>,
+    /// S3's verdicts on the entries final cuts voided (S2 v1.5's `void_reason`).
+    voided: BTreeMap<EntryRef, VoidReason>,
 }
 
 impl Source {
@@ -61,6 +64,9 @@ impl EntrySource for Source {
     }
     fn take_changed_from(&mut self) -> Option<Frame> {
         self.changed.take()
+    }
+    fn void_reason(&self, entry: &EntryRef) -> Option<VoidReason> {
+        self.voided.get(entry).copied()
     }
 }
 
@@ -892,4 +898,256 @@ fn an_import_of_a_world_at_another_rate_is_refused_and_changes_nothing() {
     assert_eq!(got, Err(ImportError::RateMismatch { world: thirty, mine: SimRate::DEFAULT }));
     assert_eq!((joiner.frame(), roots(&joiner, 8), joiner.world().root()), live, "the live state is unchanged");
     assert_eq!(joiner.world().settings().rate, SimRate::DEFAULT);
+}
+
+// ---- the change records (S5 v1.5) ------------------------------------------------------------------------------
+
+/// A reader of the frame views, as pe-render's notices and WorldApi's `watch` read them (S5 v1.5): each entry's
+/// newest record, told once `final_frame` passes its frame. View by view, it checks that `final_frame` never goes
+/// back and that no record of an entry arrives after its verdict was told.
+#[derive(Default)]
+struct Reader {
+    last: Option<Arc<FrameView>>,
+    final_frame: Option<Frame>,
+    newest: BTreeMap<EntryRef, StepRecord>,
+    told: BTreeMap<EntryRef, Outcome>,
+    /// How many records of each entry arrived, and how many of them were `Unknown`.
+    records: BTreeMap<EntryRef, u32>,
+    unknowns: BTreeMap<EntryRef, u32>,
+    /// Each health the views showed, in order, repeats dropped.
+    health: Vec<Health>,
+}
+
+impl Reader {
+    /// Read the replica's view, if it published one since the last read.
+    fn read(&mut self, r: &ReplicaImpl<MockWorld>) {
+        let v = r.view();
+        if self.last.as_ref().is_some_and(|l| Arc::ptr_eq(l, &v)) {
+            return;
+        }
+        assert!(
+            v.final_frame >= self.final_frame,
+            "final_frame went back: {:?} to {:?}",
+            self.final_frame,
+            v.final_frame
+        );
+        for c in &v.changes {
+            assert!(!self.told.contains_key(&c.entry), "a record after its verdict was told: {c:?}");
+            *self.records.entry(c.entry).or_default() += 1;
+            if matches!(c.outcome, Outcome::Unknown { .. }) {
+                *self.unknowns.entry(c.entry).or_default() += 1;
+            }
+            self.newest.insert(c.entry, c.clone());
+        }
+        self.final_frame = v.final_frame;
+        if let Some(ff) = v.final_frame {
+            for (id, c) in self.newest.iter().filter(|(_, c)| c.frame < ff) {
+                self.told.entry(*id).or_insert_with(|| c.outcome.clone());
+            }
+        }
+        if self.health.last() != Some(&v.health) {
+            self.health.push(v.health);
+        }
+        self.last = Some(v);
+    }
+}
+
+/// The verdict the good replica gave `e`.
+fn verdict(good: &ReplicaImpl<MockWorld>, e: &SignedEntry) -> Option<Outcome> {
+    good.outcome(&e.id()).map(|o| o.1)
+}
+
+/// A late entry stepped live and then left out by the final cut (S5 v1.5; @coordinator-opus m3cb7caa9343e): the
+/// reader has its `Dropped` record before `final_frame` passes its frame, and never a verdict for it. Every entry of
+/// the cut is told the clean replica's verdict, once `final_frame` passes it and not before.
+#[test]
+fn a_late_entry_the_final_cut_leaves_out_reads_dropped_before_final_frame_passes() {
+    let (clean, _) = reference(48);
+    let quorum = clean.live_root(Frame(24)).expect("live");
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    let mut a = replica();
+    let mut reader = Reader::default();
+    a.advance(Frame(48), &mut s);
+    reader.read(&a);
+    assert_eq!((reader.final_frame, &reader.health[..]), (None, &[Health::Agreed][..]), "nothing final yet");
+    let keys = TestKeys::new(7, 3);
+    let late = EntryBuilder::new(&keys, 2).next(Class::Edit, Frame(20), Bytes::from(encode(&[ball(13, 2.0, 1.0)])));
+    s.add(late.clone());
+    a.advance(Frame(48), &mut s);
+    reader.read(&a);
+    assert!(matches!(reader.newest[&late.id()].outcome, Outcome::Applied { .. }), "stepped live");
+    void(&mut s, &late, Frame(20));
+    let fc24 = FinalCut { cut: cut(&scene(), 3, 24), root: quorum, voters: vec![] };
+    assert_eq!(a.finalize(&fc24, &mut s), Finalized::Agreed);
+    a.advance(Frame(49), &mut s);
+    reader.read(&a);
+    assert_eq!(reader.final_frame, Some(Frame(24)));
+    assert_eq!(reader.told.get(&late.id()), Some(&Outcome::Dropped { reason: VoidReason::Late }));
+    for e in scene() {
+        let want = (e.entry.stamp < Frame(24)).then(|| verdict(&clean, &e)).flatten();
+        assert_eq!(reader.told.get(&e.id()), want.as_ref(), "the entry at {:?}", e.entry.stamp);
+    }
+    assert_eq!(reader.health, vec![Health::Agreed]);
+}
+
+/// A replica whose world glitches at 20, so its root differs from the quorum's at 32, read from its first view.
+fn diverged_at_32_read() -> (ReplicaImpl<MockWorld>, Source, FinalCut, Reader) {
+    let all = scene();
+    let (good, _) = reference(48);
+    let mut s = Source::default();
+    all.iter().cloned().for_each(|e| s.add(e));
+    let world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
+    world.glitch_at(Frame(20));
+    let mut config =
+        ReplicaConfig::new(SimRate::DEFAULT, Duration::from_millis(133), Arc::new(MockClock::new(SimRate::DEFAULT)));
+    config.cut_every = K;
+    let mut bad = ReplicaImpl::new(world, config).expect("a replica");
+    bad.set_budget(Duration::from_secs(10));
+    let mut reader = Reader::default();
+    bad.advance(Frame(48), &mut s);
+    reader.read(&bad);
+    let fc16 = FinalCut { cut: cut(&all, 2, 16), root: good.live_root(Frame(16)).expect("live"), voters: vec![] };
+    assert_eq!(bad.finalize(&fc16, &mut s), Finalized::Agreed);
+    let fc32 = FinalCut { cut: cut(&all, 4, 32), root: good.live_root(Frame(32)).expect("live"), voters: vec![] };
+    assert!(matches!(bad.finalize(&fc32, &mut s), Finalized::Diverged { .. }), "the glitch shows at 32");
+    bad.advance(Frame(49), &mut s);
+    reader.read(&bad);
+    // While it repairs, final_frame waits at the last agreed cut, and the view says so.
+    assert_eq!(reader.final_frame, Some(Frame(16)), "it waits at the last agreed cut");
+    assert_eq!(reader.health, vec![Health::Agreed, Health::Repairing { since: Frame(32) }]);
+    let repairing: Vec<_> = all.iter().filter(|e| (16..32).contains(&e.entry.stamp.0)).collect();
+    assert!(!repairing.is_empty() && repairing.iter().all(|e| !reader.told.contains_key(&e.id())));
+    (bad, s, fc32, reader)
+}
+
+/// Rung 1 on a deliberately diverged replica (S5 v1.5; @coordinator-opus md52a099ab4c1): the replay from my last
+/// agreed cut re-steps the entries above it, and their records come before `final_frame` passes them, so no reader
+/// ever had a verdict below `final_frame` other than the good replica's.
+#[test]
+fn after_rung_one_no_reader_ever_had_a_wrong_verdict_below_final_frame() {
+    let (good, _) = reference(48);
+    let (mut bad, mut s, fc32, mut reader) = diverged_at_32_read();
+    let above: Vec<_> = scene().into_iter().filter(|e| (16..32).contains(&e.entry.stamp.0)).collect();
+    let before: Vec<u32> = above.iter().map(|e| reader.records[&e.id()]).collect();
+    assert_eq!(bad.replay_to(&fc32.cut, &mut s), Ok(fc32.root));
+    assert_eq!(bad.finalize(&fc32, &mut s), Finalized::Agreed);
+    bad.advance(Frame(50), &mut s);
+    reader.read(&bad);
+    assert_eq!(reader.final_frame, Some(Frame(32)));
+    assert_eq!(reader.health.last(), Some(&Health::Agreed));
+    for (e, n) in above.iter().zip(before) {
+        assert!(reader.records[&e.id()] > n, "the replay re-recorded the entry at {:?}", e.entry.stamp);
+    }
+    for e in scene().iter().filter(|e| e.entry.stamp < Frame(32)) {
+        assert_eq!(reader.told.get(&e.id()), verdict(&good, e).as_ref(), "the entry at {:?}", e.entry.stamp);
+    }
+}
+
+/// Rung 2 on a deliberately diverged replica (S5 v1.5; @coordinator-opus md52a099ab4c1): the import replaces the
+/// state the entries above my last agreed cut were stepped on, so each of them reads `Unknown`, repaired at the cut,
+/// exactly once, before `final_frame` passes it. S3 had trimmed the frame of one of them (21), and the cut's heads
+/// still name it. The entries below my last agreed cut keep their verdicts.
+#[test]
+fn after_rung_two_each_affected_entry_reads_unknown_exactly_once() {
+    let (mut good, mut gs) = reference(48);
+    let (mut bad, mut s, fc32, mut reader) = diverged_at_32_read();
+    s.trim_below(Frame(24));
+    assert_eq!(bad.replay_to(&fc32.cut, &mut s), Err(RootError::NotKept), "rung 1 cannot: rung 2 is due");
+    let import = import_from(&mut good, &mut gs, &fc32.cut);
+    assert_eq!(bad.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(fc32.root));
+    assert_eq!(bad.import_at_cut(&GroupSel::Domain, import, &mut s), Ok(fc32.root), "asked again, at once");
+    assert_eq!(bad.finalize(&fc32, &mut s), Finalized::Agreed);
+    bad.advance(Frame(50), &mut s);
+    reader.read(&bad);
+    assert_eq!(reader.final_frame, Some(Frame(32)));
+    assert_eq!(reader.health.last(), Some(&Health::Agreed));
+    let repaired = Outcome::Unknown { repaired_at: fc32.cut.at };
+    for e in scene() {
+        let (id, f) = (e.id(), e.entry.stamp.0);
+        match f {
+            0..16 => assert_eq!(reader.told.get(&id), verdict(&good, &e).as_ref(), "the entry at {f}"),
+            16..32 => {
+                assert_eq!(reader.told.get(&id), Some(&repaired), "the entry at {f}");
+                assert_eq!(reader.unknowns.get(&id), Some(&1), "the entry at {f}: once");
+            }
+            _ => assert_eq!(reader.told.get(&id), None, "the entry at {f} is past final_frame"),
+        }
+    }
+}
+
+/// A replica that had the scene and `extra` from the start, run to `to`: the quorum's roots for a cut over them.
+fn clean_with(extra: &[SignedEntry], to: u64) -> ReplicaImpl<MockWorld> {
+    let mut s = Source::default();
+    scene().into_iter().chain(extra.iter().cloned()).for_each(|e| s.add(e));
+    let mut r = replica();
+    r.advance(Frame(to), &mut s);
+    r
+}
+
+/// A replica over the scene and `extra`, run to 48 and read from its first view.
+fn stepped_with(extra: &[SignedEntry]) -> (ReplicaImpl<MockWorld>, Source, Reader) {
+    let mut s = Source::default();
+    scene().into_iter().chain(extra.iter().cloned()).for_each(|e| s.add(e));
+    let mut a = replica();
+    let mut reader = Reader::default();
+    a.advance(Frame(48), &mut s);
+    reader.read(&a);
+    (a, s, reader)
+}
+
+/// S3 voids `e` at the cut going final: absent from `entries_at` from then on, with `reason` if the cut includes it.
+fn s3_voids(s: &mut Source, e: &SignedEntry, reason: Option<VoidReason>) {
+    s.entries.get_mut(&e.entry.stamp).expect("stamped").retain(|x| x.id() != e.id());
+    if let Some(r) = reason {
+        s.voided.insert(e.id(), r);
+    }
+    s.changed = Some(e.entry.stamp);
+}
+
+/// A dropped entry reads S3's reason (@design-reviewer's Medium on f13cd045): the cut at 24 includes a back-stamped
+/// entry (seq 2 stamped 16, after seq 1 stamped 18), S3 voids it as `BackStamped`, and the record copies that.
+#[test]
+fn a_dropped_entry_reads_the_reason_s3_voided_it_for() {
+    let keys = TestKeys::new(7, 3);
+    let mut x = EntryBuilder::new(&keys, 2);
+    let first = x.next(Class::Edit, Frame(18), Bytes::from(encode(&[ball(14, 2.0, 1.0)])));
+    let back = x.next(Class::Edit, Frame(16), Bytes::from(encode(&[ball(15, -2.0, 1.0)])));
+    let quorum = clean_with(std::slice::from_ref(&first), 48).live_root(Frame(24)).expect("live");
+    let (mut a, mut s, mut reader) = stepped_with(&[first.clone(), back.clone()]);
+    assert!(matches!(reader.newest[&back.id()].outcome, Outcome::Applied { .. }), "stepped live");
+    let mut all = scene();
+    all.extend([first.clone(), back.clone()]);
+    let c24 = cut(&all, 3, 24);
+    assert!(c24.includes(&back.entry.chain, back.entry.seq), "the cut includes the back-stamped entry");
+    s3_voids(&mut s, &back, Some(VoidReason::BackStamped));
+    assert_eq!(a.finalize(&FinalCut { cut: c24, root: quorum, voters: vec![] }, &mut s), Finalized::Agreed);
+    a.advance(Frame(49), &mut s);
+    reader.read(&a);
+    assert_eq!(reader.final_frame, Some(Frame(24)));
+    assert_eq!(reader.told.get(&back.id()), Some(&Outcome::Dropped { reason: VoidReason::BackStamped }));
+    assert!(matches!(reader.told.get(&first.id()), Some(Outcome::Applied { .. })), "its chain's first entry applies");
+}
+
+/// A pending entry reads `Late` whatever this replica saw of its chain (@design-reviewer's e1/e2 case on f13cd045):
+/// seq 2 is stamped 20 after seq 1 at 28, so the cut at 24 can't include seq 1, nor seq 2. S3 holds seq 2 pending,
+/// and voids it as `Late` once a later cut includes both, since judge tests late first. Every honest replica says
+/// `Late`, whether or not its present had reached 28 and stepped seq 1.
+#[test]
+fn a_pending_entry_reads_late_whatever_this_replica_saw_of_its_chain() {
+    let keys = TestKeys::new(7, 3);
+    let mut y = EntryBuilder::new(&keys, 2);
+    let e1 = y.next(Class::Edit, Frame(28), Bytes::from(encode(&[ball(14, 2.0, 1.0)])));
+    let e2 = y.next(Class::Edit, Frame(20), Bytes::from(encode(&[ball(15, -2.0, 1.0)])));
+    let quorum = reference(48).0.live_root(Frame(24)).expect("live");
+    let (mut a, mut s, mut reader) = stepped_with(&[e1.clone(), e2.clone()]);
+    assert!(reader.newest.contains_key(&e1.id()) && reader.newest.contains_key(&e2.id()), "both stepped live");
+    let c24 = cut(&scene(), 3, 24);
+    assert!(!c24.includes(&e2.entry.chain, e2.entry.seq), "pending: the cut can't include it");
+    s3_voids(&mut s, &e2, None);
+    assert_eq!(a.finalize(&FinalCut { cut: c24, root: quorum, voters: vec![] }, &mut s), Finalized::Agreed);
+    a.advance(Frame(49), &mut s);
+    reader.read(&a);
+    assert_eq!(reader.told.get(&e2.id()), Some(&Outcome::Dropped { reason: VoidReason::Late }));
+    assert_eq!(reader.told.get(&e1.id()), None, "28 is past final_frame");
 }

@@ -54,12 +54,17 @@ fn name(snap: &WorldSnapshot, id: pe_core::ObjectId) -> String {
 pub fn summary(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSnapshot) -> String {
     let made: &[pe_core::ObjectId] = match outcome {
         WorldOutcome::Applied { created, .. } => created,
-        WorldOutcome::Refused { .. } => &[],
+        WorldOutcome::Refused { .. } | WorldOutcome::Unknown { .. } | WorldOutcome::Dropped { .. } => &[],
     };
     let Some(tx) = tx else {
         return match outcome {
             WorldOutcome::Applied { .. } => "A change (its contents aren't held here).".into(),
             WorldOutcome::Refused { reason, .. } => format!("Refused ({reason:?})."),
+            WorldOutcome::Unknown { repaired_at } => format!(
+                "A change this machine can't know the result of: a repair at frame {} replaced the state.",
+                repaired_at.frame.0
+            ),
+            WorldOutcome::Dropped { reason } => format!("Dropped ({reason:?})."),
         };
     };
     let obj = |t: &Target| match t {

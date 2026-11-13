@@ -331,7 +331,7 @@ fn the_view_draws_shapes_and_appearances_and_marks_the_local_members_hands() {
     let boxed = drawn(oid(5));
     assert_eq!(boxed.held_by, Some(pe_seams::Holder { member: me, hand: ObjectId::NONE }));
     assert!(!boxed.flags.contains(pe_seams::ViewFlags::HELD_LOCAL), "a hand-less hold is not drawn from tracking");
-    assert!(ball.version.is_some(), "every drawn object carries its edit version");
+    assert_eq!(ball.version, None, "made at genesis, so no edit has written it");
 }
 
 /// A late entry whose ball lands on an earlier ball marks the earlier ball `CORRECTED` in the next view (S5): the

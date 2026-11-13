@@ -60,9 +60,10 @@ use std::sync::Arc;
 use bytes::Bytes;
 use pe_physics::{CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Transfer, WorldImage};
 use pe_seams::{
-    Advance, Cut, CutImport, CutRef, DomainId, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameClock,
-    FrameView, GroupSel, Hash, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica,
-    RigTransform, RootError, SignedEntry, SimRate, Tree, ViewCounters, ViewFlags, frames_ceil,
+    Advance, ChainId, Class, Cut, CutImport, CutRef, DomainId, EntryRef, EntrySource, FinalCut, Finalized, Frame,
+    FrameClock, FrameView, GroupSel, Hash, Health, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome,
+    PhysicsImage, Pos, Replica, RigTransform, RootError, SignedEntry, SimRate, StepRecord, Tree, ViewCounters,
+    ViewFlags, VoidReason, frames_ceil,
 };
 
 use crate::bodies;
@@ -194,14 +195,40 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// What re-steps off the live history counted, kept apart from the live counts (@chunks-reviewer's L1 on
     /// 40f9cca4): a fault in a frame both histories step is counted once against the live history.
     scratch: Scratch,
-    /// The outcomes of the last re-step off the live history: a re-base on the floor takes them for `[g, floor)`.
-    scratch_outcomes: BTreeMap<EntryRef, (Frame, Outcome)>,
+    /// The records of the last re-step off the live history: a re-base on the floor takes them for `[g, floor)`.
+    scratch_records: BTreeMap<EntryRef, (StepRecord, Seen)>,
     /// Spans `[g, floor)` that a `finalize` re-based on the cut-exact floor: S3's change report inside one is expected
     /// once, at the next `advance` (@design-reviewer, m46c0d79ab4ad).
     excused: Vec<(Frame, Frame)>,
     /// Drawn objects whose pose at the last published frame a re-simulation rewrote (a replay, a repair or a merge):
     /// the next publication marks them `CORRECTED` (S5), then forgets them.
     corrected: BTreeSet<ObjectId>,
+    /// The change records made since the last publication, in the order they were made: the next view's `changes`
+    /// (S5).
+    pending: Vec<StepRecord>,
+    /// The entries I made a record for, by frame, from my last agreed cut's frame up, with their author and class.
+    /// Before `final_frame` passes a frame, each of them the final order leaves out gets a `Dropped` record (S5 v1.5).
+    recorded: BTreeMap<Frame, BTreeMap<EntryRef, Seen>>,
+    /// The frame up to which a rung-2 import has recorded `Unknown`, so a later import never repeats an entry.
+    unknown_to: Frame,
+    /// The frame of the final cut where my root first differed, or could not be computed, since I last agreed: the
+    /// view's `Health::Repairing { since }` (S5 v1.5).
+    repairing_since: Option<Frame>,
+}
+
+/// What the replica keeps of an entry it made a change record for, until `final_frame` passes its frame.
+#[derive(Clone, Copy, Debug)]
+struct Seen {
+    author: MemberKey,
+    class: Class,
+    chain: ChainId,
+    seq: u64,
+}
+
+impl Seen {
+    fn of(e: &SignedEntry) -> Seen {
+        Seen { author: e.entry.author, class: e.entry.class, chain: e.entry.chain, seq: e.entry.seq }
+    }
 }
 
 /// What re-steps off the live history (`root_at_cut`'s scratch) counted.
@@ -257,9 +284,13 @@ impl<W: WorldModel> ReplicaImpl<W> {
             faults: 0,
             stopped: 0,
             scratch: Scratch::default(),
-            scratch_outcomes: BTreeMap::new(),
+            scratch_records: BTreeMap::new(),
             excused: Vec::new(),
             corrected: BTreeSet::new(),
+            pending: Vec::new(),
+            recorded: BTreeMap::new(),
+            unknown_to: Frame(0),
+            repairing_since: None,
         };
         if r.is_cut_frame(Frame(0)) {
             let root = r.take_root();
@@ -364,10 +395,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
         for e in apply_order(entries.iter().copied(), W::phase) {
             let (outcome, fx) = self.world.apply(f, e);
             let id = e.id();
+            let record = StepRecord { entry: id, author: e.entry.author, class: e.entry.class, frame: f, outcome };
             if live {
-                self.outcomes.insert(id, (f, outcome));
+                self.outcomes.insert(id, (f, record.outcome.clone()));
+                self.note(record, Seen::of(e));
             } else {
-                self.scratch_outcomes.insert(id, (f, outcome));
+                self.scratch_records.insert(id, (record, Seen::of(e)));
             }
             ids.push(id);
             if !fx.is_empty() {
@@ -651,7 +684,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
     ) -> Result<(Hash, Held<W::Saved>), RootError> {
         let live = (self.world.save(), self.physics.save_image().map_err(|_| RootError::Damaged)?, self.frame);
         let tally = (self.faults, self.stopped, self.counters.fp_resets);
-        self.scratch_outcomes.clear();
+        self.scratch_records.clear();
         let result = self.scratch_to(cut, from.min(cut.at.frame), source);
         // What the re-step counted is the scratch's: the live counts stay as they were (L1).
         self.scratch.faults += self.faults - tally.0;
@@ -753,9 +786,78 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.live.insert(at, root);
         // finalize's my_root just re-stepped `[k, at)` with exactly the cut's entries, k at or before g.
         self.outcomes.retain(|_, (f, _)| *f < g);
-        let scratch = std::mem::take(&mut self.scratch_outcomes);
-        self.outcomes.extend(scratch.into_iter().filter(|(_, (f, _))| (g..at).contains(f)));
+        let scratch = std::mem::take(&mut self.scratch_records);
+        for (id, (r, seen)) in scratch.into_iter().filter(|(_, (r, _))| (g..at).contains(&r.frame)) {
+            self.outcomes.insert(id, (r.frame, r.outcome.clone()));
+            self.note(r, seen);
+        }
         self.excused.push((g, at));
+    }
+
+    /// A change record for the next view, and its entry remembered until `final_frame` passes its frame (S5).
+    fn note(&mut self, r: StepRecord, seen: Seen) {
+        if self.cv.as_ref().is_none_or(|c| r.frame >= c.0.at.frame) {
+            self.recorded.entry(r.frame).or_default().insert(r.entry, seen);
+        }
+        self.pending.push(r);
+    }
+
+    /// `final_frame` is about to pass every frame below `to` (S5 v1.5).
+    ///
+    /// - **Dropped.** Each entry I recorded there that `cut`'s order leaves out gets a `Dropped` record, with S3's
+    ///   reason ([`EntrySource::void_reason`]), or `Late` for one no cut has voided yet, as S3 will void it.
+    /// - **Unknown,** after a rung-2 import (`unknown_from`): each entry of the cut's order from that frame up gets an
+    ///   `Unknown` record, since I stepped it on the wrong state, or not at all.
+    ///
+    /// Where S3 no longer keeps a frame, the cut's heads still say whether it includes an entry I recorded: included
+    /// is `Unknown` after an import (applied or void, I can't tell), and not included is `Dropped`.
+    fn settle(&mut self, cut: &Cut, to: Frame, source: &dyn EntrySource, unknown_from: Option<Frame>) {
+        let rest = self.recorded.split_off(&to);
+        let mine = std::mem::replace(&mut self.recorded, rest);
+        let kept = source.kept_from();
+        let frames: BTreeSet<Frame> = (mine.keys().copied())
+            .chain(unknown_from.into_iter().flat_map(|u| (u.max(kept).0..to.0).map(Frame)))
+            .collect();
+        let unknown = |entry: EntryRef, author: MemberKey, class: Class, frame: Frame| StepRecord {
+            entry,
+            author,
+            class,
+            frame,
+            outcome: Outcome::Unknown { repaired_at: cut.at },
+        };
+        let mut records = Vec::new();
+        for f in frames {
+            let here = mine.get(&f).into_iter().flatten();
+            let repaired = unknown_from.is_some_and(|u| f >= u);
+            let dropped = |entry: EntryRef, seen: &Seen| {
+                let reason = source.void_reason(&entry).unwrap_or(VoidReason::Late);
+                let (author, class) = (seen.author, seen.class);
+                StepRecord { entry, author, class, frame: f, outcome: Outcome::Dropped { reason } }
+            };
+            match source.entries_at(f) {
+                Some(held) => {
+                    let order = in_cut(held, cut);
+                    if repaired {
+                        records.extend(order.iter().map(|e| unknown(e.id(), e.entry.author, e.entry.class, f)));
+                    }
+                    for (&entry, seen) in here {
+                        if !order.iter().any(|e| e.id() == entry) {
+                            records.push(dropped(entry, seen));
+                        }
+                    }
+                }
+                None => {
+                    for (&entry, seen) in here {
+                        if !cut.includes(&seen.chain, seen.seq) {
+                            records.push(dropped(entry, seen));
+                        } else if repaired {
+                            records.push(unknown(entry, seen.author, seen.class, f));
+                        }
+                    }
+                }
+            }
+        }
+        self.pending.extend(records);
     }
 
     fn publish(&mut self) {
@@ -790,7 +892,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let mut view = empty_view(self.domain);
         view.frame = self.frame;
         view.sim_time = sim_time;
-        view.final_frame = self.floor.as_ref().map(|f| f.cut.at.frame);
+        view.final_frame = self.cv.as_ref().map(|c| c.0.at.frame);
+        view.health = self.repairing_since.map_or(Health::Agreed, |since| Health::Repairing { since });
+        view.changes = std::mem::take(&mut self.pending);
         view.objects = objects;
         view.counters = self.counters;
         self.view = Arc::new(view);
@@ -803,6 +907,7 @@ fn empty_view(domain: DomainId) -> FrameView {
         domain,
         sim_time: HostTime::default(),
         final_frame: None,
+        health: Health::Agreed,
         local_rig: RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
         objects: Vec::new(),
         effects: Vec::new(),
@@ -952,7 +1057,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // rung 2 is due; `my_root` counted the fault. Otherwise I have not re-simulated to the cut yet.
         let mine = match self.my_root(&cut.cut, &*source) {
             Ok(mine) => mine,
-            Err(RootError::Damaged) => return Finalized::Damaged,
+            Err(RootError::Damaged) => {
+                self.repairing_since.get_or_insert(at.frame);
+                return Finalized::Damaged;
+            }
             Err(_) => return Finalized::NotReady,
         };
         // Whether the live history below the cut's frame stepped exactly the cut's entries, asked before the floor
@@ -964,9 +1072,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         let verdict = if mine == cut.root {
             self.cv = Some((cut.cut.clone(), mine));
             self.diverged = None;
+            self.repairing_since = None;
             Finalized::Agreed
         } else {
             self.diverged = Some((at, mine));
+            self.repairing_since.get_or_insert(at.frame);
             Finalized::Diverged { mine }
         };
         self.move_floor(&cut.cut, mine);
@@ -975,6 +1085,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         }
         // What I still need (S3 v1.2): from `Cv`'s frame for rung 1's replay, from the floor's for re-simulation. The
         // floor moved either way; S3 ignores a frame that does not move forward.
+        // `final_frame` (my last agreed cut) passes the cut's frame at the next publication: first, a `Dropped` record
+        // for each entry I stepped below it that the cut's order leaves out, while S3 still keeps those frames.
+        if matches!(verdict, Finalized::Agreed) {
+            self.settle(&cut.cut, at.frame, &*source, None);
+        }
         let cv = self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame);
         source.keep_final_from(cv, at.frame);
         if let Some(g) = differs {
@@ -1126,6 +1241,12 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
                 ImportError::RootMismatch { got: root }
             });
         };
+        // `final_frame` passes the cut once the drive finalizes it again, and my records below it were made on the
+        // wrong state: each entry of the cut's order from my last agreed cut up is `Unknown` here, and one I stepped
+        // that the cut leaves out is `Dropped` (S5 v1.5).
+        let from = self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame).max(self.unknown_to);
+        self.settle(&cut, c, &*source, Some(from));
+        self.unknown_to = self.unknown_to.max(c);
         // The live history starts again at the cut. What my replaced history held above the floor is gone, its
         // outcomes included: entries there that I never applied report none.
         let floor = self.floor_frame();
