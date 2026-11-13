@@ -203,7 +203,7 @@ pub fn mine(
     step: Option<&StepRecord>,
     frame: Option<Frame>,
     owner: Option<&Owner>,
-    tx: Option<Transaction>,
+    tx: Option<std::sync::Arc<Transaction>>,
     snap: &WorldSnapshot,
 ) -> Outcome {
     let mut o = Outcome {
@@ -234,6 +234,8 @@ pub fn mine(
         Some(WorldOutcome::Refused { op, reason }) if status == Status::Refused => {
             if let Some(tx) = tx {
                 let op_of = owner.map_or_else(Vec::new, |o| o.op_of.to_vec());
+                // Copied only here, for a refusal's envelope.
+                let tx = Transaction::clone(&tx);
                 o.refusal = Some(map_refusal(snap, &WorldEdit { tx, blobs: vec![], op_of }, *op, reason));
             }
         }
