@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pe_app::clock::{self, LocalClock};
+use pe_app::local::{SwitchedHands, chain_nonce};
 use pe_app::sim::{self, Budget, Sim};
 use pe_app::standin::SoloAgreement;
 use pe_app::vr::{self, XrWait};
@@ -89,16 +90,20 @@ fn main() {
         Ok(r) => r,
         Err(e) => fail(&format!("the replica did not start: {e}")),
     };
+    // The local player's hands (app.md 3, step 2): VR's ring while an XR session runs, the desktop hand otherwise.
+    let ring = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, VR_PERIOD_NS));
+    let desktop_hand = Arc::new(DesktopHandFeed::default());
+    let hands = Arc::new(SwitchedHands::new(ring.clone(), desktop_hand.clone()));
     let sim =
-        Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, frames, slot.clone(), Budget::new(rate));
+        Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, frames, slot.clone(), Budget::new(rate))
+            .with_local(world::DEV_MEMBER, chain_nonce(), hands.clone());
     let sim = match sim::spawn(sim, host.clone(), SIM_STACK) {
         Ok(t) => t,
         Err(e) => fail(&format!("the simulation thread did not start: {e}")),
     };
 
     if vr {
-        // The located hands, for the simulation thread's local input once pe-world's inputs land (app.md 3 step 2).
-        let ring = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, VR_PERIOD_NS));
+        hands.use_vr(true);
         let guard = Guard::from_env(true);
         let effects = Box::new(LogEffects);
         match vr::start(
@@ -126,6 +131,7 @@ fn main() {
             }
             Err(why) => eprintln!("pe-app: {why}; the desktop instead"),
         }
+        hands.use_vr(false);
     }
 
     let cfg = DesktopConfig {
@@ -144,7 +150,7 @@ fn main() {
     };
     // The window, its surface and its GPU context are made on this thread, one context at a time (app.md 4): the XR
     // thread has dropped its own context before `wait` answers.
-    let window = run_desktop(cfg, slot, Arc::new(DesktopHandFeed::default()), Box::new(LogEffects));
+    let window = run_desktop(cfg, slot, desktop_hand, Box::new(LogEffects));
     finish(sim.stop(), Some(window));
 }
 
