@@ -8,15 +8,43 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use pe_core::{Frame, Hash, LineId, ObjectId};
-use pe_logic::run::{self, Loaded, Logic, Refused, RunSettings, StageCtx, StageReport};
+use pe_logic::run::{self, EngineComponent, Loaded, Logic, Refused, RunSettings, StageCtx, StageReport};
 use pe_logic::runtime::{self, Fault, Script, Settings};
 use pe_sdk::layout::Stage;
-use pe_sim::{ComponentId, Registry, SimStore};
+use pe_sim::{ComponentDesc, ComponentId, FieldDesc, FieldKind, Registry, SimStore};
 
 const KEY: Hash = Hash([7; 32]);
 
-/// Where the test worlds register the spawn mark (WS-world reserves an engine id for it).
-const MARK: ComponentId = ComponentId(ComponentId::FIRST_USER + 99);
+/// The script's tag (logic.md 3.2), under an id the world would derive from the version. Until pe-sim takes
+/// zero-field components (world-model's slice D) the test tag is a 1-byte padding row; the runner reads its size.
+const TAG: ComponentId = ComponentId(ComponentId::FIRST_USER + 99);
+
+/// The engine components the test worlds let scripts bind: pe-world's `Light`, under its own id and description.
+const LIGHT: ComponentId = pe_world::components::ids::LIGHT;
+const ENGINE: &[EngineComponent<'static>] = &[EngineComponent { name: "pe.Light", id: LIGHT, scripts_may_write: true }];
+
+/// A `Light` row: kind, intensity, range, colour, inner and outer angle.
+fn light(intensity: f32) -> Vec<u8> {
+    [
+        0u32.to_le_bytes(),
+        intensity.to_le_bytes(),
+        1f32.to_le_bytes(),
+        1f32.to_le_bytes(),
+        1f32.to_le_bytes(),
+        1f32.to_le_bytes(),
+        0f32.to_le_bytes(),
+        0f32.to_le_bytes(),
+    ]
+    .concat()
+}
+
+fn intensity(row: &[u8]) -> f32 {
+    f32::from_le_bytes(row[4..8].try_into().unwrap())
+}
+
+fn tag_desc() -> ComponentDesc {
+    ComponentDesc::new(TAG, "pe.tag", vec![FieldDesc::new("_tag", FieldKind::U8, 0, 1)]).unwrap()
+}
 
 /// What a fault test expects of the fault.
 type Expect = fn(&Fault) -> bool;
@@ -50,17 +78,21 @@ impl World {
         let e = runtime::engine(&s).unwrap();
         let script = Script::load(&e, s, tally()).unwrap_or_else(|e| panic!("{e}"));
         let m = run::read_manifest(&script).unwrap();
+        // The script's own components get ids here; `pe.Light` is the engine's.
+        let own: Vec<_> = m.components.iter().filter(|c| !c.name.starts_with("pe.")).cloned().collect();
         let ids: Vec<ComponentId> =
-            (0..m.components.len()).map(|k| ComponentId(ComponentId::FIRST_USER + 100 + k as u128)).collect();
+            (0..own.len()).map(|k| ComponentId(ComponentId::FIRST_USER + 100 + k as u128)).collect();
         let mut registry = Registry::new();
-        registry.register(run::spawn_mark_desc(MARK)).unwrap();
-        for (c, &id) in m.components.iter().zip(&ids) {
+        registry.register(tag_desc()).unwrap();
+        registry.register_type::<pe_world::components::Light>().unwrap();
+        for (c, &id) in own.iter().zip(&ids) {
             registry.register(run::component_desc(c, id).unwrap()).unwrap();
         }
-        let names = m.components.iter().map(|c| c.name.clone()).collect();
+        let names = own.iter().map(|c| c.name.clone()).collect();
         let store = SimStore::new(Arc::new(registry), 0x5eed);
-        let loaded = Loaded::bind(KEY, script, m, &ids, store.registry()).unwrap_or_else(|e| panic!("{e}"));
-        let mut logic = Logic::new(settings, MARK, store.registry()).unwrap();
+        let loaded =
+            Loaded::bind(KEY, script, m, &ids, TAG, ENGINE, store.registry()).unwrap_or_else(|e| panic!("{e}"));
+        let mut logic = Logic::new(settings);
         logic.insert(loaded);
         World { store, logic, names, ids, line: LineId::origin() }
     }
@@ -69,7 +101,15 @@ impl World {
         self.ids[self.names.iter().position(|n| n == name).unwrap()]
     }
 
+    /// An object the script is attached to: its rows, and the script's tag.
     fn object(&mut self, n: u128, rows: &[(&str, Vec<u8>)]) -> ObjectId {
+        let o = self.untagged(n, rows);
+        self.store.insert_raw(TAG, o, &[0]).unwrap();
+        o
+    }
+
+    /// An object with rows of the script's components but not its tag: the script is not attached to it.
+    fn untagged(&mut self, n: u128, rows: &[(&str, Vec<u8>)]) -> ObjectId {
         let o = ObjectId::from_u128(n);
         self.store.create(o).unwrap();
         for (name, row) in rows {
@@ -95,6 +135,20 @@ impl World {
         for stage in [Stage::PrePhysics, Stage::PostPhysics] {
             let mut ctx = StageCtx::new(self.line, 60, stage, &none);
             ctx.guard = Some(&guard);
+            out.push(self.logic.run_stage(&mut self.store, &mut ctx));
+        }
+        let post = out.pop().unwrap();
+        (out.pop().unwrap(), post)
+    }
+
+    /// One frame with the world's edit check on engine rows.
+    fn frame_checked(&mut self, f: u64, check: run::Validate<'_>) -> (StageReport, StageReport) {
+        self.store.set_frame(Frame(f));
+        let none = BTreeSet::new();
+        let mut out = Vec::new();
+        for stage in [Stage::PrePhysics, Stage::PostPhysics] {
+            let mut ctx = StageCtx::new(self.line, 60, stage, &none);
+            ctx.validate = Some(check);
             out.push(self.logic.run_stage(&mut self.store, &mut ctx));
         }
         let post = out.pop().unwrap();
@@ -280,7 +334,7 @@ fn a_fault_discards_the_whole_call_and_the_script_stops() {
 }
 
 #[test]
-fn a_script_destroys_only_what_it_spawned() {
+fn a_script_destroys_only_objects_carrying_its_tag() {
     big_stack(|| {
         // An object with no component of the script.
         let mut w = World::new(RunSettings::default());
@@ -291,14 +345,56 @@ fn a_script_destroys_only_what_it_spawned() {
         assert!(matches!(post.faults[0].fault, Fault::BadCommand(_)), "{post:?}");
         assert!(w.store.exists(foreign));
 
-        // The hole the coordinator named (mfe83e04db541): someone else's object that was given one of the script's
-        // components, as an edit could, is still not the script's to destroy.
+        // The hole the coordinator named (mfe83e04db541): an object given one of the script's components, as an edit
+        // could, but not the script's tag, is not the script's to destroy.
         let mut w = World::new(RunSettings::default());
-        let theirs = w.object(60, &[("Counter", counter(0, 1))]);
+        let theirs = w.untagged(60, &[("Counter", counter(0, 1))]);
         w.object(1, &[("Trouble", trouble(5, theirs))]);
         let (_, post) = w.frame(1);
         assert!(matches!(post.faults[0].fault, Fault::BadCommand(_)), "{post:?}");
         assert!(w.store.exists(theirs));
+
+        // An object the script is attached to (it carries the tag), though the script did not create it, is
+        // (coordinator m3abd64580972: the destroy right is the tag; attaching needs the object's edit right).
+        let mut w = World::new(RunSettings::default());
+        let attached = w.object(70, &[("Counter", counter(0, 1))]);
+        w.object(1, &[("Trouble", trouble(5, attached))]);
+        let (_, post) = w.frame(1);
+        assert!(post.faults.is_empty(), "{post:?}");
+        assert_eq!(post.destroyed, [attached]);
+        assert!(!w.store.exists(attached));
+    });
+}
+
+#[test]
+fn only_objects_carrying_the_tag_run_the_script_and_detaching_keeps_their_rows() {
+    big_stack(|| {
+        // Three objects with a Counter: 1 and 3 carry the tag, 2 does not. Then 3 is detached (its tag removed).
+        let mut w = World::new(RunSettings::default());
+        let a = w.object(1, &[("Counter", counter(0, 1))]);
+        let b = w.untagged(2, &[("Counter", counter(0, 1))]);
+        let c = w.object(3, &[("Counter", counter(0, 1))]);
+        let c_id = w.id("Counter");
+        let (pre, _) = w.frame(1);
+        assert_eq!(pre.written, vec![(c_id, a), (c_id, c)]);
+        assert_eq!(u32s(&w.row("Counter", b).unwrap()), [0, 1]);
+        w.store.remove_raw(TAG, c).unwrap();
+        let (pre, _) = w.frame(2);
+        assert_eq!(pre.written, vec![(c_id, a)]);
+        assert_eq!(u32s(&w.row("Counter", a).unwrap()), [2, 1]);
+        assert_eq!(u32s(&w.row("Counter", c).unwrap()), [1, 1], "a detached object keeps its rows");
+    });
+}
+
+#[test]
+fn what_a_script_creates_carries_its_tag() {
+    big_stack(|| {
+        let mut w = World::new(RunSettings::default());
+        let sp = w.object(1, &[("Spawner", le(&[1, 0], &[4, 4]))]);
+        let (pre, _) = w.frame(1);
+        let child = ObjectId::spawned(w.line, sp, Frame(1), 0);
+        assert_eq!(pre.created, [(child, sp)]);
+        assert_eq!(w.store.get_raw(TAG, child), Some(&[0u8][..]));
     });
 }
 
@@ -476,9 +572,10 @@ fn a_change_only_in_the_tail_of_a_row_that_straddles_a_block_is_written() {
 #[test]
 fn finding_rows_is_one_merge_walk_per_column_per_call_whatever_the_batches() {
     big_stack(|| {
-        // Enough objects for several batches of `count` and `double`. Linear: `count` walks Counter twice (the bound
-        // objects, then their rows), `double` walks Counter and Doubled twice each: 6 N steps. A walk per batch
-        // from row 0 adds about N (B - 1) / 2 steps per column (shader-reviewer on 569cf551).
+        // Enough objects for several batches of `count` and `double`. Linear: `count` joins Counter and the tag (2 N)
+        // and walks Counter for rows (N); `double` joins Counter, Doubled and the tag (3 N) and walks two columns
+        // for rows (2 N): 8 N steps. A walk per batch from row 0 adds about N (B - 1) / 2 steps per column
+        // (shader-reviewer on 569cf551).
         const N: u128 = 6000;
         let mut w = World::new(RunSettings::default());
         for k in 1..=N {
@@ -487,7 +584,188 @@ fn finding_rows_is_one_merge_walk_per_column_per_call_whatever_the_batches() {
         let (pre, _) = w.frame(1);
         assert!(pre.faults.is_empty(), "{pre:?}");
         assert!(pre.batches >= 6, "want several batches per system: {}", pre.batches);
-        assert!(pre.join_steps <= 6 * N as u64, "{} steps for {N} objects", pre.join_steps);
+        assert!(pre.join_steps <= 8 * N as u64, "{} steps for {N} objects", pre.join_steps);
         assert_eq!(u64s(&w.row("Doubled", ObjectId::from_u128(N)).unwrap()), [4]);
+    });
+}
+
+#[test]
+fn a_hold_on_an_orphan_does_not_stop_the_destroy_and_removed_lists_what_went() {
+    big_stack(|| {
+        // Under the spawn: `kid` (tagged, removed with it) and someone's `addon` (untagged, orphaned) holding
+        // `inner` (tagged, but under the add-on, so it stays with it). Holds on the add-on and on `inner` do not stop
+        // the destroy (world-model.md 9.2a, @design-reviewer m52c574e02ece); a hold on `kid` does.
+        let build = |w: &mut World| {
+            let sp = w.object(1, &[("Spawner", le(&[1, 0], &[4, 4]))]);
+            w.frame(1);
+            let child = ObjectId::spawned(w.line, sp, Frame(1), 0);
+            let kid = w.object(80, &[]);
+            let addon = w.untagged(81, &[]);
+            let inner = w.object(82, &[]);
+            w.store.set_parent(kid, Some(child), None).unwrap();
+            w.store.set_parent(addon, Some(child), None).unwrap();
+            w.store.set_parent(inner, Some(addon), None).unwrap();
+            w.frame(2);
+            (child, kid, addon, inner)
+        };
+        let mut w = World::new(RunSettings::default());
+        let (child, kid, addon, inner) = build(&mut w);
+        let (_, post) = w.frame_guarded(3, &[addon, inner]);
+        assert!(post.faults.is_empty() && post.refused.is_empty(), "{post:?}");
+        assert_eq!(post.destroyed, [child]);
+        let mut removed = post.removed.clone();
+        removed.sort();
+        let mut want = vec![child, kid];
+        want.sort();
+        assert_eq!(removed, want);
+        assert_eq!(post.orphaned, [addon]);
+        assert!(w.store.exists(inner) && w.store.parent(inner) == Some(addon));
+
+        let mut w = World::new(RunSettings::default());
+        let (child, kid, _, _) = build(&mut w);
+        let (_, post) = w.frame_guarded(3, &[kid]);
+        assert_eq!(post.refused, [(child, Refused::Guarded(kid))]);
+        assert!(post.removed.is_empty() && w.store.exists(child));
+    });
+}
+
+#[test]
+fn a_script_writes_an_engine_component_only_where_it_is_attached() {
+    big_stack(|| {
+        let mut w = World::new(RunSettings::default());
+        let lamp = w.object(1, &[]);
+        w.store.insert_raw(LIGHT, lamp, &light(1.0)).unwrap();
+        let other = w.untagged(2, &[]);
+        w.store.insert_raw(LIGHT, other, &light(1.0)).unwrap();
+        let ok = |_: ComponentId, _: ObjectId, _: &[u8]| Ok(());
+        let (_, post) = w.frame_checked(1, &ok);
+        assert!(post.faults.is_empty(), "{post:?}");
+        assert_eq!(post.written, vec![(LIGHT, lamp)]);
+        assert_eq!(intensity(w.store.get_raw(LIGHT, lamp).unwrap()), 2.0);
+        assert_eq!(intensity(w.store.get_raw(LIGHT, other).unwrap()), 1.0);
+    });
+}
+
+#[test]
+fn an_engine_row_the_world_refuses_faults_the_call() {
+    big_stack(|| {
+        // The world's check (pe-world's edit rules in the engine) refuses intensities above 1.5: the call faults with
+        // its reason, nothing is clamped, and the row keeps its value (coordinator mcb505a8e97cf).
+        let mut w = World::new(RunSettings::default());
+        let lamp = w.object(1, &[]);
+        w.store.insert_raw(LIGHT, lamp, &light(1.0)).unwrap();
+        let check = |c: ComponentId, _: ObjectId, row: &[u8]| {
+            if c == LIGHT && intensity(row) > 1.5 { Err("intensity".to_string()) } else { Ok(()) }
+        };
+        let (_, post) = w.frame_checked(1, &check);
+        assert_eq!(post.faults.len(), 1, "{post:?}");
+        assert_eq!(post.faults[0].fault, Fault::InvalidRow { component: "Light".into(), field: "intensity".into() });
+        assert_eq!(intensity(w.store.get_raw(LIGHT, lamp).unwrap()), 1.0);
+    });
+}
+
+#[test]
+fn a_create_of_an_engine_component_is_refused() {
+    big_stack(|| {
+        let mut w = World::new(RunSettings::default());
+        w.object(1, &[("Beacon", le(&[1], &[4]))]);
+        let (_, post) = w.frame(1);
+        assert!(matches!(&post.faults[0].fault, Fault::BadCommand(m) if m.contains("engine")), "{post:?}");
+        assert!(post.created.is_empty());
+    });
+}
+
+#[test]
+fn binding_checks_the_engine_table_and_the_layout() {
+    // The table leaves `pe.Light` out, forbids writing it, or the registry holds another layout under its id.
+    let s = Settings::default();
+    let e = runtime::engine(&s).unwrap();
+    let try_bind = |engine: &[EngineComponent<'_>], light_desc: ComponentDesc| {
+        let script = Script::load(&e, s, tally()).unwrap();
+        let m = run::read_manifest(&script).unwrap();
+        let own: Vec<_> = m.components.iter().filter(|c| !c.name.starts_with("pe.")).cloned().collect();
+        let ids: Vec<ComponentId> =
+            (0..own.len()).map(|k| ComponentId(ComponentId::FIRST_USER + 100 + k as u128)).collect();
+        let mut registry = Registry::new();
+        registry.register(tag_desc()).unwrap();
+        registry.register_engine(light_desc).unwrap();
+        for (c, &id) in own.iter().zip(&ids) {
+            registry.register(run::component_desc(c, id).unwrap()).unwrap();
+        }
+        Loaded::bind(KEY, script, m, &ids, TAG, engine, &registry).err().map(|e| e.to_string())
+    };
+    let real = <pe_world::components::Light as pe_sim::Component>::desc();
+    assert_eq!(try_bind(ENGINE, real.clone()), None);
+    let none = try_bind(&[], real.clone()).unwrap();
+    assert!(none.contains("not an engine component"), "{none}");
+    let ro = [EngineComponent { name: "pe.Light", id: LIGHT, scripts_may_write: false }];
+    let ro = try_bind(&ro, real).unwrap();
+    assert!(ro.contains("may not write pe.Light"), "{ro}");
+    let other = ComponentDesc::new(LIGHT, "Light", vec![FieldDesc::new("kind", FieldKind::U32, 0, 8)]).unwrap();
+    let other = try_bind(ENGINE, other).unwrap();
+    assert!(other.contains("layout differs"), "{other}");
+}
+
+#[test]
+fn the_sdk_engine_components_are_the_engine_layouts() {
+    use pe_sdk::component::Component as SdkComponent;
+    fn layout<T: SdkComponent>() -> Vec<(String, u8, u32, u32)> {
+        T::FIELDS.iter().map(|f| (f.name.to_string(), f.kind as u8, f.offset, f.count)).collect()
+    }
+    fn engine(d: &ComponentDesc) -> Vec<(String, u8, u32, u32)> {
+        // pe-sim's field kinds by name, mapped to the SDK's codes through the runner's own description of each.
+        d.fields().iter().map(|f| (f.name.clone(), sdk_code(f.kind), f.offset, f.count)).collect()
+    }
+    fn sdk_code(k: FieldKind) -> u8 {
+        use pe_sdk::layout::FieldKind as S;
+        (match k {
+            FieldKind::U32 => S::U32,
+            FieldKind::I64 => S::I64,
+            FieldKind::F32 => S::F32,
+            FieldKind::F64 => S::F64,
+            other => panic!("no SDK kind for {other:?} in these components"),
+        }) as u8
+    }
+    let light = <pe_world::components::Light as pe_sim::Component>::desc();
+    assert_eq!(layout::<pe_sdk::engine::Light>(), engine(&light));
+    assert_eq!(std::mem::size_of::<pe_sdk::engine::Light>(), light.size());
+    let transform = <pe_sim::Transform as pe_sim::Component>::desc();
+    assert_eq!(layout::<pe_sdk::engine::Transform>(), engine(&transform));
+    assert_eq!(std::mem::size_of::<pe_sdk::engine::Transform>(), transform.size());
+}
+
+#[test]
+fn an_engine_row_with_no_world_check_faults_the_call() {
+    big_stack(|| {
+        // Fail closed (shader-reviewer on 53daefdf): a world that forgot `StageCtx::validate` gets a fault, not an
+        // unchecked engine row.
+        let mut w = World::new(RunSettings::default());
+        let lamp = w.object(1, &[]);
+        w.store.insert_raw(LIGHT, lamp, &light(1.0)).unwrap();
+        let (_, post) = w.frame(1);
+        let no_check = |f: &Fault| matches!(f, Fault::InvalidRow { component, field } if component == "Light" && field.contains("no world check"));
+        assert!(no_check(&post.faults[0].fault), "{post:?}");
+        assert_eq!(intensity(w.store.get_raw(LIGHT, lamp).unwrap()), 1.0);
+    });
+}
+
+#[test]
+fn an_untagged_object_under_a_surviving_parent_is_not_moved() {
+    big_stack(|| {
+        // A (tagged, destroyed) > B (untagged) > C (tagged) > D (untagged): only A is removed, B is orphaned, and C
+        // and D stay where they are (shader-reviewer on 53daefdf).
+        let mut w = World::new(RunSettings::default());
+        let a = w.object(90, &[]);
+        let b = w.untagged(91, &[]);
+        let c = w.object(92, &[]);
+        let d = w.untagged(93, &[]);
+        w.store.set_parent(b, Some(a), None).unwrap();
+        w.store.set_parent(c, Some(b), None).unwrap();
+        w.store.set_parent(d, Some(c), None).unwrap();
+        w.object(1, &[("Trouble", trouble(5, a))]);
+        let (_, post) = w.frame(1);
+        assert!(post.faults.is_empty(), "{post:?}");
+        assert_eq!((post.removed.as_slice(), post.orphaned.as_slice()), ([a].as_slice(), [b].as_slice()));
+        assert_eq!((w.store.parent(b), w.store.parent(c), w.store.parent(d)), (None, Some(b), Some(c)));
     });
 }
