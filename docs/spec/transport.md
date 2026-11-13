@@ -524,8 +524,11 @@ its frame this way (seam S3).
     alike and which differs per connection. With quinn-proto this is rare [V, measured by a Core test]: the
     client closes the duplicate it completes second before its Finished leaves, so the server never completes
     it. The tag keeps the choice from depending on that timing.
-  - The loser is closed with code 0 and the detail `duplicate connection`. A side that gets that close, or
-    loses a connection while it holds another to the same peer, ends it quietly: no refusal, no `LinkDown`.
+  - The loser is closed with code 0 and the detail `duplicate connection`. A lost connection ends quietly (no
+    refusal, no `LinkDown`) only if another connection to the same peer stands in for it: one already holds
+    the link, or this one never did and another is live. Otherwise the loss is reported as any loss is,
+    whatever the close says [@design-reviewer's Medium on v1b]; a duplicate close is not a refusal only while
+    another connection to that peer is still opening.
 
 ### 6.3 Hello and the connection guards
 
@@ -626,6 +629,9 @@ These are the application error codes on a QUIC close. The joiner's app shows th
   - at most `N_rdv_dials` mesh and rendezvous dials (addresses) queued or under way at once; past that, the
     rest of a record is dropped;
   - more than `R_rdv` records from one peer within `T_rdv` is a protocol fault.
+  - These bound the harm but don't remove it: a member can still fill the shared dial budget with dead
+    addresses for made-up keys every `T_rdv`, delaying real introductions. Members are trusted in M1; M3
+    revisits this with relaying [@design-reviewer, Low on v1b].
 - **Each of these connections** has its own hello, guards and welcome, judged from the agreed governance (2.3).
 - **M3** adds relaying through members, and hole punching through NATs.
 
