@@ -48,6 +48,34 @@ pub type EntryDecoder = fn(&[u8]) -> Option<SignedEntry>;
 /// Where a node records its replica's frame views: each new publication, with the host time it was read at.
 pub type ViewSink = Arc<Mutex<Vec<(i64, Arc<FrameView>)>>>;
 
+/// What a node saw become final, for an offline replay through S2 ([`crate::s2replay`]): a cut at each height, and
+/// the final entries in agreed order, voided ones absent. A height's cut is its final one once the node has seen it
+/// final (in `finals`); until then, the first cut it was asked to vote on there, which a different final cut may
+/// replace (a voted cut that timed out or split, under pe-agree; @design-reviewer's Low on b9257cbd).
+#[derive(Clone, Debug, Default)]
+pub struct FinalLog {
+    pub cuts: BTreeMap<u64, Cut>,
+    /// The heights whose cut in `cuts` the node saw final.
+    pub finals: BTreeSet<u64>,
+    pub entries: Vec<SignedEntry>,
+}
+
+impl FinalLog {
+    /// Records `cut`: a final one replaces whatever is at its height; a voted one fills only an empty height.
+    pub fn record(&mut self, cut: &Cut, is_final: bool) {
+        let h = cut.at.height;
+        if is_final {
+            self.cuts.insert(h, cut.clone());
+            self.finals.insert(h);
+        } else {
+            self.cuts.entry(h).or_insert_with(|| cut.clone());
+        }
+    }
+}
+
+/// Where a node records its [`FinalLog`] (`record_final`).
+pub type FinalSink = Arc<Mutex<FinalLog>>;
+
 /// What a [`SeamNode`] needs from its replica beyond S2: the order its frames apply in, and what an entry adds to
 /// P2's reference log.
 pub trait NodeReplica: Replica {
@@ -111,6 +139,8 @@ pub struct SeamNode<A: Agreement, R: NodeReplica = KvSeamReplica> {
     /// Where each new publication of the replica's view goes, if anywhere (`record_views`).
     views: Option<ViewSink>,
     last_view: Option<Arc<FrameView>>,
+    /// Where the final cuts and entries go, if anywhere (`record_final`).
+    finals: Option<FinalSink>,
 }
 
 /// The node id of member `key`: its place in key order, from 1.
@@ -183,6 +213,7 @@ impl<R: NodeReplica> SeamNode<LockstepAgreement, R> {
             script: Vec::new(),
             views: None,
             last_view: None,
+            finals: None,
         }
     }
 }
@@ -194,6 +225,13 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
     pub fn submit_at(mut self, at: i64, class: Class, payload: Vec<u8>) -> Self {
         let i = self.script.partition_point(|s| s.0 <= at);
         self.script.insert(i, (at, class, payload));
+        self
+    }
+
+    /// This node records what became final in `sink`: each cut it votes on or finalizes, and each final cut's entries.
+    #[must_use]
+    pub fn record_final(mut self, sink: FinalSink) -> Self {
+        self.finals = Some(sink);
         self
     }
 
@@ -230,6 +268,13 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
             self.held.insert((signed.entry.chain, signed.entry.seq));
             self.held_ids.insert(signed.id());
             self.builder = b;
+        }
+    }
+
+    /// Records a cut, final or voted, for the offline replay.
+    fn record_cut(&self, cut: &Cut, is_final: bool) {
+        if let Some(Ok(mut log)) = self.finals.as_ref().map(|s| s.lock()) {
+            log.record(cut, is_final);
         }
     }
 
@@ -325,6 +370,7 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
         }
         for cut in self.agree.wants_roots() {
             self.breach_if_lacking("wants_roots", &cut);
+            self.record_cut(&cut, false);
             match self.replica.root_at_cut(&cut, &mut self.agree) {
                 Ok(root) => {
                     self.events.push(Ev::ReplicaRoot { frame: cut.at.frame.0, root: root.0 });
@@ -345,6 +391,7 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
             }
             if fc.cut.at.height > self.seen_height {
                 self.seen_height = fc.cut.at.height;
+                self.record_cut(&fc.cut, true);
                 self.breach_if_lacking("final_cut", &fc.cut);
             }
         }
@@ -380,6 +427,9 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
         // own frame's row and the sort is stable: every row keeps its frame's phase order. Never flatten this.
         for e in &entries {
             h.write_hash(&e.id().0);
+        }
+        if let Some(Ok(mut log)) = self.finals.as_ref().map(|s| s.lock()) {
+            log.entries.extend(entries.iter().cloned());
         }
         for e in pe_replica::apply_order(&entries, self.replica.phase()) {
             let author = node_of(&self.keys, &e.entry.author);
