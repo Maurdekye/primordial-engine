@@ -109,7 +109,7 @@ pub fn summary(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSna
             Op::CommitScript { script, base, .. } => {
                 let hex: String = script[..4].iter().map(|b| format!("{b:02x}")).collect();
                 format!(
-                    "committed {} of script {hex}…",
+                    "committed {} of script {hex}… for attestation",
                     if base.is_some() { "a new version" } else { "the first version" }
                 )
             }
@@ -210,7 +210,7 @@ mod tests {
         };
         let applied = WorldOutcome::Applied { created: vec![], overwrote: vec![], notes: vec![], inverse: None };
         let s = summary(Some(&tx), &applied, &snap);
-        assert_eq!(s, "Registered Health; committed the first version of script abababab….");
+        assert_eq!(s, "Registered Health; committed the first version of script abababab… for attestation.");
         assert!(crate::watch::touched_ids(Some(&tx), &applied).is_empty());
     }
 

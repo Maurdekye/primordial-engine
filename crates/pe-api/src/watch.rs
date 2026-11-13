@@ -90,8 +90,8 @@ fn touched(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSnapsho
             Op::RemoveRow { id, component, .. } => {
                 t.set.extend(at(id).map(|o| (o, field_name(snap, *component, None))))
             }
-            // A script's ops create, delete and move nothing. A commit's re-key of the rows on the objects carrying
-            // the script is not listed per object [I: from its footprint later].
+            // A script's ops create, delete and move nothing; an activation's re-key reaches watch through S5's
+            // `FrameView.activations`, not an entry (@coordinator-opus m5dcad30c0dd8).
             Op::Register { .. } | Op::CommitScript { .. } | Op::AttestBuild { .. } => {}
         }
     }
