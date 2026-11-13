@@ -10,5 +10,6 @@ description = "Deterministic session harness: network model, scenario runner, pr
 # already lists it, so adding dependencies here needs no other change.
 [dependencies]
 pe-seams = { path = "../pe-seams", features = ["test-util"] }
+pe-replica = { path = "../pe-replica" }
 blake3.workspace = true
 bytes.workspace = true
