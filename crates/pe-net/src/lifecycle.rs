@@ -333,7 +333,7 @@ mod tests {
         // A member count far past the bound is refused before any allocation.
         let mut w = vec![VERSION];
         w.extend_from_slice(&[0; 44]);
-        w.extend_from_slice(&[0xc0, 0, 0, 0, 0, 0, 0xff, 0xff]);
+        w.extend_from_slice(&[0xc0, 0, 0, 0, 0x40, 0, 0, 0]); // 2^30, in its minimal 8-byte form
         assert_eq!(Welcome::decode(&w), Err(FrameError::TooLong));
         // Every single-byte change: an error or a value, never a panic.
         for i in 0..h.len() {
