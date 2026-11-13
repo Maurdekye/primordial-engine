@@ -81,6 +81,9 @@ pub struct LockstepAgreement {
     absent: BTreeSet<EntryRef>,
     /// Voids already reported.
     reported: BTreeSet<EntryRef>,
+    /// The reason each voided entry was voided for, as `AgreeEvent::Voided` gave it: `void_reason`'s answer (S2 v1.5).
+    /// Kept for the whole session (a test's), so it answers below `kept_from` too.
+    void_reasons: BTreeMap<EntryRef, VoidReason>,
     /// Uncovered entries stamped below a final cut's frame: held, never applied, not void.
     parked: BTreeSet<EntryRef>,
     /// When each missing (chain, seq) was last asked for, in frames.
@@ -125,6 +128,7 @@ impl LockstepAgreement {
             held: BTreeMap::new(),
             absent: BTreeSet::new(),
             reported: BTreeSet::new(),
+            void_reasons: BTreeMap::new(),
             parked: BTreeSet::new(),
             asked: BTreeMap::new(),
             at: BTreeMap::new(),
@@ -267,6 +271,7 @@ impl LockstepAgreement {
         let id = e.id();
         if self.reported.insert(id) {
             self.absent.insert(id);
+            self.void_reasons.insert(id, reason);
             self.hide(e);
             self.events.push(AgreeEvent::Voided { entry: id, author: e.entry.author, reason, cut });
         }
@@ -545,6 +550,12 @@ impl LockstepAgreement {
 impl EntrySource for LockstepAgreement {
     fn final_cut(&self) -> Option<&FinalCut> {
         self.finals.last()
+    }
+
+    /// The reason a final cut voided `entry` for, from the verdicts `void` reported; `None` for an entry no final cut
+    /// has voided. The mock keeps every reason for its whole session, so this answers below `kept_from` as well.
+    fn void_reason(&self, entry: &EntryRef) -> Option<VoidReason> {
+        self.void_reasons.get(entry).copied()
     }
 
     fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
