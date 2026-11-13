@@ -15,7 +15,7 @@ use pe_seams::{
     Pos, Replica, SignedEntry,
 };
 use pe_sim::Transform;
-use pe_world::components::{Body, Name, Shape, body_kind, shape_kind};
+use pe_world::components::{Appearance, Body, Hand, Name, Shape, body_kind, shape_kind};
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
 use pe_world::{BlobStore, GENESIS, World, perm};
 
@@ -280,4 +280,82 @@ fn the_replica_steps_the_real_world_and_rolls_back_to_the_same_roots() {
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 5), "rolled back: {adv:?}");
     assert_eq!(roots(&b, 64), ra);
     assert_eq!(b.faults(), 0);
+}
+
+/// The frame view draws pe-world's objects (S5): the floor's box, a ball's sphere and colour, the ball held by the
+/// local member's right hand (`HELD_LOCAL`), that hand as a `HAND_RADIUS` sphere marked `OWN_HAND`, and another
+/// member's hand, which is neither.
+#[test]
+fn the_view_draws_shapes_and_appearances_and_marks_the_local_members_hands() {
+    let (me, other) = (keys().key(0), keys().key(1));
+    let mut w = genesis();
+    w.create(oid(2), None, me, GENESIS).expect("ball");
+    w.insert(oid(2), Transform::at(pos(0.0, 1.0, 0.0))).expect("ball transform");
+    w.insert(oid(2), sphere(0.1)).expect("ball shape");
+    w.insert(oid(2), Appearance { base: [1.0, 0.0, 0.0, 1.0], ..Appearance::default() }).expect("ball colour");
+    for (id, owner, side) in [(oid(3), me, 1), (oid(4), other, 0)] {
+        w.create(id, None, owner, GENESIS).expect("hand");
+        w.insert(id, Transform::at(pos(0.3, 1.2, 0.0))).expect("hand transform");
+        w.insert(id, Hand { owner, side, ..Hand::default() }).expect("hand row");
+    }
+    w.set_claim(oid(2), pe_world::Claim { hand: oid(3), member: me, since: Frame(0), until: Frame(1_000) })
+        .expect("held");
+    // A box I hold hand-less (an agent's grab): not HELD_LOCAL, since no tracked hand draws it.
+    w.create(oid(5), None, me, GENESIS).expect("box");
+    w.insert(oid(5), Transform::at(pos(1.0, 0.5, 0.0))).expect("box transform");
+    w.insert(oid(5), cuboid([0.1, 0.1, 0.1])).expect("box shape");
+    w.set_claim(oid(5), pe_world::Claim { hand: ObjectId::NONE, member: me, since: Frame(0), until: Frame(1_000) })
+        .expect("held");
+    let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
+    config.local = Some(me);
+    let mut r = ReplicaImpl::new(PeWorld::new(w, DomainId(0)), config).expect("a replica");
+    r.advance(Frame(1), &mut Source::default());
+    let view = r.view();
+    let drawn = |id: ObjectId| view.objects.iter().find(|o| o.id == id).unwrap_or_else(|| panic!("{id:?} drawn"));
+
+    assert_eq!(drawn(oid(1)).shape, Some(pe_seams::Shape::Box { half_extents: [10.0, 0.5, 10.0] }));
+    let ball = drawn(oid(2));
+    assert_eq!(ball.shape, Some(pe_seams::Shape::Sphere { radius: 0.1 }));
+    assert_eq!(ball.appearance.map(|a| a.base_color), Some([1.0, 0.0, 0.0, 1.0]));
+    assert_eq!(ball.held_by, Some(pe_seams::Holder { member: me, hand: oid(3) }));
+    assert!((ball.radius - 0.1).abs() < 1e-6, "{}", ball.radius);
+    assert!(ball.flags.contains(pe_seams::ViewFlags::HELD_LOCAL));
+    let mine = drawn(oid(3));
+    assert_eq!(mine.hand_of, Some((me, pe_seams::Hand::Right)));
+    assert!(mine.flags.contains(pe_seams::ViewFlags::OWN_HAND));
+    assert_eq!(mine.shape, Some(pe_seams::Shape::Sphere { radius: pe_replica::world::HAND_RADIUS }));
+    let theirs = drawn(oid(4));
+    assert_eq!(theirs.hand_of, Some((other, pe_seams::Hand::Left)));
+    assert_eq!(theirs.flags, pe_seams::ViewFlags::default());
+    let boxed = drawn(oid(5));
+    assert_eq!(boxed.held_by, Some(pe_seams::Holder { member: me, hand: ObjectId::NONE }));
+    assert!(!boxed.flags.contains(pe_seams::ViewFlags::HELD_LOCAL), "a hand-less hold is not drawn from tracking");
+    assert!(ball.version.is_some(), "every drawn object carries its edit version");
+}
+
+/// A late entry whose ball lands on an earlier ball marks the earlier ball `CORRECTED` in the next view (S5): the
+/// replay rewrote its pose at the last published frame. The floor, which nothing moved, is not marked, the late
+/// ball is new rather than corrected, and nothing is marked without a replay.
+#[test]
+fn a_replay_that_moves_a_ball_marks_it_corrected() {
+    let mut entries = scene();
+    let late = entries.pop().expect("two entries");
+    let mut s = Source::default();
+    entries.into_iter().for_each(|e| s.add(e));
+    let mut r = replica();
+    r.advance(Frame(64), &mut s);
+    let corrected = |r: &ReplicaImpl<PeWorld>| -> Vec<ObjectId> {
+        let view = r.view();
+        view.objects.iter().filter(|o| o.flags.contains(pe_seams::ViewFlags::CORRECTED)).map(|o| o.id).collect()
+    };
+    assert_eq!(corrected(&r), Vec::<ObjectId>::new(), "no replay, no correction");
+    let first = r.view().objects.iter().map(|o| o.id).find(|&id| id != oid(1)).expect("the first ball");
+
+    s.add(late);
+    let adv = r.advance(Frame(65), &mut s);
+    assert!(adv.rolled_back_to.is_some(), "{adv:?}");
+    assert_eq!(corrected(&r), [first], "only the first ball, which the late one landed on");
+
+    r.advance(Frame(66), &mut s);
+    assert_eq!(corrected(&r), Vec::<ObjectId>::new(), "a correction is marked once");
 }

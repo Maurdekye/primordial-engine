@@ -173,6 +173,8 @@ impl ViewFlags {
 pub struct Holder {
     pub member: MemberKey,
     /// The hand object. A held object's grip offset is its pose relative to this hand's simulated pose.
+    /// `ObjectId::NONE` for a hand-less hold (an agent's grab, world-model.md 8.1): there is no grip to latch to,
+    /// the hold is shown as such ("moved by X, hand-less"), and the object is never `HELD_LOCAL`.
     pub hand: ObjectId,
 }
 
