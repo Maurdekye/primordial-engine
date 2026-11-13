@@ -53,6 +53,12 @@ pub struct Config {
     /// `Busy` answers in a row from one source before it is rotated, and the longest wait one of them can ask for.
     pub n_busy_max: u32,
     pub busy_wait_max: Duration,
+    /// A repair failing again and again stops the ladder (4.3): after `n_stuck` failed rung-2 repairs in a row with
+    /// one key, or `n_stuck_any` in a row with no cure whatever the key. While stopped, cuts are still compared, and
+    /// one probe repair runs every `t_stuck_probe` to see whether the key changed.
+    pub n_stuck: u32,
+    pub n_stuck_any: u32,
+    pub t_stuck_probe: Duration,
 }
 
 impl Default for Config {
@@ -71,6 +77,9 @@ impl Default for Config {
             serve_rate: 4 << 20,
             n_busy_max: 4,
             busy_wait_max: Duration::from_secs(1),
+            n_stuck: 3,
+            n_stuck_any: 10,
+            t_stuck_probe: Duration::from_secs(30),
         }
     }
 }
@@ -218,6 +227,53 @@ enum Serve {
     Busy(u64),
 }
 
+/// What makes two failed repairs the same (4.3): the rung, the reason, and the differing leaves found (`Config`
+/// among them when the world's config differs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FailKey {
+    rung: u8,
+    why: String,
+    leaves: Vec<LeafKey>,
+}
+
+impl FailKey {
+    /// The mismatch, named for the bundle and the user: at most 8 leaves listed.
+    fn name(&self) -> String {
+        let mut s = format!("rung {}: {}; differing: ", self.rung, self.why);
+        if self.leaves.is_empty() {
+            s.push_str("none found");
+        }
+        // The config first: when it differs, it is most likely the cause.
+        let mut leaves: Vec<&LeafKey> = self.leaves.iter().filter(|k| **k == LeafKey::Config).collect();
+        leaves.extend(self.leaves.iter().filter(|k| **k != LeafKey::Config));
+        for (i, k) in leaves.into_iter().take(8).enumerate() {
+            if i > 0 {
+                s.push_str(", ");
+            }
+            s.push_str(&match k {
+                LeafKey::Config => "Config (the world's config differs)".to_string(),
+                LeafKey::Object(o) => format!("Object({})", o.to_u128()),
+                LeafKey::Table(t) => format!("Table({t})"),
+                LeafKey::Physics(d) => format!("Physics({d:?})"),
+            });
+        }
+        if self.leaves.len() > 8 {
+            s.push_str(&format!(" and {} more", self.leaves.len() - 8));
+        }
+        s
+    }
+}
+
+/// The ladder stopped (4.3).
+struct Stuck {
+    /// Stopped by `n_stuck_any` (keys kept changing) or by a rate mismatch: only a cure starts it again. Otherwise a
+    /// probe failing with a different key does.
+    any: bool,
+    key: FailKey,
+    /// The next probe repair; set at the first final cut after the stop.
+    probe_at: Option<HostTime>,
+}
+
 pub struct Diverge {
     cfg: Config,
     me: MemberKey,
@@ -231,6 +287,14 @@ pub struct Diverge {
     episode: Option<Episode>,
     recur: BTreeMap<LeafKey, Vec<HostTime>>,
     source_offset: usize,
+    /// The differing leaves of the rung-2 repair just dropped, for its failure's key.
+    last_leaves: Vec<LeafKey>,
+    /// Refused rung-2 repairs (`refused`) since the last cure: in a row with one key, and with any key; the keys seen
+    /// (at most 16).
+    fail_same: Option<(FailKey, u32)>,
+    fails_any: u32,
+    keys_seen: Vec<FailKey>,
+    stuck: Option<Stuck>,
     /// Roots I serve: the agreed roots of recent final cuts, and my root at a cut in a root split.
     servable: BTreeMap<Hash, CutRef>,
     buckets: BTreeMap<MemberKey, Bucket>,
@@ -258,6 +322,11 @@ impl Diverge {
             episode: None,
             recur: BTreeMap::new(),
             source_offset: 0,
+            last_leaves: Vec::new(),
+            fail_same: None,
+            fails_any: 0,
+            keys_seen: Vec::new(),
+            stuck: None,
             servable: BTreeMap::new(),
             buckets: BTreeMap::new(),
             ask_buckets: BTreeMap::new(),
@@ -357,6 +426,7 @@ impl Diverge {
                 self.counters.cuts_compared += 1;
                 self.counters.cuts_matched += 1;
                 self.cv = Some((fc.cut.at, fc.root));
+                self.reset_stuck();
                 // A later cut agreed: any replay or repair toward an older one, or toward a split's reference, is moot.
                 // A replay or import the replica was still finishing (`Pending`) is what made it agree: it counts as
                 // that rung's cure.
@@ -396,10 +466,25 @@ impl Diverge {
                 self.replay = None;
                 self.repair = None;
                 self.pending = None;
+                if is_final {
+                    // The data came too late, again and again for a world too big to fetch within `w_fg` (4.2).
+                    self.counters.overtaken_in_a_row += 1;
+                }
                 self.fail(rung, at, "overtaken by a newer cut");
             } else {
                 self.pending = Some(fc.clone());
                 return;
+            }
+        }
+        if let Some(st) = &mut self.stuck {
+            // The ladder stopped (4.3): the cut is compared, and no rung runs, but for one probe every `t_stuck_probe`.
+            match st.probe_at {
+                Some(t) if now >= t => st.probe_at = Some(now.plus(self.cfg.t_stuck_probe)),
+                _ => {
+                    st.probe_at.get_or_insert(now.plus(self.cfg.t_stuck_probe));
+                    self.counters.stuck_skipped += 1;
+                    return;
+                }
             }
         }
         match mine {
@@ -760,6 +845,7 @@ impl Diverge {
                 let newer = self.newer_pending(cut);
                 let f = (!newer).then(|| replica.finalize(fc, source));
                 if newer || matches!(f, Some(Finalized::Agreed)) {
+                    self.reset_stuck();
                     self.counters.cured_by_rung[0] += 1;
                     self.counters.repair_latency_nanos.push(0);
                     self.events.push(DivergeEvent::Repaired { cut, rung: Rung(1) });
@@ -1162,8 +1248,8 @@ impl Diverge {
                 rep.descents += 1;
                 if rep.descents >= self.cfg.n_descend {
                     let cut = rep.at();
-                    self.repair = None;
-                    self.fail(2, cut, "the patch stayed incomplete");
+                    self.forget_repair();
+                    self.refused(cut, "the patch stayed incomplete", false);
                     self.after_repair(replica, source, now, clock);
                 } else {
                     rep.trusted = false;
@@ -1180,15 +1266,21 @@ impl Diverge {
             }
             Err(e) => {
                 let cut = rep.at();
-                self.repair = None;
-                self.fail(
-                    2,
-                    cut,
-                    match e {
-                        ImportError::NotKept => "the cut's state is no longer kept",
-                        _ => "a bound body needs the physics image, and the image did not do",
-                    },
-                );
+                self.forget_repair();
+                let at_once = matches!(e, ImportError::RateMismatch { .. });
+                let why = match e {
+                    ImportError::NotKept => "the cut's state is no longer kept".to_string(),
+                    // S2 v1.4: a fault to report, never a rate to adopt. Only the config differs at heart, so it is
+                    // named, and the ladder stops at once (4.3).
+                    // Keyed on `Config` alone, its whole cause: the other leaves drift from probe to probe in a live
+                    // world, and must not make each probe a new key (@shader-reviewer, Low on 30a26079).
+                    ImportError::RateMismatch { world, mine } => {
+                        self.last_leaves = vec![LeafKey::Config];
+                        format!("the world runs at {} Hz and this replica at {} Hz", world.hz(), mine.hz())
+                    }
+                    _ => "a bound body needs the physics image, and the image did not do".to_string(),
+                };
+                self.refused(cut, &why, at_once);
                 self.after_repair(replica, source, now, clock);
             }
         }
@@ -1219,7 +1311,8 @@ impl Diverge {
                         }
                     }
                     _ => {
-                        self.fail(2, cut, "the import matched, but finalize did not agree");
+                        self.last_leaves = differing_of(&rep);
+                        self.refused(cut, "the import matched, but finalize did not agree", false);
                         self.after_repair(replica, source, now, clock);
                         return;
                     }
@@ -1238,11 +1331,8 @@ impl Diverge {
     fn count_cure(&mut self, rep: Repair, mine: Vec<Record>, now: HostTime) {
         let cut = rep.at();
         let taken = u64::try_from(now.0.saturating_sub(rep.started.0)).unwrap_or(0);
-        let mut differing: Vec<LeafKey> = rep.leaves.clone();
-        if let Some(image) = &rep.image {
-            differing.push(LeafKey::Physics(image.domain));
-        }
-        differing.extend(rep.absent.iter().copied());
+        let differing = differing_of(&rep);
+        self.reset_stuck();
         self.counters.cured_by_rung[1] += 1;
         self.counters.repair_latency_nanos.push(taken);
         self.counters.repair_bytes += rep.bytes;
@@ -1292,6 +1382,87 @@ impl Diverge {
         self.events.push(DivergeEvent::RungFailed { cut, rung: Rung(rung), why: why.to_string() });
     }
 
+    /// Rung 2 failed with the agreed state in hand: the replica could not take it (4.3). This is what counts toward
+    /// the stop. A failure for want of data (every source silent or busy, no source at all, overtaken) does not: no
+    /// inputs arrived, and a network outage must not stop repair for `t_stuck_probe`. A root split's repair is not
+    /// counted either; the split's own rules end it (5).
+    /// `at_once`: no retry can cure it (a rate mismatch: every honest source holds the same config), so the ladder
+    /// stops on this first failure (@design-reviewer m467dddd5ba66).
+    fn refused(&mut self, cut: CutRef, why: &str, at_once: bool) {
+        self.fail(2, cut, why);
+        let leaves = std::mem::take(&mut self.last_leaves);
+        if self.episode.is_none() {
+            self.note_failure(cut, FailKey { rung: 2, why: why.to_string(), leaves }, at_once);
+        }
+    }
+
+    /// Drop the repair under way, keeping its differing leaves for its failure's key.
+    fn forget_repair(&mut self) {
+        if let Some(rep) = self.repair.take() {
+            self.last_leaves = differing_of(&rep);
+        }
+    }
+
+    /// A refused repair (4.3): stop the ladder after `n_stuck` in a row with one key, or `n_stuck_any` in a row with
+    /// none cured. A probe failing the same way while stopped writes nothing new.
+    fn note_failure(&mut self, cut: CutRef, key: FailKey, at_once: bool) {
+        if let Some(st) = &self.stuck {
+            if st.any || st.key == key {
+                return;
+            }
+            // The key changed: the ladder runs again, and counts this key from one.
+            self.stuck = None;
+            self.fail_same = None;
+        }
+        self.fails_any += 1;
+        if !self.keys_seen.contains(&key) && self.keys_seen.len() < 16 {
+            self.keys_seen.push(key.clone());
+        }
+        match &mut self.fail_same {
+            Some((k, n)) if *k == key => *n += 1,
+            _ => self.fail_same = Some((key.clone(), 1)),
+        }
+        let same = self.fail_same.as_ref().map_or(0, |f| f.1);
+        // `sticky`: only a cure ends the stop, a probe failing another way does not restart the ladder. So for a rate
+        // mismatch, which no retry can cure, and for keys that kept changing.
+        let (sticky, all_keys) = if at_once {
+            (true, false)
+        } else if same >= self.cfg.n_stuck {
+            (false, false)
+        } else if self.fails_any >= self.cfg.n_stuck_any {
+            (true, true)
+        } else {
+            return;
+        };
+        self.counters.repairs_stuck += 1;
+        let named: Vec<String> =
+            if all_keys { self.keys_seen.iter().map(FailKey::name).collect() } else { vec![key.name()] };
+        self.events.push(DivergeEvent::RepairStuck {
+            cut,
+            rung: Rung(key.rung),
+            differing: key.leaves.clone(),
+            why: named.join("; "),
+        });
+        self.bundle(FaultBundle {
+            cv: self.cv,
+            cut,
+            differing: key.leaves.clone(),
+            rung: key.rung,
+            stuck: named,
+            ..FaultBundle::default()
+        });
+        self.stuck = Some(Stuck { any: sticky, key, probe_at: None });
+    }
+
+    /// A cure, by any rung, or a cut that agreed: the failure counts start again, and a stopped ladder runs (4.3).
+    fn reset_stuck(&mut self) {
+        self.counters.overtaken_in_a_row = 0;
+        self.fail_same = None;
+        self.fails_any = 0;
+        self.keys_seen.clear();
+        self.stuck = None;
+    }
+
     /// A final cut newer than `cut` arrived during the repair and waits.
     fn newer_pending(&self, cut: CutRef) -> bool {
         self.pending.as_ref().is_some_and(|p| p.cut.at.frame > cut.frame)
@@ -1316,6 +1487,18 @@ impl Diverge {
         self.events.push(DivergeEvent::BundleWritten { cut: b.cut, name: b.name() });
         self.actions.push(Action::WriteBundle(Box::new(b)));
     }
+}
+
+/// A repair's differing leaves: records fetched, the physics image, and leaves named absent; sorted, once each.
+fn differing_of(rep: &Repair) -> Vec<LeafKey> {
+    let mut v: Vec<LeafKey> = rep.leaves.clone();
+    if let Some(image) = &rep.image {
+        v.push(LeafKey::Physics(image.domain));
+    }
+    v.extend(rep.absent.iter().copied());
+    v.sort();
+    v.dedup();
+    v
 }
 
 /// Split `items` into groups whose encoded size stays within `budget`, at least one item per group.
