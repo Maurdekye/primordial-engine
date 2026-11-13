@@ -3,9 +3,17 @@
 //! (`pe_app::world`), drawn in VR, where the member's hands follow the headset's tracking, or in the window on the
 //! main thread. The network, MCP, configuration and invites join as their crates land.
 //!
-//! `pe-app [--vr] [--seconds <n>]`. `--vr` turns VR on, as the configuration will (pe-xr's headset guard): VR opens
-//! first, and pe-app goes to the desktop when VR does not open or when its session ends. `--seconds` ends the run
-//! after `n` seconds, in VR or on the desktop; without it the window runs until it is closed.
+//! `pe-app [--vr] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] [--advertise <addr>]... [--identity <path>]`.
+//! `--vr` turns VR on, as the configuration will (pe-xr's headset guard): VR opens first, and pe-app goes to the
+//! desktop when VR does not open or when its session ends. `--seconds` ends the run after `n` seconds, in VR or on the
+//! desktop; without it the window runs until it is closed.
+//!
+//! Without `--open` or `--join` the world runs alone (the headset tests need that). With them, two machines share one
+//! (the M1 interim, `pe_app::net`): `--open` prints an invite and waits for the joiner's reply code on standard input;
+//! `--join <invite>` prints this machine's reply code for the opener and joins. `--listen` is the UDP address to bind
+//! (default 0.0.0.0:4433), `--advertise` an address the invite or reply names (default: the bound one, which must
+//! then be specific), and `--identity` this machine's identity file (default: `identity.seed` in the per-user data
+//! folder, `%LOCALAPPDATA%\Primordial Engine` on Windows; made on first use).
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -13,10 +21,12 @@ use std::time::{Duration, Instant};
 
 use pe_app::clock::{self, LocalClock};
 use pe_app::local::{SwitchedHands, chain_nonce};
+use pe_app::net::{self, Endpoint, OpenParams, WakeLater};
 use pe_app::sim::{self, Budget, Sim};
 use pe_app::standin::SoloAgreement;
 use pe_app::vr::{self, XrWait};
 use pe_app::world;
+use pe_net_crypto::identity::{Invite, Reply};
 use pe_render::desktop_hand::{DesktopHandFeed, DesktopHandSettings};
 use pe_render::display::DisplaySettings;
 use pe_render::effects::{EffectCommand, EffectSettings};
@@ -52,18 +62,51 @@ impl EffectSink for LogEffects {
     }
 }
 
+/// A world shared with a second machine (the M1 interim): open it, or join from an invite.
+enum Shared {
+    Open,
+    Join(Invite),
+}
+
 /// The command line, until configuration lands (app.md 4 step 1).
 struct Options {
     vr: bool,
     run_for: Option<Duration>,
+    shared: Option<Shared>,
+    listen: std::net::SocketAddr,
+    advertise: Vec<std::net::SocketAddr>,
+    identity: Option<std::path::PathBuf>,
 }
 
+/// The joiner's wait for the opener to take its reply, admit it and start frame 0: a person copies the reply over.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(300);
+/// The opener's wait, once it has the reply, for the joiner's link.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an invite stays valid.
+const INVITE_VALID: Duration = Duration::from_secs(3600);
+
 fn options() -> Options {
-    let mut o = Options { vr: false, run_for: None };
+    let mut o = Options {
+        vr: false,
+        run_for: None,
+        shared: None,
+        listen: "0.0.0.0:4433".parse().unwrap_or_else(|_| usage()),
+        advertise: Vec::new(),
+        identity: None,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--vr" => o.vr = true,
+            "--open" => o.shared = Some(Shared::Open),
+            "--join" => {
+                let text = args.next().unwrap_or_else(|| usage());
+                let invite = Invite::decode(&text).unwrap_or_else(|e| fail(&format!("the invite: {e:?}")));
+                o.shared = Some(Shared::Join(invite));
+            }
+            "--listen" => o.listen = args.next().and_then(|a| a.parse().ok()).unwrap_or_else(|| usage()),
+            "--advertise" => o.advertise.push(args.next().and_then(|a| a.parse().ok()).unwrap_or_else(|| usage())),
+            "--identity" => o.identity = Some(args.next().unwrap_or_else(|| usage()).into()),
             "--seconds" => {
                 let s = args.next().and_then(|n| n.parse::<f64>().ok()).filter(|s| *s > 0.0);
                 o.run_for = Some(s.and_then(|s| Duration::try_from_secs_f64(s).ok()).unwrap_or_else(|| usage()));
@@ -78,29 +121,88 @@ fn presenter(rate: SimRate) -> Presenter {
     Presenter::new(DisplaySettings::default(), EffectSettings::default(), Environment::default(), rate.hz())
 }
 
+/// The M1 interim's session (app.md 4 step 4): open or join, then the simulation over pe-agree and pe-net.
+fn shared_sim(
+    o: &Options,
+    shared: &Shared,
+    host: &clock::HostClock,
+    wake: &WakeLater,
+    slot: Arc<FrameSlot>,
+    hands: Arc<SwitchedHands>,
+) -> Sim {
+    let rate = SimRate::DEFAULT;
+    let path = o.identity.clone().map_or_else(net::default_identity_path, Ok).unwrap_or_else(|e| fail(&e.to_string()));
+    let seed =
+        net::identity_seed(&path).unwrap_or_else(|e| fail(&format!("the identity file {}: {e}", path.display())));
+    let opener = matches!(shared, Shared::Open);
+    let mut ep = Endpoint::bind(seed, o.listen, o.advertise.clone(), opener, host.clone(), Some(wake.arrival()))
+        .unwrap_or_else(|e| fail(&e.to_string()));
+    let session = match shared {
+        Shared::Open => {
+            let invite = ep.invite(INVITE_VALID).unwrap_or_else(|e| fail(&e.to_string()));
+            println!("invite: {}", invite.encode());
+            println!("waiting for the second player's reply code (paste it here):");
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            let reply = Reply::decode(line.trim()).unwrap_or_else(|e| fail(&format!("the reply code: {e:?}")));
+            let p = OpenParams {
+                seed: WORLD_SEED,
+                balls: 500,
+                rate,
+                cut_interval: CUT_INTERVAL,
+                epoch_lead: net::EPOCH_LEAD,
+            };
+            ep.open_session(&invite, &reply, &p, OPEN_TIMEOUT)
+        }
+        Shared::Join(invite) => {
+            println!("reply code for the opener: {}", ep.reply(invite).encode());
+            ep.dial(invite).unwrap_or_else(|e| fail(&e.to_string()));
+            ep.join_session(invite, rate, JOIN_TIMEOUT)
+        }
+    }
+    .unwrap_or_else(|e| fail(&format!("the session did not start: {e}")));
+    println!(
+        "session: {} members, this machine {}",
+        session.members.len(),
+        session.me.0[..4].iter().map(|b| format!("{b:02x}")).collect::<String>()
+    );
+    // With two members, both are needed for finality: if one leaves, the other's finality stops until both restart.
+    Sim::new(Box::new(session.node), session.replica, session.frames, slot, Budget::new(rate))
+        .with_local(session.me, chain_nonce(), hands)
+        .with_transport(net::transport(session.handle), Some(Box::new(session.hook)))
+}
+
 fn main() {
-    let Options { vr, run_for } = options();
+    let options = options();
+    let (vr, run_for) = (options.vr, options.run_for);
     let started = Instant::now();
 
     let rate = SimRate::DEFAULT;
     let host = clock::shared();
-    let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
     let slot = Arc::new(FrameSlot::new());
-    let replica = match world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, CUT_INTERVAL, frames.clone()) {
-        Ok(r) => r,
-        Err(e) => fail(&format!("the replica did not start: {e}")),
-    };
     // The local player's hands (app.md 3, step 2): VR's ring while an XR session runs, the desktop hand otherwise.
     let ring = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, VR_PERIOD_NS));
     let desktop_hand = Arc::new(DesktopHandFeed::default());
     let hands = Arc::new(SwitchedHands::new(ring.clone(), desktop_hand.clone()));
-    let sim =
-        Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, frames, slot.clone(), Budget::new(rate))
-            .with_local(world::DEV_MEMBER, chain_nonce(), hands.clone());
+    let wake = WakeLater::default();
+    let sim = match &options.shared {
+        Some(shared) => shared_sim(&options, shared, &host, &wake, slot.clone(), hands.clone()),
+        None => {
+            let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
+            let replica = match world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, CUT_INTERVAL, frames.clone())
+            {
+                Ok(r) => r,
+                Err(e) => fail(&format!("the replica did not start: {e}")),
+            };
+            Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, frames, slot.clone(), Budget::new(rate))
+                .with_local(world::DEV_MEMBER, chain_nonce(), hands.clone())
+        }
+    };
     let sim = match sim::spawn(sim, host.clone(), SIM_STACK) {
         Ok(t) => t,
         Err(e) => fail(&format!("the simulation thread did not start: {e}")),
     };
+    wake.set(sim.waker());
 
     if vr {
         hands.use_vr(true);
@@ -167,7 +269,10 @@ fn finish<S: Debug, E>(stats: Result<S, E>, window: Option<Result<DesktopReport,
 }
 
 fn usage() -> ! {
-    fail("usage: pe-app [--vr] [--seconds <n>]")
+    fail(
+        "usage: pe-app [--vr] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] [--advertise <addr>]... \
+         [--identity <path>]",
+    )
 }
 
 fn fail(msg: &str) -> ! {

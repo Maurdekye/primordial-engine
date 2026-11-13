@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use pe_render::present::FrameSlot;
 use pe_replica::{DriveReport, Driver};
 use pe_seams::{
-    Agreement, Frame, FrameClock, FrameView, HandFeed, HostTime, Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate,
-    Transport,
+    AgreeEvent, Agreement, ChainId, Cut, Frame, FrameClock, FrameView, HandFeed, HostTime, Lane, MemberKey, NetEvent,
+    Replica, SelfTest, SimRate, Transport,
 };
 
 use crate::clock::HostClock;
@@ -141,6 +141,8 @@ pub struct Sim {
     /// The network (S4): pe-net's handle, or a test's in-process network. `None` is a world alone.
     net: Option<Box<dyn Transport + Send>>,
     net_hook: Option<Box<dyn NetHook>>,
+    /// S3's events, kept for a test or a diagnostic (`with_event_log`); otherwise only counted.
+    event_log: Option<Arc<std::sync::Mutex<Vec<AgreeEvent>>>>,
 }
 
 /// What net.rs does on the simulation thread (@shader-lang). Admission is decided from the agreed
@@ -193,6 +195,7 @@ impl Sim {
             input_frame: None,
             net: None,
             net_hook: None,
+            event_log: None,
         }
     }
 
@@ -203,6 +206,22 @@ impl Sim {
         self.net = Some(net);
         self.net_hook = hook;
         self
+    }
+
+    /// Keep S3's events in `log` as well as counting them (a test's, or a diagnostic's: it grows without a bound).
+    pub fn with_event_log(mut self, log: Arc<std::sync::Mutex<Vec<AgreeEvent>>>) -> Sim {
+        self.event_log = Some(log);
+        self
+    }
+
+    /// The local player's chain and the seq of its last entry agreement took, if there is a local player.
+    pub fn local_head(&self) -> Option<(ChainId, u64)> {
+        self.local.as_ref().map(|l| l.chain.head())
+    }
+
+    /// Agreement's final cut, once one is (S3's `EntrySource::final_cut`).
+    pub fn final_cut(&self) -> Option<Cut> {
+        self.agree.final_cut().map(|f| f.cut.clone())
     }
 
     /// The local player `me`: a new chain on agreement's line from `nonce` (`local::chain_nonce`), and the hands
@@ -288,7 +307,11 @@ impl Sim {
         self.stats.finalized += report.finalized.len() as u64;
         self.count_hold(report.advance.caught_up);
         // 5. S3's events. pe-diverge will take them in one ordered list with the finalize results.
-        self.stats.events += self.agree.events().len() as u64;
+        let events = self.agree.events();
+        self.stats.events += events.len() as u64;
+        if let Some(log) = &self.event_log {
+            log.lock().expect("the event log").extend(events);
+        }
         // 6. The replica's newest view. While it catches up the view holds, so nothing new goes out.
         let view = self.replica.view();
         if !self.published.as_ref().is_some_and(|v| Arc::ptr_eq(v, &view)) {
