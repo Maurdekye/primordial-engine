@@ -1367,16 +1367,20 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     where hard throws begin. Hard throws top out at the cap, 10 m/s by default and adjustable (8.1's pushes). The
     cap limits the motion of the hand **and everything it holds**: a wrist turn that would carry a held object
     faster than the cap is slowed too (@design-reviewer's Low on 0913f962).
-  - **Only a teleport skips collision:** the body is placed at its target without collision, carrying what the
-    hand holds, when the target moves farther than the teleport distance in one frame (a tracking glitch or a
-    teleport) **or the body trails its target by more than it** (@design-reviewer's Medium on 0913f962). The second
-    bounds the lag: a hand kept faster than the cap never trails by more than the teleport distance, so the body
-    never sweeps through the scene far from the hand everyone sees. For a held object the separation is measured
-    from where the hand would carry it. **A hand held steadily above the cap cycles:** it trails, is placed, and
-    trails again (at 15 m/s the lag grows by 5 m/s and reaches 0.5 m in about 0.1 s), so its contacts come in
-    bursts, and each placement carries what it holds without collision and gives it no velocity from the jump.
-    That keeps "nothing moves faster than the cap"; tests expect bursts, not a continuous push (@design-reviewer,
-    approving r2).
+  - **Only a teleport skips collision:** the body is placed at its target without collision, carrying what the hand
+    holds, when the target moves farther than the teleport distance in one frame (a tracking glitch or a teleport)
+    **or the body trails its target by more than it** (@design-reviewer's Medium on 0913f962). The second bounds the
+    lag: a hand kept faster than the cap never trails by more than the teleport distance, so the body never sweeps
+    through the scene far from the hand everyone sees. For a held object the separation is **the move the hand would
+    carry it this frame**, from where it is, keeping its offset in the hand. **A held object never passes through a
+    wall** (@coordinator-opus): pinned against one, its carried move stays the hand's own small move, so
+    it is never placed; the bare kinematic hand may pass through, the held object stays pinned by the hold's spring,
+    and springs back when the way clears. A real teleport (the target jumping past the teleport distance) still
+    carries it at its current offset, through whatever lies between. **A hand held steadily above the cap cycles:** it
+    trails, is placed, and trails again (at 15 m/s the lag grows by 5 m/s and reaches 0.5 m in about 0.1 s), so its
+    contacts come in bursts, and each placement carries what it holds without collision and gives it no velocity from
+    the jump. That keeps "nothing moves faster than the cap" (plus the solver's push-out, below); tests expect bursts,
+    not a continuous push (@design-reviewer, approving r2).
   - **The teleport distance** is `max(0.5 m, 2 · max_push_speed / rate)` [I, 0.5 m a starting value to tune]: at
     least twice the cap's distance per frame at the world's rate, so a band of trailing remains at any rate (at
     20 Hz and 10 m/s the cap alone is 0.5 m a frame).
@@ -1388,14 +1392,17 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
       and overshoots (about 13 % for a velocity step). A known excess, to fix with the spring's overshoot after a
       block (vdw-physics's docket), not a change to this rule.
     - **Throws** leave at the hand's speed up to the cap (4, 8, 11, 14 m/s give 4.00, 8.23, 10.43, 10.67 m/s). **The
-      0.5 m edge:** a throw faster than about twice the cap over a long travel trails past the teleport distance
-      and is placed in its release frame, leaving nearly at rest (20 m/s over 1.33 m: 0.56 m behind, leaves at
-      0.66 m/s). M1 keeps 0.5 m (@coordinator-opus): such throws are rare, and 1.0 m would let a
-      body run up to 1 m behind the hand everyone sees. If the touch test finds the dead throw, the teleport
-      distance is the knob.
+      0.5 m edge:** a throw at hand speed `v` over the cap trails by about `(1 − cap/v) · travel`, and once that
+      passes the teleport distance it is placed in its release frame, leaving nearly at rest: 20 m/s over 1.33 m (0.56
+      m behind as measured, the hand speeding up; leaves at 0.66 m/s), and by the same estimate 15 m/s over 1.6 m or
+      12 m/s over 3 m (@design-reviewer, [I]). M1 keeps 0.5 m (@coordinator-opus): such throws are rare,
+      and 1.0 m would let a body run up to 1 m behind the hand everyone sees. If the touch test finds the dead throw,
+      the teleport distance is the knob.
   - **Tests (hand-body work):** a target at 1.5× the cap for 2 s, with a held object: the body never trails by more
-    than the teleport distance, and nothing it touches moves faster than the cap; a fast wrist turn with an object
-    held 0.5 m out stays under the cap; a one-frame jump past the teleport distance places hand and held object.
+    than the teleport distance, and nothing it touches moves faster than the cap plus the solver's push-out speed
+    (Box3D's contact speed, above); a fast wrist turn with an object held 0.5 m out stays under the cap; a one-frame
+    jump past the teleport distance places hand and held object; a ball held pinned against a static wall, the hand 1
+    m past it, then the way cleared: never placed through it (@vdw-physics's follow-up).
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
   object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
   expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).
