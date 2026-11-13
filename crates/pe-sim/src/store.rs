@@ -239,6 +239,16 @@ impl SimStore {
         }
     }
 
+    /// The ids and packed rows of component `c`, in id order: row `i` is `bytes[i * size .. (i + 1) * size]`, with
+    /// `size` from the registry's description. For components with no Rust type on the host (a script's, WS-logic
+    /// N12). Empty for an unknown component or one with no rows. Read-only; writes go through `insert_raw`.
+    pub fn column_raw(&self, c: ComponentId) -> (&[ObjectId], &[u8]) {
+        match self.columns.get(&c) {
+            Some(col) => (&col.ids, col.bytes()),
+            None => (&[], &[]),
+        }
+    }
+
     /// The ids and writable rows of a component, in id order (not validated). Copies the column first if a
     /// snapshot shares it.
     pub fn column_mut<T: Component>(&mut self) -> (&[ObjectId], &mut [T]) {

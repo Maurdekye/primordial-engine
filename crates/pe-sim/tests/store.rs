@@ -392,3 +392,20 @@ fn row_versions_sit_beside_rows() {
     s.insert(a, Transform::IDENTITY).unwrap();
     assert_eq!(s.row_version(t, a), Some(RowVersion::NONE));
 }
+
+#[test]
+fn column_raw_matches_the_typed_column() {
+    // WS-logic's N12: script components have no host type, so the batch runner reads packed rows by id.
+    let mut s = new_store();
+    let (a, b) = (s.mk(1), s.mk(2));
+    let id = <Velocity as pe_sim::Component>::ID;
+    assert_eq!(s.column_raw(id), (&[][..], &[][..]));
+    s.insert(b, Velocity { v: [4.0, 5.0, 6.0], spin: 1.0 }).unwrap();
+    s.insert(a, Velocity { v: [1.0, 2.0, 3.0], spin: 0.5 }).unwrap();
+    let (ids, rows) = s.column_raw(id);
+    let (tids, trows) = s.column::<Velocity>();
+    assert_eq!(ids, tids);
+    assert_eq!(rows, bytemuck::cast_slice::<Velocity, u8>(trows));
+    assert_eq!(rows.len(), 2 * std::mem::size_of::<Velocity>());
+    assert!(ids.windows(2).all(|w| w[0] < w[1]));
+}

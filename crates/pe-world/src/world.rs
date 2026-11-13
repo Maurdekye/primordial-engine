@@ -136,6 +136,9 @@ pub struct World {
     /// The input tables (8.1): cooldowns, pending hand packs, push windows.
     pub(crate) inputs: Arc<InputTables>,
     pub(crate) input_settings: InputSettings,
+    /// `Some(preset::m1_line())` if M1's disposable genesis code made this world (world-model.md 2.4): the marker a
+    /// saved world carries, so a later build recognises an M1 world. In the root.
+    pub(crate) m1_marker: Option<pe_core::LineId>,
 }
 
 impl World {
@@ -154,6 +157,7 @@ impl World {
             physics_global: Hash::ZERO,
             inputs: Arc::new(InputTables::default()),
             input_settings: InputSettings::default(),
+            m1_marker: None,
         }
     }
 
