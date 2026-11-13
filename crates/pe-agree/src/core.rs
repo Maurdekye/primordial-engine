@@ -336,6 +336,9 @@ pub struct Core {
     certs: HashMap<BlockId, Qc>,
     /// Proposals waiting for their parent block, per (view, proposer).
     orphans: BTreeMap<(u64, MemberKey), Proposal>,
+    /// Blocks taken in after their parent arrived later than they did (a child before its parent).
+    orphans_adopted: u64,
+    shared_cuts: std::cell::Cell<u64>,
     /// Votes for a block not yet held: at most one per voter, the highest view, counted when the block arrives.
     pending_votes: BTreeMap<MemberKey, Vote>,
     requested: BTreeSet<BlockId>,
@@ -444,6 +447,8 @@ impl Core {
             blocks: HashMap::new(),
             certs,
             orphans: BTreeMap::new(),
+            orphans_adopted: 0,
+            shared_cuts: std::cell::Cell::new(0),
             pending_votes: BTreeMap::new(),
             requested: BTreeSet::new(),
             proposed_in: BTreeMap::new(),
@@ -519,6 +524,37 @@ impl Core {
 
     pub fn committed(&self) -> (BlockId, u64) {
         (self.committed, self.committed_height)
+    }
+
+    /// A block this member holds whose cut is `cut`: the votable proposal's first (the block a vote goes to), then the
+    /// genesis, then the one held of the highest view. `None` if two held blocks carry the cut under different
+    /// parents: the cut's verdicts depend on its ancestry, and the cut doesn't name it (counted in `shared_cuts`).
+    /// How many blocks arrived before their parent and were taken in once it came.
+    pub fn orphans_adopted(&self) -> u64 {
+        self.orphans_adopted
+    }
+
+    pub fn block_with_cut(&self, cut: &Cut) -> Option<&Block> {
+        if let Some(p) = self.votable().filter(|p| p.block.cut == *cut) {
+            return Some(&p.block);
+        }
+        if self.genesis.cut == *cut {
+            return Some(&self.genesis);
+        }
+        let same: Vec<&Block> = self.blocks.values().map(|s| &s.proposal.block).filter(|b| b.cut == *cut).collect();
+        if same.iter().any(|b| b.parent != same[0].parent) {
+            // One cut under two parents: the answers may differ, and nothing says which block is meant
+            // (@design-reviewer m414f8ac5fb25, @harness-eng m637edcfce2a1). Counted, and no answer rather than a guess.
+            self.shared_cuts.set(self.shared_cuts.get() + 1);
+            return None;
+        }
+        same.into_iter().max_by_key(|b| (b.view, b.id().0.0))
+    }
+
+    /// How often a cut other than the votable one was looked up that two held blocks carry under different parents.
+    /// It should stay 0; if it fires, `Cut` should come to name its parent or block (a seam change).
+    pub fn shared_cuts(&self) -> u64 {
+        self.shared_cuts.get()
     }
 
     pub fn block(&self, id: &BlockId) -> Option<&Block> {
@@ -1001,6 +1037,7 @@ impl Core {
             self.orphans.iter().filter(|(_, o)| o.block.parent == id).map(|(k, _)| *k).collect();
         for k in waiting {
             if let Some(o) = self.orphans.remove(&k) {
+                self.orphans_adopted += 1;
                 let _ = self.on_proposal(o, now, verifier);
             }
         }
