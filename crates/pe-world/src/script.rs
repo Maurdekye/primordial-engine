@@ -471,6 +471,12 @@ impl World {
         &self.modules
     }
 
+    /// The modules table's pending commits (logic.md 6.2a): versions waiting for a quorum's attestations, and the
+    /// voided ones, kept as their record until the asset's next commit. None of them runs.
+    pub fn pending(&self) -> &BTreeMap<AssetId, PendingCommit> {
+        &self.pending
+    }
+
     /// The asset that registered script component `c`, if it is one.
     pub fn script_asset(&self, c: ComponentId) -> Option<AssetId> {
         self.script_ids.get(&c).copied()

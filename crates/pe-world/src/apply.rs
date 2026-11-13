@@ -177,12 +177,14 @@ fn edit_writable(c: ComponentId) -> bool {
     c != ComponentId::NODE && c != ids::BODY_STATE && c != ids::HAND
 }
 
-/// What [`World::end_frame`] did to scripts (logic.md 6.2a): the commits activated, each with its re-key's report
-/// (`None` for a first version or a same-source commit), and the commits voided, in asset order.
+/// What [`World::end_frame`] did to scripts (logic.md 6.2a), in asset order, each commit named by its asset and its
+/// version (the commit's entry and op): the commits activated, with their re-key's report (`None` for a first
+/// version or a same-source commit), and the commits voided, with why. pe-replica publishes them as S5's
+/// `FrameView.activations` (@coordinator-opus).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FrameEnd {
-    pub activated: Vec<(AssetId, Option<RekeyReport>)>,
-    pub voided: Vec<(AssetId, VoidKind)>,
+    pub activated: Vec<(AssetId, Version, Option<RekeyReport>)>,
+    pub voided: Vec<(AssetId, Version, VoidKind)>,
 }
 
 /// Rows a holder feels: refused while the object is held (7.2).
@@ -514,11 +516,11 @@ impl World {
             match done {
                 Ok(report) => {
                     Arc::make_mut(&mut self.pending).remove(&a);
-                    out.activated.push((a, report));
+                    out.activated.push((a, p.version, report));
                 }
                 Err(kind) => {
                     Arc::make_mut(&mut self.pending).get_mut(&a).expect("present").void = Some((frame, kind));
-                    out.voided.push((a, kind));
+                    out.voided.push((a, p.version, kind));
                 }
             }
         }
