@@ -18,13 +18,16 @@
 pub mod api;
 pub mod changes;
 pub mod edit;
+pub mod history;
 pub mod outcome;
 pub mod ports;
 pub mod query;
 pub mod queue;
 pub mod rate;
 pub mod resolve;
+pub mod schema;
 pub mod stream;
 pub mod strict;
 pub mod versions;
+pub mod watch;
 pub mod world;

@@ -14,15 +14,45 @@
 //! bounded: settled entries are evicted first, oldest first, without scanning.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use pe_core::{ChainId, EntryRef};
 use pe_seams::world_api::{Frame, Status, TxId, Wait};
 use pe_seams::{Cut, Outcome as WorldOutcome, StepRecord};
 
+use crate::stream::{Retention, Stream};
+
 /// The most entries remembered [I].
 pub const CAPACITY: usize = 10_000;
+
+/// Who submitted one of this machine's changes through the API, for `watch`'s `mine` (api.md 5.4).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Owner {
+    /// The caller's principal: a caller's own changes are those submitted under it, from any connection.
+    pub principal: Arc<str>,
+    /// For each pe-world op, the API op it came from, to name it in a refusal.
+    pub op_of: Arc<[u32]>,
+    /// The caller's `$names` for the objects it creates, with their new indices.
+    pub refs: Arc<[(String, u32)]>,
+}
+
+/// One item of the change stream behind `watch` (api.md 5.4, 9.1). Raw and cheap to push: `watch` describes it on
+/// the caller's thread.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FeedItem {
+    /// One of this machine's changes reached agreement as `change`, stamped `frame`.
+    Submitted { change: TxId, frame: Frame, owner: Option<Owner> },
+    /// An entry was stepped here, or re-stepped with another result (a re-step that changes nothing is not
+    /// reported again). `undid`: the earlier step that applied it, when this one doesn't (a retraction).
+    Stepped { step: StepRecord, undid: Option<StepRecord>, owner: Option<Owner> },
+    /// A final cut settled an entry known here: `final`, `dropped` or a final refusal. `step`: its newest step here.
+    Settled { change: TxId, status: Status, is_final: bool, step: Option<StepRecord>, owner: Option<Owner> },
+    /// The newest final frame moved.
+    Final { frame: Frame },
+    /// pe-app's session news: membership taking effect, catching up and caught up (api.md 5.4 `session`).
+    Session(pe_seams::world_api::SessionEvent),
+}
 
 /// An entry's newest verdict.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,13 +65,18 @@ pub struct Fate {
     pub is_final: bool,
     /// pe-world's outcome at its newest step, if it was stepped here.
     pub outcome: Option<WorldOutcome>,
+    /// Its newest step here.
+    pub step: Option<StepRecord>,
+    /// Who submitted it, if it was submitted through this machine's API.
+    pub owner: Option<Owner>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Coords {
     chain: ChainId,
     seq: u64,
     stamp: Frame,
+    owner: Option<Owner>,
 }
 
 struct Inner {
@@ -59,6 +94,17 @@ struct Inner {
 pub struct ChangeLog {
     inner: Mutex<Inner>,
     changed: Condvar,
+    /// The change stream behind `watch`, appended under the log's lock, so its order is the log's (the push is an
+    /// append and a notify; nothing takes the log's lock while holding the stream's).
+    feed: Stream<Arc<FeedItem>>,
+}
+
+/// A stream epoch unlikely to repeat across runs, so an old cursor is refused, never misread.
+fn epoch() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+    (t ^ N.fetch_add(1, Ordering::Relaxed).rotate_left(40)) & 0xffff_ffff_ffff
 }
 
 fn status(outcome: Option<&WorldOutcome>, settled: Option<bool>) -> (Status, bool) {
@@ -78,7 +124,13 @@ impl Default for ChangeLog {
 
 impl ChangeLog {
     pub fn new() -> Self {
+        Self::with_retention(Retention::DEFAULT)
+    }
+
+    /// A log whose change stream keeps `r` (spec 9.1).
+    pub fn with_retention(r: Retention) -> Self {
         ChangeLog {
+            feed: Stream::new(epoch(), r),
             inner: Mutex::new(Inner {
                 fates: HashMap::new(),
                 order: VecDeque::new(),
@@ -96,38 +148,99 @@ impl ChangeLog {
     }
 
     /// pe-api, on a receipt: where this machine's change sits in agreement, for deciding it against final cuts.
-    pub fn track(&self, change: TxId, chain: ChainId, seq: u64, stamp: Frame) {
-        self.lock().coords.insert(change, Coords { chain, seq, stamp });
+    pub fn track(&self, change: TxId, chain: ChainId, seq: u64, stamp: Frame, owner: Option<Owner>) {
+        let mut g = self.lock();
+        g.coords.insert(change, Coords { chain, seq, stamp, owner: owner.clone() });
+        self.feed.push(Arc::new(FeedItem::Submitted { change, frame: stamp, owner }), Instant::now());
+        drop(g);
+    }
+
+    /// pe-app, on the simulation thread: a session event for `watch` (`Joined`/`Left` when agreement's membership
+    /// change takes effect at its frame; `CatchingUp`/`CaughtUp`). `Final` comes from `record`.
+    pub fn session_event(&self, e: pe_seams::world_api::SessionEvent) {
+        // Under the log's lock, like every other push, so the feed keeps one order (@chunks-reviewer's nit).
+        let g = self.lock();
+        self.feed.push(Arc::new(FeedItem::Session(e)), Instant::now());
+        drop(g);
+    }
+
+    /// The change stream behind `watch`.
+    pub fn feed(&self) -> &Stream<Arc<FeedItem>> {
+        &self.feed
+    }
+
+    fn push_all(&self, items: Vec<FeedItem>) {
+        let now = Instant::now();
+        for it in items {
+            self.feed.push(Arc::new(it), now);
+        }
     }
 
     /// pe-app, per publication: the entries stepped since the last one, and the newest final frame (reported, not
     /// used for status).
     pub fn record(&self, steps: &[StepRecord], final_frame: Option<Frame>) {
         let mut g = self.lock();
-        if final_frame > g.final_frame {
-            g.final_frame = final_frame;
-        }
+        let mut items = Vec::with_capacity(steps.len() + 1);
+        let applied = |o: &WorldOutcome| matches!(o, WorldOutcome::Applied { .. });
         for s in steps {
             let change = TxId::from(s.entry);
             let (status, is_final) = status(Some(&s.outcome), g.settled.get(&change).copied());
-            let f = Fate { change, frame: Some(s.frame.0), status, is_final, outcome: Some(s.outcome.clone()) };
+            let prev = g.fates.get(&change);
+            let before = prev.and_then(|f| f.step.as_ref());
+            // A re-step with the same result changed nothing a watcher saw (spec 5.4: reported only when a re-step
+            // changes what a frame did).
+            let same = before.is_some_and(|p| p.frame == s.frame && p.outcome == s.outcome);
+            let undid = before.filter(|p| applied(&p.outcome) && !applied(&s.outcome)).cloned();
+            let owner =
+                g.coords.get(&change).and_then(|c| c.owner.clone()).or_else(|| prev.and_then(|f| f.owner.clone()));
+            let f = Fate {
+                change,
+                frame: Some(s.frame.0),
+                status,
+                is_final,
+                outcome: Some(s.outcome.clone()),
+                step: Some(s.clone()),
+                owner: owner.clone(),
+            };
             if g.fates.insert(change, f).is_none() {
                 g.order.push_back(change);
             }
+            if !same {
+                items.push(FeedItem::Stepped { step: s.clone(), undid, owner });
+            }
+        }
+        if final_frame > g.final_frame {
+            g.final_frame = final_frame;
+            if let Some(frame) = final_frame {
+                items.push(FeedItem::Final { frame });
+            }
         }
         Self::evict(&mut g);
+        self.push_all(items);
         drop(g);
         self.changed.notify_all();
     }
 
-    fn settle(g: &mut Inner, t: TxId, included: bool) {
+    /// Records a final cut's decision; the feed item for it, if the entry is known here (stepped or tracked).
+    fn settle(g: &mut Inner, t: TxId, included: bool) -> Option<FeedItem> {
         if g.settled.insert(t, included).is_none() {
             g.settled_order.push_back(t);
         }
-        if let Some(f) = g.fates.get_mut(&t) {
-            let (s, fin) = status(f.outcome.as_ref(), Some(included));
-            f.status = s;
-            f.is_final = fin;
+        let known = g.coords.contains_key(&t);
+        let tracked = g.coords.get(&t).and_then(|c| c.owner.clone());
+        match g.fates.get_mut(&t) {
+            Some(f) => {
+                let (s, fin) = status(f.outcome.as_ref(), Some(included));
+                f.status = s;
+                f.is_final = fin;
+                let owner = f.owner.clone().or(tracked);
+                Some(FeedItem::Settled { change: t, status: s, is_final: fin, step: f.step.clone(), owner })
+            }
+            None if known => {
+                let (s, fin) = status(None, Some(included));
+                Some(FeedItem::Settled { change: t, status: s, is_final: fin, step: None, owner: tracked })
+            }
+            None => None,
         }
     }
 
@@ -135,8 +248,9 @@ impl ChangeLog {
     /// naming this cut). One call, so an entry the cut includes and voids is never shown final.
     pub fn confirm_cut(&self, cut: &Cut, voided: &[EntryRef]) {
         let mut g = self.lock();
+        let mut items = vec![];
         for e in voided {
-            Self::settle(&mut g, TxId::from(*e), false);
+            items.extend(Self::settle(&mut g, TxId::from(*e), false));
         }
         let voided: HashSet<TxId> = voided.iter().map(|e| TxId::from(*e)).collect();
         let decided: Vec<TxId> = g
@@ -147,7 +261,7 @@ impl ChangeLog {
             .collect();
         for t in decided {
             if !g.settled.contains_key(&t) {
-                Self::settle(&mut g, t, true);
+                items.extend(Self::settle(&mut g, t, true));
             }
             g.coords.remove(&t);
         }
@@ -155,6 +269,7 @@ impl ChangeLog {
             g.coords.remove(t);
         }
         Self::evict(&mut g);
+        self.push_all(items);
         drop(g);
         self.changed.notify_all();
     }
@@ -201,6 +316,11 @@ impl ChangeLog {
         }
     }
 
+    /// Every change stepped here that the log still holds, with its newest step (for `history`).
+    pub fn stepped(&self) -> Vec<Fate> {
+        self.lock().fates.values().filter(|f| f.step.is_some()).cloned().collect()
+    }
+
     pub fn get(&self, change: TxId) -> Option<Fate> {
         let g = self.lock();
         Self::fate(&g, change)
@@ -211,7 +331,7 @@ impl ChangeLog {
         g.fates.get(&change).cloned().or_else(|| {
             g.settled.get(&change).map(|inc| {
                 let (status, is_final) = status(None, Some(*inc));
-                Fate { change, frame: None, status, is_final, outcome: None }
+                Fate { change, frame: None, status, is_final, outcome: None, step: None, owner: None }
             })
         })
     }
@@ -284,7 +404,7 @@ mod tests {
         let log = ChangeLog::new();
         log.record(&[step(1, 10, true), step(2, 10, true), step(3, 10, false)], Some(5));
         for (e, seq) in [(1, 1), (2, 2), (3, 3)] {
-            log.track(tx(e), CHAIN, seq, 10);
+            log.track(tx(e), CHAIN, seq, 10, None);
         }
         // The final frame passing them decides nothing.
         log.record(&[], Some(20));
@@ -305,7 +425,7 @@ mod tests {
     fn not_included_is_pending_and_a_cut_below_the_stamp_decides_nothing() {
         let log = ChangeLog::new();
         log.record(&[step(4, 10, true)], Some(5));
-        log.track(tx(4), CHAIN, 7, 10);
+        log.track(tx(4), CHAIN, 7, 10, None);
         // A cut below its stamp: not for this change.
         log.confirm_cut(&cut(10, Some(9)), &[]);
         assert_eq!(log.get(tx(4)).unwrap().status, Status::Accepted);
@@ -329,7 +449,7 @@ mod tests {
     #[test]
     fn waiting_for_local_and_final() {
         let log = Arc::new(ChangeLog::new());
-        log.track(tx(7), CHAIN, 1, 3);
+        log.track(tx(7), CHAIN, 1, 3, None);
         let l = log.clone();
         let t = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(20));

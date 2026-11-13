@@ -6,8 +6,8 @@
 //!   the window is `Expired`, with a fresh cursor at the head; the caller re-reads by query.
 //! - Items are never rewritten. A rollback is reported by pushing a new item (spec 5.4).
 //! - `read` with a wait blocks the calling thread only, on a condition variable that `push` notifies. The simulation
-//!   thread's `push` takes the lock for an append and a notify, never for a reader's scan [I: readers scan under the
-//!   lock today; if that ever shows in frame times, the window becomes an immutable chunk list].
+//!   thread's `push` takes the lock for an append and a notify. A reader holds it only to copy items out (cheap
+//!   clones, `Arc`s in practice, at most `SCAN` at a time) and filters them outside it.
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
@@ -48,6 +48,9 @@ struct Inner<T> {
     /// The seq of the newest item pushed (0 before any).
     head: u64,
 }
+
+/// The most items a read copies out under the lock at once.
+const SCAN: usize = 4_096;
 
 pub struct Stream<T> {
     epoch: u64,
@@ -110,53 +113,59 @@ impl<T: Clone> Stream<T> {
         self.cursor_at(g.head)
     }
 
-    /// The items after `cursor` that `keep` accepts, at most `limit`. With no match yet, waits up to `wait` for one.
-    /// The returned cursor has passed every item scanned, matching or not.
-    pub fn read(
+    /// The items after `cursor` that `pick` turns into results, at most `limit` items picked. With none yet, waits
+    /// up to `wait` for one. The returned cursor has passed every item scanned, picked or not. `pick` runs outside
+    /// the lock, on copies taken at most `SCAN` at a time, so a reader's work never delays `push`.
+    pub fn read<U>(
         &self,
         cursor: Option<&Cursor>,
-        keep: impl Fn(&T) -> bool,
+        mut pick: impl FnMut(&T) -> Option<U>,
         limit: usize,
         wait: Duration,
-    ) -> Result<Read<T>, StreamError> {
+    ) -> Result<Read<U>, StreamError> {
         let Some(c) = cursor else {
             return Ok(Read { items: vec![], cursor: self.now_cursor(), more: false });
         };
         let mut pos = self.parse(c).ok_or(StreamError::Invalid)?;
         let deadline = Instant::now() + wait;
         let limit = limit.max(1);
-        let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let mut items = Vec::new();
         loop {
-            if pos > g.head {
-                return Err(StreamError::Invalid);
-            }
-            // The oldest seq still held; with an empty window, everything up to head has left it.
-            let oldest = g.items.front().map_or(g.head + 1, |(s, _, _)| *s);
-            if pos + 1 < oldest {
-                return Err(StreamError::Expired { fresh: self.cursor_at(g.head) });
-            }
-            let start = (pos + 1 - oldest) as usize;
-            let mut items = Vec::new();
-            let mut more = false;
-            for (seq, _, it) in g.items.iter().skip(start) {
-                if keep(it) {
-                    if items.len() == limit {
-                        more = true;
-                        break;
+            let batch: Vec<(u64, T)> = {
+                let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+                loop {
+                    if pos > g.head {
+                        return Err(StreamError::Invalid);
                     }
-                    items.push(it.clone());
+                    // The oldest seq still held; with an empty window, everything up to head has left it.
+                    let oldest = g.items.front().map_or(g.head + 1, |(s, _, _)| *s);
+                    if pos + 1 < oldest {
+                        return Err(StreamError::Expired { fresh: self.cursor_at(g.head) });
+                    }
+                    if pos < g.head {
+                        let start = (pos + 1 - oldest) as usize;
+                        break g.items.iter().skip(start).take(SCAN).map(|(s, _, t)| (*s, t.clone())).collect();
+                    }
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Ok(Read { items, cursor: self.cursor_at(pos), more: false });
+                    }
+                    let (ng, _) = self.pushed.wait_timeout(g, deadline - now).unwrap_or_else(|p| p.into_inner());
+                    g = ng;
+                }
+            };
+            for (seq, it) in &batch {
+                if let Some(u) = pick(it) {
+                    if items.len() == limit {
+                        return Ok(Read { items, cursor: self.cursor_at(pos), more: true });
+                    }
+                    items.push(u);
                 }
                 pos = *seq;
             }
             if !items.is_empty() {
-                return Ok(Read { items, cursor: self.cursor_at(pos), more });
-            }
-            let now = Instant::now();
-            if now >= deadline {
                 return Ok(Read { items, cursor: self.cursor_at(pos), more: false });
             }
-            let (ng, _) = self.pushed.wait_timeout(g, deadline - now).unwrap_or_else(|p| p.into_inner());
-            g = ng;
         }
     }
 }
@@ -175,7 +184,7 @@ mod tests {
     fn no_cursor_gives_now_and_nothing() {
         let s = small();
         s.push(1, Instant::now());
-        let r = s.read(None, |_| true, 10, Duration::ZERO).unwrap();
+        let r = s.read(None, |x| Some(*x), 10, Duration::ZERO).unwrap();
         assert!(r.items.is_empty());
         assert_eq!(r.cursor, Cursor("c:abc.1".into()));
     }
@@ -189,10 +198,10 @@ mod tests {
         for i in 0..20u32 {
             s.push(i, t);
             if i % 3 == 2 {
-                let r = s.read(Some(&c), |_| true, 2, Duration::ZERO).unwrap();
+                let r = s.read(Some(&c), |x| Some(*x), 2, Duration::ZERO).unwrap();
                 seen.extend(r.items);
                 c = r.cursor;
-                let r = s.read(Some(&c), |_| true, 10, Duration::ZERO).unwrap();
+                let r = s.read(Some(&c), |x| Some(*x), 10, Duration::ZERO).unwrap();
                 seen.extend(r.items);
                 c = r.cursor;
             }
@@ -208,14 +217,14 @@ mod tests {
         for i in 0..5u32 {
             s.push(i, t);
         }
-        let r = s.read(Some(&c), |x| x % 2 == 0, 2, Duration::ZERO).unwrap();
+        let r = s.read(Some(&c), |x| (x % 2 == 0).then_some(*x), 2, Duration::ZERO).unwrap();
         assert_eq!(r.items, vec![0, 2]);
         assert!(r.more);
-        let r = s.read(Some(&r.cursor), |x| x % 2 == 0, 2, Duration::ZERO).unwrap();
+        let r = s.read(Some(&r.cursor), |x| (x % 2 == 0).then_some(*x), 2, Duration::ZERO).unwrap();
         assert_eq!(r.items, vec![4]);
         assert!(!r.more);
         // Nothing more matches: the cursor still moves to the head.
-        let r2 = s.read(Some(&r.cursor), |x| x % 2 == 0, 2, Duration::ZERO).unwrap();
+        let r2 = s.read(Some(&r.cursor), |x| (x % 2 == 0).then_some(*x), 2, Duration::ZERO).unwrap();
         assert!(r2.items.is_empty());
         assert_eq!(r2.cursor, Cursor("c:abc.5".into()));
     }
@@ -229,11 +238,11 @@ mod tests {
             s.push(i, t); // the window keeps the last 5: items 2..=6
         }
         assert_eq!(
-            s.read(Some(&c), |_| true, 10, Duration::ZERO),
+            s.read(Some(&c), |x| Some(*x), 10, Duration::ZERO),
             Err(StreamError::Expired { fresh: Cursor("c:abc.7".into()) })
         );
         // A cursor just before the oldest held item is still good.
-        let r = s.read(Some(&Cursor("c:abc.2".into())), |_| true, 10, Duration::ZERO).unwrap();
+        let r = s.read(Some(&Cursor("c:abc.2".into())), |x| Some(*x), 10, Duration::ZERO).unwrap();
         assert_eq!(r.items, vec![2, 3, 4, 5, 6]);
     }
 
@@ -244,15 +253,18 @@ mod tests {
         let t = Instant::now();
         s.push(1, t);
         s.push(2, t + Duration::from_secs(2)); // item 1 is now too old
-        assert!(matches!(s.read(Some(&c), |_| true, 10, Duration::ZERO), Err(StreamError::Expired { .. })));
+        assert!(matches!(s.read(Some(&c), |x| Some(*x), 10, Duration::ZERO), Err(StreamError::Expired { .. })));
     }
 
     #[test]
     fn foreign_and_future_cursors_are_invalid() {
         let s = small();
-        assert_eq!(s.read(Some(&Cursor("c:def.0".into())), |_| true, 1, Duration::ZERO), Err(StreamError::Invalid));
-        assert_eq!(s.read(Some(&Cursor("c:abc.9".into())), |_| true, 1, Duration::ZERO), Err(StreamError::Invalid));
-        assert_eq!(s.read(Some(&Cursor("nonsense".into())), |_| true, 1, Duration::ZERO), Err(StreamError::Invalid));
+        assert_eq!(s.read(Some(&Cursor("c:def.0".into())), |x| Some(*x), 1, Duration::ZERO), Err(StreamError::Invalid));
+        assert_eq!(s.read(Some(&Cursor("c:abc.9".into())), |x| Some(*x), 1, Duration::ZERO), Err(StreamError::Invalid));
+        assert_eq!(
+            s.read(Some(&Cursor("nonsense".into())), |x| Some(*x), 1, Duration::ZERO),
+            Err(StreamError::Invalid)
+        );
     }
 
     #[test]
@@ -265,12 +277,12 @@ mod tests {
             s2.push(7, Instant::now());
         });
         let t0 = Instant::now();
-        let r = s.read(Some(&c), |_| true, 10, Duration::from_secs(5)).unwrap();
+        let r = s.read(Some(&c), |x| Some(*x), 10, Duration::from_secs(5)).unwrap();
         assert_eq!(r.items, vec![7]);
         assert!(t0.elapsed() < Duration::from_secs(4));
         h.join().unwrap();
         let t1 = Instant::now();
-        let r = s.read(Some(&r.cursor), |_| true, 10, Duration::from_millis(30)).unwrap();
+        let r = s.read(Some(&r.cursor), |x| Some(*x), 10, Duration::from_millis(30)).unwrap();
         assert!(r.items.is_empty());
         assert!(t1.elapsed() >= Duration::from_millis(30));
     }

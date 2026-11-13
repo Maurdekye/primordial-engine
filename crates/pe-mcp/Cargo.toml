@@ -34,4 +34,7 @@ base64 = "0.22"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Memory"] }
 
 [dev-dependencies]
+pe-core = { path = "../pe-core" }
+pe-sim = { path = "../pe-sim" }
+pe-world = { path = "../pe-world" }
 rmcp = { version = "=3.8.0", default-features = false, features = ["client", "server", "macros", "schemars", "transport-async-rw"] }
