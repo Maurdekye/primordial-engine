@@ -912,7 +912,7 @@ fn a_stalled_uplink_flushing_a_second_of_hands_at_120_hz() {
 }
 
 #[test]
-#[ignore = "fails with the arrival-time budget: refusals leave holes that never heal (Low 1, open)"]
+#[ignore = "refusal holes never heal; fix: docket pe-agree-a-stall-longer-than-the-burst-must-not-c"]
 fn a_stalled_uplink_flushing_three_seconds_of_hands_at_120_hz() {
     // @design-reviewer's Low 1 (me5616ae97a1b): VR Wi-Fi stalls for 2-3 s. A 3 s stall flushes 720 entries into a
     // burst of 240; every peer refuses part of it and reports a RateExceeded fault against an honest member. The

@@ -64,7 +64,8 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     change the settings (@design-reviewer's Low 2, me5616ae97a1b; @engine-architect m8fef170a9680).
   - **Open (Low 1, me5616ae97a1b):** a stall longer than the burst leaves refusal holes that never heal. At 120 Hz a
     3 s stall flushes 720 entries into a burst of 240, and the member gets nothing final afterwards (test
-    `a_stalled_uplink_flushing_three_seconds_of_hands_at_120_hz`, ignored until the fix).
+    `a_stalled_uplink_flushing_three_seconds_of_hands_at_120_hz`, ignored until the fix; docket
+    pe-agree-a-stall-longer-than-the-burst-must-not-c).
   - An author past its budget loses more than the excess: a refused entry leaves a hole in its chain, and its later
     entries wait until a cut names them. In one run of the flood test (twice the budget at 120 Hz) 485 of the flooder's 9,608
     entries became final in 10 s. An honest stall fits: a 1 s uplink stall at 120 Hz flushes 240 entries, inside the
