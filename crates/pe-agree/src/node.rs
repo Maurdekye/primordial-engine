@@ -138,8 +138,9 @@ pub struct Node {
     keep_floor: Frame,
 
     wanted: BTreeMap<EntryRef, i64>,
-    /// Entries a verified vote's heads name, not held: (author, since, last asked). Not solicited.
-    hinted: BTreeMap<EntryRef, (MemberKey, i64, i64)>,
+    /// Entries a verified vote's heads name, not held: (author, the voter that named it, since, last asked). Not
+    /// solicited.
+    hinted: BTreeMap<EntryRef, (MemberKey, MemberKey, i64, i64)>,
     /// Per chain, the highest stamp through its final head (void entries included), for back-stamp verdicts.
     final_high: HashMap<ChainKey, Frame>,
     arrived: HashMap<EntryRef, HostTime>,
@@ -306,7 +307,8 @@ impl Node {
         let key = ChainKey::of(&e);
         let prev = e.entry.prev;
         let solicited = self.wanted.contains_key(&id);
-        let hinted = self.hinted.contains_key(&id);
+        let hinted_by = self.hinted.get(&id).map(|h| h.1);
+        let hinted = hinted_by.is_some();
         let unchecked = AcceptAll;
         let skip_sig = self.core.mutated(Mutation::NoSignatureCheck);
         let checked = {
@@ -350,8 +352,8 @@ impl Node {
                 if let Some(p) = prev.filter(|p| !self.by_ref.contains_key(p)) {
                     if solicited {
                         self.want([p]);
-                    } else if hinted {
-                        self.hint(author, p);
+                    } else if let Some(voter) = hinted_by {
+                        self.hint(voter, author, p);
                     }
                 }
                 if self.log.next_of(&key, prev).len() > 1 {
@@ -394,29 +396,34 @@ impl Node {
         }
     }
 
-    /// Fetch an entry a vote's heads name, as a hint: at most one per author's free pending slot, at most
-    /// [`MAX_HINTS`] in all, and dropped after [`HINT_TTL_NS`] if it hasn't come.
-    fn hint(&mut self, author: MemberKey, id: EntryRef) {
-        if self.wanted.contains_key(&id) || self.hinted.contains_key(&id) || self.hinted.len() >= MAX_HINTS {
+    /// Fetch an entry a vote's heads name, as a hint: at most one per author's free pending slot, each voter at most
+    /// its share of [`MAX_HINTS`] (so a flooding voter can't crowd out an honest one's hints), and dropped after
+    /// [`HINT_TTL_NS`] if it hasn't come.
+    fn hint(&mut self, voter: MemberKey, author: MemberKey, id: EntryRef) {
+        if self.wanted.contains_key(&id) || self.hinted.contains_key(&id) {
+            return;
+        }
+        let share = (MAX_HINTS / self.cfg.members.len().max(1)).max(1);
+        if self.hinted.values().filter(|(_, v, _, _)| *v == voter).count() >= share {
             return;
         }
         let pending = self.pending_by_author.get(&author).copied().unwrap_or(0);
-        let hinted = self.hinted.values().filter(|(a, _, _)| *a == author).count();
+        let hinted = self.hinted.values().filter(|(a, _, _, _)| *a == author).count();
         if pending + hinted >= self.cfg.pending_cap {
             return;
         }
-        self.hinted.insert(id, (author, self.now.0, i64::MIN));
+        self.hinted.insert(id, (author, voter, self.now.0, i64::MIN));
     }
 
     fn ask(&mut self) {
         let now = self.now.0;
-        self.hinted.retain(|_, (_, since, _)| now.saturating_sub(*since) < HINT_TTL_NS);
+        self.hinted.retain(|_, (_, _, since, _)| now.saturating_sub(*since) < HINT_TTL_NS);
         let retry = self.cfg.fetch_retry_ns;
         let due_at = |t: i64| t == i64::MIN || now.saturating_sub(t) >= retry;
         let mut due: Vec<EntryRef> =
             self.wanted.iter().filter(|(_, t)| due_at(**t)).map(|(id, _)| *id).take(MAX_FETCH).collect();
         let room = MAX_FETCH - due.len();
-        due.extend(self.hinted.iter().filter(|(_, (_, _, t))| due_at(*t)).map(|(id, _)| *id).take(room));
+        due.extend(self.hinted.iter().filter(|(_, (_, _, _, t))| due_at(*t)).map(|(id, _)| *id).take(room));
         if due.is_empty() {
             return;
         }
@@ -424,7 +431,7 @@ impl Node {
             if let Some(t) = self.wanted.get_mut(id) {
                 *t = now;
             } else if let Some(h) = self.hinted.get_mut(id) {
-                h.2 = now;
+                h.3 = now;
             }
         }
         self.send_all(Lane::Protocol, &Wire::FetchEntries(due), &[]);
@@ -813,12 +820,13 @@ impl Agreement for Node {
                 // Heads beyond the cut in a vote, once the core has verified the vote: fetch what this member lacks, so
                 // as leader it can include them. A hint only (@design-reviewer's Medium 2): such entries are not
                 // solicited, so they pass the author's budget like any other, and the hint expires.
-                let heads = if let core::Msg::Vote(v) = &m { v.heads.clone() } else { Vec::new() };
+                let heads = if let core::Msg::Vote(v) = &m { (v.voter, v.heads.clone()) } else { (from, Vec::new()) };
                 match self.core.receive(from, m, at, self.verifier.as_ref()) {
                     Ok(()) => {
+                        let (voter, heads) = heads;
                         for h in heads {
                             if self.cfg.members.contains(&h.author) && !self.by_ref.contains_key(&h.entry) {
-                                self.hint(h.author, h.entry);
+                                self.hint(voter, h.author, h.entry);
                             }
                         }
                         Ok(())
