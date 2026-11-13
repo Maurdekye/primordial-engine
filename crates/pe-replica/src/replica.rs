@@ -438,9 +438,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// history) records nothing. Returns the root if the next frame is a cut frame.
     fn step(&mut self, entries: &[&SignedEntry], live: bool) -> Option<Hash> {
         let f = self.frame;
-        // A world with scripts, or a frame with a code commit, needs a runner (crate::logic). Without one the frame is
-        // not stepped: nothing changes, and each stop counts one fault.
-        if self.runner.is_none() && (self.world.scripted() || entries.iter().any(|e| W::commits_code(e))) {
+        // A world with scripts needs a runner (crate::logic). Without one the frame is not stepped: nothing changes,
+        // and each stop counts one fault. A frame's own entries never make a script run in it: a code commit is pending
+        // until a quorum attests it, and activates at the end of a frame (logic.md 6.2a).
+        if self.runner.is_none() && self.world.scripted() {
             let at = if live { &mut self.refused_at } else { &mut self.scratch_refused_at };
             if *at != Some(f) {
                 *at = Some(f);
