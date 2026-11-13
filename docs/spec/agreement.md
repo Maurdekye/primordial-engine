@@ -178,6 +178,20 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   voter. Votes, timeouts and proposals waiting for a parent are kept only up to 16 views above the member's current
   view, so one faulty member can't grow them without limit. Certificates carried in proposals and timeouts still move
   a member that is further behind.
+- **Catching up after an outage** (M1 requirement, coordinator; @design-reviewer).
+  pe-net retransmits Protocol messages through an outage shorter than its idle limit (5 s). Past that limit, or on a
+  new connection, whatever was queued is lost (transport.md 3.2; @shader-lang). So:
+  - A member re-sends its timeouts for its current and previous view every timeout period. The previous view's
+    timeout matters: its certificate moved this member on, and the others may lack it.
+  - t + 1 timeouts for a later view show an honest member is there. A member joins that view and times out in it,
+    which only gives up voting in it.
+  - A fetched block whose parent is missing too is kept, so a gap fills in one round trip per block.
+  - Members serve the proposals of their last 256 committed blocks to fetches. A member further behind than that
+    needs an import (join, section 8).
+  - Tests (pe-agree): a 2 s partition at n = 4, once with one member crashed and once all honest, at core and node
+    level. Messages sent during the partition are never delivered. The line resumes, and the final logs match.
+- **Hint shares.** Each voter gets its own share of the hint slots (256 / n), so one voter flooding heads can't
+  crowd out another's.
 - Never treat "the entries stamped in [floor, cut frame)" as "everything the cut includes" (coordinator).
 
 ## 5. Holds, the final log, events
