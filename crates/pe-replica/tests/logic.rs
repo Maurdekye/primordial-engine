@@ -13,7 +13,7 @@ use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
     ChainHead, Class, Cut, CutImport, CutRef, DomainId, EffectCause, EffectKey, EffectKind, EntrySource, FinalCut,
     Frame, FrameView, GroupSel, Hash, HostTime, LeafKey, LineId, MemberKey, ObjectId, Offset, Outcome, Pos, Replica,
-    RootError, SignedEntry, Stage,
+    RootError, RunnerIdentity, SignedEntry, Stage,
 };
 use pe_sim::{Component, ComponentId, SimStore, Transform};
 use pe_world::components::{Body, Shape, body_kind, shape_kind};
@@ -261,7 +261,7 @@ fn scripts_run_around_the_physics_and_their_events_become_effects() {
         assert!(!e.own && !e.resimulated && e.trigger_arrived.is_none());
     }
     assert!(view.retracted.is_empty());
-    assert_eq!(r.runner_identity(), Some(Bytes::from_static(b"the test mover, version 1")));
+    assert_eq!(r.runner_identity(), Some(RunnerIdentity(Bytes::from_static(b"the test mover, version 1"))));
     assert_eq!(r.script_counts().missing, 0);
 }
 
@@ -344,6 +344,19 @@ fn without_a_runner_a_world_with_scripts_is_not_stepped() {
 
 /// Without a runner, a replica steps a world without scripts up to the frame of a code commit and stops there. With
 /// one, the script runs from the commit's frame.
+/// The runner's identity and its modules reach S2's provided methods (v1.7) through `dyn Replica`, as the hello and a
+/// fault bundle ask for them, not only through the concrete type (@engine-architect's Low 4 on 4ac9019f). Without a
+/// runner, both are `None`.
+#[test]
+fn the_runner_s_identity_and_modules_reach_s2_through_dyn_replica() {
+    let with: Box<dyn Replica> = Box::new(replica_of(scripted()).with_runner(mover()));
+    assert_eq!(with.runner_identity(), Some(RunnerIdentity(Bytes::from_static(b"the test mover, version 1"))));
+    assert_eq!(with.module(&MODULE), Some(Bytes::from_static(b"mover")));
+    assert_eq!(with.module(&Hash([9; 32])), None, "a module it doesn't hold");
+    let without: Box<dyn Replica> = Box::new(replica_of(scripted()));
+    assert_eq!((without.runner_identity(), without.module(&MODULE)), (None, None));
+}
+
 #[test]
 fn without_a_runner_the_replica_stops_at_a_code_commit() {
     let keys = keys();
@@ -1061,7 +1074,7 @@ mod lamp {
             assert_eq!(LAMPS.map(|n| intensity(&r, n)), [1.0, 0.0, 0.0]);
             assert_eq!(r.script_counts().missing, 0);
             let identity = pe_logic::identity(&Settings::default(), &RunSettings::default());
-            assert_eq!(r.runner_identity(), Some(Bytes::from(identity)));
+            assert_eq!(r.runner_identity(), Some(pe_seams::RunnerIdentity(Bytes::from(identity))));
         });
     }
 

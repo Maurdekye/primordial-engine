@@ -66,8 +66,8 @@ use pe_physics::{CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Tra
 use pe_seams::{
     Advance, ChainId, Class, Cut, CutImport, CutRef, DomainId, Effect, EffectCause, EffectKey, EffectKind, EntryRef,
     EntrySource, FinalCut, Finalized, Frame, FrameClock, FrameView, GroupSel, Hash, Health, HostTime, ImportError,
-    MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica, RigTransform, RootError, SignedEntry, SimRate,
-    Stage, StepRecord, Tree, ViewCounters, ViewFlags, VoidReason, frames_ceil,
+    MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica, RigTransform, RootError, RunnerIdentity,
+    SignedEntry, SimRate, Stage, StepRecord, Tree, ViewCounters, ViewFlags, VoidReason, frames_ceil,
 };
 
 use crate::bodies;
@@ -355,11 +355,6 @@ impl<W: WorldModel> ReplicaImpl<W> {
     pub fn with_runner(mut self, runner: Box<dyn ScriptRunner>) -> Self {
         self.runner = Some(runner);
         self
-    }
-
-    /// The canonical bytes of its runner's identity (S2's `RunnerIdentity`), or `None` without a runner.
-    pub fn runner_identity(&self) -> Option<Bytes> {
-        self.runner.as_ref().map(|r| r.identity())
     }
 
     /// The script counts of its live steps: this machine's, never world state.
@@ -1483,5 +1478,15 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     fn agreed_snapshot(&self) -> Option<(Frame, Arc<dyn std::any::Any + Send + Sync>)> {
         let (frame, saved) = self.agreed_state()?;
         W::snapshot_of(saved, frame).map(|s| (frame, s))
+    }
+
+    /// Its runner's identity (crate::logic), or `None` without one.
+    fn runner_identity(&self) -> Option<RunnerIdentity> {
+        self.runner.as_ref().map(|r| RunnerIdentity(r.identity()))
+    }
+
+    /// The metered bytes of a module its runner holds.
+    fn module(&self, hash: &Hash) -> Option<Bytes> {
+        self.runner.as_ref().and_then(|r| r.module(hash))
     }
 }
