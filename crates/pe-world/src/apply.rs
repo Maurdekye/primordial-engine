@@ -17,7 +17,10 @@ use crate::components::{Hand, Light, Protection, SimSize, ids};
 use crate::edit::{
     Actor, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
 };
-use crate::script::{AssetId, MAX_REKEY_ROWS, MAX_SOURCE_BYTES, ModuleRow, RekeyReport, check_source};
+use crate::script::{
+    AssetId, MAX_REKEY_ROWS, MAX_SOURCE_BYTES, ModuleRow, PendingCommit, RekeyReport, VoidKind, attest_window,
+    check_source,
+};
 use crate::world::{DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, depth, perm};
 
 /// What an applied entry touched, for the replica's physics effects (9.2) and the caches. Empty for a refusal.
@@ -36,7 +39,8 @@ pub struct Footprint {
     pub pushes: Vec<Push>,
     /// Hands whose target and `Hand` row an input wrote (8.1).
     pub hands: Vec<ObjectId>,
-    /// What a script commit's re-key did (7.9): the objects, the row count and the fields zeroed or dropped.
+    /// What a script commit's re-key did (7.9): the objects, the row count and the fields zeroed or dropped. Always
+    /// `None` for an entry since logic.md 6.2a: the re-key happens at activation, and [`World::end_frame`] reports it.
     pub rekey: Option<RekeyReport>,
 }
 
@@ -173,6 +177,14 @@ fn edit_writable(c: ComponentId) -> bool {
     c != ComponentId::NODE && c != ids::BODY_STATE && c != ids::HAND
 }
 
+/// What [`World::end_frame`] did to scripts (logic.md 6.2a): the commits activated, each with its re-key's report
+/// (`None` for a first version or a same-source commit), and the commits voided, in asset order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameEnd {
+    pub activated: Vec<(AssetId, Option<RekeyReport>)>,
+    pub voided: Vec<(AssetId, VoidKind)>,
+}
+
 /// Rows a holder feels: refused while the object is held (7.2).
 fn held_rows(c: ComponentId) -> bool {
     c == ComponentId::TRANSFORM || c == ids::BODY || c == ids::SHAPE
@@ -241,7 +253,13 @@ impl World {
         {
             return Err((None, invalid()));
         }
-        if !self.permits(src.author, perm::EDIT) {
+        // An attestation (logic.md 6.2a) stands alone and needs no `EDIT`, only a voter's place on the pending
+        // commit, which its op checks.
+        let attest = tx.ops.iter().any(|o| matches!(o, Op::AttestBuild { .. }));
+        if attest && (tx.ops.len() != 1 || !tx.preconditions.is_empty()) {
+            return Err((None, invalid()));
+        }
+        if !attest && !self.permits(src.author, perm::EDIT) {
             return Err((None, Reason::NoPermission));
         }
         for (i, p) in tx.preconditions.iter().enumerate() {
@@ -453,20 +471,114 @@ impl World {
                 };
                 self.op_commit(cx, i, *script, *base, row)
             }
+            Op::AttestBuild { script, version, module } => self.op_attest(cx, *script, *version, *module),
         }
     }
 
-    /// `CommitScript` (7.9): the stamp, the base, the version's components, the re-key and the modules row.
+    /// `AttestBuild` (logic.md 6.2a; 7.9): counts the author's attestation on the asset's pending commit. `Stale` if
+    /// no commit is pending at that version (none, another V, activated or voided); `Invalid` for a non-voter, a
+    /// voter's second attestation, or a module other than the registered `author_module`. A refused one changes
+    /// nothing, and its signed entry stays in the log as the evidence.
+    fn op_attest(&mut self, cx: &mut Cx, script: AssetId, v: Hash, module: Hash) -> Result<(), Reason> {
+        let stale = |current: Version| Reason::Stale { precondition: OWN_CHECK, current, winner: current.entry };
+        let current = self.modules.get(&script).map_or(Version { entry: EntryRef(Hash::ZERO), op: 0 }, |m| m.version);
+        let p = match self.pending.get(&script) {
+            Some(p) if p.void.is_none() && p.v() == v => p,
+            Some(p) if p.void.is_none() => return Err(stale(p.version)),
+            _ => return Err(stale(current)),
+        };
+        let counted = p.attested.iter().any(|(k, _)| *k == cx.author);
+        if !p.voters.contains(&cx.author) || counted || module != p.author_module {
+            return Err(invalid());
+        }
+        let p = Arc::make_mut(&mut self.pending).get_mut(&script).expect("present");
+        let at = p.attested.partition_point(|(k, _)| k.0 < cx.author.0);
+        p.attested.insert(at, (cx.author, cx.frame));
+        Ok(())
+    }
+
+    /// Activations and voids at the end of `frame` (logic.md 6.2a), in asset order: a pending commit a quorum has
+    /// attested activates (its re-key, re-checked, and its row); otherwise one whose deadline is `frame` is voided.
+    /// Activation is tested first, so a quorum completed at the deadline activates.
+    fn end_scripts(&mut self, frame: Frame) -> FrameEnd {
+        let mut out = FrameEnd::default();
+        let due: Vec<AssetId> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.void.is_none() && (p.attested_by_quorum() || frame >= p.deadline))
+            .map(|(a, _)| *a)
+            .collect();
+        for a in due {
+            let p = self.pending[&a].clone();
+            let done = if p.attested_by_quorum() { self.activate(a, &p, frame) } else { Err(VoidKind::Unattested) };
+            match done {
+                Ok(report) => {
+                    Arc::make_mut(&mut self.pending).remove(&a);
+                    out.activated.push((a, report));
+                }
+                Err(kind) => {
+                    Arc::make_mut(&mut self.pending).get_mut(&a).expect("present").void = Some((frame, kind));
+                    out.voided.push((a, kind));
+                }
+            }
+        }
+        out
+    }
+
+    /// Makes `p` asset `a`'s current version at the end of `frame` (`F`): the re-key of 7.9, judged again now for
+    /// its author, then the row, which runs from `frame + 1`. All or nothing: a re-key that is now blocked or too
+    /// large voids the commit instead.
+    fn activate(&mut self, a: AssetId, p: &PendingCommit, frame: Frame) -> Result<Option<RekeyReport>, VoidKind> {
+        let mut report = None;
+        if let Some(m) = self.modules.get(&a).cloned()
+            && m.v() != p.v()
+        {
+            let reg = self.store.registry();
+            let new: Option<Vec<_>> = p.components.iter().map(|c| reg.get(*c).cloned()).collect();
+            let new = new.ok_or(VoidKind::RekeyBlockedAtActivation)?;
+            let (r, moves) = self.rekey_plan(&m.components, &new, p.author);
+            if r.rows > MAX_REKEY_ROWS {
+                return Err(VoidKind::RekeyTooLarge);
+            }
+            if !r.blocked.is_empty() {
+                return Err(VoidKind::RekeyBlockedAtActivation);
+            }
+            let mut w = self.clone();
+            w.apply_rekey(moves, p.version.entry, p.version.op).map_err(|_| VoidKind::RekeyBlockedAtActivation)?;
+            *self = w;
+            report = Some(r);
+        }
+        let row = ModuleRow {
+            version: p.version,
+            source: p.source,
+            toolchain: p.toolchain,
+            sdk: p.sdk,
+            author_module: p.author_module,
+            components: p.components.clone(),
+            activate_at: Frame(frame.0 + 1),
+            faulted: None,
+        };
+        Arc::make_mut(&mut self.modules).insert(a, row);
+        Ok(report)
+    }
+
+    /// `CommitScript` (7.9, logic.md 6.2a): the stamp, the base, the version's components and the re-key's limits,
+    /// then the asset's pending commit, which re-keys nothing yet. The voters are the governance members now, and the
+    /// commit is its author's attestation if the author is one.
     fn op_commit(
         &mut self,
         cx: &mut Cx,
-        i: u32,
+        _i: u32,
         script: AssetId,
         base: Option<Version>,
-        mut new: ModuleRow,
+        new: ModuleRow,
     ) -> Result<(), Reason> {
         if new.activate_at != cx.frame {
             return Err(invalid());
+        }
+        // One pending commit per asset: the next waits for its activation or void (6.2a item 6).
+        if let Some(p) = self.pending.get(&script).filter(|p| p.void.is_none()) {
+            return Err(Reason::Stale { precondition: OWN_CHECK, current: p.version, winner: p.version.entry });
         }
         let row = self.modules.get(&script).cloned();
         let current = row.as_ref().map_or(Version { entry: EntryRef(Hash::ZERO), op: 0 }, |m| m.version);
@@ -476,16 +588,16 @@ impl World {
             (Some(m), Some(b)) if m.version == b => {}
             _ => return Err(stale),
         }
-        match &row {
-            // The same source (a toolchain or SDK change): no re-key, no row version moves.
-            Some(m) if m.v() == new.v() => new.components = m.components.clone(),
+        let components = match &row {
+            // The same source (a toolchain or SDK change): the same components, no re-key at activation.
+            Some(m) if m.v() == new.v() => m.components.clone(),
             _ => {
                 let reg = cx.registered.clone().ok_or_else(invalid)?;
                 let mut ids: Vec<ComponentId> = reg.iter().map(|d| d.id()).collect();
                 ids.sort();
-                new.components = ids;
+                // The re-key's limits now, so the author hears at once; they are judged again at `F`.
                 if let Some(m) = &row {
-                    let (report, moves) = self.rekey_plan(&m.components, &reg, cx.author);
+                    let (report, _) = self.rekey_plan(&m.components, &reg, cx.author);
                     if report.rows > MAX_REKEY_ROWS {
                         return Err(Reason::TooLarge { limit: MAX_REKEY_ROWS });
                     }
@@ -493,12 +605,28 @@ impl World {
                     if !report.blocked.is_empty() {
                         return Err(invalid());
                     }
-                    self.apply_rekey(moves, cx.entry, i)?;
-                    cx.fp.rekey = Some(report);
                 }
+                ids
             }
-        }
-        Arc::make_mut(&mut self.modules).insert(script, new);
+        };
+        let voters: Vec<MemberKey> = self.members.keys().copied().collect();
+        let attested = if voters.contains(&cx.author) { vec![(cx.author, cx.frame)] } else { Vec::new() };
+        let deadline = Frame(cx.frame.0.saturating_add(attest_window(new.source.len, self.rate.hz())));
+        let pending = PendingCommit {
+            version: new.version,
+            author: cx.author,
+            source: new.source,
+            toolchain: new.toolchain,
+            sdk: new.sdk,
+            author_module: new.author_module,
+            components,
+            commit_frame: cx.frame,
+            deadline,
+            voters,
+            attested,
+            void: None,
+        };
+        Arc::make_mut(&mut self.pending).insert(script, pending);
         Ok(())
     }
 
@@ -824,11 +952,16 @@ impl World {
 
     /// Ends a frame (7.2, 7.5, 8.1): expires claims and cooldowns, writes each pending hand pack's pose for
     /// `frame + 1`, and drops the tombstones whose expiry frame has passed.
-    pub fn end_frame(&mut self, frame: Frame) {
+    ///
+    /// First the scripts (logic.md 6.2a): each pending commit a quorum has attested activates, re-keying its rows,
+    /// and runs from `frame + 1`; one at its deadline without a quorum is voided. What happened is returned.
+    pub fn end_frame(&mut self, frame: Frame) -> FrameEnd {
+        let end = self.end_scripts(frame);
         self.end_frame_inputs(frame);
         if self.tombstones.values().any(|t| t.expires <= frame) {
             Arc::make_mut(&mut self.tombstones).retain(|_, t| t.expires > frame);
         }
+        end
     }
 
     /// The whole row with one field replaced.

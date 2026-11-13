@@ -132,6 +132,10 @@ pub enum Op {
         author_module: Hash,
         activate_at: u64,
     },
+    /// A voter's attestation that it built version `version` (V) of script `script` into module `module`, passing
+    /// every check of logic.md 6.2 step 3 (6.2a; 7.9). The only op of its transaction; it needs no `EDIT`, only to
+    /// be a voter of the pending commit.
+    AttestBuild { script: [u8; 32], version: Hash, module: Hash },
 }
 
 impl Op {
@@ -397,6 +401,12 @@ impl Transaction {
                     w.raw(&author_module.0);
                     w.raw(&activate_at.to_le_bytes());
                 }
+                Op::AttestBuild { script, version, module } => {
+                    w.u8(10);
+                    w.raw(script);
+                    w.raw(&version.0);
+                    w.raw(&module.0);
+                }
             }
         }
         w.len(self.blobs.len());
@@ -621,6 +631,7 @@ impl<'a> R<'a> {
                         activate_at: u64::from_le_bytes(self.arr()?),
                     }
                 }
+                10 => Op::AttestBuild { script: self.arr()?, version: Hash(self.arr()?), module: Hash(self.arr()?) },
                 _ => return None,
             });
         }
