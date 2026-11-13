@@ -386,16 +386,14 @@ which fixes the origin's role deliberately.
   small fixed values below 2^32. A script's component gets `u128::from_le_bytes(BLAKE3("pe.component" ‖ V ‖ name ‖
   schema hash)[..16])` (the schema hash is 6.6's BLAKE3 hash of the description, which has no id in it, so the
   derivation is not circular: pe-sim's own XXH64 schema hash covers the id and is not used here; @iter-bench
-  ma47f902e5901), where **V is the content hash of one script version**, the hash of its source tree
-  (@coordinator-opus mf9dbcfe481ea and me5689a5c645c, @iter-bench m6402c933f295), not the stable asset id: this
-  supersedes r7's asset-keyed ids. Every version has its own ids, and a commit **re-keys** the old version's rows to
-  the new ones in its own transaction (7.9); a future per-copy fork is the same operation on one copy's rows. An id
-  below 2^32 is engine space and is refused at `Register` (a chance of 2^-96). Two commits on two branches can never
-  give one id two meanings: the same id means the same description everywhere. `Register` of an id already registered
-  with the same description is a no-op; with a different one (a collision) it refuses the transaction.
-
-### 3.3 Hierarchy and transforms
-
+  ma47f902e5901), where **V is the content hash of one script version**, the hash of its source archive (one blob,
+  logic.md 4.1a; @coordinator-opus mf9dbcfe481ea and me5689a5c645c, @iter-bench m6402c933f295), not the stable asset
+  id: this supersedes r7's asset-keyed ids. Every version has its own ids, and a commit **re-keys** the old version's
+  rows to the new ones in its own transaction (7.9); a future per-copy fork is the same operation on one copy's rows.
+  An id below 2^32 is engine space and is refused at `Register` (a chance of 2^-96). Two commits on two branches can
+  never give one id two meanings: the same id means the same description everywhere. `Register` of an id already
+  registered with the same description is a no-op; with a different one (a collision) it refuses the transaction.  ###
+  3.3 Hierarchy and transforms
 - Kept: parents, ordered children, the frame rule (an object is placed relative to its nearest ancestor with a
   `Transform`), and deterministic composition [V `crates/pe-sim/src/transform.rs:1-37`].
 - Kept: plain edits store what they are given; keep-world edits are explicit [V `transform.rs:11-21`]. A reparent
@@ -425,12 +423,17 @@ which fixes the origin's role deliberately.
   - **Display blobs** (a mesh to draw, textures, names, materials) may be missing. The entry applies, the `BlobRef`
     is stored as given, and the hash stays exact. Only drawing waits: a mesh is drawn as its bounding box. Shared
     simulation never reads a display blob, so no two machines can compute differently because of one.
-  - **Simulation blobs** (a collision hull, a script's source tree, anything shared logic or physics reads) are
+  - **Simulation blobs** (a collision hull, a script's source archive, anything shared logic or physics reads) are
     part of the entry for agreement. Small ones (up to 1 MiB, which covers hulls) travel *inside* the edit entry, so
-    any machine that has the entry has the bytes. Larger ones follow the rule of a late entry: a machine that lacks
-    the bytes at the entry's frame simulates as if that change had not arrived yet, which is a prediction, and
-    rewinds and replays from that frame when the bytes arrive. It does not vote for a cut that includes the entry
-    until it holds the bytes. Nobody waits; only that machine's view lags.
+    any machine that has the entry has the bytes. A script's source always does: `CommitScript` carries the archive
+    itself, at most `MAX_SOURCE_BYTES` (7.9), and applying the commit puts it into the machine's blob store, on every
+    machine, so each can build the version; a refused commit stores nothing, and what a rollback leaves behind is
+    store garbage, pruned with the store (@coordinator-opus m3b68151991e0). Other blobs travel as references only so
+    far: a transaction's `blobs` list names them, and their bytes reach other machines by fetch (display blobs may be
+    missing, above) [I, the general in-entry carriage of hulls is not built]. Larger ones follow the rule of a late
+    entry: a machine that lacks the bytes at the entry's frame simulates as if that change had not arrived yet, which
+    is a prediction, and rewinds and replays from that frame when the bytes arrive. It does not vote for a cut that
+    includes the entry until it holds the bytes. Nobody waits; only that machine's view lags.
   - **A compiled module is never a blob** (@iter-bench, under Q3c [U mf7daea6446ca]: no machine runs another's
     build). The script's source is the simulation blob; each machine builds its own module from it, a local
     product that is never stored in the world, sent or fetched. Activation after each machine's own compile is
@@ -655,7 +658,7 @@ World
 
 - **Registry:** as 3.2.
 - **Modules** (@iter-bench's layout, WS-logic): one row per script asset id, holding
-  - the version: the source tree, a `SimBlobRef`;
+  - the version: the source archive (logic.md 4.1a), a `SimBlobRef`;
   - the toolchain and SDK hashes;
   - the author's module hash, as a plain 32-byte `Hash` field: advisory, for mismatch reports, never a blob
     reference;
@@ -1359,12 +1362,28 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
   may be below 2^32 (`Invalid` otherwise). An id already registered with the same description and asset is a
   no-op; with another description or asset, the transaction is refused (a collision). The registry is a world
   table (5.4), rolled back like the rest; registered ids are never removed in M1.
-- **`CommitScript { script, base, source, toolchain, sdk, author_module, activate_at }`** needs `EDIT`.
+- **`CommitScript { script, base, source, archive, toolchain, sdk, author_module, activate_at }`** needs `EDIT`.
+  - **The source comes first, before any op of the transaction** (logic.md 4.1a; @coordinator-opus m9f5e6b2ce690,
+    m043445294e6a). `archive` is the version's source, a canonical archive, carried inside the entry; `source` is
+    its reference, derived from it when the entry is decoded (only the archive is encoded), so the two never
+    disagree. Over `MAX_SOURCE_BYTES` (256 KiB) the transaction is refused `TooLarge { limit }`, judged from the
+    length alone; then `pe_world::script::check_source` must accept the bytes, or it is refused `Invalid`. Either
+    way nothing changes and the old version keeps running. `check_source` is consensus code: what it accepts
+    decides which commits apply, so it changes only with pe-world's apply rules, and its tests pin accept and
+    refuse on exact bytes (a case-collision pair, a reserved name, a non-ASCII segment, `..`, a duplicate,
+    unsorted order, an archive over the cap). pe-logic's build service runs the same function before it unpacks.
+    The rules are 4.1a's: the magic `pe.src.v0`, files in strictly ascending byte order of path, every path `src/`
+    then segments of 1 to 64 bytes of `[a-z0-9_]`, the file segment a 1-61-byte stem plus `.rs`, no Windows
+    reserved stem, `src/lib.rs` present, every file UTF-8 (`Cargo.toml` is not in the archive: the build service
+    writes it from one template).
+  - **The bytes come from the entry on every path that applies a commit:** live, a re-simulation after a late
+    entry, rung 1's replay, and pe-diverge's bundle replay all hold the entry and so the archive. Nothing may move
+    the source out of the entry without moving this check with it.
   - `activate_at` must equal the entry's frame stamp (logic.md 6.1); anything else is `Invalid`.
   - `base: None` makes a new script and is refused as `Stale` if the asset has a row. `base: Some(v)` must equal
     the row's version, or the op is refused as `Stale { precondition: OWN_CHECK, current, winner }`, with the row's
     version as `current` and its entry as `winner`: the loser rebases (R7).
-  - **V is the source tree's hash** (`source.hash`). A commit whose V any other asset has ever had is refused as
+  - **V is the source archive's hash** (`source.hash`). A commit whose V any other asset has ever had is refused as
     `Invalid` ("same version as asset X"), since the two would share every id, tag included (ruled,
     me5689a5c645c item 2 and m028c4bf1d412: any V it ever had; to revisit with logic on objects, where a copy is a
     reference). The check is exact and costs no history: V's tag id is registered, under another asset.
