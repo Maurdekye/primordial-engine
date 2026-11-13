@@ -137,6 +137,54 @@ pub struct RateBudget {
 }
 
 impl NodeConfig {
+    /// A hash of the settings every member must share, or some would refuse an honest member's entries, votes or
+    /// cuts: `frame_tolerance_s`, the rate budget and `Timing`. For the M1 interim's genesis record, which a joining
+    /// machine checks against its own `NodeConfig` (coordinator). The line, the members and the
+    /// genesis cut are left out: the record carries them itself, and the line derives from the record
+    /// (@engine-architect). The quorum rule is fixed in code. Local settings (the cut lag, fetch retry,
+    /// retention, relay) are left out too: members may differ there.
+    pub fn consensus_hash(&self) -> Hash {
+        // Every field named, none skipped with `..`: a new field doesn't compile until it is classified as
+        // must-match (hashed) or local (@design-reviewer). Add it to the test's lists too.
+        let NodeConfig {
+            // Carried by the genesis record itself; the line derives from it.
+            line: _,
+            members: _,
+            genesis: _,
+            // Must match.
+            timing,
+            frame_tolerance_s,
+            entries_per_frame,
+            extra_per_s,
+            budget_slack,
+            burst_s,
+            pending_s,
+            min_rate_per_s,
+            min_burst,
+            min_pending,
+            // Local.
+            cut_lag_s: _,
+            cut_lag_floor_s: _,
+            cut_lag_cap_s: _,
+            cut_lag_margin_s: _,
+            fetch_retry_ns: _,
+            keep_s: _,
+            keep_bytes: _,
+            relay: _,
+            #[cfg(feature = "mutants")]
+                mutation: _,
+        } = self;
+        let mut h = Hasher::new("pe.agree.consensus.v1");
+        h.write_u64(frame_tolerance_s.to_bits());
+        h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
+        h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
+        h.write_u64(*min_rate_per_s as u64).write_u64(*min_burst as u64).write_u64(*min_pending as u64);
+        h.write_u64(timing.cadence_ns as u64)
+            .write_u64(timing.min_timeout_ns as u64)
+            .write_u64(timing.max_timeout_ns as u64);
+        h.finish()
+    }
+
     /// The budget at the world's frame rate: `entries_per_frame × rate_hz × budget_slack + extra_per_s` entries per
     /// second, a burst of `burst_s` of that and a pending cap of `pending_s`, each at least its floor. With the
     /// defaults: 255/s, 127 and 1,020 at 60 Hz; 480/s, 240 and 1,920 at 120 Hz; at 30 Hz the rate's floor applies: 150/s, a burst of 75 and 600 pending.
