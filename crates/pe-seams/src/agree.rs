@@ -109,14 +109,50 @@ pub struct FinalCut {
     pub voters: Vec<(MemberKey, crate::entry::Signature)>,
 }
 
-/// A member's last self-test result, carried in its votes, so a tie at n = 2 can be broken by the member whose guard
-/// passed (divergence.md 5, step 2).
+/// A member's last self-test verdict, carried in its votes and self-test reports, so a tie at n = 2 can be broken by
+/// the member whose guard passed (divergence.md 5, step 2). A verdict names the split it was run for (S3 v1.3; L4',
+/// @coordinator-opus): a verdict from an earlier split episode never counts for this one, and a member
+/// picks only once every voter in the split holds a verdict whose [`SelfTest::split`] is that split's cut.
+///
+/// A member runs the self-test once per split episode, and its verdict is final for that split. A second, different
+/// verdict from one member for one split is equivocation ([`FaultKind::Equivocation`]): agreement shows that member
+/// as `Failed` and reports the fault, so `Failed` wins whatever order the verdicts arrive in, and every member's
+/// pick is the same (@design-reviewer's Medium on S3 v1.3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SelfTest {
     #[default]
     NotRun,
-    Passed,
-    Failed,
+    Passed {
+        split: CutRef,
+    },
+    Failed {
+        split: CutRef,
+    },
+}
+
+impl SelfTest {
+    /// The split cut the verdict was run for; `None` before any self-test.
+    pub fn split(&self) -> Option<CutRef> {
+        match *self {
+            SelfTest::NotRun => None,
+            SelfTest::Passed { split } | SelfTest::Failed { split } => Some(split),
+        }
+    }
+}
+
+/// What became of a vote ([`Agreement::vote`], S3 v1.3; @coordinator-opus).
+#[must_use = "the vote may not have been cast in this view"]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VoteResult {
+    /// Cast in the cut's current view.
+    Voted,
+    /// This member already voted in the cut's current view. The new root counts only from the next view; agreement
+    /// sends the self-test verdict now as a signed self-test report (a Protocol-lane message naming the split cut, not
+    /// a vote: lock and finality do not change). A driver revoting after a repair expects this, and it is no error.
+    AlreadyVotedThisView,
+    /// Not votable: the cut is final or unknown, is not the current view's proposal, failed its check or still has
+    /// entries being fetched, or lies past a vote hold ([`Agreement::hold_votes_from`]).
+    NotVotable,
 }
 
 /// A message to send, on a lane, to one peer.
@@ -140,7 +176,8 @@ pub enum FaultKind {
     WrongLine,
     /// From, or naming, a key that is not a member.
     NotMember,
-    /// Two different entries at one (chain id, seq): proof against the author.
+    /// Two different entries at one (chain id, seq), or two different self-test verdicts from one member for one
+    /// split ([`SelfTest`]): proof against the author.
     Equivocation,
     /// Beyond the author's entry rate.
     RateExceeded,
@@ -197,7 +234,15 @@ pub enum AgreeEvent {
         voters: Vec<MemberKey>,
     },
     /// Votes for one cut split so that no root can reach a quorum; every member sees who holds which root, with each
-    /// voter's self-test verdict from its vote, for the tie rule at n = 2 (divergence.md 5).
+    /// voter's self-test verdict, for the tie rule at n = 2 (divergence.md 5).
+    ///
+    /// Emitted again whenever a voter's verdict for this split arrives, by vote or by self-test report, with every
+    /// voter's verdict for this split. A verdict is final for its split ([`SelfTest`]); a second, different one from the
+    /// same member is equivocation, shown as `Failed`, so every member shows the same verdicts whatever order they
+    /// arrive in. The newest `RootSplit` for a cut supersedes the earlier ones (S3 v1.3), so whatever counts splits
+    /// counts distinct cuts. A report never changes a vote: roots count only from votes, a report changes only the
+    /// verdict shown here, it is signed over (line, the split cut, the verdict), and one from a member that did not
+    /// vote on the cut is ignored (@world-chunks).
     RootSplit {
         cut: CutRef,
         roots: Vec<(Hash, Vec<(MemberKey, SelfTest)>)>,
@@ -302,8 +347,9 @@ pub trait Agreement: EntrySource + Send {
     /// answers each with [`Agreement::vote`], from [`crate::Replica::root_at_cut`].
     fn wants_roots(&self) -> Vec<Cut>;
 
-    /// Vote for a cut with my root. Called again after a repair, with the repaired root (`revote`).
-    fn vote(&mut self, cut: &CutRef, root: Hash, self_test: SelfTest);
+    /// Vote for a cut with my root. Called again after a repair, with the repaired root (`revote`): in the same view
+    /// that answers [`VoteResult::AlreadyVotedThisView`], and the verdict goes out as a self-test report.
+    fn vote(&mut self, cut: &CutRef, root: Hash, self_test: SelfTest) -> VoteResult;
 
     /// Do not vote for any cut at or past `frame` until released: a build of newly committed code is pending
     /// (logic.md 6.2, N3). Holds nest by frame; the earliest unreleased one counts.
