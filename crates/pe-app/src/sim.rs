@@ -127,6 +127,8 @@ pub struct Sim {
 struct Local {
     chain: Chain,
     hands: Arc<dyn HandFeed>,
+    /// The `engaged` last sent for each hand, left then right (`local::submit_hands`).
+    sent: [bool; 2],
 }
 
 impl Sim {
@@ -155,9 +157,10 @@ impl Sim {
     }
 
     /// The local player `me`: a new chain on agreement's line from `nonce` (`local::chain_nonce`), and the hands
-    /// whose inputs step 2 submits each tick.
+    /// whose inputs step 2 submits each tick. A restart makes a new chain under the same key, which pe-agree v0 does
+    /// not take yet (agreement.md 8): the first restart test against pe-agree meets it (@design-reviewer's nit).
     pub fn with_local(mut self, me: MemberKey, nonce: [u8; 32], hands: Arc<dyn HandFeed>) -> Sim {
-        self.local = Some(Local { chain: Chain::new(self.agree.line(), me, nonce), hands });
+        self.local = Some(Local { chain: Chain::new(self.agree.line(), me, nonce), hands, sent: [false; 2] });
         self
     }
 
@@ -181,7 +184,8 @@ impl Sim {
         if let (Some(l), Some(view)) = (&mut self.local, &self.published) {
             let at = self.clock.host_time_of(p);
             let domain = self.replica.domain();
-            let (took, refused) = local::submit_hands(&mut l.chain, &*l.hands, view, at, p, domain, &mut *self.agree);
+            let (took, refused) =
+                local::submit_hands(&mut l.chain, &mut l.sent, &*l.hands, view, at, p, domain, &mut *self.agree);
             self.stats.inputs += u64::from(took);
             self.stats.inputs_refused += u64::from(refused);
         }
@@ -394,6 +398,42 @@ mod tests {
             let d = (o.pos - want).0;
             assert!(d.iter().all(|c| c.abs() < 1e-4), "{side:?} is {d:?} off");
         }
+    }
+
+    /// Both hands tracked and closed up to frame `.1`, then lost and open: pe-xr's release of a lost hand that held.
+    struct LostAfter(Arc<dyn FrameClock>, u64);
+
+    impl pe_seams::HandFeed for LostAfter {
+        fn hand_at(&self, hand: pe_seams::Hand, at: HostTime) -> Option<pe_seams::HandInput> {
+            let tracked = self.0.frame_at(at).is_some_and(|f| f.0 <= self.1);
+            let held = StillHands([0.0, 1.0, -0.4]).hand_at(hand, at)?;
+            Some(pe_seams::HandInput { tracked, closed: tracked, grip: if tracked { 1.0 } else { 0.0 }, ..held })
+        }
+    }
+
+    /// A lost hand that held something releases once (@xr-eng's Medium on cc8d0a96): tracked and closed it sends
+    /// `engaged`; lost and open it sends one release at its held pose; lost and still open it sends nothing more.
+    #[test]
+    fn a_lost_hand_sends_its_release_once_and_then_nothing() {
+        use pe_world::input::Input;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, _slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let mut s = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(LostAfter(clock.clone(), 2)));
+        for f in 1..=5 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        let engaged = |f: u64| -> Vec<bool> {
+            (s.agree.entries_at(Frame(f)).unwrap_or(&[]).iter())
+                .map(|e| match Input::decode(&e.entry.payload) {
+                    Some(Input::Hand { poses, .. }) => poses[0].engaged,
+                    other => panic!("not a hand input: {other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(engaged(2), vec![true, true], "tracked and closed");
+        assert_eq!(engaged(3), vec![false, false], "lost: one release each");
+        assert_eq!((engaged(4), engaged(5)), (vec![], vec![]), "lost and open: nothing more");
+        assert_eq!(s.stats().inputs, 4);
     }
 
     fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
