@@ -257,7 +257,7 @@ fn a_lossy_rekey_is_refused_on_others_held_objects_and_reported_elsewhere() {
     let kb = pe_seams::test_util::TestKeys::new(1, 3).key(1);
     held.set_claim(oid(LAMP), Claim { hand: oid(HAND), member: kb, since: Frame(0), until: Frame(1000) }).unwrap();
     let r = run(&mut held, &mut f.a, &commit(ASSET, Some(base), 3, 1));
-    assert!(matches!(refused(&r), Reason::Invalid { .. }), "RekeyBlocked once pe-seams has it");
+    assert_eq!(refused(&r), Reason::RekeyBlocked { objects: vec![oid(LAMP)], more: 0 });
     // Not held: it applies, and its activation reports the zeroed field.
     let (r, end) = land(&mut f, false, &commit(ASSET, Some(base), 3, 1));
     ok(&r);
@@ -297,7 +297,7 @@ fn a_lossy_rekey_is_refused_on_another_owners_protected_tombstone() {
     ok(&run(&mut f.w, &mut f.b, &tx(vec![Op::Delete { id: Target::Existing(oid(LAMP)) }])));
     let base = f.w.modules()[&ASSET].version;
     let r = run(&mut f.w, &mut f.a, &commit(ASSET, Some(base), 3, 1));
-    assert!(matches!(refused(&r), Reason::Invalid { .. }), "RekeyBlocked once pe-seams has it");
+    assert_eq!(refused(&r), Reason::RekeyBlocked { objects: vec![oid(LAMP)], more: 0 }, "the tombstone blocks");
     // The owner may lose their own data.
     let (r, end) = land(&mut f, true, &commit(ASSET, Some(base), 3, 1));
     ok(&r);
@@ -615,6 +615,32 @@ fn an_author_revoked_before_activation_voids_the_commit() {
     assert_eq!(f.w.end_frame(Frame(1)).voided, vec![(ASSET, pv, VoidKind::AuthorRevokedAtActivation)]);
     assert_eq!(f.w.modules()[&ASSET].version, base);
     assert_eq!(row(&f.w, blink(1).id()), Some(f32s(&[2.0, 0.5])), "nothing re-keyed");
+}
+
+/// A blocked re-key names the first 16 blocking objects in id order, and how many more (7.9; S2 v1.6).
+#[test]
+fn a_blocked_rekey_names_the_first_16_objects_and_counts_the_rest() {
+    let mut f = fx();
+    with_v1(&mut f);
+    let keys = pe_seams::test_util::TestKeys::new(1, 3);
+    let kb = keys.key(1);
+    let held: Vec<u128> = (400..418).rev().collect();
+    for &id in &held {
+        f.w.create(oid(id), None, keys.key(0), pe_world::GENESIS).unwrap();
+        f.w.insert(oid(id), Transform::at(Pos::ORIGIN)).unwrap();
+        ok(&run(&mut f.w, &mut f.a, &tx(vec![set(id, tag(1), vec![]), set(id, blink(1).id(), f32s(&[1.0, 0.5]))])));
+        f.w.set_claim(oid(id), Claim { hand: oid(HAND), member: kb, since: Frame(0), until: Frame(1000) }).unwrap();
+    }
+    let base = f.w.modules()[&ASSET].version;
+    let mut want: Vec<ObjectId> = held.iter().map(|&id| oid(id)).collect();
+    want.sort();
+    match refused(&run(&mut f.w, &mut f.a, &commit(ASSET, Some(base), 3, 1))) {
+        Reason::RekeyBlocked { objects, more } => {
+            assert_eq!(objects, want[..16].to_vec(), "the first 16, in id order");
+            assert_eq!(more, 2);
+        }
+        r => panic!("{r:?}"),
+    }
 }
 
 /// The modules table's value round-trips with a pending commit, attested and voided ones included.

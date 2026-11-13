@@ -188,6 +188,16 @@ pub struct FrameEnd {
     pub voided: Vec<(AssetId, Version, VoidKind)>,
 }
 
+/// `RekeyBlocked` for the objects `blocked` (in id order): the first [`REKEY_BLOCKED_NAMED`], and how many more.
+fn rekey_blocked(blocked: &[ObjectId]) -> Reason {
+    let named = blocked.len().min(REKEY_BLOCKED_NAMED);
+    let more = u32::try_from(blocked.len() - named).unwrap_or(u32::MAX);
+    Reason::RekeyBlocked { objects: blocked[..named].to_vec(), more }
+}
+
+/// How many blocking objects a `RekeyBlocked` refusal names (7.9; @coordinator-opus).
+pub const REKEY_BLOCKED_NAMED: usize = 16;
+
 /// Rows a holder feels: refused while the object is held (7.2).
 fn held_rows(c: ComponentId) -> bool {
     c == ComponentId::TRANSFORM || c == ids::BODY || c == ids::SHAPE
@@ -614,9 +624,9 @@ impl World {
                     if report.rows > MAX_REKEY_ROWS {
                         return Err(Reason::TooLarge { limit: MAX_REKEY_ROWS });
                     }
-                    // `RekeyBlocked { objects, more }` once pe-seams has it (asked of @engine-architect).
+                    // The first 16 blocking objects in id order, and how many more (S2 v1.6).
                     if !report.blocked.is_empty() {
-                        return Err(invalid());
+                        return Err(rekey_blocked(&report.blocked));
                     }
                 }
                 ids
