@@ -222,9 +222,12 @@ pub struct ReplicaImpl<W: WorldModel> {
     repairing_since: Option<Frame>,
     /// The script runner it was given (crate::logic). Without one it refuses to step a world with scripts.
     runner: Option<Box<dyn ScriptRunner>>,
-    /// The frame a step without a runner was last refused at, so that each stop counts one fault.
+    /// The frame the live history stopped at for want of a runner, so that each stop counts one fault; cleared once a
+    /// live step passes it (@engine-architect's Low 2 on 4ac9019f).
     refused_at: Option<Frame>,
-    /// Each frame's script effects from its latest live step, from the base frame up (S5).
+    /// The same for the re-steps off the live history (`root_at_cut`'s scratch), kept apart from the live one.
+    scratch_refused_at: Option<Frame>,
+    /// Each frame's script effects from its latest live step, until the next publication (S5).
     fx: BTreeMap<Frame, Vec<Effect>>,
     /// The keys of the effects a view has carried, per frame: a key carried is never carried again (D6).
     played: BTreeMap<Frame, BTreeSet<EffectKey>>,
@@ -310,6 +313,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             repairing_since: None,
             runner: None,
             refused_at: None,
+            scratch_refused_at: None,
             fx: BTreeMap::new(),
             played: BTreeMap::new(),
             fx_stepped: BTreeSet::new(),
@@ -435,12 +439,16 @@ impl<W: WorldModel> ReplicaImpl<W> {
         // A world with scripts, or a frame with a code commit, needs a runner (crate::logic). Without one the frame is
         // not stepped: nothing changes, and each stop counts one fault.
         if self.runner.is_none() && (self.world.scripted() || entries.iter().any(|e| W::commits_code(e))) {
-            if self.refused_at != Some(f) {
+            let at = if live { &mut self.refused_at } else { &mut self.scratch_refused_at };
+            if *at != Some(f) {
+                *at = Some(f);
                 self.faults += 1;
-                self.refused_at = Some(f);
             }
             return None;
         }
+        // Stepped: a stop at or below this frame is over, and a later one there counts again.
+        let at = if live { &mut self.refused_at } else { &mut self.scratch_refused_at };
+        *at = at.filter(|&r| r > f);
         let resimulated = f < self.reached;
         if !pe_core::fpenv::check_and_reset() {
             self.counters.fp_resets += 1;
@@ -548,16 +556,16 @@ impl<W: WorldModel> ReplicaImpl<W> {
     fn frame_effects(&mut self) -> (Vec<Effect>, Vec<EffectKey>) {
         let (mut effects, mut retracted) = (Vec::new(), Vec::new());
         for f in std::mem::take(&mut self.fx_stepped) {
-            let now = self.fx.get(&f).map_or(&[][..], Vec::as_slice);
+            let now = self.fx.remove(&f).unwrap_or_default();
             let played = self.played.entry(f).or_default();
             let keys: BTreeSet<EffectKey> = now.iter().map(|e| e.key).collect();
             retracted.extend(played.iter().filter(|k| !keys.contains(k)).copied());
             played.retain(|k| keys.contains(k));
-            effects.extend(now.iter().filter(|e| played.insert(e.key)).cloned());
+            effects.extend(now.into_iter().filter(|e| played.insert(e.key)));
         }
+        // Every frame stepped since the last view was in `fx_stepped`: nothing is left to keep.
+        debug_assert!(self.fx.is_empty(), "every frame with effects was stepped since the last view");
         let base = self.base_frame();
-        self.fx = self.fx.split_off(&base);
-        self.fx.retain(|_, list| !list.is_empty());
         self.played = self.played.split_off(&base);
         self.played.retain(|_, keys| !keys.is_empty());
         (effects, retracted)
@@ -785,7 +793,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             return Err(RootError::Damaged);
         }
         if at > self.frame {
-            let coming = at <= self.reached || self.replay.is_some();
+            // The live history stopped below the cut for want of a runner: its root won't come.
+            let stopped = self.refused_at.is_some_and(|r| r < at);
+            let coming = !stopped && (at <= self.reached || self.replay.is_some());
             return Err(if coming { RootError::Pending } else { RootError::NotYetSimulated });
         }
         if self.replay.as_ref().is_some_and(|r| at > r.cut.at.frame || r.root.is_none()) {
@@ -1419,6 +1429,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.held.insert(root, held);
         self.voted.clear();
         (self.replay, self.replayed, self.lost, self.stuck_at, self.unkept_met) = (None, None, None, None, None);
+        (self.refused_at, self.scratch_refused_at) = (None, None);
         self.imported = Some((cut.at, root));
         if self.frame >= self.reached {
             self.replayed = Some((cut.at, root));
