@@ -136,6 +136,8 @@ pub struct Sim {
     stats: SimStats,
     /// The local player: this member's chain, and the hands step 2 reads. `None` runs no local input.
     local: Option<Local>,
+    /// The frame step 2 last submitted the local player's inputs for.
+    input_frame: Option<Frame>,
     /// The network (S4): pe-net's handle, or a test's in-process network. `None` is a world alone.
     net: Option<Box<dyn Transport + Send>>,
     net_hook: Option<Box<dyn NetHook>>,
@@ -188,6 +190,7 @@ impl Sim {
             hold: None,
             stats: SimStats::default(),
             local: None,
+            input_frame: None,
             net: None,
             net_hook: None,
         }
@@ -249,14 +252,18 @@ impl Sim {
             }
         }
         // 2. Local input: both hands at frame `p`'s host time, through the newest view's rig, one input entry each.
-        // Before the first view the hands' objects are not known yet, so nothing goes in.
-        if let (Some(l), Some(view)) = (&mut self.local, &self.published) {
+        // Before the first view the hands' objects are not known yet, so nothing goes in. Once per frame: a wake (step
+        // 7) ticks again within a frame, and that tick takes in messages and re-simulates but adds no second set of
+        // inputs for the frame, which would count against the rate budget.
+        let fresh = self.input_frame.is_none_or(|f| p > f);
+        if let (true, Some(l), Some(view)) = (fresh, &mut self.local, &self.published) {
             let at = self.clock.host_time_of(p);
             let domain = self.replica.domain();
             let (took, refused) =
                 local::submit_hands(&mut l.chain, &mut l.sent, &*l.hands, view, at, p, domain, &mut *self.agree);
             self.stats.inputs += u64::from(took);
             self.stats.inputs_refused += u64::from(refused);
+            self.input_frame = Some(p);
         }
         // 3. Agreement's time. Its messages go to the network's outbox; a full queue is pe-net's local fault, never
         // a stall (transport.md 7). A world alone has nowhere to send them.
@@ -477,6 +484,22 @@ mod tests {
             let d = (o.pos - want).0;
             assert!(d.iter().all(|c| c.abs() < 1e-4), "{side:?} is {d:?} off");
         }
+    }
+
+    /// A wake ticks again within a frame (step 7): that tick takes in messages and re-simulates, but submits no second
+    /// set of hand inputs for the frame, or every wake would add a frame's inputs against the rate budget.
+    #[test]
+    fn a_second_tick_in_one_frame_submits_no_second_input() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, _slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let mut s = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])));
+        let half = Duration::from_nanos(1_000_000_000 / u64::from(RATE.hz()) / 2);
+        let f2 = clock.host_time_of(Frame(2));
+        for at in [clock.host_time_of(Frame(1)), f2, f2.plus(half), clock.host_time_of(Frame(3))] {
+            s.tick(at).expect("ticked");
+        }
+        assert_eq!(s.stats().ticks, 4);
+        assert_eq!(s.stats().inputs, 4, "two at frame 2 and two at frame 3, none from the second tick at frame 2");
     }
 
     /// Both hands tracked and closed up to frame `.1`, then lost and open: pe-xr's release of a lost hand that held.
