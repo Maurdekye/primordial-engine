@@ -329,7 +329,7 @@ which fixes the origin's role deliberately.
   | `BodyState` | derived: the simulated state of a bound body (linear and angular velocity, awake flag and sleep timer) and the physics digest of section 6.3 | pe-replica, at cut frames and on export |
   | `Appearance` | base colour, emissive colour, roughness, metalness, an optional material `BlobRef` | edits |
   | `Light` | kind, colour, intensity, range, a spot light's inner and outer cone angles (radians from the local -z axis, 0 ≤ inner ≤ outer ≤ π/2; exactly 0 for other kinds, so unused angles never hash two ways; an edit outside these is refused `Invalid` naming the angle; a `SetRow` changes the kind and the angles together, while field by field a spot becomes a point light by zeroing inner, then outer, then setting the kind) | edits |
-  | `Hand` | the owning `MemberKey`, side, grip, engaged | created by world logic at admission; then inputs of its owner only (section 8) |
+  | `Hand` | the owning `MemberKey`, side, grip, engaged, mode (8.1) | created by world logic at admission; then inputs of its owner only (section 8) |
   | `SimSize` | the simulation size of 3.5 | set at creation; edits |
   | `Protection` | the owning `MemberKey` (7.8) | edits by its owner |
 
@@ -1279,6 +1279,8 @@ pub enum Input {
     Grab { object: ObjectId, hand: Option<ObjectId> },
     /// Ends the author's claim on `object`; without one it changes nothing and notes `NoEffect`.
     Release { object: ObjectId },
+    /// Sets the author's own hand's mode (below); the mode it already has notes `NoEffect`.
+    HandMode { hand: ObjectId, mode: u8 },                    // 0 or 1; anything else does not decode
 }
 pub struct HandPose { pub pos: Pos, pub rot: [f32; 4], pub grip: f32, pub engaged: bool }
 ```
@@ -1341,6 +1343,16 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
   input at least every third of `claim_ms`, even when it is still, so a held grip is never left to lapse. There
   is no automatic re-grab after a drop.
 - **Release** ends the author's claim at once, with no cooldown (pe-session put the cooldown on expiry only).
+- **A hand's mode** (D18b; @coordinator-opus ma93ce7600de1, after @vdw-physics m7a559f785a77). Whether a hand has
+  a physics body changes the simulation, so every peer reads it from the world, never from a local toggle; and the
+  user switches it within a session, so it is not a frozen config item (6.6). It is a **personal comfort choice,
+  per member, on the hand**, like a VR turning mode: `Hand.mode`, 0 = physical only while engaged (the default),
+  1 = always physical within reach. Only the hand's owner changes it, with a `HandMode` input (`NotYourHand`
+  otherwise), applied at the input's frame like any input, so a replay applies it identically; it is a field of
+  the `Hand` row, so it is in the hand's leaf hash, and an import carries it. A mode change has no physics
+  footprint: pe-replica reads `World::hand_mode(hand)` each frame when it places hand bodies. A world-wide admin
+  cap may come later if a world needs one, not in M1. pe-app gives the user a key or controller binding to flip
+  their own mode (@engine-architect).
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
   object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
   expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).
