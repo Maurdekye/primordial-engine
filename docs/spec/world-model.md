@@ -265,6 +265,15 @@ which fixes the origin's role deliberately.
   instead is open until 9.2 gives the join an id (@design-reviewer's Low). A rejoin at a later frame gets two new hands (the ids
   include the admission frame, as 8 intends); removing a leaver's hands belongs to the leave, which is not built yet,
   so until then an M1 world never readmits a member (@chunks-reviewer's note). The avatar root that should parent the hands (3.5) is not built yet; its id derivation is open.
+- **An interim session's world** (@engine-architect's `pe_app::genesis`; @coordinator-opus) is `preset::m1_session(&Session, blobs)`: the pit of `ball_pit_on` on the session's line, at the
+  session's rate, with its gravity and pe-agree's settings record (config item 4; in M1 that is pe-agree's 32-byte
+  `NodeConfig::consensus_hash`), and every member admitted at frame 0 through `World::admit` in key order, each with
+  the permission bits its role in the genesis record gives (opener `ADMIN | EDIT | AGENT`, joiner `EDIT | AGENT`),
+  standing 0.6 m apart just outside the pit's near wall. A key listed twice is refused (`WorldError::Duplicate`). So
+  the root covers each member's bits, and the record and the world cannot disagree on anything the root covers; the
+  rest (the cut interval, the epoch, the nonce) is bound through the line (2.4, @design-reviewer's nit). The second
+  machine rebuilds the world from the record and compares roots, then the replica's frame-0 root, before it starts. A
+  test pins the frame-0 root and runs on Windows and Linux [V engine-architect, `crates/pe-world/tests/preset.rs`].
 - **No dependence on the preset's ids.** Tests, the harness and API examples find the pit's objects by name
   (`preset::names`, `preset::find`), never by id.
 - **Determinism:** the same arguments give the same state root, and admitting the same member at the same frame
@@ -1630,7 +1639,9 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
   - **Agent powers are a per-member right, granted by the world's admins.** Admins and the members they trust have
     it; guests don't unless an admin grants it. A person acting as their own agent is the same member, so the right
     is checked on the member, never on a claimed actor (an `Input` names none).
-    - A role bit `perm::AGENT` (5.4) gives the default: the admin role has it, Guest doesn't.
+    - A role bit `perm::AGENT` (5.4; `1 << 1`, stored but not checked until agent powers are built) gives the
+      default: the admin role has it, Guest doesn't. **M1's interim joiner has it, by ruling** (@coordinator-opus): the genesis record admits the opener `ADMIN | EDIT | AGENT` and the joiner `EDIT | AGENT`
+      (2.4), since M1's slice needs either machine to edit through an agent.
     - A per-member override row in governance, written only by admins, grants or revokes it for one member. Like
       every governance change it applies from its point in the agreed order, so every member applies it from the
       same frame. The member list shows who holds agent powers.
