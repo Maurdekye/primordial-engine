@@ -342,8 +342,10 @@ A peer process never panics on anything a module does [I; a test in 10.3].
   every time [I; the test below compares a warm rebuild with a clean one]. Decided (a), incremental off for every
   build, by @coordinator-opus on @fable-reviewer's advice, with conditions: every output-affecting
   setting is pinned rather than left to a default (below); the identity test also runs across two OSes (Windows and
-  Linux, `scripts/iter_bench_xos.sh`, below); and it runs in the landing gate (with @provenance-eng). The edit-time cost is to be measured
-  in a clean window; a noisy run on 2026-11-11 could not separate the two modes.
+  Linux, `scripts/iter_bench_xos.sh`, below); and it runs in the landing gate (with @provenance-eng). Its edit-time cost, measured in a clean window
+  on 2026-11-13 on the `tally` script: 0.347 s per edit with incremental off against 0.265 s with it on, +0.08 s
+  [V `docs/iteration-benchmark.md` 3.4]; loading the built module adds about 5 ms (metering 0.9 ms, Cranelift
+  4.1 ms).
 - **Pinned, nothing left to a default or to the machine:** the profile keys above plus debug assertions and
   overflow checks off and no rpath; `-C target-cpu=mvp` with exactly the features of 5.3
   (`+bulk-memory,+multivalue,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext`, the list
@@ -684,6 +686,7 @@ Frame counts below are at the default 60 Hz, for illustration only; every limit 
 | Build on that machine | Frames to replay at 60 Hz | Inside a 2 s window |
 |---|---|---|
 | 0.45 s (small edit, incremental, 6.4k lines) [V benchmark] | 27 | Yes |
+| 0.35 s (a script edit, incremental off, `tally`) [V benchmark 3.4] | 21 | Yes |
 | 1.3 s (clean build of a 6.4k-line module, LTO) [V benchmark] | 78 | Yes |
 | 15-20 s (a physics-sized module) [V file 03] | 900-1,200 | No: 6.4 |
 

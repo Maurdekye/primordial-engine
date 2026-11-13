@@ -11,7 +11,7 @@ Every number has a mark. **[V]** means verified: measured here, with the raw log
 
 ## 1. Headline
 
-1. **[V] Hot-reloading a realistic logic edit takes about 0.45 s from edit to first frame.** The guest is 6.4k LOC; the build profile is opt-level 3 without LTO, 16 codegen units, incremental (the `rel-fast` profile). The time covers editing a function, building with cargo for wasm32, wasmi validate+compile, instantiate, state migration and the first frame. The cargo build is 0.45 s and the swap 6 ms. The phase-1 guess of 1-5 s was pessimistic for this size. (`loop-main.log`)
+1. **[V] Hot-reloading a realistic logic edit takes about 0.45 s from edit to first frame.** The guest is 6.4k LOC; the build profile is opt-level 3 without LTO, 16 codegen units, incremental (the `rel-fast` profile). The time covers editing a function, building with cargo for wasm32, wasmi validate+compile, instantiate, state migration and the first frame. The cargo build is 0.45 s and the swap 6 ms. The phase-1 guess of 1-5 s was pessimistic for this size. (`loop-main.log`) Rechecked 2026-11-13 in a clean window: build 0.358 s, edit to first frame 0.364 s (section 3.4).
 2. **[V] `rel-fast` builds as fast as `dev` and runs about 12x faster.** Unoptimized dev wasm in wasmi ticks at 77 ms at n=10k, against 6.4 ms for release. A plain dev build is the wrong profile for playtesting logic. (`runtime-matrix-dev.jsonl`)
 3. **[V] Fat LTO (the shipping profile) is the only slow lever.** It takes 1.3 s at 6.4k LOC, 2.7 s at 17k and 5.9 s at 45k with a crate split; one crate takes 1.9 / 4.3 / 10.9 s. The final link with LTO is 1.09 s of the 1.31 s build.
 4. **[V] Runtime speed on the same logic at n=10k, as a multiple of native time:**
@@ -138,6 +138,44 @@ Your three suspicions:
 * "Cranelift cannot emit wasm32": confirmed [V].
 * "sccache helps little": inferred [I], not measured.
 * "Process spawn and cargo overhead are a visible share": partly confirmed [V]. Visible (about 60 ms, 12-15%), but not dominant.
+
+### 3.4 Recheck and the script build service, 2026-11-13 clean window [V] (`spikes/out/iter-bench/clean-window-2026-11-13/`)
+
+These logs are on main, not in the archive tag. The run was one heavy-slot job at normal priority, with the org's build
+slots cut to 1 for the coordinator's clean window. Before timing, the other slots were free and no other cargo or rustc ran; the same
+held between the two parts and at the end (`window.log`). CPU load and non-cargo processes were not recorded. Same
+desktop and rustc 1.99.0 as October. Script: `spikes/iter-bench/clean_window_run.sh`.
+
+October's rel-fast loop, n=8, median [min-max] (`loop-recheck.jsonl`):
+
+| config | build s | edit to first frame s | October |
+|---|---|---|---|
+| split rel-fast (incremental) | 0.358 [0.338-0.375] | 0.364 | 0.446 build, 0.453 loop |
+| split rel-fast, CARGO_INCREMENTAL=0 | 0.354 [0.346-0.378] | 0.360 | 0.443 build |
+
+The swap is 6.1 ms (wasmi compile 3.5 ms, first tick 1.3 ms), as in October. rustc's own time is 339-340 ms of the
+build, and a direct replay of the rustc commands takes 0.341-0.345 s. October's 0.45 s comes out about 20 % faster
+today; toolchain and machine changes are not separated [I]. Incremental makes no difference at this size.
+
+A script edit under pe-logic's build service (logic.md 4.2), with the service's exact profile and codegen flags, on
+the `tally` test script: n=10 one-constant edits per mode, timed from the source write to cargo's exit
+(`logic-edit/summary.json`, `edit.jsonl`):
+
+| mode | edit to built s | no-op s |
+|---|---|---|
+| incremental on | 0.265 [0.264-0.306] | 0.133 |
+| incremental off (the service's setting) | 0.347 [0.334-0.374] | 0.134 |
+
+* Incremental off costs 0.08 s per edit (+31 %) here. The 2026-11-11 run on a shared machine at idle priority
+  (3.4 s on, 5.4 s off, `logic-v0/incr/incr.log`) was dominated by load.
+* `-Z time-passes`, one sample per mode: rustc total 0.186 s (off) and 0.213 s (on), `run_linker` 0.042-0.043 s
+  (`time-passes-*.txt`). One sample each, so the on/off order there means nothing.
+* Load of the built 17.8 KB module, n=19 (`load-time.jsonl`): metering pass 0.91 ms [0.86-0.99], Cranelift compile
+  4.1 ms [3.9-4.5], instantiate 0.11 ms.
+* [I] Edit to a running module is therefore about 0.35 s with incremental off, the sum of separately measured
+  parts; nearly all of it is cargo and rustc.
+* [I] The log keeps no hash per artifact. That each edit rebuilt follows from each edit taking 0.13-0.2 s longer
+  than a no-op, which matches rustc's time-passes total.
 
 ## 4. Logic runtime
 
@@ -290,6 +328,7 @@ iter-host systems <same wasm> native wasmi-eager-fuel wasmtime-cranelift-fuel-na
 iter-host physics spikes/wasm-guests/target/wasm32-unknown-unknown/release/physics_in_wasm.wasm <runtimes>
 python -I scripts/audit_native.py spikes/iter-bench/audit/wasmi spikes/iter-bench/audit/wasmtime-min-cranelift spikes/iter-bench/audit/wasmtime-min-winch spikes/iter-bench/host --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-gnu --md spikes/out/iter-bench/audit-runtimes.md
 python -I scripts/iter_bench_report.py > spikes/out/iter-bench/tables.md
+bash spikes/iter-bench/clean_window_run.sh            # 3.4; from the main checkout, PE_HEAVY_DIR set, inside one agent turn
 ```
 
 The Cranelift set needs `rustup component add rustc-codegen-cranelift-preview --toolchain nightly` and `rustup target add wasm32-unknown-unknown --toolchain nightly`; both were installed on this desktop for this bench. The wasm hashes used are in `spikes/out/iter-bench/wasm-sha256.txt`.
