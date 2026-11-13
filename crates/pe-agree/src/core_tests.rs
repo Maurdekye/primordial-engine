@@ -54,6 +54,8 @@ struct Sim {
     events: Vec<Vec<CoreEvent>>,
     faults: Vec<CoreFault>,
     inflated: std::collections::BTreeSet<u64>,
+    /// (member, from ms, until ms): every message to or from it sent in that window is lost.
+    partition: Option<(usize, i64, i64)>,
 }
 
 fn root_of(cut: &Cut, wrong: bool) -> Hash {
@@ -85,11 +87,19 @@ impl Sim {
             events: vec![Vec::new(); n as usize],
             faults: Vec::new(),
             inflated: Default::default(),
+            partition: None,
         }
     }
 
     fn send(&mut self, from: usize, to: usize, msg: Msg) {
         if self.roles[to] == Role::Crashed || to == from {
+            return;
+        }
+        if let Some((k, a, b)) = self.partition
+            && (to == k || from == k)
+            && self.now >= a * MS
+            && self.now < b * MS
+        {
             return;
         }
         let (a, b) = self.delay[from];
@@ -532,4 +542,41 @@ fn a_vote_naming_another_view_than_its_block_is_a_fault() {
     let v = crate::core::Vote { view, block: id, root, voter: k3, self_test: SelfTest::NotRun, heads: Vec::new(), sig };
     let now = HostTime(s.now);
     assert_eq!(s.nodes[0].receive(k3, Msg::Vote(v), now, &s.keys), Err(CoreFault::BadVote));
+}
+
+#[test]
+fn a_member_cut_off_for_two_seconds_catches_up_and_the_line_resumes() {
+    // M1 requirement (coordinator m871a9a3a61d9, @design-reviewer m58bfc0fc985a): n = 4 with member 3 crashed, so the
+    // other three need each other for every certificate. Member 1 loses every message for 2 s; afterwards the line
+    // must resume, though no message sent during the partition is ever delivered.
+    for seed in 1..=5 {
+        let mut s = Sim::new(4, seed, vec![Role::Honest, Role::Honest, Role::Honest, Role::Crashed], fast());
+        s.partition = Some((1, 2_000, 4_000));
+        s.run(4_000);
+        let before: Vec<usize> = (0..3).map(|i| s.finals[i].len()).collect();
+        s.run(10_000);
+        s.assert_agreement();
+        let after: Vec<usize> = (0..3).map(|i| s.finals[i].len()).collect();
+        let views: Vec<u64> = (0..3).map(|i| s.nodes[i].view()).collect();
+        assert!(
+            (0..3).all(|i| after[i] >= before[i] + 20),
+            "seed {seed}: finals {before:?} -> {after:?}, views {views:?}"
+        );
+    }
+}
+
+#[test]
+fn a_member_cut_off_while_the_others_go_on_finalizes_again() {
+    // All honest at n = 4: members 0, 2 and 3 keep finalizing while member 1 is cut off for 2 s and falls many views
+    // behind; once back, member 1 finalizes again.
+    for seed in 1..=3 {
+        let mut s = Sim::new(4, seed, vec![Role::Honest; 4], fast());
+        s.partition = Some((1, 1_000, 3_000));
+        s.run(3_000);
+        let before = s.finals[1].len();
+        assert!(s.finals[0].len() >= before + 20, "seed {seed}: the others stopped too");
+        s.run(6_000);
+        s.assert_agreement();
+        assert!(s.finals[1].len() >= before + 20, "seed {seed}: member 1 stuck at {before} finals");
+    }
 }

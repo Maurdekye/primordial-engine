@@ -286,8 +286,9 @@ struct Hdr {
     rep: Rep,
 }
 
-/// How many committed blocks' headers stay after pruning, so a voter that has committed further than a proposal
-/// certifies can still derive that proposal's leader. Past it, the voter refuses (a timeout, never safety).
+/// How many committed blocks' headers (and proposals) stay after pruning, so a voter that has committed further than a
+/// proposal certifies can still derive that proposal's leader, and a member that fell behind can fetch the blocks it
+/// missed. Past it, the voter refuses (a timeout, never safety), and a member further behind needs an import (join).
 const HEADER_HISTORY: usize = 256;
 
 /// Votes, timeouts and orphan proposals are kept only up to this many views above the current one (a faulty member
@@ -354,6 +355,13 @@ pub struct Core {
     high_qc: Qc,
     last_voted: u64,
     timed_out: u64,
+    /// This member's timeouts for its current and previous view, re-sent every timeout period, so members that lost
+    /// them (an outage past pe-net's idle limit, transport.md 3.2) can still form the certificate: the previous view's
+    /// is the one whose certificate moved this member on, which the others may lack.
+    recent_timeouts: BTreeMap<u64, Timeout>,
+    last_resend: HostTime,
+    /// Time out this view at the next tick: t + 1 members timed out in it, so at least one honest member is there.
+    join_view: u64,
     proposed_view: u64,
     consecutive_timeouts: u32,
     /// Exponentially weighted time from entering a view to its certificate, ns.
@@ -367,6 +375,8 @@ pub struct Core {
     /// Headers of recently committed blocks, oldest first (leader derivation below the committed block).
     history: HashMap<BlockId, Hdr>,
     history_order: VecDeque<BlockId>,
+    /// The proposals of the same recently committed blocks, served to a member that fetches them to catch up.
+    history_bodies: HashMap<BlockId, Proposal>,
     /// Self-test verdicts per split cut and member (S3 v1.3).
     verdicts: BTreeMap<CutRef, BTreeMap<MemberKey, Verdict>>,
 
@@ -448,6 +458,9 @@ impl Core {
             high_qc: gqc,
             last_voted: 0,
             timed_out: 0,
+            recent_timeouts: BTreeMap::new(),
+            last_resend: now,
+            join_view: 0,
             proposed_view: 0,
             consecutive_timeouts: 0,
             view_time_ns: base,
@@ -457,6 +470,7 @@ impl Core {
             commit_target: None,
             history: HashMap::new(),
             history_order: VecDeque::new(),
+            history_bodies: HashMap::new(),
             verdicts: BTreeMap::new(),
             out: Vec::new(),
             events: Vec::new(),
@@ -739,10 +753,14 @@ impl Core {
             self.committed_view = block.view;
             if let Some(h) = self.hdr(&id) {
                 self.history.insert(id, h);
+                if let Some(s) = self.blocks.get(&id) {
+                    self.history_bodies.insert(id, s.proposal.clone());
+                }
                 self.history_order.push_back(id);
                 while self.history_order.len() > HEADER_HISTORY {
                     if let Some(old) = self.history_order.pop_front() {
                         self.history.remove(&old);
+                        self.history_bodies.remove(&old);
                     }
                 }
             }
@@ -804,8 +822,9 @@ impl Core {
                 self.on_timeout(t, now, verifier)
             }
             Msg::Fetch(id) => {
-                if let Some(s) = self.blocks.get(&id) {
-                    self.out.push((To::One(from), Msg::Propose(s.proposal.clone())));
+                let p = self.blocks.get(&id).map(|s| &s.proposal).or_else(|| self.history_bodies.get(&id));
+                if let Some(p) = p {
+                    self.out.push((To::One(from), Msg::Propose(p.clone())));
                 }
                 Ok(())
             }
@@ -952,7 +971,12 @@ impl Core {
             self.note_tc(tc, now);
         }
         let Some(parent) = self.block(&b.parent).cloned() else {
-            if b.view >= self.view && b.view <= self.view + VIEW_WINDOW {
+            if wanted {
+                // A block this member fetched, whose parent it lacks too: keep it, still marked as fetched, so the
+                // chain fills in one round trip per missing block rather than one walk down the gap per block.
+                self.requested.insert(id);
+                self.orphans.insert((b.view, b.proposer), p.clone());
+            } else if b.view >= self.view && b.view <= self.view + VIEW_WINDOW {
                 self.orphans.insert((b.view, b.proposer), p.clone());
             }
             self.request(b.parent);
@@ -1083,18 +1107,29 @@ impl Core {
             return Ok(());
         }
         set.insert(t.voter, (t.high_qc.view, t.sig));
-        if set.len() >= self.q {
+        let count = set.len();
+        if count >= self.q {
             let timeouts = set.iter().map(|(k, (hv, s))| (*k, *hv, *s)).collect();
             self.note_tc(Tc { view: t.view, timeouts }, now);
+        } else if t.view > self.view && count > self.faults_tolerated() {
+            // Catch up (a member that missed a certificate while cut off): t + 1 members timed out in a later view,
+            // so an honest member is there. Join it and time out at once; that only gives up voting in it.
+            self.enter(t.view, now);
+            self.join_view = t.view;
         }
         Ok(())
+    }
+
+    /// t: how many Byzantine members the quorum tolerates.
+    fn faults_tolerated(&self) -> usize {
+        (self.cfg.members.len() - 1) / 3
     }
 
     // ---- acting ----
 
     /// Advance on time: time out the view when its deadline passes.
     pub fn tick(&mut self, now: HostTime, signer: &dyn Signer) {
-        let due = now >= self.deadline() || self.split_views.contains(&self.view);
+        let due = now >= self.deadline() || self.split_views.contains(&self.view) || self.join_view == self.view;
         if self.timed_out < self.view && due && !self.mutated(Mutation::NoTimeouts) {
             self.timed_out = self.view;
             let t = Timeout {
@@ -1104,7 +1139,19 @@ impl Core {
                 sig: signer.sign(&timeout_bytes(self.cfg.line, self.view, self.high_qc.view)),
             };
             self.out.push((To::All, Msg::Timeout(t.clone())));
+            self.recent_timeouts.insert(t.view, t.clone());
+            self.last_resend = now;
             let _ = self.on_timeout_local(t, now);
+        } else if now >= self.last_resend.plus_nanos(self.timeout_ns()) {
+            // No certificate for a timeout period: send this member's recent timeouts again (each the same message, so
+            // never equivocation).
+            let v = self.view;
+            self.recent_timeouts.retain(|tv, _| *tv + 1 >= v);
+            let again: Vec<Timeout> = self.recent_timeouts.values().cloned().collect();
+            for t in again {
+                self.out.push((To::All, Msg::Timeout(t)));
+            }
+            self.last_resend = now;
         }
     }
 
