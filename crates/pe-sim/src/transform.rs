@@ -150,7 +150,7 @@ impl Component for Transform {
     fn fields() -> Vec<FieldDesc> {
         vec![
             FieldDesc::new("chunk", FieldKind::I64, offset_of!(Transform, chunk), 3),
-            FieldDesc::new("pos", FieldKind::F64, offset_of!(Transform, pos), 3),
+            FieldDesc::new("pos", FieldKind::F64, offset_of!(Transform, pos), 3).with_unit("m"),
             FieldDesc::new("rot", FieldKind::F32, offset_of!(Transform, rot), 4),
             FieldDesc::new("scale", FieldKind::F32, offset_of!(Transform, scale), 3),
             FieldDesc::new("_pad", FieldKind::U32, offset_of!(Transform, _pad), 1),

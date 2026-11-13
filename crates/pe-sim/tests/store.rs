@@ -409,3 +409,66 @@ fn column_raw_matches_the_typed_column() {
     assert_eq!(rows.len(), 2 * std::mem::size_of::<Velocity>());
     assert!(ids.windows(2).all(|w| w[0] < w[1]));
 }
+
+/// world-model.md 6.4: every write marks its object's cached hash stale, a restore marks them all, and a refresh
+/// stores fresh hashes and drops the hashes of objects that are gone.
+#[test]
+fn cached_hashes_go_stale_on_every_write() {
+    let mut s = new_store();
+    let (a, b, c) = (oid(1, 1), oid(1, 2), oid(1, 3));
+    for id in [a, b, c] {
+        s.create(id).unwrap();
+        s.insert(id, Velocity { v: [0.0; 3], spin: 0.0 }).unwrap();
+    }
+    // A hash of the object's id and the store's frame, enough to see which entries were recomputed.
+    let tag = |s: &SimStore, id: ObjectId| {
+        let mut h = [0u8; 32];
+        h[..16].copy_from_slice(&id.to_u128().to_le_bytes());
+        h[16..24].copy_from_slice(&s.frame().0.to_le_bytes());
+        h
+    };
+    assert_eq!(s.stale_hashes(), None, "a fresh store has nothing cached");
+    assert_eq!(s.cached_hash(a), None);
+    s.refresh_hashes(tag);
+    assert!(s.stale_hashes().unwrap().is_empty());
+    assert_eq!(s.cached_hash(a), Some(tag(&s, a)));
+    let fresh = |s: &mut SimStore| {
+        s.refresh_hashes(tag);
+        assert!(s.stale_hashes().unwrap().is_empty());
+    };
+    let stale = |s: &SimStore| s.stale_hashes().unwrap().iter().copied().collect::<Vec<_>>();
+
+    s.get_mut::<Velocity>(a).unwrap().spin = 1.0;
+    assert_eq!(stale(&s), [a]);
+    assert_eq!(s.cached_hash(a), None);
+    assert!(s.cached_hash(b).is_some());
+    fresh(&mut s);
+
+    let _ = s.column_mut::<Velocity>();
+    assert_eq!(stale(&s), [a, b, c], "a column handed out marks every object in it");
+    fresh(&mut s);
+
+    s.set_parent(c, Some(a), None).unwrap();
+    assert!(stale(&s).contains(&c) && stale(&s).contains(&a), "the hierarchy writes `Node` rows");
+    fresh(&mut s);
+
+    let v = s.row_version(ComponentId::NODE, b).unwrap();
+    s.set_row_version(ComponentId::NODE, b, v);
+    assert_eq!(stale(&s), [b]);
+    fresh(&mut s);
+
+    let snap = s.snapshot();
+    s.destroy(a).unwrap();
+    assert!(stale(&s).contains(&a) && stale(&s).contains(&c), "a destroyed subtree is stale");
+    s.set_frame(pe_core::Frame(5));
+    fresh(&mut s);
+    assert_eq!(s.cached_hash(a), None, "a destroyed object's hash is dropped");
+    assert!(s.cached_hash(b).is_some());
+
+    // A clone carries the cache with its rows; a restore makes every hash stale.
+    let copy = s.clone();
+    assert_eq!(copy.cached_hash(b), s.cached_hash(b));
+    s.restore(&snap).unwrap();
+    assert_eq!(s.stale_hashes(), None);
+    assert_eq!(s.cached_hash(b), None);
+}

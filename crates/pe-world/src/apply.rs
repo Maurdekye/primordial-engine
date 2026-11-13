@@ -13,7 +13,7 @@ use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId};
 use pe_seams::{Class, FieldPath, Note, Outcome, Reason, SignedEntry, Version};
 use pe_sim::{ComponentId, Node, RowVersion, Transform};
 
-use crate::components::{Protection, SimSize, ids};
+use crate::components::{Light, Protection, SimSize, ids};
 use crate::edit::{
     Actor, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
 };
@@ -821,6 +821,12 @@ impl World {
         if c == ids::PROTECTION {
             let p: Protection = read_pod(bytes).ok_or_else(|| invalid_field(c, 0))?;
             self.check_protection_write(cx.author, id, Some(p.owner))?;
+        }
+        if c == ids::LIGHT {
+            let l: Light = read_pod(bytes).ok_or_else(|| invalid_field(c, 0))?;
+            if let Some(field) = l.invalid_angle() {
+                return Err(invalid_field(c, field));
+            }
         }
         let before = self.store.row_version(c, id);
         let prior = self.store.get_raw(c, id).map(<[u8]>::to_vec);

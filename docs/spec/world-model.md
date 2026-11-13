@@ -327,7 +327,7 @@ which fixes the origin's role deliberately.
   | `Body` | static, dynamic or kinematic; friction, restitution, linear and angular damping, rolling resistance, gravity scale, bullet, may sleep; grabbable | edits |
   | `BodyState` | derived: the simulated state of a bound body (linear and angular velocity, awake flag and sleep timer) and the physics digest of section 6.3 | pe-replica, at cut frames and on export |
   | `Appearance` | base colour, emissive colour, roughness, metalness, an optional material `BlobRef` | edits |
-  | `Light` | kind, colour, intensity, range | edits |
+  | `Light` | kind, colour, intensity, range, a spot light's inner and outer cone angles (radians from the local -z axis, 0 ≤ inner ≤ outer ≤ π/2; exactly 0 for other kinds, so unused angles never hash two ways; an edit outside these is refused `Invalid` naming the angle; a `SetRow` changes the kind and the angles together, while field by field a spot becomes a point light by zeroing inner, then outer, then setting the kind) | edits |
   | `Hand` | the owning `MemberKey`, side, grip, engaged | created by world logic at admission; then inputs of its owner only (section 8) |
   | `SimSize` | the simulation size of 3.5 | set at creation; edits |
   | `Protection` | the owning `MemberKey` (7.8) | edits by its owner |
@@ -418,6 +418,38 @@ accepted the details below (via @coordinator-opus; file 16, 6.5):
   player's scale. So an object saved by a giant and spawned by a mouse is, for simulation distance, the same size
   relative to each.
 - It is an ordinary component: hashed, versioned (7.3), and written by plain edits.
+
+### 3.6 Field units
+
+A field's description may name its unit (@coordinator-opus's ruling, on @fable-reviewer's advice). The
+unit is part of the description, so it is in the registry's hashed bytes (6.6) and in pe-sim's schema hash, and
+WorldApi's `x-unit` comes from it alone. Labels, ranges and widgets are not part of the description and stay out of
+hashed bytes.
+
+- **"No unit" has one form,** the empty string. A dimensionless product (`1`, `m/m`) is refused as a unit: such a
+  field leaves it empty. A padding field (`_` name) has no unit.
+- **Grammar** (`pe_sim::unit`): a product of the symbols `N Pa J W C V Hz kg m s A K mol cd rad sr`, each with an
+  integer power, written `factor (op factor)*`, where `op` is `*` or `/` read left to right (`J/kg/K` is
+  J·kg⁻¹·K⁻¹), and `factor` is `1` or `symbol` with an optional `^n` (n from -99 to 99, not 0). No spaces and no SI
+  prefixes: a field stores the SI unit's magnitude, and a field in another scale has no unit.
+- **One canonical spelling,** and registration refuses any other (the error names the canonical one), so `m` and
+  `meter`, or `kg/m^3` and `m^-3*kg`, cannot hash two ways. Canonical: each symbol once, its powers summed and
+  cancelled symbols gone; symbols with a positive power first, in the order listed above, joined by `*`; then each
+  symbol with a negative power, in that order, as `/symbol`; `1/` when no power is positive; a power of 1 unwritten,
+  any other as `^n`. Examples: `m/s`, `kg/m^3`, `1/s`, `N*m`, `J/kg/K`.
+- **The grammar fixes spelling, not dimension:** `N` and `kg*m/s^2` are both canonical and differ; a field is
+  labelled with the one it means. Quantities outside the grammar (colours, frame counts, light intensity whose meaning
+  depends on the light's kind) have no unit. A symbol appended to the list later makes new strings valid without
+  changing any existing spelling, but older builds refuse a description that uses it, so a newer world's component
+  may not register on an older build (@chunks-reviewer's Low).
+- **Spelling is not dimension for consumers either:** string equality of units is not dimensional equality (`Hz` is
+  not `1/s`, `J` is not `N*m`). Anything that compares or converts units (WorldApi's `x-unit` readers among them)
+  reduces them to base dimensions itself.
+- **The engine's components** carry: `Transform.pos` m; `Shape.density` kg/m^3, `Shape.size` m; `Body.linear_damping`
+  and `angular_damping` 1/s; `BodyState.linear` m/s, `angular` rad/s, `sleep_time` s; `Light.range` m, `inner_angle` and `outer_angle` rad;
+  `SimSize.metres` m. Every other engine field has none.
+- **Scripted components** (logic.md) declare units through the same description; pe-logic passes them into
+  `FieldDesc`, and the same check applies.
 
 ## 4. Coordinates: `Pos`, `Offset` and the wall
 
@@ -542,7 +574,10 @@ World
     ├── modules            per script asset: its version (source), toolchain, declared components (5.4)
     ├── governance         members, roles, permissions, bans, join rules (storage; rules are WS-gov's)
     ├── claims, cooldowns  exclusive holds (7.2)
-    └── tombstones         deleted objects, for the delete rule (7.5)
+    ├── tombstones         deleted objects, for the delete rule (7.5)
+    ├── hand packs         pending hand input (8.1)
+    └── push windows       each member's recent pushes, for the push budget (8.1)
+(the tables' order and bytes: 6.6)
 (edit versions are kept beside each row, 3.2; Local objects are outside the world, 3.1)
 ```
 
@@ -625,7 +660,8 @@ world root   = H("pe.root"   ‖ frame u64 ‖ config hash ‖ tables root ‖ c
                                in DomainId order)
   config hash  = the hash of the world's canonical config bytes
   tables root  = H("pe.tables" ‖ count u64 ‖ each table's hash, in this order: registry, lines, modules, governance,
-                               claims, cooldowns, tombstones)          each table hash is a sorted-map hash
+                               claims, cooldowns, tombstones, hand packs, push windows)
+                                                   each table hash is a sorted-map hash (6.6)
   domain root  = H("pe.domain" ‖ domain id u64 ‖ objects root ‖ physics_global)
                  physics_global is pe-physics's hash of that domain's physics image (6.3); per domain, so M4's
                  domains per contact group change no format (@design-reviewer's r5 Low 1)
@@ -664,8 +700,9 @@ world root   = H("pe.root"   ‖ frame u64 ‖ config hash ‖ tables root ‖ c
   plan puts agreement per contact group from M4 (file 16, C4), and a group is a set of ids, so the trie per domain
   fits it.
 - **Domains from M1** (plan S1): one domain per world until M4, so M1's world root has exactly one domain root.
-- **Empty and absent are the same:** a column with no rows, an object with no components of a type, and an empty
-  table each contribute nothing, as today's hash skips empty columns [V `snapshot.rs:11-12`].
+- **Empty and absent are the same** for rows: a column with no rows and an object with no components of a type
+  contribute nothing, as today's hash skips empty columns [V `snapshot.rs:11-12`]. A world table is different: the
+  tables root is positional, so an empty table is hashed with count 0, never omitted (6.6).
 
 ### 6.3 What an object's leaf covers
 
@@ -711,13 +748,24 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
 - **Incrementally:** each object leaf is cached; a write marks the object dirty (by block, 5.2); a hash at a cut
   rehashes the dirty objects and the trie paths above them. A moving ball dirties its leaf once per frame; 500 moving
   balls rehash 500 leaves and about 500 × 3 trie nodes per cut [I; measured in M1].
+  **As built (slice C):** pe-sim keeps each object's cached hash beside its rows, with a stale mark that every row
+  write sets (a row put or dropped, a version set, a row handed out mutably, a whole column handed out marks every
+  object in it, a destroyed subtree), and a restore from a pe-sim `Snapshot` marks everything. `World::object_hash`
+  uses a leaf that is not stale and computes the others; `World::refresh_tree_cache` (pe-replica's call, at cuts)
+  stores the stale ones. Marks are per object, not per block. The trie's inner nodes are rebuilt for each root, not
+  cached: measured on a 507-object pit, a root takes 4.7 ms from scratch and 0.34 ms with every leaf cached, most
+  of it the trie [V `root_cost`, release, rough]. Caching inner nodes is left until a measurement asks for it.
 - **Caches roll back with the state.** The cached leaf hashes and trie node hashes live inside the snapshotted
-  copy-on-write blocks, so `restore` brings back the caches of the restored frame, never hashes from the future. A
+  copy-on-write blocks, so `restore` brings back the caches of the restored frame, never hashes from the future. As
+  built, the cache is part of the store, so a `World` clone (pe-replica's saved state) carries its own cache, and a
+  rollback to it brings that cache back with its rows. A
   property test: after random sequences of steps, snapshots and rollbacks, the incremental root equals the root
   computed from scratch.
 - **Verified restore** (@diverge-eng's R-H3): `verify(root)` rehashes a root from its rows and tables alone,
   ignoring every cached hash, and compares. Repair rung 1 uses it on a restored root; tests use it after every
-  incremental hash, so a stale cache is a test failure, never a silent wrong root.
+  incremental hash, so a stale cache is a test failure, never a silent wrong root. As built, `Tree::verify` compares every cached leaf with
+  its rows (the tables, the config and the inner nodes are computed fresh for each tree), and a property test runs
+  random writes, refreshes and rollbacks against an identical world that never caches [V `tests/tree.rs`].
 - Today a whole-store XXH64 runs on every simulated and re-simulated frame [V file 04, 1]. The
   per-frame hash goes: nothing in the new design needs a hash at a frame that is not a cut [I].
 
@@ -733,7 +781,8 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
     never sent), `Leaf { id, leaf_hash }`, or `Empty`;
   - when my node's prefix and theirs differ, the difference is structural: everything under theirs is fetched, and
     everything under mine that they lack is removed;
-  - `export(root, keys)` returns the records for objects and tables (`LeafKey`) with their paths to the root.
+  - `export(root, keys)` returns the records for objects, tables and the config (`LeafKey`) with their paths to the
+    root.
   Tables are named paths of the same tree, so a differing table is found and exported the same way.
 - **Import** (repair rung 2): `import(at, records)` replaces the named objects' rows and the named tables with
   fetched ones. Every record's path is checked, before anything is applied, against the quorum-agreed root of a
@@ -753,6 +802,127 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
 
   The per-body digest still localizes the fault: the fault bundle names the ball, even when the repair restores
   more than the ball. The lasting fix is a history-free physics state, which the plan keeps for later.
+
+### 6.6 The byte-level definitions (slice C) [I, for review]
+
+What 6.2 and 6.3 leave to the implementation, fixed here so pe-diverge, a joiner and a later build compute the same
+bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64` length then the bytes.
+
+- **The frame** in the world root is the frame the state is at: `World::frame()`, the next frame to step, which is
+  the cut's frame when the root is taken at a cut (9.2's convention).
+- **Config hash** = `H("pe.config" ‖ config bytes)`. The config bytes are everything 5.1 lists beside the frame,
+  since each can change a later shared outcome (@design-reviewer's Medium on ecd11ef0), in this order:
+  1. the seed (`u64`): it breaks ties in pe-log's order and seeds logic's random streams;
+  2. the world's line id (32 bytes): it feeds every id derivation. In M1 it is the M1 marker's line (2.4), and all
+     zero for a world that has none yet (the `lines` table comes with branch entries);
+  3. the M1 marker (2.4): a byte 0, or 1 and the 32-byte line id;
+  4. pe-agree's settings record, `lp(bytes)`: the quorum setting and the cut cadence, which decide which frames are
+     cuts and what agreement is. pe-agree owns the format and pe-world never parses it; the bytes live in the world
+     (app.md 4 step 1: world settings live in the world, and a joiner takes them with its state), set by the creator
+     at genesis and changed only by an agreed entry at a frame (no such entry in M1: below) (@engine-architect);
+  5. the tick rate (`u32` Hz) and the depth limit (`u32`);
+  6. gravity (3 × `f32` bits) and the physics origin (4.5's canonical `Pos` encoding);
+  7. the input settings of 8.1: `claim_ms`, `cooldown_ms`, `push_budget`, `reach_mm`, `slack_mm`, each `u32`.
+
+  A new setting is appended, never inserted, and that is a world-format version change. The agent-powers slice
+  (8.1) appends `max_claims` (without and with the right), `max_chunkloaders`, `max_push_dv` and `max_push_speed`,
+  in that order; its per-member override row extends the governance value, also a format change.
+- **The config record** (S2 v1.3's `LeafKey::Config`, @engine-architect): the config bytes, with the
+  proof `[Node::World]`; it checks as `H("pe.config" ‖ bytes) == World.config`. Import decodes it exactly (every
+  item, nothing after, each value one the world's setters accept: a rate of 30 - 120 Hz, a depth limit of
+  1 - 4,096, finite gravity, input settings within 8.1's bounds) and sets every setting from it, the seed included.
+  So a joiner imports into a bare world (engine registry, default settings, built at the world's rate, below), and
+  an import without the record leaves the importer's config, which the root check catches.
+- **Simulation settings live in the world, and the replica reads them from it** (@coordinator-opus,
+  after @design-reviewer's Medium on ce6b13f0 and @fable-reviewer). Every setting that changes what a
+  simulation computes is in the config record, under the root, and the replica reads it from the world it holds.
+  It keeps no copy taken at construction. Today that means the rate, gravity, the physics origin and 8.1's input
+  settings (the push and speed limits among them); physics settings that a world may choose (CCD switches, solver
+  settings) join the config the same way, appended, while those fixed by the engine build are not world state.
+  **In M1 a world chooses none beyond the rate, gravity and the origin** (@vdw-physics). The Box3D
+  solver constants, CCD, sleep and contact recycling are fixed by the build (`PhysicsConfig::engine()`); sub-steps
+  follow from the rate (ceil(240 / hz)); worker count, capacity and event thresholds don't change results (worker
+  count [V]: pe-physics tests/api.rs runs `with_workers(2)`, `(3)` and a worker sweep against one result, and
+  tests/spike_records.rs per worker count). Every
+  physics image carries Box3D's world settings, which `physics_global` covers, and an importer whose settings differ
+  refuses the transfer, so a peer on a build with other constants fails import with `PhysicsCheck` and a running
+  mismatch shows as a root split at the next cut: nothing silent. A setting a later world may choose (sleep off,
+  softer contacts) becomes an appended config item that the replica's one physics-config builder reads.
+  - **Gravity and origin** apply from the world's settings on the physics rebuild an import already does
+    (pe-replica's, @vdw-physics and @engine-architect).
+  - **The rate: M1 runs a world at one rate, checked twice.** At the welcome, so the person is told "this world runs
+    at 30 Hz" before anything is built, and the joiner builds its replica at that rate. Again at import: a config
+    record whose rate is not the importer's is refused (`ImportError::RateMismatch`, additive in S2, from
+    @engine-architect), a fault to report, never a rate to adopt. An import that leaves the config record out
+    into a joiner at another rate ends as `RootMismatch` instead (the root check catches it), which pe-diverge's
+    stop-at-once rule does not cover; a repair never does this, since the rate is in the config record, so a
+    differing rate always makes the config leaf differ and rung 2 sends it (@design-reviewer's nit on a60dac0d).
+  - **No change mid-session in M1.** No M1 entry can change gravity, the origin or the rate: pe-world's setters for
+    them are trusted calls for genesis, and no edit, input or governance op writes the config. A later slice that
+    adds such an entry applies it at its frame, replays included.
+  - **Tests:** a 30 Hz world into a 60 Hz bare joiner (refused at the welcome and at import); non-default gravity
+    into a default joiner; non-default gravity, an import, then a rung-1 replay on the joiner, its root compared with
+    the host's; and one test that sets every simulation setting to a non-default value, imports into a bare joiner,
+    steps both sides and compares roots.
+- **The tables**, in this order (the `LeafKey::Table` index is the position): 0 registry, 1 lines, 2 modules,
+  3 governance, 4 claims, 5 cooldowns, 6 tombstones, 7 hand packs, 8 push windows. 6.2's list gains the last two,
+  which 8.1 already puts in the root. M1 has no lines or modules yet, so those two are empty maps.
+- **A table's hash** (the "sorted-map hash") = `H("pe.table" ‖ index u8 ‖ count u64 ‖ for each entry in key order:
+  lp(key bytes) ‖ lp(value bytes))`. An empty table hashes the same way with count 0; it is never omitted, because
+  the tables root names each table by position. A table's export record is its whole entry list (`count ‖ entries`,
+  as hashed): tables are small, and a table is imported whole. That has a size edge (@diverge-eng's Low 2 [I]): a
+  tombstone carries a whole `Node` record and every row of its object until it expires, so a mass delete (10,000
+  objects) makes a tombstones table of several MB, and a difference anywhere in it refetches all of it, against
+  rung 2's fetch budget (divergence.md 4.2). Fine for M1. A table that can grow large (tombstones first) may later
+  become a keyed sub-trie like the objects, a world-format change. divergence.md 15 (its open points) lists it among the
+  limits to check before worlds grow.
+- **Import order** (@diverge-eng's Low 1): canonical row bytes are decoded through the registry (`Pos` fields by
+  kind), so an import checks every record's hash against the target root first, which needs no registry, then
+  applies the registry table, then the other tables, then the objects, decoding each against the registry it just
+  applied. M1 imports no registry other than the importer's own (`RootMismatch`, 6.5's code), so M1 never decodes
+  against a registry that differs.
+- **Byte order** (@chunks-reviewer's M3): every integer and float is little-endian (floats as their IEEE bits),
+  including ids inside records and values and 6.2's `object id u128` in a leaf (`Node::hash` writes it so), except
+  **table keys, where ids are `u128` big-endian**, so a key's byte order is id order. Counts come before lists, and
+  `lp(b)` is a `u64` length then the bytes. An optional id is a byte 0, or 1 then the `u128`.
+- **Table entries.** Keys are fixed width, so sorting entries by key bytes is the key order:
+  - registry: key the component id; value `schema hash (32) ‖ description`, where **description** = `lp(name) ‖ row
+    size u32 ‖ field count u32 ‖ per field, in offset order: lp(name) ‖ kind u8 ‖ offset u32 ‖ count u32 ‖
+    lp(unit)`, the unit in 3.6's canonical spelling, empty for none. The kind
+    numbering is frozen: U8 0, U16 1, U32 2, U64 3, I8 4, I16 5, I32 6, I64 7, F32 8, F64 9, Bool 10, ObjectRef 11,
+    BlobRef 12, SimBlobRef 13, Pos 14, MemberKey 15, EntryRef 16, Hash 17; a new kind takes the next number;
+  - lines, modules: no entries in M1;
+  - governance: key the member key (32); value the permission bits `u32`;
+  - claims: key the object id; value `hand u128 ‖ member (32) ‖ since u64 ‖ until u64`;
+  - cooldowns: key `member (32) ‖ object id`; value `until u64`;
+  - tombstones: key the object id; value `by (32) ‖ frame u64 ‖ expires u64 ‖ parent (optional id) ‖ place u32 ‖
+    world pose (a byte 0, or 1 ‖ canonical Pos ‖ rot 4 × f32 ‖ scale 3 × f32) ‖ Node record ‖ row count u32 ‖ per
+    row, in component order: component id u128 ‖ row version ‖ lp(canonical row bytes)`. A tombstone keeps one
+    instance per component, as M1 has;
+  - hand packs: key the hand id; value `stamp u64 ‖ hold u8 ‖ pose count u32 ‖ per pose: canonical Pos ‖ rot 4 ×
+    f32 ‖ grip f32 ‖ engaged u8`;
+  - push windows: key the member key (32); value `pair count u32 ‖ per pair, oldest first: frame u64 ‖ |impulse|
+    as f64 bits`, in N·s exactly as stored (@chunks-reviewer's M2: no conversion to mN·s).
+- **The schema hash** in an object leaf and the registry is `H("pe.schema" ‖ description)`, the same description
+  bytes the registry value carries after it. BLAKE3 like every commitment; pe-sim's `u64` schema hash is XXH64 and
+  stays out of the tree (6.1).
+- **The `Node` record** is 192 bytes, in this order, every integer little-endian: `parent`, `first_child`,
+  `last_child`, `prev_sibling`, `next_sibling` (each a `u128` id, 0 for none), `creator` (32 bytes),
+  `version_entry` (32), `structural_entry` (32), `version_op`, `structural_op`, `born_on` (each `u32`), then 4 zero
+  bytes. **A row version** is 52 bytes: `entry` (32), `op` (`u32`), `tag` (16); pe-sim's
+  `_pad` is not part of it. These are the
+  format, written field by field: they are not pe-sim's in-memory layouts (an `ObjectId` is stored high half
+  first), and a test checks the encoder against the fields.
+- **An object's record** is the leaf's preimage after the context: `id u128 ‖ Node record ‖ row count u32 ‖ for
+  each row except the `Node` column's (already given), in (component id, instance) order: component id u128 ‖
+  schema hash (32) ‖ instance u16 ‖ row version ‖ lp(canonical row bytes)`. The object leaf hash
+  is `H("pe.obj" ‖ record)`, so an exported record is checked by hashing it. Canonical row bytes are the stored
+  bytes with each field whose registry kind is `Pos` replaced by its canonical encoding (4.5), so they are computed
+  from the registry alone (in a tombstone too); a `Transform`'s chunk and offset are plain integer and float fields,
+  already one encoding per position.
+- **Which objects** an objects trie holds: every object of the world (M1 creates no `Local` or `Session` objects,
+  3.1), all in the one domain.
+- **The physics leaf** of a domain is the `physics_global` record (9.2), all zero until `write_physics` first runs.
 
 ## 7. Edit entries and the three conflict rules
 

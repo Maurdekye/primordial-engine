@@ -92,19 +92,34 @@ impl FieldKind {
     }
 }
 
-/// One field: `count` elements of `kind` starting at byte `offset` of the row.
+/// One field: `count` elements of `kind` starting at byte `offset` of the row, in `unit`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FieldDesc {
     pub name: String,
     pub kind: FieldKind,
     pub offset: u32,
     pub count: u32,
+    /// The field's unit in [`crate::unit`]'s canonical spelling, or empty for none (world-model.md 3.6). Part of
+    /// the description and its hashes; [`ComponentDesc::new`] refuses any other spelling.
+    pub unit: String,
 }
 
 impl FieldDesc {
-    /// An offset beyond `u32` becomes `u32::MAX`, which no valid layout accepts.
+    /// A field with no unit. An offset beyond `u32` becomes `u32::MAX`, which no valid layout accepts.
     pub fn new(name: &str, kind: FieldKind, offset: usize, count: u32) -> Self {
-        FieldDesc { name: name.to_string(), kind, offset: u32::try_from(offset).unwrap_or(u32::MAX), count }
+        FieldDesc {
+            name: name.to_string(),
+            kind,
+            offset: u32::try_from(offset).unwrap_or(u32::MAX),
+            count,
+            unit: String::new(),
+        }
+    }
+
+    /// The same field in `unit` (checked when the description is built).
+    pub fn with_unit(mut self, unit: &str) -> Self {
+        self.unit = unit.to_string();
+        self
     }
 
     /// The byte after the field, or `None` on overflow (review P21-3).
@@ -138,6 +153,12 @@ impl ComponentDesc {
             if f.count == 0 {
                 return bad(format!("field {} has no elements", f.name));
             }
+            if f.name.starts_with('_') && !f.unit.is_empty() {
+                return bad(format!("padding field {} has a unit", f.name));
+            }
+            if let Err(e) = crate::unit::check_unit(&f.unit) {
+                return bad(format!("field {}: {e}", f.name));
+            }
             if f.offset != at {
                 return bad(format!("field {} at {} leaves a gap or overlaps (expected {at})", f.name, f.offset));
             }
@@ -164,6 +185,8 @@ impl ComponentDesc {
             h.write_u8(f.kind.code());
             h.write_u32(f.offset);
             h.write_u32(f.count);
+            h.write_u64(f.unit.len() as u64);
+            h.write(f.unit.as_bytes());
         }
         Ok(ComponentDesc { id, name: name.to_string(), size: at, fields, schema_hash: h.finish() })
     }
@@ -360,6 +383,34 @@ mod tests {
         r.register(ok.clone()).unwrap();
         r.register(ok).unwrap();
         assert_eq!(r.register(other), Err(Error::SchemaMismatch { component: 2000 }));
+    }
+
+    /// world-model.md 3.6: a unit is part of the description and its hash; only the canonical spelling is accepted,
+    /// "no unit" has one form, and padding has none.
+    #[test]
+    fn units() {
+        let id = ComponentId(2005);
+        let with = |u: &str| ComponentDesc::new(id, "u", vec![FieldDesc::new("d", FieldKind::F32, 0, 1).with_unit(u)]);
+        let none = with("").unwrap();
+        let si = with("kg/m^3").unwrap();
+        assert_eq!(si.fields()[0].unit, "kg/m^3");
+        assert_ne!(none.schema_hash(), si.schema_hash());
+        assert_ne!(si.schema_hash(), with("m").unwrap().schema_hash());
+        for bad in ["m^-3*kg", "kg/m3", "meter", "1", "m/m", " ", "srgb"] {
+            assert!(matches!(with(bad), Err(Error::BadLayout(_))), "{bad:?} accepted");
+        }
+        let pad = ComponentDesc::new(
+            id,
+            "p",
+            vec![
+                FieldDesc::new("a", FieldKind::U32, 0, 1),
+                FieldDesc::new("_pad", FieldKind::U32, 4, 1).with_unit("m"),
+            ],
+        );
+        assert!(pad.is_err());
+        let mut r = Registry::new();
+        r.register(none).unwrap();
+        assert_eq!(r.register(si), Err(Error::SchemaMismatch { component: 2005 }));
     }
 
     #[test]
