@@ -9,19 +9,24 @@
 //!   `Rebuilt` and then `Teleported`, since a rebuild keeps a moving body's physics pose. Affected bodies: those of
 //!   every object the entry created, removed, wrote a row of or reparented, with each object's body being itself or
 //!   its nearest ancestor with a `Body` (a compound child's), before and after; for a `Transform` write or a
-//!   reparent, those of the whole subtree. A hand input writes its hand's `Transform`, so it counts as one: a body
-//!   under a hand moves with it. An input's pushes become [`PushFx`], one for one.
+//!   reparent, those of the whole subtree. A hand input writes its hand's `Transform` for its own frame, so it counts
+//!   as one: a body under the hand moves with it on that frame. The pack's later poses are written by `end_frame`,
+//!   which gives no effects, so such a body does not follow them yet (@design-reviewer's Medium on e6d3ee9c). Grabs
+//!   hold by claims, not parenting, and the M1 ball pit puts no body under a hand. An input's pushes become
+//!   [`PushFx`], one for one.
 //! - **Entry classes:** edits and inputs as above. Governance and Protocol entries are `Applied` with no effects, as
 //!   pe-world applies neither yet.
 //! - **The order within a frame:** [`WorldModel::phase`] is pe-world's `input_phase`, so a frame's hand inputs apply
 //!   before its other entries, and a grab's reach is measured after the frame's hand movement (world-model.md 8.1).
-//! - **`end_frame(f)`:** `World::end_frame(f)`, which only expires, then the frame becomes `f + 1`.
+//! - **`end_frame(f)`:** `World::end_frame(f)`, which expires claims and push windows and writes each pending hand
+//!   pack's pose for `f + 1`, then the frame becomes `f + 1`.
 //!   `World::frame()` is the next frame to step, so a cut's root is taken when it equals the cut's frame.
 //! - **Until pe-world's hash tree (its slice C):** `root` is pe-world's stand-in root; `tree` gives that root and
 //!   the frame, with no nodes, records or object hashes; `import` answers `NotKept`; `empty` is a fresh world.
 //! - **Hands:** every `Hand` row, in id order. The target is the hand object's world transform, which its inputs
 //!   write (and `end_frame` writes a pending pack's next pose). The rest is the row's: `span` counts frames, and
-//!   `previous` is the input before, when there was one (@world-model).
+//!   `previous` is the input before, when there was one (@world-model). A hand whose
+//!   object has no world transform is left out.
 //! - **Claims:** every claim, with its hand. An agent's grab has no hand (`ObjectId::NONE`), so it gets no joint.
 //! - **The view** (S5): every object with a `Shape`, a `Light` or a `Hand`, at its world transform, with its
 //!   shape in its own units (the view's scale scales it), appearance, light, hand owner and holder. An object with no
