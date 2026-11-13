@@ -1,0 +1,11 @@
+# start 2026-11-10T20:22:35Z rustc 1.99.0 (b940084d7 2026-09-28) windows
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+   Compiling wasmtime v50.0.1 (<repo>\.worktrees\logic\crates\pe-logic\vendor\wasmtime-50.0.1)
+    Finished `release` profile [optimized] target(s) in 3m 31s
+exit=0
+{"add":42,"trap":"Some(UnreachableCodeReached)"}
+## cargo tree -i cc (expect nothing)
+warning: nothing to print.
+
+# end 2026-11-10T20:26:48Z

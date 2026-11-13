@@ -1,0 +1,5 @@
+# run2 2026-11-10T20:46:59Z cmd: spikes/iter-bench/target/logic-v0/release/logic-probe.exe cols spikes/iter-bench/target/cols_guest/wasm32-unknown-unknown/release/cols_guest.wasm ; other heavy holders at start:
+provenance-eng:52670 hb 2026-11-10T20:46:57Z bash <notes> <notes>
+world-chunks:48753 hb 2026-11-10T20:36:38Z bash target/guard.sh target/run9.txt --threads 4 walk-n4-v4 walk-n4-v4-lock n4-byz
+# end 2026-11-10T20:48:25Z:
+world-chunks:48753 hb 2026-11-10T20:36:38Z bash target/guard.sh target/run9.txt --threads 4 walk-n4-v4 walk-n4-v4-lock n4-byz

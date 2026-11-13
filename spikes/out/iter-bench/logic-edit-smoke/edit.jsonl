@@ -1,0 +1,11 @@
+{"meta": {"rustc": "rustc 1.99.0 (b940084d7 2026-09-28)", "reps": 2, "profile": ["profile.release.opt-level=3", "profile.release.lto=false", "profile.release.codegen-units=16", "profile.release.incremental=false", "profile.release.panic=\"abort\"", "profile.release.debug=false", "profile.release.strip=\"symbols\"", "profile.release.debug-assertions=false", "profile.release.overflow-checks=false", "profile.release.rpath=false"], "codegen": ["-C", "target-cpu=mvp", "-C", "target-feature=+bulk-memory,+multivalue,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext", "-C", "link-arg=-zstack-size=65536"], "heavy_prio": "idle", "start": "2026-11-11T21:36:17Z"}}
+{"mode": "inc-on", "rep": 0, "edit_to_built_s": 2.4397}
+{"mode": "inc-on", "rep": 1, "edit_to_built_s": 4.7568}
+{"mode": "inc-on", "noop": 0, "s": 2.2799}
+{"mode": "inc-on", "noop": 1, "s": 1.8581}
+{"mode": "inc-on", "noop": 2, "s": 1.0673}
+{"mode": "inc-off", "rep": 0, "edit_to_built_s": 8.4904}
+{"mode": "inc-off", "rep": 1, "edit_to_built_s": 2.1767}
+{"mode": "inc-off", "noop": 0, "s": 0.8161}
+{"mode": "inc-off", "noop": 1, "s": 0.7108}
+{"mode": "inc-off", "noop": 2, "s": 0.8232}

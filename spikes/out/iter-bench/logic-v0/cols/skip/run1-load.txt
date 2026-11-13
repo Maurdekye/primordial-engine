@@ -1,0 +1,5 @@
+# run1 2026-11-10T21:17:52Z cmd: spikes/iter-bench/target/logic-v0/release/logic-probe.exe cols spikes/iter-bench/target/cols_guest/wasm32-unknown-unknown/release/cols_guest.wasm ; holders at start:
+engine-architect:64366 hb 2026-11-10T21:17:40Z cargo clippy -p pe-seams --all-targets --all-features
+world-chunks:63522 hb 2026-11-10T21:15:17Z bash target/guard.sh target/m1.txt --threads 4 n3-chain n3-sig n3-crash n3-author-v4
+# end 2026-11-10T21:26:44Z:
+api-eng:66288 hb 2026-11-10T21:26:42Z cargo test --offline --test zz_sizes -- --nocapture

@@ -1,0 +1,48 @@
+# 2026-11-10T20:32:25Z audit_native.py --check, script+allow from gates/landing 1f11ecdc, tree = git archive 1654678b (ws/logic, no root [patch] line yet)
+heavy.sh: removing stale lock held by 
+audit_native: . [x86_64-pc-windows-msvc]: 203 packages, 187 pure Rust, 16 flagged, 0 not accepted
+audit_native: . [x86_64-unknown-linux-gnu]: 191 packages, 174 pure Rust, 17 flagged, 0 not accepted
+audit_native: spikes/chunks [x86_64-pc-windows-msvc]: 3 packages, 3 pure Rust, 0 flagged, 0 not accepted
+audit_native: spikes/chunks [x86_64-unknown-linux-gnu]: 3 packages, 3 pure Rust, 0 flagged, 0 not accepted
+audit_native: spikes/iter-bench/cb_guest [wasm32-unknown-unknown]: 1 packages, 1 pure Rust, 0 flagged, 0 not accepted
+audit_native: spikes/iter-bench/guests [wasm32-unknown-unknown]: 12 packages, 12 pure Rust, 0 flagged, 0 not accepted
+audit_native: spikes/iter-bench/host [x86_64-pc-windows-msvc]: 104 packages, 96 pure Rust, 8 flagged, 0 not accepted
+audit_native: spikes/iter-bench/host [x86_64-unknown-linux-gnu]: 104 packages, 95 pure Rust, 9 flagged, 0 not accepted
+audit_native: spikes/iter-bench/logic-v0 [x86_64-pc-windows-msvc]: 95 packages, 88 pure Rust, 7 flagged, 0 not accepted
+audit_native: spikes/iter-bench/logic-v0 [x86_64-unknown-linux-gnu]: 95 packages, 87 pure Rust, 8 flagged, 0 not accepted
+audit_native: spikes/iter-bench/logic-v0/nolinker/with-buildrs [x86_64-pc-windows-msvc]: 1 packages, 1 pure Rust, 0 flagged, 0 not accepted
+audit_native: spikes/iter-bench/logic-v0/nolinker/with-buildrs [x86_64-unknown-linux-gnu]: 1 packages, 1 pure Rust, 0 flagged, 0 not accepted
+audit_native: spikes/iter-bench/logic-v0/vendorcheck [x86_64-pc-windows-msvc]: 84 packages, 78 pure Rust, 6 flagged, 0 not accepted
+audit_native: spikes/iter-bench/logic-v0/vendorcheck [x86_64-unknown-linux-gnu]: 84 packages, 77 pure Rust, 7 flagged, 0 not accepted
+audit_native: spikes/iter-bench/rustc-timer [x86_64-pc-windows-msvc]: 1 packages, 1 pure Rust, 0 flagged, 0 not accepted
+audit_native: spikes/iter-bench/rustc-timer [x86_64-unknown-linux-gnu]: 1 packages, 1 pure Rust, 0 flagged, 0 not accepted
+audit_native: spikes/wasm-guests [wasm32-unknown-unknown]: 3 packages, 3 pure Rust, 0 flagged, 0 not accepted
+audit_native: skipped spikes/iter-bench/audit/wasmi (exclude line 31)
+audit_native: skipped spikes/iter-bench/audit/wasmtime-min-cranelift (exclude line 31)
+audit_native: skipped spikes/iter-bench/audit/wasmtime-min-winch (exclude line 31)
+audit_native: skipped spikes/stack-audit/agent-panels (exclude line 30)
+audit_native: skipped spikes/stack-audit/assets-image-default (exclude line 30)
+audit_native: skipped spikes/stack-audit/assets-pure (exclude line 30)
+audit_native: skipped spikes/stack-audit/audio-cpal (exclude line 30)
+audit_native: skipped spikes/stack-audit/discovery (exclude line 30)
+audit_native: skipped spikes/stack-audit/ecs-bevy (exclude line 30)
+audit_native: skipped spikes/stack-audit/ecs-hecs (exclude line 30)
+audit_native: skipped spikes/stack-audit/gfx-wgpu (exclude line 30)
+audit_native: skipped spikes/stack-audit/hash-blake3-default (exclude line 30)
+audit_native: skipped spikes/stack-audit/hash-blake3-pure (exclude line 30)
+audit_native: skipped spikes/stack-audit/logic-wasmi (exclude line 30)
+audit_native: skipped spikes/stack-audit/logic-wasmtime (exclude line 30)
+audit_native: skipped spikes/stack-audit/mcp-rmcp (exclude line 30)
+audit_native: skipped spikes/stack-audit/net-iroh (exclude line 30)
+audit_native: skipped spikes/stack-audit/net-libp2p (exclude line 30)
+audit_native: skipped spikes/stack-audit/net-quinn-default (exclude line 30)
+audit_native: skipped spikes/stack-audit/net-quinn-no-tls (exclude line 30)
+audit_native: skipped spikes/stack-audit/net-rustls-graviola (exclude line 30)
+audit_native: skipped spikes/stack-audit/net-snow-nostd (exclude line 30)
+audit_native: skipped spikes/stack-audit/net-snow-udp (exclude line 30)
+audit_native: skipped spikes/stack-audit/vr-openxr-loaded (exclude line 30)
+audit_native: skipped spikes/stack-audit/vr-openxr-static (exclude line 30)
+audit_native: skipped spikes/stack-audit/window-winit (exclude line 30)
+audit_native: note: allow line 44 (wayland-backend compiles-native) matched no package
+audit_native: PASS, 100% Rust under D1: 10 workspace(s), 986 package builds checked, every flag accepted by the allow file
+exit=0

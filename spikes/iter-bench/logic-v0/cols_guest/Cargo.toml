@@ -1,0 +1,26 @@
+# WS-logic measurement 1 (docs/spec/logic.md section 11): the benchmark's generated game logic as six systems
+# over host-owned columns. The guest keeps no state between calls that the host does not copy in; see
+# ../src/cols.rs. Own workspace so the repo root workspace is untouched. Same release profile as
+# spikes/iter-bench/guests, so its numbers compare with logic_wasm's.
+[package]
+name = "cols_guest"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pe_api = { path = "../../guests/pe_api" }
+logic_game = { path = "../../guests/logic_game" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
