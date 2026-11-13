@@ -137,6 +137,23 @@ pub struct RateBudget {
 }
 
 impl NodeConfig {
+    /// A hash of the settings every member must share, or some would refuse an honest member's entries, votes or
+    /// cuts: `frame_tolerance_s`, the rate budget and `Timing`. For the M1 interim's genesis record, which a joining
+    /// machine checks against its own `NodeConfig` (coordinator md1a4c7ca9c0e). The line, the members and the
+    /// genesis cut are left out: the record carries them itself, and the line derives from the record
+    /// (@engine-architect m8e5846cff93e). The quorum rule is fixed in code. Local settings (the cut lag, fetch retry,
+    /// retention, relay) are left out too: members may differ there.
+    pub fn consensus_hash(&self) -> Hash {
+        let mut h = Hasher::new("pe.agree.consensus.v1");
+        h.write_u64(self.frame_tolerance_s.to_bits());
+        h.write_u64(self.entries_per_frame as u64).write_u64(self.extra_per_s as u64);
+        h.write_u64(self.budget_slack.to_bits()).write_u64(self.burst_s.to_bits()).write_u64(self.pending_s.to_bits());
+        h.write_u64(self.min_rate_per_s as u64).write_u64(self.min_burst as u64).write_u64(self.min_pending as u64);
+        let t = &self.timing;
+        h.write_u64(t.cadence_ns as u64).write_u64(t.min_timeout_ns as u64).write_u64(t.max_timeout_ns as u64);
+        h.finish()
+    }
+
     /// The budget at the world's frame rate: `entries_per_frame × rate_hz × budget_slack + extra_per_s` entries per
     /// second, a burst of `burst_s` of that and a pending cap of `pending_s`, each at least its floor. With the
     /// defaults: 255/s, 127 and 1,020 at 60 Hz; 480/s, 240 and 1,920 at 120 Hz; at 30 Hz the rate's floor applies: 150/s, a burst of 75 and 600 pending.

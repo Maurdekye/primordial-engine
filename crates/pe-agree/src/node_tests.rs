@@ -926,3 +926,46 @@ fn a_stalled_uplink_flushing_three_seconds_of_hands_at_120_hz() {
     );
     assert!(recovered.is_some_and(|n| n <= 2), "member 0 not final again within 2 s of the stall: {recovered:?}");
 }
+
+#[test]
+fn the_consensus_hash_covers_exactly_the_must_match_settings() {
+    // For the M1 interim's genesis record (coordinator md1a4c7ca9c0e, mb33c54e8dece).
+    let keys = TestKeys::new(3, 2);
+    let base = NodeConfig::new(LineId::origin(), keys.sorted_keys(), genesis_cut());
+    let h = base.consensus_hash();
+    let changes: Vec<(&str, Box<dyn Fn(&mut NodeConfig)>)> = vec![
+        ("frame_tolerance_s", Box::new(|c| c.frame_tolerance_s = 0.2)),
+        ("entries_per_frame", Box::new(|c| c.entries_per_frame = 4)),
+        ("extra_per_s", Box::new(|c| c.extra_per_s = 31)),
+        ("budget_slack", Box::new(|c| c.budget_slack = 1.5)),
+        ("burst_s", Box::new(|c| c.burst_s = 0.6)),
+        ("pending_s", Box::new(|c| c.pending_s = 5.0)),
+        ("min_rate_per_s", Box::new(|c| c.min_rate_per_s = 151)),
+        ("min_burst", Box::new(|c| c.min_burst = 61)),
+        ("min_pending", Box::new(|c| c.min_pending = 601)),
+        ("cadence", Box::new(|c| c.timing.cadence_ns += 1)),
+        ("min timeout", Box::new(|c| c.timing.min_timeout_ns += 1)),
+        ("max timeout", Box::new(|c| c.timing.max_timeout_ns += 1)),
+    ];
+    for (what, f) in changes {
+        let mut c = base.clone();
+        f(&mut c);
+        assert_ne!(c.consensus_hash(), h, "{what} must change the hash");
+    }
+    let locals: Vec<(&str, Box<dyn Fn(&mut NodeConfig)>)> = vec![
+        ("cut_lag_s", Box::new(|c| c.cut_lag_s = 0.5)),
+        ("fetch_retry_ns", Box::new(|c| c.fetch_retry_ns += 1)),
+        ("keep_s", Box::new(|c| c.keep_s = 1.0)),
+        ("keep_bytes", Box::new(|c| c.keep_bytes = 1)),
+        ("relay", Box::new(|c| c.relay = false)),
+        // Carried by the genesis record itself, not the hash (@engine-architect m8e5846cff93e).
+        ("line", Box::new(|c| c.line = LineId(Hash::of("l", b"other")))),
+        ("members", Box::new(|c| c.members.truncate(1))),
+        ("genesis frame", Box::new(|c| c.genesis.at.frame = Frame(5))),
+    ];
+    for (what, f) in locals {
+        let mut c = base.clone();
+        f(&mut c);
+        assert_eq!(c.consensus_hash(), h, "{what} must not change the hash");
+    }
+}
