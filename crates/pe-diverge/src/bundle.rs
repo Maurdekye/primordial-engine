@@ -6,12 +6,14 @@
 //! file is discarded with the world when they leave (9.6).
 
 use bytes::Bytes;
-use pe_seams::{CutRef, Frame, Hash, LeafKey, LineId, MemberKey, Record};
+use pe_seams::{ChainHead, CutRef, Frame, Hash, LeafKey, LineId, MemberKey, Record};
 
+use crate::evidence::{get_heads, put_heads};
 use crate::msg::{DecodeError, EncodeError, Reader, put_bytes, put_cut, put_key, put_record};
 
 /// 2: `stuck` (4.3). 3: `state_at_cv` holds a [`crate::CvState`], and `entries` are filled (6); the layout is v2's.
-pub const BUNDLE_VERSION: u8 = 3;
+/// 4: `cut_heads` (@shader-reviewer on 59c742c7).
+pub const BUNDLE_VERSION: u8 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FaultBundle {
@@ -40,6 +42,9 @@ pub struct FaultBundle {
     /// Empty, unless the ladder stopped (4.3): then each repeated failure, named (the rung, the reason and the
     /// differing leaves), one per key seen.
     pub stuck: Vec<String>,
+    /// `C`'s heads, with the evidence (6): a replay takes its root at `C` with exactly the entries `C` includes. The
+    /// carried entries can hold more, stamped below `C` but included only by a later cut.
+    pub cut_heads: Vec<ChainHead>,
 }
 
 impl Default for FaultBundle {
@@ -60,6 +65,7 @@ impl Default for FaultBundle {
             state_at_cv: Bytes::new(),
             entries: Vec::new(),
             stuck: Vec::new(),
+            cut_heads: Vec::new(),
         }
     }
 }
@@ -114,6 +120,7 @@ impl FaultBundle {
         for s in &self.stuck {
             put_bytes(&mut w, s.as_bytes());
         }
+        put_heads(&mut w, &self.cut_heads)?;
         Ok(Bytes::from(w))
     }
 
@@ -159,6 +166,7 @@ impl FaultBundle {
         for _ in 0..n {
             stuck.push(String::from_utf8(r.bytes(usize::MAX)?.to_vec()).map_err(|_| DecodeError::Tag)?);
         }
+        let cut_heads = get_heads(&mut r)?;
         if !r.b.is_empty() {
             return Err(DecodeError::Trailing);
         }
@@ -178,6 +186,7 @@ impl FaultBundle {
             state_at_cv,
             entries,
             stuck,
+            cut_heads,
         })
     }
 }
@@ -236,6 +245,12 @@ mod tests {
             state_at_cv: Bytes::from_static(&[7; 10]),
             entries: vec![Bytes::from_static(&[8; 3])],
             stuck: Vec::new(),
+            cut_heads: vec![pe_seams::ChainHead {
+                chain: pe_seams::ChainId(Hash([9; 32])),
+                author: MemberKey([10; 32]),
+                seq: 4,
+                entry: pe_seams::EntryRef(Hash([11; 32])),
+            }],
         };
         let e = b.encode().unwrap();
         assert_eq!(FaultBundle::decode(&e), Ok(b.clone()));

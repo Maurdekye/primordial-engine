@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use pe_seams::{
-    Cut, CutImport, CutRef, DivergeEvent, DomainId, EntrySource, Fault, FaultKind, FinalCut, Finalized, Frame,
-    FrameClock, GroupSel, Hash, HostTime, ImportError, Lane, LeafKey, MemberKey, Nibbles, Node, Outgoing, PeerId,
-    PhysicsImage, Record, Replica, RootError, Rung, SelfTest, Tree, TreePath, frames_ceil,
+    ChainHead, Cut, CutImport, CutRef, DivergeEvent, DomainId, EntrySource, Fault, FaultKind, FinalCut, Finalized,
+    Frame, FrameClock, GroupSel, Hash, HostTime, ImportError, Lane, LeafKey, MemberKey, Nibbles, Node, Outgoing,
+    PeerId, PhysicsImage, Record, Replica, RootError, Rung, SelfTest, Tree, TreePath, frames_ceil,
 };
 
 use crate::bundle::FaultBundle;
@@ -282,6 +282,8 @@ struct Evidence {
     state: Bytes,
     entries: Vec<Bytes>,
     upto: Frame,
+    /// The heads of the cut at `upto`, the bundle's `cut_heads`.
+    to_heads: Vec<ChainHead>,
 }
 
 /// The ladder stopped (4.3).
@@ -524,7 +526,7 @@ impl Diverge {
             Some(mine) => self.diverged(fc, mine, replica, source, now, clock),
             None => {
                 self.counters.damaged += 1;
-                self.capture(replica, source, fc.cut.at.frame, clock);
+                self.capture(replica, source, &fc.cut, clock);
                 let voters = fc.voters.iter().map(|v| v.0).collect();
                 self.start_rung2(fc.cut.clone(), Some(fc.clone()), fc.root, voters, None, replica, now);
             }
@@ -910,7 +912,7 @@ impl Diverge {
                 mine
             }
         };
-        self.capture(replica, source, fc.cut.at.frame, clock);
+        self.capture(replica, source, &fc.cut, clock);
         let voters = fc.voters.iter().map(|v| v.0).collect();
         self.start_rung2(fc.cut.clone(), Some(fc.clone()), fc.root, voters, mine, replica, now);
     }
@@ -931,7 +933,8 @@ impl Diverge {
     /// Save the replay evidence (6) before rung 2 runs toward a final cut at `upto`: `Cv`'s whole state, once per
     /// `Cv`, and the entries from `Cv` up to `upto`, extended when a newer cut is repaired toward. Left out, and
     /// counted, when `Cv`'s state or an entry frame is no longer kept, or the state is over `evidence_max_bytes`.
-    fn capture(&mut self, replica: &dyn Replica, source: &dyn EntrySource, upto: Frame, clock: &dyn FrameClock) {
+    fn capture(&mut self, replica: &dyn Replica, source: &dyn EntrySource, to: &Cut, clock: &dyn FrameClock) {
+        let upto = to.at.frame;
         let (Some(cut), Some((_, root))) = (&self.cv_cut, self.cv) else {
             return;
         };
@@ -952,9 +955,16 @@ impl Diverge {
                     + physics.as_ref().map_or(0, |p| p.bytes.len())
                     + cut.heads.len() * 104;
                 (size <= max).then_some(())?;
-                let state = CvState { cv: cut.clone(), root, rate_hz: clock.rate_hz(), records, physics };
+                let state = CvState {
+                    cv: cut.clone(),
+                    root,
+                    domain: replica.domain(),
+                    rate_hz: clock.rate_hz(),
+                    records,
+                    physics,
+                };
                 let state = state.encode().ok().filter(|b| b.len() <= max)?;
-                Some(Evidence { key, state, entries: Vec::new(), upto: cut.at.frame })
+                Some(Evidence { key, state, entries: Vec::new(), upto: cut.at.frame, to_heads: Vec::new() })
             }),
         };
         // The entries stamped from `Cv`'s frame up to the cut's: what a replay from `Cv` steps.
@@ -963,6 +973,7 @@ impl Diverge {
                 ev.entries.extend(source.entries_at(Frame(f))?.iter().map(|e| Bytes::from(e.encode())));
             }
             ev.upto = upto;
+            ev.to_heads = to.heads.clone();
             Some(ev)
         });
         if ev.is_none() {
@@ -1449,6 +1460,7 @@ impl Diverge {
             sources: rep.sources[..=rep.src.min(rep.sources.len() - 1)].to_vec(),
             nanos_taken: taken,
             state_at_cv: ev.as_ref().map(|e| e.state.clone()).unwrap_or_default(),
+            cut_heads: ev.as_ref().map(|e| e.to_heads.clone()).unwrap_or_default(),
             entries: ev.map(|e| e.entries).unwrap_or_default(),
             ..FaultBundle::default()
         });
@@ -1553,6 +1565,7 @@ impl Diverge {
             // Root splits' failures never reach here (`refused`), so the evidence of the current `Cv` is this one's.
             state_at_cv: self.evidence_at_cv().map(|e| e.state.clone()).unwrap_or_default(),
             entries: self.evidence_at_cv().map(|e| e.entries.clone()).unwrap_or_default(),
+            cut_heads: self.evidence_at_cv().map(|e| e.to_heads.clone()).unwrap_or_default(),
             ..FaultBundle::default()
         });
         self.stuck = Some(Stuck { any: sticky, key, probe_at: None });

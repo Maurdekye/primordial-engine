@@ -14,7 +14,8 @@ use pe_seams::{
 use crate::msg::{DecodeError, EncodeError, MAX_IMAGE, Reader, put_bytes, put_cut, put_record};
 
 /// The format of [`CvState`]'s bytes.
-pub const STATE_VERSION: u8 = 1;
+/// 2: `domain` (@design-reviewer on 59c742c7).
+pub const STATE_VERSION: u8 = 2;
 
 /// `Cv`, and the whole state there: what `import_at_cut` takes on an empty replica.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +24,8 @@ pub struct CvState {
     pub cv: Cut,
     /// `Cv`'s root: every record checks against it.
     pub root: Hash,
+    /// The replica's domain: a replay builds its replica on it (the domain is hashed into the root).
+    pub domain: DomainId,
     /// The world's rate: a replica is built at it before the import (S2 v1.4, `RateMismatch`).
     pub rate_hz: u32,
     /// Every record at `Cv`, each with its proof: the config, the tables, the objects.
@@ -35,14 +38,9 @@ impl CvState {
     pub fn encode(&self) -> Result<Bytes, EncodeError> {
         let mut w = vec![STATE_VERSION];
         put_cut(&mut w, &self.cv.at);
-        put_u32(&mut w, self.cv.heads.len())?;
-        for h in &self.cv.heads {
-            w.extend_from_slice(&h.chain.0.0);
-            w.extend_from_slice(&h.author.0);
-            w.extend_from_slice(&h.seq.to_le_bytes());
-            w.extend_from_slice(&h.entry.0.0);
-        }
+        put_heads(&mut w, &self.cv.heads)?;
         w.extend_from_slice(&self.root.0);
+        w.extend_from_slice(&self.domain.0.to_le_bytes());
         w.extend_from_slice(&self.rate_hz.to_le_bytes());
         put_u32(&mut w, self.records.len())?;
         for r in &self.records {
@@ -71,17 +69,9 @@ impl CvState {
             return Err(DecodeError::Version);
         }
         let at = r.cut()?;
-        let n = bounded(&mut r, 32 + 32 + 8 + 32)?;
-        let mut heads = Vec::with_capacity(n);
-        for _ in 0..n {
-            heads.push(ChainHead {
-                chain: ChainId(r.hash()?),
-                author: MemberKey(r.hash()?.0),
-                seq: r.u64()?,
-                entry: EntryRef(r.hash()?),
-            });
-        }
+        let heads = get_heads(&mut r)?;
         let root = r.hash()?;
+        let domain = DomainId(r.u64()?);
         let rate_hz = r.u32()? as u32;
         let n = bounded(&mut r, 1)?; // a record is at least its key's one byte
         let mut records = Vec::with_capacity(n);
@@ -101,8 +91,34 @@ impl CvState {
         if !r.b.is_empty() {
             return Err(DecodeError::Trailing);
         }
-        Ok(CvState { cv: Cut { at, heads }, root, rate_hz, records, physics })
+        Ok(CvState { cv: Cut { at, heads }, root, domain, rate_hz, records, physics })
     }
+}
+
+/// A cut's heads: a u32 count, then each head's chain, author, seq and entry.
+pub(crate) fn put_heads(w: &mut Vec<u8>, heads: &[ChainHead]) -> Result<(), EncodeError> {
+    put_u32(w, heads.len())?;
+    for h in heads {
+        w.extend_from_slice(&h.chain.0.0);
+        w.extend_from_slice(&h.author.0);
+        w.extend_from_slice(&h.seq.to_le_bytes());
+        w.extend_from_slice(&h.entry.0.0);
+    }
+    Ok(())
+}
+
+pub(crate) fn get_heads(r: &mut Reader<'_>) -> Result<Vec<ChainHead>, DecodeError> {
+    let n = bounded(r, 32 + 32 + 8 + 32)?;
+    let mut heads = Vec::with_capacity(n);
+    for _ in 0..n {
+        heads.push(ChainHead {
+            chain: ChainId(r.hash()?),
+            author: MemberKey(r.hash()?.0),
+            seq: r.u64()?,
+            entry: EntryRef(r.hash()?),
+        });
+    }
+    Ok(heads)
 }
 
 fn put_u32(w: &mut Vec<u8>, n: usize) -> Result<(), EncodeError> {
@@ -123,7 +139,7 @@ fn bounded(r: &mut Reader<'_>, min: usize) -> Result<usize, DecodeError> {
 /// Every leaf of `tree` that has a record: the config, each table, and each domain's objects. Physics has none; it
 /// travels as the whole image (S2 `Tree::export`). `None` if a
 /// node is missing or not the kind its path names: a tree the replica holds is whole, so that is no state to save.
-pub(crate) fn all_keys(tree: &dyn Tree) -> Option<Vec<LeafKey>> {
+pub fn all_keys(tree: &dyn Tree) -> Option<Vec<LeafKey>> {
     let Some(Node::World { domains, .. }) = tree.node(&TreePath::World) else {
         return None;
     };
@@ -173,6 +189,7 @@ mod tests {
                 }],
             },
             root: Hash([5; 32]),
+            domain: DomainId(3),
             rate_hz: 60,
             records: vec![
                 Record { key: LeafKey::Config, bytes: Bytes::from_static(b"cfg"), proof: vec![Node::Empty] },

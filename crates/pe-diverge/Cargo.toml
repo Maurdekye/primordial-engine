@@ -12,6 +12,14 @@ description = "Divergence detection and repair (docs/spec/divergence.md): the re
 pe-seams = { path = "../pe-seams" }
 bytes.workspace = true
 
+# The `replay-bundle` example and its test replay a bundle on the real world (divergence.md 6).
+[dev-dependencies]
+bytemuck = "1.25"
+pe-replica = { path = "../pe-replica" }
+pe-seams = { path = "../pe-seams", features = ["test-util"] }
+pe-sim = { path = "../pe-sim" }
+pe-world = { path = "../pe-world" }
+
 [features]
 # Planted defects for the harness's mutation tests (pe-harness DESIGN.md 6.1): inert unless a node's configuration
 # names one, and never in a production build (the gate checks pe-app's normal edges).

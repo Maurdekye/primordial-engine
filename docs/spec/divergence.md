@@ -356,10 +356,11 @@ Written on every repair past rung 1, and on every root split (file 14, 4.6).
 - `Cv` and `C`: frames, roots and voters;
 - the state at `Cv` for the cells (M4: contact groups) that hold the differing objects, with the hashes on their
   path to the root, so it imports into an empty replica. In M1 a world is one cell, so it is the whole state: `Cv`'s
-  cut with its heads, `Cv`'s root, the world's rate, every record with its proof (the config, the tables, the
-  objects), and the physics image (pe-diverge's `CvState`, its own format version);
+  cut with its heads, `Cv`'s root, the domain, the world's rate, every record with its proof (the config, the
+  tables, the objects), and the physics image (pe-diverge's `CvState`, its own format version);
 - every entry from `Cv` to `C`, with signatures: those stamped from `Cv`'s frame up to `C`'s, as the entry source
-  serves them, each `SignedEntry::encode`d;
+  serves them, each `SignedEntry::encode`d, and `C`'s heads. The source can hold entries stamped below `C` that only
+  a later cut includes; a replay leaves them out of `C` and of every frame's cut;
 - the ids of the differing objects; their records under my root and under the quorum's;
 - the rung reached, the sources used, and the times taken;
 - for a ladder that stopped (4.3), each repeated failure named: the rung, the reason and the differing leaves
@@ -380,10 +381,18 @@ per divergence, is not measured yet; the M1 run measures it.] The tables are num
 (S3 v1.1), so it changes no state and is not carried.
 
 **Rules:**
-- It is self-contained: `pe-diverge replay-bundle <file>` (an example binary of the crate) replays it on any
-  machine and prints, per frame, the hashes of the differing objects. Two machines' printouts, or two builds',
-  differ first at the first frame that diverged. [I: this finds the first differing frame offline, so the live
-  repair never waits for it.]
+- It is self-contained: `replay-bundle <file> [--max-frames N]`, an example of the crate (`cargo run -p pe-diverge
+  --example replay-bundle`), replays it on any machine. It imports the state at `Cv` into an empty replica over the
+  real world (pe-replica's `PeWorld`, at the bundle's rate), steps the entries, and prints this build's root at
+  every frame from `Cv` to `C`: S2's `root_at_cut` on a cut made for each frame, `Cv`'s heads advanced by `C`'s
+  entries stamped below it, after stepping to just past that frame, so every root is taken near the present. Then it says whether the root at `C` is the agreed one, the diverged machine's, or
+  neither, and prints the differing objects' leaf hashes there. Two machines' printouts, or two builds', differ
+  first at the first frame that diverged. [I: this finds the first differing frame offline, so the live repair never
+  waits for it.] Each frame's root re-steps from the nearest keyframe and holds a snapshot, so the frames are capped
+  (600 by default). A state at `Cv` that does not check against its root is refused, not replayed.
+- Blobs are content-addressed and outside the hash tree, so a bundle does not carry them: a world whose objects name
+  blobs replays only where the local store holds them [I]. A mesh the store lacks is named, and the replay stops,
+  rather than showing as a false divergence.
 - It is a local file, in the app's data folder. It is never sent anywhere without the user's action. It holds
   other players' inputs.
 - On a non-admin's machine it is discarded with the world when they leave, unless they export it on purpose
