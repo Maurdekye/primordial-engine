@@ -25,7 +25,9 @@
 //! - **No notices:** pe-replica publishes `changes` empty until @engine-architect's producer lands, so the notices
 //!   are wired but see nothing here; present.rs's tests cover them over a batch and a gap.
 //!
-//! The quick test runs 1 seed × 5 delays. The full grid, 20 seeds × 5 delays, is `--ignored`; run it in release.
+//! The quick test runs 1 seed × 5 delays in release (2 in a debug build). The full grid, 20 seeds × 5 delays, is
+//! `--ignored`; run it in release. Effects played and stopped at gaps are printed (`eff`, `effSt`); a played effect
+//! final before a stall plays on after it (display_layer.rs's gap tests).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -47,6 +49,9 @@ use pe_seams::{FrameView, HostTime, MemberKey, ObjectId, Offset, Pos, ViewFlags}
 
 /// One-way link delays, ms: good links (the user's target holds "on good links").
 const DELAYS_MS: [u64; 5] = [10, 25, 50, 75, 100];
+/// The quick form's delays: all five in release; in a debug build (the gate's `cargo test`), the two ends, where the
+/// slot's losses first showed (about 25 s instead of 60).
+const QUICK_DELAYS_MS: &[u64] = if cfg!(debug_assertions) { &[10, 100] } else { &DELAYS_MS };
 /// The display rate: a desktop or headset refresh that isn't a multiple of the 60 Hz simulation.
 const DISPLAY_HZ: u64 = 90;
 /// The run: 3 members, 48 balls, 6 s, a push every 400 ms (harness-eng's test sizes, a little longer).
@@ -113,6 +118,9 @@ struct MemberResult {
     gaps: u64,
     lost_views: u64,
     lost_corrected: u64,
+    /// Effects played, and stopped at gaps (`EffectGate::gap`).
+    effects_played: u64,
+    gap_stops: u64,
 }
 
 /// A jump in a member's own views: `id` moved more than `e` (beyond its velocity's reach) between the views of
@@ -225,6 +233,8 @@ fn display_run(
     }
     out.counters = presenter.counters().run().display;
     out.gaps = presenter.gaps();
+    let e = presenter.effects().counters();
+    (out.effects_played, out.gap_stops) = (e.played, e.gap_stops);
     out
 }
 
@@ -259,6 +269,8 @@ struct Row {
     gaps: u64,
     lost_views: u64,
     lost_corrected: u64,
+    effects_played: u64,
+    gap_stops: u64,
 }
 
 impl Row {
@@ -287,6 +299,8 @@ impl Row {
         self.gaps += m.gaps;
         self.lost_views += m.lost_views;
         self.lost_corrected += m.lost_corrected;
+        self.effects_played += m.effects_played;
+        self.gap_stops += m.gap_stops;
         self.runs += 1;
     }
 
@@ -296,7 +310,7 @@ impl Row {
         let per_min = |n: u64| n as f64 / minutes.max(1e-9);
         let mean = |s: f64, n: u64| if n == 0 { 0.0 } else { s / n as f64 };
         println!(
-            "{label:>8} | {:>4} | {:>6.1} {:>7.1} | {:>5.1} {:>6.1} | {:>6.1} {:>5} {:>4} {:>4} | {:>5.2} {:>6.1} | {:>4} {:>5.1} {:>4} {:>5} | {:>3} | {:>4} {:>4} {:>5}",
+            "{label:>8} | {:>4} | {:>6.1} {:>7.1} | {:>5.1} {:>6.1} | {:>6.1} {:>5} {:>4} {:>4} | {:>5.2} {:>6.1} | {:>4} {:>5.1} {:>4} {:>5} | {:>3} | {:>4} {:>4} {:>5} | {:>5} {:>5}",
             self.runs,
             per_min(c.corrections),
             per_min(c.extrapolation_misses),
@@ -316,6 +330,8 @@ impl Row {
             self.gaps,
             self.lost_views,
             self.lost_corrected,
+            self.effects_played,
+            self.gap_stops,
         );
     }
 }
@@ -323,7 +339,7 @@ impl Row {
 fn header(title: &str) {
     println!("\n{title}");
     println!(
-        "{:>8} | {:>4} | {:>6} {:>7} | {:>5} {:>6} | {:>6} {:>5} {:>4} {:>4} | {:>5} {:>6} | {:>4} {:>5} {:>4} {:>5} | own | {:>4} {:>4} {:>5}",
+        "{:>8} | {:>4} | {:>6} {:>7} | {:>5} {:>6} | {:>6} {:>5} {:>4} {:>4} | {:>5} {:>6} | {:>4} {:>5} {:>4} {:>5} | own | {:>4} {:>4} {:>5} | {:>5} {:>5}",
         "delay",
         "runs",
         "corr/m",
@@ -342,7 +358,9 @@ fn header(title: &str) {
         "other",
         "gaps",
         "lost",
-        "lostC"
+        "lostC",
+        "eff",
+        "effSt"
     );
     println!(
         "{:>8} | {:>4} | {:>14} | {:>5} {:>6} | {:>22} | {:>5} {:>6} | {:>4} {:>5} {:>4} {:>5} | {:>3} |",
@@ -352,10 +370,10 @@ fn header(title: &str) {
 
 /// Runs `seeds` × `DELAYS_MS`, each cell once, displayed in every mode; prints a table per mode; returns the rows
 /// per mode and delay.
-fn grid(seeds: std::ops::Range<u64>) -> Vec<(Mode, Vec<(u64, Row)>)> {
+fn grid(seeds: std::ops::Range<u64>, delays: &[u64]) -> Vec<(Mode, Vec<(u64, Row)>)> {
     let modes = modes();
     let mut rows: Vec<(Mode, Vec<(u64, Row)>)> = modes.iter().map(|&m| (m, Vec::new())).collect();
-    for delay in DELAYS_MS {
+    for &delay in delays {
         let mut row: Vec<Row> = modes.iter().map(|_| Row::default()).collect();
         for seed in seeds.clone() {
             for (k, members) in cell(seed, delay, &modes).iter().enumerate() {
@@ -403,7 +421,7 @@ fn accept(rows: &[(Mode, Vec<(u64, Row)>)]) {
 /// The quick form, on the gate: one seed at every delay.
 #[test]
 fn the_presenter_meets_the_users_target_on_the_ball_pit() {
-    accept(&grid(1..2));
+    accept(&grid(1..2, QUICK_DELAYS_MS));
 }
 
 /// The plan's form: 20 seeds × 5 delays. Run in release: `cargo test -p pe-render --release --test ballpit -- --ignored
@@ -411,5 +429,5 @@ fn the_presenter_meets_the_users_target_on_the_ball_pit() {
 #[test]
 #[ignore]
 fn the_presenter_meets_the_users_target_over_20_seeds_and_5_delays() {
-    accept(&grid(1..21));
+    accept(&grid(1..21, &DELAYS_MS));
 }

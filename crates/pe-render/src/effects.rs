@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use pe_seams::{Effect, EffectKey, FrameView, HostTime};
+use pe_seams::{Effect, EffectKey, Frame, FrameView, HostTime};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EffectSettings {
@@ -59,6 +59,8 @@ pub struct EffectGate {
     /// Others' effects waiting `D_effect`: due time, the frame's time, the effect.
     waiting: Vec<(HostTime, HostTime, Effect)>,
     counters: EffectCounters,
+    /// The `final_frame` of the newest view taken: effects of frames below it can no longer be retracted.
+    last_final: Option<Frame>,
 }
 
 impl EffectGate {
@@ -83,6 +85,7 @@ impl EffectGate {
     /// A newly taken frame view's effects and retractions, at `now`. `sim_rate_hz` is the world's simulation rate.
     pub fn take(&mut self, view: &FrameView, sim_rate_hz: u32, now: HostTime) -> Vec<EffectCommand> {
         let mut out = Vec::new();
+        self.last_final = view.final_frame.max(self.last_final);
         for k in &view.retracted {
             if self.played.contains_key(k) {
                 out.push(EffectCommand::Stop(*k));
@@ -119,15 +122,22 @@ impl EffectGate {
         out
     }
 
-    /// The next view follows a gap (render.md 3): the views between are lost, with any retraction in them. Every
-    /// played effect the newest view doesn't list is stopped (its sink fades it; a finished one-shot ignores it) and
-    /// stays remembered, so a replay never plays it again. Waiting effects go. The newest view's effects then pass
-    /// through `take` as usual.
+    /// The next view follows a gap (render.md 3): the views between are lost, with any retraction in them. A played
+    /// effect of a frame below the `final_frame` of the last view taken before the gap was final, so no lost view can
+    /// have retracted it: it plays on (@coordinator-opus). A newer one, whose retraction may have been
+    /// lost, is stopped (its sink fades it; a finished one-shot ignores it) unless the newest view lists it, and stays
+    /// remembered, so a replay never plays it again. S5 lists effects as they are emitted, not what is on, so this is
+    /// all a reader can know. Waiting effects go. The newest view's effects then pass through `take` as usual.
     pub fn gap(&mut self, newest: &FrameView) -> Vec<EffectCommand> {
         let listed: Vec<EffectKey> = newest.effects.iter().map(|e| e.key).collect();
+        let fin = self.last_final;
         self.waiting.clear();
-        let out: Vec<EffectCommand> =
-            self.played.keys().filter(|k| !listed.contains(k)).map(|k| EffectCommand::Stop(*k)).collect();
+        let out: Vec<EffectCommand> = self
+            .played
+            .keys()
+            .filter(|k| !listed.contains(k) && fin.is_none_or(|f| k.frame >= f))
+            .map(|k| EffectCommand::Stop(*k))
+            .collect();
         self.counters.gap_stops += out.len() as u64;
         out
     }
