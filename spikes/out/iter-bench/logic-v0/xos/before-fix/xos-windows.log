@@ -1,0 +1,9 @@
+# 2026-11-13T03:08:18Z windows rev=3353d65ff3b108e9fc9638903b4bbc102640bb13
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.01s
+
+windows rustc 1.99.0 (b940084d7 2026-09-28)
+windows sha256 d71f7a249dbe86600541084201832377ae5fa7083c894ada74865021ddad8667
+windows bytes 9473
