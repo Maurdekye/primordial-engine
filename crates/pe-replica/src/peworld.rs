@@ -25,7 +25,8 @@
 //!   this domain, `tree` is pe-world's `WorldTree` of a saved world, and `import` is `World::import`, which checks
 //!   every record against the target root before anything applies and takes every setting from the config record.
 //!   The replica compares the patched root with the target, which covers absent leaves and a missing config record.
-//!   `empty` is a bare `World::new` with the engine registry and default settings, which a joiner imports into.
+//!   `empty` is a bare `World::new` with the engine registry and default settings but this machine's rate, which a
+//!   joiner imports into.
 //! - **Hands:** every `Hand` row, in id order. The target is the hand object's world transform, which its inputs
 //!   write (and `end_frame` writes a pending pack's next pose). The rest is the row's: `span` counts frames, and
 //!   `previous` is the input before, when there was one (@world-model). A hand whose
@@ -260,8 +261,13 @@ impl WorldModel for PeWorld {
         Box::new(saved.tree(self.domain))
     }
 
+    /// A bare world (engine registry, default settings) at this machine's rate, the welcome's: pe-world's import
+    /// refuses a config record at another rate than its base's (world-model.md 6.6), so a base at the default rate
+    /// would refuse every world not at 60 Hz, whatever rate this replica runs at.
     fn empty(&self) -> World {
-        World::new(0, self.world.blobs().clone())
+        let mut w = World::new(0, self.world.blobs().clone());
+        w.set_rate(self.world.rate());
+        w
     }
 
     fn import(&self, saved: &World, import: &pe_seams::CutImport) -> Result<World, ImportError> {
