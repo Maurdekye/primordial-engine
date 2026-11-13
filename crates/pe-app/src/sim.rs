@@ -138,12 +138,21 @@ pub struct Sim {
     local: Option<Local>,
     /// The network (S4): pe-net's handle, or a test's in-process network. `None` is a world alone.
     net: Option<Box<dyn Transport + Send>>,
-    on_net_event: Option<NetEventHook>,
+    net_hook: Option<Box<dyn NetHook>>,
 }
 
-/// What net.rs does with each of the transport's events, on the simulation thread (@shader-lang):
-/// admission is decided from the agreed governance, which lives here with agreement, so the hook gets agreement too.
-pub type NetEventHook = Box<dyn FnMut(&NetEvent, &mut dyn Agreement) + Send>;
+/// What net.rs does on the simulation thread (@shader-lang). Admission is decided from the agreed
+/// governance, which lives here with agreement, and carried out through pe-net's control end, which the hook owns.
+pub trait NetHook: Send {
+    /// Each of the transport's events, after step 1 counts it.
+    fn on_event(&mut self, event: &NetEvent, agree: &mut dyn Agreement);
+    /// Once a tick, after step 1's messages and events: for what reaches the hook other than as an event, such as
+    /// the lifecycle outcomes on pe-net's control end, which would otherwise wait for an unrelated event
+    /// (@design-reviewer's Low on 5ca43067).
+    fn on_tick(&mut self, now: HostTime, agree: &mut dyn Agreement) {
+        let _ = (now, agree);
+    }
+}
 
 /// The most messages step 1 takes from the network in one tick, so a flood cannot stall the tick: the rest wait
 /// in the transport's bounded queue for the next one.
@@ -180,15 +189,16 @@ impl Sim {
             stats: SimStats::default(),
             local: None,
             net: None,
-            on_net_event: None,
+            net_hook: None,
         }
     }
 
     /// The network (app.md 2): step 1 drains `net` into agreement and step 3 sends agreement's messages through it.
-    /// `on_event` gets each of its events after they are counted; without it they are only counted.
-    pub fn with_transport(mut self, net: Box<dyn Transport + Send>, on_event: Option<NetEventHook>) -> Sim {
+    /// `hook` gets each of its events after they are counted, and a call once a tick; without it events are only
+    /// counted.
+    pub fn with_transport(mut self, net: Box<dyn Transport + Send>, hook: Option<Box<dyn NetHook>>) -> Sim {
         self.net = Some(net);
-        self.on_net_event = on_event;
+        self.net_hook = hook;
         self
     }
 
@@ -230,9 +240,12 @@ impl Sim {
             }
             for e in net.events() {
                 self.stats.net_events += 1;
-                if let Some(hook) = &mut self.on_net_event {
-                    hook(&e, &mut *self.agree);
+                if let Some(hook) = &mut self.net_hook {
+                    hook.on_event(&e, &mut *self.agree);
                 }
+            }
+            if let Some(hook) = &mut self.net_hook {
+                hook.on_tick(now, &mut *self.agree);
             }
         }
         // 2. Local input: both hands at frame `p`'s host time, through the newest view's rig, one input entry each.
@@ -513,6 +526,13 @@ mod tests {
     struct Port {
         me: MemberKey,
         hub: Hub,
+        events: Arc<std::sync::Mutex<Vec<NetEvent>>>,
+    }
+
+    impl Port {
+        fn new(me: MemberKey, hub: Hub) -> Port {
+            Port { me, hub, events: Arc::default() }
+        }
     }
 
     impl Transport for Port {
@@ -528,8 +548,41 @@ mod tests {
             LinkStats::default()
         }
         fn events(&mut self) -> Vec<NetEvent> {
-            Vec::new()
+            std::mem::take(&mut *self.events.lock().expect("the events"))
         }
+    }
+
+    /// Counts what net.rs's hook would get: link-up events, and calls once a tick.
+    struct CountingHook(Arc<std::sync::Mutex<(u64, u64)>>);
+
+    impl NetHook for CountingHook {
+        fn on_event(&mut self, event: &NetEvent, _: &mut dyn Agreement) {
+            if matches!(event, NetEvent::LinkUp { .. }) {
+                self.0.lock().expect("the counts").0 += 1;
+            }
+        }
+        fn on_tick(&mut self, _: HostTime, _: &mut dyn Agreement) {
+            self.0.lock().expect("the counts").1 += 1;
+        }
+    }
+
+    /// The hook gets each event once, and runs once a tick even when no event came, so net.rs can poll pe-net's
+    /// control end for lifecycle outcomes (@design-reviewer's Low on 5ca43067).
+    #[test]
+    fn the_net_hook_gets_each_event_and_runs_once_a_tick() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, _slot) = sim(clock.clone(), Budget::new(RATE));
+        let port = Port::new(MemberKey([1; 32]), Hub::default());
+        let events = port.events.clone();
+        let counts = Arc::new(std::sync::Mutex::new((0, 0)));
+        let mut s = s.with_transport(Box::new(port), Some(Box::new(CountingHook(counts.clone()))));
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        events.lock().expect("the events").push(NetEvent::LinkUp { peer: MemberKey([2; 32]) });
+        for f in 2..=4 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        assert_eq!(*counts.lock().expect("the counts"), (1, 4), "one event, four ticks");
+        assert_eq!(s.stats().net_events, 1);
     }
 
     /// Two members over an in-process network, each with its own pe-agree node and its own replica of a small ball
@@ -561,7 +614,7 @@ mod tests {
             let slot = Arc::new(FrameSlot::new());
             let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
                 .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))
-                .with_transport(Box::new(Port { me, hub: hub.clone() }), None);
+                .with_transport(Box::new(Port::new(me, hub.clone())), None);
             sims.push((sim, slot, me));
         }
         for f in 1..=FRAMES {
