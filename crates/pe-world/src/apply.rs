@@ -295,8 +295,8 @@ impl World {
         }
         *self = work;
         // An applied commit's source goes into the machine's store, on every machine that applies it, so each can
-        // build the version (5.3; @coordinator-opus). A refused edit stores nothing; what a rollback
-        // leaves behind is store garbage, pruned with the store.
+        // build the version (5.3; @coordinator-opus). A refused edit stores nothing; what a rollback,
+        // or a dry run on the author's machine, leaves behind is store garbage, pruned with the store.
         if let Some(c) = commit
             && let Op::CommitScript { archive, .. } = &tx.ops[c]
         {

@@ -1,7 +1,9 @@
 //! The source archive's check (logic.md 4.1a; world-model.md 7.9). `check_source` is consensus code: these tests pin
 //! what it accepts and refuses on exact bytes (@coordinator-opus), so a change to either side shows.
 
-use pe_world::script::{MAX_SOURCE_BYTES, SourceError, check_source, pack_source, path_ok, source_files};
+use pe_world::script::{
+    MAX_PATH, MAX_SEGMENTS, MAX_SOURCE_BYTES, SourceError, check_source, pack_source, path_ok, source_files,
+};
 
 /// Raw archive bytes: the magic, then each `(path, body)` as given, in the order given, unchecked.
 fn raw(files: &[(&[u8], &[u8])]) -> Vec<u8> {
@@ -73,6 +75,8 @@ fn only_portable_paths_are_accepted() {
         "src/aux/x.rs",
         "src/nul.rs",
         "src/com1.rs",
+        "src/com0.rs",
+        "src/lpt0.rs",
         "src/lpt9.rs",
         "src/caf\u{e9}.rs", // non-ASCII
         "/src/lib.rs",      // absolute
@@ -96,6 +100,23 @@ fn a_segment_is_at_most_64_bytes_with_its_rs() {
     assert!(!path_ok(&format!("src/{}.rs", stem(62))));
     assert!(path_ok(&format!("src/{}/lib.rs", stem(64))));
     assert!(!path_ok(&format!("src/{}/lib.rs", stem(65))));
+}
+
+#[test]
+fn a_path_is_at_most_128_bytes_and_8_segments() {
+    assert_eq!((MAX_PATH, MAX_SEGMENTS), (128, 8));
+    // 8 segments: src, six directories, the file.
+    assert!(path_ok("src/a/b/c/d/e/f/g.rs"));
+    assert!(!path_ok("src/a/b/c/d/e/f/g/h.rs"));
+    // 128 bytes exactly: "src/" (4) + a 61-byte directory and "/" (62) + a 59-byte stem and ".rs" (62).
+    let longest = format!("src/{}/{}.rs", "a".repeat(61), "b".repeat(59));
+    assert_eq!(longest.len(), 128);
+    assert!(path_ok(&longest));
+    let over = format!("src/{}/{}.rs", "a".repeat(61), "b".repeat(60));
+    assert!(!path_ok(&over));
+    let archive =
+        [b"pe.src.v0".as_slice(), &(over.len() as u32).to_le_bytes(), over.as_bytes(), &0u32.to_le_bytes()].concat();
+    assert_eq!(check_source(&archive), Err(SourceError::Path(over)));
 }
 
 #[test]

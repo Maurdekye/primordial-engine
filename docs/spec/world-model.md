@@ -388,8 +388,10 @@ which fixes the origin's role deliberately.
   rows to the new ones in its own transaction (7.9); a future per-copy fork is the same operation on one copy's rows.
   An id below 2^32 is engine space and is refused at `Register` (a chance of 2^-96). Two commits on two branches can
   never give one id two meanings: the same id means the same description everywhere. `Register` of an id already
-  registered with the same description is a no-op; with a different one (a collision) it refuses the transaction.  ###
-  3.3 Hierarchy and transforms
+  registered with the same description is a no-op; with a different one (a collision) it refuses the transaction.
+
+### 3.3 Hierarchy and transforms
+
 - Kept: parents, ordered children, the frame rule (an object is placed relative to its nearest ancestor with a
   `Transform`), and deterministic composition [V `crates/pe-sim/src/transform.rs:1-37`].
 - Kept: plain edits store what they are given; keep-world edits are explicit [V `transform.rs:11-21`]. A reparent
@@ -1365,7 +1367,8 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
     refuse on exact bytes (a case-collision pair, a reserved name, a non-ASCII segment, `..`, a duplicate,
     unsorted order, an archive over the cap). pe-logic's build service runs the same function before it unpacks.
     The rules are 4.1a's: the magic `pe.src.v0`, files in strictly ascending byte order of path, every path `src/`
-    then segments of 1 to 64 bytes of `[a-z0-9_]`, the file segment a 1-61-byte stem plus `.rs`, no Windows
+    then segments of 1 to 64 bytes of `[a-z0-9_]`, the file segment a 1-61-byte stem plus `.rs`, a whole path at
+    most 128 bytes and 8 segments, `src` included (so it unpacks inside Windows's `MAX_PATH`), no Windows
     reserved stem, `src/lib.rs` present, every file UTF-8 (`Cargo.toml` is not in the archive: the build service
     writes it from one template).
   - **The bytes come from the entry on every path that applies a commit:** live, a re-simulation after a late
