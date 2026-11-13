@@ -1,6 +1,6 @@
 //! VR mode (app.md 1, 4; xr.md 3.1, 4.2): opening VR on the main thread ([`start`]), the XR thread's loop
-//! ([`run_xr`]) and its frame sink ([`VrSink`]). The sink draws the newest frame view through pe-render's presenter
-//! into pe-xr's swapchain images. pe-xr owns the swapchain's wgpu wrappers ([`XrTargets`]); pe-app owns the drawing
+//! ([`run_xr`]) and its frame sink ([`VrSink`]). The sink reads every frame view since the last frame and draws the
+//! newest through pe-render's presenter into pe-xr's swapchain images. pe-xr owns the swapchain's wgpu wrappers ([`XrTargets`]); pe-app owns the drawing
 //! (option (a), agreed with @xr-eng).
 
 use std::fmt;
@@ -60,6 +60,8 @@ impl VrSink {
 /// again. A slot has one reader: views taken here are gone for anyone else.
 pub struct ViewReader {
     slot: Arc<FrameSlot>,
+    /// The newest view taken. `Presenter` keeps its own for an empty batch, but the eye cameras need the view before
+    /// `frame_batch` runs, so the reader keeps one too (@design-reviewer's nit on 7b5d78d6).
     last: Option<Arc<FrameView>>,
 }
 
