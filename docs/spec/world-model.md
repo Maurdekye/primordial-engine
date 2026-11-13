@@ -249,7 +249,10 @@ which fixes the origin's role deliberately.
   `preset::ball_pit_on(line, seed, blobs, origin, balls)`, so the pit's object ids and, through `World::admit`, the
   hands' ids derive from it. Why: it is 2.3's rule in M1's form, a line is the hash of the record that makes the
   world, so two sessions never share a line, ids or signatures, where `m1_line()` would give every session with
-  one seed the same ids. It is never the origin (`ball_pit_on` refuses `LineId::origin()`), the context is in M1's
+  one seed the same ids. **The record carries a fresh 32-byte random nonce from the OS**, so two sessions with the
+  same seed, members and settings still get different records and lines, and one session's signed entries never
+  replay into another (@design-reviewer's and @chunks-reviewer's Low on 1c22bd90; the creation time alone is
+  weaker). It is never the origin (`ball_pit_on` refuses `LineId::origin()`), the context is in M1's
   disposable `pe.m1.` namespace so it cannot collide with the branch-entry derivation of the later slice, and the
   world still carries the M1 marker, `Some(m1_line())`, whatever its line. `ball_pit` and `ball_pit_with` stay
   on `m1_line()` for tests and single-machine use.
