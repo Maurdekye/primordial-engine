@@ -1,0 +1,11 @@
+# 2026-11-11T20:33:00Z rustc 1.99.0 (b940084d7 2026-09-28) runs=5
+incremental=true run=1 warm_rebuild_ms=6059
+incremental=true run=2 warm_rebuild_ms=3168
+incremental=true run=3 warm_rebuild_ms=13209
+incremental=true run=4 warm_rebuild_ms=2669
+incremental=true run=5 warm_rebuild_ms=3359
+incremental=false run=1 warm_rebuild_ms=5218
+incremental=false run=2 warm_rebuild_ms=5425
+incremental=false run=3 warm_rebuild_ms=4749
+incremental=false run=4 warm_rebuild_ms=7959
+incremental=false run=5 warm_rebuild_ms=5562

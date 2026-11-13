@@ -9,6 +9,15 @@ description = "Logic: scripts compiled by Cranelift with metering injected into 
 # Skeleton from pe-seams v0 (WS-seams). WS-logic, @iter-bench owns this crate and its manifest; the root Cargo.toml
 # already lists it, so adding dependencies here needs no other change.
 [dependencies]
+pe-core = { path = "../pe-core" }
 pe-seams = { path = "../pe-seams" }
+# The store the runner works over (logic.md 3.3).
+pe-sim = { path = "../pe-sim" }
+# The batch and manifest layout, shared with the guest.
+pe-sdk = { path = "../pe-sdk" }
 # The patched, vendored copy (vendor/PATCHES.md) through the root [patch.crates-io]: no C on any target.
 wasmtime.workspace = true
+# The metering pass (logic.md 5.2): parse and validate, then re-encode. Pure Rust; the versions wasmtime 50.0.1
+# itself uses, so the lock keeps one copy of each.
+wasmparser = { version = "=0.261.0", default-features = false, features = ["std", "validate", "features", "simd"] }
+wasm-encoder = { version = "=0.261.0", default-features = false, features = ["std", "wasmparser"] }

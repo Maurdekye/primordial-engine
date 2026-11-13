@@ -1,0 +1,4 @@
+{"kind":"physics","mode":"cl-nan","ms_per_frame_median_of_3":2.0449,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":0,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl-wtfuel-nan","ms_per_frame_median_of_3":1.8420,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":11154427845,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl-inj-nan","ms_per_frame_median_of_3":2.0947,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":10180552478,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl-inj","ms_per_frame_median_of_3":1.1489,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":10180552478,"fuel_identical_3_runs":true}

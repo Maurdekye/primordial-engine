@@ -1,0 +1,2 @@
+# run3 2026-11-10T20:50:28Z cmd: spikes/iter-bench/target/logic-v0/release/logic-probe.exe cols spikes/iter-bench/target/cols_guest/wasm32-unknown-unknown/release/cols_guest.wasm ; other heavy holders at start:
+# end 2026-11-10T20:50:40Z:

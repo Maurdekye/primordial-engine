@@ -1,0 +1,80 @@
+{
+ "meta": {
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "reps": 2,
+  "profile": [
+   "profile.release.opt-level=3",
+   "profile.release.lto=false",
+   "profile.release.codegen-units=16",
+   "profile.release.incremental=false",
+   "profile.release.panic=\"abort\"",
+   "profile.release.debug=false",
+   "profile.release.strip=\"symbols\"",
+   "profile.release.debug-assertions=false",
+   "profile.release.overflow-checks=false",
+   "profile.release.rpath=false"
+  ],
+  "codegen": [
+   "-C",
+   "target-cpu=mvp",
+   "-C",
+   "target-feature=+bulk-memory,+multivalue,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext",
+   "-C",
+   "link-arg=-zstack-size=65536"
+  ],
+  "heavy_prio": "idle",
+  "start": "2026-11-11T21:36:17Z",
+  "end": "2026-11-11T21:51:51Z"
+ },
+ "modes": {
+  "inc-on": {
+   "edit_to_built_s": {
+    "median": 3.5983,
+    "min": 2.4397,
+    "max": 4.7568,
+    "n": 2
+   },
+   "noop_s": {
+    "median": 1.8581,
+    "min": 1.0673,
+    "max": 2.2799,
+    "n": 3
+   }
+  },
+  "inc-off": {
+   "edit_to_built_s": {
+    "median": 5.3336,
+    "min": 2.1767,
+    "max": 8.4904,
+    "n": 2
+   },
+   "noop_s": {
+    "median": 0.8161,
+    "min": 0.7108,
+    "max": 0.8232,
+    "n": 3
+   }
+  }
+ },
+ "load": {
+  "instrument_ms": {
+   "median": 1.283,
+   "min": 1.006,
+   "max": 1.839,
+   "n": 19
+  },
+  "compile_ms": {
+   "median": 11.542,
+   "min": 6.559,
+   "max": 20.782,
+   "n": 19
+  },
+  "instantiate_ms": {
+   "median": 0.172,
+   "min": 0.153,
+   "max": 0.341,
+   "n": 19
+  },
+  "bytes": 15380
+ }
+}

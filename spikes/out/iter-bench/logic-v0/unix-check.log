@@ -1,0 +1,31 @@
+# start 2026-11-10T20:14:51Z Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+rustc 1.99.0 (b940084d7 2026-09-28)
+cargo 1.99.0 (5f94df478 2026-08-27)
+# which cc gcc: /usr/bin/cc /usr/bin/gcc 
+## control: pristine wasmtime, CC=/bin/false (expected to FAIL on helpers.c)
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+warning: wasmtime@50.0.1: Compiler family detection failed due to error: ToolExecError: command did not execute successfully (status code exit status: 1): "/bin/false" "-E" "/home/<user>/pe-logic-unix-check/target-pristine/release/build/wasmtime-8a770db472d8e127/out/12221858817613145316detect_compiler_family.c"
+error: failed to run custom build command for `wasmtime v50.0.1`
+  cargo:rerun-if-changed=src/runtime/vm/helpers.c
+  cargo:warning=Compiler family detection failed due to error: ToolExecError: command did not execute successfully (status code exit status: 1): "/bin/false" "-E" "/home/<user>/pe-logic-unix-check/target-pristine/release/build/wasmtime-8a770db472d8e127/out/12221858817613145316detect_compiler_family.c"
+  error occurred in cc-rs: command did not execute successfully (status code exit status: 1): "/bin/false" "-O3" "-ffunction-sections" "-fdata-sections" "-fPIC" "-m64" "-march=x86-64" "-Wall" "-Wextra" "-DCFG_TARGET_OS_linux" "-DCFG_TARGET_ARCH_x86_64" "-DVERSIONED_SUFFIX=_50_0_1" "-o" "/home/<user>/pe-logic-unix-check/target-pristine/release/build/wasmtime-8a770db472d8e127/out/8a7984002b869da0-helpers.o" "-c" "src/runtime/vm/helpers.c"
+exit=101
+## patched wasmtime, CC=/bin/false (expected to build)
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+    Finished `release` profile [optimized] target(s) in 1m 11s
+exit=0
+## objects in the patched build directories (expect none):
+## traps on Linux
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":4096,"max_wasm_stack":1048576,"deepest_ok":1023,"expected":1023,"trap":"Some(UnreachableCodeReached) depth_global=4100"}
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":4096,"max_wasm_stack":8388608,"deepest_ok":1023,"expected":1023,"trap":"Some(UnreachableCodeReached) depth_global=4100"}
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":65536,"max_wasm_stack":1048576,"deepest_ok":16383,"expected":16383,"trap":"Some(UnreachableCodeReached) depth_global=65540"}
+{"kind":"depth","extra_locals":0,"weight":4,"depth_limit":65536,"max_wasm_stack":8388608,"deepest_ok":16383,"expected":16383,"trap":"Some(UnreachableCodeReached) depth_global=65540"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":4096,"max_wasm_stack":1048576,"deepest_ok":59,"expected":59,"trap":"Some(UnreachableCodeReached) depth_global=4148"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":4096,"max_wasm_stack":8388608,"deepest_ok":59,"expected":59,"trap":"Some(UnreachableCodeReached) depth_global=4148"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":65536,"max_wasm_stack":1048576,"deepest_ok":962,"expected":962,"trap":"Some(UnreachableCodeReached) depth_global=65552"}
+{"kind":"depth","extra_locals":64,"weight":68,"depth_limit":65536,"max_wasm_stack":8388608,"deepest_ok":962,"expected":962,"trap":"Some(UnreachableCodeReached) depth_global=65552"}
+{"kind":"fuel_trap","budget":1000000,"loop_iterations":166666,"fuel_left":-3,"trapped":true,"identical_3_runs":true}
+{"kind":"refuse","case":"import outside pe","result":Some("import from module \"wasi_snapshot_preview1\": only \"pe\" is allowed")}
+# end 2026-11-10T20:16:20Z

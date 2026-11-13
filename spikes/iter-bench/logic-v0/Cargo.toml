@@ -1,0 +1,30 @@
+# WS-logic pre-build probe (docs/spec/logic.md section 11): injected metering, per-frame reset and
+# batch-copy costs on wasmtime/Cranelift. Own workspace so the repo root workspace is untouched.
+[package]
+name = "logic-probe"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+# The benchmark's generated guest, for the native column (spikes/iter-bench/guests, scripts/iter_bench_gen.py).
+pe_api = { path = "../guests/pe_api" }
+logic_game = { path = "../guests/logic_game" }
+wasmparser = { version = "=0.262.0", default-features = false, features = ["std", "validate", "features", "simd"] }
+wasm-encoder = { version = "=0.262.0", default-features = false, features = ["std", "wasmparser"] }
+# No default features: no cache (zstd-sys), no debug-builtins (helpers.c), no async (fiber's windows.c),
+# no profiling (ittapi-sys). Same set as spikes/iter-bench/host minus Winch.
+wasmtime = { version = "=50.0.1", default-features = false, features = ["std", "runtime", "cranelift", "parallel-compilation", "pooling-allocator"] }
+
+[profile.release]
+debug = false
+codegen-units = 16
+
+# The patched vendored wasmtime that pe-logic ships (no C on any target; crates/pe-logic/vendor/PATCHES.md).
+# The first measurements (spec 5.2a, before 5f45312b) used the pristine registry crate, which on Windows also
+# compiles no C; the Rust differences are Unix-only.
+[patch.crates-io]
+wasmtime = { path = "../../../crates/pe-logic/vendor/wasmtime-50.0.1" }

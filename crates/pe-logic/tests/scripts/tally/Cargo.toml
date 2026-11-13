@@ -1,0 +1,17 @@
+# A test script for pe-logic (docs/spec/logic.md 3.3-3.6): systems over counters, spawners and faults, for the batch
+# runner. Its own workspace, so the root workspace never builds it for the host; pe-logic's tests build it for wasm32
+# through the build service.
+[package]
+name = "tally"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+pe-sdk = { path = "../../../../pe-sdk" }
