@@ -16,15 +16,19 @@
 //!   and overlapping bodies are pushed out by Box3D's soft contacts at the world's contact speed (3 m/s), so a flip
 //!   inside a pile moves its balls apart gently instead of throwing them (8.1).
 //! - **Within an input's span** the body is driven to the target in one frame: `set_target`, so it pushes what it
-//!   meets at the speed it moves. A move faster than [`MAX_HAND_PUSH_SPEED`] in one frame is a jump: the body is put
-//!   at the target with no velocity, moved but not swept, so a pose jump never hits anything at that speed (8.1's
-//!   cap by `max_push_speed`).
-//! - **What a hand holds jumps with it** (@design-reviewer's Low on cc037c10): on a jump, each object the hand's
-//!   claims hold is put where the hand's move takes it, keeping its place and rotation relative to the hand, with no
-//!   velocity, so it is moved but not swept too. A move is also a jump when it would take a held object faster than
-//!   the cap, as a fast turn does to an object held away from the hand's centre. Only the claimed object moves:
-//!   other bodies resting on it (cups on a held tray) stay where they were. A throw released while its hand jumps
-//!   (moves faster than the cap) leaves with no velocity.
+//!   meets at the speed it moves. The move is measured from where the body is to its target, for the hand and for
+//!   everything it holds (each held object carried rigidly with the hand), and its farthest point decides
+//!   (world-model.md 8.1's cap by `max_push_speed`; @coordinator-opus, option (b)):
+//!   - **faster than [`MAX_HAND_PUSH_SPEED`]:** the body moves only that far towards the target this frame, its
+//!     position and turn scaled alike, so neither it nor what it holds pushes faster than the cap. It trails its
+//!     target and catches up when the hand slows, and a throw leaves at up to the cap;
+//!   - **beyond the teleport distance** ([`teleport_distance`]: [`TELEPORT_DISTANCE`], or two frames at the cap at
+//!     low rates), a tracking glitch, a real teleport, or a body trailing that far: the body is put at the target
+//!     with no velocity, moved but not swept, and each object the hand's claims hold goes with it, keeping its place
+//!     and rotation relative to the hand, with no velocity too (@design-reviewer's Low on cc037c10). So a body never
+//!     trails its target by more than the teleport distance, and a hand kept faster than the cap trails, is placed
+//!     and trails again: its contacts come in bursts. Only the claimed object moves: other bodies resting on it
+//!     (cups on a held tray) stay where they were.
 //! - **After the span, with no newer input:** if the input came as part of a stream (within its predecessor's span
 //!   plus [`COAST`]), the body coasts at its last velocity, at most [`COAST_SPEED`], until [`COAST`] after the span;
 //!   then it goes back to the hand's target by the same rule as within a span, and stays there, so it never parks
@@ -61,9 +65,18 @@ pub mod hand_mode {
 pub const COAST: Duration = Duration::from_millis(100);
 /// The fastest a coasting hand moves, m/s (replica.md 3.3).
 pub const COAST_SPEED: f32 = 3.0;
-/// The fastest a hand body pushes, m/s: a move faster than this in one frame is a jump (world-model.md 8.1's
-/// `max_push_speed`, at its default until pe-world holds the setting).
+/// The fastest a hand body, or anything it holds, moves when driven, m/s (world-model.md 8.1's `max_push_speed`, at
+/// its default until pe-world holds the setting).
 pub const MAX_HAND_PUSH_SPEED: f64 = 10.0;
+/// M1's teleport distance, m: a hand's move longer than this in one frame is placed, not swept (@coordinator-opus).
+pub const TELEPORT_DISTANCE: f64 = 0.5;
+
+/// The teleport distance at `rate`: [`TELEPORT_DISTANCE`], or two frames at the cap where that is longer (below
+/// 40 Hz), so a move between one frame at the cap and a teleport always exists to be slowed (@design-reviewer's Low
+/// on world/hand-teleport 0913f962).
+pub fn teleport_distance(rate: SimRate) -> f64 {
+    TELEPORT_DISTANCE.max(2.0 * MAX_HAND_PUSH_SPEED / f64::from(rate.hz()))
+}
 
 /// A grab's spring: it pulls the held object to its place in the hand at 5 Hz, critically damped, with at most
 /// 1,000 N. It has no angular part (`max_torque` 0): pe-physics's grab joint has no frame rotation, so an angular
@@ -152,23 +165,44 @@ fn drive(
     // Within the span, or after it and any coast: to the target. After a coast that is back to where the world's
     // hand is, so a body never parks away from the hand everyone sees (@design-reviewer's Low on 52575b48).
     let now = physics.pose(hand.hand)?;
-    let cap = MAX_HAND_PUSH_SPEED * f64::from(dt);
     let mut carried = Vec::with_capacity(held.len());
     for &object in held {
         let at = physics.pose(object)?;
         carried.push((object, at, carry(&now, &target, &at)));
     }
-    // A jump: the hand, or something it holds, would move faster than the cap (@design-reviewer's Low on cc037c10).
-    let jump = distance(now.position, target.position) > cap
-        || carried.iter().any(|(_, at, to)| distance(at.position, to.position) > cap);
-    if !jump {
-        return physics.set_target(hand.hand, target, dt, true);
+    // The move's farthest point: the hand's own, or that of something it holds.
+    let farthest = carried
+        .iter()
+        .map(|(_, at, to)| distance(at.position, to.position))
+        .fold(distance(now.position, target.position), f64::max);
+    if farthest > teleport_distance(rate) {
+        // Placed, not swept, with no velocity: a body placed into others while moving would hit them at its speed
+        // plus the push-out (measured: 14.8 m/s at a 10 m/s cap when velocities were kept).
+        physics.set_state(hand.hand, target, [0.0; 3], [0.0; 3])?;
+        for (object, _, to) in carried {
+            physics.set_state(object, to, [0.0; 3], [0.0; 3])?;
+        }
+        return Ok(());
     }
-    physics.set_state(hand.hand, target, [0.0; 3], [0.0; 3])?;
-    for (object, _, to) in carried {
-        physics.set_state(object, to, [0.0; 3], [0.0; 3])?;
+    let cap = MAX_HAND_PUSH_SPEED * f64::from(dt);
+    let to = if farthest > cap { towards(&now, &target, cap / farthest) } else { target };
+    physics.set_target(hand.hand, to, dt, true)
+}
+
+/// The pose a fraction `f` of the way from `from` to `to`: the position along the straight line, the rotation along
+/// the straight line between the two quaternions (the shorter way round), normalized. It needs no transcendental
+/// function, so every machine computes the same bits.
+fn towards(from: &Pose, to: &Pose, f: f64) -> Pose {
+    let a = from.rotation;
+    let mut b = to.rotation;
+    if a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3] < 0.0 {
+        b = b.map(|c| -c);
     }
-    Ok(())
+    let g = f as f32;
+    Pose {
+        position: [0usize, 1, 2].map(|i| from.position[i] + f * (to.position[i] - from.position[i])),
+        rotation: normalized([0usize, 1, 2, 3].map(|i| a[i] + g * (b[i] - a[i]))),
+    }
 }
 
 /// Whether `id` is a hand's: the bodies [`sync`] made, which never write poses or `BodyState` rows back to the
