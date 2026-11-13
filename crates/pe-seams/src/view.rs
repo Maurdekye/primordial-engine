@@ -270,13 +270,17 @@ pub struct ViewCounters {
 /// entry is the newer one.
 ///
 /// **Complete at the final frame** (S5 v1.4; @ballpit-viz md5e264073e68, after @shader-reviewer's L1 on render.md
-/// 8.1). A view's `changes`, with those of the views before it, hold the final verdict of every entry at or below
-/// that view's `final_frame`, as the newest record of that entry. That includes entries re-stepped while finalizing
-/// (the replica's own root check and its rebase onto the floor), so no record reaches a view after that view's
-/// `final_frame` has passed its entry. pe-render's notices and WorldApi's `watch` tell a verdict once `final_frame`
-/// reaches its entry, and rely on this. The one exception is a repair: a replica whose root diverged computed some
-/// verdicts on the wrong state. The entries a repair re-steps appear again, and the newest still wins; an import does
-/// not re-step the entries at or below its cut, so their records stand.
+/// 8.1). A view's `changes`, with those of the views before it, hold this replica's verdict of every entry at or
+/// below that view's `final_frame`, as the newest record of that entry. That includes entries re-stepped while
+/// finalizing (the replica's own root check and its rebase onto the floor), so no record reaches a view after that
+/// view's `final_frame` has passed its entry. pe-render's notices and WorldApi's `watch` tell a verdict once
+/// `final_frame` reaches its entry, and rely on this.
+///
+/// **Not on a replica whose root diverged** (@design-reviewer's Medium on v1.4, m321e1f758d97; the remedy is open with
+/// @coordinator-opus). `final_frame` is the floor, and the floor also moves to a final cut where my root differed. The
+/// entries between the last cut my root matched (`Cv`) and that cut were stepped on the wrong state, so their verdicts
+/// may be wrong. A rung-1 repair re-steps them, and its records reach a later view, after `final_frame` has passed
+/// them; a rung-2 import does not re-step them, and nothing corrects their records.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepRecord {
     pub entry: EntryRef,
