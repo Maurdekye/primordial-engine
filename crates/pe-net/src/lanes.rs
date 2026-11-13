@@ -63,6 +63,8 @@ pub enum FrameError {
     BadKind(u8),
     TooLong,
     BadAck,
+    /// A varint in a longer form than its value needs: every message has one encoding (found by fuzzing).
+    NonMinimal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,6 +133,9 @@ impl Reader<'_> {
         let mut v = u64::from(first & 0x3f);
         for &b in self.bytes(len - 1)? {
             v = (v << 8) | u64::from(b);
+        }
+        if varint_len(v) != len {
+            return Err(FrameError::NonMinimal);
         }
         Ok(v)
     }
@@ -580,6 +585,15 @@ mod tests {
             assert_eq!(b.len(), varint_len(v));
             assert_eq!(Reader(&b).varint().unwrap(), v);
         }
+    }
+
+    #[test]
+    fn a_varint_in_a_longer_form_than_needed_is_refused() {
+        // Found by the long fuzz run: a hello whose token length 40 was written 0x40 0x28 was accepted.
+        for b in [&[0x40u8, 0x28][..], &[0x40, 0x00], &[0x80, 0, 0, 0x3f], &[0xc0, 0, 0, 0, 0x3f, 0xff, 0xff, 0xff]] {
+            assert_eq!(Reader(b).varint(), Err(FrameError::NonMinimal), "{b:02x?}");
+        }
+        assert_eq!(Reader(&[0x80, 0, 0x40, 0]).varint(), Ok(0x4000));
     }
 
     #[test]

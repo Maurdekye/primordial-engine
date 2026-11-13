@@ -1,0 +1,3 @@
+# Regression inputs for the fuzz targets in tests/fuzz.rs: one lowercase hex input per line, # for comments.
+# A failing fuzz case goes into <target>.hex (hello, welcome, rendezvous, lifecycle noise, datagram,
+# lane stream, udp) with its fix, so every later run replays it.
