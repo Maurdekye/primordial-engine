@@ -613,6 +613,86 @@ fn without_a_runner_a_stop_passed_and_met_again_counts_again() {
     assert_eq!((r.frame(), r.faults()), (Frame(5), 2));
 }
 
+/// The mover, but the first time it runs frame 20 it also emits `glitch` from the ball after the physics and moves it
+/// 1 cm further: a transient fault of this machine, which rung 1 repairs. (It remembers that it glitched, which no
+/// real runner may: [`conformance`].)
+struct Glitching {
+    inner: Mover,
+    glitched: bool,
+}
+
+impl ScriptRunner for Glitching {
+    fn identity(&self) -> Bytes {
+        self.inner.identity()
+    }
+
+    fn holds(&self, module: &Hash) -> bool {
+        self.inner.holds(module)
+    }
+
+    fn module(&self, module: &Hash) -> Option<Bytes> {
+        self.inner.module(module)
+    }
+
+    fn run_stage(
+        &mut self,
+        stage: Stage,
+        scripts: &[ScriptRow],
+        store: &mut SimStore,
+        w: &StageWorld<'_>,
+    ) -> StageOutcome {
+        let mut out = self.inner.run_stage(stage, scripts, store, w);
+        if w.frame == Frame(20) && stage == Stage::LogicPostPhysics && !self.glitched {
+            self.glitched = true;
+            let glitch = ScriptEvent {
+                asset: ASSET,
+                system: "pinger".into(),
+                name: "glitch".into(),
+                object: oid(BALL),
+                bytes: vec![],
+            };
+            out.events.push(glitch);
+            let mut t = store.get::<Transform>(oid(BALL)).copied().expect("the ball");
+            t.pos[0] += 0.01;
+            store.insert(oid(BALL), t).expect("moved");
+            out.report.written.push((ComponentId::TRANSFORM, oid(BALL)));
+        }
+        out
+    }
+}
+
+/// Rung 1 replays from Cv, below the floor its divergence moved, and the views compare what it steps with what they
+/// carried (@engine-architect's Low 3 on 4ac9019f): no ping is carried twice, and the glitch's event is retracted.
+#[test]
+fn rung_one_carries_each_effect_once_and_retracts_what_a_glitch_emitted() {
+    let mut s = Source::default();
+    let mut good = replica_of(scripted()).with_runner(mover());
+    good.advance(Frame(50), &mut s);
+    let mut bad =
+        replica_of(scripted()).with_runner(Box::new(Glitching { inner: Mover { holds: MODULE }, glitched: false }));
+    bad.advance(Frame(48), &mut s);
+    let kind = EffectKind::Script(event_kind(&ASSET, "glitch"));
+    let glitch = EffectKey { frame: Frame(20), cause: EffectCause::Logic, object: oid(BALL), kind, ordinal: 0 };
+    let first = keys_of(&bad.view());
+    assert!(first.contains(&glitch) && first.len() == 49, "48 pings and the glitch: {first:?}");
+    let (c16, c32) = (cut_at(&[], 1, 16), cut_at(&[], 2, 32));
+    let (r16, r32) = (good.live_root(Frame(16)).expect("at 16"), good.live_root(Frame(32)).expect("at 32"));
+    let agreed = bad.finalize(&FinalCut { cut: c16, root: r16, voters: vec![] }, &mut s);
+    assert_eq!(agreed, pe_seams::Finalized::Agreed);
+    let fc32 = FinalCut { cut: c32.clone(), root: r32, voters: vec![] };
+    assert!(matches!(bad.finalize(&fc32, &mut s), pe_seams::Finalized::Diverged { .. }), "the glitch shows at 32");
+    // A view published with the floor at 32 and Cv at 16, before the replay.
+    bad.advance(Frame(49), &mut s);
+    assert_eq!(keys_of(&bad.view()), [ping(48)]);
+    assert_eq!(bad.replay_to(&c32, &mut s), Ok(r32));
+    bad.advance(Frame(50), &mut s);
+    let after = bad.view();
+    assert_eq!(keys_of(&after), [ping(49)], "every replayed ping was carried already");
+    assert_eq!(after.retracted, [glitch]);
+    let from_32 = |r: &ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 32).collect::<Vec<_>>();
+    assert_eq!(from_32(&bad), from_32(&good));
+}
+
 fn rows_of(w: &World) -> Vec<ScriptRow> {
     let row = |(&asset, m): (&[u8; 32], &pe_world::script::ModuleRow)| ScriptRow {
         asset,

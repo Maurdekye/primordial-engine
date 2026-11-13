@@ -54,7 +54,7 @@ use pe_seams::{
     SignedEntry, Stage, Tree, Version, ViewFlags, ViewObject,
 };
 use pe_sim::transform::rotate;
-use pe_sim::{Component, SimStore, Transform, WorldTransform};
+use pe_sim::{Component, ComponentId, SimStore, Transform, WorldTransform};
 use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
 use pe_world::edit::{Op, Transaction};
 use pe_world::{Footprint, World, input_phase};
@@ -181,13 +181,16 @@ impl WorldModel for PeWorld {
         // `after_logic` names a moved or removed object only if it has a body. The physics needs the rest too: a moved
         // parent without one carries the bodies beneath it, and a removed shape changes its owner's body
         // (@engine-architect's Medium on 4ac9019f).
+        // Sets for the membership tests, so a stage moving thousands of objects stays linear; the lists keep their order.
+        let mut rows: BTreeSet<(ObjectId, ComponentId)> = footprint.rows.iter().copied().collect();
         for &(c, o) in &out.report.written {
-            if c == Transform::ID && !footprint.rows.contains(&(o, c)) {
+            if c == Transform::ID && rows.insert((o, c)) {
                 footprint.rows.push((o, c));
             }
         }
+        let mut removed: BTreeSet<ObjectId> = footprint.removed.iter().copied().collect();
         for &o in &out.report.removed {
-            if !footprint.removed.contains(&o) {
+            if removed.insert(o) {
                 footprint.removed.push(o);
             }
         }
