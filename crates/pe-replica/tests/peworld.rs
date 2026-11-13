@@ -1828,6 +1828,34 @@ fn a_trailing_placement_carries_a_held_box_sliding_along_the_floor() {
     assert_eq!(r.faults(), 0);
 }
 
+/// A script runner that holds no module: a world's scripts never run on it, each counted missing (crate::logic).
+struct NoModules;
+
+impl pe_replica::ScriptRunner for NoModules {
+    fn identity(&self) -> Bytes {
+        Bytes::from_static(b"the test runner without modules")
+    }
+
+    fn holds(&self, _: &Hash) -> bool {
+        false
+    }
+
+    fn module(&self, _: &Hash) -> Option<Bytes> {
+        None
+    }
+
+    fn run_stage(
+        &mut self,
+        _: pe_seams::Stage,
+        scripts: &[pe_replica::logic::ScriptRow],
+        _: &mut pe_sim::SimStore,
+        _: &pe_replica::logic::StageWorld<'_>,
+    ) -> pe_replica::logic::StageOutcome {
+        let missing = scripts.iter().map(|s| s.asset).collect();
+        pe_replica::logic::StageOutcome { missing, ..Default::default() }
+    }
+}
+
 /// A script commit's re-key happens when it activates, at the end of a frame (logic.md 6.2a), so no step record
 /// names re-keyed objects any more (`StepRecord::rekeyed` stays empty until S5's `FrameView.activations` replaces it;
 /// @coordinator-opus m9dae7344d1af). With one member the commit is its own quorum and activates at the end of its
@@ -1881,7 +1909,13 @@ fn a_script_commit_activates_at_its_frame_s_end_and_no_record_names_the_re_key()
     assert_eq!(scratch.end_frame(Frame(1)).activated.len(), 1, "its author is its quorum");
     let base = scratch.modules()[&ASSET].version;
     let second = b.next(Class::Edit, Frame(3), Bytes::from(commit(Some(base), 2, 3).encode()));
-    let (r, _) = reference_of(world, &[first.clone(), attach.clone(), second.clone()], 6);
+    // A replica without a runner refuses a frame with a code commit (crate::logic): this one holds no module, so the
+    // script never runs here, but its commits step.
+    let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config()).expect("a replica");
+    let mut r = replica.with_runner(Box::new(NoModules));
+    let mut s = Source::default();
+    [first.clone(), attach.clone(), second.clone()].into_iter().for_each(|e| s.add(e));
+    r.advance(Frame(6), &mut s);
     let record = |e: &SignedEntry| {
         r.view().changes.iter().rev().find(|c| c.entry == e.id()).cloned().expect("a record of the entry")
     };
