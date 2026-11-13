@@ -501,7 +501,8 @@ that object's events that frame)`.
 
 ## 9. The merge engine (M2 v1, M3 v2): draft for WS-model
 
-Not built until WS-model's model v2 checks it [C 20:05Z, C8]. This section is the shape to model.
+Not built until WS-model's model v2 checks it [C 20:05Z, C8]. Sections 9.2-9.5 are the shape to model, made precise
+for it in r2 and r3 (coordinator).
 
 ### 9.1 What the user asked for
 
@@ -519,105 +520,372 @@ Not built until WS-model's model v2 checks it [C 20:05Z, C8]. This section is th
   theirs, the returning machine's replay under the new rules; ours, main's final state; deterministic rules resolve
   conflicts; no final frame is undone. [C: an [I] reading, open to the user's correction.]
 
-### 9.2 One pure function
+### 9.2 The inputs, at main's final frontier
 
-```text
-merge(base: Root, ours: Line, theirs: Line, rules: Rules) -> Merged
-  Line   = { root: Root, entries: [SignedEntry] since base, footprint: per object, the frames it was written }
-  Merged = { root: Root, kept: [entry], refused: [(entry, reason)], conflicts: [group], report }
-```
+Sections 9.2-9.5 are written to be modelled. Every term is defined from agreed data, and 9.5 lists the properties a
+model must check, each with a control. Unmarked rules in 9.2-9.3b are [I] (diverge-eng, r2 and r3 of this section),
+resting on the rulings they cite.
 
-- **Pure:** no clock, no randomness, no I/O, no arrival order. The same inputs give the same `Merged` on every
-  machine. That is the property "merge determinism" (plan 4.4).
-- **Inputs are agreed.** The merge runs as an ordinary entry. The returning machine (v1), or the first proposer
-  after reconvening (v2), submits a merge entry naming `base`, the hashes of `theirs.entries`, and an
-  **application frame `A = F + D`**. When a final cut includes it at frame `F`, every member computes
-  `merge(base, ours = main at A, theirs, rules)` in the background and applies it at `A`. Main's frames before
-  `A` stay as they were. [I]
-- **`D` covers the compute.** Every member must replay up to a minute of `theirs` from `base`. The submitter sets
-  `D` from the replay length at a conservative rate (`R_merge`, section 14), so that members finish before `A` and
-  do not roll back a second time. A member that finishes late rolls back to `A`, as for any late entry
-  [design-reviewer].
-- **A member that has not yet built the code `theirs` needs** cannot compute the merge. It treats the merge as a
-  pending code activation (Q3): it keeps predicting, does not vote on cuts at or past `A` until it has built the
-  code and computed the merge, then rolls back to `A`. Past `T_merge`, it is itself a returning branch.
-- **`theirs` is replayed under the new rules:** from `base`, with `theirs.entries` and the code in effect on main,
-  so the returning machine's own actions are re-simulated (Q3b).
+**A line is its entries, not its states.** A line's state is always derived by replaying its entries under the
+engine's rules. A machine's own simulation, under whatever code it ran, is never an input. Code activations are
+entries, so a replay takes up new code at its activation's stamp. That is how the returning player's actions are
+"resimulated using the new rules" (Q3b).
 
-### 9.3 The rules, per group of objects
+**`replay(S, E, f)`:** step state `S` from its frame up to frame `f`, applying the entries of `E` in the agreed
+order (stamp, then the tie rank, author, chain, seq; D37, agreement.md 3). Each entry comes with a **disposition**,
+which says whether it is applied [design-reviewer, r2 Medium 2]:
+- **`Final(v)`:** an entry of main's final log with its verdict `v`. A void entry (`Late`, `BackStamped`, a fork) is
+  skipped. Any other is applied at its stamp. Applied this way, `S_o` reproduces main's state.
+- **`AtStamp`:** applied at its stamp whatever `Late` verdict main gave it. Used for the returning entries the merge
+  admits, and for every entry in `theirs`' own replay.
+- **Never applied, in any replay:** an entry with a chain-validity void (`BackStamped` within its own chain, or a
+  fork). Those are faults, not lateness.
 
-For every object, compare `base`, `ours` and `theirs` by the tree (equal hashes need no look inside):
+The ordinary rules decide only an applied entry's state-dependent outcome: `Applied`, with any note (`Orphaned`,
+`AlreadyDeleted`), or `Refused { reason }`, and for a grab whether it was granted. `replay` records each outcome.
 
-| Since `base` | git's name | Result |
+**Footprints** (S2, 11.1) are kept per entry and per step, with **reads and writes separate**:
+- an entry's footprint holds what it read and wrote. A refused entry holds the reads that refused it, its
+  precondition or hold check, and writes nothing [design-reviewer, r2 Low 2];
+- a step's footprint holds the objects its scripts and physics read and wrote, contacts and joints included, and
+  **the code version and config rows it ran under** (rate, gravity, settings, module rows) [shader-reviewer, r2 Low
+  1].
+
+**Changed by a line** means written, not merely different at the end [shader-reviewer, r2 Medium 2]. An object or
+row is changed by a line when an entry or step of that line wrote it in `[fb, F_M)`, even if it was written back
+later. A **body** is changed by a line when an entry or script of that line wrote it, or when, at a later frame of
+that line, it touched (by contact or joint) a body that line had already changed. Plain stepping changes no body. A
+**domain** is changed by a line when one of its bodies is.
+
+**The merge entry `M`.** The returning machine (v1), or the first proposer after reconvening (v2), submits an
+ordinary entry `M`, stamped `s_M`, naming:
+- **`base`:** a final cut `Cb` both lines hold, with its root `Rb`, at frame `fb`. In v1 it is the last final cut
+  the returning machine verified before it diverged (its `Cv` then). `S_b` is the state at `Cb`.
+- **`theirs`:** the ids of the returning line's entries stamped in `[fb, s_M)`, as a set `E_t`. These are its own
+  entries and every entry it received and applied, main members' entries that main voided as late included. Each id
+  comes with the witness statements the submitter holds for it (9.3).
+- **`options`:** the defaults for an automatic merge (9.6).
+
+**From submitting `M`, the returner plays on main's line** [C, design-reviewer]. It makes its new
+entries as ordinary main-line entries, predicting the merged state, so they reach main's log and are never returning
+entries. The returning player's actions during the merge are kept: no player waits (Q3b).
+
+`M` is stamped, signed, included and given a verdict like any other entry. Members fetch the entries it names by
+name, as for a cut. Let `F_M` be the frame of the final cut that first includes `M`. **The merge runs in two
+stages** [C, @fable-reviewer]: stage 1 merges at `F_M`, where every input is final once
+`M` is; stage 2 carries the result forward to the application frame `A` (9.3a).
+- **`ours`:** `E_o`, main's final log stamped in `[fb, F_M)`, in the agreed order, fixed when `M` becomes final.
+  `E_o2` is main's entries stamped in `[F_M, A)`, which stage 2 re-applies. Entries an earlier final merge entry
+  merged in count as members of the final log at their stamps, so that no entry takes effect twice (P-M7).
+- **The returning entries:** `E_r = E_t \ E_o` by entry id. An entry in both lines counts once, as main's. A
+  returning entry stamped at or above `F_M` (in v2, a line's entries made after `M` was submitted) is refused with
+  `AfterMergePoint`.
+- **A returning entry keeps the verdict main gave it** (`Late`, or none if never included) for ever: final verdicts
+  never change [C]. What the merge does with it is reported in `M`'s outcome (9.3, step 6). A cut that
+  includes it after `M` voids it as `Late`, as usual.
+
+**The stage 1 states, all at `F_M`:**
+- `S_o = replay(S_b, E_o as Final, F_M)`: main's own state at `F_M`;
+- `S_t = replay(S_b, E_t as AtStamp, F_M)`: theirs, under the rules its entries activate, stepped to `F_M`. A domain
+  only `theirs` changed takes this state, not the returning line's last state [C];
+- `S_1 = replay(S_b, E_o as Final ∪ Adm as AtStamp, F_M)`: **the stage 1 reference**. The ordinary rules are applied
+  once to both lines' actions, in one order [file 14, 4.4; R 18:58Z "every action is a commit to the main tree"].
+
+**`Adm`, the admitted returning entries, is defined on whole-world replays,** so that the reference does not depend
+on 9.3's grouping [design-reviewer and shader-reviewer, r2 Medium 1]. Unwitnessed entries are decided by runs, in
+two steps [C]:
+- **Every witnessed returning entry** (9.3) is in `Adm`. Let `W_t` be the witnessed returning entries.
+- **Runs.** A run is a maximal sequence of one chain's unwitnessed returning entries, in chain order. A witnessed
+  entry of the chain does not break it. Runs are taken in the agreed order of their first entries.
+- **Passing.** A set `X` of unwitnessed entries *passes* against `Adm_so_far` when no entry of `E_o` has a different
+  outcome in `replay(S_b, E_o ∪ W_t ∪ Adm_so_far, F_M)` and in the same replay with `X` added.
+- **Step 1, one combined test.** If every unwitnessed run together passes against the empty set, all of them are in
+  `Adm`, and the merge applies at `A1` (9.3a). Together they change no final outcome, which is all the rule asks.
+- **Step 2, only if step 1 fails:** each run is decided in turn by the procedure below, whose result is the
+  definition, and the merge applies at `A2` (9.3a).
+  - **A budget per chain:** each chain has `N_unw` tests (section 14), with no global cap. A chain is one member's,
+    and a fork is void, so the total is bounded by `N_unw` times the session's members. A silent member can exhaust
+    only its own chain [C; shader-reviewer, r4 Medium 2].
+  - **Passing is not monotone** in the length of a prefix: a grab can block a final grab, and a later release in the
+    run can free it again. So the procedure finds *a* passing prefix, not necessarily the longest [design-reviewer,
+    r4].
+  - **Later work is kept** [C]: the first failing entry is refused, and the rest of the run is tested
+    again as a new run, next in order, within the same budget. Entries that depended on the refused one meet the
+    ordinary rules in the merged order. At `N_unw` = 16 this keeps later work past **one conflict per chain**: a
+    thin player's first conflict takes about 15 tests (one full bisection of 14,400 entries), and if the remainder
+    holds a second conflict, its one remaining test fails and the rest is refused with `MergeBudget`. Keeping `k`
+    conflicts needs about `1 + k (1 + ceil(log2 n))` tests, and `D2` grows with the budget (both reviewers, r5). Kept
+    at 16, with one conflict per chain the stated limit [C].
+
+  ```text
+  queue = the runs, in agreed order of first entry; budget[c] = N_unw for every chain c
+  while queue is not empty:
+      r = pop the first run of queue; c = its chain; n = len(r)
+      if budget[c] == 0: refuse r with MergeBudget; continue
+      budget[c] -= 1
+      if prefix(r, n) passes: admit r; continue
+      lo = 0, hi = n - 1                  // invariant: prefix(lo) passes, prefix(hi + 1) fails
+      while lo < hi and budget[c] > 0:
+          budget[c] -= 1
+          mid = ceil((lo + hi) / 2)
+          if prefix(r, mid) passes: lo = mid
+          else: hi = mid - 1
+      admit prefix(r, lo)
+      if lo == hi:                        // the procedure ended: prefix(lo + 1) was tested and failed
+          refuse entry lo + 1 with LostToFinal { entry }
+          if lo + 2 <= n: push entries lo + 2 .. n of r to the front of queue, as a new run
+      else:                               // the chain's budget ran out mid-procedure
+          refuse entries lo + 1 .. n with MergeBudget
+  ```
+
+  "Passes" is always against `Adm_so_far`, everything admitted before it. A refused entry names the earliest final
+  entry whose outcome differs in the failed test of `prefix(lo + 1)`. Authors of refused entries are told (R-M2).
+
+**Stage 2 and the reference at `A`:**
+- `S_A = replay(S_1, E_o2, A)`: stage 1's state, with main's entries in `[F_M, A)` re-applied forward by the
+  ordinary rules (as `Final` once final; a member predicts until then). Only what touches stage 1's changes needs
+  re-stepping (9.3a).
+- **The whole reference** is `S_ref = replay(S_b, (E_o ∪ E_o2) as Final ∪ Adm as AtStamp, A)`. Every admitted entry
+  is stamped below `F_M`, so `S_A = S_ref` by determinism. The model checks that 9.3's grouping and stage 2's
+  partial re-stepping keep it so (P-M1).
+
+**The function** is `merge(S_b, E_o, E_t, W, rules, options) -> Merged`, with `W` the witness statements `M` carries
+and `Merged = { state at F_M, per-entry outcomes, groups, report }`. It is pure: no clock, randomness, I/O or
+arrival order. Its state must equal `S_1` exactly, and its `Adm` the definition's (P-M1). Section 9.3 computes both
+without replaying what only one side touched; 9.3a carries the result to `A`.
+
+### 9.3 The computation, and the order rules
+
+Computing stage 1 by replaying everything from `base` would cost a minute of the whole world for every merge. The
+three-way comparison limits the replay to what both lines touched.
+
+1. **Classify** every object without a body, and every world-table row, which is treated as an object (the admin
+   list: 9.6), by which lines changed it (9.2); and every physics domain, as one unit with its bodies and its image,
+   the same way:
+
+| Since `base` | git's name | Result at `F_M` |
 |---|---|---|
-| Neither line changed it | unchanged | `base` |
-| Only `ours` changed it | fast-forward | `ours` |
-| Only `theirs` changed it | fast-forward | `theirs` |
-| Both changed it to the same record | clean | that record |
-| Both changed it differently | conflict | the group is resolved by replay (below) |
+| Neither line changed it | unchanged | `S_o` (for an object or row, equal to `S_b`) |
+| Only `ours` changed it | fast-forward | `S_o` |
+| Only `theirs` changed it | fast-forward | `S_t` |
+| Both changed it, to the same record at `F_M` (objects and rows only) | clean | that record |
+| Both changed it otherwise; or a domain both changed | conflict | its group's replay (step 5) |
 
-**Conflict groups.** A conflicting object, and every object it touched in either line (contact, a joint, a
-parent, a script's reads and writes) since `base`, form one group, closed under "touched". Each group is resolved
-by the engine's ordinary rules, applied once to both lines' actions [file 14, 4.4].
+2. **Seed the conflict set `K`** with:
+   - every object or row both lines changed, except a clean one;
+   - **every object or row one line changed that the other line read** in `[fb, F_M)`: a precondition, a hold check,
+     a script read, a contact, a config row or code version a step ran under. A physics step's reads of its own
+     domain's bodies do not seed: plain stepping is a function of the domain's state, which step 1 classifies as a
+     unit, so otherwise every domain either side changed would be seeded and "only `theirs` changed it" could never
+     happen. Its reads of config and code rows still seed [design-reviewer, r3 Low]. This also seeds a clean row
+     whose
+     intermediate value a reader on the other side saw. A write-write test alone misses the case where a
+     back-stamped write in `theirs` would refuse a final entry that only read the object [I, new in r2; accepted, C]. It also catches an entry in both lines that main refused but `theirs` applied
+     [shader-reviewer];
+   - **every domain both lines changed:** all its bodies, and its physics image. Physics restores and steps whole
+     (4.2a) [@vdw-physics, replica.md 6.3], and two bodies that met in neither line can meet in the merged one. This
+     replaces the earlier overlap rule [design-reviewer], which it covers [kept, C]. In a ball pit,
+     both sides nearly always touch some ball, so a whole-domain replay is the usual case. That makes the cost
+     experiment (9.5) a gate on any promise about merge speed [design-reviewer; C].
+3. **Close `K`** under *linked*. Two objects are linked when one footprint, of an entry or a step, in either line,
+   at any frame in `[fb, F_M)`, includes both: the entry or step read one and wrote the other, or wrote both.
+   Contacts, joints and parent links appear in the footprints. A group with a body grows to its whole domain, as in
+   step 2. **The groups** are the connected parts of `K`. Afterwards every entry's footprint, in either line, lies
+   inside one group or outside `K`.
+4. **The entries of a group `G`:** every entry of `E_o ∪ E_r` whose footprint, in either line, meets `G`,
+   deduplicated by id, in the agreed order.
+5. **Replay each group** from `S_b` restricted to `G` up to `F_M` (S2's per-group restore and step, `GroupSel`,
+   11.1), with the dispositions of 9.2. Each unwitnessed returning entry is decided by the group form of the
+   back-dating rule below. Every returning entry outside `K` is admitted. Both must give 9.2's `Adm` (P-M1).
+   - **The fixpoint:** if a group's replay has a footprint outside `K` (an entry or script that, in the merged
+     order, reaches an object neither line reached), add those objects to `K`, regroup, and repeat steps 3-5. `K`
+     only grows and objects are finite, so it ends. Whether a model finds a case that needs this is open (9.5).
+6. **`Merged`:** the state at `F_M` is step 1's table outside `K`, and each group's replay for every object in `K`.
+   `M`'s outcome, the merge report, lists:
+   - for each returning entry, `MergedIn` or `Refused { reason }`, where the reason is the ordinary one, or
+     `LostToFinal { entry }` from the back-dating rule;
+   - for each entry of `E_o` whose outcome in its group's replay differs from main's, `Overridden { hint }`. That
+     includes final entries that depended on an overridden one [shader-reviewer]. The hint names the earliest
+     witnessed returning entry in its group stamped before it: a likely cause, not a proven one [design-reviewer].
+     Below `F_M`, only a witnessed entry can cause an override (P-M4). The final entry's own verdict is unchanged:
+     what changes is the state from `A` on [accepted, C]. Stage 2 adds the overrides in `[F_M, A)`
+     (9.3a);
+   - the groups, their sizes and the frames replayed (the counters `merge_conflicts` and `merge_replay_frames`).
 
-**A group with any bound body acts as the whole domain** [@vdw-physics, replica.md 6.3]: physics, and the rows of
-every object with a body, are restored to `base` and replayed together. Physics can only be restored whole (4.2a),
-so a group restoring only its own rows would leave bodies outside it re-stepped while their rows stayed in the
-present: the body table would no longer equal the world model, and edits would be applied twice. Per-group restore
-and patch hold for physics-free rows only.
+   Every author of a refused or overridden entry gets a notice through the refusal's reason, as for every refusal
+   (R-O1, R-M2).
 
-1. start from the group's state at `base` (S2 per-group restore [C 20:05Z]; `GroupSel`, 11.1);
-2. take both lines' entries on the group, as a set: an entry in both lines counts once;
-3. order them by frame stamp, ties by the seeded rank (D37), as the engine always orders;
-4. replay them on the group (S2 per-group step). The soonest grab wins; a stale precondition is refused with its
-   reason; a later plain write wins; a delete and an add-on fall as the user ruled, by their order;
-5. the group's state at `F` is the result.
+**The ordinary rules decide every conflict**, since the merge has none of its own:
+- **an exclusive hold:** the soonest grab wins;
+- **a precondition** that is stale in the merged order refuses its entry with its reason;
+- **plain writes:** the later write wins;
+- **a delete against an add-on** follows world-model.md 7.5 and the user's order rule [R]:
+  - delete first: an object created under, or reparented to, the deleted object is orphaned (`Applied`, note
+    `Orphaned { deleted_by }`), and a component attached to it is refused (`Deleted { by }`), with a notice to its
+    author;
+  - delete second: the delete destroys the subtree, add-ons included.
 
-**Voided entries are merged in, but are never back-dated past finality.** An entry of `theirs` that main voided
-as late is in the set: that is what "their changes are merged in" means, and what the property "voiding and
-merging fit together" checks (plan 4.4). How it is ordered depends on whether its stamp was witnessed.
-**[R: confirmed by the user, as ruled by the coordinator in,
-1/1 residual included.]**
+**Back-dated entries: witnessed and unwitnessed.** [R: confirmed by the user, as ruled by the
+coordinator in, 1/1 residual included.] Returning entries that main voided as late
+are merged in, since that is what "their changes are merged in" means (Q3b). How each is ordered depends on whether
+its stamp was witnessed.
 
-- **Witnessed:** an entry is witnessed when a signed acknowledgement by a member other than its author, on either
-  side, references it, and that acknowledgement's stamp is within `B` of the entry's stamp. `B` is the normal
-  back-dating bound: the acknowledgement interval plus slack, a duration set by WS-agree; about 4-10 frames, or
-  70-170 ms, at 60 Hz [V design 8.2, cited by @design-reviewer]. A witnessed entry is ordered by its stamp like any other, and the user's order rule applies:
-  a delete first orphans the add-on, a delete second destroys it [R]. This covers an honest split
-  group, and a connected machine back from a long compile (Q3b), whose entries the others acknowledged in time.
-- **Unwitnessed:** no such acknowledgement exists. A thin player whose entries arrived late is the usual case, as
-  is an entry back-stamped by a silent member. Such an entry **loses to any final `ours` entry whose outcome it
-  would change**, whatever the operation: an exclusive hold, a precondition, or structure. For example, a
-  back-stamped delete that would refuse main's final writes to the object (`Deleted`), or orphan main's final
-  add-ons. It is refused, with the reason "lost to a final entry". Where it changes no final outcome, it replays
-  at its stamp. This matches the confirmed rule that the late or stale side loses conflicts.
-- **A 1/1 split** (a two-player session): a conflict between two unwitnessed entries keeps stamp order, the user's
-  rule. A hash would override that rule for honest pairs.
-  [I: "loses" is read as refused. Rebasing it to the application frame `A` instead would let a back-stamped
-  delete still destroy main's work at `A`, which is winning by another route.]
-- **Plain writes** are safe under the ordinary order in both cases: a back-stamped write loses to main's later
-  one.
+- **Witnessed.** A returning entry `e` (author `a`, stamp `s`) is witnessed when `M` carries a statement `(m, heads,
+  f)` that is:
+  - signed by a member `m` other than `a`, for `e`'s line;
+  - with heads that cover `e`: `m`'s head for `e`'s chain is `e`, or a later entry that links back to it;
+  - with `f - s <= B`, where `f` is the frame at which `m` first held `e`, recorded on receipt and signed later in
+    any vote or acknowledgement [shader-reviewer, r2 Low 3; design-reviewer], and `B` is converted at the rate in
+    effect at `s`.
+
+  `B` is the ordinary back-dating bound, a duration set by WS-agree, about 4-10 frames or 70-170 ms at 60 Hz [V
+  design 8.2, cited by @design-reviewer]. Because `f` is the receipt frame, not the frame of a later vote, `B` need
+  not cover the vote interval: `f - s` is the one-way delay of an on-time entry. The carrier is WS-agree's (R-M1).
+  An honest member records its true receipt frame. A faulty one can lie, which is the accepted residual that
+  colluders beyond `t` can witness each other.
+  - A witnessed entry is ordered by its stamp like any other, so the order rules above apply, the user's delete rule
+    included. This covers an honest split group, whose entries the others on its side acknowledged in time.
+- **Unwitnessed.** No such statement is carried. The usual cases are a thin player whose entries arrived late, and
+  an entry back-stamped by a silent member. The rule is 9.2's definition of `Adm`. Step 1 admits every unwitnessed
+  run together if together they change no final outcome. Otherwise, in step 2, each run keeps the prefix the
+  procedure finds; its first failing entry is refused with `LostToFinal { entry }`, and the rest is tested again. A
+  chain past its budget `N_unw` has the rest of its entries refused with `MergeBudget`. "Outcome" is the verdict
+  with its reason and notes, and for a grab whether it was granted. So an unwitnessed entry loses to any final entry
+  whose outcome it would change, whatever the operation: an exclusive hold, a precondition, or structure.
+  - **The group form,** which 9.3 uses: the same tests, with the replays restricted to the union of the groups the
+    tested entries meet [shader-reviewer, r4 nit]. That it gives the definition's answer is part of P-M1, not an
+    assumption.
+  - **No locality skip** [C]. A skip on what final outcomes read missed effects carried through
+    contact and scripts, such as a returning push that hits a resting ball a final grab holds (both reviewers, r4).
+    In a ball pit a sound skip would admit almost nothing untested. One may come back if a measurement shows it
+    pays.
+  - **Cost:** each test replays from the first tested stamp to `F_M`. The per-chain budget bounds it, and step 1
+    makes the common case one test (9.3a).
+- **Plain writes** come out safely in both cases. A back-stamped write loses to main's later one by the ordinary
+  order, and changes no final outcome, so it is admitted and then overwritten.
+- **A submitter that leaves out a witness** only makes that entry unwitnessed, which can only refuse it. In v1 the
+  entries that can suffer this are the submitter's own, and main members' entries it carries that main voided anyway
+  [I; shader-reviewer's nit].
 - **Residuals, accepted by the user:**
   - colluders beyond `t` can witness each other's back-stamps;
-  - in a 1/1 split, a lone cheater can back-date up to a minute against a lone honest player.
+  - in a 1/1 split, a lone cheater can back-date up to a minute against a lone honest player (v2, 9.4).
 - **Why** [design-reviewer, High and re-review]: ordered by stamp alone, a member could stamp actions in the past,
   stay silent past `T_merge`, then return and win at the merge against honest players' final actions. A silent
   member publishes no horizon, so the 4-10 frame bound would widen to a minute. The window needs a silent member
   with no witness, which is exactly what the unwitnessed rule covers. Refusing every earlier entry instead, the
-  general form, would contradict the user's delete-order ruling for honest split groups [C].
+  general form, would contradict the user's delete-order ruling for honest split groups [C]. [I:
+  "loses" is read as refused. Rebasing it to the application frame `A` instead would let a back-stamped delete still
+  destroy main's work at `A`, which is winning by another route.]
 - **History:** the coordinator first ruled option (a), protecting holds and preconditions (20:40Z).
-  @design-reviewer showed structure must be protected too; the witnessed/unwitnessed split reconciles that with
-  the user's ruling.
-- **In v2** (split groups, neither side final), neither side has final entries to protect. What an unwitnessed
-  entry loses to there is for WS-model's v3 to settle.
+  @design-reviewer showed structure must be protected too; the witnessed/unwitnessed split reconciles that with the
+  user's ruling.
 
-**Overlaps pull objects in.** An object only `theirs` moved, whose resulting bounds overlap an object `ours`
-moved, joins the conflict group. So the merge never leaves interpenetrating bodies at the application frame
-[design-reviewer].
+**Things only one side touched do not change** (file 14, 4.4), except where step 2 or 3 pulls them in. That is the
+"merge keeps work" property: an entry is dropped only if the ordinary rules refuse it in the merged order, or the
+unwitnessed rule refuses it.
 
-**Things only one side touched do not change** (file 14, 4.4), except where the group closure pulls them in. That
-is the "merge keeps work" property: an action is dropped only if the ordinary rules would have refused it with no
-split.
+### 9.3a Stage 2, applying at `A`: no final frame is undone
+
+- **`M` takes effect at the start of frame `A`,** before the entries stamped `A`: the state at `A` is `S_A`, and
+  main's line continues from it. Every frame below `A` keeps its state and root. Every verdict at or below
+  `final_frame` stands [C]. Since `A > F_M`, no frame that was final when `M` became final is touched.
+- **Stage 2 re-applies `E_o2`** on stage 1's state from `F_M` to `A`. Only objects linked, through the footprints of
+  `E_o2` or of the steps, to an object stage 1 changed relative to `S_o` need re-stepping; the rest keep main's
+  state at `A`. A domain with such a body re-steps whole. A late entry stamped below `A` rolls stage 2 back as for
+  any entry. Stage 1 cannot change after `M` is final, so `K` never grows late [design-reviewer, r2 Medium 3].
+- **Stage 2 can override main's entries in `[F_M, A)`, through any merged change** [C,
+  design-reviewer]. Those entries got their final verdicts on main's line without the merge. Re-applied over stage
+  1's state, their outcomes can differ, even through an unwitnessed admitted entry, because the unwitnessed test
+  protects only entries below `F_M`. Each is listed `Overridden { hint }`, with the merged change it met as the
+  hint, and its author is told (R-M2). This is the inherent cost of applying the merge at `A > F_M`, and the window
+  is bounded by `D`. The unwitnessed test is not extended to `[F_M, A)`, since that would bring back late growth.
+- **`D`, the delay to `A`, is a function of the final log at `F_M`, not the submitter's estimate** [C]. With step 1 and step 2 of 9.2 there are two candidate frames, `A1 = F_M + D1` and
+  `A2 = F_M + D2`:
+  - `N_1` is stage 1's worst-case replay in whole-world-equivalent frames, the unit `ρ` is measured in
+    [design-reviewer, r3 nit], read from the log at `F_M`:
+    - the replay of `theirs`: `F_M - fb`;
+    - the group replays with their fixpoint rounds: capped at `F_M - fb` in total. A round that would pass the cap
+      is replaced by the whole-world replay, which is `S_1` itself, so this term counts `2 (F_M - fb)`
+      [shader-reviewer, r3 Low 2];
+    - for `D1`, step 1's combined test, if there is any unwitnessed run: `F_M` minus the first unwitnessed stamp;
+    - for `D2`, step 1's test, plus, for each chain with `m` unwitnessed entries, `min(N_unw, m (1 + ceil(log2 m)))`
+      tests (at most `m` failures, each at most one bisection; one test for a single entry), each `F_M` minus that
+      chain's first unwitnessed stamp. Tests run in sequence, so the chains' terms add [both reviewers, r5 Low];
+  - `L` is the finality lag: from frame `F_M` until every honest member knows the cut at `F_M` is final, a bound
+    stated by WS-agree (the agreement lag plus two cut intervals on good links) [shader-reviewer, r3 Low 1];
+  - `ρ` is the world's `R_merge` (section 14), the replay speed over real time every member must reach. **`ρ > 1` is
+    a precondition**;
+  - stage 1 starts `L` after `F_M` and takes `N_1 / ρ`, and stage 2's worst case, the whole world over `D` frames,
+    takes `D / ρ`. Finishing by `A` needs `L + N_1 / ρ + D / ρ <= D`, so `D = (N_1 + ρ L) / (ρ - 1)` frames, rounded
+    up, converted at the rate in effect at `F_M`. That gives `D1` and `D2` from their `N_1`;
+  - **which frame applies:** if step 1 passes, or there is no unwitnessed run, the merge applies at `A1`. Otherwise
+    it applies at `A2`, and nothing happens at `A1`. Every member knows which by `A1`, since `D1` covers step 1. So
+    the frame is a pure function of the log at `F_M` and step 1's deterministic result [C]. `A` below
+    means whichever applies;
+  - `D` is not a field of `M`;
+  - members may start the replay of `theirs` on receiving `M`, before `F_M`. Counting that would save only about `ρ
+    (F_M - s_M + L)` frames, under a second of `D`, so `D` does not count on it [C].
+
+**The measured replay speed** [V, diverge-eng]. Conditions: main 746dbcc3; pe-harness's ball pit
+(`ReplicaImpl<PeWorld>`, 60 Hz) with 4 members' seeded hand pushes every 100 ms (hand move and shove, 1,190 signed
+entries a minute); a fresh replica given the whole log and stepped straight through with `advance`, whole world,
+headless, one thread, a saved state per frame; release build, run under heavy.sh at idle priority, with build slots
+shared with other jobs; the main PC only. The second PC is not measured.
+
+| Run, 3,600 frames | Time | Frames/s | `ρ` |
+|---|---|---|---|
+| 200 balls | 2.53 s | 1,422 | 23.7 |
+| 200 balls, repeat | 2.95 s | 1,219 | 20.3 |
+| 200 balls, no pushes (control: the root differs, so the pushes take effect) | 2.08 s | 1,735 | 28.9 |
+| 500 balls, the preset's maximum | 10.23 s | 352 | 5.9 |
+
+**`D` at the per-world `R_merge`** (section 14) [V arithmetic; `L` = 0.5 s is [I], the agreement lag plus two cut
+intervals]. `T = F_M - fb`. With no unwitnessed run, `N_1 = 3T`. `D1` takes `N_1 = 4T`. `D2` with one chain's
+unwitnessed run takes `N_1 = 4T + 16T = 20T`, the whole budget at the worst case. An honest thin player a minute
+behind is one run: it pays `D1` when its run changes no final outcome, and `D2` only when it conflicts. With two
+other chains of one late entry each beside it, `D2` takes `N_1 = 4T + 16T + 1T + 1T = 22T` (the last row).
+
+| Apart (`T`) | `R_merge` 15 (200 balls): none | `D1` | `D2` | `R_merge` 5 (up to 500 balls): none | `D1` | `D2` |
+|---|---|---|---|---|---|---|
+| 10 s | 2.7 s | 3.4 s | 15 s | 8.1 s | 11 s | 51 s |
+| 1 min | 13 s | 18 s | 86 s | 46 s | 61 s | 5.0 min |
+| 5 min | 65 s | 86 s | 7.2 min | 3.8 min | 5.0 min | 25 min |
+| 1 min, with two more chains of one late entry each | 13 s | 18 s | 95 s | 46 s | 61 s | 5.5 min |
+
+- **The vote waits for the merge.** A member votes on a cut at or past `A` only once it has computed `S_A`. Its root
+  must include `M`'s effect, and a vote without it would be a false root split. Cuts below `A` are voted on main's
+  line as before.
+  - **The one remaining stall** [C]: a member slower than `ρ` holds its vote at `A` until it is done.
+    Play never pauses. Finality past `A` waits only if fewer than `q` members are done.
+  - The stall is bounded by `T_merge`: past it, the slow member is itself a returning branch.
+  - A member that has not yet built the code `theirs` needs treats the merge as a pending code activation (Q3),
+    under the same bound.
+- **What players see.** The change at `A` is a correction like any other. The display layer blends it (section 8),
+  and a player who held something the merge took from them sees the notice of R-M2.
+
+### 9.3b "Visibly unchanged": the pose tolerance
+
+The coordinator ruled that untouched groups must be deterministic, not bit-exact [C 20:40Z]. In a
+domain that step 2 replays whole, a body only one side touched is replayed with the other side's activity nearby.
+Its contacts can take other ids and colours, and its pose can drift.
+
+- **The objects it applies to:** `U`, the bodies of a domain in `K` that at most one line changed (9.2). A body both
+  lines changed is a conflict, not in `U`. For each, let *its side* be `ours` if only `ours` changed it or neither
+  did, and `theirs` if only `theirs` did [shader-reviewer, r2 Medium 2].
+- **The property,** for every object of `U` at `F_M`, in stage 1's state:
+  - every record except the body's pose and velocities is equal to its side's exactly: rows, fields, structure,
+    holds;
+  - the distance between its position in stage 1's state and in its side's state (`S_o` or `S_t`) is at most
+    `E_merge`'s distance, and the angle between the orientations at most `E_merge`'s angle (section 14).
+- **One second later** [I], the harness compares again: stage 1's state stepped 1 s with no new entries, against its
+  side's state stepped the same. A body with a different velocity is visibly different within a second.
+- **Who checks it.** The model abstracts physics, so it checks the first point and the membership of `U`. The
+  harness measures the pose bounds, in the scenario of replica.md 6.3: a moving ball pit and a resting stack, merged
+  after 1, 10 and 60 s [@vdw-physics].
+- **If it fails,** the risk is the one @vdw-physics named: in a whole-domain replay the other side's activity gives
+  new contacts other ids and colours, and an active pile may drift past `E_merge` within a minute. A fork fix
+  cheaper than history-free physics may do: create and colour new contacts in canonical shape-pair order.
+  History-free physics stays "later", as in the plan. Hiding sub-visible differences is the display layer's job.
 
 ### 9.4 v1 and v2
 
@@ -625,10 +893,18 @@ split.
   2 s (plan M3, thin links, which use the same engine). Below `T_merge = 2 s` no merge is needed: the ordinary
   rollback replays the change from its agreed frame. Above it, the machine keeps playing on the old code; when its
   compile ends it replays `theirs` on a second copy in the background, then submits the merge entry. [I]
+  - A lone returner has no other member on its line, so its own entries are unwitnessed in practice, and lose to
+    any final entry whose outcome they would change [design-reviewer]. Main members' entries it carries, which
+    main voided as late, may be witnessed by the returner itself.
 - **v2 (M3): split groups.** Both sides may lack finality. `base` is the last cut both hold; both are lines of
   unconfirmed play; the merge entry is the first entry of the reconvened quorum. Within one minute the merge is
   automatic. After it, both lines know they have diverged (S3 `LineDiverged`) and become **branches**, as in git
   (9.6). pe-diverge records the branch point.
+  - **A 1/1 split** (a two-player session) is always v2, since at `n = 2` neither side can finalize alone. A
+    conflict between two unwitnessed entries keeps stamp order, the user's rule [R]: a hash would
+    override that rule for honest pairs.
+  - With neither side final, there are no final entries for an unwitnessed entry to lose to. What it loses to
+    instead is for WS-model's v3 to settle.
 - **Merging later, by choice (M5):** section 9.6.
 
 ### 9.6 Branches, rejoining, and merges between any two worlds
@@ -703,7 +979,8 @@ For the merge this means:
   the count of objects touched with a digest of their sorted ids, and the line id with any branch or merge in the
   interval;
 - per branch, the measures the tool draws: time apart, and how much changed (objects changed on each side since
-  `base`). The tool itself is a later item (@item:primordial-engine/world-line-visualization-tool-braided-glowing-li).
+  `base`). The tool itself is a later item
+  (@item:primordial-engine/world-line-visualization-tool-braided-glowing-li).
 
 **Requirement R-W1, identity under one origin (WS-world, WS-seams).** Every world now shares the origin's first
 entry, so a world cannot be named by the hash of its own genesis. A branch must also not start a new genesis, or it
@@ -711,7 +988,8 @@ loses the shared history a merge needs. **Adopted by WS-world** (world-model.md 
 `LineId` is the hash of the entry that created the line, a branch entry or the origin's; `LineId::ORIGIN` is pinned
 by a test and never changes; a branch entry names its parent line and the final cut it branches from; a merged
 line's head names both parents; a chain belongs to one line, so continuing on a branch starts a new chain. Entries
-bind the line id they were made on (S1's signed world id becomes that line id); a merged line accepts entries made on a line in its ancestry **only up to that line's recorded
+bind the line id they were made on (S1's signed world id becomes that line id); a merged line accepts entries made
+on a line in its ancestry **only up to that line's recorded
 merge point** into it (its last included entry per chain), so both parents' signatures stay valid after a merge.
 Anything made later on a parent line belongs to that line, and needs a new merge [design-reviewer, review of
 8edd08db]. Object ids and chain ids that include the line id stay unique across branches. @world-model's
@@ -721,39 +999,86 @@ spec (section 2.2, `WorldId` as the genesis hash, "a fork gets a new genesis") n
 **The fault bundle under these rules:** a bundle holds world state, so on a non-admin's machine it is discarded
 with the world when they leave, unless they export it on purpose [I].
 
-### 9.5 What the model must settle first
+### 9.5 What the model must check (WS-model v2, before merge v1 is built)
 
-- Whether "ours" and "theirs" as states (the coordinator's three-way reading) and the per-group replay agree on
-  every non-conflict object. The case to model: an object only `theirs` moved, which in the merged replay would be
-  hit by something `ours` moved. The rule above takes `theirs` unchanged and lets the next step resolve any overlap;
-  the alternative pulls it into the group.
-- That no final frame is undone, with the merge applied at `A`.
-- The back-dating rule above, with its controls [C]:
-  - a lone returner's back-stamped grab, and its back-stamped delete of an object main later edited, must lose;
-  - a witnessed earlier delete must orphan main's add-on;
-  - Q3b: a connected long-compile machine's earlier delete must orphan main's later add-on.
-- The overlap rule, with its case: an object only `theirs` moved, overlapping one that `ours` moved.
-- **Admin lists and fast-forwards (9.6)**, with controls: a removal on one side survives an automatic merge; the
-  open world is never fast-forwarded to a rejoiner's changes without the rejoin consent; an entry made on a parent
-  line after its merge point is refused by the merged line.
-- **Physics and group-level merging** [@vdw-physics]. Under 4.2a, physics restores and steps a whole domain, so the
-  exact reference is a replay of the whole domain from `base`. Until history-free physics exists (file 02 A2;
-  file 11 3.1, "later"; about 6-10 weeks of fork work), a group only one side touched is not guaranteed to come out
-  bit-identical to that side's branch: its contacts can take other ids and colours because of the other side's
-  activity. **Ruled [C 20:40Z]: deterministic is enough, not bit-exact.** Every machine must reach the same
-  merged state, and the visible result of a group only one side touched must stay unchanged within a stated pose
-  tolerance (`E_merge`, section 14). That is a property checked in model v2 and measured in the harness. Hiding
-  sub-visible differences is the display layer's job. History-free physics stays "later", as in the plan.
-  - **The risk to measure** [@vdw-physics, I]: in a whole-domain replay, the other side's activity can give an
-    untouched group's new contacts other ids and colours, and an active pile may drift past `E_merge` within a
-    minute. The harness scenario (replica.md 6.3): a moving ball pit and a resting stack, merged after 1, 10 and
-    60 s. If it fails, a fork fix cheaper than history-free physics may do: create and colour new contacts in
-    canonical shape-pair order.
-- That `merge` is independent of arrival order, and of which machine computes it.
-- **Controls that bite:** ordering by arrival; voiding entries made during a split; dropping one side's
-  non-conflicting work. Each must give a counterexample.
-- [I] The merge's cost: how far a conflict group spreads over a minute of a busy pile (file 14, section 6). An
-  experiment before the merge is promised (plan section 8).
+Model v2 is the merge against finality (plan, WS-model row): v1's single branch against a final main. Each property
+below holds over every reachable case at the model's sizes, and each control is a mutation that must give a
+counterexample, as in model v0. The names in `code` are the controls' names; the three pe-harness already wires (P9,
+`crates/pe-harness/DESIGN.md` 6.1) keep theirs.
+
+**Properties** (P-M1 to P-M8 for v2; P-M9 and P-M10 with branches, M5):
+
+| | Property | Control that must break it |
+|---|---|---|
+| P-M1 | **The computation equals the reference.** Stage 1 (9.3) gives `S_1` (9.2) on every object, exactly, with the reference's outcomes, and its group-form decisions give the definition's `Adm`, an entry outside `K` included. Unwitnessed runs are decided by 9.2's two steps and procedure, with the same budgets and the same remainders. Stage 2 with partial re-stepping gives `S_A = S_ref`: the two-stage result equals the from-`fb` definition [C]. If the model finds a case where they differ, the fallback is sizing `D` for a whole-world replay of `[fb, A)`, never refusing work. | `SeedWriteWriteOnly`: no read-write seeds (step 2). Its counterexample: a back-stamped write to an object a final entry only read. `NoFixpoint` is run too; whether it breaks P-M1 at the model's sizes is the open question below. |
+| P-M2 | **Determinism.** Every member computes the same `Merged`, whatever the arrival order of the entries, the witness statements and `M`, and whichever member computes it. | `MergeByArrival`: order the entries by arrival. |
+| P-M3 | **No final frame undone.** At every honest member, no state, root or verdict below `A` changes because of `M`. No honest member votes on a cut at or past `A` with a root that lacks `M`'s effect. `K` and `Adm` are fixed when `M` is final. | `ApplyAtStamp`: apply admitted returning entries at their stamps on main's line, which rewrites final frames. `VoteBeforeMerge`: vote before computing, which gives a false root split. |
+| P-M4 | **Only witnessed entries override, below `F_M`.** An entry of `E_o` has a different outcome in stage 1 than on main only if a witnessed returning entry stamped before it is in its group. In `[F_M, A)`, any merged change may override an entry, within `D`, and each is reported (9.3a) [C]. | `NoWitnessCheck`: treat every returning entry as witnessed. A lone returner's back-stamped grab then beats a final grab. |
+| P-M5 | **The user's order rule holds for witnessed entries.** A witnessed returning delete stamped before a final add-on orphans an object add-on and refuses a component add-on, with a notice. One stamped after destroys it. The model must reach each case, at depth 1 and depth 2. | `RefuseAllEarlier`: refuse every returning entry stamped before a final entry it conflicts with (the general form). The witnessed delete-first case then fails. |
+| P-M6 | **Keeps work, and reports every loss.** Every returning entry is `MergedIn` or `Refused` with a reason. Every final entry stands or is `Overridden` with its cause. Every object outside `K` has its fast-forward value. | `MergeDropsSide`: drop one side's non-conflicting work. `VoidSplitEntries`: leave out returning entries that main voided. |
+| P-M7 | **Once.** Every entry takes effect at most once: an entry in both lines once, as main's. A second merge entry naming entries already merged in changes nothing. | `NoDedupe`: count an entry in both lines twice. A non-idempotent op, such as a create, shows it. |
+| P-M8 | **Admin lists in an automatic merge** (9.6): a three-way set merge against `base`, so a removal on one side survives. | `UnionAdminsAlways`: take the union, which restores a removed admin. |
+| P-M9 | **Line ancestry** (R-W1): an entry made on a parent line after its merge point is refused by the merged line. | `AcceptAfterMergePoint`. |
+| P-M10 | **Consent** (9.6): the open world is never fast-forwarded to a rejoiner's changes without the rejoin consent. | `FastForwardWithoutConsent`. |
+
+**Examples the model must reach**, the controls of [C] among them:
+- a lone returner's back-stamped grab loses, and so does its back-stamped delete of an object main later edited;
+- a returning push that, in the merged order, hits a resting ball a final grab holds is refused, though nothing in
+  `ours` wrote the ball (both reviewers, r4);
+- a run whose early entry conflicts keeps its later, independent entries (step 2's remainder);
+- a witnessed earlier delete orphans main's later add-on;
+- a returning entry voided by main as `Late` that changes no final outcome is merged in at its stamp;
+- a returning write to an object main never touched is kept (fast-forward);
+- an entry both lines hold is applied once.
+
+A Q3b long compile is a special case: a connected machine's entries are on time, so they are in `E_o` and the merge
+has little to do. Its earlier delete orphans main's later add-on by the ordinary rule, and the harness test of
+section 12 checks it.
+
+**What the model settles first:**
+- **The fixpoint** (9.3, step 5). The case to model: an object only `theirs` moved, which in the merged replay a
+  script or entry of `ours` reaches. Does `NoFixpoint` break P-M1? If no case at the model's sizes needs it,
+  pe-diverge still keeps it, since it costs nothing when nothing grows [I].
+- **The read-write seeds** (step 2): `SeedWriteWriteOnly` must break P-M1. If it does not, the seeds can be
+  narrowed.
+
+**A sketch of a model that suffices** [I, for @world-chunks to change freely]:
+- **Members:** `n = 3`, with two on main and one returner, so that a non-author can witness. One more run at `n = 4`
+  with one Byzantine member, who signs any witness statement (the collusion residual), shows that the residual is
+  the only gap.
+- **Objects:** a parent `p` with a child `c`, and a free object `x`. Each has one field (values 0 or 1), a hold
+  slot, a component slot, and a version counter. `p` and `x` have bodies in one domain, with a settings object `g`
+  (gravity, say). The step is modelled truthfully, without the domain rule built in: it reads every body and `g`,
+  and writes the bodies that moved; its reads of its own domain's bodies do not seed, as in 9.3 step 2. A body moves
+  when written, or when it touches a moved body, contact being a nondeterministic choice. The domain rule must then
+  emerge from the read-write seeds and closure, or a
+  counterexample shows it is needed [design-reviewer, shader-reviewer, r2 Low 1].
+- **Operations:** `Grab(o)`, `Release(o)`, `Write(o, v)`, `WriteIf(o, version)` (a precondition), `Delete(o)` (with
+  its subtree), `Create(child of o)`, `Reparent(o, under)`, `Attach(component to o)`, and `Write(g, v)`.
+- **Time:** stamps 0-5, `fb = 0`, `F_M = 4`, `A = 6`, and `B = 1` frame, with stage 2's entries stamped 4-5. Each
+  returning entry may have a witness statement from
+  each non-author, at any frame `f`, nondeterministically.
+- **Inputs:** every `E_o`, `E_o2` and `E_r` of up to 2 or 3 entries each. The model computes the two stages and the
+  references `S_1` and `S_ref`, and compares them.
+
+**Measured in the harness, not the model:**
+- the pose tolerance of 9.3b;
+- no vote waits past `A`, for each of the two cases that grew `K` late under r2 [design-reviewer, r2 Medium 3;
+  C]:
+  - a main entry in `(F_M, A)` that first touches an object `theirs` changed;
+  - one that is main's first body change in a domain where only `theirs` had moved bodies;
+- the returner grabs an object during `D`, and the grab is kept [C];
+- a thin player a minute behind at 120 Hz returns, and `D` stays bounded [design-reviewer];
+- a silent member carrying many runs exhausts its own chain's `N_unw`: its later entries are refused with
+  `MergeBudget`, `D` stays within its bound, and other chains are untouched;
+- a thin player a minute behind, plus two main members' late entries it applied: the thin player's run is not
+  refused for budget (both reviewers, r4);
+- a thin player whose run passes step 1 gets the merge at `A1`, not `A2`;
+- the replay speed `ρ` that members reach, which sets `R_merge` and so `D`;
+- the merge's cost, as how far `K` spreads over a minute of a busy pile (file 14, section 6). It is an experiment
+  before the merge is promised (plan section 8).
+
+pe-diverge's `merge` replays the model's traces (plan 4.1, rule 2).
 
 ## 10. Requirements on other workstreams
 
@@ -788,6 +1113,18 @@ with the world when they leave, unless they export it on purpose [I].
   digest, and (from M2) each module's hash. A difference refuses the join with its reason (plan M1 acceptance). The
   last self-test result is part of a member's state that section 5 reads.
 - **R-E1, stable effect keys (WS-state, through S5).** Events carry the key of D6.
+- **R-M1, witness statements (WS-agree, from M2).** A signed statement `(m, heads, f)` by which a member shows it
+  held another author's entry from frame `f`, **the frame at which it first held it**, recorded on receipt (9.3). It
+  is kept for up to `T_diverge` with the merge base, and carried in a merge entry. The candidate carrier: the chain
+  heads beyond the cut that every vote already carries (agreement.md 3), each with its receipt frame. During a
+  split, a side's members still sign votes, though no cut becomes final. Whether a vote's heads or a separate
+  acknowledgement carry it is WS-agree's choice; the merge needs only the three fields and the signature [I].
+- **R-M2, the merge report reaches players and agents (WS-api, pe-render).** `M`'s outcome lists each returning
+  entry as `MergedIn` or `Refused { reason }`, and each final entry it overrode as `Overridden { hint }` (9.3,
+  step 6; 9.3a). Each author is told through the refusal's reason, as for every refusal. The notice of an override
+  names the overridden entry and its hint, and the overrides appear in the merge preview the admins see
+  [C]. A final verdict itself never changes [C], so an agent watching an entry reads the
+  merge's outcome from `M`, not a new verdict.
 
 ## 11. Seams: what pe-diverge needs
 
@@ -848,10 +1185,13 @@ pub trait Replica {
     // M2-M3, for the merge [C 20:05Z]:
     fn group_restore(&mut self, root: &Root, group: &GroupSel);
     fn group_step(&mut self, frame: Frame, group: &GroupSel, ordered: &[SignedEntry]) -> Vec<Outcome>;
-    fn footprint(&self) -> Footprint;                          // objects written or touched, per frame
+    fn footprint(&self) -> Footprint;   // per frame: reads and writes, per entry and per step (below)
 }
 ```
 
+- `Footprint` (from M2, for 9.3) keeps **reads and writes separately**, per entry and per step. A refused entry
+  records the reads that refused it. A step records the code version and config rows it ran under [design-reviewer,
+  shader-reviewer, r2 Lows].
 - `GroupSel = Domain | Objects(BTreeSet<ObjectId>)`. M1 uses `Domain` only. A group containing any bound body acts
   as `Domain` (9.3) [agreed with @vdw-physics].
 - **Settled names** [@world-model, world-model.md r5, d04394b; @vdw-physics, replica.md d21a809]: pe-world owns
@@ -874,9 +1214,9 @@ What pe-diverge needs from pe-agree, beyond the sketch:
 - A way to vote again on a pending cut after a repair (`revote(cut, root)`), for section 5.
 - `final_entries(from, to)`: the final log between two cuts, for rung 1, the bundle and the merge.
 - `Voided { entry, reason }`, as sketched: for `voided_own` and for the merge (9.3).
-- **Witnesses** (from M2, for 9.3): for an entry, the signed acknowledgements by other members that reference it,
-  with their stamps, so the merge can test "witnessed within `B`". They are kept with the merge base, for up to
-  `T_diverge`.
+- **Witnesses** (from M2, for 9.3; R-M1): for an entry, the signed statements `(m, heads, f)` by other members
+  whose heads cover it, so the merge can test "witnessed within `B`". They are kept with the merge base, for up to
+  `T_diverge`, and the merge entry carries those it relies on.
 - From M2: the merge entry is an ordinary entry; `Merged` and (M3) `LineDiverged` events (renamed from the sketch's `Diverged`, which is pe-diverge's root-mismatch event; @harness-eng 3b8fa6c);
   `Unconfirmed(time)` and `QuorumLost`, as sketched.
 - A member's vote carries its last self-test result, or the guard's verdict is otherwise visible to all (5, step 2).
@@ -953,10 +1293,11 @@ network model with random schedules.
 replayed through it (plan 4.1, rule 2); a merge scenario for each order of a delete and an add-on, at depth 1 and
 at depth 2 [R]; a lone returner with back-stamped grabs, and with a back-stamped delete of an
 object main later edited (both lose); a witnessed earlier delete, and a connected long-compile machine's earlier delete (main's add-on
-is orphaned in both); a 1/1 split in both orders; the overlap case; a sticky root-split
-reference under a persistent fault at `n = 2`. pe-harness wires the mutations `MergeByArrival`, `MergeDropsSide`
-and `VoidSplitEntries` to its property P9 (`crates/pe-harness/DESIGN.md` 6.1, branch `harness/design`); pe-diverge
-puts them behind its `mutants` feature.
+is orphaned in both); a 1/1 split in both orders; two bodies only one side each moved, which meet in the merged
+replay (the domain rule, 9.3 step 2); a sticky root-split
+reference under a persistent fault at `n = 2`; the pose tolerance of 9.3b. pe-harness wires the mutations
+`MergeByArrival`, `MergeDropsSide` and `VoidSplitEntries` to its property P9 (`crates/pe-harness/DESIGN.md` 6.1,
+branch `harness/design`); pe-diverge puts them, and the other controls of 9.5, behind its `mutants` feature.
 
 ## 13. Milestones
 
@@ -997,7 +1338,9 @@ mid-session never moves a bound that is already running [design-reviewer].
 | `D_effect` | Delay of others' unconfirmed effects | 0 s |
 | `T_effect_lag` | Greatest lag, from an effect's frame to the arrival of its cause, at which a new one-shot effect still plays | 1 s, the poor-link target [R] |
 | `E_merge` | Pose tolerance within which a group only one side touched counts as unchanged after a merge | Set from the M1 headset tuning: at most the display layer's sub-visible threshold. 5 cm or 10° is visible in VR at arm's length [design-reviewer] |
-| `R_merge` | Replay rate assumed when setting a merge's application frame | 2x real time |
+| `R_merge` | `ρ`, the replay speed over real time every member must reach; sets `D = (N_1 + ρ L) / (ρ - 1)` (9.3a). **A per-world setting, fixed at genesis**, set by the preset from measurement with margin. Must exceed 1. A machine slower than its world's `R_merge` holds its vote at `A`, bounded by `T_merge` [C] | 15 for the 200-ball pit, 5 up to 500 balls [I, the main PC only: measured `ρ` 20 at 200 balls and 5.9 at 500, idle priority, shared slots (9.3a)]. Final once the second PC is measured |
+| `N_unw` | Tests of unwitnessed runs per chain, per merge; no global cap. A chain past it has its remaining entries refused with `MergeBudget` (9.2) | 16 tests [C]: one honest thin player's whole procedure (`1 + ceil(log2 14,400)` = 15) |
+| `B` | Witness bound: a back-dated entry is witnessed if another member first held it at most this far past its stamp (9.3). WS-agree's | The acknowledgement interval plus slack: about 70-170 ms, 4-10 frames at 60 Hz [V design 8.2] |
 | `T_merge` | Divergence past which a merge replaces the ordinary rollback | 2 s [R] |
 | `T_diverge` | Unconfirmed play after which the lines diverge | 60 s [R] |
 | `E_cue` | Correction in view above which a visible cue is required | a hand's width, about 10 cm [R] |
@@ -1008,7 +1351,21 @@ mid-session never moves a bound that is already running [design-reviewer].
   the diverged cut rather than at `Cv` (4.2).
 - **For @engine-architect:** S2 and S3 as in section 11.
 - **For WS-world and WS-state:** R-H2, R-H3 and R-O1 (R-H1 is met by 4.2a).
-- **For WS-model:** section 9.5.
+- **For WS-model (@world-chunks):** section 9.5, the merge against finality, as model v2.
+- **Section 9 r3, settled by the coordinator**: the read-write seeds;
+  the reference merge, defined on whole-world replays; `Overridden` as a report, final verdicts unchanged; the
+  domain rule, with the cost experiment gating any promise of merge speed; the two-stage merge with `D` a function
+  of the log at `F_M`; overrides in `[F_M, A)` accepted within `D`; the returner's play during `D` kept.
+- **For @design-reviewer, in r3** [I]: "changed" as written, and a body changed by contact (9.2); the dispositions
+  of `replay`; the witness's receipt frame (R-M1); stage 2's partial re-stepping (9.3a); the 1 s check of 9.3b.
+- **Settled by the coordinator for r4 and r5**: runs of one chain,
+  decided by an exact procedure; no locality skip; a budget of `N_unw` tests per chain, with `MergeBudget` past it;
+  a combined test first, applied at `A1`, and the per-run procedure at `A2` only if it fails; a failing entry is
+  refused and the rest of its run tested again; `R_merge` a per-world setting.
+- **Settled by the coordinator from the measurement**: `N_unw` = 16 tests per chain;
+  `R_merge` 15 for the 200-ball pit and 5 up to 500 balls, final once the second PC is measured; no credit for a
+  replay of `theirs` started before `F_M`. `D` is both the width of the `[F_M, A)` override window and the
+  time the returner sees the merged world while others do not (both reviewers, r3).
 - **For @world-model and @engine-architect:** R-W1, world and line identity under one origin (9.6).
 - **Settled by the user**: the back-dating rule (9.3); components on deleted
   objects (R-O1); branches after a minute and the later merge (9.4); the visible-error and visibility targets (8).
