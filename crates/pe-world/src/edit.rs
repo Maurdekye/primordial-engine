@@ -6,13 +6,13 @@
 //! end, trailing bytes, a limit broken) is refused, never panics, and each value has exactly one encoding, so
 //! `encode(decode(b)) == b` for every accepted `b` (5.3).
 //!
-//! Not in this slice: `Register` and `CommitScript` (7.1, WS-logic's), and `Local` or `Session` classes, which no
-//! edit creates in M1 (3.1).
+//! `Register` and `CommitScript` (7.9, slice D) carry a script version's component descriptions and its modules row.
+//! Not in M1: `Local` or `Session` classes, which no edit creates (3.1).
 
 use pe_core::commit::Hasher;
 use pe_core::{ChainId, EntryRef, Hash, LineId, MemberKey, ObjectId};
 use pe_seams::Version;
-use pe_sim::ComponentId;
+use pe_sim::{ComponentDesc, ComponentId, FieldDesc};
 
 use crate::components::BlobRef;
 
@@ -114,7 +114,23 @@ pub enum Op {
     Copy { source: Target, new: u32, parent: Target, index: Option<u32>, size: u32 },
     /// Restores a deleted subtree from its tombstones, with the same ids (7.5).
     Undelete { id: ObjectId },
+    /// Registers a script version's components, its tag included, with the transaction's one `CommitScript` (7.9).
+    Register { components: Vec<ComponentDesc> },
+    /// Commits a version of script `script` (an asset id): writes its modules row and re-keys the old version's rows
+    /// (7.9). `base` is the version the author edited (`None`: a new script); `activate_at` must be the entry's stamp.
+    CommitScript {
+        script: [u8; 32],
+        base: Option<Version>,
+        source: BlobRef,
+        toolchain: Hash,
+        sdk: Hash,
+        author_module: Hash,
+        activate_at: u64,
+    },
 }
+
+/// The most components one `Register` may carry.
+pub const MAX_REGISTER: usize = 256;
 
 /// The instance tag of a row that op `op` of an entry adds (7.6): `BLAKE3("pe.row" ‖ line ‖ author ‖ chain ‖ seq ‖
 /// op)[..16]`, from the same coordinates as [`ObjectId::created`], so an author can name a row its own transaction
@@ -318,6 +334,39 @@ impl Transaction {
                     w.u8(7);
                     w.id(*id);
                 }
+                Op::Register { components } => {
+                    w.u8(8);
+                    w.len(components.len());
+                    for d in components {
+                        w.u128(d.id().0);
+                        w.text(d.name());
+                        w.len(d.fields().len());
+                        for f in d.fields() {
+                            w.text(&f.name);
+                            w.u8(crate::tree::kind_code(f.kind));
+                            w.u32(f.offset);
+                            w.u32(f.count);
+                            w.text(&f.unit);
+                        }
+                    }
+                }
+                Op::CommitScript { script, base, source, toolchain, sdk, author_module, activate_at } => {
+                    w.u8(9);
+                    w.raw(script);
+                    match base {
+                        None => w.u8(0),
+                        Some(v) => {
+                            w.u8(1);
+                            w.version(v);
+                        }
+                    }
+                    w.raw(&source.hash);
+                    w.raw(&source.len.to_le_bytes());
+                    w.raw(&toolchain.0);
+                    w.raw(&sdk.0);
+                    w.raw(&author_module.0);
+                    w.raw(&activate_at.to_le_bytes());
+                }
             }
         }
         w.len(self.blobs.len());
@@ -499,6 +548,40 @@ impl<'a> R<'a> {
                     size: self.u32()?,
                 },
                 7 => Op::Undelete { id: self.id()? },
+                8 => {
+                    let n = self.count(1, MAX_REGISTER)?;
+                    let mut components = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let id = ComponentId(u128::from_le_bytes(self.arr()?));
+                        let name = self.text(u16::MAX as usize)?;
+                        let k = self.count(13, 4096)?;
+                        let mut fields = Vec::with_capacity(k);
+                        for _ in 0..k {
+                            let fname = self.text(u16::MAX as usize)?;
+                            let kind = crate::tree::kind_of_code(self.u8()?)?;
+                            let offset = self.u32()?;
+                            let count = self.u32()?;
+                            let unit = self.text(u16::MAX as usize)?;
+                            fields.push(FieldDesc::new(&fname, kind, offset as usize, count).with_unit(&unit));
+                        }
+                        let d = ComponentDesc::new(id, &name, fields.clone()).ok()?;
+                        // One encoding per value: the fields as given must be the description's own, in offset order.
+                        if d.fields() != fields.as_slice() {
+                            return None;
+                        }
+                        components.push(d);
+                    }
+                    Op::Register { components }
+                }
+                9 => Op::CommitScript {
+                    script: self.arr()?,
+                    base: if self.flag()? { Some(self.version()?) } else { None },
+                    source: BlobRef { hash: self.arr()?, len: u64::from_le_bytes(self.arr()?) },
+                    toolchain: Hash(self.arr()?),
+                    sdk: Hash(self.arr()?),
+                    author_module: Hash(self.arr()?),
+                    activate_at: u64::from_le_bytes(self.arr()?),
+                },
                 _ => return None,
             });
         }

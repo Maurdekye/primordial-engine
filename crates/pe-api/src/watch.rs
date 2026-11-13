@@ -90,6 +90,9 @@ fn touched(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSnapsho
             Op::RemoveRow { id, component, .. } => {
                 t.set.extend(at(id).map(|o| (o, field_name(snap, *component, None))))
             }
+            // A script's ops create, delete and move nothing. A commit's re-key of the rows on the objects carrying
+            // the script is not listed per object [I: from its footprint later].
+            Op::Register { .. } | Op::CommitScript { .. } => {}
         }
     }
     t
@@ -116,6 +119,7 @@ pub fn touched_ids(tx: Option<&Transaction>, outcome: &WorldOutcome) -> Vec<Obje
             | Op::SetField { id, .. }
             | Op::SetRow { id, .. }
             | Op::RemoveRow { id, .. } => at(id),
+            Op::Register { .. } | Op::CommitScript { .. } => None,
         });
     }
     ids

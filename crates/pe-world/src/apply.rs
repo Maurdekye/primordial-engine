@@ -13,10 +13,11 @@ use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId};
 use pe_seams::{Class, FieldPath, Note, Outcome, Reason, SignedEntry, Version};
 use pe_sim::{ComponentId, Node, RowVersion, Transform};
 
-use crate::components::{Light, Protection, SimSize, ids};
+use crate::components::{Hand, Light, Protection, SimSize, ids};
 use crate::edit::{
     Actor, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
 };
+use crate::script::{AssetId, MAX_REKEY_ROWS, ModuleRow, RekeyReport};
 use crate::world::{DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, depth, perm};
 
 /// What an applied entry touched, for the replica's physics effects (9.2) and the caches. Empty for a refusal.
@@ -35,6 +36,8 @@ pub struct Footprint {
     pub pushes: Vec<Push>,
     /// Hands whose target and `Hand` row an input wrote (8.1).
     pub hands: Vec<ObjectId>,
+    /// What a script commit's re-key did (7.9): the objects, the row count and the fields zeroed or dropped.
+    pub rekey: Option<RekeyReport>,
 }
 
 /// An applied push (8.1): an impulse in newton seconds, in the world frame, at `at` or the centre of mass.
@@ -101,6 +104,10 @@ struct Cx {
     /// preconditions: the last version this transaction set on each row it wrote (7.7).
     undo: Vec<Op>,
     undo_pre: BTreeMap<(ObjectId, ComponentId), Version>,
+    /// The transaction's one `CommitScript`, if any: its asset and version hash, for `Register`'s check (7.9).
+    script: Option<(AssetId, Hash)>,
+    /// The descriptions its `Register` registered.
+    registered: Option<Vec<pe_sim::ComponentDesc>>,
 }
 
 impl Cx {
@@ -240,6 +247,18 @@ impl World {
         for (i, p) in tx.preconditions.iter().enumerate() {
             self.check(i as u32, p).map_err(|r| (None, r))?;
         }
+        // At most one `CommitScript`, and a `Register` only before it (7.9).
+        let commit = tx.ops.iter().position(|o| matches!(o, Op::CommitScript { .. }));
+        let register = tx.ops.iter().position(|o| matches!(o, Op::Register { .. }));
+        let commits = tx.ops.iter().filter(|o| matches!(o, Op::CommitScript { .. })).count();
+        let registers = tx.ops.iter().filter(|o| matches!(o, Op::Register { .. })).count();
+        if commits > 1 || registers > 1 || register.is_some_and(|r| commit.is_none_or(|c| r > c)) {
+            return Err((None, invalid()));
+        }
+        let script = commit.and_then(|c| match &tx.ops[c] {
+            Op::CommitScript { script, source, .. } => Some((*script, Hash(source.hash))),
+            _ => None,
+        });
         let mut cx = Cx {
             entry: src.entry,
             author: src.author,
@@ -254,6 +273,8 @@ impl World {
             fp: Footprint::default(),
             undo: Vec::new(),
             undo_pre: BTreeMap::new(),
+            script,
+            registered: None,
         };
         let mut work = self.clone();
         for (i, op) in tx.ops.iter().enumerate() {
@@ -393,7 +414,72 @@ impl World {
             }
             Op::Copy { source, new, parent, index, size } => self.op_copy(cx, i, *source, *new, *parent, *index, *size),
             Op::Undelete { id } => self.op_undelete(cx, i, *id),
+            Op::Register { components } => {
+                let (asset, v) = cx.script.ok_or_else(invalid)?;
+                self.register_script(&asset, &v, components)?;
+                cx.registered = Some(components.clone());
+                Ok(())
+            }
+            Op::CommitScript { script, base, source, toolchain, sdk, author_module, activate_at } => {
+                let row = ModuleRow {
+                    version: version(cx.entry, i),
+                    source: *source,
+                    toolchain: *toolchain,
+                    sdk: *sdk,
+                    author_module: *author_module,
+                    components: Vec::new(),
+                    activate_at: Frame(*activate_at),
+                    faulted: None,
+                };
+                self.op_commit(cx, i, *script, *base, row)
+            }
         }
+    }
+
+    /// `CommitScript` (7.9): the stamp, the base, the version's components, the re-key and the modules row.
+    fn op_commit(
+        &mut self,
+        cx: &mut Cx,
+        i: u32,
+        script: AssetId,
+        base: Option<Version>,
+        mut new: ModuleRow,
+    ) -> Result<(), Reason> {
+        if new.activate_at != cx.frame {
+            return Err(invalid());
+        }
+        let row = self.modules.get(&script).cloned();
+        let current = row.as_ref().map_or(Version { entry: EntryRef(Hash::ZERO), op: 0 }, |m| m.version);
+        let stale = Reason::Stale { precondition: OWN_CHECK, current, winner: current.entry };
+        match (&row, base) {
+            (None, None) => {}
+            (Some(m), Some(b)) if m.version == b => {}
+            _ => return Err(stale),
+        }
+        match &row {
+            // The same source (a toolchain or SDK change): no re-key, no row version moves.
+            Some(m) if m.v() == new.v() => new.components = m.components.clone(),
+            _ => {
+                let reg = cx.registered.clone().ok_or_else(invalid)?;
+                let mut ids: Vec<ComponentId> = reg.iter().map(|d| d.id()).collect();
+                ids.sort();
+                new.components = ids;
+                if let Some(m) = &row {
+                    let (report, moves) = self.rekey_plan(&m.components, &reg, cx.author);
+                    if report.rows > MAX_REKEY_ROWS {
+                        return Err(Reason::TooLarge { limit: MAX_REKEY_ROWS });
+                    }
+                    // `RekeyBlocked { objects, more }` once pe-seams has it (asked of @engine-architect).
+                    if !report.blocked.is_empty() {
+                        return Err(invalid());
+                    }
+                    self.apply_rekey(moves, cx.entry, i)?;
+                    cx.fp.rekey = Some(report);
+                }
+            }
+        }
+        Arc::make_mut(&mut self.modules).insert(script, new);
+        Ok(())
     }
 
     fn op_create(
@@ -485,7 +571,6 @@ impl World {
         let parent = self.store.parent(o);
         let expires =
             Frame(cx.frame.0.saturating_add(self.rate.frames(std::time::Duration::from_secs(TOMBSTONE_SECONDS))));
-        let registry = self.store.registry().clone();
         let mut stones = Vec::with_capacity(doomed.len());
         // `doomed` is depth-first with children in order, so counting per parent gives each child's place.
         let mut places: BTreeMap<ObjectId, u32> = BTreeMap::new();
@@ -500,25 +585,7 @@ impl World {
                 }
                 None => 0,
             };
-            let rows = registry
-                .iter()
-                .filter(|desc| desc.id() != ComponentId::NODE)
-                .filter_map(|desc| {
-                    let row = self.store.get_raw(desc.id(), d)?;
-                    Some((desc.id(), row.to_vec(), self.store.row_version(desc.id(), d).unwrap_or_default()))
-                })
-                .collect();
-            let stone = Tombstone {
-                by: cx.entry,
-                frame: cx.frame,
-                expires,
-                parent: up,
-                place,
-                world: self.store.world_transform(d),
-                node: self.store.node(d),
-                rows,
-            };
-            stones.push((d, stone));
+            stones.push((d, tombstone_of(&self.store, d, cx.entry, cx.frame, expires, up, place)));
         }
         self.store.destroy(o).map_err(|_| invalid())?;
         let t = Arc::make_mut(&mut self.tombstones);
@@ -813,6 +880,11 @@ impl World {
         if instance != 0 || !edit_writable(c) || self.store.registry().get(c).is_none() {
             return Err(invalid_field(c, u32::MAX));
         }
+        // A superseded version's components take no writes, and no hand takes a tag (7.9).
+        self.superseded(c)?;
+        if self.is_tag(c) && self.store.has::<Hand>(id) {
+            return Err(invalid_field(c, u32::MAX));
+        }
         if held_rows(c)
             && let Some(claim) = self.claims.get(&id)
         {
@@ -976,7 +1048,7 @@ impl World {
     }
 
     /// Moves an object's version to `v`, and its structural version too if `structural` (7.3).
-    fn touch(&mut self, id: ObjectId, v: Version, structural: bool) {
+    pub(crate) fn touch(&mut self, id: ObjectId, v: Version, structural: bool) {
         let mut n = self.store.node(id);
         n.version_entry = v.entry.0.0;
         n.version_op = v.op;
@@ -1003,6 +1075,28 @@ impl World {
             _ => invalid_field(c, u32::MAX),
         }
     }
+}
+
+/// A tombstone for `d` as `store` holds it (7.5): its rows, versions, place and last world transform.
+pub(crate) fn tombstone_of(
+    store: &pe_sim::SimStore,
+    d: ObjectId,
+    by: EntryRef,
+    frame: Frame,
+    expires: Frame,
+    parent: Option<ObjectId>,
+    place: u32,
+) -> Tombstone {
+    let rows = store
+        .registry()
+        .iter()
+        .filter(|desc| desc.id() != ComponentId::NODE)
+        .filter_map(|desc| {
+            let row = store.get_raw(desc.id(), d)?;
+            Some((desc.id(), row.to_vec(), store.row_version(desc.id(), d).unwrap_or_default()))
+        })
+        .collect();
+    Tombstone { by, frame, expires, parent, place, world: store.world_transform(d), node: store.node(d), rows }
 }
 
 fn node_version(n: &Node) -> Version {

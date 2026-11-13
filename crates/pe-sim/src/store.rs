@@ -76,6 +76,35 @@ impl SimStore {
         &self.registry
     }
 
+    /// Replaces the registry whole (world-model.md 6.6's import of a registry table). Refused, with nothing changed,
+    /// if a component that has rows here would lose its description or change size.
+    pub fn set_registry(&mut self, registry: Arc<Registry>) -> Result<(), Error> {
+        for (id, col) in &self.columns {
+            match registry.get(*id) {
+                Some(d) if d.size() == col.size => {}
+                _ if col.len() == 0 => {}
+                _ => return Err(Error::SchemaMismatch { component: id.0 }),
+            }
+        }
+        self.columns.retain(|id, col| col.len() > 0 || registry.get(*id).is_some());
+        self.registry = registry;
+        Ok(())
+    }
+
+    /// Registers a component in this live world (world-model.md 7.9: a script commit's `Register`), copy-on-write:
+    /// the registry is part of the state, so a snapshot taken before keeps the old one and a restore of it drops the
+    /// component again. The same description again is a no-op; another under the same id, or an id below
+    /// [`ComponentId::FIRST_USER`], is an error, with nothing changed.
+    pub fn register(&mut self, desc: ComponentDesc) -> Result<(), Error> {
+        if self.registry.get(desc.id()) == Some(&desc) {
+            return Ok(());
+        }
+        let mut r = (*self.registry).clone();
+        r.register(desc)?;
+        self.registry = Arc::new(r);
+        Ok(())
+    }
+
     pub fn frame(&self) -> Frame {
         self.frame
     }

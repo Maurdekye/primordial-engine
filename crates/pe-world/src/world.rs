@@ -144,6 +144,13 @@ pub struct World {
     /// pe-agree's settings record (6.6, config item 4): opaque bytes whose format pe-agree owns, set before the first
     /// cut and carried in the config, so a joiner takes them with the world.
     pub(crate) agree_settings: Arc<[u8]>,
+    /// The modules table (5.4, 7.9): each script asset's row.
+    pub(crate) modules: Arc<BTreeMap<crate::script::AssetId, crate::script::ModuleRow>>,
+    /// The asset that registered each script component id (6.6's registry value, 7.9).
+    pub(crate) script_ids: Arc<BTreeMap<pe_sim::ComponentId, crate::script::AssetId>>,
+    /// The store as a logic stage started (9.2a), for its removed objects' tombstones. Not state: taken by
+    /// `after_logic`.
+    pub(crate) stage_start: Option<SimStore>,
 }
 
 impl World {
@@ -165,6 +172,9 @@ impl World {
             m1_marker: None,
             line: pe_core::LineId(Hash::ZERO),
             agree_settings: Arc::from(&[][..]),
+            modules: Arc::new(BTreeMap::new()),
+            script_ids: Arc::new(BTreeMap::new()),
+            stage_start: None,
         }
     }
 
