@@ -1525,11 +1525,12 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     (@design-reviewer, approving r2).
   - **The hold's spring is bounded, speed-aware** (@coordinator-opus, decision 2; its floor): the separation the spring that pulls a held object to its place in the hand sees is clamped, per
     component, along the world's gravity (6.6, a fixed direction, so the clamp does not depend on order). Write `e`
-    for the object's error from its place, `ĝ` for gravity's unit direction, `e_up = max(0, −e·ĝ)` for the upward,
-    supporting part of `e`, and `e_rest = e + e_up · ĝ` for everything else (the downward part and the part across
-    gravity). With `reach = max(0, (max_push_speed − v_hold) / k)`, where `v_hold` is the hand's own speed at the hold
-    (its turn included, ω·r) and `k` Box3D's spring rate at the world's rate (14.7 per second at 60 Hz, 15.2 at 120
-    Hz): `e_up` is clamped to `max(reach, s_min)` and `e_rest`'s length to `reach`, recomputed every frame from the
+    for the object's error, from the object to its place (the way the spring pulls), `ĝ` for gravity's unit direction,
+    `e_up = max(0, −e·ĝ)` for the upward, supporting part of `e`, and `e_rest = e + e_up · ĝ` for everything else (the
+    downward part and the part across gravity). With `reach = max(0, (max_push_speed − v_hold) / k)`, where `v_hold`
+    is the hand's own speed at the hold (its turn included, ω·r) and `k` Box3D's spring rate at the world's rate (14.7
+    per second at 60 Hz, 15.2 at 120 Hz): `e_up` is clamped to `max(reach, s_min)` and `e_rest`'s length to `reach`,
+    so the spring sees `clamp(e_rest, reach) − min(e_up, max(reach, s_min)) · ĝ`, recomputed every frame from the
     current state. **The floor `s_min`** is a margin times `g / ω²`, the separation at which the spring's pull just
     equals the object's weight, with ω = 2π · 5 Hz the spring's own stiffness, not its bias rate `k`: a ball held
     still in the air sits 9.9 mm below its place at 30, 60 and 120 Hz [V @vdw-physics]. The margin lets the spring
@@ -1573,9 +1574,13 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     the ball ends up): the ball is never carried through (measured [V @vdw-physics]: a hand at 12 m/s carried 3 m past
     a 10 cm wall leaves the ball on its side at 30, 60 and 120 Hz, where before the check it was carried through; a
     ball whose path runs 1 cm beside the wall's end slides round the corner under physics before any placement, so
-    that case does not reach the check); a held ball with the hand at 1.5× the cap for 2 s, moving sideways, straight
-    up and straight down: it never sags more than `s_min` below its place, and its speed exceeds the cap by at most
-    about `s_min · k`, gravity's own fall reported apart (@vdw-physics's follow-up; @coordinator-opus).
+    that case does not reach the check); a held ball with the hand at 1.5× the cap for 2 s: **sideways**, its height
+    stays within `s_min` of its place's height (the static sag is g/ω² = 9.9 mm) and it never falls below the hand;
+    **straight up**, it rises the whole time at no more than the cap plus about `s_min · k` and never falls;
+    **straight down**, the spring adds no downward pull beyond the speed-aware reach (with the reach at 0, the ball
+    falls freely until it is below its place, then is held up), with gravity's fall reported apart. In every run its
+    speed exceeds the cap by at most about `s_min · k`, gravity's fall aside (@vdw-physics's follow-up;
+    @coordinator-opus; @design-reviewer).
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
   object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
   expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).
