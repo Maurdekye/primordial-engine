@@ -51,16 +51,18 @@ use std::sync::Arc;
 
 use pe_seams::{
     Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LightKind, ObjectClass, ObjectId, Outcome, Pos,
-    SignedEntry, Tree, Version, ViewFlags, ViewObject,
+    SignedEntry, Stage, Tree, Version, ViewFlags, ViewObject,
 };
 use pe_sim::transform::rotate;
 use pe_sim::{Component, SimStore, Transform, WorldTransform};
 use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
+use pe_world::edit::{Op, Transaction};
 use pe_world::{Footprint, World, input_phase};
 
+use crate::logic::{ScriptRow, ScriptRunner, StageWorld};
 use crate::world::{
-    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, Phase, PhysicsSettings, PushFx,
-    ShapePart, ShapeRow, WorldModel,
+    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, LogicFx, Phase, PhysicsSettings,
+    PushFx, ShapePart, ShapeRow, WorldModel,
 };
 
 const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -132,6 +134,54 @@ impl WorldModel for PeWorld {
     fn end_frame(&mut self, frame: Frame) {
         self.world.end_frame(frame);
         self.world.set_frame(frame.next());
+    }
+
+    fn scripted(&self) -> bool {
+        !self.world.modules().is_empty()
+    }
+
+    /// An edit whose transaction has a `CommitScript` op, whether or not it applies.
+    fn commits_code(entry: &SignedEntry) -> bool {
+        entry.entry.class == Class::Edit
+            && Transaction::decode(&entry.entry.payload)
+                .is_some_and(|t| t.ops.iter().any(|o| matches!(o, Op::CommitScript { .. })))
+    }
+
+    /// pe-world's hooks around the runner: `World::logic_stage` hands it the store, the guard, the faulted assets and
+    /// the row check; `World::after_logic` records what it reported and gives the footprint, whose physics effects are
+    /// found as an entry's are (module doc). Each event is placed at its object's world position after the stage.
+    fn logic_stage(&mut self, frame: Frame, stage: Stage, runner: &mut dyn ScriptRunner) -> LogicFx {
+        let scripts: Vec<ScriptRow> = self
+            .world
+            .modules()
+            .iter()
+            .filter(|(_, m)| m.activate_at <= frame)
+            .map(|(&asset, m)| ScriptRow {
+                asset,
+                module: m.author_module,
+                version: m.v(),
+                components: m.components.clone(),
+            })
+            .collect();
+        if scripts.is_empty() {
+            return LogicFx::default();
+        }
+        let (line, rate_hz) = (self.world.line(), self.world.rate().hz());
+        let before = self.world.clone();
+        let out = self.world.logic_stage(|store, guard, faulted, check| {
+            let world = StageWorld { frame, line, rate_hz, guard, faulted, check };
+            runner.run_stage(stage, &scripts, store, &world)
+        });
+        let footprint = self.world.after_logic(frame, &out.report);
+        let effects = effects(&before, &self.world, &footprint);
+        let store = self.world.store();
+        let events = (out.events.into_iter())
+            .map(|e| {
+                let at = store.world_transform(e.object).map_or(Pos::ORIGIN, |t| t.pos);
+                (e, at)
+            })
+            .collect();
+        LogicFx { effects, events, host_faults: out.host_faults, fp_resets: out.fp_resets, missing: out.missing }
     }
 
     fn body(&self, id: ObjectId) -> Option<BodyRow> {
