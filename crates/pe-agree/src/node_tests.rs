@@ -70,6 +70,10 @@ struct Sim {
     submitted: Vec<Vec<EntryRef>>,
     /// Each vote's result, and that of a revote at once after it (S3 v1.3).
     vote_results: Vec<(VoteResult, VoteResult)>,
+    /// (member, from ms, until ms): every message to or from it sent in that window is lost.
+    partition: Option<(usize, i64, i64)>,
+    /// A member cut off for good (as if crashed): every message to or from it is lost.
+    cut_off: Option<usize>,
 }
 
 impl Sim {
@@ -93,6 +97,8 @@ impl Sim {
             builders,
             net: BTreeMap::new(),
             vote_results: Vec::new(),
+            partition: None,
+            cut_off: None,
             seq: 0,
             now: 0,
             rng: Rng(seed),
@@ -108,6 +114,16 @@ impl Sim {
     fn deliver_out(&mut self, i: usize, out: Vec<pe_seams::agree::Outgoing>) {
         for o in out {
             let j = (0..self.nodes.len()).find(|&j| self.keys.key(j) == o.to).unwrap();
+            if let Some((k, a, b)) = self.partition
+                && (i == k || j == k)
+                && self.now >= a * MS
+                && self.now < b * MS
+            {
+                continue;
+            }
+            if self.cut_off.is_some_and(|k| i == k || j == k) {
+                continue;
+            }
             let (a, b) = self.delay[i];
             let (c, d) = self.delay[j];
             let at = self.now + (self.rng.range(a, b) + self.rng.range(c, d)) / 2 * MS;
@@ -560,4 +576,95 @@ fn final_entries_past_the_final_cut_is_none_not_a_partial_log() {
     assert!(s.nodes[0].final_entries(&start, &fc).is_some());
     let past = CutRef { frame: Frame(fc.frame.0 + 1_000), ..fc };
     assert_eq!(s.nodes[0].final_entries(&start, &past), None);
+}
+
+#[test]
+fn a_voter_flooding_hints_cannot_crowd_out_an_honest_voters_hint() {
+    // @design-reviewer's Low on f1c1755b: member 2 sends signed votes with 1024 made-up heads each; member 1's vote then
+    // names one real entry, which is still fetched (each voter has its own share of the hint slots).
+    use crate::codec::{Wire, decode, encode};
+    use crate::core::{BlockId, Msg, Vote, vote_bytes};
+    use pe_seams::Signer;
+    let (keys, mut node, _) = lone_node(10);
+    let line = LineId::origin();
+    let vote = |voter: usize, view: u64, tag: &[u8], heads: Vec<pe_seams::agree::ChainHead>| {
+        let block = BlockId(Hash::of("unknown", tag));
+        let sig = keys.signer(voter).sign(&vote_bytes(line, view, block, Hash::ZERO));
+        Wire::Core(Msg::Vote(Vote {
+            view,
+            block,
+            root: Hash::ZERO,
+            voter: keys.key(voter),
+            self_test: SelfTest::NotRun,
+            heads,
+            sig,
+        }))
+    };
+    for k in 0..8u64 {
+        let fake = (0..1024u64)
+            .map(|i| pe_seams::agree::ChainHead {
+                chain: pe_seams::ChainId(Hash::of("c", &(k * 10_000 + i).to_le_bytes())),
+                author: keys.key(1),
+                seq: 1,
+                entry: EntryRef(Hash::of("e", &(k * 10_000 + i).to_le_bytes())),
+            })
+            .collect();
+        let w = vote(2, 1 + k, &k.to_le_bytes(), fake);
+        assert!(node.receive(keys.key(2), Lane::Protocol, &encode(&w), HostTime(0)).is_ok());
+    }
+    let _ = node.tick(HostTime(0), &Clock);
+    let mut b = EntryBuilder::new(&keys, 2);
+    let real = b.next(Class::Input, Frame(1), Bytes::from_static(b"r"));
+    let head = pe_seams::agree::ChainHead {
+        chain: real.entry.chain,
+        author: real.entry.author,
+        seq: real.entry.seq,
+        entry: real.id(),
+    };
+    assert!(
+        node.receive(keys.key(1), Lane::Protocol, &encode(&vote(1, 1, b"honest", vec![head])), HostTime(0)).is_ok()
+    );
+    let asked: Vec<EntryRef> = node
+        .tick(HostTime(1), &Clock)
+        .iter()
+        .filter_map(|o| if let Ok(Wire::FetchEntries(ids)) = decode(&o.bytes) { Some(ids) } else { None })
+        .flatten()
+        .collect();
+    assert!(asked.contains(&real.id()), "the honest voter's hint was crowded out");
+}
+
+#[test]
+fn a_member_cut_off_for_two_seconds_catches_up_on_the_final_log() {
+    // M1 requirement (coordinator): n = 4, member 3 silent (it submits and receives nothing), member 1
+    // loses every message for 2 s. The line resumes, and every member then has the same final log.
+    let mut s = Sim::new(4, 13);
+    s.partition = Some((1, 2_000, 4_000));
+    s.cut_off = Some(3);
+    s.every_ms[3] = 0;
+    s.run(4_000);
+    let before = s.final_frame(0);
+    s.run(10_000);
+    let after: Vec<Frame> = (0..3).map(|i| s.final_frame(i)).collect();
+    assert!(after.iter().all(|f| f.0 > before.0 + 60), "final frames {before:?} -> {after:?}");
+    let low = *after.iter().min().unwrap();
+    let mut n = 0;
+    for f in 0..low.0 {
+        let ids = |i: usize| s.nodes[i].entries_at(Frame(f)).map(|v| v.iter().map(|e| e.id()).collect::<Vec<_>>());
+        assert_eq!(ids(0), ids(1), "members 0 and 1 differ at frame {f}");
+        assert_eq!(ids(0), ids(2), "members 0 and 2 differ at frame {f}");
+        n += ids(0).map_or(0, |v| v.len());
+    }
+    assert!(n >= 100, "only {n} final entries");
+}
+
+#[test]
+fn a_member_cut_off_while_the_others_go_on_catches_up_on_the_final_log() {
+    let mut s = Sim::new(4, 14);
+    s.partition = Some((1, 1_000, 3_000));
+    s.run(3_000);
+    let behind = s.final_frame(1);
+    s.run(7_000);
+    assert!(s.final_frame(1).0 > behind.0 + 60, "member 1 stuck at {behind:?}");
+    let n = s.assert_same_final_log();
+    assert!(n >= 100, "only {n} final entries");
 }
