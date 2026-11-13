@@ -5,6 +5,8 @@
 //! When pe-world lands, `pe_world::World` implements it (or the trait gives way to pe-world's own API, if
 //! @world-model reshapes it), and the row types below become pe-world's.
 
+use std::sync::Arc;
+
 use pe_seams::{
     DomainId, Frame, Hash, ImportError, MemberKey, ObjectClass, ObjectId, Outcome, Pos, SignedEntry, SimRate, Tree,
     ViewFlags, ViewObject,
@@ -47,7 +49,8 @@ pub struct CarriedFx {
     pub digest: [u8; 32],
 }
 
-/// The physics effects of one applied entry, or of one logic stage's change set. Empty for a refused entry.
+/// The physics effects of one applied entry, or of one logic stage's change set, and what its record carries
+/// besides the outcome. Empty for a refused entry.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Effects {
     /// In id order, at most one per object, except `Rebuilt` then `Teleported` for a body whose shapes or fields
@@ -55,9 +58,13 @@ pub struct Effects {
     pub changed: Vec<(ObjectId, Change)>,
     pub pushes: Vec<PushFx>,
     pub carried: Option<CarriedFx>,
+    /// The objects a script commit re-keyed, in id order: the entry's record carries them (S5 v1.6,
+    /// `StepRecord::rekeyed`). Not a physics effect.
+    pub rekeyed: Arc<[ObjectId]>,
 }
 
 impl Effects {
+    /// No physics effects (`rekeyed` is not one).
     pub fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.pushes.is_empty() && self.carried.is_none()
     }

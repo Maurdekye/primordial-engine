@@ -107,7 +107,14 @@ impl WorldModel for PeWorld {
                     self.world.apply_input(frame, entry)
                 };
                 let effects = match outcome {
-                    Outcome::Applied { .. } => effects(&before, &self.world, &footprint),
+                    Outcome::Applied { .. } => Effects {
+                        // pe-world reports the re-keyed objects in id order, tombstoned ones included (7.9).
+                        rekeyed: footprint
+                            .rekey
+                            .as_ref()
+                            .map_or_else(Default::default, |r| r.objects.as_slice().into()),
+                        ..effects(&before, &self.world, &footprint)
+                    },
                     _ => Effects::default(),
                 };
                 (outcome, effects)
