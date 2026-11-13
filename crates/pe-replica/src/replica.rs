@@ -67,12 +67,15 @@ use pe_seams::{
 
 use crate::bodies;
 use crate::ring::{Policy, Ring};
-use crate::world::{BodyStateRow, ShapePart, ShapeRow, WorldModel, apply_order};
+use crate::world::{BodyStateRow, PhysicsSettings, ShapePart, ShapeRow, WorldModel, apply_order};
 
 /// The replica's settings. Only `cut_every` follows from world state (the world's cut interval); the rest are local.
 #[derive(Clone)]
 pub struct ReplicaConfig {
-    /// pe-physics's configuration; the gravity and the sub-step count come from the world's settings.
+    /// pe-physics's engine configuration: the worker count, sleep and contact recycling. Its gravity and sub-step count
+    /// are never read. Every physics world the replica builds, at its start and at each import, takes the gravity
+    /// (and the origin) from the world model's settings and the sub-steps from the rate, so no construction-time copy
+    /// of a world setting is kept (world-model.md 6.6; @coordinator-opus).
     pub physics: PhysicsConfig,
     /// The cut interval in frames: roots are taken at its multiples.
     pub cut_every: u64,
@@ -210,12 +213,11 @@ pub struct Scratch {
 }
 
 impl<W: WorldModel> ReplicaImpl<W> {
-    /// A replica of `world` at frame 0: a body for each of its physical objects, in id order.
-    pub fn new(world: W, mut config: ReplicaConfig) -> Result<ReplicaImpl<W>, PhysicsError> {
+    /// A replica of `world` at frame 0: a body for each of its physical objects, in id order, in a physics world with
+    /// the world's gravity, origin and rate.
+    pub fn new(world: W, config: ReplicaConfig) -> Result<ReplicaImpl<W>, PhysicsError> {
         let settings = world.settings();
-        config.physics.gravity = settings.gravity;
-        let physics_config = config.physics.with_tick_rate(settings.rate.hz())?;
-        let mut physics = PhysicsWorld::new(physics_config)?;
+        let mut physics = PhysicsWorld::new(physics_config(config.physics, &settings, settings.rate)?)?;
         for id in world.physical() {
             if let Some(row) = world.body(id) {
                 physics.add_body(id, &bodies::desc(&row, settings.origin))?;
@@ -815,6 +817,17 @@ fn in_cut<'s>(all: &'s [SignedEntry], cut: &Cut) -> Vec<&'s SignedEntry> {
     all.iter().filter(|e| cut.includes(&e.entry.chain, e.entry.seq)).collect()
 }
 
+/// The physics configuration for a world with `settings`, stepped at `rate`: the engine's configuration with the
+/// world's gravity and the rate's sub-steps. The one place a physics world's configuration is made, so none keeps a
+/// setting from an earlier world (world-model.md 6.6; @coordinator-opus).
+fn physics_config(
+    engine: PhysicsConfig,
+    settings: &PhysicsSettings,
+    rate: SimRate,
+) -> Result<PhysicsConfig, PhysicsError> {
+    PhysicsConfig { gravity: settings.gravity, ..engine }.with_tick_rate(rate.hz())
+}
+
 /// A new physics world from a canonical transfer whose check hash is `global`; `None` if it is not one.
 fn restored(config: PhysicsConfig, bytes: &[u8], global: Hash) -> Option<PhysicsWorld> {
     let transfer = Transfer::from_bytes(bytes).ok()?;
@@ -1043,9 +1056,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     /// before the live state changes: the records by the world model, the physics image by
     /// `PhysicsWorld::from_transfer` (`PhysicsCheck`), and the patched state's root against the target
     /// (`RootMismatch`). The base is my own state at the cut when I hold my root there, else the empty state; without
-    /// an image, the physics is my own at the cut, or an empty world. The live state then becomes the imported one at
-    /// the cut's frame, in a new physics world: the ring starts again at the cut, the replica keeps no history below
-    /// it, and no image held from before is restored again. It re-simulates to the present within the budget, through
+    /// an image, the physics is my own at the cut, or an empty world. The new physics world takes the imported world's
+    /// gravity and origin, and an imported rate other than mine is `RateMismatch` (world-model.md 6.6). The live state
+    /// then becomes the imported one at the cut's frame, in that physics world: the ring starts again at the cut, the
+    /// replica keeps no history below it, and no image held from before is restored again. It re-simulates to the present within the budget, through
     /// the replay, answering `Pending` until it has. The same import asked again answers its progress; it is not
     /// imported twice. A cut below my floor answers `NotKept`.
     fn import_at_cut(
@@ -1072,22 +1086,40 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         let base = own.map_or_else(|| self.world.empty(), |h| h.world.clone());
         let own_physics = own.map(|h| (h.transfer.clone(), h.global));
         let patched = self.world.import(&base, &import)?;
-        let config = self.config.physics.with_tick_rate(self.rate.hz()).map_err(|_| ImportError::PhysicsCheck)?;
-        let physics = match (&import.physics, own_physics) {
-            (Some(image), _) => restored(config, &image.bytes, image.global),
-            (None, Some((bytes, global))) => restored(config, &bytes, global),
-            (None, None) => PhysicsWorld::new(config).ok(),
-        }
-        .ok_or(ImportError::PhysicsCheck)?;
-        // The patched state's root in the new physics world; the live state comes back unless it is the target.
+        // The new physics world is built for the imported world's settings, never from mine (world-model.md 6.6;
+        // @coordinator-opus): its gravity, and its origin below. A world runs at one rate, so another
+        // rate than mine is a fault to report, never one to adopt.
         let live = self.world.save();
-        let old = std::mem::replace(&mut self.physics, physics);
         self.world.restore(&patched);
+        let settings = self.world.settings();
+        let physics = if settings.rate == self.rate {
+            physics_config(self.config.physics, &settings, self.rate)
+                .ok()
+                .and_then(|config| match (&import.physics, own_physics) {
+                    (Some(image), _) => restored(config, &image.bytes, image.global),
+                    (None, Some((bytes, global))) => restored(config, &bytes, global),
+                    (None, None) => PhysicsWorld::new(config).ok(),
+                })
+                .ok_or(ImportError::PhysicsCheck)
+        } else {
+            Err(ImportError::RateMismatch { world: settings.rate, mine: self.rate })
+        };
+        let physics = match physics {
+            Ok(physics) => physics,
+            Err(e) => {
+                self.world.restore(&live);
+                return Err(e);
+            }
+        };
+        // The patched state's root in the new physics world; the live state comes back unless it is the target.
+        let old = std::mem::replace(&mut self.physics, physics);
+        let old_origin = std::mem::replace(&mut self.origin, settings.origin);
         let root = self.take_root();
         let saved = (root == import.target_root).then(|| (self.physics.save_transfer(), self.physics.save_image()));
         let Some((Ok(transfer), Ok(image))) = saved else {
             self.world.restore(&live);
             self.physics = old;
+            self.origin = old_origin;
             return Err(if root == import.target_root {
                 ImportError::PhysicsCheck
             } else {
