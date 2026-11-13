@@ -12,6 +12,7 @@
 //! - [`sim`]: the runner over [`sim::NodeUnderTest`], and P2's offline replay.
 //! - [`lockstep`]: the lockstep mock behind S3's `Agreement`, unanimous on purpose so P8 bites.
 //! - [`seamnode`]: a node over the real seams (S3 + S2 + the drive loop), as the runner's `NodeUnderTest`.
+//! - [`ballpit`]: render.md 14 test 6's run: pe-replica members over the network, a ball-pit push, every member's views.
 //! - [`mock`]: `LockstepNode`, an old-style unanimous node that tests the harness until pe-agree exists.
 //! - [`randsched`]: random fault schedules, pure in their seed, and a shrinker for the failing ones.
 //! - [`pending`]: the register of tests waiting for a milestone, each expected to fail with one named property.
@@ -19,6 +20,7 @@
 //! When pe-seams v0 lands, `kv` implements S2's trait and `net` carries S4's lanes. The local stand-in types here
 //! (ids, lanes, entries) are then replaced by the seam's.
 
+pub mod ballpit;
 pub mod clock;
 pub mod kv;
 pub mod kvrep;
