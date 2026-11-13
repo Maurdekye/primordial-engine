@@ -106,8 +106,15 @@ pub fn world_pose(rig: &RigTransform, h: &HandInput) -> Option<HandPose> {
 /// Step 2's hands: one input entry for each hand the feed tracks at `at`, frame `p`'s host time, each moving the local
 /// member's own hand object of that side, as the newest view shows it, to its world pose. Returns the entries
 /// agreement took and those it refused.
+///
+/// An untracked hand sends nothing, so the world coasts it and then holds it (xr.md 5.5, D52), except when its grasp
+/// differs from the `engaged` last sent for that side (`sent`, left then right): that is pe-xr's deliberate release
+/// of a lost hand that held something, after the grace period or on focus loss, and it goes out at the last valid
+/// pose, so nothing stays held by a frozen hand (@xr-eng's Medium on cc8d0a96).
+#[allow(clippy::too_many_arguments)]
 pub fn submit_hands(
     chain: &mut Chain,
+    sent: &mut [bool; 2],
     feed: &dyn HandFeed,
     view: &FrameView,
     at: HostTime,
@@ -116,8 +123,8 @@ pub fn submit_hands(
     agree: &mut dyn Agreement,
 ) -> (u32, u32) {
     let (mut took, mut refused) = (0, 0);
-    for side in [Hand::Left, Hand::Right] {
-        let Some(h) = feed.hand_at(side, at).filter(|h| h.tracked) else { continue };
+    for (i, side) in [Hand::Left, Hand::Right].into_iter().enumerate() {
+        let Some(h) = feed.hand_at(side, at).filter(|h| h.tracked || h.closed != sent[i]) else { continue };
         let Some(hand) = view.objects.iter().find(|o| o.hand_of == Some((chain.me(), side))).map(|o| o.id) else {
             continue;
         };
@@ -126,6 +133,7 @@ pub fn submit_hands(
         match agree.submit(chain.entry(domain, p, Class::Input, payload)) {
             Ok(signed) => {
                 chain.took(&signed);
+                sent[i] = pose.engaged;
                 took += 1;
             }
             Err(_) => refused += 1,
