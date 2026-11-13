@@ -363,8 +363,13 @@ Without a size the repair can see, a dishonest source stretches a rung-2 repair'
   only by Unicode normalization collide on macOS, and Windows refuses or rewrites reserved names and some
   characters. So every path is `src/` followed by directory segments and a file segment. A directory segment is 1 to 64
   bytes of `[a-z0-9_]`; a file segment is a stem of 1 to 61 bytes of `[a-z0-9_]` and then `.rs`, 64 bytes at most
-  with the extension (no bare `.rs`). No
-  segment's stem may be a Windows reserved name (`con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`). That is
+  with the extension (no bare `.rs`). A whole path is at most 128 bytes and 8 segments, `src` included, so that
+  unpacked under the build service's folder it stays well inside Windows's 260-character `MAX_PATH` and no
+  machine's build fails on its OS alone (@design-reviewer's Medium on world/source-check 1babd1b7); the build
+  service keeps its own folder short enough for that [I]. `src/lib.rs` must be present and every file must be
+  UTF-8, since without either no machine could build it (@world-model's additions, approved by @design-reviewer).
+  pe-world's constants are the rule: `MAX_PATH`, `MAX_SEGMENTS`, `MAX_SEGMENT`, `path_ok`. No
+  segment's stem may be a Windows reserved name (`con`, `prn`, `aux`, `nul`, `com0`-`com9`, `lpt0`-`lpt9`; @chunks-reviewer's L1). That is
   also the shape a Rust module name takes, so no real script loses anything [I]. ASCII only and lower case only,
   so no two allowed paths collide after case folding or normalization.
 - **A cap: `MAX_SOURCE_BYTES` = 256 KiB** in v0, `pe_world::script::MAX_SOURCE_BYTES` (@world-model,
@@ -771,29 +776,47 @@ author can stop finality, and the outcome is identical on every machine.
 **The rule** (@fable-reviewer's attestation, with a deadline, as @design-reviewer suggested, m08481d928e11):
 
 1. **A commit is pending, not active.** `CommitScript` writes the new version into the asset's modules row as
-   *pending* (V, hashes, declared components, the commit's frame `c`, its deadline). It re-keys nothing yet. Every
-   machine keeps running the current version.
+   *pending* (V, hashes, declared components, the commit's frame `c`, its deadline, and **the voter list at `c`**,
+   snapshotted from the world's governance members; `q` comes from its length). It re-keys nothing yet. Every
+   machine keeps running the current version. The re-key's limits (`RekeyBlocked`, `MAX_REKEY_ROWS`) are checked at
+   the commit, which is refused as today, and again at `F` (item 3). Rulings on pe-world's points:
+   @coordinator-opus mb85eb29b379f, adopting @world-model m898d6688ba0b. In M1 every member votes, and genesis checks it:
+   the world's governance members must equal pe-agree's `NodeConfig` members, refused by name otherwise
+   (@engine-architect's `Genesis::check`; m9af50a40b084). A voter bit for later epochs is a future seam
+   (@engine-architect, @world-model).
 2. **Attestations are entries.** A voting member whose build of the pending version passes all of 6.2 step 3's
    checks against the row posts `AttestBuild { script, version: V, module: Hash }`, an entry stamped with its frame
-   like any other. The commit counts as its author's attestation if the author votes.
+   like any other. It needs no edit right, only voter status at `c`. The commit counts as its author's
+   attestation, stamped `c`, if the author is in the voter list.
 3. **Activation frame `F`:** the least frame `f` such that at least `q` distinct voters at `c` have a counted
    attestation stamped at or before `f` (agreement.md: `t = floor((n-1)/3)`, `q = floor((n+t)/2) + 1`, over the
    voters at `c`); that is, the `q`-th smallest stamp among the counted attestations, one per voter
    (@design-reviewer's Medium, m095c201245c4: by stamps, not by log order, which need not be monotone in stamps).
-   At `F` the world performs the activation: the re-key of 6.1 and the row's switch from pending to current, in one
-   transaction. So the state at a frame depends only on entries stamped at or before it, and every machine computes
+   The world performs the activation **in `end_frame(F)`**, after all of `F`'s entries and both of its logic stages:
+   the re-key of 6.1 and the row's switch from pending to current, in one transaction, so the new code runs from
+   `F + 1` and the order of entries inside `F` does not matter. If the re-key at `F` is blocked or too large, the
+   commit is voided there instead, with that fault (`RekeyBlockedAtActivation` or `RekeyTooLarge`, distinct from
+   the source cap's `TooLarge`) and the frame on the row, and the old version stays. The author's `EDIT` right is
+   re-checked at `F` too: if the author no longer holds it, the commit is voided with `AuthorRevokedAtActivation`,
+   so revoking someone's rights also stops their pending code (@coordinator-opus m4dad9603059c). **A known limit:** any member
+   holding an affected object can so void someone else's commit anywhere in `c..F`, not only at `c` as before
+   (@design-reviewer m22af406bfd89, adopted m9af50a40b084). So the state at a frame depends only on entries stamped at or before it, and every machine computes
    the same `F` from the final log. An epoch change between `c` and `F` does not reset the count; `F` may fall in
    the next epoch.
    **Which attestations count:** its version is the row's pending V; its module equals the registered
    `author_module` (a different hash counts for nothing and is logged as evidence); its stamp is at or after `c`;
    its author is a voter at `c` (a non-voter's is ignored); one per voter; none once the commit is active or void;
-   a late one is void by the ordinary rule.
-4. **The deadline:** if no frame `f <= c + ceil(2 T_module * hz)` qualifies as `F`, the world voids the commit at
-   that frame: the row's pending part is cleared, the current version stays bound, and the row records the fault
-   (`Unattested`, with the frame) for the author. `T_module = W_fg + source.len / R_thin + T_build` is divergence.md
-   4.2's wait for one module, computed from the row's length (4.1a), so a larger source gets a longer deadline: the
-   lamp 23 s, so 46 s; a 256 KiB source 284 s, so 568 s [I; the factor 2 is a margin,
-   accepted by @coordinator-opus mf14ce3154bb0].
+   a late one is void by the ordinary rule. One that does not count is refused with a reason (`Stale` when its
+   version is not, or no longer, the pending V; `Invalid` for another module hash, a non-voter's, or a voter's
+   second), and its signed entry stays in the final log as evidence of who claimed what.
+4. **The deadline:** if no frame `f <= D = c + ceil(2 T_module * hz)` qualifies as `F`, the world voids the commit in
+   `end_frame(D)`: the row's pending part is cleared, the current version stays bound, and the row records the fault
+   (`Unattested`, with the frame) for the author. `end_frame(f)` tests activation first, then the void if `f == D`,
+   so an attestation stamped at `D` that completes the quorum activates. `T_module = W_fg + source.len / R_thin +
+   T_build` is divergence.md 4.2's wait for one module, computed from the row's length (4.1a), so a larger source
+   gets a longer deadline: the lamp 23 s, so 46 s; a 256 KiB source 284 s, so 568 s [I; the factor 2 is a margin,
+   accepted by @coordinator-opus mf14ce3154bb0]. The constants are divergence.md's: `W_fg` = 2 s, `R_thin` = 1,000
+   B/s, `T_build` = 20 s; pe-world mirrors them in integer milliseconds.
 5. **One build budget everywhere** (@design-reviewer's Low 2, adopted by @coordinator-opus m5b413c4e098f): the
    build service runs every build under the same caps, and a machine attests only a build that stayed within them.
    Otherwise a source crafted to build only on big or fast machines could activate with the help of `t` faulty

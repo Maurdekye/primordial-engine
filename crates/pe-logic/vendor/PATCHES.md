@@ -2,6 +2,10 @@
 
 ## wasmtime 50.0.1 (no-C patch)
 
+**Results:** any change to this patch, or to wasmtime's cargo features in the workspace `Cargo.toml`, that can
+alter a result (a state, a fault, a fuel count) bumps `pe_logic::RESULT_VERSION` in the same change. The runner
+identity (`pe_logic::identity`) names wasmtime only by its release, so it cannot see the patch.
+
 Why: wasmtime's build script compiles `src/runtime/vm/helpers.c` on every Unix target when `runtime` is on, even
 with default features off. The user's 100% Rust ruling forbids C in the engine. Without `debug-builtins` that file
 only provides `wasmtime_libunwind()`. Coordinator ruling (2026-11-10, option A): carry the patch in this vendored
