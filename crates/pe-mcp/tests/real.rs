@@ -51,8 +51,8 @@ impl WorldSource for Src {
         Draft { author: member.into(), line: LineId(Hash([7; 32])), chain: ChainId(Hash([8; 32])), seq: 1 }
     }
     fn put_blobs(&self, _: &[Vec<u8>]) {}
-    fn edit(&self, entry: EntryRef) -> Option<Transaction> {
-        self.edits.lock().unwrap().get(&entry).cloned()
+    fn edit(&self, entry: EntryRef) -> Option<std::sync::Arc<Transaction>> {
+        self.edits.lock().unwrap().get(&entry).cloned().map(std::sync::Arc::new)
     }
     fn member_name(&self, m: MemberId) -> Option<String> {
         (m == ALICE.into()).then(|| "Alice".into())

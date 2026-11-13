@@ -58,8 +58,9 @@ pub trait WorldSource: Send + Sync {
     /// Puts a change's blob bytes into the machine's blob store, before the change is queued.
     fn put_blobs(&self, blobs: &[Vec<u8>]);
     /// The transaction of an edit entry this machine holds (its payload, decoded by pe-world's codec), for `watch`
-    /// to say what a change did and who produced it. `None` if the entry is unknown or no longer held.
-    fn edit(&self, entry: EntryRef) -> Option<pe_world::edit::Transaction>;
+    /// to say what a change did and who produced it. `None` if the entry is unknown or no longer held. Shared, not
+    /// copied: `history` may ask for thousands while the simulation thread shares the source's lock.
+    fn edit(&self, entry: EntryRef) -> Option<Arc<pe_world::edit::Transaction>>;
     /// A member's display name, for `watch`'s `by`.
     fn member_name(&self, member: MemberId) -> Option<String>;
     /// What only pe-app knows about the session (api.md 5.1). Members, roles and scale are world state, read
@@ -542,14 +543,14 @@ impl<S: WorldSource> Api<S> {
                 continue;
             }
             let tx = self.src.edit(step.entry);
-            let producer = tx.as_ref().map(|t| crate::watch::producer(&t.actor));
+            let producer = tx.as_deref().map(|t| crate::watch::producer(&t.actor));
             if let Some(k) = q.producer
                 && producer.as_ref().is_none_or(|p| p.kind != k)
             {
                 continue;
             }
             if let Some(sel) = &select
-                && !crate::watch::touched_ids(tx.as_ref(), &step.outcome).iter().any(|i| sel.contains(i))
+                && !crate::watch::touched_ids(tx.as_deref(), &step.outcome).iter().any(|i| sel.contains(i))
             {
                 continue;
             }
@@ -572,7 +573,7 @@ impl<S: WorldSource> Api<S> {
                         principal: None,
                         requested_by: None,
                     }),
-                    label: tx.as_ref().and_then(|t| t.label.clone()),
+                    label: tx.as_deref().and_then(|t| t.label.clone()),
                     frame,
                     is_final: f.is_final || f.status == Status::Final,
                     status: f.status,
@@ -580,7 +581,7 @@ impl<S: WorldSource> Api<S> {
                         pe_seams::Outcome::Unknown { repaired_at } => Some(repaired_at.frame.0),
                         _ => None,
                     },
-                    summary: summary(tx.as_ref(), &step.outcome, &snap),
+                    summary: summary(tx.as_deref(), &step.outcome, &snap),
                 },
             ));
         }
@@ -612,7 +613,7 @@ impl<S: WorldSource> Api<S> {
         let mut tx = pe_world::edit::Transaction::decode(&inverse)
             .ok_or_else(|| ApiError::new(ErrorCode::Internal, "The change's recorded inverse couldn't be read."))?;
         self.take_rate(c)?;
-        let was = fate.step.as_ref().and_then(|s| self.src.edit(s.entry)).and_then(|t| t.label);
+        let was = fate.step.as_ref().and_then(|s| self.src.edit(s.entry)).and_then(|t| t.label.clone());
         let mut label = match was {
             Some(l) => format!("Revert: {l}"),
             None => "Revert".to_string(),
@@ -714,7 +715,7 @@ impl<S: WorldSource> Api<S> {
                         // A retraction says what it undid: the earlier step that applied (@chunks-reviewer's M2).
                         let shown = undid.as_ref().unwrap_or(step);
                         let d = Describe { filter: f, select: select.as_ref(), snap: snap.clone(), me };
-                        if let Some(ch) = d.change(shown, undid.is_some(), tx.as_ref(), name(step.author.into())) {
+                        if let Some(ch) = d.change(shown, undid.is_some(), tx.as_deref(), name(step.author.into())) {
                             out.push(Said::Change(Box::new(ch)));
                         }
                     }
@@ -744,7 +745,7 @@ impl<S: WorldSource> Api<S> {
                         && let Some(s) = step
                     {
                         let d = Describe { filter: f, select: select.as_ref(), snap: snap.clone(), me };
-                        if let Some(ch) = d.change(s, true, tx.as_ref(), name(s.author.into())) {
+                        if let Some(ch) = d.change(s, true, tx.as_deref(), name(s.author.into())) {
                             out.push(Said::Change(Box::new(ch)));
                         }
                     }
@@ -996,8 +997,8 @@ mod tests {
             Draft { author: member.into(), line: LineId(Hash([7; 32])), chain: ChainId(Hash([8; 32])), seq: 1 }
         }
         fn put_blobs(&self, _: &[Vec<u8>]) {}
-        fn edit(&self, entry: EntryRef) -> Option<pe_world::edit::Transaction> {
-            EDITS.with(|m| m.borrow().get(&entry).cloned())
+        fn edit(&self, entry: EntryRef) -> Option<Arc<pe_world::edit::Transaction>> {
+            EDITS.with(|m| m.borrow().get(&entry).cloned().map(Arc::new))
         }
         fn member_name(&self, m: MemberId) -> Option<String> {
             (m == ALICE.into()).then(|| "Alice".to_string())
