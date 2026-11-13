@@ -153,6 +153,8 @@ pub struct DisplayCounters {
     /// Display frames, and frame views taken.
     pub display_frames: u64,
     pub views_taken: u64,
+    /// Views that followed a gap: the views before them were lost, so every object blended from its drawn pose.
+    pub gaps: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -234,6 +236,11 @@ pub struct DisplayLayer {
     /// Under (b): per object, the old timeline's pose at a corrected view, used in place of that view's pose.
     substitutes: BTreeMap<(ObjectId, Frame), WorldPose>,
     counters: DisplayCounters,
+    /// The next view follows a gap (see [`DisplayLayer::gap`]).
+    gap: bool,
+    /// A gap's batch is arriving: the drawn poses to blend from (and whether each was own), closed by `frame`.
+    gap_open: bool,
+    gap_drawn: BTreeMap<ObjectId, (WorldPose, bool)>,
 }
 
 /// What one display frame resolves against.
@@ -265,6 +272,9 @@ impl DisplayLayer {
             objects: BTreeMap::new(),
             substitutes: BTreeMap::new(),
             counters: DisplayCounters::default(),
+            gap: false,
+            gap_open: false,
+            gap_drawn: BTreeMap::new(),
         }
     }
 
@@ -292,6 +302,23 @@ impl DisplayLayer {
         (r.pose, r.span)
     }
 
+    /// The next view follows a gap: the views between it and the last one taken are lost, with their `CORRECTED`
+    /// flags (render.md 3). The history and every pending correction start over from it, and at the display frame
+    /// that took it every object blends from where it was drawn to that frame's target, by D3's rules (the cue
+    /// included).
+    pub fn gap(&mut self) {
+        self.gap = true;
+    }
+
+    /// Take a view without drawing: a batch's earlier views (render.md 3), each an arrival at this display frame's
+    /// `t_draw`, as `frame` takes the newest.
+    pub fn take(&mut self, view: &Arc<FrameView>, display_time: HostTime, volumes: &[ViewVolume]) {
+        if self.history.back().is_none_or(|v| !Arc::ptr_eq(v, view)) {
+            let t_draw = self.settings.drawn_time.t_draw(display_time);
+            self.arrive(view.clone(), t_draw, display_time, volumes);
+        }
+    }
+
     /// One display frame: take the newest view if it is new, then compute every object's drawn pose.
     pub fn frame(&mut self, input: FrameInput<'_>) -> DisplayFrame {
         let now = input.display_time;
@@ -305,6 +332,9 @@ impl DisplayLayer {
         let newest = self.history.back().cloned().expect("a view was taken");
         let owned: Vec<Arc<FrameView>> = self.history.iter().cloned().collect();
         let hist: Vec<&FrameView> = owned.iter().map(|v| &**v).collect();
+        if self.gap_open {
+            self.close_gap(&hist, &newest, t_draw, now, input.volumes);
+        }
 
         // Under (b), corrections wait until the drawn time reaches the corrected view.
         if matches!(self.settings.drawn_time, DrawnTime::InterpolateLate { .. }) {
@@ -380,6 +410,16 @@ impl DisplayLayer {
 
     /// A new frame view: D2's change of prediction for every object, at this display frame's `t_draw`.
     fn arrive(&mut self, view: Arc<FrameView>, t_draw: HostTime, now: HostTime, volumes: &[ViewVolume]) {
+        if std::mem::take(&mut self.gap) && !self.history.is_empty() {
+            self.open_gap(view);
+            return;
+        }
+        // Under (a) the gap's blend aims at the newest prediction, so the batch's other views are history only. Under
+        // (b) the drawn time reaches them later: a `CORRECTED` one among them waits as usual (`activate_pending`).
+        if self.gap_open && !matches!(self.settings.drawn_time, DrawnTime::InterpolateLate { .. }) {
+            self.arrive_in_gap(view);
+            return;
+        }
         self.counters.views_taken += 1;
         let old: Vec<Arc<FrameView>> = self.history.iter().cloned().collect();
         self.history.push_back(view.clone());
@@ -453,6 +493,91 @@ impl DisplayLayer {
         }
         let ids: Vec<ObjectId> = view.objects.iter().map(|o| o.id).collect();
         self.objects.retain(|id, _| ids.binary_search(id).is_ok());
+    }
+
+    /// A view after a gap (see [`DisplayLayer::gap`]): the history and every pending correction start over from it,
+    /// and each object's drawn pose is kept. The blend waits for `close_gap`, at this display frame, once the whole
+    /// batch has arrived: a blend aimed at this view's pose would leave the batch's later views to move the target
+    /// unblended (test 6 found a 54 cm drop under X8 (b)).
+    fn open_gap(&mut self, view: Arc<FrameView>) {
+        self.counters.views_taken += 1;
+        self.counters.gaps += 1;
+        self.history.clear();
+        self.history.push_back(view.clone());
+        self.substitutes.clear();
+        self.gap_drawn.clear();
+        for o in &view.objects {
+            let own_now = is_own(o) && !self.settings.controls.correct_own;
+            let Some(st) = self.objects.get_mut(&o.id) else {
+                // New to the view: nothing to blend from.
+                self.objects.entry(o.id).or_default().own = own_now;
+                continue;
+            };
+            st.pending.clear();
+            if let Some(drawn) = st.last_drawn
+                && !own_now
+            {
+                self.gap_drawn.insert(o.id, (drawn, st.own));
+            }
+            st.own = own_now;
+            if own_now {
+                st.components.clear();
+                st.cue = None;
+            }
+        }
+        let ids: Vec<ObjectId> = view.objects.iter().map(|o| o.id).collect();
+        self.objects.retain(|id, _| ids.binary_search(id).is_ok());
+        self.gap_open = true;
+    }
+
+    /// The rest of a batch after a gap, under X8 (a): history only, no change of prediction (the blend in `close_gap`
+    /// carries all).
+    fn arrive_in_gap(&mut self, view: Arc<FrameView>) {
+        self.counters.views_taken += 1;
+        self.history.push_back(view.clone());
+        while self.history.len() > HISTORY {
+            self.history.pop_front();
+        }
+        for o in &view.objects {
+            let own_now = is_own(o) && !self.settings.controls.correct_own;
+            let st = self.objects.entry(o.id).or_default();
+            if own_now && !st.own {
+                st.components.clear();
+                st.cue = None;
+                self.gap_drawn.remove(&o.id);
+            }
+            st.own = own_now;
+        }
+        let ids: Vec<ObjectId> = view.objects.iter().map(|o| o.id).collect();
+        self.objects.retain(|id, _| ids.binary_search(id).is_ok());
+    }
+
+    /// After a gap, at the display frame that took the batch: every object kept by `open_gap` blends from where it
+    /// was drawn to this frame's target, as a correction by D3's rules (the cue included).
+    fn close_gap(
+        &mut self,
+        hist: &[&FrameView],
+        newest: &FrameView,
+        t_draw: HostTime,
+        now: HostTime,
+        volumes: &[ViewVolume],
+    ) {
+        self.gap_open = false;
+        let kept = std::mem::take(&mut self.gap_drawn);
+        for o in &newest.objects {
+            let Some(&(drawn, was_own)) = kept.get(&o.id) else { continue };
+            if self.objects.get(&o.id).is_none_or(|st| st.own) {
+                continue;
+            }
+            if was_own {
+                self.counters.hold_ends += 1;
+            }
+            let (Some(target_now), _) = self.resolve_in(hist, o.id, t_draw) else { continue };
+            // The old components were offsets from targets that no longer exist; the new one carries the whole
+            // difference from the drawn pose, so nothing moves now.
+            self.objects.get_mut(&o.id).expect("checked").components.clear();
+            self.correct(o, drawn, drawn, target_now, true, false, now, volumes);
+        }
     }
 
     /// Under (b): a corrected view's difference starts blending when the drawn time reaches it.

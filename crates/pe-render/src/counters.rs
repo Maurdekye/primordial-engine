@@ -186,6 +186,7 @@ fn fold(acc: &mut DisplayCounters, c: &DisplayCounters) {
     acc.visible_samples += c.visible_samples;
     acc.display_frames += c.display_frames;
     acc.views_taken += c.views_taken;
+    acc.gaps += c.gaps;
 }
 
 /// The run so far: totals, and distributions per display frame and per second.
