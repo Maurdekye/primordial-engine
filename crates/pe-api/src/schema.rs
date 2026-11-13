@@ -5,8 +5,8 @@
 //!   the schema `version`, a hash of the registry. `since: <version>` answers `unchanged` when it still matches.
 //! - With a type: a JSON Schema per field, under the name `set` takes (`Transform.position` for the stored `pos`;
 //!   fields whose names start with `_` are internal and left out), with `x-unit`, `x-sync`, `x-protected` and
-//!   `x-read-only` annotations. Units and summaries come from a table of the engine's own components [I: the
-//!   registry carries no units; a logic-declared component gets none until it can declare them].
+//!   `x-read-only` annotations. Units come from the registry (`FieldDesc::unit`, pe-sim's canonical spelling, e.g.
+//!   `kg/m^3`; world-model.md 3.6); summaries from a table of the engine's own components.
 //! - With a template: what it holds, as a tree of names and types (at most `HOLDS_MAX` objects).
 
 use std::collections::BTreeMap;
@@ -37,7 +37,7 @@ pub fn version(snap: &WorldSnapshot) -> String {
     format!("s:{:016x}", h.finish())
 }
 
-/// What the engine's own components are for, and their fields' units.
+/// What the engine's own components are for.
 fn summary(name: &str) -> Option<&'static str> {
     Some(match name {
         "Transform" => "Where an object is: position, rotation and scale, relative to its parent.",
@@ -52,20 +52,6 @@ fn summary(name: &str) -> Option<&'static str> {
         "Protection" => "Protects the object and its subtree: only the owner may take, copy or re-protect them.",
         _ => return None,
     })
-}
-
-fn unit(component: &str, field: &str) -> Option<&'static str> {
-    match (component, field) {
-        ("Transform", "position") => Some("m"),
-        ("Shape", "density") => Some("kg/m3"),
-        ("Shape", "size") | ("Light", "range") => Some("m"),
-        ("Body", "linear_damping" | "angular_damping") => Some("1/s"),
-        ("BodyState", "linear") => Some("m/s"),
-        ("BodyState", "angular") => Some("rad/s"),
-        ("BodyState", "sleep_time") => Some("s"),
-        ("SimSize", _) => Some("m"),
-        _ => None,
-    }
 }
 
 /// The engine writes these; an edit is refused.
@@ -118,8 +104,8 @@ fn field_schema(d: &ComponentDesc, f: &FieldDesc) -> (String, Json) {
         s = json!({ "type": "array", "items": s, "minItems": f.count, "maxItems": f.count });
     }
     let o = s.as_object_mut().expect("an object");
-    if let Some(u) = unit(d.name(), &name) {
-        o.insert("x-unit".into(), json!(u));
+    if !f.unit.is_empty() {
+        o.insert("x-unit".into(), json!(f.unit));
     }
     o.insert("x-sync".into(), json!("synced"));
     if d.name() == "Protection" {
@@ -281,8 +267,13 @@ mod tests {
         let q = SchemaQuery { type_name: Some("Transform".into()), ..Default::default() };
         let Schema::Type { fields, .. } = schema(&s, &q).unwrap() else { panic!() };
         assert_eq!(fields["position"]["x-unit"], "m");
+        assert!(!fields["rot"].as_object().unwrap().contains_key("x-unit"), "no unit, no annotation");
         assert_eq!(fields["position"]["x-sync"], "synced");
         assert!(!fields.contains_key("pos"), "the stored name is shown as set takes it");
+        // Units come from the registry, in its canonical spelling (world-model.md 3.6).
+        let q = SchemaQuery { type_name: Some("Shape".into()), ..Default::default() };
+        let Schema::Type { fields, .. } = schema(&s, &q).unwrap() else { panic!() };
+        assert_eq!(fields["density"]["x-unit"], "kg/m^3");
         let q = SchemaQuery { type_name: Some("Protection".into()), ..Default::default() };
         let Schema::Type { fields, .. } = schema(&s, &q).unwrap() else { panic!() };
         assert!(fields.values().all(|f| f["x-protected"] == true));
