@@ -5,8 +5,13 @@
 //!
 //! - **Members** are [`SeamNode`]s over the lockstep mock (S3) and `ReplicaImpl<PeWorld>` (S2), all admitted at frame
 //!   0 with edit permission, each with its hands at its own spawn point.
-//! - **Pushes are edits for now:** each lifts one ball above the pile, from which it drops and scatters others. Hand
-//!   pushes replace them once PeWorld applies hand inputs (@vdw-physics).
+//! - **Two kinds of push:** a lift is an edit that puts one ball above the pile, from which it drops and scatters
+//!   others. A hand push is two inputs (PeWorld's, @vdw-physics): the member moves its first hand above the ball's
+//!   place in the genesis world and holds it there, then pushes the ball with an impulse at its centre. The two are
+//!   independent checks of two inputs: the push names the ball and acts at its centre (`at: None`), so it does not
+//!   depend on where the hand is, and after lifts the ball may be far from its genesis place. pe-world has no reach
+//!   rule for pushes today (only a push's `at` must lie on the object, and `None` skips that); if one lands, these
+//!   pushes would be refused for it, and the run's rise checks fail.
 //! - **Views:** pe-replica's view publish, with `ReplicaConfig::local` set to each member's key, so a member's views
 //!   mark its own hands `OWN_HAND` (and what they hold `HELD_LOCAL`), and objects a re-simulation moved `CORRECTED`.
 //! - **Checked:** P1, P3, P4, P6, P8 and P15 from the trace, and P2 against a straight replay of the final log
@@ -20,8 +25,9 @@ use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::TestKeys;
 use pe_seams::{Class, DomainId, Frame, FrameView, HostTime, MemberKey, ObjectId, Pos, SimRate};
 use pe_sim::{Component, Transform};
+use pe_world::components::Hand;
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
-use pe_world::{BlobStore, World, perm, preset};
+use pe_world::{BlobStore, HandPose, Input, World, perm, preset};
 
 use crate::clock::{MS, Nanos, SEC, SessionClock};
 use crate::net::{LinkCfg, NodeId};
@@ -38,6 +44,17 @@ pub const HZ: u32 = 60;
 pub const CADENCE_NS: i64 = 100_000_000;
 /// The draw stream of the seeded pushes.
 const PUSH_STREAM: u64 = 0xBA11_9175;
+/// The draw stream of the seeded hand pushes.
+const HAND_STREAM: u64 = 0x4A9D_9175;
+/// How long before its push a member moves its hand into place.
+pub const HAND_LEAD: Nanos = 200 * MS;
+/// How many frames a hand holds its place after its input's one pose (a second at 60 Hz).
+pub const HAND_HOLD: u8 = 60;
+/// How far above a ball's genesis place its pusher's hand goes, in metres.
+pub const HAND_ABOVE: f64 = 0.25;
+/// A hand push's upward impulse, in newton seconds: about 2.2 m/s on an 18 g ball, which then rises about 0.25 m.
+/// Upward, because the pile is packed: a level push meets a neighbour or a wall at once, and the ball barely moves.
+pub const HAND_IMPULSE: f64 = 0.04;
 /// Where each member's hands spawn, relative to the pit's origin: around the pit, outside its walls. Fixed offsets,
 /// not trigonometry, so every machine places them alike.
 const SPAWNS: [[f64; 3]; 4] = [[1.8, 0.0, 0.0], [-1.8, 0.0, 0.0], [0.0, 0.0, 1.8], [0.0, 0.0, -1.8]];
@@ -50,6 +67,17 @@ pub struct Push {
     pub member: NodeId,
     pub ball: usize,
     pub to: [f64; 3],
+}
+
+/// One hand push: at `at - HAND_LEAD`, `member` moves its first hand [`HAND_ABOVE`] above ball `ball`'s place in the
+/// genesis world and holds it [`HAND_HOLD`] frames; at `at` it pushes the ball with `impulse` (N·s, world frame) at
+/// its centre.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HandPush {
+    pub at: Nanos,
+    pub member: NodeId,
+    pub ball: usize,
+    pub impulse: [f32; 3],
 }
 
 /// A ball-pit run: who, over which links, for how long, and the pushes.
@@ -65,14 +93,18 @@ pub struct BallPit {
     pub balls: usize,
     pub end: Nanos,
     pub pushes: Vec<Push>,
+    pub hand_pushes: Vec<HandPush>,
 }
 
 impl BallPit {
     /// `members` members and `balls` balls for `end`, over links of `delay_ns` with a quarter of it as jitter, with a
-    /// seeded push every `every` from 0.5 s until a second before the end (so every push is final before it).
+    /// seeded lift every `every` from 0.5 s until a second before the end (so every push is final before it), and a
+    /// seeded hand push every `every` between them.
     pub fn new(seed: u64, delay_ns: Nanos, members: u32, balls: usize, end: Nanos, every: Nanos) -> BallPit {
-        let pushes = seeded_pushes(seed, members, balls, 500 * MS, end.saturating_sub(SEC), every);
-        BallPit { seed, delay_ns, jitter_ns: delay_ns / 4, members, balls, end, pushes }
+        let to = end.saturating_sub(SEC);
+        let pushes = seeded_pushes(seed, members, balls, 500 * MS, to, every);
+        let hand_pushes = seeded_hand_pushes(seed, members, balls, 500 * MS + every / 2, to, every);
+        BallPit { seed, delay_ns, jitter_ns: delay_ns / 4, members, balls, end, pushes, hand_pushes }
     }
 }
 
@@ -91,6 +123,57 @@ pub fn seeded_pushes(seed: u64, members: u32, balls: usize, from: Nanos, to: Nan
             to: [mm(d(i, 2, 2001)) - 1.0, 0.9, mm(d(i, 3, 2001)) - 1.0],
         })
         .collect()
+}
+
+/// A hand push every `every` in `from..to`, each from a member, of a ball, with an upward impulse of [`HAND_IMPULSE`]
+/// plus a level one of a quarter of that in a seeded direction (it scatters the ball's neighbours as it lands), all
+/// drawn from `seed`. The direction is normalized with `sqrt`, correctly rounded everywhere.
+pub fn seeded_hand_pushes(
+    seed: u64,
+    members: u32,
+    balls: usize,
+    from: Nanos,
+    to: Nanos,
+    every: Nanos,
+) -> Vec<HandPush> {
+    let d = |i: u64, k: u64, n: u64| rng::below(rng::draw(seed, HAND_STREAM, i * 8 + k, Purpose::Schedule), n);
+    (0..)
+        .map(|i| (i, from + i * every.max(1)))
+        .take_while(|&(_, at)| at < to)
+        .map(|(i, at)| {
+            let (x, z) = (d(i, 2, 2001) as f64 - 1000.0, d(i, 3, 2001) as f64 - 1000.0);
+            let n = (x * x + z * z).sqrt();
+            let (x, z) = if n < 1.0 { (1.0, 0.0) } else { (x / n, z / n) };
+            let s = HAND_IMPULSE;
+            HandPush {
+                at,
+                member: d(i, 0, u64::from(members.max(1))) as NodeId + 1,
+                ball: d(i, 1, balls.max(1) as u64) as usize,
+                impulse: [(s * 0.25 * x) as f32, s as f32, (s * 0.25 * z) as f32],
+            }
+        })
+        .collect()
+}
+
+/// Member `key`'s first hand in `world` (its lowest id), if it has one.
+pub fn first_hand(world: &World, key: MemberKey) -> Option<ObjectId> {
+    world.store().iter::<Hand>().filter(|(_, h)| h.owner == key).map(|(id, _)| id).min()
+}
+
+/// Where a hand push on `ball` puts its pusher's hand: [`HAND_ABOVE`] above the ball's place in `world`.
+pub fn hand_target(world: &World, ball: ObjectId) -> Option<Pos> {
+    world.store().world_transform(ball)?.pos.checked_add(pe_seams::Offset([0.0, HAND_ABOVE, 0.0])).ok()
+}
+
+/// The input that moves `hand` to `to` and holds it there [`HAND_HOLD`] frames.
+pub fn hand_payload(hand: ObjectId, to: Pos) -> Vec<u8> {
+    let pose = HandPose { pos: to, rot: Transform::IDENTITY.rot, grip: 0.0, engaged: false };
+    Input::Hand { hand, poses: vec![pose], hold: HAND_HOLD }.encode()
+}
+
+/// The input that pushes `ball` with `impulse` at its centre.
+pub fn shove_payload(ball: ObjectId, impulse: [f32; 3]) -> Vec<u8> {
+    Input::Push { object: ball, impulse, at: None }.encode()
 }
 
 /// The run's member keys: node `i` is the `i`-th in key order.
@@ -218,6 +301,14 @@ pub fn run(cfg: &BallPit) -> Option<BallPitRun> {
         for p in cfg.pushes.iter().filter(|p| p.member == id) {
             let ball = *balls.get(p.ball)?;
             node = node.submit_at(p.at as i64, Class::Edit, push_payload(ball, p.to));
+        }
+        let hand = first_hand(&world, key)?;
+        for p in cfg.hand_pushes.iter().filter(|p| p.member == id) {
+            let ball = *balls.get(p.ball)?;
+            let to = hand_target(&world, ball)?;
+            node = node
+                .submit_at(p.at.saturating_sub(HAND_LEAD) as i64, Class::Input, hand_payload(hand, to))
+                .submit_at(p.at as i64, Class::Input, shove_payload(ball, p.impulse));
         }
         sinks.insert(id, sink);
         nodes.insert(id, node);
