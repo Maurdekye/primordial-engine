@@ -383,6 +383,30 @@ fn two_members_admit_each_other_without_an_up_record() {
 }
 
 #[test]
+fn a_reply_taken_while_the_joiner_s_closed_connection_drains_still_dials() {
+    // @engine-architect's Low 1 on net/app-net f7d31a31: A closes B's early dial (here a refusal; `T_welcome`
+    // alike) and takes B's reply at once, while that connection drains. The dial must go out: a closed connection
+    // is not "already connected" (6.2).
+    let mut net = Net::new();
+    let a = net.add(1, "10.0.0.1:4433", true, "pe 0.1");
+    let b = net.add(2, "10.0.0.2:4433", false, "pe 0.1");
+    let inv = net.invite(a);
+    let now = net.now;
+    net.nodes[b].core.dial(now, &inv);
+    net.run(100);
+    let kb = net.nodes[b].key;
+    let requests =
+        |n: &Node| n.events.iter().filter(|e| matches!(e, NetEvent::JoinRequest { peer, .. } if *peer == kb)).count();
+    assert_eq!(requests(&net.nodes[a]), 1, "B's early dial");
+    let now = net.now;
+    net.nodes[a].core.refuse(now, kb, Refusal { code: CloseCode::Overloaded, detail: "no decision".into() });
+    let reply = Reply { invite_id: inv.id, key: kb.0, addrs: vec!["10.0.0.2:4433".parse().unwrap()] };
+    net.nodes[a].core.take_reply(now, &reply);
+    net.run(300);
+    assert_eq!(requests(&net.nodes[a]), 2, "A's own dial reached B: {:?}", net.nodes[a].events);
+}
+
+#[test]
 fn t_welcome_closes_a_connection_nobody_decides_on() {
     let mut net = Net::new();
     let a = net.add(1, "10.0.0.1:4433", true, "pe 0.1");

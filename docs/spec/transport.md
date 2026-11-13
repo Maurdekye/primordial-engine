@@ -463,6 +463,9 @@ seconds (the user's ruling md4b42d16d9df: the tick rate is configurable per worl
   draft 1.1].
 - **If it isn't ready within `T_ready`,** that is a `ClockFault` (5.6), and the join fails with its reason.
 - **A world's first member** has offset 0, and is ready at once.
+- **A clock with no role yet** (a joiner's before its welcome) has no list to need a quorum of, and is never
+  ready. It begins converging at the welcome. [V: pe-net's `clock` unit test; before this rule it reported
+  ready after three rounds with no epoch.]
 
 ### 5.5 After frame 0: steer
 
@@ -533,6 +536,12 @@ its frame this way (seam S3).
     alike and which differs per connection. With quinn-proto this is rare [V, measured by a Core test]: the
     client closes the duplicate it completes second before its Finished leaves, so the server never completes
     it. The tag keeps the choice from depending on that timing.
+  - **A connection a side has already closed** (a refusal, `T_welcome`, a guard) never counts: a new
+    connection from the same peer replaces it. Otherwise the new one lost to a dead one about half the time
+    and was left neither refused nor welcomed [V `pe-net/tests/thread.rs`: 5 of 16 refusals never reached the
+    joiner before this rule, none lost after].
+    Nor does it make a dial to that peer redundant: a reply taken while it drains still dials
+    (@engine-architect's Low 1) [V `pe-net/tests/core.rs`, red before the rule].
   - The loser is closed with code 0 and the detail `duplicate connection`. A lost connection ends quietly (no
     refusal, no `LinkDown`) only if another connection to the same peer stands in for it: one already holds
     the link, or this one never did and another is live. Otherwise the loss is reported as any loss is,
@@ -567,6 +576,13 @@ its frame this way (seam S3).
   - the epoch and the tick rate (5.1);
   - the members, with their keys and last addresses, for 6.7;
   - what pe-agree needs to start the join (pe-agree's to define).
+- **The M1 interim** (@coordinator-opus md61c5a56424e, until pe-agree's join from a cut lands): the joiner becomes
+  a member at genesis. The opener starts the session only when it takes the joiner's reply, and the welcome's
+  `agree` bytes carry pe-app's genesis record. The welcome's line, like both hellos', is a fixed pre-genesis line,
+  since the joiner can't know the session's line before its welcome. The session's own line is the record's,
+  which the joiner derives from the record itself, never from the welcome. The joiner also checks the record's
+  members, build, pe-agree settings, rate and epoch, and its frame-0 roots, before it builds anything (pe-app's
+  `net` and `genesis`).
 - **The member list is only a hint** [@design-reviewer's Low 1]. The list that counts comes from the cut the
   joiner starts from, checked against that cut's root, so an inviter can neither hide a member nor add one. The
   joiner uses the welcome's list only to start connecting, and re-checks it against the cut.
@@ -604,6 +620,14 @@ its frame this way (seam S3).
 - **The states:** Connecting, Confirmed (handshake confirmed), Welcomed, Up, Degraded (nothing heard for
   `T_degraded`), Down (idle for `T_idle`, or closed).
 - **Keep-alive:** QUIC PING every `T_keepalive` when idle.
+- **Outages** (@coordinator-opus m47dee2c21d3a): a link silent for less than `T_idle` resumes on the same
+  connection, and the reliable lanes resend what it missed (3.2; their backoff caps at 64 RTOs, so the resend
+  comes within about one capped RTO of the link's return). A longer silence closes it, and in M1 nothing dials
+  again: the session is over for that pair, and a new invite starts another. So M1 sets `T_idle` to 30 s, a
+  stated setting (`T_IDLE_M1`) rather than QUIC's usual few seconds. Once pe-agree lets a member return (model
+  v1), a redial replaces this, and `T_idle` can shrink. Nothing else in pe-net gives up sooner: `T_degraded`
+  only reports, `T_welcome` applies before the link is first Up, the clock drops samples older than `W_clock`
+  (30 s) and then holds its offset, and the lanes resend without a limit while the connection stands.
 - **Address changes:** QUIC connection migration is on. A peer's new address is used only after QUIC's path
   validation, so a forged source address can't redirect a link.
 
@@ -686,10 +710,15 @@ impl Core {
   - **A bounded lifecycle backlog:** `Refused` and `Fault` can be caused by anyone who connects, so outcomes
     nobody takes are held up to the queue size beyond the channel. Past that, the oldest `Refused` or `Fault`
     is dropped first, and every drop is counted (`lifecycle_dropped`). `Welcomed` and `ClockReady` happen once
-    each per connection and survive [V: 16 refusals and a welcome, unpolled, with queue 4: 8 kept, the welcome
-    among them, 11 dropped].
+    each per connection, and survive while fewer than the queue size of them are waiting (@design-reviewer)
+    [V: 16 refusals, a clock-ready and a welcome, unpolled, with queue 4: 8 kept, the welcome among them, 10
+    dropped, on 3 of 3 runs].
 - **To and from the simulation thread:** bounded single-producer queues for outgoing `(peer, lane, bytes)` and
   incoming `Received` and events, plus the clock model of 5.7.
+  - **`events()` never drops a message.** It drains the whole queue, so the messages it passes wait in the
+    handle, in order, and `poll()` serves them first: the reliable lanes deliver each message once
+    (@engine-architect's Medium on net/app-net f7d31a31) [V `pe-net/tests/thread.rs`: 50 messages, `events()`
+    before every `poll()` round, all 50 once in order].
 - **The simulation thread never waits on the network.** A full outgoing queue is a local fault, reported, not a
   stall. The queue is sized for `T_queue` of traffic.
 - **The other threads** (render, XR, agent handlers) are WS-app's to arrange with WS-state, WS-render and WS-xr
@@ -853,7 +882,7 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | `T_reply` | 3 s | No answer before the joiner shows a reply code |
 | `T_keepalive` | 0.5 s | QUIC PING when idle |
 | `T_degraded` | 1 s | Nothing heard before Degraded |
-| `T_idle` | 5 s | QUIC idle timeout: Down |
+| `T_idle` | 30 s (M1) | QUIC idle timeout: Down. The longest outage a session survives (6.5) |
 | `T_queue` | 1 s | Outgoing queue capacity, in traffic time |
 
 ## 11. Open questions

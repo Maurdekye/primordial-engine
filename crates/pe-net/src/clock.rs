@@ -337,7 +337,8 @@ impl Clock {
                 && self.last_targets.iter().max().copied().unwrap_or(0)
                     - self.last_targets.iter().min().copied().unwrap_or(0)
                     < self.p.e_ready.as_nanos() as i64;
-            if !self.ready && steady && self.heard() >= self.needed() {
+            // A clock with no role yet (`idle`, before a welcome) has no members to need: it is never ready.
+            if !self.ready && self.started.is_some() && steady && self.heard() >= self.needed() {
                 self.ready = true;
                 self.events.push(ClockEvent::Ready);
             }
@@ -544,6 +545,25 @@ mod tests {
         c.add(&sample(10 * S, 5_000_000, 20_000_000, 1_000_000), &p); // queued on the way out: biased
         c.add(&sample(10 * S + 100_000_000, 5_000_000, 1_000_000, 1_000_000), &p);
         assert_eq!(c.estimate(), Some(5_000_000));
+    }
+
+    #[test]
+    fn a_clock_with_no_role_yet_is_never_ready() {
+        // B's clock before its welcome: no members, so a quorum of none would be "heard" at once. It must wait for
+        // begin_joining, or pe-app reads a frame clock with no epoch (seen as frame 0 "9e9 s ahead").
+        let mut c = Clock::idle(ClockParams::default());
+        for r in 0..20 {
+            c.on_sample(key(1), sample(r * S, 7_000_000, 1_000_000, 1_000_000));
+            c.tick(HostTime(r * S));
+        }
+        assert!(!c.is_ready());
+        assert_eq!(c.events(), vec![]);
+        c.begin_joining(HostTime(20 * S), vec![key(1)]);
+        for r in 20..25 {
+            c.on_sample(key(1), sample(r * S, 7_000_000, 1_000_000, 1_000_000));
+            c.tick(HostTime(r * S));
+        }
+        assert_eq!(c.events(), vec![ClockEvent::Ready]);
     }
 
     #[test]
