@@ -28,8 +28,8 @@ use bytes::Bytes;
 use pe_log::{ChainKey, ChainLog, Inserted, Rejected, Verdict};
 use pe_seams::agree::{AgreeEvent, AgreeStats, Agreement, Cut, CutRef, FinalCut, Outgoing, SubmitError};
 use pe_seams::{
-    EntryRef, EntrySource, Fault, FaultKind, Frame, FrameClock, Hash, Hasher, HostTime, Lane, LineId, MemberKey,
-    PeerId, SelfTest, SignedEntry, Signer, Verifier, VoteResult,
+    ChainId, EntryRef, EntrySource, Fault, FaultKind, Frame, FrameClock, Hash, Hasher, HostTime, Lane, LineId,
+    MemberKey, PeerId, SelfTest, SignedEntry, Signer, Verifier, VoteResult,
 };
 
 use crate::codec::{self, MAX_FETCH, Wire};
@@ -90,6 +90,9 @@ pub struct NodeConfig {
     pub min_rate_per_s: u32,
     pub min_burst: u32,
     pub min_pending: usize,
+    /// The byte limit on one author's entries waiting for its budget (they are delayed, never lost, up to this and to
+    /// the pending cap in entries).
+    pub defer_bytes: usize,
     /// A planted defect for the harness's mutation tests (feature `mutants` only).
     #[cfg(feature = "mutants")]
     pub mutation: Option<core::Mutation>,
@@ -119,6 +122,7 @@ impl NodeConfig {
             min_rate_per_s: 150,
             min_burst: 60,
             min_pending: 600,
+            defer_bytes: 2 << 20,
             #[cfg(feature = "mutants")]
             mutation: None,
         }
@@ -162,6 +166,8 @@ impl NodeConfig {
             min_rate_per_s,
             min_burst,
             min_pending,
+            // Two members with different queue sizes disagree on whether an honest author's flush is a fault.
+            defer_bytes,
             // Local.
             cut_lag_s: _,
             cut_lag_floor_s: _,
@@ -174,11 +180,13 @@ impl NodeConfig {
             #[cfg(feature = "mutants")]
                 mutation: _,
         } = self;
-        let mut h = Hasher::new("pe.agree.consensus.v1");
+        // v2: defer_bytes joined the set (the stall fix).
+        let mut h = Hasher::new("pe.agree.consensus.v2");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
         h.write_u64(*min_rate_per_s as u64).write_u64(*min_burst as u64).write_u64(*min_pending as u64);
+        h.write_u64(*defer_bytes as u64);
         h.write_u64(timing.cadence_ns as u64)
             .write_u64(timing.min_timeout_ns as u64)
             .write_u64(timing.max_timeout_ns as u64);
@@ -198,6 +206,17 @@ impl NodeConfig {
             pending: ((per_s * self.pending_s) as usize).max(self.min_pending),
         }
     }
+}
+
+/// One author's checked entries waiting for its budget, in chain order, with who sent each.
+#[derive(Default)]
+struct Deferred {
+    entries: BTreeMap<(ChainId, u64, EntryRef), (SignedEntry, PeerId)>,
+    bytes: usize,
+}
+
+fn entry_bytes(e: &SignedEntry) -> usize {
+    e.entry.payload.len() + 200
 }
 
 /// [`EntrySource::entries_for_cut`]'s verdicts for one cut, valid while the final block and the entries held are
@@ -228,6 +247,38 @@ pub struct Node {
     final_heads: Cut,
     final_block: BlockId,
     root_cache: std::cell::RefCell<Option<RootCache>>,
+    /// Per author: checked entries over its budget, admitted as it refills.
+    deferred: HashMap<MemberKey, Deferred>,
+    /// Per (sender, author): how many more entries this member will check (tokens in thousandths), and when.
+    verify_budget: HashMap<(PeerId, MemberKey), (u64, HostTime)>,
+    /// Entries dropped unchecked over a sender's verify budget.
+    dropped_unchecked: u64,
+    /// Per chain: the entries held, by seq (the first at a seq), to serve a range refetch.
+    by_seq: HashMap<ChainKey, BTreeMap<u64, EntryRef>>,
+    /// Per chain: the highest seq this member has seen checked (held, waiting or refused). Only the author can raise
+    /// it, by signing.
+    seen_high: HashMap<ChainKey, u64>,
+    /// Per chain: the highest seq a verified vote's heads name, and the voter that named it. A claim, not evidence:
+    /// it is forgotten once its asks run out unanswered (@design-reviewer's Low 1), and each author has at most
+    /// [`MAX_VOTE_CHAINS`] chains claimed this way.
+    vote_high: HashMap<ChainKey, (u64, MemberKey)>,
+    /// Per (chain, voter): a voter whose claim on the chain went unanswered, with the seq it claimed. Its claims on
+    /// that chain are ignored until the chain's checked seq reaches that (an honest voter's claim is answered by the
+    /// voter itself, so only an unreachable or lying voter is ignored, and its entries still come by relay and cuts).
+    vote_ignored: HashMap<(ChainKey, MemberKey), u64>,
+    /// Per chain: a gap seen and not yet asked for (its first missing seq, and since when). A gap is asked for only
+    /// once it has lasted [`GAP_WAIT_NS`], so an entry merely reordered in flight isn't fetched twice.
+    gap_since: HashMap<ChainKey, (u64, i64)>,
+    /// When this member's own chain reached each seq, recently: pacing counts only entries older than the grace.
+    own_times: std::collections::VecDeque<(i64, u64)>,
+    /// Per chain: the range refetch asked (from seq, when, how many times).
+    range_asked: HashMap<ChainKey, (u64, i64, u32)>,
+    /// Per requester: the entries this member will still serve it by range refetch, in thousandths, and when
+    /// (@design-reviewer's Medium 2 and later Low 1): one author's rate and burst across all authors, so a requester
+    /// can't make this member upload more than about one author's stream.
+    serve_budget: HashMap<PeerId, (u64, HostTime)>,
+    /// Per other member: the highest seq of this member's own chain its verified votes name as held, for pacing.
+    acked: HashMap<MemberKey, u64>,
     /// Entries inserted into the log so far (never decreases, whatever is pruned): the root cache's version.
     inserted: u64,
     final_by_frame: BTreeMap<Frame, Vec<SignedEntry>>,
@@ -266,6 +317,13 @@ const MAX_HINTS: usize = 256;
 const HINT_TTL_NS: i64 = 5_000_000_000;
 /// Samples needed before the lag adapts.
 const LATENESS_MIN: usize = 32;
+/// At most this many chains per author tracked from votes' heads alone.
+const MAX_VOTE_CHAINS: usize = 4;
+/// A range refetch claimed only by a vote's heads is given up after this many unanswered asks (the retry doubles,
+/// so about 15 s at the default retry).
+const RANGE_GIVE_UP: u32 = 5;
+/// A gap is asked for by range only once it has lasted this long (a reorder in flight closes sooner).
+const GAP_WAIT_NS: i64 = 150_000_000;
 
 fn tie_rank(line: LineId, frame: Frame, author: &MemberKey) -> u64 {
     let mut h = Hasher::new("pe.log.tie");
@@ -330,6 +388,18 @@ impl Node {
             final_block,
             root_cache: std::cell::RefCell::new(None),
             inserted: 0,
+            deferred: HashMap::new(),
+            verify_budget: HashMap::new(),
+            dropped_unchecked: 0,
+            by_seq: HashMap::new(),
+            seen_high: HashMap::new(),
+            vote_high: HashMap::new(),
+            vote_ignored: HashMap::new(),
+            gap_since: HashMap::new(),
+            own_times: std::collections::VecDeque::new(),
+            range_asked: HashMap::new(),
+            serve_budget: HashMap::new(),
+            acked: HashMap::new(),
             final_by_frame: BTreeMap::new(),
             final_bytes: 0,
             predicted: BTreeMap::new(),
@@ -412,10 +482,13 @@ impl Node {
             return Err(self.fault(from, Some(author), FaultKind::NotMember, "entry by a non-member".into()));
         }
         let key = ChainKey::of(&e);
-        let prev = e.entry.prev;
         let solicited = self.wanted.contains_key(&id);
-        let hinted_by = self.hinted.get(&id).map(|h| h.1);
-        let hinted = hinted_by.is_some();
+        if author != self.me && !solicited && !self.by_ref.contains_key(&id) && !self.may_verify(from, author, at) {
+            // More than this sender can make this member check for one author: dropped unchecked, no fault. If it was
+            // valid, the range refetch brings it back (coordinator).
+            self.dropped_unchecked += 1;
+            return Ok(false);
+        }
         let unchecked = AcceptAll;
         let skip_sig = self.core.mutated(Mutation::NoSignatureCheck);
         let checked = {
@@ -429,10 +502,286 @@ impl Node {
             self.events.push(AgreeEvent::Refused { entry: id, author, kind });
             return Err(self.fault(from, None, kind, format!("{r:?} (claims author {author:?})")));
         }
-        if author != self.me && !self.by_ref.contains_key(&id) && !self.within_budget(author, solicited, at) {
-            self.events.push(AgreeEvent::Refused { entry: id, author, kind: FaultKind::RateExceeded });
-            return Err(self.fault(from, Some(author), FaultKind::RateExceeded, "over the author's budget".into()));
+        let seen = self.seen_high.entry(key).or_default();
+        *seen = (*seen).max(e.entry.seq);
+        let links = self.fills_hole(&key, e.entry.seq);
+        // While the author has entries waiting, a new one waits behind them, in chain order, rather than taking the
+        // budget first.
+        let queued = !solicited && self.deferred.get(&author).is_some_and(|q| !q.entries.is_empty());
+        if author != self.me
+            && !self.by_ref.contains_key(&id)
+            && (queued || !self.within_budget(author, solicited, links, at))
+        {
+            // Over the budget: delay it, never lose it (coordinator). It waits, checked, in the author's
+            // queue, and is admitted (and relayed) in chain order as the budget refills; only an overflow is refused.
+            return self.defer(e, from);
         }
+        self.insert_checked(e, from, at)
+    }
+
+    /// Queue a checked entry over its author's budget; refuse it only if the author's queue is full.
+    fn defer(&mut self, e: SignedEntry, from: PeerId) -> Result<bool, Fault> {
+        let id = e.id();
+        let author = e.entry.author;
+        let cap = self.cfg.rate_budget(self.rate_hz).pending;
+        let size = entry_bytes(&e);
+        let q = self.deferred.entry(author).or_default();
+        let k = (e.entry.chain, e.entry.seq, id);
+        if q.entries.contains_key(&k) {
+            return Ok(false);
+        }
+        // Full: the earliest entries in chain order matter most (they link the chain), so a later one makes room by
+        // leaving, with no fault; the range refetch brings it back. Only an entry later than all of them is refused.
+        while (q.entries.len() >= cap || q.bytes + size > self.cfg.defer_bytes)
+            && q.entries.last_key_value().is_some_and(|(last, _)| *last > k)
+        {
+            if let Some((_, (old, _))) = q.entries.pop_last() {
+                q.bytes = q.bytes.saturating_sub(entry_bytes(&old));
+            }
+        }
+        if q.entries.len() >= cap || q.bytes + size > self.cfg.defer_bytes {
+            self.events.push(AgreeEvent::Refused { entry: id, author, kind: FaultKind::RateExceeded });
+            let detail = "over the author's budget and its queue".into();
+            return Err(self.fault(from, Some(author), FaultKind::RateExceeded, detail));
+        }
+        q.bytes += size;
+        q.entries.insert(k, (e, from));
+        Ok(false)
+    }
+
+    /// Admit waiting entries, each author's in chain order, while its budget allows; relay each one admitted that its
+    /// author sent.
+    fn admit_deferred(&mut self, at: HostTime) {
+        let authors: Vec<MemberKey> =
+            self.deferred.iter().filter(|(_, q)| !q.entries.is_empty()).map(|(a, _)| *a).collect();
+        for a in authors {
+            loop {
+                let Some((k, (e, from))) =
+                    self.deferred.get(&a).and_then(|q| q.entries.iter().next().map(|(k, v)| (*k, v.clone())))
+                else {
+                    break;
+                };
+                let held = self.by_ref.contains_key(&k.2);
+                let links = self.fills_hole(&ChainKey { author: a, chain: k.0 }, k.1);
+                if !held && !self.within_budget(a, false, links, at) {
+                    break;
+                }
+                if let Some(q) = self.deferred.get_mut(&a) {
+                    q.entries.remove(&k);
+                    q.bytes = q.bytes.saturating_sub(entry_bytes(&e));
+                }
+                if held {
+                    continue;
+                }
+                if let Ok(true) = self.insert_checked(e.clone(), from, at)
+                    && self.cfg.relay
+                    && from == a
+                {
+                    self.send_all(Lane::Action, &Wire::Entries(vec![e]), &[from]);
+                }
+            }
+        }
+        self.deferred.retain(|_, q| !q.entries.is_empty());
+    }
+
+    /// Whether an entry at `seq` on chain `key` extends the linked head while entries beyond it are already held: it
+    /// fills a hole. Exempting only these from the pending cap keeps an author's held entries within about twice the
+    /// cap (a hole can be filled only once), while a cap full of entries behind a hole can always drain.
+    fn fills_hole(&self, key: &ChainKey, seq: u64) -> bool {
+        seq == self.linked_seq(key) + 1 && self.by_seq.get(key).is_some_and(|m| m.range(seq + 1..).next().is_some())
+    }
+
+    /// The seq this member's chain `key` links through, from the final cut's head on.
+    pub(crate) fn linked_seq(&self, key: &ChainKey) -> u64 {
+        if let Some((seq, _)) = self.pred_head.get(key) {
+            return *seq;
+        }
+        let i = self.final_heads.heads.binary_search_by(|h| h.chain.cmp(&key.chain)).ok();
+        i.map(|i| self.final_heads.heads[i]).filter(|h| h.author == key.author).map_or(0, |h| h.seq)
+    }
+
+    /// The range refetch (coordinator): for each chain with a hole (a seq beyond its linked head seen,
+    /// the next one neither held nor waiting), ask for just the gap, the author first and everyone on a retry, with
+    /// the retry doubling. The answer is charged to the author's budget like any entry (it waits if over), so a
+    /// refusal, an unchecked drop and a network loss all heal the same way, a gap per round trip.
+    fn ask_ranges(&mut self) {
+        let now = self.now.0;
+        let mut asks: Vec<(ChainKey, u64, u32, u32)> = Vec::new();
+        let mut give_up: Vec<ChainKey> = Vec::new();
+        let mut new_gaps: Vec<(ChainKey, u64)> = Vec::new();
+        let keys: std::collections::BTreeSet<ChainKey> =
+            self.seen_high.keys().chain(self.vote_high.keys()).copied().collect();
+        for key in &keys {
+            if key.author == self.me {
+                continue;
+            }
+            let checked = self.seen_high.get(key).copied().unwrap_or(0);
+            let high = self.range_high(key);
+            let next = self.linked_seq(key) + 1;
+            if high < next {
+                continue;
+            }
+            let held = self.by_seq.get(key);
+            let waiting = self.deferred.get(&key.author);
+            let lo = (key.chain, next, EntryRef(Hash([0; 32])));
+            let first_waiting =
+                waiting.and_then(|q| q.entries.range(lo..).next().filter(|(k, _)| k.0 == key.chain).map(|(k, _)| k.1));
+            let first_held = held.and_then(|m| m.range(next..).next().map(|(s, _)| *s));
+            let end = [first_waiting, first_held].into_iter().flatten().min().unwrap_or(high + 1);
+            if end == next {
+                continue;
+            }
+            let count = (end - next).min(MAX_FETCH as u64) as u32;
+            let tries = match self.range_asked.get(key) {
+                Some(&(f, at, t)) if f == next => {
+                    if now.saturating_sub(at) < self.cfg.fetch_retry_ns << t.min(4) {
+                        continue;
+                    }
+                    // Only a vote claims the gap (no checked entry beyond it), and nobody answered: forget the claim.
+                    if t + 1 >= RANGE_GIVE_UP && checked < next {
+                        give_up.push(*key);
+                        continue;
+                    }
+                    t + 1
+                }
+                _ => match self.gap_since.get(key) {
+                    Some(&(f, since)) if f == next && now.saturating_sub(since) >= GAP_WAIT_NS => 0,
+                    Some(&(f, _)) if f == next => continue,
+                    _ => {
+                        new_gaps.push((*key, next));
+                        continue;
+                    }
+                },
+            };
+            asks.push((*key, next, count, tries));
+        }
+        for key in give_up {
+            if let Some((seq, voter)) = self.vote_high.remove(&key) {
+                let s = self.vote_ignored.entry((key, voter)).or_default();
+                *s = (*s).max(seq);
+            }
+            self.range_asked.remove(&key);
+        }
+        for (key, next) in new_gaps {
+            self.gap_since.insert(key, (next, now));
+        }
+        for (key, next, count, tries) in asks {
+            self.gap_since.remove(&key);
+            self.range_asked.insert(key, (next, now, tries));
+            let w = Wire::FetchRange { author: key.author, chain: key.chain, from_seq: next, count };
+            if tries == 0 {
+                let b = Bytes::from(codec::encode(&w));
+                self.out.push(Outgoing { to: key.author, lane: Lane::Protocol, bytes: b });
+            } else {
+                self.send_all(Lane::Protocol, &w, &[]);
+            }
+        }
+        let done: Vec<ChainKey> =
+            self.range_asked.keys().filter(|k| self.range_high(k) <= self.linked_seq(k)).copied().collect();
+        for k in done {
+            self.range_asked.remove(&k);
+        }
+        let closed: Vec<ChainKey> =
+            self.gap_since.iter().filter(|(k, (f, _))| self.linked_seq(k) + 1 != *f).map(|(k, _)| *k).collect();
+        for k in closed {
+            self.gap_since.remove(&k);
+        }
+        let linked: Vec<(ChainKey, u64)> = self.vote_high.keys().map(|k| (*k, self.linked_seq(k))).collect();
+        for (k, l) in linked {
+            if self.vote_high.get(&k).is_some_and(|(s, _)| *s <= l) {
+                self.vote_high.remove(&k);
+            }
+        }
+    }
+
+    /// The highest seq known on a chain: checked, or claimed by a vote not yet given up.
+    fn range_high(&self, key: &ChainKey) -> u64 {
+        let checked = self.seen_high.get(key).copied().unwrap_or(0);
+        self.vote_high.get(key).map_or(checked, |(s, _)| checked.max(*s))
+    }
+
+    /// A verified vote's heads name `seq` on `key`: remember the claim, within the bounds (see `vote_high`).
+    fn claim_from_vote(&mut self, voter: MemberKey, key: ChainKey, seq: u64) {
+        let checked = self.seen_high.get(&key).copied().unwrap_or(0);
+        if seq <= checked {
+            return;
+        }
+        match self.vote_ignored.get(&(key, voter)) {
+            Some(&claimed) if checked < claimed => return,
+            Some(_) => {
+                self.vote_ignored.remove(&(key, voter));
+            }
+            None => {}
+        }
+        match self.vote_high.get_mut(&key) {
+            Some(c) => {
+                if seq > c.0 {
+                    *c = (seq, voter);
+                }
+            }
+            None => {
+                let known = self.seen_high.contains_key(&key) || self.by_seq.contains_key(&key);
+                // Given-up claims keep their slot, so fabricated chain ids can't cycle through it.
+                let claimed: std::collections::BTreeSet<ChainKey> = self
+                    .vote_high
+                    .keys()
+                    .chain(self.vote_ignored.keys().map(|(k, _)| k))
+                    .filter(|k| k.author == key.author)
+                    .copied()
+                    .collect();
+                let claimed = claimed.len();
+                if known || claimed < MAX_VOTE_CHAINS {
+                    self.vote_high.insert(key, (seq, voter));
+                }
+            }
+        }
+    }
+
+    /// Whether this member will check one more entry `from` sends claiming `author`: twice the author's rate, with a
+    /// burst of twice its pending cap plus its burst, so a flush the queue can take is checked whole, and a flood
+    /// from one sender overflows the queue (a fault) before it is dropped unchecked.
+    fn may_verify(&mut self, from: PeerId, author: MemberKey, at: HostTime) -> bool {
+        if self.core.mutated(Mutation::RateLimitRemoved) {
+            return true;
+        }
+        let b = self.cfg.rate_budget(self.rate_hz);
+        let cap = 2 * (b.pending as u64 + b.burst as u64) * 1000;
+        let rate = (2.0 * b.per_s * 1000.0).round() as u128;
+        let (tokens, last) = self.verify_budget.get(&(from, author)).copied().unwrap_or((cap, at));
+        let dt = at.0.saturating_sub(last.0).max(0) as u128;
+        let tokens = (tokens as u128 + rate * dt / 1_000_000_000).min(cap as u128) as u64;
+        let ok = tokens >= 1000;
+        self.verify_budget.insert((from, author), (if ok { tokens - 1000 } else { tokens }, at.max(last)));
+        ok
+    }
+
+    /// How many entries this member will serve `from` in one range answer, at most `want`, and takes them from its
+    /// serving budget (one author's rate and burst per requester, whatever chains it asks for). An answer it can't
+    /// give now is simply short; the requester asks again (@design-reviewer's Medium 2).
+    fn may_serve(&mut self, from: PeerId, want: usize, at: HostTime) -> usize {
+        let b = self.cfg.rate_budget(self.rate_hz);
+        let cap = b.burst as u64 * 1000;
+        let rate = (b.per_s * 1000.0).round() as u128;
+        let (tokens, last) = self.serve_budget.get(&from).copied().unwrap_or((cap, at));
+        let dt = at.0.saturating_sub(last.0).max(0) as u128;
+        let tokens = (tokens as u128 + rate * dt / 1_000_000_000).min(cap as u128) as u64;
+        let n = ((tokens / 1000) as usize).min(want);
+        self.serve_budget.insert(from, (tokens - n as u64 * 1000, at.max(last)));
+        n
+    }
+
+    /// Insert an entry that passed every check and the budget.
+    fn insert_checked(&mut self, e: SignedEntry, from: PeerId, at: HostTime) -> Result<bool, Fault> {
+        let id = e.id();
+        let author = e.entry.author;
+        let key = ChainKey::of(&e);
+        let prev = e.entry.prev;
+        let e_seq = e.entry.seq;
+        let solicited = self.wanted.contains_key(&id);
+        let hinted_by = self.hinted.get(&id).map(|h| h.1);
+        let hinted = hinted_by.is_some();
+        let unchecked = AcceptAll;
+        let skip_sig = self.core.mutated(Mutation::NoSignatureCheck);
         let inserted = {
             let verifier: &dyn Verifier = if skip_sig { &unchecked } else { self.verifier.as_ref() };
             self.log.insert(e, verifier)
@@ -451,6 +800,7 @@ impl Node {
                     }
                 }
                 self.by_ref.insert(id, key);
+                self.by_seq.entry(key).or_default().entry(e_seq).or_insert(id);
                 self.inserted += 1;
                 self.arrived.entry(id).or_insert(at);
                 self.wanted.remove(&id);
@@ -480,7 +830,9 @@ impl Node {
     }
 
     /// Whether the author's budget admits one more entry; takes it if so.
-    fn within_budget(&mut self, author: MemberKey, solicited: bool, at: HostTime) -> bool {
+    /// `links`: the entry fills a hole (see [`Node::fills_hole`]). It is exempt from the pending cap, since it is what
+    /// lets the author's pending entries become final, but not from the tokens.
+    fn within_budget(&mut self, author: MemberKey, solicited: bool, links: bool, at: HostTime) -> bool {
         if self.core.mutated(Mutation::RateLimitRemoved) {
             return true;
         }
@@ -492,7 +844,7 @@ impl Node {
         let dt = at.0.saturating_sub(last.0).max(0) as u128;
         let tokens = (tokens as u128 + rate * dt / 1_000_000_000).min(cap as u128) as u64;
         let pending = self.pending_by_author.get(&author).copied().unwrap_or(0);
-        if !solicited && (tokens < 1000 || pending >= budget.pending) {
+        if !solicited && (tokens < 1000 || (pending >= budget.pending && !links)) {
             self.budget.insert(author, (tokens, at.max(last)));
             return false;
         }
@@ -727,7 +1079,7 @@ impl Node {
             }
             let f = first.expect("matched above");
             if let Some(v) = self.final_by_frame.remove(&f) {
-                self.final_bytes = self.final_bytes.saturating_sub(v.iter().map(|e| e.entry.payload.len() + 200).sum());
+                self.final_bytes = self.final_bytes.saturating_sub(v.iter().map(entry_bytes).sum());
             }
             self.view_by_frame.remove(&f);
         }
@@ -737,7 +1089,24 @@ impl Node {
             for f in stale {
                 self.view_by_frame.remove(&f);
             }
+            self.prune_by_seq();
         }
+    }
+
+    /// Drop the range index's rows for entries stamped below the kept frames (@design-reviewer's Low 2): no honest
+    /// member asks that far back by range (it would be late everywhere). Each chain's prefix only, so the index stays
+    /// a contiguous run of a chain's tail; the log itself is not pruned yet (spec 5).
+    fn prune_by_seq(&mut self) {
+        let to = self.kept_from;
+        for (key, m) in self.by_seq.iter_mut() {
+            while let Some((&seq, id)) = m.iter().next() {
+                if self.log.get(key, id).is_some_and(|e| e.entry.stamp >= to) {
+                    break;
+                }
+                m.remove(&seq);
+            }
+        }
+        self.by_seq.retain(|_, m| !m.is_empty());
     }
 
     // ---- the core's output ----
@@ -897,6 +1266,107 @@ impl Node {
         if missing.is_empty() { Ok(out) } else { Err(missing) }
     }
 
+    /// How many of this member's own entries are beyond the final cut (a diagnostic). It grows with the cut lag, so
+    /// pacing uses [`Node::backlog`] instead.
+    pub fn unfinal_own(&self) -> usize {
+        let Some((key, seq, _)) = self.my_head else { return 0 };
+        let i = self.final_heads.heads.binary_search_by(|h| h.chain.cmp(&key.chain)).ok();
+        let fin = i.map(|i| self.final_heads.heads[i]).filter(|h| h.author == key.author).map_or(0, |h| h.seq);
+        seq.saturating_sub(fin) as usize
+    }
+
+    /// The burst at the world's current rate: the backlog over which a driver stops making hand entries.
+    pub fn burst(&self) -> usize {
+        self.cfg.rate_budget(self.rate_hz).burst as usize
+    }
+
+    /// This member's unacknowledged backlog: its own entries beyond what a quorum holds, counting itself and, for each
+    /// other member, the head its latest verified vote names (at least the final cut's). Unlike
+    /// [`Node::unfinal_own`], it doesn't grow with the cut lag: peers name heads beyond the cut they vote on
+    /// (@design-reviewer's Medium 1). It grows when this member's entries stop reaching peers, which is what pacing is
+    /// for. With no votes at all (a view change), it counts from the final cut.
+    pub fn backlog(&self) -> usize {
+        let Some((key, _, _)) = self.my_head else { return 0 };
+        // Until a quorum's worth of peers have named this member's chain in a vote (the session's first cut lag)
+        // there is nothing to count against.
+        let need = self.core.quorum().saturating_sub(1);
+        if self.acked.len() < need {
+            return 0;
+        }
+        // Entries younger than the grace can't be named by a vote yet; counting them would pace on the vote cadence.
+        let grace = self.cfg.timing.cadence_ns + self.cfg.timing.min_timeout_ns;
+        let before = self.now.0.saturating_sub(grace);
+        let seq = self.own_times.iter().rev().find(|(t, _)| *t <= before).map_or(0, |(_, s)| *s);
+        let i = self.final_heads.heads.binary_search_by(|h| h.chain.cmp(&key.chain)).ok();
+        let fin = i.map(|i| self.final_heads.heads[i]).filter(|h| h.author == key.author).map_or(0, |h| h.seq);
+        let mut held: Vec<u64> = self
+            .cfg
+            .members
+            .iter()
+            .filter(|m| **m != self.me)
+            .map(|m| self.acked.get(m).copied().unwrap_or(0).max(fin))
+            .collect();
+        held.sort_unstable_by(|a, b| b.cmp(a));
+        // The quorum counts this member; the (q - 1)th highest of the others is held by a quorum.
+        let Some(&h) = need.checked_sub(1).and_then(|k| held.get(k)) else { return 0 };
+        seq.saturating_sub(h) as usize
+    }
+
+    /// Record when the own chain reached `seq`, keeping a little over the pacing grace of history.
+    fn note_own(&mut self, seq: u64) {
+        let now = self.now.0;
+        let keep = 2 * (self.cfg.timing.cadence_ns + self.cfg.timing.min_timeout_ns);
+        match self.own_times.back_mut() {
+            Some((t, s)) if *t == now => *s = seq,
+            _ => self.own_times.push_back((now, seq)),
+        }
+        while self.own_times.len() > 2 && self.own_times.get(1).is_some_and(|(t, _)| now.saturating_sub(*t) > keep) {
+            self.own_times.pop_front();
+        }
+    }
+
+    /// Whether the driver should make no new hand entries now: the unacknowledged backlog is over the burst, so more
+    /// would only be refused or void as late (coordinator, point 3). Edits are never held back.
+    pub fn backlogged(&self) -> bool {
+        self.backlog() > self.burst()
+    }
+
+    /// Entries held in the log, and entries waiting for their author's budget (diagnostics).
+    pub fn held_entries(&self) -> usize {
+        self.by_ref.len()
+    }
+
+    pub fn config(&self) -> &NodeConfig {
+        &self.cfg
+    }
+
+    /// This member's own chain and its head seq (diagnostics).
+    pub fn own_head(&self) -> Option<(ChainKey, u64)> {
+        self.my_head.map(|(k, s, _)| (k, s))
+    }
+
+    /// The live vote claim on a chain, if any (a test).
+    #[cfg(test)]
+    pub(crate) fn vote_claim(&self, key: &ChainKey) -> Option<u64> {
+        self.vote_high.get(key).map(|c| c.0)
+    }
+
+    /// Chains claimed by votes alone, live or given up (a test of their bound).
+    #[cfg(test)]
+    pub(crate) fn vote_claims(&self) -> (usize, usize) {
+        (self.vote_high.len(), self.vote_ignored.len())
+    }
+
+    /// As a verified vote from `voter` naming `seq` on `key` would (a test of a Byzantine voter's heads).
+    #[cfg(test)]
+    pub(crate) fn claim_for_test(&mut self, voter: MemberKey, key: ChainKey, seq: u64) {
+        self.claim_from_vote(voter, key, seq);
+    }
+
+    pub fn deferred_entries(&self) -> usize {
+        self.deferred.values().map(|q| q.entries.len()).sum()
+    }
+
     /// How many blocks from just above the final cut up to `cut`'s, if it descends from the final cut (a diagnostic:
     /// 1 is a cut on the final cut, 2 or more a pipeline).
     pub fn rooting_depth(&self, cut: &Cut) -> Option<usize> {
@@ -1013,6 +1483,12 @@ impl Agreement for Node {
         self.cfg.line
     }
 
+    /// pe-app paces hand entries on this (S3 v1.5). The provided default is `false`, so without this override pe-app
+    /// would never pace (gate item 3 for the first two-machine run).
+    fn backlogged(&self) -> bool {
+        Node::backlogged(self)
+    }
+
     fn submit(&mut self, entry: pe_seams::Entry) -> Result<SignedEntry, SubmitError> {
         if entry.author != self.me || entry.line != self.cfg.line {
             return Err(SubmitError::NotNext);
@@ -1034,6 +1510,7 @@ impl Agreement for Node {
             return Err(SubmitError::NotNext);
         }
         self.my_head = Some((key, e.entry.seq, id));
+        self.note_own(e.entry.seq);
         self.send_all(Lane::Action, &Wire::Entries(vec![e.clone()]), &[]);
         Ok(e)
     }
@@ -1056,7 +1533,16 @@ impl Agreement for Node {
                 match self.core.receive(from, m, at, self.verifier.as_ref()) {
                     Ok(()) => {
                         let (voter, heads) = heads;
+                        let mine = self.my_head.map(|(k, _, _)| k);
                         for h in heads {
+                            let key = ChainKey { author: h.author, chain: h.chain };
+                            if Some(key) == mine && voter != self.me {
+                                let a = self.acked.entry(voter).or_default();
+                                *a = (*a).max(h.seq);
+                            }
+                            if self.cfg.members.contains(&h.author) && h.author != self.me {
+                                self.claim_from_vote(voter, key, h.seq);
+                            }
                             if self.cfg.members.contains(&h.author) && !self.by_ref.contains_key(&h.entry) {
                                 self.hint(voter, h.author, h.entry);
                             }
@@ -1077,6 +1563,22 @@ impl Agreement for Node {
                 }
                 Ok(())
             }
+            Wire::FetchRange { author, chain, from_seq, count } => {
+                let key = ChainKey { author, chain };
+                let count = self.may_serve(from, count as usize, at);
+                let es: Vec<SignedEntry> = self
+                    .by_seq
+                    .get(&key)
+                    .map(|m| {
+                        m.range(from_seq..).take(count).filter_map(|(_, id)| self.log.get(&key, id).cloned()).collect()
+                    })
+                    .unwrap_or_default();
+                if !es.is_empty() {
+                    let b = Bytes::from(codec::encode(&Wire::Entries(es)));
+                    self.out.push(Outgoing { to: from, lane: Lane::Action, bytes: b });
+                }
+                Ok(())
+            }
             Wire::Entries(es) => {
                 let mut first_err = None;
                 for e in es {
@@ -1091,6 +1593,7 @@ impl Agreement for Node {
                         }
                     }
                 }
+                self.admit_deferred(at);
                 first_err.map_or(Ok(()), Err)
             }
         };
@@ -1102,6 +1605,8 @@ impl Agreement for Node {
         self.now = now;
         self.rate_hz = clock.rate_hz();
         self.present = clock.frame_at(now);
+        self.admit_deferred(now);
+        self.ask_ranges();
         self.core.tick(now, self.signer.as_ref());
         let lag = self.cut_lag_frames();
         if let (Some(lead), Some(present)) = (self.core.lead(), self.present) {

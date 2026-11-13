@@ -73,6 +73,8 @@ struct Sim {
     every_ms: Vec<i64>,
     events: Vec<Vec<AgreeEvent>>,
     submitted: Vec<Vec<EntryRef>>,
+    /// The frame each per-frame entry was submitted at (parallel to `submitted` for per-frame members).
+    submitted_at: Vec<Vec<Frame>>,
     /// Each vote's result, and that of a revote at once after it (S3 v1.3).
     vote_results: Vec<(VoteResult, VoteResult)>,
     /// (member, from ms, until ms): every message to or from it sent in that window is lost.
@@ -92,6 +94,8 @@ struct Sim {
     flooder: Option<usize>,
     /// Errors `receive` returned (only with a flooder).
     refused: usize,
+    /// A member that keeps making hand entries whatever its backlog (its transport flushes everything after a stall).
+    unpaced: Option<usize>,
     /// Per member: each cut handed out for roots, with what `entries_for_cut` answered for every frame from the
     /// member's final frame up to the cut's (the pipelined-void property, coordinator).
     rooted: Vec<Vec<Rooted>>,
@@ -102,6 +106,13 @@ struct Sim {
     held: Vec<(usize, usize, Lane, Bytes)>,
     /// Every message sent before this time (ns) is lost.
     blackout_until: i64,
+    /// Per member: frames its hand entries were paced (backlogged), and frames the old rule (entries beyond the final
+    /// cut over the burst) would have paced.
+    paced_frames: Vec<usize>,
+    old_rule_frames: Vec<usize>,
+    /// Count range refetches each member sends for this chain (decodes protocol messages; off by default).
+    count_ranges: Option<pe_seams::ChainId>,
+    range_asks: Vec<usize>,
 }
 
 impl Sim {
@@ -133,11 +144,16 @@ impl Sim {
             stall: None,
             flooder: None,
             refused: 0,
+            unpaced: None,
             rooted: vec![Vec::new(); n as usize],
             max_depth: 0,
             holding: None,
             held: Vec::new(),
             blackout_until: 0,
+            paced_frames: vec![0; n as usize],
+            old_rule_frames: vec![0; n as usize],
+            count_ranges: None,
+            range_asks: vec![0; n as usize],
             seq: 0,
             now: 0,
             rng: Rng(seed),
@@ -146,12 +162,19 @@ impl Sim {
             every_ms: vec![50; n as usize],
             events: vec![Vec::new(); n as usize],
             submitted: vec![Vec::new(); n as usize],
+            submitted_at: vec![Vec::new(); n as usize],
             keys,
         }
     }
 
     fn deliver_out(&mut self, i: usize, out: Vec<pe_seams::agree::Outgoing>) {
         for o in out {
+            if let Some(c) = self.count_ranges
+                && o.lane == Lane::Protocol
+                && matches!(crate::codec::decode(&o.bytes), Ok(crate::codec::Wire::FetchRange { chain, .. }) if chain == c)
+            {
+                self.range_asks[i] += 1;
+            }
             let j = (0..self.nodes.len()).find(|&j| self.keys.key(j) == o.to).unwrap();
             if let Some((k, a, b)) = self.partition
                 && (i == k || j == k)
@@ -202,11 +225,24 @@ impl Sim {
             let present = clock.frame_at(now).unwrap();
             if self.now > 0 && self.last_frame[i] != Some(present) {
                 self.last_frame[i] = Some(present);
+                // As pe-app does: no new hand entries while the unconfirmed backlog is over the burst (they would be
+                // void as late); edits always go (coordinator, point 3).
+                // A flooder ignores it.
+                // Through the seam, as pe-app reads it: a missing override would show here as never pacing.
+                let over = Agreement::backlogged(&self.nodes[i]);
+                if over {
+                    self.paced_frames[i] += 1;
+                }
+                if self.nodes[i].unfinal_own() > self.nodes[i].burst() {
+                    self.old_rule_frames[i] += 1;
+                }
+                let hands = if over && self.flooder != Some(i) && self.unpaced != Some(i) { 0 } else { hands };
                 for k in 0..hands + edits {
                     let class = if k < hands { Class::Input } else { Class::Edit };
                     let e = self.builders[i].next_unsigned(class, present, Bytes::from(vec![i as u8; 24]));
                     let s = self.nodes[i].submit(e).expect("own per-frame entry refused");
                     self.submitted[i].push(s.id());
+                    self.submitted_at[i].push(present);
                 }
             }
         } else if self.every_ms[i] > 0 && self.now > 0 && (self.now / MS) % self.every_ms[i] == 0 {
@@ -507,31 +543,31 @@ fn a_flooding_author_is_held_to_its_budget() {
     let (burst, cap) = (budget.burst as usize, budget.pending);
     let mut node = Node::new(cfg, Box::new(keys.signer(0)), Box::new(keys.clone()), HostTime(0));
     let mut b = EntryBuilder::new(&keys, 1);
-    // 1000 entries in one instant: the burst passes, the rest are refused as over the rate.
+    // 2000 entries in one instant: the burst is held, as many as the pending cap wait for the budget, and only the
+    // rest are refused, as over the budget and its queue (coordinator: delay, never lose, up to a cap).
     let mut ok = 0;
-    for i in 0..1000u64 {
+    for i in 0..2000u64 {
         let e = b.next(Class::Input, Frame(i / 4), Bytes::from_static(b"x"));
         if node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), HostTime(0)).is_ok() {
             ok += 1;
         }
     }
-    assert_eq!(ok, burst);
+    assert_eq!(node.held_entries(), burst);
+    assert_eq!(node.deferred_entries(), cap);
+    assert_eq!(ok, burst + cap);
     let refused = node
         .events()
         .iter()
         .filter(|e| matches!(e, AgreeEvent::Refused { kind: pe_seams::FaultKind::RateExceeded, .. }))
         .count();
-    assert_eq!(refused, 1000 - burst);
-    // Over time the rate refills, but never past the cap on entries held beyond the final cut (none is final here).
-    let mut held = ok;
-    for i in 0..20_000i64 {
-        let e = b.next(Class::Input, Frame(250 + i as u64), Bytes::from_static(b"x"));
-        let at = HostTime(i * 10 * MS);
-        if node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), at).is_ok() {
-            held += 1;
-        }
+    assert_eq!(refused, 2000 - burst - cap);
+    // Over time the rate admits the waiting entries, but never past the cap on entries held beyond the final cut
+    // (none is final here).
+    for i in 1..=200i64 {
+        let e = b.next(Class::Input, Frame(600 + i as u64), Bytes::from_static(b"x"));
+        let _ = node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), HostTime(i * 100 * MS));
     }
-    assert_eq!(held, cap);
+    assert_eq!(node.held_entries(), cap);
 }
 
 #[test]
@@ -665,7 +701,9 @@ fn vote_heads_are_hints_bounded_budgeted_and_expiring() {
             node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e.clone()])), HostTime(0)).is_ok()
         })
         .count();
-    assert_eq!(ok, burst, "hinted entries pass the author's budget like any other");
+    assert_eq!(ok, 300, "over the budget, hinted entries wait rather than fail");
+    assert_eq!(node.held_entries(), burst, "hinted entries pass the author's budget like any other");
+    assert_eq!(node.deferred_entries(), 300 - burst);
     // Made-up heads nobody answers: dropped after the hint's lifetime.
     let fake = (0..1000u64)
         .map(|i| pe_seams::agree::ChainHead {
@@ -824,6 +862,7 @@ fn the_consensus_hash_covers_exactly_the_must_match_settings() {
         ("min_rate_per_s", Box::new(|c| c.min_rate_per_s = 151)),
         ("min_burst", Box::new(|c| c.min_burst = 61)),
         ("min_pending", Box::new(|c| c.min_pending = 601)),
+        ("defer_bytes", Box::new(|c| c.defer_bytes += 1)),
         ("cadence", Box::new(|c| c.timing.cadence_ns += 1)),
         ("min timeout", Box::new(|c| c.timing.min_timeout_ns += 1)),
         ("max timeout", Box::new(|c| c.timing.max_timeout_ns += 1)),
@@ -905,14 +944,18 @@ fn a_flooder_at_twice_the_budget_is_held_to_it() {
     let _ = node.tick(HostTime(0), &clock);
     let sent_per_s = 2 * budget.per_s as i64;
     let mut b = EntryBuilder::new(&keys, 1);
-    let mut accepted = Vec::new();
+    let mut first_s = 0;
     for i in 0..3 * sent_per_s {
         let at = HostTime(i * SEC / sent_per_s);
         let e = b.next(Class::Input, clock.frame_at(at).unwrap(), Bytes::from_static(b"x"));
-        accepted.push(node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), at).is_ok());
+        let _ = node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), at);
+        if i + 1 == sent_per_s {
+            first_s = node.held_entries() as i64;
+        }
     }
-    let first_s = accepted[..sent_per_s as usize].iter().filter(|a| **a).count() as i64;
-    let total = accepted.iter().filter(|a| **a).count() as i64;
+    // Held: the burst and then the rate; the rest waits (and would be refused once its queue is full).
+    let total = node.held_entries() as i64;
+    assert_eq!(node.deferred_entries() as i64, 3 * sent_per_s - total);
     let (burst, rate) = (budget.burst as i64, budget.per_s as i64);
     assert!((first_s - (burst + rate)).abs() <= 2, "first second: {first_s} passed, want {}", burst + rate);
     assert!((total - (burst + 3 * rate)).abs() <= 2, "three seconds: {total} passed, want {}", burst + 3 * rate);
@@ -955,7 +998,9 @@ fn a_flooding_member_cannot_starve_two_hands_per_frame() {
         final_ids.extend(s.nodes[0].entries_at(Frame(f)).unwrap().iter().map(|e| e.id()));
     }
     for i in 0..3 {
-        let honest = &s.submitted[i][..(2 * rate * 8) as usize];
+        let first_8s = |(_, f): &(&EntryRef, &Frame)| f.0 < 8 * rate as u64;
+        let honest: Vec<EntryRef> =
+            s.submitted[i].iter().zip(&s.submitted_at[i]).filter(first_8s).map(|(id, _)| *id).collect();
         let missing = honest.iter().filter(|id| !final_ids.contains(id)).count();
         assert_eq!(missing, 0, "member {i}: {missing} honest entries not final");
         assert!(s.voids(0).iter().all(|v| !honest.contains(&v.0)));
@@ -972,13 +1017,25 @@ fn a_flooding_member_cannot_starve_two_hands_per_frame() {
 /// Returns the sim, the refusals per member, and how long after the stall member 0's entries are all final again:
 /// the first whole second from which every entry it submitted (up to 2 s before the run's end) is final.
 fn stall_run(stall_ms: i64, run_ms: i64) -> (Sim, [usize; 4], Option<i64>) {
+    stall_run_seeded(stall_ms, run_ms, 31)
+}
+
+fn stall_run_seeded(stall_ms: i64, run_ms: i64, seed: u64) -> (Sim, [usize; 4], Option<i64>) {
+    stall_run_with(stall_ms, run_ms, seed, true)
+}
+
+fn stall_run_with(stall_ms: i64, run_ms: i64, seed: u64, paced: bool) -> (Sim, [usize; 4], Option<i64>) {
     let rate = 120;
-    let mut s = Sim::new(4, 31);
+    let mut s = Sim::new(4, seed);
+    if !paced {
+        // Overflow refusals are expected from an unpaced author's long stall: counted, not failed on.
+        s.unpaced = Some(0);
+        s.flooder = Some(0);
+    }
     s.clock = Clock(rate);
     s.per_frame = vec![Some((2, 0)); 4];
     let end = 3_000 + stall_ms;
     s.stall = Some((0, 3_000, end));
-    s.flooder = Some(0);
     s.run(run_ms);
     let k0 = s.keys.key(0);
     let mut refused = [0usize; 4];
@@ -1001,18 +1058,31 @@ fn stall_run(stall_ms: i64, run_ms: i64) -> (Sim, [usize; 4], Option<i64>) {
         final_ids.extend(s.nodes[1].entries_at(Frame(f)).unwrap().iter().map(|e| e.id()));
     }
     // Submitted ids are in order, two per frame from frame 1.
-    let upto = (2 * rate as i64 * (run_ms - 2_000) / 1_000) as usize;
+    // Member 0's entries submitted in [from_ms, to_ms).
+    let between = |from_ms: i64, to_ms: i64| {
+        let (a, b) = (rate as i64 * from_ms / 1_000, rate as i64 * to_ms / 1_000);
+        s.submitted[0]
+            .iter()
+            .zip(&s.submitted_at[0])
+            .filter(move |(_, f)| (f.0 as i64) >= a && (f.0 as i64) < b)
+            .map(|(id, _)| *id)
+    };
     let recovered = (0..(run_ms - 2_000 - end) / 1_000).find(|n| {
-        let from = (2 * rate as i64 * (end + n * 1_000) / 1_000) as usize;
-        s.submitted[0][from..upto].iter().all(|id| final_ids.contains(id))
+        let mut window = between(end + n * 1_000, run_ms - 2_000).peekable();
+        window.peek().is_some() && window.all(|id| final_ids.contains(&id))
     });
     let per_s: Vec<usize> = (0..run_ms / 1_000)
-        .map(|sec| {
-            let a = ((2 * rate as i64 * sec) as usize).min(s.submitted[0].len());
-            let b = ((2 * rate as i64 * (sec + 1)) as usize).min(s.submitted[0].len());
-            s.submitted[0][a..b].iter().filter(|id| final_ids.contains(id)).count()
-        })
+        .map(|sec| between(sec * 1_000, (sec + 1) * 1_000).filter(|id| final_ids.contains(id)).count())
         .collect();
+    // Never lost (@design-reviewer's Low 3): every peer's chain for member 0 links through every entry member 0 made
+    // up to 2 s before the end, void or not. That is chain completeness, which "lost" depends on.
+    let cutoff = rate as u64 * (run_ms as u64 - 2_000) / 1_000;
+    let made = s.submitted_at[0].iter().filter(|f| f.0 < cutoff).count() as u64;
+    let (key0, _) = s.nodes[0].own_head().expect("member 0 made entries");
+    for i in 1..4 {
+        let linked = s.nodes[i].linked_seq(&key0);
+        assert!(linked >= made, "member {i} links member 0's chain through {linked}, short of {made}: entries lost");
+    }
     let first_refusal = s.events[1].iter().position(|e| matches!(e, AgreeEvent::Refused { .. }));
     eprintln!("member 0 final per second {per_s:?}; final frame {low:?}; first refusal at event {first_refusal:?}");
     (s, refused, recovered)
@@ -1029,7 +1099,6 @@ fn a_stalled_uplink_flushing_a_second_of_hands_at_120_hz() {
 }
 
 #[test]
-#[ignore = "refusal holes never heal; fix: docket pe-agree-a-stall-longer-than-the-burst-must-not-c"]
 fn a_stalled_uplink_flushing_three_seconds_of_hands_at_120_hz() {
     // @design-reviewer's Low 1: VR Wi-Fi stalls for 2-3 s. A 3 s stall flushes 720 entries into a
     // burst of 240; every peer refuses part of it and reports a RateExceeded fault against an honest member. The
@@ -1131,7 +1200,9 @@ fn rooted_cuts_match_through_pipelines_abandoned_cuts_and_orphans() {
         "checked {checked}, deepest pipeline {depth}, abandoned {abandoned} ({below} with an entry below), orphans {orphans}"
     );
     assert!(depth >= 2, "no pipeline two deep (deepest {depth})");
-    assert!(below >= 1, "no abandoned cut whose replacement includes an entry below its frame ({abandoned} abandoned)");
+    // The abandoned cut whose replacement includes an entry below its frame is forced by the scripted test
+    // (an_abandoned_cuts_replacement_applies_an_entry_below_its_frame); here it is only reported.
+    let _ = (abandoned, below);
     assert!(orphans >= 1, "no block reached a member before its parent");
 }
 
@@ -1197,4 +1268,163 @@ fn an_abandoned_cuts_replacement_applies_an_entry_below_its_frame() {
             below.len()
         );
     }
+}
+
+#[test]
+fn an_honest_member_is_final_again_soon_after_a_stall_of_1_3_or_10_s() {
+    // The coordinator's acceptance: the rate limiter may delay a valid entry but never lose one. An
+    // honest member whose uplink stalls 1 s, 3 s or 10 s at 120 Hz (two hands a frame) has its entries final again
+    // within a stated time of the stall's end, over several seeds, and a stall the queue absorbs reports no fault.
+    for stall in [1_000, 3_000, 10_000] {
+        for seed in [31, 32, 33] {
+            let (s, refused, recovered) = stall_run_seeded(stall, 3_000 + stall + 5_000, seed);
+            let faults: usize =
+                (0..4).map(|i| s.events[i].iter().filter(|e| matches!(e, AgreeEvent::Fault(_))).count()).sum();
+            eprintln!(
+                "stall {stall} ms seed {seed}: refused {refused:?}, faults {faults}, final again {recovered:?} s after"
+            );
+            assert!(recovered.is_some_and(|n| n <= 2), "stall {stall} ms seed {seed}: not final again within 2 s");
+            if stall <= 3_000 {
+                assert_eq!(faults, 0, "stall {stall} ms seed {seed}: faults for a stall the queue absorbs");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_unpaced_author_flushing_a_stall_is_delayed_never_lost() {
+    // What pe-agree adds by itself, for an author that doesn't stop making hand entries (or whose transport flushes
+    // everything after a stall): a 3 s stall's 720 entries wait in the queue rather than being refused, with no
+    // fault; a 10 s stall's 2,400 overflow the queue, the latest leave or are refused, and the range refetch brings
+    // them back, so the author's entries are final again, later.
+    let (s, refused, recovered) = stall_run_with(3_000, 3_000 + 3_000 + 5_000, 31, false);
+    let faults: usize = (0..4).map(|i| s.events[i].iter().filter(|e| matches!(e, AgreeEvent::Fault(_))).count()).sum();
+    eprintln!("unpaced 3 s: refused {refused:?}, faults {faults}, final again {recovered:?} s after");
+    assert_eq!(faults, 0, "a stall the queue absorbs reports no fault");
+    assert!(recovered.is_some_and(|n| n <= 2), "unpaced 3 s: not final again within 2 s");
+    let (_, refused, recovered) = stall_run_with(10_000, 3_000 + 10_000 + 14_000, 31, false);
+    eprintln!("unpaced 10 s: refused {refused:?}, final again {recovered:?} s after");
+    assert!(recovered.is_some_and(|n| n <= 11), "unpaced 10 s: not final again within 11 s");
+}
+
+// @design-reviewer's review of the stall fix.
+
+/// The give-up count, plus asks a healthy run makes anyway (a gap that outlasts the wait).
+const RANGE_GIVE_UP_FOR_TEST: usize = 5 + 5;
+
+#[test]
+fn pacing_never_holds_back_a_healthy_member_at_the_lag_cap() {
+    // Medium 1: three entries a frame at 120 Hz (the most the budget allows) with the cut lag pinned at its cap, no
+    // stall. Entries beyond the final cut run to about 400, over the burst of 244, so the old rule (unfinal_own >
+    // burst) paces a healthy member; the unacknowledged backlog must not.
+    for seed in [41, 42] {
+        let mut s = Sim::with(4, seed, |c| {
+            c.cut_lag_floor_s = c.cut_lag_cap_s;
+        });
+        s.clock = Clock(120);
+        s.per_frame = vec![Some((2, 1)); 4];
+        s.run(8_000);
+        s.assert_same_final_log();
+        eprintln!("seed {seed}: paced frames {:?}, old rule would pace {:?}", s.paced_frames, s.old_rule_frames);
+        assert!(s.old_rule_frames.iter().all(|n| *n > 0), "the old rule never tripped: the test doesn't bite");
+        assert_eq!(s.paced_frames, vec![0; 4], "a healthy member was paced");
+    }
+}
+
+#[test]
+fn a_member_repeating_range_refetches_gets_bounded_entries_back() {
+    // Medium 2 and its later Low 1: a member asking for 256 entries every millisecond, cycling over three authors'
+    // chains, gets back at most one author's burst plus its rate in all: about one author's stream, whatever it asks.
+    let mut s = Sim::new(4, 51);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 4];
+    s.run(4_000);
+    let asks: Vec<Vec<u8>> = (0..3)
+        .map(|i| {
+            let (key, _) = s.nodes[i].own_head().unwrap();
+            crate::codec::encode(&crate::codec::Wire::FetchRange {
+                author: key.author,
+                chain: key.chain,
+                from_seq: 1,
+                count: crate::codec::MAX_FETCH as u32,
+            })
+        })
+        .collect();
+    let k3 = s.keys.key(3);
+    let clock = s.clock;
+    let mut served = 0usize;
+    let secs = 2;
+    for ms in 0..secs * 1_000 {
+        let at = HostTime(s.now + ms * MS);
+        s.nodes[1].receive(k3, Lane::Protocol, &asks[ms as usize % 3], at).unwrap();
+        for o in s.nodes[1].tick(at, &clock) {
+            if o.to == k3
+                && let Ok(crate::codec::Wire::Entries(es)) = crate::codec::decode(&o.bytes)
+            {
+                served += es.len();
+            }
+        }
+    }
+    let b = s.nodes[1].config().rate_budget(120);
+    let bound = b.burst as usize + (b.per_s * secs as f64).ceil() as usize;
+    eprintln!("served {served} entries in {secs} s against a bound of {bound} (asked for {})", 256 * secs * 1_000);
+    assert!(served > 0, "nothing served");
+    assert!(served <= bound, "served {served} entries, over {bound}");
+}
+
+#[test]
+fn a_vote_claiming_a_seq_nobody_has_is_forgotten() {
+    // Low 1: a Byzantine voter's heads claim seq 2^60 on an honest chain, and seqs on fabricated chains. The claim is
+    // asked for a bounded number of times, then forgotten, and the same voter can't raise it again on that chain;
+    // fabricated chains are bounded per author. Member 0 stops making entries first: while its chain grows, a gap
+    // never lasts long enough to be asked for, so the claim costs nothing.
+    let mut s = Sim::new(4, 61);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 4];
+    s.run(2_000);
+    s.per_frame[0] = None;
+    s.every_ms[0] = 0;
+    let (key0, _) = s.nodes[0].own_head().unwrap();
+    let k3 = s.keys.key(3);
+    s.count_ranges = Some(key0.chain);
+    s.nodes[1].claim_for_test(k3, key0, 1 << 60);
+    assert_eq!(s.nodes[1].vote_claim(&key0), Some(1 << 60));
+    for c in 0..100u32 {
+        let mut h = Hasher::new("fake");
+        h.write_u64(c as u64);
+        let fake = pe_log::ChainKey { author: key0.author, chain: pe_seams::ChainId(h.finish()) };
+        s.nodes[1].claim_for_test(k3, fake, 1 << 40);
+    }
+    let (live, ignored) = s.nodes[1].vote_claims();
+    assert!(live + ignored <= 1 + 4, "claims not bounded: {live} live, {ignored} given up");
+    s.run(2_000 + 20_000);
+    // Re-raising after the give-up is ignored.
+    s.nodes[1].claim_for_test(k3, key0, 1 << 60);
+    let asks_then = s.range_asks[1];
+    s.run(2_000 + 25_000);
+    let (live, ignored) = s.nodes[1].vote_claims();
+    let later = s.range_asks[1] - asks_then;
+    eprintln!(
+        "range asks by member 1 on member 0's chain: {asks_then} in 20 s, then {later} in 5 s; claims {live} live, {ignored} given up"
+    );
+    assert!(s.nodes[1].vote_claim(&key0).is_none_or(|c| c < 1 << 60), "the claim nobody answers is still live");
+    assert!(asks_then <= 3 * RANGE_GIVE_UP_FOR_TEST, "asked {asks_then} times for a claim nobody answers");
+    assert!(later <= 3, "a given-up claim is asked again ({later} asks)");
+    s.assert_same_final_log();
+}
+
+#[test]
+fn backlogged_answers_through_the_agreement_trait() {
+    // pe-app reads `Agreement::backlogged()` through the seam. The provided default is `false`, so a missing or
+    // misspelled override in `impl Agreement for Node` would compile silently and only show as "never paces" on two
+    // machines (@design-reviewer). Member 0's uplink stalls from 1 s; 1.5 s in, its backlog is past
+    // the burst.
+    let mut s = Sim::new(4, 31);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 4];
+    s.stall = Some((0, 1_000, 3_000));
+    s.run(2_500);
+    assert!(s.nodes[0].backlogged(), "member 0 not backlogged 1.5 s into its stall: the test doesn't bite");
+    let a: &dyn Agreement = &s.nodes[0];
+    assert!(a.backlogged(), "Agreement::backlogged doesn't reach Node::backlogged");
 }
