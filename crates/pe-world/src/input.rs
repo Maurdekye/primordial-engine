@@ -42,12 +42,16 @@ pub enum Input {
     Grab { object: ObjectId, hand: Option<ObjectId> },
     /// Ends the author's claim on `object`; without one it changes nothing and notes `NoEffect`.
     Release { object: ObjectId },
+    /// Sets the author's own `hand`'s mode ([`hand_mode`](crate::components::hand_mode)); the mode it already has
+    /// changes nothing and notes `NoEffect`.
+    HandMode { hand: ObjectId, mode: u8 },
 }
 
 const TAG_HAND: u8 = 0;
 const TAG_PUSH: u8 = 1;
 const TAG_GRAB: u8 = 2;
 const TAG_RELEASE: u8 = 3;
+const TAG_HAND_MODE: u8 = 4;
 
 /// The fewest bytes one encoded pose takes: a `Pos` (three one-byte varints and three `f64`), a rotation, a grip and
 /// a flag.
@@ -101,6 +105,14 @@ impl R<'_> {
                 Input::Grab { object, hand }
             }
             TAG_RELEASE => Input::Release { object: self.id()? },
+            TAG_HAND_MODE => {
+                let hand = self.id()?;
+                let mode = self.u8()?;
+                if mode > crate::components::hand_mode::MAX {
+                    return None;
+                }
+                Input::HandMode { hand, mode }
+            }
             _ => return None,
         })
     }
@@ -153,6 +165,11 @@ impl Input {
             Input::Release { object } => {
                 w.u8(TAG_RELEASE);
                 w.id(*object);
+            }
+            Input::HandMode { hand, mode } => {
+                w.u8(TAG_HAND_MODE);
+                w.id(*hand);
+                w.u8(*mode);
             }
         }
         w.0
@@ -303,6 +320,7 @@ impl World {
                 Ok(())
             }
             Input::Push { object, impulse, at } => self.push(frame, e.author, object, impulse, at, &mut fp),
+            Input::HandMode { hand, mode } => self.set_hand_mode(e.author, hand, mode, &mut notes),
         };
         match r {
             Ok(()) => (Outcome::Applied { created: Vec::new(), overwrote: Vec::new(), notes, inverse: None }, fp),
@@ -380,6 +398,27 @@ impl World {
         }
         Arc::make_mut(&mut self.inputs).packs.insert(hand, Pack { stamp: now, poses, hold });
         fp.hands.push(hand);
+        Ok(())
+    }
+
+    /// The mode of `hand` (8.1), if it is a hand. pe-replica reads it each frame when it places hand bodies.
+    pub fn hand_mode(&self, hand: ObjectId) -> Option<u8> {
+        self.store.get::<Hand>(hand).map(|h| h.mode)
+    }
+
+    fn set_hand_mode(
+        &mut self,
+        author: MemberKey,
+        hand: ObjectId,
+        mode: u8,
+        notes: &mut Vec<Note>,
+    ) -> Result<(), Reason> {
+        let old = self.own_hand(author, hand)?;
+        if old.mode == mode {
+            notes.push(Note::NoEffect { op: 0 });
+            return Ok(());
+        }
+        self.store.insert(hand, Hand { mode, ..old }).map_err(|_| invalid())?;
         Ok(())
     }
 
