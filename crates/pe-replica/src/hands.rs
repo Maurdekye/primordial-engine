@@ -21,7 +21,9 @@
 //!   cap by `max_push_speed`).
 //! - **After the span, with no newer input:** if the input came as part of a stream (within its predecessor's span
 //!   plus [`COAST`]), the body coasts at its last velocity, at most [`COAST_SPEED`], until [`COAST`] after the span;
-//!   then it holds still. Only the frames in the hand's row decide, so a re-simulation repeats them (3.3, D52).
+//!   then it goes back to the hand's target by the same rule as within a span, and stays there, so it never parks
+//!   away from the hand everyone sees. Only the frames in the hand's row decide, so a re-simulation repeats them
+//!   (3.3, D52).
 
 use std::time::Duration;
 
@@ -104,26 +106,24 @@ fn drive(
     }
     let dt = 1.0 / rate.hz() as f32;
     let span_end = hand.stamp.0.saturating_add(u64::from(hand.span));
-    if frame.0 < span_end {
-        let now = physics.pose(hand.hand)?.position;
-        let distance = (0..3).map(|i| (target.position[i] - now[i]).powi(2)).sum::<f64>().sqrt();
-        return if distance > MAX_HAND_PUSH_SPEED * f64::from(dt) {
-            physics.set_state(hand.hand, target, [0.0; 3], [0.0; 3])
-        } else {
-            physics.set_target(hand.hand, target, dt, true)
-        };
-    }
     let coast = frames_ceil(COAST, rate.hz());
     let streamed = hand
         .previous
         .is_some_and(|(stamp, span)| hand.stamp.0 <= stamp.0.saturating_add(u64::from(span)).saturating_add(coast));
-    if streamed && frame.0 < span_end.saturating_add(coast) {
+    if frame.0 >= span_end && streamed && frame.0 < span_end.saturating_add(coast) {
         let (linear, angular) = physics.velocity(hand.hand)?;
         let speed = linear.iter().map(|v| v * v).sum::<f32>().sqrt();
         let scale = if speed > COAST_SPEED { COAST_SPEED / speed } else { 1.0 };
-        physics.set_velocity(hand.hand, linear.map(|v| v * scale), angular)
+        return physics.set_velocity(hand.hand, linear.map(|v| v * scale), angular);
+    }
+    // Within the span, or after it and any coast: to the target. After a coast that is back to where the world's
+    // hand is, so a body never parks away from the hand everyone sees (@design-reviewer's Low on 52575b48).
+    let now = physics.pose(hand.hand)?.position;
+    let distance = (0..3).map(|i| (target.position[i] - now[i]).powi(2)).sum::<f64>().sqrt();
+    if distance > MAX_HAND_PUSH_SPEED * f64::from(dt) {
+        physics.set_state(hand.hand, target, [0.0; 3], [0.0; 3])
     } else {
-        physics.set_velocity(hand.hand, [0.0; 3], [0.0; 3])
+        physics.set_target(hand.hand, target, dt, true)
     }
 }
 

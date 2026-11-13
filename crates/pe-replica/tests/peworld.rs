@@ -851,11 +851,12 @@ fn a_mode_flip_that_arrives_late_rolls_back_to_the_same_roots() {
     assert_eq!((a.faults(), c.faults()), (0, 0));
 }
 
-/// After its input's span, a hand that came as part of a stream coasts at its last velocity for 100 ms, then holds
-/// still (replica.md 3.3, D52): with single poses 5 cm a frame apart (3 m/s) ending at frame 4, its body moves on for
-/// six frames at 60 Hz and then stops.
+/// After its input's span, a hand that came as part of a stream coasts at its last velocity for 100 ms (replica.md
+/// 3.3, D52), then goes back to where the world's hand is and stays (@design-reviewer's Low on 52575b48): with single
+/// poses 5 cm a frame apart (3 m/s) ending at frame 4, its body moves on for six frames at 60 Hz, then is back at
+/// 0.10 m, so it never parks away from the hand everyone sees.
 #[test]
-fn a_streamed_hand_coasts_for_100_ms_after_its_span_then_holds() {
+fn a_streamed_hand_coasts_for_100_ms_after_its_span_then_goes_back_to_the_hand() {
     let keys = keys();
     let mut b = EntryBuilder::new(&keys, 0);
     let mut s = Source::default();
@@ -868,10 +869,12 @@ fn a_streamed_hand_coasts_for_100_ms_after_its_span_then_holds() {
         r.advance(Frame(f), &mut s);
         xs.push(r.physics().pose(oid(HAND)).expect("the hand's body").position[0]);
     }
-    // xs[k] is the body's x after frame 4 + k: it reached 0.10 at frame 4, coasts through frames 5 to 10, then holds.
+    // xs[k] is the body's x after frame 4 + k: it reached 0.10 at frame 4, coasts through frames 5 to 10 to 0.40, and is
+    // back at 0.10 after frame 11 (a 30 cm return in one frame is faster than a hand pushes, so it is placed).
     let step = |k: usize| xs[k + 1] - xs[k];
     assert!((0..5).all(|k| (step(k) - 0.05).abs() < 1e-3), "it coasts at 3 m/s: {xs:?}");
-    assert!((6..9).all(|k| step(k).abs() < 1e-9), "then it holds: {xs:?}");
+    assert!((xs[6] - 0.40).abs() < 1e-3, "six frames of coast: {xs:?}");
+    assert!((7..xs.len()).all(|k| (xs[k] - 0.10).abs() < 1e-6), "then it is back at the hand and stays: {xs:?}");
     // The body is the replica's own: it writes no pose and no `BodyState` row back to the world model, whose hand
     // stays where its last input put it, through the cuts at frames 8 and 16.
     assert!((at(&r, HAND)[0] - 0.10).abs() < 1e-6, "the world's hand stays at its input: {:?}", at(&r, HAND));
