@@ -250,6 +250,33 @@ pair: body and contact ids come from free-list pools [V `crates/box3d-fork/src/i
   objects "repeatedly diverging" in the counters and the bundle, and raises a `RepeatedDivergence` event that
   pe-app shows the user, plainly: "this machine computes <object> differently; it is being kept in step from the
   others". [I]
+- **A repair refused again and again stops the ladder** (@coordinator-opus item 5;
+  @fable-reviewer's point 4). The case: rung 2 fetches and checks the agreed state, and the replica still cannot
+  take it, for instance a joiner whose world config differs. Without a stop, every final cut starts the same
+  repair again and writes another bundle.
+  - **What counts:** a rung-2 failure with the agreed state in hand: the import refused (the patch stayed
+    incomplete), the cut's state no longer kept, the physics image not enough, finalize not agreeing after an
+    import that matched, or a rate mismatch. A failure for want of data does not count, and does not reset the
+    count either: every source silent or busy, no source at all, a repair overtaken. No inputs arrived, and a
+    network outage must not stop repair. A root split's repair is not counted; section 5's rules end it.
+  - **The key:** the rung, the failure's reason, and the differing leaves found, sorted (`Config` among them when
+    the world's config differs).
+  - **The stop:** after `N_stuck` counted failures in a row with one key, or `N_stuck_any` in a row with no cure
+    whatever the key (a failure whose key alternates, A, B, A, B, would otherwise never stop). A rate mismatch
+    stops at once: every honest source holds the same config, so no retry or other source can cure it
+    (@design-reviewer). Its key's leaves are `Config` alone, its whole cause: the other differing
+    leaves drift from probe to probe in a live world and must not make each probe a new key (@shader-reviewer).
+  - **On a stop:** one bundle, its `stuck` list naming each key (for `N_stuck_any`, every key seen since the last
+    cure), and one `RepairStuck { cut, rung, differing, why }` event (S3.8 v1.4), which pe-app shows the user as it
+    shows `RepeatedDivergence`. The config leaf is named first. Final cuts are still compared (`stuck_skipped`).
+  - **While stopped:** no rung runs, except one probe repair every `T_stuck_probe` [I: detecting "the key changed"
+    needs a repair attempt, and an attempt costs a fetch]. A probe that fails with the same key writes nothing new.
+    One that fails with a different key restarts the ladder, counting that key from one (not after an
+    `N_stuck_any` stop or a rate mismatch, which only a cure ends). A `Damaged` final cut waits for the probe too,
+    up to `T_stuck_probe`, like any other diverged cut.
+  - **A cure ends it:** a cure by any rung, or a final cut whose roots agree, clears both counts and the stop.
+  - **Unchanged:** the case above, where cures hold and the same objects diverge again, keeps curing. Nothing in M1
+    freezes or disconnects.
 - **M3 adds the higher rungs** (file 14, 4.3):
   - rung 3, reload the whole cell (or contact group) at the newest cut, behind a brief fade;
   - rung 4, rejoin from a cut, a visible reconnect;
@@ -331,7 +358,9 @@ Written on every repair past rung 1, and on every root split (file 14, 4.6).
   path to the root, so it imports into an empty replica;
 - every entry from `Cv` to `C`, with signatures;
 - the ids of the differing objects; their records under my root and under the quorum's;
-- the rung reached, the sources used, and the times taken.
+- the rung reached, the sources used, and the times taken;
+- for a ladder that stopped (4.3), each repeated failure named: the rung, the reason and the differing leaves
+  (`stuck`; the bundle format's version 2).
 
 **Rules:**
 - It is self-contained: `pe-diverge replay-bundle <file>` (an example binary of the crate) replays it on any
@@ -360,6 +389,8 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `source_faults` | Sources left for a fault: not holding the root, silent, or sending what fails its hash or proof | pe-diverge |
 | `busy_rotations` | Sources left after `N_busy` `Busy` answers in a row: over budget, not faulty | pe-diverge |
 | `repeated_divergence` | Objects marked repeatedly diverging | pe-diverge |
+| `repairs_stuck`, `stuck_skipped` | Times the ladder stopped (4.3); diverged final cuts compared while stopped, with no rung run | pe-diverge |
+| `overtaken_in_a_row` | A gauge: repairs toward a final cut overtaken by a newer one, in a row since the last cure or agreeing cut. It tells a world too big to fetch within `W_fg` (4.2) from one unlucky repair | pe-diverge |
 | `root_splits` | Root-split episodes (distinct split cuts, not `RootSplit` events), and how each ended | pe-diverge |
 | `bundles_written` | Bundles written | pe-diverge |
 | `corrections_per_min` | Drawn objects whose drawn pose had to blend or jump after a correction, per minute | pe-render (section 8) |
@@ -831,6 +862,9 @@ What pe-diverge needs from pe-agree, beyond the sketch:
 - From M2: the merge entry is an ordinary entry; `Merged` and (M3) `LineDiverged` events (renamed from the sketch's `Diverged`, which is pe-diverge's root-mismatch event; @harness-eng 3b8fa6c);
   `Unconfirmed(time)` and `QuorumLost`, as sketched.
 - A member's vote carries its last self-test result, or the guard's verdict is otherwise visible to all (5, step 2).
+- **`RepairStuck { cut, rung, differing, why }`** (S3.8 v1.4): pe-diverge raises it once per stop (4.3).
+- **`ImportError::RateMismatch { world, mine }`** (S2 v1.4): the import's config names another rate. pe-diverge
+  reports it and stops the ladder at once (4.3); it never adopts the world's rate.
 
 ### 11.3 S1, S4 and S5
 
@@ -852,7 +886,7 @@ impl Diverge {
     pub fn tick(&mut self, now: Frame, replica: &mut impl Replica) -> Vec<Outgoing>;  // Repair-lane messages
     pub fn counters(&self) -> &Counters;
     pub fn take_bundles(&mut self) -> Vec<FaultBundle>;   // pe-app writes them to disk
-    pub fn events(&mut self) -> Vec<DivergeEvent>;         // Repaired{rung}, RepeatedDivergence, RootSplitEnded
+    pub fn events(&mut self) -> Vec<DivergeEvent>;         // Repaired{rung}, RepeatedDivergence, RepairStuck, RootSplitEnded
 }
 pub fn merge(base: &Root, ours: &Line, theirs: &Line, rules: &Rules, replica: &mut impl Replica) -> Merged; // M2
 ```
@@ -873,6 +907,12 @@ network model with random schedules.
 3. **A computational fault:** B's replica perturbs one ball each step (a test-only mutation of the replica). Rung 2
    cures it each cut; after `N_recur_max` repeats within `T_recur`, `RepeatedDivergence` is raised; play never
    pauses.
+3a. **A repair refused again and again** (4.3): the replica refuses every import the same way. The ladder stops
+   after `N_stuck` (one stuck bundle naming `Config` first, one `RepairStuck`), fetches nothing until its probe, and
+   a probe failing the same way writes nothing new. A different failure restarts it, and a cure clears it. Keys
+   that alternate stop after `N_stuck_any`, the bundle naming both. A rate mismatch stops on the first refusal,
+   with no source rotated. Controls: an outage of every source (test 10) and test 3's computational fault never
+   stop the ladder.
 4. **Every kind of state** (R-H2): the same as 2 for a field, a governance record and a claim.
 4a. **A bound body:** rung 2 cures it by restoring the physics image (4.2a), with `repair_bytes` about one image.
 5. **A lying source:** a peer serves a wrong record. It is rejected by hash; the next source cures it; no wrong
@@ -931,6 +971,7 @@ mid-session never moves a bound that is already running [design-reviewer].
 | `B_serve`, `R_serve` | Serving budget per peer: burst and refill | 8 MiB; 4 MiB/s |
 | `N_busy`, `T_busy` | `Busy` answers in a row before a source is rotated; longest wait one can ask for | 4; 1 s |
 | `T_recur`, `N_recur_max` | Time within which a repeat counts; repeats before the event | 1.5 s; 3 |
+| `N_stuck`, `N_stuck_any`, `T_stuck_probe` | Refused repairs in a row before the ladder stops: with one key; with any key and no cure. The probe interval while stopped (4.3) | 3; 10; 30 s |
 | `B_keep`, `B_bytes` | Bundles kept on disk | 50; 500 MB |
 | `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |
 | `E_small`, `E_snap` | Error thresholds | 5 cm or 10°; 1 m or 90° |

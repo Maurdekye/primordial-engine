@@ -9,7 +9,8 @@ use pe_seams::{CutRef, Frame, Hash, LeafKey, LineId, MemberKey, Record};
 
 use crate::msg::{DecodeError, EncodeError, Reader, put_bytes, put_cut, put_key, put_record};
 
-pub const BUNDLE_VERSION: u8 = 1;
+/// 2: `stuck` (4.3).
+pub const BUNDLE_VERSION: u8 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FaultBundle {
@@ -35,6 +36,9 @@ pub struct FaultBundle {
     /// added by the embedding.
     pub state_at_cv: Bytes,
     pub entries: Vec<Bytes>,
+    /// Empty, unless the ladder stopped (4.3): then each repeated failure, named (the rung, the reason and the
+    /// differing leaves), one per key seen.
+    pub stuck: Vec<String>,
 }
 
 impl Default for FaultBundle {
@@ -54,18 +58,21 @@ impl Default for FaultBundle {
             nanos_taken: 0,
             state_at_cv: Bytes::new(),
             entries: Vec::new(),
+            stuck: Vec::new(),
         }
     }
 }
 
 impl FaultBundle {
     /// A file name for the bundle: the line, the cut's height and frame, and the rung (0 for a root split), so a
-    /// split's bundle and a repair's at one cut never share a name (@shader-reviewer, L5).
+    /// split's bundle and a repair's at one cut never share a name (@shader-reviewer, L5); a stopped ladder's ends in
+    /// `-stuck`.
     pub fn name(&self) -> String {
         let l = &self.cut.line.0.0;
+        let stuck = if self.stuck.is_empty() { "" } else { "-stuck" };
         format!(
-            "fault-{:02x}{:02x}{:02x}{:02x}-{}-{}-r{}.pefault",
-            l[0], l[1], l[2], l[3], self.cut.height, self.cut.frame.0, self.rung
+            "fault-{:02x}{:02x}{:02x}{:02x}-{}-{}-r{}{}.pefault",
+            l[0], l[1], l[2], l[3], self.cut.height, self.cut.frame.0, self.rung, stuck
         )
     }
 
@@ -102,6 +109,10 @@ impl FaultBundle {
         for e in &self.entries {
             put_bytes(&mut w, e);
         }
+        w.extend_from_slice(&(self.stuck.len() as u32).to_le_bytes());
+        for s in &self.stuck {
+            put_bytes(&mut w, s.as_bytes());
+        }
         Ok(Bytes::from(w))
     }
 
@@ -120,7 +131,7 @@ impl FaultBundle {
         let agreed_root = r.hash()?;
         let my_root = r.hash()?;
         let voters = get_keys(&mut r)?;
-        let n = bounded(&mut r, 2)?;
+        let n = bounded(&mut r, 1)?; // the smallest key, `Config`, is one byte
         let mut differing = Vec::with_capacity(n);
         for _ in 0..n {
             differing.push(r.key()?);
@@ -142,6 +153,11 @@ impl FaultBundle {
         for _ in 0..n {
             entries.push(r.bytes(usize::MAX)?);
         }
+        let n = bounded(&mut r, 4)?;
+        let mut stuck = Vec::with_capacity(n);
+        for _ in 0..n {
+            stuck.push(String::from_utf8(r.bytes(usize::MAX)?.to_vec()).map_err(|_| DecodeError::Tag)?);
+        }
         if !r.b.is_empty() {
             return Err(DecodeError::Trailing);
         }
@@ -160,6 +176,7 @@ impl FaultBundle {
             nanos_taken,
             state_at_cv,
             entries,
+            stuck,
         })
     }
 }
@@ -217,6 +234,7 @@ mod tests {
             nanos_taken: 3,
             state_at_cv: Bytes::from_static(&[7; 10]),
             entries: vec![Bytes::from_static(&[8; 3])],
+            stuck: Vec::new(),
         };
         let e = b.encode().unwrap();
         assert_eq!(FaultBundle::decode(&e), Ok(b.clone()));
@@ -224,5 +242,17 @@ mod tests {
             let _ = FaultBundle::decode(&e[..n]);
         }
         assert_eq!(b.name(), "fault-01010101-2-16-r2.pefault");
+        // A stopped ladder's bundle (4.3): only `Config` differs, a one-byte key.
+        let s = FaultBundle {
+            differing: vec![LeafKey::Config],
+            stuck: vec!["rung 2: the patch stayed incomplete; differing: Config".into()],
+            ..b
+        };
+        let e = s.encode().unwrap();
+        assert_eq!(FaultBundle::decode(&e), Ok(s.clone()));
+        for n in 0..e.len() {
+            let _ = FaultBundle::decode(&e[..n]);
+        }
+        assert_eq!(s.name(), "fault-01010101-2-16-r2-stuck.pefault");
     }
 }

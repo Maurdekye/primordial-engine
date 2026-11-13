@@ -354,6 +354,8 @@ pub struct Mock {
     /// S3's `kept_from`: a replay from a `Cv` below it is `NotKept`.
     pub kept_from: u64,
     pub finalize_calls: u64,
+    /// Every import is refused with this, after it is recorded (a replica that cannot take the agreed state, 4.3).
+    pub refuse: Option<ImportError>,
 }
 
 impl Mock {
@@ -376,6 +378,7 @@ impl Mock {
             damaged_from: None,
             kept_from: 0,
             finalize_calls: 0,
+            refuse: None,
         };
         m.put(St::new(objects, sleepers));
         m
@@ -603,6 +606,9 @@ impl Replica for Mock {
             return Ok(target);
         }
         self.imports.push(import.clone());
+        if let Some(e) = &self.refuse {
+            return Err(e.clone());
+        }
         let f = at.frame.0;
         if f > self.now {
             return Err(ImportError::NotKept);
