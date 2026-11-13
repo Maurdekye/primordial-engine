@@ -5,7 +5,9 @@ mod common;
 use common::{Lie, Net, key, obj, oid, spread};
 use pe_diverge::msg::Msg;
 use pe_diverge::{Action, Config};
-use pe_seams::{CutRef, DivergeEvent, Frame, LeafKey, LineId, MemberKey, ObjectId, Replica};
+use pe_seams::{
+    CutRef, DivergeEvent, Frame, Hash, ImportError, LeafKey, LineId, MemberKey, ObjectId, Replica, Rung, SimRate,
+};
 use std::time::Duration;
 
 const VICTIM: usize = 2;
@@ -368,6 +370,8 @@ fn a_computational_fault_is_kept_in_step_and_reported() {
     assert!(c.repeated_divergence >= 1, "{c:?}");
     assert!(p.events.iter().any(|e| matches!(e, DivergeEvent::RepeatedDivergence { .. })));
     assert_eq!(net.peers[0].d.counters().diverged, 0, "the honest members never diverge");
+    // Control for 4.3's stop: every cure holds for a cut, so nothing failed again and again.
+    assert_eq!(c.repairs_stuck, 0, "{c:?}");
 }
 
 #[test]
@@ -571,6 +575,7 @@ fn a_repair_overtaken_past_w_fg_restarts_at_the_newest_cut_and_cv_never_goes_bac
     net.peers[VICTIM].r.pending_frames = 130;
     damage_cv(&mut net, &[5]);
     let (mut last, mut last_r) = (net.peers[VICTIM].d.verified_cut().map(|c| c.0), net.peers[VICTIM].r.cv);
+    let mut in_a_row = 0;
     for i in 0..400 {
         if i == 300 {
             net.peers[VICTIM].r.pending_frames = 0;
@@ -580,6 +585,7 @@ fn a_repair_overtaken_past_w_fg_restarts_at_the_newest_cut_and_cv_never_goes_bac
         let v = p.d.verified_cut().map(|c| c.0);
         assert!(v >= last && p.r.cv >= last_r, "Cv moved backwards");
         (last, last_r) = (v, p.r.cv);
+        in_a_row = in_a_row.max(p.d.counters().overtaken_in_a_row);
     }
     let p = &net.peers[VICTIM];
     let overtaken = p
@@ -588,6 +594,8 @@ fn a_repair_overtaken_past_w_fg_restarts_at_the_newest_cut_and_cv_never_goes_bac
         .filter(|e| matches!(e, DivergeEvent::RungFailed { why, .. } if why.contains("overtaken")))
         .count();
     assert!(overtaken >= 2, "{overtaken}");
+    assert!(in_a_row >= 2, "overtakes counted in a row: {in_a_row}");
+    assert_eq!(p.d.counters().overtaken_in_a_row, 0, "the cure cleared the gauge");
     assert_eq!(p.d.counters().cured_by_rung[1], 1, "{:?}", p.d.counters());
     assert!(net.converged());
 }
@@ -646,7 +654,174 @@ fn no_final_frame_is_undone_and_play_never_pauses() {
     }
     let c = net.peers[VICTIM].d.counters();
     assert!(c.rung_failures >= 2, "the repairs were overtaken: {c:?}");
+    assert_eq!(c.repairs_stuck, 0, "an outage is not a repair refused again and again (4.3): {c:?}");
     assert!(net.converged());
     assert_eq!(net.peers[VICTIM].r.frame(), net.peers[0].r.frame());
     let _ = oid(1);
+}
+
+// ---- 4.3: a repair that keeps failing stops the ladder (coordinator m21ea2a0f11b2, m41efa3f06e8a) ---------------
+
+fn stuck_config() -> Config {
+    Config { t_stuck_probe: Duration::from_secs(2), ..Config::default() }
+}
+
+/// The stuck bundles the peer wrote, by their `stuck` lists.
+fn stuck_bundles(net: &Net, i: usize) -> Vec<Vec<String>> {
+    net.peers[i]
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::WriteBundle(b) if !b.stuck.is_empty() => Some(b.stuck.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Rung-2 failures the peer reported.
+fn rung2_failures(net: &Net, i: usize) -> usize {
+    net.peers[i].events.iter().filter(|e| matches!(e, DivergeEvent::RungFailed { rung: Rung(2), .. })).count()
+}
+
+fn run_until(net: &mut Net, frames: u64, done: impl Fn(&Net) -> bool) -> bool {
+    for _ in 0..frames {
+        net.step();
+        if done(net) {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn a_repair_refused_the_same_way_stops_the_ladder_and_names_the_mismatch() {
+    let mut net = Net::with_config(3, 40, &[], stuck_config());
+    damage_cv(&mut net, &[5]);
+    net.peers[VICTIM].r.refuse = Some(ImportError::RootMismatch { got: Hash::ZERO });
+    assert!(run_until(&mut net, 400, |n| n.peers[VICTIM].d.counters().repairs_stuck == 1));
+    assert_eq!(rung2_failures(&net, VICTIM), 3, "stopped after n_stuck failures with one key");
+    let b = stuck_bundles(&net, VICTIM);
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert_eq!(b[0].len(), 1, "one key: {b:?}");
+    assert!(b[0][0].starts_with("rung 2: the patch stayed incomplete; differing: "), "{b:?}");
+    assert!(
+        b[0][0].contains("differing: Config (the world's config differs), Object("),
+        "a whole refetch names the config leaf first: {b:?}"
+    );
+    // Stopped: cuts are compared, nothing is fetched, until the probe (2 s = 120 frames).
+    let imports = net.peers[VICTIM].r.imports.len();
+    net.run(60);
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert_eq!(net.peers[VICTIM].r.imports.len(), imports, "a stopped ladder fetched again before its probe");
+    assert!(c.stuck_skipped >= 3, "{c:?}");
+    // Probes run, fail the same way, and write nothing new.
+    net.run(400);
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert!(net.peers[VICTIM].r.imports.len() > imports, "no probe ran");
+    assert_eq!(c.repairs_stuck, 1, "{c:?}");
+    assert_eq!(stuck_bundles(&net, VICTIM).len(), 1);
+    // One RepairStuck event (S3.8 v1.4), with the typed differing leaves.
+    let stuck: Vec<&DivergeEvent> =
+        net.peers[VICTIM].events.iter().filter(|e| matches!(e, DivergeEvent::RepairStuck { .. })).collect();
+    assert_eq!(stuck.len(), 1, "{stuck:?}");
+    let DivergeEvent::RepairStuck { rung, differing, why, .. } = stuck[0] else { unreachable!() };
+    assert_eq!(*rung, Rung(2));
+    assert!(differing.contains(&LeafKey::Config) && differing.contains(&LeafKey::Object(oid(5))), "{differing:?}");
+    assert!(why.starts_with("rung 2: the patch stayed incomplete"), "{why}");
+}
+
+#[test]
+fn a_joiner_at_another_rate_is_stopped_and_the_rates_are_named() {
+    // S2 v1.4 RateMismatch (@coordinator-opus m21ea2a0f11b2 item 3): import refuses a world at another rate. No retry
+    // or other source can cure it, so the ladder stops on the first refusal (@design-reviewer m467dddd5ba66), names
+    // both rates and the config leaf, and never adopts the world's rate.
+    let mut net = Net::with_config(3, 40, &[], stuck_config());
+    damage_cv(&mut net, &[5]);
+    net.peers[VICTIM].r.refuse =
+        Some(ImportError::RateMismatch { world: SimRate::new(30).unwrap(), mine: SimRate::new(60).unwrap() });
+    assert!(run_until(&mut net, 400, |n| n.peers[VICTIM].d.counters().repairs_stuck == 1));
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert_eq!(rung2_failures(&net, VICTIM), 1, "stopped on the first refusal: {c:?}");
+    assert_eq!((c.source_faults, c.busy_rotations), (0, 0), "no source was spent on it: {c:?}");
+    let b = stuck_bundles(&net, VICTIM);
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert!(
+        b[0][0]
+            .starts_with("rung 2: the world runs at 30 Hz and this replica at 60 Hz; differing: Config (the world's"),
+        "{b:?}"
+    );
+    let stuck = net.peers[VICTIM].events.iter().filter(|e| matches!(e, DivergeEvent::RepairStuck { .. })).count();
+    assert_eq!(stuck, 1);
+    // In a live world the differing leaves drift from probe to probe. The key is `Config` alone, and only a cure
+    // ends this stop, so later probes stay quiet (@shader-reviewer, Low on 30a26079).
+    let cv = cv_frame(&net, VICTIM);
+    net.peers[VICTIM].r.corrupt(7, cv, false);
+    let before = rung2_failures(&net, VICTIM);
+    net.run(150); // 2.5 s of 60 Hz frames, past at least one 2 s probe
+    net.peers[VICTIM].r.corrupt(9, cv, false);
+    net.run(150);
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert!(rung2_failures(&net, VICTIM) > before, "the probes ran: {c:?}");
+    assert_eq!(c.repairs_stuck, 1, "{c:?}");
+    assert_eq!(stuck_bundles(&net, VICTIM).len(), 1);
+}
+
+#[test]
+fn a_changed_failure_restarts_the_ladder_and_a_cure_clears_the_stop() {
+    let mut net = Net::with_config(3, 40, &[], stuck_config());
+    damage_cv(&mut net, &[5]);
+    net.peers[VICTIM].r.refuse = Some(ImportError::RootMismatch { got: Hash::ZERO });
+    assert!(run_until(&mut net, 400, |n| n.peers[VICTIM].d.counters().repairs_stuck == 1));
+    // The next probe fails another way: the key changed, so the ladder runs at every cut again and stops anew.
+    net.peers[VICTIM].r.refuse = Some(ImportError::NotKept);
+    let before = rung2_failures(&net, VICTIM);
+    assert!(run_until(&mut net, 600, |n| n.peers[VICTIM].d.counters().repairs_stuck == 2));
+    assert_eq!(rung2_failures(&net, VICTIM) - before, 3, "the new key counted from one");
+    let b = stuck_bundles(&net, VICTIM);
+    assert!(b[1][0].starts_with("rung 2: the cut's state is no longer kept; differing: Object("), "{b:?}");
+    // The replica takes the state again: the next probe cures, and the stop is gone.
+    net.peers[VICTIM].r.refuse = None;
+    assert!(run_until(&mut net, 600, |n| n.peers[VICTIM].d.counters().cured_by_rung[1] >= 1));
+    net.run(80);
+    assert!(net.converged());
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert_eq!(c.repairs_stuck, 2, "{c:?}");
+}
+
+#[test]
+fn failures_whose_key_keeps_changing_stop_after_n_stuck_any() {
+    // Two failures take turns (A, B, A, B...): no key reaches n_stuck, so n_stuck_any (10) stops the ladder, and the
+    // bundle names both.
+    let mut net = Net::with_config(3, 40, &[], stuck_config());
+    damage_cv(&mut net, &[5]);
+    let mut done = false;
+    for _ in 0..2000 {
+        let refuse = if rung2_failures(&net, VICTIM).is_multiple_of(2) {
+            ImportError::RootMismatch { got: Hash::ZERO }
+        } else {
+            ImportError::NotKept
+        };
+        net.peers[VICTIM].r.refuse = Some(refuse);
+        net.step();
+        if net.peers[VICTIM].d.counters().repairs_stuck == 1 {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "{:?}", net.peers[VICTIM].d.counters());
+    assert_eq!(rung2_failures(&net, VICTIM), 10, "stopped after n_stuck_any failures with no cure");
+    let b = stuck_bundles(&net, VICTIM);
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert_eq!(b[0].len(), 2, "both keys named: {b:?}");
+    // Stopped by keys that kept changing: a probe failing either way does not restart it; only a cure would.
+    for _ in 0..600 {
+        let refuse = if rung2_failures(&net, VICTIM).is_multiple_of(2) {
+            ImportError::RootMismatch { got: Hash::ZERO }
+        } else {
+            ImportError::NotKept
+        };
+        net.peers[VICTIM].r.refuse = Some(refuse);
+        net.step();
+    }
+    assert_eq!(net.peers[VICTIM].d.counters().repairs_stuck, 1);
 }
