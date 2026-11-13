@@ -223,21 +223,29 @@ impl Sim {
 
     /// pe-api's ports over this simulation (app.md 3.1), from its replica's present world as the frame-0 snapshot, its
     /// agreement's line, its clock's rate and its local member; `wake` wakes the simulation thread when an edit is
-    /// queued. `None` unless the replica is a pe-world replica. Call before the first tick, then [`Sim::with_api`].
+    /// queued. `None` unless the replica is a pe-world replica and there is a local player (`with_local` first): an
+    /// edit goes on the member's chain, so a machine with no member has no edit port (@design-reviewer's Low on
+    /// slice 1). Call before the first tick, then [`Sim::with_api`].
     pub fn ports(&self, world_name: &str, wake: impl Fn() + Send + Sync + 'static) -> Option<crate::api::Ports> {
         let genesis = crate::api::snapshot_of(&*self.replica)?;
         let facts = crate::api::Facts {
             world_name: world_name.into(),
             line: self.agree.line(),
             rate: SimRate::new(self.clock.rate_hz())?,
-            me: self.local.as_ref().map(|l| l.chain.me()),
+            me: Some(self.local.as_ref()?.chain.me()),
         };
         Some(crate::api::Ports::new(genesis, facts, wake))
     }
 
     /// pe-api's ports (app.md 3.1): step 2 drains `ports.queue` one edit a frame, the change log follows the views and
     /// agreement's final cut, and the shared state `ApiWorld` reads follows the replica.
+    ///
+    /// # Panics
+    ///
+    /// Without a local player (`with_local` first): its queued edits could never be submitted, and their callers would
+    /// wait out pe-api's timeout with no reason given.
     pub fn with_api(mut self, ports: crate::api::Ports) -> Sim {
+        assert!(self.local.is_some(), "pe-api's edit port needs this machine's member: with_local first");
         self.api = Some(ApiLoop { ports, edit_frame: None, voided: Vec::new(), confirmed: None });
         self
     }
@@ -695,6 +703,20 @@ mod tests {
         assert_eq!(world.latest().all().len(), objects + 1, "the new object is in the newest snapshot");
         assert_eq!(world.edit(change.into()), Some(tx), "and its transaction in the index");
         assert_eq!((s.stats().edits, s.stats().edits_refused), (1, 0));
+    }
+
+    /// A machine with no member has no edit port: no ports, and `with_api` refuses to attach any (@design-reviewer's
+    /// Low on slice 1), so no queued edit can wait unanswered.
+    #[test]
+    #[should_panic(expected = "with_local first")]
+    fn a_machine_with_no_member_has_no_edit_port() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, _slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        assert!(s.ports("Pit", || {}).is_none(), "no ports without a local player");
+        let local = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])));
+        let ports = local.ports("Pit", || {}).expect("ports with one");
+        let (bare, _slot) = in_the_ball_pit(clock, Budget::new(RATE));
+        let _ = bare.with_api(ports);
     }
 
     /// While agreement reports this member backlogged (S3 v1.5), step 2 makes no hand inputs, and it makes them again
