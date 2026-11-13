@@ -12,6 +12,7 @@
 //! - [`sim`]: the runner over [`sim::NodeUnderTest`], and P2's offline replay.
 //! - [`lockstep`]: the lockstep mock behind S3's `Agreement`, unanimous on purpose so P8 bites.
 //! - [`seamnode`]: a node over the real seams (S3 + S2 + the drive loop), as the runner's `NodeUnderTest`.
+//! - [`s2replay`]: P2's offline replay through S2, for replicas with no key-value oracle (pe-world's).
 //! - [`ballpit`]: render.md 14 test 6's run: pe-replica members over the network, a ball-pit push, every member's views.
 //! - [`mock`]: `LockstepNode`, an old-style unanimous node that tests the harness until pe-agree exists.
 //! - [`randsched`]: random fault schedules, pure in their seed, and a shrinker for the failing ones.
@@ -31,6 +32,7 @@ pub mod pending;
 pub mod props;
 pub mod randsched;
 pub mod rng;
+pub mod s2replay;
 pub mod seamnode;
 pub mod sim;
 pub mod trace;

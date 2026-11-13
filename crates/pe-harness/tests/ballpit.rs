@@ -1,5 +1,5 @@
 //! render.md 14 test 6's run (src/ballpit.rs): pe-replica members over the network with a ball-pit push. A run keeps
-//! its properties, every member publishes views, the same (seed, delay) gives the same views, and once the pushes are
+//! its properties (P2 against a straight S2 replay of the final log among them), every member publishes views, the same (seed, delay) gives the same views, and once the pushes are
 //! final every member shows the same poses.
 
 use pe_harness::ballpit::{self, BallPit};
@@ -18,6 +18,9 @@ fn a_ball_pit_run_keeps_its_properties_and_every_member_shows_the_same_poses() {
     let r = ballpit::run(&cfg).expect("the run builds");
     let vs = r.violations();
     assert!(vs.is_empty(), "{vs:#?}");
+    // P2 compared real roots: the straight replay has one at every final frame (about one per 100 ms cut).
+    let replay = r.replay();
+    assert!(replay.len() >= 30, "the replay has {} roots", replay.len());
     for (n, views) in &r.views {
         assert!(views.len() > 100, "member {n} published {} views", views.len());
         assert!(views.windows(2).all(|w| w[0].0 <= w[1].0), "member {n}'s views in time order");
