@@ -21,8 +21,11 @@
 //! - **`end_frame(f)`:** `World::end_frame(f)`, which expires claims and push windows and writes each pending hand
 //!   pack's pose for `f + 1`, then the frame becomes `f + 1`.
 //!   `World::frame()` is the next frame to step, so a cut's root is taken when it equals the cut's frame.
-//! - **Until pe-world's hash tree (its slice C):** `root` is pe-world's stand-in root; `tree` gives that root and
-//!   the frame, with no nodes, records or object hashes; `import` answers `NotKept`; `empty` is a fresh world.
+//! - **The tree** (pe-world's slice C, world-model.md 6.2-6.6): `root` is the world root of pe-world's hash tree for
+//!   this domain, `tree` is pe-world's `WorldTree` of a saved world, and `import` is `World::import`, which checks
+//!   every record against the target root before anything applies and takes every setting from the config record.
+//!   The replica compares the patched root with the target, which covers absent leaves and a missing config record.
+//!   `empty` is a bare `World::new` with the engine registry and default settings, which a joiner imports into.
 //! - **Hands:** every `Hand` row, in id order. The target is the hand object's world transform, which its inputs
 //!   write (and `end_frame` writes a pending pack's next pose). The rest is the row's: `span` counts frames, and
 //!   `previous` is the input before, when there was one (@world-model, m419e8711ae50, mc69f033224d1). A hand whose
@@ -45,8 +48,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use pe_seams::{
-    Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LeafKey, LightKind, Mismatch, Node, ObjectClass,
-    ObjectId, Outcome, Pos, Record, SignedEntry, Tree, TreePath, Version, ViewFlags, ViewObject,
+    Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LightKind, ObjectClass, ObjectId, Outcome, Pos,
+    SignedEntry, Tree, Version, ViewFlags, ViewObject,
 };
 use pe_sim::transform::rotate;
 use pe_sim::{Component, SimStore, Transform, WorldTransform};
@@ -234,10 +237,14 @@ impl WorldModel for PeWorld {
             })
             .collect();
         self.world.write_physics(&rows, global);
+        // The last write before a cut's root (the replica's take_root): store the leaf hash of every object written
+        // since the last cut, so this root and later ones rehash only what changed (world-model.md 6.4;
+        // @chunks-reviewer's Low on 5e7effd2). Roots are the same either way.
+        self.world.refresh_tree_cache();
     }
 
     fn root(&self) -> Hash {
-        self.world.root()
+        self.world.root_hash(self.domain)
     }
 
     fn save(&self) -> World {
@@ -249,15 +256,15 @@ impl WorldModel for PeWorld {
     }
 
     fn tree<'a>(&'a self, saved: &'a World) -> Box<dyn Tree + 'a> {
-        Box::new(StandInTree(saved))
+        Box::new(saved.tree(self.domain))
     }
 
     fn empty(&self) -> World {
         World::new(0, self.world.blobs().clone())
     }
 
-    fn import(&self, _saved: &World, _import: &pe_seams::CutImport) -> Result<World, ImportError> {
-        Err(ImportError::NotKept)
+    fn import(&self, saved: &World, import: &pe_seams::CutImport) -> Result<World, ImportError> {
+        saved.import(self.domain, import)
     }
 }
 
@@ -309,30 +316,6 @@ fn view_light(l: &Light) -> Option<pe_seams::Light> {
         _ => return None,
     };
     Some(pe_seams::Light { kind, color: l.color, intensity: l.intensity, range: l.range })
-}
-
-/// The tree until pe-world's hash tree: the stand-in root and the frame only.
-struct StandInTree<'a>(&'a World);
-
-impl Tree for StandInTree<'_> {
-    fn root(&self) -> Hash {
-        self.0.root()
-    }
-    fn frame(&self) -> Frame {
-        self.0.frame()
-    }
-    fn node(&self, _path: &TreePath) -> Option<Node> {
-        None
-    }
-    fn export(&self, _keys: &[LeafKey]) -> Vec<Record> {
-        Vec::new()
-    }
-    fn object_hashes(&self, ids: &[ObjectId]) -> Vec<(ObjectId, Option<Hash>)> {
-        ids.iter().map(|&id| (id, None)).collect()
-    }
-    fn verify(&self) -> Result<(), Mismatch> {
-        Ok(())
-    }
 }
 
 // ---- bodies ---------------------------------------------------------------------------------------------------------
