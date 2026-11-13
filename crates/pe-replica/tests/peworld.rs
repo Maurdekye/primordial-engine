@@ -7,17 +7,17 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use pe_replica::mock::MockClock;
-use pe_replica::world::{BodyKind, Change, ShapeRow, WorldModel};
+use pe_replica::world::{BodyKind, Change, Phase, ShapeRow, WorldModel};
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
     Class, DomainId, EntrySource, FinalCut, Frame, FrameClock, Hash, HostTime, MemberKey, ObjectId, Offset, Outcome,
-    Pos, Replica, SignedEntry,
+    Pos, Reason, Replica, SignedEntry,
 };
 use pe_sim::Transform;
 use pe_world::components::{Appearance, Body, Hand, Name, Shape, body_kind, shape_kind};
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
-use pe_world::{BlobStore, GENESIS, World, perm};
+use pe_world::{BlobStore, GENESIS, HandPose, Input, World, perm};
 
 fn oid(n: u128) -> ObjectId {
     ObjectId::from_u128(n)
@@ -358,4 +358,108 @@ fn a_replay_that_moves_a_ball_marks_it_corrected() {
 
     r.advance(Frame(66), &mut s);
     assert_eq!(corrected(&r), Vec::<ObjectId>::new(), "a correction is marked once");
+}
+
+// ---- inputs (pe-world's slice B) ------------------------------------------------------------------------------------
+
+const HAND: u128 = 50;
+const BALL: u128 = 60;
+
+/// Genesis, with a hand of the editor's at (0, 1, 0) and a grabbable ball resting on the floor at x = 2.
+fn with_hand_and_ball() -> World {
+    let mut w = genesis();
+    let k = keys().key(0);
+    w.create(oid(HAND), None, k, GENESIS).expect("hand");
+    w.insert(oid(HAND), Transform::at(pos(0.0, 1.0, 0.0))).expect("hand transform");
+    w.insert(oid(HAND), Hand { owner: k, ..Hand::default() }).expect("hand row");
+    w.create(oid(BALL), None, k, GENESIS).expect("ball");
+    w.insert(oid(BALL), Transform::at(pos(2.0, 0.1, 0.0))).expect("ball transform");
+    w.insert(oid(BALL), dynamic()).expect("ball body");
+    w.insert(oid(BALL), sphere(0.1)).expect("ball shape");
+    w
+}
+
+fn replica_of(world: World) -> ReplicaImpl<PeWorld> {
+    let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
+    config.cut_every = K;
+    ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica")
+}
+
+fn input(b: &mut EntryBuilder, at: u64, i: &Input) -> SignedEntry {
+    b.next(Class::Input, Frame(at), Bytes::from(i.encode()))
+}
+
+/// A hand input with one pose per `x`, each at (x, 0.1, 0), held `hold` frames more.
+fn hand_to(xs: &[f64], hold: u8) -> Input {
+    let pose = |x| HandPose { pos: pos(x, 0.1, 0.0), rot: [0.0, 0.0, 0.0, 1.0], grip: 0.5, engaged: true };
+    Input::Hand { hand: oid(HAND), poses: xs.iter().map(|&x| pose(x)).collect(), hold }
+}
+
+/// A grab sent ahead of its author's hand input in the same frame applies after it (world-model.md 8.1): the hand
+/// input is phase `First`, so the grab's reach is measured from where the hand moved, and the grab holds. With the
+/// hand input a frame later, the same grab is out of reach.
+#[test]
+fn a_hand_input_applies_before_a_grab_sent_ahead_of_it() {
+    let grab = Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) };
+    let run = |hand_at: u64| {
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let g = input(&mut b, 3, &grab);
+        let h = input(&mut b, hand_at, &hand_to(&[2.0], 0));
+        assert_eq!((PeWorld::phase(&h), PeWorld::phase(&g)), (Phase::First, Phase::Second));
+        let mut s = Source::default();
+        s.add(g.clone());
+        s.add(h);
+        let mut r = replica_of(with_hand_and_ball());
+        r.advance(Frame(8), &mut s);
+        assert_eq!(r.faults(), 0);
+        (r.outcome(&g.id()).map(|o| o.1), r.world().claims())
+    };
+    let (outcome, claims) = run(3);
+    assert!(matches!(outcome, Some(Outcome::Applied { .. })), "{outcome:?}");
+    assert_eq!(claims.iter().map(|c| (c.object, c.hand)).collect::<Vec<_>>(), [(oid(BALL), oid(HAND))]);
+    let (outcome, claims) = run(4);
+    assert!(matches!(outcome, Some(Outcome::Refused { reason: Reason::OutOfReach, .. })), "{outcome:?}");
+    assert!(claims.is_empty());
+}
+
+/// An input's push becomes a physics push: the ball rolls along x, and without the push it stays where it was.
+#[test]
+fn an_input_s_push_moves_its_body() {
+    let run = |push: bool| {
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut s = Source::default();
+        if push {
+            s.add(input(&mut b, 3, &Input::Push { object: oid(BALL), impulse: [1.5, 0.0, 0.0], at: None }));
+        }
+        let mut r = replica_of(with_hand_and_ball());
+        r.advance(Frame(60), &mut s);
+        assert_eq!(r.faults(), 0);
+        (r.world().body(oid(BALL)).expect("the ball").pos - Pos::ORIGIN).0[0]
+    };
+    let (still, pushed) = (run(false), run(true));
+    assert!((still - 2.0).abs() < 1e-3, "{still}");
+    assert!(pushed > still + 0.1, "{pushed} against {still}");
+}
+
+/// `hands()` gives each hand at its target, the hand object's world transform, with its row's stamp, span (in
+/// frames), grip and engagement, and the input before it (@world-model).
+#[test]
+fn hands_follow_their_inputs() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut pw = PeWorld::new(with_hand_and_ball(), DomainId(0));
+    let h = pw.hands();
+    assert_eq!((h.len(), h[0].hand, h[0].span, h[0].previous), (1, oid(HAND), 0, None));
+    let first = input(&mut b, 3, &hand_to(&[1.0, 1.5], 2));
+    assert!(matches!(pw.apply(Frame(3), &first).0, Outcome::Applied { .. }));
+    let h = pw.hands()[0];
+    assert_eq!((h.owner, h.stamp, h.span, h.previous), (keys.key(0), Frame(3), 4, None));
+    assert_eq!((h.target, h.grip, h.engaged), (pos(1.0, 0.1, 0.0), 0.5, true));
+    let second = input(&mut b, 5, &hand_to(&[2.0], 0));
+    let (outcome, effects) = pw.apply(Frame(5), &second);
+    assert!(matches!(outcome, Outcome::Applied { .. }) && effects.is_empty(), "no body under the hand");
+    let h = pw.hands()[0];
+    assert_eq!((h.target, h.stamp, h.span, h.previous), (pos(2.0, 0.1, 0.0), Frame(5), 1, Some((Frame(3), 4))));
 }
