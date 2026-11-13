@@ -11,8 +11,12 @@ description = "Agreed cuts (seam S3): proposals, votes over the voter's own root
 [dependencies]
 pe-seams = { path = "../pe-seams" }
 pe-log = { path = "../pe-log" }
+bytes.workspace = true
 
 [features]
 # Planted defects for the harness's mutation tests (pe-harness DESIGN.md 6.1): inert unless a node's configuration
 # names one, and never in a production build (the gate checks pe-app's normal edges).
 mutants = []
+
+[dev-dependencies]
+pe-seams = { path = "../pe-seams", features = ["test-util"] }
