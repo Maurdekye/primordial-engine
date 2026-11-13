@@ -35,7 +35,7 @@
 //! - **A hold's spring is bounded** ([`reaches`], world-model.md 8.1): for each step it sees at most the error the
 //!   room under the cap leaves, `(max_push_speed - v_hold) / k`, so a held object kept from its place comes back no
 //!   faster than the cap, and one that lags a hand at the cap catches up when the hand slows; the part of the error
-//!   that holds the object up may always be [`HOLD_SUPPORT_MARGIN`] times the spring's sag. The bound moves the
+//!   that holds the object up keeps up to [`HOLD_SUPPORT_MARGIN`] times the spring's sag. The bound moves the
 //!   joint's anchor on the hand for the step only ([`PhysicsWorld::step_holding`]), so it is never in an image.
 //! - **After the span, with no newer input:** if the input came as part of a stream (within its predecessor's span
 //!   plus [`COAST`]), the body coasts at its last velocity, at most [`COAST_SPEED`], until [`COAST`] after the span;
@@ -102,7 +102,8 @@ pub const GRAB_TORQUE: f32 = 100.0;
 pub const OMEGA: f64 = 2.0 * std::f64::consts::PI * GRAB.hertz as f64;
 /// How many times its static sag a hold's spring may see of the error that holds its object up, whatever the hand's
 /// speed (world-model.md 8.1's `s_min`): 3, so the spring can lift twice the object's weight beyond holding it
-/// (@design-reviewer). Measured with it: a held ball stays 1.0 cm below its place while the hand
+/// (@design-reviewer). The sag is measured: 9.9 mm for a held pit ball at 9.81 m/s^2, at 30, 60 and
+/// 120 Hz, which is `g / OMEGA^2`. Measured with the margin: a held ball stays 1.0 cm below its place while the hand
 /// overruns the cap sideways for 2 s, and moves at most 0.24 m/s over the cap with the hand overrunning upwards.
 pub const HOLD_SUPPORT_MARGIN: f64 = 3.0;
 
@@ -158,9 +159,10 @@ pub fn sync<W: WorldModel + ?Sized>(
 /// sees, relative to the hand, so the error is bounded by the room the hand's own speed at the hold (`v_hold`, its
 /// turn included) leaves under [`MAX_HAND_PUSH_SPEED`]: `(max_push_speed - v_hold) / k`. A held object kept from its
 /// place (pinned by a wall) comes back no faster than the cap however far it was kept, and one that lags a hand moving
-/// at the cap catches up only once the hand slows. The part of the error that holds the object up against gravity may
-/// be at least [`HOLD_SUPPORT_MARGIN`] times the spring's static sag, `g / OMEGA^2`, so a held object never sags out
-/// of the hand; in a world without gravity that floor is 0. Every grab joint of `claims`, keyed once.
+/// at the cap catches up only once the hand slows. The upward part of the error, which holds the object up against
+/// gravity, keeps up to [`HOLD_SUPPORT_MARGIN`] times the spring's static sag `g / OMEGA^2` (its support), so a held
+/// object never sags out of the hand; in a world without gravity it has none. Every grab joint of `claims`, keyed
+/// once.
 pub fn reaches(physics: &PhysicsWorld, claims: &[ClaimRow], dt: f32, gravity: [f32; 3]) -> Vec<(JointKey, HoldReach)> {
     let per_metre = f64::from(physics.grab_spring_rate(GRAB, dt));
     let g = f64::from((gravity[0] * gravity[0] + gravity[1] * gravity[1] + gravity[2] * gravity[2]).sqrt());
@@ -176,7 +178,7 @@ pub fn reaches(physics: &PhysicsWorld, claims: &[ClaimRow], dt: f32, gravity: [f
             _ => 0.0,
         };
         let reach = (MAX_HAND_PUSH_SPEED - speed).max(0.0) / per_metre;
-        out.push((key, HoldReach { reach: reach as f32, against_gravity: reach.max(support) as f32 }));
+        out.push((key, HoldReach { reach: reach as f32, support: support as f32 }));
     }
     out
 }
