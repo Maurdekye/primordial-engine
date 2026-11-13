@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pe_diverge::{CvState, FaultBundle};
+use pe_replica::logic::LogicRunner;
 use pe_replica::mock::MockClock;
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::{
@@ -111,8 +112,12 @@ pub fn replay_with(b: &FaultBundle, max_frames: u64, blobs: BlobStore) -> Result
     let config = ReplicaConfig::new(rate, Duration::from_millis(133), Arc::new(clock));
     let mut world = World::new(0, blobs);
     world.set_rate(rate);
-    let mut replica =
-        ReplicaImpl::new(PeWorld::new(world, state.domain), config).map_err(|e| format!("no replica: {e:?}"))?;
+    // TODO(@diverge-eng, divergence.md 6): refuse a bundle whose runner identity isn't this runner's, and load the
+    // bundle's modules into it, once bundles carry them.
+    let runner = Box::new(LogicRunner::with_defaults().map_err(|e| format!("no script runner: {e}"))?);
+    let mut replica = ReplicaImpl::new(PeWorld::new(world, state.domain), config)
+        .map_err(|e| format!("no replica: {e:?}"))?
+        .with_runner(runner);
     let cv = state.cv.at.frame.0;
     let mut source = BundleSource { entries: BTreeMap::new(), kept_from: state.cv.at.frame };
     for e in &entries {

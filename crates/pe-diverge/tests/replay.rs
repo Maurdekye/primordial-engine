@@ -12,6 +12,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use pe_diverge::evidence::all_keys;
 use pe_diverge::{CvState, FaultBundle};
+use pe_replica::logic::LogicRunner;
 use pe_replica::mock::MockClock;
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
@@ -122,7 +123,8 @@ fn host(entries: &[SignedEntry]) -> (ReplicaImpl<PeWorld>, Source) {
 fn host_of(world: World, entries: &[SignedEntry]) -> (ReplicaImpl<PeWorld>, Source) {
     let rate = SimRate::DEFAULT;
     let config = ReplicaConfig::new(rate, Duration::from_millis(133), Arc::new(MockClock { rate, start: HostTime(0) }));
-    let mut r = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica");
+    let runner = Box::new(LogicRunner::with_defaults().expect("a runner"));
+    let mut r = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica").with_runner(runner);
     let mut s = Source::default();
     for e in entries {
         let at = s.entries.entry(e.entry.stamp).or_default();

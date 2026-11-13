@@ -78,6 +78,11 @@ impl LogicRunner {
         })
     }
 
+    /// A runner with pe-logic's default settings (`Settings::default()`, `RunSettings::default()`).
+    pub fn with_defaults() -> Result<LogicRunner, String> {
+        LogicRunner::new(Settings::default(), RunSettings::default())
+    }
+
     /// The native stack a thread that steps a replica with this runner needs (module doc).
     pub fn thread_stack(&self) -> usize {
         self.settings.thread_stack()
