@@ -73,12 +73,23 @@ pub struct NodeConfig {
     pub keep_bytes: usize,
     /// Relay each entry first received from its author once (the fast path).
     pub relay: bool,
-    /// The per-author rate budget (world settings): unsolicited entries per second and the burst, and the most
-    /// entries of one author held beyond the final cut. Entries this member asked for (a cut names them) always pass,
-    /// or it could never finalize that cut; they still count.
-    pub rate_per_s: u32,
-    pub rate_burst: u32,
-    pub pending_cap: usize,
+    /// The per-author rate budget (world settings; see [`NodeConfig::rate_budget`]): it follows the world's frame
+    /// rate, so an honest player's per-frame inputs pass at any rate. Entries this member asked for (a cut names them)
+    /// always pass, or it could never finalize that cut; they still count.
+    ///
+    /// Entries an author makes per frame: two hands plus one for poses and other per-frame inputs.
+    pub entries_per_frame: u32,
+    /// Entries per second on top of the per-frame ones, for edits and governance.
+    pub extra_per_s: u32,
+    /// Headroom on the per-frame entries, for jitter and bursts.
+    pub budget_slack: f64,
+    /// The burst, and the most entries of one author held beyond the final cut, as seconds of the rate.
+    pub burst_s: f64,
+    pub pending_s: f64,
+    /// Floors on the rate (per second), the burst and the pending cap, whatever the frame rate.
+    pub min_rate_per_s: u32,
+    pub min_burst: u32,
+    pub min_pending: usize,
     /// A planted defect for the harness's mutation tests (feature `mutants` only).
     #[cfg(feature = "mutants")]
     pub mutation: Option<core::Mutation>,
@@ -100,11 +111,43 @@ impl NodeConfig {
             keep_s: 60.0 + 10.0,
             keep_bytes: 64 << 20,
             relay: true,
-            rate_per_s: 150,
-            rate_burst: 60,
-            pending_cap: 600,
+            entries_per_frame: 3,
+            extra_per_s: 30,
+            budget_slack: 1.25,
+            burst_s: 0.5,
+            pending_s: 4.0,
+            min_rate_per_s: 150,
+            min_burst: 60,
+            min_pending: 600,
             #[cfg(feature = "mutants")]
             mutation: None,
+        }
+    }
+}
+
+/// The per-author rate budget at one frame rate (see [`NodeConfig::rate_budget`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RateBudget {
+    /// Entries per second.
+    pub per_s: f64,
+    /// Entries an author may send at once.
+    pub burst: u32,
+    /// The most entries of one author held beyond the final cut.
+    pub pending: usize,
+}
+
+impl NodeConfig {
+    /// The budget at the world's frame rate: `entries_per_frame × rate_hz × budget_slack + extra_per_s` entries per
+    /// second, a burst of `burst_s` of that and a pending cap of `pending_s`, each at least its floor. With the
+    /// defaults: 255/s, 127 and 1,020 at 60 Hz; 480/s, 240 and 1,920 at 120 Hz; at 30 Hz the rate's floor applies: 150/s, a burst of 75 and 600 pending.
+    /// Every member must use the same settings, or some would refuse an honest member's entries.
+    pub fn rate_budget(&self, rate_hz: u32) -> RateBudget {
+        let per_frame = self.entries_per_frame as f64 * rate_hz as f64 * self.budget_slack;
+        let per_s = (per_frame + self.extra_per_s as f64).max(self.min_rate_per_s as f64);
+        RateBudget {
+            per_s,
+            burst: ((per_s * self.burst_s) as u32).max(self.min_burst),
+            pending: ((per_s * self.pending_s) as usize).max(self.min_pending),
         }
     }
 }
@@ -376,13 +419,15 @@ impl Node {
         if self.core.mutated(Mutation::RateLimitRemoved) {
             return true;
         }
-        let cap = self.cfg.rate_burst as u64 * 1000;
-        let rate = self.cfg.rate_per_s as u128;
+        // Tokens in thousandths of an entry; the rate in thousandths of an entry per second.
+        let budget = self.cfg.rate_budget(self.rate_hz);
+        let cap = budget.burst as u64 * 1000;
+        let rate = (budget.per_s * 1000.0).round() as u128;
         let (tokens, last) = self.budget.get(&author).copied().unwrap_or((cap, at));
         let dt = at.0.saturating_sub(last.0).max(0) as u128;
-        let tokens = (tokens as u128 + rate * dt / 1_000_000).min(cap as u128) as u64;
+        let tokens = (tokens as u128 + rate * dt / 1_000_000_000).min(cap as u128) as u64;
         let pending = self.pending_by_author.get(&author).copied().unwrap_or(0);
-        if !solicited && (tokens < 1000 || pending >= self.cfg.pending_cap) {
+        if !solicited && (tokens < 1000 || pending >= budget.pending) {
             self.budget.insert(author, (tokens, at.max(last)));
             return false;
         }
@@ -409,7 +454,7 @@ impl Node {
         }
         let pending = self.pending_by_author.get(&author).copied().unwrap_or(0);
         let hinted = self.hinted.values().filter(|(a, _, _, _)| *a == author).count();
-        if pending + hinted >= self.cfg.pending_cap {
+        if pending + hinted >= self.cfg.rate_budget(self.rate_hz).pending {
             return;
         }
         self.hinted.insert(id, (author, voter, self.now.0, i64::MIN));
