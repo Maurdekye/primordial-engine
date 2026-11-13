@@ -216,16 +216,17 @@ between the user's machines over Tailscale it is the machine's Tailscale address
 **Finality at n = 2.** The quorum of two members is both (q = 2): a cut is final only when both have voted for it.
 So finality follows the slower machine, and while either machine stalls or its link is down, nothing new becomes
 final on either, though both keep simulating their predictions.
-- **A stall shorter than pe-net's idle timeout** (`t_idle`, 5 s) ends when both vote again, within the view timeout
-  reached by then (it grows by half after each timed-out view, up to 10 s). The entries a member made meanwhile
-  reach the other when the link is back. Its hand entries are paced while it is backlogged (section 3, step 2), and
-  its edits are delayed, never lost, and final once a cut covers them. An entry stamped below a cut that was already
-  final when it arrived is void as late; at n = 2 that is rare, since no cut becomes final while one member is cut
-  off.
-- **A longer outage ends the session for both.** pe-net closes a link silent for more than `t_idle`, and in the M1
-  interim nothing dials again: pe-net and pe-app have no redial. The hook would welcome a member that connects
-  again, once something dials. Until then it is as if a process had ended. Wi-Fi or Tailscale hiccups longer than
-  5 s happen, so the demo can hit this.
+- **A stall shorter than pe-net's idle timeout** ends when both vote again, within the view timeout reached by then
+  (it grows by half after each timed-out view, up to 10 s). In M1 `t_idle` is 30 s, a stated setting, so that a
+  Wi-Fi blip or a Tailscale path switch does not end the session (@coordinator-opus m23040b6527b4). The entries a
+  member made meanwhile reach the other when the link is back. Its hand entries are paced while it is backlogged
+  (section 3, step 2), and its edits are delayed, never lost, and final once a cut covers them. An entry stamped
+  below a cut that was already final when it arrived is void as late; at n = 2 that is rare, since no cut becomes
+  final while one member is cut off.
+- **A longer outage ends the session for both.** pe-net closes a link silent for more than `t_idle`, and in M1
+  nothing dials again: pe-net and pe-app have no redial. It is as if a process had ended, and going on takes a new
+  session with a new invite. The redial comes once pe-agree has return (model v1); the hook already welcomes a
+  member that connects again.
 - **pe-agree v0 has no leave, return or restart** (agreement.md 8). Once either process ends, the other never
   finalizes again. Restarting the ended process does not help: it would start its chain again at seq 1 under the
   same key, which its peer sees as a second chain or an equivocation. Start a new session.
