@@ -10,3 +10,7 @@ description = "The entry log: authors' chains, their validation in order, and th
 # already lists it, so adding dependencies here needs no other change.
 [dependencies]
 pe-seams = { path = "../pe-seams" }
+
+[dev-dependencies]
+pe-seams = { path = "../pe-seams", features = ["test-util"] }
+bytes.workspace = true
