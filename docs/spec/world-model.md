@@ -242,6 +242,20 @@ which fixes the origin's role deliberately.
   the old prototype's 0.2 kg/m³ made them 0.18 g, lighter than air: @design-reviewer's Medium), damping 0.1
   linear and 0.3 angular, rolling resistance 0.2, the old prototype's layout with a seed-dependent jitter). The world's physics origin is set to
   `origin`. It has no members and no hands.
+- **An interim session's line comes from its genesis record** (@engine-architect, @world-chunks; @coordinator-opus gives the call to world-model). Until join entries exist, an M1
+  session starts from a genesis record both machines check (pe-app's `pe_app::genesis`). Its line is
+  `preset::genesis_line(record) = Hasher::new("pe.m1.genesis.line").write_len_prefixed(record)`, over the record's
+  bytes **without its root**, since the frame-0 root covers the line. The pit is built on it with
+  `preset::ball_pit_on(line, seed, blobs, origin, balls)`, so the pit's object ids and, through `World::admit`, the
+  hands' ids derive from it. Why: it is 2.3's rule in M1's form, a line is the hash of the record that makes the
+  world, so two sessions never share a line, ids or signatures, where `m1_line()` would give every session with
+  one seed the same ids. **The record carries a fresh 32-byte random nonce from the OS**, so two sessions with the
+  same seed, members and settings still get different records and lines, and one session's signed entries never
+  replay into another (@design-reviewer's and @chunks-reviewer's Low on 1c22bd90; the creation time alone is
+  weaker). It is never the origin (`ball_pit_on` refuses `LineId::origin()`), the context is in M1's
+  disposable `pe.m1.` namespace so it cannot collide with the branch-entry derivation of the later slice, and the
+  world still carries the M1 marker, `Some(m1_line())`, whatever its line. `ball_pit` and `ball_pit_with` stay
+  on `m1_line()` for tests and single-machine use.
 - **Hands come from admission.** `World::admit(line, member, perms, frame, spawn)` is world logic applying a join
   (8): it records the member's permissions and creates the member's two hands (`ObjectId::hand`, owner the member,
   sides 0 and 1) as roots beside `spawn`. The ball pit's admin is admitted this way at frame 0, like anyone who
