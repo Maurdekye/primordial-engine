@@ -355,12 +355,29 @@ Written on every repair past rung 1, and on every root split (file 14, 4.6).
 - the world id, the engine build id, the platform and CPU features, the self-test result;
 - `Cv` and `C`: frames, roots and voters;
 - the state at `Cv` for the cells (M4: contact groups) that hold the differing objects, with the hashes on their
-  path to the root, so it imports into an empty replica;
-- every entry from `Cv` to `C`, with signatures;
+  path to the root, so it imports into an empty replica. In M1 a world is one cell, so it is the whole state: `Cv`'s
+  cut with its heads, `Cv`'s root, the world's rate, every record with its proof (the config, the tables, the
+  objects), and the physics image (pe-diverge's `CvState`, its own format version);
+- every entry from `Cv` to `C`, with signatures: those stamped from `Cv`'s frame up to `C`'s, as the entry source
+  serves them, each `SignedEntry::encode`d;
 - the ids of the differing objects; their records under my root and under the quorum's;
 - the rung reached, the sources used, and the times taken;
 - for a ladder that stopped (4.3), each repeated failure named: the rung, the reason and the differing leaves
   (`stuck`; the bundle format's version 2).
+
+**Capture** [I]: pe-diverge takes the state and the entries itself, from the replica's tree at `Cv` (`Tree::export`
+over every leaf, `Replica::physics_image`) and from `EntrySource::entries_at`, when rung 2 first runs after `Cv`
+moved, and extends the entries when a newer cut is repaired toward. `Cv`'s state and the entries from it are kept
+then, and the import that cures moves `Cv` past them, so the embedding could not fetch them afterwards. They go only
+with the repair they were captured for: its cure's bundle takes them, and a stopped ladder's at the same `Cv`
+carries them; a root split's never does, and the bundle's `cv` is the `Cv` the repair started from, the one the
+evidence names. They are left out, and counted once per `Cv` (`evidence_skipped`), when `Cv`'s state or an entry
+frame is no longer kept (a `Damaged` cut may be one), or when the state is over `B_evidence`. Once the cure's bundle
+is written, or `Cv` moves otherwise, they are dropped. A replay starts from `CvState`'s cut, which a repair's bundle
+also names as its `cv`. [I: the capture's cost, a whole-state walk, export and encode on the simulation thread once
+per divergence, is not measured yet; the M1 run measures it.] The tables are numbered from 0 by their place in
+`Node::Tables`, so the walk names each. An entry stamped below `Cv`'s frame that only `C` includes is late and void
+(S3 v1.1), so it changes no state and is not carried.
 
 **Rules:**
 - It is self-contained: `pe-diverge replay-bundle <file>` (an example binary of the crate) replays it on any
@@ -390,6 +407,7 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `busy_rotations` | Sources left after `N_busy` `Busy` answers in a row: over budget, not faulty | pe-diverge |
 | `repeated_divergence` | Objects marked repeatedly diverging | pe-diverge |
 | `repairs_stuck`, `stuck_skipped` | Times the ladder stopped (4.3); diverged final cuts compared while stopped, with no rung run | pe-diverge |
+| `evidence_skipped` | Divergences whose bundles go without replay evidence (6), once per `Cv` | pe-diverge |
 | `overtaken_in_a_row` | A gauge: repairs toward a final cut overtaken by a newer one, in a row since the last cure or agreeing cut. It tells a world too big to fetch within `W_fg` (4.2) from one unlucky repair | pe-diverge |
 | `root_splits` | Root-split episodes (distinct split cuts, not `RootSplit` events), and how each ended | pe-diverge |
 | `bundles_written` | Bundles written | pe-diverge |
@@ -971,6 +989,7 @@ mid-session never moves a bound that is already running [design-reviewer].
 | `B_serve`, `R_serve` | Serving budget per peer: burst and refill | 8 MiB; 4 MiB/s |
 | `N_busy`, `T_busy` | `Busy` answers in a row before a source is rotated; longest wait one can ask for | 4; 1 s |
 | `T_recur`, `N_recur_max` | Time within which a repeat counts; repeats before the event | 1.5 s; 3 |
+| `B_evidence` | The largest replay evidence (`Cv`'s whole state, encoded) a bundle carries (6) | 64 MiB [I: the M1 fetch limit is about 6 MB, so a world that rung 2 can repair always fits] |
 | `N_stuck`, `N_stuck_any`, `T_stuck_probe` | Refused repairs in a row before the ladder stops: with one key; with any key and no cure. The probe interval while stopped (4.3) | 3; 10; 30 s |
 | `B_keep`, `B_bytes` | Bundles kept on disk | 50; 500 MB |
 | `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |

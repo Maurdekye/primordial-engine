@@ -1,7 +1,8 @@
 //! The fault bundle (divergence.md 6): written on every repair past rung 1 and on every root split.
 //!
-//! pe-diverge fills what it knows; the embedding (pe-app) adds the build, the state at `Cv` and the entries from `Cv`
-//! to `C` before writing the file. The format is versioned and decodes without panicking. On a non-admin's machine the
+//! pe-diverge fills what it knows, the state at `Cv` and the entries from `Cv` to `C` among it (captured before rung
+//! 2's import moves `Cv` past them; [`crate::evidence`]); the embedding (pe-app) adds the build before writing the
+//! file. The format is versioned and decodes without panicking. On a non-admin's machine the
 //! file is discarded with the world when they leave (9.6).
 
 use bytes::Bytes;
@@ -9,8 +10,8 @@ use pe_seams::{CutRef, Frame, Hash, LeafKey, LineId, MemberKey, Record};
 
 use crate::msg::{DecodeError, EncodeError, Reader, put_bytes, put_cut, put_key, put_record};
 
-/// 2: `stuck` (4.3).
-pub const BUNDLE_VERSION: u8 = 2;
+/// 2: `stuck` (4.3). 3: `state_at_cv` holds a [`crate::CvState`], and `entries` are filled (6); the layout is v2's.
+pub const BUNDLE_VERSION: u8 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FaultBundle {
