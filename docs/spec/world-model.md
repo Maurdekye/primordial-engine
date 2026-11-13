@@ -269,10 +269,11 @@ which fixes the origin's role deliberately.
   session's rate, with its gravity and pe-agree's settings record (config item 4; in M1 that is pe-agree's 32-byte
   `NodeConfig::consensus_hash`), and every member admitted at frame 0 through `World::admit` in key order, each with
   the permission bits its role in the genesis record gives (opener `ADMIN | EDIT | AGENT`, joiner `EDIT | AGENT`),
-  standing 0.6 m apart just outside the pit's near wall. A key listed twice is refused (`WorldError::Duplicate`).
-  So the root covers each member's bits, and the record and the world cannot disagree: the second machine rebuilds
-  the world from the record and compares roots, then the replica's frame-0 root, before it starts. A test pins the
-  frame-0 root and runs on Windows and Linux [V engine-architect, `crates/pe-world/tests/preset.rs`].
+  standing 0.6 m apart just outside the pit's near wall. A key listed twice is refused (`WorldError::Duplicate`). So
+  the root covers each member's bits, and the record and the world cannot disagree on anything the root covers; the
+  rest (the cut interval, the epoch, the nonce) is bound through the line (2.4, @design-reviewer's nit). The second
+  machine rebuilds the world from the record and compares roots, then the replica's frame-0 root, before it starts. A
+  test pins the frame-0 root and runs on Windows and Linux [V engine-architect, `crates/pe-world/tests/preset.rs`].
 - **No dependence on the preset's ids.** Tests, the harness and API examples find the pit's objects by name
   (`preset::names`, `preset::find`), never by id.
 - **Determinism:** the same arguments give the same state root, and admitting the same member at the same frame
