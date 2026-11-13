@@ -30,6 +30,17 @@ pub fn m1_line() -> LineId {
     LineId(Hash::of(M1_LINE_CONTEXT, b"ball-pit"))
 }
 
+/// The line an M1 interim session's world is on (world-model.md 2.4, interim sessions): the hash of the session's
+/// genesis record without its root, `Hasher::new("pe.m1.genesis.line").write_len_prefixed(record)`. The record is
+/// pe-app's (`pe_app::genesis`); it cannot cover the root, since the frame-0 root covers the line. Like a branch
+/// entry's line (2.3), the line is the hash of the record that makes the world, so two sessions never share a line,
+/// and it is neither the origin nor a preset line.
+pub fn genesis_line(record_without_root: &[u8]) -> LineId {
+    let mut h = Hasher::new("pe.m1.genesis.line");
+    h.write_len_prefixed(record_without_root);
+    LineId(h.finish())
+}
+
 /// How many balls [`ball_pit`] makes.
 pub const BALLS: usize = 200;
 /// The most balls [`ball_pit_with`] makes (the old prototype's bound).
@@ -69,25 +80,36 @@ pub fn ball_pit(seed: u64, blobs: BlobStore, origin: Pos) -> World {
 /// If the preset's own transaction is refused, which is a bug in this module (a test applies it), or if `origin` is
 /// so near the edge of the position range that the pit does not fit.
 pub fn ball_pit_with(seed: u64, blobs: BlobStore, origin: Pos, balls: usize) -> World {
+    ball_pit_on(m1_line(), seed, blobs, origin, balls)
+}
+
+/// [`ball_pit_with`] on line `line`: the world's line, and the line the pit's object ids derive from (2.1). An M1
+/// interim session passes [`genesis_line`] of its genesis record, before admitting anyone, so the hands' ids derive
+/// from it too. The world still carries the M1 marker, `Some(m1_line())`, whatever its line.
+///
+/// # Panics
+/// As [`ball_pit_with`], and if `line` is the origin (`LineId::origin()`): nothing M1 makes is the origin (2.4).
+pub fn ball_pit_on(line: LineId, seed: u64, blobs: BlobStore, origin: Pos, balls: usize) -> World {
+    assert_ne!(line, LineId::origin(), "an M1 world is never on the origin's line");
     let balls = balls.clamp(1, MAX_BALLS);
     let mut w = World::new(seed, blobs.clone());
     w.set_origin(origin);
     w.m1_marker = Some(m1_line());
-    w.line = m1_line();
+    w.line = line;
     let tx = transaction(seed, &blobs, origin, balls);
     // World logic authors the preset. Logic is no member, so it holds `EDIT` only while the transaction applies.
     w.set_member(MemberKey::LOGIC, perm::EDIT);
-    let (outcome, mut w) = w.dry_run_draft_state(Frame(0), &draft(seed), &tx);
+    let (outcome, mut w) = w.dry_run_draft_state(Frame(0), &draft(line, seed), &tx);
     assert!(matches!(outcome, Outcome::Applied { .. }), "the ball-pit transaction was refused: {outcome:?}");
     w.set_member(MemberKey::LOGIC, 0);
     w
 }
 
-/// The coordinates the preset's ids derive from (2.1): world logic on [`m1_line`], with a chain from the seed.
-fn draft(seed: u64) -> Draft {
+/// The coordinates the preset's ids derive from (2.1): world logic on `line`, with a chain from the seed.
+fn draft(line: LineId, seed: u64) -> Draft {
     let mut h = Hasher::new("pe.m1.ball-pit.chain");
     h.write_u64(seed);
-    Draft { author: MemberKey::LOGIC, line: m1_line(), chain: ChainId(h.finish()), seq: 0 }
+    Draft { author: MemberKey::LOGIC, line, chain: ChainId(h.finish()), seq: 0 }
 }
 
 fn row<T: Component>(v: T) -> Row {
