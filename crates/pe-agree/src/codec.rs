@@ -23,6 +23,14 @@ pub enum Wire {
     FetchEntries(Vec<EntryRef>),
     /// Entries: the author's own, a relay, or a fetch's answer.
     Entries(Vec<SignedEntry>),
+    /// Ask for an author's chain from `from_seq`, at most `count` entries (at most [`MAX_FETCH`]): the range refetch
+    /// that heals holes after a stall or a loss (coordinator m120f73db271d).
+    FetchRange {
+        author: MemberKey,
+        chain: ChainId,
+        from_seq: u64,
+        count: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +43,7 @@ const T_FETCH_BLOCK: u8 = 4;
 const T_FETCH_ENTRIES: u8 = 5;
 const T_ENTRIES: u8 = 6;
 const T_REPORT: u8 = 7;
+const T_FETCH_RANGE: u8 = 8;
 
 struct W(Vec<u8>);
 
@@ -249,6 +258,13 @@ pub fn encode(m: &Wire) -> Vec<u8> {
                 w.b32(&id.0.0);
             }
         }
+        Wire::FetchRange { author, chain, from_seq, count } => {
+            w.u8(T_FETCH_RANGE);
+            w.b32(&author.0);
+            w.b32(&chain.0.0);
+            w.u64(*from_seq);
+            w.u32(*count);
+        }
         Wire::Entries(es) => {
             w.u8(T_ENTRIES);
             w.u32(es.len() as u32);
@@ -315,6 +331,16 @@ pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
                 ids.push(EntryRef(r.hash()?));
             }
             Wire::FetchEntries(ids)
+        }
+        T_FETCH_RANGE => {
+            let author = MemberKey(r.b32()?);
+            let chain = ChainId(r.hash()?);
+            let from_seq = r.u64()?;
+            let count = r.u32()?;
+            if count == 0 || count as usize > MAX_FETCH {
+                return Err(DecodeError);
+            }
+            Wire::FetchRange { author, chain, from_seq, count }
         }
         T_ENTRIES => {
             let n = r.count(MAX_FETCH)?;
@@ -395,6 +421,7 @@ mod tests {
             Wire::Core(Msg::Fetch(BlockId(h(b"f")))),
             Wire::FetchEntries(vec![EntryRef(h(b"1")), EntryRef(h(b"2"))]),
             Wire::Entries(Vec::new()),
+            Wire::FetchRange { author: MemberKey([3; 32]), chain: ChainId(h(b"c")), from_seq: 7, count: 12 },
         ]
     }
 
