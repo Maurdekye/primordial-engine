@@ -1,6 +1,6 @@
 # pe-net: the transport
 
-Status: draft 1.7, 2026-11-11, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.8, 2026-11-13, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
 budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.6 records
@@ -8,7 +8,8 @@ what building the Core settled: the welcome exchange and its up record (6.4), th
 Core's interface and network thread as built (7). Draft 1.7 answers @design-reviewer's code review of pe-net v1:
 `T_welcome` ends at the first Up (6.4), duplicates from one client are settled by a value both sides hold (6.2),
 rendezvous records come only from members and are bounded (6.7), and a replaced connection's reliable messages
-are lost with it (3.2). Draft 1.2 records the user's ruling on the firewall default
+are lost with it (3.2). Draft 1.8 records how pe-net is fuzzed (9, the coordinator's ruling ma3d421c9f34f) and
+the one finding so far: varints must be minimal (3.6). Draft 1.2 records the user's ruling on the firewall default
 (m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
@@ -159,8 +160,8 @@ Coordinator ruling, for each of the QUIC keys, the adapter port and the provider
 - **More tests** [I; the fuzzing and the last four from @design-reviewer]:
   - Wycheproof AES-GCM vectors;
   - a handshake against a known-good QUIC implementation, in a dev-only test outside the shipped graph;
-  - fuzzing of packet parsing and the handshake (cargo-fuzz, gate tier 2), including a crafted hello and
-    welcome in one flight, the path a hostile peer would use (@design-reviewer, before M1 acceptance);
+  - fuzzing of what pe-net parses and of the handshake path, including a crafted hello and welcome in one
+    flight, the path a hostile peer would use (@design-reviewer): done as 9's test 6 describes;
   - that the joiner sends nothing above the transport before the welcome;
   - a QUIC key update, and the Retry token;
   - that secrets are zeroized on drop;
@@ -243,6 +244,9 @@ R18's failure again [@design-reviewer's High].
   - the highest seq received in order from that peer;
   - up to `N_ack_ranges` ranges received after it, as QUIC's ACK frame does.
 
+  An acknowledgement applies only to messages this side has already transmitted: one covering a seq still
+  queued (a replayed datagram, or a peer acking ahead) leaves it queued (found by fuzzing, 9).
+
   Ranges rather than a fixed bitmap, so a full second of messages in flight still fits.
 - **First send:** a new message goes in the next datagram to the peer, Protocol before Action.
 - **Bounded redundancy:** a message of at most `L_redundant` bytes also rides in the next `r - 1` datagrams to
@@ -298,11 +302,14 @@ R18's failure again [@design-reviewer's High].
 ### 3.6 Framing
 
 - **A datagram:** a 1-byte format version, the acknowledgements, then items `(lane, seq, length, bytes)` with
-  varint fields, then optional pe-net control records (clock samples, 5.2; rendezvous, 6.7).
+  varint fields, then optional pe-net control records (clock samples, 5.2).
+- **Varints** are QUIC's variable-length integers (RFC 9000 16), always in the shortest form that holds the
+  value. A longer form is a protocol fault: every message has exactly one encoding. [V: the long fuzz run found
+  a hello whose token length 40 was written in two bytes and accepted; pe-net now refuses it.]
 - **A stream:** a 1-byte kind, then its bytes to the stream's end. The kinds are:
   - a lane (0-4), followed by a varint seq and the message;
   - the hello (`0x80`), the welcome (`0x81`) and the up record (`0x82`) of 6.3-6.4, each bounded (4 KiB, 1 MiB,
-    empty).
+    empty), and the rendezvous record (`0x83`) of 6.7, a key and at most 16 addresses.
 
   Any other kind, a Pose on a stream, or a stream over its bound is a protocol fault (code 6).
 - **Limits:**
@@ -752,7 +759,42 @@ Gated, unless marked:
    - a welcome whose member list differs from the start cut's is caught (6.4);
    - an address change survives, and a forged source address doesn't redirect a link.
 5. **The security code:** 2.5's list.
-6. **No panic** on any bytes from a peer (fuzzing, gate tier 2).
+6. **No panic** on any bytes from a peer: structured fuzzing, `crates/pe-net/tests/fuzz.rs` (the coordinator's
+   ruling ma3d421c9f34f, with @fable-reviewer's conditions and @design-reviewer's requirements).
+   - **What it is:** pure Rust, seeded and repeatable, run in the normal test suite under the normal gate. It is
+     **not coverage-guided** (no libFuzzer: that is C++, which "100% Rust" keeps out), so it finds less per CPU
+     hour than a guided fuzzer would.
+   - **How:** valid encodings are generated, then mutated: bit flips, edge bytes, truncation, splices, edge
+     varints and length-field edits.
+   - **The targets:**
+     - the hello, welcome and rendezvous decoders, with a strict round trip: bytes a decoder accepts must be the
+       canonical encoding of what it decoded;
+     - the size bounds;
+     - `Link::on_datagram`, both per case and on a long-lived link, and the lane stream path, open and closed;
+     - datagram sequences across link states (closed, receive-only, open, closed), replayed, reordered,
+       duplicated and mutated. Under replay, each real Protocol and Action message is delivered at most once,
+       a real pose only if newer than the last (Pose is latest-wins; no lane is ordered, 3.2), and no
+       acknowledgement drops a message never transmitted (3.3). That last check failed at once, and was fixed;
+     - **the datagram format is not canonical**, and doesn't need to be: the same items may come in another
+       order, a message may appear twice, and ack ranges needn't be sorted. Nothing hashes, signs, MACs or
+       deduplicates a datagram by its bytes. QUIC's packet protection covers authenticity and packet replay
+       below us, and the lanes deduplicate by (lane, seq). If anything ever keys on a datagram's bytes (a MAC
+       or a replay cache), it needs a canonical form and this suite's strict round trip first;
+     - stream records of every kind into a live Core;
+     - the hello and welcome flight before admission: nothing crosses on the lanes, and the link isn't counted
+       as up;
+     - raw UDP into a Core.
+   - **Every failing case** is kept in `tests/fuzz_corpus/<target>.hex`, and every run replays it first.
+     `PE_FUZZ_ITERS` scales the run, and `PE_FUZZ_SEED` reseeds it.
+   - **Coverage** [V, rustc source coverage with branch coverage, nightly used only to measure]:
+     - the decoders: 100 % of regions, lines and branches;
+     - `Link::on_datagram`: 100 % of lines and branches and 97.8 % of regions. The three regions it misses
+       can't be reached: an ack range's sum of two varints can't overflow a u64, the frame loop checks for
+       bytes before it reads one, and `usize::try_from` can fail only on 32-bit targets.
+   - **The long run:** `PE_FUZZ_ITERS=1000` [V, 2026-11-13, at pe-net 38bd1435, 348 s at idle priority]: 3 M mutated inputs for each decoder (about 0.4 M of each accepted, all canonical), 5 M datagrams (0.54 M parsed, 0.45 M messages delivered), 400 k stream records into 302 k live Core pairs (301 k faults, the expected end of a bad record), 24 k hello and welcome flights, 1.5 M raw UDP datagrams, and 200 k datagram sequences. No panic. The first long run found the non-minimal varint (3.6), which is fixed and kept in the corpus.
+   - **The sequence target alone** at `PE_FUZZ_ITERS=1000` [V, 2026-11-13, at pe-net 2bd48cb8, 38 s]: 200 k
+     sequences with the replay checks, no failure.
+   - **cargo-fuzz** (option 2) comes back only if coverage shows paths that better generators can't reach.
 7. **Measured and reported, not gated:**
    - handshake time;
    - action latency over 20 seeds by 5 delays, against the user's target that the other machine sees an action
