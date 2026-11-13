@@ -30,10 +30,11 @@ pub fn open_new(
     Ok(Box::new(replica))
 }
 
-/// Where the admitted member's hands start, before its first hand input moves them: at chest height over the pit's
-/// near edge. In VR the display draws the local hands at the headset's late-latched poses wherever this is.
-fn hand_spawn() -> Pos {
-    Pos::ORIGIN.checked_add(Offset([0.0, 1.2, 1.5])).unwrap_or(Pos::ORIGIN)
+/// Where the `i`-th admitted member's hands start, before its first hand input moves them: at chest height over the
+/// pit's near edge, 0.6 m apart along it. In VR the display draws the local hands at the headset's late-latched
+/// poses wherever this is.
+fn hand_spawn(i: usize) -> Pos {
+    Pos::ORIGIN.checked_add(Offset([0.6 * i as f64, 1.2, 1.5])).unwrap_or(Pos::ORIGIN)
 }
 
 /// M1's ball pit (@world-model's disposable genesis preset), its floor's top at the origin, with `me` admitted at frame 0
@@ -49,13 +50,34 @@ pub fn open_ball_pit(
     cut_interval: Duration,
     clock: Arc<dyn FrameClock>,
 ) -> Result<Box<dyn Replica>, String> {
-    let mut world = preset::ball_pit(seed, BlobStore::default(), Pos::ORIGIN);
+    ball_pit(preset::ball_pit(seed, BlobStore::default(), Pos::ORIGIN), &[me], me, rate, cut_interval, clock)
+}
+
+/// A ball pit `world` with every one of `members` admitted at frame 0 as an admin, in key order so that every machine
+/// builds the same state (pe-agree M1's membership is fixed at the line's start), and `me`'s hands marked as the
+/// local player's.
+pub(crate) fn ball_pit(
+    mut world: World,
+    members: &[MemberKey],
+    me: MemberKey,
+    rate: SimRate,
+    cut_interval: Duration,
+    clock: Arc<dyn FrameClock>,
+) -> Result<Box<dyn Replica>, String> {
     if world.rate() != rate {
         return Err(format!("the ball pit runs at {:?}, the frame clock at {rate:?}", world.rate()));
     }
-    world
-        .admit(preset::m1_line(), me, perm::ADMIN | perm::EDIT, Frame(0), hand_spawn())
-        .map_err(|e| format!("admitting the local member: {e:?}"))?;
+    let mut sorted = members.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    if !sorted.contains(&me) {
+        return Err("the local member is not one of the world's members".into());
+    }
+    for (i, m) in sorted.iter().enumerate() {
+        world
+            .admit(preset::m1_line(), *m, perm::ADMIN | perm::EDIT, Frame(0), hand_spawn(i))
+            .map_err(|e| format!("admitting member {i}: {e:?}"))?;
+    }
     let mut config = ReplicaConfig::new(rate, cut_interval, clock);
     config.local = Some(me);
     let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).map_err(|e| format!("{e:?}"))?;

@@ -1,10 +1,11 @@
 //! The simulation thread (app.md 1, 3): one tick per frame. It never waits on rendering, the network or the API.
 //!
-//! [`Sim::tick`] runs app.md 3's steps in order. This first slice runs step 3 (agreement's time), step 4
-//! (pe-replica's [`Driver::drive`], within the replica's [`Budget`]), the draining half of step 5 (S3's events,
-//! counted until pe-diverge takes them) and step 6 (the publish). Step 1 (the network inbox, pe-net), step 2 (local
-//! input, pe-world's codecs) and the rest of step 5 (pe-diverge's ordered list and its actions) join as those crates
-//! land.
+//! [`Sim::tick`] runs app.md 3's steps in order: step 1 (the network inbox into agreement, once a transport is
+//! wired: pe-net's runner through S4), step 2 (the local player's hands as pe-world inputs), step 3 (agreement's
+//! time; its messages go out through the transport), step 4 (pe-replica's [`Driver::drive`], within the replica's
+//! [`Budget`]), the draining half of step 5 (S3's events, counted until pe-diverge takes them) and step 6 (the
+//! publish). Step 2's edit queue (pe-api), the Repair and Bulk lanes, and the rest of step 5 (pe-diverge's ordered
+//! list and its actions) join as those crates land.
 //!
 //! [`spawn`] runs the loop on a thread of its own and does step 7: between ticks it waits until the next frame starts,
 //! or until a [`Waker`] wakes it (the network inbox and the edit queue will hold one).
@@ -16,7 +17,10 @@ use std::time::{Duration, Instant};
 
 use pe_render::present::FrameSlot;
 use pe_replica::{DriveReport, Driver};
-use pe_seams::{Agreement, Frame, FrameClock, FrameView, HandFeed, HostTime, MemberKey, Replica, SelfTest, SimRate};
+use pe_seams::{
+    Agreement, Frame, FrameClock, FrameView, HandFeed, HostTime, Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate,
+    Transport,
+};
 
 use crate::clock::HostClock;
 use crate::local::{self, Chain};
@@ -94,7 +98,18 @@ pub struct SimStats {
     pub holds: u64,
     /// The longest hold, in ticks.
     pub longest_hold: u64,
-    /// Messages agreement made that had nowhere to go: there is no network thread in this slice.
+    /// Messages from the network that agreement took (step 1).
+    pub received: u64,
+    /// Messages agreement refused as a peer's fault (step 1): counted, never fatal.
+    pub refused: u64,
+    /// Messages on lanes this slice does not route yet: Repair (pe-diverge), Bulk (the blob store) and Pose (the
+    /// display).
+    pub unrouted: u64,
+    /// The transport's events (links, join requests), each passed to the net-event hook if one is set.
+    pub net_events: u64,
+    /// Messages agreement made that went to the transport (step 3).
+    pub sent: u64,
+    /// Messages agreement made that had nowhere to go: no transport is wired (a world alone).
     pub unsent: u64,
     /// S3's events, drained each tick. pe-diverge takes them once it lands.
     pub events: u64,
@@ -121,7 +136,29 @@ pub struct Sim {
     stats: SimStats,
     /// The local player: this member's chain, and the hands step 2 reads. `None` runs no local input.
     local: Option<Local>,
+    /// The frame step 2 last submitted the local player's inputs for.
+    input_frame: Option<Frame>,
+    /// The network (S4): pe-net's handle, or a test's in-process network. `None` is a world alone.
+    net: Option<Box<dyn Transport + Send>>,
+    net_hook: Option<Box<dyn NetHook>>,
 }
+
+/// What net.rs does on the simulation thread (@shader-lang). Admission is decided from the agreed
+/// governance, which lives here with agreement, and carried out through pe-net's control end, which the hook owns.
+pub trait NetHook: Send {
+    /// Each of the transport's events, after step 1 counts it.
+    fn on_event(&mut self, event: &NetEvent, agree: &mut dyn Agreement);
+    /// Once a tick, after step 1's messages and events: for what reaches the hook other than as an event, such as
+    /// the lifecycle outcomes on pe-net's control end, which would otherwise wait for an unrelated event
+    /// (@design-reviewer's Low on 5ca43067).
+    fn on_tick(&mut self, now: HostTime, agree: &mut dyn Agreement) {
+        let _ = (now, agree);
+    }
+}
+
+/// The most messages step 1 takes from the network in one tick, so a flood cannot stall the tick: the rest wait
+/// in the transport's bounded queue for the next one.
+pub const MAX_IN_PER_TICK: usize = 1024;
 
 /// The local player's chain and hand feed (app.md 3, step 2).
 struct Local {
@@ -153,7 +190,19 @@ impl Sim {
             hold: None,
             stats: SimStats::default(),
             local: None,
+            input_frame: None,
+            net: None,
+            net_hook: None,
         }
+    }
+
+    /// The network (app.md 2): step 1 drains `net` into agreement and step 3 sends agreement's messages through it.
+    /// `hook` gets each of its events after they are counted, and a call once a tick; without it events are only
+    /// counted.
+    pub fn with_transport(mut self, net: Box<dyn Transport + Send>, hook: Option<Box<dyn NetHook>>) -> Sim {
+        self.net = Some(net);
+        self.net_hook = hook;
+        self
     }
 
     /// The local player `me`: a new chain on agreement's line from `nonce` (`local::chain_nonce`), and the hands
@@ -179,18 +228,55 @@ impl Sim {
             self.stats.before_frame_0 += 1;
             return None;
         };
+        // 1. Messages in. Protocol and Action go to agreement; a refusal is a peer's fault, counted and never fatal.
+        // TODO(pe-diverge): Repair to pe-diverge; TODO(blob store): Bulk; Pose is display-only.
+        if let Some(net) = &mut self.net {
+            for _ in 0..MAX_IN_PER_TICK {
+                let Some(r) = net.poll() else { break };
+                match r.lane {
+                    Lane::Protocol | Lane::Action => match self.agree.receive(r.from, r.lane, &r.bytes, r.at) {
+                        Ok(()) => self.stats.received += 1,
+                        Err(_) => self.stats.refused += 1,
+                    },
+                    _ => self.stats.unrouted += 1,
+                }
+            }
+            for e in net.events() {
+                self.stats.net_events += 1;
+                if let Some(hook) = &mut self.net_hook {
+                    hook.on_event(&e, &mut *self.agree);
+                }
+            }
+            if let Some(hook) = &mut self.net_hook {
+                hook.on_tick(now, &mut *self.agree);
+            }
+        }
         // 2. Local input: both hands at frame `p`'s host time, through the newest view's rig, one input entry each.
-        // Before the first view the hands' objects are not known yet, so nothing goes in.
-        if let (Some(l), Some(view)) = (&mut self.local, &self.published) {
+        // Before the first view the hands' objects are not known yet, so nothing goes in. Once per frame: a wake (step
+        // 7) ticks again within a frame, and that tick takes in messages and re-simulates but adds no second set of
+        // inputs for the frame, which would count against the rate budget.
+        let fresh = self.input_frame.is_none_or(|f| p > f);
+        if let (true, Some(l), Some(view)) = (fresh, &mut self.local, &self.published) {
             let at = self.clock.host_time_of(p);
             let domain = self.replica.domain();
             let (took, refused) =
                 local::submit_hands(&mut l.chain, &mut l.sent, &*l.hands, view, at, p, domain, &mut *self.agree);
             self.stats.inputs += u64::from(took);
             self.stats.inputs_refused += u64::from(refused);
+            self.input_frame = Some(p);
         }
-        // 3. Agreement's time. Its messages go to the network's outbox once pe-net's runner is wired.
-        self.stats.unsent += self.agree.tick(now, &*self.clock).len() as u64;
+        // 3. Agreement's time. Its messages go to the network's outbox; a full queue is pe-net's local fault, never
+        // a stall (transport.md 7). A world alone has nowhere to send them.
+        let out = self.agree.tick(now, &*self.clock);
+        match &mut self.net {
+            Some(net) => {
+                self.stats.sent += out.len() as u64;
+                for o in out {
+                    net.send(o.to, o.lane, o.bytes);
+                }
+            }
+            None => self.stats.unsent += out.len() as u64,
+        }
         // 4. The replica, through pe-replica's driver. `present` is exclusive, so frame `p` is simulated.
         let started = Instant::now();
         let report = self.driver.drive(&mut *self.replica, &mut *self.agree, Frame(p.0 + 1), self.self_test);
@@ -304,7 +390,7 @@ mod tests {
     use crate::standin::{EmptyReplica, SoloAgreement};
     use pe_replica::mock::MockWorld;
     use pe_replica::{ReplicaConfig, ReplicaImpl};
-    use pe_seams::{DomainId, LineId};
+    use pe_seams::{DomainId, LineId, LinkStats, Received};
 
     const RATE: SimRate = SimRate::DEFAULT;
 
@@ -400,6 +486,22 @@ mod tests {
         }
     }
 
+    /// A wake ticks again within a frame (step 7): that tick takes in messages and re-simulates, but submits no second
+    /// set of hand inputs for the frame, or every wake would add a frame's inputs against the rate budget.
+    #[test]
+    fn a_second_tick_in_one_frame_submits_no_second_input() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, _slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let mut s = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])));
+        let half = Duration::from_nanos(1_000_000_000 / u64::from(RATE.hz()) / 2);
+        let f2 = clock.host_time_of(Frame(2));
+        for at in [clock.host_time_of(Frame(1)), f2, f2.plus(half), clock.host_time_of(Frame(3))] {
+            s.tick(at).expect("ticked");
+        }
+        assert_eq!(s.stats().ticks, 4);
+        assert_eq!(s.stats().inputs, 4, "two at frame 2 and two at frame 3, none from the second tick at frame 2");
+    }
+
     /// Both hands tracked and closed up to frame `.1`, then lost and open: pe-xr's release of a lost hand that held.
     struct LostAfter(Arc<dyn FrameClock>, u64);
 
@@ -434,6 +536,134 @@ mod tests {
         assert_eq!(engaged(3), vec![false, false], "lost: one release each");
         assert_eq!((engaged(4), engaged(5)), (vec![], vec![]), "lost and open: nothing more");
         assert_eq!(s.stats().inputs, 4);
+    }
+
+    /// An in-process network (S4) for `Sim`s in one test: what one sends, the addressee polls, stamped with the host
+    /// time the test last set.
+    #[derive(Clone, Default)]
+    struct Hub {
+        boxes: Arc<std::sync::Mutex<std::collections::BTreeMap<MemberKey, std::collections::VecDeque<Received>>>>,
+        now: Arc<std::sync::atomic::AtomicI64>,
+    }
+
+    struct Port {
+        me: MemberKey,
+        hub: Hub,
+        events: Arc<std::sync::Mutex<Vec<NetEvent>>>,
+    }
+
+    impl Port {
+        fn new(me: MemberKey, hub: Hub) -> Port {
+            Port { me, hub, events: Arc::default() }
+        }
+    }
+
+    impl Transport for Port {
+        fn send(&mut self, to: MemberKey, lane: Lane, bytes: bytes::Bytes) {
+            let at = HostTime(self.hub.now.load(Ordering::SeqCst));
+            let r = Received { from: self.me, lane, bytes, at };
+            self.hub.boxes.lock().expect("the hub").entry(to).or_default().push_back(r);
+        }
+        fn poll(&mut self) -> Option<Received> {
+            self.hub.boxes.lock().expect("the hub").get_mut(&self.me)?.pop_front()
+        }
+        fn link(&self, _: MemberKey) -> LinkStats {
+            LinkStats::default()
+        }
+        fn events(&mut self) -> Vec<NetEvent> {
+            std::mem::take(&mut *self.events.lock().expect("the events"))
+        }
+    }
+
+    /// Counts what net.rs's hook would get: link-up events, and calls once a tick.
+    struct CountingHook(Arc<std::sync::Mutex<(u64, u64)>>);
+
+    impl NetHook for CountingHook {
+        fn on_event(&mut self, event: &NetEvent, _: &mut dyn Agreement) {
+            if matches!(event, NetEvent::LinkUp { .. }) {
+                self.0.lock().expect("the counts").0 += 1;
+            }
+        }
+        fn on_tick(&mut self, _: HostTime, _: &mut dyn Agreement) {
+            self.0.lock().expect("the counts").1 += 1;
+        }
+    }
+
+    /// The hook gets each event once, and runs once a tick even when no event came, so net.rs can poll pe-net's
+    /// control end for lifecycle outcomes (@design-reviewer's Low on 5ca43067).
+    #[test]
+    fn the_net_hook_gets_each_event_and_runs_once_a_tick() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, _slot) = sim(clock.clone(), Budget::new(RATE));
+        let port = Port::new(MemberKey([1; 32]), Hub::default());
+        let events = port.events.clone();
+        let counts = Arc::new(std::sync::Mutex::new((0, 0)));
+        let mut s = s.with_transport(Box::new(port), Some(Box::new(CountingHook(counts.clone()))));
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        events.lock().expect("the events").push(NetEvent::LinkUp { peer: MemberKey([2; 32]) });
+        for f in 2..=4 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        assert_eq!(*counts.lock().expect("the counts"), (1, 4), "one event, four ticks");
+        assert_eq!(s.stats().net_events, 1);
+    }
+
+    /// Two members over an in-process network, each with its own pe-agree node and its own replica of a small ball
+    /// pit with both admitted at genesis (pe-agree M1's fixed membership). Steps 1 and 3 carry agreement's
+    /// messages, so each machine's view shows the other's hands where the other put them, and cuts become final with
+    /// both members' votes.
+    #[test]
+    fn two_members_see_each_others_hands_and_finalize_over_a_network() {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        use pe_seams::{Hand, Offset, Pos};
+        const FRAMES: u64 = 180;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let hub = Hub::default();
+        let at = [[-0.5, 1.0, -0.4], [0.5, 1.1, -0.3]];
+        let mut sims = Vec::new();
+        for (i, feed) in at.iter().enumerate() {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+            let replica = crate::world::ball_pit(world, &members, me, RATE, Duration::from_millis(133), clock.clone())
+                .expect("a replica");
+            let slot = Arc::new(FrameSlot::new());
+            let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))
+                .with_transport(Box::new(Port::new(me, hub.clone())), None);
+            sims.push((sim, slot, me));
+        }
+        for f in 1..=FRAMES {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            for (s, _, _) in &mut sims {
+                s.tick(now).expect("ticked");
+            }
+        }
+        for (i, (s, slot, _)) in sims.iter().enumerate() {
+            let (them, feed) = (sims[1 - i].2, at[1 - i]);
+            let v = slot.newest().expect("published");
+            for (side, dx) in [(Hand::Left, -0.2f64), (Hand::Right, 0.2)] {
+                let o = v.objects.iter().find(|o| o.hand_of == Some((them, side))).expect("their hand");
+                let [x, y, z] = feed.map(f64::from);
+                let want = Pos::ORIGIN.checked_add(Offset([x + dx, y, z])).expect("in range");
+                let d = (o.pos - want).0;
+                assert!(d.iter().all(|c| c.abs() < 1e-4), "member {i} sees their {side:?} {d:?} off");
+            }
+            let st = s.stats();
+            println!("member {i}: final {:?} at frame {:?}; {st:?}", v.final_frame, v.frame);
+            // Final within a second of the present: the cut lag (0.25 s at first) plus two members' votes.
+            assert!(v.final_frame.is_some_and(|f| f.0 + 60 >= FRAMES), "member {i}: final frame {:?}", v.final_frame);
+            assert!(st.received > 0 && st.sent > 0 && st.votes > 0 && st.finalized > 0, "member {i}: {st:?}");
+            assert_eq!((st.refused, st.unrouted, st.unsent, st.inputs_refused), (0, 0, 0, 0), "member {i}: {st:?}");
+        }
     }
 
     fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
