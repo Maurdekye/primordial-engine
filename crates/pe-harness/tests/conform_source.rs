@@ -247,6 +247,18 @@ fn p15_bites_on_an_answer_for_a_cut_that_the_final_log_contradicts() {
 }
 
 #[test]
+fn p15_bites_on_voids_queued_after_their_cut_was_reported_final() {
+    // The void-order control (S3 v1.6): the mock holds a cut's Voided events back two ticks. The back-dated run voids.
+    let t = Target {
+        name: "late voids",
+        nodes: |k, n| lockstep_with(k, n, |a| a.voids_late = true),
+        frame_entry: LockstepAgreement::entry_message,
+    };
+    let vs = back_dated(&t);
+    assert!(vs.iter().any(|v| v.detail.starts_with("void_order:")), "{vs:#?}");
+}
+
+#[test]
 fn p15_bites_on_a_kept_from_that_lies() {
     // The retention control: the source trims below Cv but says it keeps everything.
     let keys = TestKeys::new(41, 3);
