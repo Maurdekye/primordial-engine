@@ -57,6 +57,11 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
 
 - **Quorum.** `t = floor((n-1)/3)`, `q = floor((n+t)/2) + 1` (`pe_seams::agree::quorum`). Safety against one
   Byzantine member needs n >= 4 (model: bound-n3-byz); at n = 3 the rules tolerate crashes and author faults.
+  - At n <= 3, t = 0, so a single member's timeout for a later view moves the others on (the catch-up rule,
+    section 4). That's right for M1: n = 3 tolerates crashes and author faults only, and a crashed member sends
+    nothing. A stricter threshold would wedge n = 3 with one member crashed. Under a faulty member it could livelock:
+    the member could push the others ahead up to 16 views at a time, each forcing an immediate timeout
+    (@design-reviewer).
 - **Views and proposers.** Views 1, 2, ... are led in a rotation seeded from the line id. A silent or faulty
   proposer is skipped by timeouts. **Proposer choice: leader reputation** (DiemBFT v4 with a window of one; coordinator, by measurement in models/cuts/tools/leader_sim.py): rotation, skipping the leader of the latest view
   that timed out. **It is derived from the chain the proposal itself certifies** (option (b), @design-reviewer, as DiemBFT v4 does): the blocks final within the parent's certified chain are its ancestors up to
@@ -240,3 +245,7 @@ which the model does not cover. Each is inert unless the node's configuration na
 Join, leave, return and a restarted chain (model v1, the main open risk: pe-agree does not depend on membership
 change before that model is checked); one branch merging with the main line (model v2); quorum loss,
 unconfirmed play, the one-minute bound and split groups (model v3).
+
+- **Catching up from far behind needs an import.** Peers serve only their last 256 committed blocks. They serve
+  entries from a ChainLog that is never pruned today; once pruning comes, a member behind by more than the kept
+  window needs the import path for the entries too (@design-reviewer).
