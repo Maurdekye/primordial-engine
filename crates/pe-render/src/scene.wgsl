@@ -211,3 +211,39 @@ fn fs_ghost(i: VOut) -> @location(0) vec4<f32> {
 fn fs_outline(i: VOut) -> @location(0) vec4<f32> {
     return vec4<f32>(encode(i.color.rgb), i.color.a);
 }
+
+// The overlay (render.md 8.1): a textured quad, the notices strip, drawn after the scene's items without the depth
+// test. Its model matrix carries its size; the quad is the unit square in the model's XY plane.
+struct OverlayU {
+    model: mat4x4<f32>,
+};
+
+@group(2) @binding(0) var<uniform> ov: OverlayU;
+@group(2) @binding(1) var ov_tex: texture_2d<f32>;
+@group(2) @binding(2) var ov_smp: sampler;
+
+struct OOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_overlay(@builtin(vertex_index) k: u32/*VIEW*/) -> OOut {
+    let vi = VIEW_INDEX;
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, -0.5), vec2<f32>(0.5, 0.5),
+        vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, 0.5), vec2<f32>(-0.5, 0.5),
+    );
+    let c = corners[k];
+    var o: OOut;
+    o.clip = g.view_proj[vi] * (ov.model * vec4<f32>(c, 0.0, 1.0));
+    o.uv = vec2<f32>(c.x + 0.5, 0.5 - c.y);
+    return o;
+}
+
+// The texture is sRGB, so the sample is linear; straight alpha, blended over the scene.
+@fragment
+fn fs_overlay(i: OOut) -> @location(0) vec4<f32> {
+    let t = textureSample(ov_tex, ov_smp, i.uv);
+    return vec4<f32>(encode(t.rgb), t.a);
+}

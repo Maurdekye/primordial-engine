@@ -14,10 +14,11 @@
 //!   `render_views` (render.md 16, step 3).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{DMat3, DQuat, DVec3, Mat4, Vec3, Vec4};
-use pe_seams::{Appearance, FrameView, LightKind, ObjectId, Pos, Shape};
+use pe_seams::{Appearance, FrameView, LightKind, ObjectId, Pos, Shape, ViewFlags};
 
 use crate::camera::Camera;
 use crate::display::DisplayFrame;
@@ -88,6 +89,30 @@ pub struct Scene {
     pub items: Vec<DrawItem>,
     pub lights: Vec<LightItem>,
     pub environment: Environment,
+    /// Drawn after the overlay, so a notice never covers them: the local player's own hands and what they hold
+    /// (render.md 8.1). Lit, shadowed and depth-tested like `items`; never a ghost or an outline.
+    pub front: Vec<DrawItem>,
+    /// A flat textured quad drawn after `items` and before `front`, without the depth test: the notices strip
+    /// (render.md 8.1).
+    pub overlay: Option<Overlay>,
+}
+
+/// The overlay's pixels: RGBA8, sRGB-encoded colour with straight (not premultiplied) alpha, rows top first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// A textured quad in the world (render.md 8.1). The renderer uploads `image` again only when the `Arc` changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Overlay {
+    pub image: Arc<OverlayImage>,
+    /// Its centre. The quad lies in the pose's XY plane, X to the right and Y up, its face toward +Z.
+    pub pose: WorldPose,
+    /// Width and height, metres.
+    pub size: [f32; 2],
 }
 
 /// The cue's outline colour: a soft white, so it reads on any base colour without flashing.
@@ -100,7 +125,8 @@ impl Scene {
     /// caller reports those, since only it knows whether they exist elsewhere.
     pub fn highlight(&mut self, ids: &[ObjectId]) {
         for it in &mut self.items {
-            if ids.contains(&it.id) {
+            // Id NONE names no object (the hand markers): never highlighted.
+            if !it.id.is_none() && ids.contains(&it.id) {
                 it.outline = Some(HIGHLIGHT_COLOR);
             }
         }
@@ -139,7 +165,7 @@ impl Scene {
                 s.lights.push(LightItem { pose: d.pose, light: l });
             }
             let Some(shape) = o.shape else { continue };
-            s.items.push(DrawItem {
+            let item = DrawItem {
                 id: o.id,
                 pose: d.pose,
                 scale: o.scale,
@@ -148,7 +174,13 @@ impl Scene {
                 radius: o.radius,
                 outline: d.cue.map(|c| [CUE_COLOR[0], CUE_COLOR[1], CUE_COLOR[2], c.outline]),
                 ghost: d.cue.filter(|c| c.ghost_alpha > 0.0).map(|c| (c.ghost, c.ghost_alpha)),
-            });
+            };
+            // The own hands and what they hold: never under a notice (render.md 8.1).
+            if o.flags.contains(ViewFlags::OWN_HAND) || o.flags.contains(ViewFlags::HELD_LOCAL) {
+                s.front.push(DrawItem { outline: None, ghost: None, ..item });
+            } else {
+                s.items.push(item);
+            }
         }
         s
     }
@@ -375,6 +407,23 @@ struct Pipelines {
     main: wgpu::RenderPipeline,
     ghost: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
+    overlay: wgpu::RenderPipeline,
+}
+
+/// The overlay's uniform: its anchored model matrix, size included.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct OverlayUniform {
+    model: [[f32; 4]; 4],
+}
+
+/// The overlay's GPU side: the uniform, the sampler and the texture of the image last uploaded.
+struct OverlayGpu {
+    bgl: wgpu::BindGroupLayout,
+    layout: wgpu::PipelineLayout,
+    uniform: wgpu::Buffer,
+    sampler: wgpu::Sampler,
+    current: Option<(Arc<OverlayImage>, wgpu::BindGroup)>,
 }
 
 struct Targets {
@@ -413,6 +462,7 @@ pub struct Renderer {
     instance_cap: u64,
     targets: Vec<Targets>,
     timer: Option<GpuTimer>,
+    overlay: OverlayGpu,
 }
 
 /// The scene shader, single-view or multiview (scene.wgsl's header).
@@ -503,6 +553,7 @@ impl Renderer {
             cache: None,
         });
         drop(compiling);
+        let overlay = OverlayGpu::new(device, &globals_bgl, &shadow_bgl);
         let globals_slots = 4;
         let globals = Self::globals_buffer(device, globals_slots);
         let globals_bg = Self::globals_bind_group(device, &globals_bgl, &globals);
@@ -533,6 +584,7 @@ impl Renderer {
             instance_cap,
             targets: Vec::new(),
             timer: None,
+            overlay,
         }
         .with_timer()
     }
@@ -668,7 +720,41 @@ impl Renderer {
                     cache: None,
                 })
             };
+            let overlay = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("overlay"),
+                layout: Some(&self.overlay.layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_overlay"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+                // No depth test and no depth write: a notice is never hidden, and the depth layer stays as the
+                // scene wrote it.
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_overlay"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: mask,
+                cache: None,
+            });
             let p = Pipelines {
+                overlay,
                 main: make("scene", "vs_main", "fs_main", Some(wgpu::Face::Back), true, None),
                 ghost: make(
                     "ghost",
@@ -962,7 +1048,8 @@ impl Renderer {
         let mut opaque: BTreeMap<MeshKey, Vec<Instance>> = BTreeMap::new();
         let mut ghosts: BTreeMap<MeshKey, Vec<Instance>> = BTreeMap::new();
         let mut outlines: BTreeMap<MeshKey, Vec<Instance>> = BTreeMap::new();
-        for it in &scene.items {
+        let mut front: BTreeMap<MeshKey, Vec<Instance>> = BTreeMap::new();
+        for (it, is_front) in scene.items.iter().map(|i| (i, false)).chain(scene.front.iter().map(|i| (i, true))) {
             let (key, shape_scale) = self.mesh_for(&it.shape, it.radius);
             let s = [it.scale[0] * shape_scale[0], it.scale[1] * shape_scale[1], it.scale[2] * shape_scale[2]];
             let a = &it.appearance;
@@ -972,6 +1059,10 @@ impl Renderer {
                 emissive_rough: [a.emissive[0], a.emissive[1], a.emissive[2], a.roughness],
                 params: [a.metalness, 0.0, 0.0, 0.0],
             };
+            if is_front {
+                front.entry(key).or_default().push(inst(&it.pose, 1.0));
+                continue;
+            }
             opaque.entry(key).or_default().push(inst(&it.pose, 1.0));
             if let Some((g, alpha)) = &it.ghost {
                 ghosts.entry(key).or_default().push(inst(g, *alpha));
@@ -984,7 +1075,7 @@ impl Renderer {
         }
         let mut all: Vec<Instance> = Vec::new();
         let mut ranges: Vec<(u8, MeshKey, std::ops::Range<u32>)> = Vec::new();
-        for (pass, group) in [(0u8, &opaque), (1, &ghosts), (2, &outlines)] {
+        for (pass, group) in [(0u8, &opaque), (1, &ghosts), (2, &outlines), (3, &front)] {
             for (k, v) in group {
                 let start = all.len() as u32;
                 all.extend_from_slice(v);
@@ -1053,7 +1144,9 @@ impl Renderer {
         );
         // wgpu's clip space is glam's DirectX convention: depth 0..1, +Y up.
         let light_vp = glam::camera::rh::proj::directx::orthographic(-e, e, -e, e, 0.0, 4.0 * e) * light_view;
+        let overlay = self.prepare_overlay(scene.overlay.as_ref(), anchor);
         Prepared {
+            overlay,
             ranges,
             anchor,
             light_vp,
@@ -1124,7 +1217,7 @@ impl Renderer {
         rp.set_bind_group(0, &self.globals_bg, &[(slot * SLOT) as u32]);
         rp.set_vertex_buffer(1, self.instances.slice(..));
         for (pass, k, r) in &p.ranges {
-            if *pass == 0 {
+            if *pass == 0 || *pass == 3 {
                 let m = &self.meshes[k];
                 rp.set_vertex_buffer(0, m.vb.slice(..));
                 rp.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
@@ -1179,9 +1272,14 @@ impl Renderer {
         rp.set_bind_group(0, &self.globals_bg, &[(slot * SLOT) as u32]);
         rp.set_bind_group(1, &self.shadow_bg, &[]);
         rp.set_vertex_buffer(1, self.instances.slice(..));
+        let mut overlay_drawn = false;
         for (pass, k, r) in &p.ranges {
+            if *pass == 3 && !overlay_drawn {
+                draws += self.overlay_draw(&mut rp, p, pl);
+                overlay_drawn = true;
+            }
             rp.set_pipeline(match pass {
-                0 => &pl.main,
+                0 | 3 => &pl.main,
                 1 => &pl.ghost,
                 _ => &pl.outline,
             });
@@ -1191,7 +1289,40 @@ impl Renderer {
             rp.draw_indexed(0..m.n, 0, r.clone());
             draws += 1;
         }
+        if !overlay_drawn {
+            draws += self.overlay_draw(&mut rp, p, pl);
+        }
         draws
+    }
+
+    /// The overlay, if this frame has one: after the scene's items, before the front items.
+    fn overlay_draw(&self, rp: &mut wgpu::RenderPass<'_>, p: &Prepared, pl: &Pipelines) -> u32 {
+        let (true, Some((_, bg))) = (p.overlay, self.overlay.current.as_ref()) else { return 0 };
+        rp.set_pipeline(&pl.overlay);
+        rp.set_bind_group(2, bg, &[]);
+        rp.draw(0..6, 0..1);
+        1
+    }
+
+    /// Upload the overlay's model matrix, and its image when the `Arc` changed. False: no overlay this frame.
+    fn prepare_overlay(&mut self, ov: Option<&Overlay>, anchor: Pos) -> bool {
+        let Some(ov) = ov else { return false };
+        let img = &ov.image;
+        if img.width == 0 || img.height == 0 || img.rgba.len() as u64 != img.width as u64 * img.height as u64 * 4 {
+            return false;
+        }
+        let model = anchored_model(anchor, &ov.pose, [ov.size[0], ov.size[1], 1.0]);
+        self.ctx.queue.write_buffer(
+            &self.overlay.uniform,
+            0,
+            bytemuck::bytes_of(&OverlayUniform { model: model.to_cols_array_2d() }),
+        );
+        let fresh = self.overlay.current.as_ref().is_some_and(|(cur, _)| Arc::ptr_eq(cur, img));
+        if !fresh {
+            let bg = self.overlay.upload(&self.ctx, img);
+            self.overlay.current = Some((img.clone(), bg));
+        }
+        true
     }
 
     fn depth_copy_pipeline(&mut self, format: wgpu::TextureFormat, multisampled: bool) {
@@ -1327,7 +1458,10 @@ struct PassTarget<'a> {
 
 /// One frame's shared inputs: instance ranges, lights and the shadow box.
 struct Prepared {
+    /// Pass 0 opaque, 1 ghosts, 2 outlines, 3 the front items (drawn after the overlay).
     ranges: Vec<(u8, MeshKey, std::ops::Range<u32>)>,
+    /// The overlay's uniform and texture are uploaded: draw it.
+    overlay: bool,
     anchor: Pos,
     light_vp: Mat4,
     key_dir: Vec3,
@@ -1370,6 +1504,96 @@ fn array_view(t: &wgpu::Texture) -> wgpu::TextureView {
 }
 
 /// An object's model matrix relative to the frame's anchor, along world axes: the f64 difference, then f32.
+impl OverlayGpu {
+    fn new(device: &wgpu::Device, globals: &wgpu::BindGroupLayout, shadow: &wgpu::BindGroupLayout) -> OverlayGpu {
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("overlay"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<OverlayUniform>() as u64),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        // Groups 0 and 1 as the scene's (the pass binds them), 2 the overlay's.
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("overlay"),
+            bind_group_layouts: &[Some(globals), Some(shadow), Some(&bgl)],
+            immediate_size: 0,
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("overlay"),
+            size: std::mem::size_of::<OverlayUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("overlay"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        OverlayGpu { bgl, layout, uniform, sampler, current: None }
+    }
+
+    fn upload(&self, ctx: &GpuContext, img: &OverlayImage) -> wgpu::BindGroup {
+        let size = wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 };
+        let tex = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("overlay"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &img.rgba,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(img.width * 4), rows_per_image: None },
+            size,
+        );
+        let view = tex.create_view(&Default::default());
+        ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("overlay"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        })
+    }
+}
+
 fn anchored_model(anchor: Pos, pose: &WorldPose, s: [f32; 3]) -> Mat4 {
     let r = DMat3::from_quat(pose.rot.normalize());
     let t = offset_vec(pose.pos - anchor);
