@@ -72,7 +72,7 @@ fn version(tag: &str, edit: impl Fn(String) -> String) -> Version {
 }
 
 /// A component's id under version `v`, by the world's own derivation (world-model.md 7.9, pe-world
-/// `script_component_id`), which pe-replica's binding also calls.
+/// `script_component_id`), the one pe-world's `Register` check (`register_script`) rehashes.
 fn id_of(v: &Hash, c: &Component) -> ComponentId {
     let d = run::component_desc(c, ComponentId(0)).unwrap();
     pe_world::script::script_component_id(v, &c.name, d.fields().to_vec()).unwrap()
