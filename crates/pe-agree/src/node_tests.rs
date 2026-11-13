@@ -851,25 +851,29 @@ fn a_flooding_member_cannot_starve_two_hands_per_frame() {
     );
 }
 
-#[test]
-fn a_stalled_uplink_flushing_a_second_of_hands_at_120_hz() {
-    // Member 0's uplink stalls for 1 s and then sends everything at once: 240 hand entries, right at the burst. The
-    // entries stamped during the stall are late by then and void at the same cut everywhere; what matters is that
-    // the budget refuses at most a few, and member 0's entries after the stall pass and become final.
+/// Member 0's uplink stalls for `stall_ms` from 3 s at 120 Hz with two hands per frame, then sends everything at once.
+/// Returns the sim, the refusals per member, and how long after the stall member 0's entries are all final again:
+/// the first whole second from which every entry it submitted (up to 2 s before the run's end) is final.
+fn stall_run(stall_ms: i64, run_ms: i64) -> (Sim, [usize; 4], Option<i64>) {
     let rate = 120;
     let mut s = Sim::new(4, 31);
     s.clock = Clock(rate);
     s.per_frame = vec![Some((2, 0)); 4];
-    s.stall = Some((0, 3_000, 4_000));
+    let end = 3_000 + stall_ms;
+    s.stall = Some((0, 3_000, end));
     s.flooder = Some(0);
-    s.run(10_000);
+    s.run(run_ms);
     let k0 = s.keys.key(0);
     let mut refused = [0usize; 4];
     for (i, r) in refused.iter_mut().enumerate() {
         for e in &s.events[i] {
-            if let AgreeEvent::Refused { author, .. } = e {
-                assert_eq!(*author, k0, "member {i} refused another member's entry: {e:?}");
-                *r += 1;
+            match e {
+                AgreeEvent::Refused { author, .. } => {
+                    assert_eq!(*author, k0, "member {i} refused another member's entry: {e:?}");
+                    *r += 1;
+                }
+                AgreeEvent::Fault(f) => assert!(f.author == Some(k0) || f.from == k0, "fault not about 0: {f:?}"),
+                _ => {}
             }
         }
     }
@@ -879,13 +883,46 @@ fn a_stalled_uplink_flushing_a_second_of_hands_at_120_hz() {
     for f in 0..low.0 {
         final_ids.extend(s.nodes[1].entries_at(Frame(f)).unwrap().iter().map(|e| e.id()));
     }
-    // Entries from 5 s on (a second after the flush) are all final.
-    let after = &s.submitted[0][(2 * rate * 5) as usize..(2 * rate * 8) as usize];
-    let missing = after.iter().filter(|id| !final_ids.contains(id)).count();
-    assert_eq!(missing, 0, "{missing} of member 0's entries after the stall not final");
-    let voided = s.voids(1).len();
+    // Submitted ids are in order, two per frame from frame 1.
+    let upto = (2 * rate as i64 * (run_ms - 2_000) / 1_000) as usize;
+    let recovered = (0..(run_ms - 2_000 - end) / 1_000).find(|n| {
+        let from = (2 * rate as i64 * (end + n * 1_000) / 1_000) as usize;
+        s.submitted[0][from..upto].iter().all(|id| final_ids.contains(id))
+    });
+    let per_s: Vec<usize> = (0..run_ms / 1_000)
+        .map(|sec| {
+            let a = ((2 * rate as i64 * sec) as usize).min(s.submitted[0].len());
+            let b = ((2 * rate as i64 * (sec + 1)) as usize).min(s.submitted[0].len());
+            s.submitted[0][a..b].iter().filter(|id| final_ids.contains(id)).count()
+        })
+        .collect();
+    let first_refusal = s.events[1].iter().position(|e| matches!(e, AgreeEvent::Refused { .. }));
+    eprintln!("member 0 final per second {per_s:?}; final frame {low:?}; first refusal at event {first_refusal:?}");
+    (s, refused, recovered)
+}
+
+#[test]
+fn a_stalled_uplink_flushing_a_second_of_hands_at_120_hz() {
+    // A 1 s stall flushes 240 hand entries, inside the full burst of 240: nothing is refused. The entries stamped
+    // during the stall are late by then and void at the same cut everywhere; that is the stall, not the budget.
+    let (s, refused, recovered) = stall_run(1_000, 10_000);
+    assert_eq!(refused, [0; 4]);
+    assert!(recovered.is_some_and(|n| n <= 1), "member 0 not final again within 1 s of the stall: {recovered:?}");
+    eprintln!("stall 1 s at 120 Hz: refused {refused:?}, voided at member 1: {}", s.voids(1).len());
+}
+
+#[test]
+#[ignore = "fails with the arrival-time budget: refusals leave holes that never heal (Low 1, open)"]
+fn a_stalled_uplink_flushing_three_seconds_of_hands_at_120_hz() {
+    // @design-reviewer's Low 1 (me5616ae97a1b): VR Wi-Fi stalls for 2-3 s. A 3 s stall flushes 720 entries into a
+    // burst of 240; every peer refuses part of it and reports a RateExceeded fault against an honest member. The
+    // member's entries after the stall must still become final, soon.
+    let (s, refused, recovered) = stall_run(3_000, 14_000);
+    let faults: Vec<usize> =
+        (0..4).map(|i| s.events[i].iter().filter(|e| matches!(e, AgreeEvent::Fault(_))).count()).collect();
     eprintln!(
-        "stall flush at 120 Hz: refused per member {refused:?}, voided at member 1: {voided}, errors {}",
-        s.refused
+        "stall 3 s at 120 Hz: refused {refused:?}, faults {faults:?}, voided at member 1: {}, final again {recovered:?} s after",
+        s.voids(1).len()
     );
+    assert!(recovered.is_some_and(|n| n <= 2), "member 0 not final again within 2 s of the stall: {recovered:?}");
 }
