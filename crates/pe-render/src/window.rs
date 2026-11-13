@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use glam::{DQuat, DVec3};
-use pe_seams::{HostTime, RigPose, ViewFlags};
+use pe_seams::{FrameView, HostTime, RigPose, ViewFlags};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -197,6 +197,8 @@ pub struct DesktopView {
     started: Instant,
     last_present: Option<Instant>,
     last_frame: Option<HostTime>,
+    /// The newest view taken, drawn again when no new one was published.
+    last_view: Option<Arc<FrameView>>,
     targets: Vec<Target>,
     /// The notices strip's image (render.md 8.1).
     strip: StripCache,
@@ -280,6 +282,7 @@ impl DesktopView {
             started: Instant::now(),
             last_present: None,
             last_frame: None,
+            last_view: None,
             targets: Vec::new(),
             strip: StripCache::default(),
             report,
@@ -385,7 +388,10 @@ impl DesktopView {
             }
         };
         let t0 = Instant::now();
-        let Some(view) = self.slot.newest() else { return };
+        // Every view published since the last frame (render.md 3); the camera and the hand use the newest.
+        let batch = self.slot.take();
+        let Some(view) = batch.views.last().cloned().or_else(|| self.last_view.clone()) else { return };
+        self.last_view = Some(view.clone());
         let g = self.gfx.as_ref().expect("checked above");
         let mhz = g.window.current_monitor().and_then(|m| m.refresh_rate_millihertz());
         let size = [g.config.width, g.config.height];
@@ -422,7 +428,7 @@ impl DesktopView {
         self.feed.push(hand);
         let local = LocalPresentation { display_time, hands: [None, Some(DisplayHand { pose: hand.pose })] };
 
-        let mut frame = self.cfg.presenter.frame(&view, &local, &[camera]);
+        let Some(mut frame) = self.cfg.presenter.frame_batch(&batch, &local, &[camera]) else { return };
         frame.scene.overlay =
             self.strip.get(&frame.notices, window_text_px(size[1])).map(|img| window_overlay(&camera, size, img));
         for c in &frame.effects {

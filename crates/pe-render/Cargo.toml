@@ -32,3 +32,4 @@ wgpu-hal = { version = "=30.0.1", default-features = false, features = ["vulkan"
 
 [dev-dependencies]
 pe-seams = { path = "../pe-seams", features = ["test-util"] }
+pe-harness = { path = "../pe-harness" }

@@ -71,7 +71,7 @@ Numbers marked [I] are starting values, tuned at the M1 headset test.
 ## 3. Threads and data flow
 
 ```
- simulation thread ──publishes──► FrameView (Arc, atomic swap) ◄──reads── render thread
+ simulation thread ──publishes──► FrameSlot (queue of Arc<FrameView>) ◄──takes a batch── render thread
                                                                         │
        pe-xr (VR mode): xrWaitFrame paces it; it hands eye views        ├─► window (desktop mode)
        desktop: present (Fifo) paces it                                 ├─► headset eyes (via pe-xr)
@@ -81,8 +81,24 @@ Numbers marked [I] are starting values, tuned at the M1 headset test.
 ```
 
 - **The render thread** owns the GPU context, the display layer's state and the desktop hand. In VR mode it is pe-xr's
-  XR thread (xr.md 7.1). It never takes a lock the simulation holds: it reads the newest frame view by one atomic
-  pointer swap, and keeps the previous one for interpolation.
+  XR thread (xr.md 7.1).
+- **The frame-view queue** (@coordinator-opus's ruling m7fa4df66d2fe). A view's `CORRECTED` flags, `changes` and
+  `retracted` hold since the last publication, so a reader that took only the newest view would lose those of the
+  views between. Test 6 found that: a late push re-publishes a frame with `CORRECTED` and the next frame follows 4 ms
+  later, inside one 90 Hz display frame. Under X8 (b) that drew uncued jumps of up to 1.8 m.
+  - `FrameSlot` keeps every view published since the reader last took, in order and numbered. `take` hands them over
+    as a `Batch`, and `Presenter::frame_batch` feeds each to the display layer, the effect gate and the notices, then
+    draws the newest. The simulation and the render thread hold the slot's lock only to push one view or to drain.
+  - **Bounded by time:** `SLOT_SPAN`, about 250 ms of simulated time (8 views at 30 Hz, 30 at 120 Hz). Past it the
+    oldest go unread.
+  - **A gap** is a batch that doesn't start where the reader's last one ended: views lost to the span (a hitch), or
+    taken by another reader (a handoff between the window and the XR thread). Then the display layer blends every
+    object from where it was drawn to the frame's target, by D3's rules with the cue, once the whole batch is in. The
+    effect gate stops every played effect the newest view doesn't list, and the notices drop what they hold pending
+    (8.1).
+  - **One reader at a time.** If two ever run at once, each gets its own queue (`FrameSlot::reader()`, not built).
+  - `Presenter::frame` (one view, the newest) stays for tests and for callers not yet on batches; it reads nothing
+    published between its calls.
 - **winit's event loop** must run on the main thread on some platforms [V winit 0.30 docs]. WS-app decides where:
   either the main thread is the render thread, or the event loop forwards events to it.
 - **The simulation never waits on rendering,** and keeps stepping while the window is minimized or the headset is off.
@@ -337,6 +353,14 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
   hand inputs for a reason they can't see, and an entry of theirs voided as late, are told by a notice (section
   8.1). A refused edit reaches the agent that made it, through WorldApi; in M1 the player makes no edits.
 - **D8.** Section 7.
+- **After a gap** (section 3): the history and every pending correction start over from the batch's first view. Under
+  X8 (a) the batch's other views are history only; under (b) a `CORRECTED` one among them waits as usual. At the
+  frame that took the batch, every object blends from where it was drawn to that frame's target, as a correction by
+  D3's rules: an in-view one above `E_cue` carries the cue, so a hitch ends in outlines, never in an uncued jump
+  (@coordinator-opus's ruling m7fa4df66d2fe, with my question on the cue in m7eed3efee585). Counted in `gaps`.
+- **Known edge:** an object corrected out of view blends over `T_blend` with no cue (D3). If it comes into view while
+  blending, the rest of the blend shows uncued, up to about `1.5 × e / T_blend` per second (16 cm a 90 Hz frame for
+  a 1 m correction). Test 6 saw none; a cue on entering view would close it.
 - **Controls that bite** (divergence.md 8): with blending switched off, `snaps_in_view` must rise; with the own hand
   blended, `own_error` must go non-zero. The tests catch both.
 
@@ -353,14 +377,20 @@ advice). Only the local member's own **Input-class** entries: grabs, pushes and 
   by the submissions the inspector tracks itself.
 - **Refused** (P3): a `StepRecord` in a frame view's `changes` whose `author` is the local member, whose `class` is
   `Input` and whose outcome is `Refused`. A re-stepped entry appears again and the newest verdict wins, so
-  `notices::Notices` keeps a pending record per refused entry until the view's `final_frame` reaches its frame: by
-  then every member agrees on the verdict (R10, ruled: told once final; the setting `tell_at: AtOnce` exists).
+  `notices::Notices` keeps a pending record per refused entry until the view's `final_frame` passes its frame: by
+  then every member agrees on the verdict (R10, ruled: told once final; the setting `tell_at: AtOnce` exists). A cut
+  at `f` covers the entries stamped below `f` (S3), so an entry stamped at `final_frame` itself waits for the next
+  one (@engine-architect, m7a5011737891).
+  - **After a gap** (section 3), the views between are lost, and with them perhaps a newer record of a pending entry,
+    so everything pending goes untold (`dropped_at_gaps`). A refusal can be lost this way after a hitch of 250 ms or
+    more, accepted for M1. **After M1:** the notices read WorldApi's sequence-numbered, lossless `ChangeLog`, so they
+    can re-ask for what they missed (@coordinator-opus, m7fa4df66d2fe).
   - The delay after the lost grab's slide and cue is the cut lag plus finality: about 0.3-0.6 s with today's cut lag
     and two-chain finality [I, the coordinator's estimate; to be measured in the test-6 run].
   - While finality stalls (quorum lost, play unconfirmed), the refusal waits. If its verdict reverses in a replay
     (`Applied`), it is dropped and never told.
   - **What this needs from S5** (review L1, sent to @engine-architect): a view's `changes`, together with earlier
-    views', carry the final verdict of every entry at or below its `final_frame`, including entries re-stepped inside
+    views', carry the final verdict of every entry stamped below its `final_frame`, including entries re-stepped inside
     `finalize`. Otherwise a grab refused on the predicted line and applied in the final order would be told as
     refused. Nothing on main fills `changes` yet; a test goes with the producer.
   - **After a repair** (@coordinator-opus's ruling md020c9c6ad95): `final_frame` is the agreed cut's frame, so a
@@ -613,7 +643,12 @@ On the gate, in pe-render, with a software adapter where a GPU is needed:
    the highlighted object; `capture_unavailable` without an adapter.
 6. **Against pe-harness scenarios** (with WS-harness): the counters of section 13 for every network scenario, and the
    user's convergence target "no correction larger than a hand's width in view without a cue" over 20 seeds and 5
-   delays (plan M1 acceptance).
+   delays (plan M1 acceptance). Built as tests/ballpit.rs over pe-harness's ball-pit run (3 members, 48 balls, 6 s, a
+   push every 400 ms, one-way delays 10, 25, 50, 75 and 100 ms). Each member's views go through a `FrameSlot` and a
+   `Presenter` at 90 Hz, under X8 (a) and (b), each also with a 300 ms reader stall. The target is checked on the
+   display layer's counter and, independently, on the drawn output: no object in view moves more than `E_cue` in one
+   display frame without a cue, except where its own views jump without `CORRECTED` (a push's edit, drawn as it
+   happened). The quick form (1 seed) is on the gate; the full grid is `--ignored`, run in release.
 7. **By hand, on the headset** (each run with a go through @coordinator-opus): the frame time with 500 balls and one
    remote hand at 60 ms; X8 (a) against (b); the cue's look; hand tracking enabled in Virtual Desktop first (the user
    will, m981c546957f2).

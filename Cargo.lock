@@ -2330,6 +2330,7 @@ dependencies = [
  "arc-swap",
  "bytemuck",
  "glam",
+ "pe-harness",
  "pe-seams",
  "png",
  "pollster",
