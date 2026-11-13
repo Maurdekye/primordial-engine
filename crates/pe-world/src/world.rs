@@ -149,6 +149,8 @@ pub struct World {
     pub(crate) agree_settings: Arc<[u8]>,
     /// The modules table (5.4, 7.9): each script asset's row.
     pub(crate) modules: Arc<BTreeMap<crate::script::AssetId, crate::script::ModuleRow>>,
+    /// The modules table's pending commits (logic.md 6.2a), voided ones kept as their record until the next commit.
+    pub(crate) pending: Arc<BTreeMap<crate::script::AssetId, crate::script::PendingCommit>>,
     /// The asset that registered each script component id (6.6's registry value, 7.9).
     pub(crate) script_ids: Arc<BTreeMap<pe_sim::ComponentId, crate::script::AssetId>>,
     /// The store as a logic stage started (9.2a), for its removed objects' tombstones. Not state: taken by
@@ -176,6 +178,7 @@ impl World {
             line: pe_core::LineId(Hash::ZERO),
             agree_settings: Arc::from(&[][..]),
             modules: Arc::new(BTreeMap::new()),
+            pending: Arc::new(BTreeMap::new()),
             script_ids: Arc::new(BTreeMap::new()),
             stage_start: None,
         }

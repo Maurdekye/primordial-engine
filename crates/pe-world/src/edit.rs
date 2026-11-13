@@ -118,15 +118,48 @@ pub enum Op {
     Register { components: Vec<ComponentDesc> },
     /// Commits a version of script `script` (an asset id): writes its modules row and re-keys the old version's rows
     /// (7.9). `base` is the version the author edited (`None`: a new script); `activate_at` must be the entry's stamp.
+    /// `archive` is the version's source, a canonical archive (logic.md 4.1a), carried inside the entry so every
+    /// machine that applies the commit (live, re-simulating, replaying) holds it (7.9); `source` is its reference,
+    /// whose hash is the version V. Only `archive` is encoded: decoding derives `source` from it, so the two always
+    /// agree on the wire. Build one with [`Op::commit_script`].
     CommitScript {
         script: [u8; 32],
         base: Option<Version>,
         source: BlobRef,
+        archive: bytes::Bytes,
         toolchain: Hash,
         sdk: Hash,
         author_module: Hash,
         activate_at: u64,
     },
+    /// A voter's attestation that it built version `version` (V) of script `script` into module `module`, passing
+    /// every check of logic.md 6.2 step 3 (6.2a; 7.9). The only op of its transaction; it needs no `EDIT`, only to
+    /// be a voter of the pending commit.
+    AttestBuild { script: [u8; 32], version: Hash, module: Hash },
+}
+
+impl Op {
+    /// A `CommitScript` whose `source` is `archive`'s reference.
+    pub fn commit_script(
+        script: [u8; 32],
+        base: Option<Version>,
+        archive: bytes::Bytes,
+        toolchain: Hash,
+        sdk: Hash,
+        author_module: Hash,
+        activate_at: u64,
+    ) -> Op {
+        Op::CommitScript {
+            script,
+            base,
+            source: BlobRef::of(&archive),
+            archive,
+            toolchain,
+            sdk,
+            author_module,
+            activate_at,
+        }
+    }
 }
 
 /// The most components one `Register` may carry.
@@ -350,7 +383,7 @@ impl Transaction {
                         }
                     }
                 }
-                Op::CommitScript { script, base, source, toolchain, sdk, author_module, activate_at } => {
+                Op::CommitScript { script, base, archive, toolchain, sdk, author_module, activate_at, .. } => {
                     w.u8(9);
                     w.raw(script);
                     match base {
@@ -360,12 +393,19 @@ impl Transaction {
                             w.version(v);
                         }
                     }
-                    w.raw(&source.hash);
-                    w.raw(&source.len.to_le_bytes());
+                    // The archive, not its reference: the reference is derived on decoding (7.9).
+                    w.len(archive.len());
+                    w.raw(archive);
                     w.raw(&toolchain.0);
                     w.raw(&sdk.0);
                     w.raw(&author_module.0);
                     w.raw(&activate_at.to_le_bytes());
+                }
+                Op::AttestBuild { script, version, module } => {
+                    w.u8(10);
+                    w.raw(script);
+                    w.raw(&version.0);
+                    w.raw(&module.0);
                 }
             }
         }
@@ -573,15 +613,25 @@ impl<'a> R<'a> {
                     }
                     Op::Register { components }
                 }
-                9 => Op::CommitScript {
-                    script: self.arr()?,
-                    base: if self.flag()? { Some(self.version()?) } else { None },
-                    source: BlobRef { hash: self.arr()?, len: u64::from_le_bytes(self.arr()?) },
-                    toolchain: Hash(self.arr()?),
-                    sdk: Hash(self.arr()?),
-                    author_module: Hash(self.arr()?),
-                    activate_at: u64::from_le_bytes(self.arr()?),
-                },
+                9 => {
+                    let script = self.arr()?;
+                    let base = if self.flag()? { Some(self.version()?) } else { None };
+                    // Not row bytes: the payload's own bound limits it, and apply refuses it over
+                    // `MAX_SOURCE_BYTES` as `TooLarge` (7.9).
+                    let n = self.u32()? as usize;
+                    let archive = bytes::Bytes::copy_from_slice(self.take(n)?);
+                    Op::CommitScript {
+                        script,
+                        base,
+                        source: BlobRef::of(&archive),
+                        archive,
+                        toolchain: Hash(self.arr()?),
+                        sdk: Hash(self.arr()?),
+                        author_module: Hash(self.arr()?),
+                        activate_at: u64::from_le_bytes(self.arr()?),
+                    }
+                }
+                10 => Op::AttestBuild { script: self.arr()?, version: Hash(self.arr()?), module: Hash(self.arr()?) },
                 _ => return None,
             });
         }

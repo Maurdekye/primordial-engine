@@ -109,9 +109,13 @@ pub fn summary(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSna
             Op::CommitScript { script, base, .. } => {
                 let hex: String = script[..4].iter().map(|b| format!("{b:02x}")).collect();
                 format!(
-                    "committed {} of script {hex}…",
+                    "committed {} of script {hex}… for attestation",
                     if base.is_some() { "a new version" } else { "the first version" }
                 )
+            }
+            Op::AttestBuild { script, .. } => {
+                let hex: String = script[..4].iter().map(|b| format!("{b:02x}")).collect();
+                format!("attested a build of script {hex}…")
             }
         })
         .collect();
@@ -195,15 +199,8 @@ mod tests {
         let snap = w.snapshot(pe_core::Frame(0));
         let f = pe_sim::FieldDesc::new("hp", pe_sim::FieldKind::U32, 0, 1);
         let d = pe_sim::ComponentDesc::new(pe_sim::ComponentId(0x7000_0000_0000_0001), "Health", vec![f]).unwrap();
-        let commit = Op::CommitScript {
-            script: [0xab; 32],
-            base: None,
-            source: pe_world::components::BlobRef { hash: [1; 32], len: 3 },
-            toolchain: Hash([2; 32]),
-            sdk: Hash([3; 32]),
-            author_module: Hash([4; 32]),
-            activate_at: 9,
-        };
+        let src = b"src".to_vec().into();
+        let commit = Op::commit_script([0xab; 32], None, src, Hash([2; 32]), Hash([3; 32]), Hash([4; 32]), 9);
         let tx = Transaction {
             actor: pe_world::edit::Actor::Person,
             label: None,
@@ -213,7 +210,7 @@ mod tests {
         };
         let applied = WorldOutcome::Applied { created: vec![], overwrote: vec![], notes: vec![], inverse: None };
         let s = summary(Some(&tx), &applied, &snap);
-        assert_eq!(s, "Registered Health; committed the first version of script abababab….");
+        assert_eq!(s, "Registered Health; committed the first version of script abababab… for attestation.");
         assert!(crate::watch::touched_ids(Some(&tx), &applied).is_empty());
     }
 

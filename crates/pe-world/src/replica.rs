@@ -191,7 +191,7 @@ impl World {
         };
         // Slice D's tables (7.9): which assets registered which components, and the modules rows. Appended only when
         // a script exists, so a world without scripts keeps the root it had.
-        if !self.modules.is_empty() || !self.script_ids.is_empty() {
+        if !self.modules.is_empty() || !self.pending.is_empty() || !self.script_ids.is_empty() {
             for t in [crate::tree::table::REGISTRY, crate::tree::table::MODULES] {
                 h.write_len_prefixed(&crate::tree::table_record(&self.table_entries(t)));
             }

@@ -301,8 +301,11 @@ impl World {
                 }
             }
             table::MODULES => {
-                for (a, m) in self.modules.iter() {
-                    e.push((a.to_vec(), m.to_bytes()));
+                // Each asset's current row and pending commit, in asset order (logic.md 6.2a).
+                let assets: std::collections::BTreeSet<_> = self.modules.keys().chain(self.pending.keys()).collect();
+                for a in assets {
+                    let v = crate::script::modules_value(self.modules.get(a), self.pending.get(a));
+                    e.push((a.to_vec(), v));
                 }
             }
             table::GOVERNANCE => {
