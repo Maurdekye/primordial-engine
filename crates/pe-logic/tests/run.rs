@@ -74,9 +74,18 @@ struct World {
 
 impl World {
     fn new(settings: RunSettings) -> World {
+        World::with_script(settings, false)
+    }
+
+    /// `metered`: load the module as a fault bundle carries it, already metered (`Script::load_metered`).
+    fn with_script(settings: RunSettings, metered: bool) -> World {
         let s = Settings::default();
         let e = runtime::engine(&s).unwrap();
-        let script = Script::load(&e, s, tally()).unwrap_or_else(|e| panic!("{e}"));
+        let mut script = Script::load(&e, s, tally()).unwrap_or_else(|e| panic!("{e}"));
+        if metered {
+            let (bytes, hash) = (script.metered.clone(), script.module_hash());
+            script = Script::load_metered(&e, s, &bytes, hash).unwrap_or_else(|e| panic!("{e}"));
+        }
         let m = run::read_manifest(&script).unwrap();
         // The script's own components get ids here; `pe.Light` is the engine's.
         let own: Vec<_> = m.components.iter().filter(|c| !c.name.starts_with("pe.")).cloned().collect();
@@ -219,6 +228,51 @@ fn systems_run_in_order_and_the_copy_in_skip_changes_nothing() {
             out.push((w.store.state_hash(), fuel));
         }
         assert_eq!(out[0], out[1], "the skip must change neither the state nor the fuel");
+    });
+}
+
+#[test]
+fn a_metered_module_loads_as_it_is_and_runs_identically() {
+    big_stack(|| {
+        let mut out = Vec::new();
+        for metered in [false, true] {
+            let mut w = World::with_script(RunSettings::default(), metered);
+            for k in 1..=3 {
+                w.object(k, &[("Counter", counter(0, k as u32)), ("Doubled", le(&[0], &[8]))]);
+            }
+            let mut fuel = 0;
+            for f in 1..=3 {
+                let (pre, post) = w.frame(f);
+                assert!(pre.faults.is_empty() && post.faults.is_empty(), "{pre:?} {post:?}");
+                fuel += pre.fuel + post.fuel;
+            }
+            out.push((w.store.state_hash(), fuel));
+        }
+        assert_eq!(out[0], out[1], "the metered load must run exactly as the original");
+    });
+}
+
+#[test]
+fn load_metered_refuses_other_bytes() {
+    big_stack(|| {
+        let s = Settings::default();
+        let e = runtime::engine(&s).unwrap();
+        let script = Script::load(&e, s, tally()).unwrap();
+        let (bytes, hash) = (script.metered.clone(), script.module_hash());
+        assert_eq!(Script::load_metered(&e, s, &bytes, hash).unwrap().module_hash(), hash);
+        // Not the row's module.
+        let err = Script::load_metered(&e, s, &bytes, Hash::of("pe.logic.module", b"other")).err().unwrap();
+        assert!(matches!(err, runtime::LoadError::NotTheModule { .. }), "{err}");
+        // Bytes the pass never ran over, even under their own hash: no meter globals.
+        let raw = tally();
+        let err = Script::load_metered(&e, s, raw, Hash::of("pe.logic.module", raw)).err().unwrap();
+        assert!(err.to_string().contains("not metered"), "{err}");
+        // A mutable global hidden from the per-frame reset: its `pe_g` export renamed (same length, still valid).
+        let at = bytes.windows(4).position(|w| w == b"pe_g").expect("tally has a mutable global");
+        let mut hidden = bytes.clone();
+        hidden[at + 3] = b'x';
+        let err = Script::load_metered(&e, s, &hidden, Hash::of("pe.logic.module", &hidden)).err().unwrap();
+        assert!(err.to_string().contains("is not exported as pe_g"), "{err}");
     });
 }
 

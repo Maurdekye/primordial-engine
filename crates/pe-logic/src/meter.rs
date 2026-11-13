@@ -686,3 +686,105 @@ fn rewrite_body(
     }
     Ok(f)
 }
+
+/// Checks bytes the pass already produced (a fault bundle's module, @diverge-eng's replay) without running the pass
+/// again: [`crate::runtime::Script::load_metered`] calls it after the bytes' hash matched the row's `author_module`,
+/// which already proves they are the author's metered output. This is defence in depth, and it reads only what the
+/// runtime relies on: the module validates under the same features; its imports are ABI v0's; it has one memory,
+/// exported, and the ABI's exports with their signatures; the pass's fuel (`i64`) and depth (`i32`) globals are
+/// exported as mutable; and every other mutable global the module defines is exported as `pe_g<index>`, so the
+/// per-frame reset (3.6) restores all of them. The report's `functions` counts defined functions; `segments` and
+/// `max_weight` are the pass's own figures and are 0 here.
+pub fn check_metered(wasm: &[u8], cfg: Config) -> Result<Report, Refusal> {
+    let perr = parse_err(wasm);
+    let mut v = Validator::new_with_features(features(&cfg));
+    let mut types: Vec<wasmparser::FuncType> = Vec::new();
+    let mut func_types: Vec<u32> = Vec::new(); // whole function index space: imports, then defined
+    // Imports are functions only (checked below), so the global index space is the module's own globals.
+    let mut globals: Vec<(wasmparser::ValType, bool)> = Vec::new();
+    let mut memories = 0u32;
+    let mut defined = 0u32;
+    let mut exports: Vec<(String, ExternalKind, u32)> = Vec::new();
+    for p in Parser::new(0).parse_all(wasm) {
+        let p = p.map_err(&perr)?;
+        v.payload(&p).map_err(&perr)?;
+        match &p {
+            Payload::TypeSection(r) => {
+                for t in r.clone().into_iter_err_on_gc_types() {
+                    types.push(t.map_err(&perr)?);
+                }
+            }
+            Payload::ImportSection(r) => {
+                for imp in r.clone().into_imports() {
+                    let imp = imp.map_err(&perr)?;
+                    let TypeRef::Func(ti) = imp.ty else {
+                        return refuse(RefusalKind::Import, format!("import {:?} is not a function", imp.name));
+                    };
+                    let ok = imp.module == abi::IMPORT_MODULE
+                        && abi::import(imp.name).is_some_and(|s| s.matches(&types[ti as usize]));
+                    if !ok {
+                        return refuse(RefusalKind::Import, format!("import {:?} is not ABI v0's", imp.name));
+                    }
+                    func_types.push(ti);
+                }
+            }
+            Payload::FunctionSection(r) => {
+                for t in r.clone() {
+                    func_types.push(t.map_err(&perr)?);
+                    defined += 1;
+                }
+            }
+            Payload::MemorySection(r) => memories += r.count(),
+            Payload::GlobalSection(r) => {
+                for g in r.clone() {
+                    let g = g.map_err(&perr)?;
+                    globals.push((g.ty.content_type, g.ty.mutable));
+                }
+            }
+            Payload::ExportSection(r) => {
+                for e in r.clone() {
+                    let e = e.map_err(&perr)?;
+                    exports.push((e.name.to_string(), e.kind, e.index));
+                }
+            }
+            Payload::StartSection { .. } => return refuse(RefusalKind::Abi, "a script has no start function"),
+            _ => {}
+        }
+    }
+    if memories != 1 {
+        return refuse(RefusalKind::Abi, format!("a script defines exactly one memory, not {memories}"));
+    }
+    let export = |name: &str, kind: ExternalKind| exports.iter().find(|(n, k, _)| n == name && *k == kind).map(|e| e.2);
+    if export(abi::MEMORY_EXPORT, ExternalKind::Memory).is_none() {
+        return refuse(RefusalKind::Abi, "the memory is not exported as `memory`");
+    }
+    for sig in abi::EXPORTS {
+        let ok = export(sig.name, ExternalKind::Func)
+            .and_then(|f| func_types.get(f as usize))
+            .is_some_and(|t| sig.matches(&types[*t as usize]));
+        if !ok {
+            return refuse(RefusalKind::Abi, format!("missing or mistyped export {}", sig.describe()));
+        }
+    }
+    let ours = [(FUEL_GLOBAL, wasmparser::ValType::I64), (DEPTH_GLOBAL, wasmparser::ValType::I32)];
+    let mut pass_globals = Vec::new();
+    for (name, ty) in ours {
+        let g = export(name, ExternalKind::Global);
+        if g.and_then(|g| globals.get(g as usize)) != Some(&(ty, true)) {
+            return refuse(RefusalKind::Abi, format!("not metered: no mutable {ty:?} global exported as {name}"));
+        }
+        pass_globals.extend(g);
+    }
+    let mut mutable_globals = Vec::new();
+    for (i, (_, mutable)) in globals.iter().enumerate() {
+        let i = i as u32;
+        if !mutable || pass_globals.contains(&i) {
+            continue;
+        }
+        if export(&format!("{GLOBAL_PREFIX}{i}"), ExternalKind::Global) != Some(i) {
+            return refuse(RefusalKind::Abi, format!("mutable global {i} is not exported as {GLOBAL_PREFIX}{i}"));
+        }
+        mutable_globals.push(i);
+    }
+    Ok(Report { functions: defined, segments: 0, max_weight: 0, mutable_globals })
+}

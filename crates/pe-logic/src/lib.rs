@@ -25,8 +25,10 @@ pub mod runtime;
 /// The engine settings of 5.1; `Settings::thread_stack` is the native stack a thread that runs guests needs.
 pub use runtime::Settings;
 
-/// pe-logic's result version: bumped on any change to pe-logic that can alter a result (a state, a fault, a fuel
-/// count), since the crate's version does not move with its code. Part of [`identity`].
+/// pe-logic's result version: bumped on any change that can alter a result (a state, a fault, a fuel count), since
+/// the crate's version does not move with its code. That includes pe-logic's own code, the vendored wasmtime patch
+/// (`vendor/wasmtime-50.0.1`, `vendor/PATCHES.md`) and wasmtime's cargo features in the workspace manifest, none of
+/// which [`WASMTIME_VERSION`] sees (@shader-reviewer's Low on v4-r1). Part of [`identity`].
 pub const RESULT_VERSION: u32 = 1;
 
 /// The wasmtime release pe-logic runs on, as pinned in the workspace manifest (`=50.0.1`). A test checks it against
@@ -56,6 +58,13 @@ pub fn identity(settings: &Settings, run: &run::RunSettings) -> Vec<u8> {
     let run::RunSettings { fuel_per_call, skip_unchanged: _ } = run;
     b.extend_from_slice(&fuel_per_call.to_le_bytes());
     b
+}
+
+/// Refuses unless this machine's [`identity`] equals `recorded`, the runner identity a fault bundle or the world
+/// carries. A replay calls it before [`runtime::Script::load_metered`], whose bytes do not pin the settings
+/// (@coordinator-opus meaa5b7bf57e9: replay refuses a mismatched runner).
+pub fn check_identity(recorded: &[u8], settings: &Settings, run: &run::RunSettings) -> Result<(), runtime::LoadError> {
+    if identity(settings, run) == recorded { Ok(()) } else { Err(runtime::LoadError::OtherRunner) }
 }
 
 #[cfg(test)]
@@ -92,5 +101,7 @@ mod identity_tests {
             assert_ne!(*x, base, "setting {i} left the identity unchanged");
         }
         assert_eq!(identity(&s, &run::RunSettings { skip_unchanged: !r.skip_unchanged, ..r }), base);
+        assert!(check_identity(&base, &s, &r).is_ok());
+        assert!(matches!(check_identity(&v[0], &s, &r), Err(runtime::LoadError::OtherRunner)));
     }
 }

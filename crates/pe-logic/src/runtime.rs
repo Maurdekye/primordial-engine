@@ -161,6 +161,13 @@ pub enum LoadError {
     Refused(Refusal),
     /// Cranelift or the linker failed on a module the validator accepted: a local fault, never a world fault.
     Compile(String),
+    /// [`Script::load_metered`]: the bytes are not the module the row names.
+    NotTheModule {
+        expected: pe_core::Hash,
+        got: pe_core::Hash,
+    },
+    /// [`crate::check_identity`]: this machine's runner is not the one the bundle or world recorded.
+    OtherRunner,
 }
 
 impl std::fmt::Display for LoadError {
@@ -168,6 +175,10 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Refused(r) => write!(f, "refused: {r}"),
             LoadError::Compile(e) => write!(f, "compile: {e}"),
+            LoadError::OtherRunner => write!(f, "not the runner the bundle or world recorded (pe_logic::identity)"),
+            LoadError::NotTheModule { expected, got } => {
+                write!(f, "not the module the row names: expected {expected:?}, got {got:?}")
+            }
         }
     }
 }
@@ -191,6 +202,36 @@ impl Script {
         let pre =
             linker(engine).and_then(|l| l.instantiate_pre(&module)).map_err(|e| LoadError::Compile(e.to_string()))?;
         Ok(Script { engine: engine.clone(), settings, pre, report, metered })
+    }
+
+    /// Loads bytes the metering pass already produced, as they are: a fault bundle carries exactly the module that
+    /// ran (S2 `Replica::module`; @coordinator-opus mc16cdc246147). Refused unless `Hash::of("pe.logic.module",
+    /// bytes)` equals `expected`, the row's `author_module`; then [`meter::check_metered`] checks what the runtime
+    /// relies on, and the module compiles on the same engine and linker as [`Script::load`]. The pass is never run
+    /// again: metering twice gives other bytes and another hash. `report.segments` and `report.max_weight` are 0.
+    ///
+    /// **`settings` must be the world's, the ones the bytes were metered with.** The hash pins the bytes, not the
+    /// settings: the pass bakes `meter.depth_limit` into the module while the host classifies a depth trap by
+    /// `settings.meter.depth_limit`, so a larger limit here turns every depth fault into `Unreachable`; and bytes
+    /// metered with `nan_observe` off but loaded with it on run with neither Cranelift's NaN canonicalization nor the
+    /// pass's, so NaN bits differ. Nothing here can detect either (@shader-reviewer's Low on e6f4b242). A replay
+    /// caller checks [`crate::check_identity`] against the runner identity the bundle or world recorded before it
+    /// loads (@coordinator-opus meaa5b7bf57e9: replay refuses a mismatched runner).
+    pub fn load_metered(
+        engine: &Engine,
+        settings: Settings,
+        metered: &[u8],
+        expected: pe_core::Hash,
+    ) -> Result<Script, LoadError> {
+        let got = pe_core::Hash::of("pe.logic.module", metered);
+        if got != expected {
+            return Err(LoadError::NotTheModule { expected, got });
+        }
+        let report = meter::check_metered(metered, settings.meter).map_err(LoadError::Refused)?;
+        let module = Module::new(engine, metered).map_err(|e| LoadError::Compile(e.to_string()))?;
+        let pre =
+            linker(engine).and_then(|l| l.instantiate_pre(&module)).map_err(|e| LoadError::Compile(e.to_string()))?;
+        Ok(Script { engine: engine.clone(), settings, pre, report, metered: metered.to_vec() })
     }
 
     pub fn instantiate(&self, services: Box<dyn Services>) -> wasmtime::Result<Instance> {
