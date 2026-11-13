@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use pe_replica::hands::hand_mode;
 use pe_replica::mock::MockClock;
 use pe_replica::world::{BodyKind, Change, Phase, ShapeRow, WorldModel};
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
@@ -16,7 +17,7 @@ use pe_seams::{
     SignedEntry,
 };
 use pe_sim::Transform;
-use pe_world::components::{Appearance, Body, Hand, Name, Shape, body_kind, shape_kind};
+use pe_world::components::{Appearance, Body, BodyState, Hand, Name, Shape, body_kind, shape_kind};
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
 use pe_world::{BlobStore, GENESIS, HandPose, Input, World, perm};
 
@@ -685,4 +686,195 @@ fn a_joiner_takes_every_world_setting_from_the_real_world_it_imports() {
     joiner.advance(Frame(64), &mut s);
     assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64), "the host's roots through the grab, push and release");
     assert_eq!((joiner.faults(), host.faults()), (0, 0));
+}
+
+// ---- hand bodies (replica.md 3.3; world-model.md 8.1; D18b) ---------------------------------------------------------
+
+/// A hand pack along the floor: one pose per `x`, at (x, 0.1, 0), closed or open.
+fn hand_path(xs: &[f64], closed: bool) -> Input {
+    let pose = |x| HandPose { pos: pos(x, 0.1, 0.0), rot: [0.0, 0.0, 0.0, 1.0], grip: 0.5, engaged: closed };
+    Input::Hand { hand: oid(HAND), poses: xs.iter().map(|&x| pose(x)).collect(), hold: 0 }
+}
+
+/// The hand along `xs`, one pose a frame from frame `from`, in packs of at most pe-world's `MAX_POSES`, each
+/// following the one before, so they make a stream.
+fn hand_packs(b: &mut EntryBuilder, from: u64, xs: &[f64], closed: bool) -> Vec<SignedEntry> {
+    let packs = xs.chunks(pe_world::input::MAX_POSES);
+    packs
+        .enumerate()
+        .map(|(k, c)| input(b, from + (k * pe_world::input::MAX_POSES) as u64, &hand_path(c, closed)))
+        .collect()
+}
+
+fn mode(m: u8) -> Input {
+    Input::HandMode { hand: oid(HAND), mode: m }
+}
+
+/// Where `id` is now, as plain numbers.
+fn at(r: &ReplicaImpl<PeWorld>, id: u128) -> [f64; 3] {
+    (r.world().world().store().world_transform(oid(id)).expect("placed").pos - Pos::ORIGIN).0
+}
+
+/// Run `r` one frame at a time to `to`, returning the fastest `ids` moved between two frames, in m/s.
+fn fastest(r: &mut ReplicaImpl<PeWorld>, s: &mut Source, ids: &[u128], to: u64) -> f64 {
+    let mut last: Vec<[f64; 3]> = ids.iter().map(|&id| at(r, id)).collect();
+    let mut top = 0.0_f64;
+    while r.frame().0 < to {
+        let next = r.frame().0 + 1;
+        r.advance(Frame(next), s);
+        for (k, &id) in ids.iter().enumerate() {
+            let p = at(r, id);
+            let d = (0..3).map(|i| (p[i] - last[k][i]).powi(2)).sum::<f64>().sqrt();
+            top = top.max(d * 60.0);
+            last[k] = p;
+        }
+    }
+    top
+}
+
+/// The hand sweeps along the floor from x = 0 to x = 3 at 6 m/s, through the ball at x = 2, closed or open, after
+/// an optional mode input. Where the ball ends.
+fn sweep(closed: bool, mode_input: Option<u8>) -> [f64; 3] {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    if let Some(m) = mode_input {
+        s.add(input(&mut b, 1, &mode(m)));
+    }
+    let xs: Vec<f64> = (0..=30).map(|k| 0.1 * f64::from(k)).collect();
+    hand_packs(&mut b, 2, &xs, closed).into_iter().for_each(|e| s.add(e));
+    let mut r = replica_of(with_hand_and_ball());
+    r.advance(Frame(90), &mut s);
+    assert_eq!(r.faults(), 0);
+    at(&r, BALL)
+}
+
+/// D18b's modes (@coordinator-opus): in "closed hand", the default, a closed hand has a
+/// body and pushes the ball it sweeps through, and an open hand has none and passes through it; in "always within
+/// reach" an open hand pushes too.
+#[test]
+fn a_closed_hand_pushes_a_ball_and_an_open_one_passes_through_unless_always_within_reach() {
+    let pushed = sweep(true, None);
+    assert!(pushed[0] > 2.5, "a closed hand pushes the ball along: {pushed:?}");
+    let left = sweep(false, None);
+    assert!((left[0] - 2.0).abs() < 0.01, "an open hand passes through it: {left:?}");
+    let always = sweep(false, Some(hand_mode::ALWAYS_WITHIN_REACH));
+    assert!(always[0] > 2.5, "always within reach, an open hand pushes it too: {always:?}");
+}
+
+/// A pose jump faster than a hand may push (world-model.md 8.1's `max_push_speed`) moves the hand's body without
+/// sweeping it, and without carrying its speed into what it touches: a closed hand resting against the ball jumps
+/// through it, 1.19 m in one frame (71 m/s). Driven there, the hand would hit the ball through their contact at that
+/// speed; placed there, it leaves the ball where it was. A jump from 1.5 m into the ball's side (27 m/s) pushes the
+/// ball out of the hand gently.
+#[test]
+fn a_pose_jump_moves_the_hand_without_hitting_what_it_jumps_from_or_onto() {
+    let run = |from: f64, to: f64| {
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut s = Source::default();
+        let mut xs = vec![from; 10];
+        xs.extend([to; 6]);
+        s.add(input(&mut b, 2, &hand_path(&xs, true)));
+        let mut r = replica_of(with_hand_and_ball());
+        r.advance(Frame(11), &mut s);
+        let before = at(&r, BALL);
+        let top = fastest(&mut r, &mut s, &[BALL], 40);
+        assert_eq!(r.faults(), 0);
+        (before, top, at(&r, BALL))
+    };
+    let rest = 2.0 - 0.1 - f64::from(pe_replica::world::HAND_RADIUS);
+    let (before, top, after) = run(rest, 3.0);
+    assert!(top < 1.0, "a jump through the ball leaves it: {top} m/s");
+    assert!((after[0] - before[0]).abs() < 0.05, "where it was: {before:?} then {after:?}");
+    let (_, top, after) = run(1.5, 1.95);
+    assert!(top < 4.0, "a jump into the ball pushes it out gently: {top} m/s");
+    assert!(after[0] > 2.05, "and out of the hand: {after:?}");
+}
+
+/// A hand that becomes physical inside a pile (its mode flips to always within reach) appears where it is, and the
+/// soft contacts move the balls it overlaps apart gently instead of throwing them (world-model.md 8.1): three balls
+/// 12 cm from the hand's centre, each 7 cm inside its body and clear of the others, so only the hand moves them.
+#[test]
+fn a_hand_that_becomes_physical_inside_a_pile_moves_the_balls_apart_gently() {
+    let k = keys().key(0);
+    let mut w = genesis();
+    w.create(oid(HAND), None, k, GENESIS).expect("hand");
+    w.insert(oid(HAND), Transform::at(pos(0.0, 0.1, 0.0))).expect("hand transform");
+    w.insert(oid(HAND), Hand { owner: k, ..Hand::default() }).expect("hand row");
+    let ring: Vec<u128> = (0..3).map(|i| BALL + i).collect();
+    for (i, &id) in ring.iter().enumerate() {
+        let angle = std::f64::consts::TAU * i as f64 / 3.0;
+        w.create(oid(id), None, k, GENESIS).expect("ball");
+        w.insert(oid(id), Transform::at(pos(0.12 * angle.cos(), 0.1, 0.12 * angle.sin()))).expect("ball transform");
+        w.insert(oid(id), dynamic()).expect("ball body");
+        w.insert(oid(id), sphere(0.1)).expect("ball shape");
+    }
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    s.add(input(&mut b, 10, &mode(hand_mode::ALWAYS_WITHIN_REACH)));
+    let mut r = replica_of(w);
+    r.advance(Frame(10), &mut s);
+    let before: Vec<[f64; 3]> = ring.iter().map(|&id| at(&r, id)).collect();
+    let top = fastest(&mut r, &mut s, &ring, 60);
+    assert!(top < 4.0, "the pile moves apart gently: {top} m/s");
+    let moved = ring.iter().zip(&before).any(|(&id, b)| (at(&r, id)[0] - b[0]).abs() > 0.01);
+    assert!(moved, "the hand's body pushed the balls it overlapped");
+    assert_eq!(r.faults(), 0);
+}
+
+/// Hand bodies are rebuilt from the hand rows inside each frame's step, never kept across a rollback (world-model.md
+/// 8.1): a mode flip that arrives late rolls back to before it, and the roots are those of a replica that had it all
+/// along.
+#[test]
+fn a_mode_flip_that_arrives_late_rolls_back_to_the_same_roots() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let xs: Vec<f64> = (0..=30).map(|k| 0.1 * f64::from(k)).collect();
+    let sweep_in = hand_packs(&mut b, 2, &xs, false);
+    let flip = input(&mut b, 12, &mode(hand_mode::ALWAYS_WITHIN_REACH));
+    let mut all = Source::default();
+    sweep_in.iter().cloned().for_each(|e| all.add(e));
+    all.add(flip.clone());
+    let mut a = replica_of(with_hand_and_ball());
+    a.advance(Frame(64), &mut all);
+    let mut late = Source::default();
+    sweep_in.into_iter().for_each(|e| late.add(e));
+    let mut c = replica_of(with_hand_and_ball());
+    c.advance(Frame(40), &mut late);
+    late.add(flip);
+    let adv = c.advance(Frame(64), &mut late);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 12), "the late flip rolls back: {adv:?}");
+    assert_eq!(roots(&c, 64), roots(&a, 64));
+    assert!(at(&a, BALL)[0] > 2.5, "the flip made the open hand push the ball");
+    assert_eq!((a.faults(), c.faults()), (0, 0));
+}
+
+/// After its input's span, a hand that came as part of a stream coasts at its last velocity for 100 ms, then holds
+/// still (replica.md 3.3, D52): with single poses 5 cm a frame apart (3 m/s) ending at frame 4, its body moves on for
+/// six frames at 60 Hz and then stops.
+#[test]
+fn a_streamed_hand_coasts_for_100_ms_after_its_span_then_holds() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    for (f, x) in [(2u64, 0.0), (3, 0.05), (4, 0.10)] {
+        s.add(input(&mut b, f, &hand_path(&[x], true)));
+    }
+    let mut r = replica_of(with_hand_and_ball());
+    let mut xs = Vec::new();
+    for f in 5..=16u64 {
+        r.advance(Frame(f), &mut s);
+        xs.push(r.physics().pose(oid(HAND)).expect("the hand's body").position[0]);
+    }
+    // xs[k] is the body's x after frame 4 + k: it reached 0.10 at frame 4, coasts through frames 5 to 10, then holds.
+    let step = |k: usize| xs[k + 1] - xs[k];
+    assert!((0..5).all(|k| (step(k) - 0.05).abs() < 1e-3), "it coasts at 3 m/s: {xs:?}");
+    assert!((6..9).all(|k| step(k).abs() < 1e-9), "then it holds: {xs:?}");
+    // The body is the replica's own: it writes no pose and no `BodyState` row back to the world model, whose hand
+    // stays where its last input put it, through the cuts at frames 8 and 16.
+    assert!((at(&r, HAND)[0] - 0.10).abs() < 1e-6, "the world's hand stays at its input: {:?}", at(&r, HAND));
+    assert!(r.world().world().store().get::<BodyState>(oid(HAND)).is_none(), "no BodyState row for a hand");
+    assert_eq!(r.faults(), 0);
 }

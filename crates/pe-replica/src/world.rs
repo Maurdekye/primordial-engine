@@ -127,6 +127,8 @@ pub struct HandRow {
     pub span: u32,
     /// The stamp of the input before it, if any: the stream rule of replica.md 3.3.
     pub previous: Option<(Frame, u32)>,
+    /// When its body is physical (D18b, per member): [`crate::hands::hand_mode`].
+    pub mode: u8,
 }
 
 /// A claim (world-model.md 7.2): `hand` holds `object` since frame `since`.
