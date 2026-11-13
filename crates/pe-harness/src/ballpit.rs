@@ -171,6 +171,12 @@ pub fn hand_payload(hand: ObjectId, to: Pos) -> Vec<u8> {
     Input::Hand { hand, poses: vec![pose], hold: HAND_HOLD }.encode()
 }
 
+/// The input that claims `ball` for `hand` (world-model.md 7.2): refused `OutOfReach` unless the hand's target is within
+/// the world's reach (100 mm, plus 50 mm slack, by default) of the ball's bounding sphere when it applies.
+pub fn grab_payload(ball: ObjectId, hand: ObjectId) -> Vec<u8> {
+    Input::Grab { object: ball, hand: Some(hand) }.encode()
+}
+
 /// The input that pushes `ball` with `impulse` at its centre.
 pub fn shove_payload(ball: ObjectId, impulse: [f32; 3]) -> Vec<u8> {
     Input::Push { object: ball, impulse, at: None }.encode()
@@ -278,8 +284,20 @@ impl BallPitRun {
     }
 }
 
+/// A scenario's own inputs for one member, beyond `cfg`'s pushes: given the member, the genesis world, the balls and
+/// the member's node, the node with its inputs scheduled (`SeamNode::submit_at`).
+pub type Script<'a> = &'a dyn Fn(NodeId, &World, &[ObjectId], Member) -> Member;
+
+/// A ball-pit member's node.
+pub type Member = SeamNode<crate::lockstep::LockstepAgreement, ReplicaImpl<PeWorld>>;
+
 /// Runs `cfg`. `None` if the world or a replica can't be built (a bug in the preset or the replica, not the run).
 pub fn run(cfg: &BallPit) -> Option<BallPitRun> {
+    run_with(cfg, &|_, _, _, node| node)
+}
+
+/// Runs `cfg` with `script`'s inputs added to each member's.
+pub fn run_with(cfg: &BallPit, script: Script<'_>) -> Option<BallPitRun> {
     let keys = keys(cfg.members);
     let world = genesis(cfg.seed, cfg.balls, &keys)?;
     let balls: Vec<ObjectId> = (0..cfg.balls)
@@ -310,6 +328,7 @@ pub fn run(cfg: &BallPit) -> Option<BallPitRun> {
                 .submit_at(p.at.saturating_sub(HAND_LEAD) as i64, Class::Input, hand_payload(hand, to))
                 .submit_at(p.at as i64, Class::Input, shove_payload(ball, p.impulse));
         }
+        node = script(id, &world, &balls, node);
         sinks.insert(id, sink);
         nodes.insert(id, node);
     }
