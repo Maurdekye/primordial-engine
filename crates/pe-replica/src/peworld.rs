@@ -35,8 +35,7 @@
 //!   shape in its own units (the view's scale scales it), appearance, light, hand owner and holder. An object with no
 //!   world transform (no `Transform`, or out of range) is not drawn; a hand without a `Shape` is drawn as a
 //!   [`HAND_RADIUS`] sphere. A compound child without a body of its own is published with no velocity (nothing in
-//!   M1's ball pit is compound). A spot light is not drawn yet: pe-world's
-//!   `Light` has no cone angles, which S5's `Spot` needs.
+//!   M1's ball pit is compound). A spot light carries its cone angles from pe-world's `Light` into S5's `Spot`.
 //!
 //! **Shapes** (replica.md 2.1): a body's shapes are its own `Shape`, then those of its compound children (the
 //! descendants reached without passing another `Body`) in id order, each placed in the body's frame and scaled by
@@ -310,10 +309,12 @@ fn view_appearance(a: &Appearance) -> pe_seams::Appearance {
     }
 }
 
-/// pe-world's light as the view's. A spot light is `None` until pe-world's `Light` carries its cone angles.
+/// pe-world's light as the view's: a spot light with its cone angles (radians from the object's local -z, which
+/// pe-world keeps within 0 <= inner <= outer <= pi/2). `None` for a kind the view has no name for.
 fn view_light(l: &Light) -> Option<pe_seams::Light> {
     let kind = match l.kind {
         light_kind::POINT => LightKind::Point,
+        light_kind::SPOT => LightKind::Spot { inner_angle: l.inner_angle, outer_angle: l.outer_angle },
         light_kind::DIRECTIONAL => LightKind::Directional,
         _ => return None,
     };
@@ -506,4 +507,29 @@ fn subtree(world: &World, top: ObjectId) -> Vec<ObjectId> {
         i += 1;
     }
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every kind of pe-world's `Light` the view names, a spot light with its cone; an unknown kind is not drawn.
+    #[test]
+    fn the_view_takes_each_light_kind_and_a_spot_lights_cone() {
+        let light = |kind, inner_angle, outer_angle| Light {
+            kind,
+            intensity: 2.0,
+            range: 5.0,
+            color: [1.0, 0.9, 0.8],
+            inner_angle,
+            outer_angle,
+        };
+        let kind = |l: Light| view_light(&l).map(|v| v.kind);
+        assert_eq!(kind(light(light_kind::POINT, 0.0, 0.0)), Some(LightKind::Point));
+        assert_eq!(kind(light(light_kind::DIRECTIONAL, 0.0, 0.0)), Some(LightKind::Directional));
+        let spot = view_light(&light(light_kind::SPOT, 0.3, 0.6)).expect("a spot light is drawn");
+        assert_eq!(spot.kind, LightKind::Spot { inner_angle: 0.3, outer_angle: 0.6 });
+        assert_eq!((spot.color, spot.intensity, spot.range), ([1.0, 0.9, 0.8], 2.0, 5.0));
+        assert_eq!(kind(light(7, 0.0, 0.0)), None);
+    }
 }
