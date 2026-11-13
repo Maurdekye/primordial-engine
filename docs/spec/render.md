@@ -359,6 +359,19 @@ advice). Only the local member's own **Input-class** entries: grabs, pushes and 
     and two-chain finality [I, the coordinator's estimate; to be measured in the test-6 run].
   - While finality stalls (quorum lost, play unconfirmed), the refusal waits. If its verdict reverses in a replay
     (`Applied`), it is dropped and never told.
+  - **What this needs from S5** (review L1, sent to @engine-architect): a view's `changes`, together with earlier
+    views', carry the final verdict of every entry at or below its `final_frame`, including entries re-stepped inside
+    `finalize`. Otherwise a grab refused on the predicted line and applied in the final order would be told as
+    refused. Nothing on main fills `changes` yet; a test goes with the producer.
+  - **After a repair** (@coordinator-opus's ruling md020c9c6ad95): `final_frame` is the agreed cut's frame, so a
+    told verdict agrees with every honest replica and is never taken back. Entries a repair can't decide arrive as
+    `Outcome::Unknown { repaired_at }` before `final_frame` passes them. The player gets one line per repair, not per
+    entry: "Resynced. Some of your last actions may not have happened." A view whose health is `Repairing` for more
+    than about 1.5 s shows "Resyncing…" until it is `Agreed`. Both come with @engine-architect's seam change and
+    pe-replica's producer of `changes`, and are built then.
+  - **Not handled in M1:** S3's `AgreeEvent::Refused` (an entry refused before ordering: a bad signature, the wrong
+    line, a rate limit). A grab predicted as refused would be told with the predicted reason, and one predicted as
+    applied would be undone with no words. Treating it like a void is the likely fix, a product call after M1.
 - **A grab lost to a hand the player can see gets no words**: the hands' slide and cue tell it, and the winner is in
   view (docs/ux api-surface.md 6.3). "In view" here: the refusal names a member (`Held { by }`) one of whose hands is
   in the frame view, or the local member's other hand. A grab refused for a reason the player can't see is told:
@@ -379,7 +392,7 @@ player", the local member "you"):
 | `Deleted { by, .. }` | "Your action was refused: {by's author} deleted it." |
 | `Protected { owner }` | "Refused: {owner} protects it." |
 | `NoPermission` | "Refused: you don't have permission for that." |
-| `Cooldown { until }` | "You can grab it again in {n} s." |
+| `Cooldown { until }` | "You can grab it again in {n} s.", or "… now." if it already ended |
 | `TooFast { .. }` | "Your push was refused: too fast." |
 | `OutOfReach` | "Out of reach." |
 | `TooManyClaims { limit }` | "You can hold {limit} things at once." |
@@ -394,8 +407,9 @@ player", the local member "you"):
   rounded up.
 
 **How long.** A notice shows for 5 s and fades out over its last 0.5 s. Up to 3 lines show, newest at the bottom;
-a fourth pushes the oldest out. The same text again while it shows refreshes it and counts up ("(×3)"), so a held
-grab button against a cooldown is one line, not a scroll.
+a fourth pushes the oldest out. The same text again while it shows refreshes it and counts up ("(×3)"). All cooldown
+refusals share one line, whose seconds count down as it shows (to "now" once the cooldown ends; the newest refusal
+sets the end), so a held grab button against a cooldown is one line, not a scroll.
 
 **Where.**
 - **The window:** a strip centred at the bottom, 3 % of the height above the edge, text 1/30 of the window's height
@@ -414,8 +428,11 @@ grab button against a cooldown is one line, not a scroll.
 - **Captures** never draw notices: an agent gets refusals from WorldApi.
 
 **How.** `notices::Notices` holds the lines (pure CPU, tested without a GPU): `observe(&FrameView, now)`,
-`agreement(&AgreeEvent, now)`, `lines(now)`. `notices::strip` draws them on the CPU with the labels' font (section
-11) into one image, which the caller rebuilds only when the lines or their fades change. The scene renderer draws it
+`agreement(&AgreeEvent, now)`, `lines(now)`. The `Presenter` holds it (`set_notices`, `agreement`): each new view
+feeds it once, and each `PresentedFrame` carries `notices`, the lines to show. `notices::strip` draws them on the
+CPU with the labels' font (section 11) into one image; `notices::StripCache` rebuilds it only when the lines change
+(a fade's alpha rounded to 1/16). The desktop window places it with `window_overlay`, corners on whole pixels so the
+text stays sharp; pe-xr with `Panel::place`. The scene renderer draws it
 as `Scene::overlay`, a textured quad posed in the world: in front of the camera for the window, at the panel's place
 in VR. An OpenXR quad composition layer in view space (drawn by the compositor, sharper, with no second resampling)
 is the alternative for VR; that is @xr-eng's call, after the headset test.
