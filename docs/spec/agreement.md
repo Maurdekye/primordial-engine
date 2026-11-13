@@ -226,6 +226,35 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
 - `final_entries(from, to)`: the final log between two final cuts, in agreed order (stamp, then the seeded rank),
   for rung 1's replay, the fault bundle and the merge.
 - Events are `pe_seams::AgreeEvent`; below-quorum events (`QuorumLost`, `Unconfirmed`, `LineDiverged`) are v1's.
+- **A cut's root is over its own final log** (pe-seams v1.6 `EntrySource::entries_for_cut`; @harness-eng's
+  pipelined-void finding, coordinator). For a cut handed out for roots, or the final cut,
+  the entries returned at each frame below the cut's frame are exactly what the final log yields there if the cut
+  becomes final: the same entries, verdicts (late, back-stamped, forks) and order. The answer is computed from the
+  cut's own ancestry, never from local in-flight state: each block from just above the final cut up to the cut's is
+  judged against its parent, as at finalization. Below the core's committed block, which the core prunes, the walk
+  continues through the final blocks still waiting for their entries. So two candidates at one height each get their
+  own answer, and an abandoned cut changes nothing.
+  - Why: with pipelining, cut N+1 goes out for roots while cut N is in flight. Filtering `entries_at` by the cut
+    applied entries that N+1 voids as late against N's frame (S3's pending rule only starts at the *final* frame),
+    and it ordered the cut's newly effective entries after the final ones rather than in the final log's order.
+    Either way, the quorum would certify a root the final log doesn't yield.
+  - The d1 rule counts from the previous final cut: a candidate goes out for roots only when this member holds
+    every entry its whole uncommitted ancestry includes, not only the newest segment; the rest is fetched first.
+  - A cut can be final on the line before this member holds its entries (`AgreeEvent::CutFinal` comes first);
+    `EntrySource::final_cut` reports it only once they are held. A driver that reads `final_entries` must do it
+    from `final_cut`, before `Replica::finalize` lets the trim pass.
+  - Tests: the root = final log property over every rooted cut that becomes final, in sims with late authors,
+    partitions, slow and jittery links; pipelines three deep, abandoned cuts (one whose replacement includes an
+    entry below the abandoned cut's frame) and blocks that reach a member before their parent each occur in them.
+    Two reds: the old filter, and the old filter in the final order without verdicts; each fails.
+  - **A cut doesn't name its block.** Two blocks can carry a byte-identical cut under different parents (a replacement
+    parent after a view change, in a quiet world), and their answers can differ. The lookup takes the votable
+    proposal first, the block a vote goes to; for any other cut held under two parents it answers `None` rather than
+    guess, and counts it (`Core::shared_cuts`, asserted 0 in pe-agree's sims; the harness should assert it too). If it
+    ever fires, or after M1, `Cut` should name its parent or block (a seam change for @engine-architect;
+    @design-reviewer, @harness-eng).
+  - The log and its index (`ChainLog`, `by_ref`) grow for the whole session; pruning them is open work. The root
+    cache is versioned by an insert counter, so a prune can't bring back a stale answer.
 
 ## 6. Mutations (feature `mutants`, never in production state)
 

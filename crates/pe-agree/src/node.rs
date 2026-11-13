@@ -33,7 +33,7 @@ use pe_seams::{
 };
 
 use crate::codec::{self, MAX_FETCH, Wire};
-use crate::core::{self, Block, Config as CoreConfig, Core, CoreEvent, CoreFault, Mutation, Qc, Timing, To};
+use crate::core::{self, Block, BlockId, Config as CoreConfig, Core, CoreEvent, CoreFault, Mutation, Qc, Timing, To};
 
 /// The NoSignatureCheck mutation's verifier.
 struct AcceptAll;
@@ -200,6 +200,14 @@ impl NodeConfig {
     }
 }
 
+/// [`EntrySource::entries_for_cut`]'s verdicts for one cut, valid while the final block and the entries held are
+/// unchanged.
+struct RootCache {
+    cut: Cut,
+    version: (BlockId, u64),
+    by_frame: BTreeMap<Frame, Vec<SignedEntry>>,
+}
+
 pub struct Node {
     cfg: NodeConfig,
     me: MemberKey,
@@ -216,8 +224,12 @@ pub struct Node {
     /// Final by the core, waiting for their entries.
     final_queue: Vec<(Block, Qc)>,
     final_cut: Option<FinalCut>,
-    /// The last cut reported final (the genesis cut before any).
+    /// The last cut reported final (the genesis cut before any), and its block.
     final_heads: Cut,
+    final_block: BlockId,
+    root_cache: std::cell::RefCell<Option<RootCache>>,
+    /// Entries inserted into the log so far (never decreases, whatever is pruned): the root cache's version.
+    inserted: u64,
     final_by_frame: BTreeMap<Frame, Vec<SignedEntry>>,
     final_bytes: usize,
     predicted: BTreeMap<Frame, Vec<SignedEntry>>,
@@ -301,6 +313,7 @@ impl Node {
             core
         };
         let start = cfg.genesis.at.frame;
+        let final_block = core.committed().0;
         Node {
             me,
             signer,
@@ -314,6 +327,9 @@ impl Node {
             final_queue: Vec::new(),
             final_cut: None,
             final_heads: cfg.genesis.clone(),
+            final_block,
+            root_cache: std::cell::RefCell::new(None),
+            inserted: 0,
             final_by_frame: BTreeMap::new(),
             final_bytes: 0,
             predicted: BTreeMap::new(),
@@ -435,6 +451,7 @@ impl Node {
                     }
                 }
                 self.by_ref.insert(id, key);
+                self.inserted += 1;
                 self.arrived.entry(id).or_insert(at);
                 self.wanted.remove(&id);
                 self.hinted.remove(&id);
@@ -674,6 +691,7 @@ impl Node {
                 }
             }
             self.final_heads = block.cut.clone();
+            self.final_block = block.id();
             self.final_cut = Some(FinalCut { cut: block.cut.clone(), root: qc.root, voters: qc.votes.clone() });
             // Predictions below the new final frame end: final now, or pending (absent).
             let gone: Vec<Frame> = self.predicted.range(old_ff..at.frame).map(|(f, _)| *f).collect();
@@ -809,7 +827,18 @@ impl Node {
         if self.core.mutated(Mutation::AcceptProposalUnchecked) {
             return Some((p, Check::Ok));
         }
-        let c = cuts::check(&self.log, &parent.cut, &p.block.cut, present, self.tolerance_frames());
+        let mut c = cuts::check(&self.log, &parent.cut, &p.block.cut, present, self.tolerance_frames());
+        // The d1 rule counts from the previous final cut, not the parent: every entry the cut's uncommitted ancestry
+        // includes must be held too, or the root can't be the final log's (the pipelined-void fix).
+        if matches!(c, Check::Ok) {
+            let chain = self.ancestry(&p.block.cut)?;
+            if let Err(missing) = self.effective_in(&chain) {
+                if missing.is_empty() {
+                    return None;
+                }
+                c = Check::Missing(missing);
+            }
+        }
         if self.core.mutated(Mutation::VoteWithoutChainValidation) && matches!(c, Check::Missing(_)) {
             return Some((p, Check::Ok));
         }
@@ -833,6 +862,81 @@ impl Node {
         out
     }
 
+    /// The entries `chain` (oldest first, from just above the final cut) makes effective, each block judged against
+    /// its parent as at finalization; or every entry missing for that.
+    fn effective_in(&self, chain: &[Block]) -> Result<Vec<SignedEntry>, Vec<EntryRef>> {
+        let mut parent = &self.final_heads;
+        let mut highs = self.final_high.clone();
+        let mut out = Vec::new();
+        let mut missing = Vec::new();
+        for b in chain {
+            for h in &b.cut.heads {
+                let key = ChainKey { author: h.author, chain: h.chain };
+                let from = parent.heads.binary_search_by(|p| p.chain.cmp(&h.chain)).ok().map(|i| parent.heads[i].entry);
+                if from == Some(h.entry) {
+                    continue;
+                }
+                match self.log.judge(&key, from, h.entry, parent.at.frame, highs.get(&key).copied()) {
+                    Ok((verdicts, high)) => {
+                        if let Some(f) = high {
+                            highs.insert(key, f);
+                        }
+                        for (id, v) in verdicts {
+                            if v == Verdict::Effective {
+                                out.extend(self.log.get(&key, &id).cloned());
+                            }
+                        }
+                    }
+                    Err(pe_log::SegmentError::Missing(x)) => missing.push(x),
+                    // A certified chain that doesn't link: more than t faulty voters; never rooted.
+                    Err(_) => return Err(Vec::new()),
+                }
+            }
+            parent = &b.cut;
+        }
+        if missing.is_empty() { Ok(out) } else { Err(missing) }
+    }
+
+    /// How many blocks from just above the final cut up to `cut`'s, if it descends from the final cut (a diagnostic:
+    /// 1 is a cut on the final cut, 2 or more a pipeline).
+    pub fn rooting_depth(&self, cut: &Cut) -> Option<usize> {
+        self.ancestry(cut).map(|c| c.len())
+    }
+
+    /// The blocks from just above this member's final cut up to the one carrying `cut`, oldest first: the core's
+    /// blocks, then, below the core's committed block (it prunes there), the final blocks still waiting here for
+    /// their entries. `None` if `cut` doesn't descend from the final cut, or a block between is not held.
+    fn ancestry(&self, cut: &Cut) -> Option<Vec<Block>> {
+        let fin = &self.final_heads;
+        if *cut == *fin {
+            return Some(Vec::new());
+        }
+        let queued: Vec<BlockId> = self.final_queue.iter().map(|(b, _)| b.id()).collect();
+        let mut chain = vec![self.core.block_with_cut(cut)?.clone()];
+        loop {
+            let b = chain.last().expect("never empty");
+            if b.cut.at.height <= fin.at.height + 1 {
+                break;
+            }
+            let parent = b.parent;
+            if let Some(i) = queued.iter().position(|id| *id == parent) {
+                chain.extend(self.final_queue[..=i].iter().rev().map(|(b, _)| b.clone()));
+                break;
+            }
+            let p = self.core.block(&parent)?.clone();
+            chain.push(p);
+        }
+        let oldest = chain.last().expect("never empty");
+        if oldest.cut.at.height != fin.at.height + 1 {
+            return None;
+        }
+        if oldest.parent != self.final_block {
+            return None;
+        }
+        chain.reverse();
+        Some(chain)
+    }
+
     fn held(&self, frame: Frame) -> bool {
         self.holds.keys().next().is_some_and(|h| frame >= *h)
     }
@@ -841,6 +945,41 @@ impl Node {
 impl EntrySource for Node {
     fn final_cut(&self) -> Option<&FinalCut> {
         self.final_cut.as_ref()
+    }
+
+    /// A cut's own final log (pe-seams v1.6; the pipelined-void fix, coordinator): exactly what the final
+    /// log would hold at `frame` were `cut` final, with the same entries, verdicts and order. Computed from the cut's
+    /// own ancestry, never from local in-flight state: each block from just above the final cut up to the cut's is
+    /// judged against its parent, as at finalization. The verdicts are computed once per cut, and kept until the final
+    /// cut moves or an entry arrives (pe-replica asks for every frame up to the cut; @design-reviewer).
+    /// `None` below `kept_from`, or for a cut that doesn't descend from the final cut or whose entries aren't all
+    /// held (`wants_roots` never hands such a cut out).
+    fn entries_for_cut(&self, cut: &Cut, frame: Frame) -> Option<Vec<SignedEntry>> {
+        if frame < self.kept_from {
+            return None;
+        }
+        if frame >= cut.at.frame {
+            return self.entries_at(frame).map(|v| v.to_vec());
+        }
+        if frame < self.final_frame() {
+            // Final already: no later cut makes an entry stamped below the final frame effective (it would be late).
+            return Some(self.final_by_frame.get(&frame).cloned().unwrap_or_default());
+        }
+        let version = (self.final_block, self.inserted);
+        if let Some(c) = self.root_cache.borrow().as_ref().filter(|c| c.cut == *cut && c.version == version) {
+            return Some(c.by_frame.get(&frame).cloned().unwrap_or_default());
+        }
+        let chain = self.ancestry(cut)?;
+        let mut by_frame: BTreeMap<Frame, Vec<SignedEntry>> = BTreeMap::new();
+        for e in self.effective_in(&chain).ok()? {
+            by_frame.entry(e.entry.stamp).or_default().push(e);
+        }
+        for v in by_frame.values_mut() {
+            self.order(v);
+        }
+        let out = by_frame.get(&frame).cloned().unwrap_or_default();
+        *self.root_cache.borrow_mut() = Some(RootCache { cut: cut.clone(), version, by_frame });
+        Some(out)
     }
 
     fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
