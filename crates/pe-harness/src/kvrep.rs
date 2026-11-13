@@ -186,13 +186,15 @@ impl KvSeamReplica {
     ///
     /// A frame no longer kept is never stepped empty (S3 v1.2). Below the floor only a replay from `Cv` meets one:
     /// `NotKept`, and rung 2 is next. At or above it the root cannot be taken: `Damaged`, and rung 2 is due at once.
+    /// Every cut path (a root, `finalize`'s check and rung 1's replay to the cut) steps S3's answer for the cut,
+    /// `entries_for_cut` (S3 v1.4): exactly what the final log would hold at each frame were the cut final, from the
+    /// cut's own ancestry. Never `entries_at` filtered by the cut's heads: a pipelining S3 may hold entries there that
+    /// the cut voids (the pipelined-void defect, m365a498e6849).
     fn replay_cut(&self, mut base: KvReplica, cut: &Cut, source: &dyn EntrySource) -> Result<KvReplica, RootError> {
         while base.frame() < cut.at.frame.0 {
-            let Some(all) = source.entries_at(Frame(base.frame())) else {
+            let Some(mine) = source.entries_for_cut(cut, Frame(base.frame())) else {
                 return Err(if base.frame() < self.floor { RootError::NotKept } else { RootError::Damaged });
             };
-            let mine: Vec<SignedEntry> =
-                all.iter().filter(|e| cut.includes(&e.entry.chain, e.entry.seq)).cloned().collect();
             self.step(&mut base, &mine, None);
         }
         Ok(base)
