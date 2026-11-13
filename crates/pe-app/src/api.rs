@@ -13,12 +13,16 @@
 //!   the session's facts, the members whose links are up and the last advance.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::io;
+use std::process::ExitStatus;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use pe_api::api::{Api, SessionFacts, WorldSource};
 use pe_api::changes::{CAPACITY, ChangeLog};
 use pe_api::queue::EditQueue;
+use pe_mcp::host::{self, HostOpts};
 use pe_seams::world_api::{self, Link, MemberId, WorldApi};
 use pe_seams::{ChainId, EntryRef, Frame, LineId, MemberKey, Replica, SimRate};
 use pe_world::edit::Transaction;
@@ -265,6 +269,46 @@ impl WorldSource for ApiWorld {
     }
 }
 
+/// The MCP thread (app.md 1, 3.1): pe-mcp's transports over a WorldApi on a tokio runtime of 2 workers, whose
+/// handlers call the API through `spawn_blocking` (WS-api O9). It runs until the agent pe-mcp launched exits, or until
+/// [`McpThread::stop`]; either way pe-mcp revokes its tokens.
+pub struct McpThread {
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<JoinHandle<io::Result<Option<ExitStatus>>>>,
+}
+
+/// Start the MCP thread over `api` with pe-mcp's `opts` (its transports, the agent's command line and grant).
+pub fn spawn_mcp(api: Arc<dyn WorldApi>, opts: HostOpts) -> io::Result<McpThread> {
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let rt =
+        tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("pe-mcp").enable_all().build()?;
+    let thread = thread::Builder::new().name("mcp".into()).spawn(move || {
+        rt.block_on(async move {
+            let mut hosted = host::start(api, &opts).await?;
+            tokio::select! {
+                exited = hosted.wait() => exited,
+                _ = stopped => Ok(None),
+            }
+        })
+    })?;
+    Ok(McpThread { stop: Some(stop), thread: Some(thread) })
+}
+
+impl McpThread {
+    /// Stop the transports, and the agent with them if pe-mcp launched it, and wait for the thread. The agent's exit
+    /// status if it had already exited; an error if the transports never started.
+    pub fn stop(mut self) -> io::Result<Option<ExitStatus>> {
+        if let Some(s) = self.stop.take() {
+            let _ = s.send(());
+        }
+        match self.thread.take().map(JoinHandle::join) {
+            Some(Ok(r)) => r,
+            Some(Err(_)) => Err(io::Error::other("the MCP thread panicked")),
+            None => Ok(None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +371,31 @@ mod tests {
         ix.insert(e(3), tx, 1);
         assert!(!ix.by_entry.contains_key(&e(1)) && ix.by_entry.contains_key(&e(3)));
         assert_eq!(ix.bytes, EDIT_BYTES_MAX / 2 + 1);
+    }
+
+    fn grant() -> pe_mcp::auth::Grant {
+        pe_mcp::auth::Grant {
+            member: MemberId::from(MemberKey([2; 32])),
+            producer: world_api::Producer {
+                kind: world_api::ProducerKind::Agent,
+                harness: None,
+                principal: None,
+                requested_by: None,
+            },
+            confirm: false,
+        }
+    }
+
+    /// The MCP thread serves its pipe until stopped, and reports transports that never started.
+    #[test]
+    fn the_mcp_thread_serves_until_stopped_and_reports_a_start_that_failed() {
+        let ports = Ports::new(snap(0), facts(), || {});
+        let mut opts = HostOpts::new(grant());
+        opts.pipe = true;
+        let mcp = spawn_mcp(ports.api(), opts).expect("the thread");
+        assert_eq!(mcp.stop().expect("served, then stopped"), None, "no agent was launched");
+        let none = spawn_mcp(ports.api(), HostOpts::new(grant())).expect("the thread");
+        assert_eq!(none.stop().map_err(|e| e.kind()), Err(io::ErrorKind::InvalidInput), "no transport asked for");
     }
 
     #[test]

@@ -221,6 +221,20 @@ impl Sim {
         }
     }
 
+    /// pe-api's ports over this simulation (app.md 3.1), from its replica's present world as the frame-0 snapshot, its
+    /// agreement's line, its clock's rate and its local member; `wake` wakes the simulation thread when an edit is
+    /// queued. `None` unless the replica is a pe-world replica. Call before the first tick, then [`Sim::with_api`].
+    pub fn ports(&self, world_name: &str, wake: impl Fn() + Send + Sync + 'static) -> Option<crate::api::Ports> {
+        let genesis = crate::api::snapshot_of(&*self.replica)?;
+        let facts = crate::api::Facts {
+            world_name: world_name.into(),
+            line: self.agree.line(),
+            rate: SimRate::new(self.clock.rate_hz())?,
+            me: self.local.as_ref().map(|l| l.chain.me()),
+        };
+        Some(crate::api::Ports::new(genesis, facts, wake))
+    }
+
     /// pe-api's ports (app.md 3.1): step 2 drains `ports.queue` one edit a frame, the change log follows the views and
     /// agreement's final cut, and the shared state `ApiWorld` reads follows the replica.
     pub fn with_api(mut self, ports: crate::api::Ports) -> Sim {
@@ -241,6 +255,11 @@ impl Sim {
     pub fn with_event_log(mut self, log: Arc<std::sync::Mutex<Vec<AgreeEvent>>>) -> Sim {
         self.event_log = Some(log);
         self
+    }
+
+    /// This machine's member, if there is a local player.
+    pub fn local_member(&self) -> Option<MemberKey> {
+        self.local.as_ref().map(|l| l.chain.me())
     }
 
     /// The local player's chain and the seq of its last entry agreement took, if there is a local player.

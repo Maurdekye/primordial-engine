@@ -14,11 +14,16 @@
 //! (default 0.0.0.0:4433), `--advertise` an address the invite or reply names (default: the bound one, which must
 //! then be specific), and `--identity` this machine's identity file (default: `identity.seed` in the per-user data
 //! folder, `%LOCALAPPDATA%\Primordial Engine` on Windows; made on first use).
+//!
+//! `--mcp-pipe` and `--mcp-http` start pe-mcp's transports over pe-api, so an agent can read and edit the world for
+//! this machine's member (app.md 3.1); `--agent <command> <args>...`, the rest of the line, launches it with the
+//! transport's address and a token in its environment.
 
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use pe_app::api;
 use pe_app::clock::{self, LocalClock};
 use pe_app::local::{SwitchedHands, chain_nonce};
 use pe_app::net::{self, Endpoint, OpenParams, WakeLater};
@@ -26,6 +31,8 @@ use pe_app::sim::{self, Budget, Sim};
 use pe_app::standin::SoloAgreement;
 use pe_app::vr::{self, XrWait};
 use pe_app::world;
+use pe_mcp::auth::Grant;
+use pe_mcp::host::HostOpts;
 use pe_net_crypto::identity::{Invite, Reply};
 use pe_render::desktop_hand::{DesktopHandFeed, DesktopHandSettings};
 use pe_render::display::DisplaySettings;
@@ -34,7 +41,8 @@ use pe_render::gpu::ContextError;
 use pe_render::present::{FrameSlot, Presenter};
 use pe_render::scene::{Environment, RenderSettings};
 use pe_render::window::{DesktopConfig, DesktopReport, EffectSink, run_desktop};
-use pe_seams::{FrameClock, LineId, RigPose, SimRate};
+use pe_seams::world_api::{MemberId, Producer, ProducerKind};
+use pe_seams::{FrameClock, LineId, MemberKey, RigPose, SimRate};
 use pe_xr::guard::Guard;
 use pe_xr::loader::SystemDiscovery;
 use pe_xr::ring::{DEFAULT_WINDOW_NS, HandRing};
@@ -76,6 +84,11 @@ struct Options {
     listen: std::net::SocketAddr,
     advertise: Vec<std::net::SocketAddr>,
     identity: Option<std::path::PathBuf>,
+    /// pe-mcp's transports for an agent (app.md 3.1): a pipe, loopback HTTP, or both; none runs no MCP thread.
+    mcp_pipe: bool,
+    mcp_http: bool,
+    /// The agent's command line, launched with the transport's address and a token in its environment.
+    agent: Vec<String>,
 }
 
 /// The joiner's wait for the opener to take its reply, admit it and start frame 0: a person copies the reply over.
@@ -93,6 +106,9 @@ fn options() -> Options {
         listen: "0.0.0.0:4433".parse().unwrap_or_else(|_| usage()),
         advertise: Vec::new(),
         identity: None,
+        mcp_pipe: false,
+        mcp_http: false,
+        agent: Vec::new(),
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -107,6 +123,10 @@ fn options() -> Options {
             "--listen" => o.listen = args.next().and_then(|a| a.parse().ok()).unwrap_or_else(|| usage()),
             "--advertise" => o.advertise.push(args.next().and_then(|a| a.parse().ok()).unwrap_or_else(|| usage())),
             "--identity" => o.identity = Some(args.next().unwrap_or_else(|| usage()).into()),
+            "--mcp-pipe" => o.mcp_pipe = true,
+            "--mcp-http" => o.mcp_http = true,
+            // The rest of the command line is the agent's.
+            "--agent" => o.agent = args.by_ref().collect(),
             "--seconds" => {
                 let s = args.next().and_then(|n| n.parse::<f64>().ok()).filter(|s| *s > 0.0);
                 o.run_for = Some(s.and_then(|s| Duration::try_from_secs_f64(s).ok()).unwrap_or_else(|| usage()));
@@ -198,11 +218,32 @@ fn main() {
                 .with_local(world::DEV_MEMBER, chain_nonce(), hands.clone())
         }
     };
+    // pe-api's ports and the MCP thread (app.md 3.1), when a transport is asked for.
+    let mcp_wanted = options.mcp_pipe || options.mcp_http;
+    if !mcp_wanted && !options.agent.is_empty() {
+        fail("--agent needs --mcp-pipe or --mcp-http");
+    }
+    let me = sim.local_member();
+    let ports = mcp_wanted.then(|| {
+        let arrival = wake.arrival();
+        sim.ports(WORLD_NAME, move || arrival()).unwrap_or_else(|| fail("pe-api needs a pe-world replica"))
+    });
+    let sim = match &ports {
+        Some(p) => sim.with_api(p.clone()),
+        None => sim,
+    };
     let sim = match sim::spawn(sim, host.clone(), SIM_STACK) {
         Ok(t) => t,
         Err(e) => fail(&format!("the simulation thread did not start: {e}")),
     };
     wake.set(sim.waker());
+    let mcp = ports.map(|p| {
+        let member = me.unwrap_or_else(|| fail("an agent acts for this machine's member, and there is none"));
+        match api::spawn_mcp(p.api(), mcp_opts(&options, member)) {
+            Ok(t) => t,
+            Err(e) => fail(&format!("the MCP thread did not start: {e}")),
+        }
+    });
 
     if vr {
         hands.use_vr(true);
@@ -226,6 +267,7 @@ fn main() {
                 let waited = xr.wait(left);
                 println!("vr: {waited:?}; at its end {:?}", xr.stop());
                 if waited == XrWait::Running {
+                    stop_mcp(mcp);
                     finish(sim.stop(), None);
                     return;
                 }
@@ -253,7 +295,35 @@ fn main() {
     // The window, its surface and its GPU context are made on this thread, one context at a time (app.md 4): the XR
     // thread has dropped its own context before `wait` answers.
     let window = run_desktop(cfg, slot, desktop_hand, Box::new(LogEffects));
+    stop_mcp(mcp);
     finish(sim.stop(), Some(window));
+}
+
+/// The world's name as pe-api reports it, until the invite or the configuration names it (api.md 5.1).
+const WORLD_NAME: &str = "M1 ball pit";
+
+/// pe-mcp's options: the transports asked for, and the agent's command line and grant. The agent acts for this
+/// machine's member, as an agent (pe-world's `Actor::Agent`), named by its command.
+fn mcp_opts(o: &Options, member: MemberKey) -> HostOpts {
+    let harness = o.agent.first().map(|c| {
+        let name = std::path::Path::new(c).file_stem().map(|s| s.to_string_lossy().into_owned());
+        name.unwrap_or_else(|| c.clone())
+    });
+    let producer = Producer { kind: ProducerKind::Agent, harness, principal: None, requested_by: None };
+    let mut opts = HostOpts::new(Grant { member: MemberId::from(member), producer, confirm: false });
+    opts.pipe = o.mcp_pipe;
+    opts.http = o.mcp_http;
+    opts.cmd = o.agent.clone();
+    opts
+}
+
+fn stop_mcp(mcp: Option<api::McpThread>) {
+    if let Some(m) = mcp {
+        match m.stop() {
+            Ok(exited) => println!("mcp: stopped; the agent {exited:?}"),
+            Err(e) => eprintln!("mcp: {e}"),
+        }
+    }
 }
 
 fn finish<S: Debug, E>(stats: Result<S, E>, window: Option<Result<DesktopReport, ContextError>>) {
@@ -271,7 +341,7 @@ fn finish<S: Debug, E>(stats: Result<S, E>, window: Option<Result<DesktopReport,
 fn usage() -> ! {
     fail(
         "usage: pe-app [--vr] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] [--advertise <addr>]... \
-         [--identity <path>]",
+         [--identity <path>] [--mcp-pipe] [--mcp-http] [--agent <command> <args>...]",
     )
 }
 
