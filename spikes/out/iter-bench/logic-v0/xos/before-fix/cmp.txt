@@ -1,0 +1,6 @@
+# cmp -l lamp-windows.wasm lamp-linux.wasm (offset, octal bytes): main 3353d65f
+8808 134  57
+8812 134  57
+8825 134  57
+d71f7a249dbe86600541084201832377ae5fa7083c894ada74865021ddad8667 *lamp-windows.wasm
+aaf5902160e70f8377bc2bed07689b24faa11fcb912f5c9bfe05df2b2b36569c *lamp-linux.wasm
