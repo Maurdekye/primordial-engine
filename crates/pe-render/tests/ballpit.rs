@@ -10,7 +10,9 @@
 //!   crosses a jump the member's own views show between two frames, on an object not marked `CORRECTED`, is the
 //!   simulation's own jump (a push's edit), drawn as it happened, and is counted apart (`simJ`): no prediction was
 //!   corrected. Such view jumps on balls nobody pushed are counted too (`other`), since they would be a missing flag.
-//! - **D4:** `own_error` stays 0. Each member's views mark its own hands `OWN_HAND`; they don't move in this run.
+//!   The member's own objects (`OWN_HAND`, `HELD_LOCAL`) are left out of both, as they are drawn exact: the harness's
+//!   hand pushes move each pusher's first hand to above its ball in one input, a jump of up to a few metres.
+//! - **D4:** `own_error` stays 0. Each member's views mark its own hands `OWN_HAND`.
 //! - **Both drawn-time rules,** X8 (a) (the default) and (b), each also with a reader stall of 300 ms at 3 s, past the
 //!   slot's 250 ms span, so the presenter meets a gap (render.md 3; @coordinator-opus's ruling m7fa4df66d2fe).
 //! - **The counters of section 13** are printed per delay, measured, for the report.
@@ -131,7 +133,7 @@ fn view_jumps(views: &[(Nanos, Arc<FrameView>)], e: f64) -> Vec<ViewJump> {
         let dt = b.sim_time.secs_since(a.sim_time);
         for o in &b.objects {
             let Some(p) = a.object(o.id) else { continue };
-            if o.flags.contains(ViewFlags::CORRECTED) {
+            if o.flags.contains(ViewFlags::CORRECTED) || is_own(b, o.id) {
                 continue;
             }
             let v = p.linear_velocity;
