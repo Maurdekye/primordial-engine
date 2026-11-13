@@ -1,0 +1,8 @@
+{"kind":"physics","mode":"cl-nan","ms_per_frame_median_of_3":1.7665,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":0,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl-wtfuel-nan","ms_per_frame_median_of_3":1.7266,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":11154427845,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl","ms_per_frame_median_of_3":0.8347,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":0,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl-wtfuel","ms_per_frame_median_of_3":0.9322,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":11154427845,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl-inj0-nan","ms_per_frame_median_of_3":1.7794,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":10180552478,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl-inj-nan","ms_per_frame_median_of_3":1.8038,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":10180552478,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl-inj","ms_per_frame_median_of_3":0.8782,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":10180552478,"fuel_identical_3_runs":true}
+{"kind":"physics","mode":"cl-inj-nanobs","ms_per_frame_median_of_3":1.0528,"digest":"7903109aab28ed9b","digest_eq_native":true,"fuel_total":10180552478,"fuel_identical_3_runs":true}

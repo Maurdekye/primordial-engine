@@ -1,0 +1,2 @@
+{"kind":"load","wasm":"spikes/iter-bench/target/guests/wasm32-unknown-unknown/release/logic_wasm.wasm","bytes":263917,"instrument_ms":14.61,"compile_ms":54.83,"instantiate_ms":0.049}
+{"kind":"load","wasm":"spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v1.wasm","bytes":980,"instrument_ms":0.11,"compile_ms":1.23,"instantiate_ms":0.030}

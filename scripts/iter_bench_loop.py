@@ -7,7 +7,7 @@ to the new .wasm and reports read/compile/instantiate/migrate/first-tick times. 
 measured from just before the source write to the swap reply.
 
 usage (from the repo root; hold the pe-bench-slot slot):
-  python -I scripts/iter_bench_loop.py --set main|levers|cranelift|scale [--reps N] [--guests DIR] [--tag T]
+  python -I scripts/iter_bench_loop.py --set main|levers|cranelift|scale|recheck [--reps N] [--guests DIR] [--tag T]
 
 Raw results: spikes/out/iter-bench/loop-<set>[-<tag>].jsonl (one JSON object per build).
 """
@@ -89,6 +89,15 @@ SETS = {
           cargo_extra=["-Zcodegen-backend"], env={"CARGO_PROFILE_DEV_CODEGEN_BACKEND": "cranelift"}),
         C("wasm32 dev cranelift nightly", "split", "dev", rt=None, toolchain="nightly",
           cargo_extra=["-Zcodegen-backend"], env={"CARGO_PROFILE_DEV_CODEGEN_BACKEND": "cranelift"}),
+    ],
+    # 2026-11-11, for the coordinator (mcda7c814aebf): does October's 0.45 s still reproduce on today's machine and
+    # toolchain, and what does incremental cost on rel-fast? Run in a clean window with HEAVY_PRIO=normal.
+    "recheck": [
+        C("split rel-fast", "split", "rel-fast"),
+        C("split rel-fast incr=0", "split", "rel-fast", env={"CARGO_INCREMENTAL": "0"}),
+        C("split rel-fast +breakdown", "split", "rel-fast", rt=None, breakdown=True),
+        C("split rel-fast incr=0 +breakdown", "split", "rel-fast", rt=None, breakdown=True,
+          env={"CARGO_INCREMENTAL": "0"}),
     ],
     "scale": [
         C("split dev", "split", "dev"),

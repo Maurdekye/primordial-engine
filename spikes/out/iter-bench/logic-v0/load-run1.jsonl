@@ -1,0 +1,8 @@
+{"kind":"load","wasm":"spikes/iter-bench/target/guests/wasm32-unknown-unknown/release/logic_wasm.wasm","bytes":263917,"instrument_ms":16.68,"compile_ms":56.71,"instantiate_ms":0.049}
+
+thread '<unnamed>' (89340) panicked at src\main.rs:536:76:
+called `Result::unwrap()` on an `Err` value: "v0 needs a global and an export section"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (81628) panicked at src\main.rs:557:87:
+called `Result::unwrap()` on an `Err` value: Any { .. }

@@ -1,0 +1,4 @@
+# clean window (coordinator m406f11cd9978), HEAVY_PRIO=normal, both slots; start 2026-11-10T20:53:21Z; cmd: spikes/iter-bench/target/logic-v0/release/logic-probe.exe cols spikes/iter-bench/target/cols_guest/wasm32-unknown-unknown/release/cols_guest.wasm; holders:
+iter-bench:55128 hb 2026-11-10T20:53:16Z bash -c echo placeholder-start $(date -u +%FT%TZ); sleep 70; echo placeholder-end $(date -u +%FT%TZ)
+# end 2026-11-10T20:53:45Z; holders:
+iter-bench:55128 hb 2026-11-10T20:53:16Z bash -c echo placeholder-start $(date -u +%FT%TZ); sleep 70; echo placeholder-end $(date -u +%FT%TZ)

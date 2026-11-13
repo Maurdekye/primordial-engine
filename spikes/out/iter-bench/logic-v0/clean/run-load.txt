@@ -1,0 +1,11 @@
+# start 2026-11-10T20:12:08Z
+# heavy holders:
+iter-bench:28454 hb 2026-11-10T20:09:58Z bash -c echo placeholder-start $(date -u +%FT%TZ); sleep 1500
+iter-bench:28522 hb 2026-11-10T20:12:07Z bash .worktrees/logic/spikes/iter-bench/logic-v0/clean_run.sh
+# probe sha256: 3a649aebccf15c3894815f91077ae068cb62c905df306886fff872a24d42ece1
+27761c61c9b01596eb8b28207ccfd6c327d6cb365155ea97af3592b6e6529330 *spikes/iter-bench/target/guests/wasm32-unknown-unknown/release/logic_wasm.wasm
+589e97a7008badfd687c603e782b420febaba77dd7fb95f8876f82f8a4547395 *spikes/wasm-guests/target/wasm32-unknown-unknown/release/physics_in_wasm.wasm
+# end 2026-11-10T20:13:15Z
+# heavy holders:
+iter-bench:28454 hb 2026-11-10T20:09:58Z bash -c echo placeholder-start $(date -u +%FT%TZ); sleep 1500
+iter-bench:28522 hb 2026-11-10T20:12:07Z bash .worktrees/logic/spikes/iter-bench/logic-v0/clean_run.sh

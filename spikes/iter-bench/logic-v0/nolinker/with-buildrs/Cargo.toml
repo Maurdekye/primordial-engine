@@ -1,0 +1,11 @@
+# Control for the no-host-linker check: a wasm32 crate with a build script, which needs a host linker.
+[package]
+name = "with-buildrs"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
