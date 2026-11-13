@@ -1453,11 +1453,12 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
     `TooLarge { limit: 32768 }`. It is separate from 7.1's per-transaction limits, which count only the author's
     ops. So the largest M1 footprint is a script whose rows (the tag plus its components, per object) total 32,768:
     for example a tag and two components on 10,922 objects.
-  - **What it costs is reported.** The commit's footprint lists the objects moved, the row count, and each
-    component and field zeroed or dropped; a dry run (pe-api) shows the same before the commit, with the objects
-    that would block.
-  - **The refusal naming objects** needs a seam addition, `Reason::RekeyBlocked { objects, more }` (the first 16
-    blocking objects in id order, and how many more), asked of @engine-architect.
+  - **What it costs is reported.** The activation's report (`FrameEnd`, logic.md 6.2a) lists the objects moved,
+    the row count, and each component and field zeroed or dropped; a dry run (pe-api) shows the same before the
+    commit, with the objects that would block.
+  - **The refusal names the objects:** a commit whose re-key is blocked is refused as `Reason::RekeyBlocked {
+    objects, more }` (S2 v1.6): the first 16 blocking objects in id order, and how many more. At activation a block
+    voids the commit instead (`RekeyBlockedAtActivation`, logic.md 6.2a), since no entry is there to refuse.
 
 ## 8. Inputs: hands, pushes and grabs
 
