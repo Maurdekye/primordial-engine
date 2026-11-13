@@ -47,7 +47,7 @@ pub mod test_util;
 
 pub use agree::{
     AgreeEvent, AgreeStats, Agreement, ChainHead, Cut, CutRef, Fault, FaultKind, FinalCut, Outgoing, SelfTest,
-    SubmitError, VoidReason, quorum,
+    SubmitError, VoidReason, VoteResult, quorum,
 };
 pub use entry::{Class, DomainId, Entry, EntryError, MAX_PAYLOAD, Signature, SignedEntry, Signer, Verifier};
 pub use ids::{
