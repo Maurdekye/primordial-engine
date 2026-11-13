@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use pe_replica::logic::{ScriptEvent, ScriptRow, StageOutcome, StageWorld};
+use pe_replica::logic::{Fixture, ScriptEvent, ScriptRow, StageOutcome, StageWorld, conformance};
 use pe_replica::mock::MockClock;
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl, ScriptRunner, event_kind};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
@@ -453,4 +453,342 @@ fn without_a_runner_a_cut_root_across_a_code_commit_is_not_computed() {
     let cut = cut_at(&[late], 1, 16);
     assert_eq!(r.root_at_cut(&cut, &mut s), Err(RootError::NotYetSimulated));
     assert_eq!((r.frame(), r.faults(), r.scratch().faults), (Frame(20), 0, 1));
+}
+
+fn rows_of(w: &World) -> Vec<ScriptRow> {
+    let row = |(&asset, m): (&[u8; 32], &pe_world::script::ModuleRow)| ScriptRow {
+        asset,
+        module: m.author_module,
+        version: m.v(),
+        components: m.components.clone(),
+    };
+    w.modules().iter().map(row).collect()
+}
+
+/// `w`'s store and scripts for the conformance check, and a script whose module no runner holds.
+fn fixture_of(w: &World) -> Fixture {
+    let mut scripts = rows_of(w);
+    scripts.push(ScriptRow { asset: [8; 32], module: Hash([4; 32]), version: v1(), components: vec![tag()] });
+    Fixture { store: w.store().clone(), scripts, line: LineId::origin(), rate_hz: 60, frames: 8 }
+}
+
+/// The test's own runner passes the check every runner passes (crate::logic::conformance).
+#[test]
+fn the_fake_runner_conforms() {
+    conformance(&mover, &fixture_of(&scripted())).expect("the mover conforms");
+}
+
+/// A runner whose results depend on what it ran before fails the check: two fresh ones agree with each other, but a
+/// replay from a saved store does not match the first run.
+#[test]
+fn a_runner_that_remembers_fails_the_conformance_check() {
+    struct Remembering {
+        inner: Mover,
+        stages: u32,
+    }
+    impl ScriptRunner for Remembering {
+        fn identity(&self) -> Bytes {
+            self.inner.identity()
+        }
+        fn holds(&self, module: &Hash) -> bool {
+            self.inner.holds(module)
+        }
+        fn module(&self, module: &Hash) -> Option<Bytes> {
+            self.inner.module(module)
+        }
+        fn run_stage(
+            &mut self,
+            stage: Stage,
+            scripts: &[ScriptRow],
+            store: &mut SimStore,
+            w: &StageWorld<'_>,
+        ) -> StageOutcome {
+            self.stages += 1;
+            let mut out = self.inner.run_stage(stage, scripts, store, w);
+            if self.stages > 12 {
+                out.events.clear();
+            }
+            out
+        }
+    }
+    let make = || Box::new(Remembering { inner: Mover { holds: MODULE }, stages: 0 }) as Box<dyn ScriptRunner>;
+    let err = conformance(&make, &fixture_of(&scripted())).expect_err("it remembers");
+    assert!(err.contains("replay"), "{err}");
+}
+
+/// pe-logic's runner (the `logic` feature) on the lamp of logic.md appendix A, which the build service builds.
+#[cfg(feature = "logic")]
+mod lamp {
+    use std::path::Path;
+    use std::sync::OnceLock;
+
+    use pe_logic::run::{self, RunSettings};
+    use pe_logic::runtime::{self, Script, Settings};
+    use pe_replica::logic::LogicRunner;
+    use pe_sim::ComponentDesc;
+    use pe_world::script::script_component_id;
+
+    use super::*;
+
+    const LAMP: [u8; 32] = [11; 32];
+    const LAMPS: [u128; 3] = [70, 71, 72];
+    /// Each lamp blinks with a 1 s period from its phase (logic.md appendix A).
+    const PHASES: [f32; 3] = [0.0, 0.5, 0.25];
+
+    /// The lamp's bytes, built once.
+    fn wasm() -> &'static [u8] {
+        static W: OnceLock<Vec<u8>> = OnceLock::new();
+        W.get_or_init(|| {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/lamp");
+            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
+            pe_logic::build::build(&dir, &pe_logic::build::engine_sdk(), &target, true)
+                .unwrap_or_else(|e| panic!("{e}"))
+        })
+    }
+
+    /// The lamp's version hash V, which its ids derive from: any fixed hash will do here.
+    fn v() -> Hash {
+        Hash([12; 32])
+    }
+
+    /// The lamp's module hash and its own components (Blink, Glow) under V.
+    fn parts() -> &'static (Hash, Vec<ComponentDesc>) {
+        static P: OnceLock<(Hash, Vec<ComponentDesc>)> = OnceLock::new();
+        P.get_or_init(|| {
+            let s = Settings::default();
+            let script = Script::load(&runtime::engine(&s).unwrap(), s, wasm()).unwrap();
+            let m = run::read_manifest(&script).unwrap();
+            let desc = |c: &pe_logic::manifest::Component| {
+                let fields = run::component_desc(c, ComponentId(0)).unwrap().fields().to_vec();
+                run::component_desc(c, script_component_id(&v(), &c.name, fields).unwrap()).unwrap()
+            };
+            (script.module_hash(), m.components.iter().map(desc).collect())
+        })
+    }
+
+    /// Runs `f` on a thread with the native stack pe-logic's runner needs.
+    fn big_stack(f: impl FnOnce() + Send + 'static) {
+        let stack = Settings::default().thread_stack();
+        std::thread::Builder::new().stack_size(stack).spawn(f).unwrap().join().unwrap();
+    }
+
+    fn runner(with_lamp: bool) -> LogicRunner {
+        let mut r = LogicRunner::new(Settings::default(), RunSettings::default()).expect("a runner");
+        if with_lamp {
+            assert_eq!(r.insert(wasm()).expect("the lamp loads"), parts().0);
+        }
+        r
+    }
+
+    /// The floor and the ball, the lamp committed at frame 0, and three lamps, dark.
+    fn lit() -> World {
+        let (module, descs) = parts();
+        let mut w = floor_and_ball();
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut components = vec![tag_desc(&v())];
+        components.extend(descs.iter().cloned());
+        let commit = tx(vec![
+            Op::Register { components },
+            Op::CommitScript {
+                script: LAMP,
+                base: None,
+                source: BlobRef { hash: v().0, len: 10 },
+                toolchain: Hash([1; 32]),
+                sdk: Hash([2; 32]),
+                author_module: *module,
+                activate_at: 0,
+            },
+        ]);
+        applied(&w.apply_edit(Frame(0), &b.next(Class::Edit, Frame(0), Bytes::from(commit.encode()))).0);
+        for (k, &n) in LAMPS.iter().enumerate() {
+            w.create(oid(n), None, MemberKey([1; 32]), GENESIS).expect("a lamp");
+            w.insert(oid(n), Transform::at(pos(k as f64, 2.0, 0.0))).expect("its transform");
+            let blink: Vec<u8> = [1.0f32, PHASES[k], 2.0].iter().flat_map(|x| x.to_le_bytes()).collect();
+            let set = |component, bytes| Op::SetRow {
+                id: Target::Existing(oid(n)),
+                row: Row { component, instance: 0, bytes },
+            };
+            let ops =
+                vec![set(descs[0].id(), blink), set(descs[1].id(), vec![0; 16]), set(tag_desc(&v()).id(), vec![])];
+            applied(&w.apply_edit(Frame(0), &edit(&mut b, 0, ops)).0);
+        }
+        w
+    }
+
+    fn intensity(r: &ReplicaImpl<PeWorld>, n: u128) -> f32 {
+        let row = r.world().world().store().get_raw(parts().1[1].id(), oid(n)).expect("a glow row");
+        f32::from_le_bytes(row[12..16].try_into().expect("four bytes"))
+    }
+
+    /// pe-logic's runner passes the check every runner passes, on the lamp.
+    #[test]
+    fn the_logic_runner_conforms_on_the_lamp() {
+        big_stack(|| {
+            let make = || Box::new(runner(true)) as Box<dyn ScriptRunner>;
+            conformance(&make, &fixture_of(&lit())).expect("pe-logic's runner conforms");
+        });
+    }
+
+    /// Each logic stage runs its own systems only: the lamp's `pulse` is a pre-physics system, so at frame 0 the first
+    /// stage switches two lamps on (the third, half a period in, stays dark: unchanged) and the second writes nothing.
+    /// The row whose module the runner lacks is missing at both.
+    #[test]
+    fn a_stage_runs_its_own_systems_only() {
+        big_stack(|| {
+            let fx = fixture_of(&lit());
+            let mut r = runner(true);
+            let mut store = fx.store.clone();
+            let faulted = BTreeSet::new();
+            let guard = |_: ObjectId| false;
+            let check = |_: ComponentId, _: ObjectId, _: &[u8]| -> Result<(), String> { Ok(()) };
+            let world = StageWorld {
+                frame: Frame(0),
+                line: fx.line,
+                rate_hz: 60,
+                guard: &guard,
+                faulted: &faulted,
+                check: &check,
+            };
+            let pre = r.run_stage(Stage::LogicPrePhysics, &fx.scripts, &mut store, &world);
+            let post = r.run_stage(Stage::LogicPostPhysics, &fx.scripts, &mut store, &world);
+            let glow = parts().1[1].id();
+            assert_eq!(pre.report.written, [(glow, oid(LAMPS[0])), (glow, oid(LAMPS[2]))]);
+            assert!(post.report.written.is_empty(), "{post:?}");
+            assert_eq!((pre.missing, post.missing), (vec![[8; 32]], vec![[8; 32]]));
+        });
+    }
+
+    /// The lamp runs in the replica's frame: after frames 0 to 29 each lamp's glow is what its rule gives at frame 29
+    /// (t = 29/60 s, on while (t + phase) mod 1 s < 0.5 s): on, off, off. The runner's identity is pe-logic's.
+    #[test]
+    fn the_lamp_runs_in_the_replicas_frame() {
+        big_stack(|| {
+            let mut s = Source::default();
+            let mut r = replica_of(lit()).with_runner(Box::new(runner(true)));
+            r.advance(Frame(30), &mut s);
+            assert_eq!((r.frame(), r.faults()), (Frame(30), 0));
+            assert_eq!(LAMPS.map(|n| intensity(&r, n)), [1.0, 0.0, 0.0]);
+            assert_eq!(r.script_counts().missing, 0);
+            let identity = pe_logic::identity(&Settings::default(), &RunSettings::default());
+            assert_eq!(r.runner_identity(), Some(Bytes::from(identity)));
+        });
+    }
+
+    /// A late entry rolls the replica back across frames where the lamps switched: the replay reaches the roots the
+    /// in-order run reached.
+    #[test]
+    fn a_rollback_replays_the_lamp_to_the_same_roots() {
+        big_stack(|| {
+            let keys = keys();
+            let mut b = EntryBuilder::new(&keys, 0);
+            let late = edit(&mut b, 12, vec![Op::Delete { id: Target::Existing(oid(BALL)) }]);
+            let mut all = Source::default();
+            all.add(late.clone());
+            let mut a = replica_of(lit()).with_runner(Box::new(runner(true)));
+            a.advance(Frame(40), &mut all);
+            let mut s = Source::default();
+            let mut r = replica_of(lit()).with_runner(Box::new(runner(true)));
+            r.advance(Frame(30), &mut s);
+            s.add(late);
+            let adv = r.advance(Frame(40), &mut s);
+            assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 12), "rolled back: {adv:?}");
+            assert_eq!((a.faults(), r.faults()), (0, 0));
+            assert_eq!(roots(&r, 40), roots(&a, 40));
+            assert_eq!(roots(&r, 40).len(), 6);
+            assert_eq!(LAMPS.map(|n| intensity(&r, n)), LAMPS.map(|n| intensity(&a, n)));
+        });
+    }
+
+    /// pe-logic's tally script (its batch runner's test script) through the replica. Its `spawn` system creates a child
+    /// and emits `spawned` with the count made so far: the event becomes an S5 effect under its declared name's kind,
+    /// and the child is in the world. Its `trouble` system panics after the physics: the fault is world state (the
+    /// modules row records it) and the script runs no more, so the second spawn never happens.
+    #[test]
+    fn a_script_event_reaches_the_view_and_a_fault_stops_the_script() {
+        big_stack(|| {
+            const TALLY: [u8; 32] = [13; 32];
+            const SPAWNER: u128 = 80;
+            const TROUBLE: u128 = 81;
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/tally");
+            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
+            let wasm = pe_logic::build::build(&dir, &pe_logic::build::engine_sdk(), &target, true)
+                .unwrap_or_else(|e| panic!("{e}"));
+            let mut runner = runner(false);
+            let module = runner.insert(&wasm).expect("the tally loads");
+            let s = Settings::default();
+            let m = run::read_manifest(&Script::load(&runtime::engine(&s).unwrap(), s, &wasm).unwrap()).unwrap();
+            let own = m.components.iter().filter(|c| !c.name.starts_with("pe."));
+            let desc = |c: &pe_logic::manifest::Component| {
+                let fields = run::component_desc(c, ComponentId(0)).unwrap().fields().to_vec();
+                run::component_desc(c, script_component_id(&v(), &c.name, fields).unwrap()).unwrap()
+            };
+            let descs: Vec<ComponentDesc> = own.map(desc).collect();
+            let id_of = |name: &str| descs.iter().find(|d| d.name() == name).expect("a tally component").id();
+            let (spawner, trouble) = (id_of("Spawner"), id_of("Trouble"));
+            let trouble_size = descs.iter().find(|d| d.id() == trouble).expect("Trouble").size();
+            let mut w = floor_and_ball();
+            let keys = keys();
+            let mut b = EntryBuilder::new(&keys, 0);
+            let mut components = vec![tag_desc(&v())];
+            components.extend(descs.iter().cloned());
+            let commit = tx(vec![
+                Op::Register { components },
+                Op::CommitScript {
+                    script: TALLY,
+                    base: None,
+                    source: BlobRef { hash: v().0, len: 10 },
+                    toolchain: Hash([1; 32]),
+                    sdk: Hash([2; 32]),
+                    author_module: module,
+                    activate_at: 0,
+                },
+            ]);
+            applied(&w.apply_edit(Frame(0), &b.next(Class::Edit, Frame(0), Bytes::from(commit.encode()))).0);
+            for n in [SPAWNER, TROUBLE] {
+                w.create(oid(n), None, MemberKey([1; 32]), GENESIS).expect("an object");
+                w.insert(oid(n), Transform::at(pos(0.0, 3.0, n as f64 - 80.0))).expect("its transform");
+            }
+            let set = |n, component, bytes| Op::SetRow {
+                id: Target::Existing(oid(n)),
+                row: Row { component, instance: 0, bytes },
+            };
+            let left: Vec<u8> = [2u32, 0].iter().flat_map(|x| x.to_le_bytes()).collect();
+            let mut panics = vec![0; trouble_size];
+            panics[..4].copy_from_slice(&2u32.to_le_bytes());
+            let ops = vec![
+                set(SPAWNER, spawner, left),
+                set(SPAWNER, tag_desc(&v()).id(), vec![]),
+                set(TROUBLE, trouble, panics),
+                set(TROUBLE, tag_desc(&v()).id(), vec![]),
+            ];
+            applied(&w.apply_edit(Frame(0), &edit(&mut b, 0, ops)).0);
+            let mut r = replica_of(w).with_runner(Box::new(runner));
+            let objects = r.world().world().store().objects().len();
+            r.advance(Frame(3), &mut Source::default());
+            assert_eq!((r.frame(), r.faults(), r.script_counts().missing), (Frame(3), 0, 0));
+            let row = r.world().world().modules()[&TALLY].clone();
+            assert!(row.faulted.is_some_and(|(f, _)| f == Frame(0)), "{:?}", row.faulted);
+            assert_eq!(r.script_counts().host_faults, 0);
+            let view = r.view();
+            let kind = EffectKind::Script(event_kind(&TALLY, "spawned"));
+            let key = EffectKey { frame: Frame(0), cause: EffectCause::Logic, object: oid(SPAWNER), kind, ordinal: 0 };
+            assert_eq!(keys_of(&view), [key]);
+            assert_eq!(view.effects[0].data, Bytes::from(0u32.to_le_bytes().to_vec()));
+            assert_eq!(r.world().world().store().objects().len(), objects + 1, "the child");
+        });
+    }
+
+    /// A runner without the lamp's module steps on and counts the lamp missing at each stage; the lamps stay dark.
+    #[test]
+    fn without_the_module_the_lamp_is_missing_and_stays_dark() {
+        big_stack(|| {
+            let mut s = Source::default();
+            let mut r = replica_of(lit()).with_runner(Box::new(runner(false)));
+            r.advance(Frame(10), &mut s);
+            assert_eq!((r.frame(), r.faults()), (Frame(10), 0));
+            assert_eq!(LAMPS.map(|n| intensity(&r, n)), [0.0; 3]);
+            assert_eq!(r.script_counts().missing, 20, "one per stage");
+        });
+    }
 }

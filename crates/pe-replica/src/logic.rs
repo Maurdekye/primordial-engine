@@ -18,6 +18,8 @@
 //!   binds under the row's ids (logic.md 6.2, 3). Otherwise it does not run on this machine, and the stage reports it
 //!   as missing: a build fault on this machine.
 //! - **Events** become S5 effects ([`event_kind`]): their keys are stable across replays, so the view plays each once.
+//! - **Every runner** the repo builds passes [`conformance`] (@fable-reviewer m46630a61ded7): the test fake, and
+//!   pe-logic's (`LogicRunner`, the `logic` feature).
 
 use std::collections::BTreeSet;
 
@@ -27,6 +29,11 @@ use pe_seams::Stage;
 use pe_sim::{ComponentId, SimStore};
 use pe_world::LogicReport;
 use pe_world::script::AssetId;
+
+#[cfg(feature = "logic")]
+mod runner;
+#[cfg(feature = "logic")]
+pub use runner::LogicRunner;
 
 /// One script a logic stage runs: its row of the world's modules table (world-model.md 5.4 and 7.9).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,4 +129,88 @@ pub struct ScriptCounts {
     pub host_faults: u64,
     /// Script runs skipped because the module was missing or would not bind: one per script and stage.
     pub missing: u64,
+}
+
+/// A fixture for [`conformance`]: a store and the rows to run over it, frame after frame from the store's frame.
+pub struct Fixture {
+    pub store: SimStore,
+    pub scripts: Vec<ScriptRow>,
+    pub line: LineId,
+    pub rate_hz: u32,
+    /// How many frames to run, both stages each. The replay check starts halfway.
+    pub frames: u64,
+}
+
+/// What two runs must agree on: everything a stage reports except this machine's own counts.
+fn agreed(o: &StageOutcome) -> (LogicReport, Vec<ScriptEvent>, Vec<AssetId>) {
+    (o.report.clone(), o.events.clone(), o.missing.clone())
+}
+
+fn run_fixture_stage(
+    r: &mut dyn ScriptRunner,
+    stage: Stage,
+    fx: &Fixture,
+    store: &mut SimStore,
+    faulted: &BTreeSet<AssetId>,
+) -> StageOutcome {
+    let guard = |_: ObjectId| false;
+    let check = |_: ComponentId, _: ObjectId, _: &[u8]| -> Result<(), String> { Ok(()) };
+    let frame = store.frame();
+    let world = StageWorld { frame, line: fx.line, rate_hz: fx.rate_hz, guard: &guard, faulted, check: &check };
+    r.run_stage(stage, &fx.scripts, store, &world)
+}
+
+/// The conformance check every runner the repo builds passes (Q1's testing condition, @fable-reviewer m46630a61ded7).
+/// Over `fx`'s frames:
+/// 1. two runners from `make` have equal identities, not empty, and at every stage they report the same and leave
+///    the same store;
+/// 2. the first runner, having run every frame, replays the second half from the store saved there exactly as it ran
+///    it the first time: nothing it keeps from one frame to the next changes a result.
+///
+/// A fault puts its script among the faulted for the frames after, as the world records it. Host-stack faults and
+/// floating-point resets are this machine's own and are not compared. Returns the first difference.
+pub fn conformance(make: &dyn Fn() -> Box<dyn ScriptRunner>, fx: &Fixture) -> Result<(), String> {
+    let (mut a, mut b) = (make(), make());
+    let id = a.identity();
+    if id.is_empty() || id != b.identity() {
+        return Err("two runners' identities differ, or one is empty".into());
+    }
+    let image = |s: &SimStore| s.snapshot().to_bytes();
+    let (first, end) = (fx.store.frame().0, fx.store.frame().0 + fx.frames);
+    let half = first + fx.frames / 2;
+    let (mut sa, mut sb) = (fx.store.clone(), fx.store.clone());
+    let mut faulted = BTreeSet::new();
+    let mut saved = None;
+    let mut first_run = Vec::new();
+    for f in first..end {
+        if f == half {
+            saved = Some((sa.clone(), faulted.clone()));
+        }
+        sa.set_frame(Frame(f));
+        sb.set_frame(Frame(f));
+        for stage in [Stage::LogicPrePhysics, Stage::LogicPostPhysics] {
+            let oa = run_fixture_stage(&mut *a, stage, fx, &mut sa, &faulted);
+            let ob = run_fixture_stage(&mut *b, stage, fx, &mut sb, &faulted);
+            if agreed(&oa) != agreed(&ob) || image(&sa) != image(&sb) {
+                return Err(format!("frame {f}, {stage:?}: two runners differ"));
+            }
+            if f >= half {
+                first_run.push((agreed(&oa), image(&sa)));
+            }
+            faulted.extend(oa.report.faults.iter().map(|(asset, _)| *asset));
+        }
+    }
+    let Some((mut s, mut faulted)) = saved else { return Ok(()) };
+    let mut first_run = first_run.into_iter();
+    for f in half..end {
+        s.set_frame(Frame(f));
+        for stage in [Stage::LogicPrePhysics, Stage::LogicPostPhysics] {
+            let o = run_fixture_stage(&mut *a, stage, fx, &mut s, &faulted);
+            if Some((agreed(&o), image(&s))) != first_run.next() {
+                return Err(format!("frame {f}, {stage:?}: the replay from frame {half} differs from the first run"));
+            }
+            faulted.extend(o.report.faults.iter().map(|(asset, _)| *asset));
+        }
+    }
+    Ok(())
 }
