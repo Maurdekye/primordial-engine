@@ -20,6 +20,8 @@ pe-mcp = { path = "../pe-mcp" }
 pe-render = { path = "../pe-render" }
 pe-xr = { path = "../pe-xr" }
 pe-diverge = { path = "../pe-diverge" }
+# The genesis record's session nonce: the OS's randomness, the getrandom pe-net-crypto uses (src/genesis.rs).
+getrandom = "0.4"
 
 # The two-member test: pe-seams's test keys, and Bytes for its in-process Transport.
 [dev-dependencies]
