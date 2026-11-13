@@ -249,7 +249,8 @@ The caller's principal, member, producer label, the permissions its role has (in
 agent can tell in advance what will be refused). In M1 roles follow world-model.md 5.4 (coordinator, U3): a private
 world's creator is its only admin; friends join as Guest, a role with `EDIT`; the confidants of the world's admins
 join as admins. Every admin is a co-owner; there is no world-owner field (10.5). Also: the world's line id and name; every
-member of the world with its role, each marked whether it is here; the local frame, the newest final frame and the tick rate; the link state in the
+member of the world with its role, each marked whether it is here, then anyone here whose admission hasn't stepped
+yet, as a watcher; the local frame, the newest final frame and the tick rate; the link state in the
 player's words (`fine`, `thin`, `some actions dropped`, `catching up`, `watching only`; file 08, A6); the player's
 scale; the API's limits (9.3); and `kept`, whether an admin of the world is present (file 18, 2.2; gnosarium-ux
 draft 6). The user ruled (file 18, 6-7): a session with no admin keeps nothing unless an admin joins before it ends,

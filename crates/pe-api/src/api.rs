@@ -823,7 +823,8 @@ pub fn role_of(perms: u32) -> (&'static str, Vec<String>) {
 
 impl<S: WorldSource> Api<S> {
     /// `session` (api.md 5.1): pe-app's facts, and the world state (frame, members and their roles, scale) from the
-    /// newest snapshot. Every member of the world is listed, each marked whether it is here; `kept` is whether an
+    /// newest snapshot. Every member of the world is listed, each marked whether it is here, and then anyone here
+    /// whose admission hasn't stepped yet, as a watcher (@chunks-reviewer's Low on 930cd094); `kept` is whether an
     /// admin is here.
     pub fn session(&self, c: &Caller) -> pe_seams::world_api::SessionInfo {
         use pe_seams::world_api::{Limits, Me, MemberInfo, SessionInfo, WorldBrief};
@@ -831,13 +832,18 @@ impl<S: WorldSource> Api<S> {
         let snap = self.src.latest();
         let role = |m: MemberId| role_of(snap.perms(m.into()).unwrap_or(0));
         let name = |m: MemberId| self.src.member_name(m).unwrap_or_default();
-        let members: Vec<MemberInfo> = snap
+        let mut members: Vec<MemberInfo> = snap
             .members()
             .map(|(k, p)| {
                 let m: MemberId = k.into();
                 MemberInfo { member: m, name: name(m), role: role_of(p).0.into(), here: facts.here.contains(&m) }
             })
             .collect();
+        for m in &facts.here {
+            if snap.perms((*m).into()).is_none() {
+                members.push(MemberInfo { member: *m, name: name(*m), role: role_of(0).0.into(), here: true });
+            }
+        }
         let kept = members.iter().any(|m| m.here && m.role == "admin");
         let scale = self
             .src
@@ -955,6 +961,8 @@ mod tests {
     const ALICE: MemberKey = MemberKey([1; 32]);
     /// A member of the world who isn't here.
     const BOB: MemberKey = MemberKey([2; 32]);
+    /// Someone here whose admission hasn't stepped yet.
+    const CAROL: MemberKey = MemberKey([3; 32]);
 
     fn id(n: u128) -> pe_core::ObjectId {
         pe_core::ObjectId::from_u128(n)
@@ -990,7 +998,7 @@ mod tests {
             SessionFacts {
                 world_name: "Test".into(),
                 line: LineId(Hash([0; 32])),
-                here: vec![ALICE.into()],
+                here: vec![ALICE.into(), CAROL.into()],
                 link: pe_seams::world_api::Link::Fine,
                 caught_up: !CATCHING_UP.with(|c| c.get()),
                 tick_hz: 60,
@@ -1093,9 +1101,12 @@ mod tests {
         let s = w.session(&c);
         assert_eq!((s.world.name.as_str(), s.frame, s.tick_hz, s.caught_up, s.kept), ("Test", 4, 60, true, true));
         assert_eq!((s.me.role.as_str(), s.me.name.as_str(), s.me.scale), ("admin", "Alice", 1.0));
-        // Every member, each marked whether it is here.
+        // Every member, each marked whether it is here, then anyone here not yet admitted, as a watcher.
         let here: Vec<(MemberId, &str, bool)> = s.members.iter().map(|m| (m.member, m.role.as_str(), m.here)).collect();
-        assert_eq!(here, vec![(ALICE.into(), "admin", true), (BOB.into(), "guest", false)]);
+        assert_eq!(
+            here,
+            vec![(ALICE.into(), "admin", true), (BOB.into(), "guest", false), (CAROL.into(), "watcher", true)]
+        );
         assert_eq!(s.limits.ops_per_tx, 4096);
         assert!(w.query(&c, &Query::default()).is_ok());
         // A confirm token: live changes refused, dry runs answer.
