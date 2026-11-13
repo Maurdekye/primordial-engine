@@ -29,6 +29,8 @@ struct Source {
     asked: Option<(Frame, Frame)>,
     /// S3's verdicts on the entries final cuts voided (S2 v1.5's `void_reason`).
     voided: BTreeMap<EntryRef, VoidReason>,
+    /// S3's answer for any cut below its frame, when set (S3 v1.4's `entries_for_cut`), as a pipelining S3 gives it.
+    for_cut: Option<BTreeMap<Frame, Vec<SignedEntry>>>,
 }
 
 impl Source {
@@ -67,6 +69,16 @@ impl EntrySource for Source {
     }
     fn void_reason(&self, entry: &EntryRef) -> Option<VoidReason> {
         self.voided.get(entry).copied()
+    }
+    fn entries_for_cut(&self, cut: &Cut, frame: Frame) -> Option<Vec<SignedEntry>> {
+        let all = self.entries_at(frame)?;
+        Some(match &self.for_cut {
+            Some(answer) if frame < cut.at.frame => answer.get(&frame).cloned().unwrap_or_default(),
+            _ if frame < cut.at.frame => {
+                all.iter().filter(|e| cut.includes(&e.entry.chain, e.entry.seq)).cloned().collect()
+            }
+            _ => all.to_vec(),
+        })
     }
 }
 
@@ -1149,4 +1161,53 @@ fn a_pending_entry_reads_late_whatever_this_replica_saw_of_its_chain() {
     reader.read(&a);
     assert_eq!(reader.told.get(&e2.id()), Some(&Outcome::Dropped { reason: VoidReason::Late }));
     assert_eq!(reader.told.get(&e1.id()), None, "28 is past final_frame");
+}
+
+// ---- a root steps exactly S3's answer for its cut (S3 v1.4) --------------------------------------------------------
+
+/// S3 v1.4 (@coordinator-opus, after @harness-eng's pipelined-void repro): a root at a cut, and rung 1's
+/// replay to it, step exactly what `entries_for_cut` answers for that cut, frame by frame and in its order, where
+/// `entries_at` holds more (a ball the cut includes but its ancestry voids), less (a push only the answer holds) or the
+/// same entries in another order (two teleports of one ball in one frame, so the last one decides where it ends).
+#[test]
+fn a_root_at_a_cut_steps_exactly_what_s3_answers_for_that_cut() {
+    let keys = TestKeys::new(7, 2);
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let edit = |ops: &[MockOp]| Bytes::from(encode(ops));
+    let ground = MockOp::Spawn {
+        id: id(1),
+        kind: BodyKind::Static,
+        shape: ShapeRow::Box { center: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0], half_extents: [10.0, 0.5, 10.0] },
+        pos: [0.0, -0.5, 0.0],
+    };
+    let g = a.next(Class::Edit, Frame(0), edit(&[ground]));
+    let b10 = a.next(Class::Edit, Frame(2), edit(&[ball(10, 0.0, 1.0)]));
+    let b11 = b.next(Class::Edit, Frame(3), edit(&[ball(11, 0.3, 2.0)]));
+    let push = a.next(Class::Edit, Frame(6), edit(&[MockOp::Push { id: id(10), impulse: [0.4, 0.0, 0.0] }]));
+    let to_p = b.next(Class::Edit, Frame(12), edit(&[MockOp::Teleport { id: id(10), pos: [1.0, 1.5, 0.0] }]));
+    let to_q = a.next(Class::Edit, Frame(12), edit(&[MockOp::Teleport { id: id(10), pos: [-1.0, 2.5, 0.0] }]));
+    let all = [g.clone(), b10.clone(), b11.clone(), push.clone(), to_p.clone(), to_q.clone()];
+    let (c8, c16) = (cut(&all, 1, 8), cut(&all, 2, 16));
+    // This member's prediction: every entry but the push, which its S3 holds without predicting it.
+    let mut s = Source::default();
+    for e in [&g, &b10, &b11, &to_p, &to_q] {
+        s.add(e.clone());
+    }
+    let reversed: Vec<SignedEntry> = s.entries_at(Frame(12)).expect("kept").iter().rev().cloned().collect();
+    let answer =
+        BTreeMap::from([(Frame(0), vec![g]), (Frame(2), vec![b10]), (Frame(6), vec![push]), (Frame(12), reversed)]);
+    s.for_cut = Some(answer.clone());
+    let mut r = replica();
+    r.advance(Frame(17), &mut s);
+    let root = r.root_at_cut(&c16, &mut s).expect("a root");
+    // The reference steps the answer live: a source whose `entries_at` holds exactly it, in its order.
+    let mut want = Source { entries: answer, ..Source::default() };
+    let mut w = replica();
+    w.advance(Frame(17), &mut want);
+    assert_eq!(Some(root), w.live_root(Frame(16)), "the root is the answer's");
+    assert_ne!(Some(root), r.live_root(Frame(16)), "the live history, from entries_at, differs");
+    // Rung 1 replays from `Cv` with the answer too: the answer's state at 8 becomes `Cv`, then the replay to 16.
+    let r8 = r.root_at_cut(&c8, &mut s).expect("a root at 8");
+    assert_eq!(r.finalize(&FinalCut { cut: c8, root: r8, voters: vec![] }, &mut s), Finalized::Agreed);
+    assert_eq!(r.replay_to(&c16, &mut s), Ok(root), "rung 1's replay steps the answer too");
 }
