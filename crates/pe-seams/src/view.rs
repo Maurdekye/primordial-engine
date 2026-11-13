@@ -302,8 +302,9 @@ pub struct StepRecord {
     /// The frame it was stepped at.
     pub frame: Frame,
     pub outcome: Outcome,
-    /// The objects a script commit re-keyed (world-model.md 7.9): every object, tombstoned ones included, whose rows
-    /// moved onto the new version's ids, in id order. Empty for every other record. WorldApi's `watch` and history
+    /// The objects a script commit re-keyed (world-model.md 7.9): every object, tombstoned ones included, with a row of
+    /// the old version, moved onto the new version's ids or dropped, in id order (@world-model's nit). Empty for every
+    /// other record. WorldApi's `watch` and history
     /// name them from here (S5 v1.6; @coordinator-opus, for @api-eng). At most
     /// pe-world's `MAX_REKEY_ROWS` of them; the set is shared across re-publications, never copied.
     pub rekeyed: Arc<[ObjectId]>,
