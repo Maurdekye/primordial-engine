@@ -4,9 +4,10 @@ mod common;
 
 use common::{Lie, Net, key, obj, oid, spread};
 use pe_diverge::msg::Msg;
-use pe_diverge::{Action, Config};
+use pe_diverge::{Action, Config, CvState, FaultBundle};
 use pe_seams::{
-    CutRef, DivergeEvent, Frame, Hash, ImportError, LeafKey, LineId, MemberKey, ObjectId, Replica, Rung, SimRate,
+    CutRef, DivergeEvent, Frame, Hash, ImportError, LeafKey, LineId, MemberKey, ObjectId, Replica, Rung, SignedEntry,
+    SimRate,
 };
 use std::time::Duration;
 
@@ -92,6 +93,114 @@ fn a_persistent_fault_is_cured_by_rung_2_fetching_only_what_differs() {
     assert_eq!(b.differing, vec![obj(5)]);
     assert_eq!(b.rung, 2);
     assert!(net.converged());
+}
+
+#[test]
+fn a_rung_2_bundle_carries_cv_s_whole_state_for_offline_replay() {
+    // divergence.md 6: the bundle imports into an empty replica. The state is captured before the import moves Cv
+    // past it, so it is the old Cv's: its cut, its root, the world's rate, and a record for every leaf.
+    let mut net = Net::new(3, 40, &[]);
+    let cv = damage_cv(&mut net, &[5]);
+    let (cv_cut, cv_root) = net.peers[VICTIM].d.verified_cut().unwrap();
+    net.run(40);
+    assert_eq!(net.peers[VICTIM].d.counters().cured_by_rung[1], 1);
+    assert_eq!(net.peers[VICTIM].d.counters().evidence_skipped, 0);
+    let b = bundles(&net, VICTIM).pop().unwrap();
+    assert_eq!(FaultBundle::decode(&b.encode().unwrap()), Ok(b.clone()), "the bundle round-trips with its state");
+    let s = CvState::decode(&b.state_at_cv).expect("the state decodes");
+    assert_eq!((s.cv.at, s.root, s.rate_hz), (cv_cut, cv_root, 60));
+    assert_eq!(s.cv.at.frame.0, cv);
+    // One `Cv` in the bundle: the one the repair started from, not the cut its cure moved `Cv` to (Low 1).
+    assert_eq!(b.cv, Some((s.cv.at, s.root)));
+    let st = &net.peers[0].r.states[&cv];
+    let want = 1 + st.tables.len() + st.objs.len(); // the config, the tables, the objects; physics is the image
+    assert_eq!(s.records.len(), want);
+    assert_eq!(s.records[0].key, LeafKey::Config);
+    assert!(s.records.iter().any(|r| r.key == obj(5)));
+    assert!(s.records.iter().all(|r| !r.proof.is_empty()), "each record carries its proof");
+    assert_eq!(s.physics.as_ref().map(|p| p.frame), Some(Frame(cv)));
+    assert!(b.entries.is_empty(), "no entries were given");
+}
+
+/// The bundle's entries, decoded, as (stamp, n).
+fn bundle_entries(b: &FaultBundle) -> Vec<(u64, u8)> {
+    b.entries
+        .iter()
+        .map(|e| {
+            let e = SignedEntry::decode(e).expect("an entry decodes");
+            (e.entry.stamp.0, e.entry.author.0[0])
+        })
+        .collect()
+}
+
+#[test]
+fn a_bundle_carries_exactly_the_entries_stamped_from_cv_to_the_cut_in_order() {
+    // @design-reviewer on 7d4ae387: entries stamped in [Cv, C), in the source's agreed order; none below Cv, none
+    // from C up.
+    let mut net = Net::new(3, 40, &[]);
+    let cv = damage_cv(&mut net, &[5]);
+    let src = &mut net.peers[VICTIM].src;
+    for (f, n) in [(cv - 1, 1), (cv, 2), (cv, 3), (cv + 5, 4), (cv + 400, 5)] {
+        src.entries.entry(f).or_default().push(common::entry(f, n));
+    }
+    net.run(40);
+    let b = bundles(&net, VICTIM).pop().unwrap();
+    assert!(b.cut.frame.0 > cv + 5 && b.cut.frame.0 < cv + 400, "{:?}", b.cut);
+    assert_eq!(bundle_entries(&b), vec![(cv, 2), (cv, 3), (cv + 5, 4)]);
+}
+
+#[test]
+fn entries_extend_to_a_newer_cut_without_duplicates() {
+    // Every source silent past W_fg: rung-2 repairs are overtaken and restart at newer cuts. The entries extend to
+    // each, every frame once.
+    let mut net = Net::new(3, 40, &[]);
+    let cv = damage_cv(&mut net, &[5]);
+    net.peers[0].silent = true;
+    net.peers[1].silent = true;
+    for f in cv..cv + 500 {
+        net.peers[VICTIM].src.entries.insert(f, vec![common::entry(f, (f % 200) as u8)]);
+    }
+    for i in 0..300 {
+        if i == 180 {
+            net.peers[0].silent = false;
+            net.peers[1].silent = false;
+        }
+        net.step();
+    }
+    let p = &net.peers[VICTIM];
+    let starts = p.events.iter().filter(|e| matches!(e, DivergeEvent::RungStarted { rung: Rung(2), .. })).count();
+    assert!(starts >= 2, "the repair restarted at a newer cut: {starts} rung-2 starts");
+    let b = bundles(&net, VICTIM).pop().unwrap();
+    let got: Vec<u64> = bundle_entries(&b).iter().map(|e| e.0).collect();
+    assert_eq!(got, (cv..b.cut.frame.0).collect::<Vec<_>>(), "every frame from Cv to the cut, once");
+}
+
+#[test]
+fn an_entry_frame_no_longer_kept_leaves_the_evidence_out_counted_once() {
+    // S3 trimmed past Cv: the entries from Cv cannot all be had, so the bundle goes without evidence, and the
+    // omission is counted once for this Cv, however often rung 2 starts.
+    let mut net = Net::with_config(3, 40, &[], stuck_config());
+    let cv = damage_cv(&mut net, &[5]);
+    net.peers[VICTIM].src.kept_from = cv + 2;
+    net.peers[VICTIM].r.refuse = Some(ImportError::NotKept);
+    assert!(run_until(&mut net, 600, |n| n.peers[VICTIM].d.counters().repairs_stuck == 1));
+    net.run(300); // probes run
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert!(rung2_failures(&net, VICTIM) > 3, "{c:?}");
+    assert_eq!(c.evidence_skipped, 1, "{c:?}");
+    assert!(bundles(&net, VICTIM).iter().all(|b| b.state_at_cv.is_empty() && b.entries.is_empty()));
+}
+
+#[test]
+fn a_bundle_left_without_evidence_is_counted() {
+    // Over `evidence_max_bytes`, the state is left out: the bundle is still written, and the omission counted.
+    let cfg = Config { evidence_max_bytes: 16, ..Config::default() };
+    let mut net = Net::with_config(3, 40, &[], cfg);
+    damage_cv(&mut net, &[5]);
+    net.run(40);
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert_eq!((c.cured_by_rung[1], c.evidence_skipped), (1, 1), "{c:?}");
+    assert!(bundles(&net, VICTIM).pop().unwrap().state_at_cv.is_empty());
 }
 
 #[test]
@@ -483,6 +592,8 @@ fn a_late_failed_verdict_never_makes_the_correct_member_import_the_faulty_state(
     assert!(net.peers[0].r.imports.is_empty(), "the correct member imported the faulty member's state");
     let c = net.peers[1].d.counters().clone();
     assert!(c.root_splits >= 1 && c.cured_by_rung[1] >= 1, "{c:?}");
+    // A root split's bundles carry no replay evidence (divergence.md 6; @design-reviewer, Medium on 7d4ae387).
+    assert!(bundles(&net, 1).iter().all(|b| b.state_at_cv.is_empty() && b.entries.is_empty()));
 }
 
 #[test]

@@ -15,14 +15,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use bytes::Bytes;
 use pe_seams::{
-    Cut, CutImport, CutRef, DivergeEvent, DomainId, EntrySource, Fault, FaultKind, FinalCut, Finalized, FrameClock,
-    GroupSel, Hash, HostTime, ImportError, Lane, LeafKey, MemberKey, Nibbles, Node, Outgoing, PeerId, PhysicsImage,
-    Record, Replica, RootError, Rung, SelfTest, Tree, TreePath, frames_ceil,
+    Cut, CutImport, CutRef, DivergeEvent, DomainId, EntrySource, Fault, FaultKind, FinalCut, Finalized, Frame,
+    FrameClock, GroupSel, Hash, HostTime, ImportError, Lane, LeafKey, MemberKey, Nibbles, Node, Outgoing, PeerId,
+    PhysicsImage, Record, Replica, RootError, Rung, SelfTest, Tree, TreePath, frames_ceil,
 };
 
 use crate::bundle::FaultBundle;
 use crate::counters::Counters;
+use crate::evidence::{CvState, all_keys};
 use crate::msg::{Msg, node_size, path_size, record_size};
 use crate::split;
 
@@ -59,6 +61,9 @@ pub struct Config {
     pub n_stuck: u32,
     pub n_stuck_any: u32,
     pub t_stuck_probe: Duration,
+    /// The largest replay evidence a bundle carries (6): `Cv`'s whole state, encoded. A larger state is left out,
+    /// and counted (`evidence_skipped`).
+    pub evidence_max_bytes: usize,
 }
 
 impl Default for Config {
@@ -80,6 +85,7 @@ impl Default for Config {
             n_stuck: 3,
             n_stuck_any: 10,
             t_stuck_probe: Duration::from_secs(30),
+            evidence_max_bytes: 64 << 20,
         }
     }
 }
@@ -139,6 +145,10 @@ struct Replay {
 
 struct Repair {
     cut: Cut,
+    /// `Cv` when the repair started: the bundle's `cv`, whatever a cure's `finalize` moves `Cv` to.
+    from_cv: Option<(CutRef, Hash)>,
+    /// Replay evidence was captured for this repair, at `from_cv` (6). Never for a root split's.
+    evidence: bool,
     /// The final cut repaired toward, or `None` for a root split's reference root (the cut is not final).
     final_cut: Option<FinalCut>,
     target: Hash,
@@ -264,6 +274,16 @@ impl FailKey {
     }
 }
 
+/// A bundle's replay evidence (6): `Cv`'s state, encoded ([`CvState`]), and the entries from `Cv`'s frame up to
+/// `upto`, each [`pe_seams::SignedEntry::encode`]d.
+struct Evidence {
+    /// The `Cv` it was captured at: its cut and root, so a `Cv` replaced at the same frame never reuses it.
+    key: (CutRef, Hash),
+    state: Bytes,
+    entries: Vec<Bytes>,
+    upto: Frame,
+}
+
 /// The ladder stopped (4.3).
 struct Stuck {
     /// Stopped by `n_stuck_any` (keys kept changing) or by a rate mismatch: only a cure starts it again. Otherwise a
@@ -278,6 +298,13 @@ pub struct Diverge {
     cfg: Config,
     me: MemberKey,
     cv: Option<(CutRef, Hash)>,
+    /// `Cv`'s cut with its heads, for the replay evidence.
+    cv_cut: Option<Cut>,
+    /// The replay evidence for the bundles of this divergence (6), captured once per `Cv`, and kept past the cure
+    /// that moves `Cv`, whose bundle carries it.
+    evidence: Option<Evidence>,
+    /// The `Cv` whose capture failed: not tried again, and counted once (`evidence_skipped`).
+    evidence_failed: Option<(CutRef, Hash)>,
     replay: Option<Replay>,
     repair: Option<Repair>,
     pending: Option<FinalCut>,
@@ -315,6 +342,9 @@ impl Diverge {
             cfg,
             me,
             cv: None,
+            cv_cut: None,
+            evidence: None,
+            evidence_failed: None,
             replay: None,
             repair: None,
             pending: None,
@@ -425,7 +455,7 @@ impl Diverge {
             Finalized::Agreed => {
                 self.counters.cuts_compared += 1;
                 self.counters.cuts_matched += 1;
-                self.cv = Some((fc.cut.at, fc.root));
+                self.set_cv(&fc.cut, fc.root);
                 self.reset_stuck();
                 // A later cut agreed: any replay or repair toward an older one, or toward a split's reference, is moot.
                 // A replay or import the replica was still finishing (`Pending`) is what made it agree: it counts as
@@ -442,6 +472,9 @@ impl Diverge {
                 {
                     self.count_cure(rep, mine, now);
                 }
+                // Whatever evidence is left was for an older `Cv`, and no bundle will take it: up to
+                // `evidence_max_bytes` is not kept resident (@shader-reviewer, Low).
+                self.evidence = None;
                 self.pending = None;
                 if let Some(ep) = self.episode.take() {
                     self.counters.root_splits_ended += 1;
@@ -491,6 +524,7 @@ impl Diverge {
             Some(mine) => self.diverged(fc, mine, replica, source, now, clock),
             None => {
                 self.counters.damaged += 1;
+                self.capture(replica, source, fc.cut.at.frame, clock);
                 let voters = fc.voters.iter().map(|v| v.0).collect();
                 self.start_rung2(fc.cut.clone(), Some(fc.clone()), fc.root, voters, None, replica, now);
             }
@@ -850,7 +884,8 @@ impl Diverge {
                     self.counters.repair_latency_nanos.push(0);
                     self.events.push(DivergeEvent::Repaired { cut, rung: Rung(1) });
                     if !newer {
-                        self.cv = Some((cut, fc.root));
+                        self.set_cv(&fc.cut, fc.root);
+                        self.evidence = None; // a rung-1 cure writes no bundle
                     }
                     self.after_repair(replica, source, now, clock);
                     return;
@@ -875,8 +910,66 @@ impl Diverge {
                 mine
             }
         };
+        self.capture(replica, source, fc.cut.at.frame, clock);
         let voters = fc.voters.iter().map(|v| v.0).collect();
         self.start_rung2(fc.cut.clone(), Some(fc.clone()), fc.root, voters, mine, replica, now);
+    }
+
+    /// The replay evidence captured at the current `Cv`, if any.
+    fn evidence_at_cv(&self) -> Option<&Evidence> {
+        self.evidence.as_ref().filter(|e| Some(e.key) == self.cv)
+    }
+
+    /// `Cv` moved to an agreed cut.
+    fn set_cv(&mut self, cut: &Cut, root: Hash) {
+        self.cv = Some((cut.at, root));
+        self.cv_cut = Some(cut.clone());
+        // The evidence stays for one step: a rung-2 cure's `finalize` moves `Cv` just before `count_cure` writes its
+        // bundle from the old `Cv`'s evidence and takes it. The other paths that move `Cv` drop it.
+    }
+
+    /// Save the replay evidence (6) before rung 2 runs toward a final cut at `upto`: `Cv`'s whole state, once per
+    /// `Cv`, and the entries from `Cv` up to `upto`, extended when a newer cut is repaired toward. Left out, and
+    /// counted, when `Cv`'s state or an entry frame is no longer kept, or the state is over `evidence_max_bytes`.
+    fn capture(&mut self, replica: &dyn Replica, source: &dyn EntrySource, upto: Frame, clock: &dyn FrameClock) {
+        let (Some(cut), Some((_, root))) = (&self.cv_cut, self.cv) else {
+            return;
+        };
+        let key = (cut.at, root);
+        if self.evidence_failed == Some(key) || self.evidence.as_ref().is_some_and(|e| e.key == key && e.upto >= upto) {
+            return;
+        }
+        let max = self.cfg.evidence_max_bytes;
+        let ev = match self.evidence.take() {
+            Some(ev) if ev.key == key => Some(ev),
+            _ => replica.tree(&root).and_then(|tree| {
+                let keys = all_keys(&*tree)?;
+                let records = tree.export(&keys);
+                (records.len() == keys.len()).then_some(())?;
+                let physics = replica.physics_image(&root);
+                // Over the bound: bail before encoding, from the sizes in hand (@design-reviewer, Low 2).
+                let size = records.iter().map(record_size).sum::<usize>()
+                    + physics.as_ref().map_or(0, |p| p.bytes.len())
+                    + cut.heads.len() * 104;
+                (size <= max).then_some(())?;
+                let state = CvState { cv: cut.clone(), root, rate_hz: clock.rate_hz(), records, physics };
+                let state = state.encode().ok().filter(|b| b.len() <= max)?;
+                Some(Evidence { key, state, entries: Vec::new(), upto: cut.at.frame })
+            }),
+        };
+        // The entries stamped from `Cv`'s frame up to the cut's: what a replay from `Cv` steps.
+        let ev = ev.and_then(|mut ev| {
+            for f in ev.upto.0..upto.0 {
+                ev.entries.extend(source.entries_at(Frame(f))?.iter().map(|e| Bytes::from(e.encode())));
+            }
+            ev.upto = upto;
+            Some(ev)
+        });
+        if ev.is_none() {
+            self.counters.evidence_skipped += 1;
+            self.evidence_failed = Some(key);
+        }
+        self.evidence = ev;
     }
 
     // ---- rung 2 --------------------------------------------------------------------------------------------------
@@ -909,6 +1002,7 @@ impl Diverge {
             self.fail(2, cut.at, "no other member holds the root");
             return;
         }
+        let final_cut_is_some = final_cut.is_some();
         let mut rep = Repair {
             cut,
             final_cut,
@@ -922,6 +1016,8 @@ impl Diverge {
             busy: 0,
             sent_at: now,
             started: now,
+            from_cv: self.cv,
+            evidence: final_cut_is_some && self.evidence.as_ref().is_some_and(|e| Some(e.key) == self.cv),
             descents: 0,
             phase: Phase::Physics,
             trusted,
@@ -1303,7 +1399,7 @@ impl Diverge {
             Some(fc) => {
                 // Only finalize moves Cv (S2 v1): ask the replica to compare the repaired cut again.
                 match replica.finalize(fc, source) {
-                    Finalized::Agreed => self.cv = Some((cut, rep.target)),
+                    Finalized::Agreed => self.set_cv(&rep.cut, rep.target),
                     // Not caught up to the cut within its budget yet: asked again once nothing runs (`tick`).
                     Finalized::NotReady => {
                         if self.pending.as_ref().is_none_or(|p| p.cut.at.frame <= cut.frame) {
@@ -1337,8 +1433,11 @@ impl Diverge {
         self.counters.repair_latency_nanos.push(taken);
         self.counters.repair_bytes += rep.bytes;
         self.events.push(DivergeEvent::Repaired { cut, rung: Rung(2) });
+        // The evidence goes with the repair it was captured for, and only that one (@design-reviewer, Medium): the
+        // cure's bundle takes it, and nothing after it needs it.
+        let ev = self.evidence.take_if(|e| rep.evidence && Some(e.key) == rep.from_cv);
         self.bundle(FaultBundle {
-            cv: self.cv,
+            cv: rep.from_cv,
             cut,
             agreed_root: rep.target,
             my_root: rep.my_root.unwrap_or(Hash::ZERO),
@@ -1349,6 +1448,8 @@ impl Diverge {
             rung: 2,
             sources: rep.sources[..=rep.src.min(rep.sources.len() - 1)].to_vec(),
             nanos_taken: taken,
+            state_at_cv: ev.as_ref().map(|e| e.state.clone()).unwrap_or_default(),
+            entries: ev.map(|e| e.entries).unwrap_or_default(),
             ..FaultBundle::default()
         });
         self.note_recurrence(cut, &differing, now);
@@ -1449,6 +1550,9 @@ impl Diverge {
             differing: key.leaves.clone(),
             rung: key.rung,
             stuck: named,
+            // Root splits' failures never reach here (`refused`), so the evidence of the current `Cv` is this one's.
+            state_at_cv: self.evidence_at_cv().map(|e| e.state.clone()).unwrap_or_default(),
+            entries: self.evidence_at_cv().map(|e| e.entries.clone()).unwrap_or_default(),
             ..FaultBundle::default()
         });
         self.stuck = Some(Stuck { any: sticky, key, probe_at: None });
