@@ -138,22 +138,71 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
 - **Network:** none. **Cost:** `C.frame - Cv.frame` frames of replay, normally one cut interval, plus one full
   rehash. [I] At M1's size (500 balls) this fits in the frame; from M2 it runs on a second copy (S2 `fork`) and is
   swapped in, as every deep replay does (file 14, 4.2).
-- **If `Cv` is older than `T_keep`,** its root has been released: skip rung 1.
+- **On the seam (S2 v1.2):** steps 1-4 are one call, `Replica::replay_to(&C)`. It moves neither `Cv` nor the floor;
+  pe-diverge compares the root it returns with `C`'s and, if equal, calls `finalize(C)` again, the only call that
+  moves `Cv`. The replica replays within a per-call budget and answers `Pending` meanwhile; pe-diverge asks again
+  with the same cut on each tick, and a later cut that agrees meanwhile counts as the rung's cure.
+- **If the entries from `Cv` are no longer kept** (`NotKept`: S3 trimmed past `Cv`, S3 v1.2), or `Cv`'s saved state
+  fails its rehash (`Damaged`), rung 1 fails at once and rung 2 runs.
+- **pe-diverge never reads entries itself.** It does not assume that the entries stamped in `[floor, C.frame)` are
+  the ones `C` covers (they need not be: a cut may include void entries and leave pending ones out, S3 v1.1). The
+  replica replays `C` with exactly `C`'s entries, and pe-diverge only ever hands it cuts S3 gave this member in full
+  (its final cut, or a cut it voted on, as a root split's).
 
 ### 4.2 Rung 2: fetch what differs, patch, replay forward (M1)
 
 1. **Choose a source:** one of the voters of `C`, the members that hold its root. Prefer the lowest measured
    delay; on a timeout of `T_peer`, the next one. A source is trusted for nothing: every byte is checked against
    `C`'s root, so a lying or faulty source costs time, never correctness.
-2. **Descend the tree.** Ask the source for the child hashes of the tree nodes under `C`'s root (S2 `node`,
-   served by the source's pe-diverge over the repair lane). Compare them with my tree at my root at `C`. Descend
-   only into children that differ, a whole level per round trip. At the leaves are the differing objects.
+2. **Descend the tree.** First rehash my own tree at `C` (S2 `Tree::verify`). If it fails, my cached hashes are
+   untrusted: damage behind a stale cache would look equal, be missed and come back later, so every leaf is fetched
+   rather than diffed. Then ask the source for the tree nodes under `C`'s root (S2 `Tree::node`, served by the
+   source's pe-diverge over the repair lane), and compare them with my tree at my root at `C`. Every node the source
+   sends must hash (`Node::hash`, S2 v1) to what its already-checked parent named, starting from `C`'s root, and an
+   objects-trie node must lie under the prefix asked for: a lying source is caught at its first false node, and the
+   next source is asked. Descend only into children that differ, a whole level per round trip. At the leaves are the
+   differing objects and tables.
+   - **Shapes:** the objects trie is addressed by nibble prefix (S2 v1), so two tries of different shapes are
+     compared prefix by prefix. Where one side has a leaf or a path-compressed segment and the other a node with a
+     different prefix, the difference is structural: everything under theirs is fetched, everything under mine is
+     removed, and what both have is fetched, not removed.
+   - **Bounds:** at most `node_request_paths` paths and `record_request_keys` keys per request; a larger answer is
+     split into replies of at most `reply_budget` bytes, and partial replies are collected until the request is
+     answered. The descent needs no node cap: a node is taken only if it was asked for, only once, and only if it
+     hashes to what its checked parent named, so no source can make a member take more nodes than the target tree
+     has. The hash check is the bound, also for a member with no tree of its own or one far smaller than the target.
+   - **Serving budget:** a source serves each peer from a byte bucket of `B_serve` that refills at `R_serve`. It
+     answers a request while the bucket is above zero, and takes the reply's bytes from it. Past that it answers
+     `Busy` with the wait until the bucket is above zero again, never "not held" (@shader-reviewer and
+     @design-reviewer, re-review Medium A). A source still serves one physics image per peer and root.
+   - **Pacing:** the requester keeps its own copy of each source's bucket, taking each reply's bytes from it, with
+     half the burst and a rate a quarter lower to allow for the two clocks and the network's jitter. It holds back a
+     request the source would answer `Busy`. A held-back request is not a silent source. So an honest repair is
+     never refused, and only a flooding member's excess is.
+   - **`Busy`:** the requester asks the same source again after the wait it named, at most `T_busy`. A source that
+     answers `Busy` `N_busy` times in a row is rotated, so a source can't hold a repair with it. A source naming waits so long
+     that `N_busy` of them outlast `W_fg` is left another way: the repair is overtaken at `W_fg` first, and the next
+     starts at the next source. Leaving for `Busy` is counted apart from source faults (`busy_rotations`).
+   - **Fetch time:** a repair overtaken past `W_fg` restarts at the newest cut, and a source serves a root for
+     `T_keep`. So a fetch has to finish within the shorter of the two, which is 1.5 s. At the default budget that is
+     about 6 MB of nodes and records with their proofs, around 3,000 objects at about 2 KB each, proof included [I].
+     M1's ball pit is well inside it. A larger world needs a source to keep a root while a peer fetches it, which
+     takes an S2 call to hold a root past `T_keep` (`Replica::hold`) and proofs built by the requester from the
+     nodes it already checked. Both are M2 (@coordinator-opus); M1 states the limit.
+   - **With no root of mine at `C`** (S2 v1.2 `Finalized::Damaged` or `RootError::Damaged`: a frame from my floor up
+     to `C` is no longer kept, which only S3's time cap does, for a member more than `T_diverge` plus `T_keep` behind):
+     nothing is diffed. Every leaf and the physics image are fetched, nothing is named absent, and the replica
+     imports the whole state from empty, as a joiner does [pe-seams RULINGS, S2 v1.2 round 3]. Diffing against the
+     floor's root instead is a later optimization.
    - [I] At M1's size the tree is about three levels deep, so the descent is about three round trips.
 3. **Fetch** the records of the differing objects at `C`, with the hashes on their path to the root (S2
    `export`). Check each record's path against `C`'s root. Reject any record that does not check, and ask the next
    source for it.
-4. **Patch** my state at `C` with the records (S2 `import`). Its root must now equal `C`'s. If it does not, the
-   patch is incomplete: descend again against the patched tree, at most `N_descend` times, then fail the rung.
+4. **Patch** my state at `C` with the records (S2 `import_at_cut`). Its root must now equal `C`'s. If it does not,
+   the patch is incomplete: descend again, fetching every leaf this time, at most `N_descend` times, then fail the
+   rung. The replica re-simulates to the present within its budget and answers `Pending` meanwhile; pe-diverge asks
+   again with the same import on each tick (no peer is timed out while it waits). Then `finalize(C)` again moves
+   `Cv`.
 5. **Replay forward** from `C.frame` to the current frame, with every entry held since: final ones and
    predictions, my own included. This is the same replay as after a late entry.
 6. **Record:** write a fault bundle (section 6) and count a rung-2 cure.
@@ -166,6 +215,13 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
 - **Cells and groups:** the tree's interior nodes are cells, and from M4 contact groups. S2 `import` patches
   objects inside a cell without reloading the cell [C 20:05Z, "per-group save, restore and step"].
 - **A source that has released `C`'s root** answers "not held", and the next voter is asked.
+- **A newer final cut waiting:** when a repair at `C` ends while a newer final cut is pending, the replica's floor is
+  already past `C`. `C` is not finalized again, since pe-replica counts a cut below its floor as a protocol fault
+  (@shader-reviewer, re-review L1). The repair counts as cured, and the newer cut moves `Cv` next.
+- **Silence:** only a reply that answers something asked restarts `T_peer`. An empty or unasked reply doesn't
+  (@shader-reviewer, re-review L2).
+- **A second descent** (after `RootMismatch`) keeps the physics image, which already passed the replica's check: a
+  source serves one image per peer and root (@shader-reviewer, re-review L3).
 - **Tables as well as objects:** governance, claims and the other world-model tables go through `export` and
   `import` the same way as objects.
 
@@ -218,22 +274,51 @@ pair: body and contact ids come from free-list pools [V `crates/box3d-fork/src/i
   toward it (section 4).
 - **With no quorum root** (S3 `RootSplit`): typically two players, or three that all differ. Every member applies
   the same rule [I]:
-  1. Every member runs rung 1 from its own `Cv` and votes again. Transient faults end here.
-  2. If the split persists, every member **re-runs the physics self-test** at once, rather than reading its last
-     result. A member whose fresh self-test fails, or whose connection guard reported a difference (WS-net,
-     section 10), adopts another's root. At `n = 2` a fresh failure is the only real evidence of which machine is
-     wrong.
-  3. If it still persists, a **reference member** is chosen once per episode: the member whose root most voters
-     hold, with ties going to the smaller `H(Cv's root ‖ member key)`. Every member that does not hold the
-     reference member's root runs rung 2 toward it and votes again.
-  4. **The choice is sticky.** It holds until a cut is final with matching roots, which ends the episode. Without
-     this, a persistent computational fault changes the roots every cut, so a pick by root hash changes winner
-     every cut, and both players see their machines patched toward each other in turn [design-reviewer].
+  1. Every member runs rung 1 from its own `Cv` (`replay_to` at the split cut, which moves neither `Cv` nor the
+     floor, since the cut is not final) and votes again with the root it gives. Transient faults end here.
+  2. Every member **runs the physics self-test** for the split, once per episode, rather than reading its last
+     result. Its verdict names the split cut (S3 v1.3 `SelfTest::{Passed, Failed} { split }`) and is final for the
+     split: a second, different verdict from one member for one split is equivocation, which agreement shows as
+     `Failed` and reports. The verdict reaches every member in the step-1 revote, or, if the member already voted
+     in that view, in a signed self-test report that changes no vote; agreement then emits `RootSplit` again with
+     every voter's newest verdict, and the newest supersedes the older. A member whose verdict is `Failed`, or
+     whose connection guard reported a difference (WS-net, section 10), adopts another's root. At `n = 2` a failed
+     self-test is the only real evidence of which machine is wrong.
+  3. A **reference member** is chosen (@coordinator-opus's L4' rulings, on
+     @fable-reviewer's rule):
+     - **The latch:** a member any of whose verdicts for this split shows `Failed` is out for the rest of the
+       episode.
+     - **The pick:** among the members not latched out, the one with the smallest `H(the newest final cut's line,
+       height and frame ‖ member key)`. Nothing becomes final during an episode, so every member hashes the same
+       cut, and it stays fixed for the episode.
+     - **When:** only once step 1's replay is done, every voter's verdict names this split, and the member is not
+       behind on finality: `EntrySource::final_cut` names the newest cut S3 reported final (the driver passes every
+       `CutFinal` to `Diverge::on_cut_final` as it arrives). Without the wait, at `n = 2` the correct member could
+       pick before the faulty member's failed verdict reached it, import the faulty state, and the cut would go final
+       on it (@design-reviewer). A voter that never sends its verdict keeps the cut pending until the liveness rules
+       remove it, and the voter set is then agreed.
+     - Every member that does not hold the reference's root runs rung 2 toward it (an import that moves neither
+       `Cv` nor the floor) and votes again.
+     - **"Most voters hold" is not used in M1.** It matters from `n = 4` (a 2-1-1 split), and comes back with a
+       model check. It is a known gap until then.
+  4. **The choice is sticky.** It holds until a cut is final with matching roots, which ends the episode. Only a
+     latch that grows (an equivocating member) moves it, and a repair toward the old reference is then dropped.
+     From `n = 4` there is one more way, a known M1 gap beside "most voters hold": S3 can declare a split before
+     every vote is in (1-1-1 with one voter missing), the wait covers only the voters in `RootSplit`, and when the
+     late vote arrives every member recomputes and may move to the new voter. It converges, at the cost of one
+     dropped repair (@design-reviewer, Low). The fix is to wait for the cut's whole voter set from governance, with a
+     missing voter left to the liveness rules; it comes back with the model check. `n = 2` is not affected: both
+     voters have voted before a split exists.
+     Without this, a persistent computational fault changes the roots every cut, so a pick by root hash changes
+     winner every cut, and both players see their machines patched toward each other in turn [design-reviewer].
   5. The split is reported, with a fault bundle, on every machine.
-- **Why a hash of `Cv` and the key** [I]: no player is favoured in general, every member computes the same answer
-  from data agreed before the split, and nobody can steer it by changing state. It is arbitrary by design. Between
-  two machines with no third, nothing tells which computed correctly; the rule makes them agree, and the bundle
-  reports it.
+- **Why a hash of the newest final cut and the key** [I]: no player is favoured in general, every member computes
+  the same answer from data every voter holds identically once caught up (not its own `Cv`, which differs while
+  one member is still repairing, @design-reviewer and @shader-reviewer on ff37b4fd), and nobody can steer it by
+  changing state. It is arbitrary by design: **at `n = 2` with both self-tests passing, the pick is arbitrary.**
+  Between two machines with no third, nothing tells which computed correctly; the rule makes them agree, and the
+  bundle reports it. A later episode hashes a later final cut, so with a fault neither self-test catches, the
+  reference can differ from one episode to the next.
 
 ## 6. The fault bundle
 
@@ -272,8 +357,10 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `cured_by_rung[1..5]` | Repairs, by the rung that cured them | pe-diverge |
 | `repair_latency` | From the `CutFinal` that showed the mismatch to an equal root, as a distribution | pe-diverge |
 | `repair_bytes` | Bytes fetched for repair | pe-diverge |
+| `source_faults` | Sources left for a fault: not holding the root, silent, or sending what fails its hash or proof | pe-diverge |
+| `busy_rotations` | Sources left after `N_busy` `Busy` answers in a row: over budget, not faulty | pe-diverge |
 | `repeated_divergence` | Objects marked repeatedly diverging | pe-diverge |
-| `root_splits` | `RootSplit` events, and how each ended | pe-diverge |
+| `root_splits` | Root-split episodes (distinct split cuts, not `RootSplit` events), and how each ended | pe-diverge |
 | `bundles_written` | Bundles written | pe-diverge |
 | `corrections_per_min` | Drawn objects whose drawn pose had to blend or jump after a correction, per minute | pe-render (section 8) |
 | `visible_error` | Mean and max distance between drawn and simulated pose, over objects in view, per second | pe-render |
@@ -655,8 +742,42 @@ with the world when they leave, unless they export it on purpose [I].
 
 ## 11. Seams: what pe-diverge needs
 
-A proposal to @engine-architect for seams v0, to be agreed before it is fixed. The names follow the plan's
-Appendix A sketch.
+**Settled in pe-seams** (`crates/pe-seams`, `RULINGS.md`): v0 on main at f3c1e6a7 with 019234f7's four changes for
+WS-diverge; S2 v1 (c93fa631) after the code review of ff37b4fd; S2 v1.1 (budgets) and S3/S2 v1.2 (retention). What
+pe-diverge uses, which replaces the proposal kept below for the record:
+- **Only `finalize` moves `Cv` and the floor.** `Replica::finalize(&FinalCut)` returns `Agreed`, `Diverged { mine }`,
+  `NotReady` or `Damaged`. The driver passes each final cut and the replica's verdict to `Diverge::on_final`; after a
+  repair at a final cut, pe-diverge calls `finalize` for it again.
+- **Rung 1** is `replay_to(&Cut) -> Result<Hash, RootError>`: my root at the cut, after a replay from a verified
+  `Cv`; `Pending` while it runs, `NotKept` or `Damaged` for rung 2 at once.
+- **Rung 2's calls:** `Replica::tree(&root)` gives `Tree::{node, export(&[LeafKey]), object_hashes, verify}` on a
+  held root (the floor, `Cv`, final cuts within `T_keep`, my root at a cut I diverged at, and the root I voted with
+  at each cut not yet final); `TreePath::{World, Tables, Domain, Objects { prefix }}` by nibble prefix, and
+  `Node::hash`, the one hash definition, against which pe-diverge checks every node a peer sends;
+  `physics_image(&root)`; `import_at_cut(&GroupSel::Domain, CutImport { cut, target_root, .. }, source)`, which
+  checks every record's proof against the target root and re-simulates to the present (`Pending` meanwhile), and
+  moves neither `Cv` nor the floor.
+- **Root splits** (S3 v1.3): `RootSplit { cut, roots: Vec<(Hash, Vec<(MemberKey, SelfTest)>)> }`, emitted again
+  whenever a voter's verdict for the split arrives; the newest for a cut supersedes the older, and the driver hands
+  each to `Diverge::on_root_split`. `SelfTest::{NotRun, Passed { split }, Failed { split }}`: a verdict names its
+  split, and is final for it. The driver runs the self-test on `Action::RunSelfTest { cut }`, once per episode, and
+  votes on `Action::Revote`; `vote` answering `AlreadyVotedThisView` is expected there (the verdict goes out as a
+  self-test report), not an error. The driver passes every `CutFinal` to `Diverge::on_cut_final` as it arrives,
+  before its entries are held: a split's pick waits until `EntrySource::final_cut` has caught up with it (5, step 3).
+- **`LeafKey::Config`** (S2 v1.3): the world's config bytes, a leaf of the world node. pe-diverge fetches it when
+  `World.config` differs, and on every whole-state fetch; its proof is `[Node::World]`.
+- **Identities and time:** `PeerId` is `MemberKey`; `CutRef` carries the line (R-W1 closed); `tick(now: HostTime,
+  clock: &dyn FrameClock)`; limits are `Duration`s turned into frames by `frames_ceil`.
+- **Events and actions:** trace events are `pe_seams::DivergeEvent`; what the driver must do is pe-diverge's own
+  `Action` list (`Revote`, `RunSelfTest`, `WriteBundle`).
+- **The repair lane's messages** (S4 `Lane::Repair`): node, record (by `LeafKey`) and physics requests and replies,
+  `NotHeld`, and `Busy { retry_after_us }` for a peer over its serving budget (4.2, step 2).
+- **Mutations:** `ImportUnchecked` and `PatchNoReplay` belong to pe-replica now, whose import checks the proofs and
+  replays; pe-diverge's are `SkipVerify`, `StickWithSource` and `UncheckedNodes`.
+- **Apply order** (@coordinator-opus): pe-diverge applies no entries in M1. The merge's replay (M2)
+  will iterate a frame's entries only through pe-replica's one "entries of frame f in apply order" helper.
+
+The proposal as sent (names after the plan's Appendix A sketch):
 
 ### 11.1 S2, Replica
 
@@ -689,7 +810,9 @@ pub trait Replica {
   `import_at_cut(group, parts, source)`, and rung 1's `replay_from_last_agreed(source)`. pe-diverge calls those
   names; the sketch above is the shape, not the final signatures, which pe-seams v0 fixes.
 - `Root` is a handle that keeps its structure alive, and is `Send`, so a worker can replay it.
-- Roots of the final cuts of the last `T_keep` are kept, and served to peers: enough for repair.
+- Roots of the final cuts of the last `T_keep` are kept, and served to peers: enough for repair. A machine serves
+  only roots it matched at a final cut, and, during a root-split episode, its own root at the split's cut, which is
+  not final (section 5). The requester checks every byte against the reference's root either way.
 - **Merge bases are kept separately.** A member keeps its `Cv` root, and the log since, for as long as it may be a
   branch (up to `T_diverge`, a minute), whatever `T_keep` says. Older bases come from the world record (M3).
 
@@ -805,6 +928,8 @@ mid-session never moves a bound that is already running [design-reviewer].
 | `W_fg` | Deepest replay run in the foreground | 2 s: the old speculation window, `2 * hz` frames at any rate [V `spikes/session-sim/src/r18.rs:108`] |
 | `T_peer` | Wait for a repair source before trying the next | 4 round-trip times, at least 100 ms |
 | `N_descend` | Descents per rung-2 attempt | 3 |
+| `B_serve`, `R_serve` | Serving budget per peer: burst and refill | 8 MiB; 4 MiB/s |
+| `N_busy`, `T_busy` | `Busy` answers in a row before a source is rotated; longest wait one can ask for | 4; 1 s |
 | `T_recur`, `N_recur_max` | Time within which a repeat counts; repeats before the event | 1.5 s; 3 |
 | `B_keep`, `B_bytes` | Bundles kept on disk | 50; 500 MB |
 | `T_blend`, `T_fast` | Blend times | 100 ms; 40 ms |
@@ -831,4 +956,7 @@ mid-session never moves a bound that is already running [design-reviewer].
   (9.6).
 - **Settled by the coordinator:** untouched groups need to be deterministic,
   not bit-exact (9.5), both at 20:40Z; M1's logic edit compiles in under 2 s.
+- **Limits to check before worlds grow** (M2): a rung-2 fetch must finish within the shorter of `W_fg` and `T_keep`,
+  about 6 MB or 3,000 objects at the default serving budget [I] (4.2); `Replica::hold` and requester-built proofs
+  lift it. The root-split pick from `n = 4`: "most voters hold" and the full voter set (5, steps 3-4).
 - **With the user:** nothing open for WS-diverge.

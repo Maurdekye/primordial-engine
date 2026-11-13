@@ -11,9 +11,6 @@
   manifest was rewritten: no workspace, demo or bench sections, and the lints were inlined. The
   original manifest is kept as `Cargo.upstream.toml`. Line endings were then normalized to LF.
   Git stores LF, so this changes nothing in the repository.
-* **Never formatted:** `rustfmt.toml` here sets `disable_all_formatting`, which overrides the
-  workspace's for every file of the crate. A reformat would bury the upstream diff, so
-  `cargo fmt` over the workspace leaves the fork as it is.
 
 ## Changes
 

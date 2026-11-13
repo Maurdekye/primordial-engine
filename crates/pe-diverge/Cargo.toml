@@ -10,6 +10,7 @@ description = "Divergence detection and repair (docs/spec/divergence.md): the re
 # already lists it, so adding dependencies here needs no other change.
 [dependencies]
 pe-seams = { path = "../pe-seams" }
+bytes.workspace = true
 
 [features]
 # Planted defects for the harness's mutation tests (pe-harness DESIGN.md 6.1): inert unless a node's configuration
