@@ -37,6 +37,9 @@ pub struct Claim {
 /// Permission bits of a role (5.4). M1 checks only [`perm::EDIT`].
 pub mod perm {
     pub const EDIT: u32 = 1;
+    /// Agent powers (8.1): the role bit that gives a member the right by default. Stored, not checked yet: the
+    /// check comes with agent powers.
+    pub const AGENT: u32 = 1 << 1;
     pub const ADMIN: u32 = 1 << 31;
 }
 
