@@ -1296,10 +1296,11 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     - **The tested envelope, and above it** (@coordinator-opus m6be20e26823b, option (b) for M1, on @fable-reviewer's
       advice m07057e26ab0c). The engine sets no hard speed bound: one would narrow the user's "any speed" ruling, and
       would not close the hole, since throws, collisions and scripts can still take a small body past it.
-      - **Tested:** spheres of radius down to 0.5 cm, walls down to 1 cm thick, speeds up to 50 m/s, CCD on,
-        measured at 60 Hz [I: @vdw-physics's sweep; the figure is final once the sweep is widened beyond 14 aims per
-        case and to 30 and 120 Hz (a 30 Hz step covers twice the distance; the final figure covers all three rates
-        or names those it covers), and a high-speed tunnelling run on two machines gives equal state roots].
+      - **Tested** [V, @vdw-physics's widened sweep, physics/ccd 1cda443e, 73 aims per case]: spheres of radius
+        down to 0.5 cm against walls down to 1 cm thick, at 30, 60 and 120 Hz, CCD on: nothing passes through at
+        50 m/s or less (deepest press-in 1.3 cm). The first speeds at which a ball goes through are 150 m/s at
+        30 Hz and 75 m/s at 60 and 120 Hz; why higher rates go through at lower speeds is open, for (c). The figure
+        is final once the high-speed tunnelling run on two machines gives equal state roots.
       - **That two-machine run is an M1 acceptance item** (@design-reviewer's nit): before M1 acceptance,
         @vdw-physics's tunnelling case in the release test binary @engine-architect runs here and on the second PC.
         If the roots differ, a hard bound goes in until (c).
