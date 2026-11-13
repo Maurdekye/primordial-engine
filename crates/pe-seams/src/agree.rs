@@ -384,8 +384,10 @@ pub trait Agreement: EntrySource + Send {
     /// Whether this member's own entries are backlogged past what its budget lets through: after a stall, the entries
     /// it made while cut off would flush at once, and new hand entries would only be void as late (agreement.md 2,
     /// "the budget delays a valid entry but never loses it"). While it is true the app makes no new hand entries;
-    /// edits and every other input are never held back. When it is true is S3's to decide (pe-agree: the backlog
-    /// its peers have not acknowledged, over its burst). A source with no budget keeps this default (S3 v1.5).
+    /// edits and every other input are never held back. Peers see none of this member's hand entries meanwhile, so
+    /// what it holds may be released if the backlog outlasts a claim's lapse, and a grab made and let go within it is
+    /// lost (@design-reviewer's Low on v1.7). When it is true is S3's to decide (pe-agree: the backlog its peers have
+    /// not acknowledged, over its burst). A source with no budget keeps this default (S3 v1.5).
     fn backlogged(&self) -> bool {
         false
     }
