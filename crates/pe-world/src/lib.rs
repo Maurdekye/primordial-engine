@@ -24,7 +24,7 @@ mod source;
 pub mod tree;
 mod world;
 
-pub use apply::{Draft, Footprint, FrameEnd, Push};
+pub use apply::{Blocked, Draft, Footprint, FrameEnd, Push};
 pub use components::BlobRef;
 pub use input::{HandPose, Input, InputSettings, input_phase};
 pub use pe_seams::Version;
