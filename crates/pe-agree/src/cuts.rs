@@ -27,6 +27,8 @@ pub enum Reject {
     BeyondFrame(EntryRef),
     /// The cut is not the parent's child (line or height).
     WrongPlace,
+    /// Its frame is not a multiple of the world's cut interval in frames (the cut grid).
+    OffGrid,
 }
 
 /// The outcome of a check.
