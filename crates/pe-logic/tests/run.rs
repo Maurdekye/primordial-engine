@@ -43,7 +43,7 @@ fn intensity(row: &[u8]) -> f32 {
 }
 
 fn tag_desc() -> ComponentDesc {
-    ComponentDesc::new(TAG, "pe.tag", vec![FieldDesc::new("_tag", FieldKind::U8, 0, 1)]).unwrap()
+    ComponentDesc::new(TAG, "pe.tag", Vec::new()).unwrap()
 }
 
 /// What a fault test expects of the fault.
@@ -104,7 +104,7 @@ impl World {
     /// An object the script is attached to: its rows, and the script's tag.
     fn object(&mut self, n: u128, rows: &[(&str, Vec<u8>)]) -> ObjectId {
         let o = self.untagged(n, rows);
-        self.store.insert_raw(TAG, o, &[0]).unwrap();
+        self.store.insert_raw(TAG, o, &[]).unwrap();
         o
     }
 
@@ -394,7 +394,7 @@ fn what_a_script_creates_carries_its_tag() {
         let (pre, _) = w.frame(1);
         let child = ObjectId::spawned(w.line, sp, Frame(1), 0);
         assert_eq!(pre.created, [(child, sp)]);
-        assert_eq!(w.store.get_raw(TAG, child), Some(&[0u8][..]));
+        assert_eq!(w.store.get_raw(TAG, child), Some(&[][..]));
     });
 }
 
