@@ -1361,9 +1361,15 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     a mode flip, a rollback across it, and roots equal to a straight run.
   - **A hand body's contact speed is capped like a push** (point 2): a pose input can move a hand any distance in
     one frame, and a kinematic body moved that way would sweep balls at Δpos/dt, past the push envelope above. So
-    a hand body's contact speed is bounded by `max_push_speed`, and a pose jump past the cap moves the body
-    without collision; flipping to mode 1 with the hand inside a pile must not push the overlapped objects apart
-    violently. How is the hand-body spec's (@vdw-physics); this is the bound it starts from.
+    a hand body's contact speed is bounded by `max_push_speed`; flipping to mode 1 with the hand inside a pile must
+    not push the overlapped objects apart violently. How is the hand-body spec's (@vdw-physics); this is the bound
+    it starts from.
+  - **A hand moving faster than the cap moves at the cap** (@coordinator-opus m3a9a9fa32ff0, option (b)): its body
+    trails the target and catches up, so it still pushes and throws at up to `max_push_speed`; there is no cliff
+    where hard throws begin. Hard throws top out at the cap, 10 m/s by default and adjustable (8.1's pushes).
+  - **Only a teleport skips collision:** a target that moves farther than the teleport distance in one frame (a
+    tracking glitch or a teleport) places the body there without collision, and what the hand holds goes with it.
+    The M1 teleport distance is 0.5 m [I, a starting value to tune].
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
   object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
   expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).
