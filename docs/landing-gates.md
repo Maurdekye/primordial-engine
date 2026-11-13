@@ -139,6 +139,38 @@ and are never built. The secret scan of the whole history finds nothing.
 
   Run it after changing the gate.
 
+## Tier 1: checks by the paths a landing touches
+
+Some checks matter only when a landing touches certain paths, and compile, which the gate never does: it runs
+inside main's lock. `scripts/tier1_checks.txt` lists them, each with its paths (git pathspecs with glob magic),
+one command, and optionally a regex its output must match (`expect`: a test filter that matches no test exits 0,
+so a renamed or ignored test would otherwise pass). `scripts/tier1.sh` runs the ones a landing triggers.
+
+* **Integrators run it** on the commit they hand in, after the rebase, from the root of a clean checkout of it,
+  under the build-slot wrapper, and put its output in the hand-in's evidence:
+  `PE_TIER1_WRAP='bash "<team folder>/heavy.sh"' bash scripts/tier1.sh --base main --run <commit>`.
+  Without `--run` it lists the checks the landing triggers and the paths that trigger them. `--run` refuses
+  uncommitted changes, and untracked files under a triggered check's paths, which would be tested in place of
+  the landing's.
+* **A check runs the landing's own code** (its test, and the files the test reads), so a landing that changes
+  what a check runs changes the check that judges it. Read such a diff as a change to the check.
+* **The table and the runner come from the base,** like the gate's code (the runner hands over to the base's
+  copy), so a landing can't drop or skip a check it triggers, and a change to either applies from the next
+  landing. While the base has no table, the landing's own applies, with a NOTE. A change to them is a gate
+  change, with its review.
+* **Today's checks:**
+  * `lamp-bytes` (coordinator rulings): a script module's fuel counts follow its
+    bytes. A landing that touches pe-logic, pe-sdk, the toolchain pin, a cargo configuration file or Cargo.lock
+    builds the lamp test script in two folders and again from a warm cache, and checks that the modules are the
+    same bytes. It needs the `wasm32-unknown-unknown` target. The same check across two operating systems isn't
+    tier 1 but periodic: tier 2's hosted matrix after 2026-11-16, and until then a run on WSL after a landing.
+* **Its self-test,** `bash scripts/test_tier1.sh`, runs no cargo, so it needs no build slot. In a throwaway clone
+  it checks, in fourteen cases, that a landing triggers and runs the checks its paths name and no others, that
+  the table and the runner come from the base, that a failing command fails the run and so does one that exits 0
+  without its expected output, that `--run` refuses a checkout that isn't at the landing or isn't clean where it
+  matters, and that a malformed table is an error.
+* Hosted CI will run it too, later (refound-plan 4.6).
+
 ## Accepting an exception
 
 The allow files come from the landing itself, so a landing can accept its own finding, and the gate's NOTE is
