@@ -570,6 +570,49 @@ fn without_a_runner_a_cut_root_across_a_code_commit_is_not_computed() {
     assert_eq!((r.frame(), r.faults(), r.scratch().faults), (Frame(20), 0, 1));
 }
 
+/// The scratch's stops and the live history's are counted apart (@engine-architect's Low 2 on 4ac9019f): after a cut's
+/// root stopped at a late code commit off the live history, the live loop rolls back to the commit and stops there
+/// too, with its own fault. A cut above that stop then answers `NotYetSimulated`, since its root won't come, not
+/// `Pending` (the review's nit).
+#[test]
+fn without_a_runner_the_scratch_and_the_live_history_count_their_stops_apart() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let late = commit(&mut b, 5);
+    let mut s = Source::default();
+    let mut r = replica_of(floor_and_ball());
+    r.advance(Frame(20), &mut s);
+    s.add(late.clone());
+    let cut = cut_at(&[late], 1, 16);
+    assert_eq!(r.root_at_cut(&cut, &mut s), Err(RootError::NotYetSimulated));
+    assert_eq!((r.frame(), r.faults(), r.scratch().faults), (Frame(20), 0, 1));
+    r.advance(Frame(30), &mut s);
+    assert_eq!((r.frame(), r.faults(), r.scratch().faults), (Frame(5), 1, 1));
+    r.advance(Frame(30), &mut s);
+    assert_eq!(r.faults(), 1, "one fault per stop");
+    assert_eq!(r.root_at_cut(&cut, &mut s), Err(RootError::NotYetSimulated));
+}
+
+/// A stop is over once the live history passes it, so a later stop at the same frame counts again (Low 2): the code
+/// commit at frame 5 is withdrawn, the replica steps on past it, and a second commit there stops it again.
+#[test]
+fn without_a_runner_a_stop_passed_and_met_again_counts_again() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    s.add(commit(&mut b, 5));
+    let mut r = replica_of(floor_and_ball());
+    r.advance(Frame(10), &mut s);
+    assert_eq!((r.frame(), r.faults()), (Frame(5), 1));
+    s.entries.clear();
+    s.changed = Some(Frame(5));
+    r.advance(Frame(10), &mut s);
+    assert_eq!((r.frame(), r.faults()), (Frame(10), 1));
+    s.add(commit(&mut b, 5));
+    r.advance(Frame(20), &mut s);
+    assert_eq!((r.frame(), r.faults()), (Frame(5), 2));
+}
+
 fn rows_of(w: &World) -> Vec<ScriptRow> {
     let row = |(&asset, m): (&[u8; 32], &pe_world::script::ModuleRow)| ScriptRow {
         asset,
