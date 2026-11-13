@@ -237,6 +237,10 @@ impl WorldModel for PeWorld {
             })
             .collect();
         self.world.write_physics(&rows, global);
+        // The last write before a cut's root (the replica's take_root): store the leaf hash of every object written
+        // since the last cut, so this root and later ones rehash only what changed (world-model.md 6.4;
+        // @chunks-reviewer's Low on 5e7effd2). Roots are the same either way.
+        self.world.refresh_tree_cache();
     }
 
     fn root(&self) -> Hash {
