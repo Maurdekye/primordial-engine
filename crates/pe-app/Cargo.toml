@@ -14,6 +14,7 @@ pe-log = { path = "../pe-log" }
 pe-agree = { path = "../pe-agree" }
 pe-replica = { path = "../pe-replica" }
 pe-net = { path = "../pe-net" }
+pe-net-crypto = { path = "../pe-net-crypto" }
 pe-logic = { path = "../pe-logic" }
 pe-api = { path = "../pe-api" }
 pe-mcp = { path = "../pe-mcp" }

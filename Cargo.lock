@@ -2200,6 +2200,7 @@ dependencies = [
  "pe-logic",
  "pe-mcp",
  "pe-net",
+ "pe-net-crypto",
  "pe-render",
  "pe-replica",
  "pe-seams",
