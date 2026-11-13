@@ -221,7 +221,8 @@ impl<A: Agreement> SeamNode<A> {
             match self.replica.root_at_cut(&cut, &mut self.agree) {
                 Ok(root) => {
                     self.events.push(Ev::ReplicaRoot { frame: cut.at.frame.0, root: root.0 });
-                    self.agree.vote(&cut.at, root, self.self_test);
+                    // The lockstep stand-in casts every vote (it has no views).
+                    let _ = self.agree.vote(&cut.at, root, self.self_test);
                 }
                 // S3 v1.2: no root at this cut will come; rung 2 is due (M0 runs none). Recorded once per cut.
                 Err(pe_seams::RootError::Damaged) if self.damaged.insert(cut.at.frame.0) => {

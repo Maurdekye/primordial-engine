@@ -5,6 +5,9 @@
 //!   thread loads the newest. Neither ever waits on the other, and the simulation keeps stepping while nothing draws.
 //! - **The presenter** runs the display layer (D1-D5, D7) and the effect gate (D6) once per display frame, and builds
 //!   the [`Scene`] every view of that frame draws.
+//! - **The counters** (render.md 13): the presenter takes the display layer's counters every frame into its
+//!   [`RenderCounters`], so `DisplayLayer::counters` reads only the current frame's; the caller reports each draw
+//!   ([`Presenter::drawn`]) and each capture event, and pe-app reads [`Presenter::counters`].
 
 use std::sync::Arc;
 
@@ -13,9 +16,11 @@ use pe_seams::FrameView;
 
 use crate::LocalPresentation;
 use crate::camera::Camera;
+use crate::counters::{CaptureEvent, RenderCounters};
 use crate::display::{DisplayFrame, DisplayLayer, DisplaySettings, FrameInput};
 use crate::effects::{EffectCommand, EffectGate, EffectSettings};
-use crate::scene::{Environment, Scene};
+use crate::pacing::Quality;
+use crate::scene::{Environment, FrameStats, Scene};
 
 /// Where the simulation publishes frame views for the render thread.
 #[derive(Default)]
@@ -54,6 +59,7 @@ pub struct Presenter {
     environment: Environment,
     sim_rate_hz: u32,
     last: Option<Arc<FrameView>>,
+    counters: RenderCounters,
 }
 
 impl Presenter {
@@ -70,6 +76,7 @@ impl Presenter {
             environment,
             sim_rate_hz,
             last: None,
+            counters: RenderCounters::new(),
         }
     }
 
@@ -85,11 +92,29 @@ impl Presenter {
         &self.effects
     }
 
+    /// pe-render's counters, per second and over the run (render.md 13).
+    pub fn counters(&self) -> &RenderCounters {
+        &self.counters
+    }
+
+    /// Report a draw of the last presented frame, at `at` (host time), at `quality`. Once per presented frame: a
+    /// stereo frame is one draw, not one per eye.
+    pub fn drawn(&mut self, at: pe_seams::HostTime, stats: &FrameStats, quality: Quality) {
+        self.counters.drawn(at, stats, quality);
+    }
+
+    /// Report a capture's progress (the capture port, render.md 11).
+    pub fn capture_event(&mut self, at: pe_seams::HostTime, e: CaptureEvent) {
+        self.counters.capture(at, e);
+    }
+
     /// One display frame against `view`, seen through `cameras` (both eyes, or the window).
     pub fn frame(&mut self, view: &Arc<FrameView>, local: &LocalPresentation, cameras: &[Camera]) -> PresentedFrame {
         let volumes: Vec<_> = cameras.iter().map(Camera::volume).collect();
         let display =
             self.display.frame(FrameInput { view, display_time: local.display_time, volumes: &volumes, local });
+        let taken = self.display.take_counters();
+        self.counters.display_frame(local.display_time, &taken, &display, local.display_time);
         // `take` also releases what is due; between arrivals, only the waits run.
         let effects = if self.last.as_ref().is_none_or(|l| !Arc::ptr_eq(l, view)) {
             self.last = Some(view.clone());
@@ -140,7 +165,9 @@ mod tests {
         for _ in 0..3 {
             p.frame(&v, &local, &[]);
         }
-        assert_eq!(p.display().counters().views_taken, 1);
-        assert_eq!(p.display().counters().display_frames, 3);
+        let run = p.counters().run();
+        assert_eq!(run.display.views_taken, 1);
+        assert_eq!(run.display.display_frames, 3);
+        assert_eq!(run.view_age_ms.count, 3);
     }
 }

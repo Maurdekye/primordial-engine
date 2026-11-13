@@ -10,7 +10,7 @@ use pe_seams::{
     Advance, AgreeEvent, AgreeStats, Agreement, Cut, CutImport, CutRef, DomainId, Entry, EntryRef, EntrySource, Fault,
     FinalCut, Finalized, Frame, FrameClock, FrameView, GroupSel, Hash, HostTime, ImportError, Lane, LineId, MemberKey,
     Outcome, Outgoing, PeerId, PhysicsImage, Pos, Replica, RigTransform, RootError, SelfTest, Signature, SignedEntry,
-    SubmitError, Tree, ViewCounters,
+    SubmitError, Tree, ViewCounters, VoteResult,
 };
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -69,8 +69,14 @@ impl Agreement for Agree {
     fn wants_roots(&self) -> Vec<Cut> {
         self.wants.clone()
     }
-    fn vote(&mut self, cut: &CutRef, _: Hash, self_test: SelfTest) {
-        note(&self.log, format!("agree.vote h{} {self_test:?}", cut.height));
+    fn vote(&mut self, cut: &CutRef, _: Hash, self_test: SelfTest) -> VoteResult {
+        let verdict = match self_test {
+            SelfTest::NotRun => "NotRun".to_string(),
+            SelfTest::Passed { split } => format!("Passed@h{}", split.height),
+            SelfTest::Failed { split } => format!("Failed@h{}", split.height),
+        };
+        note(&self.log, format!("agree.vote h{} {verdict}", cut.height));
+        VoteResult::Voted
     }
     fn hold_votes_from(&mut self, _: Frame) {}
     fn release_votes_from(&mut self, _: Frame) {}
@@ -218,9 +224,9 @@ fn votes_once_per_cut_and_finalizes_once_per_final_cut() {
     assert_eq!(r.no_root, [(cut(1, 8).at, RootError::NotYetSimulated)]);
 
     // Once simulated, it is voted on, with the caller's self-test verdict.
-    let r = n.tick(8, SelfTest::Failed);
+    let r = n.tick(8, SelfTest::Failed { split: cut(1, 8).at });
     assert_eq!(r.votes, [(cut(1, 8).at, Hash([1; 32]))]);
-    assert!(n.log().contains(&"agree.vote h1 Failed".to_string()));
+    assert!(n.log().contains(&"agree.vote h1 Failed@h1".to_string()));
 
     // Wanted again: no second vote (a revote is pe-diverge's, through the caller).
     let r = n.tick(9, SelfTest::NotRun);

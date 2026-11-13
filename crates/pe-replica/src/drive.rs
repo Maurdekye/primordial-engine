@@ -59,7 +59,9 @@ impl Driver {
             }
             match replica.root_at_cut(&cut, agree) {
                 Ok(root) => {
-                    agree.vote(&cut.at, root, self_test);
+                    // A first vote is cast, or not votable (the cut went final, or lies past a hold); either way
+                    // this cut is not asked again. A revote after a repair is pe-diverge's, through its actions.
+                    let _ = agree.vote(&cut.at, root, self_test);
                     self.voted.insert(cut.at);
                     report.votes.push((cut.at, root));
                 }

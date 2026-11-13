@@ -307,6 +307,10 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
     that pose times the S5 grip offset (xr.md 5.6, X1). "Draw where simulated" is the other setting.
   - On the desktop the own hand is drawn at its current input pose (the mouse ray now, section 9): the desktop's
     late-latch, never extrapolated or corrected. A held object follows it at the grip offset.
+  - **Markers** (`hands::markers`): when the frame view has no own-hand object to move (no simulation, as in pe-xr's
+    smoke run, or before the session publishes the local member's hand bodies), each tracked hand is drawn as a
+    4 × 6 × 12 cm block along its pose's Z with a 12 cm pointer out of the −Z face, blue for the left hand and
+    orange for the right, sized in the rig frame. They carry `ObjectId::NONE`, so no highlight or label lands on them.
   - **When a hold ends** (released, thrown, or undone because a race was lost), the object enters the display layer
     with its last drawn pose and velocity. Its offset is set from there and blends; a lost grab also plays its short
     cue (D7).
@@ -418,13 +422,15 @@ As agreed with @api-eng (api.md 8):
     identical pixels.
 - **Highlight and labels:**
   - **Highlight:** `Scene::highlight(ids)` gives those objects the outline pass (section 6) in amber, so a highlight
-    never reads as the correction cue's soft white.
+    never reads as the correction cue's soft white. Captures draw simulated poses, so there is no cue to
+    replace; on a displayed scene a highlight replaces the object's cue outline.
   - **Names:** the caller passes `(id, name)` pairs (pe-api reads the names from the snapshot). `labels::place_labels`
     runs when the capture is recorded, with its scene and camera. Each label sits beside its object's anchor: the
     projected circle of its bounding sphere, cut to `visible_list`'s box (that box comes from a cube around the
     sphere, up to √3 too wide). It goes to the right, else to the left, above or below: the first spot inside the
     image covering no other label and no other named object, failing that the first covering no label. An object
-    out of view gets no label; a name wider than the image is cut with an ellipsis.
+    out of view gets no label; a name wider than the image is cut with an ellipsis. The order of the names is the
+    placement priority, so pe-api passes the highlighted objects first.
   - **Limit:** for a long shape (a capsule seen from the side) the bounding sphere is wider than the silhouette, so
     its label sits further off, about 35 px for the example's capsule at 768×432. Shape-aware bounds fix it if
     agents find it confusing.
@@ -471,6 +477,21 @@ pe-render reports, per second and as distributions over a run, to pe-diverge's t
 - per display frame: CPU recording time, GPU time, render scale and MSAA, `t_draw − display_time`, the age of the
   frame view drawn;
 - captures: queued, drawn, deferred, timed out.
+
+`counters::RenderCounters`, held by the `Presenter` (so the window and the headset report the same way):
+- **Fed:** `Presenter::frame` takes the display layer's counters every frame (`DisplayLayer::counters` then reads
+  only the current frame's) with the drawn time and the view's age; the caller reports each draw
+  (`Presenter::drawn`: `FrameStats` and the `Quality` drawn at) and each capture event (`Presenter::capture_event`).
+- **Read:** pe-app reads `Presenter::counters()` and passes them to pe-diverge's table, pe-xr's and MCP; pe-render
+  pushes nothing. `run()` walks every histogram, so it is read once a second or on request, never per frame.
+  `Presenter::drawn` is called once per presented frame: a stereo frame is one draw, not one per eye.
+  - **Per second** (`Second`): the display counters folded (sums added, maxima the largest), draws, the largest CPU
+    and GPU times, the lowest render scale, frames per MSAA level, captures. Seconds close on the host clock; the
+    newest 600 are kept, and a gap (a minimized window) counts as empty seconds.
+  - **Over the run** (`RunReport`): totals, `corrections_per_min`, and distributions (count, mean, p50, p95, p99,
+    max) per display frame of the CPU and GPU times, `display_time − t_draw`, the frame view's age and the render
+    scale, and per second of `visible_error`'s mean and max and of corrections. Quantiles are within 1 % (log
+    buckets); means and maxima are exact.
 
 ## 14. Tests
 
