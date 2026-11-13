@@ -5,28 +5,34 @@ use std::collections::BTreeMap;
 use box3d_rust::body::{
     body_apply_angular_impulse, body_apply_force, body_apply_force_to_center, body_apply_linear_impulse,
     body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity, body_get_linear_velocity,
-    body_get_transform, body_get_type, body_is_awake, body_is_valid, body_reset_history, body_set_angular_velocity,
-    body_set_awake, body_set_linear_velocity, body_set_target_transform, body_set_transform, create_body, destroy_body,
+    body_get_shape_count, body_get_shapes, body_get_transform, body_get_type, body_is_awake, body_is_valid,
+    body_reset_history, body_set_angular_velocity, body_set_awake, body_set_linear_velocity, body_set_target_transform,
+    body_set_transform, create_body, destroy_body,
 };
 use box3d_rust::core::get_length_units_per_meter;
-use box3d_rust::geometry::{Capsule, Sphere};
-use box3d_rust::hull::{create_hull, make_box_hull};
-use box3d_rust::id::{BodyId, JointId};
+use box3d_rust::geometry::{Capsule, ShapeType, Sphere};
+use box3d_rust::hull::{create_hull, get_hull_points, make_box_hull};
+use box3d_rust::id::{BodyId, JointId, ShapeId};
 use box3d_rust::joint::{
     JointType, create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
-    joint_get_body_a, joint_get_body_b, joint_is_valid, joint_wake_bodies, motor_joint_set_angular_velocity,
-    motor_joint_set_linear_velocity,
+    joint_get_body_a, joint_get_body_b, joint_get_local_frame_a, joint_get_local_frame_b, joint_is_valid,
+    joint_set_local_frame_a, joint_wake_bodies, motor_joint_set_angular_velocity, motor_joint_set_linear_velocity,
 };
 use box3d_rust::math_functions::{
-    Pos, Quat, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform, is_normalized_quat,
+    Pos, Quat, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform, inv_rotate_vector,
+    is_normalized_quat, rotate_vector, sub_pos, transform_world_point,
 };
 use box3d_rust::recording::hash_world_state;
-use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_shape};
-use box3d_rust::types::{
-    BodyType, default_body_def, default_distance_joint_def, default_motor_joint_def, default_shape_def,
-    default_spherical_joint_def, default_weld_joint_def,
+use box3d_rust::shape::{
+    create_capsule_shape, create_hull_shape, create_sphere_shape, shape_get_body, shape_get_capsule, shape_get_hull,
+    shape_get_sphere, shape_get_type,
 };
-use box3d_rust::world::{World, world_get_awake_body_count, world_set_worker_count};
+use box3d_rust::solver::make_soft;
+use box3d_rust::types::{
+    BodyType, default_body_def, default_distance_joint_def, default_motor_joint_def, default_query_filter,
+    default_shape_def, default_spherical_joint_def, default_weld_joint_def,
+};
+use box3d_rust::world::{World, world_cast_mover, world_get_awake_body_count, world_set_worker_count};
 use pe_core::ids::ObjectId;
 use pe_sim::{SimStore, Transform, WorldTransform};
 
@@ -136,6 +142,16 @@ pub struct GrabSpring {
     pub max_torque: f32,
 }
 
+/// How far from its place a grab's spring may see its object in one step ([`PhysicsWorld::step_holding`]), m.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HoldReach {
+    /// The most error the spring sees.
+    pub reach: f32,
+    /// The upward part of the error (against gravity, which holds the object up) the spring keeps seeing, up to this
+    /// much, where `reach` would cut it: its support.
+    pub support: f32,
+}
+
 /// A joint between two bound objects (or one object and the world, `b = None`). Anchors are
 /// in each body's local frame. The two ends must be different bodies.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -193,6 +209,63 @@ pub struct PhysicsWorld {
 
 /// The fork's worker-count limit.
 const MAX_WORKERS: i32 = 32;
+
+/// A shape as a capsule for [`PhysicsWorld::static_in_way`], in its body's frame: its two centres and its radius. A
+/// sphere or capsule is itself; a hull is the smallest capsule about its centre, along the longest side of its
+/// bounding box, that holds every one of its points (@coordinator-opus mc74fcfa211f2: it errs towards a held object
+/// not being carried, the side the wall ruling chose, so a hull passing close by a wall's edge may be held back).
+/// `None` for shapes pe-physics never makes.
+fn mover_of(world: &World, shape: ShapeId) -> Option<(Vec3, Vec3, f32)> {
+    match shape_get_type(world, shape) {
+        ShapeType::Sphere => {
+            let s = shape_get_sphere(world, shape);
+            Some((s.center, s.center, s.radius))
+        }
+        ShapeType::Capsule => {
+            let c = shape_get_capsule(world, shape);
+            Some((c.center1, c.center2, c.radius))
+        }
+        ShapeType::Hull => {
+            let hull = shape_get_hull(world, shape)?;
+            let c = hull.center;
+            let (lo, hi) = (hull.aabb.lower_bound, hull.aabb.upper_bound);
+            let half = [0.5 * (hi.x - lo.x), 0.5 * (hi.y - lo.y), 0.5 * (hi.z - lo.z)];
+            let axis = (1..3).fold(0, |a, i| if half[i] > half[a] { i } else { a });
+            // Each point's place along the axis from the centre, and its distance from the axis.
+            let parts: Vec<(f32, f32)> = get_hull_points(hull)
+                .iter()
+                .map(|p| {
+                    let d = [p.x - c.x, p.y - c.y, p.z - c.z];
+                    let off: f32 = (0..3).filter(|&i| i != axis).map(|i| d[i] * d[i]).sum();
+                    (d[axis], off.sqrt())
+                })
+                .collect();
+            let radius = parts.iter().map(|&(_, r)| r).fold(0.0_f32, f32::max);
+            if !(radius.is_finite() && radius > 0.0) {
+                return None;
+            }
+            // Long enough that every point is within `radius` of the segment.
+            let length =
+                parts.iter().map(|&(t, r)| t.abs() - (radius * radius - r * r).max(0.0).sqrt()).fold(0.0_f32, f32::max);
+            let mut u = [0.0_f32; 3];
+            u[axis] = 1.0;
+            let end = |k: f32| Vec3 { x: c.x + k * u[0], y: c.y + k * u[1], z: c.z + k * u[2] };
+            Some((end(-length), end(length), radius))
+        }
+        _ => None,
+    }
+}
+
+/// `v` shortened to at most `reach` along its own direction (`v` itself if it is within it).
+fn within(v: Vec3, reach: f32) -> Vec3 {
+    let length = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+    if length > reach {
+        let k = reach / length;
+        Vec3 { x: v.x * k, y: v.y * k, z: v.z * k }
+    } else {
+        v
+    }
+}
 
 fn check_length_units() -> Result<(), PhysicsError> {
     if get_length_units_per_meter() == 1.0 { Ok(()) } else { Err(PhysicsError::LengthUnits) }
@@ -689,13 +762,140 @@ impl PhysicsWorld {
 
     /// Advance by `dt` seconds (0 < dt <= 1) in the configuration's sub-steps ([`PhysicsConfig::sub_steps`]).
     pub fn step(&mut self, dt: f32) -> Result<(), PhysicsError> {
+        self.step_holding(dt, &[])
+    }
+
+    /// Advance by `dt` like [`PhysicsWorld::step`], with each listed grab's spring seeing at most its [`HoldReach`] of
+    /// error during the step (world-model.md 8.1's hold bound). The error `e`, from the object's anchor to its place
+    /// on `a`, is shortened to `reach` along its own direction, then its upward part (against gravity) is raised back
+    /// to `min(up(e), support)` if shortening took it below that: `e' = e1 + max(0, min(up(e), support) - up(e1))`
+    /// upwards, with `e1` the shortened error and `up(x)` the part of `x` against gravity. So the spring sees at most
+    /// `reach + support` in any direction, and keeps what it needs to hold the object up. A grab whose object is
+    /// farther from its place pulls it as if it were that far, through the same point of the object, so the speed
+    /// the spring gives it is bounded (an object kept from its place, pinned by a wall say, comes back as if from its
+    /// reach away). For the step the
+    /// spring's anchor on `a` is moved that much towards the object, its position only, and put back after it, so
+    /// between steps every grab keeps the anchor it was made with (its object's place on `a`): images, digests and
+    /// rollbacks never see a moved one, and the bound is a function of the state at the step's start. `a`'s anchor is
+    /// moved rather than the object's because `a` is the hand's kinematic body (or the world anchor), which no joint
+    /// force moves, so the object is still pulled through its own anchor, with no turn from the move. In a world
+    /// without gravity there is no support: `e' = e1`. `reaches` names grab joints, each at most once, with reach and
+    /// support in `0..=MAX_SIZE`; a refusal changes nothing.
+    pub fn step_holding(&mut self, dt: f32, reaches: &[(JointKey, HoldReach)]) -> Result<(), PhysicsError> {
         self.usable()?;
         check_length_units()?;
         if !(dt.is_finite() && dt > 0.0 && dt <= 1.0) {
             return Err(PhysicsError::InvalidValue("step time"));
         }
+        let mut keys: Vec<JointKey> = reaches.iter().map(|&(key, _)| key).collect();
+        keys.sort_unstable();
+        if keys.windows(2).any(|w| w[0] == w[1]) {
+            return Err(PhysicsError::InvalidValue("a grab listed twice"));
+        }
+        let [gx, gy, gz] = self.config.gravity;
+        let g = (gx * gx + gy * gy + gz * gz).sqrt();
+        let down = (g > 0.0).then(|| Vec3 { x: gx / g, y: gy / g, z: gz / g });
+        // Validate everything and compute every moved anchor before changing anything.
+        let mut moved = Vec::new();
+        for &(key, reach) in reaches {
+            let valid = |r: f32| r.is_finite() && (0.0..=MAX_SIZE).contains(&r);
+            if !(valid(reach.reach) && valid(reach.support)) {
+                return Err(PhysicsError::InvalidValue("grab reach"));
+            }
+            let joint = *self.joints.get(&key).ok_or(PhysicsError::UnknownJoint(key.0))?;
+            if joint.kind != JointKind::Grab {
+                return Err(PhysicsError::NotAGrab(key.0));
+            }
+            let home = joint_get_local_frame_a(&self.world, joint.id);
+            let xa = body_get_transform(&self.world, joint_get_body_a(&self.world, joint.id));
+            let xb = body_get_transform(&self.world, joint_get_body_b(&self.world, joint.id));
+            let place = transform_world_point(xa, home.p);
+            let anchor_b = transform_world_point(xb, joint_get_local_frame_b(&self.world, joint.id).p);
+            let error = sub_pos(place, anchor_b);
+            // The error shortened to `reach`, then its upward part raised back towards the support (8.1).
+            let mut seen = within(error, reach.reach);
+            if let Some(d) = down {
+                let up = |v: Vec3| (-(v.x * d.x + v.y * d.y + v.z * d.z)).max(0.0);
+                let raise = (up(error).min(reach.support) - up(seen)).max(0.0);
+                seen = Vec3 { x: seen.x - raise * d.x, y: seen.y - raise * d.y, z: seen.z - raise * d.z };
+            }
+            if seen != error {
+                let cut = Vec3 { x: error.x - seen.x, y: error.y - seen.y, z: error.z - seen.z };
+                let excess = inv_rotate_vector(xa.q, cut);
+                let p = Vec3 { x: home.p.x - excess.x, y: home.p.y - excess.y, z: home.p.z - excess.z };
+                moved.push((joint.id, home, BoxTransform { p, q: home.q }));
+            }
+        }
+        for &(id, _, frame) in &moved {
+            joint_set_local_frame_a(&mut self.world, id, frame);
+        }
         self.world.step(dt, self.config.sub_steps);
+        for &(id, home, _) in &moved {
+            joint_set_local_frame_a(&mut self.world, id, home);
+        }
         Ok(())
+    }
+
+    /// The speed `spring` asks for per metre of error, 1/s, in a step of `dt`: Box3D's soft-constraint bias rate,
+    /// `omega / (2 zeta + h omega)` at the configured sub-step `h = dt / sub_steps`. A grab whose object is `d` from
+    /// its place pulls it towards it at no more than about this times `d`.
+    pub fn grab_spring_rate(&self, spring: GrabSpring, dt: f32) -> f32 {
+        make_soft(spring.hertz, spring.damping_ratio, dt / self.config.sub_steps as f32).bias_rate
+    }
+
+    /// Whether static geometry lies in the way of `object` moving to `to`, for a placement that must not carry a held
+    /// object through a wall (world-model.md 8.1). Each of the object's shapes is swept by the move of its own centre,
+    /// keeping its rotation, with Box3D's mover cast against static shapes only: a sphere or capsule as itself, a hull
+    /// (a box) as the largest capsule inside it, about the hull's centre along the longest side of its bounding box.
+    /// The mover cast passes a shape the object already touches or overlaps unless the move goes into it, so an object
+    /// resting on the floor may slide along it. The answer is only yes or no, so the order in which Box3D visits shapes
+    /// cannot change it.
+    pub fn static_in_way(&self, object: ObjectId, to: &Pose) -> Result<bool, PhysicsError> {
+        let q = exact_rotation(to)?;
+        let body = self.live_body(object)?;
+        if self.world.locked {
+            return Err(PhysicsError::Locked);
+        }
+        let from = body_get_transform(&self.world, body);
+        let to = BoxWorldTransform { p: pos(to.position), q };
+        let filter = default_query_filter();
+        let world = &self.world;
+        let count = usize::try_from(body_get_shape_count(world, body)).unwrap_or(0);
+        for shape in body_get_shapes(world, body, count) {
+            let Some((c1, c2, radius)) = mover_of(world, shape) else {
+                continue;
+            };
+            let mid = Vec3 { x: 0.5 * (c1.x + c2.x), y: 0.5 * (c1.y + c2.y), z: 0.5 * (c1.z + c2.z) };
+            let start = transform_world_point(from, mid);
+            let translation = sub_pos(transform_world_point(to, mid), start);
+            if translation.x == 0.0 && translation.y == 0.0 && translation.z == 0.0 {
+                continue;
+            }
+            let mover = Capsule {
+                center1: rotate_vector(from.q, Vec3 { x: c1.x - mid.x, y: c1.y - mid.y, z: c1.z - mid.z }),
+                center2: rotate_vector(from.q, Vec3 { x: c2.x - mid.x, y: c2.y - mid.y, z: c2.z - mid.z }),
+                radius,
+            };
+            let mut only_static = |id: ShapeId| body_get_type(world, shape_get_body(world, id)) == BodyType::Static;
+            if world_cast_mover(world, start, &mover, translation, &filter, Some(&mut only_static)) < 1.0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The anchor of the grab under `key` on its `a` end, in `a`'s frame: where it holds its object (the object's
+    /// anchor is pulled there).
+    pub fn grab_anchor(&self, key: JointKey) -> Result<[f32; 3], PhysicsError> {
+        if self.poisoned {
+            return Err(PhysicsError::Poisoned);
+        }
+        let joint = *self.joints.get(&key).ok_or(PhysicsError::UnknownJoint(key.0))?;
+        if joint.kind != JointKind::Grab {
+            return Err(PhysicsError::NotAGrab(key.0));
+        }
+        let p = joint_get_local_frame_a(&self.world, joint.id).p;
+        Ok([p.x, p.y, p.z])
     }
 
     /// Box3D's state hash: every body's transform and velocities (the C reference's hash,
