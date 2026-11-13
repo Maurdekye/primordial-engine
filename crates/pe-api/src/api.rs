@@ -73,7 +73,7 @@ pub struct SessionFacts {
     /// The world's name, from the invite or the local configuration (not world state in M1).
     pub world_name: String,
     pub line: pe_core::LineId,
-    /// The members connected now (from agreement and pe-net).
+    /// The members connected now (from agreement and pe-net), each at most once.
     pub here: Vec<MemberId>,
     pub link: pe_seams::world_api::Link,
     /// False while a joiner's import or a catch-up runs: `apply` then refuses live changes with `not_ready`.
