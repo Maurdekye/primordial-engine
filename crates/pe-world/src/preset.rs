@@ -118,28 +118,30 @@ pub struct Session {
     pub rate: SimRate,
     /// Metres per second squared, in the world frame.
     pub gravity: [f32; 3],
-    /// pe-agree's settings record (6.6, config item 4), opaque here.
+    /// pe-agree's settings record (6.6, config item 4), opaque here. M1's genesis passes pe-agree's 32-byte
+    /// `NodeConfig::consensus_hash`, so in M1 config item 4 holds that hash.
     pub agree: Vec<u8>,
-    /// Every member, in any order; they are admitted in key order.
-    pub members: Vec<MemberKey>,
+    /// Every member with its permission bits ([`perm`]), in any order; they are admitted in key order. The genesis
+    /// record decides the bits (pe-app maps each member's role to them), so a change to them moves the root.
+    pub members: Vec<(MemberKey, u32)>,
 }
 
-/// M1's session genesis with every member at frame 0: the interim until a join from a cut exists (@coordinator-opus). The ball pit of [`ball_pit_on`] on the session's line ([`genesis_line`]), at its rate, with its gravity and
-/// pe-agree's settings record, and each member admitted at frame 0 through [`World::admit`] (the function a join entry
-/// calls), in key order, standing on the pit's near edge 0.6 m apart. Deterministic: the same `Session` gives the same
-/// world and the same root on every machine, which is what a second machine checks against its record before it
-/// starts.
+/// M1's session genesis with every member at frame 0: the interim until a join from a cut exists (@coordinator-opus). The ball pit of [`ball_pit_on`] on the session's line ([`genesis_line`]), at its rate, with its
+/// gravity and pe-agree's settings record. Each member is admitted at frame 0 with its permission bits through
+/// [`World::admit`] (the function a join entry calls), in key order, standing 0.6 m apart just outside the pit's near
+/// wall. Deterministic: the same `Session` gives the same world and the same root on every machine, which is what a
+/// second machine checks against its record before it starts. A key listed twice is refused (`WorldError::Duplicate`,
+/// from its second admission).
 pub fn m1_session(s: &Session, blobs: BlobStore) -> Result<World, crate::WorldError> {
     let mut w = ball_pit_on(s.line, s.seed, blobs, s.origin, s.balls);
     w.set_rate(s.rate);
     w.set_gravity(s.gravity);
     w.set_agree_settings(&s.agree);
     let mut members = s.members.clone();
-    members.sort();
-    members.dedup();
-    for (i, &m) in members.iter().enumerate() {
+    members.sort_by_key(|m| m.0);
+    for (i, &(m, perms)) in members.iter().enumerate() {
         let feet = s.origin.checked_add(Offset([0.6 * i as f64, 0.0, 1.5])).unwrap_or(s.origin);
-        w.admit(s.line, m, perm::ADMIN | perm::EDIT, Frame(0), feet)?;
+        w.admit(s.line, m, perms, Frame(0), feet)?;
     }
     Ok(w)
 }

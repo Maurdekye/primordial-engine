@@ -166,9 +166,10 @@ fn no_pit_is_built_on_the_origins_line() {
 /// frame-0 root on every machine, which a second machine checks against its genesis record before it starts. The
 /// constant is the root on Windows; the same test cross-built for x86_64-unknown-linux-musl and run under WSL gives it
 /// too. The members' order doesn't change it; the line, which a session derives from its record, does (the hands' ids
-/// carry it), and so does each setting.
+/// carry it), and so does each setting and each member's permission bits. A key listed twice is refused.
 #[test]
 fn a_session_s_frame_0_root_is_the_same_on_every_machine() {
+    let (opener, joiner) = (MemberKey([2; 32]), MemberKey([1; 32]));
     let session = Session {
         seed: 7,
         origin: Pos::ORIGIN,
@@ -177,26 +178,35 @@ fn a_session_s_frame_0_root_is_the_same_on_every_machine() {
         rate: pe_seams::SimRate::DEFAULT,
         gravity: pe_world::GRAVITY,
         agree: b"pe-agree's consensus settings".to_vec(),
-        members: vec![MemberKey([2; 32]), MemberKey([1; 32])],
+        members: vec![(opener, perm::ADMIN | perm::EDIT | perm::AGENT), (joiner, perm::EDIT | perm::AGENT)],
     };
     let root = |s: &Session| m1_session(s, BlobStore::default()).expect("a session").root_hash(pe_seams::DomainId(0));
     let r = root(&session);
-    assert_eq!(r.to_string(), "81107a69daa46690b951ae98d9a6dad8309a329da99464ba240f485d3eaa6262");
+    assert_eq!(r.to_string(), "b2c1cd2ec0a317757366dd457138cfd1f71490449f82216dfb117887f4248df7");
     let w = m1_session(&session, BlobStore::default()).expect("a session");
     assert_eq!((w.line(), w.m1_marker()), (session.line, Some(m1_line())));
+    assert_eq!(
+        w.snapshot(w.frame()).members().filter(|m| m.0 != MemberKey::LOGIC).collect::<Vec<_>>(),
+        vec![(joiner, perm::EDIT | perm::AGENT), (opener, perm::ADMIN | perm::EDIT | perm::AGENT)],
+        "each member with its own bits, in key order"
+    );
     let mut reordered = session.clone();
     reordered.members.reverse();
     assert_eq!(root(&reordered), r, "members in any order");
-    let changed: [fn(&mut Session); 5] = [
+    let changed: [fn(&mut Session); 6] = [
         |s| s.line = pe_core::LineId(pe_core::Hash([8; 32])),
         |s| s.seed = 8,
         |s| s.rate = pe_seams::SimRate::new(90).expect("90 Hz"),
         |s| s.gravity = [0.0, -3.0, 0.0],
         |s| s.agree = b"other settings".to_vec(),
+        |s| s.members[1].1 |= perm::ADMIN,
     ];
     for (i, change) in changed.iter().enumerate() {
         let mut s = session.clone();
         change(&mut s);
         assert_ne!(root(&s), r, "change {i} is in the root");
     }
+    let mut twice = session.clone();
+    twice.members.push((joiner, perm::EDIT));
+    assert!(matches!(m1_session(&twice, BlobStore::default()), Err(WorldError::Duplicate(_))), "a key listed twice");
 }
