@@ -1,6 +1,7 @@
 //! Divergence injection for M1's "What the hash covers" test (feature `test-util`, never in a shipped build; the gate
 //! checks pe-app's normal edges). [`divergence`] damages one record of one of the five hashed kinds in a world,
-//! bypassing every check, and returns the leaf it changed, so a test can assert that the hash tree finds exactly that
+//! bypassing every check (plus a body's physics state, the leaf most likely to diverge for real; @coordinator-opus
+//! m4494d7113f6d), and returns the leaf it changed, so a test can assert that the hash tree finds exactly that
 //! leaf: pe-world's own detection test, and @diverge-eng's repair by rungs 1 and 2 on the real pe-world.
 
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId, Pos};
 use pe_seams::{LeafKey, Version};
 use pe_sim::{ComponentDesc, FieldDesc, FieldKind, Transform};
 
+use crate::components::BodyState;
 use crate::script::{ModuleRow, script_component_id, tag_desc};
 use crate::tree::table;
 use crate::{BlobRef, BlobStore, Claim, GENESIS, World, perm};
@@ -26,17 +28,20 @@ pub enum Kind {
     LogicState,
     /// The modules table (a script's current version).
     ModuleVersion,
+    /// A body's physics state (a `BodyState` row: velocities, sleep and digest).
+    BodyState,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [Kind::Field, Kind::Governance, Kind::Claim, Kind::LogicState, Kind::ModuleVersion];
+    pub const ALL: [Kind; 6] =
+        [Kind::Field, Kind::Governance, Kind::Claim, Kind::LogicState, Kind::ModuleVersion, Kind::BodyState];
 }
 
 /// The asset of [`five_kinds`]' script.
 pub const ASSET: [u8; 32] = [0xA5; 32];
 
 /// A small world with something of every [`Kind`], built by trusted construction: two members, an object with a
-/// `Transform`, a hand holding it (a claim), and a script version (its modules row, tag and one component with a
+/// `Transform` and a `BodyState`, a hand holding it (a claim), and a script version (its modules row, tag and one component with a
 /// row on the object).
 pub fn five_kinds() -> World {
     let (a, b) = (MemberKey([1; 32]), MemberKey([2; 32]));
@@ -48,6 +53,15 @@ pub fn five_kinds() -> World {
         w.create(id, None, a, GENESIS).expect("fresh id");
         w.insert(id, Transform::at(Pos::ORIGIN)).expect("live object");
     }
+    let body = BodyState {
+        linear: [0.5, 0.0, 0.0],
+        angular: [0.0; 3],
+        sleep_time: 0.0,
+        awake: 1,
+        _pad: [0; 3],
+        digest: [4; 32],
+    };
+    w.insert(lamp, body).expect("live object");
     w.set_claim(lamp, Claim { hand, member: a, since: Frame(0), until: Frame(600) }).expect("live object");
     let v = Hash([7; 32]);
     let fields = vec![FieldDesc::new("period", FieldKind::F32, 0, 1), FieldDesc::new("phase", FieldKind::F32, 4, 1)];
@@ -83,7 +97,8 @@ pub fn five_kinds() -> World {
 /// - `Claim`: the first claim's `until` grows by one frame;
 /// - `LogicState`: the first row of the first sized script component, in modules order, has its first byte's lowest
 ///   bit flipped (a finite `f32` stays finite);
-/// - `ModuleVersion`: the first modules row's version names the next op of its entry.
+/// - `ModuleVersion`: the first modules row's version names the next op of its entry;
+/// - `BodyState`: the first body's linear velocity gains 1 mm/s along x.
 pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
     match kind {
         Kind::Field => {
@@ -118,6 +133,13 @@ pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
             let m = Arc::make_mut(&mut w.modules).get_mut(&asset)?;
             m.version.op = m.version.op.wrapping_add(1);
             Some(LeafKey::Table(table::MODULES))
+        }
+        Kind::BodyState => {
+            let id = *w.store.objects().iter().find(|&&id| w.store.get::<BodyState>(id).is_some())?;
+            let mut b = *w.store.get::<BodyState>(id)?;
+            b.linear[0] += 0.001;
+            w.store.insert(id, b).ok()?;
+            Some(LeafKey::Object(id))
         }
     }
 }
