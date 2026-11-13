@@ -142,6 +142,10 @@ the MCP thread's handlers read them (@coordinator-opus m7af16ffc372e, m22babe2c6
     exactly that cut's entries, never a prediction, and left alone by rollbacks, replays and imports. So it never
     lags the final frame and survives a stall or a repair. Before the first agreed cut it is the frame-0 snapshot
     taken at startup, final by genesis (@coordinator-opus m926ccfeb16e9, replacing D2 for `final_()`; @api-eng's M2).
+    In the M1 interim B builds frame 0 from the genesis record, so that holds on both machines; a joiner that
+    imports at a cut (after model v1) answers with the imported state until its first agreed finalize. pe-api's
+    statuses wait for Cv as well (api.md 9.1, 5.3.2), so a change it reports final is in `final_()`'s state, though
+    agreement's final cut, which `confirm_cut` follows, may be ahead of Cv for a moment.
 - **The change record:** with each new view, `ChangeLog::publish(changes, final_frame, health)` from the view. When
   agreement's final cut moves (S3's `EntrySource::final_cut`, never the `CutFinal` event, whose voids may come a
   tick or more later), one `ChangeLog::confirm_cut(cut, voided)`, with the entries of every `Voided` event drained
