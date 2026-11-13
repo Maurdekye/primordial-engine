@@ -22,6 +22,7 @@
 //! (ids, lanes, entries) are then replaced by the seam's.
 
 pub mod ballpit;
+pub mod changes;
 pub mod clock;
 pub mod kv;
 pub mod kvrep;

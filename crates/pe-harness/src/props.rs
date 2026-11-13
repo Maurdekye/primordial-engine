@@ -2,7 +2,7 @@
 //!
 //! Built so far: P1 agreement, P2 live equals replay, P3 no final frame undone, P4 voids decided by cuts and equal
 //! everywhere, P6 no aborts and every invalid input refused, P8's paused-frame half, P15 the entry source's
-//! contract. The rest follow with the
+//! contract (P16, the change record's contract, is checked from views: `changes`). The rest follow with the
 //! runner. Every checker has planted-violation tests below (DESIGN.md 6.2): a checker that never fires proves
 //! nothing.
 
@@ -25,6 +25,9 @@ pub enum Prop {
     /// lacks an entry the cut names; final cuts only move forward; nothing uncovered or void is applied below the
     /// final frame.
     P15,
+    /// The change record's contract (S5 v1.5): each member's `FrameView::changes` agree with its final log, and
+    /// final verdicts agree across members (`changes`). Checked from views, not the trace.
+    P16,
     /// A scenario's own `[[expect]]` on an outcome (DESIGN.md 4.1): an expectation, not a property.
     Expect,
 }
