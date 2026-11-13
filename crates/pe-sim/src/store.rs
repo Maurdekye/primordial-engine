@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use pe_core::{Error, Frame, ObjectId};
@@ -25,13 +25,38 @@ pub struct SimStore {
     /// Live objects, sorted.
     pub(crate) objects: Arc<Vec<ObjectId>>,
     pub(crate) columns: BTreeMap<ComponentId, Column>,
+    /// Each object's cached hash (world-model.md 6.4), kept beside the rows it describes so a copy or a restore of
+    /// the store never pairs rows with another state's hashes.
+    pub(crate) hashes: HashCache,
+}
+
+/// Per-object hashes, opaque to pe-sim (pe-world stores its leaf hashes here), and the objects whose rows changed
+/// since they were stored. Every row write marks its object; a restore marks everything.
+#[derive(Clone, Debug)]
+pub(crate) struct HashCache {
+    all_dirty: bool,
+    dirty: Arc<BTreeSet<ObjectId>>,
+    hashes: Arc<BTreeMap<ObjectId, [u8; 32]>>,
+}
+
+impl Default for HashCache {
+    fn default() -> Self {
+        HashCache { all_dirty: true, dirty: Arc::default(), hashes: Arc::default() }
+    }
 }
 
 impl SimStore {
     /// An empty world at frame 0. `seed` is the session seed that [`TickCtx::rng`](crate::TickCtx::rng)
     /// streams derive from.
     pub fn new(registry: Arc<Registry>, seed: u64) -> Self {
-        SimStore { registry, frame: Frame::ZERO, seed, objects: Arc::new(Vec::new()), columns: BTreeMap::new() }
+        SimStore {
+            registry,
+            frame: Frame::ZERO,
+            seed,
+            objects: Arc::new(Vec::new()),
+            columns: BTreeMap::new(),
+            hashes: HashCache::default(),
+        }
     }
 
     /// A copy that shares no buffer with this store or its snapshots (tools and benchmarks; a plain
@@ -62,6 +87,11 @@ impl SimStore {
 
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// Sets the session seed: an import that takes a world's config (world-model.md 6.6) takes its seed too.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.seed = seed;
     }
 
     // ---- objects ---------------------------------------------------------------------------------
@@ -97,6 +127,9 @@ impl SimStore {
         }
         let doomed = self.subtree(id);
         self.unlink(id);
+        for &d in &doomed {
+            self.touch(d);
+        }
         let objects = Arc::make_mut(&mut self.objects);
         for &d in &doomed {
             if let Ok(i) = objects.binary_search(&d) {
@@ -121,6 +154,7 @@ impl SimStore {
 
     /// Inserts or overwrites a row without checks (the caller has validated it).
     pub(crate) fn put_row(&mut self, c: ComponentId, id: ObjectId, row: &[u8]) {
+        self.touch(id);
         let size = row.len();
         let col = self.columns.entry(c).or_insert_with(|| Column::new(size));
         match col.find(id) {
@@ -135,6 +169,7 @@ impl SimStore {
         match col.find(id) {
             Ok(i) => {
                 col.remove(i);
+                self.touch(id);
                 true
             }
             Err(_) => false,
@@ -153,6 +188,7 @@ impl SimStore {
         let Some(col) = self.columns.get_mut(&c) else { return false };
         let Ok(i) = col.find(id) else { return false };
         col.set_version(i, RowVersion { _pad: 0, ..v });
+        self.touch(id);
         true
     }
 
@@ -162,6 +198,8 @@ impl SimStore {
     }
 
     pub(crate) fn row_mut(&mut self, c: ComponentId, id: ObjectId) -> Option<&mut [u8]> {
+        self.columns.get(&c)?.find(id).ok()?;
+        self.touch(id);
         let col = self.columns.get_mut(&c)?;
         let i = col.find(id).ok()?;
         Some(col.row_mut(i))
@@ -190,6 +228,66 @@ impl SimStore {
         }
         self.put_row(c, id, row);
         Ok(())
+    }
+
+    /// Import (world-model.md 6.5): sets an object's whole state from a checked record, creating it if absent. Its
+    /// `Node` row becomes `node` as given, links included, and its rows become exactly `rows`, each stored as given
+    /// with its version; rows it had that `rows` lacks go. No hierarchy check: the caller imports a set of records
+    /// that is consistent as a whole and checks the result against the agreed root. Refused, with nothing changed,
+    /// for `ObjectId::NONE`, a `Node` row in `rows`, an unknown component, a wrong size or an invalid value.
+    pub fn import_object(
+        &mut self,
+        id: ObjectId,
+        node: &Node,
+        rows: &[(ComponentId, &[u8], RowVersion)],
+    ) -> Result<(), Error> {
+        if id.is_none() {
+            return Err(Error::UnknownObject(id));
+        }
+        for &(c, row, _) in rows {
+            if c == ComponentId::NODE {
+                return Err(Error::Reserved { component: c.0 });
+            }
+            let desc = self.desc(c)?;
+            if row.len() != desc.size() {
+                return Err(Error::WrongSize { component: c.0, expected: desc.size(), got: row.len() });
+            }
+            if let Some(field) = desc.invalid_field(row) {
+                return Err(Error::InvalidValue { component: c.0, object: id, field: field.to_string() });
+            }
+        }
+        if let Err(at) = self.objects.binary_search(&id) {
+            Arc::make_mut(&mut self.objects).insert(at, id);
+        }
+        let had: Vec<ComponentId> = self
+            .columns
+            .iter()
+            .filter(|(c, col)| **c != ComponentId::NODE && col.find(id).is_ok())
+            .map(|(c, _)| *c)
+            .collect();
+        for c in had {
+            self.drop_row(c, id);
+        }
+        self.put_row(ComponentId::NODE, id, bytemuck::bytes_of(node));
+        for &(c, row, v) in rows {
+            self.put_row(c, id, row);
+            self.set_row_version(c, id, v);
+        }
+        Ok(())
+    }
+
+    /// Import's removal of an absent leaf (world-model.md 6.5): the object and its rows go, with no hierarchy fixup
+    /// (its neighbours' links come from their own records). Returns whether it existed.
+    pub fn import_remove(&mut self, id: ObjectId) -> bool {
+        let Ok(i) = self.objects.binary_search(&id) else { return false };
+        self.touch(id);
+        Arc::make_mut(&mut self.objects).remove(i);
+        for col in self.columns.values_mut() {
+            if let Ok(i) = col.find(id) {
+                col.remove(i);
+            }
+        }
+        true
     }
 
     pub fn get_raw(&self, c: ComponentId, id: ObjectId) -> Option<&[u8]> {
@@ -253,6 +351,13 @@ impl SimStore {
     /// snapshot shares it.
     pub fn column_mut<T: Component>(&mut self) -> (&[ObjectId], &mut [T]) {
         assert!(T::ID != ComponentId::NODE, "Node is managed by the hierarchy API");
+        // Any row may be written through the slice, so every object in the column is marked.
+        if let Some(col) = self.columns.get(&T::ID) {
+            let ids = Arc::clone(&col.ids);
+            for &id in ids.iter() {
+                self.touch(id);
+            }
+        }
         match self.columns.get_mut(&T::ID) {
             Some(col) => {
                 let n = col.ids.len() * col.size;
@@ -263,6 +368,56 @@ impl SimStore {
                 (ids, bytemuck::cast_slice_mut(bytes))
             }
             None => (&[], &mut []),
+        }
+    }
+
+    // ---- cached object hashes (world-model.md 6.4) -----------------------------------------------
+
+    /// Marks an object's cached hash stale.
+    pub(crate) fn touch(&mut self, id: ObjectId) {
+        if !self.hashes.all_dirty && !self.hashes.dirty.contains(&id) {
+            Arc::make_mut(&mut self.hashes.dirty).insert(id);
+        }
+    }
+
+    /// Marks every cached hash stale (a restore, a fresh store).
+    pub(crate) fn touch_all(&mut self) {
+        self.hashes = HashCache::default();
+    }
+
+    /// The hash stored for `id` by [`SimStore::refresh_hashes`], if no write has touched the object since.
+    pub fn cached_hash(&self, id: ObjectId) -> Option<[u8; 32]> {
+        if self.hashes.all_dirty || self.hashes.dirty.contains(&id) {
+            return None;
+        }
+        self.hashes.hashes.get(&id).copied()
+    }
+
+    /// The objects whose cached hash is stale, or `None` if every one is (some may no longer exist).
+    pub fn stale_hashes(&self) -> Option<&BTreeSet<ObjectId>> {
+        (!self.hashes.all_dirty).then_some(&*self.hashes.dirty)
+    }
+
+    /// Recomputes the hash of every stale object that exists with `f`, drops the hashes of objects that are gone,
+    /// and clears the stale marks. Afterwards every live object has a cached hash.
+    pub fn refresh_hashes(&mut self, f: impl Fn(&SimStore, ObjectId) -> [u8; 32]) {
+        if self.hashes.all_dirty {
+            let fresh: BTreeMap<ObjectId, [u8; 32]> = self.objects.iter().map(|&id| (id, f(self, id))).collect();
+            self.hashes = HashCache { all_dirty: false, dirty: Arc::default(), hashes: Arc::new(fresh) };
+            return;
+        }
+        if self.hashes.dirty.is_empty() {
+            return;
+        }
+        let stale = std::mem::take(&mut self.hashes.dirty);
+        let fresh: Vec<(ObjectId, Option<[u8; 32]>)> =
+            stale.iter().map(|&id| (id, self.exists(id).then(|| f(self, id)))).collect();
+        let hashes = Arc::make_mut(&mut self.hashes.hashes);
+        for (id, h) in fresh {
+            match h {
+                Some(h) => hashes.insert(id, h),
+                None => hashes.remove(&id),
+            };
         }
     }
 

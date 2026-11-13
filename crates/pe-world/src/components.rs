@@ -45,9 +45,10 @@ pub mod ids {
     pub const PROTECTION: ComponentId = ComponentId(11);
 }
 
+/// `"name": field, Kind, count;` or, with a unit (world-model.md 3.6), `"name": field, Kind, count, "unit";`.
 macro_rules! fields {
-    ($t:ty; $($name:literal: $field:ident, $kind:ident, $count:expr;)*) => {
-        vec![$(FieldDesc::new($name, FieldKind::$kind, offset_of!($t, $field), $count)),*]
+    ($t:ty; $($name:literal: $field:ident, $kind:ident, $count:expr $(, $unit:literal)?;)*) => {
+        vec![$(FieldDesc::new($name, FieldKind::$kind, offset_of!($t, $field), $count)$(.with_unit($unit))?),*]
     };
 }
 
@@ -98,8 +99,8 @@ impl Component for Shape {
     fn fields() -> Vec<FieldDesc> {
         fields![Shape;
             "kind": kind, U32, 1;
-            "density": density, F32, 1;
-            "size": size, F32, 3;
+            "density": density, F32, 1, "kg/m^3";
+            "size": size, F32, 3, "m";
             "_pad": _pad, U32, 1;
             "mesh": mesh, SimBlobRef, 1;
         ]
@@ -138,8 +139,8 @@ impl Component for Body {
             "kind": kind, U32, 1;
             "friction": friction, F32, 1;
             "restitution": restitution, F32, 1;
-            "linear_damping": linear_damping, F32, 1;
-            "angular_damping": angular_damping, F32, 1;
+            "linear_damping": linear_damping, F32, 1, "1/s";
+            "angular_damping": angular_damping, F32, 1, "1/s";
             "rolling_resistance": rolling_resistance, F32, 1;
             "gravity_scale": gravity_scale, F32, 1;
             "bullet": bullet, Bool, 1;
@@ -169,9 +170,9 @@ impl Component for BodyState {
     const NAME: &'static str = "BodyState";
     fn fields() -> Vec<FieldDesc> {
         fields![BodyState;
-            "linear": linear, F32, 3;
-            "angular": angular, F32, 3;
-            "sleep_time": sleep_time, F32, 1;
+            "linear": linear, F32, 3, "m/s";
+            "angular": angular, F32, 3, "rad/s";
+            "sleep_time": sleep_time, F32, 1, "s";
             "awake": awake, Bool, 1;
             "_pad": _pad, U8, 3;
             "digest": digest, Hash, 1;
@@ -221,6 +222,35 @@ pub struct Light {
     pub intensity: f32,
     pub range: f32,
     pub color: [f32; 3],
+    /// A spot light's cone (radians from its axis, the object's local -z, as in glTF): full intensity inside
+    /// `inner_angle`, none beyond `outer_angle`, with 0 <= inner <= outer <= pi/2. Both are 0 for other kinds, so an
+    /// unused angle never makes two equal lights hash differently. An edit outside these is refused
+    /// ([`Light::invalid_angle`]).
+    pub inner_angle: f32,
+    pub outer_angle: f32,
+}
+
+impl Light {
+    /// The field index (4 `inner_angle`, 5 `outer_angle`) of the first angle an edit may not write: for a spot light,
+    /// outside 0 <= inner <= outer <= pi/2 (or not finite); for any other kind, not 0.
+    pub fn invalid_angle(&self) -> Option<u32> {
+        let (i, o) = (self.inner_angle, self.outer_angle);
+        if self.kind == light_kind::SPOT {
+            if !(0.0..=std::f32::consts::FRAC_PI_2).contains(&i) {
+                return Some(4);
+            }
+            if !(i..=std::f32::consts::FRAC_PI_2).contains(&o) {
+                return Some(5);
+            }
+            None
+        } else if i.to_bits() != 0 {
+            Some(4)
+        } else if o.to_bits() != 0 {
+            Some(5)
+        } else {
+            None
+        }
+    }
 }
 
 impl Component for Light {
@@ -230,8 +260,10 @@ impl Component for Light {
         fields![Light;
             "kind": kind, U32, 1;
             "intensity": intensity, F32, 1;
-            "range": range, F32, 1;
+            "range": range, F32, 1, "m";
             "color": color, F32, 3;
+            "inner_angle": inner_angle, F32, 1, "rad";
+            "outer_angle": outer_angle, F32, 1, "rad";
         ]
     }
 }
@@ -287,7 +319,7 @@ impl Component for SimSize {
     const ID: ComponentId = ids::SIM_SIZE;
     const NAME: &'static str = "SimSize";
     fn fields() -> Vec<FieldDesc> {
-        fields![SimSize; "metres": metres, F64, 1;]
+        fields![SimSize; "metres": metres, F64, 1, "m";]
     }
 }
 
@@ -341,7 +373,7 @@ mod tests {
                 ("Body", 32),
                 ("BodyState", 64),
                 ("Appearance", 80),
-                ("Light", 24),
+                ("Light", 32),
                 ("Hand", 72),
                 ("SimSize", 8),
                 ("Protection", 32),
