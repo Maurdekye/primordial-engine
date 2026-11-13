@@ -105,6 +105,24 @@ pub fn euler_deg(q: [f32; 4]) -> [f64; 3] {
     })
 }
 
+/// Euler angles in degrees, in Unity's order (Z, then X, then Y: q = qy·qx·qz), as a unit quaternion `[x, y, z, w]`:
+/// the inverse of [`euler_deg`], computed in `f64`.
+pub fn quat_from_euler_deg(e: [f64; 3]) -> [f32; 4] {
+    let half = |d: f64| (d.to_radians() / 2.0).sin_cos();
+    let ((sx, cx), (sy, cy), (sz, cz)) = (half(e[0]), half(e[1]), half(e[2]));
+    let mul = |a: [f64; 4], b: [f64; 4]| {
+        let ([ax, ay, az, aw], [bx, by, bz, bw]) = (a, b);
+        [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ]
+    };
+    let q = mul(mul([0.0, sy, 0.0, cy], [sx, 0.0, 0.0, cx]), [0.0, 0.0, sz, cz]);
+    q.map(|c| c as f32)
+}
+
 /// One published pe-world frame as pe-api's `Snapshot`, for one caller (whose head `"me"` names).
 #[derive(Clone)]
 pub struct WorldView {
@@ -119,7 +137,7 @@ impl WorldView {
 
     /// The frame `r` names, as pe-world's `offset_in` takes it: `Some(None)` for the world origin, `Some(Some(id))`
     /// for an object (or `"me"`), `None` if it names nothing.
-    fn frame_of(&self, r: &ObjRef) -> Option<Option<pe_core::ObjectId>> {
+    pub(crate) fn frame_of(&self, r: &ObjRef) -> Option<Option<pe_core::ObjectId>> {
         match r.0.as_str() {
             "world_origin" => Some(None),
             "me" => self.me.map(|m| Some(m.into())),
@@ -210,6 +228,18 @@ mod tests {
     use pe_core::{Frame as CoreFrame, MemberKey};
     use pe_seams::world_api::Selector;
     use pe_sim::Transform;
+
+    #[test]
+    fn euler_degrees_round_trip_and_turn_the_unity_way() {
+        for e in [[30.0, 45.0, 60.0], [0.0, 90.0, 0.0], [10.0, 200.0, 350.0], [0.0, 0.0, 0.0]] {
+            let back = euler_deg(quat_from_euler_deg(e));
+            let same = e.iter().zip(back).all(|(a, b)| ((a - b + 540.0f64).rem_euclid(360.0) - 180.0).abs() < 1e-4);
+            assert!(same, "{e:?} -> {back:?}");
+        }
+        // +90 about +y takes +z to +x (api.md 4.4).
+        let v = pe_sim::transform::rotate(quat_from_euler_deg([0.0, 90.0, 0.0]), [0.0, 0.0, 1.0]);
+        assert!((v[0] - 1.0).abs() < 1e-6 && v[2].abs() < 1e-6, "{v:?}");
+    }
     use pe_world::components::{Name, Protection};
     use pe_world::{BlobStore, World};
 

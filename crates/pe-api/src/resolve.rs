@@ -34,12 +34,11 @@ use crate::ports::Snapshot;
 use crate::query::{Budget, EXAMINE_MAX, Named, resolve_in, select_in};
 
 /// pe-world's per-transaction op limit (world-model.md 7.1).
-pub const OPS_MAX: usize = 4096;
+pub const OPS_MAX: usize = pe_world::edit::MAX_OPS;
 /// The most objects one change may create, counting every object a copy or a template brings (@chunks-reviewer's
-/// M1). Checked before anything is reserved. pe-world owns this bound (coordinator): it is to be
-/// `pe_world::edit::MAX_NEW_OBJECTS`, beside `MAX_OPS`. Until that lands this copy must keep its value, 65,536;
-/// then use pe-world's constant instead.
-pub const NEW_MAX: u32 = 65_536;
+/// M1). Checked before anything is reserved. pe-world owns this bound (coordinator); this is its
+/// constant.
+pub const NEW_MAX: u32 = pe_world::edit::MAX_NEW_OBJECTS as u32;
 /// pe-world's label limit, in bytes.
 pub const LABEL_MAX: usize = 200;
 
