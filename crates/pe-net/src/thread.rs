@@ -12,13 +12,17 @@
 //!   lifecycle's outcomes (6.3-6.6) on a channel of their own, so the handle itself can live on as the
 //!   simulation's `Transport` while the app's network code keeps admission and dialling (app.md 3). Lifecycle
 //!   outcomes are not ordered relative to the handle's messages and events. If the control end is dropped,
-//!   later outcomes are discarded; the thread runs on.
+//!   later outcomes are discarded (`Fault`s too); the thread runs on.
+//! - **A bounded lifecycle backlog:** `Refused` and `Fault` are triggered by whoever connects, so outcomes nobody
+//!   polls are held up to `queue` beyond the channel, then the oldest `Refused` or `Fault` goes first
+//!   (@design-reviewer). Every drop is counted (`lifecycle_dropped`).
 //! - **Time** is the app's host clock (seam S5), passed in, so pe-net and the simulation agree on `HostTime`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -68,6 +72,7 @@ pub struct NetHandle {
     out: Receiver<Output>,
     /// The lifecycle channel, until [`NetHandle::control`] takes it.
     life: Option<Receiver<Lifecycle>>,
+    life_dropped: Arc<AtomicU64>,
     join: Option<JoinHandle<io::Result<()>>>,
     events: Vec<NetEvent>,
     stats: BTreeMap<PeerId, LinkStats>,
@@ -102,6 +107,7 @@ impl Waker {
 pub struct NetControl {
     waker: Waker,
     life: Receiver<Lifecycle>,
+    life_dropped: Arc<AtomicU64>,
 }
 
 impl NetControl {
@@ -114,6 +120,22 @@ impl NetControl {
     pub fn poll_lifecycle(&mut self) -> Option<Lifecycle> {
         self.life.try_recv().ok()
     }
+
+    /// Lifecycle outcomes dropped so far because nobody took them (the backlog's cap).
+    pub fn lifecycle_dropped(&self) -> u64 {
+        self.life_dropped.load(Ordering::Relaxed)
+    }
+}
+
+/// Hold an outcome for the lifecycle channel, at most `cap` of them: when full, the oldest `Refused` or `Fault`
+/// (which any connecting peer can cause) goes first, else the oldest of all. Each drop is counted.
+fn hold(backlog: &mut VecDeque<Lifecycle>, l: Lifecycle, cap: usize, dropped: &AtomicU64) {
+    if backlog.len() >= cap.max(1) {
+        let i = backlog.iter().position(|o| matches!(o, Lifecycle::Refused { .. } | Lifecycle::Fault { .. }));
+        backlog.remove(i.unwrap_or(0));
+        dropped.fetch_add(1, Ordering::Relaxed);
+    }
+    backlog.push_back(l);
 }
 
 impl NetHandle {
@@ -134,14 +156,17 @@ impl NetHandle {
         let (cmd, cmd_rx) = sync_channel(queue);
         let (out_tx, out) = sync_channel(queue);
         let (life_tx, life) = sync_channel(queue);
+        let life_dropped = Arc::new(AtomicU64::new(0));
+        let dropped = life_dropped.clone();
         let join = std::thread::Builder::new()
             .name("pe-net".into())
-            .spawn(move || run(core, socket, clock, cmd_rx, out_tx, life_tx))?;
+            .spawn(move || run(core, socket, clock, cmd_rx, out_tx, (life_tx, queue, dropped)))?;
         Ok(Self {
             frame_clock,
             waker: Waker { cmd, socket: waker, to: wake_to },
             out,
             life: Some(life),
+            life_dropped,
             join: Some(join),
             events: Vec::new(),
             stats: BTreeMap::new(),
@@ -163,7 +188,12 @@ impl NetHandle {
     /// already. The handle keeps its own command path (it still sends) and stays the `Transport`.
     pub fn control(&mut self) -> io::Result<Option<NetControl>> {
         let Some(life) = self.life.take() else { return Ok(None) };
-        Ok(Some(NetControl { waker: self.waker.try_clone()?, life }))
+        Ok(Some(NetControl { waker: self.waker.try_clone()?, life, life_dropped: self.life_dropped.clone() }))
+    }
+
+    /// Lifecycle outcomes dropped so far because nobody took them (the backlog's cap).
+    pub fn lifecycle_dropped(&self) -> u64 {
+        self.life_dropped.load(Ordering::Relaxed)
     }
 
     /// Take outputs off the queue until a message arrives (`until_received`) or none are left.
@@ -222,7 +252,7 @@ fn run(
     clock: HostClock,
     cmds: Receiver<Command>,
     out: SyncSender<Output>,
-    life: SyncSender<Lifecycle>,
+    (life, life_cap, life_dropped): (SyncSender<Lifecycle>, usize, Arc<AtomicU64>),
 ) -> io::Result<()> {
     let mut buf = vec![0u8; 65_536];
     let mut backlog: VecDeque<Output> = VecDeque::new();
@@ -257,7 +287,7 @@ fn run(
         backlog.extend(core.events().into_iter().map(Output::Event));
         while let Some(l) = core.poll_lifecycle() {
             if life_open {
-                life_backlog.push_back(l);
+                hold(&mut life_backlog, l, life_cap, &life_dropped);
             }
         }
         // Lifecycle outcomes wait for a full channel; with the control end gone, they are discarded.
