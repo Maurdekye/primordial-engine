@@ -24,7 +24,7 @@ use crate::scene::Scene;
 
 static FONT_BYTES: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
 
-fn font() -> &'static FontRef<'static> {
+pub(crate) fn font() -> &'static FontRef<'static> {
     static FONT: OnceLock<FontRef<'static>> = OnceLock::new();
     FONT.get_or_init(|| FontRef::try_from_slice(FONT_BYTES).expect("the embedded font parses"))
 }
@@ -53,7 +53,7 @@ pub fn text_px(height: u32) -> f32 {
 }
 
 /// The width of `text` at `px`, with kerning.
-fn text_width(text: &str, px: f32) -> f32 {
+pub(crate) fn text_width(text: &str, px: f32) -> f32 {
     let f = font().as_scaled(PxScale::from(px));
     let mut w = 0.0;
     let mut prev = None;

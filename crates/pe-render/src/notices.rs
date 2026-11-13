@@ -1,0 +1,861 @@
+//! Notices (render.md 8.1; D7: P3, P4, P5): one plain line telling the local player that something they did did not
+//! happen. This module holds the lines (pure CPU), draws them into one image ([`strip`]) and places it
+//! ([`window_overlay`], [`Panel`]); the scene renderer draws it as `Scene::overlay`.
+//!
+//! - **Refusals** of the local member's entries, from the frame view's `changes`, are told once the entry's frame is
+//!   final (render.md R10): a refusal reversed by a replay is never told. While finality stalls, the refusal waits;
+//!   if the verdict reverses, it is dropped.
+//! - **A grab lost to a hand the player can see** is not told in words: the hands' slide and cue tell it, and the
+//!   winner is in view (coordinator m3d3fe84209ae; api-surface.md 6.3). A grab refused for a reason the player can't
+//!   see (held by a member with no hand in view, a lock, the claim cap, out of reach) is told with the reason.
+//! - **Voids** (S3's `AgreeEvent::Voided`, handed in by pe-app) are told at once: a final cut decided them. A void
+//!   of an entry whose refusal was already told replaces that line, so one entry is never told twice.
+//! - **Only Input-class entries** (grabs, pushes, hand inputs) in M1 (coordinator m6b09cd4785b8): every edit
+//!   entry carries the member's key, an agent's too, so an edit refusal can't be told as the player's. A void names
+//!   no class, so it is told only for an entry this player's views stepped as Input (the local member's entries are
+//!   stepped here first, so a void of one never comes unseen).
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use ab_glyph::{Font, PxScale, ScaleFont, point};
+use glam::{DQuat, DVec3};
+use pe_seams::{AgreeEvent, Class, EntryRef, FrameView, HostTime, MemberKey, Outcome, Reason, StepRecord, VoidReason};
+
+use crate::camera::Camera;
+use crate::labels::{font, text_width};
+use crate::pose::{WorldPose, offset_vec};
+use crate::scene::{Overlay, OverlayImage};
+
+/// When a refusal is told (render.md R10).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TellAt {
+    /// Once the refused entry's frame is final: every member agrees on the verdict.
+    #[default]
+    Final,
+    /// At the first refusal seen, even on the predicted line.
+    AtOnce,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoticeSettings {
+    pub tell_at: TellAt,
+    /// Tell in words a grab lost to a hand in view too. Off: the hands' cue tells it.
+    pub lost_grabs: bool,
+    /// How long a line shows, seconds, fade included.
+    pub life_s: f64,
+    /// The fade at the end of its life, seconds.
+    pub fade_s: f64,
+    /// Lines shown at once; a newer one pushes the oldest out.
+    pub max_lines: usize,
+    /// How long a stepped entry's author is remembered, to name the winner of a `Stale` or `Deleted` refusal
+    /// (`W_fg`), seconds. An older winner reads "someone".
+    pub authors_s: f64,
+}
+
+impl Default for NoticeSettings {
+    fn default() -> Self {
+        NoticeSettings {
+            tell_at: TellAt::Final,
+            lost_grabs: false,
+            life_s: 5.0,
+            fade_s: 0.5,
+            max_lines: 3,
+            authors_s: 2.0,
+        }
+    }
+}
+
+/// A line to draw now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Line {
+    pub text: String,
+    /// 1 until the fade, then down to 0.
+    pub alpha: f32,
+}
+
+#[derive(Clone, Debug)]
+struct Shown {
+    text: String,
+    /// The refused entries this line tells (a void of one of them retracts it from the line).
+    entries: Vec<EntryRef>,
+    count: u32,
+    until: HostTime,
+}
+
+/// What an entry was told as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Told {
+    Refusal,
+    /// A refusal judged not to need words (a grab lost to a hand in view).
+    Silent,
+    Void,
+}
+
+/// Entries remembered as told, so a re-stepped refusal or a repeated void is never told twice.
+const TOLD_KEPT: usize = 4096;
+
+/// The local player's notices.
+pub struct Notices {
+    settings: NoticeSettings,
+    local: MemberKey,
+    sim_rate_hz: u32,
+    names: HashMap<MemberKey, String>,
+    authors: VecDeque<(HostTime, EntryRef, MemberKey)>,
+    /// The class of each of the local member's entries seen stepped, for voids (bounded like `told`).
+    own_class: HashMap<EntryRef, Class>,
+    own_order: VecDeque<EntryRef>,
+    pending: HashMap<EntryRef, StepRecord>,
+    told: HashMap<EntryRef, Told>,
+    told_order: VecDeque<EntryRef>,
+    shown: VecDeque<Shown>,
+    told_total: u64,
+}
+
+impl Notices {
+    pub fn new(settings: NoticeSettings, local: MemberKey, sim_rate_hz: u32) -> Notices {
+        Notices {
+            settings,
+            local,
+            sim_rate_hz: sim_rate_hz.max(1),
+            names: HashMap::new(),
+            authors: VecDeque::new(),
+            own_class: HashMap::new(),
+            own_order: VecDeque::new(),
+            pending: HashMap::new(),
+            told: HashMap::new(),
+            told_order: VecDeque::new(),
+            shown: VecDeque::new(),
+            told_total: 0,
+        }
+    }
+
+    pub fn settings(&self) -> &NoticeSettings {
+        &self.settings
+    }
+
+    /// Notices told over the run, repeats included.
+    pub fn told_total(&self) -> u64 {
+        self.told_total
+    }
+
+    /// A member's display name, from pe-app's roster.
+    pub fn set_name(&mut self, member: MemberKey, name: impl Into<String>) {
+        self.names.insert(member, name.into());
+    }
+
+    /// Read a new frame view's `changes` (and `final_frame`) at host time `now`.
+    pub fn observe(&mut self, view: &FrameView, now: HostTime) {
+        for rec in &view.changes {
+            self.authors.push_back((now, rec.entry, rec.author));
+            if rec.author != self.local {
+                continue;
+            }
+            if self.own_class.insert(rec.entry, rec.class).is_none() {
+                self.own_order.push_back(rec.entry);
+                if self.own_order.len() > TOLD_KEPT {
+                    let old = self.own_order.pop_front().expect("non-empty");
+                    self.own_class.remove(&old);
+                }
+            }
+            if self.told.contains_key(&rec.entry) {
+                continue;
+            }
+            // A re-stepped entry appears again; the newest verdict wins.
+            match &rec.outcome {
+                Outcome::Refused { .. } if rec.class == Class::Input => {
+                    self.pending.insert(rec.entry, rec.clone());
+                }
+                _ => {
+                    self.pending.remove(&rec.entry);
+                }
+            }
+        }
+        while self.authors.front().is_some_and(|a| now.secs_since(a.0) > self.settings.authors_s) {
+            self.authors.pop_front();
+        }
+        let tell_at = self.settings.tell_at;
+        let mut due: Vec<StepRecord> = Vec::new();
+        self.pending.retain(|_, r| {
+            let now_due = match tell_at {
+                TellAt::AtOnce => true,
+                TellAt::Final => view.final_frame.is_some_and(|f| r.frame <= f),
+            };
+            if now_due {
+                due.push(r.clone());
+            }
+            !now_due
+        });
+        due.sort_by_key(|r| (r.frame, r.entry.0.0));
+        for rec in due {
+            match self.refusal_text(&rec, view) {
+                Some(text) => {
+                    self.remember(rec.entry, Told::Refusal);
+                    self.tell(text, Some(rec.entry), now);
+                }
+                None => self.remember(rec.entry, Told::Silent),
+            }
+        }
+    }
+
+    /// An agreement event from pe-app: a void of one of the local member's entries is told at once (a final cut has
+    /// decided it). If that entry's refusal was already told, the void replaces it.
+    pub fn agreement(&mut self, e: &AgreeEvent, now: HostTime) {
+        let AgreeEvent::Voided { entry, author, reason, .. } = e else { return };
+        if *author != self.local
+            || self.told.get(entry) == Some(&Told::Void)
+            || self.own_class.get(entry) != Some(&Class::Input)
+        {
+            return;
+        }
+        self.pending.remove(entry);
+        if self.told.get(entry) == Some(&Told::Refusal) {
+            self.retract(entry);
+        }
+        self.remember(*entry, Told::Void);
+        let text = match reason {
+            VoidReason::Late => "An action of yours arrived too late and was undone.",
+            VoidReason::BackStamped => "An action of yours was undone: it arrived out of order.",
+        };
+        self.tell(text.to_string(), None, now);
+    }
+
+    /// The lines to draw at `now`, oldest first.
+    pub fn lines(&mut self, now: HostTime) -> Vec<Line> {
+        self.shown.retain(|s| s.until.0 > now.0);
+        let fade = self.settings.fade_s;
+        self.shown
+            .iter()
+            .map(|s| {
+                let left = s.until.secs_since(now);
+                let alpha = if fade > 0.0 { (left / fade).clamp(0.0, 1.0) } else { 1.0 };
+                let text = if s.count > 1 { format!("{} (×{})", s.text, s.count) } else { s.text.clone() };
+                Line { text, alpha: alpha as f32 }
+            })
+            .collect()
+    }
+
+    fn remember(&mut self, e: EntryRef, how: Told) {
+        if self.told.insert(e, how).is_none() {
+            self.told_order.push_back(e);
+            if self.told_order.len() > TOLD_KEPT {
+                let old = self.told_order.pop_front().expect("non-empty");
+                self.told.remove(&old);
+            }
+        }
+    }
+
+    fn tell(&mut self, text: String, entry: Option<EntryRef>, now: HostTime) {
+        let until = now.plus_nanos((self.settings.life_s * 1e9) as i64);
+        self.told_total += 1;
+        self.shown.retain(|s| s.until.0 > now.0);
+        if let Some(i) = self.shown.iter().position(|s| s.text == text) {
+            let mut s = self.shown.remove(i).expect("found");
+            s.count += 1;
+            s.until = until;
+            s.entries.extend(entry);
+            self.shown.push_back(s);
+            return;
+        }
+        self.shown.push_back(Shown { text, entries: entry.into_iter().collect(), count: 1, until });
+        while self.shown.len() > self.settings.max_lines.max(1) {
+            self.shown.pop_front();
+        }
+    }
+
+    /// Take a told refusal back off its line: the line's count drops, and the line goes at zero.
+    fn retract(&mut self, e: &EntryRef) {
+        let Some(i) = self.shown.iter().position(|s| s.entries.contains(e)) else { return };
+        let s = &mut self.shown[i];
+        s.entries.retain(|x| x != e);
+        s.count = s.count.saturating_sub(1);
+        if s.count == 0 {
+            self.shown.remove(i);
+        }
+        self.told_total = self.told_total.saturating_sub(1);
+    }
+
+    /// A member's name, starting a sentence.
+    fn name(&self, m: &MemberKey) -> String {
+        if *m == self.local {
+            return "You".to_string();
+        }
+        self.names.get(m).cloned().unwrap_or_else(|| "Another player".to_string())
+    }
+
+    /// The author of a recently stepped entry, starting a sentence.
+    fn author_of(&self, e: &EntryRef) -> String {
+        match self.authors.iter().rev().find(|a| a.1 == *e) {
+            Some((_, _, m)) => self.name(m),
+            None => "Someone".to_string(),
+        }
+    }
+
+    /// The words for a refusal, or `None` when it needs none: a grab lost to a hand in view.
+    fn refusal_text(&self, rec: &StepRecord, view: &FrameView) -> Option<String> {
+        let Outcome::Refused { reason, .. } = &rec.outcome else { return None };
+        let what = match rec.class {
+            Class::Input => "action",
+            Class::Edit => "edit",
+            Class::Governance | Class::Protocol => "change",
+        };
+        Some(match reason {
+            Reason::Held { by } => {
+                let in_view = *by == self.local || view.objects.iter().any(|o| o.hand_of.is_some_and(|h| h.0 == *by));
+                if in_view && !self.settings.lost_grabs {
+                    return None;
+                }
+                format!("{} is holding it.", self.name(by))
+            }
+            Reason::Stale { winner, .. } => {
+                format!("Your {what} was refused: {} changed it first.", inside(&self.author_of(winner)))
+            }
+            Reason::Deleted { by, .. } => {
+                format!("Your {what} was refused: {} deleted it.", inside(&self.author_of(by)))
+            }
+            Reason::Protected { owner } => format!("Refused: {} protects it.", inside(&self.name(owner))),
+            Reason::NoPermission => "Refused: you don't have permission for that.".to_string(),
+            // Counted from the frame of the view that tells it, not the frame the grab was stepped at.
+            Reason::Cooldown { until } => {
+                let frames = until.0.saturating_sub(view.frame.0);
+                let secs = frames.div_ceil(self.sim_rate_hz as u64).max(1);
+                format!("You can grab it again in {secs} s.")
+            }
+            Reason::TooFast { .. } => "Your push was refused: too fast.".to_string(),
+            Reason::OutOfReach => "Out of reach.".to_string(),
+            Reason::TooManyClaims { limit } => format!("You can hold {limit} things at once."),
+            other => match plain_reason(other) {
+                Some(why) => format!("Your {what} was refused: {why}."),
+                None => format!("Your {what} was refused."),
+            },
+        })
+    }
+}
+
+/// A name that started a sentence, placed inside one: "You", "Someone" and "Another player" go lower case; a
+/// member's own name is kept.
+fn inside(s: &str) -> String {
+    match s {
+        "You" | "Someone" | "Another player" => s.to_lowercase(),
+        other => other.to_string(),
+    }
+}
+
+/// The remaining reasons in plain words; `None` for one this version can't name.
+fn plain_reason(r: &Reason) -> Option<&'static str> {
+    Some(match r {
+        Reason::Malformed | Reason::NewIndexOverlap => "it was malformed",
+        Reason::Unknown(_) => "it no longer exists",
+        Reason::Exists(_) => "it already exists",
+        Reason::Invalid { .. } => "a value wasn't allowed",
+        Reason::OutOfRange => "too far from the world's centre",
+        Reason::Cycle => "it would put something inside itself",
+        Reason::TooDeep { .. } => "it would nest things too deep",
+        Reason::TooLarge { .. } => "too many new things at once",
+        Reason::NotYourHand => "that isn't your hand",
+        _ => return None,
+    })
+}
+
+// ---- the strip: the lines as an image ------------------------------------------------------------------------------
+
+/// The box behind each line: black at this opacity (times the line's fade).
+const STRIP_BOX: f32 = 0.6;
+
+/// The lines as one image: each line centred on its own black box (60 % opaque), white text, the whole faded by
+/// each line's alpha; transparent elsewhere. `px` is the text height in pixels. `None` with no lines.
+pub fn strip(lines: &[Line], px: f32) -> Option<OverlayImage> {
+    if lines.is_empty() {
+        return None;
+    }
+    let f = font().as_scaled(PxScale::from(px));
+    let pad = (px * 0.4).ceil();
+    let line_h = (f.ascent() - f.descent()).ceil() + 2.0 * pad;
+    let widths: Vec<f32> = lines.iter().map(|l| text_width(&l.text, px).ceil() + 2.0 * pad).collect();
+    let w = widths.iter().cloned().fold(0.0, f32::max) as usize;
+    let h = (line_h * lines.len() as f32) as usize;
+    let mut box_a = vec![0f32; w * h];
+    let mut text_a = vec![0f32; w * h];
+    for (i, (l, lw)) in lines.iter().zip(&widths).enumerate() {
+        let top = i as f32 * line_h;
+        let left = ((w as f32 - lw) / 2.0).floor();
+        for y in top as usize..(top + line_h) as usize {
+            for x in left as usize..(left + lw) as usize {
+                box_a[y * w + x] = STRIP_BOX * l.alpha;
+            }
+        }
+        let mut pen = point(left + pad, top + pad + f.ascent());
+        let mut prev = None;
+        for c in l.text.chars() {
+            let id = f.glyph_id(c);
+            if let Some(p) = prev {
+                pen.x += f.kern(p, id);
+            }
+            let g = id.with_scale_and_position(px, pen);
+            pen.x += f.h_advance(id);
+            prev = Some(id);
+            if let Some(o) = f.outline_glyph(g) {
+                let b = o.px_bounds();
+                o.draw(|gx, gy, cov| {
+                    let (x, y) = (b.min.x as i64 + gx as i64, b.min.y as i64 + gy as i64);
+                    if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h {
+                        let k = y as usize * w + x as usize;
+                        text_a[k] = text_a[k].max(cov.clamp(0.0, 1.0) * l.alpha);
+                    }
+                });
+            }
+        }
+    }
+    let mut rgba = vec![0u8; w * h * 4];
+    for k in 0..w * h {
+        // White text over the black box, straight alpha: colour = text / total (linear), then sRGB.
+        let (t, b) = (text_a[k], box_a[k]);
+        let a = t + b * (1.0 - t);
+        let c = if a > 0.0 { srgb_byte(t / a) } else { 0 };
+        rgba[k * 4..k * 4 + 4].copy_from_slice(&[c, c, c, (a * 255.0).round() as u8]);
+    }
+    Some(OverlayImage { width: w as u32, height: h as u32, rgba })
+}
+
+fn srgb_byte(linear: f32) -> u8 {
+    let c = linear.clamp(0.0, 1.0);
+    let s = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+    (s * 255.0).round() as u8
+}
+
+// ---- where the strip goes -----------------------------------------------------------------------------------------
+
+/// The window's text height: 1/30 of its height, at least 14 px.
+pub fn window_text_px(window_height: u32) -> f32 {
+    (window_height as f32 / 30.0).max(14.0)
+}
+
+/// The strip in the window: centred at the bottom, at its pixel size on screen, 3 % of the height above the bottom
+/// edge. Placed in front of `cam` (ten times its near plane, so it is never clipped), facing it.
+pub fn window_overlay(cam: &Camera, window: [u32; 2], image: Arc<OverlayImage>) -> Overlay {
+    let d = cam.near * 10.0;
+    let [tl, tr, tu, td] = [cam.fov.left, cam.fov.right, cam.fov.up, cam.fov.down].map(|a| (a as f64).tan());
+    let visible_h = d * (tu - td);
+    let per_px = visible_h / window[1].max(1) as f64;
+    let size = [image.width as f64 * per_px, image.height as f64 * per_px];
+    let centre = DVec3::new(d * (tl + tr) / 2.0, d * td + 0.03 * visible_h + size[1] / 2.0, -d);
+    Overlay { image, pose: cam.pose.moved(cam.pose.rot * centre), size: size.map(|v| v as f32) }
+}
+
+/// Where a notice sits in the headset (render.md R11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PanelMode {
+    /// Locked to the head: always `distance` ahead and `below` under the head's forward direction.
+    #[default]
+    HeadLocked,
+    /// Fixed in the world; it glides back to the head-locked place once the head has turned more than
+    /// `follow_deg` away from it.
+    LazyFollow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelSettings {
+    pub mode: PanelMode,
+    /// Metres ahead of the head, in the rig frame (times the rig's scale in the world).
+    pub distance: f64,
+    /// Degrees below the head's forward direction.
+    pub below_deg: f64,
+    /// The text's height in metres at `distance` (rig frame): 3 cm at 1 m is about 1.7°.
+    pub text_height: f64,
+    /// The strip's text size in pixels when rasterized for the headset.
+    pub px: f32,
+    /// Lazy follow: how far the head may turn from the panel before it moves, degrees.
+    pub follow_deg: f64,
+    /// Lazy follow: the glide's time constant, seconds.
+    pub follow_s: f64,
+}
+
+impl Default for PanelSettings {
+    fn default() -> Self {
+        PanelSettings {
+            mode: PanelMode::HeadLocked,
+            distance: 1.0,
+            below_deg: 20.0,
+            text_height: 0.03,
+            px: 32.0,
+            follow_deg: 25.0,
+            follow_s: 0.3,
+        }
+    }
+}
+
+/// The head between two eyes: the eyes' midpoint, their mean orientation.
+pub fn head_of(eyes: &[Camera; 2]) -> WorldPose {
+    let half = offset_vec(eyes[1].pose.pos - eyes[0].pose.pos) * 0.5;
+    WorldPose { pos: eyes[0].pose.moved(half).pos, rot: eyes[0].pose.rot.slerp(eyes[1].pose.rot, 0.5) }
+}
+
+/// The headset's notice panel. The mode can change at any time (a switch in the headset, render.md R11).
+#[derive(Clone, Debug, Default)]
+pub struct Panel {
+    pub settings: PanelSettings,
+    placed: Option<WorldPose>,
+    gliding: bool,
+    last: Option<HostTime>,
+}
+
+impl Panel {
+    pub fn new(settings: PanelSettings) -> Panel {
+        Panel { settings, ..Panel::default() }
+    }
+
+    /// Switch between head-locked and lazy follow; a lazy panel starts where the head-locked one is now.
+    pub fn set_mode(&mut self, mode: PanelMode) {
+        self.settings.mode = mode;
+        self.placed = None;
+        self.gliding = false;
+    }
+
+    /// The head-locked place for `head`, in a rig of scale `scale`.
+    pub fn head_locked(&self, head: &WorldPose, scale: f64) -> WorldPose {
+        let rot = head.rot * DQuat::from_rotation_x(-self.settings.below_deg.to_radians());
+        WorldPose { pos: head.moved(rot * DVec3::new(0.0, 0.0, -self.settings.distance * scale)).pos, rot }
+    }
+
+    /// The strip's overlay this display frame at `now`, for `head` in a rig of scale `scale`.
+    pub fn place(&mut self, head: &WorldPose, scale: f64, image: Arc<OverlayImage>, now: HostTime) -> Overlay {
+        let target = self.head_locked(head, scale);
+        let dt = self.last.map_or(0.0, |l| now.secs_since(l).max(0.0));
+        self.last = Some(now);
+        let pose = match self.settings.mode {
+            PanelMode::HeadLocked => target,
+            PanelMode::LazyFollow => {
+                let cur = *self.placed.get_or_insert(target);
+                let dir = |p: &WorldPose| offset_vec(p.pos - head.pos).normalize_or_zero();
+                let off = dir(&cur).angle_between(dir(&target)).to_degrees();
+                if off > self.settings.follow_deg {
+                    self.gliding = true;
+                }
+                let next = if self.gliding {
+                    let k = if self.settings.follow_s > 0.0 { 1.0 - (-dt / self.settings.follow_s).exp() } else { 1.0 };
+                    let pos = cur.moved(offset_vec(target.pos - cur.pos) * k).pos;
+                    let p = WorldPose { pos, rot: cur.rot.slerp(target.rot, k) };
+                    if dir(&p).angle_between(dir(&target)).to_degrees() < 1.0 {
+                        self.gliding = false;
+                    }
+                    p
+                } else {
+                    cur
+                };
+                self.placed = Some(next);
+                next
+            }
+        };
+        let per_px = self.settings.text_height * scale / self.settings.px.max(1.0) as f64;
+        let size = [image.width as f64 * per_px, image.height as f64 * per_px].map(|v| v as f32);
+        Overlay { image, pose, size }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pe_seams::{
+        CutRef, DomainId, Frame, Hand, Hash, LineId, ObjectClass, ObjectId, Pos, RigTransform, Version, ViewCounters,
+        ViewFlags, ViewObject,
+    };
+
+    use super::*;
+    use crate::camera::{DepthRange, Fov};
+
+    const ME: MemberKey = MemberKey([1; 32]);
+    const BOB: MemberKey = MemberKey([2; 32]);
+
+    fn entry(n: u8) -> EntryRef {
+        EntryRef(pe_seams::Hash([n; 32]))
+    }
+
+    fn t(ms: i64) -> HostTime {
+        HostTime::from_millis(ms)
+    }
+
+    fn rec(n: u8, author: MemberKey, class: Class, frame: u64, outcome: Outcome) -> StepRecord {
+        StepRecord { entry: entry(n), author, class, frame: Frame(frame), outcome }
+    }
+
+    fn input(n: u8, frame: u64, reason: Reason) -> StepRecord {
+        rec(n, ME, Class::Input, frame, refused(reason))
+    }
+
+    fn refused(reason: Reason) -> Outcome {
+        Outcome::Refused { op: None, reason }
+    }
+
+    fn applied() -> Outcome {
+        Outcome::Applied { created: vec![], overwrote: vec![], notes: vec![], inverse: None }
+    }
+
+    fn view(frame: u64, final_frame: Option<u64>, changes: Vec<StepRecord>) -> FrameView {
+        FrameView {
+            frame: Frame(frame),
+            domain: DomainId::default(),
+            sim_time: HostTime(0),
+            final_frame: final_frame.map(Frame),
+            local_rig: RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
+            objects: vec![],
+            effects: vec![],
+            retracted: vec![],
+            counters: ViewCounters::default(),
+            changes,
+        }
+    }
+
+    /// A view that also shows `member`'s right hand.
+    fn with_hand_of(mut v: FrameView, member: MemberKey) -> FrameView {
+        v.objects.push(ViewObject {
+            id: ObjectId::from_u128(77),
+            class: ObjectClass::World,
+            pos: Pos::ORIGIN,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            shape: None,
+            appearance: None,
+            light: None,
+            radius: 0.09,
+            hand_of: Some((member, Hand::Right)),
+            held_by: None,
+            flags: ViewFlags::default(),
+            version: None,
+        });
+        v
+    }
+
+    fn void(e: u8, author: MemberKey, reason: VoidReason) -> AgreeEvent {
+        AgreeEvent::Voided {
+            entry: entry(e),
+            author,
+            reason,
+            cut: CutRef { line: LineId(Hash([0; 32])), height: 1, frame: Frame(5) },
+        }
+    }
+
+    fn texts(n: &mut Notices, now: HostTime) -> Vec<String> {
+        n.lines(now).into_iter().map(|l| l.text).collect()
+    }
+
+    fn notices() -> Notices {
+        let mut n = Notices::new(NoticeSettings::default(), ME, 60);
+        n.set_name(BOB, "Bob");
+        n
+    }
+
+    #[test]
+    fn a_refusal_is_told_once_final_and_a_reversed_one_never() {
+        let mut n = notices();
+        // Predicted: out of reach at frame 10. Not final yet: nothing told.
+        n.observe(&view(12, Some(5), vec![input(1, 10, Reason::OutOfReach)]), t(0));
+        assert!(texts(&mut n, t(0)).is_empty());
+        // A replay re-steps it: applied after all. Then frame 10 goes final: still nothing.
+        n.observe(&view(14, Some(8), vec![rec(1, ME, Class::Input, 10, applied())]), t(30));
+        n.observe(&view(16, Some(12), vec![]), t(60));
+        assert!(texts(&mut n, t(60)).is_empty());
+        // Another, at frame 20: told when 20 is final.
+        n.observe(&view(22, Some(15), vec![input(2, 20, Reason::OutOfReach)]), t(100));
+        assert!(texts(&mut n, t(100)).is_empty());
+        n.observe(&view(26, Some(20), vec![]), t(200));
+        assert_eq!(texts(&mut n, t(200)), ["Out of reach."]);
+        // Re-stepped after being told: never told again.
+        n.observe(&view(27, Some(21), vec![input(2, 20, Reason::OutOfReach)]), t(210));
+        assert_eq!(n.told_total(), 1);
+    }
+
+    #[test]
+    fn at_once_tells_on_the_predicted_line() {
+        let mut n = Notices::new(NoticeSettings { tell_at: TellAt::AtOnce, ..NoticeSettings::default() }, ME, 60);
+        n.observe(&view(12, None, vec![input(1, 10, Reason::OutOfReach)]), t(0));
+        assert_eq!(texts(&mut n, t(0)), ["Out of reach."]);
+    }
+
+    /// A grab lost to a hand in view is the cue's alone; held by a member with no hand in view, it is told.
+    #[test]
+    fn a_grab_lost_to_a_visible_hand_is_not_told_in_words() {
+        let mut n = notices();
+        n.observe(&with_hand_of(view(30, Some(30), vec![input(1, 10, Reason::Held { by: BOB })]), BOB), t(0));
+        assert!(texts(&mut n, t(0)).is_empty());
+        n.observe(&view(31, Some(31), vec![input(2, 11, Reason::Held { by: BOB })]), t(10));
+        assert_eq!(texts(&mut n, t(10)), ["Bob is holding it."]);
+        let mut all = Notices::new(NoticeSettings { lost_grabs: true, ..NoticeSettings::default() }, ME, 60);
+        all.observe(&with_hand_of(view(30, Some(30), vec![input(1, 10, Reason::Held { by: BOB })]), BOB), t(0));
+        assert_eq!(texts(&mut all, t(0)), ["Another player is holding it."]);
+    }
+
+    /// M1: only the local member's Input-class entries (coordinator m6b09cd4785b8).
+    #[test]
+    fn only_my_input_entries_are_told() {
+        let mut n = notices();
+        let stale = Reason::Stale { precondition: 0, current: Version { entry: entry(9), op: 0 }, winner: entry(9) };
+        n.observe(
+            &view(
+                30,
+                Some(30),
+                vec![
+                    rec(1, BOB, Class::Input, 10, refused(Reason::OutOfReach)),
+                    rec(2, ME, Class::Edit, 11, refused(stale)),
+                    rec(3, ME, Class::Governance, 12, refused(Reason::NoPermission)),
+                    input(4, 13, Reason::TooFast { limit: 5000 }),
+                ],
+            ),
+            t(0),
+        );
+        assert_eq!(texts(&mut n, t(0)), ["Your push was refused: too fast."]);
+        // A void of my edit (an agent's, as far as this player knows) is not told either.
+        n.agreement(&void(2, ME, VoidReason::Late), t(10));
+        assert_eq!(n.told_total(), 1);
+    }
+
+    #[test]
+    fn a_deleted_object_names_the_deleting_entry_s_author() {
+        let mut n = notices();
+        n.observe(&view(10, Some(9), vec![rec(7, BOB, Class::Edit, 9, applied())]), t(0));
+        n.observe(
+            &view(12, Some(12), vec![input(8, 11, Reason::Deleted { object: ObjectId::NONE, by: entry(7) })]),
+            t(100),
+        );
+        // The author is forgotten after `authors_s`: "someone".
+        n.observe(
+            &view(400, Some(400), vec![input(9, 300, Reason::Deleted { object: ObjectId::NONE, by: entry(7) })]),
+            t(5000),
+        );
+        assert_eq!(
+            texts(&mut n, t(5000)),
+            ["Your action was refused: Bob deleted it.", "Your action was refused: someone deleted it."]
+        );
+    }
+
+    #[test]
+    fn a_void_is_told_at_once_and_repeats_count_up() {
+        let mut n = notices();
+        n.observe(&view(10, None, vec![input(1, 5, Reason::OutOfReach), rec(2, ME, Class::Input, 6, applied())]), t(0));
+        n.agreement(&void(1, BOB, VoidReason::Late), t(0));
+        assert!(texts(&mut n, t(0)).is_empty(), "someone else's void");
+        n.agreement(&void(1, ME, VoidReason::Late), t(0));
+        n.agreement(&void(1, ME, VoidReason::Late), t(10)); // the same entry again: told once
+        n.agreement(&void(2, ME, VoidReason::Late), t(1000));
+        assert_eq!(texts(&mut n, t(1000)), ["An action of yours arrived too late and was undone. (×2)"]);
+        assert_eq!(n.told_total(), 2);
+        // The void decided the first entry: its pending refusal is never told.
+        n.observe(&view(12, Some(12), vec![]), t(1100));
+        assert_eq!(n.told_total(), 2);
+    }
+
+    /// Review L1: a refusal told once final, then voided (the void arrived after the final view): one line, the
+    /// void's.
+    #[test]
+    fn a_void_replaces_a_told_refusal_of_the_same_entry() {
+        let mut n = notices();
+        n.observe(&view(12, Some(12), vec![input(1, 10, Reason::OutOfReach)]), t(0));
+        assert_eq!(texts(&mut n, t(0)), ["Out of reach."]);
+        n.agreement(&void(1, ME, VoidReason::BackStamped), t(50));
+        assert_eq!(texts(&mut n, t(50)), ["An action of yours was undone: it arrived out of order."]);
+        assert_eq!(n.told_total(), 1);
+    }
+
+    #[test]
+    fn lines_fade_expire_and_cap_at_three() {
+        let mut n = notices();
+        let reasons = [Reason::OutOfReach, Reason::TooFast { limit: 1 }, Reason::NotYourHand, Reason::Cycle];
+        for (i, r) in reasons.into_iter().enumerate() {
+            n.observe(&view(10, Some(10), vec![input(i as u8, 5, r)]), t(i as i64 * 100));
+        }
+        let l = n.lines(t(300));
+        assert_eq!(l.len(), 3, "the oldest was pushed out");
+        assert_eq!(l[0].text, "Your push was refused: too fast.");
+        assert_eq!(l[2].text, "Your action was refused: it would put something inside itself.");
+        // The first remaining line was told at 100 ms: full until 4.6 s, half at 4.85 s, gone at 5.1 s; the others
+        // (told at 200 and 300 ms) go at 5.2 and 5.3 s.
+        assert_eq!(n.lines(t(4600))[0].alpha, 1.0);
+        assert!((n.lines(t(4850))[0].alpha - 0.5).abs() < 1e-6);
+        assert_eq!(n.lines(t(5150)).len(), 2);
+        assert!(n.lines(t(5300)).is_empty());
+    }
+
+    #[test]
+    fn a_cooldown_counts_from_the_telling_view() {
+        let mut n = notices();
+        n.observe(&view(100, Some(100), vec![input(1, 90, Reason::Cooldown { until: Frame(161) })]), t(0));
+        assert_eq!(texts(&mut n, t(0)), ["You can grab it again in 2 s."]);
+    }
+
+    #[test]
+    fn the_strip_is_text_on_boxes_and_clear_around_a_short_line() {
+        let lines = [
+            Line { text: "A much longer line of notice text".into(), alpha: 1.0 },
+            Line { text: "Short".into(), alpha: 0.5 },
+        ];
+        let img = strip(&lines, 20.0).expect("two lines");
+        let (w, h) = (img.width as usize, img.height as usize);
+        assert!(w > 200 && h >= 40, "{w} x {h}");
+        let px = |x: usize, y: usize| &img.rgba[(y * w + x) * 4..(y * w + x) * 4 + 4];
+        // Beside the short line, outside its box: clear.
+        assert_eq!(px(1, h - 2)[3], 0);
+        // The long line's box corner: black at 60 %.
+        assert_eq!(px(0, 0), [0, 0, 0, 153]);
+        // White text somewhere in each line. The second is faded to half: its text (0.5) over its box (0.3) reads
+        // 0.5 + 0.3 x 0.5 = 0.65.
+        let top_max = (0..h / 2).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| px(x, y)[3]).max().unwrap();
+        let bot_max = (h / 2..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| px(x, y)[3]).max().unwrap();
+        assert!(top_max >= 250, "{top_max}");
+        assert!((163..=169).contains(&bot_max), "{bot_max}");
+        assert!(strip(&[], 20.0).is_none());
+    }
+
+    #[test]
+    fn the_window_strip_sits_at_the_bottom_at_its_pixel_size() {
+        let cam = Camera::placed(
+            WorldPose { pos: Pos::ORIGIN, rot: DQuat::from_rotation_y(0.7) },
+            Fov::symmetric(1.0, 16.0 / 9.0),
+            DepthRange::DESKTOP,
+        );
+        let img = Arc::new(OverlayImage { width: 300, height: 40, rgba: vec![0; 300 * 40 * 4] });
+        let o = window_overlay(&cam, [1280, 720], img);
+        // Project its corners: 300 x 40 px, centred, its bottom 3 % of the height above the window's bottom.
+        let proj = |dx: f64, dy: f64| {
+            let p = o.pose.moved(o.pose.rot * DVec3::new(dx * o.size[0] as f64, dy * o.size[1] as f64, 0.0)).pos;
+            let l = cam.relative(p);
+            let c = cam.projection() * glam::Vec4::new(l.x as f32, l.y as f32, l.z as f32, 1.0);
+            let n = c / c.w;
+            ((n.x as f64 * 0.5 + 0.5) * 1280.0, (0.5 - n.y as f64 * 0.5) * 720.0)
+        };
+        let (x0, y1) = proj(-0.5, -0.5);
+        let (x1, y0) = proj(0.5, 0.5);
+        assert!((x1 - x0 - 300.0).abs() < 0.5 && (y1 - y0 - 40.0).abs() < 0.5, "{x0} {x1} {y0} {y1}");
+        assert!(((x0 + x1) / 2.0 - 640.0).abs() < 0.5);
+        assert!((720.0 - y1 - 0.03 * 720.0).abs() < 0.5, "bottom at {y1}");
+    }
+
+    #[test]
+    fn the_head_locked_panel_is_ahead_and_below_and_lazy_follow_waits() {
+        let img = Arc::new(OverlayImage { width: 320, height: 48, rgba: vec![0; 320 * 48 * 4] });
+        let head = WorldPose {
+            pos: Pos::ORIGIN.checked_add(pe_seams::Offset([0.0, 1.6, 0.0])).unwrap(),
+            rot: DQuat::IDENTITY,
+        };
+        let mut p = Panel::new(PanelSettings::default());
+        let o = p.place(&head, 1.0, img.clone(), t(0));
+        let d = offset_vec(o.pose.pos - head.pos);
+        assert!((d.length() - 1.0).abs() < 1e-9);
+        assert!((d.y / d.length() + 20f64.to_radians().sin()).abs() < 1e-9, "20 degrees down: {d:?}");
+        // 3 cm text at 32 px: 320 px wide is 0.3 m.
+        assert!((o.size[0] - 0.3).abs() < 1e-6 && (o.size[1] - 0.045).abs() < 1e-6);
+
+        // Lazy follow: a 15 degree turn leaves it; a 40 degree turn starts a glide that ends at the new place.
+        p.set_mode(PanelMode::LazyFollow);
+        let start = p.place(&head, 1.0, img.clone(), t(0)).pose;
+        let turned = |deg: f64| WorldPose { pos: head.pos, rot: DQuat::from_rotation_y(deg.to_radians()) };
+        assert_eq!(p.place(&turned(15.0), 1.0, img.clone(), t(100)).pose, start);
+        let mut ms = 100;
+        let mut last = start;
+        for _ in 0..125 {
+            ms += 16;
+            last = p.place(&turned(40.0), 1.0, img.clone(), t(ms)).pose;
+        }
+        let want = p.head_locked(&turned(40.0), 1.0);
+        assert!(offset_vec(last.pos - want.pos).length() < 0.02, "glided to the new place");
+    }
+}

@@ -9,7 +9,8 @@
 //!
 //! The left hand is blue and the right orange, both slightly emissive so they read in any lighting. The markers are
 //! sized in the rig frame, so they keep the player's real hand size at any rig scale. They carry
-//! [`ObjectId::NONE`], which names no object, so no highlight or label ever lands on them.
+//! [`ObjectId::NONE`], which names no object, so no highlight, label or `visible_list` entry ever lands on them.
+//! The caller puts them in `Scene::front`, so a notice never covers them (render.md 8.1).
 
 use glam::DVec3;
 use pe_seams::{Appearance, Hand, ObjectId, RigPose, RigTransform, Shape};

@@ -310,7 +310,8 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
   - **Markers** (`hands::markers`): when the frame view has no own-hand object to move (no simulation, as in pe-xr's
     smoke run, or before the session publishes the local member's hand bodies), each tracked hand is drawn as a
     4 × 6 × 12 cm block along its pose's Z with a 12 cm pointer out of the −Z face, blue for the left hand and
-    orange for the right, sized in the rig frame. They carry `ObjectId::NONE`, so no highlight or label lands on them.
+    orange for the right, sized in the rig frame. They carry `ObjectId::NONE`, so no highlight, label or
+    `visible_list` entry lands on them, and go in `Scene::front` (8.1).
   - **When a hold ends** (released, thrown, or undone because a race was lost), the object enters the display layer
     with its last drawn pose and velocity. Its offset is set from there and blends; a lost grab also plays its short
     cue (D7).
@@ -331,11 +332,93 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
   - own effects play at once; others' wait `D_effect`, a duration (default 0 s).
   - pe-render plays visual effects (particles) itself. It hands sound and haptic plays and stops, already
     de-duplicated, to their sinks: audio to pe-app, haptics to pe-xr.
-- **D7. Lost races and refusals are told.** A lost grab: the slide out of the grip plus its cue (D4). A refused edit
-  is shown by the UI layer from WorldApi's outcome (after M1; in M1, through the agent).
+- **D7. Lost races and refusals are told** (P3, P4, P5). A grab lost to a hand in view: the slide out of the grip
+  plus its cue (D4), and no words, since the winner is in view. A refusal of the local player's grabs, pushes or
+  hand inputs for a reason they can't see, and an entry of theirs voided as late, are told by a notice (section
+  8.1). A refused edit reaches the agent that made it, through WorldApi; in M1 the player makes no edits.
 - **D8.** Section 7.
 - **Controls that bite** (divergence.md 8): with blending switched off, `snaps_in_view` must rise; with the own hand
   blended, `own_error` must go non-zero. The tests catch both.
+
+### 8.1 Notices (D7: P3, P4, P5)
+
+A notice is one short line of plain text telling the local player that something they did did not happen. Nothing
+else uses notices in M1.
+
+**What is told** (coordinator rulings m3d3fe84209ae, m6b09cd4785b8, on @fable-reviewer's and @shader-reviewer's
+advice). Only the local member's own **Input-class** entries: grabs, pushes and hand inputs.
+- **Edits are not told in M1.** Every edit entry is signed with the member's own key, an agent's too (api.md 4.5),
+  and `StepRecord` doesn't say who produced it, so an agent's refused edit would read as the player's. The agent
+  gets its refusals through WorldApi. When the inspector exists, its edit toast (docs/ux inspector.md 3.5) is driven
+  by the submissions the inspector tracks itself.
+- **Refused** (P3): a `StepRecord` in a frame view's `changes` whose `author` is the local member, whose `class` is
+  `Input` and whose outcome is `Refused`. A re-stepped entry appears again and the newest verdict wins, so
+  `notices::Notices` keeps a pending record per refused entry until the view's `final_frame` reaches its frame: by
+  then every member agrees on the verdict (R10, ruled: told once final; the setting `tell_at: AtOnce` exists).
+  - The delay after the lost grab's slide and cue is the cut lag plus finality: about 0.3-0.6 s with today's cut lag
+    and two-chain finality [I, the coordinator's estimate; to be measured in the test-6 run].
+  - While finality stalls (quorum lost, play unconfirmed), the refusal waits. If its verdict reverses in a replay
+    (`Applied`), it is dropped and never told.
+- **A grab lost to a hand the player can see gets no words**: the hands' slide and cue tell it, and the winner is in
+  view (docs/ux api-surface.md 6.3). "In view" here: the refusal names a member (`Held { by }`) one of whose hands is
+  in the frame view, or the local member's other hand. A grab refused for a reason the player can't see is told:
+  held by a member with no hand in view (an agent's hold), a lock, the claim cap, out of reach, a cooldown. The
+  setting `lost_grabs` tells every lost grab.
+- **Voided** (P5): S3's `AgreeEvent::Voided` with the local member as `author`, handed in by pe-app, for an entry the
+  views stepped as `Input` (the local member's entries are stepped here first, so its class is known). A void is
+  decided by a final cut, so it is told at once.
+  - A void drops the entry's pending refusal. If that refusal was already told (the view showing `final_frame` past
+    it arrived before the void), the void replaces its line, so one entry is never told twice.
+
+**The words** (English in M1; names from pe-app's roster, `MemberKey -> String`; an unknown member reads "another
+player", the local member "you"):
+
+| Cause | Text |
+|---|---|
+| `Held { by }`, no hand of `by` in view | "{by} is holding it." |
+| `Deleted { by, .. }` | "Your action was refused: {by's author} deleted it." |
+| `Protected { owner }` | "Refused: {owner} protects it." |
+| `NoPermission` | "Refused: you don't have permission for that." |
+| `Cooldown { until }` | "You can grab it again in {n} s." |
+| `TooFast { .. }` | "Your push was refused: too fast." |
+| `OutOfReach` | "Out of reach." |
+| `TooManyClaims { limit }` | "You can hold {limit} things at once." |
+| another reason pe-render knows | "Your action was refused: {a plain phrase}." (e.g. `Unknown`: "it no longer exists"; `NotYourHand`: "that isn't your hand") |
+| a reason added later | "Your action was refused." |
+| `Voided { reason: Late }` | "An action of yours arrived too late and was undone." |
+| `Voided { reason: BackStamped }` | "An action of yours was undone: it arrived out of order." |
+
+- `Deleted`'s `by` is an `EntryRef` (a hash, with no author in it). Its author is looked up among the entries
+  stepped in the last `W_fg` (2 s) of views; an older one reads "someone".
+- `Cooldown`'s n is counted from the frame of the view that tells it, not the frame the grab was stepped at, and
+  rounded up.
+
+**How long.** A notice shows for 5 s and fades out over its last 0.5 s. Up to 3 lines show, newest at the bottom;
+a fourth pushes the oldest out. The same text again while it shows refreshes it and counts up ("(×3)"), so a held
+grab button against a cooldown is one line, not a scroll.
+
+**Where.**
+- **The window:** a strip centred at the bottom, 3 % of the height above the edge, text 1/30 of the window's height
+  (at least 14 px), each line white on its own 60 % black box (`notices::window_overlay`).
+- **The headset** (R11, ruled: head-locked for M1; `notices::Panel`):
+  - **Head-locked** (the default): 1 m ahead (× the rig's scale) and 20° below the head's forward direction, text
+    3 cm tall (about 1.7°), facing the head.
+  - **Lazy follow** (a mode switchable in the headset, for the user to compare at the headset test): the panel stays
+    fixed in the world until the head turns more than 25° from it, then glides to the head-locked place (time
+    constant 0.3 s) and stops there.
+  - Drawn in both eyes at its place, so it has true stereo depth, after the scene's items and without the depth
+    test, so nothing in the world hides it.
+- **Never over the hands:** the own hands and what they hold (`OWN_HAND`, `HELD_LOCAL`, and the markers) go in
+  `Scene::front`, drawn after the strip with the depth test. A notice never covers them; an ordinary object nearer
+  than the strip is still covered by it.
+- **Captures** never draw notices: an agent gets refusals from WorldApi.
+
+**How.** `notices::Notices` holds the lines (pure CPU, tested without a GPU): `observe(&FrameView, now)`,
+`agreement(&AgreeEvent, now)`, `lines(now)`. `notices::strip` draws them on the CPU with the labels' font (section
+11) into one image, which the caller rebuilds only when the lines or their fades change. The scene renderer draws it
+as `Scene::overlay`, a textured quad posed in the world: in front of the camera for the window, at the panel's place
+in VR. An OpenXR quad composition layer in view space (drawn by the compositor, sharper, with no second resampling)
+is the alternative for VR; that is @xr-eng's call, after the headset test.
 
 ## 9. The desktop hand
 
@@ -536,6 +619,8 @@ For @coordinator-opus unless marked; my proposal first.
 | R7 | The desktop hand's controls | As section 9; revisited in the UI lab |
 | R8 (with @xr-eng) | Gravity in X8 (a)'s extrapolation | Measured [V, CPU test]: a falling ball (60 Hz simulation, 90 Hz display, 50 ms lead) misses by up to 1.14 cm a tick and is drawn up to 4.0 cm from its target, never with a cue. @shader-reviewer's suggestion: extrapolate unsupported dynamic bodies with the world's gravity, which needs the gravity vector or a flag in S5. Judged at the headset test |
 | R9 | Known limits of the M1 scene | Metals read dark (no environment lighting); a mesh blob draws as its bounding stand-in; a box's outline may crack at corners (section 6) |
+| R10 | Notices (8.1): told when final, or at once | **Ruled** (m3d3fe84209ae): when final. Never a notice for a grab won after the replay; costs the cut lag plus finality (about 0.3-0.6 s [I], measured in the test-6 run) |
+| R11 | Notices (8.1) in the headset | **Ruled** (m3d3fe84209ae): head-locked for M1, 1 m ahead, 20° down; the lazy-follow panel is a mode switchable in the headset, for the user to compare at the headset test |
 
 ## 16. Size and order
 
