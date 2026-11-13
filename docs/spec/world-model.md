@@ -956,13 +956,19 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     numbering is frozen: U8 0, U16 1, U32 2, U64 3, I8 4, I16 5, I32 6, I64 7, F32 8, F64 9, Bool 10, ObjectRef 11,
     BlobRef 12, SimBlobRef 13, Pos 14, MemberKey 15, EntryRef 16, Hash 17; a new kind takes the next number;
   - lines: no entries in M1;
-  - modules (slice D): key the script asset id (32); value `version entry (32) ‖ version op u32 ‖ source (hash 32 ‖
-    len u64) ‖ toolchain (32) ‖ sdk (32) ‖ author_module (32) ‖ component count u32 ‖ the version's component ids,
-    u128 each, strictly ascending (the tag among them) ‖ activate_at u64 ‖ faulted (a byte 0, or 1 ‖ frame u64 ‖
-    kind u8)`. V is `source.hash`, stored once (@chunks-reviewer's L1). Decoding is strict: a repeated or
-    out-of-order id, a faulted byte other than 0 or 1, or a kind that is not one of pe-logic's `Fault::code()`
-    values 1 to 13 (logic.md 3.6) does not decode; `HostStack` has no code, since it is one machine's own fault and
-    never world state;
+  - modules (slice D; pending commits since logic.md 6.2a): key the script asset id (32); value `flags u8` (bit 0: a
+    current row, bit 1: a pending commit; at least one), then `u32 len ‖ current row` if present, then the pending
+    commit if present. The current row is `version entry (32) ‖ version op u32 ‖ source (hash 32 ‖ len u64) ‖
+    toolchain (32) ‖ sdk (32) ‖ author_module (32) ‖ component count u32 ‖ the version's component ids, u128 each,
+    strictly ascending (the tag among them) ‖ activate_at u64 ‖ faulted (a byte 0, or 1 ‖ frame u64 ‖ kind u8)`. V is
+    `source.hash`, stored once (@chunks-reviewer's L1). Decoding is strict: a repeated or out-of-order id, a faulted
+    byte other than 0 or 1, or a kind that is not one of pe-logic's `Fault::code()` values 1 to 13 (logic.md 3.6) does
+    not decode; `HostStack` has no code, since it is one machine's own fault and never world state;. The pending
+    commit is `version entry (32) ‖ op u32 ‖ author (32) ‖ source (hash 32 ‖ len u64) ‖ toolchain (32) ‖ sdk (32) ‖
+    author_module (32) ‖ count u32 ‖ component ids (u128 LE, ascending) ‖ c u64 ‖ D u64 ‖ count u32 ‖ voters (32 each,
+    ascending) ‖ count u32 ‖ attestations (voter 32 ‖ stamp u64, ascending, voters only) ‖ void u8 (0 none, 1
+    Unattested, 2 RekeyBlockedAtActivation, 3 RekeyTooLarge) ‖ its frame u64 if not 0`. A world with no scripts has no
+    entries, so its root is unchanged.
   - governance: key the member key (32); value the permission bits `u32`;
   - claims: key the object id; value `hand u128 ‖ member (32) ‖ since u64 ‖ until u64`;
   - cooldowns: key `member (32) ‖ object id`; value `until u64`;
@@ -1392,12 +1398,39 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
     reference). The check is exact and costs no history: V's tag id is registered, under another asset.
   - **V equal to the base's V** (a toolchain or SDK change only) re-keys nothing and moves no row version: the op
     only rewrites the modules row (m83562b197235, L4).
-  - The op writes the asset's modules row (6.6): version = this entry and op, the hashes, the component ids,
-    `activate_at`, and no faulted mark.
+  - **The op writes a pending commit, not the row** (logic.md 6.2a; @coordinator-opus mce3f4443f229,
+    m8b7038c226ea): version = this entry and op, the author, the source, the hashes, the component ids, `c` = this
+    frame, the deadline `D = c + attest_window(source.len, hz)`, the voters at `c` (the governance members now, in
+    key order; `q` is the quorum over their count), and the author's own attestation stamped `c` if the author is a
+    voter. Nothing re-keys and nothing runs yet. A second commit to the asset while one is pending is refused
+    `Stale`, with the pending commit's entry as `winner`. The re-key's limits (`MAX_REKEY_ROWS`, the loss rule) are
+    judged now, so the author hears at once, and again at activation.
+  - **`AttestBuild { script, version, module }`** is a voter's statement that its build of the pending V passed
+    every check of logic.md 6.2 step 3 and gave `module`. It is the only op of its transaction, with no
+    preconditions, and needs no `EDIT`, only a place among the pending commit's voters. It is refused `Stale` if no
+    commit of that V is pending (none, another V, activated or voided), and `Invalid` for a module other than the
+    registered `author_module`, a non-voter's, or a voter's second. A refused attestation changes nothing; its
+    signed entry stays in the log as the evidence. A counted one records the voter and its stamp.
+  - **`end_frame(f)` activates, then voids** (in asset order). A pending commit with at least `q` counted
+    attestations, so `F` is the `q`-th smallest counted stamp, activates at the end of `F`: the re-key below, its
+    limits judged again for the author, and then the asset's row (version = the commit, the hashes, the component
+    ids, `activate_at = F + 1`, no faulted mark), so the new version runs from `F + 1`. A re-key now over
+    `MAX_REKEY_ROWS`, or now losing data on an object its committer may not edit, voids the commit instead, as
+    `RekeyTooLarge` or `RekeyBlockedAtActivation`. Otherwise a commit at its deadline `f == D` is voided as
+    `Unattested`. Activation is tested first, so a quorum completed at `D` activates. A voided commit keeps its
+    record (the frame and why) until the asset's next commit replaces it, and the old version stays bound.
+    `end_frame` returns what it did (`FrameEnd`: each activation with its re-key report, each void with its kind,
+    each named by asset and commit), which pe-replica publishes as S5's `FrameView.activations`. **A known limit:**
+    any member holding an affected object can void another's commit anywhere in `c..F`, where today's rule allowed
+    it only at `c`.
+  - **The deadline** is `attest_window(len, hz) = ceil(2 · T_module · hz)` frames, `T_module = W_fg + len / R_thin +
+    T_build` in integer milliseconds (2 s, 1,000 B/s, 20 s; divergence.md 4.2, @iter-bench md6045bca63d9): the
+    lamp's 1,213 bytes give 2,786 frames at 60 Hz, the 256 KiB cap 34,098.
 - **Re-keying** (ruled, me5689a5c645c item 1; m028c4bf1d412). A commit with a base whose V differs moves every row
   of the old version's components to the new version's same-named component, object by object, **the tag rows
-  included** (or every attached object would detach), in the commit's own transaction, so no frame sees half-moved
-  rows. Each moved row takes the commit as its row version, so an edit that read the old row is stale.
+  included** (or every attached object would detach), at the commit's activation (`end_frame(F)`, logic.md 6.2a),
+  all at once, so no frame sees half-moved rows. Each moved row takes the commit as its row version, so an edit that
+  read the old row is stale.
   - **Field mapping**, deterministic and identical on every peer: a field with the same name, kind, `count` and
     unit copies its value; a new field, or a same-name field whose kind, count or unit changed, starts at zero
     (a unit is meaning, never copied silently: m83562b197235, L3); a dropped field is gone; a component whose name
