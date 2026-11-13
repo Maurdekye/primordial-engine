@@ -168,8 +168,13 @@ join from a cut yet, so the second machine becomes a member at genesis, and step
   10 s ahead). It then builds the world from the record and refuses, by name, a frame-0 root that differs from A's.
 - **Anyone else's join request is refused** ("not admitted"). When pe-agree's join from a cut lands, only B's path
   changes: it imports the state at a final cut (step 5) instead of building genesis.
-- **Not yet checked:** that the record's consensus settings are the ones the members run (pe-agree's
-  `NodeConfig::consensus_hash`, @world-chunks). B checks them once that lands.
+- **The consensus settings and the voters** (the gate's item 1, main bf521179): the record's `agree` is this build's
+  `NodeConfig::consensus_hash` (@world-chunks), the hash of the settings every member must share. B's check
+  compares it before building anything; `Genesis::start` compares the configuration it runs on both machines, and
+  net.rs again before `Node::new`, so a member with other settings is refused by name (`GenesisError::Agree`)
+  instead of refusing the other's entries, votes or cuts later. `start` also refuses a world whose governance members
+  aren't the record's, which are pe-agree's voters (`GenesisError::Governance`), since logic.md 6.2a's voter
+  snapshot relies on every member voting in M1 (@design-reviewer m1a02a35a8a8e).
 
 **Shutdown**, in reverse:
 1. Stop MCP.
