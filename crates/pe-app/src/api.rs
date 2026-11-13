@@ -113,7 +113,9 @@ impl ApiShared {
             draft: None,
             edits: EditIndex::default(),
             here: BTreeSet::new(),
-            caught_up: true,
+            // Until the first advance says otherwise, so pe-api refuses live changes with `not_ready` meanwhile
+            // (@api-eng's Low on slice 1).
+            caught_up: false,
         };
         ApiShared { facts, keep_frames, inner: Mutex::new(inner) }
     }
@@ -172,8 +174,9 @@ impl ApiShared {
         self.lock().edits.by_entry.contains_key(entry)
     }
 
-    /// An edit entry a view's change record named, with its payload's length.
-    pub fn index_edit(&self, entry: EntryRef, tx: Transaction, bytes: usize) {
+    /// An edit entry's transaction, with its payload's length: this machine's own when step 2 submits it, anyone's
+    /// when a view's change record names it.
+    pub fn index_edit(&self, entry: EntryRef, tx: Arc<Transaction>, bytes: usize) {
         self.lock().edits.insert(entry, tx, bytes);
     }
 }
@@ -181,13 +184,13 @@ impl ApiShared {
 /// The transactions of the edit entries the views named, oldest dropped first past either cap.
 #[derive(Default)]
 struct EditIndex {
-    by_entry: HashMap<EntryRef, Transaction>,
+    by_entry: HashMap<EntryRef, Arc<Transaction>>,
     order: VecDeque<(EntryRef, usize)>,
     bytes: usize,
 }
 
 impl EditIndex {
-    fn insert(&mut self, entry: EntryRef, tx: Transaction, bytes: usize) {
+    fn insert(&mut self, entry: EntryRef, tx: Arc<Transaction>, bytes: usize) {
         if self.by_entry.insert(entry, tx).is_some() {
             return;
         }
@@ -242,7 +245,7 @@ impl WorldSource for ApiWorld {
         }
     }
 
-    fn edit(&self, entry: EntryRef) -> Option<Transaction> {
+    fn edit(&self, entry: EntryRef) -> Option<Arc<Transaction>> {
         self.0.lock().edits.by_entry.get(&entry).cloned()
     }
 
@@ -275,23 +278,38 @@ impl WorldSource for ApiWorld {
 pub struct McpThread {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<JoinHandle<io::Result<Option<ExitStatus>>>>,
+    #[cfg(test)]
+    handle: tokio::runtime::Handle,
 }
+
+/// How long stopping waits for the runtime's blocking calls, such as an agent's `watch` long poll (up to 30 s): they
+/// hold only the API and finish by themselves, and pe-app is exiting (@api-eng's Medium on slice 2).
+const MCP_SHUTDOWN: Duration = Duration::from_millis(100);
 
 /// Start the MCP thread over `api` with pe-mcp's `opts` (its transports, the agent's command line and grant).
 pub fn spawn_mcp(api: Arc<dyn WorldApi>, opts: HostOpts) -> io::Result<McpThread> {
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let rt =
         tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("pe-mcp").enable_all().build()?;
+    #[cfg(test)]
+    let handle = rt.handle().clone();
     let thread = thread::Builder::new().name("mcp".into()).spawn(move || {
-        rt.block_on(async move {
+        let served = rt.block_on(async move {
             let mut hosted = host::start(api, &opts).await?;
             tokio::select! {
                 exited = hosted.wait() => exited,
                 _ = stopped => Ok(None),
             }
-        })
+        });
+        rt.shutdown_timeout(MCP_SHUTDOWN);
+        served
     })?;
-    Ok(McpThread { stop: Some(stop), thread: Some(thread) })
+    Ok(McpThread {
+        stop: Some(stop),
+        thread: Some(thread),
+        #[cfg(test)]
+        handle,
+    })
 }
 
 impl McpThread {
@@ -364,6 +382,7 @@ mod tests {
             blobs: vec![],
         };
         let e = |n: u8| EntryRef(pe_seams::Hash([n; 32]));
+        let tx = Arc::new(tx);
         ix.insert(e(1), tx.clone(), EDIT_BYTES_MAX / 2);
         ix.insert(e(2), tx.clone(), EDIT_BYTES_MAX / 2);
         ix.insert(e(2), tx.clone(), EDIT_BYTES_MAX / 2);
@@ -396,6 +415,20 @@ mod tests {
         assert_eq!(mcp.stop().expect("served, then stopped"), None, "no agent was launched");
         let none = spawn_mcp(ports.api(), HostOpts::new(grant())).expect("the thread");
         assert_eq!(none.stop().map_err(|e| e.kind()), Err(io::ErrorKind::InvalidInput), "no transport asked for");
+    }
+
+    /// Stopping doesn't wait out a blocking API call in flight, such as an agent's 30 s `watch` (@api-eng's Medium on
+    /// slice 2).
+    #[test]
+    fn stopping_the_mcp_thread_does_not_wait_for_a_blocking_call() {
+        let ports = Ports::new(snap(0), facts(), || {});
+        let mut opts = HostOpts::new(grant());
+        opts.pipe = true;
+        let mcp = spawn_mcp(ports.api(), opts).expect("the thread");
+        mcp.handle.spawn_blocking(|| thread::sleep(Duration::from_secs(30)));
+        let started = std::time::Instant::now();
+        assert_eq!(mcp.stop().expect("stopped"), None);
+        assert!(started.elapsed() < Duration::from_secs(5), "stopping took {:?}", started.elapsed());
     }
 
     #[test]

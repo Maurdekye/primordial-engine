@@ -344,11 +344,16 @@ impl Sim {
         {
             api.edit_frame = Some(p);
             for (ticket, sub) in api.ports.queue.drain(1) {
-                let entry = l.chain.entry(self.replica.domain(), p, Class::Edit, sub.tx.encode());
+                let payload = sub.tx.encode();
+                let bytes = payload.len();
+                let entry = l.chain.entry(self.replica.domain(), p, Class::Edit, payload);
                 let receipt = match self.agree.submit(entry) {
                     Ok(signed) => {
                         l.chain.took(&signed);
                         self.stats.edits += 1;
+                        // Indexed now, not only when a view's record names it, so `edit()` answers for this machine's
+                        // own change at once (@api-eng's Low on slice 1).
+                        api.ports.shared.index_edit(signed.id(), Arc::new(sub.tx), bytes);
                         let (chain, seq) = l.chain.head();
                         Receipt::Submitted { change: TxId::from(signed.id()), frame: p.0, chain, seq }
                     }
@@ -456,7 +461,7 @@ impl Sim {
             if let Some(e) = signed
                 && let Some(tx) = pe_world::edit::Transaction::decode(&e.entry.payload)
             {
-                shared.index_edit(r.entry, tx, e.entry.payload.len());
+                shared.index_edit(r.entry, Arc::new(tx), e.entry.payload.len());
             }
         }
     }
@@ -701,7 +706,7 @@ mod tests {
         assert_eq!(fate.frame, Some(2));
         assert!(matches!(fate.outcome, Some(pe_seams::Outcome::Applied { .. })), "{fate:?}");
         assert_eq!(world.latest().all().len(), objects + 1, "the new object is in the newest snapshot");
-        assert_eq!(world.edit(change.into()), Some(tx), "and its transaction in the index");
+        assert_eq!(world.edit(change.into()).as_deref(), Some(&tx), "and its transaction in the index");
         assert_eq!((s.stats().edits, s.stats().edits_refused), (1, 0));
     }
 
