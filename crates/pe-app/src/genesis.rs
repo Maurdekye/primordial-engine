@@ -28,8 +28,11 @@
 //! - **The frame clock** must run at the record's rate ([`GenesisError::ClockRate`]). The clock speaks host time, so
 //!   the epoch can't be compared through it: net.rs makes the clock from the record's epoch and refuses an epoch in
 //!   the past or too far ahead (@shader-lang, @coordinator-opus m9571fcf519b9).
-//! - **Not yet:** that `agree` is the hash of the configuration the members run. It waits for @world-chunks's
-//!   `NodeConfig::consensus_hash` on main (TODO in `start`).
+//! - **pe-agree's settings are checked on both machines** (@coordinator-opus m1be30a8c61b1, the first two-machine
+//!   run's gate): `agree` is this build's [`consensus_hash`], the `NodeConfig::consensus_hash` of the configuration
+//!   [`Genesis::start`] runs. B's [`Genesis::check`] refuses a record for other settings before building anything,
+//!   and each machine's `start` compares the configuration it runs with the record's, so a member whose settings
+//!   differ is refused by name ([`GenesisError::Agree`]) instead of refusing the other's entries, votes or cuts later.
 
 use std::fmt;
 use std::sync::Arc;
@@ -94,7 +97,7 @@ pub struct Genesis {
     pub build: Vec<u8>,
     /// Exactly two, sorted by key: one opener and one joiner.
     pub members: Vec<(MemberKey, Role)>,
-    /// pe-agree's `NodeConfig::consensus_hash` of the configuration the members run.
+    /// pe-agree's `NodeConfig::consensus_hash` of the configuration the members run: [`consensus_hash`].
     pub agree: Hash,
     pub rate: SimRate,
     pub cut_interval_ms: u32,
@@ -117,7 +120,6 @@ pub struct Params {
     pub build: Vec<u8>,
     pub opener: MemberKey,
     pub joiner: MemberKey,
-    pub agree: Hash,
     pub rate: SimRate,
     pub cut_interval: Duration,
     pub gravity: [f32; 3],
@@ -142,6 +144,12 @@ pub enum GenesisError {
     },
     /// The members are not exactly this machine (the joiner) and the invite's key (the opener): what was wrong.
     Members(&'static str),
+    /// The world's governance members are not the record's, the members pe-agree's configuration names: 6.2a's
+    /// voter snapshot takes the voters from the world, so in M1, where every member votes, the two must be one set.
+    Governance {
+        world: Vec<MemberKey>,
+        agree: Vec<MemberKey>,
+    },
     Preset {
         name: String,
         version: u32,
@@ -183,6 +191,7 @@ impl fmt::Display for GenesisError {
             GenesisError::Format { record, mine } => write!(f, "record format {record}, this build reads {mine}"),
             GenesisError::Build { .. } => write!(f, "another engine build than this one"),
             GenesisError::Members(what) => write!(f, "members: {what}"),
+            GenesisError::Governance { .. } => write!(f, "the world's governance members are not agreement's"),
             GenesisError::Preset { name, version } => write!(f, "unknown preset {name:?} version {version}"),
             GenesisError::Agree { .. } => write!(f, "other pe-agree settings than this machine's"),
             GenesisError::Root { built, record } => {
@@ -228,7 +237,7 @@ impl Genesis {
             nonce: params.nonce,
             build: params.build.clone(),
             members,
-            agree: params.agree,
+            agree: consensus_hash(),
             rate: params.rate,
             cut_interval_ms,
             gravity: params.gravity,
@@ -251,10 +260,10 @@ impl Genesis {
         Ok((genesis, replica, node))
     }
 
-    /// B's side, before it builds anything: a record of this format, from this engine build (`build`), with pe-agree's
-    /// settings this machine runs (`agree`), naming exactly this machine (`me`) as the joiner and the invite's key
-    /// (`opener`) as the opener.
-    pub fn check(&self, me: MemberKey, opener: MemberKey, build: &[u8], agree: Hash) -> Result<(), GenesisError> {
+    /// B's side, before it builds anything: a record of this format, from this engine build (`build`), with the
+    /// pe-agree settings this machine runs ([`consensus_hash`]), naming exactly this machine (`me`) as the joiner and
+    /// the invite's key (`opener`) as the opener.
+    pub fn check(&self, me: MemberKey, opener: MemberKey, build: &[u8]) -> Result<(), GenesisError> {
         if self.format != FORMAT {
             return Err(GenesisError::Format { record: self.format, mine: FORMAT });
         }
@@ -277,8 +286,9 @@ impl Genesis {
             [_, _] => return Err(GenesisError::Members("not sorted by key, or one key twice")),
             _ => return Err(GenesisError::Members("not exactly two")),
         }
-        if self.agree != agree {
-            return Err(GenesisError::Agree { record: self.agree, mine: agree });
+        let mine = consensus_hash();
+        if self.agree != mine {
+            return Err(GenesisError::Agree { record: self.agree, mine });
         }
         Ok(())
     }
@@ -464,8 +474,10 @@ impl Genesis {
         preset::m1_session(&session, BlobStore::default()).map_err(|e| GenesisError::World(format!("{e:?}")))
     }
 
-    /// The replica over `world` with `me` local, its root at frame 0, and pe-agree's configuration: pe-agree's
-    /// defaults, which `agree` hashes. Refuses a clock at another rate than the record's.
+    /// The replica over `world` with `me` local, its root at frame 0, and pe-agree's configuration ([`node_config`]).
+    /// Refuses a clock at another rate than the record's, and a configuration whose consensus hash isn't the
+    /// record's `agree`: on A that can't happen, since A's record takes `agree` from the same function; on B it
+    /// holds even if [`Genesis::check`] was skipped.
     fn start(
         &self,
         world: World,
@@ -475,18 +487,45 @@ impl Genesis {
         if clock.rate_hz() != self.rate.hz() {
             return Err(GenesisError::ClockRate { clock: clock.rate_hz(), record: self.rate.hz() });
         }
+        let keys: Vec<MemberKey> = self.members.iter().map(|m| m.0).collect();
+        // The world's governance members are agreement's, the voters: 6.2a's voter snapshot takes them from the world,
+        // and in M1 every member votes, so it is checked, never assumed (@design-reviewer m1a02a35a8a8e,
+        // @coordinator-opus m800c0992d30d). Both lists are in key order.
+        let snapshot = world.snapshot(Frame(0));
+        let governance: Vec<MemberKey> = snapshot.members().map(|(k, _)| k).collect();
+        if governance != keys {
+            return Err(GenesisError::Governance { world: governance, agree: keys });
+        }
+        let node = node_config(self.line(), keys, self.genesis_cut());
+        let mine = node.consensus_hash();
+        if mine != self.agree {
+            return Err(GenesisError::Agree { record: self.agree, mine });
+        }
         let mut config = ReplicaConfig::new(self.rate, Duration::from_millis(self.cut_interval_ms.into()), clock);
         config.local = Some(me);
         let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config)
             .map_err(|e| GenesisError::World(format!("{e:?}")))?;
         let root = replica.live_root(Frame(0)).ok_or_else(|| GenesisError::World("no root at frame 0".into()))?;
-        let keys = self.members.iter().map(|m| m.0).collect();
-        // TODO(@world-chunks's agree/consensus-hash, approved, not on main yet; @coordinator-opus m9571fcf519b9):
-        // refuse with `GenesisError::Agree` unless this configuration's `NodeConfig::consensus_hash()` is
-        // `self.agree`, on both machines, and have `ball_pit` take `agree` from it instead of from `Params`.
-        let node = NodeConfig::new(self.line(), keys, self.genesis_cut());
         Ok((Box::new(replica), node, root))
     }
+}
+
+/// The `agree` hash this build writes into a record and expects in one: pe-agree's `NodeConfig::consensus_hash` of
+/// the configuration [`Genesis::start`] runs. That hash leaves out the line, the members and the genesis cut (the
+/// record carries them, and the line derives from the record, `agree` included), so it is taken here from a
+/// configuration with placeholders for them, before a line exists; `start` compares it with the real one.
+pub fn consensus_hash() -> Hash {
+    let line = LineId(Hash([0; 32]));
+    let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+    node_config(line, Vec::new(), genesis).consensus_hash()
+}
+
+/// pe-agree's configuration of a session: every setting the members must share is this build's, pe-agree's
+/// defaults. net.rs may change only the local ones ([`Genesis::ball_pit`]), which `consensus_hash` leaves out, and
+/// today changes none. One function for [`consensus_hash`] and [`Genesis::start`], so the hash a record carries and
+/// the configuration a machine runs can't drift apart.
+fn node_config(line: LineId, members: Vec<MemberKey>, genesis: Cut) -> NodeConfig {
+    NodeConfig::new(line, members, genesis)
 }
 
 /// A fresh session nonce from the operating system's randomness (getrandom, the source pe-net-crypto uses).
@@ -538,7 +577,6 @@ mod tests {
     const A: MemberKey = MemberKey([0xa1; 32]);
     const B: MemberKey = MemberKey([0x0b; 32]);
     const BUILD: &[u8] = b"pe test build";
-    const AGREE: Hash = Hash([7; 32]);
 
     fn clock() -> Arc<dyn FrameClock> {
         Arc::new(LocalClock::new(HostTime(0), SimRate::DEFAULT))
@@ -550,7 +588,6 @@ mod tests {
             build: BUILD.to_vec(),
             opener: A,
             joiner: B,
-            agree: AGREE,
             rate: SimRate::DEFAULT,
             cut_interval: Duration::from_millis(133),
             gravity: pe_world::GRAVITY,
@@ -570,7 +607,7 @@ mod tests {
         let bytes = g.encode();
         let got = Genesis::decode(&bytes).expect("a record");
         assert_eq!(got, g);
-        got.check(B, A, BUILD, AGREE).expect("B's check");
+        got.check(B, A, BUILD).expect("B's check");
         let (mut b, node_b) = got.build(B, clock()).expect("B's genesis");
         let mut source = crate::standin::SoloAgreement::new(g.line());
         let ra = a.root_at_cut(&g.genesis_cut(), &mut source).expect("A's root at frame 0");
@@ -624,7 +661,7 @@ mod tests {
             let mut altered = g.clone();
             change(&mut altered);
             let altered = Genesis::decode(&altered.encode()).expect("still a record");
-            altered.check(B, A, BUILD, AGREE).and_then(|()| altered.build(B, clock()).map(|_| ()))
+            altered.check(B, A, BUILD).and_then(|()| altered.build(B, clock()).map(|_| ()))
         };
         assert!(matches!(refused(&|r| r.build = b"another build".to_vec()), Err(GenesisError::Build { .. })));
         assert!(matches!(refused(&|r| r.preset.version += 1), Err(GenesisError::Preset { .. })));
@@ -656,6 +693,44 @@ mod tests {
         let mut format = g.encode();
         format[0] ^= 1;
         assert!(matches!(Genesis::decode(&format), Err(GenesisError::Format { .. })));
+    }
+
+    /// The record names the pe-agree settings both machines run: A's record carries the consensus hash of the
+    /// configuration A starts, and B starts one with the same hash (gate item 1, @coordinator-opus m1be30a8c61b1).
+    #[test]
+    fn the_record_names_the_consensus_settings_both_machines_run() {
+        let (g, _, node_a) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        assert_eq!(g.agree, node_a.consensus_hash(), "A's record names the settings A runs");
+        assert_eq!(g.agree, consensus_hash(), "this build's hash");
+        let g = Genesis::decode(&g.encode()).expect("a record");
+        g.check(B, A, BUILD).expect("B's check");
+        let (_, node_b) = g.build(B, clock()).expect("B's world");
+        assert_eq!(node_b.consensus_hash(), g.agree, "and the settings B runs");
+    }
+
+    /// Each machine's start compares the configuration it runs with the record's, `check` or not: a record for other
+    /// settings, its world right for its own line, is refused there, naming both hashes.
+    #[test]
+    fn a_record_for_other_consensus_settings_is_refused_at_start() {
+        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let mut other = g.clone();
+        other.agree = Hash([8; 32]);
+        let world = other.world().expect("its world");
+        let refused = other.start(world, B, clock()).map(|_| ()).expect_err("other settings");
+        assert_eq!(refused, GenesisError::Agree { record: Hash([8; 32]), mine: consensus_hash() });
+    }
+
+    /// The world's governance members are agreement's, checked at start (@design-reviewer m1a02a35a8a8e): a record
+    /// whose members aren't those of the world it is started with is refused, naming both lists.
+    #[test]
+    fn a_world_whose_governance_members_are_not_agreement_s_is_refused() {
+        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let world = g.world().expect("its world");
+        let c = MemberKey([0xcc; 32]);
+        let mut other = g.clone();
+        other.members = vec![(B, Role::Joiner), (c, Role::Opener)];
+        let refused = other.start(world, B, clock()).map(|_| ()).expect_err("other members");
+        assert_eq!(refused, GenesisError::Governance { world: vec![B, A], agree: vec![B, c] });
     }
 
     /// A value past the record's bounds is refused, never cut to fit (@chunks-reviewer's L2).

@@ -79,15 +79,6 @@ pub fn check_epoch(frame_0_at: HostTime, now: HostTime) -> Result<(), NetError> 
     Ok(())
 }
 
-/// pe-agree's consensus settings, as the genesis record carries them and B compares them (@world-chunks's
-/// `NodeConfig::consensus_hash`, which covers the settings only).
-// TODO(pe-agree): `pe_agree::NodeConfig::consensus_hash()` once agree/consensus-hash lands (060bc238, approved). Until
-// then both sides run pe-agree's compiled defaults, which the hello's build check already makes equal, and this
-// stand-in hash names that.
-pub fn agree_hash() -> pe_seams::Hash {
-    pe_seams::Hash::of("pe.app.agree.defaults.standin", BUILD)
-}
-
 /// The line both hellos carry before genesis (module docs): M1's preset line, never a session's own.
 pub fn pre_genesis_line() -> [u8; 32] {
     pe_world::preset::m1_line().0.0
@@ -185,6 +176,8 @@ struct Built {
     replica: Box<dyn Replica>,
     cfg: pe_agree::NodeConfig,
     frames: Arc<dyn FrameClock>,
+    /// The record's `agree`, which `into_session` compares with `cfg` again.
+    agree: pe_seams::Hash,
 }
 
 fn parse_seed(s: &str) -> Option<[u8; 32]> {
@@ -405,7 +398,7 @@ impl Endpoint {
         }
         let b = built.expect("up only after admitting");
         self.welcome = Some(b.welcome);
-        self.into_session(b.members, b.replica, b.cfg, b.frames)
+        self.into_session(b.members, b.replica, b.cfg, b.frames, b.agree)
     }
 
     /// A, on B's first join request (@engine-architect's L1): frame 0 is `epoch_lead` from now, so the lead covers
@@ -420,7 +413,6 @@ impl Endpoint {
             build: BUILD.to_vec(),
             opener: self.me,
             joiner: them,
-            agree: agree_hash(),
             rate: p.rate,
             cut_interval: p.cut_interval,
             gravity: pe_world::GRAVITY,
@@ -450,7 +442,7 @@ impl Endpoint {
             members: vec![(self.me, self.addrs.clone())],
             agree: genesis.encode(),
         };
-        Ok(Built { welcome, members, replica, cfg, frames })
+        Ok(Built { welcome, members, replica, cfg, frames, agree: genesis.agree })
     }
 
     /// B, after dialling `invite`: wait up to `timeout` for the welcome, check it against the invite, this build and
@@ -514,7 +506,7 @@ impl Endpoint {
         let members: Vec<MemberKey> = genesis.members.iter().map(|m| m.0).collect();
         self.command(Command::SetMember(true))?;
         self.command(Command::SetClockMembers(others(&members, self.me)))?;
-        self.into_session(members, replica, cfg, frames)
+        self.into_session(members, replica, cfg, frames, genesis.agree)
     }
 
     fn into_session(
@@ -523,7 +515,15 @@ impl Endpoint {
         replica: Box<dyn Replica>,
         cfg: pe_agree::NodeConfig,
         frames: Arc<dyn FrameClock>,
+        agree: pe_seams::Hash,
     ) -> Result<Session, NetError> {
+        // The configuration pe-agree runs must still be the one whose hash the record names (genesis's `start`
+        // compared them): a must-match setting changed on the way here would refuse the other member's entries, votes
+        // or cuts later (@design-reviewer's Low on m1/consensus-check).
+        let mine = cfg.consensus_hash();
+        if mine != agree {
+            return self.fail(NetError::Genesis(GenesisError::Agree { record: agree, mine }));
+        }
         let control = self.handle.control()?.ok_or_else(|| NetError::Core("the control end was taken".into()))?;
         let node = Node::new(cfg, Box::new(Identity::from_seed(&self.seed)), Box::new(StrictVerifier), (self.host)());
         let welcome = self.welcome.take().ok_or_else(|| NetError::Core("no welcome".into()))?;
@@ -558,7 +558,7 @@ pub fn check_welcome(w: &Welcome, me: MemberKey, opener: MemberKey, rate_pin: Si
     // The session's line is the record's own (`Genesis::line`), derived here, never taken from the welcome: every
     // pe-agree signature commits to it, so a record A didn't send can't yield signatures B accepts.
     let genesis = Genesis::decode(&w.agree).map_err(NetError::Genesis)?;
-    genesis.check(me, opener, BUILD, agree_hash()).map_err(NetError::Genesis)?;
+    genesis.check(me, opener, BUILD).map_err(NetError::Genesis)?;
     if w.epoch_ns != genesis.epoch_ns {
         return Err(NetError::Welcome(format!("epoch {} against the record's {}", w.epoch_ns, genesis.epoch_ns)));
     }
@@ -777,7 +777,6 @@ mod tests {
             build: BUILD.to_vec(),
             opener,
             joiner: me,
-            agree: agree_hash(),
             rate: RATE,
             cut_interval: Duration::from_millis(133),
             gravity: pe_world::GRAVITY,
