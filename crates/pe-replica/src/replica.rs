@@ -50,8 +50,11 @@
 //! history below it (`base_frame`): there, roots answer `Damaged` (rung 2 again), changes are faults, and no replay
 //! starts from an older `Cv`.
 //!
-//! **Not yet here** (the M1 increments that follow): hands, grips and grab joints (3.3), carried checks (3.4), logic
-//! stages (3, steps 3 and 8), and the view's rows beyond bodies (7).
+//! **Logic stages** (3, steps 3 and 8; crate::logic): `LogicPrePhysics` after the entries and `LogicPostPhysics` after
+//! the write-back, through the runner the replica is given. Without one it refuses to step a world with scripts.
+//!
+//! **Not yet here** (the M1 increments that follow): script activation inside the window (logic.md 6.2, the script
+//! binding's increment 2), carried checks (3.4), and the view's rows beyond bodies (7).
 
 use core::time::Duration;
 use std::borrow::Cow;
