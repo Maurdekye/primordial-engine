@@ -1,6 +1,6 @@
 //! M1's "What the hash covers", pe-world's half (@item:primordial-engine/m1-test-a-divergence-in-each-hashed-kind-is-foun):
 //! a divergence injected into each of the five hashed kinds (fields, governance, claims, logic state, module versions),
-//! and into a body's physics state, moves the root, and descending the two trees from the root, as a peer's walk does, finds exactly the damaged leaf.
+//! and into a body's physics state and a pending commit's attestations, moves the root, and descending the two trees from the root, as a peer's walk does, finds exactly the damaged leaf.
 //! The repair by rungs 1 and 2 is @diverge-eng's, on the same hook (`pe_world::test_util`).
 
 use pe_core::Hash;
@@ -98,7 +98,9 @@ fn a_divergence_in_each_hashed_kind_is_found_at_exactly_its_leaf() {
         let r = twin.root_hash(D);
         assert_ne!(r, r0, "{kind:?}: the root covers it");
         assert_eq!(differing_leaves(&base, &twin), vec![leaf], "{kind:?}: the walk names exactly the damaged leaf");
-        // The leaf cache can't hide it: a twin whose cache was refreshed before the damage still finds it.
+        // The store's writes drop a damaged object's cached leaf, so a twin cached before the damage still finds it
+        // (this shows writes invalidate the cache; a cached leaf that no longer matches its rows is
+        // `verify_tree_cache`'s, R-H3).
         let mut cached = base.clone();
         cached.refresh_tree_cache();
         assert_eq!(divergence(&mut cached, kind), Some(leaf));
