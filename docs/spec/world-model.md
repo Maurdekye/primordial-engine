@@ -1536,25 +1536,28 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     (@vdw-physics, ws/hold-reach 9d3a0270), it is Box3D's mover cast: spheres and capsules are swept as themselves, a
     hull as the capsule that encloses it, an over-approximation that errs towards not carrying through, the side the
     wall ruling chose: a hull whose own shape would pass close by a wall's edge may be held back (@design-reviewer's
-    Low 1, @coordinator-opus m53c7e29eca9b; the capsule inside it would have let its corners clip the edge), and a
-    shape the object already touches is passed unless the move goes into it, so a ball resting on the floor can still
-    be carried along it. If the physics fork has no shape cast, five rays stand in, any hit counting: one from the
-    object's centre and four from the points at ±r along two axes perpendicular to the move, `r` the bounding radius,
-    the axes chosen deterministically from the move's direction and the world's up (world x when the move is vertical)
-    (@design-reviewer's nits), and their limits are stated: rays this sparse can miss a post thinner than their
-    spacing, and it can pass beside a wall's end or corner, or through an opening narrower than the object, leaving
-    part of the object overlapping the wall for the solver's push-out to settle (@design-reviewer's Low, adopted by
-    @coordinator-opus mf154876646fa). A real teleport (the target jumping past the teleport distance) still carries it
-    at its current offset, through whatever lies between. **Which placement is which:** a placement is a trailing one
-    when the body moved at the cap the frame before (at least 99.9 % of it, at the body or at any hold, read from the
-    kinematic velocity in the image); a body that was not slowed reached its target, so a jump now is the target's
-    own, a real teleport. **So a real teleport during an overrun counts as a trailing placement:** what the hand holds
-    is not carried through a wall, and its spring brings it after the hand (@vdw-physics's flagged limit, accepted by
-    @coordinator-opus mc86cae687831 as the safer side). **A hand held steadily above the cap cycles:** it trails, is
-    placed, and trails again (at 15 m/s the lag grows by 5 m/s and reaches 0.5 m in about 0.1 s), so its contacts come
-    in bursts, and each placement carries what it holds without collision and gives it no velocity from the jump. That
-    keeps "nothing moves faster than the cap" (plus the solver's push-out, below); tests expect bursts, not a
-    continuous push (@design-reviewer, approving r2).
+    Low 1, @coordinator-opus m53c7e29eca9b; the capsule inside it would have let its corners clip the edge; the
+    enclosing capsule runs along the longest side of the hull's bounding box, its radius the farthest any hull point
+    lies from that axis), and a shape the object already touches is passed unless the move goes into it, so a ball
+    resting on the floor can still be carried along it, and so can a box whose enclosing capsule overlaps the floor
+    (measured [V @vdw-physics, ws/hold-reach f710c9ac]: a 10×10×30 cm box held on the floor, the hand at 15 m/s along
+    it, moves with the hand's body at every trailing placement). If the physics fork has no shape cast, five rays
+    stand in, any hit counting: one from the object's centre and four from the points at ±r along two axes
+    perpendicular to the move, `r` the bounding radius, the axes chosen deterministically from the move's direction
+    and the world's up (world x when the move is vertical) (@design-reviewer's nits), and their limits are stated:
+    rays this sparse can miss a post thinner than their spacing, and it can pass beside a wall's end or corner, or
+    through an opening narrower than the object, leaving part of the object overlapping the wall for the solver's
+    push-out to settle (@design-reviewer's Low, adopted by @coordinator-opus mf154876646fa). A real teleport (the
+    target jumping past the teleport distance) still carries it at its current offset, through whatever lies between.
+    **Which placement is which:** a placement is a trailing one when the body moved at the cap the frame before (at
+    least 99.9 % of it, at the body or at any hold, read from the kinematic velocity in the image); a body that was
+    not slowed reached its target, so a jump now is the target's own, a real teleport. **So a real teleport during an
+    overrun counts as a trailing placement:** what the hand holds is not carried through a wall, and its spring brings
+    it after the hand (@vdw-physics's flagged limit, accepted by @coordinator-opus mc86cae687831 as the safer side).
+    **A hand held steadily above the cap cycles:** it trails, is placed, and trails again (at 15 m/s the lag grows by
+    5 m/s and reaches 0.5 m in about 0.1 s), so its contacts come in bursts, and each placement carries what it holds
+    without collision and gives it no velocity from the jump. That keeps "nothing moves faster than the cap" (plus the
+    solver's push-out, below); tests expect bursts, not a continuous push (@design-reviewer, approving r2).
   - **The hold's spring is bounded, speed-aware** (@coordinator-opus m62b0ae1c56d3, decision 2; its floor
     m0ee08c54ed95): the separation the spring that pulls a held object to its place in the hand sees is clamped as a
     whole, and then only its part supporting the object against the world's gravity (6.6, a fixed direction, so the
@@ -1623,8 +1626,9 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     beyond the speed-aware reach (with the reach at 0, the ball falls freely until it is below its place, then is held
     up), with gravity's fall reported apart. In every run its speed exceeds the cap by at most about `s_min · k`,
     gravity's fall aside; a ball pinned at 45° below and beside its place, and at 45° above and beside it, released
-    with the hand still: its top speed is at most the cap plus about `s_min · k` (@vdw-physics's follow-up;
-    @coordinator-opus m0ee08c54ed95; @design-reviewer m558fef25533c).
+    with the hand still: its top speed is at most the cap plus about `s_min · k` (measured [V @vdw-physics, f710c9ac]:
+    8.39 m/s from a corner below, 8.57 m/s from a shelf above) (@vdw-physics's follow-up; @coordinator-opus
+    m0ee08c54ed95; @design-reviewer m558fef25533c).
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
   object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
   expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).
