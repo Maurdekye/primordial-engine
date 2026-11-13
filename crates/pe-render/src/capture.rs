@@ -85,7 +85,8 @@ pub fn visible_list(scene: &Scene, camera: &Camera, size: [u32; 2]) -> Vec<Visib
     let mut out = Vec::new();
     for it in &scene.items {
         let r = it.radius as f64;
-        if !vol.touches_sphere(it.pose.pos, r) {
+        // Id NONE names no object (the hand markers): an agent gets no entry for it.
+        if it.id.is_none() || !vol.touches_sphere(it.pose.pos, r) {
             continue;
         }
         let c = camera.relative(it.pose.pos);
@@ -217,5 +218,43 @@ impl PendingCapture {
         drop(data);
         self.buffer.unmap();
         Image { width: w, height: h, rgba }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::DQuat;
+    use pe_seams::{ObjectId, Offset, Pos, Shape};
+
+    use super::*;
+    use crate::camera::{DepthRange, Fov};
+    use crate::pose::WorldPose;
+    use crate::scene::{DEFAULT_APPEARANCE, DrawItem};
+
+    /// Id NONE names no object (the own-hand markers, shader-reviewer): never highlighted, never in
+    /// `visible_list`; a named object beside it is both.
+    #[test]
+    fn an_item_with_id_none_is_never_highlighted_or_listed() {
+        let ball = |id: u128, x: f64| DrawItem {
+            id: ObjectId::from_u128(id),
+            pose: WorldPose { pos: Pos::ORIGIN.checked_add(Offset([x, 0.0, -2.0])).unwrap(), rot: DQuat::IDENTITY },
+            scale: [1.0; 3],
+            shape: Shape::Sphere { radius: 0.2 },
+            appearance: DEFAULT_APPEARANCE,
+            radius: 0.2,
+            outline: None,
+            ghost: None,
+        };
+        let mut s = Scene { items: vec![ball(0, -0.5), ball(5, 0.5)], ..Scene::default() };
+        s.highlight(&[ObjectId::NONE, ObjectId::from_u128(5)]);
+        assert_eq!(s.items[0].outline, None);
+        assert!(s.items[1].outline.is_some());
+        let cam = Camera::placed(
+            WorldPose { pos: Pos::ORIGIN, rot: DQuat::IDENTITY },
+            Fov::symmetric(1.0, 1.0),
+            DepthRange::DESKTOP,
+        );
+        let v = visible_list(&s, &cam, [64, 64]);
+        assert_eq!(v.iter().map(|x| x.id).collect::<Vec<_>>(), [ObjectId::from_u128(5)]);
     }
 }

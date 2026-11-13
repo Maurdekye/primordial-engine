@@ -14,6 +14,7 @@
 //! - [`pacing`]: the display period and the render-scale controller (render.md 10).
 //! - [`desktop_hand`]: the mouse-ray hand and its `HandFeed` (render.md 9).
 //! - [`hands`]: markers for the own hands when the view has no hand object (render.md 8, D4).
+//! - [`notices`]: the local player's notices (D7) and their strip in the window and the headset (render.md 8.1).
 //! - [`present`]: the frame-view slot and the per-frame presenter (render.md 3).
 //! - [`window`]: the desktop window and its loop (render.md 9, 10).
 //!
@@ -29,6 +30,7 @@ pub mod effects;
 pub mod gpu;
 pub mod hands;
 pub mod labels;
+pub mod notices;
 pub mod pacing;
 pub mod pose;
 pub mod present;
