@@ -48,6 +48,8 @@ pub struct Bounded {
     pub depth: usize,
     /// Each property with a discovery: a counterexample (always) or an example (sometimes), as its action trace.
     pub found: HashMap<&'static str, Vec<Action>>,
+    /// The search stopped at its time budget before covering every behaviour up to the bound.
+    pub unfinished: bool,
 }
 
 struct Shared<'a> {
@@ -140,7 +142,9 @@ impl Shared<'_> {
     }
 }
 
-pub fn check(m: &Cuts, max_depth: usize, threads: usize, stop_on: &[&'static str], progress: &(dyn Fn(usize, usize) + Sync)) -> Bounded {
+pub fn check(m: &Cuts, max_depth: usize, threads: usize, stop_on: &[&'static str], budget: Option<std::time::Duration>, progress: &(dyn Fn(usize, usize) + Sync)) -> Bounded {
+    let t0 = std::time::Instant::now();
+    let out_of_time = AtomicBool::new(false);
     let sh = Shared {
         m,
         props: m.properties(),
@@ -175,25 +179,36 @@ pub fn check(m: &Cuts, max_depth: usize, threads: usize, stop_on: &[&'static str
         d += 1;
     }
     let work = Mutex::new(level);
+    // The workers still searching: the reporter runs (and enforces the budget) until the last one is done.
+    let running = AtomicUsize::new(threads);
     std::thread::scope(|sc| {
         for _ in 0..threads {
-            sc.spawn(|| loop {
-                let item = work.lock().unwrap().pop();
-                let Some((s, t)) = item else { break };
-                sh.dfs(s, d, t);
+            sc.spawn(|| {
+                loop {
+                    let item = work.lock().unwrap().pop();
+                    let Some((s, t)) = item else { break };
+                    sh.dfs(s, d, t);
+                }
+                running.fetch_sub(1, Ordering::Relaxed);
             });
         }
         sc.spawn(|| {
-            while !work.lock().unwrap().is_empty() || sh.visits.load(Ordering::Relaxed) == 0 {
-                std::thread::sleep(std::time::Duration::from_secs(10));
-                let u: usize = sh.seen.iter().map(|t| t.lock().unwrap().len()).sum();
-                progress(u, sh.visits.load(Ordering::Relaxed));
-                if sh.stop.load(Ordering::Relaxed) {
-                    break;
+            let mut tick = 0;
+            while running.load(Ordering::Relaxed) > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                tick += 1;
+                if tick % 10 == 0 {
+                    let u: usize = sh.seen.iter().map(|t| t.lock().unwrap().len()).sum();
+                    progress(u, sh.visits.load(Ordering::Relaxed));
+                }
+                if budget.is_some_and(|b| t0.elapsed() >= b) && !sh.stop.load(Ordering::Relaxed) {
+                    out_of_time.store(true, Ordering::Relaxed);
+                    sh.stop.store(true, Ordering::Relaxed);
                 }
             }
         });
     });
     let unique = sh.seen.iter().map(|t| t.lock().unwrap().len()).sum();
-    Bounded { unique, visits: sh.visits.load(Ordering::Relaxed), depth: sh.deepest.load(Ordering::Relaxed), found: sh.found.into_inner().unwrap() }
+    let unfinished = out_of_time.load(Ordering::Relaxed);
+    Bounded { unique, visits: sh.visits.load(Ordering::Relaxed), depth: sh.deepest.load(Ordering::Relaxed), found: sh.found.into_inner().unwrap(), unfinished }
 }
