@@ -248,6 +248,15 @@ impl MockWorld {
         }
     }
 
+    /// This world with `gravity` and `origin`. They are genesis settings, like pe-world's trusted setters: no mock
+    /// entry changes them, as no M1 entry does (world-model.md 6.6). They are the world's config record
+    /// ([`LeafKey::Config`]), which its root covers.
+    pub fn with_settings(mut self, gravity: [f32; 3], origin: Pos) -> MockWorld {
+        self.settings.gravity = gravity;
+        self.settings.origin = origin;
+        self
+    }
+
     /// Every step of `frame`, live or re-stepped, reports one repaired transform: a fault each time it is stepped.
     pub fn fault_transforms_at(&mut self, frame: Frame) {
         self.transform_fault = Some(frame);
@@ -264,9 +273,11 @@ impl MockWorld {
         self.bodies.get(&id).map(|b| (b.pos - Pos::ORIGIN).0)
     }
 
-    /// Every leaf the mock's root covers, for an export of the whole state: its objects, then its `physics_global`.
+    /// Every leaf the mock's root covers, for an export of the whole state: its config record, its objects, then its
+    /// `physics_global`.
     pub fn leaves(&self) -> Vec<LeafKey> {
-        self.bodies.keys().map(|&id| LeafKey::Object(id)).chain([LeafKey::Physics(self.domain)]).collect()
+        let objects = self.bodies.keys().map(|&id| LeafKey::Object(id));
+        [LeafKey::Config].into_iter().chain(objects).chain([LeafKey::Physics(self.domain)]).collect()
     }
 
     fn object_hash(id: ObjectId, b: &BodyRow, phys: Option<&BodyStateRow>) -> Hash {
@@ -431,6 +442,7 @@ impl WorldModel for MockWorld {
         let mut h = Hasher::new("pe-replica.mock.root");
         h.write_u64(self.domain.0);
         h.write_u64(self.frame.0);
+        h.write(&encode_settings(&self.settings));
         for (&id, b) in &self.bodies {
             h.write_hash(&Self::object_hash(id, b, self.physics.get(&id)));
         }
@@ -450,7 +462,8 @@ impl WorldModel for MockWorld {
         Box::new(MockTree(saved))
     }
 
-    /// No objects and no physics rows. The mock keeps its settings, which its root does not cover.
+    /// No objects and no physics rows. It keeps my settings: an import without the config record keeps them, and the
+    /// root check shows any difference, as pe-world's does.
     fn empty(&self) -> MockWorld {
         MockWorld {
             frame: Frame(0),
@@ -465,6 +478,8 @@ impl WorldModel for MockWorld {
     /// a table, is `BadProof`. Since it cannot check records one by one, it checks the patched root against
     /// `target_root` at the end: a wrong or missing record shows there as `RootMismatch` (chunks-reviewer's L2 on
     /// 48e4e521). Every mock object is a bound body, so a record or an absent key for one needs the physics image.
+    /// The config record sets every setting, the rate included. Unlike pe-world's import, the mock does not refuse
+    /// another rate itself, so the replica's own check of it can be tested.
     fn import(&self, saved: &MockWorld, import: &pe_seams::CutImport) -> Result<MockWorld, ImportError> {
         let mut next = saved.clone();
         for key in &import.absent {
@@ -493,6 +508,7 @@ impl WorldModel for MockWorld {
                     let global = <[u8; 32]>::try_from(&record.bytes[..]).map_err(|_| ImportError::BadProof(i))?;
                     next.global = Hash(global);
                 }
+                LeafKey::Config => next.settings = decode_settings(&record.bytes).ok_or(ImportError::BadProof(i))?,
                 _ => return Err(ImportError::BadProof(i)),
             }
         }
@@ -618,6 +634,23 @@ fn decode_object(bytes: &[u8]) -> Option<(BodyRow, Option<BodyStateRow>)> {
     r.0.is_empty().then_some((row, phys))
 }
 
+/// The config record's bytes ([`LeafKey::Config`]): the rate in hertz, the gravity, then the origin.
+fn encode_settings(s: &PhysicsSettings) -> Vec<u8> {
+    let mut out = s.rate.hz().to_le_bytes().to_vec();
+    s.gravity.iter().for_each(|g| out.extend_from_slice(&g.to_le_bytes()));
+    (s.origin - Pos::ORIGIN).0.iter().for_each(|c| out.extend_from_slice(&c.to_le_bytes()));
+    out
+}
+
+/// `None` unless the bytes are exactly a config record with a rate a world may have and finite values.
+fn decode_settings(bytes: &[u8]) -> Option<PhysicsSettings> {
+    let mut r = Reader(bytes);
+    let rate = SimRate::new(u32::from_le_bytes(r.take::<4>()?))?;
+    let gravity = r.vec3()?;
+    let origin = Pos::ORIGIN.checked_add(Offset(r.pos()?)).ok()?;
+    r.0.is_empty().then_some(PhysicsSettings { rate, gravity, origin })
+}
+
 /// The mock's tree: its root, its objects' hashes and their records. It has no inner nodes, so `node` finds nothing,
 /// and its records carry no proof.
 struct MockTree<'a>(&'a MockWorld);
@@ -638,6 +671,7 @@ impl Tree for MockTree<'_> {
             let bytes = match key {
                 LeafKey::Object(id) => encode_object(w.bodies.get(&id)?, w.physics.get(&id)),
                 LeafKey::Physics(d) if d == w.domain => w.global.0.to_vec(),
+                LeafKey::Config => encode_settings(&w.settings),
                 _ => return None,
             };
             Some(Record { key, bytes: Bytes::from(bytes), proof: Vec::new() })
@@ -721,11 +755,33 @@ mod tests {
     fn a_whole_export_imported_into_empty_has_the_donor_s_root() {
         let d = donor();
         let records = d.tree(&d).export(&d.leaves());
-        assert_eq!(records.len(), 4);
+        assert_eq!(records.len(), 5, "the config record, three objects and physics_global");
         let got = d.import(&d.empty(), &import_of(&d, records, Vec::new(), true)).expect("import");
         assert_eq!(got.root(), d.root());
         assert_eq!(got.body(ObjectId::from_u128(2)), d.body(ObjectId::from_u128(2)));
         assert_eq!(d.empty().root(), MockWorld::new(DomainId(4), SimRate::DEFAULT).root());
+    }
+
+    /// The config record sets every setting from exactly its bytes, and the root covers it, so a world with other
+    /// settings has another root. Bytes of the wrong length, a rate a world may not have, or a gravity that is not
+    /// finite are refused.
+    #[test]
+    fn the_config_record_round_trips_and_refuses_junk() {
+        let origin = at([40.0, 0.0, -25.0]).expect("in range");
+        let s = PhysicsSettings { rate: SimRate::new(30).expect("30 Hz"), gravity: [0.0, -3.0, 0.5], origin };
+        let bytes = encode_settings(&s);
+        assert_eq!(decode_settings(&bytes), Some(s));
+        assert_eq!(decode_settings(&bytes[..bytes.len() - 1]), None);
+        assert_eq!(decode_settings(&[bytes.clone(), vec![0]].concat()), None);
+        let mut slow = bytes.clone();
+        slow[..4].copy_from_slice(&29u32.to_le_bytes());
+        assert_eq!(decode_settings(&slow), None);
+        let mut nan = bytes.clone();
+        nan[4..8].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_eq!(decode_settings(&nan), None);
+        let w = MockWorld::new(DomainId(4), SimRate::DEFAULT);
+        assert_ne!(w.clone().with_settings([0.0, -3.0, 0.0], Pos::ORIGIN).root(), w.root());
+        assert_ne!(w.clone().with_settings([0.0, -10.0, 0.0], origin).root(), w.root());
     }
 
     #[test]
@@ -750,8 +806,12 @@ mod tests {
         bad[1].bytes = Bytes::from_static(&[2, 0]);
         assert_eq!(import(bad, true).err(), Some(ImportError::BadProof(1)));
         let mut other = all.clone();
-        other[3].key = LeafKey::Physics(DomainId(5));
-        assert_eq!(import(other, true).err(), Some(ImportError::BadProof(3)));
+        let physics = other.len() - 1;
+        other[physics].key = LeafKey::Physics(DomainId(5));
+        assert_eq!(import(other, true).err(), Some(ImportError::BadProof(physics)));
+        let mut junk = all.clone();
+        junk[0].bytes = Bytes::from_static(&[60, 0, 0, 0]);
+        assert_eq!(import(junk, true).err(), Some(ImportError::BadProof(0)), "a config record cut short");
         let mut missing = all.clone();
         missing.remove(1);
         let got = import(missing, true).err();
