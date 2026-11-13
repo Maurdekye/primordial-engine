@@ -278,6 +278,11 @@ pub trait WorldModel: Send {
         None
     }
 
+    /// A saved state's read-only snapshot, for [`pe_seams::Replica::agreed_snapshot`]. `None` by default.
+    fn snapshot_of(_saved: &Self::Saved, _final_frame: Frame) -> Option<Arc<dyn Any + Send + Sync>> {
+        None
+    }
+
     // what the replica writes
 
     /// Step 7's write-back (replica.md 3), once per frame: every body that moved, in id order, with its world pose.

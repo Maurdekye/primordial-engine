@@ -179,7 +179,11 @@ impl WorldModel for PeWorld {
     }
 
     fn snapshot(&self, final_frame: Frame) -> Option<Arc<dyn Any + Send + Sync>> {
-        let snap: Arc<dyn Any + Send + Sync> = self.world.snapshot(final_frame);
+        Self::snapshot_of(&self.world, final_frame)
+    }
+
+    fn snapshot_of(saved: &World, final_frame: Frame) -> Option<Arc<dyn Any + Send + Sync>> {
+        let snap: Arc<dyn Any + Send + Sync> = saved.snapshot(final_frame);
         Some(snap)
     }
 
