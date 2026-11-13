@@ -48,6 +48,7 @@ fn view(frame: u64, sim_time: HostTime, mut objects: Vec<ViewObject>) -> Arc<Fra
         domain: DomainId(0),
         sim_time,
         final_frame: None,
+        health: pe_seams::Health::Agreed,
         local_rig: RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
         objects,
         effects: vec![],

@@ -39,7 +39,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::agree::{Cut, FinalCut};
+use crate::agree::{Cut, CutRef, FinalCut, VoidReason};
 use crate::entry::{DomainId, SignedEntry};
 use crate::ids::{EntryRef, Frame, Hash, Hasher, MemberKey, ObjectId};
 use crate::time::{HostTime, SimRate};
@@ -64,7 +64,8 @@ pub struct FieldPath {
 }
 
 /// What every machine computes for an entry at its place in the agreed order (world-model.md 7.7). Outcomes are a
-/// function of the state and the entry; they are not hashed, the state they produce is.
+/// function of the state and the entry; they are not hashed, the state they produce is. `Unknown` and `Dropped` are
+/// the replica's, in its change records (S5's `StepRecord`); the world model never returns them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Applied {
@@ -82,6 +83,17 @@ pub enum Outcome {
         op: Option<u32>,
         reason: Reason,
     },
+    /// In the final order, but this replica cannot know the verdict: it stepped the entry on a state that diverged,
+    /// and a rung-2 import at `repaired_at` replaced that state without re-stepping it. One per entry of the cut's
+    /// order from my last agreed cut up to `repaired_at`, recorded before `final_frame` passes it (S2 v1.5;
+    /// @coordinator-opus). Not pending: the entry happened, and only its result is unknown here.
+    /// Fetching the true verdicts from the repair source comes after M1.
+    Unknown { repaired_at: CutRef },
+    /// Not in the final order: this replica stepped the entry, but a final cut voided it, or left it out below its
+    /// frame, so it is pending until a void (S3). `reason` is `Late` for an entry S3 still holds, and `BackStamped` for
+    /// one S3 has predicted absent (an earlier stamp of its chain is later). Recorded before `final_frame` passes the
+    /// entry's frame (S2 v1.5; @coordinator-opus).
+    Dropped { reason: VoidReason },
 }
 
 /// Something an applied entry did that its author may want to know. Like [`Reason`], the list grows, so it is

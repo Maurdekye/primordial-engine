@@ -346,6 +346,8 @@ pub struct SessionInfo {
     pub link: Link,
     /// False while this machine is catching up; `apply` then refuses with `not_ready`.
     pub caught_up: bool,
+    /// Read from the view, never inferred from two frame numbers (api.md 5.1; S6 v1.5).
+    pub health: SessionHealth,
     /// Whether an admin of the world is present: with none, the session keeps nothing (user ruling, file 18).
     pub kept: bool,
     pub limits: Limits,
@@ -632,6 +634,18 @@ pub struct ApplyOpts {
     pub if_version: Option<Version>,
 }
 
+/// The replica's standing with the quorum, from S5's `Health` (api.md 5.1; S6 v1.5): `"agreed"`, or
+/// `{"repairing": {"since": frame}}` while a repair is under way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionHealth {
+    #[default]
+    Agreed,
+    Repairing {
+        since: Frame,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -640,6 +654,9 @@ pub enum Status {
     Final,
     Refused,
     Dropped,
+    /// In the final order, but this machine cannot know how it came out: a repair replaced the state it was stepped
+    /// on, at the cut whose frame `repaired_at` gives (api.md 5.4; S6 v1.5). Re-read the state.
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -727,6 +744,9 @@ pub struct Outcome {
     #[serde(default, skip_serializing_if = "is_false")]
     pub dry_run: bool,
     pub status: Status,
+    /// For `unknown`: the frame of the cut whose repair replaced the state (S6 v1.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repaired_at: Option<Frame>,
     /// For `refused`: whether the refusal is final.
     #[serde(rename = "final", default, skip_serializing_if = "is_false")]
     pub is_final: bool,
@@ -814,12 +834,24 @@ pub struct ChangeItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
-    Joined { member: MemberBrief },
-    Left { member: MemberBrief },
+    Joined {
+        member: MemberBrief,
+    },
+    Left {
+        member: MemberBrief,
+    },
     CatchingUp,
     CaughtUp,
-    Final { frame: Frame },
-    SchemaChanged { version: String },
+    Final {
+        frame: Frame,
+    },
+    SchemaChanged {
+        version: String,
+    },
+    /// The replica's standing with the quorum changed (S6 v1.5).
+    HealthChanged {
+        health: SessionHealth,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -877,6 +909,9 @@ pub struct HistoryEntry {
     #[serde(rename = "final")]
     pub is_final: bool,
     pub status: Status,
+    /// For `unknown`: the frame of the cut whose repair replaced the state (S6 v1.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repaired_at: Option<Frame>,
     /// Engine-written, capped: "Created Red cube under Table".
     pub summary: String,
 }
@@ -1140,11 +1175,25 @@ mod tests {
         assert!(matches!(r.from, Some(From::Player { .. })));
     }
 
+    /// The health and the unknown status read as api.md 5.1 and 5.4 write them (S6 v1.5).
+    #[test]
+    fn health_and_unknown_serialize_as_the_spec_writes_them() {
+        assert_eq!(serde_json::to_value(SessionHealth::Agreed).unwrap(), json!("agreed"));
+        let repairing = SessionHealth::Repairing { since: 120 };
+        assert_eq!(serde_json::to_value(repairing).unwrap(), json!({"repairing": {"since": 120}}));
+        let e = SessionEvent::HealthChanged { health: repairing };
+        let want = json!({"event": "health_changed", "health": {"repairing": {"since": 120}}});
+        assert_eq!(serde_json::to_value(&e).unwrap(), want);
+        assert_eq!(serde_json::from_value::<SessionEvent>(want).unwrap(), e);
+        assert_eq!(serde_json::to_value(Status::Unknown).unwrap(), json!("unknown"));
+    }
+
     #[test]
     fn a_refused_outcome_serializes_flat_enough_to_read() {
         let o = Outcome {
             dry_run: false,
             status: Status::Refused,
+            repaired_at: None,
             is_final: false,
             change: None,
             frame: Some(18350),

@@ -171,6 +171,7 @@ pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft)
     let base = Outcome {
         dry_run: true,
         status: Status::Accepted,
+        repaired_at: None,
         is_final: false,
         change: None,
         frame: None,
@@ -202,6 +203,11 @@ pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft)
             let f = map_refusal(snap, e, op, &reason);
             Outcome { status: Status::Refused, refusal: Some(f), count: 0, ..base }
         }
+        // pe-world's dry run never returns these two: they are the replica's, in its change records (S5).
+        pe_seams::Outcome::Unknown { repaired_at } => {
+            Outcome { status: Status::Unknown, repaired_at: Some(repaired_at.frame.0), count: 0, ..base }
+        }
+        pe_seams::Outcome::Dropped { .. } => Outcome { status: Status::Dropped, count: 0, ..base },
     }
 }
 

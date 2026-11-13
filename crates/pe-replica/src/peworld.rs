@@ -206,8 +206,10 @@ impl WorldModel for PeWorld {
                         .map(|h| (h.owner, if h.side == 0 { pe_seams::Hand::Left } else { pe_seams::Hand::Right })),
                     held_by: held.get(&id).cloned(),
                     flags: ViewFlags::default(),
-                    // The last edit that changed anything about the object (world-model.md 7.3).
-                    version: Some(Version { entry: EntryRef(Hash(node.version_entry)), op: node.version_op }),
+                    // The last edit that changed anything about the object (world-model.md 7.3), or none if no edit
+                    // has written it: pe-world's GENESIS, for genesis and trusted engine code.
+                    version: Some(Version { entry: EntryRef(Hash(node.version_entry)), op: node.version_op })
+                        .filter(|v| *v != pe_world::GENESIS),
                 })
             })
             .collect()
