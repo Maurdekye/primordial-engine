@@ -186,6 +186,10 @@ impl World {
         h.write(bytemuck::cast_slice(&self.gravity)).write(&origin);
         h.write_hash(&self.physics_global);
         self.hash_inputs(&mut h);
+        match &self.m1_marker {
+            None => h.write_u8(0),
+            Some(line) => h.write_u8(1).write_hash(&line.0),
+        };
         h.finish()
     }
 

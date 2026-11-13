@@ -351,6 +351,10 @@ pub enum LeafKey {
     Table(u8),
     /// A domain's `physics_global`.
     Physics(DomainId),
+    /// The world's config bytes (world-model.md 6.6), pe-agree's settings record among them, so a joiner that imports
+    /// from empty gets them. Its proof is `[Node::World]`, and it checks as `H("pe.config", bytes) == World.config`;
+    /// import sets the config from it (S2 v1.3; @world-model, mcc7d02a34a32).
+    Config,
 }
 
 /// One node of a state tree, as [`Tree::node`] returns it. [`Node::hash`] is the one definition of every node's

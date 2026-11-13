@@ -215,8 +215,47 @@ itself is WS-diverge's (M5, "re-merging later, by choice"):
   the common ancestor. Dropping history on purpose ("share from now, without its past") is a branch from a cut with
   the history cut off, a later feature.
 
-**For M1:** the origin constant, branch entries for one preset (the ball pit) and one world made from it, line ids
-in every derivation, and the reserved `Node.born_on` field and `lines` table. Merging unrelated worlds is M5's.
+**For M1:** the origin constant, line ids in every derivation, and the reserved `Node.born_on` field and `lines`
+table. Merging unrelated worlds is M5's.
+
+### 2.4 M1's ball pit: disposable genesis code
+
+**Narrowed for M1** (@coordinator-opus m949a335461b2, option (a), with @fable-reviewer's conditions mbb99c4a64eb7).
+This replaces "branch entries for one preset (the ball pit) and one world made from it" above and the
+preset-as-a-line text of 2.1 and 2.3 for M1 only. Branch entries and preset lines come in a later slice (option (b)),
+which fixes the origin's role deliberately.
+
+- **Genesis code, not a preset line.** `pe_world::preset::ball_pit(seed, blobs, origin) -> World` builds the pit at
+  frame 0. In M1 one machine creates the world and the other joins by importing state at a cut, so only one machine
+  runs this code.
+- **Built through the edit path.** The content is one ordinary edit transaction (`Create` ops with their rows),
+  applied by the normal edit path (`dry_run_draft_state`, so encoded and decoded first). The author is world logic
+  (`LOGIC`), which holds `EDIT` only while it applies. The coordinates are a reserved line,
+  `m1_line() = BLAKE3("pe.m1.disposable" ‖ "ball-pit")`, a chain derived from the seed, and seq 0. The objects'
+  versions name the draft's stand-in entry id (9.2's `Draft::entry`).
+- **Nothing in it is the origin.** The M1 line is neither `LineId::origin()` nor a preset line, and nothing here is
+  treated as one.
+- **M1 worlds are disposable and marked.** A world made this way carries `m1_marker = Some(m1_line())`, which is in
+  its root. The save format (6, import in slice C) must carry it, so a later build recognises an M1 world and
+  refuses it or imports it as unrelated content. No M1 world is kept across the move to (b).
+- **Content only.** The pit has a root named "Ball pit" with a static floor, four static walls, a point lamp and the
+  balls (200 by default, at most 500: radius 0.06 m, **18 g each** (density 20 kg/m³, a real ball-pit ball;
+  the old prototype's 0.2 kg/m³ made them 0.18 g, lighter than air: @design-reviewer's Medium), damping 0.1
+  linear and 0.3 angular, rolling resistance 0.2, the old prototype's layout with a seed-dependent jitter). The world's physics origin is set to
+  `origin`. It has no members and no hands.
+- **Hands come from admission.** `World::admit(line, member, perms, frame, spawn)` is world logic applying a join
+  (8): it records the member's permissions and creates the member's two hands (`ObjectId::hand`, owner the member,
+  sides 0 and 1) as roots beside `spawn`. The ball pit's admin is admitted this way at frame 0, like anyone who
+  joins, with the world creator's spawn (pe-app passes the pit's `origin`) and `ADMIN | EDIT`. For anyone after
+  that, every machine must admit identically, so `perms`, `spawn` and the frame come from the agreed join record
+  (8), never from local state. The hands' versions are `GENESIS`, since no edit made them; naming the join's entry
+  instead is open until 9.2 gives the join an id (@design-reviewer's Low). A rejoin at a later frame gets two new hands (the ids
+  include the admission frame, as 8 intends); removing a leaver's hands belongs to the leave, which is not built yet,
+  so until then an M1 world never readmits a member (@chunks-reviewer's note). The avatar root that should parent the hands (3.5) is not built yet; its id derivation is open.
+- **No dependence on the preset's ids.** Tests, the harness and API examples find the pit's objects by name
+  (`preset::names`, `preset::find`), never by id.
+- **Determinism:** the same arguments give the same state root, and admitting the same member at the same frame
+  gives the same root again [V `crates/pe-world/tests/preset.rs`].
 
 ## 3. Objects and components
 
@@ -1254,6 +1293,26 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
       not count against `push_budget`.
     - Physics adds continuous collision detection against static geometry for small dynamic bodies, on the
       deterministic path (@vdw-physics's part of the decision).
+    - **The tested envelope, and above it** (@coordinator-opus m6be20e26823b, option (b) for M1, on @fable-reviewer's
+      advice m07057e26ab0c). The engine sets no hard speed bound: one would narrow the user's "any speed" ruling, and
+      would not close the hole, since throws, collisions and scripts can still take a small body past it.
+      - **Tested** [V, @vdw-physics's widened sweep, physics/ccd 1cda443e, 73 aims per case]: spheres of radius
+        down to 0.5 cm against walls down to 1 cm thick, at 30, 60 and 120 Hz, CCD on: nothing passes through at
+        50 m/s or less (deepest press-in 1.3 cm). The first speeds at which a ball goes through are 150 m/s at
+        30 Hz and 75 m/s at 60 and 120 Hz; why higher rates go through at lower speeds is open, for (c). The figure
+        is final once the high-speed tunnelling run on two machines gives equal state roots.
+      - **That two-machine run is an M1 acceptance item** (@design-reviewer's nit): before M1 acceptance,
+        @vdw-physics's tunnelling case in the release test binary @engine-architect runs here and on the second PC.
+        If the roots differ, a hard bound goes in until (c).
+      - **The default does not change:** `max_push_speed` stays 10 m/s. Only an admin's choice goes above the
+        envelope.
+      - **Above it,** small objects can pass through walls. An admin may still raise `max_push_speed` to "no limit";
+        Box3D's 400 m/s ceiling is the real top (the box3d fork's
+        `default_world_def()`, `maximum_linear_speed` 400 × length units, with length units 1, which pe-physics keeps:
+        a clamp on the solver's velocity, not a per-step travel limit [V, @vdw-physics]). That is the admin's own choice: the admin interface shows the
+        tested limit and warns above it, whenever that interface exists.
+      - **(c), after M1** (@vdw-physics, on the docket): confirm the spin cause first (a 0.5 cm ball at 75 m/s
+        spins at about 15,000 rad/s), then try an angular-speed clamp or a substep.
     - Tests: the largest allowed push on the lightest ball (`max_push_dv` exactly, then 1 mm/s over); the speed
       cap's edge on a ball already moving, and repeated pushes stopping at `max_push_speed`; two pushes on one ball
       in one frame, each under `max_push_dv`, whose sum crosses `max_push_speed` (the second refused); a scaled body's mass
@@ -1480,6 +1539,8 @@ Each is a test in pe-world, pe-sim or pe-core unless marked [I on all thresholds
 15. **Cost, measured, not gated:** the hash at a cut with 500 moving balls (leaves, body digests and the image
     hash), one deep rollback across several pending cut frames (which must hash nothing), and an edit's apply time,
     reported in the checkpoint record.
+16. **Push speed envelope** (8.1; @vdw-physics's test, not pe-world's): a high-speed tunnelling case run on two
+    machines from one release binary gives equal state roots. If they differ, a hard speed bound goes in until (c).
 
 ## 12. Open points
 

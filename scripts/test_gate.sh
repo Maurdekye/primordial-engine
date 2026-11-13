@@ -270,7 +270,9 @@ expect export-refusals fail "link: a symbolic link" "sub: a submodule" "readme\.
 #     an update-ref, lets a clean merge in, and runs the base's hook and gate when a landing changes both, also
 #     when it comes as a forced update (git gives the hook zeros as the old value). An update that leaves main
 #     where it is, or moves only HEAD, returns at once, even while the audit's wrapper stalls (as a build-slot
-#     wrapper does while the slots are busy): it runs no gate, so it can't hold main's lock behind one.
+#     wrapper does while the slots are busy): it runs no gate, so it can't hold main's lock behind one. Deleting
+#     main is refused (PE_GATE=off lets it through), pack-refs still packs main, and a move that git gives an old
+#     value for, while main's tip can't be read, is refused.
 new_case
 # The installer waits for the gate: while main's tip has no hook (here the repository's first commit), it refuses,
 # since the trampoline would refuse every update of main; once main is <rev>, it installs.
@@ -347,6 +349,56 @@ if [ -z "$noop_bad" ] && [ "$(git -C "$R" rev-parse main)" = "$landed" ]; then
   pass=$((pass + 1)); echo "test_gate: ok   hook-no-op-returns-at-once (reset --hard HEAD, reset --merge HEAD, update-ref to the same value, checkouts that move only HEAD; stdin /dev/null; audit wrapper stalled)"
 else
   bad=$((bad + 1)); echo "test_gate: BAD  hook-no-op-returns-at-once:$noop_bad"
+fi
+del_bad=
+for c in "update-ref -d refs/heads/main" "update-ref -d refs/heads/main $landed" "branch -m main renamed"; do
+  hk $c < /dev/null > "$tmp/hook-del.log" 2>&1; rc=$?
+  if [ $rc = 0 ] || [ "$(git -C "$R" rev-parse -q --verify refs/heads/main)" != "$landed" ] ||
+     ! grep -q "REFUSED: deleting main" "$tmp/hook-del.log"; then
+    del_bad="$del_bad
+    git $c: exit $rc: $(tr '\n' ' ' < "$tmp/hook-del.log" | cut -c1-200)"
+    g update-ref refs/heads/main "$landed"; g symbolic-ref HEAD refs/heads/main; g branch -q -D renamed 2> /dev/null
+  fi
+done
+PE_GATE=off hk update-ref -d refs/heads/main < /dev/null > "$tmp/hook-del.log" 2>&1; rc=$?
+if [ $rc != 0 ] || git -C "$R" rev-parse -q --verify refs/heads/main > /dev/null || ! grep -q "UNCHECKED" "$tmp/hook-del.log"; then
+  del_bad="$del_bad
+    PE_GATE=off git update-ref -d refs/heads/main: exit $rc: $(tr '\n' ' ' < "$tmp/hook-del.log" | cut -c1-200)"
+fi
+g update-ref refs/heads/main "$landed"
+if [ -z "$del_bad" ]; then
+  pass=$((pass + 1)); echo "test_gate: ok   hook-refuses-deleting-main (update-ref -d with and without an old value, branch -m; PE_GATE=off lets it through)"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  hook-refuses-deleting-main:$del_bad"
+fi
+hk pack-refs --all < /dev/null > "$tmp/hook-pack.log" 2>&1; rc=$?
+if [ $rc = 0 ] && [ "$(git -C "$R" rev-parse main)" = "$landed" ] && grep -qx "$landed refs/heads/main" "$R/.git/packed-refs" &&
+   [ ! -e "$R/.git/refs/heads/main" ]; then
+  pass=$((pass + 1)); echo "test_gate: ok   hook-lets-pack-refs-pack-main (as git gc does: main's loose file goes, its tip stays)"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  hook-lets-pack-refs-pack-main (exit $rc)"; sed 's/^/    /' "$tmp/hook-pack.log"
+fi
+# The trampoline and the hook, run as git runs them but with a git that can't read main (which is there, packed):
+# a move that git gives an old value for, and a forced update (zeros), are refused rather than judged as main's
+# creation.
+mkdir -p "$tmp/shim"
+printf '#!/bin/sh\ncase "$*" in "rev-parse -q --verify refs/heads/main") exit 1 ;; esac\nexec "%s" "$@"\n' "$(type -P git)" > "$tmp/shim/git"
+chmod +x "$tmp/shim/git"
+nowhere=$(printf 'f%.0s' $(seq 1 ${#landed})) zeros=$(printf '0%.0s' $(seq 1 ${#landed}))
+read_bad=
+for h in "$(git -C "$R" config --get core.hooksPath)/reference-transaction" "$R/scripts/hooks/reference-transaction"; do
+  for o in "$landed" "$zeros"; do
+    (cd "$R" && printf '%s %s refs/heads/main\n' "$o" "$nowhere" | PATH="$tmp/shim:$PATH" sh "$h" prepared) > "$tmp/hook-read.log" 2>&1; rc=$?
+    if [ $rc = 0 ] || ! grep -q "can't be read" "$tmp/hook-read.log"; then
+      read_bad="$read_bad
+    $h, old $(printf '%s' "$o" | cut -c1-10): exit $rc: $(tr '\n' ' ' < "$tmp/hook-read.log" | cut -c1-200)"
+    fi
+  done
+done
+if [ -z "$read_bad" ]; then
+  pass=$((pass + 1)); echo "test_gate: ok   hook-refuses-when-main-cannot-be-read (the trampoline and the hook; a move with an old value, and a forced update)"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  hook-refuses-when-main-cannot-be-read:$read_bad"
 fi
 t0=$(date +%s); hk branch -q other "$sha"; hk branch -q -D other; t1=$(date +%s)
 echo "test_gate: note: two updates of another branch with the hook on took $((t1 - t0)) s"

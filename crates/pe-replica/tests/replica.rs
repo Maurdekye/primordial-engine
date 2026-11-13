@@ -8,7 +8,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use pe_replica::mock::{MockClock, MockOp, MockWorld, encode};
 use pe_replica::world::{BodyKind, ShapeRow};
-use pe_replica::{ReplicaConfig, ReplicaImpl, WorldModel};
+use pe_replica::{Phase, ReplicaConfig, ReplicaImpl, WorldModel, apply_order};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
     ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntrySource, FinalCut, Finalized, Frame, GroupSel, Hash,
@@ -744,4 +744,59 @@ fn a_joiner_imports_the_whole_state_from_empty() {
     let from_32 = |r: &ReplicaImpl<MockWorld>| roots(r, 48).into_iter().filter(|r| r.0 >= 32).collect::<Vec<_>>();
     assert_eq!(from_32(&joiner), from_32(&good));
     assert_eq!(joiner.faults(), 0);
+}
+
+// ---- the apply order within a frame (world-model.md 8.1; @coordinator-opus's ruling mf12426b9ee0a) ----------------
+
+/// By phase, then in agreed order within a phase, and nothing dropped. There are enough entries that a sort that is
+/// not stable would reorder those of one phase (@engine-architect, mb2d38064ef72).
+#[test]
+fn apply_order_is_by_phase_then_agreed_order() {
+    let keys = TestKeys::new(9, 1);
+    let mut author = EntryBuilder::new(&keys, 0);
+    let entries: Vec<SignedEntry> = (0..256u32)
+        .map(|i| {
+            let class = if i % 3 == 0 || i % 7 == 0 { Class::Input } else { Class::Edit };
+            author.next(class, Frame(1), Bytes::from(i.to_le_bytes().to_vec()))
+        })
+        .collect();
+    let seqs = |order: Vec<&SignedEntry>| order.iter().map(|e| e.entry.seq).collect::<Vec<_>>();
+    let (inputs, edits): (Vec<&SignedEntry>, Vec<&SignedEntry>) =
+        entries.iter().partition(|e| e.entry.class == Class::Input);
+    let want = seqs(inputs.into_iter().chain(edits).collect());
+    assert_eq!(seqs(apply_order(&entries, MockWorld::phase)), want);
+    assert_eq!(seqs(apply_order(&entries, |_| Phase::First)), seqs(entries.iter().collect()), "one phase: agreed");
+}
+
+/// Within a frame the mock's inputs apply before its edits, whatever their agreed order. An edit and an input stamped
+/// in the same frame teleport one ball to two places, and in either agreed order the edit's place stands. A cut's root
+/// over the frame is the live one, and finalize finds that the frame stepped exactly the cut's entries, so it does
+/// not re-base the live state on the floor.
+#[test]
+fn a_frame_applies_its_inputs_before_its_edits() {
+    let (by_edit, by_input) = ([2.0, 3.0, 0.0], [-2.0, 3.0, 0.0]);
+    let run = |input_author: usize| {
+        let keys = TestKeys::new(9, 2);
+        let mut authors = [EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1)];
+        let ops = |ops: &[MockOp]| Bytes::from(encode(ops));
+        let teleport = |pos| ops(&[MockOp::Teleport { id: id(10), pos }]);
+        let entries = vec![
+            authors[0].next(Class::Edit, Frame(0), ops(&[ball(10, 0.0, 3.0)])),
+            authors[input_author].next(Class::Input, Frame(3), teleport(by_input)),
+            authors[1 - input_author].next(Class::Edit, Frame(3), teleport(by_edit)),
+        ];
+        let mut s = Source::default();
+        entries.iter().cloned().for_each(|e| s.add(e));
+        let mut r = replica();
+        r.advance(Frame(16), &mut s);
+        let c8 = cut(&entries, 1, 8);
+        let live = r.live_root(Frame(8)).expect("live");
+        assert_eq!(r.root_at_cut(&c8, &mut s), Ok(live));
+        assert_eq!(r.finalize(&FinalCut { cut: c8, root: live, voters: vec![] }, &mut s), Finalized::Agreed);
+        assert_eq!((r.frame(), r.faults()), (Frame(16), 0), "no re-base on the floor");
+        r.world().position(id(10)).expect("the ball")
+    };
+    let (a, b) = (run(0), run(1));
+    assert_eq!(a, b, "either agreed order");
+    assert!((a[0] - by_edit[0]).abs() < 0.01 && a[2].abs() < 0.01, "the edit's place stands: {a:?}");
 }

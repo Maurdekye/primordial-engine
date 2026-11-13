@@ -7,12 +7,14 @@
 //! * [`World`]: one world's state (5.1), with the trusted construction calls.
 //! * [`WorldSnapshot`]: the published, read-only view of one frame that WorldApi reads (9.4).
 //! * [`edit`]: the edit payload and its canonical codec (7.1); [`World::apply_edit`] applies one (7.2-7.7).
+//! * [`preset`]: M1's disposable ball pit, and member admission ([`World::admit`]).
 //! * [`input`]: the input payload (8.1); [`World::apply_input`] applies one, and [`World::end_frame`] expires claims.
 
 mod apply;
 pub mod components;
 pub mod edit;
 pub mod input;
+pub mod preset;
 mod read;
 mod replica;
 mod world;

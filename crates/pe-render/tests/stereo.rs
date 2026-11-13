@@ -9,12 +9,14 @@
 use std::time::Duration;
 
 use glam::{DQuat, DVec3};
+use pe_render::DisplayHand;
 use pe_render::camera::{Camera, DepthRange, Fov};
 use pe_render::gpu::{AdapterChoice, GpuContext};
+use pe_render::hands::markers;
 use pe_render::pose::WorldPose;
 use pe_render::scene::{DEFAULT_APPEARANCE, DrawItem, RenderSettings, Renderer, Scene, StereoTarget};
 use pe_render::wgpu;
-use pe_seams::{Appearance, ObjectId, Offset, Pos, Shape};
+use pe_seams::{Appearance, ObjectId, Offset, Pos, RigPose, RigTransform, Shape};
 
 const SIZE: [u32; 2] = [192, 160];
 
@@ -217,5 +219,42 @@ fn multiview_draws_what_two_passes_draw() {
             read_layer(&two, &b, l, wgpu::TextureAspect::All),
             "layer {l} differs"
         );
+    }
+}
+
+/// The own-hand markers (pe_render::hands; the smoke run's hands, coordinator m0d42760d6a6d), seen by a standing head
+/// in a STAGE-like rig: eyes 1.6 m up looking along −Z with a headset's asymmetric FOV. The right hand, 40 cm ahead,
+/// 20 cm right and 20 cm below the eyes, shows in both eyes, right of centre; an untracked left hand shows nowhere.
+#[test]
+fn own_hand_markers_show_in_both_eyes_where_the_hand_is() {
+    let Some(mut r) = renderer(RenderSettings { multiview: false, ..Default::default() }) else { return };
+    let rig = RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 };
+    let hand = RigPose { position: [0.2, 1.4, -0.4], orientation: [0.0, 0.0, 0.0, 1.0] };
+    let s = Scene { items: markers(&[None, Some(DisplayHand { pose: hand })], &rig), ..Scene::default() };
+    assert_eq!(s.items.len(), 2);
+    let fov = Fov { left: -0.8, right: 0.7, up: 0.75, down: -0.8 };
+    let eye = |x: f64| Camera::placed(WorldPose { pos: at([x, 1.6, 0.0]), rot: DQuat::IDENTITY }, fov, DepthRange::VR);
+    let eyes = [eye(-0.032), eye(0.032)];
+    let color = texture(&r, wgpu::TextureFormat::Rgba8UnormSrgb, 2);
+    r.render_stereo(&s, eyes, &StereoTarget { color: &color, depth: None, extent: SIZE });
+    for (l, cam) in eyes.iter().enumerate() {
+        let px = read_layer(&r, &color, l as u32, wgpu::TextureAspect::All);
+        let clear = px[0..4].to_vec();
+        let drawn: Vec<(u32, u32)> = px
+            .chunks(4)
+            .enumerate()
+            .filter(|(_, p)| p.iter().zip(&clear).any(|(a, b)| a.abs_diff(*b) > 2))
+            .map(|(i, _)| (i as u32 % SIZE[0], i as u32 / SIZE[0]))
+            .collect();
+        let n = drawn.len() as u32;
+        assert!(n > 40, "eye {l}: the hand's markers cover {n} pixels");
+        let cx = drawn.iter().map(|p| p.0).sum::<u32>() / n;
+        let cy = drawn.iter().map(|p| p.1).sum::<u32>() / n;
+        // Where the hand's centre projects in this eye; the markers' centroid lies near it (the pointer pulls it a
+        // little toward the image centre).
+        let (hx, hy, _) = project(cam, DVec3::new(0.2, 1.4, -0.4));
+        eprintln!("eye {l}: {n} px, centroid ({cx}, {cy}), hand projects to ({hx}, {hy})");
+        assert!(cx > SIZE[0] / 2 && cy > SIZE[1] / 2, "eye {l}: the right hand, below the eyes, lies right and down");
+        assert!(cx.abs_diff(hx) < 20 && cy.abs_diff(hy) < 20, "eye {l}: the markers are where the hand is");
     }
 }

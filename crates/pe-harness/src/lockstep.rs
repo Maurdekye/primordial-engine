@@ -31,7 +31,7 @@ use pe_seams::test_util::{TestKeys, TestSigner};
 use pe_seams::{
     AgreeEvent, AgreeStats, Agreement, ChainHead, ChainId, Cut, CutRef, Entry, EntryRef, EntrySource, Fault, FaultKind,
     FinalCut, Frame, FrameClock, Hash, HostTime, Lane, LineId, MemberKey, Outgoing, PeerId, SelfTest, Signature,
-    SignedEntry, Signer, SubmitError, Verifier, VoidReason,
+    SignedEntry, Signer, SubmitError, Verifier, VoidReason, VoteResult,
 };
 
 /// The final frame lagging the clock by more than this makes the mock pause: the old 2 s window.
@@ -366,15 +366,11 @@ impl LockstepAgreement {
     }
 
     fn vote_body(f: u64, author: &MemberKey, root: &Hash, st: SelfTest) -> Vec<u8> {
-        let mut b = Vec::with_capacity(8 + 32 + 32 + 1);
+        let mut b = Vec::with_capacity(8 + 32 + 32 + 17);
         b.extend(f.to_le_bytes());
         b.extend(author.0);
         b.extend(root.0);
-        b.push(match st {
-            SelfTest::NotRun => 0,
-            SelfTest::Passed => 1,
-            SelfTest::Failed => 2,
-        });
+        put_self_test(&mut b, st);
         b
     }
 
@@ -482,7 +478,7 @@ impl LockstepAgreement {
                 Ok(())
             }
             TAG_MARK | TAG_VOTE => {
-                let fixed = if tag == TAG_MARK { 8 + 32 + 1 } else { 8 + 32 + 32 + 1 };
+                let fixed = if tag == TAG_MARK { 8 + 32 + 1 } else { 8 + 32 + 32 + 17 };
                 if body.len() < fixed + 64 {
                     return Err((None, FaultKind::Malformed, "short"));
                 }
@@ -521,11 +517,8 @@ impl LockstepAgreement {
                         return Err((Some(author), FaultKind::Malformed, "vote"));
                     }
                     let root = Hash(msg[40..72].try_into().unwrap_or_default());
-                    let st = match msg[72] {
-                        0 => SelfTest::NotRun,
-                        1 => SelfTest::Passed,
-                        2 => SelfTest::Failed,
-                        _ => return Err((Some(author), FaultKind::Malformed, "self-test")),
+                    let Some(st) = self_test_at(&msg[72..89], self.line) else {
+                        return Err((Some(author), FaultKind::Malformed, "self-test"));
                     };
                     // A later vote replaces an earlier one: a revote after a repair.
                     self.votes.entry(f).or_default().insert(author, (root, st, sig));
@@ -674,7 +667,7 @@ impl Agreement for LockstepAgreement {
         out
     }
 
-    fn vote(&mut self, cut: &CutRef, root: Hash, self_test: SelfTest) {
+    fn vote(&mut self, cut: &CutRef, root: Hash, self_test: SelfTest) -> VoteResult {
         let f = cut.frame.0;
         let body = Self::vote_body(f, &self.me, &root, self_test);
         let sig = self.sign(&body);
@@ -685,6 +678,8 @@ impl Agreement for LockstepAgreement {
         bytes.extend(sig.0);
         self.broadcast(Lane::Protocol, Bytes::from(bytes));
         self.progress();
+        // No views here: a revote replaces the earlier vote at once.
+        VoteResult::Voted
     }
 
     fn hold_votes_from(&mut self, frame: Frame) {
@@ -738,5 +733,57 @@ impl Agreement for LockstepAgreement {
 
     fn events(&mut self) -> Vec<AgreeEvent> {
         std::mem::take(&mut self.events)
+    }
+}
+
+/// A vote's self-test verdict on the wire (S3 v1.3): a tag, then the height and frame of the split it was run for,
+/// the line being this line's; zeros after `NotRun`. 17 bytes.
+fn put_self_test(b: &mut Vec<u8>, st: SelfTest) {
+    let (tag, split) = match st {
+        SelfTest::NotRun => (0, None),
+        SelfTest::Passed { split } => (1, Some(split)),
+        SelfTest::Failed { split } => (2, Some(split)),
+    };
+    b.push(tag);
+    let (height, frame) = split.map_or((0, 0), |c| (c.height, c.frame.0));
+    b.extend(height.to_le_bytes());
+    b.extend(frame.to_le_bytes());
+}
+
+/// The verdict [`put_self_test`] wrote, on `line`; `None` for an unknown tag, a short slice, or a `NotRun` with a
+/// split.
+fn self_test_at(bytes: &[u8], line: LineId) -> Option<SelfTest> {
+    let height = u64::from_le_bytes(bytes.get(1..9)?.try_into().ok()?);
+    let frame = Frame(u64::from_le_bytes(bytes.get(9..17)?.try_into().ok()?));
+    let split = CutRef { line, height, frame };
+    match bytes[0] {
+        0 if height == 0 && frame == Frame(0) => Some(SelfTest::NotRun),
+        1 => Some(SelfTest::Passed { split }),
+        2 => Some(SelfTest::Failed { split }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A verdict reaches the other members with the split it was run for (S3 v1.3), so pe-diverge can tell this
+    /// episode's verdicts from an earlier one's.
+    #[test]
+    fn a_self_test_verdict_round_trips_with_its_split() {
+        let line = LineId::origin();
+        let split = CutRef { line, height: 3, frame: Frame(24) };
+        for st in [SelfTest::NotRun, SelfTest::Passed { split }, SelfTest::Failed { split }] {
+            let mut b = Vec::new();
+            put_self_test(&mut b, st);
+            assert_eq!(b.len(), 17);
+            assert_eq!(self_test_at(&b, line), Some(st));
+        }
+        let mut with_split = vec![0u8; 17];
+        with_split[5] = 1;
+        assert_eq!(self_test_at(&with_split, line), None, "NotRun carries no split");
+        assert_eq!(self_test_at(&[3; 17], line), None);
+        assert_eq!(self_test_at(&[1; 9], line), None);
     }
 }
