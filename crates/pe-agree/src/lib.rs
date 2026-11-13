@@ -14,7 +14,7 @@ pub mod core;
 pub mod cuts;
 pub mod node;
 
-pub use node::{Node, NodeConfig};
+pub use node::{Node, NodeConfig, RateBudget};
 
 #[cfg(test)]
 mod core_tests;
