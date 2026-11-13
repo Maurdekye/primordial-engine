@@ -1,0 +1,27 @@
+{"meta": {"rustc": "rustc 1.99.0 (b940084d7 2026-09-28)", "reps": 10, "profile": ["profile.release.opt-level=3", "profile.release.lto=false", "profile.release.codegen-units=16", "profile.release.incremental=false", "profile.release.panic=\"abort\"", "profile.release.debug=false", "profile.release.strip=\"symbols\"", "profile.release.debug-assertions=false", "profile.release.overflow-checks=false", "profile.release.rpath=false", "target.wasm32-unknown-unknown.linker=\"rust-lld\""], "codegen": ["-C", "target-cpu=mvp", "-C", "target-feature=+bulk-memory,+multivalue,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext", "-C", "link-arg=-zstack-size=65536"], "heavy_prio": "normal", "start": "2026-11-13T06:53:43Z"}}
+{"mode": "inc-on", "rep": 0, "edit_to_built_s": 0.3058}
+{"mode": "inc-on", "rep": 1, "edit_to_built_s": 0.2716}
+{"mode": "inc-on", "rep": 2, "edit_to_built_s": 0.2638}
+{"mode": "inc-on", "rep": 3, "edit_to_built_s": 0.2698}
+{"mode": "inc-on", "rep": 4, "edit_to_built_s": 0.2642}
+{"mode": "inc-on", "rep": 5, "edit_to_built_s": 0.2646}
+{"mode": "inc-on", "rep": 6, "edit_to_built_s": 0.2658}
+{"mode": "inc-on", "rep": 7, "edit_to_built_s": 0.2638}
+{"mode": "inc-on", "rep": 8, "edit_to_built_s": 0.2687}
+{"mode": "inc-on", "rep": 9, "edit_to_built_s": 0.2649}
+{"mode": "inc-on", "noop": 0, "s": 0.1332}
+{"mode": "inc-on", "noop": 1, "s": 0.1326}
+{"mode": "inc-on", "noop": 2, "s": 0.1314}
+{"mode": "inc-off", "rep": 0, "edit_to_built_s": 0.3352}
+{"mode": "inc-off", "rep": 1, "edit_to_built_s": 0.3378}
+{"mode": "inc-off", "rep": 2, "edit_to_built_s": 0.334}
+{"mode": "inc-off", "rep": 3, "edit_to_built_s": 0.3475}
+{"mode": "inc-off", "rep": 4, "edit_to_built_s": 0.3463}
+{"mode": "inc-off", "rep": 5, "edit_to_built_s": 0.3518}
+{"mode": "inc-off", "rep": 6, "edit_to_built_s": 0.3399}
+{"mode": "inc-off", "rep": 7, "edit_to_built_s": 0.3741}
+{"mode": "inc-off", "rep": 8, "edit_to_built_s": 0.36}
+{"mode": "inc-off", "rep": 9, "edit_to_built_s": 0.3662}
+{"mode": "inc-off", "noop": 0, "s": 0.134}
+{"mode": "inc-off", "noop": 1, "s": 0.1515}
+{"mode": "inc-off", "noop": 2, "s": 0.1342}

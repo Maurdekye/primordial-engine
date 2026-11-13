@@ -1,0 +1,120 @@
+# start 2026-11-13T06:51:19Z
+# heavy.slots=1 heavy.jobs=3 HEAVY_PRIO=normal
+# slot holders:
+#   .heavy-lock: iter-bench:145390 hb 2026-11-13T06:51:19Z bash .worktrees/logic/spikes/iter-bench/clean_window.sh
+# heavy processes (cargo, rustc, cuts-model, *-model, link):
+# cpu load %: 
+# phase 0: build load_time example (untimed)
+# phase 0 exit 0 in 120 s
+# phase 1: drain
+#   06:53:20Z other slots: [] cargo/rustc processes: 0
+# drained after 0 s
+# before-timing 2026-11-13T06:53:20Z
+# heavy.slots=1 heavy.jobs=3 HEAVY_PRIO=normal
+# slot holders:
+#   .heavy-lock: iter-bench:145390 hb 2026-11-13T06:51:19Z bash .worktrees/logic/spikes/iter-bench/clean_window.sh
+# heavy processes (cargo, rustc, cuts-model, *-model, link):
+# cpu load %: 
+# phase 2a: python -I scripts/iter_bench_loop.py --set recheck --reps 8
+spawn of a no-op exe from Python: median 4.53 ms
+split rel-fast                     build   0.358s [0.338-0.375]  noop 0.049s  swap     6.08ms (compile 3.5, tick1 1.3)  loop 0.364s  207950 B
+split rel-fast incr=0              build   0.354s [0.346-0.378]  noop 0.051s  swap     6.07ms (compile 3.6, tick1 1.2)  loop 0.360s  208844 B
+split rel-fast +breakdown          build   0.358s [0.356-0.374]  noop 0.053s  rustc-sum 339ms  direct-rustc 0.345s  207950 B
+split rel-fast incr=0 +breakdown   build   0.362s [0.359-0.374]  noop 0.050s  rustc-sum 340ms  direct-rustc 0.341s  208844 B
+raw: <repo>\spikes\out\iter-bench\loop-recheck.jsonl
+# 2a exit 0 in 22 s
+# between 2026-11-13T06:53:42Z
+# heavy.slots=1 heavy.jobs=3 HEAVY_PRIO=normal
+# slot holders:
+#   .heavy-lock: iter-bench:145390 hb 2026-11-13T06:51:19Z bash .worktrees/logic/spikes/iter-bench/clean_window.sh
+# heavy processes (cargo, rustc, cuts-model, *-model, link):
+# cpu load %: 
+# phase 2b: python -I scripts/iter_bench_logic_edit.py --worktree .worktrees/logic --reps 10 --tag clean
+{
+ "meta": {
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "reps": 10,
+  "profile": [
+   "profile.release.opt-level=3",
+   "profile.release.lto=false",
+   "profile.release.codegen-units=16",
+   "profile.release.incremental=false",
+   "profile.release.panic=\"abort\"",
+   "profile.release.debug=false",
+   "profile.release.strip=\"symbols\"",
+   "profile.release.debug-assertions=false",
+   "profile.release.overflow-checks=false",
+   "profile.release.rpath=false",
+   "target.wasm32-unknown-unknown.linker=\"rust-lld\""
+  ],
+  "codegen": [
+   "-C",
+   "target-cpu=mvp",
+   "-C",
+   "target-feature=+bulk-memory,+multivalue,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext",
+   "-C",
+   "link-arg=-zstack-size=65536"
+  ],
+  "heavy_prio": "normal",
+  "start": "2026-11-13T06:53:43Z",
+  "end": "2026-11-13T06:53:52Z"
+ },
+ "modes": {
+  "inc-on": {
+   "edit_to_built_s": {
+    "median": 0.2653,
+    "min": 0.2638,
+    "max": 0.3058,
+    "n": 10
+   },
+   "noop_s": {
+    "median": 0.1326,
+    "min": 0.1314,
+    "max": 0.1332,
+    "n": 3
+   }
+  },
+  "inc-off": {
+   "edit_to_built_s": {
+    "median": 0.3469,
+    "min": 0.334,
+    "max": 0.3741,
+    "n": 10
+   },
+   "noop_s": {
+    "median": 0.1342,
+    "min": 0.134,
+    "max": 0.1515,
+    "n": 3
+   }
+  }
+ },
+ "load": {
+  "instrument_ms": {
+   "median": 0.905,
+   "min": 0.856,
+   "max": 0.994,
+   "n": 19
+  },
+  "compile_ms": {
+   "median": 4.107,
+   "min": 3.867,
+   "max": 4.533,
+   "n": 19
+  },
+  "instantiate_ms": {
+   "median": 0.107,
+   "min": 0.087,
+   "max": 0.119,
+   "n": 19
+  },
+  "bytes": 17797
+ }
+}
+# 2b exit 0 in 9 s
+# end 2026-11-13T06:53:52Z
+# heavy.slots=1 heavy.jobs=3 HEAVY_PRIO=normal
+# slot holders:
+#   .heavy-lock: iter-bench:145390 hb 2026-11-13T06:51:19Z bash .worktrees/logic/spikes/iter-bench/clean_window.sh
+# heavy processes (cargo, rustc, cuts-model, *-model, link):
+# cpu load %: 

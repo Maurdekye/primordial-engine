@@ -17,7 +17,7 @@ use pe_logic::manifest::{Component, Manifest};
 use pe_logic::run::{self, Loaded, Logic, RunSettings, StageCtx};
 use pe_logic::runtime::{self, Script, Settings};
 use pe_sdk::layout::Stage;
-use pe_sim::{ComponentDesc, ComponentId, FieldDesc, FieldKind, Registry, SimStore};
+use pe_sim::{ComponentDesc, ComponentId, Registry, SimStore};
 
 const KEY: Hash = Hash([9; 32]);
 const ACTIVATE: u64 = 10;
@@ -71,25 +71,20 @@ fn version(tag: &str, edit: impl Fn(String) -> String) -> Version {
     Version { v: Hash::of("pe.test.source", src.as_bytes()), wasm }
 }
 
-/// A component's id under version `v`: a hash of V, the name and the layout (without an id), as world-model.md 3.2
-/// derives it. Above the engine's range.
+/// A component's id under version `v`, by the world's own derivation (world-model.md 7.9, pe-world
+/// `script_component_id`), which pe-replica's binding also calls.
 fn id_of(v: &Hash, c: &Component) -> ComponentId {
-    let mut b = v.0.to_vec();
-    b.extend(c.name.as_bytes());
-    for f in &c.fields {
-        b.extend(format!("|{}:{:?}:{}:{}", f.name, f.kind, f.offset, f.count).as_bytes());
-    }
-    let h = Hash::of("pe.test.component", &b);
-    ComponentId(u128::from_le_bytes(h.0[..16].try_into().unwrap()) | (1 << 100))
+    let d = run::component_desc(c, ComponentId(0)).unwrap();
+    pe_world::script::script_component_id(v, &c.name, d.fields().to_vec()).unwrap()
+}
+
+/// Version `v`'s tag: zero size, as the world registers it.
+fn tag_desc(v: &Hash) -> ComponentDesc {
+    pe_world::script::tag_desc(v)
 }
 
 fn tag_of(v: &Hash) -> ComponentId {
-    let h = Hash::of("pe.test.tag", &v.0);
-    ComponentId(u128::from_le_bytes(h.0[..16].try_into().unwrap()) | (1 << 100))
-}
-
-fn tag_desc(id: ComponentId) -> ComponentDesc {
-    ComponentDesc::new(id, "pe.tag", vec![FieldDesc::new("_tag", FieldKind::U8, 0, 1)]).unwrap()
+    tag_desc(v).id()
 }
 
 fn loaded(ver: &Version, ids_from: &Hash, registry: &Registry) -> Result<Loaded, String> {
@@ -124,7 +119,7 @@ fn world_at_activation(v1: &Version, v2: &Version) -> (SimStore, Vec<ObjectId>) 
     let (m1, m2) = (manifest(v1), manifest(v2));
     let mut registry = Registry::new();
     for (v, m) in [(&v1.v, &m1), (&v2.v, &m2)] {
-        registry.register(tag_desc(tag_of(v))).unwrap();
+        registry.register(tag_desc(v)).unwrap();
         for c in &m.components {
             registry.register(run::component_desc(c, id_of(v, c)).unwrap()).unwrap();
         }
@@ -139,7 +134,7 @@ fn world_at_activation(v1: &Version, v2: &Version) -> (SimStore, Vec<ObjectId>) 
         let c1 = |n: &str| m1.components.iter().find(|c| c.name == n).unwrap();
         store.insert_raw(id_of(&v1.v, c1("Blink")), o, &blink).unwrap();
         store.insert_raw(id_of(&v1.v, c1("Glow")), o, &vec![0; c1("Glow").size as usize]).unwrap();
-        store.insert_raw(tag_of(&v1.v), o, &[0]).unwrap();
+        store.insert_raw(tag_of(&v1.v), o, &[]).unwrap();
         lamps.push(o);
     }
     // The re-key.
@@ -160,7 +155,7 @@ fn world_at_activation(v1: &Version, v2: &Version) -> (SimStore, Vec<ObjectId>) 
             store.insert_raw(id_of(&v2.v, c2), o, &new).unwrap();
         }
         store.remove_raw(tag_of(&v1.v), o).unwrap();
-        store.insert_raw(tag_of(&v2.v), o, &[0]).unwrap();
+        store.insert_raw(tag_of(&v2.v), o, &[]).unwrap();
     }
     (store, lamps)
 }
