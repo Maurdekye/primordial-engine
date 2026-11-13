@@ -113,6 +113,10 @@ pub fn summary(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSna
                     if base.is_some() { "a new version" } else { "the first version" }
                 )
             }
+            Op::AttestBuild { script, .. } => {
+                let hex: String = script[..4].iter().map(|b| format!("{b:02x}")).collect();
+                format!("attested a build of script {hex}…")
+            }
         })
         .collect();
     let mut s = String::new();
