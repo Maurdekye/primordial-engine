@@ -99,6 +99,7 @@ impl SimStore {
         self.seed = s.seed;
         self.objects = Arc::clone(&s.objects);
         self.columns = s.columns.iter().map(|c| (c.id, c.col.clone())).collect();
+        self.touch_all();
         Ok(())
     }
 

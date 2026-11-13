@@ -73,6 +73,7 @@ pub fn ball_pit_with(seed: u64, blobs: BlobStore, origin: Pos, balls: usize) -> 
     let mut w = World::new(seed, blobs.clone());
     w.set_origin(origin);
     w.m1_marker = Some(m1_line());
+    w.line = m1_line();
     let tx = transaction(seed, &blobs, origin, balls);
     // World logic authors the preset. Logic is no member, so it holds `EDIT` only while the transaction applies.
     w.set_member(MemberKey::LOGIC, perm::EDIT);
@@ -147,7 +148,8 @@ fn transaction(seed: u64, blobs: &BlobStore, origin: Pos, balls: usize) -> Trans
         rows.extend(static_box(half));
         create(&mut ops, under, rows);
     }
-    let lamp = Light { kind: light_kind::POINT, intensity: 40.0, range: 8.0, color: [1.0, 0.95, 0.85] };
+    let lamp =
+        Light { kind: light_kind::POINT, intensity: 40.0, range: 8.0, color: [1.0, 0.95, 0.85], ..Light::default() };
     create(
         &mut ops,
         under,
