@@ -62,6 +62,12 @@ pub struct LockstepAgreement {
     pub trim_cap: Option<u64>,
     /// The planted defect for the retention control: `kept_from` answers frame 0 whatever was trimmed. Off by default.
     pub kept_from_lies: bool,
+    /// The planted defect for P15's void-order control (S3 v1.6): a cut's `Voided` events are held back two ticks,
+    /// so they come after the call in which `final_cut` reported the cut, and after a drain that saw it final (a void
+    /// decided in `receive` would otherwise be released by the very next tick, before the node looks). Off by default.
+    pub voids_late: bool,
+    late_voids: Vec<AgreeEvent>,
+    later_voids: Vec<AgreeEvent>,
     /// The planted defect for P15's `entries_for_cut` control: below the current final cut's frame only (where a
     /// pipelining S3's late entries live; design-reviewer's Low on 4eba171a), the answer for a cut leaves out its
     /// frame's last entry, so it differs from what the final log holds. Off by default.
@@ -119,6 +125,9 @@ impl LockstepAgreement {
             trim_below_cv: false,
             trim_cap: None,
             kept_from_lies: false,
+            voids_late: false,
+            late_voids: Vec::new(),
+            later_voids: Vec::new(),
             cut_answer_lies: false,
             drop_frame: None,
             kept: 0,
@@ -278,7 +287,8 @@ impl LockstepAgreement {
             self.absent.insert(id);
             self.void_reasons.insert(id, reason);
             self.hide(e);
-            self.events.push(AgreeEvent::Voided { entry: id, author: e.entry.author, reason, cut });
+            let ev = AgreeEvent::Voided { entry: id, author: e.entry.author, reason, cut };
+            if self.voids_late { self.late_voids.push(ev) } else { self.events.push(ev) }
         }
     }
 
@@ -640,6 +650,8 @@ impl Agreement for LockstepAgreement {
 
     fn tick(&mut self, now: HostTime, clock: &dyn FrameClock) -> Vec<Outgoing> {
         self.rate_hz = clock.rate_hz().max(1);
+        let due = std::mem::replace(&mut self.later_voids, std::mem::take(&mut self.late_voids));
+        self.events.extend(due);
         if self.k == 0 {
             let k = i128::from(self.cadence_ns) * i128::from(self.rate_hz) / 1_000_000_000;
             self.k = k.max(1) as u64;

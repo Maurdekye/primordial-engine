@@ -160,6 +160,9 @@ pub struct SeamNode<A: Agreement, R: NodeReplica = KvSeamReplica> {
     /// Cut frames already recorded as `Damaged`.
     damaged: BTreeSet<u64>,
     seen_height: u64,
+    /// The final height seen when the agreement's events were last drained: a `Voided` naming a cut at or below it
+    /// came after the call in which `final_cut` first reported that cut (S3 v1.6).
+    voids_settled_to: u64,
     /// The class each scenario input is signed with (`Class::Edit` unless `with_order` says otherwise).
     class_of: fn(&Op) -> Class,
     /// Raw entries this node submits on its own, by host time (`submit_at`): inputs that are not key-value ops.
@@ -287,6 +290,7 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
             probe: 0,
             damaged: BTreeSet::new(),
             seen_height: 0,
+            voids_settled_to: 0,
             class_of: |_| Class::Edit,
             script: Vec::new(),
             views: None,
@@ -596,6 +600,12 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
                         let detail = format!("void of an entry not held, under cut {}", cut.height);
                         self.events.push(Ev::Breach { rule: "verdict", detail });
                     }
+                    // S3 v1.6 (pe-seams v1.8, engine-architect): a cut's voids are queued no later than
+                    // the call in which `final_cut` first reports it, so none arrives after a drain that saw it final.
+                    if cut.height <= self.voids_settled_to {
+                        let detail = format!("void under cut {} after that cut was reported final", cut.height);
+                        self.events.push(Ev::Breach { rule: "void_order", detail });
+                    }
                     // S2 v1.5: `void_reason` answers the reason the void was reported with. pe-agree doesn't implement
                     // it yet (`void_reason_missing_ok`, world-chunks): it may answer `None`, never
                     // another reason.
@@ -620,6 +630,7 @@ impl<A: Agreement, R: NodeReplica> SeamNode<A, R> {
             }
         }
         self.absorb_pending();
+        self.voids_settled_to = self.seen_height;
     }
 
     /// Absorbs the pending final cuts, oldest first, while this member holds their entries; each becomes `Ev::Final`
