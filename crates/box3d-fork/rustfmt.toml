@@ -1,3 +1,0 @@
-# Primordial Engine: the fork is never formatted. It tracks upstream box3d-rust, and a reformat would bury the
-# upstream diff (FORK.md). This file overrides the workspace rustfmt.toml for every file of this crate.
-disable_all_formatting = true
