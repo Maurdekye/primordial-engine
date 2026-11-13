@@ -419,9 +419,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         }
         // The hand bodies for this frame, rebuilt from the world model's hands and the physics state (3.3).
         let hands = self.world.hands();
-        self.faults += hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f);
+        let (faults, reaches) = hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f);
+        self.faults += faults;
         let awake_before = self.awake(&hands);
-        self.faults += u64::from(self.physics.step(self.dt).is_err());
+        self.faults += u64::from(self.physics.step_holding(self.dt, &reaches).is_err());
         self.write_back(awake_before, &hands);
         self.faults += u64::from(self.world.maintain_transforms());
         self.world.end_frame(f);
