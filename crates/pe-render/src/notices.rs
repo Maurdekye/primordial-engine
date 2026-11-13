@@ -113,6 +113,7 @@ pub struct Notices {
     told_order: VecDeque<EntryRef>,
     shown: VecDeque<Shown>,
     told_total: u64,
+    dropped_at_gaps: u64,
 }
 
 impl Notices {
@@ -130,6 +131,7 @@ impl Notices {
             told_order: VecDeque::new(),
             shown: VecDeque::new(),
             told_total: 0,
+            dropped_at_gaps: 0,
         }
     }
 
@@ -140,6 +142,20 @@ impl Notices {
     /// Notices told over the run, repeats included.
     pub fn told_total(&self) -> u64 {
         self.told_total
+    }
+
+    /// The next view follows a gap (render.md 3): the views between are lost, and with them perhaps a newer record of
+    /// an entry held pending, so everything pending goes untold (@coordinator-opus's ruling m7fa4df66d2fe). A refusal
+    /// can be lost this way after a hitch of 250 ms or more; reading WorldApi's lossless `ChangeLog` fixes that after
+    /// M1.
+    pub fn gap(&mut self) {
+        self.dropped_at_gaps += self.pending.len() as u64;
+        self.pending.clear();
+    }
+
+    /// Refusals dropped untold at gaps, over the run.
+    pub fn dropped_at_gaps(&self) -> u64 {
+        self.dropped_at_gaps
     }
 
     /// A member's display name, from pe-app's roster.
@@ -182,7 +198,8 @@ impl Notices {
         self.pending.retain(|_, r| {
             let now_due = match tell_at {
                 TellAt::AtOnce => true,
-                TellAt::Final => view.final_frame.is_some_and(|f| r.frame <= f),
+                // A cut at `f` covers the entries stamped below `f` (S3): one stamped at `f` can still change.
+                TellAt::Final => view.final_frame.is_some_and(|f| r.frame < f),
             };
             if now_due {
                 due.push(r.clone());
@@ -311,7 +328,6 @@ impl Notices {
         }
     }
 
-    /// The words for a refusal, or `None` when it needs none: a grab lost to a hand in view.
     /// A cooldown's end in host time: its frames left past the telling view's frame, from `now`.
     fn cooldown_end(&self, rec: &StepRecord, view: &FrameView, now: HostTime) -> Option<HostTime> {
         let Outcome::Refused { reason: Reason::Cooldown { until }, .. } = &rec.outcome else { return None };
@@ -319,6 +335,7 @@ impl Notices {
         Some(now.plus_nanos((frames as f64 / self.sim_rate_hz as f64 * 1e9) as i64))
     }
 
+    /// The words for a refusal, or `None` when it needs none: a grab lost to a hand in view.
     fn refusal_text(&self, rec: &StepRecord, view: &FrameView) -> Option<String> {
         let Outcome::Refused { reason, .. } = &rec.outcome else { return None };
         let what = match rec.class {
@@ -725,11 +742,14 @@ mod tests {
         n.observe(&view(14, Some(8), vec![rec(1, ME, Class::Input, 10, applied())]), t(30));
         n.observe(&view(16, Some(12), vec![]), t(60));
         assert!(texts(&mut n, t(60)).is_empty());
-        // Another, at frame 20: told when 20 is final.
+        // Another, stamped at frame 20: told when a cut covers it. A cut at 20 covers the entries below 20 (S3), so
+        // it waits for the next one.
         n.observe(&view(22, Some(15), vec![input(2, 20, Reason::OutOfReach)]), t(100));
         assert!(texts(&mut n, t(100)).is_empty());
         n.observe(&view(26, Some(20), vec![]), t(200));
-        assert_eq!(texts(&mut n, t(200)), ["Out of reach."]);
+        assert!(texts(&mut n, t(200)).is_empty(), "final_frame 20 doesn't cover frame 20");
+        n.observe(&view(26, Some(21), vec![]), t(205));
+        assert_eq!(texts(&mut n, t(205)), ["Out of reach."]);
         // Re-stepped after being told: never told again.
         n.observe(&view(27, Some(21), vec![input(2, 20, Reason::OutOfReach)]), t(210));
         assert_eq!(n.told_total(), 1);

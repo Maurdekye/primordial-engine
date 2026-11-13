@@ -580,3 +580,156 @@ fn own_effects_play_at_once_and_others_wait_d_effect() {
     assert_eq!(plays(&g.due(now.plus(Duration::from_millis(49)))), 0);
     assert_eq!(plays(&g.due(now.plus(Duration::from_millis(50)))), 1);
 }
+
+/// After a gap (render.md 3): a ball that moved 2 m in the lost views blends from where it was drawn, never jumps,
+/// carries the cue, and reaches its target; under both X8 rules.
+#[test]
+fn after_a_gap_every_object_blends_from_its_drawn_pose() {
+    for drawn_time in [DrawnTime::default(), DrawnTime::InterpolateLate { d_render: Duration::from_millis(50) }] {
+        let settings = DisplaySettings { drawn_time, ..Default::default() };
+        let mut layer = DisplayLayer::new(settings);
+        let vols = volumes();
+        let local = |t: HostTime| LocalPresentation { display_time: t, hands: [None, None] };
+        let a = at(0.0, 0.0, -3.0);
+        let b = at(2.0, 0.0, -3.0);
+        // Views at 60 Hz, displayed at 90 Hz, for 0.2 s at A.
+        let mut last_drawn = None;
+        let frame_at = |layer: &mut DisplayLayer, v: &Arc<FrameView>, t: HostTime| {
+            let f = layer.frame(FrameInput { view: v, display_time: t, volumes: &vols, local: &local(t) });
+            f.objects[0].clone()
+        };
+        let mut views = Vec::new();
+        for i in 0..12u64 {
+            views.push(view(i, frame_time(i, 60), vec![ball(1, a, [0.0; 3])]));
+        }
+        let mut t_ms = 0;
+        for v in &views {
+            for _ in 0..2 {
+                t_ms += 11;
+                let d = frame_at(&mut layer, v, HostTime(t_ms * 1_000_000 + 60_000_000));
+                last_drawn = Some(d.pose.pos);
+            }
+        }
+        // A 0.5 s stall, then a view of frame 42 with the ball at B; the views between are lost.
+        layer.gap();
+        let after = view(42, frame_time(42, 60), vec![ball(1, b, [0.0; 3])]);
+        let mut prev = last_drawn.unwrap();
+        let mut cued = false;
+        for i in 0..30 {
+            let t = HostTime((t_ms + 500 + i * 11) * 1_000_000 + 60_000_000);
+            let mut next = view(42 + i as u64 / 2, frame_time(42 + i as u64 / 2, 60), vec![ball(1, b, [0.0; 3])]);
+            if i == 0 {
+                next = after.clone();
+            }
+            let d = frame_at(&mut layer, &next, t);
+            let step = offset_vec(d.pose.pos - prev).length();
+            assert!(step <= 0.10 || d.cue.is_some(), "{drawn_time:?} frame {i}: an uncued step of {step} m");
+            cued |= d.cue.is_some();
+            prev = d.pose.pos;
+            if i == 0 {
+                assert!(offset_vec(d.pose.pos - a).length() < 1e-9, "{drawn_time:?}: nothing moves at the gap");
+            }
+        }
+        assert!(cued, "{drawn_time:?}: the 2 m correction carries the cue");
+        assert!(offset_vec(prev - b).length() < 1e-6, "{drawn_time:?}: the ball reaches B");
+        let c = layer.counters();
+        assert_eq!((c.gaps, c.snaps_in_view, c.cueless_large_corrections), (1, 0, 0), "{drawn_time:?}: {c:?}");
+    }
+}
+
+/// A gap whose batch holds many views (a stall, then 250 ms of views at once) and a ball that starts falling inside it:
+/// the blend aims at the pose the frame draws, after the whole batch, so the ball never drops uncued (test 6 found
+/// 54 cm under X8 (b) when the blend aimed at the batch's first view).
+#[test]
+fn a_gap_blends_to_the_pose_after_the_whole_batch() {
+    for drawn_time in [DrawnTime::default(), DrawnTime::InterpolateLate { d_render: Duration::from_millis(50) }] {
+        let mut layer = DisplayLayer::new(DisplaySettings { drawn_time, ..Default::default() });
+        let vols = volumes();
+        let local = |t: HostTime| LocalPresentation { display_time: t, hands: [None, None] };
+        // At rest 3 m up and 6 m ahead (in view) until frame 30, then falling at 3.6 m/s (6 cm a frame at 60 Hz): the batch's
+        // first view matches the last drawn pose, and its later views carry the fall.
+        let fall = |f: u64| {
+            let k = f.saturating_sub(30) as f64;
+            let v = if f >= 30 { -3.6 } else { 0.0 };
+            view(f, frame_time(f, 60), vec![ball(1, at(0.0, 3.0 - 0.06 * k, -6.0), [0.0, v, 0.0])])
+        };
+        let shown = |f: u64| HostTime(frame_time(f, 60).0 + 60_000_000);
+        let mut prev = None;
+        for f in 0..10 {
+            let d = layer.frame(FrameInput {
+                view: &fall(f),
+                display_time: shown(f),
+                volumes: &vols,
+                local: &local(shown(f)),
+            });
+            prev = Some(d.objects[0].pose.pos);
+        }
+        // Frames 10..=27 are lost; 28..=42 arrive in one batch; the frame draws at frame 42's time.
+        layer.gap();
+        for f in 28..42 {
+            layer.take(&fall(f), shown(42), &vols);
+        }
+        let mut prev = prev.unwrap();
+        for (i, f) in (42..50).enumerate() {
+            let t = HostTime(shown(42).0 + i as i64 * 11_000_000);
+            let d = layer.frame(FrameInput { view: &fall(f), display_time: t, volumes: &vols, local: &local(t) });
+            let o = &d.objects[0];
+            let step = dist(o.pose.pos, prev);
+            assert!(step <= 0.10 || o.cue.is_some(), "{drawn_time:?} frame {f}: an uncued step of {step} m");
+            prev = o.pose.pos;
+        }
+        assert_eq!(layer.counters().gaps, 1);
+    }
+}
+
+/// Under X8 (b), a gap's batch that holds a re-published frame marked `CORRECTED` (a late push): the correction still
+/// blends with its cue when the drawn time reaches it (test 6 found uncued jumps of up to 2 m when the flags inside a
+/// gap's batch were ignored).
+#[test]
+fn under_interpolation_a_correction_inside_a_gaps_batch_still_blends() {
+    let settings = DisplaySettings {
+        drawn_time: DrawnTime::InterpolateLate { d_render: Duration::from_millis(50) },
+        ..Default::default()
+    };
+    let mut layer = DisplayLayer::new(settings);
+    let vols = volumes();
+    let local = |t: HostTime| LocalPresentation { display_time: t, hands: [None, None] };
+    let (a, b) = (at(0.0, 0.0, -6.0), at(1.5, 0.9, -6.0));
+    let still = |f: u64, p: Pos| view(f, frame_time(f, 60), vec![ball(1, p, [0.0; 3])]);
+    let corrected = |f: u64, p: Pos| {
+        let mut o = ball(1, p, [0.0; 3]);
+        o.flags = ViewFlags::default().with(ViewFlags::CORRECTED);
+        view(f, frame_time(f, 60), vec![o])
+    };
+    let shown = |f: u64| HostTime(frame_time(f, 60).0 + 60_000_000);
+    let mut prev = None;
+    for f in 0..10 {
+        let d = layer.frame(FrameInput {
+            view: &still(f, a),
+            display_time: shown(f),
+            volumes: &vols,
+            local: &local(shown(f)),
+        });
+        prev = Some(d.objects[0].pose.pos);
+    }
+    // Frames 10..=27 lost; the batch: 28..=40 at A, 40 again at B (the push arrived late), 41 at B.
+    layer.gap();
+    for f in 28..=40 {
+        layer.take(&still(f, a), shown(36), &vols);
+    }
+    layer.take(&corrected(40, b), shown(36), &vols);
+    let last = still(41, b);
+    let mut prev = prev.unwrap();
+    let mut cued = false;
+    for i in 0..40 {
+        let t = HostTime(shown(36).0 + i * 11_000_000);
+        let d = layer.frame(FrameInput { view: &last, display_time: t, volumes: &vols, local: &local(t) });
+        let o = &d.objects[0];
+        let step = dist(o.pose.pos, prev);
+        assert!(step <= 0.10 || o.cue.is_some(), "frame {i}: an uncued step of {step} m");
+        cued |= o.cue.is_some();
+        prev = o.pose.pos;
+    }
+    assert!(cued, "the late push is cued");
+    assert!(dist(prev, b) < 1e-6, "the ball reaches B");
+}
