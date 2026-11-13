@@ -42,7 +42,7 @@ use bytes::Bytes;
 use crate::agree::{Cut, FinalCut};
 use crate::entry::{DomainId, SignedEntry};
 use crate::ids::{EntryRef, Frame, Hash, Hasher, MemberKey, ObjectId};
-use crate::time::HostTime;
+use crate::time::{HostTime, SimRate};
 use crate::view::FrameView;
 
 // ---- outcomes ------------------------------------------------------------------------------------------------------
@@ -514,6 +514,10 @@ pub enum ImportError {
     NeedsPhysicsImage(ObjectId),
     /// The record at this index does not check against the target root.
     BadProof(usize),
+    /// The world's config record ([`LeafKey::Config`]) checked against the target root, but it names a rate other
+    /// than this replica's. M1 runs a world at one rate, checked at the welcome and again here, so a mismatch is a
+    /// fault to report, never a rate to adopt (S2 v1.4; @coordinator-opus, @world-model).
+    RateMismatch { world: SimRate, mine: SimRate },
     /// The physics image's check hash is not the target root's `physics_global`.
     PhysicsCheck,
     /// Everything checked, but the patched root is not the target: the import was incomplete.
