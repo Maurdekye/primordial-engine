@@ -11,6 +11,7 @@
 //! as their crates land.
 
 pub mod clock;
+pub mod local;
 pub mod sim;
 pub mod standin;
 pub mod vr;
