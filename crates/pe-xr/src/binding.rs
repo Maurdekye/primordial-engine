@@ -217,6 +217,9 @@ pub struct XrTargets {
     /// The swapchain's size; a frame draws into `extent` from the origin, which the projection layer's `imageRect`
     /// matches (render scale as a viewport, @ballpit-viz).
     pub size: [u32; 2],
+    /// The device the images were wrapped on, so that dropping the wrappers without [`XrTargets::release`] (a
+    /// panic, an early return) still waits for the GPU first (binding review 2, Low).
+    device: wgpu::Device,
 }
 
 /// Wrap one runtime-owned Vulkan image of 2 layers.
@@ -312,7 +315,7 @@ impl XrTargets {
                     .push(unsafe { wrap_vulkan(gpu, img, f, size, wgpu::TextureUsages::RENDER_ATTACHMENT, w, w) }?);
             }
         }
-        Ok(XrTargets { color, depth: depth_textures, format, size })
+        Ok(XrTargets { color, depth: depth_textures, format, size, device: gpu.device.clone() })
     }
 
     /// The colour texture of an image, both layers.
@@ -352,13 +355,26 @@ impl XrTargets {
     /// Drop every wrapper, once the GPU is idle on them (review 1, L4): `FrameSink::release_swapchain` calls this,
     /// before `xrDestroySwapchain`.
     pub fn release(&mut self, gpu: &GpuContext) {
+        debug_assert!(self.device == gpu.device, "released on the device the images were wrapped on");
+        self.release_on_own_device();
+    }
+
+    fn release_on_own_device(&mut self) {
         if self.color.is_empty() && self.depth.is_empty() {
             return;
         }
         // Waits until every submission so far has finished on the GPU.
-        let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         self.color.clear();
         self.depth.clear();
+    }
+}
+
+/// Wrappers dropped without [`XrTargets::release`] still wait for the GPU first, so they are safe whoever drops
+/// them. The session-before-GPU-context order stays the holder's ([`crate::open::VrParts`]).
+impl Drop for XrTargets {
+    fn drop(&mut self) {
+        self.release_on_own_device();
     }
 }
 

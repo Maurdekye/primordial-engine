@@ -19,6 +19,7 @@
 pub mod backend;
 pub mod binding;
 pub mod clock;
+pub mod diag;
 pub mod fake;
 pub mod guard;
 pub mod hands;
@@ -30,6 +31,7 @@ pub mod real_session;
 pub mod ring;
 pub mod seam;
 pub mod session;
+pub mod smoke;
 
 #[cfg(test)]
 mod session_tests;
