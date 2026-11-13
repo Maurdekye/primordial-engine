@@ -224,6 +224,45 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
   source serves one image per peer and root (@shader-reviewer, re-review L3).
 - **Tables as well as objects:** governance, claims and the other world-model tables go through `export` and
   `import` the same way as objects.
+- **Script modules** [C, with @fable-reviewer's conditions]: an import can bring rows that name modules
+  the importer does not hold. Modules are never sent (logic.md 2, Q3c): the importer fetches the script's source
+  blobs on the bulk lane and builds the module itself, over the same polled path as an activation (logic.md 6.2).
+  - **Holds.** An import resets the replica's holds to what the imported state itself requires: a hold from before
+    the import, for an activation the import jumped past, would sit at or below `C.frame` and never clear
+    [design-reviewer, Low 1]. Each module the importer lacks holds this machine's votes (S2 `Replica::vote_holds`)
+    from `C.frame`, or from the row's `activate_at` if that is later. pe-diverge never needs the missing set.
+  - **Finished.** The repair is finished only when `vote_holds()` names no frame at or below `C.frame`. Until then
+    pe-diverge asks again on each tick, as for `Pending`, and counts the cure when the holds clear. Holds above
+    `C.frame` are ordinary pending activations, not the repair's. Activation itself never waits: the module is
+    active at its row's frame on every machine, and readiness changes only whether this machine may vote.
+  - **A module that does not come** [C]: a repair still waiting on its holds past `T_module` restarts
+    at the newest final cut, as a repair overtaken past `W_fg` does, and the wait counts toward the stop rule (4.3)
+    under its own failure key, `ModuleMissing`, naming the module hashes. A module no source serves then stops the
+    ladder with a bundle that names it, instead of holding the vote forever. Waiting without a limit is ruled out.
+  - **Why not `W_fg`** [V sizes, I times]: the wait is the source's transfer plus a clean build. The thin links run
+    at 8-32 kbit/s, 1-4 KB/s (plan, M1 thin links), so `W_fg`'s 2 s carries 2-8 KB of source. The lamp's source is
+    1,438 bytes, but the 6.4k-line benchmark guest's (`spikes/iter-bench/guests/logic_mono`) is 188,839 bytes:
+    189 s at 1 KB/s, 47 s at 4 KB/s (16,595 bytes gzipped, if the bulk lane compresses). Its clean build takes
+    1.3 s, and a physics-sized module's 15-20 s (logic.md 6.3). So `W_fg` covers only the smallest scripts.
+  - **`T_module`, from the modules the repair lacks:** `T_module = W_fg + ΣS / R_thin + n T_build`, over the `n`
+    modules the repair lacks, with `S` the bytes of each script's source tree, `R_thin` = 1 KB/s (the thin links'
+    floor) and `T_build` = 20 s (the measured top). The sizes add because the sources share one thin link, and the
+    builds add because v0 builds one at a time, in order (logic.md 6.5); taking the largest instead would time out
+    an honest repair whose modules were arriving, and count a false `ModuleMissing` [design-reviewer, r2 Medium].
+    The benchmark guest alone gets 2 + 189 + 20 = 211 s, two of them 2 + 378 + 40 = 420 s, and the lamp 23 s. It
+    is computed from sizes because the world sets no cap on a script's source: the bounds are a blob's 64 MiB and a
+    transaction's 256 MiB (world-model.md 3.4), which at 1 KB/s take 18.6 hours and 3 days. R-L1 (10) asks WS-logic
+    for a cap, and for the source tree's total size in the row.
+  - **Until R-L1, a deadline that grows as sizes become known** [design-reviewer, r2 Low and r3 Medium]: the row
+    names only the source tree's root, by hash (logic.md 6.1), and a large tree's own nodes do not fit in 2 s (about
+    20 KB for a 301-file tree, 20 s at 1 KB/s [I]). So the deadline, from the import, is
+    `W_fg (1 + d) + B_known / R_thin + n T_build`, where `B_known` is every byte known so far, nodes and blobs, and
+    `d` the deepest tree level reached. It is recomputed each time a node arrives naming more, from the lengths it
+    gives [I: that nodes name each child by hash and length, as a `BlobRef` does (world-model.md 3.4), is for
+    WS-logic to confirm]. The repair restarts and counts `ModuleMissing` when the clock passes the current deadline.
+    Each level then gets its transfer time once its size is known, and `W_fg` is a latency allowance per level,
+    since the row's ref gives no length for the root. Once every blob is known, it equals `T_module` plus the
+    levels' latency.
 
 ### 4.2a Physics: one canonical image per domain
 
@@ -361,6 +400,13 @@ Written on every repair past rung 1, and on every root split (file 14, 4.6).
 - every entry from `Cv` to `C`, with signatures: those stamped from `Cv`'s frame up to `C`'s, as the entry source
   serves them, each `SignedEntry::encode`d, and `C`'s heads. The source can hold entries stamped below `C` that only
   a later cut includes; a replay leaves them out of `C` and of every frame's cut;
+- **script modules** [C]: the runner's identity (`Replica::runner_identity`, canonical bytes, 11.1),
+  and the metered bytes of every module that the state at `Cv` or an entry up to `C` names (`Replica::module`),
+  each under its hash. They are taken in order of (`activate_at`, hash) until the evidence reaches `B_evidence`,
+  and the rest are kept as hashes only, so two machines' bundles for one fault carry the same modules
+  [design-reviewer, Low 2]. A replay then needs a store that holds the rest. A world without modules carries none.
+  The bundle is a local file, so this sends no module anywhere (logic.md Q3c). This is a later version of the
+  bundle format; the code waits for the seams (11.1);
 - the ids of the differing objects; their records under my root and under the quorum's;
 - the rung reached, the sources used, and the times taken;
 - for a ladder that stopped (4.3), each repeated failure named: the rung, the reason and the differing leaves
@@ -390,6 +436,18 @@ per divergence, is not measured yet; the M1 run measures it.] The tables are num
   first at the first frame that diverged. [I: this finds the first differing frame offline, so the live repair never
   waits for it.] Each frame's root re-steps from the nearest keyframe and holds a snapshot, so the frames are capped
   (600 by default). A state at `Cv` that does not check against its root is refused, not replayed.
+- **Modules on replay** [C]: the replay hands the bundle's module bytes to this build's runner and
+  activates each at its row's frame, as the live world does.
+  - It checks each module's bytes against the hash they are filed under (`Hash::of("pe.logic.module", bytes)`,
+    logic.md 6.2) before the runner sees them, and refuses a mismatch by name: a bundle is evidence, not trusted
+    [design-reviewer, Low 3].
+  - Before stepping, it refuses a runner whose identity differs from the bundle's, and prints both identities, so
+    the printout says what differed. A bundle with no identity recorded, over a state with module rows, is refused
+    the same way, as is a build with no runner.
+  - The identity is the runner's own, not the app's build: a replay on another build of the app with the same
+    runner still runs, which is the cross-build comparison the tool exists for [design-reviewer, Medium].
+    `--allow-runner-mismatch` runs anyway, and marks every line it prints as from a different runner.
+  - A module that neither the bundle nor the local store holds is named, and the replay stops, as for a blob.
 - Blobs are content-addressed and outside the hash tree, so a bundle does not carry them: a world whose objects name
   blobs replays only where the local store holds them [I]. A mesh the store lacks is named, and the replay stops,
   rather than showing as a false divergence.
@@ -1134,6 +1192,11 @@ pe-diverge's `merge` replays the model's traces (plan 4.1, rule 2).
   names the overridden entry and its hint, and the overrides appear in the merge preview the admins see
   [C]. A final verdict itself never changes [C], so an agent watching an entry reads the
   merge's outcome from `M`, not a new verdict.
+- **R-L1, a script's source has a size the repair can see (WS-logic, WS-world).** A rung-2 repair that lacks a
+  module waits up to `T_module`, computed from the bytes of the script's source tree (4.2). The `modules` row
+  should carry that total, or a cap on it should hold per world, so that a machine can size the wait before it
+  fetches. Today the only bounds are a blob's 64 MiB and a transaction's 256 MiB, which at the thin links' 1 KB/s
+  take 18.6 hours and 3 days [I].
 
 ## 11. Seams: what pe-diverge needs
 
@@ -1208,6 +1271,19 @@ pub trait Replica {
   `import_at_cut(group, parts, source)`, and rung 1's `replay_from_last_agreed(source)`. pe-diverge calls those
   names; the sketch above is the shape, not the final signatures, which pe-seams v0 fixes.
 - `Root` is a handle that keeps its structure alive, and is `Send`, so a worker can replay it.
+- **Script modules**, in pe-seams' next version (@engine-architect, on ruling), all
+  provided methods with empty defaults:
+  - `runner_identity(&self) -> Option<RunnerIdentity>`, with `RunnerIdentity(pub Bytes)` canonical bytes, so a
+    bundle can say what differed. It covers the runner's own build, not the app's, which the hello already compares:
+    the wasmtime version, the fuel and limit settings, every wasmtime `Config` setting that can change a result
+    (the enabled proposals, relaxed SIMD above all, and NaN canonicalization), the instrumentation pass's version
+    and pe-logic's version [design-reviewer, Medium; @engine-architect: "build id" is the runner's];
+  - `module(&self, hash: &Hash) -> Option<Bytes>`, the metered bytes as `author_module` hashes them;
+  - `vote_holds(&self) -> Vec<Frame>`, level-triggered, which pe-app reconciles with S3's `hold_votes_from` and
+    `release_votes_from`. An import resets it to what the imported state requires (4.2).
+
+  pe-diverge reads the first two for bundles (6) and the third to finish a rung-2 repair (4.2). @vdw-physics's
+  runner fills them in `ReplicaImpl`.
 - Roots of the final cuts of the last `T_keep` are kept, and served to peers: enough for repair. A machine serves
   only roots it matched at a final cut, and, during a root-split episode, its own root at the split's cut, which is
   not final (section 5). The requester checks every byte against the reference's root either way.
@@ -1334,6 +1410,7 @@ mid-session never moves a bound that is already running [design-reviewer].
 |---|---|---|
 | `T_keep` | Age of the final cuts whose roots are kept and served (and at least the last 2 cuts) | 1.5 s |
 | `W_fg` | Deepest replay run in the foreground | 2 s: the old speculation window, `2 * hz` frames at any rate [V `spikes/session-sim/src/r18.rs:108`] |
+| `T_module` | How long a rung-2 repair waits for a module it lacks before it restarts and counts `ModuleMissing` (4.2) | Over the `n` modules a repair lacks: `W_fg + ΣS / R_thin + n T_build`, with `R_thin` = 1 KB/s and `T_build` = 20 s; 211 s for the 6.4k-line benchmark guest alone, 23 s for the lamp. Until R-L1, a deadline recomputed as the source trees' nodes name lengths, with `W_fg` per tree level (4.2) [C; sizes V, times I] |
 | `T_peer` | Wait for a repair source before trying the next | 4 round-trip times, at least 100 ms |
 | `N_descend` | Descents per rung-2 attempt | 3 |
 | `B_serve`, `R_serve` | Serving budget per peer: burst and refill | 8 MiB; 4 MiB/s |
