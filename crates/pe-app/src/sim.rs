@@ -15,11 +15,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use pe_api::queue::Receipt;
 use pe_render::present::FrameSlot;
 use pe_replica::{DriveReport, Driver};
+use pe_seams::world_api::TxId;
 use pe_seams::{
-    AgreeEvent, Agreement, ChainId, Cut, Frame, FrameClock, FrameView, HandFeed, HostTime, Lane, MemberKey, NetEvent,
-    Replica, SelfTest, SimRate, Transport,
+    AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, HandFeed, HostTime,
+    Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate, Transport,
 };
 
 use crate::clock::HostClock;
@@ -119,6 +121,9 @@ pub struct SimStats {
     /// Frames whose hand inputs step 2 held back because agreement reported this member backlogged after a stall
     /// (S3 v1.5, [`Agreement::backlogged`]).
     pub hands_paced: u64,
+    /// Edits step 2 took from pe-api's queue that agreement took, and those it refused (app.md 3.1).
+    pub edits: u64,
+    pub edits_refused: u64,
     pub votes: u64,
     pub finalized: u64,
 }
@@ -146,6 +151,19 @@ pub struct Sim {
     net_hook: Option<Box<dyn NetHook>>,
     /// S3's events, kept for a test or a diagnostic (`with_event_log`); otherwise only counted.
     event_log: Option<Arc<std::sync::Mutex<Vec<AgreeEvent>>>>,
+    /// pe-api's ports (app.md 3.1), with what this loop keeps for them.
+    api: Option<ApiLoop>,
+}
+
+/// pe-api's ports and the loop's own state for them (app.md 3.1).
+struct ApiLoop {
+    ports: crate::api::Ports,
+    /// The frame step 2 last took an edit for: one a frame.
+    edit_frame: Option<Frame>,
+    /// The entries of the `Voided` events drained since the last `confirm_cut`.
+    voided: Vec<EntryRef>,
+    /// The final cut the change log last confirmed.
+    confirmed: Option<CutRef>,
 }
 
 /// What net.rs does on the simulation thread (@shader-lang m8a27b2a40aeb). Admission is decided from the agreed
@@ -199,7 +217,37 @@ impl Sim {
             net: None,
             net_hook: None,
             event_log: None,
+            api: None,
         }
+    }
+
+    /// pe-api's ports over this simulation (app.md 3.1), from its replica's present world as the frame-0 snapshot, its
+    /// agreement's line, its clock's rate and its local member; `wake` wakes the simulation thread when an edit is
+    /// queued. `None` unless the replica is a pe-world replica and there is a local player (`with_local` first): an
+    /// edit goes on the member's chain, so a machine with no member has no edit port (@design-reviewer's Low on
+    /// slice 1). Call before the first tick, then [`Sim::with_api`].
+    pub fn ports(&self, world_name: &str, wake: impl Fn() + Send + Sync + 'static) -> Option<crate::api::Ports> {
+        let genesis = crate::api::snapshot_of(&*self.replica)?;
+        let facts = crate::api::Facts {
+            world_name: world_name.into(),
+            line: self.agree.line(),
+            rate: SimRate::new(self.clock.rate_hz())?,
+            me: Some(self.local.as_ref()?.chain.me()),
+        };
+        Some(crate::api::Ports::new(genesis, facts, wake))
+    }
+
+    /// pe-api's ports (app.md 3.1): step 2 drains `ports.queue` one edit a frame, the change log follows the views and
+    /// agreement's final cut, and the shared state `ApiWorld` reads follows the replica.
+    ///
+    /// # Panics
+    ///
+    /// Without a local player (`with_local` first): its queued edits could never be submitted, and their callers would
+    /// wait out pe-api's timeout with no reason given.
+    pub fn with_api(mut self, ports: crate::api::Ports) -> Sim {
+        assert!(self.local.is_some(), "pe-api's edit port needs this machine's member: with_local first");
+        self.api = Some(ApiLoop { ports, edit_frame: None, voided: Vec::new(), confirmed: None });
+        self
     }
 
     /// The network (app.md 2): step 1 drains `net` into agreement and step 3 sends agreement's messages through it.
@@ -215,6 +263,11 @@ impl Sim {
     pub fn with_event_log(mut self, log: Arc<std::sync::Mutex<Vec<AgreeEvent>>>) -> Sim {
         self.event_log = Some(log);
         self
+    }
+
+    /// This machine's member, if there is a local player.
+    pub fn local_member(&self) -> Option<MemberKey> {
+        self.local.as_ref().map(|l| l.chain.me())
     }
 
     /// The local player's chain and the seq of its last entry agreement took, if there is a local player.
@@ -265,6 +318,9 @@ impl Sim {
             }
             for e in net.events() {
                 self.stats.net_events += 1;
+                if let (Some(api), NetEvent::LinkUp { peer } | NetEvent::LinkDown { peer }) = (&self.api, &e) {
+                    api.ports.shared.link(*peer, matches!(e, NetEvent::LinkUp { .. }));
+                }
                 if let Some(hook) = &mut self.net_hook {
                     hook.on_event(&e, &mut *self.agree);
                 }
@@ -280,6 +336,35 @@ impl Sim {
         // While agreement reports this member backlogged after a stall (S3 v1.5), the frame's hand inputs are held
         // back: they would only be void as late, and they would lengthen the flush. Edits never come through here, so
         // nothing holds them back.
+        // The frame's edit goes first, before its hand entries, so that a dry run made while pe-api's queue was empty
+        // names the seq the edit gets (app.md 3.1). One a frame, never paced: an edit is never void as late for
+        // being held back, and the queue's wake (step 7) brings its frame's tick.
+        if let (Some(l), Some(api)) = (&mut self.local, &mut self.api)
+            && api.edit_frame.is_none_or(|f| p > f)
+        {
+            api.edit_frame = Some(p);
+            for (ticket, sub) in api.ports.queue.drain(1) {
+                let payload = sub.tx.encode();
+                let bytes = payload.len();
+                let entry = l.chain.entry(self.replica.domain(), p, Class::Edit, payload);
+                let receipt = match self.agree.submit(entry) {
+                    Ok(signed) => {
+                        l.chain.took(&signed);
+                        self.stats.edits += 1;
+                        // Indexed now, not only when a view's record names it, so `edit()` answers for this machine's
+                        // own change at once (@api-eng's Low on slice 1).
+                        api.ports.shared.index_edit(signed.id(), Arc::new(sub.tx), bytes);
+                        let (chain, seq) = l.chain.head();
+                        Receipt::Submitted { change: TxId::from(signed.id()), frame: p.0, chain, seq }
+                    }
+                    Err(e) => {
+                        self.stats.edits_refused += 1;
+                        Receipt::Refused(e)
+                    }
+                };
+                api.ports.queue.settle(ticket, receipt);
+            }
+        }
         let fresh = self.input_frame.is_none_or(|f| p > f);
         if let (true, Some(l), Some(view)) = (fresh, &mut self.local, &self.published) {
             if self.agree.backlogged() {
@@ -293,6 +378,10 @@ impl Sim {
                 self.stats.inputs_refused += u64::from(refused);
             }
             self.input_frame = Some(p);
+        }
+        if let (Some(l), Some(api)) = (&self.local, &self.api) {
+            let (chain, last) = l.chain.head();
+            api.ports.shared.draft(chain, last + 1);
         }
         // 3. Agreement's time. Its messages go to the network's outbox; a full queue is pe-net's local fault, never
         // a stall (transport.md 7). A world alone has nowhere to send them.
@@ -315,21 +404,66 @@ impl Sim {
         }
         self.stats.votes += report.votes.len() as u64;
         self.stats.finalized += report.finalized.len() as u64;
+        if let Some(api) = &self.api {
+            if let Some(k) = report.advance.rolled_back_to {
+                api.ports.shared.rolled_back(k);
+            }
+            api.ports.shared.caught_up(report.advance.caught_up);
+        }
         self.count_hold(report.advance.caught_up);
         // 5. S3's events. pe-diverge will take them in one ordered list with the finalize results.
         let events = self.agree.events();
         self.stats.events += events.len() as u64;
+        if let Some(api) = &mut self.api {
+            api.voided.extend(events.iter().filter_map(|e| match e {
+                AgreeEvent::Voided { entry, .. } => Some(*entry),
+                _ => None,
+            }));
+            // On `final_cut`, never on `CutFinal`: a cut's voids are queued no later than the call in which
+            // `final_cut` first reports it (S3 v1.6), so they are in hand here.
+            if let Some(fc) = self.agree.final_cut()
+                && api.confirmed.as_ref() != Some(&fc.cut.at)
+            {
+                api.ports.log.confirm_cut(&fc.cut, &api.voided);
+                api.voided.clear();
+                api.confirmed = Some(fc.cut.at);
+            }
+        }
         if let Some(log) = &self.event_log {
             log.lock().expect("the event log").extend(events);
         }
         // 6. The replica's newest view. While it catches up the view holds, so nothing new goes out.
         let view = self.replica.view();
         if !self.published.as_ref().is_some_and(|v| Arc::ptr_eq(v, &view)) {
+            if let Some(api) = &self.api {
+                self.feed_api(api, &view);
+            }
             self.slot.publish(view.clone());
             self.published = Some(view);
             self.stats.published += 1;
         }
         Some((p, report))
+    }
+
+    /// Step 6 for pe-api (app.md 3.1): the view's change records, the present world, the world at `Cv`, and the
+    /// transactions of the edit entries the records name, each decoded once.
+    fn feed_api(&self, api: &ApiLoop, view: &FrameView) {
+        let shared = &api.ports.shared;
+        api.ports.log.publish(&view.changes, view.final_frame.map(|f| f.0), view.health);
+        if let Some(s) = crate::api::snapshot_of(&*self.replica) {
+            shared.keep(s);
+        }
+        if let Some(s) = crate::api::agreed_of(&*self.replica) {
+            shared.agreed(s);
+        }
+        for r in view.changes.iter().filter(|r| r.class == Class::Edit && !shared.has_edit(&r.entry)) {
+            let signed = self.agree.entries_at(r.frame).and_then(|es| es.iter().find(|e| e.id() == r.entry));
+            if let Some(e) = signed
+                && let Some(tx) = pe_world::edit::Transaction::decode(&e.entry.payload)
+            {
+                shared.index_edit(r.entry, Arc::new(tx), e.entry.payload.len());
+            }
+        }
     }
 
     fn count_hold(&mut self, caught_up: bool) {
@@ -533,6 +667,61 @@ mod tests {
         }
         assert_eq!(s.stats().ticks, 4);
         assert_eq!(s.stats().inputs, 4, "two at frame 2 and two at frame 3, none from the second tick at frame 2");
+    }
+
+    /// An edit through pe-api's queue (app.md 3.1): step 2 submits it first in its frame and settles its ticket, the
+    /// world steps it, the change log records it, and `ApiWorld` shows the new object and answers `edit()` for it.
+    #[test]
+    fn an_edit_from_pe_api_s_queue_is_submitted_stepped_and_recorded() {
+        use crate::api::{ApiWorld, Facts, Ports};
+        use pe_api::api::WorldSource;
+        use pe_api::queue::Submission;
+        use pe_seams::world_api::Wait;
+        use pe_world::edit::{Actor, Op, Target, Transaction};
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, Duration::from_millis(133), clock.clone()).expect("pit");
+        let genesis = crate::api::snapshot_of(&*replica).expect("a pe-world replica");
+        let objects = genesis.all().len();
+        let facts = Facts { world_name: "Pit".into(), line: LineId::origin(), rate: RATE, me: Some(me) };
+        let ports = Ports::new(genesis, facts, || {});
+        let (s, _slot) = with_replica(replica, clock.clone(), Budget::new(RATE));
+        let mut s = s.with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4]))).with_api(ports.clone());
+        let world = ApiWorld(ports.shared.clone());
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        let draft = world.draft_for(me.into());
+        let create = Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] };
+        let tx =
+            Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops: vec![create], blobs: vec![] };
+        let ticket = ports.queue.submit(Submission { tx: tx.clone(), base: 1 }).expect("room in the queue");
+        s.tick(clock.host_time_of(Frame(2))).expect("ticked");
+        let Some(Receipt::Submitted { change, frame, seq, .. }) = ports.queue.receipt(ticket, Instant::now()) else {
+            panic!("not submitted");
+        };
+        assert_eq!((frame, seq), (2, draft.seq), "stamped at its frame, and first in it: the seq the draft named");
+        for f in 3..=5 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        let fate = ports.log.wait(change, Wait::Local, Instant::now()).expect("stepped here");
+        assert_eq!(fate.frame, Some(2));
+        assert!(matches!(fate.outcome, Some(pe_seams::Outcome::Applied { .. })), "{fate:?}");
+        assert_eq!(world.latest().all().len(), objects + 1, "the new object is in the newest snapshot");
+        assert_eq!(world.edit(change.into()).as_deref(), Some(&tx), "and its transaction in the index");
+        assert_eq!((s.stats().edits, s.stats().edits_refused), (1, 0));
+    }
+
+    /// A machine with no member has no edit port: no ports, and `with_api` refuses to attach any (@design-reviewer's
+    /// Low on slice 1), so no queued edit can wait unanswered.
+    #[test]
+    #[should_panic(expected = "with_local first")]
+    fn a_machine_with_no_member_has_no_edit_port() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, _slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        assert!(s.ports("Pit", || {}).is_none(), "no ports without a local player");
+        let local = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])));
+        let ports = local.ports("Pit", || {}).expect("ports with one");
+        let (bare, _slot) = in_the_ball_pit(clock, Budget::new(RATE));
+        let _ = bare.with_api(ports);
     }
 
     /// While agreement reports this member backlogged (S3 v1.5), step 2 makes no hand inputs, and it makes them again
