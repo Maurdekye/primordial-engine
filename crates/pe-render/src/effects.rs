@@ -47,6 +47,8 @@ pub struct EffectCounters {
     /// Never played: re-simulated with no newly arrived cause, or with its cause later than `T_effect_lag`.
     pub stale_dropped: u64,
     pub stopped: u64,
+    /// Stops sent at a gap, for every played effect the newest view doesn't list (see [`EffectGate::gap`]).
+    pub gap_stops: u64,
 }
 
 #[derive(Default)]
@@ -114,6 +116,19 @@ impl EffectGate {
         // Forget keys past W_fg, by their frame's time.
         let w = self.settings.w_fg;
         self.played.retain(|_, t| t.plus(w) >= now);
+        out
+    }
+
+    /// The next view follows a gap (render.md 3): the views between are lost, with any retraction in them. Every
+    /// played effect the newest view doesn't list is stopped (its sink fades it; a finished one-shot ignores it) and
+    /// stays remembered, so a replay never plays it again. Waiting effects go. The newest view's effects then pass
+    /// through `take` as usual.
+    pub fn gap(&mut self, newest: &FrameView) -> Vec<EffectCommand> {
+        let listed: Vec<EffectKey> = newest.effects.iter().map(|e| e.key).collect();
+        self.waiting.clear();
+        let out: Vec<EffectCommand> =
+            self.played.keys().filter(|k| !listed.contains(k)).map(|k| EffectCommand::Stop(*k)).collect();
+        self.counters.gap_stops += out.len() as u64;
         out
     }
 
