@@ -38,4 +38,4 @@ pub use digest::BodyDigest;
 pub use error::PhysicsError;
 pub use image::{CheckHash, Transfer, WorldImage};
 pub use pe_core::ids::ObjectId;
-pub use world::{GrabSpring, JointDesc, JointKey, JointKind, PhysicsWorld, Pose, Push, WriteBack};
+pub use world::{GrabSpring, HoldReach, JointDesc, JointKey, JointKind, PhysicsWorld, Pose, Push, WriteBack};
