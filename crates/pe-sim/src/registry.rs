@@ -140,12 +140,9 @@ pub struct ComponentDesc {
 
 impl ComponentDesc {
     /// Validates the layout (see the module docs). Fields may be listed in any order; they are kept sorted
-    /// by offset.
+    /// by offset. No fields is a zero-size component, whose rows are empty: a script's tag (world-model.md 7.9).
     pub fn new(id: ComponentId, name: &str, mut fields: Vec<FieldDesc>) -> Result<Self, Error> {
         let bad = |m: String| Err(Error::BadLayout(format!("component {name} ({}): {m}", id.0)));
-        if fields.is_empty() {
-            return bad("no fields".into());
-        }
         fields.sort_by_key(|f| f.offset);
         let mut at = 0u32;
         let mut max_align = 1u32;

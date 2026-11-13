@@ -125,11 +125,14 @@ fn corrupt_or_mismatched_bytes_are_refused() {
     swapped[at..at + 8].copy_from_slice(&b);
     swapped[at + 8..at + 16].copy_from_slice(&a);
     assert!(Snapshot::from_bytes(&swapped, reg).is_err());
-    // A registry without the scenario's components cannot read or restore it, and a failed restore leaves a
-    // populated store unchanged.
+    // A registry without the scenario's components cannot read it. A snapshot carries its registry (world-model.md
+    // 7.9: components register in a live world), so a store restores it unless the two registries give one id two
+    // descriptions, a snapshot of another world; that failed restore leaves a populated store unchanged.
     let bare = std::sync::Arc::new(pe_sim::Registry::new());
     assert!(Snapshot::from_bytes(&bytes, &bare).is_err());
-    let mut other = SimStore::new(bare, SEED);
+    let mut clash = pe_sim::Registry::new();
+    clash.register(pe_sim::registry::ComponentDesc::new(HEAT, "NotHeat", vec![]).unwrap()).unwrap();
+    let mut other = SimStore::new(std::sync::Arc::new(clash), SEED);
     for _ in 0..10 {
         let o = other.mk(4);
         other.insert(o, Transform::local([1.0, 2.0, 3.0])).unwrap();

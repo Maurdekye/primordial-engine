@@ -332,6 +332,24 @@ which fixes the origin's role deliberately.
   | `Hand` | the owning `MemberKey`, side, grip, engaged, mode (8.1) | created by world logic at admission; then inputs of its owner only (section 8) |
   | `SimSize` | the simulation size of 3.5 | set at creation; edits |
   | `Protection` | the owning `MemberKey` (7.8) | edits by its owner |
+  | a script's **tag** (slice D) | nothing: zero size, one per script version, its id derived like the script's other components (7.9) | edits with the object's edit right (attach = add, detach = remove); a script's create gives the new object its tag; a commit re-keys it |
+
+  **Which engine components scripts may write** (@coordinator-opus m58c1611231fe; slice D), only on objects
+  carrying the script's tag (7.9), and each written row checked as an edit's would be:
+
+  | Component | Scripts may write | Why |
+  |---|---|---|
+  | `Transform` | yes, never a hand's (a hand carries no tag, 7.9) | moving things is what logic is for; a written pose of a body is a physics effect (9.2a) |
+  | `Light` | yes | the demo's lamp; checked like an edit (the cone-angle rule) |
+  | `Appearance` | yes | display only |
+  | `Node` | no | the hierarchy API only; scripts create, destroy and orphan through the runner's commands |
+  | `Name` | no | a `BlobRef`, and a script has no way to bring a blob into the world |
+  | `Shape`, `Body` | no | pe-replica binds bodies from edits' footprints in M1; a later slice may report them as effects |
+  | `BodyState` | no | physics state, written only by the step |
+  | `Hand` | no | each member's own, through inputs (8.1) |
+  | `SimSize` | no | it chooses the object's region layer (3.5, M4); writes come with that work |
+  | `Protection` | no | rewriting `owner` would be an ownership change through logic (@iter-bench's question, mc351d0082333) |
+  | another script's components or tag | no | a script writes only its own components and the engine ones marked here |
 
 - **The registry is world state** [I]. Today it is configuration shared by every peer [V `registry.rs:216-218`]. With
   a logic edit in M1 [U mc40fc6379bc6, U1], a script that declares components changes the schema at a frame. So:
@@ -339,13 +357,17 @@ which fixes the origin's role deliberately.
   - a script's components are registered by the edit that commits the script, at that frame;
   - the registry is a world table (section 5.4), hashed, and rolled back with everything else;
   - a component id never changes its description. A changed schema gets a new id, and a migration is an edit.
-- **Component ids are derived too** (@chunks-reviewer's F7). `ComponentId` widens to 128 bits. Engine components
-  keep small fixed values below 2^32. A script's component gets `BLAKE3("pe.component" ‖ script asset id ‖ name ‖
-  schema hash)[..16]`. The script asset id is stable across the script's versions (@iter-bench), so a code commit
-  that leaves a component's description unchanged keeps its id and its rows, and the swap needs no migration; a
-  changed description gets a new id. Two commits on two branches can never give one id two meanings: the same id
-  means the same description everywhere. `Register` of an id already registered with the same description is a no-op; with a
-  different one (a collision) it refuses the transaction.
+- **Component ids are derived too** (@chunks-reviewer's F7). `ComponentId` widens to 128 bits. Engine components keep
+  small fixed values below 2^32. A script's component gets `u128::from_le_bytes(BLAKE3("pe.component" ‖ V ‖ name ‖
+  schema hash)[..16])` (the schema hash is 6.6's BLAKE3 hash of the description, which has no id in it, so the
+  derivation is not circular: pe-sim's own XXH64 schema hash covers the id and is not used here; @iter-bench
+  ma47f902e5901), where **V is the content hash of one script version**, the hash of its source tree
+  (@coordinator-opus mf9dbcfe481ea and me5689a5c645c, @iter-bench m6402c933f295), not the stable asset id: this
+  supersedes r7's asset-keyed ids. Every version has its own ids, and a commit **re-keys** the old version's rows to
+  the new ones in its own transaction (7.9); a future per-copy fork is the same operation on one copy's rows. An id
+  below 2^32 is engine space and is refused at `Register` (a chance of 2^-96). Two commits on two branches can never
+  give one id two meanings: the same id means the same description everywhere. `Register` of an id already registered
+  with the same description is a no-op; with a different one (a collision) it refuses the transaction.
 
 ### 3.3 Hierarchy and transforms
 
@@ -614,9 +636,10 @@ World
     reference;
   - the declared components;
   - `activate_at`, the agreed frame;
-  - the faulted mark.
+  - the faulted mark: per asset, not per object (@coordinator-opus mf9dbcfe481ea, item 4). A fault stops all of
+    the script's systems; the mark is set after the stage (9.2a) and cleared by the asset's next commit.
 
-  No module bytes are in the world (3.4).
+  No module bytes are in the world (3.4). The byte layout is 6.6's.
 - **Governance:** the tables only. M1 stores the member list (keys and roles), the role table (permission bits) and
   the ban list, all hashed. The one permission M1 checks is `EDIT` (section 7.6). Roles follow the user's rulings,
   with no M1 simplification (@coordinator-opus, m78746a465fd2):
@@ -867,7 +890,7 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     steps both sides and compares roots.
 - **The tables**, in this order (the `LeafKey::Table` index is the position): 0 registry, 1 lines, 2 modules,
   3 governance, 4 claims, 5 cooldowns, 6 tombstones, 7 hand packs, 8 push windows. 6.2's list gains the last two,
-  which 8.1 already puts in the root. M1 has no lines or modules yet, so those two are empty maps.
+  which 8.1 already puts in the root. M1 has no lines yet, so that table is an empty map.
 - **A table's hash** (the "sorted-map hash") = `H("pe.table" ‖ index u8 ‖ count u64 ‖ for each entry in key order:
   lp(key bytes) ‖ lp(value bytes))`. An empty table hashes the same way with count 0; it is never omitted, because
   the tables root names each table by position. A table's export record is its whole entry list (`count ‖ entries`,
@@ -880,19 +903,36 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
 - **Import order** (@diverge-eng's Low 1): canonical row bytes are decoded through the registry (`Pos` fields by
   kind), so an import checks every record's hash against the target root first, which needs no registry, then
   applies the registry table, then the other tables, then the objects, decoding each against the registry it just
-  applied. M1 imports no registry other than the importer's own (`RootMismatch`, 6.5's code), so M1 never decodes
-  against a registry that differs.
+  applied. **From slice D the registry and modules tables can differ** (a joiner that hasn't seen a commit). An
+  import installs the union of its registry and the target's before it decodes any object record, since a record
+  may carry a component only the target has registered (@design-reviewer's Low 1), keeping the target's entry
+  where both hold one id with a different asset or description, so objects decode as the target encoded them and
+  the root check settles the rest (@chunks-reviewer's r2 L2); then patches the objects and
+  tables; then prunes the registry to the target's. If an object still has a row of a pruned component, the patched
+  root differs from the target and the import fails with `RootMismatch`: such a row still hashes (its description
+  is kept until the comparison), never panics, and the import builds a new `World`, so a refused import leaves the
+  importer unchanged (@chunks-reviewer's L5). The modules table is replaced whole; pe-replica then rebinds what
+  runs (9.2a).
 - **Byte order** (@chunks-reviewer's M3): every integer and float is little-endian (floats as their IEEE bits),
   including ids inside records and values and 6.2's `object id u128` in a leaf (`Node::hash` writes it so), except
   **table keys, where ids are `u128` big-endian**, so a key's byte order is id order. Counts come before lists, and
   `lp(b)` is a `u64` length then the bytes. An optional id is a byte 0, or 1 then the `u128`.
 - **Table entries.** Keys are fixed width, so sorting entries by key bytes is the key order:
-  - registry: key the component id; value `schema hash (32) ‖ description`, where **description** = `lp(name) ‖ row
+  - registry: key the component id; value `asset (32) ‖ schema hash (32) ‖ description`, where `asset` is the
+    script asset that registered the id (zero for an engine component; slice D, so a script id names its asset, 7.9)
+    and **description** = `lp(name) ‖ row
     size u32 ‖ field count u32 ‖ per field, in offset order: lp(name) ‖ kind u8 ‖ offset u32 ‖ count u32 ‖
     lp(unit)`, the unit in 3.6's canonical spelling, empty for none. The kind
     numbering is frozen: U8 0, U16 1, U32 2, U64 3, I8 4, I16 5, I32 6, I64 7, F32 8, F64 9, Bool 10, ObjectRef 11,
     BlobRef 12, SimBlobRef 13, Pos 14, MemberKey 15, EntryRef 16, Hash 17; a new kind takes the next number;
-  - lines, modules: no entries in M1;
+  - lines: no entries in M1;
+  - modules (slice D): key the script asset id (32); value `version entry (32) ‖ version op u32 ‖ source (hash 32 ‖
+    len u64) ‖ toolchain (32) ‖ sdk (32) ‖ author_module (32) ‖ component count u32 ‖ the version's component ids,
+    u128 each, strictly ascending (the tag among them) ‖ activate_at u64 ‖ faulted (a byte 0, or 1 ‖ frame u64 ‖
+    kind u8)`. V is `source.hash`, stored once (@chunks-reviewer's L1). Decoding is strict: a repeated or
+    out-of-order id, a faulted byte other than 0 or 1, or a kind that is not one of pe-logic's `Fault::code()`
+    values 1 to 13 (logic.md 3.6) does not decode; `HostStack` has no code, since it is one machine's own fault and
+    never world state;
   - governance: key the member key (32); value the permission bits `u32`;
   - claims: key the object id; value `hand u128 ‖ member (32) ‖ since u64 ‖ until u64`;
   - cooldowns: key `member (32) ‖ object id`; value `until u64`;
@@ -1241,6 +1281,102 @@ The user (mbe87e750ca35, V1): "simple protections can exist for objects the same
 - One exception (8.1, agent powers, a later slice): an admin may clear `Protection`'s lock flag, and only that
   flag, so a departed owner's grab-and-push lock does not bind a shared object forever.
 - Later (M5): wearing, saving, exporting and fetching the assets of a protected object, under the same owner rule.
+
+### 7.9 Scripts in the world (slice D) [I, for review: r2]
+
+logic.md's N4, N5 and N13, under @coordinator-opus's rulings mf9dbcfe481ea, me5689a5c645c, m028c4bf1d412,
+m83562b197235 and m58c1611231fe (with @fable-reviewer's third shape, m1711da962a3b), and @design-reviewer's and
+@chunks-reviewer's reviews of r1 (m705a821af13f, m52c574e02ece; m983a52c0cad8). A script attaches to an object by
+an implicit **tag** component; there is no binding row and no spawn mark; component ids hash the version (3.2).
+
+- **Ids.** `pe_world::script_component_id(V, name, fields) -> ComponentId` is the one derivation: 3.2's formula,
+  with the name length-prefixed (`lp(name)`, 6.6's) and the schema hash of the description built from the name
+  and fields (6.6, no id). `Register`'s check and
+  pe-replica's binding both call it; pe-logic does not depend on pe-world, so pe-replica derives the ids from V and
+  the manifest and passes them to `Loaded::bind`. The modules row's id list is then a cross-check, in id order
+  where `bind` wants manifest order.
+- **The tag.** Every script version declares one zero-size component of its own, named `"pe.tag"` (an SDK name is
+  a Rust identifier and has no `.`, so it never clashes), its id derived like the version's other components.
+  `Register` refuses `.` in any other component's name, so no script component can pose as an engine one, which
+  the manifest names `pe.X` (@chunks-reviewer's code Low 1).
+  Attaching a script is adding its tag (`SetRow` with empty row bytes); detaching is removing it (`RemoveRow`), and
+  the script's other rows stay. Every system binds the tag implicitly, so an object may run any number of scripts.
+  pe-sim allows zero-field components and empty row writes for this (10).
+  - **Its row version** is the attaching entry and op, like any `SetRow`, so a precondition can name it; a tag a
+    script's create added (below) has the zero row version of a row no edit added (7.6).
+  - **It needs the object's edit right** (item 3): adding or removing it is an ordinary row write under 7.6's
+    permission checks and 7.8's protections, so a script cannot attach itself to someone else's object.
+    Protecting an object later keeps the tags already on it; its owner removes them to revoke the consent
+    (@chunks-reviewer's r2 L3).
+  - **Never on a hand** (@design-reviewer's r2 Low 2): adding a tag to an object with a `Hand` row is refused
+    `Invalid`, so no script can move a hand outside 8.1's input rules (reach, speed, claims following the hand).
+  - **A script's create** gives the new object the script's tag as well as the row it carries, so the script sees
+    its own spawns (logic.md 3.3). In v0 a create carries only the script's own components (@iter-bench).
+- **The destroy right** is "objects carrying the script's tag" (logic.md 3.3). A script's destroy removes the
+  object and every tagged object beneath it that is not under an untagged one; each topmost untagged descendant
+  (someone's add-on) becomes a root in place, keeping its world pose and its subtree (the orphan rule). A member's
+  `Delete` is different: it carries the member's own rights and takes the whole subtree (7.5). Destroys leave
+  tombstones (9.2a), so `Undelete` and the user's delete-order rule hold for script destroys too.
+- **Writes.** A script writes its own components and the engine components marked "scripts may write" in 3.2, only
+  on objects carrying its tag; the owner's consent to the tag covers the writes, on protected objects they own too
+  (m58c1611231fe). Each written engine row passes `World::check_script_row(component, object, bytes)`, which runs
+  the edit path's per-row checks with no author: row validity (`Light`'s angles, `Transform`'s range and
+  normalisation, field rules) and a held object's pose (`Held`). A refusal faults the script's call (the runner's
+  `InvalidRow`, code 11), never clamps. pe-world exports the table of engine components a script may name: the
+  manifest name (`pe.Transform`, `pe.Light`, `pe.Appearance`, and the read-only ones), the id and the mark.
+- **A superseded version's ids** (@chunks-reviewer's M1). An edit that adds or writes a row, or adds a tag, of a
+  script component whose asset's current version doesn't list it (an author who resolved names before a commit
+  they hadn't received) is refused as `Stale { precondition: OWN_CHECK, current, winner }` with that asset's
+  modules row version as `current` and its entry as `winner`, so the author re-resolves. The registry names each
+  script id's asset (6.6). Removing such a row or tag is allowed, for cleanup.
+- **`Register { components }`** comes only in a transaction with one `CommitScript`, and registers that version's
+  components, the tag included, under the commit's asset. Each id must equal `script_component_id(V, ..)` and none
+  may be below 2^32 (`Invalid` otherwise). An id already registered with the same description and asset is a
+  no-op; with another description or asset, the transaction is refused (a collision). The registry is a world
+  table (5.4), rolled back like the rest; registered ids are never removed in M1.
+- **`CommitScript { script, base, source, toolchain, sdk, author_module, activate_at }`** needs `EDIT`.
+  - `activate_at` must equal the entry's frame stamp (logic.md 6.1); anything else is `Invalid`.
+  - `base: None` makes a new script and is refused as `Stale` if the asset has a row. `base: Some(v)` must equal
+    the row's version, or the op is refused as `Stale { precondition: OWN_CHECK, current, winner }`, with the row's
+    version as `current` and its entry as `winner`: the loser rebases (R7).
+  - **V is the source tree's hash** (`source.hash`). A commit whose V any other asset has ever had is refused as
+    `Invalid` ("same version as asset X"), since the two would share every id, tag included (ruled,
+    me5689a5c645c item 2 and m028c4bf1d412: any V it ever had; to revisit with logic on objects, where a copy is a
+    reference). The check is exact and costs no history: V's tag id is registered, under another asset.
+  - **V equal to the base's V** (a toolchain or SDK change only) re-keys nothing and moves no row version: the op
+    only rewrites the modules row (m83562b197235, L4).
+  - The op writes the asset's modules row (6.6): version = this entry and op, the hashes, the component ids,
+    `activate_at`, and no faulted mark.
+- **Re-keying** (ruled, me5689a5c645c item 1; m028c4bf1d412). A commit with a base whose V differs moves every row
+  of the old version's components to the new version's same-named component, object by object, **the tag rows
+  included** (or every attached object would detach), in the commit's own transaction, so no frame sees half-moved
+  rows. Each moved row takes the commit as its row version, so an edit that read the old row is stale.
+  - **Field mapping**, deterministic and identical on every peer: a field with the same name, kind, `count` and
+    unit copies its value; a new field, or a same-name field whose kind, count or unit changed, starts at zero
+    (a unit is meaning, never copied silently: m83562b197235, L3); a dropped field is gone; a component whose name
+    disappears loses its rows. Padding fields (names starting `_`) are always zero and are never a loss. A moved
+    row the new description's checks refuse refuses the commit.
+  - **A loss is a dropped field or component, or a zeroed field, whose value was not zero** (a field that was zero
+    loses nothing). A loss on an object the committer could not
+    edit (held by another member, or protected under 7.8 by another owner) refuses the commit, naming those
+    objects; elsewhere it applies. Lossless moves apply on every object, others' and protected ones included. Why
+    (m028c4bf1d412): every M1 script is world-level, the user's "linked script" (mb500e054abf1), so changing it in
+    one place changes it everywhere; but an `EDIT` holder on the asset must not wipe a protected owner's data by
+    retyping a field. A blocked author can still ship a compatible change (add a field instead of retyping one).
+  - **Tombstones are re-keyed too** (@chunks-reviewer's code M1): a deleted object's rows (7.5) move like live ones
+    and count in the bound, so an `Undelete` brings back the new version's rows, never ones no system binds. A loss
+    there is judged by the protection the object had: its tombstone's own `Protection` row, else its nearest
+    ancestor's, live or tombstoned (7.8 covers the whole subtree). Claims end at a delete, so none applies.
+  - **Its own bound** (@chunks-reviewer's M2): a re-key moves at most `MAX_REKEY_ROWS` = 32,768 rows [I, to
+    measure: the frame-time spike of moving them in one step]; past it the commit is refused as
+    `TooLarge { limit: 32768 }`. It is separate from 7.1's per-transaction limits, which count only the author's
+    ops. So the largest M1 footprint is a script whose rows (the tag plus its components, per object) total 32,768:
+    for example a tag and two components on 10,922 objects.
+  - **What it costs is reported.** The commit's footprint lists the objects moved, the row count, and each
+    component and field zeroed or dropped; a dry run (pe-api) shows the same before the commit, with the objects
+    that would block.
+  - **The refusal naming objects** needs a seam addition, `Reason::RekeyBlocked { objects, more }` (the first 16
+    blocking objects in id order, and how many more), asked of @engine-architect.
 
 ## 8. Inputs: hands, pushes and grabs
 
@@ -1683,6 +1819,52 @@ The plan's sketch splits between pe-replica (WS-state) and pe-world. My proposal
   back `Transform` and `BodyState`. pe-world gives it the list of objects whose physics-relevant rows an edit changed
   at a frame, so it never scans.
 
+### 9.2a The logic stages (slice D) [I, for review: r2]
+
+pe-replica runs pe-logic's runner in the two logic stages, after the frame's entries (9.2's order: entries, logic
+before physics, physics, logic after physics, events). pe-world gives it the store and what the runner asks for,
+and records what the runner reports. pe-world never depends on pe-logic.
+
+- **`World::logic_stage(frame, f)`** keeps the stage-start state (a copy-on-write clone of the store, which costs a
+  reference count per column) and calls `f(&mut SimStore, guard, &faulted, check)`, where
+  - `guard` names the objects a script may not remove now: those held by anyone (the claims table), and, once the
+    owner's lock exists (8.1's agent powers, a later slice), those carrying it. The runner refuses a destroy if any
+    object it would **remove** is guarded (an untagged descendant is orphaned, not removed, so it doesn't count:
+    @design-reviewer's correction m52c574e02ece). The set is computed when the stage starts. The logic stages run
+    after the frame's inputs, so a grab stamped in this frame is already in it; nothing in a stage can hold or lock an
+    object, since scripts write neither claims nor `Protection`;
+  - `faulted` is the set of asset ids whose modules row has a faulted mark;
+  - `check` is `World::check_script_row` (7.9), for every changed engine row.
+- **Destroys are the store's, then tombstoned.** The runner destroys through the store (`SimStore::destroy`, its
+  default), because it undoes a refused destroy and every command of a faulting call by restoring the store. It
+  reports the objects each surviving destroy removed and orphaned.
+- **`World::after_logic(frame, report)`**, with the runner's report in plain types (created with their spawners,
+  removed, orphaned, written rows, faults), then
+  - **writes a tombstone for every removed object** from the stage-start state, exactly as 7.5's delete does (its
+    rows, versions, place and last world transform, copy-on-write), with the frame and the one-minute expiry. The
+    deleting `EntryRef` is zero, the world's logic; `Deleted { by }` then shows zero (naming the destroying script
+    asset instead is a later nicety, @design-reviewer's r2 nit). Undone destroys were rolled back before this and
+    leave none (m028c4bf1d412, after @design-reviewer's Medium 1). An object created and removed in the same stage
+    leaves none either: nothing of it existed before the stage, so there is nothing to undelete (r2 Low 1);
+  - gives each created object its `SimSize`: 1 m times its spawner's world scale (3.5);
+  - sets each faulting asset's faulted mark to `(frame, kind)`. The frame's first fault wins, a mark already set is
+    kept, and the modules row's version does not move, so the author's next `base` still matches;
+  - returns the physics effects: written `Transform`s of bodies and removed or orphaned bodies, which pe-replica
+    acts on as it does for an edit's footprint.
+- The runner's row writes and its restores mark leaf caches stale through pe-sim (6.4), as any write does.
+- **What runs** is pe-replica's to derive from the modules rows of the frame it simulates (@iter-bench
+  m277ac6a09ccf): after a commit applies at frame F, or an import replaces the modules table, it builds and binds
+  each listed version (`Loaded::bind` with the ids derived from V and the manifest, the tag's id, and the engine
+  table); after a rollback before F it puts back the version the row names then. `World::modules()` lists the
+  rows. **A new version runs from frame F's own logic stages:** the commit is an entry, entries run before logic,
+  and the re-key has already moved the rows (@chunks-reviewer's r2 L1). A machine still building it binds its old
+  module under the new version's ids (logic.md 6.2, @coordinator-opus mdc202526c56f): every component the edit left
+  unchanged gets the new version's id, since the id is derived from V and the description, both of which match, so
+  the old code keeps running on the re-keyed rows (the user's Q3a); if a component's description changed, the bind
+  refuses and the script pauses on that machine until its build is ready. Either way those frames are predictions,
+  which the replay from `activate_at` replaces, so nothing reaches world state. This is why `script_component_id`
+  takes a description, not a registry lookup.
+
 ### 9.3 S5, the frame view
 
 pe-replica publishes it; the world model defines what an object carries [I]:
@@ -1722,6 +1904,7 @@ outcomes (7.7), and the edit history by version. Two points for WS-api [I]:
 | block copy-on-write, dirty bits, cached object hashes; instances; classes | pe-sim | none should: these are internals behind the same API |
 | the state hash becomes the BLAKE3 tree of section 6 | pe-sim, pe-world | every test that pins an XXH64 state hash value |
 | `Transform` holds a `Pos` for roots; the 2^61 root limit goes | pe-sim | transform limit tests at the root chunk limit |
+| zero-field components (row size 0) and empty row writes, for a script's tag (7.9); run-time `Register` into the live registry, copy-on-write (slice D) | pe-sim | the "no fields" refusal in `ComponentDesc::new` |
 
 - **Everything else in pe-core stays as it is:** the clock, `dmath`, the RNG streams, the float-environment check
   and XXH64 [V `crates/pe-core/src/lib.rs:20-30`].

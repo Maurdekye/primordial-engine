@@ -10,6 +10,7 @@ use pe_sim::{ComponentDesc, ComponentId, FieldKind, RowVersion, WorldTransform};
 
 use crate::components::ids;
 use crate::input::{HandPose, InputSettings, Pack};
+use crate::script::{AssetId, ModuleRow};
 use crate::tree::{schema_hash, table, table_hash, table_record};
 use crate::world::{Claim, Tombstone, World};
 
@@ -239,6 +240,54 @@ fn check_table(target: Hash, index: u8, bytes: &[u8], proof: &[Node]) -> Option<
 }
 
 /// A table record's entries: `count u64 ‖ lp(key) ‖ lp(value) …`.
+fn mismatch() -> ImportError {
+    ImportError::RootMismatch { got: Hash::ZERO }
+}
+
+/// A registry of exactly `descs` (the built-ins among them, as every world registers them).
+fn registry_of(descs: impl IntoIterator<Item = pe_sim::ComponentDesc>) -> Result<pe_sim::Registry, ImportError> {
+    let mut r = pe_sim::Registry::new();
+    for d in descs {
+        r.register_engine(d).map_err(|_| mismatch())?;
+    }
+    Ok(r)
+}
+
+/// A registry table record's entries (6.6): each `asset ‖ schema hash ‖ description` under its id, checked strictly
+/// (the schema hash and the re-encoded description must match).
+fn decode_registry(bytes: &[u8]) -> Option<Vec<(AssetId, pe_sim::ComponentDesc)>> {
+    let mut out = Vec::new();
+    for (k, v) in table_entries(bytes)? {
+        let id = ComponentId(u128::from_be_bytes(k.try_into().ok()?));
+        let mut r = Rd(v);
+        let asset: AssetId = r.arr()?;
+        let schema: [u8; 32] = r.arr()?;
+        let desc = r.0;
+        let name = std::str::from_utf8(r.lp()?).ok()?.to_string();
+        let size = r.u32()?;
+        let n = r.u32()? as usize;
+        if n > desc.len() {
+            return None;
+        }
+        let mut fields = Vec::with_capacity(n);
+        for _ in 0..n {
+            let fname = std::str::from_utf8(r.lp()?).ok()?.to_string();
+            let kind = crate::tree::kind_of_code(r.arr::<1>()?[0])?;
+            let offset = r.u32()?;
+            let count = r.u32()?;
+            let unit = std::str::from_utf8(r.lp()?).ok()?.to_string();
+            fields.push(pe_sim::FieldDesc::new(&fname, kind, offset as usize, count).with_unit(&unit));
+        }
+        r.end()?;
+        let d = pe_sim::ComponentDesc::new(id, &name, fields).ok()?;
+        if d.size() != size as usize || crate::tree::desc_bytes(&d) != desc || Hash::of("pe.schema", desc).0 != schema {
+            return None;
+        }
+        out.push((asset, d));
+    }
+    Some(out)
+}
+
 fn table_entries(bytes: &[u8]) -> Option<Vec<(&[u8], &[u8])>> {
     let mut r = Rd(bytes);
     let n = r.u64()?;
@@ -283,7 +332,7 @@ impl World {
     /// the target, which also covers a config that was not imported.
     pub fn import(&self, domain: DomainId, import: &CutImport) -> Result<World, ImportError> {
         let target = import.target_root;
-        let mut objects = Vec::new();
+        let mut raw_objects = Vec::new();
         let mut tables: Vec<(u8, &Record)> = Vec::new();
         let mut physics_leaf = None;
         let mut config = None;
@@ -295,8 +344,7 @@ impl World {
                     if let Node::Domain { physics, .. } = dom {
                         physics_leaf = Some(physics);
                     }
-                    let o = decode_object(self, &rec.bytes).filter(|o| o.id == id).ok_or(ImportError::BadProof(i))?;
-                    objects.push((i, o));
+                    raw_objects.push((i, id, rec));
                 }
                 LeafKey::Table(t) if (t as usize) < table::COUNT => {
                     check_table(target, t, &rec.bytes, &rec.proof).ok_or(ImportError::BadProof(i))?;
@@ -315,6 +363,36 @@ impl World {
                 LeafKey::Table(_) | LeafKey::Physics(_) => return Err(ImportError::BadProof(i)),
             }
         }
+        // The registry first (6.6): the union of this world's and the target's, the target's entry winning, so every
+        // object record decodes as the target encoded it; pruned to the target's after the patch.
+        let target_registry = match tables.iter().find(|(t, _)| *t == table::REGISTRY) {
+            Some((_, rec)) => {
+                let i = import.records.iter().position(|r| std::ptr::eq(r, *rec)).unwrap_or(0);
+                Some(decode_registry(&rec.bytes).ok_or(ImportError::BadProof(i))?)
+            }
+            None => None,
+        };
+        let mut base = self.clone();
+        if let Some(entries) = &target_registry {
+            let mut merged: BTreeMap<ComponentId, pe_sim::ComponentDesc> =
+                self.store.registry().iter().map(|d| (d.id(), d.clone())).collect();
+            let mut assets = (*self.script_ids).clone();
+            for (asset, d) in entries {
+                merged.insert(d.id(), d.clone());
+                if *asset == [0; 32] {
+                    assets.remove(&d.id());
+                } else {
+                    assets.insert(d.id(), *asset);
+                }
+            }
+            base.store.set_registry(Arc::new(registry_of(merged.into_values())?)).map_err(|_| mismatch())?;
+            base.script_ids = Arc::new(assets);
+        }
+        let mut objects = Vec::new();
+        for (i, id, rec) in raw_objects {
+            let o = decode_object(&base, &rec.bytes).filter(|o| o.id == id).ok_or(ImportError::BadProof(i))?;
+            objects.push((i, o));
+        }
         let has_body = |w: &World, id| w.store.get_raw(ids::BODY, id).is_some();
         if import.physics.is_none() {
             for (_, o) in &objects {
@@ -330,7 +408,7 @@ impl World {
                 }
             }
         }
-        let mut w = self.clone();
+        let mut w = base;
         if let Some(c) = config {
             w.store.set_seed(c.seed);
             w.line = c.line;
@@ -361,8 +439,23 @@ impl World {
             w.store.import_object(o.id, &o.node, &rows).map_err(|_| ImportError::BadProof(*i))?;
         }
         for (t, rec) in tables {
+            if t == table::REGISTRY {
+                continue;
+            }
             let i = import.records.iter().position(|r| std::ptr::eq(r, rec)).unwrap_or(0);
             w.import_table(t, &rec.bytes).ok_or(ImportError::BadProof(i))??;
+        }
+        // Prune to the target's registry: a component it lacks must have no rows left, or the patched world cannot
+        // be the target's (`RootMismatch`); the importer itself is untouched either way.
+        if let Some(entries) = target_registry {
+            let keep: BTreeMap<ComponentId, AssetId> = entries.iter().map(|(a, d)| (d.id(), *a)).collect();
+            if w.store.registry().iter().any(|d| !keep.contains_key(&d.id()) && w.store.count(d.id()) > 0) {
+                return Err(mismatch());
+            }
+            w.store
+                .set_registry(Arc::new(registry_of(entries.into_iter().map(|(_, d)| d))?))
+                .map_err(|_| mismatch())?;
+            w.script_ids = Arc::new(keep.into_iter().filter(|(_, a)| *a != [0; 32]).collect());
         }
         w.store.set_frame(import.cut.at.frame);
         Ok(w)
@@ -380,15 +473,22 @@ impl World {
         }
     }
 
-    /// Replaces table `t` from its record. `None` if the record does not decode; `Some(Err)` for a table M1 cannot
-    /// import (registry, lines, modules) unless it equals this world's.
+    /// Replaces table `t` from its record. `None` if the record does not decode; `Some(Err)` for the lines table,
+    /// which M1 cannot import unless it equals this world's. The registry is applied by `import` itself.
     fn import_table(&mut self, t: u8, bytes: &[u8]) -> Option<Result<(), ImportError>> {
         let entries = table_entries(bytes)?;
         match t {
-            table::REGISTRY | table::LINES | table::MODULES => {
+            table::LINES => {
                 if bytes != table_record(&self.table_entries(t)).as_slice() {
                     return Some(Err(ImportError::RootMismatch { got: Hash::ZERO }));
                 }
+            }
+            table::MODULES => {
+                let mut m = BTreeMap::new();
+                for (k, v) in entries {
+                    m.insert(<AssetId>::try_from(k).ok()?, ModuleRow::from_bytes(v)?);
+                }
+                self.modules = Arc::new(m);
             }
             table::GOVERNANCE => {
                 let mut m = BTreeMap::new();

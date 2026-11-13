@@ -94,6 +94,20 @@ pub fn summary(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSna
             Op::SetRow { id, row } => format!("set {} on {}", comp(row.component), obj(id)),
             Op::RemoveRow { id, component, .. } => format!("removed {} from {}", comp(*component), obj(id)),
             Op::Undelete { id } => format!("restored {}", name(snap, *id)),
+            // Slice D (world-model.md 7.9): logic ops name no object; the summary's cap trims a long list.
+            Op::Register { components } => {
+                // Every Register carries the script's tag; it says nothing to a reader (chunks-reviewer's nit).
+                let names: Vec<&str> =
+                    components.iter().map(|d| d.name()).filter(|n| *n != pe_world::script::TAG_NAME).collect();
+                format!("registered {}", names.join(", "))
+            }
+            Op::CommitScript { script, base, .. } => {
+                let hex: String = script[..4].iter().map(|b| format!("{b:02x}")).collect();
+                format!(
+                    "committed {} of script {hex}…",
+                    if base.is_some() { "a new version" } else { "the first version" }
+                )
+            }
         })
         .collect();
     let mut s = String::new();
@@ -166,6 +180,35 @@ mod tests {
         assert_eq!(summary(Some(&tx(vec![])), &applied, &snap), "No operations.");
         let one = summary(Some(&tx(vec![del(1)])), &applied, &snap);
         assert!(one.starts_with("Deleted o:") && one.ends_with('.') && !one.contains("more"));
+    }
+
+    // Slice D (world-model.md 7.9): a script's ops are summarized without object ids.
+    #[test]
+    fn a_script_commit_is_summarized_by_its_components_and_script() {
+        let w = pe_world::World::new(1, pe_world::BlobStore::default());
+        let snap = w.snapshot(pe_core::Frame(0));
+        let f = pe_sim::FieldDesc::new("hp", pe_sim::FieldKind::U32, 0, 1);
+        let d = pe_sim::ComponentDesc::new(pe_sim::ComponentId(0x7000_0000_0000_0001), "Health", vec![f]).unwrap();
+        let commit = Op::CommitScript {
+            script: [0xab; 32],
+            base: None,
+            source: pe_world::components::BlobRef { hash: [1; 32], len: 3 },
+            toolchain: Hash([2; 32]),
+            sdk: Hash([3; 32]),
+            author_module: Hash([4; 32]),
+            activate_at: 9,
+        };
+        let tx = Transaction {
+            actor: pe_world::edit::Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops: vec![Op::Register { components: vec![d, pe_world::script::tag_desc(&Hash([5; 32]))] }, commit],
+            blobs: vec![],
+        };
+        let applied = WorldOutcome::Applied { created: vec![], overwrote: vec![], notes: vec![], inverse: None };
+        let s = summary(Some(&tx), &applied, &snap);
+        assert_eq!(s, "Registered Health; committed the first version of script abababab….");
+        assert!(crate::watch::touched_ids(Some(&tx), &applied).is_empty());
     }
 
     #[test]
