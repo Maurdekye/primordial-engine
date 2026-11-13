@@ -119,7 +119,8 @@ enum Went {
     Stayed,
     /// Its centre got past a wall's outer face below the wall's top, or below the floor's bottom.
     Tunnelled,
-    /// It got past a wall's outer face with its bottom above the wall's top: deflected up and over, which is play.
+    /// Its centre got past a wall's outer face above the wall's top: deflected up and over, or over the edge, which
+    /// is play, not going through the wall.
     OverTheTop,
     /// It ended inside a wall or the floor: its centre past a wall's inner face, or below the floor's top.
     Embedded,
@@ -151,7 +152,7 @@ fn run(hz: u32, r: f64, (start, velocity): ([f64; 3], [f32; 3]), half_thickness:
         if fate.went == Went::Stayed && p[1] < -1.0 {
             fate.went = Went::Tunnelled;
         } else if fate.went == Went::Stayed && side > outer {
-            fate.went = if p[1] - r > top { Went::OverTheTop } else { Went::Tunnelled };
+            fate.went = if p[1] > top { Went::OverTheTop } else { Went::Tunnelled };
         }
     }
     if fate.went == Went::Stayed && (p[0].abs().max(p[2].abs()) >= PIT_W || p[1] < 0.0) {
