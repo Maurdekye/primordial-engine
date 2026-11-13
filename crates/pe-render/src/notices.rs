@@ -14,13 +14,21 @@
 //!   entry carries the member's key, an agent's too, so an edit refusal can't be told as the player's. A void names
 //!   no class, so it is told only for an entry this player's views stepped as Input (the local member's entries are
 //!   stepped here first, so a void of one never comes unseen).
+//! - **S5 v1.5's records** (@coordinator-opus's rulings): an `Outcome::Dropped` of the
+//!   local member's Input entry is told as a void, at once, and only once whether it comes as a record or as S3's
+//!   `Voided`. `Outcome::Unknown` (a repair replaced the state its verdict was stepped on) is told once per repair,
+//!   not per entry. While the view's `health` is `Repairing` for longer than `resync_after_s`, a status line
+//!   "Resyncing…" shows above the others.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use ab_glyph::{Font, PxScale, ScaleFont, point};
 use glam::{DQuat, DVec3};
-use pe_seams::{AgreeEvent, Class, EntryRef, FrameView, HostTime, MemberKey, Outcome, Reason, StepRecord, VoidReason};
+use pe_seams::{
+    AgreeEvent, Class, CutRef, EntryRef, FrameView, Health, HostTime, MemberKey, Outcome, Reason, StepRecord,
+    VoidReason,
+};
 
 use crate::camera::Camera;
 use crate::labels::{font, text_width};
@@ -51,6 +59,8 @@ pub struct NoticeSettings {
     /// How long a stepped entry's author is remembered, to name the winner of a `Stale` or `Deleted` refusal
     /// (`W_fg`), seconds. An older winner reads "someone".
     pub authors_s: f64,
+    /// How long the view's health must stay `Repairing` before "Resyncing…" shows, seconds (about 1-2 s, ruling).
+    pub resync_after_s: f64,
 }
 
 impl Default for NoticeSettings {
@@ -62,6 +72,7 @@ impl Default for NoticeSettings {
             fade_s: 0.5,
             max_lines: 3,
             authors_s: 2.0,
+            resync_after_s: 1.5,
         }
     }
 }
@@ -114,6 +125,10 @@ pub struct Notices {
     shown: VecDeque<Shown>,
     told_total: u64,
     dropped_at_gaps: u64,
+    /// Repairs already told ("Resynced…"), newest last, a few kept.
+    resynced: VecDeque<CutRef>,
+    /// Since when (host time) the views have said `Repairing`.
+    repairing_since: Option<HostTime>,
 }
 
 impl Notices {
@@ -132,6 +147,8 @@ impl Notices {
             shown: VecDeque::new(),
             told_total: 0,
             dropped_at_gaps: 0,
+            resynced: VecDeque::new(),
+            repairing_since: None,
         }
     }
 
@@ -165,6 +182,11 @@ impl Notices {
 
     /// Read a new frame view's `changes` (and `final_frame`) at host time `now`.
     pub fn observe(&mut self, view: &FrameView, now: HostTime) {
+        self.repairing_since = match view.health {
+            Health::Repairing { .. } => Some(self.repairing_since.unwrap_or(now)),
+            Health::Agreed => None,
+        };
+        let mut unknown: Vec<CutRef> = Vec::new();
         for rec in &view.changes {
             self.authors.push_back((now, rec.entry, rec.author));
             if rec.author != self.local {
@@ -175,6 +197,27 @@ impl Notices {
                 if self.own_order.len() > TOLD_KEPT {
                     let old = self.own_order.pop_front().expect("non-empty");
                     self.own_class.remove(&old);
+                }
+            }
+            // S5 v1.5: a void decided by a final cut, and a verdict a repair couldn't know (Input-class only, like the
+            // refusals).
+            if rec.class == Class::Input {
+                match &rec.outcome {
+                    Outcome::Dropped { reason } => {
+                        self.void(rec.entry, *reason, now);
+                        continue;
+                    }
+                    Outcome::Unknown { repaired_at } => {
+                        self.pending.remove(&rec.entry);
+                        // Keep a void or refusal already told: a later void must still retract the refusal, and
+                        // must not be told twice.
+                        if !self.told.contains_key(&rec.entry) {
+                            self.remember(rec.entry, Told::Silent);
+                        }
+                        unknown.push(*repaired_at);
+                        continue;
+                    }
+                    _ => {}
                 }
             }
             if self.told.contains_key(&rec.entry) {
@@ -188,6 +231,15 @@ impl Notices {
                 _ => {
                     self.pending.remove(&rec.entry);
                 }
+            }
+        }
+        for cut in unknown {
+            if !self.resynced.contains(&cut) {
+                self.resynced.push_back(cut);
+                if self.resynced.len() > 16 {
+                    self.resynced.pop_front();
+                }
+                self.tell("Resynced. Some of your last actions may not have happened.".to_string(), None, now);
             }
         }
         while self.authors.front().is_some_and(|a| now.secs_since(a.0) > self.settings.authors_s) {
@@ -223,17 +275,23 @@ impl Notices {
     /// decided it). If that entry's refusal was already told, the void replaces it.
     pub fn agreement(&mut self, e: &AgreeEvent, now: HostTime) {
         let AgreeEvent::Voided { entry, author, reason, .. } = e else { return };
-        if *author != self.local
-            || self.told.get(entry) == Some(&Told::Void)
-            || self.own_class.get(entry) != Some(&Class::Input)
-        {
+        if *author != self.local || self.own_class.get(entry) != Some(&Class::Input) {
             return;
         }
-        self.pending.remove(entry);
-        if self.told.get(entry) == Some(&Told::Refusal) {
-            self.retract(entry);
+        self.void(*entry, *reason, now);
+    }
+
+    /// A void of one of the local member's Input entries, from S3 or as a `Dropped` record: told once, replacing a
+    /// refusal of it already told.
+    fn void(&mut self, entry: EntryRef, reason: VoidReason, now: HostTime) {
+        if self.told.get(&entry) == Some(&Told::Void) {
+            return;
         }
-        self.remember(*entry, Told::Void);
+        self.pending.remove(&entry);
+        if self.told.get(&entry) == Some(&Told::Refusal) {
+            self.retract(&entry);
+        }
+        self.remember(entry, Told::Void);
         let text = match reason {
             VoidReason::Late => "An action of yours arrived too late and was undone.",
             VoidReason::BackStamped => "An action of yours was undone: it arrived out of order.",
@@ -241,13 +299,15 @@ impl Notices {
         self.tell(text.to_string(), None, now);
     }
 
-    /// The lines to draw at `now`, oldest first.
+    /// The lines to draw at `now`, oldest first, after "Resyncing…" while a repair has lasted `resync_after_s`.
     pub fn lines(&mut self, now: HostTime) -> Vec<Line> {
         self.shown.retain(|s| s.until.0 > now.0);
         let fade = self.settings.fade_s;
-        self.shown
-            .iter()
-            .map(|s| {
+        let resyncing = self.repairing_since.filter(|t| now.secs_since(*t) >= self.settings.resync_after_s);
+        let status = resyncing.map(|_| Line { text: "Resyncing…".to_string(), alpha: 1.0 });
+        status
+            .into_iter()
+            .chain(self.shown.iter().map(|s| {
                 let left = s.until.secs_since(now);
                 let alpha = if fade > 0.0 { (left / fade).clamp(0.0, 1.0) } else { 1.0 };
                 let text = match s.cooldown_end {
@@ -256,7 +316,7 @@ impl Notices {
                 };
                 let text = if s.count > 1 { format!("{text} (×{})", s.count) } else { text };
                 Line { text, alpha: alpha as f32 }
-            })
+            }))
             .collect()
     }
 
@@ -983,5 +1043,98 @@ mod tests {
         }
         let want = p.head_locked(&turned(40.0), 1.0);
         assert!(offset_vec(last.pos - want.pos).length() < 0.02, "glided to the new place");
+    }
+
+    fn dropped(n: u8, frame: u64, reason: VoidReason) -> StepRecord {
+        rec(n, ME, Class::Input, frame, Outcome::Dropped { reason })
+    }
+
+    fn cut(height: u64) -> CutRef {
+        CutRef { line: pe_seams::LineId::default(), height, frame: Frame(height * 6) }
+    }
+
+    fn repairing(mut v: FrameView, since: u64) -> FrameView {
+        v.health = Health::Repairing { since: Frame(since) };
+        v
+    }
+
+    /// S5 v1.5: a `Dropped` record is a void, told at once and once, whether S3's `Voided` comes too or not; it
+    /// replaces a refusal of the same entry already told, and drops one still pending.
+    #[test]
+    fn a_dropped_record_is_told_as_a_void_once() {
+        let mut n = notices();
+        n.observe(&view(12, Some(5), vec![input(1, 10, Reason::OutOfReach)]), t(0));
+        n.observe(&view(13, Some(5), vec![dropped(1, 10, VoidReason::Late)]), t(10));
+        assert_eq!(texts(&mut n, t(10)), ["An action of yours arrived too late and was undone."]);
+        let void = AgreeEvent::Voided { entry: entry(1), author: ME, reason: VoidReason::Late, cut: cut(2) };
+        n.agreement(&void, t(20));
+        n.observe(&view(30, Some(30), vec![]), t(30));
+        assert_eq!(n.told_total(), 1, "told once, never as refused");
+        // Told as refused first, then dropped: the void replaces it.
+        n.observe(&view(40, Some(40), vec![input(2, 35, Reason::OutOfReach)]), t(100));
+        assert_eq!(texts(&mut n, t(100)).last().unwrap(), "Out of reach.");
+        n.observe(&view(41, Some(41), vec![dropped(2, 35, VoidReason::BackStamped)]), t(110));
+        let l = texts(&mut n, t(110));
+        assert!(!l.iter().any(|x| x == "Out of reach."), "{l:?}");
+        assert_eq!(l.last().unwrap(), "An action of yours was undone: it arrived out of order.");
+        // Another member's dropped entry is theirs to hear about.
+        n.observe(
+            &view(42, Some(42), vec![rec(3, BOB, Class::Input, 41, Outcome::Dropped { reason: VoidReason::Late })]),
+            t(120),
+        );
+        assert_eq!(n.told_total(), 2);
+    }
+
+    /// `Unknown` is told once per repair, not per entry, and only for the local member's own entries.
+    #[test]
+    fn unknown_verdicts_are_told_once_per_repair() {
+        let mut n = notices();
+        let unknown = |e: u8, f: u64, c: CutRef| rec(e, ME, Class::Input, f, Outcome::Unknown { repaired_at: c });
+        n.observe(&view(50, Some(48), vec![unknown(1, 40, cut(8)), unknown(2, 41, cut(8))]), t(0));
+        n.observe(&view(51, Some(48), vec![unknown(3, 42, cut(8))]), t(10));
+        assert_eq!(texts(&mut n, t(10)), ["Resynced. Some of your last actions may not have happened."]);
+        assert_eq!(n.told_total(), 1);
+        let theirs = rec(4, BOB, Class::Input, 43, Outcome::Unknown { repaired_at: cut(9) });
+        n.observe(&view(60, Some(58), vec![theirs]), t(20));
+        assert_eq!(n.told_total(), 1, "another member's entry");
+        n.observe(&view(70, Some(68), vec![unknown(5, 66, cut(11))]), t(30));
+        assert_eq!(n.told_total(), 2, "a second repair");
+        // A refusal of an entry later reported Unknown is never told.
+        n.observe(&view(80, Some(70), vec![input(6, 75, Reason::OutOfReach)]), t(40));
+        n.observe(&view(81, Some(70), vec![unknown(6, 75, cut(13))]), t(50));
+        n.observe(&view(90, Some(90), vec![]), t(60));
+        assert!(!texts(&mut n, t(60)).iter().any(|x| x == "Out of reach."));
+    }
+
+    /// Under `TellAt::AtOnce` a refusal told before an `Unknown` stays recorded as told: a later void still retracts
+    /// it, and is told once (shader-reviewer's nit on e0598ab9).
+    #[test]
+    fn unknown_keeps_a_refusal_already_told() {
+        let mut n = Notices::new(NoticeSettings { tell_at: TellAt::AtOnce, ..NoticeSettings::default() }, ME, 60);
+        n.observe(&view(12, None, vec![input(1, 10, Reason::OutOfReach)]), t(0));
+        assert_eq!(texts(&mut n, t(0)), ["Out of reach."]);
+        let unknown = rec(1, ME, Class::Input, 10, Outcome::Unknown { repaired_at: cut(3) });
+        n.observe(&view(20, Some(15), vec![unknown]), t(10));
+        n.observe(&view(21, Some(15), vec![dropped(1, 10, VoidReason::Late)]), t(20));
+        let l = texts(&mut n, t(20));
+        assert!(!l.iter().any(|x| x == "Out of reach."), "the void retracts the refusal: {l:?}");
+        assert_eq!(l.last().unwrap(), "An action of yours arrived too late and was undone.");
+        let told = n.told_total();
+        let void = AgreeEvent::Voided { entry: entry(1), author: ME, reason: VoidReason::Late, cut: cut(4) };
+        n.agreement(&void, t(30));
+        assert_eq!(n.told_total(), told, "the void is told once");
+    }
+
+    /// "Resyncing…" shows after the views have said `Repairing` for 1.5 s, above the other lines, until `Agreed`.
+    #[test]
+    fn resyncing_shows_while_a_repair_lasts() {
+        let mut n = notices();
+        n.observe(&repairing(view(100, Some(90), vec![]), 95), t(0));
+        n.observe(&repairing(view(130, Some(90), vec![input(1, 120, Reason::OutOfReach)]), 95), t(1000));
+        assert!(texts(&mut n, t(1000)).is_empty(), "under 1.5 s: nothing, and the refusal waits for finality");
+        n.observe(&repairing(view(160, Some(90), vec![]), 95), t(1600));
+        assert_eq!(texts(&mut n, t(1600)), ["Resyncing…"]);
+        n.observe(&view(170, Some(168), vec![]), t(1800));
+        assert_eq!(texts(&mut n, t(1800)), ["Out of reach."], "agreed again: the status goes, the refusal is told");
     }
 }
