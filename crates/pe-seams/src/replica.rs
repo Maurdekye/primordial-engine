@@ -157,6 +157,10 @@ pub enum Reason {
     NotYourHand,
     /// A transaction's new-object indices overlap.
     NewIndexOverlap,
+    /// A script commit whose re-key would lose data on objects its committer may not edit (held by another member,
+    /// or protected by another owner): the first 16 such objects in id order, and how many more (world-model.md 7.9;
+    /// @coordinator-opus, @world-model; S2 v1.6).
+    RekeyBlocked { objects: Vec<ObjectId>, more: u32 },
 }
 
 // ---- the frame -----------------------------------------------------------------------------------------------------
@@ -247,7 +251,9 @@ pub trait EntrySource {
     /// replica's [`Outcome::Dropped`] record copies it, so every honest member gives one entry the same reason (S2
     /// v1.5; @design-reviewer's Medium on f13cd045). `None` for an entry no final cut has voided (yet): a pending one
     /// reads `Late`, which is how S3 voids it once a later cut includes it, since judge tests late first and its
-    /// stamp is then below that cut's previous final frame. A source that never voids keeps this default.
+    /// stamp is then below that cut's previous final frame. A source that never voids keeps this default. A source
+    /// that voids keeps each reason at least as long as it keeps the entry's frame ([`EntrySource::kept_from`]), so
+    /// a replica that re-steps the frame reads the same reason (@design-reviewer's nit on 00c27528; S2 v1.6).
     fn void_reason(&self, entry: &EntryRef) -> Option<VoidReason> {
         let _ = entry;
         None

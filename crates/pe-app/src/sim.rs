@@ -116,6 +116,9 @@ pub struct SimStats {
     /// The local player's hand inputs agreement took, and those it refused (step 2).
     pub inputs: u64,
     pub inputs_refused: u64,
+    /// Frames whose hand inputs step 2 held back because agreement reported this member backlogged after a stall
+    /// (S3 v1.5, [`Agreement::backlogged`]).
+    pub hands_paced: u64,
     pub votes: u64,
     pub finalized: u64,
 }
@@ -274,14 +277,21 @@ impl Sim {
         // Before the first view the hands' objects are not known yet, so nothing goes in. Once per frame: a wake (step
         // 7) ticks again within a frame, and that tick takes in messages and re-simulates but adds no second set of
         // inputs for the frame, which would count against the rate budget.
+        // While agreement reports this member backlogged after a stall (S3 v1.5), the frame's hand inputs are held
+        // back: they would only be void as late, and they would lengthen the flush. Edits never come through here, so
+        // nothing holds them back.
         let fresh = self.input_frame.is_none_or(|f| p > f);
         if let (true, Some(l), Some(view)) = (fresh, &mut self.local, &self.published) {
-            let at = self.clock.host_time_of(p);
-            let domain = self.replica.domain();
-            let (took, refused) =
-                local::submit_hands(&mut l.chain, &mut l.sent, &*l.hands, view, at, p, domain, &mut *self.agree);
-            self.stats.inputs += u64::from(took);
-            self.stats.inputs_refused += u64::from(refused);
+            if self.agree.backlogged() {
+                self.stats.hands_paced += 1;
+            } else {
+                let at = self.clock.host_time_of(p);
+                let domain = self.replica.domain();
+                let (took, refused) =
+                    local::submit_hands(&mut l.chain, &mut l.sent, &*l.hands, view, at, p, domain, &mut *self.agree);
+                self.stats.inputs += u64::from(took);
+                self.stats.inputs_refused += u64::from(refused);
+            }
             self.input_frame = Some(p);
         }
         // 3. Agreement's time. Its messages go to the network's outbox; a full queue is pe-net's local fault, never
@@ -523,6 +533,32 @@ mod tests {
         }
         assert_eq!(s.stats().ticks, 4);
         assert_eq!(s.stats().inputs, 4, "two at frame 2 and two at frame 3, none from the second tick at frame 2");
+    }
+
+    /// While agreement reports this member backlogged (S3 v1.5), step 2 makes no hand inputs, and it makes them again
+    /// once the backlog clears (@world-chunks's stall fix; @coordinator-opus).
+    #[test]
+    fn hand_inputs_wait_while_agreement_reports_a_backlog() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, Duration::from_millis(133), clock.clone()).expect("pit");
+        let agree = SoloAgreement::new(LineId::origin());
+        let backlog = agree.backlog.clone();
+        let slot = Arc::new(FrameSlot::new());
+        let mut s = Sim::new(Box::new(agree), replica, clock.clone(), slot, Budget::new(RATE)).with_local(
+            me,
+            [7; 32],
+            Arc::new(StillHands([0.0, 1.0, -0.4])),
+        );
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        backlog.store(true, Ordering::Relaxed);
+        for f in 2..=4 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        assert_eq!((s.stats().inputs, s.stats().hands_paced), (0, 3), "no hand inputs while backlogged");
+        backlog.store(false, Ordering::Relaxed);
+        s.tick(clock.host_time_of(Frame(5))).expect("ticked");
+        assert_eq!((s.stats().inputs, s.stats().hands_paced), (2, 3), "both hands again once it clears");
     }
 
     /// Both hands tracked and closed up to frame `.1`, then lost and open: pe-xr's release of a lost hand that held.

@@ -18,6 +18,8 @@
 //! world-model.md 3 and may gain fields with pe-world; [`Effect`]'s freshness fields, which WS-render and WS-diverge
 //! settle with the display layer's tests.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 
 use crate::entry::{Class, DomainId};
@@ -273,9 +275,12 @@ pub struct ViewCounters {
 /// **Complete at the final frame** (S5 v1.4 and v1.5; @ballpit-viz, after @shader-reviewer's L1 on
 /// render.md 8.1; @coordinator-opus). A view's `changes`, with those of the views
 /// before it, hold the final verdict of every entry stamped below that view's `final_frame` (a cut at frame `f` covers
-/// the entries stamped below `f`; S3), as the newest record of that entry, and no record of an entry reaches a view
-/// whose `final_frame` is past its frame. pe-render's notices and WorldApi's `watch` tell a verdict once `final_frame`
-/// passes its entry's frame, and rely on this. It holds
+/// the entries stamped below `f`; S3), as the newest record of that entry. A view's `changes` may carry the final
+/// record of an entry together with the `final_frame` that first passes its frame, so a reader applies a view's
+/// `changes` before its `final_frame`; no record of an entry reaches a view whose *predecessor's* `final_frame` was
+/// already past its frame (S5 v1.6; @design-reviewer's Low 2 on harness/changes, the reading pe-replica builds).
+/// pe-render's notices and WorldApi's `watch` tell a verdict once `final_frame` passes its entry's frame, and rely
+/// on this. It holds
 /// because `final_frame` is my last agreed cut, which a diverged replica does not move, and because the replica
 /// records, before `final_frame` passes them:
 /// - the entries it re-steps while finalizing (its own root check, and its rebase onto the floor);
@@ -297,6 +302,12 @@ pub struct StepRecord {
     /// The frame it was stepped at.
     pub frame: Frame,
     pub outcome: Outcome,
+    /// The objects a script commit re-keyed (world-model.md 7.9): every object, tombstoned ones included, with a row of
+    /// the old version, moved onto the new version's ids or dropped, in id order (@world-model's nit). Empty for every
+    /// other record. WorldApi's `watch` and history
+    /// name them from here (S5 v1.6; @coordinator-opus, for @api-eng). At most
+    /// pe-world's `MAX_REKEY_ROWS` of them; the set is shared across re-publications, never copied.
+    pub rekeyed: Arc<[ObjectId]>,
 }
 
 /// This replica's standing with the quorum, so a reader never infers it from two frame numbers (S5 v1.5;

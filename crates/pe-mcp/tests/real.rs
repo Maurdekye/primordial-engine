@@ -170,6 +170,7 @@ async fn an_agent_reads_edits_and_watches_a_pe_world_through_mcp() {
                         class: pe_seams::Class::Edit,
                         frame: Frame(5),
                         outcome,
+                        rekeyed: Default::default(),
                     }],
                     None,
                 );
