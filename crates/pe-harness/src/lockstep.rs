@@ -62,6 +62,10 @@ pub struct LockstepAgreement {
     pub trim_cap: Option<u64>,
     /// The planted defect for the retention control: `kept_from` answers frame 0 whatever was trimmed. Off by default.
     pub kept_from_lies: bool,
+    /// The planted defect for P15's `entries_for_cut` control: below the current final cut's frame only (where a
+    /// pipelining S3's late entries live; design-reviewer's Low on 4eba171a), the answer for a cut leaves out its
+    /// frame's last entry, so it differs from what the final log holds. Off by default.
+    pub cut_answer_lies: bool,
     /// A second retention defect: this one frame is no longer kept, whatever `kept_from` says. Off by default.
     pub drop_frame: Option<u64>,
     /// Frames below this are no longer kept.
@@ -115,6 +119,7 @@ impl LockstepAgreement {
             trim_below_cv: false,
             trim_cap: None,
             kept_from_lies: false,
+            cut_answer_lies: false,
             drop_frame: None,
             kept: 0,
             keys: keys.clone(),
@@ -556,6 +561,17 @@ impl EntrySource for LockstepAgreement {
     /// has voided. The mock keeps every reason for its whole session, so this answers below `kept_from` as well.
     fn void_reason(&self, entry: &EntryRef) -> Option<VoidReason> {
         self.void_reasons.get(entry).copied()
+    }
+
+    /// The default answer (the mock finalizes each cut before proposing the next, so `entries_at` already leaves out
+    /// whatever a cut voids), unless `cut_answer_lies` plants the control's defect.
+    fn entries_for_cut(&self, cut: &Cut, frame: Frame) -> Option<Vec<SignedEntry>> {
+        let mut v: Vec<SignedEntry> =
+            self.entries_at(frame)?.iter().filter(|e| cut.includes(&e.entry.chain, e.entry.seq)).cloned().collect();
+        if self.cut_answer_lies && self.finals.last().is_some_and(|f| frame < f.cut.at.frame) {
+            v.pop();
+        }
+        Some(v)
     }
 
     fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {

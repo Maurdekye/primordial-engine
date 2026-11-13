@@ -1,6 +1,6 @@
 //! The entry source's conformance suite (coordinator): one set of scenarios, run against every
-//! agreement the harness has. Today that is the lockstep mock, with and without its relay; pe-agree joins once it
-//! exists, through its test-util codec.
+//! agreement the harness has: the lockstep mock, with and without its relay, and pe-agree (`pe_agree::Node`, over
+//! `SeamNode::agree_over`), with and without its relay, its entries framed as its codec's `Entries` message.
 //!
 //! The contract (S3 v1.1, `EntrySource` and `Agreement`), as P15 checks it on every honest member:
 //! - `wants_roots` and `final_cut` never hand over a cut unless the member holds every entry it names, void ones
@@ -19,12 +19,13 @@ use std::collections::BTreeMap;
 
 use pe_harness::clock::{MS, Nanos, SEC};
 use pe_harness::kv::{KvReplica, Op, Template};
-use pe_harness::kvrep::payload;
+use pe_harness::kvrep::{KvSeamReplica, payload};
 use pe_harness::lockstep::LockstepAgreement;
 use pe_harness::net::{LinkCfg, Loss, NodeId};
 use pe_harness::props::{self, Prop, Violation};
-use pe_harness::seamnode::SeamNode;
+use pe_harness::seamnode::{SeamNode, agree_config};
 use pe_harness::sim::{NodeFault, Run, Scenario, reference_log, replay, run};
+use pe_harness::trace::Ev;
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{Agreement, Class, Frame, SignedEntry, SimRate};
 
@@ -56,6 +57,30 @@ fn lockstep_with(
             (id, node)
         })
         .collect()
+}
+
+fn agree_nodes(keys: &TestKeys, n: u32, relay: bool) -> BTreeMap<NodeId, SeamNode<pe_agree::Node>> {
+    let rate = SimRate::new(HZ).unwrap_or_default();
+    (1..=n)
+        .map(|id| {
+            let mut cfg = agree_config(keys, CADENCE_NS);
+            cfg.relay = relay;
+            let replica = KvSeamReplica::new(keys.sorted_keys(), &Template::AllAdmin, &[OBJ]);
+            (id, SeamNode::agree_over(keys, id, cfg, replica, rate))
+        })
+        .collect()
+}
+
+/// pe-agree's framing of one entry, as its author sends it.
+fn agree_frame(e: &SignedEntry) -> Vec<u8> {
+    pe_agree::codec::encode(&pe_agree::codec::Wire::Entries(vec![e.clone()]))
+}
+
+fn agree_targets() -> Vec<Target<pe_agree::Node>> {
+    vec![
+        Target { name: "pe-agree, relay", nodes: |k, n| agree_nodes(k, n, true), frame_entry: agree_frame },
+        Target { name: "pe-agree, fetch only", nodes: |k, n| agree_nodes(k, n, false), frame_entry: agree_frame },
+    ]
 }
 
 fn lockstep_nodes(keys: &TestKeys, n: u32, relay: bool, defect: bool) -> BTreeMap<NodeId, SeamNode<LockstepAgreement>> {
@@ -104,6 +129,11 @@ fn clean<A: Agreement>(t: &Target<A>) -> Vec<Violation> {
     sc.link =
         LinkCfg { delay_ns: 20 * MS, jitter_ns: 10 * MS, loss: Loss::Bernoulli { ppm: 10_000 }, ..Default::default() };
     let r = run(&sc, (t.nodes)(&keys, 3));
+    // A session that made progress: about a cut every 100 ms for 3 s, less pe-agree's cut lag and those in flight.
+    for n in 1..=3 {
+        let finals = r.trace.of(n).filter(|x| matches!(x.ev, Ev::Final { .. })).count();
+        assert!(finals >= 15, "{}: member {n} saw {finals} final cuts", t.name);
+    }
     judge(&r, 3)
 }
 
@@ -170,6 +200,23 @@ fn every_agreement_keeps_the_entry_source_contract() {
 }
 
 #[test]
+fn pe_agree_keeps_the_entry_source_contract() {
+    for t in agree_targets() {
+        for (scenario, vs) in [
+            ("clean", clean(&t)),
+            ("hole", {
+                let keys = TestKeys::new(42, 3);
+                let r = hole(&t, (t.nodes)(&keys, 3), &keys);
+                judge(&r, 3)
+            }),
+            ("back-dated", back_dated(&t)),
+        ] {
+            assert!(vs.is_empty(), "{} / {scenario}: {vs:#?}", t.name);
+        }
+    }
+}
+
+#[test]
 fn p15_bites_on_a_vote_without_the_entries() {
     // The control: the mock's d1 defect hands over the cut that names e3 before e2 has arrived.
     let keys = TestKeys::new(42, 3);
@@ -181,6 +228,22 @@ fn p15_bites_on_a_vote_without_the_entries() {
     let r = hole(&t, (t.nodes)(&keys, 3), &keys);
     let vs = props::p15_source_contract(&r.trace);
     assert!(vs.iter().any(|v| v.prop == Prop::P15 && v.detail.starts_with("wants_roots")), "{vs:#?}");
+}
+
+#[test]
+fn p15_bites_on_an_answer_for_a_cut_that_the_final_log_contradicts() {
+    // The entries_for_cut control (S3 v1.4): the source answers a cut out for roots with one entry fewer than the
+    // final log then holds at that frame.
+    let keys = TestKeys::new(41, 3);
+    let t = Target {
+        name: "lying entries_for_cut",
+        nodes: |k, n| lockstep_with(k, n, |a| a.cut_answer_lies = true),
+        frame_entry: LockstepAgreement::entry_message,
+    };
+    let sc = Scenario::new(41, 2 * SEC).at(frame_at(10), 1, Op::Set { obj: OBJ, field: 0, value: 4 });
+    let r = run(&sc, (t.nodes)(&keys, 3));
+    let vs = props::p15_source_contract(&r.trace);
+    assert!(vs.iter().any(|v| v.detail.starts_with("entries_for_cut: cut")), "{vs:#?}");
 }
 
 #[test]
