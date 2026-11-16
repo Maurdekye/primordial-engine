@@ -27,17 +27,32 @@ use pe_seams::{
 use crate::clock::HostClock;
 use crate::local::{self, Chain};
 
-/// The replica's per-call budget (app.md 3; S2 v1.1), in simulated time. It is never below two frames at the world's
-/// rate, because real time adds a frame per tick and a budget of one frame never catches up. Above that floor it
-/// follows the measured cost of a frame, so that one call's work fits in a share of a frame period. It is a local
-/// setting: it changes how fast the replica catches up, never what it computes.
+/// The replica's per-call budget (app.md 3; S2 v1.1), in simulated time. It is a local setting: it changes how fast the
+/// replica catches up, never what it computes. It is the largest of:
+/// - two frames at the world's rate (S2's floor): real time adds a frame per tick, and a budget of one frame never
+///   catches up;
+/// - the keep-up floor ([`Budget::at_present`]): the frames the frame clock's present advanced since the previous
+///   tick, plus one. A tick also takes messages in, signs the hand inputs and runs agreement, and when that alone
+///   outlasts a frame period, ticks run back to back and real time gains several frames on each. Sized from stepping
+///   alone, the budget then let a replica fall further behind every tick, though its frames were five times cheaper
+///   than real time (@engine-architect's debug measurement; @coordinator-opus mce61106b6b96, after @fable-reviewer).
+///   The keep-up floor is capped at [`Budget::KEEP_UP_CAP`] of stepping at the measured cost of a frame, and at
+///   [`Budget::MAX`]: a machine that steps slower than real time, or one back from a long stall, holds and reports
+///   it, rather than making each tick longer than the last;
+/// - what the measured cost of a frame fits into a share of a frame period ([`Budget::observe`]), up to `MAX`.
 #[derive(Clone, Debug)]
 pub struct Budget {
     rate: SimRate,
-    /// The share of a frame period one call may spend; 0 keeps the budget at the floor.
+    /// The share of a frame period one call may spend; 0 keeps this part of the budget at the floor.
     share: f64,
     /// The measured wall time of one frame, in nanoseconds, smoothed.
     cost_ns: Option<f64>,
+    /// What the measured cost fits into the share, between S2's floor and `MAX`.
+    fit: u64,
+    /// The frame clock's present at the latest tick, the greatest seen ([`Budget::at_present`]).
+    present: Option<Frame>,
+    /// The frames present advanced at the latest tick, plus one, before the cap; 0 before any tick.
+    keep_up: u64,
     frames: u64,
 }
 
@@ -48,13 +63,17 @@ impl Budget {
     pub const DEFAULT_SHARE: f64 = 0.5;
     /// The most simulated time one call is given, however cheap a frame is: twice `W_fg`.
     pub const MAX: Duration = Duration::from_secs(4);
+    /// The most stepping the keep-up floor asks of one call, at the measured cost of a frame (@coordinator-opus
+    /// mce61106b6b96): uncapped, a 10 s stall would become one 600-frame tick that sends no votes or timeouts.
+    pub const KEEP_UP_CAP: Duration = Duration::from_millis(100);
 
     pub fn new(rate: SimRate) -> Budget {
         Budget::with_share(rate, Budget::DEFAULT_SHARE)
     }
 
     pub fn with_share(rate: SimRate, share: f64) -> Budget {
-        Budget { rate, share: share.max(0.0), cost_ns: None, frames: Budget::FLOOR_FRAMES }
+        let floor = Budget::FLOOR_FRAMES;
+        Budget { rate, share: share.max(0.0), cost_ns: None, fit: floor, present: None, keep_up: 0, frames: floor }
     }
 
     /// The budget in frames.
@@ -86,7 +105,37 @@ impl Budget {
         let period_ns = 1e9 / f64::from(self.rate.hz());
         // A float-to-integer cast saturates, so a frame that costs nothing gives the most.
         let fit = (self.share * period_ns / cost.max(1.0)) as u64;
-        let frames = fit.clamp(Budget::FLOOR_FRAMES, self.rate.frames(Budget::MAX));
+        self.fit = fit.clamp(Budget::FLOOR_FRAMES, self.max_frames());
+        self.settle()
+    }
+
+    /// Records the frame clock's present at a tick, before the replica is driven (app.md 3). The budget is then at
+    /// least the frames present advanced since the previous tick, plus one, so that a replica whose frames are cheaper
+    /// than a period gains at least a frame on real time every tick, whatever else the tick costs. The first tick, and
+    /// a present that moved backwards, count as no advance. Returns the new budget when it changed.
+    pub fn at_present(&mut self, present: Frame) -> Option<Duration> {
+        let advanced = self.present.map_or(0, |last| present.0.saturating_sub(last.0));
+        self.present = Some(self.present.map_or(present, |last| last.max(present)));
+        self.keep_up = advanced.saturating_add(1);
+        self.settle()
+    }
+
+    /// The keep-up floor's cap in frames: [`Budget::KEEP_UP_CAP`] of stepping at the measured cost, between S2's floor
+    /// and `MAX`. With no frame measured yet there is no cost to size it by, so it stays at S2's floor.
+    pub fn keep_up_cap(&self) -> u64 {
+        let Some(cost) = self.cost_ns else { return Budget::FLOOR_FRAMES };
+        // A float-to-integer cast saturates, so a frame that costs nothing gives the most.
+        let fit = (Budget::KEEP_UP_CAP.as_nanos() as f64 / cost.max(1.0)) as u64;
+        fit.clamp(Budget::FLOOR_FRAMES, self.max_frames())
+    }
+
+    fn max_frames(&self) -> u64 {
+        self.rate.frames(Budget::MAX)
+    }
+
+    fn settle(&mut self) -> Option<Duration> {
+        let keep_up = self.keep_up.min(self.keep_up_cap());
+        let frames = self.fit.max(keep_up).clamp(Budget::FLOOR_FRAMES, self.max_frames());
         (frames != self.frames).then(|| {
             self.frames = frames;
             self.current()
@@ -401,7 +450,11 @@ impl Sim {
             }
             None => self.stats.unsent += out.len() as u64,
         }
-        // 4. The replica, through pe-replica's driver. `present` is exclusive, so frame `p` is simulated.
+        // 4. The replica, through pe-replica's driver. `present` is exclusive, so frame `p` is simulated. First the
+        // budget's keep-up floor: the frames `p` advanced since the previous tick, plus one, capped (`Budget`).
+        if let Some(b) = self.budget.at_present(p) {
+            self.replica.set_budget(b);
+        }
         let started = Instant::now();
         let report = self.driver.drive(&mut *self.replica, &mut *self.agree, Frame(p.0 + 1), self.self_test);
         let frames = report.advance.resimulated + report.advance.stepped;
@@ -953,6 +1006,151 @@ mod tests {
         // The cost is smoothed: one slow call moves it only part of the way.
         b.observe(1, Duration::from_millis(9));
         assert!(b.frames() < 8 && b.frames() >= Budget::FLOOR_FRAMES, "{}", b.frames());
+    }
+
+    #[test]
+    fn the_keep_up_floor_follows_the_present_and_is_capped() {
+        // The first tick is no advance, and with no frame measured the cap is S2's floor.
+        let mut fresh = Budget::new(RATE);
+        assert_eq!(fresh.at_present(Frame(10)), None);
+        assert_eq!(fresh.at_present(Frame(40)), None, "no cost yet: capped at the floor");
+        assert_eq!(fresh.frames(), Budget::FLOOR_FRAMES);
+        // 1 ms a frame: the share fits 8, the cap is 100 ms of stepping.
+        let mut b = Budget::new(RATE);
+        b.observe(10, Duration::from_millis(10));
+        assert_eq!((b.frames(), b.keep_up_cap()), (8, 100));
+        assert_eq!(b.at_present(Frame(40)), None);
+        // One frame since the last tick asks for 2: the share's 8 stands.
+        assert_eq!(b.at_present(Frame(41)), None);
+        assert_eq!(b.frames(), 8);
+        // 20 frames since the last tick ask for 21.
+        let raised = b.at_present(Frame(61)).expect("raised");
+        assert_eq!((b.frames(), RATE.frames(raised)), (21, 21));
+        // A 10 s stall asks for 601, capped at 100 ms of stepping.
+        b.at_present(Frame(661));
+        assert_eq!(b.frames(), 100);
+        // A present that moved backwards is no advance, and the greatest present seen stays the reference.
+        b.at_present(Frame(650));
+        assert_eq!(b.frames(), 8);
+        b.at_present(Frame(662));
+        assert_eq!(b.frames(), 8, "one frame past 661, not twelve past 650");
+        // Cheap frames: the cap is MAX.
+        let mut cheap = Budget::with_share(RATE, 0.0);
+        cheap.observe(100, Duration::from_micros(10));
+        cheap.at_present(Frame(0));
+        cheap.at_present(Frame(600));
+        assert_eq!(cheap.frames(), RATE.frames(Budget::MAX));
+    }
+
+    /// The simulation thread's loop as a model in simulated wall time: each tick costs `fixed` (taking messages in,
+    /// signing, agreement), then `cost` for each frame stepped, and a replica that caught up waits for its next frame,
+    /// as `run` does. It starts `behind` frames behind, and real time jumps by `stall` before tick `stall_at`. Returns
+    /// each tick's frames stepped and whether the replica caught up (a tick that didn't is a hold, `count_hold`).
+    /// `keep_up` false never calls `at_present`: the budget sized from stepping alone, as before the keep-up floor.
+    fn model(
+        cost: Duration,
+        fixed: Duration,
+        behind: u64,
+        stall: (usize, Duration),
+        ticks: usize,
+        keep_up: bool,
+    ) -> Vec<(u64, bool)> {
+        let period = 1e9 / f64::from(RATE.hz());
+        let mut b = Budget::new(RATE);
+        let mut t = behind as f64 * period;
+        let mut next = 0u64;
+        let mut out = Vec::new();
+        for i in 0..ticks {
+            if i == stall.0 {
+                t += stall.1.as_nanos() as f64;
+            }
+            let present = (t / period) as u64;
+            if keep_up {
+                b.at_present(Frame(present));
+            }
+            let steps = (present + 1).saturating_sub(next).min(b.frames());
+            next += steps;
+            if steps > 0 {
+                b.observe(steps, cost * steps as u32);
+            }
+            t += fixed.as_nanos() as f64 + cost.as_nanos() as f64 * steps as f64;
+            let caught_up = next > present;
+            if caught_up {
+                t = t.max((present + 1) as f64 * period);
+            }
+            out.push((steps, caught_up));
+        }
+        out
+    }
+
+    /// @coordinator-opus mce61106b6b96, test 1: a tick that costs 100 ms besides stepping (a debug build's crypto on
+    /// a loaded machine) still catches up when a frame costs less than a period, 3 ms here. Sized from stepping
+    /// alone, the budget (2 frames) falls further behind every tick.
+    #[test]
+    fn a_fixed_100_ms_a_tick_still_catches_up() {
+        let (cost, fixed, never) = (Duration::from_millis(3), Duration::from_millis(100), (usize::MAX, Duration::ZERO));
+        let with = model(cost, fixed, 120, never, 400, true);
+        let first = with.iter().position(|&(_, up)| up).expect("the keep-up floor catches up");
+        assert!(with[first..].iter().all(|&(_, up)| up), "and stays caught up");
+        let without = model(cost, fixed, 120, never, 400, false);
+        assert!(without.iter().all(|&(_, up)| !up), "the budget from stepping alone never catches up");
+    }
+
+    /// Test 2: a 10 s stall never gives a tick more than `KEEP_UP_CAP` of stepping, or more than `MAX`, and the
+    /// replica still catches up after it. After the stall's first, capped tick the floor is what real time adds plus
+    /// one, so with dear frames (3 ms, where the share fits only S2's floor) it gains about a frame a tick, and the
+    /// 600 frames take several hundred short ticks.
+    #[test]
+    fn a_ten_second_stall_never_gives_a_tick_longer_than_the_cap() {
+        for cost in [Duration::from_micros(300), Duration::from_millis(3)] {
+            let ticks = model(cost, Duration::from_millis(2), 0, (50, Duration::from_secs(10)), 1500, true);
+            for (i, &(steps, _)) in ticks.iter().enumerate() {
+                assert!(cost * steps as u32 <= Budget::KEEP_UP_CAP, "tick {i} at {cost:?}: {steps} frames");
+                assert!(steps <= RATE.frames(Budget::MAX), "tick {i} at {cost:?}: {steps} frames");
+            }
+            assert!(!ticks[50].1, "the stall leaves it behind at {cost:?}");
+            assert!(ticks[50..].iter().any(|&(_, up)| up), "and it catches up at {cost:?}");
+        }
+    }
+
+    /// Test 3: frames dearer than a period (30 ms at 60 Hz) keep every tick's stepping within the cap, and the
+    /// replica holds: it falls behind for good, and each tick that leaves it behind is a hold (`count_hold`).
+    #[test]
+    fn frames_dearer_than_a_period_keep_ticks_bounded_and_hold() {
+        let cost = Duration::from_millis(30);
+        let ticks = model(cost, Duration::from_millis(1), 0, (usize::MAX, Duration::ZERO), 200, true);
+        let cap = (Budget::KEEP_UP_CAP.as_nanos() / cost.as_nanos()) as u64;
+        assert!(ticks.iter().all(|&(steps, _)| steps <= cap.max(Budget::FLOOR_FRAMES)), "{ticks:?}");
+        assert!(ticks[10..].iter().all(|&(_, up)| !up), "it holds: {:?}", &ticks[..20]);
+    }
+
+    /// Test 4: the keep-up floor changes how fast a replica catches up, never what it computes. A pe-world replica
+    /// that comes back from a quarter-second stall in larger steps publishes the same objects at the same frame as one
+    /// ticked every frame. Kept short: a ball-pit frame costs about 20 ms in a debug build, so the cap allows a few
+    /// frames a tick there, and the replica then gains about one frame a tick.
+    #[test]
+    fn the_keep_up_floor_gives_the_same_state_as_stepping_every_frame() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (mut steady, steady_slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let (mut stalled, stalled_slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let end = 70u64;
+        for f in 1..=end {
+            steady.tick(clock.host_time_of(Frame(f)));
+        }
+        for f in 1..=10 {
+            stalled.tick(clock.host_time_of(Frame(f)));
+        }
+        let mut most = 0;
+        for f in 25..=end {
+            let (_, report) = stalled.tick(clock.host_time_of(Frame(f))).expect("ticked");
+            most = most.max(report.advance.stepped + report.advance.resimulated);
+        }
+        assert!(most > Budget::FLOOR_FRAMES, "the keep-up floor stepped {most} frames in its largest tick");
+        assert!(most <= RATE.frames(Budget::MAX), "{most}");
+        let (a, b) = (steady_slot.newest().expect("a view"), stalled_slot.newest().expect("a view"));
+        assert_eq!(a.frame, Frame(end + 1));
+        assert_eq!(b.frame, a.frame, "caught up by frame {end}");
+        assert_eq!(b.objects, a.objects);
     }
 
     #[test]

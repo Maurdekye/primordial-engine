@@ -117,8 +117,17 @@ setting, deterministic for the harness; pe-app may adjust it from the measured s
 call. Until it has reached the present again it publishes no new frame view, so the display keeps drawing, and
 extrapolating, the last one, while agreement keeps ticking and voting. The budget is never below two frames of
 simulated time at the world's rate, because real time adds a frame per tick and a budget of one frame never catches
-up (S2's floor; @design-reviewer's Low on 549f4ca4); pe-app raises it from the measured step cost, never below that
-floor. Each hold is counted, with its length; the objects that jump when the view resumes are blended and, above
+up (S2's floor; @design-reviewer's Low on 549f4ca4). Nor is it below the frames the frame clock's present advanced
+since the previous tick, plus one (the keep-up floor; @coordinator-opus mce61106b6b96, after @fable-reviewer). A
+tick also takes messages in, signs the hand inputs and runs agreement, and when that alone outlasts a frame period,
+ticks run back to back and real time gains several frames on each: sized from stepping alone, the budget then let a
+replica fall further behind every tick though its frames were five times cheaper than real time (a debug build
+under load: 120 ms a tick besides 2.8 ms a frame). With the keep-up floor, a replica whose frames are cheaper than a
+period gains at least a frame on real time every tick, whatever the rest costs. The keep-up floor is capped at
+100 ms of stepping at the measured cost of a frame, and at `Budget::MAX` (4 s), so a machine that steps slower than
+real time, or one back from a long stall, holds and reports it rather than making each tick longer than the last,
+and a 10 s stall never becomes one 600-frame tick that sends no votes or timeouts. Above both floors pe-app raises
+the budget from the measured step cost. Each hold is counted, with its length; the objects that jump when the view resumes are blended and, above
 `E_cue`, cued like any correction (render.md 8, D2-D3). A replay or an import that does not fit in one
 call returns "pending" and is called again on a later tick. The budget is part of S2 (`Advance::caught_up`,
 `RootError::Pending`, `ImportError::Pending`). M2's second copy then keeps the old prediction moving during a deep
@@ -296,6 +305,11 @@ final on either, though both keep simulating their predictions.
   time, votes and messages keep flowing, and the frame view resumes within the catch-up time the budget gives: at
   the floor budget of two frames the replica gains one frame per tick, so a `W_fg` backlog catches up within `W_fg`.
   That bound is exact, so the test allows two ticks of slack (@design-reviewer, m81f8b1342bc9).
+- **Ticks dearer than a frame period** (the keep-up floor, section 3): a fixed 100 ms a tick besides stepping still
+  catches up when a frame costs less than a period, where the budget from stepping alone falls behind for good; a
+  10 s stall never gives a tick more than the cap of stepping; frames dearer than a period keep every tick within the
+  cap and hold; and the floor changes no state (a replica back from a stall publishes the same objects at the same
+  frame as one ticked every frame).
 - **Startup without a GPU:** headless capture works, so CI runs the two-process test.
 - **Shutdown:** the leave reaches the other member, which pauses for zero frames.
 - **The two-process session** of section 6, on Windows and Linux.
