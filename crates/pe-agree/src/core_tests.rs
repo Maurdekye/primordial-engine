@@ -70,7 +70,7 @@ impl Sim {
         let members = keys.sorted_keys();
         let line = LineId::origin();
         let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
-        let cfg = Config { line, members: members.clone(), genesis, timing };
+        let cfg = Config { line, members: members.clone(), genesis, timing, epoch: 0 };
         let nodes = (0..n as usize).map(|i| Core::new(cfg.clone(), keys.key(i), HostTime(0))).collect();
         let idx = (0..n as usize).map(|i| (keys.key(i), i)).collect();
         Sim {
