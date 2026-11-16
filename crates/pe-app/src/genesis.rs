@@ -99,6 +99,9 @@ pub struct Genesis {
     /// pe-agree's `NodeConfig::consensus_hash` of the configuration the members run: [`consensus_hash`].
     pub agree: Hash,
     pub rate: SimRate,
+    /// pe-agree's cut interval, this build's consensus setting ([`settings`]), in whole milliseconds. The line covers
+    /// it; the replica's cut grid comes from the settings themselves ([`replica_config`]), and `start` checks the two
+    /// agree.
     pub cut_interval_ms: u32,
     pub gravity: [f32; 3],
     pub preset: Preset,
@@ -120,7 +123,6 @@ pub struct Params {
     pub opener: MemberKey,
     pub joiner: MemberKey,
     pub rate: SimRate,
-    pub cut_interval: Duration,
     pub gravity: [f32; 3],
     pub seed: u64,
     pub balls: u32,
@@ -225,10 +227,7 @@ impl Genesis {
         if params.opener == params.joiner {
             return Err(GenesisError::Members("the two keys are the same"));
         }
-        let cut_interval_ms = u32::try_from(params.cut_interval.as_millis())
-            .ok()
-            .filter(|&ms| ms > 0)
-            .ok_or_else(|| GenesisError::World("the cut interval is out of range".into()))?;
+        let cut_interval_ms = interval_ms(&settings())?;
         let mut members = vec![(params.opener, Role::Opener), (params.joiner, Role::Joiner)];
         members.sort_by_key(|m| m.0);
         let mut genesis = Genesis {
@@ -500,7 +499,13 @@ impl Genesis {
         if mine != self.agree {
             return Err(GenesisError::Agree { record: self.agree, mine });
         }
-        let mut config = ReplicaConfig::new(self.rate, Duration::from_millis(self.cut_interval_ms.into()), clock);
+        if interval_ms(&node)? != self.cut_interval_ms {
+            return Err(GenesisError::World(format!(
+                "the record's cut interval, {} ms, isn't its consensus settings' {} s",
+                self.cut_interval_ms, node.cut_interval_s
+            )));
+        }
+        let mut config = replica_config(&node, self.rate, clock);
         config.local = Some(me);
         let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config)
             .map_err(|e| GenesisError::World(format!("{e:?}")))?;
@@ -514,9 +519,37 @@ impl Genesis {
 /// record carries them, and the line derives from the record, `agree` included), so it is taken here from a
 /// configuration with placeholders for them, before a line exists; `start` compares it with the real one.
 pub fn consensus_hash() -> Hash {
+    settings().consensus_hash()
+}
+
+/// This build's consensus settings (pe-agree's defaults), with placeholders for the line, the members and the genesis
+/// cut, which [`consensus_hash`] leaves out: the source of a record's `agree` and cut interval, and of a solo world's
+/// cut grid (world.rs).
+pub(crate) fn settings() -> NodeConfig {
     let line = LineId(Hash([0; 32]));
     let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
-    node_config(line, Vec::new(), genesis).consensus_hash()
+    node_config(line, Vec::new(), genesis)
+}
+
+/// The replica's settings at `rate` on `node`'s cut grid. `cut_every` is `NodeConfig::cut_every`, the frames between
+/// cuts that pe-agree's voters require (they refuse a cut off the grid), so the replica's live roots and keyframes
+/// sit on the cuts' frames and serve every vote without re-stepping (@world-chunks's cut grid). `ReplicaConfig::new`
+/// rounds the interval up instead, which differs wherever it isn't a whole number of frames: 0.1 s is 7.2 frames at
+/// 72 Hz, a grid of 7 for pe-agree and 8 for the rounding up.
+pub(crate) fn replica_config(node: &NodeConfig, rate: SimRate, clock: Arc<dyn FrameClock>) -> ReplicaConfig {
+    let mut config = ReplicaConfig::new(rate, Duration::from_secs_f64(node.cut_interval_s), clock);
+    config.cut_every = node.cut_every(rate.hz());
+    config
+}
+
+/// A configuration's cut interval in whole milliseconds, as a record carries it: at least 1 and within `u32`.
+fn interval_ms(node: &NodeConfig) -> Result<u32, GenesisError> {
+    let ms = (node.cut_interval_s * 1000.0).round();
+    if (1.0..=u32::MAX as f64).contains(&ms) {
+        Ok(ms as u32)
+    } else {
+        Err(GenesisError::World("the cut interval is out of range".into()))
+    }
 }
 
 /// pe-agree's configuration of a session: every setting the members must share is this build's, pe-agree's
@@ -588,7 +621,6 @@ mod tests {
             opener: A,
             joiner: B,
             rate: SimRate::DEFAULT,
-            cut_interval: Duration::from_millis(133),
             gravity: pe_world::GRAVITY,
             seed: 11,
             balls: 24,
@@ -649,6 +681,34 @@ mod tests {
         let mut other = g.clone();
         other.nonce[0] ^= 1;
         assert_ne!(other.line(), g.line(), "and the nonce, so two sessions never share a line");
+    }
+
+    /// At 72 Hz, pe-agree's 0.1 s grid is 7 frames (7.2, rounded), where `ReplicaConfig::new`'s rounding up gives 8.
+    /// The replica takes its roots on the cuts' grid, solo and in a session, so every cut a voter accepts lands on a
+    /// live root (@world-chunks's cut grid).
+    #[test]
+    fn the_replica_s_cut_grid_is_pe_agree_s_at_72_hz() {
+        let node = settings();
+        let rate = SimRate::new(72).expect("72 Hz is a supported rate");
+        assert_eq!(node.cut_every(72), 7, "0.1 s at 72 Hz is 7.2 frames");
+        assert_eq!(replica_config(&node, rate, clock()).cut_every, node.cut_every(72));
+        let rounded_up = ReplicaConfig::new(rate, Duration::from_secs_f64(node.cut_interval_s), clock()).cut_every;
+        assert_eq!(rounded_up, 8, "the rule replica_config replaces");
+    }
+
+    /// A record's cut interval is this build's consensus setting, and `start` refuses a record whose interval isn't
+    /// the one its `agree` hash stands for: the line covers the interval, and the grid comes from the settings.
+    #[test]
+    fn the_record_s_cut_interval_is_the_settings_and_start_refuses_another() {
+        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        assert_eq!(g.cut_interval_ms, 100, "pe-agree's 0.1 s");
+        let mut other = g.clone();
+        other.cut_interval_ms += 1;
+        let world = other.world().expect("the record's world");
+        match other.start(world, A, clock()) {
+            Err(GenesisError::World(m)) => assert!(m.contains("cut interval"), "{m}"),
+            r => panic!("expected the cut interval refused, got {:?}", r.map(|_| ())),
+        }
     }
 
     /// A record with one field altered is refused, naming the field, or, for what the root covers, both roots

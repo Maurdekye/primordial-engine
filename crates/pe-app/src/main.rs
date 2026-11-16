@@ -53,10 +53,9 @@ use pe_xr::ring::{DEFAULT_WINDOW_NS, HandRing};
 // lands, from the same `Settings` the replica runs guests with (design-reviewer's Low 1 on slice 1).
 const SIM_STACK: usize = 4 << 20;
 
-/// A new world's seed and cut cadence, until configuration names the world and its settings (app.md 4, step 1). The
-/// stand-in agreement makes no cuts, so the cadence only places the replica's roots; 133 ms is pe-replica's test value.
+/// A new world's seed, until configuration names the world and its settings (app.md 4, step 1). Its cut grid is this
+/// build's consensus setting, solo or in a session (genesis.rs `replica_config`).
 const WORLD_SEED: u64 = 0;
-const CUT_INTERVAL: Duration = Duration::from_millis(133);
 
 /// The headset's display period until its frame loop reports the runtime's own (`HandRing::set_display_period`).
 const VR_PERIOD_NS: i64 = 11_111_111;
@@ -165,13 +164,7 @@ fn shared_sim(
             let mut line = String::new();
             let _ = std::io::stdin().read_line(&mut line);
             let reply = Reply::decode(line.trim()).unwrap_or_else(|e| fail(&format!("the reply code: {e:?}")));
-            let p = OpenParams {
-                seed: WORLD_SEED,
-                balls: 500,
-                rate,
-                cut_interval: CUT_INTERVAL,
-                epoch_lead: net::EPOCH_LEAD,
-            };
+            let p = OpenParams { seed: WORLD_SEED, balls: 500, rate, epoch_lead: net::EPOCH_LEAD };
             ep.open_session(&invite, &reply, &p, OPEN_TIMEOUT)
         }
         Shared::Join(invite) => {
@@ -209,8 +202,7 @@ fn main() {
         Some(shared) => shared_sim(&options, shared, &host, &wake, slot.clone(), hands.clone()),
         None => {
             let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
-            let replica = match world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, CUT_INTERVAL, frames.clone())
-            {
+            let replica = match world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, frames.clone()) {
                 Ok(r) => r,
                 Err(e) => fail(&format!("the replica did not start: {e}")),
             };
