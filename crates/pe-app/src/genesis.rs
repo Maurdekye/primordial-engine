@@ -500,10 +500,11 @@ impl Genesis {
         if mine != self.agree {
             return Err(GenesisError::Agree { record: self.agree, mine });
         }
-        if interval_ms(&node)? != self.cut_interval_ms {
+        let settings_ms = interval_ms(&node)?;
+        if settings_ms != self.cut_interval_ms {
             return Err(GenesisError::World(format!(
-                "the record's cut interval, {} ms, isn't its consensus settings' {} s",
-                self.cut_interval_ms, node.cut_interval_s
+                "the record's cut interval, {} ms, isn't its consensus settings' {settings_ms} ms",
+                self.cut_interval_ms
             )));
         }
         let mut config = replica_config(&node, self.rate, clock);
