@@ -113,6 +113,8 @@ fn main() {
                 retracted: vec![],
                 counters: ViewCounters::default(),
                 changes: vec![],
+                activations: Vec::new(),
+                activations_retracted: Vec::new(),
             }));
             let next = HostTime(((f + 1) as i128 * 1_000_000_000 / hz as i128) as i64);
             let wait = next.0 - c2().0;

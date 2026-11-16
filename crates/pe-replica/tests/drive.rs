@@ -185,6 +185,8 @@ fn node() -> Node {
         retracted: Vec::new(),
         counters: ViewCounters::default(),
         changes: Vec::new(),
+        activations: Vec::new(),
+        activations_retracted: Vec::new(),
     });
     Node {
         agree: Agree { log: log.clone(), final_cut: None, wants: Vec::new(), none: Vec::new() },

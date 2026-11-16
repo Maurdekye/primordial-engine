@@ -61,7 +61,7 @@ pub use time::{HostTime, SimRate, frames_ceil};
 pub use trace::{DivergeEvent, Rung, TraceEvent};
 pub use transport::{FrameClock, Lane, LinkState, LinkStats, NetEvent, PeerId, Received, Transport};
 pub use view::{
-    Appearance, BlobRef, Effect, EffectCause, EffectKey, EffectKind, FrameView, Hand, HandFeed, HandInput, HandSource,
-    Health, Holder, Light, LightKind, ObjectClass, RigPose, RigTransform, Shape, StepRecord, ViewCounters, ViewFlags,
-    ViewObject,
+    Activation, ActivationKey, ActivationOutcome, Appearance, BlobRef, BuildFailure, Effect, EffectCause, EffectKey,
+    EffectKind, FrameView, Hand, HandFeed, HandInput, HandSource, Health, Holder, Light, LightKind, ObjectClass,
+    RigPose, RigTransform, Shape, StepRecord, ViewCounters, ViewFlags, ViewObject, VoidedWhy,
 };
