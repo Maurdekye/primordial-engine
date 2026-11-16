@@ -287,8 +287,9 @@ which fixes the origin's role deliberately.
   5. **Pending script commits are left to logic.md 6.2a:** the voters stay those at `c`, and an attestation given
      before the leave still counts. A commit whose quorum the leave makes unreachable is voided at that frame's end
      by 6.2a's shared void rule, as `QuorumUnreachable` (`VoidKind` 5), rather than at `D`. The leaver's own pending
-     commit voids at activation as `AuthorRevokedAtActivation`, or at `D` as `Unattested` if the others never
-     attest; a readmission with `EDIT` before its `F` would let it activate, since `EDIT` is checked at `F`.
+     commit voids at activation as `AuthorRevokedAtActivation` if it reaches its quorum, at that frame's end as
+     `QuorumUnreachable` if the leave leaves it unreachable, or else at `D` as `Unattested`; a readmission with
+     `EDIT` before its `F` would let it activate, since `EDIT` is checked at `F`.
 
   Everything else the member made or set stays: a leave is not a delete. Its objects keep their rows, and the
   protections it set stay. Until agent powers (8.1) lets an admin clear a lock, nobody can lift those protections,
