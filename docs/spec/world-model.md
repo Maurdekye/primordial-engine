@@ -267,30 +267,33 @@ which fixes the origin's role deliberately.
   instead is open until 9.2 gives the join an id (@design-reviewer's Low). A rejoin at a later frame gets two new hands (the ids
   include the admission frame, as 8 intends), once a leave has removed the old ones. The avatar root that should
   parent the hands (3.5) is not built yet; its id derivation is open.
-- **A leave** (`World::leave(member, entry, frame)`; @coordinator-opus m003987d0d045 and mbdc0966ab9ab, after
+- **A leave** (`World::leave(member, entry)`; @coordinator-opus m003987d0d045 and mbdc0966ab9ab, after
   @fable-reviewer m4598f19943d3): the world side of the member's final `Leave` entry (pe-agree's epoch change,
   agreement.md 8), applied at its stamp on every replica, as a join is by `admit`. It is all or nothing, and refused
-  with `WorldError::NotAMember` for a key that holds no permission bits. In order:
+  with `WorldError::NotAMember` for a key that holds no permission bits. That is its only error, since every step
+  below is infallible: a hand's child that can't keep its world pose under the hand's parent becomes a root. In
+  order:
   1. **The hands are removed outright,** with no tombstone, so no edit can undelete one; their hand packs go with
-     them. A hand's children first move to the hand's parent (M1's hands are roots, so they become roots), keeping
-     their world pose and the hand's child order, versioned by the leave's entry.
+     them, and so does any tombstone of a hand of the member's that an edit deleted. A hand's children first move to
+     the hand's parent (M1's hands are roots, so they become roots), keeping their world pose and the hand's child
+     order, versioned by the leave's entry.
   2. **Every claim by the member ends,** as a release does (7.2): the object keeps its velocity and no cooldown
      starts, so another member may grab it on the next frame.
-  3. **The member's input rows go:** its cooldowns and its push window. A later readmission starts clean; a leave and
-     rejoin can't be used to skip a cooldown or refill a push budget early, since an epoch change takes longer than
-     either.
+  3. **The member's input rows go:** its cooldowns and its push window. A later readmission starts clean. A leave and
+     rejoin can't be used to skip a cooldown or refill a push budget at will, since a rejoin needs an admin's
+     `Admit`: two epoch changes and a person.
   4. **Its permission bits are dropped,** so any later entry of its is refused (`NoPermission` for an edit; an input
      names a hand that no longer exists). pe-agree also makes `Leave` the last entry of the leaver's chain.
-  5. **Pending script commits (logic.md 6.2a):** the voters stay those at `c`, and an attestation given before the
-     leave still counts. A commit whose quorum the leave makes unreachable (the attestations given, plus the voters
-     still members who have not yet attested, fall short of `quorum(voters)`) is voided at the leave's frame as
-     `QuorumUnreachable` (`VoidKind` 5), rather than at `D`. The leaver's own pending commit is left to 6.2a: it
-     voids at activation as `AuthorRevokedAtActivation`.
+  5. **Pending script commits are left to logic.md 6.2a:** the voters stay those at `c`, and an attestation given
+     before the leave still counts. A commit whose quorum the leave makes unreachable is voided at that frame's end
+     by 6.2a's shared void rule, as `QuorumUnreachable` (`VoidKind` 5), rather than at `D`. The leaver's own pending
+     commit voids at activation as `AuthorRevokedAtActivation`, or at `D` as `Unattested` if the others never
+     attest; a readmission with `EDIT` before its `F` would let it activate, since `EDIT` is checked at `F`.
 
   Everything else the member made or set stays: a leave is not a delete. Its objects keep their rows, and the
   protections it set stay. Until agent powers (8.1) lets an admin clear a lock, nobody can lift those protections,
   and with no admin left they stay frozen for good. The root after an admit and its leave equals the root before
-  the admit, apart from what the member made.
+  the admit, apart from what the member made and changed.
 - **An interim session's world** (@engine-architect's `pe_app::genesis`; @coordinator-opus m9571fcf519b9,
   m4d09145cb902) is `preset::m1_session(&Session, blobs)`: the pit of `ball_pit_on` on the session's line, at the
   session's rate, with its gravity and pe-agree's settings record (config item 4; in M1 that is pe-agree's 32-byte

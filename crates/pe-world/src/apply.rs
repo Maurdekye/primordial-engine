@@ -536,13 +536,24 @@ impl World {
         let due: Vec<AssetId> = self
             .pending
             .iter()
-            .filter(|(_, p)| p.void.is_none() && (p.attested_by_quorum() || frame >= p.deadline))
+            .filter(|(_, p)| {
+                p.void.is_none()
+                    && (p.attested_by_quorum()
+                        || p.quorum_unreachable(|k| self.members.contains_key(k))
+                        || frame >= p.deadline)
+            })
             .map(|(a, _)| *a)
             .collect();
         for a in due {
             let p = self.pending[&a].clone();
-            let done =
-                if p.attested_by_quorum() { self.activate(a, &p, frame) } else { Err((VoidKind::Unattested, None)) };
+            // Activation first, then the shared void rule, then the deadline (logic.md 6.2a).
+            let done = if p.attested_by_quorum() {
+                self.activate(a, &p, frame)
+            } else if p.quorum_unreachable(|k| self.members.contains_key(k)) {
+                Err((VoidKind::QuorumUnreachable, None))
+            } else {
+                Err((VoidKind::Unattested, None))
+            };
             match done {
                 Ok(report) => {
                     Arc::make_mut(&mut self.pending).remove(&a);

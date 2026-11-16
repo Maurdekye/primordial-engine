@@ -165,8 +165,8 @@ pub enum VoidKind {
     /// At `F` its author no longer holds `EDIT`: revoking someone's rights stops their pending code too
     /// (@coordinator-opus m41d775f5d9f9).
     AuthorRevokedAtActivation = 4,
-    /// A leave made its quorum unreachable: the attestations given plus the voters still members who have not yet
-    /// attested fall short. Voided at the leave's frame rather than at `D` (@fable-reviewer via @coordinator-opus
+    /// Its quorum became unreachable ([`PendingCommit::quorum_unreachable`], logic.md 6.2a item 4), for example
+    /// after a leave: voided at that frame's end rather than at `D` (@fable-reviewer via @coordinator-opus
     /// mbdc0966ab9ab).
     QuorumUnreachable = 5,
 }
@@ -220,6 +220,16 @@ impl PendingCommit {
     /// Whether a quorum of its voters has attested it.
     pub fn attested_by_quorum(&self) -> bool {
         self.attested.len() >= quorum(self.voters.len())
+    }
+
+    /// The shared void rule (logic.md 6.2a item 4): the quorum can no longer be reached, because the counted
+    /// attestations plus the voters at `c` who are still members (`is_member`) and have not attested fall short of
+    /// `q`. The voters stay those at `c`, so an attestation given before a leave still counts. `BuildFailed` adds
+    /// "nor failed" to the second count when it lands.
+    pub fn quorum_unreachable(&self, is_member: impl Fn(&MemberKey) -> bool) -> bool {
+        let attested = |k: &MemberKey| self.attested.iter().any(|(a, _)| a == k);
+        let could = self.voters.iter().filter(|k| !attested(k) && is_member(k)).count();
+        self.attested.len() + could < quorum(self.voters.len())
     }
 
     fn write(&self, b: &mut Vec<u8>) {
