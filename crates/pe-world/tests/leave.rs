@@ -87,12 +87,12 @@ fn a_leave_while_holding_a_moving_object_ends_the_claim_keeps_its_velocity_and_f
     let mut f = fx();
     assert!(applied(&input(&mut f.w, 0, &mut f.b, grab(BALL, f.hands_b[1])).0));
     assert_eq!(f.w.claims().count(), 1);
-    let r = f.w.leave(f.kb, leave_entry(), Frame(1)).unwrap();
+    let r = f.w.leave(f.kb, leave_entry()).unwrap();
     let mut hands = f.hands_b.to_vec();
     hands.sort();
     assert_eq!(r.hands, hands);
     assert_eq!(r.released, vec![oid(BALL)]);
-    assert!(r.moved.is_empty() && r.voided.is_empty());
+    assert!(r.moved.is_empty());
     for h in f.hands_b {
         assert!(!f.w.store().exists(h), "hand removed outright");
     }
@@ -116,7 +116,7 @@ fn a_leave_drops_the_leavers_cooldowns_and_push_window() {
     assert!(f.w.cooldown(f.kb, oid(BALL)).is_some(), "the fixture starts a cooldown");
     let push = Input::Push { object: oid(BALL), impulse: [0.01, 0.0, 0.0], at: None };
     assert!(applied(&input(&mut f.w, 31, &mut f.b, push).0));
-    f.w.leave(f.kb, leave_entry(), Frame(31)).unwrap();
+    f.w.leave(f.kb, leave_entry()).unwrap();
     assert_eq!(f.w.cooldown(f.kb, oid(BALL)), None);
     // Nothing keyed by B stays in the cooldowns, hand packs or push windows.
     for t in [5u8, 7, 8] {
@@ -135,7 +135,7 @@ fn admit_then_leave_restores_the_root_before_the_admit() {
     let r0 = w.root_hash(D);
     w.admit(m1_line(), kb, perm::EDIT, Frame(3), Pos::ORIGIN).unwrap();
     assert_ne!(w.root_hash(D), r0);
-    w.leave(kb, leave_entry(), Frame(9)).unwrap();
+    w.leave(kb, leave_entry()).unwrap();
     assert_eq!(w.root_hash(D), r0, "nothing of B's stays: no hands, no tombstones, no member row");
 }
 
@@ -146,7 +146,7 @@ fn a_hands_children_move_to_its_parent_keeping_their_world_pose() {
     f.w.create(oid(BOX), Some(hand), f.kb, pe_world::GENESIS).unwrap();
     f.w.insert(oid(BOX), Transform::local([0.0, 0.0, 0.1])).unwrap();
     let pose = f.w.store().world_transform(oid(BOX)).unwrap();
-    let r = f.w.leave(f.kb, leave_entry(), Frame(1)).unwrap();
+    let r = f.w.leave(f.kb, leave_entry()).unwrap();
     assert_eq!(r.moved, vec![oid(BOX)]);
     assert_eq!(f.w.store().parent(oid(BOX)), None, "M1's hands are roots, so it becomes one");
     assert_eq!(f.w.store().world_transform(oid(BOX)).unwrap(), pose);
@@ -156,7 +156,7 @@ fn a_hands_children_move_to_its_parent_keeping_their_world_pose() {
 #[test]
 fn what_the_leaver_made_stays_and_its_protections_stay_frozen_until_agent_powers() {
     let mut f = fx();
-    f.w.leave(f.kb, leave_entry(), Frame(1)).unwrap();
+    f.w.leave(f.kb, leave_entry()).unwrap();
     assert!(f.w.store().exists(oid(BALL)), "a leave is not a delete");
     assert_eq!(f.w.store().get::<Protection>(oid(BALL)), Some(&Protection { owner: f.kb }));
     // A, the admin left, can't lift it yet: an admin's lock-flag clear is agent powers' (8.1), a later slice.
@@ -168,7 +168,7 @@ fn what_the_leaver_made_stays_and_its_protections_stay_frozen_until_agent_powers
 #[test]
 fn the_leavers_later_entries_are_refused() {
     let mut f = fx();
-    f.w.leave(f.kb, leave_entry(), Frame(1)).unwrap();
+    f.w.leave(f.kb, leave_entry()).unwrap();
     assert!(!applied(&input(&mut f.w, 1, &mut f.b, grab(BALL, f.hands_b[1])).0), "its hands are gone");
     let paint = vec![Op::SetRow { id: Target::Existing(oid(BALL)), row: row(Appearance::default()) }];
     assert_eq!(reason(&edit(&mut f.w, 1, &mut f.b, paint)), Reason::NoPermission);
@@ -179,17 +179,17 @@ fn a_non_member_cannot_leave_and_nothing_changes() {
     let mut f = fx();
     let before = f.w.root_hash(D);
     let stranger = MemberKey([9; 32]);
-    assert_eq!(f.w.leave(stranger, leave_entry(), Frame(1)), Err(WorldError::NotAMember(stranger)));
+    assert_eq!(f.w.leave(stranger, leave_entry()), Err(WorldError::NotAMember(stranger)));
     assert_eq!(f.w.root_hash(D), before);
-    f.w.leave(f.kb, leave_entry(), Frame(1)).unwrap();
-    assert_eq!(f.w.leave(f.kb, leave_entry(), Frame(2)), Err(WorldError::NotAMember(f.kb)), "twice");
+    f.w.leave(f.kb, leave_entry()).unwrap();
+    assert_eq!(f.w.leave(f.kb, leave_entry()), Err(WorldError::NotAMember(f.kb)), "twice");
 }
 
 #[test]
 fn leave_then_readmit_replays_to_the_same_root_and_gives_new_hands() {
     let f = fx();
     let step = |w: &mut World| {
-        w.leave(f.kb, leave_entry(), Frame(2)).unwrap();
+        w.leave(f.kb, leave_entry()).unwrap();
         w.admit(m1_line(), f.kb, perm::EDIT, Frame(5), Pos::ORIGIN).unwrap()
     };
     let mut w1 = f.w.clone();
@@ -202,4 +202,18 @@ fn leave_then_readmit_replays_to_the_same_root_and_gives_new_hands() {
     assert_eq!(step(&mut w2), new);
     assert_eq!(w1.root_hash(D), w2.root_hash(D));
     assert_ne!(w1.root_hash(D), f.w.root_hash(D));
+}
+
+#[test]
+fn a_deleted_hand_of_the_leavers_leaves_no_tombstone_to_undelete() {
+    let mut f = fx();
+    let hand = f.hands_b[0];
+    let del = edit(&mut f.w, 0, &mut f.a, vec![Op::Delete { id: Target::Existing(hand) }]);
+    assert!(applied(&del), "today an edit may delete a hand: {del:?}");
+    assert!(f.w.tombstone(hand).is_some());
+    let r = f.w.leave(f.kb, leave_entry()).unwrap();
+    assert_eq!(r.hands, vec![f.hands_b[1]], "only the live hand is removed");
+    assert!(f.w.tombstone(hand).is_none(), "and the deleted one can't come back");
+    let undo = edit(&mut f.w, 1, &mut f.a, vec![Op::Undelete { id: hand }]);
+    assert!(!applied(&undo), "{undo:?}");
 }

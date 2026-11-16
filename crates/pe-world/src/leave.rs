@@ -4,13 +4,11 @@
 
 use std::sync::Arc;
 
-use pe_core::{EntryRef, Frame, MemberKey, ObjectId};
+use pe_core::{EntryRef, MemberKey, ObjectId};
 use pe_seams::Version;
 
-use crate::apply::Blocked;
-use crate::components::Hand;
-use crate::script::{AssetId, VoidKind, quorum};
-use crate::world::{World, WorldError};
+use crate::components::{Hand, ids};
+use crate::world::{Tombstone, World, WorldError};
 
 /// What [`World::leave`] did, each list in id (or asset) order.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -22,25 +20,24 @@ pub struct LeaveReport {
     /// Children of a hand, moved to the hand's parent (a root, for M1's root hands), keeping their world pose and
     /// the hand's child order.
     pub moved: Vec<ObjectId>,
-    /// Pending script commits voided at the leave (`QuorumUnreachable`): the leaver had not attested, and the
-    /// attestations given plus the voters still members who could give one fall short of the quorum.
-    pub voided: Vec<(AssetId, Version, VoidKind, Option<Blocked>)>,
 }
 
 impl World {
-    /// `member`'s graceful leave at `frame`, from its final `Leave` entry `entry` (logic order: every replica calls it
-    /// at the same frame). All or nothing; `NotAMember` if `member` holds no permission bits. In order:
+    /// `member`'s graceful leave, from its final `Leave` entry `entry`, applied at the entry's stamp (every replica
+    /// at the same frame, in agreed order). All or nothing. Its only error is `NotAMember`, for a key that holds no
+    /// permission bits; every step below is infallible, so pe-replica treats any other `Err` as a bug. In order:
     /// 1. each hand the member owns: its children move to the hand's parent, keeping world pose and order, then the
-    ///    hand is removed outright, with its hand pack;
+    ///    hand is removed outright, with its hand pack; a deleted hand of the member's leaves no tombstone behind;
     /// 2. every claim by the member ends, as a release does (7.2: no cooldown);
     /// 3. the member's input rows go: its cooldowns and its push window, so a later readmission starts clean;
     /// 4. its permission bits are dropped;
-    /// 5. a pending commit whose quorum the leave makes unreachable is voided now (logic.md 6.2a). The voters stay
-    ///    those at `c`, and an attestation the leaver gave before leaving still counts. The leaver's own pending
-    ///    commit is left to 6.2a: it voids at activation as `AuthorRevokedAtActivation`.
+    /// 5. pending script commits are left to 6.2a: the voters stay those at `c` (an attestation the leaver gave
+    ///    still counts), and one whose quorum the leave makes unreachable is voided at this frame's end by the shared
+    ///    void rule (`QuorumUnreachable`); the leaver's own voids at activation as `AuthorRevokedAtActivation`.
     ///
-    /// Everything else the member made or set stays: its objects, the protections it set (an admin can lift them).
-    pub fn leave(&mut self, member: MemberKey, entry: EntryRef, frame: Frame) -> Result<LeaveReport, WorldError> {
+    /// Everything else the member made or set stays: its objects, and the protections it set (nobody can lift those
+    /// until agent powers lets an admin clear a lock, world-model.md 2.4).
+    pub fn leave(&mut self, member: MemberKey, entry: EntryRef) -> Result<LeaveReport, WorldError> {
         if !self.members.contains_key(&member) {
             return Err(WorldError::NotAMember(member));
         }
@@ -59,15 +56,36 @@ impl World {
             let at = parent.and_then(|p| w.store.children(p).position(|c| c == h));
             let kids: Vec<ObjectId> = w.store.children(h).collect();
             for (k, &c) in kids.iter().enumerate() {
-                w.store.set_parent_keep_world(c, parent, at.map(|i| i + k))?;
+                // A final Leave must apply on every replica, so the move can't fail: if keeping the world pose under
+                // the hand's parent is refused (a rewritten transform past the limits), the child becomes a root
+                // keeping its world pose, and failing that a root keeping its local transform, which needs no
+                // rewrite (@chunks-reviewer's L1).
+                let up = w.store.set_parent_keep_world(c, parent, at.map(|i| i + k));
+                let moved = up
+                    .or_else(|_| w.store.set_parent_keep_world(c, None, None))
+                    .or_else(|_| w.store.set_parent(c, None, None));
+                debug_assert!(moved.is_ok(), "a hand's child always moves up: {moved:?}");
                 w.touch(c, v, true);
                 report.moved.push(c);
             }
             if let Some(p) = parent {
                 w.touch(p, v, true);
             }
-            w.store.destroy(h)?;
+            let gone = w.store.destroy(h);
+            debug_assert!(gone.is_ok(), "the hand is live: {gone:?}");
             Arc::make_mut(&mut w.inputs).packs.remove(&h);
+        }
+        // A hand of the member's that an edit deleted lies in a tombstone: drop it, so no `Undelete` brings back a
+        // hand owned by a non-member (@chunks-reviewer's L2).
+        let ghost = |t: &Tombstone| {
+            t.rows.iter().any(|(c, bytes, _)| {
+                *c == ids::HAND
+                    && bytes.len() == size_of::<Hand>()
+                    && bytemuck::pod_read_unaligned::<Hand>(bytes).owner == member
+            })
+        };
+        if w.tombstones.values().any(ghost) {
+            Arc::make_mut(&mut w.tombstones).retain(|_, t| !ghost(t));
         }
         report.moved.sort();
         report.hands = hands;
@@ -79,24 +97,6 @@ impl World {
         t.cooldowns.retain(|(m, _), _| *m != member);
         t.pushes.remove(&member);
         w.set_member(member, 0);
-        let due: Vec<AssetId> = w
-            .pending
-            .iter()
-            .filter(|(_, p)| {
-                let attested = |k: &MemberKey| p.attested.iter().any(|(a, _)| a == k);
-                let could = p.voters.iter().filter(|k| !attested(k) && w.members.contains_key(k)).count();
-                p.void.is_none()
-                    && p.voters.contains(&member)
-                    && !attested(&member)
-                    && p.attested.len() + could < quorum(p.voters.len())
-            })
-            .map(|(a, _)| *a)
-            .collect();
-        for a in due {
-            let p = Arc::make_mut(&mut w.pending).get_mut(&a).expect("present");
-            p.void = Some((frame, VoidKind::QuorumUnreachable));
-            report.voided.push((a, p.version, VoidKind::QuorumUnreachable, None));
-        }
         *self = w;
         Ok(report)
     }
