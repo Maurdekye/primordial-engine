@@ -471,6 +471,15 @@ never deleted].
   `RUSTC_BOOTSTRAP` on the pinned stable toolchain).
 - The build runs as a child process at idle priority, one at a time per machine, in its own target directory per
   world.
+- **The author builds what the others build** (@shader-reviewer's Low 2 on v6-r1): the author's module, the
+  `author_module` its commit names, is `build::build_archive(build::pack(dir))`, the archive it commits built from a
+  fresh folder with the template's `Cargo.toml`, and never `build::build(dir)` on its own crate, whose package name
+  and manifest are the author's. Every other machine builds the archive, so any other path risks a module hash
+  nobody else reproduces. Today the two give the same bytes (the lamp, 9,473 bytes: the package name does not reach
+  the stripped module), and `tests/archive.rs`, `a_direct_build_of_the_authors_crate_differs_only_as_pinned_here`,
+  pins that, so a change shows up [V]. `build::pack` also refuses a symlink or junction under `src`, and anything it
+  cannot read, which the author's own build would otherwise still see (@shader-reviewer's Low 1) [V the same file,
+  `pack_refuses_a_link_under_src`, with a junction on Windows].
 - **Reproducibility is a requirement, not an assumption:** two machines' builds of one source must give the same
   bytes, or their states differ and the hash tree finds it. Shown so far for six dependency-free modules on two
   x86-64 machines only [V file 03]. The M2 acceptance (same bytes on all four hosted platforms) is the test.
