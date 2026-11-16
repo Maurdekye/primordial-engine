@@ -407,10 +407,15 @@ agent-authored edit needs (the lamp is 1.2 KB). It still leaves the slowest hone
   travel inside a commit anyway.
 
 A script bigger than the cap is split into several scripts, or waits for a later version of this rule (M2: a
-per-world setting, or a source that depends on a shared library asset). Not built yet: the archive codec and the
-cap check (pe-logic's build service takes a folder today; pe-world's `CommitScript` takes any length).
-@world-model adds `MAX_SOURCE_BYTES`, `check_source` and their tests (over the cap; a case-collision pair) to
-pe-world; pe-logic's build service then packs a crate into the archive and unpacks it through `check_source`.
+per-world setting, or a source that depends on a shared library asset). **Built:** pe-world has the format,
+the cap and the check (`MAX_SOURCE_BYTES`, `check_source`, `source_files`, `pack_source`; @world-model,
+world/source-check, main c3962919), and `CommitScript` refuses a non-canonical archive at apply. pe-logic's build
+service packs a crate's `src` with `build::pack`, refusing a file the archive cannot carry rather than skipping it,
+and builds an archive with `build::build_archive`: it checks it with the same `source_files`, unpacks it into a
+fresh folder beside the template's `Cargo.toml`, and builds there [V `tests/archive.rs`: the lamp packs canonically
+and builds to the same bytes unpacked at two depths; a `.txt`, an upper-case name, a hyphen and a non-UTF-8 file are
+refused; a non-canonical archive is refused before anything is written; a work folder the service did not write is
+never deleted].
 
 ### 4.2 The build
 
