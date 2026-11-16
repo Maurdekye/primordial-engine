@@ -177,6 +177,12 @@ fn edit_writable(c: ComponentId) -> bool {
     c != ComponentId::NODE && c != ids::BODY_STATE && c != ids::HAND
 }
 
+/// A hand's own row an edit can't write, though another object's it may: its transform. Hands are logic's alone,
+/// made by `admit`, moved by their member's input and removed by the leave (7.5; @coordinator-opus).
+fn hand_only(c: ComponentId) -> bool {
+    c == ComponentId::TRANSFORM
+}
+
 /// What [`World::end_frame`] did to scripts (logic.md 6.2a), in asset order, each commit named by its asset and its
 /// version (the commit's entry and op): the commits activated, with their re-key's report, and the commits voided,
 /// with why. The report is `None` when no re-key was needed, so no object changed: a script's first version (no
@@ -1069,6 +1075,12 @@ impl World {
         Ok(())
     }
 
+    /// Refuses an edit that would move hand `id` or write its transform, as `Invalid` naming `Hand` (7.5): a hand is
+    /// moved only by its member's input. A subtree that merely holds a hand may still move.
+    fn not_a_hand(&self, id: ObjectId) -> Result<(), Reason> {
+        if self.store.get_raw(ids::HAND, id).is_some() { Err(invalid_field(ids::HAND, u32::MAX)) } else { Ok(()) }
+    }
+
     /// The owner of the nearest `Protection` at or above `id`. Iterative and bounded (3.3).
     pub(crate) fn protected_by(&self, id: ObjectId) -> Option<MemberKey> {
         let mut at = id;
@@ -1094,6 +1106,9 @@ impl World {
     ) -> Result<(), Reason> {
         if instance != 0 || !edit_writable(c) || self.store.registry().get(c).is_none() {
             return Err(invalid_field(c, u32::MAX));
+        }
+        if hand_only(c) {
+            self.not_a_hand(id)?;
         }
         // A superseded version's components take no writes, and no hand takes a tag (7.9).
         self.superseded(c)?;
@@ -1154,6 +1169,9 @@ impl World {
         if instance != 0 || !edit_writable(c) || c == ids::SIM_SIZE || self.store.registry().get(c).is_none() {
             return Err(invalid_field(c, u32::MAX));
         }
+        if hand_only(c) {
+            self.not_a_hand(id)?;
+        }
         // The instance it names is already gone: no row, or a row added again since with another tag (7.6). There is
         // nothing to remove, so nothing to hold or protect either, and two removals in a merge need no rule of their
         // own.
@@ -1205,6 +1223,7 @@ impl World {
         index: Option<u32>,
         keep_world: bool,
     ) -> Result<(), Reason> {
+        self.not_a_hand(id)?;
         if let Some(claim) = self.claims.get(&id) {
             return Err(Reason::Held { by: claim.member });
         }
