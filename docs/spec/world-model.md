@@ -988,8 +988,7 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     author_module (32) ‖ count u32 ‖ component ids (u128 LE, ascending) ‖ c u64 ‖ D u64 ‖ count u32 ‖ voters (32 each,
     ascending) ‖ count u32 ‖ attestations (voter 32 ‖ stamp u64, ascending, voters only) ‖ void u8 (0 none, 1
     Unattested, 2 RekeyBlockedAtActivation, 3 RekeyTooLarge, 4 AuthorRevokedAtActivation, 5 QuorumUnreachable) ‖ its
-    frame u64 if not 0`. A
-    world with no scripts has no entries, so its root is unchanged.
+    frame u64 if not 0`. A world with no scripts has no entries, so its root is unchanged.
   - governance: key the member key (32); value the permission bits `u32`;
   - claims: key the object id; value `hand u128 ‖ member (32) ‖ since u64 ‖ until u64`;
   - cooldowns: key `member (32) ‖ object id`; value `until u64`;
