@@ -177,10 +177,12 @@ fn edit_writable(c: ComponentId) -> bool {
     c != ComponentId::NODE && c != ids::BODY_STATE && c != ids::HAND
 }
 
-/// A hand's own row an edit can't write, though another object's it may: its transform. Hands are logic's alone,
-/// made by `admit`, moved by their member's input and removed by the leave (7.5; @coordinator-opus m7821f3319dc2).
+/// A hand's own rows an edit can't write or remove, though another object's it may: the ones that place it or make
+/// it a body ([`held_rows`]: `Transform`, `Body`, `Shape`), so neither an edit nor physics ever moves a hand. Hands
+/// are logic's alone, made by `admit`, moved by their member's input and removed by the leave (7.5; @coordinator-opus
+/// m7821f3319dc2, widened mb4ecbbb53073 after @chunks-reviewer's Medium).
 fn hand_only(c: ComponentId) -> bool {
-    c == ComponentId::TRANSFORM
+    held_rows(c)
 }
 
 /// What [`World::end_frame`] did to scripts (logic.md 6.2a), in asset order, each commit named by its asset and its
@@ -1076,8 +1078,8 @@ impl World {
         Ok(())
     }
 
-    /// Refuses an edit that would move hand `id` or write its transform, as `Invalid` naming `Hand` (7.5): a hand is
-    /// moved only by its member's input. A subtree that merely holds a hand may still move.
+    /// Refuses an edit that would move hand `id` or write one of its [`hand_only`] rows, as `Invalid` naming `Hand`
+    /// (7.5): a hand is moved only by its member's input. A subtree that merely holds a hand may still move.
     fn not_a_hand(&self, id: ObjectId) -> Result<(), Reason> {
         if self.store.get_raw(ids::HAND, id).is_some() { Err(invalid_field(ids::HAND, u32::MAX)) } else { Ok(()) }
     }
