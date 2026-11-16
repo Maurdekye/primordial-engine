@@ -323,8 +323,8 @@ From the repo root:
 
 ```
 python -I scripts/iter_bench_gen.py                      # spikes/iter-bench/guests (also --scale 3 --out spikes/iter-bench/guests-x3, --scale 8 ... guests-x8)
-set CARGO_TARGET_DIR=spikes/iter-bench/target/host  &&  cargo build --release --manifest-path spikes/iter-bench/host/Cargo.toml
-set CARGO_TARGET_DIR=spikes/iter-bench/target/tools &&  cargo build --release --manifest-path spikes/iter-bench/rustc-timer/Cargo.toml
+CARGO_TARGET_DIR="$(python -I scripts/cargo_output.py . iter-bench/host)"  cargo build --release --manifest-path spikes/iter-bench/host/Cargo.toml   # bash; where iter_bench_loop.py looks
+CARGO_TARGET_DIR="$(python -I scripts/cargo_output.py . iter-bench/tools)" cargo build --release --manifest-path spikes/iter-bench/rustc-timer/Cargo.toml
 python -I scripts/iter_bench_loop.py --set main|levers|breakdown|cranelift   [--reps 8]
 python -I scripts/iter_bench_loop.py --set scale --reps 6 --guests spikes/iter-bench/guests-x3 --tag x3
 iter-host matrix  <target/guests/wasm32-unknown-unknown/release/logic_wasm.wasm> native wasmi-eager-fuel wasmtime-cranelift-fuel-nancanon wasmtime-winch-fuel ...
