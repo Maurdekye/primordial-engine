@@ -488,7 +488,6 @@ mod tests {
             } else {
                 WorldOutcome::Refused { op: Some(0), reason: Reason::NoPermission }
             },
-            rekeyed: Default::default(),
         }
     }
     fn tx(e: u8) -> TxId {

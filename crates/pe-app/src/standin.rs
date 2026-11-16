@@ -145,6 +145,8 @@ pub(crate) fn view_at(clock: &dyn FrameClock, frame: Frame) -> Arc<FrameView> {
         retracted: Vec::new(),
         counters: ViewCounters::default(),
         changes: Vec::new(),
+        activations: Vec::new(),
+        activations_retracted: Vec::new(),
     })
 }
 

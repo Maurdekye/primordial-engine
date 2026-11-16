@@ -1857,7 +1857,7 @@ impl pe_replica::ScriptRunner for NoModules {
 }
 
 /// A script commit's re-key happens when it activates, at the end of a frame (logic.md 6.2a), so no step record
-/// names re-keyed objects any more (`StepRecord::rekeyed` stays empty until S5's `FrameView.activations` replaces it;
+/// names re-keyed objects (S5 v1.8 moved the record to `FrameView.activations` and removed `StepRecord::rekeyed`;
 /// @coordinator-opus m9dae7344d1af). With one member the commit is its own quorum and activates at the end of its
 /// frame: the replica's world then runs version 2, with both lamps' rows moved onto its ids.
 #[test]
@@ -1922,7 +1922,6 @@ fn a_script_commit_activates_at_its_frame_s_end_and_no_record_names_the_re_key()
     for e in [&first, &attach, &second] {
         let c = record(e);
         assert!(matches!(c.outcome, Outcome::Applied { .. }), "{:?}", c.outcome);
-        assert!(c.rekeyed.is_empty(), "no step record names a re-key since 6.2a");
     }
     let w = r.world().world();
     assert_eq!(w.modules()[&ASSET].version, pe_world::Version { entry: second.id(), op: 1 }, "version 2 runs");
