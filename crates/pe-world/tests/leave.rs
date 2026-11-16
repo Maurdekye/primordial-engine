@@ -29,7 +29,6 @@ fn leave_entry() -> EntryRef {
 struct Fx {
     a: EntryBuilder,
     b: EntryBuilder,
-    ka: MemberKey,
     kb: MemberKey,
     hands_a: [ObjectId; 2],
     hands_b: [ObjectId; 2],
@@ -50,7 +49,7 @@ fn fx() -> Fx {
     w.insert(oid(BALL), Shape { kind: shape_kind::SPHERE, size: [0.05, 0.0, 0.0], ..Shape::default() }).unwrap();
     w.insert(oid(BALL), BodyState { linear: [1.0, 0.0, 0.0], awake: 1, ..BodyState::default() }).unwrap();
     w.insert(oid(BALL), Protection { owner: kb }).unwrap();
-    Fx { a: EntryBuilder::new(&keys, 0), b: EntryBuilder::new(&keys, 1), ka, kb, hands_a, hands_b, w }
+    Fx { a: EntryBuilder::new(&keys, 0), b: EntryBuilder::new(&keys, 1), kb, hands_a, hands_b, w }
 }
 
 fn input(w: &mut World, f: u64, b: &mut EntryBuilder, i: Input) -> (Outcome, Footprint) {
