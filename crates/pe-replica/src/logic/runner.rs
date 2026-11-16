@@ -34,13 +34,16 @@ use super::{ScriptEvent, ScriptRow, ScriptRunner, StageOutcome, StageWorld};
 
 /// A module the runner holds.
 struct Held {
-    /// The bytes as the build service gave them: each binding loads them again, since a bound script owns its
-    /// compiled module.
-    wasm: Vec<u8>,
     metered: Bytes,
     manifest: Manifest,
-    /// The module loaded at [`LogicRunner::insert`] or [`ModuleInbox::load`], for its first binding.
-    spare: Option<Script>,
+    /// The module as [`LogicRunner::insert`] or [`ModuleInbox::load`] compiled it. Each binding takes a clone, which
+    /// shares the compiled code, so a re-binding (a rollback across the script's activation, or its row leaving and
+    /// coming back) never compiles on the sim thread. Re-binding the 9.5 KB lamp took a median 12.1 ms when it
+    /// loaded the module again and takes 0.15 ms with a clone [V release, 40 re-bindings each, under load]. The cost
+    /// is memory: every module held keeps its compiled code, where it kept the wasm before (an M1 session holds a
+    /// few). A clone carries the settings the module was loaded with, which are the runner's, fixed at
+    /// [`LogicRunner::new`]: a runner whose settings could change would load again rather than clone (@iter-bench).
+    script: Script,
 }
 
 impl Held {
@@ -51,7 +54,7 @@ impl Held {
         let manifest = run::read_manifest(&script).map_err(|e| LoadError::Compile(e.0))?;
         let hash = script.module_hash();
         let metered = Bytes::from(script.metered.clone());
-        Ok((hash, Held { wasm: wasm.to_vec(), metered, manifest, spare: Some(script) }))
+        Ok((hash, Held { metered, manifest, script }))
     }
 }
 
@@ -172,8 +175,8 @@ impl LogicRunner {
 
     /// `row`'s module bound under its ids, or why not. `Err((reason, of_the_module))`: `of_the_module` is true when
     /// the reason is the module's own, so the same module, version and ids would fail again whatever the world holds.
-    fn bind(&mut self, row: &ScriptRow, registry: &Registry) -> Result<Loaded, (String, bool)> {
-        let held = self.held.get_mut(&row.module).ok_or_else(|| ("the module is not held".to_string(), false))?;
+    fn bind(&self, row: &ScriptRow, registry: &Registry) -> Result<Loaded, (String, bool)> {
+        let held = self.held.get(&row.module).ok_or_else(|| ("the module is not held".to_string(), false))?;
         let tag = tag_desc(&row.version).id();
         let mut own = Vec::new();
         for c in held.manifest.components.iter().filter(|c| !c.name.starts_with(ENGINE_PREFIX)) {
@@ -193,10 +196,7 @@ impl LogicRunner {
         if let Some(id) = own.iter().chain([&tag]).find(|id| row.components.binary_search(id).is_err()) {
             return Err((format!("id {:?} is not among the row's", id), false));
         }
-        let script = match held.spare.take() {
-            Some(s) => s,
-            None => Script::load(&self.engine, self.settings, &held.wasm).map_err(|e| (e.to_string(), true))?,
-        };
+        let script = held.script.clone();
         debug_assert_eq!(script.module_hash(), row.module, "a held module is keyed by its metered bytes' hash");
         let engine: Vec<EngineComponent<'_>> = ENGINE_COMPONENTS
             .iter()

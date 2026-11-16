@@ -1250,4 +1250,37 @@ mod lamp {
             assert_eq!(next.report.written, [(glow, oid(LAMPS[0])), (glow, oid(LAMPS[2]))]);
         });
     }
+
+    /// A script bound again after its row left (as on a rollback across its activation) runs as it did the first
+    /// time: the runner binds a clone of the module it holds.
+    #[test]
+    fn a_script_bound_again_runs_as_it_did() {
+        big_stack(|| {
+            let fx = fixture_of(&lit());
+            let mut r = runner(true);
+            let faulted = BTreeSet::new();
+            let guard = |_: ObjectId| false;
+            let check = |_: ComponentId, _: ObjectId, _: &[u8]| -> Result<(), String> { Ok(()) };
+            let world = StageWorld {
+                frame: Frame(0),
+                line: fx.line,
+                rate_hz: 60,
+                guard: &guard,
+                faulted: &faulted,
+                check: &check,
+            };
+            let without: Vec<ScriptRow> = fx.scripts.iter().filter(|s| s.asset != LAMP).cloned().collect();
+            let mut stage = |scripts: &[ScriptRow]| {
+                let mut store = fx.store.clone();
+                let out = r.run_stage(Stage::LogicPrePhysics, scripts, &mut store, &world);
+                (out.report.written, out.missing)
+            };
+            let first = stage(&fx.scripts);
+            assert_eq!(first.0.len(), 2, "two lamps switch on: {first:?}");
+            assert_eq!(stage(&without), (vec![], vec![[8; 32]]));
+            for _ in 0..3 {
+                assert_eq!(stage(&fx.scripts), first);
+            }
+        });
+    }
 }
