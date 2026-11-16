@@ -59,7 +59,14 @@ fn tally() -> &'static [u8] {
     WASM.get_or_init(|| {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("scripts").join("tally");
         let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
-        pe_logic::build::build(&dir, &pe_logic::build::engine_sdk(), &target, true).unwrap_or_else(|e| panic!("{e}"))
+        pe_logic::build::build(
+            &pe_logic::build::Toolchain::current().unwrap(),
+            &dir,
+            &pe_logic::build::engine_sdk(),
+            &target,
+            true,
+        )
+        .unwrap_or_else(|e| panic!("{e}"))
     })
 }
 
