@@ -1820,3 +1820,206 @@ fn a_slow_link_above_the_lag_cap_still_finalizes() {
         }
     }
 }
+
+// Membership change by epochs, Leave only (agreement.md 8; @item:primordial-engine/m1-leave-a-member-leaves-gracefully-and-the-rest).
+
+/// Member `i` signs its `Leave` now and makes no more entries.
+fn leave(s: &mut Sim, i: usize) -> EntryRef {
+    s.per_frame[i] = None;
+    s.every_ms[i] = 0;
+    let present = s.clock.frame_at(HostTime(s.now)).unwrap();
+    let e = s.builders[i].next_unsigned(Class::Protocol, present, Bytes::from_static(crate::LEAVE));
+    let e = s.nodes[i].submit(e).expect("own Leave refused");
+    s.submitted[i].push(e.id());
+    s.submitted_at[i].push(present);
+    e.id()
+}
+
+#[test]
+fn a_member_leaves_and_the_other_finalizes_alone() {
+    // M1 demo step 8 (model v1's leave-2to1): B leaves at 3 s, stays for E's suffix, and quits at 5 s; A carries on
+    // alone with quorum(1) = 1, and its final frame keeps advancing.
+    for seed in [111, 112] {
+        let mut s = Sim::new(2, seed);
+        s.clock = Clock(120);
+        s.per_frame = vec![Some((2, 0)); 2];
+        s.run(3_000);
+        let l = leave(&mut s, 1);
+        // Nothing more from B: submit refuses after its own Leave.
+        let next = s.builders[1].next_unsigned(Class::Input, Frame(400), Bytes::from_static(b"x"));
+        assert_eq!(s.nodes[1].submit(next).err(), Some(pe_seams::agree::SubmitError::AfterLeave));
+        s.run(5_000);
+        let a = s.keys.key(0);
+        for i in 0..2 {
+            assert_eq!(s.nodes[i].members(), vec![a], "seed {seed}: member {i}'s epoch didn't end at E");
+            assert!(s.nodes[i].core().epoch() == 1, "seed {seed}: member {i} not in epoch 1");
+        }
+        let at_quit = s.final_frame(0);
+        s.cut_off = Some(1);
+        s.run(15_000);
+        s.assert_same_final_log();
+        let leave_final =
+            (0..at_quit.0).any(|f| s.nodes[0].entries_at(Frame(f)).is_some_and(|v| v.iter().any(|e| e.id() == l)));
+        let fin = s.final_frame(0).0 as f64 / 120.0;
+        eprintln!(
+            "seed {seed}: final at the quit {:.2} s, at the end {fin:.2} s of 15; leave final {leave_final}",
+            at_quit.0 as f64 / 120.0
+        );
+        assert!(leave_final, "seed {seed}: the Leave isn't in the final log");
+        assert!(fin >= 14.0, "seed {seed}: A alone didn't finalize: final at {fin:.2} s");
+        let faults: usize = s.events[0].iter().filter(|e| matches!(e, AgreeEvent::Fault(_))).count();
+        assert_eq!(faults, 0, "seed {seed}: faults at A");
+    }
+}
+
+#[test]
+fn one_of_three_leaves_and_the_two_go_on() {
+    // Model v1's leave-3to2: member 2 leaves; members 0 and 1 (q = 2) keep finalizing, and the leaver's later
+    // messages and entries raise no fault.
+    for seed in [121, 122] {
+        let mut s = Sim::new(3, seed);
+        s.clock = Clock(120);
+        s.per_frame = vec![Some((2, 0)); 3];
+        s.run(3_000);
+        leave(&mut s, 2);
+        s.run(5_000);
+        let kept: Vec<_> = {
+            let mut v = vec![s.keys.key(0), s.keys.key(1)];
+            v.sort();
+            v
+        };
+        for i in 0..3 {
+            assert_eq!(s.nodes[i].members(), kept, "seed {seed}: member {i}");
+        }
+        s.cut_off = Some(2);
+        s.run(12_000);
+        s.assert_same_final_log();
+        let fin = s.final_frame(0).0 as f64 / 120.0;
+        eprintln!("seed {seed}: 3 -> 2, final at {fin:.2} s of 12");
+        assert!(fin >= 11.0, "seed {seed}: the two didn't go on");
+        for i in 0..2 {
+            assert!(!s.events[i].iter().any(|e| matches!(e, AgreeEvent::Fault(_))), "seed {seed}: a fault at {i}");
+        }
+    }
+}
+
+#[test]
+fn an_entry_after_the_leave_is_void_and_nothing_follows_it() {
+    // A faulty leaver signs an entry after its Leave (pe-agree refuses to; this one is made by hand) and sends it; it
+    // is void as AfterLeave at E, the same everywhere (agreement.md 8).
+    let mut s = Sim::new(2, 131);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.run(3_000);
+    leave(&mut s, 1);
+    let present = s.clock.frame_at(HostTime(s.now)).unwrap();
+    let late = s.builders[1].next(Class::Input, present, Bytes::from_static(b"after"));
+    let bytes = crate::codec::encode(&crate::codec::Wire::Entries(vec![late.clone()]));
+    let from = s.keys.key(1);
+    s.nodes[0].receive(from, Lane::Action, &bytes, HostTime(s.now)).expect("a signed entry, held");
+    s.run(6_000);
+    s.assert_same_final_log();
+    for i in 0..2 {
+        let v: Vec<_> = s.voids(i).into_iter().filter(|v| v.0 == late.id()).collect();
+        eprintln!("member {i}: {v:?}");
+        assert!(v.len() == 1 && v[0].1 == VoidReason::AfterLeave, "member {i}: the entry after the Leave: {v:?}");
+    }
+    let cuts: Vec<CutRef> = (0..2).map(|i| s.voids(i).into_iter().find(|v| v.0 == late.id()).unwrap().2).collect();
+    assert_eq!(cuts[0], cuts[1], "decided at different cuts");
+}
+
+#[test]
+fn submit_refuses_an_own_entry_stamped_below_the_chains_last_stamp() {
+    // S3 v1.7 BelowOwnStamp: an honest member never signs an entry that would be void as back-stamped.
+    let mut s = Sim::new(2, 141);
+    s.every_ms = vec![0, 0];
+    let a = s.builders[0].next_unsigned(Class::Edit, Frame(10), Bytes::from_static(b"a"));
+    s.nodes[0].submit(a).expect("first");
+    let b = s.builders[0].next_unsigned(Class::Edit, Frame(9), Bytes::from_static(b"b"));
+    assert_eq!(s.nodes[0].submit(b).err(), Some(pe_seams::agree::SubmitError::BelowOwnStamp));
+}
+
+/// n = 2: B leaves at 3 s and quits at the first tick where `quit` holds for it (at most 10 s later). Returns whether
+/// A reached epoch 1, who had E final first (0 or 1), and how long after its Leave B quit, in ms.
+fn quit_run(seed: u64, slow: Option<(usize, usize, i64, i64)>, quit: impl Fn(&Node) -> bool) -> (bool, usize, i64) {
+    let mut s = Sim::new(2, seed);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.slow_link = slow;
+    s.run(3_000);
+    leave(&mut s, 1);
+    let left = s.now / MS;
+    let mut first = None;
+    while s.now < 13_000 * MS && !quit(&s.nodes[1]) {
+        let next = s.now / MS + 1;
+        s.run(next);
+        if first.is_none() {
+            first = (0..2).find(|&i| s.nodes[i].core().epoch() == 1);
+        }
+    }
+    let quit_ms = s.now / MS - left;
+    // The process exits: what it hadn't delivered yet is lost too.
+    s.net.retain(|_, m| m.0 != 1);
+    s.cut_off = Some(1);
+    s.run(s.now / MS + 10_000);
+    (s.nodes[0].core().epoch() == 1, first.unwrap_or(9), quit_ms)
+}
+
+#[test]
+fn a_leaver_that_waits_for_leave_settled_never_strands_the_other() {
+    // @design-reviewer's M2 on e3597563 (coordinator m5e5018854743): at n = 2 whoever forms the certificate on E's
+    // suffix child has E final first. A leaver that quits when E is final at itself can strand the other in epoch 0
+    // with q = 2; one that waits for `leave_settled` (every remaining member told it E is final there) never does.
+    // Each link direction in turn is slower, so each member is the first to have E final in some runs.
+    let mut stranded_naive = 0;
+    let mut firsts = [0; 2];
+    let mut runs = 0;
+    for slow in [None, Some((0, 1, 40, 0)), Some((1, 0, 40, 0))] {
+        for seed in [151, 152, 153] {
+            let (ok, first, ms) = quit_run(seed, slow, Agreement::leave_settled);
+            eprintln!(
+                "{slow:?} seed {seed}: quit on leave_settled after {ms} ms; E final first at member {first}; A in epoch 1: {ok}"
+            );
+            assert!(ok, "{slow:?} seed {seed}: A was stranded although B waited for leave_settled");
+            assert!(ms < 10_000, "{slow:?} seed {seed}: leave_settled never came");
+            if first < 2 {
+                firsts[first] += 1;
+            }
+            let (naive, _, _) = quit_run(seed, slow, |n| n.core().epoch() == 1);
+            stranded_naive += usize::from(!naive);
+            runs += 1;
+        }
+    }
+    eprintln!(
+        "E final first at A in {} runs, at B in {}; quitting at E's local finality stranded A in {stranded_naive} of {runs}",
+        firsts[0], firsts[1]
+    );
+    // The control: quitting at E's local finality, with the exit losing what was in flight, does strand A sometimes
+    // (measured: 3 of 9), so the test can tell the two apart.
+    assert!(stranded_naive > 0, "the naive quit never stranded A: the test doesn't exercise M2");
+    assert!(firsts[0] > 0 && firsts[1] > 0, "each member should have E final first in some run: {firsts:?}");
+}
+
+#[test]
+fn the_last_member_leaving_is_void_and_the_line_keeps_it() {
+    // @design-reviewer's L1 on e3597563: both members of a pair leave in one cut. The first Leave in the final log's
+    // order takes effect; the second would leave no members, so it is void as LastMember, and that member stays.
+    let mut s = Sim::new(2, 161);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.run(3_000);
+    let l0 = leave(&mut s, 0);
+    let l1 = leave(&mut s, 1);
+    s.run(6_000);
+    let voided: Vec<_> = (0..2).flat_map(|i| s.voids(i)).filter(|v| v.0 == l0 || v.0 == l1).collect();
+    eprintln!(
+        "voids of the two Leaves: {voided:?}; members {:?}",
+        (0..2).map(|i| s.nodes[i].members().len()).collect::<Vec<_>>()
+    );
+    assert_eq!(voided.len(), 2, "one Leave void, at both members");
+    assert!(voided.iter().all(|v| v.1 == VoidReason::LastMember && v.0 == voided[0].0));
+    let stays = if voided[0].0 == l0 { 0 } else { 1 };
+    for i in 0..2 {
+        assert_eq!(s.nodes[i].members(), vec![s.keys.key(stays)], "member {i}");
+    }
+}

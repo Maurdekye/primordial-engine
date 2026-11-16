@@ -474,6 +474,18 @@ impl<S: WorldSource> Api<S> {
                         "This machine is too far behind to submit; try again when it has caught up.".to_string(),
                         Some("Wait for session_info's caught_up, then apply again.".to_string()),
                     ),
+                    // S3 v1.7 (@api-eng's mapping, api.md 9.4): this machine's frame clock stepped back; retryable.
+                    SubmitError::BelowOwnStamp => (
+                        RefusalCode::NotReady,
+                        "This machine's clock is catching up; try again.".to_string(),
+                        Some("Apply again in a moment.".to_string()),
+                    ),
+                    // S3 v1.7: this member has left the session; nothing more is accepted from it.
+                    SubmitError::AfterLeave => (
+                        RefusalCode::Invalid,
+                        "This member has left the session; it can't make changes any more.".to_string(),
+                        None,
+                    ),
                     other => {
                         (RefusalCode::Invalid, format!("The change couldn't be encoded as an entry ({other:?})."), None)
                     }
