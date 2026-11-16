@@ -221,9 +221,8 @@ fn no_edit_deletes_a_hand_or_a_subtree_holding_one() {
         keep_world: true,
     }];
     let moved = edit(&mut f.w, 0, &mut f.a, up);
-    if applied(&moved) {
-        let del = edit(&mut f.w, 0, &mut f.a, vec![Op::Delete { id: Target::Existing(oid(BALL)) }]);
-        assert_eq!(reason(&del), refused);
-    }
+    assert!(applied(&moved), "{moved:?}");
+    let del = edit(&mut f.w, 0, &mut f.a, vec![Op::Delete { id: Target::Existing(oid(BALL)) }]);
+    assert_eq!(reason(&del), refused);
     assert!(f.w.tombstone(f.hands_b[0]).is_none());
 }
