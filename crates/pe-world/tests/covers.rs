@@ -1,7 +1,9 @@
-//! M1's "What the hash covers", pe-world's half (@item:primordial-engine/m1-test-a-divergence-in-each-hashed-kind-is-foun):
-//! a divergence injected into each of the five hashed kinds (fields, governance, claims, logic state, module versions),
-//! and into a body's physics state and a pending commit's attestations, moves the root, and descending the two trees from the root, as a peer's walk does, finds exactly the damaged leaf.
-//! The repair by rungs 1 and 2 is @diverge-eng's, on the same hook (`pe_world::test_util`).
+//! M1's "What the hash covers", pe-world's half
+//! (@item:primordial-engine/m1-test-a-divergence-in-each-hashed-kind-is-foun): a divergence injected into each of
+//! the five hashed kinds (fields, governance, claims, logic state, module versions), and into a body's physics state
+//! and a pending commit's attestations, moves the root, and descending the two trees from the root, as a peer's walk
+//! does, finds exactly the damaged leaf. The repair by rungs 1 and 2 is @diverge-eng's, on the same hook
+//! (`pe_world::test_util`).
 
 use pe_core::Hash;
 use pe_seams::{DomainId, LeafKey, Nibbles, Node, Tree, TreePath};
