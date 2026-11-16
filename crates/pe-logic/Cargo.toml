@@ -13,6 +13,9 @@ pe-core = { path = "../pe-core" }
 pe-seams = { path = "../pe-seams" }
 # The store the runner works over (logic.md 3.3).
 pe-sim = { path = "../pe-sim" }
+# The source archive's format and check (logic.md 4.1a): the build service packs and unpacks with pe-world's own
+# functions, the ones `CommitScript` applies.
+pe-world = { path = "../pe-world" }
 # The batch and manifest layout, shared with the guest.
 pe-sdk = { path = "../pe-sdk" }
 # The patched, vendored copy (vendor/PATCHES.md) through the root [patch.crates-io]: no C on any target.

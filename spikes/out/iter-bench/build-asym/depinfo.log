@@ -1,0 +1,27 @@
+# iter-bench 2026-11-16T20:51:09Z: what rustc's dep-info records for a script that reads outside its archive (build-asymmetry ruling m327e1d2d1222)
+# rustc: rustc 1.94.0-nightly (f52090008 2025-12-10)
+# command (cwd = crate, under heavy.sh): CARGO_TARGET_DIR=<tmp>/t cargo rustc --release --lib --target wasm32-unknown-unknown --offline -q
+## src/lib.rs
+#![no_std]
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+static ENV: &str = match option_env!("PE_ASYM_UNSET") { Some(s) => s, None => "" };
+static DIR: &str = env!("CARGO_MANIFEST_DIR");
+static FILE: &[u8] = include_bytes!("S:/primordial-engine/tmp/asym-depinfo/outside.bin");
+#[path = "../sub/far.rs"]
+mod far;
+#[unsafe(no_mangle)]
+pub extern "C" fn probe(i: usize) -> u32 { ENV.len() as u32 + DIR.len() as u32 + FILE.get(i).copied().unwrap_or(0) as u32 + far::k() }
+## sub/far.rs (outside src/)
+pub fn k() -> u32 { 7 }
+## target/wasm32-unknown-unknown/release/deps/script.d
+S:/primordial-engine/tmp/asym-depinfo/t\wasm32-unknown-unknown\release\deps\script.d: src\lib.rs src\..\sub\far.rs S:/primordial-engine/tmp/asym-depinfo/outside.bin
+
+S:/primordial-engine/tmp/asym-depinfo/t\wasm32-unknown-unknown\release\deps\script.wasm: src\lib.rs src\..\sub\far.rs S:/primordial-engine/tmp/asym-depinfo/outside.bin
+
+src\lib.rs:
+src\..\sub\far.rs:
+S:/primordial-engine/tmp/asym-depinfo/outside.bin:
+
+# env-dep:CARGO_MANIFEST_DIR=S:\\primordial-engine\\tmp\\asym-depinfo\\c
+# env-dep:PE_ASYM_UNSET

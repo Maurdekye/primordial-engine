@@ -1,0 +1,156 @@
+{
+ "meta": {
+  "rustc": [
+   "rustc 1.99.0 (b940084d7 2026-09-28)",
+   "binary: rustc",
+   "commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4",
+   "commit-date: 2026-09-28",
+   "host: x86_64-pc-windows-msvc",
+   "release: 1.99.0",
+   "LLVM version: 23.1.1"
+  ],
+  "reps": 3,
+  "profile": [
+   "profile.release.opt-level=3",
+   "profile.release.lto=false",
+   "profile.release.codegen-units=16",
+   "profile.release.incremental=false",
+   "profile.release.panic=\"abort\"",
+   "profile.release.debug=false",
+   "profile.release.strip=\"symbols\"",
+   "profile.release.debug-assertions=false",
+   "profile.release.overflow-checks=false",
+   "profile.release.rpath=false",
+   "target.wasm32-unknown-unknown.linker=\"rust-lld\""
+  ],
+  "codegen": [
+   "-C",
+   "target-cpu=mvp",
+   "-C",
+   "target-feature=+bulk-memory,+multivalue,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext",
+   "-C",
+   "link-arg=-zstack-size=65536"
+  ],
+  "heavy_prio": "idle",
+  "cpus": 16,
+  "start": "2026-11-16T20:45:08Z",
+  "end": "2026-11-16T20:46:36Z"
+ },
+ "jobs": {
+  "lamp j1": {
+   "peak_job_mib": {
+    "median": 106.2,
+    "min": 106.0,
+    "max": 106.7,
+    "n": 3
+   },
+   "wall_s": {
+    "median": 3.7,
+    "min": 2.3,
+    "max": 3.7,
+    "n": 3
+   },
+   "sha256": [
+    "bc8cc7e2ea032cc2"
+   ],
+   "failed": 0
+  },
+  "lamp j4": {
+   "peak_job_mib": {
+    "median": 105.9,
+    "min": 105.8,
+    "max": 107.6,
+    "n": 3
+   },
+   "wall_s": {
+    "median": 2.3,
+    "min": 2.0,
+    "max": 3.6,
+    "n": 3
+   },
+   "sha256": [
+    "bc8cc7e2ea032cc2"
+   ],
+   "failed": 0
+  },
+  "lamp j16": {
+   "peak_job_mib": {
+    "median": 106.5,
+    "min": 105.8,
+    "max": 107.5,
+    "n": 3
+   },
+   "wall_s": {
+    "median": 1.7,
+    "min": 1.7,
+    "max": 2.3,
+    "n": 3
+   },
+   "sha256": [
+    "bc8cc7e2ea032cc2"
+   ],
+   "failed": 0
+  },
+  "guest6k j1": {
+   "peak_job_mib": {
+    "median": 142.8,
+    "min": 142.1,
+    "max": 143.0,
+    "n": 3
+   },
+   "wall_s": {
+    "median": 8.4,
+    "min": 6.4,
+    "max": 9.0,
+    "n": 3
+   },
+   "sha256": [
+    "369de9632ade8c90"
+   ],
+   "failed": 0
+  },
+  "guest6k j4": {
+   "peak_job_mib": {
+    "median": 151.4,
+    "min": 151.2,
+    "max": 151.4,
+    "n": 3
+   },
+   "wall_s": {
+    "median": 4.4,
+    "min": 4.3,
+    "max": 5.4,
+    "n": 3
+   },
+   "sha256": [
+    "369de9632ade8c90"
+   ],
+   "failed": 0
+  },
+  "guest6k j16": {
+   "peak_job_mib": {
+    "median": 157.1,
+    "min": 156.8,
+    "max": 160.7,
+    "n": 3
+   },
+   "wall_s": {
+    "median": 5.0,
+    "min": 4.4,
+    "max": 8.4,
+    "n": 3
+   },
+   "sha256": [
+    "369de9632ade8c90"
+   ],
+   "failed": 0
+  }
+ },
+ "leak": {
+  "a plain": "94e8cbb433eaab9e",
+  "b env var set": "3ed7d0950f6a76a4",
+  "c cwd has .cargo/config.toml [env]": "33b3b4c4a03d8fa5",
+  "a plain again": "94e8cbb433eaab9e",
+  "d absolute include_bytes file changed": "30ee7657a581a158"
+ }
+}
