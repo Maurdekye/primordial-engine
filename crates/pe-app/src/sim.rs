@@ -351,6 +351,14 @@ impl Sim {
         &self.budget
     }
 
+    /// The replica's root at `frame`, a frame of its cut grid it still keeps, through S2's `root_at_cut` on a cut with
+    /// no entries: the keep-up floor's test compares it (the floor changes how fast, never what is computed).
+    #[cfg(test)]
+    pub(crate) fn root_at(&mut self, frame: Frame) -> Result<pe_seams::Hash, pe_seams::RootError> {
+        let cut = Cut { at: CutRef { line: self.agree.line(), height: 1, frame }, heads: Vec::new() };
+        self.replica.root_at_cut(&cut, &mut *self.agree)
+    }
+
     /// One tick at host time `now` (app.md 3): the frame it ticked and what the driver did, or `None` before frame 0.
     pub fn tick(&mut self, now: HostTime) -> Option<(Frame, DriveReport)> {
         self.stats.ticks += 1;
@@ -1158,6 +1166,10 @@ mod tests {
         assert_eq!(a.frame, Frame(end + 1));
         assert_eq!(b.frame, a.frame, "caught up by frame {end}");
         assert_eq!(b.objects, a.objects);
+        // And the same root at a frame of the 6-frame grid both keep (@design-reviewer's nit on da7f4947).
+        let (r_steady, r_stalled) = (steady.root_at(Frame(66)), stalled.root_at(Frame(66)));
+        assert!(r_steady.is_ok(), "{r_steady:?}");
+        assert_eq!(r_stalled, r_steady);
     }
 
     #[test]
