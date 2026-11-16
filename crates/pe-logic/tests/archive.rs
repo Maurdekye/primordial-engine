@@ -95,3 +95,55 @@ fn build_archive_will_not_delete_a_folder_it_did_not_write() {
     ));
     assert_eq!(std::fs::read_to_string(dir.join("Cargo.toml")).unwrap(), "[package]\nname = \"mine\"\n");
 }
+
+#[test]
+fn pack_refuses_a_link_under_src() {
+    // A file symlink where the machine allows one; otherwise (Windows without the privilege) a directory junction,
+    // which needs none. Either is neither a plain file nor a folder to `pack`.
+    let dir = scratch("pack-link");
+    copy_tree(&lamp_dir(), &dir);
+    let outside = dir.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(
+        outside.join("far.rs"),
+        "pub fn f() {}
+",
+    )
+    .unwrap();
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(outside.join("far.rs"), dir.join("src/linked.rs")).is_ok() || {
+        let st = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            // mklink takes backslashes only, and the target folder may be given with forward ones.
+            .arg(dir.join("src").join("linked").to_string_lossy().replace('/', "\\"))
+            .arg(outside.to_string_lossy().replace('/', "\\"))
+            .output();
+        st.is_ok_and(|o| o.status.success())
+    };
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(outside.join("far.rs"), dir.join("src/linked.rs")).is_ok();
+    assert!(made, "could make neither a symlink nor a junction");
+    match pack(&dir) {
+        Err(BuildError::Source(SourceError::Path(p))) => assert!(p.contains("linked"), "{p}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The author's module is `build_archive(pack(dir))`, the archive it commits (logic.md 4.2; @shader-reviewer's
+/// Low 2 on v6-r1): other machines build the archive with the template's package name, never the author's crate.
+/// This pins how a direct `build(dir)` of the author's own crate relates to it, so a change shows up.
+#[test]
+fn a_direct_build_of_the_authors_crate_differs_only_as_pinned_here() {
+    let root = scratch("author");
+    let direct =
+        pe_logic::build::build(&lamp_dir(), &engine_sdk(), &root.join("td"), true).unwrap_or_else(|e| panic!("{e}"));
+    let archive = pack(&lamp_dir()).unwrap();
+    let via = build_archive(&archive, &engine_sdk(), &root.join("w"), &root.join("ta"), true)
+        .unwrap_or_else(|e| panic!("{e}"));
+    eprintln!("direct {} bytes, archive {} bytes, equal: {}", direct.len(), via.len(), direct == via);
+    assert_eq!(direct == via, DIRECT_EQUALS_ARCHIVE);
+}
+
+/// Measured on v6-r2: equal (the lamp, 9,473 bytes either way); the package name does not reach the stripped module.
+/// The rule stands regardless (4.2): if this ever flips, an author's tooling must not have used `build(dir)`.
+const DIRECT_EQUALS_ARCHIVE: bool = true;

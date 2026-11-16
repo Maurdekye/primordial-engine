@@ -1,0 +1,73 @@
+{
+ "start": "2026-11-16T21:39:11Z",
+ "toolchain": "1.99.0-x86_64-pc-windows-msvc",
+ "size": {
+  "full_mib": 1333.4,
+  "full_files": 307,
+  "minimal_mib": 439.8,
+  "minimal_files": 62,
+  "minimal_xz_mib": 100.5,
+  "xz_seconds": 369.9,
+  "minimal_list": [
+   "bin/cargo.exe",
+   "bin/rustc.exe",
+   "bin/rustc_driver-9cc664dca72b379e.dll",
+   "lib/rustlib/x86_64-pc-windows-msvc/bin/gcc-ld/ld.lld.exe",
+   "lib/rustlib/x86_64-pc-windows-msvc/bin/gcc-ld/ld64.lld.exe",
+   "lib/rustlib/x86_64-pc-windows-msvc/bin/gcc-ld/lld-link.exe",
+   "lib/rustlib/x86_64-pc-windows-msvc/bin/gcc-ld/wasm-ld.exe",
+   "lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe"
+  ]
+ },
+ "builds": {
+  "lamp proxy-repo": {
+   "exit": 0,
+   "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+   "wall_s": 3.6,
+   "sha256": "bc8cc7e2ea032cc2"
+  },
+  "lamp proxy-elsewhere": {
+   "exit": 0,
+   "rustc": "rustc 1.94.0-nightly (f52090008 2025-12-10)",
+   "wall_s": 3.67,
+   "sha256": "a69cdc984f4536d3"
+  },
+  "lamp abs-rustup": {
+   "exit": 0,
+   "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+   "wall_s": 1.95,
+   "sha256": "bc8cc7e2ea032cc2"
+  },
+  "lamp abs-min": {
+   "exit": 0,
+   "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+   "wall_s": 3.88,
+   "sha256": "bc8cc7e2ea032cc2"
+  },
+  "guest6k proxy-repo": {
+   "exit": 0,
+   "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+   "wall_s": 4.95,
+   "sha256": "369de9632ade8c90"
+  },
+  "guest6k proxy-elsewhere": {
+   "exit": 0,
+   "rustc": "rustc 1.94.0-nightly (f52090008 2025-12-10)",
+   "wall_s": 5.28,
+   "sha256": "c31fe3a08612ddf9"
+  },
+  "guest6k abs-rustup": {
+   "exit": 0,
+   "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+   "wall_s": 3.96,
+   "sha256": "369de9632ade8c90"
+  },
+  "guest6k abs-min": {
+   "exit": 0,
+   "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+   "wall_s": 3.99,
+   "sha256": "369de9632ade8c90"
+  }
+ },
+ "end": "2026-11-16T21:45:56Z"
+}
