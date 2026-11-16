@@ -187,8 +187,9 @@ impl NodeConfig {
             #[cfg(feature = "mutants")]
                 mutation: _,
         } = self;
-        // v2: defer_bytes joined the set (the stall fix); v3: cut_interval_s (the cut grid).
-        let mut h = Hasher::new("pe.agree.consensus.v3");
+        // v2: defer_bytes joined the set (the stall fix); v3: cut_interval_s (the cut grid); v4: no new setting, but
+        // timeouts carry heads (the outage rule), a wire change, so builds before and after refuse each other at start.
+        let mut h = Hasher::new("pe.agree.consensus.v4");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
@@ -319,6 +320,12 @@ pub struct Node {
     pending_by_author: HashMap<MemberKey, usize>,
     /// How late other members' entries arrived, in frames: the last LATENESS_SAMPLES.
     lateness: std::collections::VecDeque<u64>,
+    /// The outage rule's voter side (agreement.md 3): the views this member abstained in, per own entry.
+    abstained: AbstainBook,
+    /// The outage rule's leader side: per chain whose claimed head is ahead of what this member holds, when it began
+    /// capping its cuts for it and how long it waits. Kept once the wait runs out, so a chain is waited for once,
+    /// until it reaches its claim.
+    cap_wait: HashMap<ChainKey, (i64, i64)>,
     now: HostTime,
     present: Option<Frame>,
     rate_hz: u32,
@@ -331,6 +338,59 @@ const MAX_HINTS: usize = 256;
 const HINT_TTL_NS: i64 = 5_000_000_000;
 /// Samples needed before the lag adapts.
 const LATENESS_MIN: usize = 32;
+/// A member abstains for one own entry in at most this many views, then votes (the outage rule's bound).
+const ABSTAIN_VIEWS: usize = 2;
+/// The outage rule's bounds (agreement.md 3). By progress (coordinator m60983b248518, @fable-reviewer's concern): at
+/// most [`ABSTAIN_VIEWS`] abstentions between two final cuts, so a link that keeps every cut a fresh entry short
+/// (a sustained one-way delay above the lag) can't stop finality. Per entry (@design-reviewer's L1): the highest own
+/// seq whose abstentions are used up, never abstained for again, nor anything below it.
+#[derive(Default)]
+pub(crate) struct AbstainBook {
+    spent: u64,
+    views: BTreeMap<u64, Vec<u64>>,
+    since_final: usize,
+}
+
+impl AbstainBook {
+    /// Whether this member abstains in `view` for its own entry `seq`.
+    pub(crate) fn abstains(&self, seq: u64, view: u64) -> bool {
+        if self.views.get(&seq).is_some_and(|v| v.contains(&view)) {
+            return true;
+        }
+        if seq <= self.spent || self.since_final >= ABSTAIN_VIEWS {
+            return false;
+        }
+        self.views.get(&seq).is_none_or(|v| v.len() < ABSTAIN_VIEWS)
+    }
+
+    /// A cut became final, covering this member's own chain through `own_final`: abstaining is allowed again
+    /// (within the per-entry bound), and entries it covers are forgotten.
+    pub(crate) fn progressed(&mut self, own_final: u64) {
+        self.since_final = 0;
+        self.views.retain(|s, _| *s > own_final);
+    }
+
+    /// Record an abstention in `view` for `seq`: false if it was recorded already.
+    pub(crate) fn note(&mut self, seq: u64, view: u64) -> bool {
+        let v = self.views.entry(seq).or_default();
+        if v.contains(&view) {
+            return false;
+        }
+        v.push(view);
+        self.since_final += 1;
+        if v.len() >= ABSTAIN_VIEWS {
+            self.spent = self.spent.max(seq);
+            let spent = self.spent;
+            self.views.retain(|s, _| *s > spent);
+        }
+        true
+    }
+}
+
+/// The leader's wait for a claimed backlog: its entries at the author's rate, plus this.
+const CAP_WAIT_EXTRA_NS: i64 = 1_000_000_000;
+/// At most this many own entries pushed when abstaining (the rest come by the range refetch the heads start).
+const ABSTAIN_PUSH: usize = 256;
 /// At most this many chains per author tracked from votes' heads alone.
 const MAX_VOTE_CHAINS: usize = 4;
 /// A range refetch claimed only by a vote's heads is given up after this many unanswered asks (the retry doubles,
@@ -431,6 +491,8 @@ impl Node {
             budget: HashMap::new(),
             pending_by_author: HashMap::new(),
             lateness: std::collections::VecDeque::new(),
+            abstained: AbstainBook::default(),
+            cap_wait: HashMap::new(),
             now,
             present: None,
             rate_hz: 60,
@@ -804,7 +866,9 @@ impl Node {
             Ok(Inserted::Duplicate) => Ok(false),
             Ok(Inserted::New) => {
                 // Lateness from unsolicited entries only: a fetched one arrives late by construction.
-                if let Some(p) = self.present.filter(|_| author != self.me && !solicited && !hinted) {
+                // Nor from a claimed backlog (the outage rule): its entries arrive late by construction too.
+                let backlog = self.vote_high.get(&key).is_some_and(|(s, _)| *s >= e_seq);
+                if let Some(p) = self.present.filter(|_| author != self.me && !solicited && !hinted && !backlog) {
                     {
                         let stamp = self.log.get(&key, &id).map_or(p, |e| e.entry.stamp);
                         if self.lateness.len() == LATENESS_SAMPLES {
@@ -1057,6 +1121,11 @@ impl Node {
                 }
             }
             self.final_heads = block.cut.clone();
+            let own_final = self.my_head.map_or(0, |(key, _, _)| {
+                let i = self.final_heads.heads.binary_search_by(|h| h.chain.cmp(&key.chain)).ok();
+                i.map(|i| self.final_heads.heads[i]).filter(|h| h.author == key.author).map_or(0, |h| h.seq)
+            });
+            self.abstained.progressed(own_final);
             self.final_block = block.id();
             self.final_cut = Some(FinalCut { cut: block.cut.clone(), root: qc.root, voters: qc.votes.clone() });
             // Predictions below the new final frame end: final now, or pending (absent).
@@ -1202,8 +1271,69 @@ impl Node {
         }
     }
 
-    /// The proposal the core allows a vote for, with the node's check of its cut.
+    /// The proposal the core allows a vote for, with the node's check of its cut; none while this member abstains
+    /// from it (the outage rule).
     fn candidate(&self) -> Option<(&core::Proposal, Check)> {
+        let (p, c) = self.checked_candidate()?;
+        if matches!(c, Check::Ok) && self.abstains(p).is_some() {
+            return None;
+        }
+        Some((p, c))
+    }
+
+    /// The own entry's seq this member abstains from `p` for (agreement.md 3, coordinator md904d9b1a9c7): the lowest
+    /// one the cut omits, stamped at or above the parent's frame and below the cut's, while its bound allows
+    /// ([`AbstainBook`]).
+    fn abstains(&self, p: &core::Proposal) -> Option<u64> {
+        if self.core.mutated(Mutation::NoAbstention) {
+            return None;
+        }
+        let parent = self.core.block(&p.block.parent)?;
+        let seq = self.omitted_own(&parent.cut, &p.block.cut).first().map(|e| e.entry.seq)?;
+        self.abstained.abstains(seq, p.block.view).then_some(seq)
+    }
+
+    /// This member's own entries `cut` omits, stamped at or above `parent`'s frame and below `cut`'s, oldest first
+    /// (at most [`ABSTAIN_PUSH`]). An own chain's stamps never fall, so they are the first ones above the cut's head.
+    fn omitted_own(&self, parent: &Cut, cut: &Cut) -> Vec<SignedEntry> {
+        let Some((key, _, _)) = self.my_head else { return Vec::new() };
+        let from = cut.heads.iter().find(|h| h.chain == key.chain && h.author == key.author).map_or(0, |h| h.seq);
+        let Some(seqs) = self.by_seq.get(&key) else { return Vec::new() };
+        let mut out = Vec::new();
+        for id in seqs.range(from + 1..).map(|(_, id)| id) {
+            let Some(e) = self.log.get(&key, id) else { break };
+            if e.entry.stamp >= cut.at.frame || out.len() >= ABSTAIN_PUSH {
+                break;
+            }
+            if e.entry.stamp >= parent.at.frame {
+                out.push(e.clone());
+            }
+        }
+        out
+    }
+
+    /// Record an abstention from the current proposal, if this member abstains from it: time out its view at once,
+    /// carrying this member's heads, and push the omitted entries (lost in the outage, or still in flight).
+    fn note_abstention(&mut self) {
+        let Some((p, Check::Ok)) = self.checked_candidate() else { return };
+        let Some(seq) = self.abstains(p) else { return };
+        let view = p.block.view;
+        let parent = self.core.block(&p.block.parent).map(|b| b.cut.clone());
+        let cut = p.block.cut.clone();
+        if !self.abstained.note(seq, view) {
+            return;
+        }
+        if view == self.core.view() {
+            self.core.abstain();
+        }
+        let push = parent.map(|parent| self.omitted_own(&parent, &cut)).unwrap_or_default();
+        if !push.is_empty() {
+            self.send_all(Lane::Action, &Wire::Entries(push), &[]);
+        }
+    }
+
+    /// The proposal the core allows a vote for, with the node's check of its cut (before the outage rule).
+    fn checked_candidate(&self) -> Option<(&core::Proposal, Check)> {
         let p = self.core.votable()?;
         let parent = self.core.block(&p.block.parent)?;
         let present = self.present?;
@@ -1230,6 +1360,67 @@ impl Node {
             return Some((p, Check::Ok));
         }
         Some((p, c))
+    }
+
+    /// This member's linked chain heads beyond its final cut (for its timeouts).
+    fn heads_beyond_final(&self) -> Vec<pe_seams::ChainHead> {
+        let fin = &self.final_heads;
+        let mut out: Vec<pe_seams::ChainHead> = self
+            .pred_head
+            .iter()
+            .filter(|(k, (seq, _))| {
+                let i = fin.heads.binary_search_by(|h| h.chain.cmp(&k.chain)).ok();
+                i.map(|i| fin.heads[i]).filter(|h| h.author == k.author).is_none_or(|h| h.seq < *seq)
+            })
+            .map(|(k, (seq, id))| pe_seams::ChainHead { chain: k.chain, author: k.author, seq: *seq, entry: *id })
+            .collect();
+        out.sort();
+        out.truncate(crate::codec::MAX_HEADS);
+        out
+    }
+
+    /// The outage rule's leader side (agreement.md 3, @fable-reviewer's form in coordinator md904d9b1a9c7): the
+    /// highest frame a cut may name, the lowest last-held stamp among other members' chains whose claimed head is
+    /// ahead of what this member holds, so their backlog isn't void as late when it arrives. Each such chain is waited
+    /// for once, for its claimed backlog at the author's rate plus a second, until it reaches its claim.
+    fn backlog_cap(&mut self) -> Option<Frame> {
+        if self.core.mutated(Mutation::NoBacklogCap) {
+            return None;
+        }
+        let now = self.now.0;
+        let budget = self.cfg.rate_budget(self.rate_hz);
+        let per_s = budget.per_s.max(1.0);
+        // Claimed by a vote's or timeout's heads, or seen checked beyond a hole: either way not yet linked here.
+        let keys: std::collections::BTreeSet<ChainKey> =
+            self.vote_high.keys().chain(self.seen_high.keys()).copied().collect();
+        let claims: Vec<(ChainKey, u64)> = keys.into_iter().map(|k| (k, self.range_high(&k))).collect();
+        self.cap_wait.retain(|k, _| claims.iter().any(|(c, _)| c == k));
+        let mut cap: Option<Frame> = None;
+        for (key, claim) in claims {
+            if key.author == self.me || !self.cfg.members.contains(&key.author) {
+                continue;
+            }
+            let held = self.linked_seq(&key);
+            if claim <= held {
+                self.cap_wait.remove(&key);
+                continue;
+            }
+            // The wait is sized once, from the backlog claimed when it begins, at most the author's pending cap: a
+            // growing or inflated claim can't stretch it.
+            let backlog = ((claim - held) as usize).min(budget.pending);
+            let (since, wait) =
+                *self.cap_wait.entry(key).or_insert((now, (backlog as f64 / per_s * 1e9) as i64 + CAP_WAIT_EXTRA_NS));
+            if now.saturating_sub(since) > wait {
+                continue;
+            }
+            let stamp = match self.pred_head.get(&key) {
+                Some((_, id)) => self.log.get(&key, id).map(|e| e.entry.stamp),
+                None => self.final_high.get(&key).copied(),
+            }
+            .unwrap_or(self.final_frame());
+            cap = Some(cap.map_or(stamp, |c: Frame| c.min(stamp)));
+        }
+        cap
     }
 
     /// This member's linked chain heads beyond the cut `at` names (for its vote).
@@ -1547,7 +1738,12 @@ impl Agreement for Node {
                 // Heads beyond the cut in a vote, once the core has verified the vote: fetch what this member lacks, so
                 // as leader it can include them. A hint only (@design-reviewer's Medium 2): such entries are not
                 // solicited, so they pass the author's budget like any other, and the hint expires.
-                let heads = if let core::Msg::Vote(v) = &m { (v.voter, v.heads.clone()) } else { (from, Vec::new()) };
+                // A timeout's heads count the same (the outage rule: an abstaining member's timeout carries them).
+                let heads = match &m {
+                    core::Msg::Vote(v) => (v.voter, v.heads.clone()),
+                    core::Msg::Timeout(t) => (t.voter, t.heads.clone()),
+                    _ => (from, Vec::new()),
+                };
                 match self.core.receive(from, m, at, self.verifier.as_ref()) {
                     Ok(()) => {
                         let (voter, heads) = heads;
@@ -1615,6 +1811,7 @@ impl Agreement for Node {
                 first_err.map_or(Ok(()), Err)
             }
         };
+        self.note_abstention();
         self.pump();
         r
     }
@@ -1625,15 +1822,28 @@ impl Agreement for Node {
         self.present = clock.frame_at(now);
         self.admit_deferred(now);
         self.ask_ranges();
+        self.note_abstention();
+        let heads = self.heads_beyond_final();
+        self.core.set_timeout_heads(heads);
         self.core.tick(now, self.signer.as_ref());
         let lag = self.cut_lag_frames();
+        let cap = self.backlog_cap();
         if let (Some(lead), Some(present)) = (self.core.lead(), self.present) {
-            // On the grid: the latest grid frame at or below the present less the lag.
+            // On the grid: the latest grid frame at or below the present less the lag, and at or below the backlog
+            // cap (the outage rule). A cap at or below the parent's frame proposes nothing yet.
             let k = self.cfg.cut_every(self.rate_hz);
-            let frame = Frame(present.0.saturating_sub(lag) / k * k);
+            let below = cap.map_or(present.0.saturating_sub(lag), |c| c.0.min(present.0.saturating_sub(lag)));
+            let frame = Frame(below / k * k);
+            let uncapped = Frame(present.0.saturating_sub(lag) / k * k);
             if now >= lead.not_before && frame > lead.parent.frame() {
                 let cut = cuts::build(&self.log, &lead.parent.cut, frame);
                 self.core.propose(cut, now, self.signer.as_ref(), self.verifier.as_ref());
+            } else if now >= lead.not_before && uncapped > lead.parent.frame() {
+                // Only the cap stops a cut (coordinator md904d9b1a9c7: "no cut possible" isn't a failed leader): if the
+                // view times out, its timeout doesn't grow the next one. The view isn't given up at once: the backlog
+                // may arrive within it, and then this member proposes (measured: giving it up at once tripled the
+                // final frame's longest stand-still on a 1.2 s one-way link).
+                self.core.spare_view();
             }
         }
         let missing = match self.candidate() {
