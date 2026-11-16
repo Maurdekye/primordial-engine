@@ -49,8 +49,10 @@ impl Kind {
 pub const ASSET: [u8; 32] = [0xA5; 32];
 
 /// A small world with something of every [`Kind`], built by trusted construction: two members, an object with a
-/// `Transform` and a `BodyState`, a hand holding it (a claim), and a script version (its modules row, tag and one component with a
-/// row on the object) with a next version pending, attested by its author.
+/// `Transform` and a `BodyState`, a hand holding it (a claim), and a script version (its modules row, tag and one
+/// component with a row on the object) with a next version pending, attested by its author. For hashing tests only:
+/// the pending commit reuses the current version's component ids under another V, which no real commit can (ids
+/// derive from V), so don't activate it (@chunks-reviewer's note).
 pub fn five_kinds() -> World {
     let (a, b) = (MemberKey([1; 32]), MemberKey([2; 32]));
     let (lamp, hand) = (ObjectId::from_u128(100), ObjectId::from_u128(101));
