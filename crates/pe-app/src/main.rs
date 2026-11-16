@@ -31,6 +31,7 @@ use pe_app::sim::{self, Budget, Sim};
 use pe_app::standin::SoloAgreement;
 use pe_app::vr::{self, XrWait};
 use pe_app::world;
+use pe_logic::run::RunSettings;
 use pe_mcp::auth::Grant;
 use pe_mcp::host::HostOpts;
 use pe_net_crypto::identity::{Invite, Reply};
@@ -41,16 +42,17 @@ use pe_render::gpu::ContextError;
 use pe_render::present::{FrameSlot, Presenter};
 use pe_render::scene::{Environment, RenderSettings};
 use pe_render::window::{DesktopConfig, DesktopReport, EffectSink, run_desktop};
+use pe_replica::ScriptRunner;
+use pe_replica::logic::LogicRunner;
 use pe_seams::world_api::{MemberId, Producer, ProducerKind};
 use pe_seams::{FrameClock, LineId, MemberKey, RigPose, SimRate};
 use pe_xr::guard::Guard;
 use pe_xr::loader::SystemDiscovery;
 use pe_xr::ring::{DEFAULT_WINDOW_NS, HandRing};
 
-/// The simulation thread's stack until pe-logic's `Settings::thread_stack()` is on main (app.md 1): wasmtime's
-/// default `max_wasm_stack` of 512 KiB plus 2 MiB, rounded up.
-// TODO(pe-logic): spawn with `pe_logic::Settings::thread_stack()` (`max_wasm_stack` + 2 MiB, on ws/logic) once pe-logic
-// lands, from the same `Settings` the replica runs guests with (design-reviewer's Low 1 on slice 1).
+/// The simulation thread's least stack (app.md 1). It gets more when the script runner needs it: the replica steps
+/// scripts on it, and wasmtime checks its stack limit against the stack it entered on (`LogicRunner::thread_stack`,
+/// from the same pe-logic `Settings` the runner runs guests with).
 const SIM_STACK: usize = 4 << 20;
 
 /// A new world's seed, until configuration names the world and its settings (app.md 4, step 1). Its cut grid is this
@@ -148,6 +150,7 @@ fn shared_sim(
     wake: &WakeLater,
     slot: Arc<FrameSlot>,
     hands: Arc<SwitchedHands>,
+    runner: Box<dyn ScriptRunner>,
 ) -> Sim {
     let rate = SimRate::DEFAULT;
     let path = o.identity.clone().map_or_else(net::default_identity_path, Ok).unwrap_or_else(|e| fail(&e.to_string()));
@@ -165,12 +168,12 @@ fn shared_sim(
             let _ = std::io::stdin().read_line(&mut line);
             let reply = Reply::decode(line.trim()).unwrap_or_else(|e| fail(&format!("the reply code: {e:?}")));
             let p = OpenParams { seed: WORLD_SEED, balls: 500, rate, epoch_lead: net::EPOCH_LEAD };
-            ep.open_session(&invite, &reply, &p, OPEN_TIMEOUT)
+            ep.open_session(&invite, &reply, &p, OPEN_TIMEOUT, runner)
         }
         Shared::Join(invite) => {
             println!("reply code for the opener: {}", ep.reply(invite).encode());
             ep.dial(invite).unwrap_or_else(|e| fail(&e.to_string()));
-            ep.join_session(invite, rate, JOIN_TIMEOUT)
+            ep.join_session(invite, rate, JOIN_TIMEOUT, runner)
         }
     }
     .unwrap_or_else(|e| fail(&format!("the session did not start: {e}")));
@@ -193,16 +196,24 @@ fn main() {
     let rate = SimRate::DEFAULT;
     let host = clock::shared();
     let slot = Arc::new(FrameSlot::new());
+    // The script runner (pe-replica's `logic`): pe-app owns it, and the simulation thread gets the stack it needs.
+    let runner = match LogicRunner::new(pe_logic::Settings::default(), RunSettings::default()) {
+        Ok(r) => r,
+        Err(e) => fail(&format!("the script runner did not start: {e}")),
+    };
+    let sim_stack = SIM_STACK.max(runner.thread_stack());
+    let runner: Box<dyn ScriptRunner> = Box::new(runner);
     // The local player's hands (app.md 3, step 2): VR's ring while an XR session runs, the desktop hand otherwise.
     let ring = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, VR_PERIOD_NS));
     let desktop_hand = Arc::new(DesktopHandFeed::default());
     let hands = Arc::new(SwitchedHands::new(ring.clone(), desktop_hand.clone()));
     let wake = WakeLater::default();
     let sim = match &options.shared {
-        Some(shared) => shared_sim(&options, shared, &host, &wake, slot.clone(), hands.clone()),
+        Some(shared) => shared_sim(&options, shared, &host, &wake, slot.clone(), hands.clone(), runner),
         None => {
             let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
-            let replica = match world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, frames.clone()) {
+            let pit = world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, frames.clone(), runner);
+            let replica = match pit {
                 Ok(r) => r,
                 Err(e) => fail(&format!("the replica did not start: {e}")),
             };
@@ -224,7 +235,7 @@ fn main() {
         Some(p) => sim.with_api(p.clone()),
         None => sim,
     };
-    let sim = match sim::spawn(sim, host.clone(), SIM_STACK) {
+    let sim = match sim::spawn(sim, host.clone(), sim_stack) {
         Ok(t) => t,
         Err(e) => fail(&format!("the simulation thread did not start: {e}")),
     };

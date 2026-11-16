@@ -29,6 +29,8 @@ use pe_net::thread::{Arrival, Command, HostClock, NetControl, NetHandle};
 use pe_net_crypto::identity::{Identity, Invite, Reply, StrictVerifier};
 use pe_seams::{Agreement, FrameClock, HostTime, MemberKey, NetEvent, Replica, SimRate, Transport};
 
+use pe_replica::ScriptRunner;
+
 use crate::genesis::{Genesis, GenesisError, Params, fresh_nonce};
 use crate::sim::{NetHook, Waker};
 use crate::world::DEV_MEMBER;
@@ -348,6 +350,7 @@ impl Endpoint {
         reply: &Reply,
         p: &OpenParams,
         timeout: Duration,
+        runner: Box<dyn ScriptRunner>,
     ) -> Result<Session, NetError> {
         let them = MemberKey(reply.key);
         if them == self.me || them == DEV_MEMBER {
@@ -363,6 +366,8 @@ impl Endpoint {
         self.command(Command::TakeReply(reply.clone()))?;
         let deadline = Instant::now() + timeout;
         let mut built: Option<Built> = None;
+        // Genesis is built once, on B's first join request: the runner goes to that replica.
+        let mut runner = Some(runner);
         let mut up = false;
         while !up {
             if Instant::now() >= deadline {
@@ -378,7 +383,7 @@ impl Endpoint {
                     // early dial, at `T_welcome`), where pe-net's admit does nothing, and the next from A's own dial.
                     NetEvent::JoinRequest { peer, .. } if peer == them => {
                         if built.is_none() {
-                            built = Some(self.genesis_for(them, p)?);
+                            built = Some(self.genesis_for(them, p, runner.take().expect("built once"))?);
                         }
                         let welcome = built.as_ref().map(|b| b.welcome.clone()).expect("built above");
                         self.command(Command::Admit { peer, welcome })?;
@@ -403,7 +408,12 @@ impl Endpoint {
     /// A, on B's first join request (@engine-architect's L1): frame 0 is `epoch_lead` from now, so the lead covers
     /// only the welcome and B's clock convergence, however long the reply took to paste. Building 500 balls takes
     /// well under pe-net's `T_welcome` (10 s).
-    fn genesis_for(&mut self, them: MemberKey, p: &OpenParams) -> Result<Built, NetError> {
+    fn genesis_for(
+        &mut self,
+        them: MemberKey,
+        p: &OpenParams,
+        runner: Box<dyn ScriptRunner>,
+    ) -> Result<Built, NetError> {
         let frames: Arc<dyn FrameClock> = self.handle.frame_clock.clone();
         // The first member's session time is its host time (transport.md 5.4).
         let epoch_ns = (self.host)().plus(p.epoch_lead).0;
@@ -428,7 +438,7 @@ impl Endpoint {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        let (genesis, replica, cfg) = Genesis::ball_pit(&params, frames.clone()).map_err(NetError::Genesis)?;
+        let (genesis, replica, cfg) = Genesis::ball_pit(&params, frames.clone(), runner).map_err(NetError::Genesis)?;
         let members: Vec<MemberKey> = genesis.members.iter().map(|m| m.0).collect();
         self.command(Command::SetClockMembers(others(&members, self.me)))?;
         let welcome = Welcome {
@@ -445,7 +455,13 @@ impl Endpoint {
 
     /// B, after dialling `invite`: wait up to `timeout` for the welcome, check it against the invite, this build and
     /// `rate_pin` (the coordinator's welcome-rate rule), and rebuild genesis.
-    pub fn join_session(mut self, invite: &Invite, rate_pin: SimRate, timeout: Duration) -> Result<Session, NetError> {
+    pub fn join_session(
+        mut self,
+        invite: &Invite,
+        rate_pin: SimRate,
+        timeout: Duration,
+        runner: Box<dyn ScriptRunner>,
+    ) -> Result<Session, NetError> {
         let opener = MemberKey(invite.key);
         let deadline = Instant::now() + timeout;
         let mut clock_ready = false;
@@ -497,7 +513,7 @@ impl Endpoint {
         if let Err(e) = check_epoch(frames.host_time_of(pe_seams::Frame(0)), (self.host)()) {
             return self.fail(e);
         }
-        let (replica, cfg) = match genesis.build(self.me, frames.clone()) {
+        let (replica, cfg) = match genesis.build(self.me, frames.clone(), runner) {
             Ok(r) => r,
             Err(e) => return self.fail(NetError::Genesis(e)),
         };
@@ -664,6 +680,12 @@ mod tests {
     use pe_render::present::FrameSlot;
     use pe_seams::{Hand, HandFeed, HandInput, HandSource, RigPose};
 
+    /// pe-logic's runner, as the binary hands it to each replica it builds.
+    fn runner() -> Box<dyn ScriptRunner> {
+        let run = pe_logic::run::RunSettings::default();
+        Box::new(pe_replica::logic::LogicRunner::new(pe_logic::Settings::default(), run).expect("a runner"))
+    }
+
     struct StillHands([f32; 3]);
 
     impl HandFeed for StillHands {
@@ -713,8 +735,8 @@ mod tests {
         let reply = b.reply(&invite);
         b.dial(&invite).unwrap();
         let theirs = invite.clone();
-        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(10)));
-        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(10)).expect("A's session");
+        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(10), runner()));
+        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(10), runner()).expect("A's session");
         let sb = joiner.join().unwrap().expect("B's session");
         assert_eq!(sa.members, sb.members);
         assert_eq!(sa.frames.rate_hz(), sb.frames.rate_hz());
@@ -789,7 +811,7 @@ mod tests {
             origin: pe_seams::Pos::ORIGIN,
             epoch_ns: 123,
         };
-        let (g, _, _) = Genesis::ball_pit(&p, frames).unwrap();
+        let (g, _, _) = Genesis::ball_pit(&p, frames, runner()).unwrap();
         let w = Welcome {
             line: pre_genesis_line(),
             epoch_ns: 123,
@@ -847,7 +869,7 @@ mod tests {
         let mut old = invite.clone();
         old.id[0] ^= 1;
         let stale = b.reply(&old);
-        match a.open_session(&invite, &stale, &params(), Duration::from_secs(5)) {
+        match a.open_session(&invite, &stale, &params(), Duration::from_secs(5), runner()) {
             Err(e) => assert!(e.to_string().contains("another invite"), "{e}"),
             Ok(_) => panic!("a stale reply opened a session"),
         }
@@ -869,9 +891,9 @@ mod tests {
         let reply = b.reply(&invite);
         b.dial(&invite).unwrap();
         let theirs = invite.clone();
-        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(15)));
+        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(15), runner()));
         std::thread::sleep(t_welcome * 3);
-        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(10)).expect("A's session");
+        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(10), runner()).expect("A's session");
         let sb = joiner.join().unwrap().expect("B's session");
         assert_eq!(sa.members, sb.members);
     }
@@ -974,8 +996,8 @@ mod tests {
         let reply = b.reply(&invite);
         b.dial(&invite).unwrap();
         let theirs = invite.clone();
-        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(20)));
-        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(20)).expect("A's session");
+        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(20), runner()));
+        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(20), runner()).expect("A's session");
         let sb = joiner.join().unwrap().expect("B's session");
 
         let feeds = [[-0.5f32, 1.0, -0.4], [0.5, 1.1, -0.3]];
