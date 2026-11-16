@@ -1192,4 +1192,62 @@ mod lamp {
             assert_eq!(r.script_counts().missing, 18, "one per stage, frames 1 to 9");
         });
     }
+
+    /// A module loaded through the runner's inbox on another thread (pe-app's build thread, logic.md 6.2 steps 3-4) is
+    /// held from the start of the runner's next frame: the lamp, missing at frames 1 to 9, runs from frame 10, and
+    /// after frame 29 each lamp's glow is what its rule gives there, as with the module from the start.
+    #[test]
+    fn a_module_loaded_through_the_inbox_runs_from_the_next_frame() {
+        big_stack(|| {
+            let runner = runner(false);
+            let inbox = runner.inbox();
+            let mut s = Source::default();
+            let mut r = replica_of(lit()).with_runner(Box::new(runner));
+            r.advance(Frame(10), &mut s);
+            assert_eq!(r.script_counts().missing, 18, "one per stage, frames 1 to 9");
+            let build = std::thread::Builder::new().stack_size(inbox.thread_stack());
+            let loaded = build.spawn(move || inbox.load(wasm())).unwrap().join().unwrap();
+            assert_eq!(loaded.expect("the lamp loads"), parts().0);
+            r.advance(Frame(30), &mut s);
+            assert_eq!((r.frame(), r.faults()), (Frame(30), 0));
+            assert_eq!(r.script_counts().missing, 18, "none from frame 10");
+            assert_eq!(LAMPS.map(|n| intensity(&r, n)), [1.0, 0.0, 0.0]);
+        });
+    }
+
+    /// The runner takes what its inbox loaded at a frame's start only, so both stages of a frame see the same modules:
+    /// loaded between them, the lamp is missing at both stages of that frame and runs at the next frame's first stage.
+    /// A module that won't load is refused at the load.
+    #[test]
+    fn a_module_loaded_between_a_frames_stages_waits_for_the_next_frame() {
+        big_stack(|| {
+            let fx = fixture_of(&lit());
+            let mut r = runner(false);
+            let inbox = r.inbox();
+            let mut store = fx.store.clone();
+            let faulted = BTreeSet::new();
+            let guard = |_: ObjectId| false;
+            let check = |_: ComponentId, _: ObjectId, _: &[u8]| -> Result<(), String> { Ok(()) };
+            let world = |frame| StageWorld {
+                frame: Frame(frame),
+                line: fx.line,
+                rate_hz: 60,
+                guard: &guard,
+                faulted: &faulted,
+                check: &check,
+            };
+            assert!(inbox.load(b"not a module").is_err());
+            let pre = r.run_stage(Stage::LogicPrePhysics, &fx.scripts, &mut store, &world(0));
+            assert_eq!(inbox.load(wasm()).expect("the lamp loads"), parts().0);
+            assert!(!r.holds(&parts().0), "not before the next frame");
+            let post = r.run_stage(Stage::LogicPostPhysics, &fx.scripts, &mut store, &world(0));
+            assert!(pre.report.written.is_empty(), "{pre:?}");
+            assert_eq!((pre.missing, post.missing), (vec![LAMP, [8; 32]], vec![LAMP, [8; 32]]));
+            let next = r.run_stage(Stage::LogicPrePhysics, &fx.scripts, &mut store, &world(1));
+            assert!(r.holds(&parts().0));
+            assert_eq!(next.missing, vec![[8; 32]]);
+            let glow = parts().1[1].id();
+            assert_eq!(next.report.written, [(glow, oid(LAMPS[0])), (glow, oid(LAMPS[2]))]);
+        });
+    }
 }
