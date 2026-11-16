@@ -17,7 +17,14 @@ fn big_stack(f: impl FnOnce() + Send + 'static) {
 fn lamp() -> Vec<u8> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("scripts").join("lamp");
     let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
-    pe_logic::build::build(&dir, &pe_logic::build::engine_sdk(), &target, true).unwrap_or_else(|e| panic!("{e}"))
+    pe_logic::build::build(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &dir,
+        &pe_logic::build::engine_sdk(),
+        &target,
+        true,
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn manifest_of(i: &mut Instance) -> Manifest {
@@ -111,7 +118,13 @@ fn a_script_with_unsafe_code_is_refused_by_the_build() {
     .unwrap();
     std::fs::write(dir.join("src/lib.rs"), "#![no_std]\npub fn f(p: *const u8) -> u8 { unsafe { *p } }\n").unwrap();
     let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
-    match pe_logic::build::build(&dir, &pe_logic::build::engine_sdk(), &target, true) {
+    match pe_logic::build::build(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &dir,
+        &pe_logic::build::engine_sdk(),
+        &target,
+        true,
+    ) {
         Err(pe_logic::build::BuildError::Rustc(msg)) => assert!(msg.contains("unsafe"), "{msg}"),
         other => panic!("expected a refusal, got {:?}", other.map(|b| b.len())),
     }
@@ -161,14 +174,18 @@ fn the_module_is_the_same_bytes_from_any_folder_and_from_a_warm_cache() {
     let (ta, tb) = (tmp.join("target-a"), tmp.join("t").join("target b"));
     let _ = std::fs::remove_dir_all(&ta);
     let _ = std::fs::remove_dir_all(&tb);
-    let first = pe_logic::build::build(&a, &sa, &ta, true).unwrap_or_else(|e| panic!("{e}"));
-    let second = pe_logic::build::build(&b, &sb, &tb, true).unwrap_or_else(|e| panic!("{e}"));
+    let first = pe_logic::build::build(&pe_logic::build::Toolchain::current().unwrap(), &a, &sa, &ta, true)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let second = pe_logic::build::build(&pe_logic::build::Toolchain::current().unwrap(), &b, &sb, &tb, true)
+        .unwrap_or_else(|e| panic!("{e}"));
     let lib = a.join("src/lib.rs");
     let src = std::fs::read_to_string(&lib).unwrap();
     std::fs::write(&lib, format!("{src}\npub fn __changed() -> u32 {{ 7 }}\n")).unwrap();
-    pe_logic::build::build(&a, &sa, &ta, true).unwrap_or_else(|e| panic!("{e}"));
+    pe_logic::build::build(&pe_logic::build::Toolchain::current().unwrap(), &a, &sa, &ta, true)
+        .unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(&lib, &src).unwrap();
-    let warm = pe_logic::build::build(&a, &sa, &ta, true).unwrap_or_else(|e| panic!("{e}"));
+    let warm = pe_logic::build::build(&pe_logic::build::Toolchain::current().unwrap(), &a, &sa, &ta, true)
+        .unwrap_or_else(|e| panic!("{e}"));
     for (name, m) in [("another folder", &second), ("a warm rebuild", &warm)] {
         assert!(m == &first, "{name}: {} vs {} bytes", m.len(), first.len());
     }
@@ -229,7 +246,13 @@ fn a_script_crate_outside_the_rules_is_refused_before_it_builds() {
     std::fs::write(dir.join("src/lib.rs"), "#![no_std]\n").unwrap();
     let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
     assert!(matches!(
-        pe_logic::build::build(&dir, &pe_logic::build::engine_sdk(), &target, true),
+        pe_logic::build::build(
+            &pe_logic::build::Toolchain::current().unwrap(),
+            &dir,
+            &pe_logic::build::engine_sdk(),
+            &target,
+            true
+        ),
         Err(BuildError::Manifest(_))
     ));
 }
@@ -256,7 +279,13 @@ fn a_script_may_not_choose_its_own_pe_sdk() {
     .unwrap();
     std::fs::write(root.join("script/src/lib.rs"), "#![no_std]\n").unwrap();
     let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
-    match pe_logic::build::build(&root.join("script"), &pe_logic::build::engine_sdk(), &target, true) {
+    match pe_logic::build::build(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &root.join("script"),
+        &pe_logic::build::engine_sdk(),
+        &target,
+        true,
+    ) {
         Err(pe_logic::build::BuildError::Manifest(m)) => assert!(m.contains("engine's pe-sdk"), "{m}"),
         other => panic!("expected a refusal, got {:?}", other.map(|b| b.len())),
     }
@@ -277,13 +306,25 @@ fn a_script_with_many_files_builds_the_same_module() {
     }
     let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("many-files-target");
     let _ = std::fs::remove_dir_all(&target);
-    let many =
-        pe_logic::build::build(&lamp, &root.join("crates/pe-sdk"), &target, true).unwrap_or_else(|e| panic!("{e}"));
+    let many = pe_logic::build::build(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &lamp,
+        &root.join("crates/pe-sdk"),
+        &target,
+        true,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     let plain_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("few-files");
     let plain = lamp_under(&plain_root);
     let plain_target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("few-files-target");
     let _ = std::fs::remove_dir_all(&plain_target);
-    let few = pe_logic::build::build(&plain, &plain_root.join("crates/pe-sdk"), &plain_target, true)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let few = pe_logic::build::build(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &plain,
+        &plain_root.join("crates/pe-sdk"),
+        &plain_target,
+        true,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(many == few, "{} vs {} bytes", many.len(), few.len());
 }

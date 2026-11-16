@@ -38,18 +38,39 @@ fn the_lamp_packs_canonically_and_builds_the_same_module_from_any_folder() {
     assert!(files.iter().any(|(p, _)| *p == "src/lib.rs"));
 
     let root = scratch("same");
-    let a = build_archive(&archive, &engine_sdk(), &root.join("a"), &root.join("ta"), true)
-        .unwrap_or_else(|e| panic!("{e}"));
-    let b = build_archive(&archive, &engine_sdk(), &root.join("deeper/b/c"), &root.join("tb"), true)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let a = build_archive(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &archive,
+        &engine_sdk(),
+        &root.join("a"),
+        &root.join("ta"),
+        true,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let b = build_archive(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &archive,
+        &engine_sdk(),
+        &root.join("deeper/b/c"),
+        &root.join("tb"),
+        true,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(a, b, "one archive, one module, wherever it is unpacked");
     assert_eq!(&a[..4], b"\0asm");
     // The service's manifest, not the author's: the author's `lamp` package name is gone.
     let toml = std::fs::read_to_string(root.join("a/script/Cargo.toml")).unwrap();
     assert!(toml.contains("name = \"script\"") && !toml.contains("lamp"));
     // A rebuild into the same work folder replaces what the last one wrote.
-    let again = build_archive(&archive, &engine_sdk(), &root.join("a"), &root.join("ta"), true)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let again = build_archive(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &archive,
+        &engine_sdk(),
+        &root.join("a"),
+        &root.join("ta"),
+        true,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(again, a);
 }
 
@@ -75,7 +96,14 @@ fn build_archive_refuses_a_non_canonical_archive_before_writing_anything() {
     let root = scratch("refuse");
     let mut archive = pack(&lamp_dir()).unwrap();
     archive[0] ^= 1;
-    match build_archive(&archive, &engine_sdk(), &root.join("w"), &root.join("t"), true) {
+    match build_archive(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &archive,
+        &engine_sdk(),
+        &root.join("w"),
+        &root.join("t"),
+        true,
+    ) {
         Err(BuildError::Source(SourceError::Magic)) => {}
         other => panic!("{other:?}"),
     }
@@ -90,7 +118,14 @@ fn build_archive_will_not_delete_a_folder_it_did_not_write() {
     std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"mine\"\n").unwrap();
     let archive = pack(&lamp_dir()).unwrap();
     assert!(matches!(
-        build_archive(&archive, &engine_sdk(), &root.join("w"), &root.join("t"), true),
+        build_archive(
+            &pe_logic::build::Toolchain::current().unwrap(),
+            &archive,
+            &engine_sdk(),
+            &root.join("w"),
+            &root.join("t"),
+            true
+        ),
         Err(BuildError::Io(_))
     ));
     assert_eq!(std::fs::read_to_string(dir.join("Cargo.toml")).unwrap(), "[package]\nname = \"mine\"\n");
@@ -135,11 +170,24 @@ fn pack_refuses_a_link_under_src() {
 #[test]
 fn a_direct_build_of_the_authors_crate_differs_only_as_pinned_here() {
     let root = scratch("author");
-    let direct =
-        pe_logic::build::build(&lamp_dir(), &engine_sdk(), &root.join("td"), true).unwrap_or_else(|e| panic!("{e}"));
+    let direct = pe_logic::build::build(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &lamp_dir(),
+        &engine_sdk(),
+        &root.join("td"),
+        true,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     let archive = pack(&lamp_dir()).unwrap();
-    let via = build_archive(&archive, &engine_sdk(), &root.join("w"), &root.join("ta"), true)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let via = build_archive(
+        &pe_logic::build::Toolchain::current().unwrap(),
+        &archive,
+        &engine_sdk(),
+        &root.join("w"),
+        &root.join("ta"),
+        true,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     eprintln!("direct {} bytes, archive {} bytes, equal: {}", direct.len(), via.len(), direct == via);
     assert_eq!(direct == via, DIRECT_EQUALS_ARCHIVE);
 }

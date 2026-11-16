@@ -15,10 +15,17 @@
 //!   script or a procedural macro of its own (shader-reviewer, round 2);
 //! - every other output-affecting setting pinned: the CPU and the feature list of 5.3, debug assertions and overflow
 //!   checks off, `CARGO_INCREMENTAL=0`, no rustc wrapper (coordinator);
-//! - its own target directory, given by the caller (one per world).
+//! - its own target directory, given by the caller (one per world);
+//! - **isolated from the machine** (logic.md 6.2b, under the build-asymmetry ruling: a build one
+//!   member passes and another fails splits the session): the pinned toolchain's own cargo and rustc by absolute
+//!   path ([`Toolchain`]), never a rustup proxy, which picks the compiler from a `rust-toolchain` file around the
+//!   working folder; a cleared environment with a short fixed list ([`KEEP_ENV`]); the crate itself as the working
+//!   folder; and a `CARGO_HOME` of the service's own, inside the target directory. [`build_archive`], the path every
+//!   module takes (4.2), also refuses a work folder that sits under a cargo configuration.
 //!
-//! Not yet in v0: the pinned toolchain hash (D75), idle priority for the child, one build at a time per machine,
-//! and rustc's JSON diagnostics for `code_check` (the messages are returned as text).
+//! Not yet in v0: the pinned toolchain's hash and fetching it (D75), idle priority for the child, one build at a
+//! time per machine, the dep-info check, the pinned job count and the retries of 6.2b, and rustc's JSON
+//! diagnostics for `code_check` (the messages are returned as text).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,6 +46,10 @@ pub enum BuildError {
     Source(pe_world::script::SourceError),
     /// A file of the crate or of the work folder could not be read or written.
     Io(String),
+    /// The toolchain is not one the service runs: not found, or a rustup proxy (logic.md 6.2b).
+    Toolchain(String),
+    /// The machine around the build could change it: a cargo configuration above the work folder (6.2b).
+    Environment(String),
 }
 
 impl std::fmt::Display for BuildError {
@@ -51,11 +62,57 @@ impl std::fmt::Display for BuildError {
             BuildError::Manifest(e) => write!(f, "the script's crate is refused (logic.md 4.1): {e}"),
             BuildError::Source(e) => write!(f, "the script's source is refused (logic.md 4.1a): {e}"),
             BuildError::Io(e) => write!(f, "the build service's files: {e}"),
+            BuildError::Toolchain(e) => write!(f, "the build service's toolchain (logic.md 6.2b): {e}"),
+            BuildError::Environment(e) => write!(f, "the build service's folder (logic.md 6.2b): {e}"),
         }
     }
 }
 
 impl std::error::Error for BuildError {}
+
+/// The pinned toolchain the service runs, by absolute path (logic.md 6.2b): its own `cargo` and `rustc`. Never a
+/// rustup proxy: a proxy picks the compiler from a `rust-toolchain` file in or above the working folder, or from
+/// `RUSTUP_TOOLCHAIN`, so the same command can build with another compiler and give other bytes, without an error
+/// [V `scripts/iter_bench_toolchain_min.py`: through the proxy outside the repo, nightly 1.94 and other hashes].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Toolchain {
+    pub cargo: PathBuf,
+    pub rustc: PathBuf,
+}
+
+impl Toolchain {
+    /// The toolchain whose executables are in `bin` (D75's installed copy, or a rustup toolchain's own `bin`).
+    /// Refuses a folder holding `rustup`, which is where rustup's proxies live.
+    pub fn in_bin(bin: &Path) -> Result<Toolchain, BuildError> {
+        let bin = std::path::absolute(bin).map_err(|e| BuildError::Toolchain(e.to_string()))?;
+        let exe = |n: &str| bin.join(format!("{n}{}", std::env::consts::EXE_SUFFIX));
+        if exe("rustup").exists() {
+            return Err(BuildError::Toolchain(format!("{} holds rustup's proxies, not a toolchain", bin.display())));
+        }
+        let tc = Toolchain { cargo: exe("cargo"), rustc: exe("rustc") };
+        for f in [&tc.cargo, &tc.rustc] {
+            if !f.is_file() {
+                return Err(BuildError::Toolchain(format!("no {}", f.display())));
+            }
+        }
+        Ok(tc)
+    }
+
+    /// The toolchain of the cargo that runs this process: `CARGO`, which cargo sets to its own executable, the
+    /// toolchain's real one even when cargo was started through a rustup proxy. For tests and the dev engine,
+    /// until D75 installs the pinned toolchain.
+    pub fn current() -> Result<Toolchain, BuildError> {
+        let cargo = std::env::var_os("CARGO").ok_or(BuildError::Toolchain("CARGO is not set".into()))?;
+        let bin = Path::new(&cargo).parent().ok_or(BuildError::Toolchain("CARGO has no folder".into()))?;
+        Toolchain::in_bin(bin)
+    }
+}
+
+/// The only variables of the engine's environment the build's child keeps (logic.md 6.2b): the OS's own, which
+/// processes need to start and to make temporary files. Everything else, `RUSTFLAGS`, `RUSTUP_TOOLCHAIN`,
+/// `CARGO_*`, wrappers and anything a script could read with `option_env!`, is cleared [V `iter_bench_build_asym.py`:
+/// one inherited variable changed the module's hash].
+pub const KEEP_ENV: &[&str] = &["SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "TEMP", "TMP", "TMPDIR"];
 
 /// The `--config` overrides that make `--release` the `rel-fast` profile.
 const PROFILE: &[&str] = &[
@@ -256,6 +313,7 @@ pub fn pack(crate_dir: &Path) -> Result<Vec<u8>, BuildError> {
 /// `work_dir` is the service's own: `work_dir/script` is deleted first, but only if it is missing or its
 /// `Cargo.toml` is one this function wrote. Keep `work_dir` short: 4.1a's paths are at most 128 bytes below it.
 pub fn build_archive(
+    tc: &Toolchain,
     archive: &[u8],
     sdk: &Path,
     work_dir: &Path,
@@ -264,6 +322,21 @@ pub fn build_archive(
 ) -> Result<Vec<u8>, BuildError> {
     let files = pe_world::script::source_files(archive).map_err(BuildError::Source)?;
     let dir = work_dir.join("script");
+    // Cargo reads `.cargo/config.toml` in every folder above its working one; the service's folder must have none,
+    // or that file's `[env]`, `[build]` or `[target]` could change the module on this machine only (6.2b) [V
+    // `iter_bench_build_asym.py`: an `[env]` entry changed the hash].
+    let abs = std::path::absolute(&dir).map_err(|e| BuildError::Io(e.to_string()))?;
+    for a in abs.ancestors() {
+        for f in [".cargo/config.toml", ".cargo/config"] {
+            if a.join(f).exists() {
+                return Err(BuildError::Environment(format!(
+                    "{} lies under {}, which could change the build; move the service's folder",
+                    work_dir.display(),
+                    a.join(f).display()
+                )));
+            }
+        }
+    }
     let io = |e: std::io::Error| BuildError::Io(format!("{}: {e}", dir.display()));
     if dir.exists() {
         let ours = std::fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|t| t.starts_with(TEMPLATE_MARK));
@@ -287,7 +360,7 @@ pub fn build_archive(
          pe-sdk = {{ path = \"{sdk_path}\" }}\n"
     );
     std::fs::write(dir.join("Cargo.toml"), manifest).map_err(io)?;
-    build(&dir, sdk, target_dir, offline)
+    build(tc, &dir, sdk, target_dir, offline)
 }
 
 /// The pe-sdk of the engine's own source tree, for callers that build from it (tests, the dev engine).
@@ -297,7 +370,13 @@ pub fn engine_sdk() -> PathBuf {
 
 /// Build the script crate in `crate_dir` against the engine's pe-sdk in `sdk` into `target_dir`; returns the
 /// module's bytes. The script's own `pe-sdk` path must lead to `sdk`.
-pub fn build(crate_dir: &Path, sdk: &Path, target_dir: &Path, offline: bool) -> Result<Vec<u8>, BuildError> {
+pub fn build(
+    tc: &Toolchain,
+    crate_dir: &Path,
+    sdk: &Path,
+    target_dir: &Path,
+    offline: bool,
+) -> Result<Vec<u8>, BuildError> {
     let manifest = crate_dir.join("Cargo.toml");
     let text = std::fs::read_to_string(&manifest).map_err(|e| BuildError::Spawn(e.to_string()))?;
     let name = package_name(&text).ok_or(BuildError::NoName)?.replace('-', "_");
@@ -314,9 +393,10 @@ pub fn build(crate_dir: &Path, sdk: &Path, target_dir: &Path, offline: bool) -> 
             "pe-sdk at {sdk_rel:?} is not the engine's pe-sdk; a script builds only against the engine's own"
         )));
     }
-    let cargo_home = std::env::var("CARGO_HOME").map(PathBuf::from).ok().or_else(|| {
-        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|h| PathBuf::from(h).join(".cargo"))
-    });
+    // The service's own CARGO_HOME, so no configuration of the machine's cargo applies (6.2b). Inside the target
+    // directory, which is remapped; the script's only dependency is pe-sdk by path, so nothing is fetched into it.
+    let cargo_home = target_dir.join("cargo-home");
+    std::fs::create_dir_all(&cargo_home).map_err(|e| BuildError::Spawn(e.to_string()))?;
     let mut rustflags: Vec<String> = CODEGEN.iter().map(|s| s.to_string()).collect();
     // rustc applies the last remap that matches, so the most specific (the script's folder, which may sit inside
     // the engine's or the target's) goes last. Each folder is given both as the file system names it and lexically.
@@ -328,9 +408,7 @@ pub fn build(crate_dir: &Path, sdk: &Path, target_dir: &Path, offline: bool) -> 
             rustflags.push(format!("--remap-path-prefix={}={to}", f.display()));
         }
     }
-    if let Some(h) = cargo_home {
-        rustflags.push(format!("--remap-path-prefix={}=/cargo", h.display()));
-    }
+    rustflags.push(format!("--remap-path-prefix={}=/cargo", cargo_home.display()));
     // Below a remapped folder the host's separator survives: Windows wrote `/pe-sdk\src\guest.rs` and `src\lib.rs`
     // into panic locations where Linux writes `/pe-sdk/src/guest.rs` and `src/lib.rs`, so the same script built to
     // different bytes on the two (3 bytes of the lamp, scripts/iter_bench_xos.sh). On Windows every file under
@@ -357,7 +435,16 @@ pub fn build(crate_dir: &Path, sdk: &Path, target_dir: &Path, offline: bool) -> 
     // character cap applies, because std passes its own environment block to CreateProcessW and cargo moves a long
     // rustc command line into an argument file [V `tests/lamp.rs`, `a_script_with_many_files_builds...`].
     let encoded = rustflags.join("\u{1f}");
-    let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    let mut cmd = Command::new(&tc.cargo);
+    // The crate is the working folder, so cargo looks for configuration only above it (6.2b); and the environment
+    // is cleared to KEEP_ENV, so nothing of the engine's process reaches cargo, rustc or the script.
+    cmd.current_dir(crate_dir).env_clear();
+    for k in KEEP_ENV {
+        if let Some(v) = std::env::var_os(k) {
+            cmd.env(k, v);
+        }
+    }
+    cmd.env("RUSTC", &tc.rustc).env("CARGO_HOME", &cargo_home);
     cmd.arg("rustc")
         .arg("--release")
         .arg("--lib")
