@@ -10,7 +10,7 @@
 set -u
 LOG="$1"
 MODE="${2:-full}"
-REPO="/mnt/e/Libraries/Desktop/Primordial Engine/.worktrees/logic"
+REPO="/mnt/s/primordial-engine/repo/.worktrees/logic"
 WORK="$HOME/pe-logic-unix-check"
 exec > >(tee "$LOG") 2>&1
 echo "# start $(date -u +%FT%TZ) $(uname -srm)"

@@ -19,7 +19,7 @@ case $profile in
 esac
 d=crates/pe-physics/tests/records/vdw
 low cargo build -q $flag -p pe-physics --example records || { echo "RESULT: FAIL (build)"; exit 1; }
-exe=${CARGO_TARGET_DIR:-target}/$profile/examples/records
+exe="$(low cargo metadata --no-deps --format-version 1 | python -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/$profile/examples/records"
 tmp=$(mktemp -d)
 fail=0
 for w in $workers; do

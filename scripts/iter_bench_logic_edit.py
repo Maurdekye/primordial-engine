@@ -28,6 +28,9 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cargo_output import target_dir
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WASM = "wasm32-unknown-unknown"
 EDIT = ("x.wrapping_mul(3)", "x.wrapping_mul(5)")
@@ -81,7 +84,7 @@ def main():
     for mode in ("inc-on", "inc-off"):
         inc = "true" if mode == "inc-on" else "false"
         prof = [p.replace("incremental=false", "incremental=" + inc) for p in profile]
-        tgt = os.path.join(work, "target-" + mode)
+        tgt = target_dir(ROOT, "logic-edit/" + os.path.basename(out) + "/" + mode)
         env = dict(os.environ)
         env.pop("RUSTFLAGS", None)
         env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(codegen)

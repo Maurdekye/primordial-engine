@@ -22,7 +22,7 @@ Then it verifies the copy, and exits 1 if any check fails (2 on an error):
     (PE_PUBLISH_TERMS or scripts/publish_terms.local) as a fail term, finds nothing in added lines,
     messages or any blob of the copy;
   * with --build, `cargo check --workspace --all-targets --offline` passes on the copy's tip
-    (through $PE_HEAVY if set; target folder <new folder>.target).
+    (through $PE_HEAVY if set; an isolated target folder from scripts/cargo_output.py).
 It reports the commits whose ids, trees, own changes or messages changed.
 """
 
@@ -31,6 +31,9 @@ import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cargo_output import target_dir
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -285,7 +288,7 @@ def main():
         failures.append(f"publish_history.py on the copy exited {r.returncode}")
 
     if build:
-        env = dict(os.environ, CARGO_TARGET_DIR=out_dir + ".target")
+        env = dict(os.environ, CARGO_TARGET_DIR=target_dir(out_dir, "publish-check"))
         cmd = ["cargo", "check", "--workspace", "--all-targets", "--offline", "-q"]
         heavy = os.environ.get("PE_HEAVY")
         if heavy:
