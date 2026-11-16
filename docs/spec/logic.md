@@ -356,8 +356,9 @@ Without a size the repair can see, a dishonest source stretches a rung-2 repair'
   checks the format and the path rule below. `CommitScript` calls it on the source, which under the cap always rides
   inside the entry, and refuses an archive that is not canonical (bad magic or lengths, unsorted, a duplicate, a
   path outside the rules) as `Invalid`; the old version keeps running. pe-logic's build service calls the same
-  function before unpacking. Refusing at build instead would make a malformed commit a build fault on every
-  machine, which under 6.2 step 3 stops finality for the whole world past `activate_at`.
+  function before unpacking. Refusing at build instead would make a malformed commit a failed build on every
+  machine, voided only once enough voters had built and posted `BuildFailed` that the quorum was unreachable (6.2a item 4),
+  rather than refused at once.
 - **Paths that unpack the same on every filesystem** (@design-reviewer, m6513bdb2ba8a). Otherwise one V could build
   different crates: `src/A.rs` and `src/a.rs` are one file on Windows and on macOS by default, names that differ
   only by Unicode normalization collide on macOS, and Windows refuses or rewrites reserved names and some
@@ -461,8 +462,9 @@ never deleted].
   file under pe-sdk's and the script's `src` (sources and `include!`d files) to its forward-slash name (the script's also by the relative path
   cargo passes), and the Windows lamp became aaf59021, Linux's bytes [V]; the identity test refuses a `\` beside
   `src` in a module (it fails without the remap). A module brought in with `#[path]` from outside `src` is not
-  covered; the module-hash comparison (6.2) reports it as a build fault, not a desync, which @coordinator-opus
-  accepted (m2dbeac2cdda2). The flags grow with the file count: 301 files
+  covered by the remaps; it is refused by the dep-info check (6.2b), on every machine alike. (Before the
+  build-asymmetry ruling, the module-hash comparison reported it as a build fault, which @coordinator-opus had
+  accepted, m2dbeac2cdda2; under the ruling a build only some machines pass splits the session, 6.2 step 3.) The flags grow with the file count: 301 files
   make 114,652 characters on Windows, past the 32,767 a Windows variable is said to hold, and the build still works
   and gives the same module (std passes its own environment block; cargo moves a long rustc command line into an
   argument file) [V `tests/lamp.rs`, `a_script_with_many_files_builds_the_same_module`; @shader-reviewer's Low,
@@ -481,7 +483,9 @@ never deleted].
   cannot read, which the author's own build would otherwise still see (@shader-reviewer's Low 1) [V the same file,
   `pack_refuses_a_link_under_src`, with a junction on Windows].
 - **Reproducibility is a requirement, not an assumption:** two machines' builds of one source must give the same
-  bytes, or their states differ and the hash tree finds it. Shown so far for six dependency-free modules on two
+  bytes, or their states differ and the hash tree finds it. And every member must be able to build every script:
+  a member whose build fails splits off (6.2 step 3, the user's ruling m327e1d2d1222), so 6.2b's prevention keeps
+  a build a function of the source and the build identity alone. Shown so far for six dependency-free modules on two
   x86-64 machines only [V file 03]. The M2 acceptance (same bytes on all four hosted platforms) is the test.
 
 ### 4.3 The sandbox
@@ -635,7 +639,7 @@ after every float operation is not needed.
      refusal is a stated invariant with its own test.
   3. **The pass is part of the build's identity:** its version is pinned under the SDK hash in `CommitScript`, and
      its output is byte-deterministic, or fuel and trap points differ between machines (6.2 step 3 already makes a
-     differing module a build fault).
+     differing module a failed build, `Mismatch`).
   4. **Flush-to-zero:** MXCSR FTZ/DAZ or FPCR.FZ changes non-NaN results. WS-state's floating-point guard must
      cover the thread that runs wasm, at every entry into a guest (N11). The call is
      `pe_core::fpenv::check_and_reset() -> bool` (`crates/pe-core/src/fpenv.rs:16`, on main; @vdw-physics,
@@ -760,25 +764,41 @@ where `n` counts the spawner's *applied* spawns in that frame (a discarded call 
      duration in seconds, 2 s by default, never a frame count; the tick rate is per world, 60 Hz by default,
      md4b42d16d9df), it rolls
      back to `activate_at` and replays with the new module. Its objects jump once to the new behaviour.
-3. **A build can lag, never diverge** (@chunks-reviewer on world-model r7). A machine never runs a module unless
-   all of these hold; otherwise it is a **build fault on that machine**, and the module is never run there:
-   - its toolchain hash and SDK hash equal the row's;
-   - the build succeeded and the module passed validation and instrumentation;
+3. **Every member builds what its line activates; a slow build lags, a failed one splits off** (user rulings m327e1d2d1222, mbd847a64c831, m9c280fd75b82; @coordinator-opus m979ee4babb0f, m4a1765d8bb25).
+   A machine never runs a module unless all of these hold:
+   - its build identity (6.2b) is the session's, and its toolchain hash and SDK hash equal the row's;
+   - the build succeeded within the memory cap (6.2a item 5), read nothing outside its archive and pe-sdk (the
+     dep-info check, 6.2b), and the module passed validation and instrumentation;
    - its manifest equals the one the author's build declared (the declared components in the row);
    - its module hash equals `author_module`. The hash is of the metered bytes, which are what runs
      (`runtime::Script::module_hash`, `pe_core::Hash::of("pe.logic.module", metered)`), so it covers the pass's version too.
 
-   On a build fault the machine keeps predicting with the old module, never votes for a cut at or past
-   `activate_at`, and reports the fault with both hashes. It cannot follow the world past that frame until the
-   cause is fixed (for example by fetching the pinned toolchain, D75), so it lags; it never computes a state of its
-   own. If the author's build is the odd one (a module nobody reproduces, or a source that does not compile),
-   every other machine faults, and with activation at the commit's own frame finality would stop for the whole
-   world. 6.2a's proposal closes that: a module activates only once a quorum has attested that it built it.
+   - **A slow build is never a failure** (m9c280fd75b82, "no limit"). A machine whose build is still running lags
+     for as long as the build takes: it keeps predicting with the old module, and it does not vote for a cut at or
+     past `F` until it has the module. Before the deadline `D` it simply has not attested (6.2a). No timer stops a
+     slow compiler, no deadline splits a slow machine, and slowness is never posted as a failure.
+   - **A failed build** is posted as `BuildFailed` (6.2a item 2) with its reason, and only after the local retries
+     of 6.2b (a `Local` failure is retried twice, a `Mismatch` rebuilt once from a clean folder), since under the
+     ruling posting it can cost the member the session. If its line activates the version anyway (a quorum
+     attested), a member that failed to build it **splits off at once** (Q2 (a)): no grace period. A member that fell
+     behind and fails to build a version already active does the same. The split is the member's own leave, posted
+     by its replica (world-model.md 2.4; in M1 it leaves the session): pe-world records the failure and never removes
+     a member itself (@world-model m05277f3e8fec). If the line voids the version, nobody splits.
+   - **A joining machine** builds every active version before it becomes a member, with no deadline (m4a1765d8bb25).
+     A joiner whose build of an active version fails does not become a member, and is told why.
+   - **The author** (Q1 (c)): when its commit is voided, it is told who could not build it and why (`BuildFailed`'s
+     reason, or `Unattested`); its source stays intact and re-committable. It may then choose to leave and carry on
+     with the script on a line of its own, where it re-commits as the only voter (in M1: end the session). Nothing
+     splits automatically over a voided commit.
+   - **No machine needs a compiler-less path:** every member must run the build service (Q3; no watch-only mode).
+
+   If the author's build is the odd one (a module nobody reproduces, or a source that does not compile), no quorum
+   attests and 6.2a voids the commit, at the deadline or as soon as the quorum is unreachable.
 
 From the replica's side a pending module is the same thing as a late entry: the frames since `activate_at` are a
 prediction until it arrives [I; file 13, A.4].
 
-### 6.2a Activation by attestation (a proposal, for @design-reviewer and @coordinator-opus)
+### 6.2a Activation by attestation
 
 **The problem** (@coordinator-opus m88a0d579704e): with activation at the commit's own frame, one author with
 commit rights can stop finality for everyone. A source that does not compile, or an `author_module` hash the author
@@ -802,6 +822,14 @@ author can stop finality, and the outcome is identical on every machine.
    checks against the row posts `AttestBuild { script, version: V, module: Hash }`, an entry stamped with its frame
    like any other. It needs no edit right, only voter status at `c`. The commit counts as its author's
    attestation, stamped `c`, if the author is in the voter list.
+   **A failed build is an entry too** (6.2 step 3; pe-world: @world-model, reviewer @chunks-reviewer): after its
+   local retries a voter posts `BuildFailed { script, version: V, reason, toolchain, sdk, module: Option<Hash> }`.
+   The reason is an enum, `Compile`, `Refused` (6.2b's dep-info check), `Cap`, `Mismatch` or `Local`, plus the
+   hashes, **never compiler output**: the entry goes to every member and stays in the log, and a rustc message can
+   carry local paths. One per voter, counted against the quorum like an attestation, in these orders: a later
+   success by the same voter supersedes its failure while the commit is pending; a failure after a success is
+   refused; nothing changes a void. A failure for a version that is already active is accepted as a record only:
+   it is the log's statement that this member split off (6.2 step 3), which the notices read.
 3. **Activation frame `F`:** the least frame `f` such that at least `q` distinct voters at `c` have a counted
    attestation stamped at or before `f` (agreement.md: `t = floor((n-1)/3)`, `q = floor((n+t)/2) + 1`, over the
    voters at `c`); that is, the `q`-th smallest stamp among the counted attestations, one per voter
@@ -830,14 +858,29 @@ author can stop finality, and the outcome is identical on every machine.
    T_build` is divergence.md 4.2's wait for one module, computed from the row's length (4.1a), so a larger source
    gets a longer deadline: the lamp 23 s, so 46 s; a 256 KiB source 284 s, so 568 s [I; the factor 2 is a margin,
    accepted by @coordinator-opus mf14ce3154bb0]. The constants are divergence.md's: `W_fg` = 2 s, `R_thin` = 1,000
-   B/s, `T_build` = 20 s; pe-world mirrors them in integer milliseconds.
-5. **One build budget everywhere** (@design-reviewer's Low 2, adopted by @coordinator-opus m5b413c4e098f): the
-   build service runs every build under the same caps, and a machine attests only a build that stayed within them.
-   Otherwise a source crafted to build only on big or fast machines could activate with the help of `t` faulty
-   attesters while smaller honest machines cannot follow. Proposed: **1 GiB peak committed memory** for the whole
-   build (cargo, rustc and rust-lld together, a Windows job object's `JobMemoryLimit`, a cgroup's `memory.max` on
-   Linux [I]) and **60 s wall time**. Measured on this desktop, clean builds with the service's flags, n=3,
-   median [min-max] [V shared machine, idle priority, `spikes/out/iter-bench/build-budget/`,
+   B/s, `T_build` = 20 s; pe-world mirrors them in integer milliseconds. A machine still building at `D` has simply
+   not attested: the deadline voids the commit, never the machine (6.2 step 3). At n = 2 a missing attestation
+   therefore voids at `D` as `Unattested`, and Q1 (c) applies.
+   **An unreachable quorum voids at once** (the shared void rule, for `BuildFailed` and for Leave; @coordinator-opus
+   m979ee4babb0f, @fable-reviewer): in `end_frame(f)`, after the activation test and before the deadline test, the
+   commit is voided as `QuorumUnreachable` when the counted attestations, plus the voters at `c` who are still
+   members and have neither attested nor failed, number fewer than `q`. At n = 2 the first `BuildFailed` voids at
+   once. A leave (world-model.md 2.4) keeps the voters at `c`, an attestation the leaver gave before leaving still
+   counts, and the leaver's own pending commit voids at activation as `AuthorRevokedAtActivation` (@world-model,
+   m53bbf128d631). **This is a policy, not a necessity:** a failure can be superseded by a later success, and
+   voiding early gives that chance up for a fast, certain answer that is the same on every machine.
+5. **One memory budget everywhere; no time limit** (Q4 (b) and m9c280fd75b82; @design-reviewer's Low 2, adopted by
+   @coordinator-opus m5b413c4e098f, for the memory cap). The build service runs every build under **1 GiB peak
+   committed memory** for the whole build (cargo, rustc and rust-lld together, a Windows job object's
+   `JobMemoryLimit`, a cgroup's `memory.max` on Linux [I]), with the job count pinned (6.2b) so the cap measures the
+   same build on every machine, and a machine attests only a build that stayed within it. Otherwise a source crafted
+   to build only on big machines could activate with the help of `t` faulty attesters while smaller honest machines
+   cannot follow. **The cap is a margin, not a removal** (@fable-reviewer): Windows and Linux count memory
+   differently, so a source sitting at 1 GiB can pass on one machine and fail on another [I]. **There is no
+   wall-time cap:** a slow build lags (6.2 step 3). **The author's margins** keep honest scripts far from both: the
+   editor refuses to commit a script whose own build took over 15 s or peaked over 512 MiB on the author's machine,
+   and says why. They protect honest authors only. Measured on this desktop, clean builds with the service's flags,
+   n=3, median [min-max] [V shared machine, idle priority, `spikes/out/iter-bench/build-budget/`,
    `scripts/iter_bench_build_budget.py`]:
 
    | guest | source | peak, whole build | peak, largest process | wall |
@@ -845,21 +888,20 @@ author can stop finality, and the outcome is identical on every machine.
    | lamp (with pe-sdk) | 780 B | 105.6 MiB [105.6-105.9] | 99.6 MiB | 0.52 s [0.51-0.60] |
    | 6.4k-line guest (`logic_mono`) | 188,839 B | 148.5 MiB [148.5-149.1] | 142.3 MiB | 1.28 s [1.25-1.56] |
 
-   1 GiB is about 7 times the 6.4k-line guest's peak, and 60 s about 47 times its build time, so a machine ten
-   times slower than this desktop still has a margin of 4.7 [I]. A wall-time cap is the one part that is not the
-   same on every machine. A slow machine that exceeds it only withholds its own attestation, and the deadline
-   (item 4) bounds the rest. Neither cap is built yet.
+   1 GiB is about 7 times the 6.4k-line guest's peak. Peak memory moves with the job count (the 6.4k-line guest
+   142.8, 151.4 and 157.1 MiB at 1, 4 and 16 jobs; the module's bytes do not move) [V
+   `spikes/out/iter-bench/build-asym/`]. Neither the cap nor the margins are built yet.
 6. **A second commit while one is pending** is refused as `Stale` with the pending entry as `winner`: the author
    waits for activation or the void [I; the simplest v0 rule, kept for 6.5].
 
 **Why it meets the requirements [I]:**
 - Before `F`, every machine runs the current version, which they all have, so finality never waits on the new
-  build. After `F`, at least `q` voters have the module, so a quorum can compute and vote. A slow or broken minority
-  only holds its own vote, as today.
+  build. After `F`, at least `q` voters have the module, so a quorum can compute and vote. A slow minority holds its
+  own vote until it has built; a member whose build fails splits off (6.2 step 3).
 - `q` attestations include at least `q - t >= t + 1` honest members (`q = 3`, `t = 1` at `n = 4`), so the module was
   built by an honest member. `t` faulty members attesting to a module nobody can build cannot reach `q`.
-- A module nobody reproduces is never attested, so it never activates; the deadline voids it, and the void is a
-  function of the final log alone, identical everywhere.
+- A module nobody reproduces is never attested, so it never activates; the deadline or the unreachable quorum
+  voids it, and the void is a function of the final log alone, identical everywhere.
 
 **What changes for the author: (i), provisional, pending the user** (@coordinator-opus mf14ce3154bb0, asking the
 user through @liaison-opus, since it reads Q3 differently). Q3 has the
@@ -882,12 +924,68 @@ and pe-replica); the 0.5-2 s above is inferred.
   frames after `c` would then depend on entries stamped after them, which no other part of the world does.
 
 **Needs from others:**
-- @world-model: the pending row, `AttestBuild`, activation and the re-key at `F`, and the void at the deadline. The
-  re-key moves from the commit's transaction to `F`'s.
+- @world-model: the pending row, `AttestBuild`, activation and the re-key at `F`, and the void at the deadline
+  (built, main c3962919 and 1d401fde). Under the build-asymmetry rulings: `BuildFailed`, the shared void rule
+  (`QuorumUnreachable`), the void notice to the author (Q1 (c)), and the split of a member that fails an activated
+  version (Q2 (a); in M1 a leave).
 - @engine-architect (S3): the voter set at `c` and `q` for the count.
 - @diverge-eng: `T_module` from the row, which 4.1a already provides.
 
 The runner needs nothing new: the lagging binding of 6.2 step 2 applies from `F` instead of `activate_at`.
+
+### 6.2b Prevention: a build is a function of its source and the build identity
+
+Under 6.2 step 3 a build that one member passes and another fails splits the session, so the build service makes
+a build depend on nothing but the version V and the **build identity B**, and the session compares B at join.
+Then a failure is the same on every machine, 6.2a voids the commit, and nobody splits. The analysis, with its
+measurements: the build-asymmetry draft, section 3 (@iter-bench and @engine-architect, revised to
+@fable-reviewer's view). **Not built yet:** @iter-bench builds it in slices, reviewed by @shader-reviewer.
+
+- **B** = the toolchain's identity (the release, rustc commit and LLVM version, plus the hash of the wasm32 std
+  component; D75), pe-sdk's source hash, a build-service version (template, profile, flags, remaps; bumped like
+  `RESULT_VERSION`) and the metering pass's version. pe-app's session `BUILD` carries it, so genesis refuses a
+  member whose B differs, by name. Players on different engine versions therefore cannot play together, as today.
+- **The toolchain by absolute path:** the service runs the pinned toolchain's own `cargo` and `rustc` (`CARGO`,
+  `RUSTC`), never a rustup proxy, with `RUSTUP_TOOLCHAIN` removed. Measured: the service's command through the
+  proxy, from a folder outside the repo, silently built with another toolchain (this PC's default, nightly 1.94)
+  and gave other module hashes; by absolute path, the pinned toolchain and a minimal copy of it gave the expected
+  hashes [V `scripts/iter_bench_toolchain_min.py`, `spikes/out/iter-bench/toolchain/`]. The service's check that a toolchain
+  folder holds no `rustup` is only a heuristic (a proxy or a package manager's shim copied elsewhere passes it); the
+  actual guard is D75's pinned toolchain hash, checked before the toolchain is used (@shader-reviewer, on v7-r1). The minimal set is
+  439.8 MiB on disk, 100.5 MiB as an xz download (Windows x86-64; the full rustup install is 1,333 MiB) [V].
+- **The child's environment:** cleared, then a fixed list (the temp folder, `SYSTEMROOT` on Windows) [I]. Its
+  working directory is the unpacked crate, `CARGO_HOME` a folder the service owns, and `build_archive` refuses a
+  work folder with a cargo configuration (`.cargo/config.toml`) in any folder above it. A `rust-toolchain` file
+  there can no longer matter, since no proxy runs. Measured: an environment
+  variable read by `option_env!`, and an `[env]` entry in a `.cargo/config.toml` in the working folder, each
+  changed the module hash [V `scripts/iter_bench_build_asym.py`, `spikes/out/iter-bench/build-asym/`]. Inside the
+  archive neither can occur: 4.1a's paths allow only `src/**.rs`.
+- **The dep-info check:** after the build, the service reads rustc's dep-info files and refuses the module
+  (`Refused`) if any file it lists lies outside the unpacked `src/` (or pe-sdk's `src/` for pe-sdk) or any
+  `env-dep` line appears. rustc records every file a crate read (`include!`, `include_str!`, `include_bytes!`,
+  `#[path]` modules) and every variable it asked for, set or not [V `build-asym/depinfo.log`]. It refuses what a
+  script tried to read, not what it got, so it refuses on every machine.
+- **The job count pinned** (4 [I]): the bytes do not depend on it, peak memory does (item 5).
+- **Deterministic compile limits:** `-F long_running_const_eval`, so a const-eval loop is the same compile error
+  everywhere; a raised `#![recursion_limit]` or `#![type_length_limit]` is refused [I].
+- **Retries before `BuildFailed`:** a `Local` failure (no compiler diagnostic: disk, antivirus, a killed process)
+  twice; a `Mismatch` once, from a clean folder and an empty target directory.
+- **A bug bundle:** a `Compile` or `Refused` failure on a version another member attested, or a `Mismatch` that
+  survives the clean rebuild, means prevention has a gap. The machine saves the archive, B, both module hashes,
+  the full compiler output and dep-info, the toolchain's file hashes and the OS and CPU locally, and tells the
+  user where. Nothing of it goes into the entry.
+- **Permanent tests** (`tests/build_isolation.rs`, each with a red control): an environment variable, a cargo
+  configuration and a `rust-toolchain` file around the build leave the hash unchanged; `option_env!`, `env!`, an
+  outside `include_bytes!` and a `#[path]` module outside `src` are `Refused`; 1 and 4 jobs give the same hash.
+- **Open, for @coordinator-opus [I]:** saved worlds after an engine update whose B differs (their rows name a
+  toolchain no member has). The draft recommends re-committing each script with the same source and the new
+  toolchain, attested as usual, and fetching the old toolchain by hash only for a script that fails to migrate.
+  And a canary in B (each install's module hashes for the lamp and `tally`), so a host whose compiler emits other
+  bytes is refused at join.
+
+What prevention leaves: a local failure that survives its retries, the memory cap's margin, a host whose
+compiler differs in a way not yet measured (only Windows and Linux on one x86-64 PC so far [V]), a compiler crash
+on one host, and a dishonest author aiming at a limit. Those split a member off, as ruled.
 
 ### 6.3 Costs, from measured numbers
 
