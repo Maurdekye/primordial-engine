@@ -123,6 +123,9 @@ pub struct Timeout {
     pub view: u64,
     pub high_qc: Qc,
     pub voter: MemberKey,
+    /// Not signed: the member's chain heads beyond the final cut, as a vote's (a hint; a wrong one costs a fetch).
+    /// An abstaining member's timeout carries its heads, so the next leader learns what it lacks (agreement.md 3).
+    pub heads: Vec<pe_seams::ChainHead>,
     /// Over (line, view, high_qc.view).
     pub sig: Signature,
 }
@@ -258,6 +261,10 @@ pub enum Mutation {
     RateLimitRemoved,
     /// Accept a cut's frame however far beyond the voter's present.
     HorizonRuleOff,
+    /// The outage rule's voter side off: vote for a cut that omits an own entry stamped below its frame.
+    NoAbstention,
+    /// The outage rule's leader side off: name a cut's frame whatever backlog other members claim.
+    NoBacklogCap,
 }
 
 /// The stored block, with what came with it.
@@ -348,8 +355,15 @@ pub struct Core {
     votes_by_voter: BTreeMap<(u64, MemberKey), (BlockId, Hash)>,
     votes: HashMap<BlockId, VoteSet>,
     split_reported: BTreeSet<BlockId>,
-    /// Views in which a root split was seen: abandoned at once, and their timeout does not grow the next one.
-    split_views: BTreeSet<u64>,
+    /// Views abandoned at once, whose timeout does not grow the next one: a root split was seen, this member
+    /// abstained (the outage rule, agreement.md 3), or more than n - q members timed out in it, so it can't be
+    /// certified.
+    quick_views: BTreeSet<u64>,
+    /// Views whose timeout doesn't grow the next one, though they run to their timer: this member led them and only
+    /// its backlog cap stopped its cut (the outage rule).
+    spared_views: BTreeSet<u64>,
+    /// The chain heads this member's next timeouts carry (set by the node before each tick).
+    timeout_heads: Vec<pe_seams::ChainHead>,
     timeouts: BTreeMap<u64, BTreeMap<MemberKey, (u64, Signature)>>,
     tcs: BTreeMap<u64, Tc>,
 
@@ -455,7 +469,9 @@ impl Core {
             votes_by_voter: BTreeMap::new(),
             votes: HashMap::new(),
             split_reported: BTreeSet::new(),
-            split_views: BTreeSet::new(),
+            quick_views: BTreeSet::new(),
+            timeout_heads: Vec::new(),
+            spared_views: BTreeSet::new(),
             timeouts: BTreeMap::new(),
             tcs: BTreeMap::new(),
             view: 1,
@@ -724,8 +740,11 @@ impl Core {
         let v = tc.view;
         self.tcs.entry(v).or_insert(tc);
         if v >= self.view {
-            // A view abandoned for a root split is no sign of slow links: it doesn't grow the timeout.
-            if !self.split_views.contains(&v) {
+            // A view abandoned at once (a root split, an abstention, or no certificate possible) is no sign of slow
+            // links: it doesn't grow the timeout.
+            // A spared view counts only if this member didn't propose in it after all (@design-reviewer's L1).
+            let spared = self.spared_views.contains(&v) && self.proposed_view != v;
+            if !self.quick_views.contains(&v) && !spared {
                 self.consecutive_timeouts = self.consecutive_timeouts.saturating_add(1);
             }
             self.enter(v + 1, now);
@@ -825,7 +844,8 @@ impl Core {
         self.timeouts.retain(|tv, _| *tv + 1 >= v && *tv >= cv);
         self.tcs.retain(|tv, _| *tv + 1 >= v);
         self.proposed_in.retain(|(pv, _), _| *pv >= cv);
-        self.split_views.retain(|sv| *sv + 1 >= v);
+        self.quick_views.retain(|sv| *sv + 1 >= v);
+        self.spared_views.retain(|sv| *sv + 1 >= v);
         self.orphans.retain(|(pv, _), _| *pv >= cv);
         self.pending_votes.retain(|_, pv| pv.view >= cv);
         self.verdicts.retain(|c, _| c.height >= h);
@@ -1118,7 +1138,7 @@ impl Core {
             self.events.push(CoreEvent::RootSplit { block: v.block, roots });
             // Abandon the view at once (L4', coordinator m0eb22d90561e): each repair step then costs about a link
             // delay, not a timeout. A timeout is always safe.
-            self.split_views.insert(v.view);
+            self.quick_views.insert(v.view);
         }
         Ok(())
     }
@@ -1148,6 +1168,10 @@ impl Core {
         if count >= self.q {
             let timeouts = set.iter().map(|(k, (hv, s))| (*k, *hv, *s)).collect();
             self.note_tc(Tc { view: t.view, timeouts }, now);
+        } else if t.view == self.view && count > self.cfg.members.len() - self.q {
+            // No certificate is possible in this view any more (a member never votes after timing out): time out at
+            // once. A timeout is always safe. At n = 2 that is the other member's single timeout, an abstention.
+            self.quick_views.insert(t.view);
         } else if t.view > self.view && count > self.faults_tolerated() {
             // Catch up (a member that missed a certificate while cut off): t + 1 members timed out in a later view,
             // so an honest member is there. Join it and time out at once; that only gives up voting in it.
@@ -1166,13 +1190,14 @@ impl Core {
 
     /// Advance on time: time out the view when its deadline passes.
     pub fn tick(&mut self, now: HostTime, signer: &dyn Signer) {
-        let due = now >= self.deadline() || self.split_views.contains(&self.view) || self.join_view == self.view;
+        let due = now >= self.deadline() || self.quick_views.contains(&self.view) || self.join_view == self.view;
         if self.timed_out < self.view && due && !self.mutated(Mutation::NoTimeouts) {
             self.timed_out = self.view;
             let t = Timeout {
                 view: self.view,
                 high_qc: self.high_qc.clone(),
                 voter: self.me,
+                heads: self.timeout_heads.clone(),
                 sig: signer.sign(&timeout_bytes(self.cfg.line, self.view, self.high_qc.view)),
             };
             self.out.push((To::All, Msg::Timeout(t.clone())));
@@ -1200,6 +1225,23 @@ impl Core {
             self.note_tc(Tc { view: t.view, timeouts }, now);
         }
         Ok(())
+    }
+
+    /// The chain heads this member's timeouts carry from now on.
+    pub fn set_timeout_heads(&mut self, heads: Vec<pe_seams::ChainHead>) {
+        self.timeout_heads = heads;
+    }
+
+    /// Abstain in the current view (the outage rule, agreement.md 3): time it out at the next tick, without growing
+    /// the timeout. A timeout is always safe.
+    pub fn abstain(&mut self) {
+        self.quick_views.insert(self.view);
+    }
+
+    /// The current view's timeout, if it comes, doesn't grow the next one (a leader whose backlog cap stops its cut:
+    /// no cut possible isn't a failed leader).
+    pub fn spare_view(&mut self) {
+        self.spared_views.insert(self.view);
     }
 
     /// If this member leads the current view and has not proposed in it: what its proposal builds on.

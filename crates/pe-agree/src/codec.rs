@@ -239,6 +239,10 @@ pub fn encode(m: &Wire) -> Vec<u8> {
             w.u64(t.view);
             w.qc(&t.high_qc);
             w.b32(&t.voter.0);
+            w.u32(t.heads.len() as u32);
+            for h in &t.heads {
+                w.head(h);
+            }
             w.sig(&t.sig);
         }
         Wire::Core(Msg::Report(rp)) => {
@@ -313,8 +317,13 @@ pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
             let view = r.u64()?;
             let high_qc = r.qc()?;
             let voter = MemberKey(r.b32()?);
+            let n = r.count(MAX_HEADS)?;
+            let mut heads = Vec::with_capacity(n);
+            for _ in 0..n {
+                heads.push(r.head()?);
+            }
             let sig = r.sig()?;
-            Wire::Core(Msg::Timeout(Timeout { view, high_qc, voter, sig }))
+            Wire::Core(Msg::Timeout(Timeout { view, high_qc, voter, heads, sig }))
         }
         T_REPORT => {
             let verdict = r.self_test()?;
@@ -416,6 +425,12 @@ mod tests {
                 view: 8,
                 high_qc: qc,
                 voter: MemberKey([6; 32]),
+                heads: vec![ChainHead {
+                    chain: ChainId(h(b"d")),
+                    author: MemberKey([4; 32]),
+                    seq: 9,
+                    entry: EntryRef(h(b"y")),
+                }],
                 sig: Signature([2; 64]),
             })),
             Wire::Core(Msg::Fetch(BlockId(h(b"f")))),

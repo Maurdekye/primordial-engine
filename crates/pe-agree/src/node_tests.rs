@@ -81,6 +81,10 @@ struct Sim {
     partition: Option<(usize, i64, i64)>,
     /// A member cut off for good (as if crashed): every message to or from it is lost.
     cut_off: Option<usize>,
+    /// (from, to, from ms, until ms): one direction of one link is down; what `from` sends `to` then is lost.
+    link_down: Option<(usize, usize, i64, i64)>,
+    /// (from, to, extra ms, jitter ms): one direction of one link is slower by extra plus up to jitter ms.
+    slow_link: Option<(usize, usize, i64, i64)>,
     /// The world's frame clock.
     clock: Clock,
     /// (hands, edits): entries a member submits each frame, on one chain (overrides `every_ms` when set).
@@ -113,6 +117,10 @@ struct Sim {
     /// Count range refetches each member sends for this chain (decodes protocol messages; off by default).
     count_ranges: Option<pe_seams::ChainId>,
     range_asks: Vec<usize>,
+    /// Per member: also submit one edit every this many frames, on the per-frame chain (0: never).
+    edit_every: Vec<u64>,
+    /// Per member: the edits submitted through `edit_every`, with their stamps.
+    edits: Vec<Vec<(EntryRef, Frame)>>,
 }
 
 impl Sim {
@@ -146,6 +154,8 @@ impl Sim {
             vote_results: Vec::new(),
             partition: None,
             cut_off: None,
+            link_down: None,
+            slow_link: None,
             clock: Clock(60),
             per_frame: vec![None; n as usize],
             last_frame: vec![None; n as usize],
@@ -162,6 +172,8 @@ impl Sim {
             old_rule_frames: vec![0; n as usize],
             count_ranges: None,
             range_asks: vec![0; n as usize],
+            edit_every: vec![0; n as usize],
+            edits: vec![Vec::new(); n as usize],
             seq: 0,
             now: 0,
             rng: Rng(seed),
@@ -191,6 +203,14 @@ impl Sim {
             {
                 continue;
             }
+            if let Some((a, b, from, until)) = self.link_down
+                && i == a
+                && j == b
+                && self.now >= from * MS
+                && self.now < until * MS
+            {
+                continue;
+            }
             if self.cut_off.is_some_and(|k| i == k || j == k) || self.now < self.blackout_until {
                 continue;
             }
@@ -208,7 +228,13 @@ impl Sim {
             }
             let (a, b) = self.delay[i];
             let (c, d) = self.delay[j];
-            let at = sent + (self.rng.range(a, b) + self.rng.range(c, d)) / 2 * MS;
+            let mut at = sent + (self.rng.range(a, b) + self.rng.range(c, d)) / 2 * MS;
+            if let Some((x, y, extra, jitter)) = self.slow_link
+                && i == x
+                && j == y
+            {
+                at += (extra + self.rng.range(0, jitter)) * MS;
+            }
             self.seq += 1;
             self.net.insert((at, self.seq), (i, j, o.lane, o.bytes));
         }
@@ -251,6 +277,13 @@ impl Sim {
                     let s = self.nodes[i].submit(e).expect("own per-frame entry refused");
                     self.submitted[i].push(s.id());
                     self.submitted_at[i].push(present);
+                }
+                if self.edit_every[i] > 0 && present.0.is_multiple_of(self.edit_every[i]) {
+                    let e = self.builders[i].next_unsigned(Class::Edit, present, Bytes::from(vec![i as u8; 24]));
+                    let s = self.nodes[i].submit(e).expect("own edit refused");
+                    self.submitted[i].push(s.id());
+                    self.submitted_at[i].push(present);
+                    self.edits[i].push((s.id(), present));
                 }
             }
         } else if self.every_ms[i] > 0 && self.now > 0 && (self.now / MS) % self.every_ms[i] == 0 {
@@ -1498,4 +1531,292 @@ fn a_cut_off_the_grid_gets_no_honest_vote() {
     }
     eprintln!("off-grid proposals seen by member 1: {}; final cuts {}", proposed_off.len(), final_frames(&s, 1).len());
     assert!(!proposed_off.is_empty(), "member 0 never proposed off the grid: the test doesn't bite");
+}
+
+// Entries made during an outage (@item:primordial-engine/pe-agree-entries-made-during-an-outage-must-not-b; coordinator
+// md904d9b1a9c7): "delayed, never lost" holds for edits whatever the cause.
+
+/// Two members at 120 Hz, two hands a frame and an edit every 10 frames each, lose every message for `dark_ms` from
+/// 3 s. Returns the sim and the frames the blackout started and ended at.
+fn outage_run(dark_ms: i64, run_ms: i64, seed: u64) -> (Sim, Frame, Frame) {
+    outage_run_with(2, dark_ms, run_ms, seed, |_| {})
+}
+
+fn outage_run_with(n: u32, dark_ms: i64, run_ms: i64, seed: u64, f: impl Fn(&mut NodeConfig)) -> (Sim, Frame, Frame) {
+    let mut s = Sim::with(n, seed, f);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); n as usize];
+    s.edit_every = vec![10; n as usize];
+    s.run(3_000);
+    let from = s.clock.frame_at(HostTime(s.now)).unwrap();
+    s.blackout_until = s.now + dark_ms * MS;
+    s.run(3_000 + dark_ms);
+    let until = s.clock.frame_at(HostTime(s.now)).unwrap();
+    s.run(run_ms);
+    (s, from, until)
+}
+
+/// Late voids at member `i` of entries stamped in [from, until), as (hands, edits).
+fn outage_voids(s: &Sim, i: usize, from: Frame, until: Frame) -> (usize, usize) {
+    let edits: Vec<EntryRef> = s.edits.iter().flatten().map(|e| e.0).collect();
+    let stamped: Vec<EntryRef> = (0..s.nodes.len())
+        .flat_map(|a| s.submitted[a].iter().zip(&s.submitted_at[a]))
+        .filter(|(_, f)| **f >= from && **f < until)
+        .map(|(e, _)| *e)
+        .collect();
+    let late: Vec<EntryRef> =
+        s.voids(i).into_iter().filter(|v| v.1 == VoidReason::Late && stamped.contains(&v.0)).map(|v| v.0).collect();
+    let e = late.iter().filter(|v| edits.contains(v)).count();
+    (late.len() - e, e)
+}
+
+#[test]
+fn no_entry_made_during_a_ten_second_outage_is_voided_as_late() {
+    // The repro, @shader-lang's blackout test in pe-agree's sim (m118d7ea7bf46: 0-151 Late voids per run at n = 2).
+    for seed in [61, 62, 63, 64] {
+        let (s, from, until) = outage_run(10_000, 30_000, seed);
+        s.assert_same_final_log();
+        let firsts: Vec<Option<CutRef>> = (0..2)
+            .map(|i| {
+                s.events[i].iter().find_map(|e| match e {
+                    AgreeEvent::CutFinal { cut, .. } if cut.frame > until => Some(*cut),
+                    _ => None,
+                })
+            })
+            .collect();
+        let v: Vec<(usize, usize)> = (0..2).map(|i| outage_voids(&s, i, from, until)).collect();
+        let edits_final = (0..2)
+            .map(|a| {
+                s.edits[a]
+                    .iter()
+                    .filter(|(e, f)| s.nodes[0].entries_at(*f).is_some_and(|v| v.iter().any(|x| x.id() == *e)))
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        eprintln!(
+            "seed {seed}: dark {from:?}..{until:?}; first final after {firsts:?}; Late voids (hands, edits) {v:?}; edits final {edits_final:?} of {:?}; final frames {:?}",
+            s.edits.iter().map(|e| e.len()).collect::<Vec<_>>(),
+            (0..2).map(|i| s.final_frame(i)).collect::<Vec<_>>()
+        );
+        assert_eq!(v, vec![(0, 0); 2], "seed {seed}: entries made during the outage were voided as late");
+    }
+}
+
+#[cfg(feature = "mutants")]
+#[test]
+fn each_side_of_the_outage_rule_alone() {
+    // Which side does the work at n = 2 (a measurement; the red steps are the code-level ones).
+    use crate::core::Mutation;
+    for m in [Mutation::NoAbstention, Mutation::NoBacklogCap] {
+        for seed in [61, 62, 63, 64] {
+            let (s, from, until) = outage_run_with(2, 10_000, 30_000, seed, |c| c.mutation = Some(m));
+            s.assert_same_final_log();
+            let v: Vec<(usize, usize)> = (0..2).map(|i| outage_voids(&s, i, from, until)).collect();
+            eprintln!("{m:?} seed {seed}: Late voids (hands, edits) {v:?}");
+        }
+    }
+}
+
+/// Four members at 120 Hz, two hands a frame and an edit every 10 frames each; what member 3 sends member 0 is lost
+/// for 10 s from 3 s, so member 0 learns of member 3's entries only from the others' heads. Returns the sim and
+/// member 3's Late voids (hands, edits) at member 0 among entries stamped while the link was down.
+fn one_link_run(seed: u64, f: impl Fn(&mut NodeConfig)) -> (Sim, (usize, usize)) {
+    let mut s = Sim::with(4, seed, f);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 4];
+    s.edit_every = vec![10; 4];
+    s.link_down = Some((3, 0, 3_000, 13_000));
+    s.run(3_000);
+    let from = s.clock.frame_at(HostTime(s.now)).unwrap();
+    s.run(13_000);
+    let until = s.clock.frame_at(HostTime(s.now)).unwrap();
+    s.run(20_000);
+    s.assert_same_final_log();
+    let edits: Vec<EntryRef> = s.edits[3].iter().map(|e| e.0).collect();
+    let stamped: Vec<EntryRef> = s.submitted[3]
+        .iter()
+        .zip(&s.submitted_at[3])
+        .filter(|(_, f)| **f >= from && **f < until)
+        .map(|(e, _)| *e)
+        .collect();
+    let late: Vec<EntryRef> =
+        s.voids(0).into_iter().filter(|v| v.1 == VoidReason::Late && stamped.contains(&v.0)).map(|v| v.0).collect();
+    let e = late.iter().filter(|v| edits.contains(v)).count();
+    (s, (late.len() - e, e))
+}
+
+#[test]
+fn a_leader_missing_one_members_entries_caps_its_cut_below_them() {
+    for seed in [71, 72, 73] {
+        let (s, v) = one_link_run(seed, |_| {});
+        eprintln!(
+            "seed {seed}: member 3's Late voids (hands, edits) {v:?}; final frames {:?}",
+            (0..4).map(|i| s.final_frame(i)).collect::<Vec<_>>()
+        );
+        assert_eq!(v, (0, 0), "seed {seed}: member 3's entries voided as late");
+    }
+}
+
+#[cfg(feature = "mutants")]
+#[test]
+fn without_the_backlog_cap_a_leader_missing_one_members_entries_voids_them() {
+    use crate::core::Mutation;
+    for seed in [71, 72, 73] {
+        let (_, v) = one_link_run(seed, |c| c.mutation = Some(Mutation::NoBacklogCap));
+        eprintln!("NoBacklogCap seed {seed}: member 3's Late voids (hands, edits) {v:?}");
+    }
+}
+
+#[test]
+fn no_entry_made_during_a_ten_second_outage_of_four_members_is_voided_as_late() {
+    for seed in [81, 82, 83] {
+        let (s, from, until) = outage_run_with(4, 10_000, 30_000, seed, |_| {});
+        s.assert_same_final_log();
+        let v: Vec<(usize, usize)> = (0..4).map(|i| outage_voids(&s, i, from, until)).collect();
+        eprintln!(
+            "n = 4 seed {seed}: Late voids (hands, edits) {v:?}; final frames {:?}",
+            (0..4).map(|i| s.final_frame(i)).collect::<Vec<_>>()
+        );
+        assert_eq!(v, vec![(0, 0); 4], "seed {seed}: entries made during the outage were voided as late");
+    }
+}
+
+#[cfg(feature = "mutants")]
+#[test]
+fn each_side_of_the_outage_rule_alone_at_four_members() {
+    // At n = 4 three votes make a quorum, so an abstaining owner can't stop a cut that omits its backlog: the
+    // leader's cap must (measured: without it 1-8 edits per run void, seeds 81-83).
+    use crate::core::Mutation;
+    for m in [Mutation::NoAbstention, Mutation::NoBacklogCap] {
+        let mut total = 0;
+        for seed in [81, 82, 83] {
+            let (s, from, until) = outage_run_with(4, 10_000, 30_000, seed, |c| c.mutation = Some(m));
+            s.assert_same_final_log();
+            let v: Vec<(usize, usize)> = (0..4).map(|i| outage_voids(&s, i, from, until)).collect();
+            eprintln!("n = 4 {m:?} seed {seed}: Late voids (hands, edits) {v:?}");
+            total += v.iter().map(|(h, e)| h + e).sum::<usize>();
+        }
+        match m {
+            Mutation::NoAbstention => assert_eq!(total, 0, "the cap alone should hold at n = 4"),
+            _ => assert!(total > 0, "the control didn't bite: without the cap nothing was voided"),
+        }
+    }
+}
+
+#[test]
+fn a_claimed_backlog_never_sent_holds_cuts_back_once_and_only_for_the_wait() {
+    // @fable-reviewer's trap (coordinator md904d9b1a9c7): a member that claims entries and never sends them. Member 3
+    // crashes at 3 s; every other member is told (as by a vote's heads) that its chain reaches far beyond what they
+    // hold. Their cuts are capped at its last held stamp for at most the wait (the pending cap at the author's rate
+    // plus 1 s: 1,920 / 480 + 1 = 5 s at 120 Hz), then go on, and the claim doesn't hold them back again.
+    let mut s = Sim::new(4, 91);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 4];
+    s.run(3_000);
+    s.cut_off = Some(3);
+    let k3 = s.keys.key(3);
+    let e3 = (0..s.final_frame(0).0)
+        .rev()
+        .find_map(|f| s.nodes[0].entries_at(Frame(f)).and_then(|v| v.iter().find(|e| e.entry.author == k3).cloned()))
+        .expect("member 3 has a final entry");
+    let key = pe_log::ChainKey::of(&e3);
+    for i in 0..3 {
+        s.nodes[i].claim_for_test(k3, key, e3.entry.seq + 100_000);
+    }
+    let mut finals = Vec::new();
+    for t in (3_100..=20_000).step_by(100) {
+        s.run(t);
+        finals.push((t, s.final_frame(0)));
+    }
+    s.assert_same_final_log();
+    // The longest time member 0's final frame stood still after the claim.
+    let mut stood = 0;
+    let mut since = 3_000;
+    for w in finals.windows(2) {
+        if w[1].1 > w[0].1 {
+            since = w[1].0;
+        } else {
+            stood = stood.max(w[1].0 - since);
+        }
+    }
+    let late = s.final_frame(0).0 as i64 * 1_000 / 120;
+    eprintln!("claimed backlog never sent: final frame stood still at most {stood} ms; final at {late} ms of 20,000");
+    assert!(stood <= 6_500, "cuts held back {stood} ms, past the 5 s wait");
+    assert!(late >= 17_000, "finality didn't resume: final at {late} ms");
+}
+
+#[test]
+fn the_abstention_bound_keeps_each_own_entry_to_two_views_when_leaders_alternate() {
+    // @design-reviewer's L1: omissions alternate e1, e2, e1, e2, e1 over views 1-5; neither entry costs more than
+    // two views, and once e1's are used up nothing at or below it is abstained for again.
+    let mut b = crate::node::AbstainBook::default();
+    let mut used = std::collections::BTreeMap::<u64, usize>::new();
+    for (view, seq) in [(1, 5), (2, 7), (3, 5), (4, 7), (5, 5), (6, 7), (7, 3)] {
+        // Progress after every view here, so only the per-entry bound applies.
+        b.progressed(0);
+        if b.abstains(seq, view) {
+            assert!(b.note(seq, view));
+            *used.entry(seq).or_default() += 1;
+        }
+    }
+    assert_eq!(used, [(5, 2), (7, 2)].into_iter().collect(), "abstentions per own entry");
+    assert!(b.abstains(9, 8), "a later entry still gets its views");
+    // Without progress, at most two abstentions in all, whatever the entries.
+    let mut b = crate::node::AbstainBook::default();
+    let n = (1..=6).filter(|v| b.abstains(10 + v, *v) && b.note(10 + v, *v)).count();
+    assert_eq!(n, 2, "abstentions between two final cuts");
+}
+
+/// n = 2 at 120 Hz with two hands a frame each; what member 1 sends member 0 takes `extra` ms more, plus up to
+/// `jitter`. Returns the sim and the longest time member 0's final frame stood still after the first 3 s, in ms.
+fn slow_link_run(extra: i64, jitter: i64, seed: u64) -> (Sim, i64) {
+    slow_link_run_with(extra, jitter, seed, |_| {})
+}
+
+fn slow_link_run_with(extra: i64, jitter: i64, seed: u64, f: impl Fn(&mut NodeConfig)) -> (Sim, i64) {
+    let mut s = Sim::with(2, seed, f);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 2];
+    // B also makes an edit every 10 frames (@design-reviewer's L2): does an edit survive the slow link?
+    s.edit_every = vec![0, 10];
+    s.slow_link = Some((1, 0, extra, jitter));
+    let (mut last, mut since, mut worst) = (Frame(0), 3_000, 0);
+    for t in (100..=33_000).step_by(100) {
+        s.run(t);
+        let f = s.final_frame(0);
+        if f > last {
+            last = f;
+            since = t;
+        } else if t > 3_000 {
+            worst = worst.max(t - since);
+        }
+    }
+    s.assert_same_final_log();
+    (s, worst)
+}
+
+#[test]
+fn a_slow_link_above_the_lag_cap_still_finalizes() {
+    // @fable-reviewer's concern (coordinator m60983b248518): at n = 2, a sustained one-way delay from B to A above
+    // the lag means every cut A leads omits a fresh B entry, so B abstains in every view A leads, each time for a
+    // new entry. The final frame must keep advancing, fixed delay and jittering.
+    // The first two are above the lag cap (1 s); the third, below it, must void no edit.
+    for (extra, jitter) in [(1_200, 0), (900, 600), (500, 400)] {
+        for seed in [101, 102] {
+            let (s, worst) = slow_link_run(extra, jitter, seed);
+            let voids = s.voids(0).len();
+            let edits: Vec<EntryRef> = s.edits[1].iter().map(|e| e.0).collect();
+            let edit_voids = s.voids(0).iter().filter(|v| edits.contains(&v.0)).count();
+            let final_s = s.final_frame(0).0 as f64 / 120.0;
+            eprintln!(
+                "B -> A +{extra} ms (+0-{jitter} ms) seed {seed}: final stood still at most {worst} ms; final at {final_s:.1} s of 33; voids {voids}, of them edits {edit_voids} of {}",
+                edits.len()
+            );
+            assert!(final_s >= 25.0, "finality stalled: final at {final_s:.1} s");
+            if extra + jitter < 1_000 {
+                assert_eq!(edit_voids, 0, "an edit voided on a link below the lag cap");
+            }
+            assert!(worst <= 8_000, "the final frame stood still {worst} ms");
+        }
+    }
 }
