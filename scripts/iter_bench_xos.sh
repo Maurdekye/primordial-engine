@@ -3,7 +3,8 @@
 # service on Windows and on Linux (WSL) must be the same bytes.
 # Usage (Git Bash on Windows, repo root, each cargo phase under heavy.sh):
 #   scripts/iter_bench_xos.sh <rev> <out-dir> [windows|linux|compare|all]   (default all)
-# windows: runs the identity test at <rev> in a temporary worktree with its own target dir.
+# windows: runs the identity test at <rev> in a temporary worktree with its own target dir, deleted after a run
+#   that passes (set PE_XOS_KEEP=1 to keep it).
 # linux: streams `git archive <rev>` into WSL on stdin (no /mnt/c needed, so it works from Windows Session 0), unpacks
 #   it in WSL's own file system and runs the same test there with WSL's own target dir and ~/.cargo/bin toolchain.
 # compare: the two lamp modules' sha256 and both rustc versions, from the phases' logs. Exits 1 if they differ.
@@ -26,6 +27,8 @@ windows() {
     echo "windows bytes $(wc -c < "$tgt/$lamp_rel")"
   } | tee "$out/xos-windows.log"
   git worktree remove --force "$wt"
+  # A fresh target folder per run, never one another worktree used: delete it, or it piles up.
+  [ -n "${PE_XOS_KEEP:-}" ] || rm -rf "$tgt"
 }
 
 linux() {
