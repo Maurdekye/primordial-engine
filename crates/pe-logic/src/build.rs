@@ -35,6 +35,10 @@ pub enum BuildError {
     NoName,
     /// The script crate breaks a rule of 4.1: the line, and why.
     Manifest(String),
+    /// The source archive is not canonical, or a crate holds a file under `src` it cannot carry (4.1a).
+    Source(pe_world::script::SourceError),
+    /// A file of the crate or of the work folder could not be read or written.
+    Io(String),
 }
 
 impl std::fmt::Display for BuildError {
@@ -45,6 +49,8 @@ impl std::fmt::Display for BuildError {
             BuildError::NoModule(p) => write!(f, "no module at {}", p.display()),
             BuildError::NoName => f.write_str("the script's Cargo.toml has no package name"),
             BuildError::Manifest(e) => write!(f, "the script's crate is refused (logic.md 4.1): {e}"),
+            BuildError::Source(e) => write!(f, "the script's source is refused (logic.md 4.1a): {e}"),
+            BuildError::Io(e) => write!(f, "the build service's files: {e}"),
         }
     }
 }
@@ -195,6 +201,71 @@ fn src_files(dir: &Path) -> Vec<PathBuf> {
     walk(dir, Path::new("src"), &mut out);
     out.sort();
     out
+}
+
+/// The first line of the `Cargo.toml` [`build_archive`] writes; it deletes a work folder only if its manifest starts so.
+const TEMPLATE_MARK: &str = "# Written by pe-logic's build service from logic.md 4.1a's template; not the author's.";
+
+/// The canonical source archive of the script crate in `crate_dir` (logic.md 4.1a): every file under its `src`,
+/// packed by pe-world's [`pe_world::script::pack_source`]. Its `Cargo.toml` is not in it: [`build_archive`] writes
+/// one from the template. A file under `src` that the archive cannot carry is refused, not skipped (a file not
+/// ending `.rs`, an upper-case or otherwise non-portable name, a non-UTF-8 file): another machine would build
+/// without it, or not at all.
+pub fn pack(crate_dir: &Path) -> Result<Vec<u8>, BuildError> {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for rel in src_files(crate_dir) {
+        let parts: Vec<&str> = rel.components().filter_map(|c| c.as_os_str().to_str()).collect();
+        if parts.len() != rel.components().count() {
+            return Err(BuildError::Source(pe_world::script::SourceError::Path(rel.to_string_lossy().into_owned())));
+        }
+        let body =
+            std::fs::read(crate_dir.join(&rel)).map_err(|e| BuildError::Io(format!("{}: {e}", rel.display())))?;
+        files.push((parts.join("/"), body));
+    }
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+    pe_world::script::pack_source(&refs).map_err(BuildError::Source)
+}
+
+/// Builds a source archive (logic.md 4.1a, 4.2): checks it with pe-world's [`pe_world::script::source_files`], the
+/// function `CommitScript` applies, then unpacks it into `work_dir/script`, a fresh folder, beside a `Cargo.toml`
+/// written from the template (package `script`, edition 2024, the engine's pe-sdk at `sdk` the only dependency), and
+/// builds that with [`build`]. So no path of the author's machine and no manifest of the author's enters the module.
+///
+/// `work_dir` is the service's own: `work_dir/script` is deleted first, but only if it is missing or its
+/// `Cargo.toml` is one this function wrote. Keep `work_dir` short: 4.1a's paths are at most 128 bytes below it.
+pub fn build_archive(
+    archive: &[u8],
+    sdk: &Path,
+    work_dir: &Path,
+    target_dir: &Path,
+    offline: bool,
+) -> Result<Vec<u8>, BuildError> {
+    let files = pe_world::script::source_files(archive).map_err(BuildError::Source)?;
+    let dir = work_dir.join("script");
+    let io = |e: std::io::Error| BuildError::Io(format!("{}: {e}", dir.display()));
+    if dir.exists() {
+        let ours = std::fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|t| t.starts_with(TEMPLATE_MARK));
+        if !ours {
+            return Err(BuildError::Io(format!(
+                "{} exists and was not written by the build service; not deleting it",
+                dir.display()
+            )));
+        }
+        std::fs::remove_dir_all(&dir).map_err(io)?;
+    }
+    for (path, body) in &files {
+        let to = dir.join(path);
+        std::fs::create_dir_all(to.parent().unwrap_or(&dir)).map_err(io)?;
+        std::fs::write(&to, body).map_err(io)?;
+    }
+    let sdk_path = lexical(sdk).to_string_lossy().replace('\\', "/");
+    let manifest = format!(
+        "{TEMPLATE_MARK}\n[package]\nname = \"script\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [workspace]\n\n[lib]\ncrate-type = [\"cdylib\"]\npath = \"src/lib.rs\"\n\n[dependencies]\n\
+         pe-sdk = {{ path = \"{sdk_path}\" }}\n"
+    );
+    std::fs::write(dir.join("Cargo.toml"), manifest).map_err(io)?;
+    build(&dir, sdk, target_dir, offline)
 }
 
 /// The pe-sdk of the engine's own source tree, for callers that build from it (tests, the dev engine).
