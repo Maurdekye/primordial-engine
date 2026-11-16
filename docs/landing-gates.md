@@ -110,8 +110,8 @@ and are never built. The secret scan of the whole history finds nothing.
     `git config pe.gate.wrap "nice -n 19"` (idle priority, no slot; the audit builds nothing). Run the check
     before merging under the build-slot wrapper instead (`PE_GATE_WRAP='bash "<team folder>/heavy.sh"'`).
   * The hook, its trampoline and the gate put their temporary files (the gate exports the whole tree) in the
-    folder `git config pe.gate.tmpdir <folder>` names, when it exists (on Windows written `S:/like/this`), instead
-    of `TMPDIR`'s. The main clone keeps them off C: this way.
+    folder `git config pe.gate.tmpdir <folder>` names, when that is an absolute path to a folder that exists (on
+    Windows written `S:/like/this`), instead of `TMPDIR`'s. The main clone keeps them off C: this way.
   * Give the merge a long tool timeout, and never wrap it in `timeout`: that kills git but not the hook, and
     leaves the checkout half-applied. A git killed by other means leaves `.git/HEAD.lock` and
     `.git/refs/heads/main.lock` behind; remove them only once no git process runs in the clone.

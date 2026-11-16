@@ -92,8 +92,10 @@ else
 fi
 input="$input$old $new refs/heads/main
 "
-# Temporary files go to the folder git config pe.gate.tmpdir names, when it exists, as in the hook and the gate.
-gtmp=$(git config --get pe.gate.tmpdir) && [ -d "$gtmp" ] && export TMPDIR="$gtmp" TMP="$gtmp" TEMP="$gtmp"
+# Temporary files go to the folder git config pe.gate.tmpdir names (an absolute path to a folder that exists), as
+# in the hook and the gate.
+gtmp=$(git config --get pe.gate.tmpdir) &&
+  case $gtmp in /*|[A-Za-z]:/*) [ -d "$gtmp" ] && export TMPDIR="$gtmp" TMP="$gtmp" TEMP="$gtmp" ;; esac
 tmp=$(mktemp -d) || refuse "moving main with no temporary folder for its hook"
 trap 'rm -rf "$tmp"' EXIT
 git show "$from:scripts/hooks/reference-transaction" > "$tmp/hook" 2> /dev/null ||

@@ -321,6 +321,7 @@ fi
 # pe.gate.tmpdir: the gate run directly, and the hook through its trampoline, keep their temporary files in that
 # folder, not TMPDIR's. The audit's wrapper records what it sees: the three variables, and which of the
 # trampoline's copy of the hook and the hook's (or the hand-over's) copy of gate.sh lie there. Afterwards it is empty.
+# A relative path counts for nothing: the gate keeps TMPDIR's folder and writes nothing in the folder it names.
 gt="$tmp/gate-tmp"; mkdir -p "$gt"; if [ $win = 1 ]; then gt=$(cygpath -m "$gt"); fi
 cat > "$tmp/record.sh" << EOF
 #!/bin/sh
@@ -338,6 +339,13 @@ gate.sh" ] || [ -n "$(ls -A "$gt")" ]; then
     gate.sh run directly: exit $rc, saw: $(tr '\n' ' ' < "$tmp/seen.txt" 2> /dev/null), left: $(ls -A "$gt" | tr '\n' ' ')"
 fi
 rm -f "$tmp/seen.txt"
+git -C "$R" config pe.gate.tmpdir gate-tmp-rel; mkdir -p "$R/gate-tmp-rel"
+(cd "$R" && PE_GATE_WRAP="sh '$tmp/record.sh'" bash scripts/gate.sh --base main fine2) > "$tmp/gate-tmp-rel.log" 2>&1; rc=$?
+if [ $rc != 0 ] || [ ! -s "$tmp/seen.txt" ] || grep -q "gate-tmp-rel" "$tmp/seen.txt" || [ -n "$(ls -A "$R/gate-tmp-rel")" ]; then
+  tmp_bad="$tmp_bad
+    a relative pe.gate.tmpdir: exit $rc, saw: $(head -1 "$tmp/seen.txt" 2> /dev/null), left: $(ls -A "$R/gate-tmp-rel" | tr '\n' ' ')"
+fi
+rm -rf "$R/gate-tmp-rel" "$tmp/seen.txt"; git -C "$R" config pe.gate.tmpdir "$gt"
 git -C "$R" config pe.gate.wrap "sh '$tmp/record.sh'"
 hk merge -q --no-ff -m "land fine 2" fine2 > "$tmp/hook-tmp.log" 2>&1; rc=$?
 if [ $rc != 0 ] || [ "$(cat "$tmp/seen.txt" 2> /dev/null)" != "$want
