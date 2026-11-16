@@ -650,3 +650,57 @@ fn an_attestation_round_trips() {
     let t = attest_of(&commit(ASSET, None, 1, 1));
     assert_eq!(Transaction::decode(&t.encode()), Some(t));
 }
+
+fn leave_entry() -> pe_core::EntryRef {
+    pe_core::EntryRef(Hash([0x1e; 32]))
+}
+
+/// A commit pending across a 2 -> 1 leave (world-model.md 8; logic.md 6.2a): the leaver had not attested, so the
+/// quorum of the voters at `c` (2 of 2) can't be reached; it is voided at the leave, not at `D`, and the old version
+/// stays.
+#[test]
+fn a_commit_pending_across_a_2_to_1_leave_is_voided_at_the_leave() {
+    let mut f = fx();
+    with_v1(&mut f);
+    let base = f.w.modules()[&ASSET].version;
+    ok(&run(&mut f.w, &mut f.a, &commit(ASSET, Some(base), 2, 1)));
+    let pv = f.w.pending()[&ASSET].version;
+    let kb = TestKeys::new(1, 3).key(1);
+    let r = f.w.leave(kb, leave_entry(), Frame(1)).unwrap();
+    assert_eq!(r.voided, vec![(ASSET, pv, VoidKind::QuorumUnreachable, None)]);
+    assert_eq!(f.w.pending()[&ASSET].void, Some((Frame(1), VoidKind::QuorumUnreachable)));
+    assert_eq!(f.w.end_frame(Frame(1)), FrameEnd::default(), "nothing activates or voids again");
+    assert_eq!(f.w.modules()[&ASSET].version, base);
+}
+
+/// 3 -> 2 (quorum 2 of the 3 voters at `c`): an attestation the leaver gave before leaving still counts, and a
+/// commit the remaining voters can still attest is left pending.
+#[test]
+fn across_a_3_to_2_leave_the_leavers_attestation_counts_and_a_reachable_quorum_stays_pending() {
+    let keys = TestKeys::new(1, 3);
+    let (kb, kc) = (keys.key(1), keys.key(2));
+    assert_eq!(quorum(3), 2);
+    // The leaver attested before leaving: the commit activates at the frame's end.
+    let mut f = fx();
+    f.w.set_member(kc, perm::EDIT);
+    with_v1(&mut f);
+    let base = f.w.modules()[&ASSET].version;
+    let t = commit(ASSET, Some(base), 2, 1);
+    ok(&run(&mut f.w, &mut f.a, &t));
+    ok(&run(&mut f.w, &mut f.b, &attest_of(&t)));
+    assert!(f.w.leave(kb, leave_entry(), Frame(1)).unwrap().voided.is_empty());
+    assert_eq!(f.w.end_frame(Frame(1)).activated.len(), 1);
+    assert_ne!(f.w.modules()[&ASSET].version, base);
+    // The leaver had not attested, but C still can: pending until C attests, then it activates.
+    let mut f = fx();
+    f.w.set_member(kc, perm::EDIT);
+    with_v1(&mut f);
+    let base = f.w.modules()[&ASSET].version;
+    let t = commit(ASSET, Some(base), 2, 1);
+    ok(&run(&mut f.w, &mut f.a, &t));
+    assert!(f.w.leave(kb, leave_entry(), Frame(1)).unwrap().voided.is_empty());
+    assert_eq!(f.w.pending()[&ASSET].void, None);
+    let mut c = EntryBuilder::new(&keys, 2);
+    ok(&run(&mut f.w, &mut c, &attest_of(&t)));
+    assert_eq!(f.w.end_frame(Frame(1)).activated.len(), 1);
+}
