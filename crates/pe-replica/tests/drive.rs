@@ -1,5 +1,6 @@
 //! The S2/S3 glue (src/drive.rs): the order of one call, one vote per cut with the caller's self-test, roots not yet
-//! available, and one `finalize` per final cut (again after `NotReady`). With fakes that log every call; no physics.
+//! available, one `finalize` per final cut (again after `NotReady`), and the replica's vote holds reconciled with
+//! S3's. With fakes that log every call; no physics.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -78,8 +79,12 @@ impl Agreement for Agree {
         note(&self.log, format!("agree.vote h{} {verdict}", cut.height));
         VoteResult::Voted
     }
-    fn hold_votes_from(&mut self, _: Frame) {}
-    fn release_votes_from(&mut self, _: Frame) {}
+    fn hold_votes_from(&mut self, frame: Frame) {
+        note(&self.log, format!("agree.hold {}", frame.0));
+    }
+    fn release_votes_from(&mut self, frame: Frame) {
+        note(&self.log, format!("agree.release {}", frame.0));
+    }
     fn final_entries(&self, _: &CutRef, _: &CutRef) -> Option<Vec<SignedEntry>> {
         None
     }
@@ -103,6 +108,8 @@ struct Rep {
     verdicts: VecDeque<Finalized>,
     pending: Vec<u64>,
     view: Arc<FrameView>,
+    /// What `vote_holds` answers (S2 v1.7).
+    holds: Vec<Frame>,
 }
 
 impl Replica for Rep {
@@ -152,6 +159,9 @@ impl Replica for Rep {
     fn view(&self) -> Arc<FrameView> {
         self.view.clone()
     }
+    fn vote_holds(&self) -> Vec<Frame> {
+        self.holds.clone()
+    }
 }
 
 struct Node {
@@ -178,7 +188,14 @@ fn node() -> Node {
     });
     Node {
         agree: Agree { log: log.clone(), final_cut: None, wants: Vec::new(), none: Vec::new() },
-        replica: Rep { log: log.clone(), present: 0, verdicts: VecDeque::new(), pending: Vec::new(), view },
+        replica: Rep {
+            log: log.clone(),
+            present: 0,
+            verdicts: VecDeque::new(),
+            pending: Vec::new(),
+            view,
+            holds: Vec::new(),
+        },
         driver: Driver::new(),
         log,
     }
@@ -275,4 +292,66 @@ fn a_pending_root_is_asked_for_again() {
     assert_eq!(r.no_root, [(cut(1, 8).at, RootError::Pending)]);
     let r = n.tick(9, SelfTest::NotRun);
     assert_eq!(r.votes, [(cut(1, 8).at, Hash([1; 32]))]);
+}
+
+/// S2 v1.7: the driver holds what the replica lists, after the advance and before any vote, and a cut at or past the
+/// hold is not asked for a root until the hold is released; then it is voted as usual.
+#[test]
+fn a_hold_is_placed_before_the_vote_and_the_held_cut_is_voted_once_released() {
+    let mut n = node();
+    n.replica.holds = vec![Frame(10)];
+    n.agree.wants = vec![cut(1, 12)];
+    let r = n.tick(20, SelfTest::NotRun);
+    assert_eq!(n.log(), ["replica.advance 20", "agree.hold 10"]);
+    assert!(r.votes.is_empty());
+    assert_eq!(r.held_back, [cut(1, 12).at]);
+    // Still listed: nothing is placed twice, and the cut still waits.
+    let r = n.tick(21, SelfTest::NotRun);
+    assert_eq!(n.log(), ["replica.advance 21"]);
+    assert_eq!(r.held_back, [cut(1, 12).at]);
+    // Released: S3 hears it before the vote, and the cut is voted.
+    n.replica.holds.clear();
+    let r = n.tick(22, SelfTest::NotRun);
+    assert_eq!(n.log(), ["replica.advance 22", "agree.release 10", "replica.root_at_cut h1", "agree.vote h1 NotRun"]);
+    assert_eq!(r.votes.len(), 1);
+    assert!(r.held_back.is_empty());
+}
+
+/// Holds nest by frame, and the earliest counts: a cut below every hold is voted, one at or past the earliest waits.
+/// Each frame is held once and released once, whatever order the replica lists them in.
+#[test]
+fn holds_nest_by_frame_and_the_earliest_counts() {
+    let mut n = node();
+    n.replica.holds = vec![Frame(20), Frame(10)];
+    n.agree.wants = vec![cut(1, 8), cut(2, 15)];
+    let r = n.tick(30, SelfTest::NotRun);
+    assert_eq!(
+        n.log(),
+        ["replica.advance 30", "agree.hold 10", "agree.hold 20", "replica.root_at_cut h1", "agree.vote h1 NotRun"]
+    );
+    assert_eq!(r.held_back, [cut(2, 15).at]);
+    // The earlier hold goes: the cut at 15 is below the one left, at 20.
+    n.replica.holds = vec![Frame(20)];
+    n.agree.wants = vec![cut(2, 15), cut(3, 25)];
+    let r = n.tick(31, SelfTest::NotRun);
+    assert_eq!(n.log(), ["replica.advance 31", "agree.release 10", "replica.root_at_cut h2", "agree.vote h2 NotRun"]);
+    assert_eq!(r.held_back, [cut(3, 25).at]);
+}
+
+/// Level-triggered: a rollback that removed the commit empties the replica's list, and the driver releases what it
+/// placed; a rebuilt replica that lists other frames gets exactly those held.
+#[test]
+fn a_rollback_or_a_rebuilt_replica_never_leaves_a_hold_behind() {
+    let mut n = node();
+    n.replica.holds = vec![Frame(10)];
+    n.tick(20, SelfTest::NotRun);
+    n.replica.holds.clear();
+    n.tick(21, SelfTest::NotRun);
+    assert_eq!(n.log(), ["replica.advance 21", "agree.release 10"]);
+    n.replica.holds = vec![Frame(40), Frame(30)];
+    n.tick(22, SelfTest::NotRun);
+    assert_eq!(n.log(), ["replica.advance 22", "agree.hold 30", "agree.hold 40"]);
+    n.replica.holds = vec![Frame(30), Frame(50)];
+    n.tick(23, SelfTest::NotRun);
+    assert_eq!(n.log(), ["replica.advance 23", "agree.hold 50", "agree.release 40"]);
 }
