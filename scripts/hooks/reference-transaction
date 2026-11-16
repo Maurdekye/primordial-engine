@@ -18,8 +18,9 @@
 #                                    emergency only; report it to the coordinator in the same turn
 #   git config pe.gate.wrap '<cmd>'  runs the audit's cargo calls under <cmd>; never a build-slot wrapper, since
 #                                    git holds main's lock meanwhile (the main clone has "nice -n 19")
-#   git config pe.gate.tmpdir <dir>  puts the hook's and the gate's temporary files in <dir>, a folder that exists
-#                                    (on Windows written S:/like/this), not TMPDIR's: the main clone keeps them off C:
+#   git config pe.gate.tmpdir <dir>  puts the hook's and the gate's temporary files in <dir>, an absolute path to a
+#                                    folder that exists (on Windows written S:/like/this), not TMPDIR's: the main
+#                                    clone keeps them off C:
 # Check a branch before merging it, so a refusal is rare: bash scripts/gate.sh --base main <branch>
 
 if [ "$1" != prepared ]; then
@@ -65,7 +66,8 @@ drop="to drop the gate: git config --unset core.hooksPath"
 [ -z "$unreadable" ] || refuse "main is there, but its tip can't be read ($drop)"
 case "$new" in *[!0]*) ;; *) refuse "deleting main is refused while the gate is on ($drop)" ;; esac
 [ -n "$tip" ] || case "$old" in *[!0]*) refuse "git gives main an old tip, but its tip can't be read" ;; esac
-gtmp=$(git config --get pe.gate.tmpdir) && [ -d "$gtmp" ] && export TMPDIR="$gtmp" TMP="$gtmp" TEMP="$gtmp"
+gtmp=$(git config --get pe.gate.tmpdir) &&
+  case $gtmp in /*|[A-Za-z]:/*) [ -d "$gtmp" ] && export TMPDIR="$gtmp" TMP="$gtmp" TEMP="$gtmp" ;; esac
 tmp=$(mktemp -d) || refuse "no temporary folder"
 trap 'rm -rf "$tmp"' EXIT
 case "$old" in *[!0]*) from=$old base="--base $old" ;; *) from=$new base=--full-history ;; esac
