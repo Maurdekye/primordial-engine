@@ -708,7 +708,7 @@ impl World {
             WorldError::TooDeep { object, limit } => too_deep(object, limit),
             WorldError::Duplicate(id) => Reason::Exists(id),
             WorldError::UnknownObject(id) => Reason::Unknown(id),
-            WorldError::Store(_) => invalid(),
+            WorldError::Store(_) | WorldError::NotAMember(_) => invalid(),
         })?;
         cx.new.insert(new, id);
         for r in rows {

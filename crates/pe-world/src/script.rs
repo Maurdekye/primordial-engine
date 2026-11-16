@@ -165,6 +165,10 @@ pub enum VoidKind {
     /// At `F` its author no longer holds `EDIT`: revoking someone's rights stops their pending code too
     /// (@coordinator-opus m41d775f5d9f9).
     AuthorRevokedAtActivation = 4,
+    /// A leave made its quorum unreachable: the attestations given plus the voters still members who have not yet
+    /// attested fall short. Voided at the leave's frame rather than at `D` (@fable-reviewer via @coordinator-opus
+    /// mbdc0966ab9ab).
+    QuorumUnreachable = 5,
 }
 
 impl VoidKind {
@@ -174,6 +178,7 @@ impl VoidKind {
             2 => Some(VoidKind::RekeyBlockedAtActivation),
             3 => Some(VoidKind::RekeyTooLarge),
             4 => Some(VoidKind::AuthorRevokedAtActivation),
+            5 => Some(VoidKind::QuorumUnreachable),
             _ => None,
         }
     }
