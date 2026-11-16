@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId, Offset, Pos};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
-use pe_seams::{Class, Outcome, Reason, SignedEntry};
+use pe_seams::{Class, FieldPath, Outcome, Reason, SignedEntry};
 use pe_sim::Transform;
 use pe_world::components::{Appearance, Body, BodyState, Protection, Shape, ids, shape_kind};
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
@@ -205,15 +205,25 @@ fn leave_then_readmit_replays_to_the_same_root_and_gives_new_hands() {
 }
 
 #[test]
-fn a_deleted_hand_of_the_leavers_leaves_no_tombstone_to_undelete() {
+fn no_edit_deletes_a_hand_or_a_subtree_holding_one() {
     let mut f = fx();
-    let hand = f.hands_b[0];
-    let del = edit(&mut f.w, 0, &mut f.a, vec![Op::Delete { id: Target::Existing(hand) }]);
-    assert!(applied(&del), "today an edit may delete a hand: {del:?}");
-    assert!(f.w.tombstone(hand).is_some());
-    let r = f.w.leave(f.kb, leave_entry()).unwrap();
-    assert_eq!(r.hands, vec![f.hands_b[1]], "only the live hand is removed");
-    assert!(f.w.tombstone(hand).is_none(), "and the deleted one can't come back");
-    let undo = edit(&mut f.w, 1, &mut f.a, vec![Op::Undelete { id: hand }]);
-    assert!(!applied(&undo), "{undo:?}");
+    let refused = Reason::Invalid { field: Some(FieldPath { component: ids::HAND.0, field: u32::MAX }) };
+    // Not another member's hand, nor one's own: hands are made and removed only by admit and leave (7.5).
+    for (b, hand) in [(&mut f.a, f.hands_b[0]), (&mut f.b, f.hands_b[0])] {
+        let del = edit(&mut f.w, 0, b, vec![Op::Delete { id: Target::Existing(hand) }]);
+        assert_eq!(reason(&del), refused);
+    }
+    // Nor a subtree a hand was moved into.
+    let up = vec![Op::Reparent {
+        id: Target::Existing(f.hands_b[1]),
+        parent: Target::Existing(oid(BALL)),
+        index: None,
+        keep_world: true,
+    }];
+    let moved = edit(&mut f.w, 0, &mut f.a, up);
+    if applied(&moved) {
+        let del = edit(&mut f.w, 0, &mut f.a, vec![Op::Delete { id: Target::Existing(oid(BALL)) }]);
+        assert_eq!(reason(&del), refused);
+    }
+    assert!(f.w.tombstone(f.hands_b[0]).is_none());
 }

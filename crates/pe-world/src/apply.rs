@@ -765,6 +765,11 @@ impl World {
             Res::Live(o) => o,
         };
         let doomed = self.store.subtree(o);
+        // Hands are made and removed only by logic (`admit`, `leave`), so a subtree holding one is no edit's to delete,
+        // as it is no edit's to copy (7.5; @coordinator-opus md7f2148e0db5).
+        if doomed.iter().any(|&d| self.store.get_raw(ids::HAND, d).is_some()) {
+            return Err(invalid_field(ids::HAND, u32::MAX));
+        }
         // A hold by anyone but the author refuses the delete (7.2). The author's own holds end with it, so a player
         // can delete what they hold without letting go first (@coordinator-opus m6d5969e46cb1, option (b)).
         for d in &doomed {

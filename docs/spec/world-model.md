@@ -1199,6 +1199,9 @@ orphaned. if the delete occured second, then everything is destroyed."
 
 - **Delete second:** `Delete` destroys the object and its whole subtree, add-ons included, as today
   [V `store.rs:131-153`].
+- **No edit deletes a hand** (@coordinator-opus md7f2148e0db5): a `Delete` whose subtree holds a `Hand`, anyone's,
+  the author's own included, is refused as `Invalid` naming `Hand`, as `Copy` is (7.6). Hands are made and removed
+  only by logic: `admit` and the leave (2.4).
 - **Delete first:** an edit that creates an object under, or reparents an object to, an object already deleted does
   not fail (@diverge-eng's R-O1, `docs/spec/divergence.md` §10). The object becomes a root:
   - a created object is placed where the deleted parent last was: its last world transform, composed with the op's
