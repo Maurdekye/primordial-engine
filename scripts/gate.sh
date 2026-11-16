@@ -43,9 +43,13 @@
 # Environment: PE_GITLEAKS (a gitleaks binary; it must be the pinned build), PE_PYTHON (a Python 3.10+),
 # PE_GATE_WRAP (a command line to run the audit under, such as the org's build-slot wrapper; read with eval,
 # so quote paths in it as in a shell), PE_PUBLISH_TERMS and PE_PUBLISH_ALLOW (the term file and the
-# allowlist; default: git config pe.gate.terms and pe.gate.allow).
+# allowlist; default: git config pe.gate.terms and pe.gate.allow). git config pe.gate.tmpdir names a folder for
+# its temporary files (it exports the whole tree there), as an absolute path, when that folder exists; else
+# TMPDIR's is used.
 set -u
 die() { echo "gate: ERROR: $*" >&2; exit 2; }
+gtmp=$(git config --get pe.gate.tmpdir 2> /dev/null) &&
+  case $gtmp in /*|[A-Za-z]:/*) [ -d "$gtmp" ] && export TMPDIR="$gtmp" TMP="$gtmp" TEMP="$gtmp" ;; esac
 
 base=main rev= full=0 report=
 while [ $# -gt 0 ]; do
@@ -116,7 +120,7 @@ if [ -z "$py" ]; then
   if [ "$win" = 1 ]; then py=python; else py=$(command -v python3 || command -v python) || die "no python3"; fi
 fi
 
-tmp=$(mktemp -d)
+tmp=$(mktemp -d) || die "no temporary folder"
 trap 'rm -rf "$tmp"' EXIT
 
 # The gate's code files, from $code.
