@@ -212,6 +212,54 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   newly included entries take effect in chain order, except: `BackStamped` (section 2), and `Late` (stamped below the
   previous final cut's frame). Every honest member names the same deciding cut for each verdict (harness P4). A fork
   of an included entry is the fork fault, not a second pending entry.
+- **An outage's entries are delayed, never void as late** (coordinator, from @design-reviewer and @fable-reviewer; @shader-lang's blackout test). After an outage the
+  leader names its present less the lag, over a parent from before the outage. It holds little of the others'
+  backlog yet, and a vote checks only what a cut includes, so without these rules the backlog stamped below that
+  frame is late at the next cut: in pe-agree's sim, a 10 s blackout at n = 2 voided 102-118 edits and 61-314 hand
+  entries per run (crates/pe-agree/src/node_tests.rs, `no_entry_made_during_a_ten_second_outage_is_voided_as_late`).
+  - **The voter abstains.** A member doesn't vote for a cut that omits one of its own entries stamped at or above
+    the parent's frame and below the cut's (one below the parent's frame is late on its own). It times out in that
+    view at once, without growing the timeout (as for a root split); the timeout carries its chain heads (section
+    4), and it pushes the omitted entries, at most 256. Two bounds keep it from stalling the line:
+    - *by progress* (coordinator, @fable-reviewer's concern): at most 2 abstentions between two final
+      cuts. With only a per-entry bound, a sustained one-way delay above the lag (B to A, 0.9-1.5 s at n = 2) makes
+      every cut A leads omit a fresh B entry, B abstains in each, and nothing became final in 30 s (measured; the
+      model's ctl-early profile). With it, and B also making an edit every 10 frames
+      (`a_slow_link_above_the_lag_cap_still_finalizes`): on links above the lag cap (1.2 s fixed, 0.9-1.5 s) the
+      final frame stands still at most 3.8-6.1 s, and 24-113 of B's entries per 30 s are void as late, 2-5 of its
+      397 edits among them; on a link below the cap (0.5-0.9 s) it stands still at most 0.9 s and nothing is void.
+      Entries from an author whose link is slower than the lag cap are the slow member's residual above: pe-app's
+      stamping ahead (not built yet) keeps them, and until then an edit among them is re-sent by rule 3 below;
+    - *per entry* (@design-reviewer's L1): at most 2 views for one own entry, monotone: once an entry's are used up,
+      it never abstains for that entry or any below it, however leaders alternate their omissions.
+  - **A view that can't be certified ends at once.** A member that holds more than n - q timeouts for its current
+    view times out in it too, without growing the timeout: a member never votes after timing out, so no
+    certificate is possible. At n = 2 that is the other member's one timeout, so an abstention costs a round trip,
+    not the leader's timer.
+  - **The leader caps its cut.** A cut's frame is at most the lowest last-held stamp among other members' chains
+    known beyond what the leader has linked: claimed by a vote's or timeout's heads, or seen checked beyond a hole.
+    The capped frame is rounded down to the grid, and a frame not above the parent's proposes nothing yet; if that
+    view then times out, its timeout doesn't grow the leader's next one ("no cut possible" isn't a failed leader).
+    The view isn't given up at once, since the backlog may arrive within it (measured: giving it up at once tripled
+    the longest stand-still on a 1.2 s one-way link); and if the leader proposes in it after all, its timeout grows
+    as usual (@design-reviewer's L1 on b4b8bedb). The leader waits for each chain once: for its backlog when the
+    wait begins (at most the author's pending cap) at the author's rate, plus 1 s, and not again until the chain reaches what was claimed, so a member that claims
+    entries and never sends them holds cuts back once (measured: 5.5 s at 120 Hz). "Once" is per chain and claimant
+    (@design-reviewer's L3): when a claim's asks run out unanswered it is dropped with its wait, and another member's
+    claim on the chain starts a fresh one; a claimant whose claim went unanswered is ignored on that chain until the
+    chain reaches it, so a chain is waited for at most f + 1 times. Only members' claims count (a
+    removed member's don't, once membership changes, section 8). Entries on a chain claimed beyond them are left
+    out of the adaptive lag, as fetched ones are.
+  - **Which side does the work** (measured, sim): at n = 2 (seeds 61-64) the cap alone voids nothing and the voter
+    side alone leaves 0-2 edits void per run; at n = 4 (seeds 81-83), where three votes make a quorum without the
+    owner, the voter side alone leaves 1-8 edits void when all four come back from a 10 s outage, and the cap alone
+    voids nothing. Both together void nothing in either. The mutants `NoAbstention` and
+    `NoBacklogCap` turn each side off.
+  - *Residual:* an edit can still be void as late, for example when a member at n >= 4 is cut off while the others
+    finalize past its stamps. Edits get a re-send backstop in pe-api (rule 3 of the ruling, placed by @api-eng and
+    @engine-architect): the voided edit and the same author's later edits refused because of it are re-sent in
+    order, with preconditions checked, backing off up to the one-minute bound, with one notice of the outcome. Hand
+    entries are never re-sent.
 
 - **A second vote in a view is a self-test report** (coordinator; S3 v1.3 shape by
   @engine-architect). A member votes once per view. The driver's `vote` after a repair returns
@@ -265,6 +313,9 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   - fetched within the author's free pending slots and at most 256 at a time;
   - dropped after 5 s if no entry came;
   - never solicited, so the entries they name pass the author's rate budget like any other.
+
+  Timeouts carry the same heads, beyond the member's final cut, as unsigned hints taken the same way (the outage
+  rule, section 3): an abstaining member sends no vote, so its timeout is how the next leader learns of its backlog.
 - **Votes and views** (@design-reviewer's High on 61e08c0d). A vote counts only for a held block and only in that
   block's own view; one naming another view is a fault. A vote that arrives before its block waits, at most one per
   voter. Votes, timeouts and proposals waiting for a parent are kept only up to 16 views above the member's current
@@ -354,7 +405,10 @@ which the model does not cover. Each is inert unless the node's configuration na
   before any of them is reported final. The model delivers every proposal to every member.
 - **The adaptive timeout** (crates/pe-agree/src/core.rs): the cadence, plus the larger of a floor and three times
   the measured time from entering a view to its certificate (an average weighted 1/8 to the newest), growing by
-  half after each timeout certificate until a view succeeds, up to a ceiling. All three limits are durations.
+  half after each timeout certificate until a view succeeds, up to a ceiling. All three limits are durations. A view
+  ended at once (a root split, an abstention, more than n - q timeouts held) or a leader's view its backlog cap kept
+  empty doesn't grow it, so the timeout grows only at a member whose own timer fired: at n = 2, where the members
+  alternate, it grows about every second timed-out view (@design-reviewer's L2).
 - **Empty cuts don't pause yet.** v0 proposes on every cadence, empty or not; the pause after the last content cut
   becomes final (section 3, "The last cut needs a child") comes with an idle mode in which nobody times out.
 - Blocks are named by hash; the model names them by their path of views and cuts.

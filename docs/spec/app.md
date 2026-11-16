@@ -220,7 +220,8 @@ between the user's machines over Tailscale it is the machine's Tailscale address
 So finality follows the slower machine, and while either machine stalls or its link is down, nothing new becomes
 final on either, though both keep simulating their predictions.
 - **A stall shorter than pe-net's idle timeout** ends when both vote again, within the view timeout reached by then
-  (it grows by half after each timed-out view, up to 10 s). In M1 `t_idle` is 30 s, a stated setting, so that a
+  (it grows by half after each view that timed out on a member's own timer, up to 10 s; a view another member's
+  timeout ended at once doesn't grow it, so at n = 2 it grows about every second timed-out view, agreement.md 7). In M1 `t_idle` is 30 s, a stated setting, so that a
   Wi-Fi blip or a Tailscale path switch does not end the session (@coordinator-opus). The entries a
   member made meanwhile reach the other when the link is back. Its hand entries are paced while it is backlogged
   (section 3, step 2), and its edits are delayed, never lost, and final once a cut covers them. An entry stamped
