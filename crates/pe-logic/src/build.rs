@@ -210,10 +210,32 @@ const TEMPLATE_MARK: &str = "# Written by pe-logic's build service from logic.md
 /// packed by pe-world's [`pe_world::script::pack_source`]. Its `Cargo.toml` is not in it: [`build_archive`] writes
 /// one from the template. A file under `src` that the archive cannot carry is refused, not skipped (a file not
 /// ending `.rs`, an upper-case or otherwise non-portable name, a non-UTF-8 file): another machine would build
-/// without it, or not at all.
+/// without it, or not at all. So is anything under `src` that is neither a plain file nor a folder (a symlink, a
+/// junction) and any entry it cannot read (@shader-reviewer's Low 1 on v6-r1): `src_files`, which the remaps use,
+/// skips those silently, and the author's own build would still see them.
 pub fn pack(crate_dir: &Path) -> Result<Vec<u8>, BuildError> {
+    fn walk(root: &Path, at: &Path, out: &mut Vec<PathBuf>) -> Result<(), BuildError> {
+        let io = |e: std::io::Error| BuildError::Io(format!("{}: {e}", at.display()));
+        for e in std::fs::read_dir(root.join(at)).map_err(io)? {
+            let e = e.map_err(io)?;
+            let rel = at.join(e.file_name());
+            let t = e.file_type().map_err(io)?;
+            if t.is_dir() {
+                walk(root, &rel, out)?;
+            } else if t.is_file() {
+                out.push(rel);
+            } else {
+                return Err(BuildError::Source(pe_world::script::SourceError::Path(
+                    rel.to_string_lossy().into_owned(),
+                )));
+            }
+        }
+        Ok(())
+    }
+    let mut rels = Vec::new();
+    walk(crate_dir, Path::new("src"), &mut rels)?;
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    for rel in src_files(crate_dir) {
+    for rel in rels {
         let parts: Vec<&str> = rel.components().filter_map(|c| c.as_os_str().to_str()).collect();
         if parts.len() != rel.components().count() {
             return Err(BuildError::Source(pe_world::script::SourceError::Path(rel.to_string_lossy().into_owned())));
