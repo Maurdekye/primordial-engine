@@ -21,6 +21,8 @@ mod read;
 mod replica;
 pub mod script;
 mod source;
+#[cfg(feature = "test-util")]
+pub mod test_util;
 pub mod tree;
 mod world;
 
