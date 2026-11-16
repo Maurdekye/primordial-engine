@@ -231,7 +231,6 @@ pub struct OpenParams {
     /// The ball pit's ball count (500 in M1's demo).
     pub balls: u32,
     pub rate: SimRate,
-    pub cut_interval: Duration,
     pub epoch_lead: Duration,
 }
 
@@ -414,7 +413,6 @@ impl Endpoint {
             opener: self.me,
             joiner: them,
             rate: p.rate,
-            cut_interval: p.cut_interval,
             gravity: pe_world::GRAVITY,
             seed: p.seed,
             balls: p.balls,
@@ -693,16 +691,17 @@ mod tests {
     const RATE: SimRate = SimRate::DEFAULT;
 
     fn params() -> OpenParams {
-        OpenParams {
-            seed: 3,
-            balls: 8,
-            rate: RATE,
-            cut_interval: Duration::from_millis(133),
-            epoch_lead: Duration::from_millis(1500),
-        }
+        OpenParams { seed: 3, balls: 8, rate: RATE, epoch_lead: Duration::from_millis(1500) }
     }
 
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "release only: in a debug build a tick's signing, verifying and decryption (ed25519, AES-GCM, \
+                  unoptimized) take 50-200 ms under load, while the step budget is sized from stepping alone, so \
+                  the replica falls further behind every tick (9 of 9 failures at 77-100 % CPU; release passes at \
+                  95 %; @coordinator-opus me534c81118ea, mccf5762cee74): run with --release"
+    )]
     fn a_second_machine_joins_from_an_invite_and_both_finalize() {
         // The M1 interim end to end over real UDP on loopback: A opens and invites, B replies and dials, A takes the
         // reply and admits B with the genesis record, B checks and rebuilds it, and both simulate the ball pit on
@@ -740,11 +739,17 @@ mod tests {
         }
         for (i, (sim, slot, _, frames)) in sims.iter().enumerate() {
             let v = slot.newest();
+            // A frame period over the measured cost of a frame is stepping's margin over real time (sim.rs `Budget`).
+            // Both machines step on this one thread, so here the margin each one has is half of it.
+            let cost = sim.budget().cost();
+            let period = Duration::from_nanos(1_000_000_000 / u64::from(RATE.hz()));
             println!(
-                "machine {i}: now {:?}, view {:?}, final {:?}; {:?}",
+                "machine {i}: now {:?}, view {:?}, final {:?}; frame cost {cost:?}, margin {:.2}, budget {} frames; {:?}",
                 frames.frame_at(host()),
                 v.as_ref().map(|v| v.frame),
                 v.as_ref().and_then(|v| v.final_frame),
+                cost.map_or(0.0, |c| period.as_secs_f64() / c.as_secs_f64().max(1e-9)),
+                sim.budget().frames(),
                 sim.stats()
             );
         }
@@ -778,7 +783,6 @@ mod tests {
             opener,
             joiner: me,
             rate: RATE,
-            cut_interval: Duration::from_millis(133),
             gravity: pe_world::GRAVITY,
             seed: 3,
             balls: 8,
