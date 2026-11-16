@@ -1198,10 +1198,12 @@ orphaned. if the delete occured second, then everything is destroyed."
 - **No edit deletes a hand** (@coordinator-opus): a `Delete` whose subtree holds a `Hand`, anyone's,
   the author's own included, is refused as `Invalid` naming `Hand`, as `Copy` is (7.6). Hands are made and removed
   only by logic: `admit` and the leave (2.4).
-- **No edit moves a hand** (@coordinator-opus): a `Reparent` of an object that has a `Hand`, or a
-  `SetRow`, `SetField` or `RemoveRow` of its `Transform`, is refused the same way, whoever's hand it is. A hand moves
-  only by its member's input. An object may still be moved under a hand, a subtree that merely holds a hand may
-  still move (the hand goes with it), and the hand's other rows are an edit's like any object's.
+- **No edit moves a hand** (@coordinator-opus): a `Reparent` of an object that has a
+  `Hand`, or a `SetRow`, `SetField` or `RemoveRow` of its `Transform`, `Body` or `Shape` (the rows a hold covers,
+  7.2), is refused the same way, whoever's hand it is. A hand moves only by its member's input, and never becomes a
+  body physics would move (8). An object may still be moved under a hand, a subtree that merely holds a hand may
+  still move (the hand goes with it), and the hand's other rows are an edit's like any object's. In M1 hands are
+  roots, so nothing is above one; revisit the subtree rule with the avatar root (3.5), which will parent them.
 - **Delete first:** an edit that creates an object under, or reparents an object to, an object already deleted does
   not fail (@diverge-eng's R-O1, `docs/spec/divergence.md` §10). The object becomes a root:
   - a created object is placed where the deleted parent last was: its last world transform, composed with the op's
@@ -1255,11 +1257,11 @@ its reason and the index of the op [I]:
 4. **Each op, in order,** against the state just before it, which includes the earlier ops of the same transaction:
    its targets exist (or orphan, 7.5); no protection is broken (7.8) and no hold (7.2); the components are
    registered; the rows have the right size and valid values; positions are in range (4.3); no cycle; the depth limit
-   holds (3.3); `Hand` rows are not written by edits (they are inputs), nor is a hand moved or its `Transform`
-   written (7.5); `Node`, `BodyState` and row versions are never written by edits. Protections and holds are checked
-   here rather than in step 2 because an op may name an object an earlier op created, or lift a protection a later op
-   relies on; a transaction that does the latter passes only if its author may lift that protection
-   (@coordinator-opus).
+   holds (3.3); `Hand` rows are not written by edits (they are inputs), nor is a hand moved or its `Transform`,
+   `Body` or `Shape` written (7.5); `Node`, `BodyState` and row versions are never written by edits. Protections and
+   holds are checked here rather than in step 2 because an op may name an object an earlier op created, or lift a
+   protection a later op relies on; a transaction that does the latter passes only if its author may lift that
+   protection (@coordinator-opus).
 5. **All or nothing.** The ops apply to a copy-on-write working state; any failure discards it. Nothing outside the
    transaction sees a partial result, and the reported reason is the first failing op's, in order.
 

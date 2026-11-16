@@ -223,8 +223,9 @@ fn no_edit_deletes_a_hand_or_a_subtree_holding_one() {
     assert!(f.w.tombstone(f.hands_b[0]).is_none());
 }
 
-/// Hands are logic's alone (7.5; @coordinator-opus): no edit moves a hand, its owner's included, or
-/// writes or removes its transform; an object may still be moved under a hand, and a subtree holding a hand may move.
+/// Hands are logic's alone (7.5; @coordinator-opus): no edit moves a hand, its owner's
+/// included, or writes or removes its transform, body or shape; an object may still be moved under a hand, and a
+/// subtree holding a hand may move.
 #[test]
 fn no_edit_moves_a_hand_or_writes_its_transform() {
     let mut f = fx();
@@ -244,6 +245,12 @@ fn no_edit_moves_a_hand_or_writes_its_transform() {
             value: bytemuck::bytes_of(&[0.0f64, 2.0, 0.0]).to_vec(),
         },
         Op::RemoveRow { id: Target::Existing(hand), component: pe_sim::ComponentId::TRANSFORM, instance: 0, tag },
+        // Nor makes it a body, which physics would then move (@chunks-reviewer's Medium).
+        Op::SetRow { id: Target::Existing(hand), row: row(Body::default()) },
+        Op::SetRow {
+            id: Target::Existing(hand),
+            row: row(Shape { kind: shape_kind::SPHERE, size: [0.05, 0.0, 0.0], ..Shape::default() }),
+        },
     ];
     for op in refusals {
         for b in [&mut f.a, &mut f.b] {
