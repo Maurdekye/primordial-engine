@@ -33,7 +33,8 @@ impl World {
     /// 4. its permission bits are dropped;
     /// 5. pending script commits are left to 6.2a: the voters stay those at `c` (an attestation the leaver gave
     ///    still counts), and one whose quorum the leave makes unreachable is voided at this frame's end by the shared
-    ///    void rule (`QuorumUnreachable`); the leaver's own voids at activation as `AuthorRevokedAtActivation`.
+    ///    void rule (`QuorumUnreachable`); the leaver's own voids as `AuthorRevokedAtActivation` if it reaches its
+    ///    quorum, else as `QuorumUnreachable` or, at `D`, `Unattested` (world-model.md 2.4).
     ///
     /// Everything else the member made or set stays: its objects, and the protections it set (nobody can lift those
     /// until agent powers lets an admin clear a lock, world-model.md 2.4).
