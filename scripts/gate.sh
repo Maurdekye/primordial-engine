@@ -43,9 +43,11 @@
 # Environment: PE_GITLEAKS (a gitleaks binary; it must be the pinned build), PE_PYTHON (a Python 3.10+),
 # PE_GATE_WRAP (a command line to run the audit under, such as the org's build-slot wrapper; read with eval,
 # so quote paths in it as in a shell), PE_PUBLISH_TERMS and PE_PUBLISH_ALLOW (the term file and the
-# allowlist; default: git config pe.gate.terms and pe.gate.allow).
+# allowlist; default: git config pe.gate.terms and pe.gate.allow). git config pe.gate.tmpdir names a folder for
+# its temporary files (it exports the whole tree there), when that folder exists; else TMPDIR's is used.
 set -u
 die() { echo "gate: ERROR: $*" >&2; exit 2; }
+gtmp=$(git config --get pe.gate.tmpdir 2> /dev/null) && [ -d "$gtmp" ] && export TMPDIR="$gtmp" TMP="$gtmp" TEMP="$gtmp"
 
 base=main rev= full=0 report=
 while [ $# -gt 0 ]; do
