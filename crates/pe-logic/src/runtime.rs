@@ -186,6 +186,11 @@ impl std::fmt::Display for LoadError {
 impl std::error::Error for LoadError {}
 
 /// A script's module: validated, metered and compiled for this engine.
+///
+/// A clone shares the compiled code (wasmtime's `InstancePre` is reference-counted) and copies only the metered bytes,
+/// so binding a module again never compiles it again: a runner re-binding a script after a rollback across its
+/// activation clones what it holds instead of loading it (@vdw-physics, pe-replica's `LogicRunner`).
+#[derive(Clone)]
 pub struct Script {
     engine: Engine,
     settings: Settings,
