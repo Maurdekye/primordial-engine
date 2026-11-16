@@ -288,6 +288,7 @@ g checkout -q -B main "$sha"
 (cd "$R" && bash scripts/install_gate_hook.sh > "$tmp/install-hook.log" 2>&1) || { cat "$tmp/install-hook.log"; die "install_gate_hook.sh failed"; }
 g checkout -q -b leak "$sha"; printf 'aws_secret = %s\n' "$(fake aws)" > "$R/leak.txt"; commit -m "leak"
 g checkout -q -b fine "$sha"; echo "fine" >> "$R/README.md"; commit -m "fine"
+g checkout -q -b fine2 "$sha"; echo "fine 2" > "$R/fine2.txt"; commit -m "fine 2"
 g checkout -q -b neuter "$sha"; printf '#!/bin/sh\ncat > /dev/null\nexit 0\n' > "$R/scripts/hooks/reference-transaction"
 sed -i '0,/^set -u$/s//set -u\nexit 0/' "$R/scripts/gate.sh"; printf 'aws_secret = %s\n' "$(fake aws)" > "$R/leak3.txt"; commit -m "no gate"
 g checkout -q main
@@ -316,6 +317,41 @@ if [ $rc = 0 ] && [ "$(git -C "$R" rev-parse main^2)" = "$(git -C "$R" rev-parse
   pass=$((pass + 1)); echo "test_gate: ok   hook-lets-clean-merge-in"
 else
   bad=$((bad + 1)); echo "test_gate: BAD  hook-lets-clean-merge-in (exit $rc)"; sed 's/^/    /' "$tmp/hook-fine.log"
+fi
+# pe.gate.tmpdir: the gate run directly, and the hook through its trampoline, keep their temporary files in that
+# folder, not TMPDIR's. The audit's wrapper records what it sees: the three variables, and which of the
+# trampoline's copy of the hook and the hook's (or the hand-over's) copy of gate.sh lie there. Afterwards it is empty.
+gt="$tmp/gate-tmp"; mkdir -p "$gt"; if [ $win = 1 ]; then gt=$(cygpath -m "$gt"); fi
+cat > "$tmp/record.sh" << EOF
+#!/bin/sh
+{ echo "TMPDIR=\$TMPDIR TMP=\$TMP TEMP=\$TEMP"
+  for f in "\$TMPDIR"/*/hook "\$TMPDIR"/*/gate.sh; do [ -f "\$f" ] && echo "\${f##*/}"; done; } > "$tmp/seen.txt"
+exec "\$@"
+EOF
+git -C "$R" config pe.gate.tmpdir "$gt"
+want="TMPDIR=$gt TMP=$gt TEMP=$gt"
+tmp_bad=
+(cd "$R" && PE_GATE_WRAP="sh '$tmp/record.sh'" bash scripts/gate.sh --base main fine2) > "$tmp/gate-tmp-direct.log" 2>&1; rc=$?
+if [ $rc != 0 ] || [ "$(cat "$tmp/seen.txt" 2> /dev/null)" != "$want
+gate.sh" ] || [ -n "$(ls -A "$gt")" ]; then
+  tmp_bad="$tmp_bad
+    gate.sh run directly: exit $rc, saw: $(tr '\n' ' ' < "$tmp/seen.txt" 2> /dev/null), left: $(ls -A "$gt" | tr '\n' ' ')"
+fi
+rm -f "$tmp/seen.txt"
+git -C "$R" config pe.gate.wrap "sh '$tmp/record.sh'"
+hk merge -q --no-ff -m "land fine 2" fine2 > "$tmp/hook-tmp.log" 2>&1; rc=$?
+if [ $rc != 0 ] || [ "$(cat "$tmp/seen.txt" 2> /dev/null)" != "$want
+hook
+gate.sh" ] || [ -n "$(ls -A "$gt")" ]; then
+  tmp_bad="$tmp_bad
+    the hook: exit $rc, saw: $(tr '\n' ' ' < "$tmp/seen.txt" 2> /dev/null), left: $(ls -A "$gt" | tr '\n' ' ')"
+fi
+if [ -n "${PE_GATE_WRAP:-}" ]; then git -C "$R" config pe.gate.wrap "$PE_GATE_WRAP"; else git -C "$R" config --unset pe.gate.wrap; fi
+git -C "$R" config --unset pe.gate.tmpdir
+if [ -z "$tmp_bad" ]; then
+  pass=$((pass + 1)); echo "test_gate: ok   gate-tmpdir (the gate run directly, and the hook through its trampoline, keep their temporary files in pe.gate.tmpdir's folder)"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  gate-tmpdir:$tmp_bad"; sed 's/^/    /' "$tmp/gate-tmp-direct.log" "$tmp/hook-tmp.log" | tail -8
 fi
 landed=$(git -C "$R" rev-parse main)
 hk merge -q --no-ff -m "land no gate" neuter > "$tmp/hook-neuter.log" 2>&1; rc=$?
