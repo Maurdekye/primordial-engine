@@ -10,7 +10,9 @@ use pe_world::components::{Hand, Light, ids};
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
 use pe_world::script::{ModuleRow, TAG_NAME, attest_window, pack_source, quorum, script_component_id, tag_desc};
 use pe_world::tree::table;
-use pe_world::{BlobRef, BlobStore, Blocked, Claim, Footprint, FrameEnd, LogicReport, VoidKind, World, perm};
+use pe_world::{
+    BlobRef, BlobStore, Blocked, BuildFailure, Claim, Footprint, FrameEnd, LogicReport, VoidKind, Voided, World, perm,
+};
 
 const ASSET: [u8; 32] = [7; 32];
 const OTHER: [u8; 32] = [8; 32];
@@ -143,6 +145,30 @@ fn land(f: &mut Fx, by_b: bool, t: &Transaction) -> ((Outcome, Footprint), Frame
 fn rekeyed(end: &FrameEnd) -> pe_world::RekeyReport {
     assert_eq!(end.activated.len(), 1, "{end:?}");
     end.activated[0].2.clone().expect("a re-key report")
+}
+
+/// A void of `ASSET`'s commit `pv`, as `end_frame` reports it.
+fn void(
+    pv: pe_seams::Version,
+    kind: VoidKind,
+    blocked: Option<Blocked>,
+    failed: Vec<(pe_core::MemberKey, BuildFailure)>,
+) -> Voided {
+    Voided { asset: ASSET, version: pv, kind, blocked, failed }
+}
+
+/// `t`'s commit failed to build here, for `why` (logic.md 6.2a item 2).
+fn failed_of(t: &Transaction, why: BuildFailure) -> Transaction {
+    let Some(Op::CommitScript { script, source, .. }) = t.ops.last() else { panic!("no commit") };
+    let module = (why == BuildFailure::Mismatch).then_some(Hash([9; 32]));
+    tx(vec![Op::BuildFailed {
+        script: *script,
+        version: Hash(source.hash),
+        reason: why,
+        toolchain: Hash([1; 32]),
+        sdk: Hash([2; 32]),
+        module,
+    }])
 }
 
 /// Commits version 1 and attaches it to the lamp with a Blink row (period 2, phase 0.5).
@@ -558,7 +584,7 @@ fn an_unattested_commit_is_voided_at_its_deadline_unless_the_quorum_completes_th
     assert_eq!(f.w.end_frame(Frame(d.0 - 1)), FrameEnd::default());
     let root = f.w.root();
     let pv = f.w.pending()[&ASSET].version;
-    assert_eq!(f.w.end_frame(d).voided, vec![(ASSET, pv, VoidKind::Unattested, None)]);
+    assert_eq!(f.w.end_frame(d).voided, vec![void(pv, VoidKind::Unattested, None, vec![])]);
     assert_ne!(f.w.root(), root, "the void is recorded in the root");
     assert_eq!(f.w.pending()[&ASSET].void, Some((d, VoidKind::Unattested)));
     assert_eq!(f.w.modules()[&ASSET].version, base, "the old version stays");
@@ -595,7 +621,7 @@ fn a_rekey_blocked_by_the_time_of_activation_voids_the_commit() {
     ok(&run(&mut f.w, &mut f.b, &attest_of(&t)));
     let pv = f.w.pending()[&ASSET].version;
     let blocked = Some(Blocked { objects: vec![oid(LAMP)], more: 0 });
-    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![(ASSET, pv, VoidKind::RekeyBlockedAtActivation, blocked)]);
+    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![void(pv, VoidKind::RekeyBlockedAtActivation, blocked, vec![])]);
     assert_eq!(f.w.modules()[&ASSET].version, base);
     assert_eq!(row(&f.w, blink(1).id()), Some(f32s(&[2.0, 0.5])), "nothing re-keyed");
 }
@@ -613,7 +639,7 @@ fn an_author_revoked_before_activation_voids_the_commit() {
     f.w.set_member(ka, perm::AGENT);
     ok(&run(&mut f.w, &mut f.b, &attest_of(&t)));
     let pv = f.w.pending()[&ASSET].version;
-    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![(ASSET, pv, VoidKind::AuthorRevokedAtActivation, None)]);
+    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![void(pv, VoidKind::AuthorRevokedAtActivation, None, vec![])]);
     assert_eq!(f.w.modules()[&ASSET].version, base);
     assert_eq!(row(&f.w, blink(1).id()), Some(f32s(&[2.0, 0.5])), "nothing re-keyed");
 }
@@ -668,7 +694,7 @@ fn a_commit_pending_across_a_2_to_1_leave_is_voided_at_that_frames_end() {
     let kb = TestKeys::new(1, 3).key(1);
     f.w.leave(kb, leave_entry()).unwrap();
     assert_eq!(f.w.pending()[&ASSET].void, None, "the shared rule voids it at the frame's end");
-    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![(ASSET, pv, VoidKind::QuorumUnreachable, None)]);
+    assert_eq!(f.w.end_frame(Frame(1)).voided, vec![void(pv, VoidKind::QuorumUnreachable, None, vec![])]);
     assert_eq!(f.w.pending()[&ASSET].void, Some((Frame(1), VoidKind::QuorumUnreachable)));
     assert_eq!(f.w.end_frame(Frame(2)), FrameEnd::default(), "nothing activates or voids again");
     assert_eq!(f.w.modules()[&ASSET].version, base);
@@ -704,4 +730,163 @@ fn across_a_3_to_2_leave_the_leavers_attestation_counts_and_a_reachable_quorum_s
     let mut c = EntryBuilder::new(&keys, 2);
     ok(&run(&mut f.w, &mut c, &attest_of(&t)));
     assert_eq!(f.w.end_frame(Frame(1)).activated.len(), 1);
+}
+
+/// A failure's evidence must agree with itself (7.9; @chunks-reviewer's L1): a module exactly for a `Mismatch`, and
+/// never the registered `author_module` it failed to match.
+#[test]
+fn a_failures_module_is_present_exactly_for_a_mismatch_and_is_not_the_authors() {
+    let mut f = fx();
+    let t = commit(ASSET, None, 1, 1);
+    ok(&run(&mut f.w, &mut f.a, &t));
+    let with = |why: BuildFailure, module: Option<Hash>| {
+        let mut x = failed_of(&t, why);
+        if let Op::BuildFailed { reason, module: m, .. } = &mut x.ops[0] {
+            (*reason, *m) = (why, module);
+        }
+        x
+    };
+    for bad in [
+        with(BuildFailure::Compile, Some(Hash([9; 32]))),
+        with(BuildFailure::Mismatch, None),
+        with(BuildFailure::Mismatch, Some(Hash([3; 32]))),
+    ] {
+        assert!(matches!(refused(&run_at(&mut f.w, &mut f.b, &bad, 2)), Reason::Invalid { .. }), "{bad:?}");
+    }
+    assert!(f.w.pending()[&ASSET].failed.is_empty());
+    ok(&run_at(&mut f.w, &mut f.b, &with(BuildFailure::Mismatch, Some(Hash([9; 32]))), 2));
+}
+
+/// `BuildFailed` round-trips, with and without the module a `Mismatch` built, and an unknown reason does not decode.
+#[test]
+fn a_build_failure_round_trips() {
+    let t = commit(ASSET, None, 1, 1);
+    let all =
+        [BuildFailure::Compile, BuildFailure::Refused, BuildFailure::Cap, BuildFailure::Mismatch, BuildFailure::Local];
+    for why in all {
+        let f = failed_of(&t, why);
+        assert_eq!(Transaction::decode(&f.encode()), Some(f));
+    }
+    // The reason byte is where a Compile and a Refused encoding differ.
+    let mut bytes = failed_of(&t, BuildFailure::Compile).encode();
+    let other = failed_of(&t, BuildFailure::Refused).encode();
+    let diff: Vec<usize> = (0..bytes.len()).filter(|&i| bytes[i] != other[i]).collect();
+    assert_eq!(diff.len(), 1);
+    bytes[diff[0]] = 6;
+    assert_eq!(Transaction::decode(&bytes), None);
+}
+
+/// At n = 2 (quorum 2), the other member's `BuildFailed` makes the quorum unreachable: the shared void rule voids the
+/// commit at that frame's end, naming who could not build it and why (Q1 (c)), the old version stays, and nothing
+/// counts on the void afterwards (logic.md 6.2a).
+#[test]
+fn a_failed_build_at_n_2_voids_the_commit_at_that_frames_end_naming_who_and_why() {
+    let mut f = fx();
+    with_v1(&mut f);
+    let base = f.w.modules()[&ASSET].version;
+    let t = commit(ASSET, Some(base), 2, 1);
+    ok(&run(&mut f.w, &mut f.a, &t));
+    let pv = f.w.pending()[&ASSET].version;
+    let kb = TestKeys::new(1, 3).key(1);
+    let before = f.w.root();
+    ok(&run(&mut f.w, &mut f.b, &failed_of(&t, BuildFailure::Compile)));
+    assert_eq!(f.w.pending()[&ASSET].failed, vec![(kb, Frame(1), BuildFailure::Compile)]);
+    assert_ne!(f.w.root(), before, "a counted failure is in the root");
+    assert_eq!(
+        f.w.end_frame(Frame(1)).voided,
+        vec![void(pv, VoidKind::QuorumUnreachable, None, vec![(kb, BuildFailure::Compile)])]
+    );
+    let p = &f.w.pending()[&ASSET];
+    assert_eq!(
+        (p.void, p.failures()),
+        (Some((Frame(1), VoidKind::QuorumUnreachable)), vec![(kb, BuildFailure::Compile)])
+    );
+    assert_eq!(f.w.modules()[&ASSET].version, base);
+    f.w.verify_tree_cache(DomainId(1)).unwrap();
+    // Nothing changes a void: a later success or failure is Stale.
+    assert!(matches!(refused(&run_at(&mut f.w, &mut f.b, &attest_of(&t), 2)), Reason::Stale { .. }));
+    assert!(matches!(
+        refused(&run_at(&mut f.w, &mut f.a, &failed_of(&t, BuildFailure::Local), 2)),
+        Reason::Stale { .. }
+    ));
+    assert_eq!(f.w.end_frame(Frame(2)), FrameEnd::default());
+}
+
+/// n = 3 (quorum 2 of 3): a failure counts against the quorum but leaves it reachable; one per voter; a later success
+/// by the same voter supersedes it while the commit is pending; a failure after a success is refused; a non-voter's,
+/// another version's, and one beside another op are refused too.
+#[test]
+fn a_failure_is_one_per_voter_superseded_by_a_success_and_refused_after_one() {
+    let keys = TestKeys::new(1, 3);
+    let kc = keys.key(2);
+    let mut f = fx();
+    f.w.set_member(kc, perm::EDIT);
+    with_v1(&mut f);
+    let base = f.w.modules()[&ASSET].version;
+    let t = commit(ASSET, Some(base), 2, 1);
+    ok(&run(&mut f.w, &mut f.a, &t));
+    let mut c = EntryBuilder::new(&keys, 2);
+    ok(&run(&mut f.w, &mut f.b, &failed_of(&t, BuildFailure::Mismatch)));
+    assert_eq!(f.w.end_frame(Frame(1)), FrameEnd::default(), "1 attested + C could = 2: still reachable");
+    assert!(
+        matches!(refused(&run_at(&mut f.w, &mut f.b, &failed_of(&t, BuildFailure::Local), 2)), Reason::Invalid { .. }),
+        "a second"
+    );
+    let mut other_v = failed_of(&t, BuildFailure::Compile);
+    if let Op::BuildFailed { version, .. } = &mut other_v.ops[0] {
+        *version = v_of(3);
+    }
+    assert!(matches!(refused(&run_at(&mut f.w, &mut c, &other_v, 2)), Reason::Stale { .. }));
+    let mut two = failed_of(&t, BuildFailure::Compile);
+    two.ops.push(Op::Delete { id: Target::Existing(oid(LAMP)) });
+    assert!(matches!(refused(&run_at(&mut f.w, &mut c, &two, 2)), Reason::Invalid { .. }));
+    // A failure after the author's own attestation (the commit) is refused.
+    assert!(matches!(
+        refused(&run_at(&mut f.w, &mut f.a, &failed_of(&t, BuildFailure::Cap), 2)),
+        Reason::Invalid { .. }
+    ));
+    // B's clean rebuild succeeds: its success supersedes its failure, and the quorum completes.
+    ok(&run_at(&mut f.w, &mut f.b, &attest_of(&t), 2));
+    assert!(f.w.pending()[&ASSET].failed.is_empty());
+    // C's failure after B's success counts, but can't stop the quorum B completed.
+    ok(&run_at(&mut f.w, &mut c, &failed_of(&t, BuildFailure::Refused), 2));
+    assert_eq!(f.w.pending()[&ASSET].failed, vec![(kc, Frame(2), BuildFailure::Refused)]);
+    let end = f.w.end_frame(Frame(2));
+    assert!(end.voided.is_empty() && end.activated.len() == 1, "{end:?}");
+    // A non-voter: a member admitted after `c` is not among its voters.
+    let mut g = fx();
+    with_v1(&mut g);
+    let base = g.w.modules()[&ASSET].version;
+    let t = commit(ASSET, Some(base), 2, 1);
+    ok(&run(&mut g.w, &mut g.a, &t));
+    g.w.set_member(kc, perm::EDIT);
+    let mut c = EntryBuilder::new(&keys, 2);
+    assert!(matches!(
+        refused(&run_at(&mut g.w, &mut c, &failed_of(&t, BuildFailure::Compile), 2)),
+        Reason::Invalid { .. }
+    ));
+}
+
+/// A failure for the asset's current version is a record only (logic.md 6.2 step 3): the log's statement that this
+/// member split off, which changes nothing in the world; a non-member's is refused.
+#[test]
+fn a_failure_for_the_active_version_is_a_record_only() {
+    let mut f = fx();
+    with_v1(&mut f);
+    let active = commit(ASSET, None, 1, 1);
+    let root = f.w.root();
+    ok(&run_at(&mut f.w, &mut f.b, &failed_of(&active, BuildFailure::Compile), 2));
+    assert_eq!(f.w.root(), root, "nothing changes");
+    assert!(f.w.pending().is_empty());
+    let keys = TestKeys::new(1, 3);
+    let mut outsider = EntryBuilder::new(&keys, 2);
+    assert!(matches!(
+        refused(&run_at(&mut f.w, &mut outsider, &failed_of(&active, BuildFailure::Compile), 2)),
+        Reason::Invalid { .. }
+    ));
+    // A version the asset never had is Stale.
+    assert!(matches!(
+        refused(&run_at(&mut f.w, &mut f.b, &failed_of(&commit(ASSET, None, 5, 1), BuildFailure::Compile), 2)),
+        Reason::Stale { .. }
+    ));
 }

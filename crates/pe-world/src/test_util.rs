@@ -108,6 +108,7 @@ pub fn five_kinds() -> World {
         deadline: Frame(1205),
         voters: vec![a, b],
         attested: vec![(a, Frame(5))],
+        failed: Vec::new(),
         void: None,
     };
     Arc::make_mut(&mut w.modules).insert(ASSET, module);

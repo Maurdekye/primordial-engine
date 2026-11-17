@@ -18,8 +18,8 @@ use crate::edit::{
     Actor, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
 };
 use crate::script::{
-    AssetId, MAX_REKEY_ROWS, MAX_SOURCE_BYTES, ModuleRow, PendingCommit, RekeyReport, VoidKind, attest_window,
-    check_source,
+    AssetId, BuildFailure, MAX_REKEY_ROWS, MAX_SOURCE_BYTES, ModuleRow, PendingCommit, RekeyReport, VoidKind,
+    attest_window, check_source,
 };
 use crate::world::{DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, depth, perm};
 
@@ -192,7 +192,19 @@ fn hand_only(c: ComponentId) -> bool {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FrameEnd {
     pub activated: Vec<(AssetId, Version, Option<RekeyReport>)>,
-    pub voided: Vec<(AssetId, Version, VoidKind, Option<Blocked>)>,
+    pub voided: Vec<Voided>,
+}
+
+/// One pending commit [`World::end_frame`] voided: its asset and version, why, the objects that blocked it (only for
+/// `RekeyBlockedAtActivation`), and who could not build it and why, in key order (Q1 (c)'s notice to the author; S5's
+/// `Voided.failed`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Voided {
+    pub asset: AssetId,
+    pub version: Version,
+    pub kind: VoidKind,
+    pub blocked: Option<Blocked>,
+    pub failed: Vec<(MemberKey, BuildFailure)>,
 }
 
 /// The objects that block a re-key (7.9), in id order: the first [`REKEY_BLOCKED_NAMED`], and how many more. One
@@ -290,9 +302,9 @@ impl World {
         {
             return Err((None, invalid()));
         }
-        // An attestation (logic.md 6.2a) stands alone and needs no `EDIT`, only a voter's place on the pending
-        // commit, which its op checks.
-        let attest = tx.ops.iter().any(|o| matches!(o, Op::AttestBuild { .. }));
+        // An attestation or a failed build (logic.md 6.2a) stands alone and needs no `EDIT`, only a voter's place on
+        // the pending commit (or, for a failure, a member's on the current version), which its op checks.
+        let attest = tx.ops.iter().any(|o| matches!(o, Op::AttestBuild { .. } | Op::BuildFailed { .. }));
         if attest && (tx.ops.len() != 1 || !tx.preconditions.is_empty()) {
             return Err((None, invalid()));
         }
@@ -509,13 +521,16 @@ impl World {
                 self.op_commit(cx, i, *script, *base, row)
             }
             Op::AttestBuild { script, version, module } => self.op_attest(cx, *script, *version, *module),
+            Op::BuildFailed { script, version, reason, module, .. } => {
+                self.op_build_failed(cx, *script, *version, *reason, *module)
+            }
         }
     }
 
     /// `AttestBuild` (logic.md 6.2a; 7.9): counts the author's attestation on the asset's pending commit. `Stale` if
     /// no commit is pending at that version (none, another V, activated or voided); `Invalid` for a non-voter, a
     /// voter's second attestation, or a module other than the registered `author_module`. A refused one changes
-    /// nothing, and its signed entry stays in the log as the evidence.
+    /// nothing, and its signed entry stays in the log as the evidence. It supersedes the voter's own `BuildFailed`.
     fn op_attest(&mut self, cx: &mut Cx, script: AssetId, v: Hash, module: Hash) -> Result<(), Reason> {
         let stale = |current: Version| Reason::Stale { precondition: OWN_CHECK, current, winner: current.entry };
         let current = self.modules.get(&script).map_or(Version { entry: EntryRef(Hash::ZERO), op: 0 }, |m| m.version);
@@ -529,9 +544,53 @@ impl World {
             return Err(invalid());
         }
         let p = Arc::make_mut(&mut self.pending).get_mut(&script).expect("present");
+        p.failed.retain(|(k, _, _)| *k != cx.author);
         let at = p.attested.partition_point(|(k, _)| k.0 < cx.author.0);
         p.attested.insert(at, (cx.author, cx.frame));
         Ok(())
+    }
+
+    /// `BuildFailed` (logic.md 6.2a item 2; 7.9): a voter's statement that its build of version `v` failed, after its
+    /// local retries. On the pending commit at `v` it is counted, one per voter, against the quorum (the shared void
+    /// rule at this frame's end); `Invalid` for a non-voter, a second failure, or a failure after the voter's counted
+    /// attestation. For the asset's current version it is a record only, the log's statement that this member split
+    /// off (6.2 step 3), and changes nothing; `Invalid` from a non-member. Otherwise `Stale`, as for `AttestBuild`:
+    /// nothing changes a void. The hashes ride in the entry as evidence; the world keeps the reason. The evidence must
+    /// agree with itself: `module` is present exactly for a `Mismatch`, the hash it built, which is not the one it
+    /// failed to match; anything else is `Invalid` (@chunks-reviewer's L1).
+    fn op_build_failed(
+        &mut self,
+        cx: &mut Cx,
+        script: AssetId,
+        v: Hash,
+        why: BuildFailure,
+        module: Option<Hash>,
+    ) -> Result<(), Reason> {
+        let stale = |current: Version| Reason::Stale { precondition: OWN_CHECK, current, winner: current.entry };
+        if module.is_some() != (why == BuildFailure::Mismatch) {
+            return Err(invalid());
+        }
+        let row = self.modules.get(&script);
+        let matched = |against: Hash| module == Some(against);
+        let current = row.map_or(Version { entry: EntryRef(Hash::ZERO), op: 0 }, |m| m.version);
+        match self.pending.get(&script) {
+            Some(p) if p.void.is_none() && p.v() == v => {
+                let refused = !p.voters.contains(&cx.author) || p.has_attested(&cx.author) || p.has_failed(&cx.author);
+                if refused || matched(p.author_module) {
+                    return Err(invalid());
+                }
+                let p = Arc::make_mut(&mut self.pending).get_mut(&script).expect("present");
+                let at = p.failed.partition_point(|(k, _, _)| k.0 < cx.author.0);
+                p.failed.insert(at, (cx.author, cx.frame, why));
+                Ok(())
+            }
+            _ if row.is_some_and(|m| m.v() == v) => {
+                let m = row.expect("checked");
+                if self.members.contains_key(&cx.author) && !matched(m.author_module) { Ok(()) } else { Err(invalid()) }
+            }
+            Some(p) if p.void.is_none() => Err(stale(p.version)),
+            _ => Err(stale(current)),
+        }
     }
 
     /// Activations and voids at the end of `frame` (logic.md 6.2a), in asset order: a pending commit a quorum has
@@ -567,7 +626,7 @@ impl World {
                 }
                 Err((kind, blocked)) => {
                     Arc::make_mut(&mut self.pending).get_mut(&a).expect("present").void = Some((frame, kind));
-                    out.voided.push((a, p.version, kind, blocked));
+                    out.voided.push(Voided { asset: a, version: p.version, kind, blocked, failed: p.failures() });
                 }
             }
         }
@@ -688,6 +747,7 @@ impl World {
             deadline,
             voters,
             attested,
+            failed: Vec::new(),
             void: None,
         };
         Arc::make_mut(&mut self.pending).insert(script, pending);

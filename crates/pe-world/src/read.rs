@@ -72,6 +72,17 @@ pub struct WorldSnapshot {
 }
 
 impl WorldSnapshot {
+    /// The modules table's current rows at this frame (6.6): each script's active version.
+    pub fn modules(&self) -> &BTreeMap<crate::script::AssetId, crate::script::ModuleRow> {
+        self.world.modules()
+    }
+
+    /// The pending script commits at this frame (logic.md 6.2a), voided ones kept as their record: what a machine's
+    /// build thread builds and attests (@vdw-physics).
+    pub fn pending(&self) -> &BTreeMap<crate::script::AssetId, crate::script::PendingCommit> {
+        self.world.pending()
+    }
+
     /// What the edit path would give `tx` from `draft` at this snapshot, changing nothing (7.6; api.md 9.2 step 3).
     /// See [`World::dry_run_draft`] for what in the outcome is provisional. `frame` is the frame the entry would be
     /// applied at, which is never before this snapshot's [`WorldSnapshot::frame`]; it only dates the tombstones a
