@@ -147,8 +147,10 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
         turns slower for good paces its author until 32 slower samples replace the faster ones (about 3-10 s of
         votes). A transport that drains a long stall slowly would have its acks of the drained entries sampled with
         their age, and over 32 of them lift the allowance until fresh samples replace them (the sim flushes at once,
-        so this is [I], not measured). Lateness reports are unsigned hints: a peer that under-reports makes its
-        author pace less, which costs only that author's own entries (void as late).
+        so this is [I], not measured). Lateness reports are unsigned hints. A peer that under-reports makes the author
+        pace less, which costs the author voids (its entries void as late). A peer that over-reports drives the
+        author's allowance for it to 0 and can pace the author on that peer's slow return path, as delaying its votes
+        already could; at n >= 4 the (q - 1)th-least selection means one member alone can't (@design-reviewer's Low).
     - Measured [V, pe-agree sim, 120 Hz, two hands a frame, seeds 31-33]: with pacing, stalls of 1, 3 and 10 s give no
       refusal and no fault, and the member's entries are final again from the stall's end. In every stall run, paced
       or not, every peer's copy of the member's chain links through every entry it made up to 2 s before the end
