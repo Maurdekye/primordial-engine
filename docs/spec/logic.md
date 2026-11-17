@@ -882,7 +882,13 @@ author can stop finality, and the outcome is identical on every machine.
 
    1 GiB is about 7 times the 6.4k-line guest's peak. Peak memory moves with the job count (the 6.4k-line guest
    142.8, 151.4 and 157.1 MiB at 1, 4 and 16 jobs; the module's bytes do not move) [V
-   `spikes/out/iter-bench/build-asym/`]. Neither the cap nor the margins are built yet.
+   `spikes/out/iter-bench/build-asym/`].
+   **In M1 the attesters' cap is not enforced** (@coordinator-opus): members are trusted (the `code`
+   permission, 6.2b's last case), so a source crafted to exhaust a smaller machine's memory makes that machine's
+   build fail as `Local`, and it splits off. M1 keeps the pinned job count and the author's 15 s margin. Enforcing
+   the cap, and measuring the author's own peak for the 512 MiB margin, both need an OS binding (a Windows job
+   object; a Linux cgroup or measure-then-refuse), which is M2, docketed separately [I: `windows-sys` is to be
+   checked against the native audit first].
 6. **A second commit while one is pending** is refused as `Stale` with the pending entry as `winner`: the author
    waits for activation or the void [I; the simplest v0 rule, kept for 6.5].
 
