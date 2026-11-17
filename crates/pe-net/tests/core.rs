@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 use bytes::Bytes;
-use pe_net::core::{Config, Core, Lifecycle};
-use pe_net::lifecycle::{CloseCode, Hello, Refusal, Welcome, encode_rendezvous};
+use pe_net::core::{Config, Core, CoreError, Lifecycle};
+use pe_net::lifecycle::{CloseCode, Hello, HelloError, MAX_BUILD, Refusal, Welcome, encode_rendezvous};
 use pe_net_crypto::identity::{Identity, Invite, Reply};
 use pe_seams::{FrameClock, HostTime, Lane, LinkState, NetEvent, PeerId, Received, SimRate, Transport};
 
@@ -21,6 +21,23 @@ fn hello(build: &str) -> Hello {
         addrs: Vec::new(),
         clock_ready: true,
     }
+}
+
+/// A build id over the hello's bound is refused when the Core is built, with a typed error. Sent, every peer would
+/// drop the hello as malformed and the connection would only time out (@iter-bench's finding).
+#[test]
+fn a_build_id_over_the_hello_s_bound_is_refused_when_the_core_is_built() {
+    let core = |build: &str| Core::new(Config::new(hello(build), true), Identity::from_seed(&[9; 32]), [9; 32]);
+    let refused = core(&"x".repeat(MAX_BUILD + 1));
+    assert!(
+        matches!(
+            refused,
+            Err(CoreError::Hello(HelloError::TooLong { field: "build id", len, max })) if len == MAX_BUILD + 1 && max == MAX_BUILD
+        ),
+        "{:?}",
+        refused.err()
+    );
+    assert!(core(&"x".repeat(MAX_BUILD)).is_ok(), "a build id at the bound is fine");
 }
 
 struct Node {
