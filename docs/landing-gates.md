@@ -160,8 +160,10 @@ so a renamed or ignored test would otherwise pass). `scripts/tier1.sh` runs the 
   folder holds a path that triggers the check. A path on the check's `all` lines (the toolchain pin, a cargo
   configuration, for clippy also `Cargo.lock` and the root manifest) makes it every member instead. The check's
   `skip` packages are never included (box3d-fork, whose package is `box3d-rust`, by C10). When none is left, the
-  check has nothing to run, which isn't a failure. A touched crate's dependents aren't tier 1's: the job's
-  workspace check compiles them, and tier 2 tests them.
+  check has nothing to run, which isn't a failure. A landing that drops a crate from the members while it
+  changes files in the crate's folder fails, since no check would build them (removing the member together
+  with its folder is fine). A touched crate's dependents aren't tier 1's: the job's workspace check compiles
+  them, and tier 2 tests them.
 * **No crate is exempt.** The coordinator's ruling allowed an exempt list that only shrinks, for
   crates that failed clippy when the check started. The census on main ff9be64b found none: every one of the 19
   crates passed `clippy --no-deps -- -D warnings` on its own, with no warning. So the table has no exempt list,
@@ -188,12 +190,13 @@ so a renamed or ignored test would otherwise pass). `scripts/tier1.sh` runs the 
     `models/cuts/` changes. Its output must say that all 16 checks met their expectation.
   * The harness's fast profile follows once its owner names the command.
 * **Its self-test,** `bash scripts/test_tier1.sh`, runs no cargo, so it needs no build slot. In a throwaway clone
-  it checks, in twenty-one cases, that a landing triggers and runs the checks its paths name and no others, that
+  it checks, in twenty-two cases, that a landing triggers and runs the checks its paths name and no others, that
   the table and the runner come from the base, that a failing command fails the run and so does one that exits 0
   without its expected output, that `--run` refuses a checkout that isn't at the landing or isn't clean where it
   matters, and that a malformed table is an error. For `{crates}`, it checks that it holds exactly the touched
-  members less the skipped ones (every member for an `all` path, and only the landing's members), and that a
-  landing whose own table is malformed fails.
+  members less the skipped ones (every member for an `all` path), that a landing which drops a member while
+  changing its files fails and one which removes it with its folder doesn't, and that a landing whose own table
+  is malformed fails.
 * Hosted CI will run it too, later (refound-plan 4.6).
 
 ## Accepting an exception

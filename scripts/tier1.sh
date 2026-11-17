@@ -104,7 +104,7 @@ parse_table() {
       *) perr="line $lineno: unknown keyword '$key' (check, why, when, all, needs, skip, run, expect)"; return 1 ;;
     esac
   done <<< "$text"
-  for w in "${!names[@]}"; do
+  for w in ${names[@]+"${!names[@]}"}; do
     [ -n "${whens[w]}" ] || { perr="check ${names[w]} has no 'when' line"; return 1; }
     [ -n "${runs[w]}" ] || { perr="check ${names[w]} has no 'run' line"; return 1; }
     case "${runs[w]}" in
@@ -123,14 +123,11 @@ if [ $own = 0 ] && ltab=$(git show "$sha:$table" 2> /dev/null) && [ "$ltab" != "
 fi
 parse_table "$tab" || die "$table: $perr"
 
-# The workspace members as the landing has them: each member's folder and its package name. Read once, the
-# first time a triggered check names {crates}.
-mdirs=() mpkgs=() mread=0
-read_members() {
-  [ $mread = 0 ] || return 0
-  mread=1
-  local man line d name section= inm=0 qre='"([^"]*)"' hre='^[[:space:]]*\[' mre='^[[:space:]]*members[[:space:]]*='
-  man=$(git show "$sha:Cargo.toml" 2> /dev/null) || die "{crates} needs a Cargo.toml at the root of $(short "$sha")"
+# member_dirs <commit>: prints the [workspace] members of the commit's root Cargo.toml, one folder per line.
+# Returns 1 when it names none (or there is no Cargo.toml), 2 when a member is a pattern rather than a folder.
+member_dirs() {
+  local man line d section= inm=0 found=0 qre='"([^"]*)"' hre='^[[:space:]]*\[' mre='^[[:space:]]*members[[:space:]]*='
+  man=$(git show "$1:Cargo.toml" 2> /dev/null) || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%%#*}
     if [ $inm = 0 ]; then
@@ -140,25 +137,43 @@ read_members() {
     fi
     while [[ $line =~ $qre ]]; do
       d=${BASH_REMATCH[1]}
-      case "$d" in *[*?[]*) die "the root Cargo.toml's member '$d' is a pattern; {crates} needs each member's folder" ;; esac
-      mdirs+=("${d%/}")
+      case "$d" in *[*?[]*) return 2 ;; esac
+      printf '%s\n' "${d%/}"; found=1
       line=${line#*"\"$d\""}
     done
     case "$line" in *']'*) break ;; esac
   done <<< "$man"
-  [ ${#mdirs[@]} -gt 0 ] || die "can't read the workspace members from the root Cargo.toml of $(short "$sha")"
+  [ $found = 1 ]
+}
+
+# The workspace members as the landing has them (each member's folder and its package name), and the base's
+# member folders. Read once, the first time a triggered check names {crates}.
+mdirs=() mpkgs=() bdirs=() mread=0
+read_members() {
+  [ $mread = 0 ] || return 0
+  mread=1
+  local list rc d name
+  list=$(member_dirs "$sha"); rc=$?
+  [ $rc != 2 ] || die "the root Cargo.toml of $(short "$sha") names a member by a pattern; {crates} needs each member's folder"
+  [ $rc = 0 ] || die "can't read the workspace members from the root Cargo.toml of $(short "$sha")"
+  while IFS= read -r d; do mdirs+=("$d"); done <<< "$list"
   for d in "${mdirs[@]}"; do
     name=$(git show "$sha:$d/Cargo.toml" 2> /dev/null |
       sed -n '/^\[package\]/,/^\[/s/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
     [[ $name =~ $pkgre ]] || die "can't read the package name of the workspace member $d"
     mpkgs+=("$name")
   done
+  if list=$(member_dirs "$bsha"); then
+    while IFS= read -r d; do bdirs+=("$d"); done <<< "$list"
+  fi
 }
 
-# expand <check index> <its triggering paths>: sets crates to the check's -p list, and notes to how it was
-# chosen and the packages it leaves out. Returns 1 when none is left.
+# expand <check index> <its triggering paths>: sets crates to the check's -p list, notes to how it was chosen
+# and the packages it leaves out, and orphans to the triggering paths that the landing still has in a folder
+# that is a member at the base but not in the landing (it changes a crate it drops from the workspace, so no
+# check would build those files). Returns 1 when no package is left.
 expand() {
-  local i=$1 paths=$2 k p sel all=0 allhit g specs
+  local i=$1 paths=$2 k p sel all=0 allhit g specs d m
   read_members
   if [ -n "${alls[i]}" ]; then
     specs=()
@@ -179,6 +194,16 @@ expand() {
     case " ${skips[i]} " in *" $p "*) notes="$notes; $p skipped"; continue ;; esac
     crates="$crates -p $p"
   done
+  orphans=
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    m=0
+    for d in "${mdirs[@]}"; do case "$g" in "$d"/*) m=1; break ;; esac; done
+    [ $m = 0 ] || continue
+    for d in ${bdirs[@]+"${bdirs[@]}"}; do
+      case "$g" in "$d"/*) ! git cat-file -e "$sha:$g" 2> /dev/null || orphans="$orphans $g ($d)"; break ;; esac
+    done
+  done <<< "$paths"
   [ $all = 0 ] || notes="every member, for a path on its 'all' lines$notes"
   notes=${notes#; }
   [ -z "$crates" ] || return 0
@@ -205,7 +230,7 @@ if [ -n "$lerr" ]; then
   refused=1
 fi
 hit=0 passed=0 failed=0 empty=0
-for i in "${!names[@]}"; do
+for i in ${names[@]+"${!names[@]}"}; do
   specs=()
   set -f
   for g in ${whens[i]}; do specs+=(":(glob)$g"); done
@@ -222,7 +247,13 @@ for i in "${!names[@]}"; do
   cmd=${runs[i]}
   case "$cmd" in
     *'{crates}'*)
-      if ! expand "$i" "$paths"; then
+      left=1; expand "$i" "$paths" || left=0
+      if [ -n "$orphans" ]; then
+        refused=1
+        echo "tier1: ${names[i]}: FAIL: the landing changes files in a folder that is a workspace member at the base" \
+          "but not in the landing, so no check builds them:$orphans"
+      fi
+      if [ $left = 0 ]; then
         empty=$((empty + 1)); echo "tier1: ${names[i]}: nothing to run: $notes"
         continue
       fi
