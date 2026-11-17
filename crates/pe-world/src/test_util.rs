@@ -2,8 +2,8 @@
 //! checks pe-app's normal edges). [`divergence`] damages one record of one of the five hashed kinds in a world,
 //! bypassing every check (plus a body's physics state, the leaf most likely to diverge for real; @coordinator-opus
 //! m4494d7113f6d), and into each of the other hashed tables (registry, cooldowns, tombstones, hand packs, push
-//! windows; m4494d7113f6d item 2), and returns the leaf it changed, so a test can assert that the hash tree finds exactly that
-//! leaf: pe-world's own detection test, and @diverge-eng's repair by rungs 1 and 2 on the real pe-world.
+//! windows; m4494d7113f6d item 2), and returns the leaf it changed, so a test can assert that the hash tree finds
+//! exactly that leaf: pe-world's own detection test, and @diverge-eng's repair by rungs 1 and 2 on the real pe-world.
 
 use std::sync::Arc;
 
