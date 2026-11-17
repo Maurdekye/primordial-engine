@@ -861,3 +861,59 @@ impl World {
         fp
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending() -> PendingCommit {
+        let (a, b, c) = (MemberKey([1; 32]), MemberKey([2; 32]), MemberKey([3; 32]));
+        PendingCommit {
+            version: Version { entry: EntryRef(Hash([10; 32])), op: 1 },
+            author: a,
+            source: BlobRef { hash: [8; 32], len: 64 },
+            toolchain: Hash([1; 32]),
+            sdk: Hash([2; 32]),
+            author_module: Hash([3; 32]),
+            components: vec![ComponentId(1 << 100)],
+            commit_frame: Frame(5),
+            deadline: Frame(1205),
+            voters: vec![a, b, c],
+            attested: vec![(a, Frame(5))],
+            failed: vec![(b, Frame(6), BuildFailure::Mismatch), (c, Frame(7), BuildFailure::Local)],
+            void: Some((Frame(7), VoidKind::QuorumUnreachable)),
+        }
+    }
+
+    /// The pending row's failures round-trip, and decoding is strict: out of order, a non-voter, a voter that also
+    /// attested, or an unknown reason does not decode.
+    #[test]
+    fn failures_round_trip_and_decode_strictly() {
+        let p = pending();
+        assert_eq!(modules_value_from(&modules_value(None, Some(&p))), Some((None, Some(p.clone()))));
+        let bad = |edit: &dyn Fn(&mut PendingCommit)| {
+            let mut q = pending();
+            edit(&mut q);
+            modules_value_from(&modules_value(None, Some(&q)))
+        };
+        assert_eq!(bad(&|q| q.failed.reverse()), None, "out of order");
+        assert_eq!(bad(&|q| q.failed[0].0 = MemberKey([9; 32])), None, "a non-voter");
+        assert_eq!(bad(&|q| q.failed[0].0 = MemberKey([1; 32])), None, "the attester");
+        let mut b = modules_value(None, Some(&p));
+        let n = b.len();
+        // The last failure's reason sits before the void (kind u8 + frame u64).
+        b[n - 1 - 1 - 8] = 0;
+        assert_eq!(modules_value_from(&b), None, "an unknown reason");
+    }
+
+    #[test]
+    fn the_shared_void_rule_counts_neither_attested_nor_failed() {
+        let mut p = pending();
+        p.void = None;
+        // q(3) = 2: A attested, B and C failed, so 1 + 0 < 2.
+        assert!(p.quorum_unreachable(|_| true));
+        p.failed.pop();
+        assert!(!p.quorum_unreachable(|_| true), "C could still attest");
+        assert!(p.quorum_unreachable(|k| *k != MemberKey([3; 32])), "unless C left");
+    }
+}
