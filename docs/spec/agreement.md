@@ -170,9 +170,42 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   just below it (measured: 19 honest entries void in 4 s at n = 4 with 5-30 ms links). The lag starts at 0.25 s and
   then adapts: the 95th percentile of how late other members' entries arrive at this member (present frame at
   arrival against the stamp), plus a margin, clamped between a floor and a cap (world settings, in seconds; defaults
-  0.05 s, 1 s, margin 0.05 s). Members need not agree on it: the cut carries its frame. Past the cap, a slow member
-  stamps its own entries ahead by its measured delay (the author's side, pe-app), so its input lags but is never
-  voided. Harness property: no honest entry is voided while every link's delay is below the lag minus the margin.
+  0.05 s, 1 s, margin 0.05 s). Members need not agree on it: the cut carries its frame. Past the target, a slow
+  member stamps its own entries ahead (the author's side, pe-app; app.md). The other members report how late its
+  entries reach them (`own_lateness`, below), and it stamps ahead by the excess, `lead = delay - target + margin`.
+  The target is a setting at most the cap, 0.1 s by default: receivers can't afford to re-step a second of a slow
+  member's input every tick (measured by @engine-architect: under a 1 s target a receiver's view was published on
+  583 of 1,800 ticks), so the slow member pays its excess as its own input lag (@coordinator-opus,
+  after the user's thin-link rulings). Its input lags by the lead but is never voided, up to the lead's clamp
+  (app.md). Past the clamp its hand entries void as late and its edits go to pe-api's re-send backstop. Harness
+  property: no honest entry is voided while every link's delay is below the lag minus the margin.
+  - **The measured delay comes from the receivers** (@engine-architect's plan, option (a) of
+    @item:primordial-engine/pe-app-stamps-a-slow-member-s-entries-ahead-by-i). The author can't see a one-way delay:
+    its round trips halve an asymmetric one, and the clock offset folds the rest in. Each member keeps the lag's
+    samples per chain as well (the last 128 of each other member's chain, with each entry's seq), signed: negative
+    when an entry arrives before its stamp, so a lead that is too large shows and can shed (@engine-architect's Medium
+    on 0238ca46; the lag counts an early entry as on time). Its votes and timeouts carry, not signed, one report per
+    chain with at least 16 samples: (author, chain, the 95th percentile in frames, the seq of the entry at that
+    percentile). That seq, not the window's newest, is what makes the correction exact (@design-reviewer's M1 on
+    0238ca46): just after a lead rises, the slowest samples are the oldest, stamped with the old lead, and adding the
+    new lead to them would ratchet it up. The author keeps each other member's report from its latest vote or timeout
+    (by epoch and view, since views restart in each epoch) on its current chain, and S3's `own_lateness()` (S3 v1.8)
+    returns them raw. The driver knows the lead it stamped each seq with and corrects each report by it; at n = 2 it
+    takes the one report, and at n >= 4 a quorum-rank figure, not the largest, so one faulty member can't push the
+    lead up alone. A report is a hint from an authenticated link: a wrong one moves only the author's own lead, which
+    the driver clamps (a world setting of a few seconds). The samples leave out what the lag leaves out: fetched and
+    hinted arrivals, and a backlog a vote or timeout claimed first. That biases the report low, since the entries a
+    vote overtakes are the slowest; the exclusion stays, because after a real outage they would inflate the lead
+    (measured negligible at n = 2, below). The 16-sample minimum and the 128-sample window assume a member that
+    streams hands, as every M1 member does: a chain of edits alone would wait 16 edits for its first report, and its
+    window would span minutes. Measured [V, pe-agree sim, release, n = 2, B -> A slow, A -> B fast, 2 seeds each]: A
+    reports B's 95th percentile at 1,216-1,225 ms on a 1.2 s fixed link and 1,483-1,500 ms on a 0.9-1.5 s one, over a
+    seq 150-300 behind B's head; B reports A's at 2-3 frames. On the jittered link 3-15 % of B's arrivals at A are
+    left out as a claimed backlog (a vote overtook them), and 0.1-0.2 % in all on the fixed one; the percentile still
+    matches the link. A lead stepped up by 0.5 s reads, corrected, at most 1,216-1,225 ms on the fixed link and 1,500
+    ms on the jittered one (with the window's newest seq it read 1,716 ms). With a 1.2 s lead on the 1.2 s link, a
+    drop to 0.3 s reads 316-325 ms from 1.1 s after the drop, once the entries already in flight on the slow path have
+    arrived.
   - *Residual:* a faulty leader can name its present (or a frame just behind it) and void entries in flight. That is
     visible as voids per leader.
   - *Residual:* a member with no hand stream (an agent) can stamp up to the lag in the past and win same-frame races.
@@ -465,6 +498,8 @@ Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-revi
   - **A cut's identity is its `CutRef`** (S3 v1.7; L2): heights go on across the switch, so the old epoch's suffix
     cuts and the new epoch's first cuts share heights with different frames.
   - The consensus hash is v5: this build's final log differs from v4's from the first `Leave`.
+  - v6 adds no setting: votes and timeouts carry the lateness reports of section 3 (stamp-ahead), a wire change, so
+    builds before and after refuse each other at start.
   - Tests (crates/pe-agree/src/node_tests.rs): 2 -> 1 (the leaver stays for E, then quits; the other finalizes
     alone), 3 -> 2, an entry signed after the `Leave` void as `AfterLeave` at the same cut everywhere, the leaver
     waiting for `leave_settled` (and the naive quit as its control), the last member's `Leave` void.

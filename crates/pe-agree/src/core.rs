@@ -115,7 +115,23 @@ pub struct Vote {
     /// Not signed: the voter's chain heads beyond the cut, so the next proposer learns what it lacks and fetches it
     /// (bounded progress, model v0.2). A hint only; a wrong one costs a fetch.
     pub heads: Vec<pe_seams::ChainHead>,
+    /// Not signed: how late the other members' entries reach this voter (stamp-ahead, agreement.md 3). A hint only;
+    /// a wrong one moves the author's own lead, which pe-app clamps.
+    pub lateness: Vec<Lateness>,
     pub sig: Signature,
+}
+
+/// How late one chain's entries reach the reporter, as its votes and timeouts carry it (stamp-ahead, agreement.md 3;
+/// @engine-architect's plan): the 95th percentile of the arrival lateness over a window of the chain's
+/// recent entries, in frames (negative when they arrive before their stamps), and `seq`, the seq of the entry at
+/// that percentile. The author reads the reports on its own chain (`Agreement::own_lateness`) and corrects each by
+/// the lead it stamped entry `seq` with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lateness {
+    pub author: MemberKey,
+    pub chain: pe_seams::ChainId,
+    pub frames: i64,
+    pub seq: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,6 +142,8 @@ pub struct Timeout {
     /// Not signed: the member's chain heads beyond the final cut, as a vote's (a hint; a wrong one costs a fetch).
     /// An abstaining member's timeout carries its heads, so the next leader learns what it lacks (agreement.md 3).
     pub heads: Vec<pe_seams::ChainHead>,
+    /// Not signed: as a vote's.
+    pub lateness: Vec<Lateness>,
     /// Over (line, view, high_qc.view).
     pub sig: Signature,
 }
@@ -380,6 +398,8 @@ pub struct Core {
     spared_views: BTreeSet<u64>,
     /// The chain heads this member's next timeouts carry (set by the node before each tick).
     timeout_heads: Vec<pe_seams::ChainHead>,
+    /// The lateness reports this member's next votes and timeouts carry (set by the node before each tick).
+    lateness: Vec<Lateness>,
     timeouts: BTreeMap<u64, BTreeMap<MemberKey, (u64, Signature)>>,
     tcs: BTreeMap<u64, Tc>,
 
@@ -487,6 +507,7 @@ impl Core {
             split_reported: BTreeSet::new(),
             quick_views: BTreeSet::new(),
             timeout_heads: Vec::new(),
+            lateness: Vec::new(),
             spared_views: BTreeSet::new(),
             timeouts: BTreeMap::new(),
             tcs: BTreeMap::new(),
@@ -1223,6 +1244,7 @@ impl Core {
                 high_qc: self.high_qc.clone(),
                 voter: self.me,
                 heads: self.timeout_heads.clone(),
+                lateness: self.lateness.clone(),
                 sig: signer.sign(&timeout_bytes(self.domain(), self.view, self.high_qc.view)),
             };
             self.out.push((To::All, Msg::Timeout(t.clone())));
@@ -1255,6 +1277,11 @@ impl Core {
     /// The chain heads this member's timeouts carry from now on.
     pub fn set_timeout_heads(&mut self, heads: Vec<pe_seams::ChainHead>) {
         self.timeout_heads = heads;
+    }
+
+    /// The lateness reports this member's votes and timeouts carry from now on.
+    pub fn set_lateness(&mut self, lateness: Vec<Lateness>) {
+        self.lateness = lateness;
     }
 
     /// Abstain in the current view (the outage rule, agreement.md 3): time it out at the next tick, without growing
@@ -1354,6 +1381,7 @@ impl Core {
             voter: self.me,
             self_test,
             heads,
+            lateness: self.lateness.clone(),
             sig: signer.sign(&vote_bytes(self.domain(), view, block, root)),
         };
         self.out.push((To::All, Msg::Vote(v.clone())));

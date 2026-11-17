@@ -5,7 +5,7 @@ use pe_seams::{
     ChainHead, ChainId, Cut, CutRef, EntryRef, Frame, Hash, LineId, MemberKey, SelfTest, Signature, SignedEntry,
 };
 
-use crate::core::{Block, BlockId, Msg, Proposal, Qc, Report, Tc, Timeout, Vote};
+use crate::core::{Block, BlockId, Lateness, Msg, Proposal, Qc, Report, Tc, Timeout, Vote};
 
 /// Most heads in a cut: one per chain, and a member has one chain per line (a few more over restarts).
 pub const MAX_HEADS: usize = 1024;
@@ -81,6 +81,16 @@ impl W {
         self.u64(h.seq);
         self.b32(&h.entry.0.0);
     }
+    /// Frames as i32 (saturating): a lateness past 2^31 frames either way is no different from one at it.
+    fn lateness(&mut self, ls: &[Lateness]) {
+        self.u32(ls.len() as u32);
+        for l in ls {
+            self.b32(&l.author.0);
+            self.b32(&l.chain.0.0);
+            self.u32(l.frames.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32);
+            self.u64(l.seq);
+        }
+    }
     fn qc(&mut self, q: &Qc) {
         self.b32(&q.block.0.0);
         self.u64(q.view);
@@ -153,6 +163,19 @@ impl<'a> R<'a> {
             seq: self.u64()?,
             entry: EntryRef(self.hash()?),
         })
+    }
+    fn lateness(&mut self) -> Result<Vec<Lateness>, DecodeError> {
+        let n = self.count(MAX_HEADS)?;
+        let mut ls = Vec::with_capacity(n);
+        for _ in 0..n {
+            ls.push(Lateness {
+                author: MemberKey(self.b32()?),
+                chain: ChainId(self.hash()?),
+                frames: self.u32()? as i32 as i64,
+                seq: self.u64()?,
+            });
+        }
+        Ok(ls)
     }
     fn qc(&mut self) -> Result<Qc, DecodeError> {
         let block = BlockId(self.hash()?);
@@ -243,6 +266,7 @@ pub fn encode(m: &Wire) -> Vec<u8> {
             for h in &v.heads {
                 w.head(h);
             }
+            w.lateness(&v.lateness);
             w.sig(&v.sig);
         }
         Wire::Core(Msg::Timeout(t)) => {
@@ -254,6 +278,7 @@ pub fn encode(m: &Wire) -> Vec<u8> {
             for h in &t.heads {
                 w.head(h);
             }
+            w.lateness(&t.lateness);
             w.sig(&t.sig);
         }
         Wire::Core(Msg::Report(rp)) => {
@@ -336,8 +361,9 @@ pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
             for _ in 0..n {
                 heads.push(r.head()?);
             }
+            let lateness = r.lateness()?;
             let sig = r.sig()?;
-            Wire::Core(Msg::Vote(Vote { view, block, root, voter, self_test, heads, sig }))
+            Wire::Core(Msg::Vote(Vote { view, block, root, voter, self_test, heads, lateness, sig }))
         }
         T_TIMEOUT => {
             let view = r.u64()?;
@@ -348,8 +374,9 @@ pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
             for _ in 0..n {
                 heads.push(r.head()?);
             }
+            let lateness = r.lateness()?;
             let sig = r.sig()?;
-            Wire::Core(Msg::Timeout(Timeout { view, high_qc, voter, heads, sig }))
+            Wire::Core(Msg::Timeout(Timeout { view, high_qc, voter, heads, lateness, sig }))
         }
         T_REPORT => {
             let verdict = r.self_test()?;
@@ -440,6 +467,7 @@ mod tests {
                     seq: 2,
                     entry: EntryRef(h(b"z")),
                 }],
+                lateness: vec![Lateness { author: MemberKey([4; 32]), chain: ChainId(h(b"c")), frames: 144, seq: 2 }],
                 sig: Signature([1; 64]),
             })),
             Wire::Core(Msg::Report(Report {
@@ -458,6 +486,7 @@ mod tests {
                     seq: 9,
                     entry: EntryRef(h(b"y")),
                 }],
+                lateness: vec![Lateness { author: MemberKey([4; 32]), chain: ChainId(h(b"d")), frames: -3, seq: 9 }],
                 sig: Signature([2; 64]),
             })),
             Wire::Core(Msg::Fetch(BlockId(h(b"f")))),
