@@ -330,6 +330,15 @@ pub struct Node {
     lateness_dirty: bool,
     /// Per author: the samples taken and the arrivals left out (fetched or hinted, or a claimed backlog).
     lateness_counts: HashMap<MemberKey, LatenessCounts>,
+    /// When this member last received anything from each peer.
+    heard: HashMap<MemberKey, HostTime>,
+    /// Per author, the outage mark: this member's present frame at the first arrival after silence from that peer
+    /// longer than OUTAGE_SILENCE_NS. Its entries stamped below the mark waited out the outage, so they are an outage's
+    /// backlog and go unsampled, whatever order they come in (@design-reviewer: a transport that queues
+    /// through a dark path flushes the backlog, and the author's votes and timeouts from the outage with it, before any
+    /// fresh claim; it was sampled with its whole outage age). Stamps rise, so once the backlog has drained no entry
+    /// falls below the mark.
+    outage_mark: HashMap<MemberKey, Frame>,
     /// The other members' latest reports on this member's own chains: per reporter, the (epoch, view) of the vote or
     /// timeout that carried it (views restart in each epoch), the chain, frames and seq.
     reported: HashMap<MemberKey, ((u64, u64), ChainKey, i64, u64)>,
@@ -353,6 +362,10 @@ pub struct Node {
 }
 
 const LATENESS_SAMPLES: usize = 256;
+/// Silence from a peer longer than this sets its outage mark (see `outage_mark`). A live session sends
+/// votes or timeouts every cut interval (0.1 s) and entries every frame, and a jittered slow link (0.9-1.5 s) spreads
+/// arrivals by 0.6 s at most, so a second of silence is an outage or a stall.
+const OUTAGE_SILENCE_NS: i64 = 1_000_000_000;
 /// Per chain, the samples a lateness report covers.
 const CHAIN_LATENESS_SAMPLES: usize = 128;
 /// Samples of a chain needed before this member reports on it.
@@ -557,6 +570,8 @@ impl Node {
             lateness_dirty: false,
             lateness_counts: HashMap::new(),
             reported: HashMap::new(),
+            heard: HashMap::new(),
+            outage_mark: HashMap::new(),
             abstained: AbstainBook::default(),
             cap_wait: HashMap::new(),
             old_epoch: None,
@@ -998,7 +1013,9 @@ impl Node {
             Ok(Inserted::New) => {
                 // Lateness from unsolicited entries only: a fetched one arrives late by construction.
                 // Nor from a claimed backlog (the outage rule): its entries arrive late by construction too.
-                let backlog = self.vote_high.get(&key).is_some_and(|(s, _)| *s >= e_seq);
+                let stamp_of = self.log.get(&key, &id).map(|e| e.entry.stamp);
+                let backlog = self.vote_high.get(&key).is_some_and(|(s, _)| *s >= e_seq)
+                    || self.outage_mark.get(&author).zip(stamp_of).is_some_and(|(m, st)| st < *m);
                 if let Some(p) = self.present.filter(|_| author != self.me) {
                     let c = self.lateness_counts.entry(author).or_default();
                     if solicited || hinted {
@@ -2084,6 +2101,12 @@ impl Agreement for Node {
             Ok(w) => w,
             Err(_) => return Err(self.fault(from, None, FaultKind::Malformed, "undecodable message".into())),
         };
+        // After silence from this peer, its entries stamped before now are an outage's backlog.
+        if self.heard.insert(from, at).is_some_and(|t| at.0.saturating_sub(t.0) > OUTAGE_SILENCE_NS)
+            && let Some(p) = self.present
+        {
+            self.outage_mark.insert(from, p);
+        }
         // A core message counts only in its own epoch (agreement.md 8): the current one, or the previous one while its
         // core is kept to finish E's suffix. Any other epoch's is dropped, without a fault: honest members lag.
         let (epoch, w) = match w {

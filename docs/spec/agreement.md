@@ -194,21 +194,33 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     takes the one report, and at n >= 4 a quorum-rank figure, not the largest, so one faulty member can't push the
     lead up alone. A report is a hint from an authenticated link: a wrong one moves only the author's own lead, which
     the driver clamps (a world setting of a few seconds). The samples leave out what the lag leaves out: fetched and
-    hinted arrivals, and a backlog a vote or timeout claimed first. That biases the report low, since the entries a
-    vote overtakes are the slowest; the exclusion stays, because after a real outage they would inflate the lead
-    (measured negligible at n = 2, below). The 16-sample minimum and the 128-sample window assume a member that
-    streams hands, as every M1 member does: a chain of edits alone would wait 16 edits for its first report, and its
-    window would span minutes. Measured [V, pe-agree sim, release, n = 2, B -> A slow, A -> B fast, 2 seeds each]: A
-    reports B's 95th percentile at 1,216-1,225 ms on a 1.2 s fixed link and 1,483-1,500 ms on a 0.9-1.5 s one, over a
-    seq 150-300 behind B's head; B reports A's at 2-3 frames. On the jittered link 3-15 % of B's arrivals at A are
-    left out as a claimed backlog (a vote overtook them), and 0.1-0.2 % in all on the fixed one; the percentile still
-    matches the link. A lead stepped up by 0.5 s reads, corrected, at most 1,216-1,225 ms on the fixed link and 1,500
-    ms on the jittered one (with the window's newest seq it read 1,716 ms). With a 1.2 s lead on the 1.2 s link, a
-    drop to 0.3 s reads 316-325 ms from 1.1 s after the drop, once the entries already in flight on the slow path have
-    arrived.
+    hinted arrivals, a backlog a vote or timeout claimed first, and an outage's backlog: after silence from a peer
+    longer than 1 s, its entries stamped below this member's present frame at the first arrival after it (the outage
+    mark) waited out the outage, however they come, since a transport that queues through a dark path flushes them
+    before any fresh claim (@design-reviewer: unmarked, the first report after a 10 s blackout read 22 s
+    and pe-app's lead jumped to its 3 s clamp; marked, the reports stay at 16-25 ms and the cut lag at 66-75 ms after
+    a held-and-flushed 10 s blackout in pe-agree's sim [V]). That biases the report low, since the entries a vote
+    overtakes are the slowest; the exclusion stays, because after a real outage they would inflate the lead (measured
+    negligible at n = 2, below). The 16-sample minimum and the 128-sample window assume a member that streams hands,
+    as every M1 member does: a chain of edits alone would wait 16 edits for its first report, and its window would
+    span minutes. Measured [V, pe-agree sim, release, n = 2, B -> A slow, A -> B fast, 2 seeds each]: A reports B's
+    95th percentile at 1,216-1,225 ms on a 1.2 s fixed link and 1,483-1,500 ms on a 0.9-1.5 s one, over a seq 150-300
+    behind B's head; B reports A's at 2-3 frames. On the jittered link 3-15 % of B's arrivals at A are left out as a
+    claimed backlog (a vote overtook them), and 0.1-0.2 % in all on the fixed one; the percentile still matches the
+    link. A lead stepped up by 0.5 s reads, corrected, at most 1,216-1,225 ms on the fixed link and 1,500 ms on the
+    jittered one (with the window's newest seq it read 1,716 ms). With a 1.2 s lead on the 1.2 s link, a drop to 0.3 s
+    reads 316-325 ms from 1.1 s after the drop, once the entries already in flight on the slow path have arrived.
   - *Residual:* a faulty leader can name its present (or a frame just behind it) and void entries in flight. That is
     visible as voids per leader.
   - *Residual:* a member with no hand stream (an agent) can stamp up to the lag in the past and win same-frame races.
+  - *Residual (the outage mark's threshold, @engine-architect) [I]:* a dropout shorter than 1 s sets no
+    mark, so its flushed backlog is sampled at its age: a 0.5 s dropout puts about 60 hand entries in the 128-sample
+    window and the 95th percentile reads about 0.45 s, which the driver's lead follows until it drains. 1 s stays
+    above a reliable lane's retransmit gap, so a lost-and-resent entry isn't read as an outage; the threshold is to be
+    set from pe-app measurements of 0.3 s and 0.7 s blackouts. And a step up in delay past 1 s (a link handover, say
+    0.1 s to 1.5 s) is read as an outage: the mark falls at the first arrival at the new delay, so about the next
+    delay's worth of arrivals goes unsampled by both the reports and the cut lag, and neither reacts until about
+    twice the new delay after the change. The author's entries void as late meanwhile.
   - *Residual:* lateness is measured over all authors, so a member that back-stamps its entries raises every
     leader's lag, up to the cap. It costs finality latency, never safety.
 - **The last cut needs a child.** When cuts pause (idle, or the session ends), one empty cut follows, so the last
