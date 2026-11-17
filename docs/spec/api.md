@@ -169,7 +169,8 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
   - **A query's projection** reads each selected object by that object's names. Where a bare name is ambiguous on an
     object, it reads every match, keyed by full form (`{"Spin@a:<A>": …, "Spin@a:<B>": …}`), and a field list
     applies to each. Elsewhere the key is the bare name. Never silent, never refused for one object of many (ruling
-    m4336b4c0c296).
+    m4336b4c0c296). Every key is the type as the object's `types` names it, however it was asked, so two requests for
+    one component answer once, with both field lists.
   - **Qualified forms** are always accepted, whatever is attached: `Spin@a:<hex>` with the script's id or any unique
     prefix of at least 4 hex digits, in either case (as git takes commit prefixes), and `Transform@engine`. A prefix that matches more
     than one script is refused, listing them.
