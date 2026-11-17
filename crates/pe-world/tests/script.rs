@@ -1069,6 +1069,7 @@ fn a_colour_field_is_kept_by_the_op_the_registry_and_import() {
     keys.extend((0..table::COUNT as u8).map(LeafKey::Table));
     keys.push(LeafKey::Config);
     let imp = CutImport {
+        blobs: vec![],
         cut: pe_seams::Cut {
             at: pe_seams::CutRef { line: f.w.line(), height: 0, frame: f.w.frame() },
             heads: Vec::new(),
