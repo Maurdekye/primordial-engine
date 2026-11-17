@@ -1,0 +1,26 @@
+# The feature policy: features no shipped binary may build. Read by scripts/audit_native.py --check --forbid,
+# which scripts/gate.sh runs on every landing (in the gate, not in tier 1's table). The gate takes this file
+# from the base, like its other rules, so a change to it applies from the next landing, and the landing's
+# reviewer approves it. The landing that changes it must also meet the new version over its own tree, and one
+# that deletes it fails.
+#
+# Shipped binaries are built per crate (`cargo build -p pe-app --release`), never workspace-wide: a workspace
+# build unifies features across every member it builds, so a feature the harness turns on would reach them
+# (transport.md 8). So each shipped crate is checked as built on its own: `cargo tree -p <crate> -e normal`,
+# with features, for each of its targets.
+#
+# Line kinds (# starts a comment; every line needs a reason after " -- "):
+#   shipped <crate> <triple>...       a crate that ships, and the targets it ships for (one line per crate)
+#   forbid <package> <feature>        a feature no shipped build may turn on in <package> (a glob, such as *)
+# A shipped crate that no audited workspace has yet gets a note, not a failure. engine-architect owns the
+# shipped list (m373871d88a0d): pe-app, pe-mcp and pe-sdk for M1; the launcher joins it in M5.
+
+shipped pe-app x86_64-pc-windows-msvc x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin -- the application, WS-app (docs/refound-plan.md 2.3), on the four shipped platforms (tier 2's matrix)
+shipped pe-mcp x86_64-pc-windows-msvc x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin -- its bridge stays a small binary (WS-api, O9)
+shipped pe-sdk wasm32-unknown-unknown -- pe-logic's build service compiles it into every script module, so it ships inside every world
+
+forbid * mutants -- planted defects for the harness's mutation tests, built only into those tests and never into a production build (docs/refound-plan.md 3.1; pe-harness DESIGN.md 6.1; today pe-agree, pe-world and pe-diverge declare it)
+forbid pe-net-crypto insecure-deterministic-rng -- swaps the OS randomness for a seeded ChaCha stream, for the deterministic harness only (transport.md 8; design-reviewer's Low 1 on pe-net-crypto, via shader-lang mdffada5bab8f)
+forbid * test-util -- test helpers (pe-seams: an entry builder, deterministic test keys with a stand-in signature, the Corrupt trait; pe-world: divergence injection), each marked never in a shipped build in its own manifest
+forbid pe-net testing -- test and fuzz hooks (Core::testing_send_record), never in a build that ships (its manifest)
+forbid pe-physics raw -- PhysicsWorld::raw_mut hands out the Box3D world mutable, for test scenes and tools only (its manifest)

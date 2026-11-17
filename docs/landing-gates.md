@@ -1,7 +1,8 @@
 # The landing gate
 
-One command, `scripts/gate.sh`, checks a commit before it lands on main. Today it runs three checks: the
-native-code audit, the secret scan and, where the term files are configured, the publication check. The
+One command, `scripts/gate.sh`, checks a commit before it lands on main. Today it runs the native-code audit
+with the feature policy for shipped builds, the secret scan and, where the term files are configured, the
+publication check. The
 re-founding plan (`docs/refound-plan.md`, 4.6) adds the format, lint, test, model and harness checks, in two
 tiers. Owner: WS-ci.
 
@@ -15,7 +16,8 @@ fail and 2 on an error.
 **The gate never judges a change to itself with the changed code** (coordinator ruling, 2026-11-10):
 * When there is a base, the gate's code comes from it: `scripts/gate.sh` (a copy run from the landing hands over
   to the base's at once), `scripts/audit_native.py`, `scripts/install_gitleaks.sh`, the hook, the publication
-  check's scripts, the rules of `.gitleaks.toml`, and the cargo and rustup configuration files the audit runs with.
+  check's scripts, the rules of `.gitleaks.toml`, the feature policy (`scripts/feature_policy.txt`), and the cargo
+  and rustup configuration files the audit runs with.
 * Only the allow files come from `<rev>`: `scripts/native_allow.txt` and the `[[allowlists]]` entries of
   `.gitleaks.toml`.
 * When a landing changes any of these files, the gate prints a NOTE naming them, and the landing's reviewer
@@ -66,6 +68,17 @@ checks either.
    * A committed `.cargo/config.toml` can name a program for cargo to run, and `rust-toolchain.toml` can name a
      toolchain. So the audit runs with the base's versions of those files, and the gate lists any the landing
      changes.
+   * **The feature policy** (`scripts/feature_policy.txt`, from the base): no shipped binary may build a forbidden
+     feature. The file lists the shipped crates with their targets, and the forbidden features, each with its
+     reason. Each shipped crate is checked as built on its own, `cargo tree -p <crate> -e normal` with features,
+     on each of its targets. Shipped binaries are built per crate (`cargo build -p pe-app --release`). A
+     workspace-wide build unifies features across every member it builds, so a feature the harness turns on
+     would reach them. A shipped crate that no workspace has yet gets a note.
+     A landing that changes the policy must also meet the new one, over its own tree, since the landings after
+     it are judged by it. A policy that doesn't parse (a crate with two `shipped` lines counts) or that names a
+     target cargo can't resolve would stop all of them, its fix included, and one the tree already breaks would
+     fail each of them until a fix lands. A landing that deletes the file fails too: to retire the policy, change
+     the gate's code first, or land with `PE_GATE=off` and report it.
 3. **Publication check:** `scripts/publish_check.sh`, the term check that the publishing step already runs.
    * It needs this clone's term file and allowlist: `git config pe.gate.terms <file>` and `pe.gate.allow <file>`
      (or `PE_PUBLISH_TERMS` and `PE_PUBLISH_ALLOW`).
@@ -122,7 +135,7 @@ and are never built. The secret scan of the whole history finds nothing.
   GitHub runs the workflow file as the landing has it, so the gate's NOTE lists a change to it.
 * **The self-test,** `bash scripts/test_gate.sh`, takes about 20 minutes; run it as one build-slot job
   (`bash "<team folder>/heavy.sh" bash scripts/test_gate.sh`). In a throwaway clone it runs the gate as the hook
-  does, in 35 checks:
+  does, in 43 checks:
   * secrets in eleven ways: in the tree, only in the history, only in a message, behind an inline
     `gitleaks:allow`, a pe-app member key file, under an `export-ignore` path, in a file marked `-diff`, added
     only by a merge, behind a committed `.gitleaksignore` or one in the folder the gate runs from, and a session
@@ -131,9 +144,15 @@ and are never built. The secret scan of the whole history finds nothing.
     crate in no workspace, a new workspace, a workspace under an `export-ignore` path, a build script whose
     module emits `rustc-link-arg`, and an executable without an extension;
   * a publication term in three ways: in the tree, only in the history, and in a file marked `-diff`;
+  * the feature policy, on a test base whose policy names planted crates: a harness that turns forbidden features
+    on for its own build passes, and a shipped crate that turns on a forbidden feature or a `mutants` feature
+    fails, even when the landing also drops the policy's line. A landing that changes the policy fails when its
+    own policy doesn't parse (a crate with two `shipped` lines), names a target cargo can't resolve, or is
+    broken by its own tree, even where the base's policy allows it, and one that deletes the policy fails;
   * the gate's own code: a landing that changes it is judged by the base's, one that runs its own copy hands
     over, one that adds its own exception has it applied, a committed gitleaks binary is refused, a committed
-    cargo configuration isn't applied, and the export refuses a symbolic link, a submodule and a case twin;
+    cargo configuration isn't applied, the export refuses a symbolic link, a submodule and a case twin, and the
+    gate's temporary files go to the folder `pe.gate.tmpdir` names, run directly and through the trampoline;
   * the hook: the installer waits until main has the gate; the hook refuses a merge and an update-ref, lets a
     clean merge in, runs the base's hook and gate when a landing empties both, also when it comes as a forced
     update, and returns at once from a reset to HEAD, `reset --merge`, a same-value `update-ref` and a

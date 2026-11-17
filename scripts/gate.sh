@@ -13,7 +13,8 @@
 # there is a base, the gate's code comes from it:
 #   * this script (it hands over to the base's copy at once), scripts/audit_native.py, scripts/install_gitleaks.sh
 #     (the pinned gitleaks and the SHA-256 of its binary), the hook, the publication check's scripts;
-#   * the rules of .gitleaks.toml, and the cargo and rustup configuration files the audit runs with.
+#   * the rules of .gitleaks.toml, the feature policy (scripts/feature_policy.txt), and the cargo and rustup
+#     configuration files the audit runs with.
 # Only the allow files come from <rev>: scripts/native_allow.txt, and the [[allowlists]] entries of
 # .gitleaks.toml. A landing that changes any of these files gets a NOTE naming them, and its reviewer approves
 # those lines. A change to the gate's code takes effect from the next landing. With --full-history, or when the
@@ -28,8 +29,11 @@
 #      <rev> reaches. No .gitleaksignore counts: one in the tree fails the gate. Inline `gitleaks:allow`
 #      comments are ignored;
 #   3. native audit: scripts/audit_native.py --check over the export (every Cargo workspace in it) with <rev>'s
-#      allow file. For this step the export's cargo and rustup configuration files are the base's (a committed
-#      .cargo/config.toml can name a program for cargo to run);
+#      allow file, and the base's feature policy (scripts/feature_policy.txt lists the forbidden features with
+#      their reasons): each shipped crate, built on its own, must turn on no forbidden feature. A landing that
+#      changes the policy must also meet the new one, which judges the landings after it. For this step the
+#      export's cargo and rustup configuration files are the base's (a committed .cargo/config.toml can name a
+#      program for cargo to run);
 #   4. publication check (scripts/publish_check.sh), when this clone names its term file: the tree of <rev>,
 #      and, blocking, the added lines and messages of <base>..<rev> (identities are left to the publishing step,
 #      which maps them). The terms are local files that must never be published, so hosted CI skips this step;
@@ -247,7 +251,8 @@ if [ -n "$bsha" ]; then
   allowd=$(G diff --name-only "$bsha" "$sha" -- .gitleaks.toml scripts/native_allow.txt)
   coded=$(G diff --name-only "$bsha" "$sha" -- scripts/gate.sh scripts/audit_native.py scripts/install_gitleaks.sh \
     scripts/install_gate_hook.sh scripts/hooks scripts/publish_check.sh scripts/publish_history.py \
-    scripts/publish_allow.py .github/workflows ':(glob,icase)**/.cargo/config' ':(glob,icase)**/.cargo/config.toml' \
+    scripts/publish_allow.py scripts/feature_policy.txt .github/workflows ':(glob,icase)**/.cargo/config' \
+    ':(glob,icase)**/.cargo/config.toml' \
     ':(glob,icase)**/rust-toolchain' ':(glob,icase)**/rust-toolchain.toml')
   if [ -n "$allowd" ]; then
     echo "gate: NOTE: this landing changes the gate's allow files, which apply to it; its reviewer approves these lines:"
@@ -436,10 +441,18 @@ if [ -s "$tmp/cargo-config.out" ]; then
   echo "gate: the audit ran with the base's version of (absent where the base has none):"
   sed 's/^/gate:   /' "$tmp/cargo-config.out"
 fi
+# The feature policy, from the base like the gate's other rules.
+pol=()
+if G show "$code:scripts/feature_policy.txt" > "$c/scripts/feature_policy.txt" 2> /dev/null; then
+  pol=(--forbid "$(native "$c/scripts/feature_policy.txt")")
+else
+  echo "gate: NOTE: ${code:0:10} has no scripts/feature_policy.txt; shipped builds' features not checked"
+fi
 wrap=()
 if [ -n "${PE_GATE_WRAP:-}" ]; then eval "wrap=($PE_GATE_WRAP)"; fi
 ${wrap[@]+"${wrap[@]}"} "$py" -I "$(native "$c/scripts/audit_native.py")" --check --tree "$(native "$x")" \
-  --allow "$(native "$x/scripts/native_allow.txt")" --md "$(native "$tmp/native-audit.md")" > "$tmp/native.out" 2>&1
+  --allow "$(native "$x/scripts/native_allow.txt")" ${pol[@]+"${pol[@]}"} --md "$(native "$tmp/native-audit.md")" \
+  > "$tmp/native.out" 2>&1
 rc=$?
 grep -E "^audit_native: (FAIL|PASS|ERROR|note)" "$tmp/native.out" | sed 's/^/gate: /'
 case $rc in
@@ -447,6 +460,35 @@ case $rc in
   1) echo "gate: native audit FAIL"; fail=1 ;;
   *) tail -20 "$tmp/native.out" | sed 's/^/gate:   /'; die "the native audit could not run (exit $rc)" ;;
 esac
+
+# A landing that changes the feature policy must also meet the new one, over its own tree: the landings after it
+# are judged by it. One that doesn't parse (a crate with two shipped lines counts) or that names a target cargo
+# can't resolve would stop every one of them, its fix included, and one this tree already breaks would fail each
+# of them until a fix lands. The base's code reads it. A landing that deletes it fails: the policy would be off
+# for every landing after it.
+ownpol=$(G rev-parse -q --verify "$sha:scripts/feature_policy.txt" 2> /dev/null) || ownpol=
+basepol=$(G rev-parse -q --verify "$code:scripts/feature_policy.txt" 2> /dev/null) || basepol=
+if [ -n "$basepol" ] && [ -z "$ownpol" ]; then
+  echo "gate: this landing deletes scripts/feature_policy.txt, which turns the feature policy off from the next landing: FAIL"
+  echo "gate:   to retire the policy, change the gate's code first, or land with PE_GATE=off and report it"
+  fail=1
+elif [ -n "$ownpol" ] && [ "$ownpol" != "$basepol" ]; then
+  echo "gate: this landing changes the feature policy, which judges the landings after it; its tree must meet it:"
+  ${wrap[@]+"${wrap[@]}"} "$py" -I "$(native "$c/scripts/audit_native.py")" --check --policy-only \
+    --tree "$(native "$x")" --allow "$(native "$x/scripts/native_allow.txt")" \
+    --forbid "$(native "$x/scripts/feature_policy.txt")" > "$tmp/policy.out" 2>&1
+  rc=$?
+  if [ $rc = 0 ] || { [ $rc = 1 ] && grep -q "^audit_native: FAIL" "$tmp/policy.out"; }; then
+    grep -E "^audit_native: (FAIL|PASS|note: feature policy)" "$tmp/policy.out"
+  else
+    tail -12 "$tmp/policy.out"
+  fi | sed "s|$(native "$x")/||g;s/^/gate:   /"
+  if [ $rc = 0 ]; then
+    echo "gate: the landing's own feature policy PASS"
+  else
+    echo "gate: the landing's own feature policy FAIL (exit $rc)"; fail=1
+  fi
+fi
 
 # 4. The publication check, against this repository's objects, with the base's check scripts, run from a folder
 #    that holds only them.
