@@ -39,7 +39,7 @@ Two modes.
     audits the named workspaces; with --allow it also marks what the allow file accepts. Exits 0.
 
   Check (the landing gate, scripts/gate.sh): python -I scripts/audit_native.py --check [--tree DIR]
-                      [--allow FILE] [--md OUT.md] [--offline]
+                      [--allow FILE] [--forbid POLICY [--policy-only]] [--md OUT.md] [--offline]
     finds every Cargo workspace in DIR (default: the current directory; its tracked and untracked,
     not ignored, files if it is a git work tree, else every file under it, folders named target or
     .tools included: the gate's DIR is an export of one commit, which holds only committed files),
@@ -49,6 +49,10 @@ Two modes.
     workspace already covers (a vendored crate may ship its own lock). New crates are covered as they
     appear: a crate that is in no workspace the gate audits, and not under an `exclude` line, fails.
     --allow defaults to DIR/scripts/native_allow.txt; its format is described in that file.
+    --forbid also checks the feature policy (scripts/feature_policy.txt describes it): each shipped crate,
+    built on its own, must turn on no forbidden feature, on any of the policy's targets. --policy-only
+    checks the policy alone, with no native audit and no report (the gate's check that a landing which
+    changes the policy meets its own).
 """
 
 import fnmatch
@@ -159,6 +163,36 @@ class Allow:
         return None
 
 
+class Policy:
+    """The feature policy: shipped crates with their targets, and forbidden (package glob, feature) pairs."""
+
+    def __init__(self):
+        self.shipped, self.forbid = {}, []
+
+    @staticmethod
+    def parse(path):
+        pol = Policy()
+        with open(path, encoding="utf-8") as f:
+            for n, raw in enumerate(f, 1):
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                body, sep, reason = line.partition(" -- ")
+                words, where = body.split(), f"{path}:{n}"
+                if not sep or not reason.strip():
+                    raise GateError(f"{where}: every line needs a reason after ' -- '")
+                if words[0] == "shipped" and len(words) >= 3:
+                    if words[1] in pol.shipped:
+                        raise GateError(f"{where}: {words[1]} is already shipped on line "
+                                        f"{lineno(pol.shipped[words[1]][1])}; give all its targets on one line")
+                    pol.shipped[words[1]] = (words[2:], where)
+                elif words[0] == "forbid" and len(words) == 3:
+                    pol.forbid.append((words[1], words[2], reason.strip(), where))
+                else:
+                    raise GateError(f"{where}: can't parse {line!r}")
+        return pol
+
+
 # ---------------------------------------------------------------------------------------------
 # cargo tree, parsed into nodes, features and edges
 
@@ -201,8 +235,8 @@ def parse_tree(text):
     return feats, edges, roots
 
 
-def cargo_tree(root, triple, offline, pkgid=None):
-    cmd = ["cargo", "tree", "--locked", "-e", "normal,build", "--target", triple, "--charset", "ascii",
+def cargo_tree(root, triple, offline, pkgid=None, edges="normal,build"):
+    cmd = ["cargo", "tree", "--locked", "-e", edges, "--target", triple, "--charset", "ascii",
            "--format", "{p}|{f}", "--manifest-path", os.path.join(root, "Cargo.toml")]
     cmd += ["-p", pkgid] if pkgid else ["--workspace"]
     if offline:
@@ -490,7 +524,27 @@ def rel_of(tree, path):
     return os.path.normcase(os.path.relpath(os.path.normpath(path), os.path.normpath(tree))).replace(os.sep, "/")
 
 
-def check(tree, allow, offline, md):
+def check_shipped(root, d, meta, policy, offline, problems, shipped_seen):
+    """The feature policy over one workspace: each shipped member, built on its own, on each policy target."""
+    members = [p for p in meta["packages"] if p["id"] in set(meta["workspace_members"])]
+    for m in members:
+        if m["name"] not in policy.shipped:
+            continue
+        shipped_seen[m["name"]] = d
+        found = {}  # (package, version, feature, policy line) -> targets
+        for t in policy.shipped[m["name"]][0]:
+            feats, _, _ = cargo_tree(root, t, offline, pkgid=m["id"], edges="normal")
+            for (name, ver), fs in sorted(feats.items()):
+                for pattern, feature, reason, where in policy.forbid:
+                    if fnmatch.fnmatchcase(name, pattern) and feature in fs:
+                        found.setdefault((name, ver, feature, reason, where), []).append(t)
+        for (name, ver, feature, reason, where), targets in found.items():
+            problems.append(f"{d}: {m['name']} built on its own builds {name} {ver} with feature {feature} (on "
+                            f"{', '.join(targets)}), which the feature policy forbids in a shipped build "
+                            f"(line {lineno(where)}: {reason})")
+
+
+def check(tree, allow, offline, md, policy=None, policy_only=False):
     manifests = list_manifests(tree)
     if not manifests:
         raise GateError(f"no Cargo.toml under {tree}")
@@ -505,7 +559,7 @@ def check(tree, allow, offline, md):
     # audited as part of it, not as a root of its own.
     roots = [r for r in manifests if info[r]["ws"]] + \
         [r for r in manifests if not info[r]["ws"] and info[r]["pkg"] and info[r]["lock"]]
-    problems, covered, results, skipped = [], set(), [], []
+    problems, covered, results, skipped, shipped_seen = [], set(), [], [], {}
     for rel in roots:
         if not info[rel]["ws"] and os.path.normcase(rel).replace(os.sep, "/") in covered:
             continue
@@ -523,16 +577,19 @@ def check(tree, allow, offline, md):
             if p["source"] is None:
                 covered.add(rel_of(tree, p["manifest_path"]))
         triples = allow.targets_for(d)
-        res = audit_workspace(root, triples, allow, offline, meta=meta, ws=d)
-        results.append((d, triples, res))
+        res = {} if policy_only else audit_workspace(root, triples, allow, offline, meta=meta, ws=d)
+        if not policy_only:
+            results.append((d, triples, res))
+        if policy:
+            check_shipped(root, d, meta, policy, offline, problems, shipped_seen)
         for t, r in res.items():
             problems += [f"{d} [{t}]: {p}" for p in r["problems"]]
     for rel in manifests:
-        if info[rel]["pkg"] and os.path.normcase(rel).replace(os.sep, "/") not in covered \
+        if not policy_only and info[rel]["pkg"] and os.path.normcase(rel).replace(os.sep, "/") not in covered \
                 and not allow.excluded(info[rel]["dir"]):
             problems.append(f"{rel}: a crate in no workspace the gate audits; make it a member of one (or give it "
                             f"its own workspace with a Cargo.lock), or add an exclude line with a reason")
-    unused = [e for e in allow.entries if not e["used"]]
+    unused = [] if policy_only else [e for e in allow.entries if not e["used"]]
     write_report(md, tree, results, skipped, problems, unused, allow, check_mode=True)
     for d, triples, res in results:
         for t, r in res.items():
@@ -544,12 +601,24 @@ def check(tree, allow, offline, md):
         print(f"audit_native: skipped {d} (exclude line {lineno(where)})")
     for e in unused:
         print(f"audit_native: note: allow line {lineno(e['where'])} ({e['name']} {e['class']}) matched no package")
+    if policy:
+        for name, (targets, where) in policy.shipped.items():
+            if name in shipped_seen:
+                print(f"audit_native: note: feature policy: {name} ({shipped_seen[name]}) checked on "
+                      f"{len(targets)} target(s) against {len(policy.forbid)} forbidden feature(s)")
+            else:
+                print(f"audit_native: note: feature policy line {lineno(where)}: {name} is in no audited workspace "
+                      f"yet, so not checked")
     if problems:
         for p in problems:
             print(f"audit_native: FAIL: {p}")
         print(f"audit_native: FAIL, {len(problems)} problem(s); see the allow file's header for how to accept a "
-              f"reviewed exception")
+              f"reviewed exception to D1 (a feature the policy forbids can't be accepted: turn it off)")
         return 1
+    if policy_only:
+        print(f"audit_native: PASS, the feature policy holds: {len(shipped_seen)} shipped crate(s) checked against "
+              f"{len(policy.forbid)} forbidden feature(s)")
+        return 0
     n = sum(len(r["rows"]) for _, _, res in results for r in res.values())
     print(f"audit_native: PASS, 100% Rust under D1: {len(results)} workspace(s), {n} package builds checked, "
           f"every flag accepted by the allow file")
@@ -631,12 +700,13 @@ def report(dirs, triples, allow, offline, md):
 
 def main():
     args = sys.argv[1:]
-    triples, dirs, md, allow_path, tree, mode, offline = [], [], None, None, None, "report", False
+    triples, dirs, md, allow_path, tree, mode, offline, policy_path = [], [], None, None, None, "report", False, None
+    policy_only = False
     i = 0
     try:
         while i < len(args):
             a = args[i]
-            if a in ("--target", "--md", "--allow", "--tree"):
+            if a in ("--target", "--md", "--allow", "--tree", "--forbid"):
                 if i + 1 >= len(args):
                     raise GateError(f"{a} needs a value")
                 v = args[i + 1]
@@ -647,11 +717,15 @@ def main():
                     md = v
                 elif a == "--allow":
                     allow_path = v
+                elif a == "--forbid":
+                    policy_path = v
                 else:
                     tree = v
                 continue
             if a == "--check":
                 mode = "check"
+            elif a == "--policy-only":
+                policy_only = True
             elif a == "--offline":
                 offline = True
             elif a.startswith("-"):
@@ -666,10 +740,14 @@ def main():
             allow = Allow.parse(allow_path or os.path.join(tree, "scripts", "native_allow.txt"))
             if not allow.targets:
                 raise GateError("the allow file names no target lines")
-            return check(tree, allow, offline, md)
+            if policy_only and (not policy_path or md):
+                raise GateError("--policy-only needs --forbid, and writes no report (no --md)")
+            return check(tree, allow, offline, md, Policy.parse(policy_path) if policy_path else None, policy_only)
+        if policy_path or policy_only:
+            raise GateError("--forbid and --policy-only work with --check only")
         if not dirs:
             raise GateError("usage: audit_native.py <workspace-dir>... [--target T]... [--md OUT] [--allow FILE] "
-                            "| --check [--tree DIR] [--allow FILE] [--md OUT]")
+                            "| --check [--tree DIR] [--allow FILE] [--forbid POLICY] [--md OUT]")
         allow = Allow.parse(allow_path) if allow_path else None
         return report(dirs, triples or (allow.targets if allow else ["x86_64-pc-windows-msvc"]), allow, offline, md)
     except GateError as e:

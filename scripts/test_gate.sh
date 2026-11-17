@@ -75,13 +75,15 @@ plant_c_crate() {  # a crate of the root workspace that compiles C (cc is in the
 }
 
 pass=0 bad=0
-expect() {  # name, pass|fail|error, then the regexes its gate output must match. HOW=self runs the landing's own copy.
+expect() {  # name, pass|fail|error, then the regexes its gate output must match. HOW=self runs the landing's own
+            # copy; BASE=<commit> lands on that commit instead of <rev> (its gate code included).
   local name=$1 want=$2; shift 2
-  local log="$tmp/$name.log" rc ok=1
+  local log="$tmp/$name.log" rc ok=1 b=${BASE:-$sha}
   if [ "${HOW:-}" = self ]; then
-    (cd "$R" && bash scripts/gate.sh --base "$sha" HEAD) > "$log" 2>&1
+    (cd "$R" && bash scripts/gate.sh --base "$b" HEAD) > "$log" 2>&1
   else
-    (cd "$R" && PE_GATE_CODE=$sha bash "$tmp/gate-base.sh" --base "$sha" HEAD) > "$log" 2>&1
+    git -C "$R" show "$b:scripts/gate.sh" > "$tmp/gate-b.sh" || die "$b has no scripts/gate.sh"
+    (cd "$R" && PE_GATE_CODE=$b bash "$tmp/gate-b.sh" --base "$b" HEAD) > "$log" 2>&1
   fi
   rc=$?
   case $want in pass) [ $rc = 0 ] || ok=0 ;; fail) [ $rc = 1 ] || ok=0 ;; error) [ $rc = 2 ] || ok=0 ;; esac
@@ -266,7 +268,59 @@ g update-index --add --cacheinfo "120000,$blob,link" --cacheinfo "160000,$sha,su
 g commit -q -m "a link, a submodule and a case twin"
 expect export-refusals fail "link: a symbolic link" "sub: a submodule" "readme\.MD: differs from README\.md only in case" "^gate: FAIL"
 
-# 24. The hook, through its trampoline: refuses a merge into main that fails, leaves main where it was, refuses
+# 24. The feature policy: a shipped crate, built on its own, turns on no forbidden feature. The policy comes from
+#     the base, so these checks land on a test base whose policy names planted crates: planted-app ships, and
+#     planted-lib has a forbidden feature, danger, and a mutants feature. planted-harness turns both on for its own
+#     build, which is allowed: the shipped crate is checked as built on its own.
+new_case
+mkdir -p "$R/crates/planted-lib/src" "$R/crates/planted-app/src" "$R/crates/planted-harness/src"
+printf '[package]\nname = "planted-lib"\nversion = "0.0.1"\nedition = "2024"\n\n[features]\ndanger = []\nmutants = []\n' > "$R/crates/planted-lib/Cargo.toml"
+echo 'pub fn f() {}' > "$R/crates/planted-lib/src/lib.rs"
+printf '[package]\nname = "planted-app"\nversion = "0.0.1"\nedition = "2024"\n\n[dependencies]\nplanted-lib = { path = "../planted-lib" }\n' > "$R/crates/planted-app/Cargo.toml"
+echo 'fn main() {}' > "$R/crates/planted-app/src/main.rs"
+printf '[package]\nname = "planted-harness"\nversion = "0.0.1"\nedition = "2024"\n\n[dependencies]\nplanted-lib = { path = "../planted-lib", features = ["danger", "mutants"] }\n' > "$R/crates/planted-harness/Cargo.toml"
+echo 'pub fn f() {}' > "$R/crates/planted-harness/src/lib.rs"
+member crates/planted-lib; member crates/planted-app; member crates/planted-harness
+printf '\nshipped planted-app x86_64-pc-windows-msvc x86_64-unknown-linux-gnu -- test: a shipped crate\nforbid planted-lib danger -- test: a feature only the harness may build\n' >> "$R/scripts/feature_policy.txt"
+relock "$R"; commit -m "test base: planted crates, and a policy that names them"
+fbase=$(git -C "$R" rev-parse HEAD)
+BASE=$fbase expect feature-policy-per-crate pass "feature policy: planted-app \(\.\) checked on 2 target" "^gate: PASS"
+from_fbase() { g checkout -q -f --detach "$fbase" && g clean -qfdx -e .tools > /dev/null; }
+# The shipped crate turns danger on, and the landing also drops the policy's line: judged by the base's policy.
+from_fbase; sed -i 's|^planted-lib = { path = "../planted-lib" }$|planted-lib = { path = "../planted-lib", features = ["danger"] }|' "$R/crates/planted-app/Cargo.toml"
+sed -i '/^forbid planted-lib danger /d' "$R/scripts/feature_policy.txt"
+grep -q '"danger"' "$R/crates/planted-app/Cargo.toml" && ! grep -q 'planted-lib danger' "$R/scripts/feature_policy.txt" || die "could not plant the danger feature"
+commit -m "the shipped crate turns on danger, and the policy line goes"
+BASE=$fbase expect feature-policy-forbidden fail "planted-app built on its own builds planted-lib 0\.0\.1 with feature danger" \
+  "^gate:   scripts/feature_policy\.txt$" "^gate: the landing's own feature policy PASS" "^gate: FAIL"
+from_fbase; sed -i 's|^planted-lib = { path = "../planted-lib" }$|planted-lib = { path = "../planted-lib", features = ["mutants"] }|' "$R/crates/planted-app/Cargo.toml"
+grep -q '"mutants"' "$R/crates/planted-app/Cargo.toml" || die "could not plant the mutants feature"
+commit -m "the shipped crate turns on mutants"
+BASE=$fbase expect feature-policy-mutants fail "planted-app built on its own builds planted-lib 0\.0\.1 with feature mutants" "^gate: FAIL"
+# A landing that changes the policy must also meet its own, which judges the landings after it: here one that
+# doesn't parse (planted-app gets a second shipped line), one that names a target cargo can't resolve, and one
+# whose tree breaks the line it adds (the base's policy allows that feature, so the native audit passes).
+from_fbase; printf 'shipped planted-app x86_64-unknown-linux-gnu -- test: a second line for the same crate\n' >> "$R/scripts/feature_policy.txt"
+commit -m "a second shipped line for planted-app"
+BASE=$fbase expect feature-policy-own-parse fail "planted-app is already shipped on line [0-9]+" \
+  "^gate: the landing's own feature policy FAIL" "^gate: FAIL"
+from_fbase; sed -i 's|^shipped planted-app x86_64-pc-windows-msvc |shipped planted-app x86_64-pc-windows-msvx |' "$R/scripts/feature_policy.txt"
+grep -q '^shipped planted-app x86_64-pc-windows-msvx ' "$R/scripts/feature_policy.txt" || die "could not plant the bad target"
+commit -m "the policy names a target cargo can't resolve"
+BASE=$fbase expect feature-policy-own-target fail "msvx" "^gate: the landing's own feature policy FAIL" "^gate: FAIL"
+from_fbase; printf 'safe = []\n' >> "$R/crates/planted-lib/Cargo.toml"
+sed -i 's|^planted-lib = { path = "../planted-lib" }$|planted-lib = { path = "../planted-lib", features = ["safe"] }|' "$R/crates/planted-app/Cargo.toml"
+printf 'forbid planted-lib safe -- test: a feature this tree turns on\n' >> "$R/scripts/feature_policy.txt"
+grep -q '"safe"' "$R/crates/planted-app/Cargo.toml" || die "could not plant the safe feature"
+commit -m "the policy forbids a feature the shipped crate turns on"
+BASE=$fbase expect feature-policy-own-broken fail "planted-app built on its own builds planted-lib 0\.0\.1 with feature safe" \
+  "^gate: native audit PASS" "^gate: the landing's own feature policy FAIL" "^gate: FAIL"
+# A landing that deletes the policy fails: from the next landing, shipped builds' features would not be checked.
+from_fbase; rm "$R/scripts/feature_policy.txt"; commit -m "the landing deletes the feature policy"
+BASE=$fbase expect feature-policy-own-deleted fail "this landing deletes scripts/feature_policy\.txt" \
+  "^gate: native audit PASS" "^gate: FAIL"
+
+# 25. The hook, through its trampoline: refuses a merge into main that fails, leaves main where it was, refuses
 #     an update-ref, lets a clean merge in, and runs the base's hook and gate when a landing changes both, also
 #     when it comes as a forced update (git gives the hook zeros as the old value). An update that leaves main
 #     where it is, or moves only HEAD, returns at once, even while the audit's wrapper stalls (as a build-slot
