@@ -273,11 +273,15 @@ which fixes the origin's role deliberately.
   entry at frame F stands at the feet of the lowest slot along genesis's row (slot i at `origin + (0.6 i, 0, 1.5)`,
   as `m1_session` admits) that no current member's hand takes. A hand takes a slot when it is horizontally (x, z)
   closer than 0.3 m, half the spacing, to the midpoint of where that slot's two hands start. It is a function of
-  the world at F alone (the hands' poses are hashed state), so every replica admits at the same spot. It keeps no
+  the world as the replica stands when it applies the `Admit`, after F's earlier entries in the final log's order
+  (a hand entry in the same frame may come before or after it, and the two orders give different spots, each the
+  same on every replica). The hands' poses are hashed state, so every replica admits at the same spot. It keeps no
   counter and changes no root. A leaver's slot comes free when its hands go, and a slot someone's tracked hands
   still crowd is skipped. A hand takes at most one slot, so of the first `n + 1` slots, with `n` hands, one is
-  free [V `a_joiner_stands_at_the_lowest_slot_no_hand_takes`]. It is an M1 rule: a spawn point the world carries
-  (an avatar spawn object, a home template's) replaces it when one exists.
+  free [V `a_joiner_stands_at_the_lowest_slot_no_hand_takes`]. It is an M1 rule, for one join at a time and a
+  handful of players: the row grows along +x without bound, so a slot is not always on the floor, and only hands
+  are checked, not a player's body, so a slot may be where a player walked. A spawn point the world carries (an
+  avatar spawn object, a home template's) replaces it when one exists (@design-reviewer's nits, mc74cfd4c19d4).
 - **A leave** (`World::leave(member, entry)`; @coordinator-opus m003987d0d045 and mbdc0966ab9ab, after
   @fable-reviewer m4598f19943d3): the world side of the member's final `Leave` entry (pe-agree's epoch change,
   agreement.md 8), applied at its stamp on every replica, as a join is by `admit`. It is all or nothing, and refused
