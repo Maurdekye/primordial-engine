@@ -67,7 +67,8 @@ pub struct NodeConfig {
     pub cut_lag_margin_s: f64,
     /// Silence from a peer longer than this sets its outage mark (see `Node::outage_mark`), seconds. Local: it only
     /// chooses which arrivals the lateness reports and the adaptive lag sample. 0.3 s is three cut intervals with
-    /// nothing from the peer on any lane (coordinator mddb626a425c8; agreement.md 3 has the measurements).
+    /// nothing from the peer on any lane (coordinator mddb626a425c8; agreement.md 3 has the measurements). Clamped
+    /// to 0.05-10 s where it's used; NaN reads as 0.3 s.
     pub outage_silence_s: f64,
     /// Ask again for missing entries after this long, ns.
     pub fetch_retry_ns: i64,
@@ -368,6 +369,13 @@ pub struct Node {
 }
 
 const LATENESS_SAMPLES: usize = 256;
+/// `NodeConfig::outage_silence_s` in ns, clamped to 0.05-10 s (@design-reviewer's Low on 117d17d8: 0, a negative
+/// value or NaN would mark every gap, and nothing would ever be sampled); NaN reads as the default 0.3 s.
+fn outage_silence_ns(s: f64) -> i64 {
+    let s = if s.is_nan() { 0.3 } else { s.clamp(0.05, 10.0) };
+    (s * 1e9) as i64
+}
+
 /// Per chain, the samples a lateness report covers.
 const CHAIN_LATENESS_SAMPLES: usize = 128;
 /// Samples of a chain needed before this member reports on it.
@@ -2107,7 +2115,7 @@ impl Agreement for Node {
         if self
             .heard
             .insert(from, at)
-            .is_some_and(|t| at.0.saturating_sub(t.0) > (self.cfg.outage_silence_s * 1e9) as i64)
+            .is_some_and(|t| at.0.saturating_sub(t.0) > outage_silence_ns(self.cfg.outage_silence_s))
             && let Some(p) = self.present
         {
             self.outage_mark.insert(from, p);
@@ -2353,5 +2361,18 @@ impl Agreement for Node {
 
     fn events(&mut self) -> Vec<AgreeEvent> {
         std::mem::take(&mut self.events)
+    }
+}
+
+#[cfg(test)]
+mod outage_silence_tests {
+    #[test]
+    fn the_outage_silence_is_clamped() {
+        use super::outage_silence_ns as f;
+        assert_eq!(f(0.3), 300_000_000);
+        assert_eq!(f(0.0), 50_000_000);
+        assert_eq!(f(-1.0), 50_000_000);
+        assert_eq!(f(f64::NAN), 300_000_000);
+        assert_eq!(f(f64::INFINITY), 10_000_000_000);
     }
 }
