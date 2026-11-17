@@ -51,15 +51,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use pe_seams::{
-    Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LightKind, MemberKey, ObjectClass, ObjectId, Outcome,
-    Pos, Reason, SignedEntry, Stage, Tree, Version, ViewFlags, ViewObject,
+    Activation, ActivationKey, ActivationOutcome, Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError,
+    LightKind, MemberKey, ObjectClass, ObjectId, Outcome, Pos, Reason, SignedEntry, Stage, Tree, Version, ViewFlags,
+    ViewObject, VoidedWhy,
 };
 use pe_sim::transform::rotate;
 use pe_sim::{Component, ComponentId, SimStore, Transform, WorldTransform};
 use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
 use pe_world::edit::{AssetTarget, Op, Transaction};
 use pe_world::script::AssetId;
-use pe_world::{Footprint, World, input_phase};
+use pe_world::{Footprint, FrameEnd, RekeyReport, VoidKind, World, input_phase};
 
 use crate::logic::{ScriptRow, ScriptRunner, StageWorld};
 use crate::world::{
@@ -161,14 +162,7 @@ impl PeWorld {
                     self.world.apply_input(frame, entry)
                 };
                 let effects = match outcome {
-                    Outcome::Applied { .. } => Effects {
-                        // pe-world reports the re-keyed objects in id order, tombstoned ones included (7.9).
-                        rekeyed: footprint
-                            .rekey
-                            .as_ref()
-                            .map_or_else(Default::default, |r| r.objects.as_slice().into()),
-                        ..effects(&before, &self.world, &footprint)
-                    },
+                    Outcome::Applied { .. } => effects(&before, &self.world, &footprint),
                     _ => Effects::default(),
                 };
                 (outcome, effects)
@@ -239,6 +233,40 @@ fn decides(entry: &SignedEntry, p: &Prediction, local: Option<MemberKey>) -> boo
     })
 }
 
+/// S5's records of what pe-world's `end_frame(frame)` did with pending code commits (S5 v1.8; logic.md 6.2a).
+fn activations(frame: Frame, end: &FrameEnd) -> Vec<Activation> {
+    let activated_ =
+        end.activated.iter().map(|(asset, version, report)| activated(*asset, *version, frame, report.as_ref()));
+    let voided = end.voided.iter().map(|v| Activation {
+        key: ActivationKey { asset: v.asset, version: v.version },
+        frame,
+        outcome: ActivationOutcome::Voided {
+            why: voided_why(v.kind),
+            objects: v.blocked.as_ref().map(|b| b.objects.clone()).unwrap_or_default(),
+            more: v.blocked.as_ref().map_or(0, |b| b.more),
+            failed: v.failed.clone(),
+        },
+    });
+    activated_.chain(voided).collect()
+}
+
+/// An activation's record: the objects its re-key moved (pe-world's report, in id order), none without a re-key.
+fn activated(asset: AssetId, version: Version, frame: Frame, report: Option<&RekeyReport>) -> Activation {
+    let rekeyed = report.map(|r| r.objects.clone()).unwrap_or_default();
+    Activation { key: ActivationKey { asset, version }, frame, outcome: ActivationOutcome::Activated { rekeyed } }
+}
+
+/// pe-world's void kinds as S5 names them: the same five, with the same codes.
+fn voided_why(kind: VoidKind) -> VoidedWhy {
+    match kind {
+        VoidKind::Unattested => VoidedWhy::Unattested,
+        VoidKind::RekeyBlockedAtActivation => VoidedWhy::RekeyBlockedAtActivation,
+        VoidKind::RekeyTooLarge => VoidedWhy::RekeyTooLarge,
+        VoidKind::AuthorRevokedAtActivation => VoidedWhy::AuthorRevokedAtActivation,
+        VoidKind::QuorumUnreachable => VoidedWhy::QuorumUnreachable,
+    }
+}
+
 /// An entry applied with nothing to report: a protocol or governance entry's outcome.
 fn applied() -> Outcome {
     Outcome::Applied { created: Vec::new(), overwrote: Vec::new(), notes: Vec::new(), inverse: None }
@@ -262,19 +290,26 @@ impl WorldModel for PeWorld {
         done
     }
 
-    fn end_frame(&mut self, frame: Frame) {
-        self.world.end_frame(frame);
+    fn end_frame(&mut self, frame: Frame) -> Vec<Activation> {
+        let end = self.world.end_frame(frame);
+        let mut acts = activations(frame, &end);
         if let Some(p) = self.predict.now.filter(|_| !self.predict.scratch) {
             if frame == p.c {
-                if !matches!(self.world.activate_for_prediction(p.asset, frame), Some(Ok(_))) {
-                    self.predict.now = None;
-                    self.predict.ended.insert((p.asset, p.version));
+                match self.world.activate_for_prediction(p.asset, frame) {
+                    Some(Ok(report)) => acts.push(activated(p.asset, p.version, frame, report.as_ref())),
+                    _ => {
+                        self.predict.now = None;
+                        self.predict.ended.insert((p.asset, p.version));
+                    }
                 }
             } else if frame >= p.deadline {
                 self.end_prediction();
             }
         }
+        // Asset order within the frame (S5 v1.8), activated and voided together; the sort is stable.
+        acts.sort_by_key(|a| a.key.asset);
         self.world.set_frame(frame.next());
+        acts
     }
 
     fn set_local(&mut self, local: Option<MemberKey>) {

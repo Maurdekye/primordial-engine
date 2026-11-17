@@ -383,7 +383,7 @@ impl WorldModel for MockWorld {
         }
     }
 
-    fn end_frame(&mut self, frame: Frame) {
+    fn end_frame(&mut self, frame: Frame) -> Vec<pe_seams::Activation> {
         self.frame = Frame(frame.0.saturating_add(1));
         let fire = {
             let mut armed = self.glitch.lock().unwrap_or_else(|e| e.into_inner());
@@ -392,6 +392,7 @@ impl WorldModel for MockWorld {
         if let Some(b) = fire.then(|| self.bodies.values_mut().find(|b| b.kind == BodyKind::Static)).flatten() {
             b.pos = b.pos.checked_add(Offset([0.001, 0.0, 0.0])).unwrap_or(b.pos);
         }
+        Vec::new()
     }
 
     fn body(&self, id: ObjectId) -> Option<BodyRow> {

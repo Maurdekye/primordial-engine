@@ -11,9 +11,10 @@ use pe_replica::mock::MockClock;
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl, ScriptRunner, event_kind};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
-    ChainHead, Class, Cut, CutImport, CutRef, DomainId, EffectCause, EffectKey, EffectKind, EntrySource, FinalCut,
-    Frame, FrameView, GroupSel, Hash, HostTime, LeafKey, LineId, MemberKey, ObjectId, Offset, Outcome, Pos, Replica,
-    RootError, RunnerIdentity, SignedEntry, Stage,
+    Activation, ActivationKey, ActivationOutcome, ChainHead, Class, Cut, CutImport, CutRef, DomainId, EffectCause,
+    EffectKey, EffectKind, EntrySource, FinalCut, Frame, FrameView, GroupSel, Hash, HostTime, LeafKey, LineId,
+    MemberKey, ObjectId, Offset, Outcome, Pos, Replica, RootError, RunnerIdentity, SignedEntry, Stage, Version,
+    VoidedWhy,
 };
 use pe_sim::{Component, ComponentId, SimStore, Transform};
 use pe_world::components::{Body, Shape, body_kind, shape_kind};
@@ -908,8 +909,16 @@ fn the_author_predicts_its_commit_and_steps_again_from_c_when_it_is_decided() {
     assert_eq!(author.vote_holds(), [Frame(6)]);
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(6), "predicted");
     assert!((ball_x(&author) - 0.05).abs() < 1e-4, "frames 6 to 10: {}", ball_x(&author));
+    let key = ActivationKey { asset: asset(), version: Version { entry: commit_of(&s).id(), op: 1 } };
+    let predicted = Activation { key, frame: Frame(5), outcome: ActivationOutcome::Activated { rekeyed: vec![] } };
+    assert_eq!(author.view().activations, [predicted], "the prediction's record");
     let adv = author.advance(Frame(24), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 5), "stepped again from c or below: {adv:?}");
+    let agreed = Activation { key, frame: Frame(12), outcome: ActivationOutcome::Activated { rekeyed: vec![] } };
+    assert_eq!(
+        (author.view().activations.clone(), author.view().activations_retracted.clone()),
+        (vec![agreed], vec![])
+    );
     assert!(author.vote_holds().is_empty());
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
@@ -937,6 +946,11 @@ fn a_prediction_voided_before_d_steps_again_with_the_old_code_throughout() {
     assert_eq!(p.void, Some((Frame(12), pe_world::VoidKind::QuorumUnreachable)));
     assert!(ball_x(&author).abs() < 1e-9, "the old code throughout: {}", ball_x(&author));
     assert_eq!(author.view().retracted, (6..11).map(ping).collect::<Vec<_>>());
+    let key = ActivationKey { asset: asset(), version: Version { entry: commit_of(&s).id(), op: 1 } };
+    let why = VoidedWhy::QuorumUnreachable;
+    let voided = ActivationOutcome::Voided { why, objects: vec![], more: 0, failed: vec![] };
+    assert_eq!(author.view().activations, [Activation { key, frame: Frame(12), outcome: voided }], "superseded");
+    assert!(author.view().activations_retracted.is_empty());
     assert_eq!((author.faults(), plain.faults()), (0, 0));
     assert_eq!(roots(&author, 24), roots(&plain, 24));
 }
@@ -1060,6 +1074,10 @@ fn a_prediction_that_reaches_d_steps_again_with_the_old_code_throughout() {
     assert!(author.vote_holds().is_empty());
     let p = &author.world().world().pending()[&asset()];
     assert_eq!(p.void, Some((deadline, pe_world::VoidKind::Unattested)));
+    let key = ActivationKey { asset: asset(), version: p.version };
+    let void = ActivationOutcome::Voided { why: VoidedWhy::Unattested, objects: vec![], more: 0, failed: vec![] };
+    assert_eq!(author.view().activations, [Activation { key, frame: deadline, outcome: void }], "superseded");
+    assert!(author.view().activations_retracted.is_empty());
     assert!(ball_x(&author).abs() < 1e-9, "the old code throughout: {}", ball_x(&author));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
     assert_eq!(roots(&author, end), roots(&plain, end));
@@ -1087,6 +1105,11 @@ fn a_build_failure_ends_the_prediction_and_the_commit_voids() {
     let p = &author.world().world().pending()[&asset()];
     assert_eq!(p.void, Some((Frame(12), pe_world::VoidKind::QuorumUnreachable)));
     assert_eq!(p.failures(), [(keys().key(1), pe_seams::BuildFailure::Compile)]);
+    let key = ActivationKey { asset: asset(), version: p.version };
+    let why = VoidedWhy::QuorumUnreachable;
+    let void = ActivationOutcome::Voided { why, objects: vec![], more: 0, failed: p.failures() };
+    assert_eq!(author.view().activations, [Activation { key, frame: Frame(12), outcome: void }], "superseded");
+    assert!(author.view().activations_retracted.is_empty());
     assert!(ball_x(&author).abs() < 1e-9, "the old code throughout: {}", ball_x(&author));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
     assert_eq!(roots(&author, 24), roots(&plain, 24));
@@ -1131,6 +1154,54 @@ fn a_late_leave_before_c_does_not_end_the_prediction() {
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
     assert_eq!(roots(&author, 24), roots(&plain, 24));
+}
+
+/// The code commit among `s`'s entries: the first, at frame 5.
+fn commit_of(s: &Source) -> SignedEntry {
+    s.entries[&Frame(5)][0].clone()
+}
+
+/// What became of a code commit at a frame's end reaches the view (S5 v1.8): a one-member commit at 5 activates at
+/// 5's end, and the view carries its record. A late entry at 3 steps frame 5 again, and the next view carries the
+/// record again, unchanged, with nothing retracted.
+#[test]
+fn an_activation_reaches_the_view_and_again_when_its_frame_is_stepped_again() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let c = commit(&mut b, 5);
+    let late = edit(&mut b, 3, vec![Op::Delete { id: Target::Existing(oid(BALL)) }]);
+    let mut s = Source::default();
+    s.add(c.clone());
+    let mut r = replica_for(floor_and_ball(), None);
+    r.advance(Frame(10), &mut s);
+    let key = ActivationKey { asset: asset(), version: Version { entry: c.id(), op: 1 } };
+    let record = Activation { key, frame: Frame(5), outcome: ActivationOutcome::Activated { rekeyed: vec![] } };
+    assert_eq!(r.view().activations, std::slice::from_ref(&record));
+    s.add(late);
+    let adv = r.advance(Frame(12), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 3), "{adv:?}");
+    assert_eq!((r.view().activations.clone(), r.view().activations_retracted.clone()), (vec![record], vec![]));
+}
+
+/// An attestation that decides nothing (B's names another module, so pe-world refuses it `Invalid`) still ends A's
+/// prediction: A steps again from 5 under the rule, where the commit stays pending. The prediction's record is
+/// retracted, and no record replaces it yet.
+#[test]
+fn a_prediction_ended_without_a_decision_retracts_its_record() {
+    let wrong = |b: &mut EntryBuilder| {
+        edit(b, 12, vec![Op::AttestBuild { script: asset(), version: v1(), module: Hash([9; 32]) }])
+    };
+    let (world, mut s) = predicted_entries(wrong);
+    let mut author = replica_for(world, Some(keys().key(0)));
+    author.advance(Frame(11), &mut s);
+    let key = ActivationKey { asset: asset(), version: Version { entry: commit_of(&s).id(), op: 1 } };
+    assert_eq!(author.view().activations.iter().map(|a| a.key).collect::<Vec<_>>(), [key]);
+    author.advance(Frame(24), &mut s);
+    assert!(author.vote_holds().is_empty());
+    assert!(author.view().activations.is_empty(), "{:?}", author.view().activations);
+    assert_eq!(author.view().activations_retracted, [key]);
+    let p = &author.world().world().pending()[&asset()];
+    assert_eq!((p.void, p.attested.len()), (None, 1), "still pending, the author's own attestation only");
 }
 
 /// pe-logic's runner (the `logic` feature) on the lamp of logic.md appendix A, which the build service builds.
