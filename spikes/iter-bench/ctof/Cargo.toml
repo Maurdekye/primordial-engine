@@ -1,0 +1,28 @@
+# The lamp's c-to-F (logic.md 6.2a, "What changes for the author"): two pe-app machines over real UDP on loopback,
+# each with its build service and attester as pe-app's binary wires them, commit the lamp through pe-api's `code` op;
+# the probe reads the commit frame c and the activation frame F. Own workspace, so the repo root is untouched.
+[package]
+name = "ctof-probe"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+pe-app = { path = "../../../crates/pe-app" }
+pe-seams = { path = "../../../crates/pe-seams", features = ["world-api"] }
+pe-world = { path = "../../../crates/pe-world" }
+pe-replica = { path = "../../../crates/pe-replica", features = ["logic"] }
+pe-logic = { path = "../../../crates/pe-logic" }
+pe-render = { path = "../../../crates/pe-render" }
+serde_json = "1"
+
+[profile.release]
+debug = false
+
+# The root workspace's patches (Cargo.toml [patch.crates-io]), which a path dependency doesn't carry.
+[patch.crates-io]
+box3d-rust = { path = "../../../crates/box3d-fork" }
+wasmtime = { path = "../../../crates/pe-logic/vendor/wasmtime-50.0.1" }

@@ -1,0 +1,22 @@
+COLD
+  F-c frames: n=3 median 79 [76-104]
+  F-c ms: n=3 median 1317 [1267-1733]
+  author call ms (first try to accepted): n=3 median 1797 [1360-2380]
+  author first try ms: n=3 median 1797 [1360-2380]
+  NotReady retries: [0, 0, 0]
+  B_saw_pending ms after call: n=3 median 0 [0-28]
+  B_active ms after call: n=3 median 1270 [1267-1706]
+  A_corrected ms after call: n=3 median 1538 [1527-2204]
+  A_final ms after call: n=3 median 1686 [1639-2293]
+  prediction from c+1: True
+WARM
+  F-c frames: n=30 median 48 [37-81]
+  F-c ms: n=30 median 800 [617-1350]
+  author call ms (first try to accepted): n=30 median 836 [638-1349]
+  author first try ms: n=30 median 809 [592-1349]
+  NotReady retries: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0]
+  B_saw_pending ms after call: n=30 median 6 [0-30]
+  B_active ms after call: n=30 median 801 [601-1335]
+  A_corrected ms after call: n=30 median 981 [713-1627]
+  A_final ms after call: n=30 median 1139 [882-1746]
+  prediction from c+1: True
