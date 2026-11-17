@@ -26,7 +26,7 @@ use pe_seams::{AgreeEvent, FrameView, HostTime};
 use crate::LocalPresentation;
 use crate::camera::Camera;
 use crate::counters::{CaptureEvent, RenderCounters};
-use crate::display::{DisplayFrame, DisplayLayer, DisplaySettings, FrameInput};
+use crate::display::{DisplayFrame, DisplayLayer, DisplaySettings, FrameInput, OwnHands};
 use crate::effects::{EffectCommand, EffectGate, EffectSettings};
 use crate::notices::{Line, Notices};
 use crate::pacing::Quality;
@@ -267,6 +267,9 @@ impl Presenter {
         self.last = Some(newest.clone());
         let notices = self.notices.as_mut().map(|n| n.lines(now)).unwrap_or_default();
         let mut scene = Scene::displayed(newest, &display);
+        if self.display.settings().own_hands == OwnHands::LateLatched {
+            crate::hands::draw_tracked_joints(&mut scene, newest, local);
+        }
         scene.environment = self.environment;
         PresentedFrame { scene, display, effects, notices }
     }
