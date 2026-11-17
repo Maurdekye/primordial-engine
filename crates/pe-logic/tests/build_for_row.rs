@@ -3,8 +3,8 @@
 //! build the same error on every machine.
 
 use pe_logic::build::{
-    AUTHOR_MAX_BUILD, BuildError, CommitRefusal, FailReason, Toolchain, build_archive, build_for_commit, build_for_row,
-    engine_sdk, pack,
+    AUTHOR_MAX_BUILD, BuildError, CommitRefusal, FailReason, RustcMessage, RustcSpan, Toolchain, build_archive,
+    build_for_commit, build_for_row, engine_sdk, pack,
 };
 use pe_logic::runtime::{Script, Settings, engine};
 use std::path::{Path, PathBuf};
@@ -124,22 +124,88 @@ fn a_raised_compiler_limit_is_refused_before_the_build() {
     }
 }
 
+fn diag(level: &str, message: &str, at: Option<(&str, u32)>) -> RustcMessage {
+    RustcMessage {
+        level: level.into(),
+        code: None,
+        message: message.into(),
+        spans: at.map(|(file, line)| RustcSpan { file: file.into(), line, column: 1 }).into_iter().collect(),
+    }
+}
+
 #[test]
-fn a_rustc_failure_is_compile_only_with_a_located_diagnostic() {
-    let r = |out: &str| BuildError::Rustc(out.into()).reason();
+fn a_rustc_failure_is_compile_only_with_an_error_at_a_place_in_the_source() {
+    // The crate rustc "ran in": tests/, so a name relative to it exists there and not in the working folder of the
+    // tests themselves.
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let r = |d: Vec<RustcMessage>| {
+        BuildError::Rustc { text: String::new(), diagnostics: d, crate_dir: dir.to_path_buf() }.reason()
+    };
+    let at = Some(("/script/src/lib.rs", 3));
     assert_eq!(
-        r("src\\lib.rs:3:5: error[E0425]: cannot find value `x`\nerror: could not compile `script`\n"),
+        r(vec![diag("error", "cannot find value `x`", at), diag("error", "aborting", None)]),
         FailReason::Compile
     );
-    assert_eq!(r("C:\\w\\script\\src\\lib.rs:12:1: error: unknown attribute\n"), FailReason::Compile);
+    // No diagnostic (cargo failed first, a killed compiler), only a warning, or an error at no place: Local.
+    assert_eq!(r(vec![]), FailReason::Local);
+    assert_eq!(r(vec![diag("warning", "unused", at)]), FailReason::Local);
+    assert_eq!(r(vec![diag("error", "could not write the output", None)]), FailReason::Local);
+    // An internal compiler error is Local even beside a located error (@shader-reviewer).
     assert_eq!(
-        r("src/lib.rs:7:9: error: allow(long_running_const_eval) incompatible with previous forbid\n"),
-        FailReason::Compile
+        r(vec![diag("error", "x", at), diag("error: internal compiler error", "unexpected panic", None)]),
+        FailReason::Local
     );
-    assert_eq!(r("error: failed to write `S:\\t\\x`: The disk is full\n"), FailReason::Local);
-    assert_eq!(r("warning: src/lib.rs:1:1: unused\n"), FailReason::Local);
+    // A read rustc could not do: Local when the file exists (this machine's trouble), Refused when it does not (the
+    // source names a file outside its archive).
+    let exists = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let exists = format!("couldn't read `{}`: Access is denied. (os error 5)", exists.display());
+    assert_eq!(r(vec![diag("error", &exists, at)]), FailReason::Local);
+    let gone = "couldn't read `Z:\\no\\such\\file.txt`: The system cannot find the path specified. (os error 3)";
+    assert_eq!(r(vec![diag("error", gone, at)]), FailReason::Refused);
+    // A relative name is resolved in the crate rustc ran in, not in the engine's working folder.
+    let rel = "couldn't read `scripts\\lamp\\Cargo.toml`: The process cannot access the file. (os error 32)";
+    assert_eq!(r(vec![diag("error", rel, at)]), FailReason::Local);
+    let rel_gone = "couldn't read `src\\no_such.rs`: The system cannot find the file specified. (os error 2)";
+    assert_eq!(r(vec![diag("error", rel_gone, at)]), FailReason::Refused);
     assert_eq!(BuildError::Refused("x".into()).reason(), FailReason::Refused);
     assert_eq!(BuildError::Spawn("x".into()).reason(), FailReason::Local);
+}
+
+#[test]
+fn rustcs_diagnostics_come_back_parsed_with_the_scripts_own_file_names() {
+    let root = scratch("diagnostics");
+    let archive = lamp_with(&root, "", "\npub fn broken() -> u32 { no_such_name }\n");
+    let lines = std::fs::read_to_string(lamp_dir().join("src/lib.rs")).unwrap().lines().count() as u32;
+    match build_archive(&tc(), &archive, &engine_sdk(), &root.join("w"), &root.join("t"), true) {
+        Err(BuildError::Rustc { text, diagnostics, .. }) => {
+            let e = diagnostics.iter().find(|d| d.level == "error").unwrap_or_else(|| panic!("{diagnostics:?}"));
+            assert_eq!(e.code.as_deref(), Some("E0425"), "{e:?}");
+            assert!(e.message.contains("no_such_name"), "{e:?}");
+            assert_eq!(e.spans.len(), 1, "{e:?}");
+            // The appended line: after the lamp's last line, one empty line, then the function.
+            assert_eq!((e.spans[0].line, e.spans[0].column), (lines + 2, 26), "{e:?}");
+            assert_eq!(e.spans[0].file, "src/lib.rs", "{e:?}");
+            assert!(text.contains("E0425"), "{text}");
+            let root_s = root.to_string_lossy().replace('\\', "/");
+            for d in &diagnostics {
+                for sp in &d.spans {
+                    assert!(!sp.file.replace('\\', "/").contains(&root_s), "a local path: {d:?}");
+                }
+            }
+        }
+        other => panic!("{:?}", other.map(|w| w.len())),
+    }
+}
+
+#[test]
+fn reading_a_file_outside_the_archive_is_refused_on_every_machine() {
+    // On a machine without the file, rustc's "couldn't read" is Refused, like the dep-info check's refusal on one
+    // that has it (logic.md 6.2b), not Compile.
+    let root = scratch("read-missing");
+    let gone = root.join("no-such-file.txt").to_string_lossy().replace('\\', "/");
+    let archive = lamp_with(&root, "", &format!("\npub const X: &str = include_str!(\"{gone}\");\n"));
+    let f = for_row(&archive, &root, &tc(), pe_core::Hash::of("x", b"")).err().expect("a refusal");
+    assert_eq!((f.reason, f.module, f.attempts), (FailReason::Refused, None, 1), "{}", f.detail);
 }
 
 #[test]
@@ -199,4 +265,79 @@ fn a_clean_rebuild_deletes_only_what_the_service_wrote() {
     let f = for_row(&archive, &root, &tc(), pe_core::Hash::of("x", b"not it")).err().expect("a mismatch");
     assert_eq!((f.reason, f.attempts), (FailReason::Mismatch, 2));
     assert_eq!(std::fs::read_to_string(&keep).unwrap(), "keep me");
+}
+
+/// A file of the script's own `src` that this machine cannot read while rustc runs (an antivirus scanner holding a
+/// freshly unpacked file, here an exclusive handle) is this machine's trouble, `Local`, retried; never `Refused`,
+/// which would split a member over a passing lock (@shader-reviewer's probe on v11-r1).
+#[cfg(windows)]
+#[test]
+fn a_locked_file_inside_the_script_is_a_local_failure() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = scratch("locked");
+    let dir = root.join("crate");
+    copy_tree(&lamp_dir(), &dir);
+    std::fs::write(dir.join("src/table.rs"), "locked\n").unwrap();
+    let lib = dir.join("src/lib.rs");
+    let src = std::fs::read_to_string(&lib).unwrap();
+    std::fs::write(&lib, format!("{src}\npub const TABLE: &str = include_str!(\"table.rs\");\n")).unwrap();
+    let archive = pack(&dir).unwrap();
+    // Unpacked and built once, so `w/script` is the service's; then rebuilt into a fresh target with the file held.
+    build_archive(&tc(), &archive, &engine_sdk(), &root.join("w"), &root.join("t"), true)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let held = root.join("w/script/src/table.rs");
+    let _lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&held).unwrap();
+    match pe_logic::build::build(&tc(), &root.join("w/script"), &engine_sdk(), &root.join("t2"), true) {
+        Err(e @ BuildError::Rustc { .. }) => {
+            assert_eq!(e.reason(), FailReason::Local, "{e}");
+            assert!(e.to_string().contains("couldn't read"), "{e}");
+        }
+        other => panic!("{:?}", other.map(|w| w.len())),
+    }
+}
+
+#[test]
+fn the_authors_commit_carries_rustcs_warnings_about_the_script_only() {
+    // For pe-api's `Built.warnings` (@api-eng): a passing build still tells the author what rustc warned about, with
+    // the place in the archive; pe-sdk's warnings and rustc's summary line are not the author's.
+    let root = scratch("warnings");
+    let dir = root.join("crate");
+    copy_tree(&lamp_dir(), &dir);
+    let lib = dir.join("src/lib.rs");
+    let src = std::fs::read_to_string(&lib).unwrap();
+    let lines = src.lines().count() as u32;
+    std::fs::write(&lib, format!("{src}\npub fn noisy() -> u32 {{\n    let unused_here = 7;\n    1\n}}\n")).unwrap();
+    let s = Settings::default();
+    let c = build_for_commit(
+        &tc(),
+        &dir,
+        &engine_sdk(),
+        &root.join("w"),
+        &root.join("t"),
+        true,
+        &engine(&s).unwrap(),
+        s,
+        AUTHOR_MAX_BUILD,
+    )
+    .unwrap_or_else(|r| panic!("{r}"));
+    assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+    let w = &c.warnings[0];
+    assert_eq!((w.level.as_str(), w.code.as_deref()), ("warning", Some("unused_variables")), "{w:?}");
+    assert!(w.message.contains("unused_here"), "{w:?}");
+    assert_eq!(w.spans.len(), 1, "{w:?}");
+    assert_eq!((w.spans[0].file.as_str(), w.spans[0].line, w.spans[0].column), ("src/lib.rs", lines + 3, 9));
+    // The plain lamp has none.
+    let quiet = build_for_commit(
+        &tc(),
+        &lamp_dir(),
+        &engine_sdk(),
+        &root.join("w2"),
+        &root.join("t2"),
+        true,
+        &engine(&s).unwrap(),
+        s,
+        AUTHOR_MAX_BUILD,
+    )
+    .unwrap_or_else(|r| panic!("{r}"));
+    assert!(quiet.warnings.is_empty(), "{:?}", quiet.warnings);
 }
