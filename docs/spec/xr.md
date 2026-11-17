@@ -492,8 +492,10 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
   nothing in pe-xr counts simulation frames: its limits are durations.
 - **The drawn time.** The newest frame view is for a simulation frame at or before now, and the predicted display
   time is well past now: 38-63 ms on Virtual Desktop's runtime (section 5.6), about five periods at 120 Hz. So the display time is almost always past the newest frame view,
-  and interpolating between frame views cannot reach it. The time the world is drawn at is WS-render's choice, one
-  of:
+  and interpolating between frame views cannot reach it. **Ruled 2026-11-17:** in VR, world objects are drawn at the
+  engine's present (`Present`), never extrapolated to the display time; the head and the own hands stay late-latched
+  [R user, render.md X8 (coordinator)]. That replaces my proposal (a) below, which is
+  kept for the record. The time the world is drawn at was WS-render's choice, one of:
   - **(a) extrapolate** from the newest frame view to the display time, up to the measured lead, with the display
     layer's smoothing. This is design.md 18.3's rule, and my proposal [I];
   - **(b) interpolate** between the two newest frame views at the display time minus a render delay. Nothing is

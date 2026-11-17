@@ -460,7 +460,8 @@ impl DesktopView {
         };
         let (_, hand) = self.hand.update(&input, &self.targets, &view.local_rig);
         self.feed.push(hand);
-        let local = LocalPresentation { display_time, hands: [None, Some(DisplayHand { pose: hand.pose })] };
+        let local =
+            LocalPresentation { display_time, hands: [None, Some(DisplayHand { pose: hand.pose, joints: None })] };
 
         let Some(mut frame) = self.cfg.presenter.frame_batch(&batch, &local, &[camera]) else { return };
         frame.scene.overlay =

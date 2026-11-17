@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 use pe_seams::{Hand, RigPose};
 
 use crate::backend::{EyePose, SessionState};
+use crate::hands::Reading;
+use crate::seam::HandSource;
 use crate::session::{Counters, EndReason};
 
 /// The environment variable that turns the log on when it is `1`.
@@ -33,6 +35,29 @@ pub struct Diag {
     on: bool,
     eyes_logged: bool,
     hand_logged: [bool; 2],
+    /// Each hand's pose source in the last FOCUSED frame, to log its changes.
+    source: [Option<PoseSource>; 2],
+}
+
+/// Where a hand's pose came from in one frame (spec 5.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoseSource {
+    /// XR_EXT_hand_tracking's joints.
+    Joints,
+    /// A controller's grip pose.
+    Controller,
+    /// No valid pose.
+    None,
+}
+
+impl PoseSource {
+    pub fn of(r: &Reading) -> PoseSource {
+        match (r.pose, r.source) {
+            (None, _) => PoseSource::None,
+            (Some(_), HandSource::Tracked) => PoseSource::Joints,
+            (Some(_), _) => PoseSource::Controller,
+        }
+    }
 }
 
 impl Diag {
@@ -84,6 +109,14 @@ impl Diag {
         out
     }
 
+    /// A hand's pose source, when it changes (the first FOCUSED frame included): controllers put down for bare hands,
+    /// or picked up again.
+    pub fn hand_source(&mut self, hand: Hand, source: PoseSource, at_ns: i64) -> Option<String> {
+        let last = self.source[hand.index()].replace(source);
+        (self.on && last != Some(source))
+            .then(|| format!("{hand:?} hand pose from {source:?} (was {last:?}) at {at_ns} ns"))
+    }
+
     pub fn ended(&self, why: Option<EndReason>, counters: &Counters) -> Option<String> {
         self.on.then(|| {
             let never = if self.hand_logged == [false, false] { "; no hand was ever tracked while drawn" } else { "" };
@@ -133,6 +166,18 @@ mod tests {
 
         let end = d.ended(Some(EndReason::Exited), &Counters::default()).expect("logged");
         assert!(end.contains("Exited") && !end.contains("no hand"), "{end}");
+    }
+
+    #[test]
+    fn a_hands_pose_source_is_logged_when_it_changes() {
+        let mut d = Diag::new(true);
+        let first = d.hand_source(Hand::Left, PoseSource::Controller, 1).expect("the first source is logged");
+        assert!(first.contains("Left hand pose from Controller (was None)"), "{first}");
+        assert!(d.hand_source(Hand::Left, PoseSource::Controller, 2).is_none(), "unchanged");
+        let put_down = d.hand_source(Hand::Left, PoseSource::Joints, 3).expect("controllers put down");
+        assert!(put_down.contains("from Joints (was Some(Controller)) at 3 ns"), "{put_down}");
+        assert!(d.hand_source(Hand::Right, PoseSource::Joints, 4).is_some(), "each hand on its own");
+        assert!(Diag::new(false).hand_source(Hand::Left, PoseSource::Joints, 5).is_none(), "off logs nothing");
     }
 
     #[test]

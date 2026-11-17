@@ -435,6 +435,7 @@ fn own_hands_and_held_objects_are_never_corrected() {
                     None,
                     Some(DisplayHand {
                         pose: RigPose { position: [0.25, 0.1, -0.5], orientation: [0.0, 0.0, 0.0, 1.0] },
+                        joints: None,
                     }),
                 ],
             };

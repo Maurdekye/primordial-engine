@@ -88,12 +88,10 @@ impl ViewReader {
 }
 
 /// The local player's part of a display frame: shown at the runtime's predicted display time, with the hands pe-xr
-/// located for it.
+/// located for it, and a tracked hand's joints for drawing it (xr.md 6, render.md 5).
 fn local_presentation(frame: &FrameRequest<'_>) -> LocalPresentation {
-    LocalPresentation {
-        display_time: frame.timing.predicted_display_time,
-        hands: frame.hands.map(|h| h.map(|pose| DisplayHand { pose })),
-    }
+    let hand = |i: usize| frame.hands[i].map(|pose| DisplayHand { pose, joints: frame.hand_joints[i] });
+    LocalPresentation { display_time: frame.timing.predicted_display_time, hands: [hand(0), hand(1)] }
 }
 
 impl FrameSink for VrSink {
@@ -622,6 +620,8 @@ mod tests {
     fn the_local_presentation_takes_the_display_time_and_the_located_hands() {
         let eye = EyePose { pose: RigPose::IDENTITY, fov: Fov { left: -0.8, right: 0.8, up: 0.8, down: -0.8 } };
         let right = RigPose::IDENTITY;
+        let mut joints = pe_render::HandJoints([pe_render::HandJoint::default(); pe_render::HandJoints::COUNT]);
+        joints.0[0] = pe_render::HandJoint { position: [0.1, 1.0, -0.3], radius: 0.02, valid: true };
         let frame = FrameRequest {
             timing: FrameTiming {
                 predicted_display_time: HostTime(7_000_000),
@@ -632,10 +632,12 @@ mod tests {
             image: ImageIndex(0),
             depth_image: None,
             hands: [None, Some(right)],
+            hand_joints: [None, Some(joints)],
         };
         let local = local_presentation(&frame);
         assert_eq!(local.display_time, HostTime(7_000_000));
         assert!(local.hands[0].is_none(), "an untracked hand is not drawn");
         assert_eq!(local.hands[1].map(|h| h.pose), Some(right));
+        assert_eq!(local.hands[1].and_then(|h| h.joints), Some(joints), "a tracked hand's joints are drawn with it");
     }
 }
