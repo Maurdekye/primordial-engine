@@ -12,7 +12,9 @@
 //! `details.winner_change` meanwhile), and the dry run's field diff.
 
 use pe_core::Frame as CoreFrame;
-use pe_seams::world_api::{IdVersion, MemberId, ObjectBrief, ObjectId, Outcome, Refusal, RefusalCode, Status, TxId};
+use pe_seams::world_api::{
+    IdVersion, MemberId, ObjectBrief, ObjectId, Outcome, Refusal, RefusalCode, ScriptVersion, Status, TxId,
+};
 use pe_seams::{Note, Reason};
 use pe_world::edit::{MAX_OPS, MAX_ROW_BYTES, OWN_CHECK, Op, Precondition};
 use pe_world::{Draft, WorldSnapshot};
@@ -167,6 +169,16 @@ fn op_object(op: &Op) -> Option<pe_core::ObjectId> {
 }
 
 /// The change's dry run on `snap`: pe-world's edit path on a scratch copy, as from `draft`, changing nothing.
+/// The key `Outcome.scripts` gives a committed script: its `$name` if this change creates it, else its id.
+pub fn script_key(r: &Resolved, script: &pe_world::edit::AssetTarget) -> String {
+    match script {
+        pe_world::edit::AssetTarget::New(k) => {
+            r.script_refs.iter().find(|(_, v)| *v == k).map(|(n, _)| n.clone()).unwrap_or_default()
+        }
+        pe_world::edit::AssetTarget::Existing(a) => crate::resolve::asset_text(a),
+    }
+}
+
 pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft) -> Outcome {
     let base = Outcome {
         dry_run: true,
@@ -184,8 +196,17 @@ pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft)
         resent_as: None,
         held: None,
         activation: None,
+        scripts: Default::default(),
     };
-    let (outcome, after) = snap.dry_run_state(CoreFrame(snap.frame().0), draft, &e.tx);
+    // A commit's `activate_at` is the frame it applies at (api.md 7); live, step 2 sets it.
+    let tx = if e.tx.ops.iter().any(|o| matches!(o, pe_world::edit::Op::CommitScript { .. })) {
+        let mut tx = e.tx.clone();
+        tx.set_activation(CoreFrame(snap.frame().0));
+        std::borrow::Cow::Owned(tx)
+    } else {
+        std::borrow::Cow::Borrowed(&e.tx)
+    };
+    let (outcome, after) = snap.dry_run_state(CoreFrame(snap.frame().0), draft, &tx);
     match outcome {
         pe_seams::Outcome::Applied { notes, .. } => {
             let mut created = std::collections::BTreeMap::new();
@@ -200,7 +221,25 @@ pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft)
                 }
             }
             let _orphans: Vec<_> = notes.iter().filter(|n| matches!(n, Note::Orphaned { .. })).collect();
-            Outcome { created, ..base }
+            // The script it commits, its id derived from the draft's coordinates as a new object's (api.md 7).
+            let mut scripts = std::collections::BTreeMap::new();
+            for op in &e.tx.ops {
+                if let pe_world::edit::Op::CommitScript { script, .. } = op {
+                    let a = match *script {
+                        pe_world::edit::AssetTarget::Existing(a) => a,
+                        pe_world::edit::AssetTarget::New(k) => {
+                            pe_world::script::asset_created(draft.line, draft.author, draft.chain, draft.seq, k)
+                        }
+                    };
+                    if let Some(p) = after.pending().get(&a) {
+                        scripts.insert(
+                            script_key(r, script),
+                            ScriptVersion { id: crate::resolve::asset_text(&a), version: version_text(&p.version) },
+                        );
+                    }
+                }
+            }
+            Outcome { created, scripts, ..base }
         }
         pe_seams::Outcome::Refused { op, reason } => {
             let f = map_refusal(snap, e, op, &reason);
