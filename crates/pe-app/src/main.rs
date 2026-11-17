@@ -191,6 +191,8 @@ fn shared_sim(
 
 fn main() {
     let options = options();
+    // Others share the world (`--open` or `--join`): the quit then leaves gracefully (app.md 4).
+    let networked = options.shared.is_some();
     let (vr, run_for) = (options.vr, options.run_for);
     let started = Instant::now();
 
@@ -282,7 +284,7 @@ fn main() {
                 if waited == XrWait::Running {
                     stop_mcp(mcp);
                     stop_builds(attester);
-                    finish(sim.stop(), None);
+                    finish(quit(sim, networked), None);
                     return;
                 }
                 eprintln!("pe-app: the VR session ended; the desktop instead");
@@ -311,7 +313,17 @@ fn main() {
     let window = run_desktop(cfg, slot, desktop_hand, Box::new(LogEffects));
     stop_mcp(mcp);
     stop_builds(attester);
-    finish(sim.stop(), Some(window));
+    finish(quit(sim, networked), Some(window));
+}
+
+/// The quit (app.md 4), once MCP and the attester have stopped. In a session with others this member leaves
+/// gracefully: its `Leave` goes out, it goes on voting until every remaining member has confirmed it or the quit's
+/// bound passes, and the console says so ("leaving…"). A world alone just stops.
+fn quit(sim: sim::SimThread, networked: bool) -> std::thread::Result<sim::SimStats> {
+    if !networked {
+        return sim.stop();
+    }
+    sim.leave_and_stop(&mut |line| println!("{line}")).1
 }
 
 /// The world's name as pe-api reports it, until the invite or the configuration names it (api.md 5.1).
