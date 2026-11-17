@@ -8,7 +8,11 @@
 //!   the thread that calls it, so the sim thread never compiles a built module: loading the 18 KB tally takes about
 //!   5 ms and a 264 KB module 50-84 ms [V logic.md 4.2, 5.2a], against a 13.9 ms frame at 72 Hz. The runner takes
 //!   what has arrived at the start of a frame, its `LogicPrePhysics` stage, so both stages of a frame see the same
-//!   modules.
+//!   modules. When a module arrives is this machine's timing, not the world's: a take can land inside a re-simulation,
+//!   so one advance can step some frames without the module and later ones with it. That is harmless only because a
+//!   replica that stepped frames at or past an activation F without the module holds its votes from F, and steps
+//!   again from F once it holds it (S2 v1.7's `vote_holds`; at n = 2 every member holds the module at F, since it
+//!   attests after loading it; @engine-architect's Low 1 on 1dd85502).
 //! - **Binding** (logic.md 3.2, 6.2; world-model.md 7.9): a row binds its module under the ids its version V gives
 //!   (`pe_world::script::script_component_id` over each of the manifest's own components, the tag `tag_desc(V)`),
 //!   every one of which must be among the row's ids, and under the engine components of 3.2's table. A script stays
@@ -27,7 +31,7 @@ use pe_logic::run::{self, EngineComponent, Loaded, Logic, RunSettings, StageCtx}
 use pe_logic::runtime::{self, LoadError, Script, Settings};
 use pe_sdk::layout::Stage as SdkStage;
 use pe_seams::Stage;
-use pe_sim::{ComponentId, Registry, SimStore};
+use pe_sim::{ComponentDesc, ComponentId, Registry, SimStore};
 use pe_world::script::{AssetId, ENGINE_COMPONENTS, script_component_id, tag_desc};
 
 use super::{ScriptEvent, ScriptRow, ScriptRunner, StageOutcome, StageWorld};
@@ -86,10 +90,43 @@ impl ModuleInbox {
         Ok(hash)
     }
 
-    /// The native stack a thread that calls [`ModuleInbox::load`] needs: reading a module's manifest runs it.
+    /// Describes a module as a `CommitScript` of version `v` registers it, without holding it, on the calling thread
+    /// (which needs [`ModuleInbox::thread_stack`]): for the build service's checks of a member's build against the
+    /// commit (logic.md 6.2 step 3) and for the author's own commit (pe-app's `Builder`). The hash is this runner's,
+    /// from the settings it meters with.
+    pub fn describe(&self, wasm: &[u8], v: &Hash) -> Result<Described, LoadError> {
+        let (module, held) = Held::load(&self.engine, self.settings, wasm)?;
+        let components = own_components(&held.manifest, v).map_err(LoadError::Compile)?;
+        Ok(Described { module, components })
+    }
+
+    /// The native stack a thread that calls [`ModuleInbox::load`] or [`ModuleInbox::describe`] needs: reading a
+    /// module's manifest runs it.
     pub fn thread_stack(&self) -> usize {
         self.settings.thread_stack()
     }
+}
+
+/// A module as a `CommitScript` of version V registers it (logic.md 3.2, 6.2 step 3; [`ModuleInbox::describe`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Described {
+    /// The hash of its metered bytes: the commit's `author_module`.
+    pub module: Hash,
+    /// Its own components under the ids V gives them (`pe_world::script::script_component_id`), in the manifest's
+    /// order. With the tag `tag_desc(V)` these are the version's components, which the commit registers.
+    pub components: Vec<ComponentDesc>,
+}
+
+/// `manifest`'s own components (not the engine's) under the ids version `v` gives them, in the manifest's order. An
+/// error is the module's own: the same module and version fail alike everywhere.
+fn own_components(manifest: &Manifest, v: &Hash) -> Result<Vec<ComponentDesc>, String> {
+    let own = manifest.components.iter().filter(|c| !c.name.starts_with(ENGINE_PREFIX));
+    own.map(|c| {
+        let fields = run::component_desc(c, ComponentId(0)).map_err(|e| e.to_string())?.fields().to_vec();
+        let id = script_component_id(v, &c.name, fields).ok_or_else(|| format!("component {}: no id", c.name))?;
+        run::component_desc(c, id).map_err(|e| e.to_string())
+    })
+    .collect()
 }
 
 /// What a row binds.
@@ -180,16 +217,12 @@ impl LogicRunner {
         let held = self.held.get(&row.module).ok_or_else(|| ("the module is not held".to_string(), false))?;
         let tag = tag_desc(&row.version).id();
         let mut own = Vec::new();
-        for c in held.manifest.components.iter().filter(|c| !c.name.starts_with(ENGINE_PREFIX)) {
-            let fields = run::component_desc(c, ComponentId(0)).map_err(|e| (e.to_string(), true))?.fields().to_vec();
-            let id = script_component_id(&row.version, &c.name, fields)
-                .ok_or_else(|| (format!("component {}: no id", c.name), true))?;
+        for want in own_components(&held.manifest, &row.version).map_err(|e| (e, true))? {
             // The world's own check of what bind checks too: until the world registers the version, it doesn't bind.
-            let want = run::component_desc(c, id).map_err(|e| (e.to_string(), true))?;
-            if registry.get(id) != Some(&want) {
-                return Err((format!("component {} is not registered under this version", c.name), false));
+            if registry.get(want.id()) != Some(&want) {
+                return Err((format!("component {} is not registered under this version", want.name()), false));
             }
-            own.push(id);
+            own.push(want.id());
         }
         if registry.get(tag).is_none() {
             return Err(("the version's tag is not registered".to_string(), false));
