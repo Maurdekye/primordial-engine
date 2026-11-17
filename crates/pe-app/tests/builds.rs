@@ -17,7 +17,9 @@ use pe_app::builds::{
 use pe_logic::build::Toolchain;
 use pe_replica::logic::{LogicRunner, ModuleInbox};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
-use pe_seams::world_api::{Caller, CodeCheck, ConnectionId, DiagnosticKind, MemberId, Producer, ProducerKind, Scope};
+use pe_seams::world_api::{
+    Caller, CodeCheck, ConnectionId, DiagnosticKind, MemberId, Producer, ProducerKind, Scope, Severity,
+};
 use pe_seams::{BuildFailure, Class, Frame, Hash, LineId, Outcome, SimRate};
 use pe_world::edit::{Actor, AssetTarget, Op, Transaction};
 use pe_world::script::tag_desc;
@@ -108,6 +110,12 @@ fn committed(built: &Built, ids: (Hash, Hash), module: Hash) -> World {
     commit_world(archive(), Some(built), ids, module)
 }
 
+/// The bug bundle's folder a pass's log line names.
+fn bundle_in(why: &str) -> PathBuf {
+    let at = why.split("bug bundle (local, see report.txt): ").nth(1).unwrap_or_else(|| panic!("no bundle: {why}"));
+    PathBuf::from(at.lines().next().unwrap())
+}
+
 fn blob_of(w: &World) -> impl Fn(&BlobRef) -> Option<Arc<[u8]>> + '_ {
     |r| w.blobs().get(r)
 }
@@ -164,11 +172,16 @@ fn a_build_that_differs_from_the_commit_is_reported_and_not_attested() {
             matches!(&pass.failed[..], [(a, f, why)] if *a == lamp() && *f == v() && why.contains("Mismatch after 2")),
             "{pass:?}"
         );
+        // A Mismatch means 6.2b's prevention has a gap: the bug bundle is saved, locally, and the log says where.
+        let bundle = bundle_in(&pass.failed[0].2);
+        assert!(bundle.starts_with(config("differs").dir.join("bugs")), "{}", bundle.display());
+        let report = std::fs::read_to_string(bundle.join("report.txt")).expect("the bundle's report");
+        assert!(report.contains("reason: Mismatch") && bundle.join("module.wasm").is_file(), "{report}");
 
         let w = committed(&built, (Hash([7; 32]), builder.ids().1), mine);
         let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
         assert!(pass.loaded.is_empty() && pass.attest.is_empty() && pass.failures.is_empty(), "{pass:?}");
-        let why = "another toolchain or SDK";
+        let why = "another build identity";
         assert!(matches!(&pass.failed[..], [(a, f, w)] if *a == lamp() && *f == v() && w.contains(why)), "{pass:?}");
     });
 }
@@ -187,9 +200,44 @@ fn a_voter_reports_a_compile_error_at_once() {
         let version = w.pending()[&lamp()].version;
         assert_eq!(pass.failures, [Failure { asset: lamp(), version, reason: BuildFailure::Compile, tx }]);
         assert!(matches!(&pass.failed[..], [(_, _, why)] if why.contains("Compile after 1")), "{pass:?}");
+        // The author's commit counts as its attestation, so a compile error here is a gap too: bundled, rustc's output
+        // in its report.
+        let report = std::fs::read_to_string(bundle_in(&pass.failed[0].2).join("report.txt")).expect("a report");
+        assert!(report.contains("reason: Compile") && report.contains("src/lib.rs"), "{report}");
         let author = Attester::new(keys().key(0)).pass(w.pending(), blob_of(&w), &builder, &inbox);
         assert!(author.failures.is_empty() && author.attest.is_empty(), "{author:?}");
     });
+}
+
+/// A commit whose components aren't its module's is the same on every machine: a voter reports `Refused`, not `Local`
+/// (6.2a item 2), and, since the author built the version, saves a bug bundle: the same module describing differently
+/// on two machines would be a prevention gap.
+#[test]
+fn components_that_differ_from_the_modules_are_refused() {
+    big_stack(|| {
+        let (builder, inbox) = builder("components");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let w = commit_world(archive(), None, builder.ids(), built.described.module);
+        let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let tx = build_failed(lamp(), v(), BuildFailure::Refused, builder.ids(), None);
+        let version = w.pending()[&lamp()].version;
+        assert_eq!(pass.failures, [Failure { asset: lamp(), version, reason: BuildFailure::Refused, tx }]);
+        let report = std::fs::read_to_string(bundle_in(&pass.failed[0].2).join("report.txt")).expect("a report");
+        assert!(report.contains("reason: Refused") && report.contains("components differ"), "{report}");
+    });
+}
+
+/// The toolchain hash a commit carries is the build identity B (logic.md 6.2b), the one pe-app's session compares at
+/// join.
+#[test]
+fn the_commits_toolchain_hash_is_the_build_identity() {
+    let (builder, _) = builder("identity");
+    let tc = Toolchain::current().unwrap_or_else(|e| panic!("{e}"));
+    let b = pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(builder.ids().0, b);
+    let hex: String = b.0[..16].iter().map(|x| format!("{x:02x}")).collect();
+    let id = String::from_utf8(pe_app::net::build_id().to_vec()).unwrap();
+    assert!(id.ends_with(&format!("; scripts {hex}")), "{id}");
 }
 
 /// A voter already counted loads the module but attests nothing; a voided commit is skipped.
@@ -264,6 +312,25 @@ fn the_build_port_answers_as_the_authors_build() {
         let Err(BuildRefused::Failed(d)) = port.build(&broken(), deadline) else { panic!("rustc's error") };
         assert!(!d.is_empty() && d.iter().all(|d| d.kind == DiagnosticKind::Rustc), "{d:?}");
         assert_eq!((d[0].file.as_deref(), d[0].line), (Some("src/lib.rs"), Some(1)), "{d:?}");
+
+        // rustc's warnings about the script's own source come back on a passing build, at their place.
+        let lamp = std::fs::read_to_string(lamp_dir().join("src/lib.rs")).expect("the lamp's source");
+        let line = lamp.lines().count() as u32 + 3;
+        let noisy = format!(
+            "{lamp}
+pub fn noisy() -> u32 {{
+    let unused_here = 7;
+    1
+}}
+"
+        );
+        let api = port.build(&pe_api::builds::archive_of(&noisy).expect("an archive"), deadline).expect("it passes");
+        let w = &api.warnings[..];
+        assert!(
+            matches!(w, [w] if w.severity == Severity::Warning && w.code.as_deref() == Some("unused_variables")
+            && (w.file.as_deref(), w.line) == (Some("src/lib.rs"), Some(line))),
+            "{w:?}"
+        );
 
         // The same folder, now free: a builder whose margin no build meets.
         let strict = Builder::new(BuildConfig { margin: Duration::ZERO, ..config("port") }, inbox).expect("a builder");
