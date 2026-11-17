@@ -1,6 +1,6 @@
 # pe-net: the transport
 
-Status: draft 1.9, 2026-11-17, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.10, 2026-11-17, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
 budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.6 records
@@ -10,7 +10,8 @@ Core's interface and network thread as built (7). Draft 1.7 answers @design-revi
 rendezvous records come only from members and are bounded (6.7), and a replaced connection's reliable messages
 are lost with it (3.2). Draft 1.8 records how pe-net is fuzzed (9, the coordinator's ruling ma3d421c9f34f) and
 the one finding so far: varints must be minimal (3.6). Draft 1.9 refuses a hello over its bounds where it is built
-(6.3, @iter-bench's finding). Draft 1.2 records the user's ruling on the firewall default
+(6.3, @iter-bench's finding). Draft 1.10 holds a stream message at the peer's stream limit until it has credit,
+where it was dropped (3.5, @engine-architect's finding). Draft 1.2 records the user's ruling on the firewall default
 (m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
@@ -294,7 +295,17 @@ R18's failure again [@design-reviewer's High].
   stream ends.
 - **Priority:** Repair above Bulk (quinn's stream priority), both below datagram traffic in pe-net's queue (4.2).
 - **Limits:**
-  - at most `N_streams_in` incoming streams open at once per peer (QUIC flow control);
+  - at most `N_streams_in` incoming streams open at once per peer (QUIC flow control). At the peer's limit a
+    sender's message waits, it is never dropped [V `pe-net/tests/core.rs`, 200 Repair and 200 Bulk messages each
+    way: before 1.10, one side received 62 of the 200 Repair messages]. pe-net's own records (the hello, welcome, up and lifecycle records)
+    wait in the connection's queue, highest priority first, and at most one lane message waits there with them;
+    the rest stay in their lanes' queues, where the lane order and the delay guard (4.3) still apply. That one
+    message takes the first credit that frees, even if it is Bulk and a Protocol message waits in its lane: an
+    inversion of one message at most. Repair and Bulk streams the delay guard holds mid-write keep at most half
+    of `N_streams_in`, so Protocol and Action messages on streams always have the other half (both sides run one
+    build, so the peer's limit is the sender's own) [@design-reviewer's Lows on 9e71ac4c]. The peer's
+    credit arrives in a packet, and each packet reruns the send path. pe-net gives the caller no signal of how
+    much waits [I: a queue-depth signal is out of scope (coordinator m0d8cba2d2191)];
   - at most `L_bulk` bytes per message. Larger transfers are split by the caller, for example by hash ranges of a
     blob's chunks.
 - **A request and its reply** are two messages. pe-diverge matches them by content (the root), as its spec says,
