@@ -826,7 +826,11 @@ author can stop finality, and the outcome is identical on every machine.
    local retries a voter posts `BuildFailed { script, version: V, reason, toolchain, sdk, module: Option<Hash> }`.
    The reason is an enum, `Compile`, `Refused` (6.2b's dep-info check), `Cap`, `Mismatch` or `Local`, plus the
    hashes, **never compiler output**: the entry goes to every member and stays in the log, and a rustc message can
-   carry local paths. `module` is present exactly for a `Mismatch`: the metered module this machine built, or the
+   carry local paths. The service reads rustc's JSON diagnostics to tell them apart: `Compile` only for an error
+   at a place in the source; an internal compiler error, a read of a file that exists, or a failure with no
+   diagnostic is `Local`; a read of a file that does not exist is `Refused`, since the source names a file
+   outside its archive, which a machine that has the file refuses too, by the dep-info check (@shader-reviewer).
+   `module` is present exactly for a `Mismatch`: the metered module this machine built, or the
    raw module's hash (domain `pe.logic.raw`) when the metering pass refused it; a `Mismatch` module equal to
    `author_module` is refused as `Invalid` (@world-model m4bd3e101e652, after @chunks-reviewer's L1). One per voter,
    counted against the quorum like an attestation, in these orders: a later
@@ -956,8 +960,10 @@ measurements: the build-asymmetry draft, section 3 (@iter-bench and @engine-arch
 @fable-reviewer's view). **Not built yet:** @iter-bench builds it in slices, reviewed by @shader-reviewer.
 
 - **B** = the toolchain's identity (the release, rustc commit and LLVM version, plus the hash of the wasm32 std
-  component; D75), pe-sdk's source hash, a build-service version (template, profile, flags, remaps; bumped like
-  `RESULT_VERSION`) and the metering pass's version. pe-app's session `BUILD` carries it, so genesis refuses a
+  component; D75), pe-sdk's source hash (its manifest inherits nothing from the engine's workspace, which B does not
+  read, and the service refuses one that does), the service's data as it is (template, profile, flags, the kept
+  environment, the job count, the refused limits), a build-service version for its logic (remaps, checks; bumped
+  like `RESULT_VERSION`) and the metering pass's version (@shader-reviewer on v10-r1). pe-app's session `BUILD` carries it, so genesis refuses a
   member whose B differs, by name. Players on different engine versions therefore cannot play together, as today.
 - **The toolchain by absolute path:** the service runs the pinned toolchain's own `cargo` and `rustc` (`CARGO`,
   `RUSTC`), never a rustup proxy, with `RUSTUP_TOOLCHAIN` removed. Measured: the service's command through the

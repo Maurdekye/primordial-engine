@@ -28,9 +28,12 @@
 //! [`build_for_row`] is what a voter attests with: the archive built, metered and compared with the row's
 //! `author_module`, retried as 6.2b says before a failure is reported, with [`FailReason`] for `BuildFailed`.
 //!
+//! A compile error comes back as [`BuildError::Rustc`]: the text, and rustc's diagnostics parsed from its JSON
+//! output ([`RustcMessage`]), with the script's files named relative to its crate (`src/lib.rs`, the path in the
+//! archive) and pe-sdk's remapped (`/pe-sdk/...`), for pe-api's `code_check` and for [`BuildError::reason`].
+//!
 //! Not yet in v0: the pinned toolchain's hash and fetching it (D75), idle priority for the child, one build at a
-//! time per machine, the memory cap and the pinned job count of 6.2a item 5, and rustc's JSON
-//! diagnostics for `code_check` (the messages are returned as text).
+//! time per machine, and the attesters' memory cap of 6.2a item 5 (M2).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,8 +42,12 @@ use std::process::Command;
 pub enum BuildError {
     /// cargo could not be started.
     Spawn(String),
-    /// The compiler refused the script: its output.
-    Rustc(String),
+    /// The compiler refused the script. `text` is what a console shows: rustc's short rendering of each diagnostic,
+    /// then cargo's own output. `diagnostics` are rustc's messages, parsed from its JSON (`--message-format=
+    /// json-diagnostic-short`), in the order rustc gave them; empty when rustc printed none (cargo failed first, or
+    /// the compiler was killed). `crate_dir` is the folder rustc ran in: a relative path in a message (`couldn't read
+    /// `src\table.rs``) is relative to it, not to the engine's working folder (@shader-reviewer on v11-r1).
+    Rustc { text: String, diagnostics: Vec<RustcMessage>, crate_dir: PathBuf },
     /// The build succeeded but its module was not where expected.
     NoModule(PathBuf),
     /// The script's manifest has no `[package] name`.
@@ -66,7 +73,7 @@ impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BuildError::Spawn(e) => write!(f, "could not run cargo: {e}"),
-            BuildError::Rustc(e) => write!(f, "the script did not compile:\n{e}"),
+            BuildError::Rustc { text, .. } => write!(f, "the script did not compile:\n{text}"),
             BuildError::NoModule(p) => write!(f, "no module at {}", p.display()),
             BuildError::NoName => f.write_str("the script's Cargo.toml has no package name"),
             BuildError::Manifest(e) => write!(f, "the script's crate is refused (logic.md 4.1): {e}"),
@@ -77,6 +84,85 @@ impl std::fmt::Display for BuildError {
             BuildError::Refused(e) => write!(f, "the script reads outside its source (logic.md 6.2b): {e}"),
         }
     }
+}
+
+/// One of rustc's diagnostics (its JSON `message`), as `code_check` shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RustcMessage {
+    /// `error`, `warning`, `note`, `help`, `failure-note` or `error: internal compiler error`.
+    pub level: String,
+    /// The error or lint code, `E0425` or `unused_variables`, when rustc gives one.
+    pub code: Option<String>,
+    pub message: String,
+    /// The primary spans: where the diagnostic points. Empty for a message about no place in the source.
+    pub spans: Vec<RustcSpan>,
+}
+
+/// A place in a script's source. `file` is as rustc names it after the service's remaps: crate-relative for the
+/// script, `src/lib.rs`, the path in its archive (cargo hands rustc a relative name, which no prefix remap touches;
+/// the per-file remap gives it `/` separators on Windows); `/pe-sdk/...` for pe-sdk; never this machine's folder.
+/// `line` and `column` count from 1.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RustcSpan {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// Splits cargo's `--message-format=json-diagnostic-short` output (one JSON object per line on stdout) into rustc's
+/// diagnostics and their short renderings. Lines that are not a `compiler-message` (artifacts, build-finished, or
+/// anything not JSON) are skipped.
+pub fn parse_rustc_json(stdout: &str) -> (Vec<RustcMessage>, String) {
+    let mut out = Vec::new();
+    let mut rendered = String::new();
+    for (_, m, r) in parse_json(stdout) {
+        rendered.push_str(&r);
+        if !r.is_empty() && !r.ends_with('\n') {
+            rendered.push('\n');
+        }
+        out.push(m);
+    }
+    (out, rendered)
+}
+
+/// Each `compiler-message`: the name of the target rustc was compiling (`script`, `pe_sdk`), the message, and its
+/// short rendering.
+fn parse_json(stdout: &str) -> Vec<(String, RustcMessage, String)> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v.get("reason").and_then(|r| r.as_str()) != Some("compiler-message") {
+            continue;
+        }
+        let Some(m) = v.get("message") else { continue };
+        let s = |k: &str| m.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned();
+        let spans = m
+            .get("spans")
+            .and_then(|x| x.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|sp| sp.get("is_primary").and_then(|p| p.as_bool()) == Some(true))
+            .map(|sp| RustcSpan {
+                file: sp.get("file_name").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+                line: sp.get("line_start").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                column: sp.get("column_start").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            })
+            .collect();
+        let code = m.get("code").and_then(|c| c.get("code")).and_then(|c| c.as_str()).map(str::to_owned);
+        let target =
+            v.get("target").and_then(|t| t.get("name")).and_then(|n| n.as_str()).unwrap_or_default().to_owned();
+        out.push((target, RustcMessage { level: s("level"), code, message: s("message"), spans }, s("rendered")));
+    }
+    out
+}
+
+/// A module the service built, and rustc's warnings about the script crate's own source, for the author (pe-api's
+/// `Built.warnings`, @api-eng). pe-sdk's warnings are not the author's and are left out, and so is rustc's
+/// summary line (`1 warning emitted`), which points at no place.
+#[derive(Debug)]
+pub struct Built {
+    pub wasm: Vec<u8>,
+    pub warnings: Vec<RustcMessage>,
 }
 
 impl std::error::Error for BuildError {}
@@ -155,6 +241,21 @@ const CODEGEN: &[&str] = &[
     "-C",
     "link-arg=-zstack-size=65536",
 ];
+
+/// The flags given to rustc for the script crate only, after cargo's `--` (4.1, 6.2b): no `unsafe`, and no `allow`
+/// of rustc's lint for a long const-eval loop, so such a loop is the same compile error on every machine rather than
+/// a build that ends only when a slow machine gives up (@fable-reviewer).
+const SCRIPT_FLAGS: &[&str] = &["-F", "unsafe_code", "-F", "long_running_const_eval"];
+
+/// The crate attributes a script may not name (6.2b): a raised limit lets a script make the compile as long as it
+/// likes.
+const LIMITS: &[&str] = &["recursion_limit", "type_length_limit"];
+
+/// The `Cargo.toml` [`build_archive`] writes beside an unpacked archive (4.1a); `{SDK}` becomes pe-sdk's folder.
+const TEMPLATE: &str = "# Written by pe-logic's build service from logic.md 4.1a's template; not the author's.\n\
+    [package]\nname = \"script\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
+    [workspace]\n\n[lib]\ncrate-type = [\"cdylib\"]\npath = \"src/lib.rs\"\n\n[dependencies]\n\
+    pe-sdk = { path = \"{SDK}\" }\n";
 
 fn package_name(manifest: &str) -> Option<String> {
     let mut in_package = false;
@@ -326,6 +427,7 @@ pub fn pack(crate_dir: &Path) -> Result<Vec<u8>, BuildError> {
 ///
 /// `work_dir` is the service's own: `work_dir/script` is deleted first, but only if it is missing or its
 /// `Cargo.toml` is one this function wrote. Keep `work_dir` short: 4.1a's paths are at most 128 bytes below it.
+/// [`build_archive_reporting`] also returns the warnings.
 pub fn build_archive(
     tc: &Toolchain,
     archive: &[u8],
@@ -334,12 +436,24 @@ pub fn build_archive(
     target_dir: &Path,
     offline: bool,
 ) -> Result<Vec<u8>, BuildError> {
+    build_archive_reporting(tc, archive, sdk, work_dir, target_dir, offline).map(|b| b.wasm)
+}
+
+/// [`build_archive`], with rustc's warnings about the script's own source ([`Built`]).
+pub fn build_archive_reporting(
+    tc: &Toolchain,
+    archive: &[u8],
+    sdk: &Path,
+    work_dir: &Path,
+    target_dir: &Path,
+    offline: bool,
+) -> Result<Built, BuildError> {
     let files = pe_world::script::source_files(archive).map_err(BuildError::Source)?;
     // A raised `#![recursion_limit]` or `#![type_length_limit]` lets a script make the compile as long as it likes;
     // refused before the build, from the source alone, so on every machine alike (logic.md 6.2b). Any mention is
     // refused, comments included: the check is a substring, not a parse.
     for (path, body) in &files {
-        for limit in ["recursion_limit", "type_length_limit"] {
+        for limit in LIMITS {
             if body.windows(limit.len()).any(|w| w == limit.as_bytes()) {
                 return Err(BuildError::Refused(format!("{path} names {limit}; the compiler's own limits apply")));
             }
@@ -378,15 +492,11 @@ pub fn build_archive(
         std::fs::write(&to, body).map_err(io)?;
     }
     let sdk_path = lexical(sdk).to_string_lossy().replace('\\', "/");
-    let manifest = format!(
-        "{TEMPLATE_MARK}\n[package]\nname = \"script\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
-         [workspace]\n\n[lib]\ncrate-type = [\"cdylib\"]\npath = \"src/lib.rs\"\n\n[dependencies]\n\
-         pe-sdk = {{ path = \"{sdk_path}\" }}\n"
-    );
+    let manifest = TEMPLATE.replace("{SDK}", &sdk_path);
     std::fs::write(dir.join("Cargo.toml"), manifest).map_err(io)?;
-    let module = build(tc, &dir, sdk, target_dir, offline)?;
+    let built = build_reporting(tc, &dir, sdk, target_dir, offline)?;
     check_reads(&dir, sdk, target_dir, "script")?;
-    Ok(module)
+    Ok(built)
 }
 
 /// The dep-info check (logic.md 6.2b): refuses a build whose compile read anything but the crate's `src` and
@@ -394,8 +504,8 @@ pub fn build_archive(
 /// `include_bytes!` and `#[path]` modules among them, and an `# env-dep:` line for every environment variable it
 /// asked for, set or not [V `spikes/out/iter-bench/build-asym/depinfo.log`]. Without build scripts and proc macros
 /// (4.1) nothing else can read on rustc's behalf [I]. It refuses what the script tried to read, not what it got, so
-/// it refuses on every machine alike: a file present on one machine and missing on another is a refusal on the
-/// first and a compile error on the second, both failures. `name` is the script crate's (`script` for an archive).
+/// it refuses on every machine alike: a file present on one machine and missing on another is refused here on the
+/// first, and on the second is rustc's `couldn't read`, which [`BuildError::reason`] also calls `Refused`. `name` is the script crate's (`script` for an archive).
 pub fn check_reads(crate_dir: &Path, sdk: &Path, target_dir: &Path, name: &str) -> Result<(), BuildError> {
     let deps = target_dir.join("wasm32-unknown-unknown").join("release").join("deps");
     let mut files = vec![(deps.join(format!("{name}.d")), crate_dir.to_path_buf())];
@@ -466,7 +576,7 @@ pub fn engine_sdk() -> PathBuf {
 }
 
 /// Build the script crate in `crate_dir` against the engine's pe-sdk in `sdk` into `target_dir`; returns the
-/// module's bytes. The script's own `pe-sdk` path must lead to `sdk`.
+/// module's bytes. The script's own `pe-sdk` path must lead to `sdk`. [`build_reporting`] also returns the warnings.
 pub fn build(
     tc: &Toolchain,
     crate_dir: &Path,
@@ -474,6 +584,17 @@ pub fn build(
     target_dir: &Path,
     offline: bool,
 ) -> Result<Vec<u8>, BuildError> {
+    build_reporting(tc, crate_dir, sdk, target_dir, offline).map(|b| b.wasm)
+}
+
+/// [`build`], with rustc's warnings about the script's own source ([`Built`]).
+pub fn build_reporting(
+    tc: &Toolchain,
+    crate_dir: &Path,
+    sdk: &Path,
+    target_dir: &Path,
+    offline: bool,
+) -> Result<Built, BuildError> {
     let manifest = crate_dir.join("Cargo.toml");
     let text = std::fs::read_to_string(&manifest).map_err(|e| BuildError::Spawn(e.to_string()))?;
     let name = package_name(&text).ok_or(BuildError::NoName)?.replace('-', "_");
@@ -554,17 +675,15 @@ pub fn build(
         .arg("wasm32-unknown-unknown")
         .arg("--manifest-path")
         .arg(&manifest)
-        .arg("--message-format=short");
+        // rustc's diagnostics as JSON on stdout, each with its short rendering; cargo's own errors stay text on stderr.
+        .arg("--message-format=json-diagnostic-short");
     if offline {
         cmd.arg("--offline");
     }
     for c in PROFILE {
         cmd.arg("--config").arg(c);
     }
-    // `-F long_running_const_eval`: a script may not `allow` rustc's lint for a long const-eval loop, so such a loop
-    // is the same compile error on every machine rather than a build that ends only when a slow machine gives up
-    // (logic.md 6.2b; @fable-reviewer).
-    cmd.arg("--").arg("-F").arg("unsafe_code").arg("-F").arg("long_running_const_eval");
+    cmd.arg("--").args(SCRIPT_FLAGS);
     // The flags go through CARGO_ENCODED_RUSTFLAGS (0x1f-separated), so paths with spaces survive.
     cmd.env("CARGO_ENCODED_RUSTFLAGS", encoded)
         .env_remove("RUSTFLAGS")
@@ -576,10 +695,19 @@ pub fn build(
         .env("CARGO_TARGET_DIR", target_dir);
     let out = cmd.output().map_err(|e| BuildError::Spawn(e.to_string()))?;
     if !out.status.success() {
-        return Err(BuildError::Rustc(String::from_utf8_lossy(&out.stderr).into_owned()));
+        let (diagnostics, mut text) = parse_rustc_json(&String::from_utf8_lossy(&out.stdout));
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        return Err(BuildError::Rustc { text, diagnostics, crate_dir: crate_dir.to_path_buf() });
     }
     let path = target_dir.join("wasm32-unknown-unknown").join("release").join(format!("{name}.wasm"));
-    std::fs::read(&path).map_err(|_| BuildError::NoModule(path))
+    let wasm = std::fs::read(&path).map_err(|_| BuildError::NoModule(path))?;
+    let own = name.replace('-', "_");
+    let warnings = parse_json(&String::from_utf8_lossy(&out.stdout))
+        .into_iter()
+        .filter(|(t, m, _)| t.replace('-', "_") == own && m.level == "warning" && !m.spans.is_empty())
+        .map(|(_, m, _)| m)
+        .collect();
+    Ok(Built { wasm, warnings })
 }
 
 #[cfg(test)]
@@ -609,22 +737,28 @@ pub enum FailReason {
 }
 
 impl BuildError {
-    /// The `BuildFailed` reason of this error. A rustc failure is `Compile` only when its output holds a diagnostic
-    /// at a source location (`path:line:col: error`, the short format the service asks for); cargo's own errors and a
-    /// killed compiler print none, and are `Local`.
+    /// The `BuildFailed` reason of this error. A rustc failure is `Compile` only when rustc reported an error at a
+    /// place in the source, which is a function of the source and the build identity. It is `Local` when rustc
+    /// reported none (cargo failed first, or the compiler was killed), when the compiler crashed (an internal
+    /// compiler error: a bug, or this machine's memory; @shader-reviewer), or when it could not read a file that
+    /// exists (`couldn't read`). A read of a file that does not exist is `Refused`: the source names a file outside
+    /// its archive, which a machine that has the file refuses too, by 6.2b's dep-info check.
     pub fn reason(&self) -> FailReason {
         match self {
-            BuildError::Rustc(out) => {
-                let located = out.lines().any(|l| {
-                    // `src\lib.rs:3:5: error[E0425]: ...`; split from the right, so a drive letter's colon stays in
-                    // the path.
-                    let Some(i) = l.find(": error") else { return false };
-                    let mut parts = l[..i].rsplitn(3, ':');
-                    let (Some(col), Some(line), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
-                        return false;
-                    };
-                    !path.is_empty() && line.parse::<u32>().is_ok() && col.parse::<u32>().is_ok()
-                });
+            BuildError::Rustc { diagnostics, crate_dir, .. } => {
+                if diagnostics.iter().any(|d| d.level.starts_with("error: internal compiler error")) {
+                    return FailReason::Local;
+                }
+                let mut located = false;
+                for d in diagnostics.iter().filter(|d| d.level == "error") {
+                    if let Some(path) = unread_file(&d.message) {
+                        // A relative name is the crate's: an `include_str!("table.rs")` that a scanner holds
+                        // open exists, and is Local.
+                        let exists = crate_dir.join(path).exists();
+                        return if exists { FailReason::Local } else { FailReason::Refused };
+                    }
+                    located |= d.spans.iter().any(|s| !s.file.is_empty() && s.line > 0);
+                }
                 if located { FailReason::Compile } else { FailReason::Local }
             }
             BuildError::Refused(_) | BuildError::Source(_) | BuildError::Manifest(_) | BuildError::NoName => {
@@ -637,6 +771,13 @@ impl BuildError {
             | BuildError::Environment(_) => FailReason::Local,
         }
     }
+}
+
+/// The path in rustc's "couldn't read `<path>`: <why>" (an `include_str!` or `include_bytes!` it could not read), as
+/// rustc wrote it.
+fn unread_file(message: &str) -> Option<&str> {
+    let rest = message.strip_prefix("couldn't read `")?;
+    Some(&rest[..rest.rfind("`: ").or_else(|| rest.rfind('`'))?])
 }
 
 /// A version this machine cannot attest, after its retries: what `BuildFailed` reports, plus the local detail.
@@ -766,6 +907,8 @@ pub struct Commit {
     pub archive: Vec<u8>,
     pub script: crate::runtime::Script,
     pub took: std::time::Duration,
+    /// rustc's warnings about the script's own source, for the author ([`Built`]).
+    pub warnings: Vec<RustcMessage>,
 }
 
 /// The author's side of a commit (logic.md 4.2, 6.2a item 5): packs the crate in `crate_dir`, builds the archive with
@@ -785,19 +928,21 @@ pub fn build_for_commit(
 ) -> Result<Commit, CommitRefusal> {
     let archive = pack(crate_dir).map_err(CommitRefusal::Build)?;
     let t0 = std::time::Instant::now();
-    let wasm = build_archive(tc, &archive, sdk, work_dir, target_dir, offline).map_err(CommitRefusal::Build)?;
+    let built =
+        build_archive_reporting(tc, &archive, sdk, work_dir, target_dir, offline).map_err(CommitRefusal::Build)?;
     let took = t0.elapsed();
     if took > max {
         return Err(CommitRefusal::TooSlow { took, max });
     }
-    let script = crate::runtime::Script::load(engine, settings, &wasm).map_err(CommitRefusal::Load)?;
-    Ok(Commit { archive, script, took })
+    let script = crate::runtime::Script::load(engine, settings, &built.wasm).map_err(CommitRefusal::Load)?;
+    Ok(Commit { archive, script, took, warnings: built.warnings })
 }
 
-/// The build service's own version (logic.md 6.2b), part of [`build_identity`]: bumped on any change to what decides
-/// a module's bytes or a build's verdict that the toolchain and pe-sdk hashes do not see: the template, the profile
-/// and codegen flags, the remaps, [`KEEP_ENV`], [`BUILD_JOBS`], and the checks (the dep-info check, the compiler
-/// limits, the archive rules it applies before building).
+/// The build service's own version (logic.md 6.2b), part of [`build_identity`]: bumped on any change to the service's
+/// logic that decides a module's bytes or a build's verdict: the remaps, the environment it builds in, and the checks
+/// (the dep-info check, the archive rules it applies before building, [`BuildError::reason`]). Its data, the template,
+/// the profile, the flags, [`KEEP_ENV`], [`BUILD_JOBS`] and the limit names, is hashed into B as it is, so a change to
+/// it moves B by itself (@shader-reviewer on v10-r1).
 pub const BUILD_SERVICE_VERSION: u32 = 1;
 
 /// The toolchain's release, as [`build_identity`] takes it: rustc's `release`, `commit-hash` and `LLVM version`
@@ -814,6 +959,24 @@ pub fn toolchain_release(tc: &Toolchain) -> Result<String, BuildError> {
         lines.push(l.trim().to_string());
     }
     Ok(lines.join("\n"))
+}
+
+/// Refuses a pe-sdk manifest that takes anything from a workspace (`edition.workspace = true`, `[lints] workspace =
+/// true`, a dependency's `workspace = true`): cargo resolves those from the `Cargo.toml` above pe-sdk, which
+/// [`build_identity`] does not read, so the edition, say, could change with B unchanged (@shader-reviewer's Low on
+/// v10-r1). Any mention outside a comment is refused: the check is a substring, not a parse.
+pub fn check_sdk_manifest(text: &str) -> Result<(), BuildError> {
+    for (n, line) in text.lines().enumerate() {
+        let code = line.split('#').next().unwrap_or_default();
+        if code.contains("workspace") {
+            return Err(BuildError::Toolchain(format!(
+                "pe-sdk's Cargo.toml line {} inherits from a workspace, which the build identity does not see: {}",
+                n + 1,
+                line.trim()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn run_rustc(tc: &Toolchain, args: &[&str]) -> Result<String, BuildError> {
@@ -886,7 +1049,10 @@ fn tree_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, BuildError> {
 ///   one artifact for every host [I]) by name and size. The names carry each std crate's metadata hash
 ///   (`libcore-79bd1e8c3e3cb812.rlib`), so with the release's commit they pin the std without reading its 99 MiB,
 ///   which took about 4.5 s a time in a debug build [V `tests/build_identity.rs`, this desktop];
-/// - pe-sdk at `sdk`: its `Cargo.toml` and every file under its `src`, by path and hash.
+/// - the service's data: the profile, the codegen and script flags, [`KEEP_ENV`], the limit names, [`BUILD_JOBS`]
+///   and the template;
+/// - pe-sdk at `sdk`: its `Cargo.toml` and every file under its `src`, by path and hash. Its manifest may inherit
+///   nothing from a workspace ([`check_sdk_manifest`]).
 ///
 /// A caller computes it once per process. D75's pinned toolchain hash is to replace the release lines and the std
 /// listing once the toolchain is installed by hash.
@@ -899,6 +1065,14 @@ pub fn build_identity(tc: &Toolchain, sdk: &Path) -> Result<pe_core::Hash, Build
     lp(b"pe.logic.build.v1");
     lp(&BUILD_SERVICE_VERSION.to_le_bytes());
     lp(&crate::RESULT_VERSION.to_le_bytes());
+    for list in [PROFILE, CODEGEN, SCRIPT_FLAGS, KEEP_ENV, LIMITS] {
+        lp(&(list.len() as u64).to_le_bytes());
+        for item in list {
+            lp(item.as_bytes());
+        }
+    }
+    lp(&BUILD_JOBS.to_le_bytes());
+    lp(TEMPLATE.as_bytes());
     lp(toolchain_release(tc)?.as_bytes());
     let sysroot = PathBuf::from(run_rustc(tc, &["--print", "sysroot"])?.trim());
     let std_dir = sysroot.join("lib").join("rustlib").join("wasm32-unknown-unknown");
@@ -909,6 +1083,7 @@ pub fn build_identity(tc: &Toolchain, sdk: &Path) -> Result<pe_core::Hash, Build
     lp(b"pe-sdk");
     let manifest = std::fs::read(sdk.join("Cargo.toml"))
         .map_err(|e| BuildError::Toolchain(format!("{}: {e}", sdk.join("Cargo.toml").display())))?;
+    check_sdk_manifest(&String::from_utf8_lossy(&manifest))?;
     lp(&pe_core::Hash::of("pe.logic.build.file", &manifest).0);
     for (name, bytes) in tree_files(&sdk.join("src"))? {
         lp(name.as_bytes());
