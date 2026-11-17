@@ -528,7 +528,14 @@ pub fn follow_up(
         }
     }
     let label = format!("Re-point after a re-send: {}", tx.label.as_deref().unwrap_or("a change"));
-    let t = Transaction { actor: tx.actor.clone(), label: Some(label), preconditions: vec![], ops, blobs: vec![] };
+    let t = Transaction {
+        inline: vec![],
+        actor: tx.actor.clone(),
+        label: Some(label),
+        preconditions: vec![],
+        ops,
+        blobs: vec![],
+    };
     supersede(&t, later).map(|(t, _)| t)
 }
 
@@ -543,7 +550,7 @@ mod tests {
     const C: ComponentId = ComponentId(5);
 
     fn tx(ops: Vec<Op>, preconditions: Vec<Precondition>) -> Transaction {
-        Transaction { actor: Actor::Person, label: None, preconditions, ops, blobs: vec![] }
+        Transaction { inline: vec![], actor: Actor::Person, label: None, preconditions, ops, blobs: vec![] }
     }
     fn carrier(e: u8, seq: u64) -> Carrier {
         Carrier { entry: EntryRef(Hash([e; 32])), chain: ChainId(Hash([3; 32])), seq }

@@ -1601,7 +1601,14 @@ mod tests {
         Owner { principal: "claude".into(), op_of: Arc::from(vec![0u32, 1, 2]), refs: Arc::from(vec![]) }
     }
     fn txn(ops: Vec<Op>, pre: Vec<Precondition>) -> Transaction {
-        Transaction { actor: Actor::Person, label: Some("t".into()), preconditions: pre, ops, blobs: vec![] }
+        Transaction {
+            inline: vec![],
+            actor: Actor::Person,
+            label: Some("t".into()),
+            preconditions: pre,
+            ops,
+            blobs: vec![],
+        }
     }
     fn kept_at(t: Transaction, slots: Slots, first: Instant) -> Kept {
         Kept { tx: Arc::new(t), slots: Arc::new(slots), line: LINE, author: ME, first }

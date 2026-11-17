@@ -65,6 +65,7 @@ fn drop(x: f64, y: f64) -> Bytes {
         let ball = Shape { kind: shape_kind::SPHERE, density: 800.0, size: [0.25, 0.0, 0.0], ..Shape::default() };
         let rows = vec![row(Transform::at(pos(x, y, 0.0))), row(body), row(ball)];
         let tx = Transaction {
+            inline: vec![],
             actor: Actor::Person,
             label: None,
             preconditions: vec![],

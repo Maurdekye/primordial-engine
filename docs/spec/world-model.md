@@ -442,8 +442,46 @@ which fixes the origin's role deliberately.
 - **Where they live:** a per-machine store keyed by hash, shared by every world on the machine. A blob is kept while
   any kept root, world record or open edit refers to it. Nothing is deleted while the world record keeps an entry
   that names it (the user, 19:09Z).
-- **How they travel:** an edit that introduces a blob names its hash and length. The bytes travel alongside on the
-  bulk lane (S4), or are fetched by hash from any member that has them.
+- **How they travel:** an edit that introduces a blob names its hash and length. An inline-class blob's bytes travel
+  inside the edit (below); a larger one's travel alongside on the bulk lane (S4), or are fetched by hash from any
+  member that has them.
+- **Inline blobs** (@coordinator-opus's ruling, on @fable-reviewer's advice; @engine-architect's S1/S2
+  shapes). The inline class is defined by size alone: a blob of 1 to 256 bytes (`MAX_INLINE_BLOB`),
+  display and simulation alike, which covers every name (pe-api caps a name below 256 bytes). "None" and the empty
+  blob are not of the class; every store answers the empty blob's reference with no bytes.
+  - **In the entry:** `Transaction.inline` carries the bytes of the inline-class blobs its ops introduce, inside the
+    signed, hashed payload (7.1), in ascending order of hash, none twice, at most 2 KiB in all (`MAX_INLINE_BYTES`).
+    An op introduces a blob when a `Create` row, a `SetRow` or a `SetField` of a blob field writes its reference; a
+    `Copy` introduces none (its rows' blobs are on every machine that has the source). There is no dedup against
+    the store: the bytes are always carried, and the store dedups by hash.
+  - **At apply:** over 2 KiB is `TooLarge { limit: 2048 }`, and a blob no op introduces is `Invalid`, on every
+    machine alike. An applied edit puts the bytes into the machine's store; a refused one stores nothing.
+  - **Two limits** (@coordinator-opus, amending the ruling's point 3, after @fable-reviewer): pe-api
+    refuses any edit over 1 KiB, predicting a forward edit's inverse at the dry run too ("split this change; undoing
+    it would be too large"); pe-world's hard cap is twice that, so an inverse whose old values grew through a race
+    still fits. An undo still over 2 KiB is refused ("undo this in parts"); there is no split undo.
+  - **Undo:** an outcome's inverse carries the bytes of the blobs it restores, from the store. A delete's inverse is
+    `Undelete`, which names objects, not blobs, and carries none: the tombstone keeps the rows, the tombstones are
+    imported state (6.6), and the tombstone's expiry is the undo window.
+  - **Not yet enforced:** that every inline-class reference an op introduces comes with its bytes. It lands once
+    pe-api hands the bytes over (the ruling's sequencing); until then a reference without them applies as before.
+    Once it does, an undo whose machine lacks a restored blob's bytes (it never received them) carries the
+    reference without them and is refused as `Invalid`, like any edit missing its bytes; pe-api reports it
+    (@design-reviewer's Low).
+  - **In an import** (6.5; S2 v1.8): `CutImport.blobs` carries the bytes of the inline-class blobs the imported rows
+    reference, a tombstone's kept rows included when the tombstones table is imported, since `Undelete` restores
+    them (`Tree::export_blobs` gives them). Each must be one an imported row references, in ascending order of hash
+    (`BadBlob(i)` otherwise). A missing inline-class *simulation* blob that this machine lacks too refuses it
+    (`MissingBlob`), since without it the joiner could step differently. A missing inline-class *display* blob does
+    not refuse it yet, and the name stays blank on that machine until it is rewritten, since nothing fetches inline
+    blobs. That refusal (`MissingBlob` too, so the ladder tries another donor) lands with the enforcement above, once
+    pe-diverge's fetch carries a donor's `export_blobs`; before then it would turn a repair that converges with a
+    blank name into one that fails (@design-reviewer's Low).
+  - **Kept:** the store deletes nothing today [V, `BlobStore`]. When pruning comes, an inline-class blob is kept
+    while any live or tombstoned row references it, even after its entry has left the log's retention, since a joiner's
+    import is then the only way it travels.
+  - **Known gap (M1):** blobs over 256 bytes (hulls, meshes, textures) still travel by reference only, and nothing
+    fetches them yet.
 - **Blobs are of two uses, with two rules** [I, after @chunks-reviewer's F1]. A component field declares which, by
   its kind: `BlobRef` for display, `SimBlobRef` for simulation. The enforcement point is the reader: pe-physics and
   pe-sdk read bytes only through `SimBlobRef` fields, and pe-sdk gives logic no way to read a display blob's bytes
@@ -887,9 +925,9 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
     root.
   Tables are named paths of the same tree, so a differing table is found and exported the same way.
 - **Import** (repair rung 2): `import(at, records)` replaces the named objects' rows and the named tables with
-  fetched ones. Every record's path is checked, before anything is applied, against the quorum-agreed root of a
-  final cut, never against the sender's claim. It is a restore of part of a root; WS-diverge drives it and
-  pe-replica replays forward from it.
+  fetched ones, and stores the inline blobs the import carries (3.4). Every record's path is checked, before
+  anything is applied, against the quorum-agreed root of a final cut, never against the sender's claim. It is a
+  restore of part of a root; WS-diverge drives it and pe-replica replays forward from it.
 - `object_hashes(ids)` returns the current leaf hash of each object, for the fault bundle's replay
   (@diverge-eng's `replay-bundle`).
 - An object present on one side and absent on the other is a differing object like any other.
@@ -1064,6 +1102,7 @@ pub struct Transaction {
     pub preconditions: Vec<Precondition>, // all must hold, or nothing applies
     pub ops: Vec<Op>,                     // applied in order, all or nothing
     pub blobs: Vec<BlobRef>,              // blobs this transaction introduces (3.4)
+    pub inline: Vec<Vec<u8>>,             // the inline-class ones' bytes, ascending by hash, ≤ 1 KiB (3.4)
 }
 pub enum Op {
     Create { new: u32, parent: Target, index: Option<u32>, class: Class, rows: Vec<Row> },
@@ -1119,7 +1158,11 @@ pub enum Precondition {
   [I; an optimisation, invisible in the hash].
 - Field writes name a field by its index in the description, and give its bytes. WorldApi turns names into indices
   against the schema at the author's frame.
-- **Limits** per transaction [I, to tune]: 4,096 ops, 1 MiB of payload apart from blobs, and 65,536 created
+- **Inline bytes** are the payload's last section, present only when non-empty, so a transaction without them
+  encodes as it did before they existed (3.4). A section that is present but empty (a count of 0) is malformed: one
+  encoding per transaction.
+- **Limits** per transaction [I, to tune]: 4,096 ops, 1 MiB of payload apart from blobs, 2 KiB of inline blob bytes
+  (pe-api: 1 KiB; 3.4), and 65,536 created
   objects (`MAX_NEW_OBJECTS`), counting each `Create` and every object of each `Copy`'s subtree; `Undelete`
   restores objects that were in the world before, so it does not count. Over a limit is a
   refusal, not a truncation; the object cap's is `TooLarge { limit }`. pe-world's constants are the one

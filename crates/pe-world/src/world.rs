@@ -112,10 +112,14 @@ impl BlobStore {
         true
     }
 
-    /// The bytes of `r`, if this machine has them. `None` for [`BlobRef::NONE`].
+    /// The bytes of `r`, if this machine has them. `None` for [`BlobRef::NONE`]; every machine has the empty blob's
+    /// (3.4; @engine-architect).
     pub fn get(&self, r: &BlobRef) -> Option<Arc<[u8]>> {
         if r.is_none() {
             return None;
+        }
+        if r.len == 0 && *r == BlobRef::of(b"") {
+            return Some(Arc::from(&[][..]));
         }
         let m = self.0.read().unwrap_or_else(|e| e.into_inner());
         m.get(&r.hash).filter(|b| b.len() as u64 == r.len).cloned()

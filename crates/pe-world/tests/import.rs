@@ -33,6 +33,7 @@ fn full_import(target: &World) -> CutImport {
     keys.push(LeafKey::Config);
     let physics = PhysicsImage { domain: D, frame: target.frame(), global: Hash::ZERO, bytes: Default::default() };
     CutImport {
+        blobs: vec![],
         cut: cut(target),
         target_root: t.root(),
         records: t.export(&keys),
@@ -94,6 +95,7 @@ fn a_bound_body_needs_the_physics_image() {
     // Removing a bound body is a physics change too.
     let ball = find(&target, "Ball 0").unwrap();
     let imp = CutImport {
+        blobs: vec![],
         cut: cut(&target),
         target_root: target.root_hash(D),
         records: Vec::new(),
@@ -114,6 +116,7 @@ fn a_physics_free_object_patches_alone() {
     assert_ne!(diverged.root_hash(D), target.root_hash(D));
     let t = target.tree(D);
     let imp = CutImport {
+        blobs: vec![],
         cut: cut(&target),
         target_root: t.root(),
         records: t.export(&[LeafKey::Object(lamp)]),

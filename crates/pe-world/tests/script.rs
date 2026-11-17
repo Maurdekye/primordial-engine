@@ -99,7 +99,7 @@ fn named(t: AssetTarget) -> [u8; 32] {
 }
 
 fn tx(ops: Vec<Op>) -> Transaction {
-    Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
+    Transaction { inline: vec![], actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
 }
 
 struct Fx {
@@ -439,6 +439,7 @@ fn a_joiner_imports_the_scripts_registry_and_modules() {
     keys.extend((0..table::COUNT as u8).map(LeafKey::Table));
     keys.push(LeafKey::Config);
     let imp = CutImport {
+        blobs: vec![],
         cut: pe_seams::Cut {
             at: pe_seams::CutRef { line: target.line(), height: 0, frame: target.frame() },
             heads: Vec::new(),
@@ -1068,6 +1069,7 @@ fn a_colour_field_is_kept_by_the_op_the_registry_and_import() {
     keys.extend((0..table::COUNT as u8).map(LeafKey::Table));
     keys.push(LeafKey::Config);
     let imp = CutImport {
+        blobs: vec![],
         cut: pe_seams::Cut {
             at: pe_seams::CutRef { line: f.w.line(), height: 0, frame: f.w.frame() },
             heads: Vec::new(),

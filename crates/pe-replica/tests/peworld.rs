@@ -34,7 +34,7 @@ fn row<T: pe_sim::Component>(v: T) -> Row {
 }
 
 fn tx(ops: Vec<Op>) -> Transaction {
-    Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
+    Transaction { inline: vec![], actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
 }
 
 fn sphere(radius: f32) -> Shape {
@@ -546,7 +546,14 @@ fn full_import(donor: &mut ReplicaImpl<PeWorld>, s: &mut Source, cut: &Cut) -> C
     keys.extend((0..pe_world::tree::table::COUNT as u8).map(LeafKey::Table));
     keys.push(LeafKey::Config);
     let records = donor.tree(&root).expect("held").export(&keys);
-    CutImport { cut: cut.clone(), target_root: root, records, absent: Vec::new(), physics: donor.physics_image(&root) }
+    CutImport {
+        blobs: vec![],
+        cut: cut.clone(),
+        target_root: root,
+        records,
+        absent: Vec::new(),
+        physics: donor.physics_image(&root),
+    }
 }
 
 fn from(r: &ReplicaImpl<PeWorld>, at: u64, to: u64) -> Vec<(u64, Hash)> {

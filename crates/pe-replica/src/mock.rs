@@ -729,7 +729,7 @@ mod tests {
             global: w.global,
             bytes: Bytes::new(),
         });
-        pe_seams::CutImport { cut, target_root: w.root(), records, absent, physics }
+        pe_seams::CutImport { blobs: vec![], cut, target_root: w.root(), records, absent, physics }
     }
 
     /// A donor at a cut frame: two bodies of every shape kind, `BodyState` rows on one, a `physics_global`.

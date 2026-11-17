@@ -124,6 +124,7 @@ pub fn replay_with(b: &FaultBundle, max_frames: u64, blobs: BlobStore) -> Result
         source.entries.entry(e.entry.stamp).or_default().push(e.clone());
     }
     let import = CutImport {
+        blobs: vec![],
         cut: state.cv.clone(),
         target_root: state.root,
         records: state.records.clone(),
@@ -133,6 +134,12 @@ pub fn replay_with(b: &FaultBundle, max_frames: u64, blobs: BlobStore) -> Result
     match replica.import_at_cut(&GroupSel::Domain, import, &mut source) {
         Ok(root) if root == state.root => {}
         Ok(root) => return Err(format!("the import gave {root:?}, not Cv's root {:?}", state.root)),
+        // A small simulation blob (a mesh of 256 bytes or less) the bundle cannot carry and this store lacks: pe-world
+        // refuses the import (world-model.md 3.4), so name it as the check below names a larger one.
+        Err(pe_seams::ImportError::MissingBlob(h)) => {
+            let h: String = h.0.iter().map(|b| format!("{b:02x}")).collect();
+            return Err(format!("blob {h} is not in the local store"));
+        }
         Err(e) => return Err(format!("the state at Cv does not import: {e:?}")),
     }
     // A mesh the local store lacks would show as a false divergence: name it and stop (@design-reviewer and

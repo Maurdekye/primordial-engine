@@ -1135,6 +1135,7 @@ mod tests {
             .map(|(p, clock)| {
                 let create = Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] };
                 let tx = Transaction {
+                    inline: vec![],
                     actor: Actor::Person,
                     label: None,
                     preconditions: vec![],

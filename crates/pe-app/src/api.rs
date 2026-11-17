@@ -411,6 +411,7 @@ mod tests {
     fn the_edit_index_drops_the_oldest_past_its_byte_cap() {
         let mut ix = EditIndex::default();
         let tx = Transaction {
+            inline: vec![],
             actor: pe_world::edit::Actor::Person,
             label: None,
             preconditions: vec![],
