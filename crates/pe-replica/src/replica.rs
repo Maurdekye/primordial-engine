@@ -12,11 +12,22 @@
 //! the live history, and puts the live state back. Every root it gives out is held as a snapshot of its own (world
 //! state, physics image and transfer) until its cut is final or superseded; the floor's and `Cv`'s stay held.
 //!
+//! **Resuming from a held root** (replica.md 5.3, was O13). A vote's re-step starts instead from my root held at an
+//! earlier voted cut, the newest one above that keyframe, whose cut's entries below its frame are exactly this cut's.
+//! A held root records what it was stepped from: the lineage (the base it started on: the floor, or my last import,
+//! and no rung-1 replay since) and a digest of its cut's entry ids, frame by frame, from the base to its frame. One
+//! pass over the cut's entries, with no physics, finds both the first difference and the digests to compare. Each
+//! vote then re-steps about one cut interval, not the distance to a first difference pinned near the floor, as in a
+//! finality stall where entries void in every cut stay in S3's live view until a final cut voids them. Determinism
+//! makes the root the same as a full re-step's. `finalize` always re-steps from the first difference: its re-base on
+//! the floor takes that re-step's records from there.
+//!
 //! **Bounded work.** Each call steps at most the budget's frames (never fewer than two). A rollback, a re-simulation
 //! or a rung-1 replay that does not fit resumes on the next call; the results never depend on the split. Two steps
 //! are not budgeted yet (@design-reviewer's Lows on 3d13ff88):
-//! - `root_at_cut`'s re-step off the live history, from the first frame whose entries differ from the cut's to the
-//!   cut's frame: at most the distance from the floor to the cut, normally one or two cut intervals;
+//! - `root_at_cut`'s re-step off the live history, from the first frame whose entries differ from the cut's, or from a
+//!   held root, to the cut's frame: at most the distance from the floor to the cut, normally one or two cut
+//!   intervals;
 //! - `replay_to`'s check of `Cv`: a full tree `verify` and a physics rehash, O(world) in one call (M2's worker).
 //!
 //! **Entries S3 no longer keeps (S3 v1.2).** Rung 1 replays from `Cv`, which can be older than the floor, and reads
@@ -66,9 +77,9 @@ use pe_physics::{CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Tra
 use pe_seams::{
     Activation, ActivationKey, Advance, ChainId, Class, Cut, CutImport, CutRef, DomainId, Effect, EffectCause,
     EffectKey, EffectKind, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameClock, FrameView, GroupSel, Hash,
-    Health, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica, RigTransform,
-    RootError, RunnerIdentity, SignedEntry, SimRate, Stage, StepRecord, Tree, ViewCounters, ViewFlags, VoidReason,
-    frames_ceil,
+    Hasher, Health, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica,
+    RigTransform, RootError, RunnerIdentity, SignedEntry, SimRate, Stage, StepRecord, Tree, ViewCounters, ViewFlags,
+    VoidReason, frames_ceil,
 };
 
 use crate::bodies;
@@ -133,6 +144,42 @@ struct Held<S> {
     /// The physics world `image` belongs to (`ReplicaImpl::epoch`). The records and the transfer serve exports from
     /// any world, but the image restores only into its own.
     epoch: u64,
+    /// What a vote's re-step stepped this state from, so a later one may resume from it; `None` for a root no vote
+    /// computed.
+    mark: Option<Mark>,
+}
+
+/// What a held root's state was stepped from (5.3): the lineage it was computed on (`ReplicaImpl::lineage`) and the
+/// digest of its cut's entries from the base to its frame ([`HISTORY`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Mark {
+    lineage: u64,
+    history: Hash,
+}
+
+/// The digest of a cut's entries from the base up to a frame: for each frame in order, the count of the entries it
+/// steps, then their ids in apply order.
+const HISTORY: &str = "pe-replica.history";
+
+/// The cut intervals of the newest votes whose cuts all keep their snapshots; past them, two per doubling of age (4.1).
+const HELD_DENSE: u64 = 4;
+
+/// Where a re-step for a root at a cut starts.
+#[derive(Clone, Copy, Debug)]
+enum Start {
+    /// The newest ring keyframe at or before this frame.
+    Ring(Frame),
+    /// My root held at an earlier cut (5.3).
+    Held(Hash),
+}
+
+/// One pass over a cut's entries from the base, with no physics (5.3).
+struct Walk {
+    /// The first frame whose live entries are not exactly the cut's (`first_difference`).
+    difference: Option<Frame>,
+    /// The digest of the cut's entries from the base up to each frame asked for, and up to the cut's frame. A frame
+    /// past one no longer kept has none.
+    digests: BTreeMap<Frame, Hash>,
 }
 
 /// The newest cut finalized here, and my root at it.
@@ -178,6 +225,9 @@ pub struct ReplicaImpl<W: WorldModel> {
     replay: Option<Replay>,
     /// The last rung-1 replay that finished, and its root: asked again, it answers at once.
     replayed: Option<(CutRef, Hash)>,
+    /// The cuts a rung-1 replay was asked for that are not final yet: a root split's (divergence.md 5). While the
+    /// episode lasts, a peer may fetch my root at the split's cut (11.1 there), so its snapshot is never thinned (4.1).
+    split_cuts: BTreeSet<CutRef>,
     /// The cut of my last import (rung 2 or joining) and my root there, until the floor reaches it. The replica
     /// keeps no history below it: its physics world is new, and older keyframes cannot be restored into it.
     imported: Option<(CutRef, Hash)>,
@@ -185,6 +235,10 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// into it. Held roots from before an import keep its number, so none of their images is ever restored
     /// (@chunks-reviewer's L2 on 05903341).
     epoch: u64,
+    /// The base the live history and a vote's re-step start from: it moves on whenever the floor moves, an import
+    /// lands, or a rung-1 replay starts or is abandoned. A held root computed on another lineage is never resumed
+    /// from (5.3).
+    lineage: u64,
     /// A replay that ended at a frame no longer kept, and what it answers when asked again: `NotKept` below the floor
     /// (abandoned), `Damaged` at or above it when its cut's root needed that frame (S2 v1.2 round 3).
     lost: Option<(CutRef, RootError)>,
@@ -276,6 +330,8 @@ pub struct Scratch {
     pub faults: u64,
     pub stopped: u64,
     pub fp_resets: u32,
+    /// The frames re-stepped: what a root at a cut costs (5.3).
+    pub frames: u64,
 }
 
 impl<W: WorldModel> ReplicaImpl<W> {
@@ -316,8 +372,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
             diverged: None,
             replay: None,
             replayed: None,
+            split_cuts: BTreeSet::new(),
             imported: None,
             epoch: 0,
+            lineage: 0,
             lost: None,
             stuck_at: None,
             unkept_met: None,
@@ -393,6 +451,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// What re-steps off the live history counted: never part of [`Self::faults`] or [`Self::stopped`].
     pub fn scratch(&self) -> Scratch {
         self.scratch
+    }
+
+    /// How many snapshots the replica holds (4.1): the floor's, `Cv`'s, the finals', and those of my roots at cuts not
+    /// final yet that it keeps.
+    pub fn held_count(&self) -> usize {
+        self.held.len()
     }
 
     /// The live root at a cut-grid frame, if it has been taken and is still kept.
@@ -749,6 +813,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             return false;
         }
         self.lost = self.replay.take().map(|r| (r.cut.at, RootError::NotKept));
+        self.lineage += 1;
         // The replay's history below the floor goes; the next `advance` trims its keyframes there.
         self.live.retain(|f, _| *f >= at);
         self.stepped.retain(|f, _| *f >= at);
@@ -841,8 +906,57 @@ impl<W: WorldModel> ReplicaImpl<W> {
         })
     }
 
-    /// My root at the cut, computed (no cache) and held.
-    fn my_root(&mut self, cut: &Cut, source: &dyn EntrySource) -> Result<Hash, RootError> {
+    /// One pass over the cut's entries from the base, with no physics (5.3): the first difference, as
+    /// [`Self::first_difference`] finds it, and the digest of the cut's entries up to each frame in `marks` and up to
+    /// the cut's frame.
+    fn walk(&self, cut: &Cut, source: &dyn EntrySource, marks: &BTreeSet<Frame>) -> Walk {
+        let at = cut.at.frame;
+        let mut h = Hasher::new(HISTORY);
+        let mut walk = Walk { difference: None, digests: BTreeMap::new() };
+        for g in (self.base_frame().0..at.0).map(Frame) {
+            if marks.contains(&g) {
+                walk.digests.insert(g, h.finish());
+            }
+            // A frame no longer kept counts as different (`my_root` refuses before asking), and no digest passes it.
+            let Some(all) = source.entries_for_cut(cut, g) else {
+                walk.difference.get_or_insert(g);
+                return walk;
+            };
+            let ids: Vec<EntryRef> = apply_order(&all, W::phase).iter().map(|e| e.id()).collect();
+            if walk.difference.is_none() && self.stepped.get(&g).is_none_or(|had| *had != ids) {
+                walk.difference = Some(g);
+            }
+            h.write_u64(ids.len() as u64);
+            for id in &ids {
+                h.write_hash(&id.0);
+            }
+        }
+        walk.digests.insert(at, h.finish());
+        walk
+    }
+
+    /// Where a vote's re-step for a cut at `at` starts (5.3): my root held at the newest voted cut on the grid above
+    /// the ring's keyframe for `from`, at or below `at`, computed on this lineage, whose cut's entries up to its frame
+    /// are this cut's (`walk`'s digest there). Otherwise the ring's keyframe. A root held off the grid is not one to
+    /// resume from: it was saved after `take_root` wrote its rows, which a step through that frame never writes
+    /// (@chunks-reviewer's L2 on 3aa8180d).
+    fn resume_from(&self, from: Frame, at: Frame, walk: &Walk) -> Start {
+        let ring = self.ring.at_or_before(from).map_or(Frame(0), |(k, _)| k);
+        let grid = |f: Frame| f.0.is_multiple_of(self.config.cut_every);
+        let same = |c: &CutRef, root: &Hash| {
+            let mark = walk.digests.get(&c.frame).map(|&history| Mark { lineage: self.lineage, history });
+            self.held_here(root).is_some_and(|h| h.frame == c.frame && h.mark.is_some() && h.mark == mark)
+        };
+        (self.voted.iter())
+            .filter(|(c, root)| c.frame > ring && c.frame <= at && grid(c.frame) && same(c, root))
+            .max_by_key(|(c, _)| c.frame)
+            .map_or(Start::Ring(from), |(_, &root)| Start::Held(root))
+    }
+
+    /// My root at the cut, computed (no cache) and held. A vote's re-step (`resume`) may start from a root I hold at
+    /// an earlier cut (5.3). `finalize`'s always starts from the first difference, since its re-base on the floor
+    /// takes that re-step's records from there (`rebase_on_floor`).
+    fn my_root(&mut self, cut: &Cut, source: &dyn EntrySource, resume: bool) -> Result<Hash, RootError> {
         // At my last import's cut, my root is the imported one, with no re-step below it (S2 v1.2).
         if let Some((_, root)) = self.imported.filter(|i| i.0 == cut.at) {
             return Ok(root);
@@ -879,25 +993,43 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
             return Err(RootError::Damaged);
         }
-        let from = self.first_difference(cut, source).unwrap_or(at);
-        let (root, held) = self.state_at_cut(cut, from, source)?;
+        let (from, start, history) = if resume {
+            let base = self.base_frame();
+            // A digest only where a snapshot is held: a thinned root is never resumed from (4.1).
+            let marks: BTreeSet<Frame> = (self.voted.iter())
+                .filter(|&(c, root)| c.frame >= base && c.frame < at && self.held.contains_key(root))
+                .map(|(c, _)| c.frame)
+                .collect();
+            let walk = self.walk(cut, source, &marks);
+            let from = walk.difference.unwrap_or(at);
+            (from, self.resume_from(from, at, &walk), walk.digests.get(&at).copied())
+        } else {
+            let from = self.first_difference(cut, source).unwrap_or(at);
+            (from, Start::Ring(from), None)
+        };
+        let (root, mut held) = self.state_at_cut(cut, start, source)?;
         if from == at {
             // The live history stepped exactly the cut's entries, through the same frame function.
             debug_assert!(self.live.get(&at).is_none_or(|&live| live == root), "the live root at {at:?} is the cut's");
         }
-        // The same root held from before my last import has the old physics world's image: this one replaces it.
-        if self.held_here(&root).is_none() {
-            self.held.insert(root, held);
+        held.mark = history.map(|history| Mark { lineage: self.lineage, history });
+        match self.held.get_mut(&root).filter(|h| h.epoch == self.epoch) {
+            // The same state, held already: a vote's re-step records what it was stepped from this time.
+            Some(h) => h.mark = held.mark.or(h.mark),
+            // The same root held from before my last import has the old physics world's image: this one replaces it.
+            None => {
+                self.held.insert(root, held);
+            }
         }
         Ok(root)
     }
 
-    /// My root at the cut and its snapshot, from the newest keyframe at or before `from`, stepping exactly the cut's
-    /// entries to its frame. The live state is put back.
+    /// My root at the cut and its snapshot, from `start` (the newest keyframe at or before a frame, or a held root),
+    /// stepping exactly the cut's entries to its frame. The live state is put back.
     fn state_at_cut(
         &mut self,
         cut: &Cut,
-        from: Frame,
+        start: Start,
         source: &dyn EntrySource,
     ) -> Result<(Hash, Held<W::Saved>), RootError> {
         let live = (self.world.save(), self.physics.save_image().map_err(|_| RootError::Damaged)?, self.frame);
@@ -908,7 +1040,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
         // Off the live history, the model keeps its machine state as it is: no prediction starts or runs in a re-step,
         // so a root given out never includes one (@engine-architect's Medium on 29b02af0).
         self.world.set_scratch(true);
-        let result = self.scratch_to(cut, from.min(cut.at.frame), source);
+        let start = match start {
+            Start::Ring(from) => Start::Ring(from.min(cut.at.frame)),
+            held => held,
+        };
+        let result = self.scratch_to(cut, start, source);
         self.world.set_scratch(false);
         // What the re-step counted is the scratch's: the live counts stay as they were (L1).
         self.scratch.faults += self.faults - tally.0;
@@ -926,15 +1062,19 @@ impl<W: WorldModel> ReplicaImpl<W> {
     fn scratch_to(
         &mut self,
         cut: &Cut,
-        from: Frame,
+        start: Start,
         source: &dyn EntrySource,
     ) -> Result<(Hash, Held<W::Saved>), RootError> {
         let at = cut.at.frame;
-        let ReplicaImpl { ring, world, physics, faults, .. } = self;
-        let (k, key) = ring.at_or_before(from).ok_or(RootError::NotKept)?;
-        world.restore(&key.world);
+        let ReplicaImpl { ring, held, world, physics, faults, .. } = self;
+        let (k, saved, image) = match start {
+            Start::Ring(from) => ring.at_or_before(from).map(|(k, key)| (k, &key.world, &key.image)),
+            Start::Held(root) => held.get(&root).map(|h| (h.frame, &h.world, &h.image)),
+        }
+        .ok_or(RootError::NotKept)?;
+        world.restore(saved);
         // A refused physics call is a fault, counted (@chunks-reviewer's nit on 7a360722); here it is the scratch's.
-        if physics.restore_image(&key.image).is_err() {
+        if physics.restore_image(image).is_err() {
             *faults += 1;
             return Err(RootError::Damaged);
         }
@@ -948,6 +1088,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             if self.frame == before {
                 return Err(RootError::NotYetSimulated);
             }
+            self.scratch.frames += 1;
         }
         // Stepped onto a grid frame: its root was just taken. Otherwise (a keyframe restored at the cut's frame, or a
         // cut off the grid) take it here; at a grid keyframe the rows are already written, so nothing changes.
@@ -961,12 +1102,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
         };
         let global = Hash(transfer.check_hash().0);
         let transfer = Bytes::from(transfer.to_bytes());
-        let held = Held { frame: at, world: self.world.save(), image, transfer, global, epoch: self.epoch };
+        let held = Held { frame: at, world: self.world.save(), image, transfer, global, epoch: self.epoch, mark: None };
         Ok((root, held))
     }
 
     /// Release held roots nobody needs: kept are the floor's, `Cv`'s, the finals within `T_keep` (at least two), the
-    /// diverged root, and my roots at cuts not final yet.
+    /// diverged root, my last import's, and, of my roots at cuts not final yet, those something may read (4.1).
     fn release(&mut self) {
         let keep_frames = self.rate.frames(self.config.keep_finals);
         while self.finals.len() > 2 {
@@ -980,8 +1121,16 @@ impl<W: WorldModel> ReplicaImpl<W> {
         keep.extend(self.floor.as_ref().map(|f| f.root));
         keep.extend(self.cv.as_ref().map(|c| c.1));
         keep.extend(self.diverged.map(|d| d.1));
-        keep.extend(self.voted.values().copied());
         keep.extend(self.imported.map(|i| i.1));
+        // My roots at cuts not final yet all stay, as votes; their snapshots only where something reads them before
+        // the cut is final (4.1, was O19; @coordinator-opus mc19bd7c38ea8). The resume needs the newest (5.3), which
+        // the ring's policy over the cut grid keeps. A root split's reference serves its root at the split's cut, so
+        // every cut a rung-1 replay was asked for keeps its snapshot until a finalize at or above it (divergence.md 5,
+        // 11.1). A snapshot kept for anything above stays in any case: `keep` is their union.
+        let policy = Policy { spacing: self.config.cut_every, dense: HELD_DENSE };
+        let newest = self.voted.keys().map(|c| c.frame).max().unwrap_or(Frame(0));
+        let read = |c: &CutRef| policy.keeps(c.frame, newest) || self.split_cuts.contains(c);
+        keep.extend(self.voted.iter().filter(|(c, _)| read(c)).map(|(_, &root)| root));
         self.held.retain(|h, _| keep.contains(h));
     }
 
@@ -989,6 +1138,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// snapshot held from before my last import never enters the ring: its image is the old physics world's.
     fn move_floor(&mut self, cut: &Cut, root: Hash) {
         let at = cut.at.frame;
+        self.lineage += 1;
         if let Some(key) = self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone() }) {
             self.ring.insert(at, key);
         }
@@ -1280,8 +1430,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         if let Some(&root) = self.voted.get(&cut.at) {
             return Ok(root);
         }
-        let root = self.my_root(cut, &*source)?;
+        let root = self.my_root(cut, &*source, true)?;
         self.voted.insert(cut.at, root);
+        // A long stall votes at every cut and finalizes none: the snapshots are thinned at each vote (4.1).
+        self.release();
         Ok(root)
     }
 
@@ -1299,7 +1451,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // My root at the cut: recomputed, since after a repair it is the repaired history's. `Damaged`: a frame from
         // my floor to the cut is no longer kept, or I stopped short of the cut at one, so no root will ever come and
         // rung 2 is due; `my_root` counted the fault. Otherwise I have not re-simulated to the cut yet.
-        let mine = match self.my_root(&cut.cut, &*source) {
+        let mine = match self.my_root(&cut.cut, &*source, false) {
             Ok(mine) => mine,
             Err(RootError::Damaged) => {
                 self.repairing_since.get_or_insert(at.frame);
@@ -1311,6 +1463,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // moves past those frames.
         let differs = self.first_difference(&cut.cut, &*source);
         self.voted.retain(|c, _| c.height > at.height);
+        self.split_cuts.retain(|c| c.height > at.height);
         self.finals.retain(|f| f.0 != at);
         self.finals.push_back((at, mine));
         let verdict = if mine == cut.root {
@@ -1344,6 +1497,8 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     }
 
     fn replay_to(&mut self, cut: &Cut, source: &mut dyn EntrySource) -> Result<Hash, RootError> {
+        // A root split's cut, whether or not this replay can run: my root there stays served (4.1).
+        self.split_cuts.insert(cut.at);
         if let Some((_, root)) = self.replayed.filter(|r| r.0 == cut.at) {
             return Ok(root);
         }
@@ -1382,6 +1537,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.ring.rewind_to(cv_frame);
         self.forget_after(cv_frame);
         self.voted.clear();
+        self.lineage += 1;
         self.replayed = None;
         self.lost = None;
         let root = (cut.at.frame == cv_frame).then_some(cv_root);
@@ -1507,9 +1663,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // A new physics world: the snapshots held from before keep their records and transfers for exports, but none
         // of their images is restored again.
         self.epoch += 1;
+        self.lineage += 1;
         let global = Hash(transfer.check_hash().0);
         let transfer = Bytes::from(transfer.to_bytes());
-        let held = Held { frame: c, world: self.world.save(), image, transfer, global, epoch: self.epoch };
+        let held = Held { frame: c, world: self.world.save(), image, transfer, global, epoch: self.epoch, mark: None };
         self.held.insert(root, held);
         self.voted.clear();
         (self.replay, self.replayed, self.lost, self.stuck_at, self.unkept_met) = (None, None, None, None, None);

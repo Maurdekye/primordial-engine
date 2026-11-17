@@ -1212,3 +1212,186 @@ fn a_root_at_a_cut_steps_exactly_what_s3_answers_for_that_cut() {
     assert_eq!(r.finalize(&FinalCut { cut: c8, root: r8, voters: vec![] }, &mut s), Finalized::Agreed);
     assert_eq!(r.replay_to(&c16, &mut s), Ok(root), "rung 1's replay steps the answer too");
 }
+
+// ---- a vote's re-step resumes from a held root (replica.md 5.3; was O13) -------------------------------------------
+
+/// The scene with a third author's push at 10 that no cut covers, run to `to`. The push stays in S3's live view, so
+/// every cut's first difference is frame 10: the shape of the finality stall, where entries void in every cut's
+/// history stayed in the live view until a final cut voided them.
+fn with_push_at_10(to: u64) -> (ReplicaImpl<MockWorld>, Source, SignedEntry) {
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    let keys = TestKeys::new(7, 3);
+    let push = Bytes::from(encode(&[MockOp::Push { id: id(10), impulse: [0.2, 0.0, 0.0] }]));
+    let late = EntryBuilder::new(&keys, 2).next(Class::Edit, Frame(10), push);
+    s.add(late.clone());
+    let mut r = replica();
+    r.advance(Frame(to), &mut s);
+    (r, s, late)
+}
+
+/// The frames `root_at_cut` re-stepped for one vote, and its root.
+fn vote(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, cut: &Cut) -> (u64, Hash) {
+    let before = r.scratch().frames;
+    let root = r.root_at_cut(cut, s).expect("a root");
+    (r.scratch().frames - before, root)
+}
+
+/// In the stall's shape, each vote after the first resumes from my root held at the previous voted cut and re-steps
+/// one cut interval, not the distance from the first difference, which grows with each cut. Every root is the full
+/// re-step's: that of a replica that never had the push. A final cut that voids the push then moves the floor, and
+/// a vote after it starts from the new floor (5.3).
+#[test]
+fn a_vote_resumes_from_the_root_held_at_the_previous_cut() {
+    let (clean, _) = reference(112);
+    let (mut a, mut s, late) = with_push_at_10(112);
+    assert_ne!(a.live_root(Frame(96)), clean.live_root(Frame(96)), "the push moves the scene");
+    let all = scene();
+    let mut costs = Vec::new();
+    for (h, f) in (16..=96).step_by(K as usize).enumerate() {
+        let (cost, root) = vote(&mut a, &mut s, &cut(&all, h as u64 + 2, f));
+        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        costs.push(cost);
+    }
+    assert!((6..=16).contains(&costs[0]), "the first re-steps from a keyframe at or before 10: {costs:?}");
+    assert!(costs[1..].iter().all(|&c| c == K), "the others one cut interval each: {costs:?}");
+    // S3 voids the push as the cut at 24 goes final: the floor moves there, and the live history is re-based on it.
+    void(&mut s, &late, Frame(10));
+    let quorum = clean.live_root(Frame(24)).expect("live");
+    let fin = FinalCut { cut: cut(&all, 3, 24), root: quorum, voters: vec![] };
+    assert_eq!(a.finalize(&fin, &mut s), Finalized::Agreed);
+    a.advance(Frame(112), &mut s);
+    let (_, root) = vote(&mut a, &mut s, &cut(&all, 13, 104));
+    assert_eq!(Some(root), clean.live_root(Frame(104)));
+    assert_eq!(a.live_root(Frame(112)), clean.live_root(Frame(112)));
+}
+
+/// A vote resumes only from a held root whose cut's entries up to its frame are the new cut's (5.3). The cut at 24
+/// covers the push at 10 and the cuts at 16 and 32 do not, so the root at 32 resumes from the one held at 16, not
+/// from the newer one at 24, and it is the full re-step's.
+#[test]
+fn a_vote_never_resumes_from_a_held_root_with_other_entries() {
+    let (clean, _) = reference(48);
+    let (mut a, mut s, late) = with_push_at_10(48);
+    let all = scene();
+    let (_, at_16) = vote(&mut a, &mut s, &cut(&all, 2, 16));
+    assert_eq!(Some(at_16), clean.live_root(Frame(16)));
+    let mut covered = all.clone();
+    covered.push(late);
+    let (cost, at_24) = vote(&mut a, &mut s, &cut(&covered, 3, 24));
+    assert_eq!((cost, Some(at_24)), (0, a.live_root(Frame(24))), "the live history is exactly the cut at 24's");
+    let (cost, at_32) = vote(&mut a, &mut s, &cut(&all, 4, 32));
+    assert_eq!(Some(at_32), clean.live_root(Frame(32)));
+    assert_eq!(cost, 16, "from the root held at 16");
+}
+
+/// A vote resumes only from a root held at a grid frame (5.3; @chunks-reviewer's L2 on 3aa8180d): one held off the
+/// grid was saved after its rows were written, which a step through that frame never writes. The vote at 24 resumes
+/// from the root held at 16, not from the newer one at 20, off the grid, and it is the full re-step's.
+#[test]
+fn a_vote_never_resumes_from_a_root_held_off_the_grid() {
+    let (clean, _) = reference(32);
+    let (mut a, mut s, _) = with_push_at_10(32);
+    let all = scene();
+    let (_, at_16) = vote(&mut a, &mut s, &cut(&all, 2, 16));
+    assert_eq!(Some(at_16), clean.live_root(Frame(16)));
+    let (cost, _) = vote(&mut a, &mut s, &cut(&all, 3, 20));
+    assert_eq!(cost, 4, "the vote off the grid resumes from the root held at 16");
+    let (cost, at_24) = vote(&mut a, &mut s, &cut(&all, 4, 24));
+    assert_eq!(Some(at_24), clean.live_root(Frame(24)));
+    assert_eq!(cost, K, "from the root held at 16, not the one at 20");
+}
+
+/// In a long stall the replica keeps every voted root but only some snapshots (4.1, was O19): every voted cut of the
+/// newest four cut intervals, then two per doubling of age, by the ring's policy over the cut grid. Over 124 votes it
+/// never holds more than that bound, each vote still re-steps one cut interval from the previous one, and every root
+/// is the full re-step's.
+#[test]
+fn a_long_stall_holds_logarithmically_many_snapshots() {
+    let to = 1000;
+    let (clean, _) = reference(to);
+    let (mut a, mut s, _) = with_push_at_10(to);
+    let all = scene();
+    let before = a.held_count();
+    let young = 4 * K;
+    for (h, f) in (16..=to).step_by(K as usize).enumerate() {
+        let (cost, root) = vote(&mut a, &mut s, &cut(&all, h as u64 + 2, f));
+        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        if h > 0 {
+            assert_eq!(cost, K, "the vote at {f} resumes from the previous one");
+        }
+        // The newest five cuts (ages 0 to 4K), then at most two per band of age past them.
+        let age = f - 16;
+        let bands = if age < young { 0 } else { (age / young).ilog2() as usize + 1 };
+        assert!(a.held_count() <= before + 5 + 2 * bands, "{} held at {f}, {bands} bands", a.held_count());
+    }
+    assert!(a.held_count() <= before + 15, "15 snapshots at most for 124 votes: {}", a.held_count());
+}
+
+/// A voted cut whose snapshot was thinned (4.1) has no tree to diff against, so rung 2 fetches every leaf
+/// (pe-diverge's ladder), and an import at that cut takes the empty state as its base (6.2): a patch with no records
+/// fails there, and the full transfer lands; its root keeps its snapshot through the next vote's thinning. Where the
+/// snapshot stays, the same empty patch lands on it.
+#[test]
+fn an_import_at_a_cut_whose_snapshot_was_thinned_takes_the_full_transfer() {
+    let (mut good, mut gs) = reference(112);
+    let stalled = || {
+        let (mut r, mut s, _) = with_push_at_10(112);
+        let all = scene();
+        let mut roots = BTreeMap::new();
+        for (h, f) in (16..=112).step_by(K as usize).enumerate() {
+            let c = cut(&all, h as u64 + 2, f);
+            let root = r.root_at_cut(&c, &mut s).expect("a root");
+            roots.insert(f, (c, root));
+        }
+        (r, s, roots)
+    };
+    let empty = |mut i: CutImport| {
+        i.records.clear();
+        i.physics = None;
+        i
+    };
+    let (mut a, mut s, roots) = stalled();
+    let (c24, r24) = roots[&24].clone();
+    assert!(a.tree(&r24).is_none() && a.physics_image(&r24).is_none(), "the snapshot at 24 is thinned");
+    assert!(a.tree(&roots[&112].1).is_some(), "the newest stays");
+    let full = import_from(&mut good, &mut gs, &c24);
+    assert_eq!(full.target_root, r24, "my root at 24 is the donor's");
+    let got = a.import_at_cut(&GroupSel::Domain, empty(full.clone()), &mut s);
+    assert!(matches!(got, Err(ImportError::RootMismatch { .. })), "no base to patch: {got:?}");
+    assert_eq!(import_until_done(&mut a, &mut s, &full, 112).0, r24);
+    // The next vote thins the snapshots again, and my import's root keeps its own: an import clears my votes, and its
+    // root is kept as my last import's.
+    a.advance(Frame(120), &mut s);
+    vote(&mut a, &mut s, &cut(&scene(), 15, 120));
+    assert!(a.tree(&r24).is_some(), "the imported root keeps its snapshot");
+    let (mut b, mut bs, roots) = stalled();
+    let (c112, r112) = roots[&112].clone();
+    let patch = empty(import_from(&mut good, &mut gs, &c112));
+    assert_eq!(patch.target_root, r112);
+    assert_eq!(import_until_done(&mut b, &mut bs, &patch, 112).0, r112, "my own snapshot is the base");
+}
+
+/// A root split's reference member serves its root at the split's cut while the episode lasts (divergence.md 5,
+/// 11.1), so a cut a rung-1 replay was asked for keeps its snapshot as the stall thins the others (4.1). Here the
+/// replay at 40 runs from `Cv` at 8 and repairs the live history, and the votes go on to 112.
+#[test]
+fn a_root_split_s_cut_keeps_its_snapshot_while_the_stall_thins_the_rest() {
+    let (clean, _) = reference(112);
+    let (mut a, mut s, _) = with_push_at_10(112);
+    let all = scene();
+    let at_8 = clean.live_root(Frame(8)).expect("live");
+    assert_eq!(a.finalize(&FinalCut { cut: cut(&all, 1, 8), root: at_8, voters: vec![] }, &mut s), Finalized::Agreed);
+    let mut roots = BTreeMap::new();
+    for (h, f) in (16..=112).step_by(K as usize).enumerate() {
+        let c = cut(&all, h as u64 + 2, f);
+        if f == 40 {
+            assert_eq!(a.replay_to(&c, &mut s), clean.live_root(Frame(40)).ok_or(RootError::NotKept), "rung 1");
+        }
+        let (_, root) = vote(&mut a, &mut s, &c);
+        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        roots.insert(f, root);
+    }
+    assert!(a.tree(&roots[&40]).is_some() && a.physics_image(&roots[&40]).is_some(), "the split's cut is served");
+    assert!(a.tree(&roots[&56]).is_none(), "a cut off the alignment is thinned");
+}
