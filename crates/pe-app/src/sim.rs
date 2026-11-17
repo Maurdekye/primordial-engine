@@ -479,7 +479,8 @@ impl Sim {
             None => self.stats.unsent += out.len() as u64,
         }
         // 4. The replica, through pe-replica's driver. `present` is exclusive, so frame `p` is simulated. First the
-        // budget's keep-up floor: the frames `p` advanced since the previous tick, plus one, capped (`Budget`).
+        // budget's keep-up floor: what the last call needed to reach its present, rollback included, plus the frames
+        // `p` advanced since the previous tick, plus one, capped (`Budget`).
         if let Some(b) = self.budget.at_present(p) {
             self.replica.set_budget(b);
         }
