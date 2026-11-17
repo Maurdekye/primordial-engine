@@ -116,16 +116,28 @@ setting, deterministic for the harness; pe-app may adjust it from the measured s
 call. Until it has reached the present again it publishes no new frame view, so the display keeps drawing, and
 extrapolating, the last one, while agreement keeps ticking and voting. The budget is never below two frames of
 simulated time at the world's rate, because real time adds a frame per tick and a budget of one frame never catches
-up (S2's floor; @design-reviewer's Low on 549f4ca4). Nor is it below the frames the frame clock's present advanced
-since the previous tick, plus one (the keep-up floor; @coordinator-opus, after @fable-reviewer). A
-tick also takes messages in, signs the hand inputs and runs agreement, and when that alone outlasts a frame period,
-ticks run back to back and real time gains several frames on each: sized from stepping alone, the budget then let a
-replica fall further behind every tick though its frames were five times cheaper than real time (a debug build
-under load: 120 ms a tick besides 2.8 ms a frame). With the keep-up floor, a replica whose frames are cheaper than a
-period gains at least a frame on real time every tick, whatever the rest costs. The keep-up floor is capped at
-100 ms of stepping at the measured cost of a frame, and at `Budget::MAX` (4 s), so a machine that steps slower than
-real time, or one back from a long stall, holds and reports it rather than making each tick longer than the last,
-and a 10 s stall never becomes one 600-frame tick that sends no votes or timeouts. Above both floors pe-app raises
+up (S2's floor; @design-reviewer's Low on 549f4ca4). Nor is it below what reaching the present asks of the call,
+as the last call measured it (the keep-up floor; @coordinator-opus, which replaced's
+advance plus one): the frames the frame clock's present advanced since the previous tick plus what the last call
+left short, plus one, and at least the whole of what the last call needed, rollback included (S2's `frame()` is the
+re-simulation frontier, so what a call leaves short counts what is left of a re-simulation).
+- **The advance** covers ticks dearer than a frame period. A tick also takes messages in, signs the hand inputs and
+  runs agreement, and when that alone outlasts a frame period, ticks run back to back and real time gains several
+  frames on each: sized from stepping alone, the budget then let a replica fall further behind every tick though its
+  frames were five times cheaper than real time (a debug build under load: 120 ms a tick besides 2.8 ms a frame).
+- **The last call's need** covers late entries. A member whose entries arrive `L` frames late on every frame (its
+  hands move, its link is slow) rolls the replica back about `L` frames on every tick. With only the advance plus
+  one, a budget under `L + 1` never reached the present again: a 300 ms link froze a receiver's view for a whole
+  30 s run, in the 200-ball pit at about 1 ms a frame, where the share fits 8 (@engine-architect's measurement,
+  <notes>).
+
+So a replica whose frames are cheaper than a period gains at least a frame on real time every tick, whatever the
+rest costs, and one re-stepping late entries reaches the present on every tick that the work fits. The keep-up floor
+is capped at 100 ms of stepping at the measured cost of a frame, and at `Budget::MAX` (4 s), so a machine that steps
+slower than real time, one back from a long stall, or one re-stepping more than that every tick, holds and reports
+it rather than making each tick longer than the last, and a 10 s stall never becomes one 600-frame tick that sends
+no votes or timeouts. A tick that re-steps a lot runs long on the simulation thread, never the render thread, which
+keeps drawing the last view. Above both floors pe-app raises
 the budget from the measured step cost. Each hold is counted, with its length; the objects that jump when the view resumes are blended and, above
 `E_cue`, cued like any correction (render.md 8, D2-D3). A replay or an import that does not fit in one
 call returns "pending" and is called again on a later tick. The budget is part of S2 (`Advance::caught_up`,
@@ -307,7 +319,11 @@ final on either, though both keep simulating their predictions.
   catches up when a frame costs less than a period, where the budget from stepping alone falls behind for good; a
   10 s stall never gives a tick more than the cap of stepping; frames dearer than a period keep every tick within the
   cap and hold; and the floor changes no state (a replica back from a stall publishes the same objects at the same
-  frame as one ticked every frame).
+  frame as one ticked every frame, with the same root at a grid frame).
+- **Late entries on every frame** (the keep-up floor's last-call need, section 3): entries 18 frames late on every
+  tick no longer hold the view, in the model and with two pe-world members whose B reaches A 300 ms late; with them,
+  a 10 s stall still never gives a tick more than the cap; and both members finalize the same roots and show the
+  same objects once B's hands are still.
 - **Startup without a GPU:** headless capture works, so CI runs the two-process test.
 - **Shutdown:** the leave reaches the other member, which pauses for zero frames.
 - **The two-process session** of section 6, on Windows and Linux.

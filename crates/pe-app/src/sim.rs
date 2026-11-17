@@ -31,14 +31,19 @@ use crate::local::{self, Chain};
 /// replica catches up, never what it computes. It is the largest of:
 /// - two frames at the world's rate (S2's floor): real time adds a frame per tick, and a budget of one frame never
 ///   catches up;
-/// - the keep-up floor ([`Budget::at_present`]): the frames the frame clock's present advanced since the previous
-///   tick, plus one. A tick also takes messages in, signs the hand inputs and runs agreement, and when that alone
-///   outlasts a frame period, ticks run back to back and real time gains several frames on each. Sized from stepping
-///   alone, the budget then let a replica fall further behind every tick, though its frames were five times cheaper
-///   than real time (@engine-architect's debug measurement; @coordinator-opus, after @fable-reviewer).
-///   The keep-up floor is capped at [`Budget::KEEP_UP_CAP`] of stepping at the measured cost of a frame, and at
-///   [`Budget::MAX`]: a machine that steps slower than real time, or one back from a long stall, holds and reports
-///   it, rather than making each tick longer than the last;
+/// - the keep-up floor ([`Budget::at_present`]): the whole of what the last call needed to reach its present, rollback
+///   included ([`Budget::called`]), plus the frames the frame clock's present advanced since, plus one
+///   (@coordinator-opus, which replaced's advance plus one). The advance covers
+///   ticks dearer than a frame period: a tick also takes messages in, signs the hand inputs and runs agreement, and
+///   when that alone outlasts a period, real time gains several frames on each tick. Sized from stepping alone, the
+///   budget then let a replica fall further behind every tick, though its frames were five times cheaper than real
+///   time (@engine-architect's debug measurement). The last call's need covers late entries: a member whose entries
+///   arrive `L` frames late on every frame rolls the replica back about `L` frames every tick, and a budget under
+///   `L + 1` never reached the present again, so the view held for good (a 300 ms link froze it for a whole run,
+///   @engine-architect's measurement, <notes>). The keep-up floor is capped at
+///   [`Budget::KEEP_UP_CAP`] of stepping at the measured cost of a frame, and at [`Budget::MAX`]: a machine that
+///   steps slower than real time, one back from a long stall, or one re-stepping more than that every tick, holds
+///   and reports it, rather than making each tick longer than the last;
 /// - what the measured cost of a frame fits into a share of a frame period ([`Budget::observe`]), up to `MAX`.
 #[derive(Clone, Debug)]
 pub struct Budget {
@@ -51,8 +56,11 @@ pub struct Budget {
     fit: u64,
     /// The frame clock's present at the latest tick, the greatest seen ([`Budget::at_present`]).
     present: Option<Frame>,
-    /// The frames present advanced at the latest tick, plus one, before the cap; 0 before any tick.
+    /// The keep-up floor before the cap ([`Budget::at_present`]); 0 before any tick.
     keep_up: u64,
+    /// What the last call needed to reach its present, rollback included: the frames it stepped and re-stepped plus
+    /// those it left short ([`Budget::called`]); 0 before any call.
+    need: u64,
     frames: u64,
 }
 
@@ -72,7 +80,8 @@ impl Budget {
 
     pub fn with_share(rate: SimRate, share: f64) -> Budget {
         let floor = Budget::FLOOR_FRAMES;
-        Budget { rate, share: share.max(0.0), cost_ns: None, fit: floor, present: None, keep_up: 0, frames: floor }
+        let share = share.max(0.0);
+        Budget { rate, share, cost_ns: None, fit: floor, present: None, keep_up: 0, need: 0, frames: floor }
     }
 
     /// The budget in frames.
@@ -109,14 +118,24 @@ impl Budget {
     }
 
     /// Records the frame clock's present at a tick, before the replica is driven (app.md 3). The budget is then at
-    /// least the frames present advanced since the previous tick, plus one, so that a replica whose frames are cheaper
-    /// than a period gains at least a frame on real time every tick, whatever else the tick costs. The first tick, and
-    /// a present that moved backwards, count as no advance. Returns the new budget when it changed.
+    /// least the whole of what the last call needed ([`Budget::called`]) plus the frames present advanced since, plus
+    /// one: a replica whose frames are cheaper than a period then gains at least a frame on real time every tick,
+    /// whatever else the tick costs, and late entries, which roll a replica back about as far on every tick, never
+    /// keep it from the present. What the last call needed bounds what is left of it, so this asks for no less than
+    /// reaching the present takes, and the replica stops there. The first tick, and a present that moved backwards,
+    /// count as no advance. Returns the new budget when it changed.
     pub fn at_present(&mut self, present: Frame) -> Option<Duration> {
         let advanced = self.present.map_or(0, |last| present.0.saturating_sub(last.0));
         self.present = Some(self.present.map_or(present, |last| last.max(present)));
-        self.keep_up = advanced.saturating_add(1);
+        self.keep_up = self.need.saturating_add(advanced).saturating_add(1);
         self.settle()
+    }
+
+    /// Records what a call did, after the replica is driven: `frames` stepped and re-stepped, and `short` of its
+    /// present still to step (S2's `frame()` is the re-simulation frontier, so after a partial re-simulation that is
+    /// what is left of it). The next tick's keep-up floor asks for at least their sum again ([`Budget::at_present`]).
+    pub fn called(&mut self, frames: u64, short: u64) {
+        self.need = frames.saturating_add(short);
     }
 
     /// The keep-up floor's cap in frames: [`Budget::KEEP_UP_CAP`] of stepping at the measured cost, between S2's floor
@@ -351,6 +370,14 @@ impl Sim {
         &self.budget
     }
 
+    /// The replica's root at `frame`, a frame of its cut grid it still keeps, through S2's `root_at_cut` on a cut with
+    /// no entries: the keep-up floor's test compares it (the floor changes how fast, never what is computed).
+    #[cfg(test)]
+    pub(crate) fn root_at(&mut self, frame: Frame) -> Result<pe_seams::Hash, pe_seams::RootError> {
+        let cut = Cut { at: CutRef { line: self.agree.line(), height: 1, frame }, heads: Vec::new() };
+        self.replica.root_at_cut(&cut, &mut *self.agree)
+    }
+
     /// One tick at host time `now` (app.md 3): the frame it ticked and what the driver did, or `None` before frame 0.
     pub fn tick(&mut self, now: HostTime) -> Option<(Frame, DriveReport)> {
         self.stats.ticks += 1;
@@ -461,6 +488,8 @@ impl Sim {
         if let Some(b) = self.budget.observe(frames, started.elapsed()) {
             self.replica.set_budget(b);
         }
+        // The next keep-up floor: what reaching the present asked of this call, rollback included.
+        self.budget.called(frames, (p.0 + 1).saturating_sub(self.replica.frame().0));
         self.stats.votes += report.votes.len() as u64;
         self.stats.finalized += report.finalized.len() as u64;
         if let Some(api) = &self.api {
@@ -852,11 +881,14 @@ mod tests {
     }
 
     /// An in-process network (S4) for `Sim`s in one test: what one sends, the addressee polls, stamped with the host
-    /// time the test last set.
+    /// time the test last set, plus the one-way delay from the sender to it (none unless set).
     #[derive(Clone, Default)]
     struct Hub {
         boxes: Arc<std::sync::Mutex<std::collections::BTreeMap<MemberKey, std::collections::VecDeque<Received>>>>,
         now: Arc<std::sync::atomic::AtomicI64>,
+        /// One-way delays in host nanoseconds by (from, to): a message is polled once the test's time reaches its
+        /// arrival. Each box is first in, first out, which holds with one sender per box (two members).
+        delay: Arc<std::sync::Mutex<std::collections::BTreeMap<(MemberKey, MemberKey), i64>>>,
     }
 
     struct Port {
@@ -873,12 +905,16 @@ mod tests {
 
     impl Transport for Port {
         fn send(&mut self, to: MemberKey, lane: Lane, bytes: bytes::Bytes) {
-            let at = HostTime(self.hub.now.load(Ordering::SeqCst));
+            let d = self.hub.delay.lock().expect("the delays").get(&(self.me, to)).copied().unwrap_or(0);
+            let at = HostTime(self.hub.now.load(Ordering::SeqCst) + d);
             let r = Received { from: self.me, lane, bytes, at };
             self.hub.boxes.lock().expect("the hub").entry(to).or_default().push_back(r);
         }
         fn poll(&mut self) -> Option<Received> {
-            self.hub.boxes.lock().expect("the hub").get_mut(&self.me)?.pop_front()
+            let now = self.hub.now.load(Ordering::SeqCst);
+            let mut boxes = self.hub.boxes.lock().expect("the hub");
+            let q = boxes.get_mut(&self.me)?;
+            if q.front()?.at.0 <= now { q.pop_front() } else { None }
         }
         fn link(&self, _: MemberKey) -> LinkStats {
             LinkStats::default()
@@ -979,6 +1015,119 @@ mod tests {
         }
     }
 
+    /// B's hands, closed (physical under the default `CLOSED_HAND` mode), circling at about 0.6 m/s half a turn apart,
+    /// the left one through the front row of the pit's balls, until `until`, then still where they were.
+    struct SweepHands {
+        until: HostTime,
+    }
+
+    impl SweepHands {
+        /// The rig-frame position of `hand` at host time `at` (the rig is at the origin).
+        fn at(&self, hand: pe_seams::Hand, at: HostTime) -> [f64; 3] {
+            let t = at.min(self.until).0 as f64 * 1e-9;
+            let (cx, phase) = if hand == pe_seams::Hand::Left { (-0.45, 0.0) } else { (0.45, std::f64::consts::PI) };
+            let a = std::f64::consts::TAU * t / 3.0 + phase;
+            [cx + 0.3 * a.cos(), 0.08, -0.85 + 0.3 * a.sin()]
+        }
+    }
+
+    impl pe_seams::HandFeed for SweepHands {
+        fn hand_at(&self, hand: pe_seams::Hand, at: HostTime) -> Option<pe_seams::HandInput> {
+            let [x, y, z] = self.at(hand, at);
+            Some(pe_seams::HandInput {
+                hand,
+                source: pe_seams::HandSource::Tracked,
+                sampled_at: at,
+                tracked: true,
+                pose: pe_seams::RigPose { position: [x as f32, y as f32, z as f32], orientation: [0.0, 0.0, 0.0, 1.0] },
+                linear_velocity: None,
+                angular_velocity: None,
+                grip: 1.0,
+                closed: true,
+                discontinuity: 0,
+            })
+        }
+    }
+
+    /// @coordinator-opus, tests 1 and 3, with two pe-world members: B's messages reach A 300 ms late and
+    /// A's reach B in 25 ms, and B's closed hands sweep through the balls, so every frame brings A an entry 18 frames
+    /// behind its present. Both budgets have no share (the floors alone), so the result doesn't depend on how fast
+    /// this build steps. Before the keep-up floor covered the last call's need, A's view held from the first late
+    /// entry on. Now it is at the present on nearly every tick; both members finalize cuts that cover the sweep, so
+    /// they computed the same roots there (q = 2 of 2); and once B's hands are still, both show the same objects at
+    /// the same frame.
+    #[test]
+    fn late_entries_on_every_frame_no_longer_hold_a_two_member_view() {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::Pos;
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        const FRAMES: u64 = 240;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let still = clock.host_time_of(Frame(150));
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let hub = Hub::default();
+        let (a, b) = (keys.key(0), keys.key(1));
+        {
+            let mut d = hub.delay.lock().expect("the delays");
+            d.insert((b, a), 300_000_000);
+            d.insert((a, b), 25_000_000);
+        }
+        let mut sims = Vec::new();
+        for i in 0..2 {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+            let replica =
+                crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let slot = Arc::new(FrameSlot::new());
+            let hands: Arc<dyn pe_seams::HandFeed> =
+                if i == 0 { Arc::new(StillHands([-0.5, 1.0, -0.4])) } else { Arc::new(SweepHands { until: still }) };
+            let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::with_share(RATE, 0.0))
+                .with_local(me, keys.nonce(i, 0), hands)
+                .with_transport(Box::new(Port::new(me, hub.clone())), None);
+            sims.push((sim, slot));
+        }
+        let (mut current, mut most) = (0u64, 0u64);
+        for f in 1..=FRAMES {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            let (_, report) = sims[0].0.tick(now).expect("ticked");
+            sims[1].0.tick(now);
+            most = most.max(report.advance.resimulated + report.advance.stepped);
+            if f > 60 && sims[0].1.newest().is_some_and(|v| v.frame == Frame(f + 1)) {
+                current += 1;
+            }
+        }
+        assert!(most > 18, "A's largest call stepped {most} frames: the late frames were re-stepped");
+        let after = FRAMES - 60;
+        let budget = sims[0].0.budget();
+        assert!(
+            current >= after * 9 / 10,
+            "A's view was at the present on {current} of {after} ticks (budget {} frames, cost {:?}, keep-up cap {})",
+            budget.frames(),
+            budget.cost(),
+            budget.keep_up_cap()
+        );
+        let (va, vb) = (sims[0].1.newest().expect("A's view"), sims[1].1.newest().expect("B's view"));
+        for (i, v) in [&va, &vb].into_iter().enumerate() {
+            assert!(v.final_frame.is_some_and(|f| f.0 >= 150), "member {i}: final frame {:?}", v.final_frame);
+        }
+        // B's hands have been still for 1.5 s, five times the 300 ms that A's view of them trails by.
+        assert_eq!(va.frame, vb.frame);
+        let state = |v: &FrameView| {
+            v.objects
+                .iter()
+                .map(|o| (o.id, o.pos, o.rotation, o.linear_velocity, o.angular_velocity))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(state(&va), state(&vb));
+    }
+
     fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
         let slot = Arc::new(FrameSlot::new());
         let sim = Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, clock, slot.clone(), budget);
@@ -1051,9 +1200,11 @@ mod tests {
 
     /// The simulation thread's loop as a model in simulated wall time: each tick costs `fixed` (taking messages in,
     /// signing, agreement), then `cost` for each frame stepped, and a replica that caught up waits for its next frame,
-    /// as `run` does. It starts `behind` frames behind, and real time jumps by `stall` before tick `stall_at`. Returns
-    /// each tick's frames stepped and whether the replica caught up (a tick that didn't is a hold, `count_hold`).
-    /// `keep_up` false never calls `at_present`: the budget sized from stepping alone, as before the keep-up floor.
+    /// as `run` does. It starts `behind` frames behind, and real time jumps by `stall` before tick `stall_at`. With
+    /// `late`, another member's entries arrive that many frames behind the present on every tick, so each tick first
+    /// rolls the replica back there. Returns each tick's frames stepped and whether the replica caught up (a tick that
+    /// didn't is a hold, `count_hold`). `keep_up` false never calls `at_present` or `called`: the budget sized from
+    /// stepping alone, as before the keep-up floor.
     fn model(
         cost: Duration,
         fixed: Duration,
@@ -1061,6 +1212,7 @@ mod tests {
         stall: (usize, Duration),
         ticks: usize,
         keep_up: bool,
+        late: u64,
     ) -> Vec<(u64, bool)> {
         let period = 1e9 / f64::from(RATE.hz());
         let mut b = Budget::new(RATE);
@@ -1075,10 +1227,16 @@ mod tests {
             if keep_up {
                 b.at_present(Frame(present));
             }
+            if late > 0 {
+                next = next.min(present.saturating_sub(late));
+            }
             let steps = (present + 1).saturating_sub(next).min(b.frames());
             next += steps;
             if steps > 0 {
                 b.observe(steps, cost * steps as u32);
+            }
+            if keep_up {
+                b.called(steps, (present + 1).saturating_sub(next));
             }
             t += fixed.as_nanos() as f64 + cost.as_nanos() as f64 * steps as f64;
             let caught_up = next > present;
@@ -1096,10 +1254,10 @@ mod tests {
     #[test]
     fn a_fixed_100_ms_a_tick_still_catches_up() {
         let (cost, fixed, never) = (Duration::from_millis(3), Duration::from_millis(100), (usize::MAX, Duration::ZERO));
-        let with = model(cost, fixed, 120, never, 400, true);
+        let with = model(cost, fixed, 120, never, 400, true, 0);
         let first = with.iter().position(|&(_, up)| up).expect("the keep-up floor catches up");
         assert!(with[first..].iter().all(|&(_, up)| up), "and stays caught up");
-        let without = model(cost, fixed, 120, never, 400, false);
+        let without = model(cost, fixed, 120, never, 400, false, 0);
         assert!(without.iter().all(|&(_, up)| !up), "the budget from stepping alone never catches up");
     }
 
@@ -1110,7 +1268,7 @@ mod tests {
     #[test]
     fn a_ten_second_stall_never_gives_a_tick_longer_than_the_cap() {
         for cost in [Duration::from_micros(300), Duration::from_millis(3)] {
-            let ticks = model(cost, Duration::from_millis(2), 0, (50, Duration::from_secs(10)), 1500, true);
+            let ticks = model(cost, Duration::from_millis(2), 0, (50, Duration::from_secs(10)), 1500, true, 0);
             for (i, &(steps, _)) in ticks.iter().enumerate() {
                 assert!(cost * steps as u32 <= Budget::KEEP_UP_CAP, "tick {i} at {cost:?}: {steps} frames");
                 assert!(steps <= RATE.frames(Budget::MAX), "tick {i} at {cost:?}: {steps} frames");
@@ -1125,10 +1283,39 @@ mod tests {
     #[test]
     fn frames_dearer_than_a_period_keep_ticks_bounded_and_hold() {
         let cost = Duration::from_millis(30);
-        let ticks = model(cost, Duration::from_millis(1), 0, (usize::MAX, Duration::ZERO), 200, true);
+        let ticks = model(cost, Duration::from_millis(1), 0, (usize::MAX, Duration::ZERO), 200, true, 0);
         let cap = (Budget::KEEP_UP_CAP.as_nanos() / cost.as_nanos()) as u64;
         assert!(ticks.iter().all(|&(steps, _)| steps <= cap.max(Budget::FLOOR_FRAMES)), "{ticks:?}");
         assert!(ticks[10..].iter().all(|&(_, up)| !up), "it holds: {:?}", &ticks[..20]);
+    }
+
+    /// @coordinator-opus, test 1: another member's entries arriving 300 ms (18 frames) late on every
+    /// frame roll the replica back 18 frames on every tick. With frames at 1 ms the share fits 8, so before the floor
+    /// covered the last call's need the replica never reached the present again and its view held for good. Now it
+    /// catches up on every tick after the first few, each within the cap.
+    #[test]
+    fn entries_late_on_every_frame_no_longer_hold_the_view() {
+        let (cost, fixed, never) = (Duration::from_millis(1), Duration::from_millis(1), (usize::MAX, Duration::ZERO));
+        let ticks = model(cost, fixed, 0, never, 600, true, 18);
+        let cap = (Budget::KEEP_UP_CAP.as_nanos() / cost.as_nanos()) as u64;
+        assert!(ticks.iter().all(|&(steps, _)| steps <= cap), "within the cap");
+        // Past the first 40 ticks, while the present is under 18 and the late entries roll back to frame 0.
+        assert!(ticks[40..].iter().all(|&(_, up)| up), "caught up on every tick: {:?}", &ticks[30..60]);
+        assert!(ticks[40..].iter().all(|&(steps, _)| steps >= 19), "each re-stepping the 18 frames");
+    }
+
+    /// Test 2: with entries late on every frame as well, a 10 s stall still never gives a tick more than
+    /// `KEEP_UP_CAP` of stepping, and the replica catches up after it.
+    #[test]
+    fn a_stall_with_late_entries_never_gives_a_tick_longer_than_the_cap() {
+        for cost in [Duration::from_micros(300), Duration::from_millis(1)] {
+            let ticks = model(cost, Duration::from_millis(2), 0, (50, Duration::from_secs(10)), 3000, true, 18);
+            for (i, &(steps, _)) in ticks.iter().enumerate() {
+                assert!(cost * steps as u32 <= Budget::KEEP_UP_CAP, "tick {i} at {cost:?}: {steps} frames");
+            }
+            assert!(!ticks[50].1, "the stall leaves it behind at {cost:?}");
+            assert!(ticks[2900..].iter().all(|&(_, up)| up), "and it catches up for good at {cost:?}");
+        }
     }
 
     /// Test 4: the keep-up floor changes how fast a replica catches up, never what it computes. A pe-world replica
@@ -1158,6 +1345,10 @@ mod tests {
         assert_eq!(a.frame, Frame(end + 1));
         assert_eq!(b.frame, a.frame, "caught up by frame {end}");
         assert_eq!(b.objects, a.objects);
+        // And the same root at a frame of the 6-frame grid both keep (@design-reviewer's nit on da7f4947).
+        let (r_steady, r_stalled) = (steady.root_at(Frame(66)), stalled.root_at(Frame(66)));
+        assert!(r_steady.is_ok(), "{r_steady:?}");
+        assert_eq!(r_stalled, r_steady);
     }
 
     #[test]
