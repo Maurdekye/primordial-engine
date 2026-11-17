@@ -2205,12 +2205,12 @@ Each is a test in pe-world, pe-sim or pe-core unless marked [I on all thresholds
 9. **What the hash covers:** a one-bit change injected into each covered part (a component row, a row version,
    `BodyState`, each world table, the registry) changes the root, and the diff walk names exactly that object or
    table. A change to a `Local` object changes nothing.
-   - [V] tests/covers.rs, on `pe_world::test_util` (feature `test-util`): twelve kinds of damage (a component row,
+   - [V] tests/covers.rs, on `pe_world::test_util` (feature `test-util`): thirteen kinds of damage (a component row,
      governance, a claim, a script component row, a module version, `BodyState`, a pending attestation, the
-     registry, a cooldown, a tombstone, a hand pack, a push window) each move the root, a walk from the root names
+     registry, a cooldown, a tombstone, a hand pack, a push window, and a row version alone with its bytes
+     unchanged) each move the root, a walk from the root names
      exactly the damaged object or table, and every table but the empty `LINES` is reached. tests/tree.rs adds the
      seed, a setting (the depth limit), pe-agree's settings record, `physics_global` and the frame.
-   - Not yet tested [I]: a row version changed alone, with its row's bytes unchanged.
    - Waits for `Local` objects, which M1 doesn't make (6.6): a change to one changes nothing.
    - The repair half (rungs 1 and 2 cure each kind on the real replica) is @diverge-eng's, on the same hook.
 10. **Canonical trie and caches:** random insert and delete orders give equal roots and shapes; after random steps,

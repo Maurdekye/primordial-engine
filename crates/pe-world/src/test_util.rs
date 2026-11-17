@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId, Pos};
 use pe_seams::{LeafKey, Version};
-use pe_sim::{ComponentDesc, FieldDesc, FieldKind, Transform};
+use pe_sim::{ComponentDesc, ComponentId, FieldDesc, FieldKind, Transform};
 
 use crate::components::BodyState;
 use crate::input::{HandPose, Pack};
@@ -44,10 +44,13 @@ pub enum Kind {
     HandPack,
     /// The push windows table (8.1): a member's pushes in the last second.
     PushWindow,
+    /// A row's edit version alone (7.3), its bytes unchanged: hashed in the object's leaf, read by preconditions and
+    /// merges, and the damage a repair comparing only row bytes would miss (@chunks-reviewer m02caf199661d).
+    RowVersion,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Field,
         Kind::Governance,
         Kind::Claim,
@@ -60,6 +63,7 @@ impl Kind {
         Kind::Tombstone,
         Kind::HandPack,
         Kind::PushWindow,
+        Kind::RowVersion,
     ];
 }
 
@@ -89,7 +93,9 @@ pub fn five_kinds() -> World {
     let inputs = Arc::make_mut(&mut w.inputs);
     inputs.cooldowns.insert((b, lamp), Frame(30));
     let pose = HandPose { pos: Pos::ORIGIN, rot: [0.0, 0.0, 0.0, 1.0], grip: 0.5, engaged: true };
-    inputs.packs.insert(hand, Pack { stamp: Frame(2), poses: vec![pose], hold: 1 });
+    // The longest hold a pack can carry, so it lives to frame 258, past a replica's first cuts, and a repair test on
+    // the real replica can see it (@diverge-eng m42757b24c271: with hold 1 it was gone at frame 4).
+    inputs.packs.insert(hand, Pack { stamp: Frame(2), poses: vec![pose], hold: u8::MAX });
     inputs.pushes.insert(b, [(Frame(3), 0.25)].into());
     let body = BodyState {
         linear: [0.5, 0.0, 0.0],
@@ -159,7 +165,8 @@ pub fn five_kinds() -> World {
 /// - `Cooldown`: the first cooldown ends one frame later;
 /// - `Tombstone`: the first tombstone expires one frame later;
 /// - `HandPack`: the first pending hand pack's stamp is one frame later;
-/// - `PushWindow`: the first member's newest push grows by 0.001 N·s.
+/// - `PushWindow`: the first member's newest push grows by 0.001 N·s;
+/// - `RowVersion`: the first object with a `Transform` has that row's version name the next op of its entry.
 pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
     match kind {
         Kind::Field => {
@@ -231,6 +238,13 @@ pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
             let m = *w.inputs.pushes.iter().find(|(_, q)| !q.is_empty())?.0;
             Arc::make_mut(&mut w.inputs).pushes.get_mut(&m)?.back_mut()?.1 += 0.001;
             Some(LeafKey::Table(table::PUSH_WINDOWS))
+        }
+        Kind::RowVersion => {
+            let c = ComponentId::TRANSFORM;
+            let id = *w.store.objects().iter().find(|&&id| w.store.row_version(c, id).is_some())?;
+            let mut v = w.store.row_version(c, id)?;
+            v.op = v.op.wrapping_add(1);
+            w.store.set_row_version(c, id, v).then_some(LeafKey::Object(id))
         }
     }
 }
