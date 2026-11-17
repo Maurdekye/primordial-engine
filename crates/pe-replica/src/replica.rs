@@ -460,14 +460,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         for e in apply_order(entries.iter().copied(), W::phase) {
             let (outcome, fx) = self.world.apply(f, e);
             let id = e.id();
-            let record = StepRecord {
-                entry: id,
-                author: e.entry.author,
-                class: e.entry.class,
-                frame: f,
-                outcome,
-                rekeyed: fx.rekeyed.clone(),
-            };
+            let record = StepRecord { entry: id, author: e.entry.author, class: e.entry.class, frame: f, outcome };
             if live {
                 self.outcomes.insert(id, (f, record.outcome.clone()));
                 self.note(record, Seen::of(e));
@@ -994,7 +987,6 @@ impl<W: WorldModel> ReplicaImpl<W> {
             class,
             frame,
             outcome: Outcome::Unknown { repaired_at: cut.at },
-            rekeyed: Arc::default(),
         };
         let mut records = Vec::new();
         for f in frames {
@@ -1003,14 +995,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             let dropped = |entry: EntryRef, seen: &Seen| {
                 let reason = source.void_reason(&entry).unwrap_or(VoidReason::Late);
                 let (author, class) = (seen.author, seen.class);
-                StepRecord {
-                    entry,
-                    author,
-                    class,
-                    frame: f,
-                    outcome: Outcome::Dropped { reason },
-                    rekeyed: Arc::default(),
-                }
+                StepRecord { entry, author, class, frame: f, outcome: Outcome::Dropped { reason } }
             };
             match source.entries_for_cut(cut, f) {
                 Some(order) => {
@@ -1092,6 +1077,8 @@ fn empty_view(domain: DomainId) -> FrameView {
         retracted: Vec::new(),
         counters: ViewCounters::default(),
         changes: Vec::new(),
+        activations: Vec::new(),
+        activations_retracted: Vec::new(),
     }
 }
 
