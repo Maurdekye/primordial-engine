@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use pe_core::{ChainId, EntryRef, LineId, MemberKey};
 use pe_seams::world_api::{Frame, HeldBatch, SessionEvent, SessionHealth, Status, TxId, Wait};
-use pe_seams::{Cut, Health, Outcome as WorldOutcome, StepRecord, VoidReason};
+use pe_seams::{Activation, ActivationKey, Cut, Health, Outcome as WorldOutcome, StepRecord, VoidReason};
 use pe_world::WorldSnapshot;
 use pe_world::edit::Transaction;
 
@@ -175,6 +175,9 @@ pub enum FeedItem {
     },
     /// The newest final frame moved.
     Final { frame: Frame },
+    /// A code change's version activated or was voided, and a final frame has passed it (api.md 7; S5 v1.8's
+    /// `FrameView.activations`). `change`: the commit's entry.
+    Activation { change: TxId, owner: Option<Owner>, activation: Activation },
     /// Session news: from pe-app, membership taking effect, catching up and caught up; from the view, its health
     /// changing (api.md 5.4 `session`).
     Session(pe_seams::world_api::SessionEvent),
@@ -244,6 +247,12 @@ struct Inner {
     follow_ups: VecDeque<TxId>,
     /// Kept changes the backstop has open.
     open_count: usize,
+    /// Activations and voids published but not yet passed by a final frame, by key; a later record supersedes,
+    /// a retraction removes (S5 v1.8).
+    activations: BTreeMap<ActivationKey, Activation>,
+    /// Those told, by the commit's entry, for `history` and `get`; bounded like the fates.
+    told: HashMap<TxId, Activation>,
+    told_order: VecDeque<TxId>,
 }
 
 pub struct ChangeLog {
@@ -326,6 +335,9 @@ impl ChangeLog {
                 next_batch: epoch() << 16,
                 follow_ups: VecDeque::new(),
                 open_count: 0,
+                activations: BTreeMap::new(),
+                told: HashMap::new(),
+                told_order: VecDeque::new(),
             }),
             latest: OnceLock::new(),
             changed: Condvar::new(),
@@ -363,6 +375,32 @@ impl ChangeLog {
         for it in items {
             self.feed.push(Arc::new(it), now);
         }
+    }
+
+    /// pe-app, per publication, before [`ChangeLog::publish`]: the view's `activations` and
+    /// `activations_retracted` (S5 v1.8). Each is told to the commit's principal once a final frame passes it, so
+    /// every machine says the same (api.md 7); a record a re-simulation retracts before then is never told.
+    pub fn activations(&self, records: &[Activation], retracted: &[ActivationKey]) {
+        if records.is_empty() && retracted.is_empty() {
+            return;
+        }
+        let mut g = self.lock();
+        for k in retracted {
+            g.activations.remove(k);
+        }
+        for a in records {
+            g.activations.insert(a.key, a.clone());
+        }
+        let mut items = vec![];
+        g.tell_activations(&mut items);
+        self.push_all(items);
+        drop(g);
+        self.changed.notify_all();
+    }
+
+    /// What became of a code change's version, once told (api.md 7).
+    pub fn activation_of(&self, change: TxId) -> Option<Activation> {
+        self.lock().told.get(&change).cloned()
     }
 
     /// pe-app, per publication, in order and without a gap (S5's completeness): the view's `changes` (the entries
@@ -492,6 +530,7 @@ impl ChangeLog {
             if let Some(frame) = ff {
                 items.push(FeedItem::Final { frame });
             }
+            g.tell_activations(&mut items);
         }
         g.sweep(now, &mut items);
         Self::evict(&mut g);
@@ -610,6 +649,11 @@ impl ChangeLog {
             g.fates.remove(&t);
             g.settled.remove(&t);
             g.coords.remove(&t);
+        }
+        while g.told_order.len() > CAPACITY {
+            if let Some(t) = g.told_order.pop_front() {
+                g.told.remove(&t);
+            }
         }
         if g.order.len() > 2 * CAPACITY {
             let fates = &g.fates;
@@ -968,6 +1012,26 @@ impl Inner {
             }
         }
         m
+    }
+
+    /// The activations and voids a final frame now passes, told once each to the commit's principal (api.md 7).
+    fn tell_activations(&mut self, items: &mut Vec<FeedItem>) {
+        let ff = self.final_frame;
+        let due: Vec<ActivationKey> =
+            self.activations.iter().filter(|(_, a)| passed(ff, Some(a.frame.0))).map(|(k, _)| *k).collect();
+        for k in due {
+            let Some(a) = self.activations.remove(&k) else { continue };
+            let change = TxId::from(k.version.entry);
+            let owner = self
+                .coords
+                .get(&change)
+                .and_then(|c| c.owner.clone())
+                .or_else(|| self.fates.get(&change).and_then(|f| f.owner.clone()));
+            if self.told.insert(change, a.clone()).is_none() {
+                self.told_order.push_back(change);
+            }
+            items.push(FeedItem::Activation { change, owner, activation: a });
+        }
     }
 
     /// Whether kept change `o` names one before it that waits to be re-sent or is held; with `strong`, only in a
@@ -1869,6 +1933,42 @@ mod tests {
         let gone = log.feed().read(Some(&c0), pick, 1000, Duration::ZERO).unwrap().items;
         let want: Vec<(Arc<str>, u32)> = vec![("ann".into(), 1), ("claude".into(), 1)];
         assert_eq!(gone, vec![(first[0].handle.clone(), want)]);
+    }
+
+    #[test]
+    fn an_activation_is_told_to_its_author_once_a_final_frame_passes_it() {
+        use pe_seams::{Activation, ActivationKey, ActivationOutcome, VoidedWhy};
+        let log = ChangeLog::new();
+        let c0 = start(&log);
+        own(&log, 1, 1, kept_at(txn(vec![], vec![]), Slots::default(), Instant::now()), ok(vec![]));
+        let key = |e| ActivationKey { asset: [e; 32], version: pe_seams::Version { entry: entry(e), op: 0 } };
+        let on =
+            Activation { key: key(1), frame: CoreFrame(5), outcome: ActivationOutcome::Activated { rekeyed: vec![] } };
+        let off = Activation {
+            key: key(2),
+            frame: CoreFrame(5),
+            outcome: ActivationOutcome::Voided { why: VoidedWhy::Unattested, objects: vec![], more: 0, failed: vec![] },
+        };
+        let told = || {
+            let pick = |it: &Arc<FeedItem>| match it.as_ref() {
+                FeedItem::Activation { change, owner, activation } => {
+                    Some((*change, owner.as_ref().map(|o| o.principal.to_string()), activation.key))
+                }
+                _ => None,
+            };
+            log.feed().read(Some(&c0), pick, 100, Duration::ZERO).unwrap().items
+        };
+        log.activations(&[on.clone(), off], &[]);
+        // Not before a final frame is past frame 5; a re-simulation retracts the void meanwhile.
+        log.record(&[], Some(5));
+        assert!(told().is_empty());
+        log.activations(&[], &[key(2)]);
+        log.record(&[], Some(6));
+        assert_eq!(told(), vec![(tx(1), Some("claude".to_string()), key(1))]);
+        assert_eq!(log.activation_of(tx(1)), Some(on));
+        // Once only.
+        log.record(&[], Some(9));
+        assert_eq!(told().len(), 1);
     }
 
     #[test]

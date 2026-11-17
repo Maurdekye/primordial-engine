@@ -25,13 +25,14 @@ use std::time::{Duration, Instant};
 use pe_core::EntryRef;
 use pe_seams::SubmitError;
 use pe_seams::world_api::{
-    ApiError, ApplyOpts, At, AtName, Caller, Changes, ConnectionId, Cursor, ErrorCode, Filter, Frame, HeldAction,
-    MemberId, Mode, ObjectId, Outcome, ProducerKind, Query, QueryResult, Refusal, RefusalCode, Scope, SessionEvent,
-    Status, Transaction, TxId, Wait,
+    ApiError, ApplyOpts, At, AtName, Caller, Changes, CodeCheck, ConnectionId, Cursor, Diagnostics, ErrorCode, Filter,
+    Frame, HeldAction, MemberId, Mode, ObjectId, Outcome, ProducerKind, Query, QueryResult, Refusal, RefusalCode,
+    Scope, SessionEvent, Status, Transaction, TxId, Wait,
 };
 use pe_world::edit::Actor;
 use pe_world::{Draft, WorldSnapshot};
 
+use crate::builds::{BuildRefused, Builds, archive_of, diagnostics_of, margin_diagnostic, refusal_diagnostics};
 use crate::changes::{ChangeLog, FeedItem, Kept, Owner};
 use crate::edit::{Unmapped, WorldEdit, to_world};
 use crate::outcome::{dry_run, map_refusal};
@@ -119,6 +120,7 @@ fn refused_outcome(snap: &WorldSnapshot, f: Refusal) -> Outcome {
         diff: None,
         resent_as: None,
         held: None,
+        activation: None,
     }
 }
 
@@ -205,6 +207,8 @@ pub struct Api<S: WorldSource> {
     versions: Mutex<HashMap<ConnectionId, Arc<Mutex<VersionTable>>>>,
     rates: Mutex<HashMap<String, Bucket>>,
     rate: Rate,
+    /// The machine's build service (api.md 7.1); `None` answers `unavailable`.
+    builds: Option<Arc<dyn Builds>>,
 }
 
 fn rate_limited(wait: Duration) -> ApiError {
@@ -249,6 +253,7 @@ impl<S: WorldSource + 'static> Api<S> {
             versions: Mutex::new(HashMap::new()),
             rates: Mutex::new(HashMap::new()),
             rate: Rate::TX_DEFAULT,
+            builds: None,
         }
     }
 
@@ -321,6 +326,7 @@ impl<S: WorldSource + 'static> Api<S> {
             diff: None,
             resent_as: None,
             held: None,
+            activation: None,
         };
         let r = resolve_tx(&view, &tx, &lookup);
         drop(table);
@@ -626,6 +632,7 @@ impl<S: WorldSource + 'static> Api<S> {
                         _ => None,
                     },
                     summary: summary(tx.as_deref(), &step.outcome, &snap),
+                    activation: self.log.activation_of(f.change).map(|a| self.note(&a)),
                 },
             ));
         }
@@ -809,6 +816,16 @@ impl<S: WorldSource + 'static> Api<S> {
                         out.push(Said::Session(e.clone()));
                     }
                 }
+                FeedItem::Activation { change, owner, activation } => {
+                    // The second report of a code change (api.md 5.3.2): final, with its version's fate.
+                    if is_mine(owner.as_ref(), *change) {
+                        let snap = self.src.latest();
+                        let frame = self.log.get(*change).and_then(|f| f.frame);
+                        let mut o = mine(*change, (Status::Final, true), None, frame, owner.as_ref(), None, &snap);
+                        o.activation = Some(self.note(activation));
+                        out.push(Said::Mine(Box::new(o)));
+                    }
+                }
                 FeedItem::HeldDiscarded { handle, counts } => {
                     let theirs = counts.iter().find(|(p, _)| **p == *c.principal);
                     if let (true, Some((_, count))) = (session_on, theirs) {
@@ -873,7 +890,7 @@ pub fn role_of(perms: u32) -> (&'static str, Vec<String>) {
     }
 }
 
-impl<S: WorldSource> Api<S> {
+impl<S: WorldSource + 'static> Api<S> {
     /// `session` (api.md 5.1): pe-app's facts, and the world state (frame, members and their roles, scale) from the
     /// newest snapshot. Every member of the world is listed, each marked whether it is here, and then anyone here
     /// whose admission hasn't stepped yet, as a watcher (@chunks-reviewer's Low on 930cd094); `kept` is whether an
@@ -941,6 +958,81 @@ impl<S: WorldSource> Api<S> {
     /// `held` (api.md 9.4): applies or discards the caller's own changes in a held batch. Applied changes go to the
     /// queue again in order, through the backstop's preparation, with a fresh bound; each answers as `apply` with
     /// `wait: "local"` would, under its original id.
+    /// An activation record as the API says it (api.md 7): objects capped, failures by member name and reason name.
+    fn note(&self, a: &pe_seams::Activation) -> pe_seams::world_api::ActivationNote {
+        use pe_seams::world_api::{ActivationNote, BuildFailedBy, MemberBrief, VoidWhy};
+        use pe_seams::{ActivationOutcome, VoidedWhy};
+        const REKEYED_SHOWN: usize = 64;
+        match &a.outcome {
+            ActivationOutcome::Activated { rekeyed } => ActivationNote::Activated {
+                frame: a.frame.0,
+                rekeyed: rekeyed.iter().take(REKEYED_SHOWN).map(|o| (*o).into()).collect(),
+                more: rekeyed.len().saturating_sub(REKEYED_SHOWN) as u32,
+            },
+            ActivationOutcome::Voided { why, objects, more, failed } => ActivationNote::Voided {
+                frame: a.frame.0,
+                why: match why {
+                    VoidedWhy::Unattested => VoidWhy::Unattested,
+                    VoidedWhy::RekeyBlockedAtActivation => VoidWhy::RekeyBlocked,
+                    VoidedWhy::RekeyTooLarge => VoidWhy::RekeyTooLarge,
+                    VoidedWhy::AuthorRevokedAtActivation => VoidWhy::AuthorRevoked,
+                    VoidedWhy::QuorumUnreachable => VoidWhy::QuorumUnreachable,
+                },
+                failed: failed
+                    .iter()
+                    .map(|(k, r)| BuildFailedBy {
+                        member: MemberBrief {
+                            member: (*k).into(),
+                            name: self.src.member_name((*k).into()).unwrap_or_default(),
+                        },
+                        reason: r.name().to_string(),
+                    })
+                    .collect(),
+                // Already capped by pe-world (REKEY_BLOCKED_NAMED, 16, with `more`): no second cap here.
+                blocked: objects.iter().map(|o| (*o).into()).collect(),
+                more: *more,
+            },
+        }
+    }
+
+    /// The machine's build service, which pe-app starts before it creates the ports (api.md 7.1).
+    pub fn with_builds(mut self, b: Arc<dyn Builds>) -> Self {
+        self.builds = Some(b);
+        self
+    }
+
+    /// `code_check` (api.md 7, 7.1): builds and validates one script's source as its author's machine would for a
+    /// commit, through the build port, and changes nothing. It takes a token from the caller's bucket, as a build
+    /// is the costliest call [I].
+    pub fn code_check(&self, c: &Caller, r: &CodeCheck, deadline: Instant) -> Result<Diagnostics, ApiError> {
+        if !c.scopes.contains(&Scope::Edit) {
+            return Err(forbidden("check code"));
+        }
+        let Some(b) = &self.builds else {
+            return Err(ApiError::new(
+                ErrorCode::Unavailable,
+                "This machine has no build service, so code can't be checked here.",
+            ));
+        };
+        let archive =
+            archive_of(&r.source).map_err(|e| ApiError::arg("source", format!("The source can't be packed: {e}.")))?;
+        self.take_rate(c)?;
+        match b.build(&archive, deadline) {
+            Ok(built) => Ok(diagnostics_of(&built)),
+            Err(BuildRefused::Failed(d)) => Ok(refusal_diagnostics(d)),
+            Err(BuildRefused::Margin { which, measured }) => {
+                Ok(refusal_diagnostics(vec![margin_diagnostic(which, measured)]))
+            }
+            Err(BuildRefused::Timeout) => Err(ApiError::new(
+                ErrorCode::Timeout,
+                "The build waited too long behind other builds; try again (a build that started finishes and is kept).",
+            )),
+            Err(BuildRefused::Unavailable(why)) => {
+                Err(ApiError::new(ErrorCode::Unavailable, format!("The build service can't build now: {why}.")))
+            }
+        }
+    }
+
     pub fn held(&self, c: &Caller, handle: &str, action: HeldAction) -> Result<Vec<Outcome>, ApiError> {
         if !c.scopes.contains(&Scope::Edit) {
             return Err(forbidden("change the world"));
@@ -1013,12 +1105,8 @@ impl<S: WorldSource + 'static> pe_seams::world_api::WorldApi for Api<S> {
     ) -> Result<pe_seams::world_api::Capture, ApiError> {
         Err(ApiError::new(ErrorCode::CaptureUnavailable, "view_capture isn't available on this machine yet."))
     }
-    fn code_check(
-        &self,
-        _c: &Caller,
-        _r: &pe_seams::world_api::CodeCheck,
-    ) -> Result<pe_seams::world_api::Diagnostics, ApiError> {
-        Err(ApiError::new(ErrorCode::InvalidArgument, "The logic check isn't available yet."))
+    fn code_check(&self, c: &Caller, r: &CodeCheck) -> Result<Diagnostics, ApiError> {
+        Api::code_check(self, c, r, Instant::now() + CODE_CHECK_WAIT)
     }
     fn held(&self, c: &Caller, handle: &str, action: HeldAction) -> Result<Vec<Outcome>, ApiError> {
         Api::held(self, c, handle, action)
@@ -1031,6 +1119,12 @@ enum Said {
     Mine(Box<Outcome>),
     Session(SessionEvent),
 }
+
+/// How long `code_check` waits for its build in the queue [I]; the build itself, once started, finishes. 30 s plus a
+/// build inside the 15 s margin stays under the 60 s request timeout common MCP clients default to, and a retry is
+/// cheap because a started build is kept (@design-reviewer). pe-mcp runs each call on tokio's blocking
+/// pool, so a waiting check holds no other tool call.
+const CODE_CHECK_WAIT: Duration = Duration::from_secs(30);
 
 /// `watch`'s items per call: the default and the most (api.md 5.4 [I]).
 const WATCH_LIMIT: u32 = 100;
@@ -1258,6 +1352,71 @@ mod tests {
         more(&mut w);
         w.set_frame(CoreFrame(4));
         Api::new(Src(w.snapshot(CoreFrame(4))), Arc::new(EditQueue::new(2, || {})), Arc::new(ChangeLog::new()))
+    }
+
+    /// A build service that answers what it was given, and counts its builds.
+    struct FakeBuilds(Mutex<Vec<Result<crate::builds::Built, BuildRefused>>>, std::sync::atomic::AtomicUsize);
+    impl Builds for FakeBuilds {
+        fn build(&self, archive: &[u8], _deadline: Instant) -> Result<crate::builds::Built, BuildRefused> {
+            let files = pe_world::script::source_files(archive).expect("an archive pe-world reads");
+            assert_eq!(files.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec!["src/lib.rs"]);
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.0.lock().unwrap().remove(0)
+        }
+    }
+
+    #[test]
+    fn code_check_goes_through_the_build_port() {
+        use crate::builds::{Built, Margin};
+        use pe_seams::world_api::DiagnosticKind;
+        let check = CodeCheck { source: "pub fn f() {}".into() };
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        // No build service: unavailable; read-only callers: forbidden.
+        assert_eq!(api().code_check(&c, &check, Instant::now()).unwrap_err().code, ErrorCode::Unavailable);
+        let built = Built {
+            module: pe_core::Hash([3; 32]),
+            toolchain: pe_core::Hash([1; 32]),
+            sdk: pe_core::Hash([2; 32]),
+            components: vec![],
+            systems: vec!["pulse".into()],
+            warnings: vec![],
+            build_ms: 812,
+            peak_bytes: None,
+        };
+        let rustc = pe_seams::world_api::Diagnostic {
+            kind: DiagnosticKind::Rustc,
+            severity: pe_seams::world_api::Severity::Error,
+            message: "expected `;`".into(),
+            file: Some("src/lib.rs".into()),
+            line: Some(1),
+            column: Some(9),
+            code: None,
+        };
+        let b = Arc::new(FakeBuilds(
+            Mutex::new(vec![
+                Ok(built),
+                Err(BuildRefused::Failed(vec![rustc.clone()])),
+                Err(BuildRefused::Margin { which: Margin::Time, measured: 15_400 }),
+                Err(BuildRefused::Timeout),
+            ]),
+            Default::default(),
+        ));
+        let a = api().with_builds(b.clone());
+        assert_eq!(
+            a.code_check(&caller(&[Scope::Read]), &check, Instant::now()).unwrap_err().code,
+            ErrorCode::Forbidden
+        );
+        let d = a.code_check(&c, &check, Instant::now()).unwrap();
+        assert!(d.ok);
+        assert_eq!((d.module, d.systems, d.build_ms), (Some("03".repeat(32)), vec!["pulse".to_string()], Some(812)));
+        let d = a.code_check(&c, &check, Instant::now()).unwrap();
+        assert_eq!((d.ok, d.diagnostics), (false, vec![rustc]));
+        // A margin is named as such, never as a compile error.
+        let d = a.code_check(&c, &check, Instant::now()).unwrap();
+        assert_eq!((d.ok, d.diagnostics[0].kind), (false, DiagnosticKind::Margin));
+        assert!(d.diagnostics[0].message.contains("15.4 s"), "{}", d.diagnostics[0].message);
+        assert_eq!(a.code_check(&c, &check, Instant::now()).unwrap_err().code, ErrorCode::Timeout);
+        assert_eq!(b.1.load(std::sync::atomic::Ordering::SeqCst), 4, "a forbidden call builds nothing");
     }
 
     fn caller(scopes: &[Scope]) -> Caller {
@@ -1729,6 +1888,40 @@ mod tests {
         let e = a.watch(&c, &Filter { final_only: true, ..f.clone() }, None, Duration::ZERO);
         assert_eq!(e.unwrap_err().field.as_deref(), Some("final_only"));
         assert_eq!(a.watch(&caller(&[]), &f, None, Duration::ZERO).unwrap_err().code, ErrorCode::Forbidden);
+    }
+
+    #[test]
+    fn a_code_change_reports_its_versions_void_with_who_could_not_build_it() {
+        use pe_seams::world_api::{ActivationNote, VoidWhy};
+        use pe_seams::{Activation, ActivationKey, ActivationOutcome, BuildFailure, VoidedWhy};
+        let a = api();
+        let c = caller(&[Scope::Read]);
+        let commit = EntryRef(pe_core::Hash([7; 32]));
+        let f = Filter { of: vec![TxId::from(commit)], ..Filter::default() };
+        let start = a.watch(&c, &f, None, Duration::ZERO).unwrap().cursor;
+        let bob = pe_core::MemberKey([2; 32]);
+        a.log.activations(
+            &[Activation {
+                key: ActivationKey { asset: [1; 32], version: pe_seams::Version { entry: commit, op: 0 } },
+                frame: CoreFrame(5),
+                outcome: ActivationOutcome::Voided {
+                    why: VoidedWhy::QuorumUnreachable,
+                    objects: vec![],
+                    more: 0,
+                    failed: vec![(bob, BuildFailure::Compile)],
+                },
+            }],
+            &[],
+        );
+        a.log.record(&[], Some(9));
+        let w = a.watch(&c, &f, Some(&start), Duration::ZERO).unwrap();
+        let o = w.mine.iter().find(|o| o.change == Some(TxId::from(commit))).expect("told");
+        assert_eq!((o.status, o.is_final), (Status::Final, true));
+        let Some(ActivationNote::Voided { frame: 5, why: VoidWhy::QuorumUnreachable, failed, .. }) = &o.activation
+        else {
+            panic!("{:?}", o.activation)
+        };
+        assert_eq!((failed[0].member.member, failed[0].reason.as_str()), (bob.into(), "compile error"));
     }
 
     #[test]
