@@ -29,7 +29,7 @@ py=${PE_PYTHON:-}; [ -n "$py" ] || { if [ "$win" = 1 ]; then py=python; else py=
 wrap=(); if [ -n "${PE_GATE_WRAP:-}" ]; then eval "wrap=($PE_GATE_WRAP)"; fi
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap '[ -z "${spid:-}" ] || kill "$spid" 2> /dev/null; rm -rf "$tmp"' EXIT
 git clone -q --shared --no-checkout "$common" "$tmp/repo" || die "clone failed"
 R="$tmp/repo"
 g() { git -C "$R" -c user.name="gate test" -c user.email="gate-test@example.invalid" -c core.hooksPath=/dev/null "$@"; }
@@ -323,20 +323,43 @@ BASE=$fbase expect feature-policy-own-deleted fail "this landing deletes scripts
   "^gate: native audit PASS" "^gate: FAIL"
 
 # 25. Tier 2's state (C7), with files standing in for GitHub's answers (PE_CI_RUNS_URL). First scripts/ci_status.py
-#     on its own: it looks past a cancelled run, counts no pull request's run (a fork's own branch may be called
-#     main), says an answer it can't read is unreadable (3), never exits 1 (red) on a malformed one (4), and names
-#     each red run once for the triage watchdog. Then the gate: with pe.gate.tier2 on, a red run fails it until
+#     on its own: it judges a run by its jobs (coordinator), so a cancelled run with a failed job, or
+#     with a job that started and was stopped, is red; a run with a platform GitHub never gave a runner has no
+#     verdict, whatever its own conclusion, and so has a run cancelled before any job started: the check looks past
+#     both, judging 5 runs at most before it calls the state unknown (3). It counts no pull request's run (a fork's
+#     own branch may be called main), says an answer it can't read is unreadable (3), and never exits 1 (red) on a
+#     malformed one (4). For the triage watchdog it names each red
+#     run once, with the commits a platform back from runs without a runner left unverified, and reports a platform
+#     with no real verdict for 3 runs in a row or for 24 h, once. scripts/tier2_digests.py compares the platforms
+#     that ran and notes the one that didn't, and scripts/tier2.sh's annotation of a failed step carries a failed
+#     test's panic and what a failed linker said. Then the gate: with pe.gate.tier2 on, a red run fails it until
 #     scripts/tier2_explained.txt names the run; with note, it is only reported; a malformed answer, and an answer
 #     that never finishes, don't block it (the hook runs this step while git holds main's locks, so the check gives
 #     up after 20 s in all); and an unknown mode is an error.
 export PE_CI_REPO=example/tier2-fixture
 fx="$tmp/fixture"; mkdir -p "$fx"; fxw=$fx; [ "$win" = 1 ] && fxw=$(cygpath -m "$fx")
 fxu="file:///${fxw#/}"
-printf '{"jobs":[{"name":"tier 2, macos-arm64","conclusion":"failure"},{"name":"gate","conclusion":"success"}]}' > "$fx/jobs.json"
-run_json() {  # id, conclusion, [event, [head repository]]: one run as GitHub lists it
-  printf '{"id":%s,"conclusion":"%s","head_sha":"0123456789abcdef","html_url":"https://example.invalid/%s","created_at":"2026-11-17T00:00:00Z","event":"%s","head_branch":"main","head_repository":{"full_name":"%s"},"jobs_url":"%s/jobs.json"}' \
-    "$1" "$2" "$1" "${3:-push}" "${4:-$PE_CI_REPO}" "$fxu"
+jobs_json() {  # run id, then one "name|conclusion|started" per job (started: 1 if GitHub gave it a runner)
+  local id=$1 t n c out="" sep=""; shift
+  for t in "$@"; do
+    n=${t%%|*}; t=${t#*|}; c=${t%%|*}
+    if [ "${t#*|}" = 1 ]; then out="$out$sep{\"name\":\"$n\",\"conclusion\":\"$c\",\"runner_name\":\"GitHub Actions 1\",\"steps\":[{\"name\":\"Run\",\"conclusion\":\"$c\"}]}"
+    else out="$out$sep{\"name\":\"$n\",\"conclusion\":\"$c\",\"runner_name\":\"\",\"steps\":[]}"; fi
+    sep=","
+  done
+  printf '{"total_count":%s,"jobs":[%s]}' "$#" "$out" > "$fx/jobs-$id.json"
 }
+run_json() {  # id, conclusion, [event, [head repository, [created at]]]: one run as GitHub lists it
+  printf '{"id":%s,"conclusion":"%s","head_sha":"%sabcdef0123456789","html_url":"https://example.invalid/%s","created_at":"%s","event":"%s","head_branch":"main","head_repository":{"full_name":"%s"},"jobs_url":"%s/jobs-%s.json"}' \
+    "$1" "$2" "$1" "$1" "${5:-2026-11-17T00:00:00Z}" "${3:-push}" "${4:-$PE_CI_REPO}" "$fxu" "$1"
+}
+jobs_json 424242 "tier 2, macos-arm64|failure|1" "native audit and secret scan|success|1"
+jobs_json 424243; jobs_json 424245  # cancelled while waiting: no job started
+jobs_json 424244 "tier 2, macos-arm64|success|1" "native audit and secret scan|success|1"
+jobs_json 424250 "tier 2, linux-x64|failure|1" "tier 2, macos-arm64|cancelled|0"
+jobs_json 424251 "tier 2, windows-x64|cancelled|1" "tier 2, linux-x64|success|1"
+jobs_json 424252 "tier 2, macos-arm64|cancelled|0" "tier 2, linux-x64|success|1"
+jobs_json 424253 "tier 2, macos-arm64|cancelled|0" "tier 2, linux-x64|success|1" "tier 2, the same digests on all four|success|1"
 printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424243 cancelled)" "$(run_json 424242 failure)" > "$fx/red.json"
 printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424245 cancelled)" "$(run_json 424244 success schedule)" > "$fx/green.json"
 # A fork's pull request from its own branch called main: green above main's red push, then red above main's green.
@@ -363,6 +386,28 @@ ci ci-fork-green-hides-no-red fork-green.json 1 "^ci_status: tier 2 RED: run 424
 ci ci-fork-red-blocks-nothing fork-red.json 0 "^ci_status: tier 2 green: run 424244 on"
 ci ci-unreadable missing.json 3 "^ci_status: GitHub can't be read"
 ci ci-malformed malformed.json 4 "^ci_status: failed: "
+# Judged by its jobs: a cancelled run with a failed job is red, and the job never given a runner isn't named; a job
+# that started and was cancelled (stopped at its time limit, or by hand) is red; a platform never given a runner
+# leaves the run with no verdict, even when GitHub calls the run a failure.
+printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424250 cancelled)" "$(run_json 424244 success)" > "$fx/cancelled-red.json"
+printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424251 cancelled)" "$(run_json 424244 success)" > "$fx/stopped.json"
+printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424252 success)" "$(run_json 424242 failure)" > "$fx/not-run.json"
+printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424253 failure)" "$(run_json 424244 success)" > "$fx/not-run-failure.json"
+ci ci-cancelled-run-with-a-failed-job-is-red cancelled-red.json 1 \
+  "^ci_status: tier 2 RED: run 424250 \(cancelled\) on 424250abcd, jobs tier 2, linux-x64: https://example\.invalid/424250$"
+ci ci-started-then-cancelled-is-red stopped.json 1 "^ci_status: tier 2 RED: run 424251 \(cancelled\) .*jobs tier 2, windows-x64: "
+ci ci-not-run-gives-no-verdict not-run.json 1 \
+  "^ci_status: tier 2 RED: run 424242 \(failure\) .*\(past 1 run\(s\) with no verdict; not run: macos-arm64 in run 424252\)$"
+ci ci-not-run-even-in-a-failure not-run-failure.json 0 \
+  "^ci_status: tier 2 green: run 424244 on 424244abcd \(past 1 run\(s\) with no verdict; not run: macos-arm64 in run 424253\)$"
+# Each judged run costs an API call (60 an hour), so --check judges 5 at most: six runs that macos-arm64 missed,
+# before a red one, leave tier 2's state unknown (3), and the gate passes with a NOTE (chunks-reviewer's L1).
+gap=""; for i in 424285 424284 424283 424282 424281 424280; do
+  jobs_json $i "tier 2, macos-arm64|cancelled|0" "tier 2, linux-x64|success|1"; gap="$gap$(run_json $i success),"
+done
+printf '{"workflow_runs":[%s%s]}\n' "$gap" "$(run_json 424242 failure)" > "$fx/long-gap.json"
+ci ci-judges-5-runs-at-most long-gap.json 3 \
+  "^ci_status: no verdict in the 5 newest runs judged \(not run: macos-arm64 in run 424285; .*; macos-arm64 in run 424281\); older runs not read$"
 PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --new "$tmp/t2state" > "$tmp/new1.log" 2>&1; r1=$?
 PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --new "$tmp/t2state" > "$tmp/new2.log" 2>&1; r2=$?
 if [ "$r1$r2" = 00 ] && [ "$(cat "$tmp/new1.log")" = "TIER2 RED 424242 failure https://example.invalid/424242 jobs: tier 2, macos-arm64" ] \
@@ -370,6 +415,145 @@ if [ "$r1$r2" = 00 ] && [ "$(cat "$tmp/new1.log")" = "TIER2 RED 424242 failure h
   pass=$((pass + 1)); echo "test_gate: ok   ci-new-names-a-red-run-once"
 else
   bad=$((bad + 1)); echo "test_gate: BAD  ci-new-names-a-red-run-once (exits $r1 $r2)"; sed 's/^/    /' "$tmp/new1.log" "$tmp/new2.log"
+fi
+# The watchdog's record of each platform: macos-arm64 never given a runner in 3 runs in a row, and never verified,
+# is reported once. Verified in 424270, then without a runner in 424271: reported 24 h after 424270, not at 23.5 h;
+# and when it is back in the red run 424272, that run's line names the commits it left unverified.
+for i in 424260 424261 424262 424271; do jobs_json $i "tier 2, macos-arm64|cancelled|0" "tier 2, linux-x64|success|1"; done
+jobs_json 424270 "tier 2, macos-arm64|success|1" "tier 2, linux-x64|success|1"
+jobs_json 424272 "tier 2, macos-arm64|failure|1" "tier 2, linux-x64|success|1"
+printf '{"workflow_runs":[%s,%s,%s]}\n' "$(run_json 424262 success)" "$(run_json 424261 success)" \
+  "$(run_json 424260 success)" > "$fx/misses3.json"
+r70=$(run_json 424270 success push "$PE_CI_REPO" 2026-11-17T00:00:00Z)
+r71=$(run_json 424271 success push "$PE_CI_REPO" 2026-11-17T20:00:00Z)
+r72=$(run_json 424272 failure push "$PE_CI_REPO" 2026-11-18T01:00:00Z)
+printf '{"workflow_runs":[%s]}\n' "$r70" > "$fx/day1.json"
+printf '{"workflow_runs":[%s,%s]}\n' "$r71" "$r70" > "$fx/day2.json"
+printf '{"workflow_runs":[%s,%s,%s]}\n' "$r72" "$r71" "$r70" > "$fx/day3.json"
+nw() {  # listing, state file, the time: one --new call; appends "<exit>: <output>" to $tmp/<state file>.out
+  local o
+  o=$(PE_CI_RUNS_URL="$fxu/$1" PE_CI_NOW=$3 "$py" -I "$tmp/ci_status.py" --new "$tmp/$2" 2>&1)
+  printf '%s: %s\n' "$?" "$o" >> "$tmp/$2.out"
+}
+nwant() {  # check name, state file, wanted lines of $tmp/<state file>.out
+  local name=$1 f=$2; shift 2
+  if [ "$(cat "$tmp/$f.out")" = "$(printf '%s\n' "$@")" ]; then
+    pass=$((pass + 1)); echo "test_gate: ok   $name"
+  else
+    bad=$((bad + 1)); echo "test_gate: BAD  $name"; printf '    want: %s\n' "$@"; sed 's/^/    got:  /' "$tmp/$f.out"
+  fi
+}
+nw misses3.json s3 2026-11-17T03:00:00Z; nw misses3.json s3 2026-11-17T04:00:00Z
+nwant ci-new-stale-after-3-runs-once s3 \
+  "0: TIER2 STALE macos-arm64 unverified since tier 2 began (no real verdict yet): 3 run(s) in a row without a runner, 3 h without a real verdict" \
+  "0: "
+nw day1.json s24 2026-11-17T00:10:00Z; nw day2.json s24 2026-11-17T23:30:00Z; nw day2.json s24 2026-11-18T00:30:00Z
+nw day3.json s24 2026-11-18T01:30:00Z
+nwant ci-new-stale-after-24-h-and-the-range-when-back s24 "0: " "0: " \
+  "0: TIER2 STALE macos-arm64 unverified since 424270abcd: 1 run(s) in a row without a runner, 24 h without a real verdict" \
+  "0: TIER2 RED 424272 failure https://example.invalid/424272 jobs: tier 2, macos-arm64; macos-arm64 unverified since 424270abcd, up to 424272abcd"
+# scripts/tier2_digests.py: a platform with no folder (no output kept) is noted and not compared, and if it is the
+# reference, the first that ran stands in; a folder without digests, or a line that differs, fails.
+git -C "$R" show "$sha:scripts/tier2_digests.py" > "$tmp/tier2_digests.py" || die "$rev has no scripts/tier2_digests.py"
+dg="$tmp/digests"
+for p in a/tier2-windows-x64 a/tier2-linux-x64 a/tier2-linux-arm64 c/tier2-linux-x64; do
+  mkdir -p "$dg/$p/digests"; printf 'RESULT a 1\nRESULT b 2\n' > "$dg/$p/digests/debug.txt"
+  printf 'RESULT c 3\n' > "$dg/$p/digests/release.txt"
+done
+printf 'RESULT c 4\n' > "$dg/c/tier2-linux-x64/digests/release.txt"
+mkdir -p "$dg/b/tier2-macos-arm64"
+dgc() {  # name, wanted exit, a regex some line must match, a regex the last line must match, then the folders
+  local name=$1 want=$2 re=$3 last=$4 rc; shift 4
+  "$py" -I "$tmp/tier2_digests.py" "$@" > "$tmp/$name.log" 2>&1; rc=$?
+  if [ "$rc" = "$want" ] && grep -Eq -- "$re" "$tmp/$name.log" && tail -1 "$tmp/$name.log" | grep -Eq -- "$last"; then
+    pass=$((pass + 1)); echo "test_gate: ok   $name (tier2_digests exit $rc)"
+  else
+    bad=$((bad + 1)); echo "test_gate: BAD  $name (tier2_digests exit $rc, wanted $want, /$re/, /$last/)"
+    sed 's/^/    /' "$tmp/$name.log"
+  fi
+}
+dgc digests-not-run-is-noted 0 "^tier2_digests: macos-arm64: not run \(no output kept\); not compared$" \
+  "^tier2_digests: PASS: windows-x64, linux-x64, linux-arm64 have the same digests$" \
+  "$dg/a/tier2-windows-x64" "$dg/a/tier2-linux-x64" "$dg/a/tier2-linux-arm64" "$dg/none/tier2-macos-arm64"
+dgc digests-reference-not-run 0 "^tier2_digests: windows-x64 didn't run; linux-x64 is the reference$" \
+  "^tier2_digests: PASS: linux-x64, linux-arm64 have the same digests$" \
+  "$dg/none/tier2-windows-x64" "$dg/a/tier2-linux-x64" "$dg/a/tier2-linux-arm64"
+dgc digests-folder-without-digests-fails 1 "^tier2_digests: DIFFERENT: release, macos-arm64: no digests" \
+  "^tier2_digests: FAIL: 2 difference" "$dg/a/tier2-windows-x64" "$dg/b/tier2-macos-arm64"
+dgc digests-a-differing-line-fails 1 "^  linux-x64: RESULT c 4$" "^tier2_digests: FAIL: 1 difference" \
+  "$dg/a/tier2-windows-x64" "$dg/c/tier2-linux-x64"
+# scripts/tier2.sh's annotation of a failed step, which is all of a hosted failure the public API shows: a failed
+# test's panic, never a should_panic test's own nor a failed test's other output; and what a failed linker said,
+# each line once, without its command line or the note that arguments were omitted.
+git -C "$R" show "$sha:scripts/tier2.sh" > "$tmp/tier2.sh" || die "$rev has no scripts/tier2.sh"
+cat > "$tmp/t2-tests.log" << 'EOF'
+running 2 tests
+test tests::a_panics_on_purpose - should panic ... ok
+test tests::b_fails ... FAILED
+
+successes:
+
+---- tests::a_panics_on_purpose stdout ----
+
+thread 'tests::a_panics_on_purpose' (1) panicked at src/lib.rs:10:9:
+on purpose
+
+successes:
+    tests::a_panics_on_purpose
+
+failures:
+
+---- tests::b_fails stdout ----
+some output first
+
+thread 'tests::b_fails' (2) panicked at src/lib.rs:15:9:
+assertion `left == right` failed
+  left: 1
+ right: 2
+
+failures:
+    tests::b_fails
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
+EOF
+cat > "$tmp/t2-link.log" << 'EOF'
+error: linking with `rust-lld` failed: signal: 6 (SIGABRT)
+  |
+  = note: "rust-lld" "-flavor" "wasm" "-o" "script.wasm"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: rust-lld: error: out of memory
+          libc++abi: terminating
+
+error: could not compile `script` (lib) due to 1 previous error
+error: linking with `rust-lld` failed: signal: 6 (SIGABRT)
+  |
+  = note: "rust-lld" "-flavor" "wasm" "-o" "script.wasm"
+  = note: rust-lld: error: out of memory
+          libc++abi: terminating
+
+error: could not compile `script` (lib) due to 1 previous error
+EOF
+ann() {  # log: the annotation tier2.sh writes for a step that failed with it, one decoded line per line
+  ( cr=$(printf '\r'); where=fixture; eval "$(sed -n '/^annotate() {/,/^}/p' "$tmp/tier2.sh")"
+    GITHUB_ACTIONS=true annotate step 101 "$1" ) | sed 's/%0A/\n/g; s/%25/%/g'
+}
+ann "$tmp/t2-tests.log" > "$tmp/ann-tests.txt"; ann "$tmp/t2-link.log" > "$tmp/ann-link.txt"
+n_of() { grep -c -F -x -- "$2" "$tmp/$1"; }  # file, line: how many lines are exactly that
+if [ "$(n_of ann-tests.txt 'assertion `left == right` failed')" = 1 ] && [ "$(n_of ann-tests.txt ' right: 2')" = 1 ] \
+  && [ "$(n_of ann-tests.txt 'test tests::b_fails ... FAILED')" = 1 ] && ! grep -qE "on purpose|some output first" "$tmp/ann-tests.txt"; then
+  pass=$((pass + 1)); echo "test_gate: ok   tier2-annotation-has-the-failed-tests-panic"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  tier2-annotation-has-the-failed-tests-panic"; sed 's/^/    /' "$tmp/ann-tests.txt"
+fi
+if [ "$(n_of ann-link.txt 'linker: rust-lld: error: out of memory')" = 1 ] \
+  && [ "$(n_of ann-link.txt 'linker: libc++abi: terminating')" = 1 ] \
+  && [ "$(n_of ann-link.txt 'error: linking with `rust-lld` failed: signal: 6 (SIGABRT)')" = 1 ] \
+  && ! grep -qE -- "-flavor|arguments are omitted" "$tmp/ann-link.txt"; then
+  pass=$((pass + 1)); echo "test_gate: ok   tier2-annotation-has-what-the-linker-said"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  tier2-annotation-has-what-the-linker-said"; sed 's/^/    /' "$tmp/ann-link.txt"
 fi
 export PE_GATE_TIER2=on PE_CI_RUNS_URL="$fxu/red.json"
 new_case; echo "tier 2 test" >> "$R/README.md"; commit -m "a change while tier 2 is red"
@@ -381,8 +565,10 @@ new_case; echo "tier 2 test" >> "$R/README.md"; commit -m "a change while tier 2
 PE_GATE_TIER2=note expect tier2-note pass "^gate: NOTE: tier 2 RED: run 424242" "not blocking yet: pe\.gate\.tier2 is note" "^gate: PASS"
 PE_CI_RUNS_URL="$fxu/malformed.json" expect tier2-malformed pass "^gate: NOTE: tier 2's check failed \(exit 4" "^gate: PASS"
 PE_GATE_TIER2=maybe expect tier2-unknown-mode error "pe\.gate\.tier2 \(or PE_GATE_TIER2\) is 'maybe'; it must be on, note or off"
-# A server that answers with a status line and then one header byte a second, for two minutes: a socket's own
-# time-out never fires, so only the check's 20 s limit can end the call.
+# A server that answers with a status line and then one header byte a second: a socket's own time-out never fires,
+# so only the check's 20 s limit can end the call. It serves until the check is over (15 minutes at most; the exit
+# trap stops it too), since the gate reaches step 5 only after its scans and audit: on a loaded machine that took
+# over the 2 minutes it used to live, and the check found nothing listening (2026-11-17).
 cat > "$tmp/stall.py" << 'PYEOF'
 import socket, sys, time
 end = time.time() + float(sys.argv[2])
@@ -406,12 +592,12 @@ while time.time() < end:
         except OSError:
             held.remove(c)
 PYEOF
-"$py" -I "$tmp/stall.py" "$tmp/stall.port" 120 > "$tmp/stall.log" 2>&1 & spid=$!
+"$py" -I "$tmp/stall.py" "$tmp/stall.port" 900 > "$tmp/stall.log" 2>&1 & spid=$!
 for _ in $(seq 100); do [ -s "$tmp/stall.port" ] && break; sleep 0.1; done
 [ -s "$tmp/stall.port" ] || die "the stalling server didn't start: $(cat "$tmp/stall.log")"
 PE_CI_RUNS_URL="http://127.0.0.1:$(cat "$tmp/stall.port")/runs" expect tier2-stalled-answer-cut-at-20-s pass \
   "^gate: NOTE: tier 2's state is unknown \(GitHub can't be read: no answer within 20 s; (19|2[0-9]) s\); not blocking" "^gate: PASS"
-kill "$spid" 2> /dev/null; wait "$spid" 2> /dev/null
+kill "$spid" 2> /dev/null; wait "$spid" 2> /dev/null; spid=
 unset PE_GATE_TIER2 PE_CI_RUNS_URL PE_CI_REPO
 
 # 26. The hook, through its trampoline: refuses a merge into main that fails, leaves main where it was, refuses

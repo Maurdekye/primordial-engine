@@ -15,8 +15,9 @@
 # set): neither changes what the code computes, and the target folder is a fraction of the size.
 # A RESULT line is a contract (coordinator): a test prints one only for a value that must be the same
 # on every platform, never a timing or anything that depends on the machine.
-# On GitHub Actions each failed step is also written as an error annotation that names its failing tests and errors,
-# since GitHub's public API serves annotations (scripts/ci_status.py --run reads them) and logs need a login.
+# On GitHub Actions each failed step is also written as an error annotation that names its failing tests, with their
+# panic messages, and its errors, with what a failed linker said, since GitHub's public API serves annotations
+# (scripts/ci_status.py --run reads them) and logs need a login.
 # Exit 0 if every step passes, 1 if one fails, 2 on an error.
 set -u
 die() { echo "tier2: ERROR: $*" >&2; exit 2; }
@@ -38,11 +39,40 @@ annotate() {  # step name, exit code, log: the failed step, with its failing tes
   # annotation (GitHub keeps 10 per workflow step, and this script is one step). Its lines are joined with %0A, the
   # escaped newline; a property's value may hold no comma or colon unescaped, so the title has neither.
   [ "${GITHUB_ACTIONS:-}" = true ] || return 0
-  local lines
-  # Failing tests by name, and errors with their place. Not "---- <test> stdout ----" or "panicked at": with
-  # --show-output a passing test's output has the same header, and a should_panic test panics on purpose.
-  lines=$(grep -E "^test .* FAILED$|^error(\[[A-Za-z0-9_]+\])?:|^ +--> " "$3" | tr -d "$cr" |
-    head -40 | sed 's/%/%25/g' | awk '{ printf "%s%%0A", $0 }')
+  local lines panics linker
+  # Failing tests by name, and errors with their place, each line once: an error that many tests hit (a crate that
+  # can't be built) would otherwise fill the annotation.
+  lines=$(grep -E "^test .* FAILED$|^error(\[[A-Za-z0-9_]+\])?:|^ +--> " "$3" | tr -d "$cr" | awk '!seen[$0]++' |
+    head -40)
+  # Then each failing test's panic or error, from libtest's "failures:" section: it opens with "failures:", holds
+  # a "---- <test> stdout ----" block for each failed test, and closes with a second "failures:" over their names.
+  # A passing test's output (--show-output) comes under "successes:" instead, so a should_panic test's panic, which
+  # is on purpose, stays out. A test's own output may come before its panic, so the panic is looked for.
+  panics=$(tr -d "$cr" < "$3" | awk '
+    /^running [0-9]+ tests?$/ || /^test result: / { inf = 0; next }
+    /^failures:$/ { inf = !inf; next }
+    !inf { next }
+    /^---- .* stdout ----$/ { print; k = 0; next }
+    /^thread .* panicked at / || /^Error: / { print; k = 6; next }
+    k > 0 && NF { print; k-- }' | head -40)
+  # And what a linker that failed said. rustc gives it in the "= note:" lines after "error: linking with ...
+  # failed", continued on lines indented by ten spaces. Two notes are left out: the linker's whole command line
+  # (it starts with a quote, or on Linux with an environment assignment) and the one saying arguments were omitted.
+  # Each line once, at most 300 characters.
+  linker=$(tr -d "$cr" < "$3" | awk '
+    /^error: linking with .* failed/ { lk = 1; skip = 0; next }
+    !lk { next }
+    /^  = note: / {
+      s = substr($0, 11)
+      skip = (s ~ /^"/ || s ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || s ~ /^some arguments are omitted/)
+      if (!skip) print "linker: " s
+      next
+    }
+    /^          [^ ]/ { if (!skip) print "linker: " substr($0, 11); next }
+    /^ *$/ || /^  \|/ { next }
+    { lk = 0 }' | awk '!seen[$0]++' | cut -c1-300 | head -20)
+  lines=$(printf '%s\n%s\n%s\n' "$lines" "$panics" "$linker" | sed '/^$/d' | sed 's/%/%25/g' |
+    awk '{ printf "%s%%0A", $0 }')
   echo "::error title=tier 2 $where $1::the step failed (exit $2)%0A$lines"
 }
 

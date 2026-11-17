@@ -139,7 +139,7 @@ and are never built. The secret scan of the whole history finds nothing.
   * Tier 2's jobs, on four platforms (below, "Tier 2: the hosted platforms").
 * **The self-test,** `bash scripts/test_gate.sh`, takes about 50 minutes. Its cargo calls are `cargo metadata` and
   `cargo tree`, which build nothing, so it runs without a build slot, under the hook's idle-priority wrapper in
-  `PE_GATE_WRAP` (coordinator). In a throwaway clone it runs the gate as the hook does, in 56
+  `PE_GATE_WRAP` (coordinator). In a throwaway clone it runs the gate as the hook does, in 69
   checks:
   * secrets in eleven ways: in the tree, only in the history, only in a message, behind an inline
     `gitleaks:allow`, a pe-app member key file, under an `export-ignore` path, in a file marked `-diff`, added
@@ -155,10 +155,18 @@ and are never built. The secret scan of the whole history finds nothing.
     own policy doesn't parse (a crate with two `shipped` lines), names a target cargo can't resolve, or is
     broken by its own tree, even where the base's policy allows it, and one that deletes the policy fails;
   * tier 2's state, from files standing in for GitHub: a red run fails the gate with `pe.gate.tier2` on, passes
-    once `scripts/tier2_explained.txt` names it, and is only reported with `note`; a cancelled run is looked past,
-    and a fork's pull request from its own `main` counts for nothing, green or red; an unreadable answer, a
-    malformed one and an unknown mode are each handled as stated below; and a server
-    that never finishes its answer is cut off at 20 s, after which the gate passes with a NOTE;
+    once `scripts/tier2_explained.txt` names it, and is only reported with `note`; a run cancelled before any job
+    started is looked past, and a fork's pull request from its own `main` counts for nothing, green or red; a
+    cancelled run with a failed job, or with a job that started and was cancelled, is red, and a platform never
+    given a runner leaves its run with no verdict, even one GitHub calls a failure, and six such runs in a row
+    leave tier 2's state unknown; an unreadable answer, a malformed one and an unknown mode are each handled as
+    stated below; and a server that never finishes its answer is cut off at 20 s, after which the gate passes
+    with a NOTE. For triage: a red run is named once, with the commits a platform back from runs without a runner
+    left unverified, and a platform with no real verdict for 3 runs in a row, or for 24 h, is reported once. The
+    digest comparison notes a platform that didn't run, lets the first that ran stand in for windows-x64, and
+    fails on a platform without digests or a line that differs. A failed step's annotation carries a failed
+    test's panic but not a should_panic test's, and what a failed linker said, each line once, without its
+    command line;
   * the gate's own code: a landing that changes it is judged by the base's, one that runs its own copy hands
     over, one that adds its own exception has it applied, a committed gitleaks binary is refused, a committed
     cargo configuration isn't applied, the export refuses a symbolic link, a submodule and a case twin, and the
@@ -247,33 +255,49 @@ already landed, and a red run holds up the landings after it (decision C7).
   Windows, so a pass means bit-identical results. The script runs the same way on a developer's machine:
   `bash scripts/tier2.sh <out-folder>`.
 * **The digests.** Each platform keeps the RESULT lines its tests printed, per profile. A final job
-  (`scripts/tier2_digests.py`) requires them to be the same as windows-x64's, line for line.
+  (`scripts/tier2_digests.py`) requires them to be the same as windows-x64's, line for line. A platform that kept
+  nothing didn't run: it is noted and not compared (if windows-x64 didn't run, the first platform that did stands
+  in), and its own job decides what that means for the run (below).
   * **A RESULT line is a contract** (coordinator). A test prints one only for a value that must be the
     same on every platform, never a timing or anything else that depends on the machine.
   * A workstream adds a cross-platform digest by printing a RESULT line from a test (fuel and trap points,
     replica replays, randsched roots). The workflow doesn't change.
-* **Nightly,** the agreement model's fast profile and its bounded n = 4 Byzantine checks (`models/cuts`) run too.
+* **Nightly,** the agreement model's checks run too (`models/cuts`): the fast profile, the bounded n = 4 Byzantine
+  checks and the backoff checks, 25 in all. The model's owner chooses the set.
 * **A red run blocks the next landing** until it is fixed or explained (decision C7). The gate's step 5 reads the
   latest finished run on the public main (`scripts/ci_status.py --check`, from the base). `git config
   pe.gate.tier2` (or `PE_GATE_TIER2`) sets what the gate does with it:
   * `on`: a red run fails the gate, unless `scripts/tier2_explained.txt` lists it. The landing that fixes it, or
     explains it, adds `<run id> -- <reason>` there. It is an allow file, read from the landing, and its reviewer
     approves the line;
-  * `note`: the gate only reports a red run. The main clone stays here until the first four-platform run is
-    green or each of its red jobs is fixed or explained (coordinator);
+  * `note`: the gate only reports a red run. The main clone stays here until every platform has run once and
+    the red jobs of the first four-platform run are fixed and published, or explained (coordinator);
   * `off`, the default: no check. Any other value is an error.
   * Only main's own runs count: a push, the nightly run or a manual dispatch, in the public repository itself.
     A pull request's run never does, not even one from a fork's own branch called `main` (GitHub's branch filter
     matches that too).
-  * A cancelled, skipped or stale run gives no verdict, so the check looks past it to the run before. A burst
-    of pushes cancels the runs still waiting.
+  * **A run's jobs give its verdict** (coordinator). It is red when a job failed or timed out, or
+    started and was then cancelled: GitHub reports a job stopped at its time limit as cancelled, like one
+    cancelled by hand. Failing that, a platform GitHub never gave a runner ("not acquired": it had no capacity,
+    as for macos-arm64 in the first run) is "not run". Its result is unknown, so the run has no verdict, whatever
+    GitHub calls it. So has a run cancelled before any job started (a burst of pushes cancels the runs still
+    waiting), and a skipped or stale one. The check looks past a run with no verdict to the run before, and names
+    the platforms that didn't run. It judges 5 runs at most, since each costs one of the 60 API calls an hour this
+    machine may make. If none of them gives a verdict, tier 2's state is unknown, and the gate says so and passes
+    (chunks-reviewer's L1).
   * The check gives up after 20 s in all, because the hook runs it while git holds main's locks. If GitHub can't
     be read in time, or its answer can't be read, the gate says so and passes.
 * **Triage** is WS-ci's.
-  * A watchdog runs `scripts/ci_status.py --new <state file>`, which names each red run once.
-  * `scripts/ci_status.py --run <id>` lists a red run's failed jobs, with their failing tests and differing
-    digests. The jobs write these as error annotations, because GitHub serves those without a login and logs
-    need one.
+  * A watchdog runs `scripts/ci_status.py --new <state file>` every 30 minutes. It names each red run once. When
+    a platform is back in a red run after runs without a runner, the line adds the commits it left unverified:
+    those since its last real verdict. When a platform has had no real verdict for 24 h or for 3 runs in a row, it
+    reports `<platform> unverified since <sha>` once, and WS-ci passes that to the coordinator. Neither blocks a
+    landing (coordinator).
+  * `scripts/ci_status.py --run <id>` gives a run's verdict and lists the jobs that didn't pass, with their
+    failing tests and each failed test's panic message, what a failed linker said (rustc's notes, without the
+    linker's command line), and any differing digests. A step's errors come once each, however many tests hit
+    them. The jobs write these as error annotations, because GitHub serves those without a login and logs need one
+    (to its admins only).
   * A run's commit is the public one: the publishing step's map leads back to main's.
 
 ## Accepting an exception

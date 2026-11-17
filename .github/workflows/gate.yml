@@ -8,7 +8,7 @@
 #   tests compare goldens, traces and snapshot images with the committed records, so a pass on a platform means
 #   its results are bit-identical with them. A final job then requires the RESULT lines the tests printed to be
 #   the same on all four (scripts/tier2_digests.py; coordinator). Nightly, the agreement model's
-#   fast profile and its bounded n = 4 Byzantine checks run as well.
+#   fast profile, its bounded n = 4 Byzantine checks and its backoff checks run as well.
 # A red run blocks the next landing until it is fixed or explained (decision C7; scripts/gate.sh reads it through
 # scripts/ci_status.py), and WS-ci triages it. The tier-2 jobs write their failures as error annotations, which
 # GitHub's public API serves without a login.
@@ -151,14 +151,17 @@ jobs:
         run: |
           rustup toolchain install 2> /dev/null || rustup show
           rustc --version --verbose && cargo --version
-      # The fast profile (tier 1's model-fast) and the bounded n = 4 Byzantine safety checks, 250-313 s each at
-      # 4 threads on the org's machine (models/cuts/README.md, v0.2). A check over 3,599 s counts as failed.
+      # The fast profile (tier 1's model-fast); the bounded n = 4 Byzantine safety checks, 70-313 s each in
+      # models/cuts/README.md's runs and 164-483 s, at most 2.14 GB, in world-chunks' run at 4 threads on the org's
+      # machine; and the backoff profile of pe-agree's stall fix, about 40 s for its six. The set is world-chunks'. A check over 3,599 s counts as failed. The pass line's count also
+      # catches a misspelt name, which the model skips.
       - name: The model's checks (models/cuts)
         run: |
           cargo run --release --locked --manifest-path models/cuts/Cargo.toml -- n3-chain n3-sig n3-crash \
             n3-chain-live n3-crash-live n4-byz-live n4-crash-live n3-root bound-n3-byz ctl-d1 ctl-unchecked \
-            ctl-quorum ctl-nolock ctl-nosig ctl-noroot ctl-notimeout n4-byz n4-byz-chain n4-root 2>&1 | tee model.log
-          grep -E "^all 19 check\(s\) met their expectation" model.log
+            ctl-quorum ctl-nolock ctl-nosig ctl-noroot ctl-notimeout n4-byz n4-byz-chain n4-root \
+            n2-live-backoff bound-n2-backoff ctl-backoff-reset n2-live-early bound-n2-early ctl-early 2>&1 | tee model.log
+          grep -E "^all 25 check\(s\) met their expectation" model.log
       - name: Name the failures
         if: ${{ failure() }}
         run: |
