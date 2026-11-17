@@ -132,8 +132,8 @@ impl BuildFail {
     fn refused(self, crate_dir: &Path) -> BuildRefused {
         match self {
             BuildFail::Build(e) => match (e.reason(), &e) {
-                (FailReason::Compile, BuildError::Rustc(out)) => {
-                    BuildRefused::Failed(rustc_diagnostics(out, crate_dir))
+                (FailReason::Compile, BuildError::Rustc { text, .. }) => {
+                    BuildRefused::Failed(rustc_diagnostics(text, crate_dir))
                 }
                 (FailReason::Refused, _) => {
                     BuildRefused::Failed(vec![diagnostic(DiagnosticKind::Manifest, e.to_string())])
@@ -162,7 +162,8 @@ fn diagnostic(kind: DiagnosticKind, message: String) -> Diagnostic {
 const RAW_MAX: usize = 4096;
 
 /// rustc's short-format messages (`src\lib.rs:3:5: error[E0425]: cannot find value ...`, the format pe-logic asks
-/// for), one diagnostic each (api.md 7.1; @iter-bench). Lines that aren't one are left out. The file is
+/// for), one diagnostic each (api.md 7.1; @iter-bench), from `BuildError::Rustc`'s `text`: each
+/// diagnostic's short rendering, then cargo's output (pe-logic v11). Lines that aren't one are left out. The file is
 /// made relative to `crate_dir`, with `/`. When no line is one (another format, a linker's error), the output itself,
 /// trimmed to [`RAW_MAX`] bytes, is the one diagnostic, so the author still sees why (@api-eng's Medium on 3b8bf923).
 fn rustc_diagnostics(out: &str, crate_dir: &Path) -> Vec<Diagnostic> {
