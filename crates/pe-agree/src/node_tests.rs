@@ -69,6 +69,8 @@ struct Sim {
     delay: Vec<(i64, i64)>,
     /// Every member's stamp lags its present by this many frames (a slow or lying author).
     stamp_lag: Vec<u64>,
+    /// Per member, per-frame entries are stamped this many frames ahead of its present (stamp-ahead, pe-app's side).
+    stamp_lead: Vec<u64>,
     /// Submit an entry every this many ms (0: never).
     every_ms: Vec<i64>,
     events: Vec<Vec<AgreeEvent>>,
@@ -179,6 +181,7 @@ impl Sim {
             rng: Rng(seed),
             delay: vec![(5, 30); n as usize],
             stamp_lag: vec![0; n as usize],
+            stamp_lead: vec![0; n as usize],
             every_ms: vec![50; n as usize],
             events: vec![Vec::new(); n as usize],
             submitted: vec![Vec::new(); n as usize],
@@ -271,19 +274,20 @@ impl Sim {
                     self.old_rule_frames[i] += 1;
                 }
                 let hands = if over && self.flooder != Some(i) && self.unpaced != Some(i) { 0 } else { hands };
+                let stamp = Frame(present.0 + self.stamp_lead[i]);
                 for k in 0..hands + edits {
                     let class = if k < hands { Class::Input } else { Class::Edit };
-                    let e = self.builders[i].next_unsigned(class, present, Bytes::from(vec![i as u8; 24]));
+                    let e = self.builders[i].next_unsigned(class, stamp, Bytes::from(vec![i as u8; 24]));
                     let s = self.nodes[i].submit(e).expect("own per-frame entry refused");
                     self.submitted[i].push(s.id());
-                    self.submitted_at[i].push(present);
+                    self.submitted_at[i].push(stamp);
                 }
                 if self.edit_every[i] > 0 && present.0.is_multiple_of(self.edit_every[i]) {
-                    let e = self.builders[i].next_unsigned(Class::Edit, present, Bytes::from(vec![i as u8; 24]));
+                    let e = self.builders[i].next_unsigned(Class::Edit, stamp, Bytes::from(vec![i as u8; 24]));
                     let s = self.nodes[i].submit(e).expect("own edit refused");
                     self.submitted[i].push(s.id());
-                    self.submitted_at[i].push(present);
-                    self.edits[i].push((s.id(), present));
+                    self.submitted_at[i].push(stamp);
+                    self.edits[i].push((s.id(), stamp));
                 }
             }
         } else if self.every_ms[i] > 0 && self.now > 0 && (self.now / MS) % self.every_ms[i] == 0 {
@@ -715,6 +719,7 @@ fn vote_heads_are_hints_bounded_budgeted_and_expiring() {
             voter: keys.key(1),
             self_test: SelfTest::NotRun,
             heads,
+            lateness: Vec::new(),
             sig,
         }))
     };
@@ -796,6 +801,7 @@ fn a_voter_flooding_hints_cannot_crowd_out_an_honest_voters_hint() {
             voter: keys.key(voter),
             self_test: SelfTest::NotRun,
             heads,
+            lateness: Vec::new(),
             sig,
         }))
     };
@@ -1818,6 +1824,139 @@ fn a_slow_link_above_the_lag_cap_still_finalizes() {
             }
             assert!(worst <= 8_000, "the final frame stood still {worst} ms");
         }
+    }
+}
+
+#[test]
+fn votes_tell_a_slow_member_how_late_its_entries_arrive() {
+    // Stamp-ahead (agreement.md 3; @item:primordial-engine/pe-app-stamps-a-slow-member-s-entries-ahead-by-i): A's votes
+    // and timeouts carry how late B's entries reach A, so B's driver can stamp its own entries ahead. B -> A is slow
+    // (+1.2 s fixed, +0.9-1.5 s jittered); A -> B is fast. B reads A's report with `own_lateness`, near the one-way
+    // delay and over a recent seq of its chain; A reads B's, near zero.
+    for (extra, jitter) in [(1_200, 0), (900, 600)] {
+        for seed in [103, 104] {
+            let (s, _) = slow_link_run(extra, jitter, seed);
+            let (a, b) = (s.keys.key(0), s.keys.key(1));
+            let on_b = Agreement::own_lateness(&s.nodes[1]);
+            assert_eq!(on_b.len(), 1, "seed {seed}: B has no single report: {on_b:?}");
+            assert_eq!(on_b[0].reporter, a);
+            let ms = on_b[0].frames * 1000 / 120;
+            let made = s.submitted[1].len() as u64;
+            let counts = s.nodes[0].lateness_counts().get(&b).copied().unwrap_or_default();
+            let on_a = Agreement::own_lateness(&s.nodes[0]);
+            eprintln!(
+                "B -> A +{extra} ms (+0-{jitter} ms) seed {seed}: A reports B's p95 {ms} ms over seq {} of {made}; B reports A's {:?} frames; B's arrivals at A {counts:?}",
+                on_b[0].seq,
+                on_a.iter().map(|r| r.frames).collect::<Vec<_>>()
+            );
+            assert!(
+                ms >= extra && ms <= extra + jitter + 300,
+                "seed {seed}: A reports {ms} ms for a {extra}+{jitter} ms link"
+            );
+            // The window is recent: within about two seconds of B's entries (two hands a frame and the edits).
+            assert!(made - on_b[0].seq <= 600, "seed {seed}: the report covers seq {} of {made}", on_b[0].seq);
+            assert_eq!(on_a.len(), 1, "seed {seed}: A has no single report: {on_a:?}");
+            assert_eq!(on_a[0].reporter, b);
+            assert!(
+                on_a[0].frames * 1000 / 120 <= 300,
+                "seed {seed}: B reports A's entries {} frames late",
+                on_a[0].frames
+            );
+            assert!(
+                counts.sampled > counts.backlog + counts.fetched,
+                "seed {seed}: most of B's arrivals unsampled: {counts:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_rising_lead_never_reads_as_a_longer_delay() {
+    // @design-reviewer's M1 on 0238ca46: B raises its stamp lead once, by 0.5 s, on a slow B -> A link. A report
+    // corrected by the lead its seq's entry was stamped with (pe-app's `reported + lead(seq)`) must never exceed the
+    // link's top delay: with the window's newest seq it read as the delay plus the step until the old samples aged out,
+    // and the lead would ratchet up.
+    const STEP: u64 = 60;
+    for (extra, jitter) in [(1_200, 0), (900, 600)] {
+        for seed in [105, 106] {
+            let mut s = Sim::new(2, seed);
+            s.clock = Clock(120);
+            s.per_frame = vec![Some((2, 0)); 2];
+            s.edit_every = vec![0, 10];
+            s.slow_link = Some((1, 0, extra, jitter));
+            s.run(10_000);
+            // Every entry of B's chain after this seq is stamped STEP frames ahead.
+            let step_seq = s.submitted[1].len() as u64;
+            s.stamp_lead[1] = STEP;
+            let (mut worst, mut newer) = (i64::MIN, 0usize);
+            for t in (10_100..=20_000).step_by(100) {
+                s.run(t);
+                let r = Agreement::own_lateness(&s.nodes[1]);
+                assert_eq!(r.len(), 1, "seed {seed}: B has no single report at {t} ms: {r:?}");
+                let lead = if r[0].seq > step_seq { STEP as i64 } else { 0 };
+                newer += (lead > 0) as usize;
+                worst = worst.max(r[0].frames + lead);
+            }
+            let worst_ms = worst * 1000 / 120;
+            eprintln!(
+                "B -> A +{extra} ms (+0-{jitter} ms) seed {seed}: corrected delay at most {worst_ms} ms after a {STEP}-frame step; {newer} of 100 reports past the step"
+            );
+            assert!(newer > 50, "seed {seed}: the reports never moved past the step ({newer})");
+            assert!(
+                worst_ms <= extra + jitter + 50,
+                "seed {seed}: corrected delay {worst_ms} ms on a {extra}+{jitter} ms link"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_falling_delay_shows_through_a_lead_that_is_too_large() {
+    // @engine-architect's Medium on 0238ca46 and @design-reviewer's fall case: B stamps 1.2 s ahead on a 1.2 s link,
+    // then the link's delay drops to 0.3 s. B's entries now arrive before their stamps; the report must say so
+    // (negative), so the corrected delay follows the link down within a window, and pe-app can shed the lead. A
+    // report clamped at 0 would read as 1.2 s for good.
+    const LEAD: u64 = 144;
+    for seed in [107, 108] {
+        let mut s = Sim::new(2, seed);
+        s.clock = Clock(120);
+        s.per_frame = vec![Some((2, 0)); 2];
+        s.edit_every = vec![0, 10];
+        s.slow_link = Some((1, 0, 1_200, 0));
+        s.run(6_000);
+        let lead_seq = s.submitted[1].len() as u64;
+        s.stamp_lead[1] = LEAD;
+        let corrected = |s: &Sim| {
+            let r = Agreement::own_lateness(&s.nodes[1]);
+            assert_eq!(r.len(), 1, "seed {seed}: B has no single report: {r:?}");
+            let lead = if r[0].seq > lead_seq { LEAD as i64 } else { 0 };
+            (r[0].frames + lead) * 1000 / 120
+        };
+        s.run(10_000);
+        let settled = corrected(&s);
+        s.slow_link = Some((1, 0, 300, 0));
+        // Entries sent just before the drop still take 1.2 s, and their lateness is real: the report can follow only
+        // once they have arrived, within a window (128 of B's entries, about 0.5 s of them) after that.
+        let (mut followed, mut after) = (None, Vec::new());
+        for t in (10_100..=14_000).step_by(100) {
+            s.run(t);
+            let ms = corrected(&s);
+            if followed.is_none() && ms <= 350 {
+                followed = Some(t - 10_000);
+            }
+            if followed.is_some() {
+                after.push(ms);
+            }
+        }
+        eprintln!(
+            "seed {seed}: corrected delay {settled} ms at a 1.2 s link with a 1.2 s lead; at 0.3 s from {followed:?} ms after the drop, then {after:?} ms"
+        );
+        assert!((1_150..=1_250).contains(&settled), "seed {seed}: settled at {settled} ms");
+        assert!(
+            followed.is_some_and(|ms| ms <= 1_700),
+            "seed {seed}: the report didn't follow the delay down: {followed:?}"
+        );
+        assert!(after.iter().all(|ms| *ms <= 350), "seed {seed}: the report went back up: {after:?}");
     }
 }
 

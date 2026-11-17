@@ -163,6 +163,7 @@ impl Sim {
                         voter: self.keys.key(i),
                         self_test: SelfTest::NotRun,
                         heads: Vec::new(),
+                        lateness: Vec::new(),
                         sig,
                     };
                     for j in 0..self.nodes.len() {
@@ -311,6 +312,7 @@ fn a_forged_vote_is_refused() {
         voter: s.keys.key(1),
         self_test: SelfTest::NotRun,
         heads: Vec::new(),
+        lateness: Vec::new(),
         sig: s.keys.signer(2).sign(b"not the vote bytes"),
     };
     let r = s.nodes[0].receive(s.keys.key(1), Msg::Vote(forged), HostTime(s.now), &s.keys);
@@ -332,6 +334,7 @@ fn a_second_different_vote_in_one_view_is_equivocation() {
             voter: s.keys.key(1),
             self_test: SelfTest::NotRun,
             heads: Vec::new(),
+            lateness: Vec::new(),
             sig: k1.sign(&crate::core::vote_bytes(LineId::origin(), view, block, Hash::ZERO)),
         }
     };
@@ -539,7 +542,16 @@ fn a_vote_naming_another_view_than_its_block_is_a_fault() {
     let k3 = s.keys.key(3);
     let root = root_of(&block.cut, false);
     let sig = s.keys.signer(3).sign(&crate::core::vote_bytes(LineId::origin(), view, id, root));
-    let v = crate::core::Vote { view, block: id, root, voter: k3, self_test: SelfTest::NotRun, heads: Vec::new(), sig };
+    let v = crate::core::Vote {
+        view,
+        block: id,
+        root,
+        voter: k3,
+        self_test: SelfTest::NotRun,
+        heads: Vec::new(),
+        lateness: Vec::new(),
+        sig,
+    };
     let now = HostTime(s.now);
     assert_eq!(s.nodes[0].receive(k3, Msg::Vote(v), now, &s.keys), Err(CoreFault::BadVote));
 }
