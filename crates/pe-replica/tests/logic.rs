@@ -1298,4 +1298,116 @@ mod lamp {
             }
         });
     }
+
+    /// The n = 2 path of logic.md 6.2a with pe-logic's runner (@coordinator-opus). A commits the lamp at
+    /// frame 2 holding its own build. B holds no module until its build thread loads the lamp through B's inbox, then
+    /// attests at frame 6. The commit activates at frame 6's end on both, and A's edit at frame 8 tags the lamps. Both
+    /// replicas take the same roots at every cut, run the lamp from frame 7, and glow at frame 29 as its rule gives. A
+    /// third replica, which sees A's entry at frame 4 only after reaching frame 20, rolls back across the activation,
+    /// binds the lamp again (a clone of the module it holds) and reaches A's roots.
+    #[test]
+    fn two_members_activate_a_built_module_at_the_same_frame_and_agree() {
+        big_stack(|| {
+            let keys = keys();
+            let (module, descs) = parts();
+            let mut world = floor_and_ball();
+            world.set_member(keys.key(1), perm::EDIT);
+            for (k, &n) in LAMPS.iter().enumerate() {
+                world.create(oid(n), None, MemberKey([1; 32]), GENESIS).expect("a lamp");
+                world.insert(oid(n), Transform::at(pos(k as f64, 2.0, 0.0))).expect("its transform");
+            }
+            let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+            let mut components = vec![tag_desc(&v())];
+            components.extend(descs.iter().cloned());
+            let commit = tx(vec![
+                Op::Register { components },
+                Op::commit_script(AssetTarget::New(0), None, source(), Hash([1; 32]), Hash([2; 32]), *module, 2),
+            ]);
+            let commit = a.next(Class::Edit, Frame(2), Bytes::from(commit.encode()));
+            let late = edit(&mut a, 4, vec![Op::Delete { id: Target::Existing(oid(BALL)) }]);
+            let attest = edit(&mut b, 6, vec![Op::AttestBuild { script: asset(), version: v(), module: *module }]);
+            let mut tags = Vec::new();
+            for (k, &n) in LAMPS.iter().enumerate() {
+                let blink: Vec<u8> = [1.0f32, PHASES[k], 2.0].iter().flat_map(|x| x.to_le_bytes()).collect();
+                let set = |component, bytes| Op::SetRow {
+                    id: Target::Existing(oid(n)),
+                    row: Row { component, instance: 0, bytes },
+                };
+                tags.extend([
+                    set(descs[0].id(), blink),
+                    set(descs[1].id(), vec![0; 16]),
+                    set(tag_desc(&v()).id(), vec![]),
+                ]);
+            }
+            let tag = edit(&mut a, 8, tags);
+            let source_of = |with_late: bool| {
+                let mut s = Source::default();
+                for e in [&commit, &attest, &tag] {
+                    s.add(e.clone());
+                }
+                if with_late {
+                    s.add(late.clone());
+                }
+                s
+            };
+            // B's build thread: the module reaches B's runner through its inbox, from another thread.
+            let built = || {
+                let runner = runner(false);
+                let inbox = runner.inbox();
+                let build = std::thread::Builder::new().stack_size(inbox.thread_stack());
+                let loaded = build.spawn(move || inbox.load(wasm())).unwrap().join().unwrap();
+                assert_eq!(loaded.expect("the lamp loads"), *module);
+                runner
+            };
+            let mut author = replica_of(world.clone()).with_runner(Box::new(runner(true)));
+            author.advance(Frame(30), &mut source_of(true));
+            let mut voter = replica_of(world.clone()).with_runner(Box::new(built()));
+            voter.advance(Frame(30), &mut source_of(true));
+            for r in [&author, &voter] {
+                assert_eq!((r.frame(), r.faults(), r.script_counts().missing), (Frame(30), 0, 0));
+                assert_eq!(r.world().world().modules()[&asset()].activate_at, Frame(7));
+                assert_eq!(LAMPS.map(|n| intensity(r, n)), [1.0, 0.0, 0.0]);
+            }
+            assert_eq!(roots(&voter, 30), roots(&author, 30));
+            assert_eq!(roots(&author, 30).len(), 4);
+
+            let mut s = source_of(false);
+            let mut later = replica_of(world).with_runner(Box::new(built()));
+            later.advance(Frame(20), &mut s);
+            s.add(late);
+            let adv = later.advance(Frame(30), &mut s);
+            assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 4), "rolled back across F: {adv:?}");
+            assert_eq!((later.frame(), later.faults(), later.script_counts().missing), (Frame(30), 0, 0));
+            assert_eq!(roots(&later, 30), roots(&author, 30));
+            assert_eq!(LAMPS.map(|n| intensity(&later, n)), [1.0, 0.0, 0.0]);
+        });
+    }
+
+    /// The inbox describes a module as a commit of a version registers it, without holding it: the hash of its
+    /// metered bytes and its own components under the version's ids, the lamp's Blink and Glow. A frame later the
+    /// runner still holds nothing, and the lamp is missing.
+    #[test]
+    fn the_inbox_describes_a_module_without_holding_it() {
+        big_stack(|| {
+            let fx = fixture_of(&lit());
+            let mut r = runner(false);
+            let d = r.inbox().describe(wasm(), &v()).expect("the lamp describes");
+            assert_eq!((&d.module, &d.components), (&parts().0, &parts().1));
+            assert_eq!(d.components.iter().map(|c| c.name()).collect::<Vec<_>>(), ["Blink", "Glow"]);
+            let faulted = BTreeSet::new();
+            let guard = |_: ObjectId| false;
+            let check = |_: ComponentId, _: ObjectId, _: &[u8]| -> Result<(), String> { Ok(()) };
+            let world = StageWorld {
+                frame: Frame(0),
+                line: fx.line,
+                rate_hz: 60,
+                guard: &guard,
+                faulted: &faulted,
+                check: &check,
+            };
+            let out = r.run_stage(Stage::LogicPrePhysics, &fx.scripts, &mut fx.store.clone(), &world);
+            assert!(!r.holds(&d.module));
+            assert_eq!(out.missing, vec![asset(), [8; 32]]);
+        });
+    }
 }
