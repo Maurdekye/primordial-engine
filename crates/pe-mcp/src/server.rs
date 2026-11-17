@@ -229,6 +229,13 @@ pub struct RevertParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct HeldParams {
+    // From a dropped outcome's `held`.
+    pub held: String,
+    pub action: s6::HeldAction,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CaptureParams {
     #[serde(flatten)]
     pub request: s6::CaptureRequest,
@@ -331,7 +338,7 @@ impl WorldServer {
 
     #[tool(
         name = "world_schema",
-        description = "The component types and templates in this world: fields, types, units, allowed values and whether each is synced. Name one type or template, or omit the name for a list."
+        description = "This world's component types and templates: fields, types, units, allowed values, whether synced. Name one, or omit the name for a list."
     )]
     async fn world_schema(
         &self,
@@ -344,7 +351,7 @@ impl WorldServer {
 
     #[tool(
         name = "world_query",
-        description = "Find objects. Select by id, path, name, component type, parent, or nearness, and choose which fields to return. Results include each object's version, which an edit names."
+        description = "Find objects by id, path, name, component type, parent or nearness, with the fields you choose. Each result has the object's version, which an edit names."
     )]
     async fn world_query(
         &self,
@@ -357,7 +364,7 @@ impl WorldServer {
 
     #[tool(
         name = "world_apply",
-        description = "Change the world: a list of operations, applied all or nothing. Each edit names the version of the object you read; if someone has changed it since, the whole change is refused and the reply says who changed it. Use \"mode\": \"dry_run\" to check a change without making it."
+        description = "Change the world: operations applied all or nothing. Each edit carries the version you read; if the object changed since, the change is refused, saying who changed it. Use \"mode\": \"dry_run\" to check without changing anything."
     )]
     async fn world_apply(
         &self,
@@ -371,7 +378,7 @@ impl WorldServer {
 
     #[tool(
         name = "world_watch",
-        description = "What changed since your cursor: objects created, deleted and changed, by whom, and changes of yours that became final, were refused or were dropped. Filter by object. Waits up to wait_ms for something to happen."
+        description = "What changed since your cursor, by whom, and what became of your own changes (final, refused, dropped). Filter by object; waits up to wait_ms."
     )]
     async fn world_watch(
         &self,
@@ -385,7 +392,7 @@ impl WorldServer {
 
     #[tool(
         name = "history_list",
-        description = "The world's changes, newest first, filtered by object, member or time. Each says who made it, through what, and what it did."
+        description = "The world's changes, newest first, by object, member or time: who made each, through what, and what it did."
     )]
     async fn history_list(
         &self,
@@ -398,7 +405,7 @@ impl WorldServer {
 
     #[tool(
         name = "history_revert",
-        description = "Undo one change, by making a new change that puts back what it changed. It is refused if those objects have changed again since."
+        description = "Undo one change with a new change that puts back what it changed; refused if those objects changed again since."
     )]
     async fn history_revert(
         &self,
@@ -410,9 +417,26 @@ impl WorldServer {
         Self::outcome(o)
     }
 
+    #[tool(name = "world_held", description = "Apply or discard your changes held after an outage.")]
+    async fn world_held(
+        &self,
+        Parameters(p): Parameters<HeldParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        // `{outcomes}`, each as world_apply gives it. No output schema: the tool list has a size budget (6.2).
+        let c = match self.require(&ctx, "world_held") {
+            Ok(p) => p.caller(),
+            Err(e) => return e,
+        };
+        match self.run(move |a| a.held(&c, &p.held, p.action)).await {
+            Ok(outcomes) => CallToolResult::structured(serde_json::json!({ "outcomes": outcomes })),
+            Err(e) => e,
+        }
+    }
+
     #[tool(
         name = "view_capture",
-        description = "An image of the world, from a player's view or from a camera you place. Optionally highlights objects and lists which objects are visible and where. Use it to check your work."
+        description = "An image of the world from a player's view or a camera you place, optionally highlighting objects and listing those visible and where. Use it to check your work."
     )]
     async fn view_capture(
         &self,
@@ -438,7 +462,7 @@ impl WorldServer {
 
     #[tool(
         name = "code_check",
-        description = "Compile and check a script's source without changing anything. Returns the compiler's diagnostics, or on success the systems and components the script declares."
+        description = "Compile and check a script's source without changing anything: the compiler's diagnostics, or the systems and components it declares."
     )]
     async fn code_check(
         &self,

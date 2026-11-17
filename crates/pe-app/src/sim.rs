@@ -21,7 +21,7 @@ use pe_replica::{DriveReport, Driver};
 use pe_seams::world_api::TxId;
 use pe_seams::{
     AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, HandFeed, HostTime,
-    Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate, Transport,
+    Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate, Transport, VoidReason,
 };
 
 use crate::clock::HostClock;
@@ -214,8 +214,9 @@ struct ApiLoop {
     ports: crate::api::Ports,
     /// The frame step 2 last took an edit for: one a frame.
     edit_frame: Option<Frame>,
-    /// The entries of the `Voided` events drained since the last `confirm_cut`.
-    voided: Vec<EntryRef>,
+    /// The entries of the `Voided` events drained since the last `confirm_cut`, with their reasons (pe-api's re-send
+    /// backstop re-sends a late one, api.md 9.4).
+    voided: Vec<(EntryRef, VoidReason)>,
     /// The final cut the change log last confirmed.
     confirmed: Option<CutRef>,
 }
@@ -474,7 +475,7 @@ impl Sim {
         self.stats.events += events.len() as u64;
         if let Some(api) = &mut self.api {
             api.voided.extend(events.iter().filter_map(|e| match e {
-                AgreeEvent::Voided { entry, .. } => Some(*entry),
+                AgreeEvent::Voided { entry, reason, .. } => Some((*entry, *reason)),
                 _ => None,
             }));
             // On `final_cut`, never on `CutFinal`: a cut's voids are queued no later than the call in which
