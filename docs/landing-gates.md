@@ -288,6 +288,13 @@ already landed, and a red run holds up the landings after it (decision C7).
     (chunks-reviewer's L1).
   * The check gives up after 20 s in all, because the hook runs it while git holds main's locks. If GitHub can't
     be read in time, or its answer can't be read, the gate says so and passes.
+  * **The check keeps each finished run's verdict** in `pe-tier2-verdicts.json` in the clone's git folder, which
+    its worktrees share, under the run's id and attempt (coordinator m9f85508b37fe). A finished attempt never
+    changes, and a re-run is a new attempt, judged afresh. A check then costs one call, the listing, until a new
+    run finishes. Before, each of a landing's checks (the lander's gate, the hook, the integrator's run) cost two
+    to four calls, and on 2026-11-17 a busy hour spent all 60: GitHub refused with HTTP 403, and an answer of 304
+    counts too without a login. A cache that can't be read or written only costs calls. If the 60 are spent
+    anyway, the gate says GitHub can't be read and passes; a red run blocks again once GitHub answers.
 * **Triage** is WS-ci's.
   * A watchdog runs `scripts/ci_status.py --new <state file>` every 30 minutes. It names each red run once. When
     a platform is back in a red run after runs without a runner, the line adds the commits it left unverified:

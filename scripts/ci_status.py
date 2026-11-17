@@ -1,7 +1,7 @@
 """Tier 2's state (docs/refound-plan.md 4.6, decision C7): the hosted runs of .github/workflows/gate.yml on the
 public repository's main. docs/landing-gates.md describes tier 2.
 
-usage: python -I scripts/ci_status.py [--repo OWNER/NAME] [--check FILE | --new STATEFILE | --run ID]
+usage: python -I scripts/ci_status.py [--repo OWNER/NAME] [--check FILE [--cache FILE] | --new STATEFILE | --run ID]
   (no option)        the latest finished runs on main, each with its verdict.
   --check FILE       the landing gate's C7 step (scripts/gate.sh, step 5). Exit 1 if tier 2 is red: the latest
                      finished run on main that gives a verdict is red, and its id isn't listed in FILE
@@ -9,6 +9,11 @@ usage: python -I scripts/ci_status.py [--repo OWNER/NAME] [--check FILE | --new 
                      is green or explained, or there is none yet; 3 if tier 2's state is unknown: GitHub can't be
                      read, or none of the 5 newest runs it judges gives a verdict (it reads no further: chunks-
                      reviewer's L1; a stretch of runs a platform missed would cost a call each).
+  --cache FILE       with --check: keep each finished run's verdict in FILE, under the run's id and attempt, so a
+                     later check reads only the listing for a run it has judged. A finished attempt never changes,
+                     and a re-run is a new attempt, judged afresh. The gate keeps FILE in the clone's git folder,
+                     shared by its worktrees (coordinator m9f85508b37fe). A FILE that can't be read or written only
+                     costs calls: it never changes a verdict or the exit code.
   --new STATEFILE    for the triage watchdog, nothing when all is well, otherwise:
                      `TIER2 RED <run id> <conclusion> <url> jobs: <red jobs>`, once per red run, followed by
                      `; <platform> unverified since <sha>, up to <sha>` for each platform that is back after runs
@@ -28,12 +33,13 @@ hand. Failing that, a job GitHub never gave a runner leaves the run with no verd
 cancelled before any job started (a burst of pushes cancels the runs still waiting). Failing both, the run's own
 conclusion decides: success or neutral is green; failure, timed_out or startup_failure is red; anything else gives
 no verdict. The check looks past a run with no verdict to the run before.
-It reads GitHub's public API without credentials (60 requests an hour per address): the listing, then each judged
-run's jobs (two calls in all, usually; --new judges at most 5 new runs a call). --check, --new and the listing give
-up after 20 s in all, whatever holds them up (a DNS lookup, a server that trickles bytes), because the landing hook
-runs --check while git holds main's locks; --run gives up after 60 s. A 404 on the listing means the workflow has
-no run yet. PE_CI_RUNS_URL replaces the listing's URL (the self-test points it at a fixture, or at a server that
-never finishes its answer), and PE_CI_NOW the time --new measures 24 h from.
+It reads GitHub's public API without credentials (60 requests an hour per address; an answer of 304 counts too,
+measured 2026-11-17): the listing, then each judged run's jobs (two calls in all, usually, and one with --cache
+once the run is judged; --new judges at most 5 new runs a call). --check, --new and the listing give up after 20 s
+in all, whatever holds them up (a DNS lookup, a server that trickles bytes), because the landing hook runs --check
+while git holds main's locks; --run gives up after 60 s. A 404 on the listing means the workflow has no run yet.
+PE_CI_RUNS_URL replaces the listing's URL (the self-test points it at a fixture, or at a server that never
+finishes its answer), and PE_CI_NOW the time --new measures 24 h from.
 Exit 2 on a usage error, 4 if this script fails in any other way, so that a crash never reads as a red run.
 """
 
@@ -59,7 +65,7 @@ PLATFORM = re.compile(r"^tier 2, ([a-z0-9]+-[a-z0-9]+)$")  # a tier-2 job's name
 STALE_RUNS = 3
 STALE_S = 24 * 3600
 NEW_AT_MOST = 5  # new runs --new judges a call; older new ones are only remembered
-CHECK_AT_MOST = 5  # runs --check judges (a call each) before it calls tier 2's state unknown
+CHECK_AT_MOST = 5  # runs --check judges (a call each, unless --cache has it) before it calls tier 2's state unknown
 
 
 class Unreadable(Exception):
@@ -123,6 +129,57 @@ def verdict(run):
     return judge(run, jobs_of(run)) if run.get("conclusion") in JUDGED else (None, [])
 
 
+def run_key(run):
+    """A finished run's verdict never changes within an attempt; re-running it makes a new attempt."""
+    return f"{run['id']}:{run.get('run_attempt') or 1}"
+
+
+def load_cache(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_cache(path, cache, loaded, keys):
+    """Keeps the entries of the runs just listed (`keys`), and writes only a change. Another check may write at the
+    same moment: each writes whole files through its own temporary one, and a lost entry costs one call later."""
+    kept = {k: v for k, v in cache.items() if k in keys}
+    if kept == loaded:
+        return
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(kept, f, indent=0, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def cached_verdict(run, cache):
+    """verdict(run), through `cache` (a dict; None for no cache). An entry is used only in the shape this writes.
+    A verdict is kept only when every job has its conclusion, so a jobs list GitHub hasn't finished is read again,
+    and from no jobs only for a run cancelled before any job started or one that couldn't start: any other finished
+    run has jobs, so an empty list is read again too (chunks-reviewer's nit, mee4f076f3d1d)."""
+    if cache is None or run.get("conclusion") not in JUDGED:
+        return verdict(run)
+    key = run_key(run)
+    hit = cache.get(key)
+    if (isinstance(hit, dict) and set(hit) == {"verdict", "names"} and hit["verdict"] in ("red", "green", None)
+            and isinstance(hit["names"], list) and all(isinstance(n, str) for n in hit["names"])):
+        return hit["verdict"], hit["names"]
+    jobs = jobs_of(run)
+    v, names = judge(run, jobs)
+    if all(j.get("conclusion") for j in jobs) and (jobs or run.get("conclusion") in ("cancelled", "startup_failure")):
+        cache[key] = {"verdict": v, "names": names}
+    return v, names
+
+
 def explained(path):
     ids = set()
     try:
@@ -140,9 +197,20 @@ def not_run(names):
     return ", ".join(PLATFORM.sub(r"\1", n) for n in names)
 
 
-def check(repo, path):
+def check(repo, path, cache_path=None):
     """(exit code, message) for the gate."""
     rs = runs(repo)
+    if not cache_path:
+        return judge_newest(rs, path, None)
+    loaded = load_cache(cache_path)
+    cache = dict(loaded)
+    try:
+        return judge_newest(rs, path, cache)
+    finally:  # what was judged is kept, even when a later call fails
+        save_cache(cache_path, cache, loaded, {run_key(r) for r in rs})
+
+
+def judge_newest(rs, path, cache):
     gaps, judged = [], 0
     for n, r in enumerate(rs):
         if r.get("conclusion") in JUDGED:
@@ -150,7 +218,7 @@ def check(repo, path):
                 return 3, (f"no verdict in the {judged} newest runs judged"
                            f"{' (not run: ' + '; '.join(gaps) + ')' if gaps else ''}; older runs not read")
             judged += 1
-        v, names = verdict(r)
+        v, names = cached_verdict(r, cache)
         past = f" (past {n} run(s) with no verdict{'; not run: ' + '; '.join(gaps) if gaps else ''})" if n else ""
         if v == "green":
             return 0, f"tier 2 green: run {r['id']} on {r['head_sha'][:10]}{past}"
@@ -281,19 +349,24 @@ def bounded(limit, fn, *args):
 
 
 def main():
-    args, repo, mode, value = sys.argv[1:], os.environ.get("PE_CI_REPO", REPO), None, None
+    args, repo, mode, value, cache = sys.argv[1:], os.environ.get("PE_CI_REPO", REPO), None, None, None
     while args:
         a = args.pop(0)
         if a == "--repo" and args:
             repo = args.pop(0)
+        elif a == "--cache" and args and cache is None:
+            cache = args.pop(0)
         elif a in ("--check", "--new", "--run") and args and mode is None:
             mode, value = a, args.pop(0)
         else:
             print(__doc__)
             return 2
+    if cache is not None and mode != "--check":
+        print(__doc__)
+        return 2
     try:
         if mode == "--check":
-            code, msg = bounded(LIMIT_S, check, repo, value)
+            code, msg = bounded(LIMIT_S, check, repo, value, cache)
             print(f"ci_status: {msg}")
             return code
         if mode == "--new":

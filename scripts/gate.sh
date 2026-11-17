@@ -542,7 +542,10 @@ case ${t2:-off} in
       echo "gate: NOTE: ${code:0:10} has no scripts/ci_status.py; tier 2's state not checked"
     else
       t0=$(date +%s)
-      "$py" -I "$(native "$c/scripts/ci_status.py")" --check "$(native "$x/scripts/tier2_explained.txt")" > "$tmp/tier2.log" 2>&1
+      # Each finished run's verdict is kept in the clone's git folder, which its worktrees share, so a check reads
+      # only the listing for a run already judged: GitHub allows 60 calls an hour (coordinator m9f85508b37fe).
+      "$py" -I "$(native "$c/scripts/ci_status.py")" --check "$(native "$x/scripts/tier2_explained.txt")" \
+        --cache "$(native "$gitdir/pe-tier2-verdicts.json")" > "$tmp/tier2.log" 2>&1
       r=$?
       dt=$(( $(date +%s) - t0 ))
       msg=$(sed 's/^ci_status: //' "$tmp/tier2.log" | tail -1)
