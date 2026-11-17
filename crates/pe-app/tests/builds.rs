@@ -201,6 +201,30 @@ fn an_active_version_is_loaded_once_and_never_attested() {
     });
 }
 
+/// A script this machine can't run is reported (S6's `scripts_not_running`; @coordinator-opus m562651ab5aed): an
+/// active version whose module isn't loaded here, with why, until a pass loads it. One with another build identity
+/// stays reported, with that reason.
+#[test]
+fn an_active_version_not_loaded_here_is_reported_until_it_is() {
+    big_stack(|| {
+        let (builder, inbox) = builder("not-running");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let w = predicted(committed(&built, builder.ids(), built.described.module));
+        let mut a = Attester::new(keys().key(0));
+        let before = a.not_running(w.modules());
+        assert_eq!(before.iter().map(|n| n.0).collect::<Vec<_>>(), [lamp()], "{before:?}");
+        assert!(before[0].2.contains("isn't built"), "{before:?}");
+        a.pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
+        assert!(a.not_running(w.modules()).is_empty(), "loaded");
+        let other = predicted(committed(&built, (Hash([7; 32]), builder.ids().1), built.described.module));
+        let mut b = Attester::new(keys().key(1));
+        b.pass(other.pending(), other.modules(), blob_of(&other), &builder, &inbox);
+        let why = b.not_running(other.modules());
+        assert_eq!(why.iter().map(|n| n.0).collect::<Vec<_>>(), [lamp()], "{why:?}");
+        assert!(why[0].2.contains("another build identity"), "{why:?}");
+    });
+}
+
 /// A commit whose module differs from this machine's build, after the clean rebuild 6.2b asks for, is neither loaded
 /// nor attested: the voter reports `BuildFailed` with `Mismatch` and the module it built. One whose toolchain and SDK
 /// differ from this machine's is only logged: this machine can't judge it.
