@@ -86,6 +86,21 @@ pub struct SessionFacts {
     /// (locomotion, a teleport, a bodiless member's view position). A client setting, not world state (coordinator
     /// mb98c4a76ff1b; api.md 10.6).
     pub agents_move_user: bool,
+    /// Scripts this machine can't run (api.md 5.1; S6 v1.9). pe-app logs each too, so a skipped script is never
+    /// silent.
+    pub scripts_not_running: Vec<NotRunning>,
+}
+
+/// A script this machine can't run, as pe-app knows it (S6 v1.9's `ScriptNotRunning`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotRunning {
+    pub script: pe_world::script::AssetId,
+    /// The object it won't bind to, when one bind fails; none when the script can't run at all (no module).
+    pub object: Option<pe_core::ObjectId>,
+    /// The frame it stopped running from, or never ran from.
+    pub since: pe_core::Frame,
+    /// Why, in a sentence.
+    pub why: String,
 }
 
 /// A refusal with only a code, a message and what to do next.
@@ -1050,6 +1065,16 @@ impl<S: WorldSource + 'static> Api<S> {
                 capture_size_max: [1920, 1080],
             },
             held: self.log.held_for(&c.principal),
+            scripts_not_running: facts
+                .scripts_not_running
+                .iter()
+                .map(|n| pe_seams::world_api::ScriptNotRunning {
+                    script: crate::resolve::asset_text(&n.script),
+                    object: n.object.map(Into::into),
+                    since_frame: n.since.0,
+                    why: n.why.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -1369,6 +1394,7 @@ mod tests {
                 caught_up: !CATCHING_UP.with(|c| c.get()),
                 tick_hz: 60,
                 agents_move_user: MOVE_OK.with(|c| c.get()),
+                scripts_not_running: NOT_RUNNING.with(|c| c.borrow().clone()),
             }
         }
     }
@@ -1382,6 +1408,8 @@ mod tests {
         static HEAD: std::cell::Cell<Option<u128>> = const { std::cell::Cell::new(None) };
         /// The owning user's "agents may move me" setting.
         static MOVE_OK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// The scripts the test's machine can't run.
+        static NOT_RUNNING: std::cell::RefCell<Vec<NotRunning>> = Default::default();
     }
 
     #[test]
@@ -1475,6 +1503,28 @@ mod tests {
             vec![(ALICE.into(), "admin", true), (BOB.into(), "guest", false), (CAROL.into(), "watcher", true)]
         );
         assert_eq!(s.limits.ops_per_tx, 4096);
+        // A script this machine can't run is listed, never silent (S6 v1.9); none, and the field is left out.
+        assert!(s.scripts_not_running.is_empty());
+        assert!(serde_json::to_value(&s).unwrap().get("scripts_not_running").is_none());
+        NOT_RUNNING.with(|n| {
+            n.borrow_mut().push(NotRunning {
+                script: [0xab; 32],
+                object: Some(id(20)),
+                since: pe_core::Frame(3),
+                why: "it won't bind: no Light".into(),
+            })
+        });
+        let s = w.session(&c);
+        NOT_RUNNING.with(|n| n.borrow_mut().clear());
+        assert_eq!(
+            s.scripts_not_running,
+            vec![pe_seams::world_api::ScriptNotRunning {
+                script: crate::resolve::asset_text(&[0xab; 32]),
+                object: Some(id(20).into()),
+                since_frame: 3,
+                why: "it won't bind: no Light".into()
+            }]
+        );
         assert!(w.query(&c, &Query::default()).is_ok());
         // A confirm token: live changes refused, dry runs answer.
         let mut held = c.clone();
