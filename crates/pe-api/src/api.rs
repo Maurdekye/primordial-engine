@@ -535,7 +535,7 @@ impl<S: WorldSource + 'static> Api<S> {
                         o.refusal = Some(match carrier {
                             Some((tx, owner)) => {
                                 let tx = pe_world::edit::Transaction::clone(&tx);
-                                let e = WorldEdit { tx, blobs: vec![], op_of: owner.op_of.to_vec() };
+                                let e = WorldEdit { tx, blobs: vec![], op_of: owner.op_of.to_vec(), undo: false };
                                 map_refusal(snap, &e, *op, reason)
                             }
                             None => map_refusal(snap, &e, *op, reason),
@@ -749,7 +749,7 @@ impl<S: WorldSource + 'static> Api<S> {
             count: u64::from(n),
             op_of: vec![],
         };
-        let e = WorldEdit { tx, blobs: vec![], op_of: (0..n).collect() };
+        let e = WorldEdit { tx, blobs: vec![], op_of: (0..n).collect(), undo: true };
         self.submit(c, &self.src.latest(), &r, e, opts)
     }
 

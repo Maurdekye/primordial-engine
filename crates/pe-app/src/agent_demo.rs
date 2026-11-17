@@ -277,10 +277,8 @@ fn the_agent_demo_script_runs_against_two_machines() {
             assert_eq!(o["status"], "final", "{o}");
             let copy = o["created"]["$copy"]["id"].as_str().expect("the copy's id").to_string();
             seen("the copy, red", &|api, c| is(field(api, c, &copy, "Appearance", "base"), json!([0.65, 0.03, 0.03, 1.0])));
-            // By name only on B for now: a created object's name is a display blob, whose bytes don't reach the
-            // other machine yet (world-model.md 3.4; ruling). Check A by name too once
-            // @item:primordial-engine/inline-small-blobs-names-and-other-256-b-blobs-r and pe-api's hand-over land.
-            hub_frame.until("two red cubes on B", || is(json!(names(&*b, &pb, json!({"name": "Red cube"})).len()), json!(2)));
+            // By name on both machines: a created object's name rides inside its entry (world-model.md 3.4).
+            seen("two red cubes, by name", &|api, c| is(json!(names(api, c, json!({"name": "Red cube"})).len()), json!(2)));
 
             hub_frame.step("4: the stale case");
             // 4. The stale case: the agent reads the lamp, a person on A dims it, and the agent's delete of what it

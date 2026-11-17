@@ -123,6 +123,13 @@ pub fn map_refusal(snap: &WorldSnapshot, e: &WorldEdit, op: Option<u32>, reason:
             f.details = Some(json!({ "limit": limit }));
             f
         }
+        // pe-world's cap on an entry's inline bytes (world-model.md 3.4): pe-api's own 1 KiB check comes first, so
+        // only an undo grown past it through a race reaches this (ruling).
+        Reason::TooLarge { limit } if *limit as usize == pe_world::inline::MAX_INLINE_BYTES => {
+            let mut f = undo_in_parts();
+            f.details = Some(json!({ "limit": limit }));
+            f
+        }
         Reason::TooLarge { limit } => {
             let mut f = refusal(RefusalCode::TooLarge, None, format!("The change creates more than {limit} objects."));
             f.details = Some(json!({ "limit": limit }));
@@ -180,6 +187,63 @@ pub fn script_key(r: &Resolved, script: &pe_world::edit::AssetTarget) -> String 
     }
 }
 
+fn inline_bytes(tx: &pe_world::edit::Transaction) -> usize {
+    tx.inline.iter().map(Vec::len).sum()
+}
+
+fn undo_in_parts() -> Refusal {
+    let mut f = refusal(
+        RefusalCode::TooLarge,
+        None,
+        format!(
+            "Undoing this would carry more than {} bytes of names; undo this in parts.",
+            pe_world::inline::MAX_INLINE_BYTES
+        ),
+    );
+    f.next =
+        Some("Revert the later, smaller changes that touched these objects first, or edit them back by hand.".into());
+    f
+}
+
+/// The inline-byte limits (api.md 5.3; rulings), checked before pe-world's dry run: a
+/// change carries at most [`INLINE_MAX`](crate::edit::INLINE_MAX) bytes of names; a revert, up to pe-world's cap.
+fn inline_refusal(e: &WorldEdit) -> Option<Refusal> {
+    let n = inline_bytes(&e.tx);
+    if e.undo {
+        return (n > pe_world::inline::MAX_INLINE_BYTES).then(undo_in_parts);
+    }
+    (n > crate::edit::INLINE_MAX).then(|| {
+        let mut f = refusal(
+            RefusalCode::TooLarge,
+            None,
+            format!("The change carries {n} bytes of names, more than {}; split this change.", crate::edit::INLINE_MAX),
+        );
+        f.details = Some(json!({ "limit": crate::edit::INLINE_MAX, "bytes": n }));
+        f
+    })
+}
+
+/// Whether undoing an applied change would carry more names than one change may (ruling, point 2):
+/// its recorded inverse, predicted by the dry run.
+fn undo_refusal(e: &WorldEdit, inverse: Option<&[u8]>) -> Option<Refusal> {
+    if e.undo {
+        return None;
+    }
+    let n = inverse.and_then(pe_world::edit::Transaction::decode).map_or(0, |t| inline_bytes(&t));
+    (n > crate::edit::INLINE_MAX).then(|| {
+        let mut f = refusal(
+            RefusalCode::TooLarge,
+            None,
+            format!(
+                "Undoing this change would carry {n} bytes of names, more than {}; split this change.",
+                crate::edit::INLINE_MAX
+            ),
+        );
+        f.details = Some(json!({ "limit": crate::edit::INLINE_MAX, "undo_bytes": n }));
+        f
+    })
+}
+
 pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft) -> Outcome {
     let base = Outcome {
         dry_run: true,
@@ -207,9 +271,15 @@ pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft)
     } else {
         std::borrow::Cow::Borrowed(&e.tx)
     };
+    if let Some(f) = inline_refusal(e) {
+        return Outcome { status: Status::Refused, refusal: Some(f), count: 0, ..base };
+    }
     let (outcome, after) = snap.dry_run_state(CoreFrame(snap.frame().0), draft, &tx);
     match outcome {
-        pe_seams::Outcome::Applied { notes, .. } => {
+        pe_seams::Outcome::Applied { notes, inverse, .. } => {
+            if let Some(f) = undo_refusal(e, inverse.as_deref()) {
+                return Outcome { status: Status::Refused, refusal: Some(f), count: 0, ..base };
+            }
             let mut created = std::collections::BTreeMap::new();
             for (name, k) in &r.refs {
                 let id = pe_core::ObjectId::created(draft.line, draft.author, draft.chain, draft.seq, *k);
@@ -329,7 +399,7 @@ mod tests {
             ops: vec![],
             blobs: vec![],
         };
-        let e = WorldEdit { tx, blobs: vec![], op_of: vec![] };
+        let e = WorldEdit { tx, blobs: vec![], op_of: vec![], undo: false };
         let f = map_refusal(&snap, &e, None, &Reason::Cooldown { until: pe_core::Frame(42) });
         assert_eq!(f.code, RefusalCode::NotReady);
         assert_eq!(f.details.unwrap()["until_frame"], 42);
@@ -361,6 +431,72 @@ mod tests {
         // pe-world ops: 0 Copy box, 1 SetRow Name on it, 2 SetField scale on it, 3 Create Cup, 4 Create Handle under Cup.
         assert!(o.created["$b"].version.0.ends_with(".2"), "{}", o.created["$b"].version.0);
         assert!(o.created["$c"].version.0.ends_with(".4"), "{}", o.created["$c"].version.0);
+    }
+
+    /// Names ride inline (world-model.md 3.4), at most 255 bytes each and 1 KiB a change (rulings).
+    #[test]
+    fn names_ride_inline_within_their_limits() {
+        let name = |k: u8| String::from_utf8(vec![b'a' + k; crate::edit::NAME_MAX]).unwrap();
+        let creates = |n: u8| {
+            json!((0..n).map(|k| json!({"op": "create", "parent": "/Floor", "name": name(k)})).collect::<Vec<_>>())
+        };
+        // Four longest names: 1,020 bytes, carried, and pe-world takes them.
+        let (s, v) = world();
+        let tx: ApiTx = serde_json::from_value(json!({ "label": "t", "ops": creates(4) })).unwrap();
+        let r = resolve_tx(&v, &tx, &|_| None).map_err(|e| e.message).unwrap();
+        let e = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
+        assert_eq!(e.tx.inline.len(), 4);
+        assert!(pe_world::inline::canonical(&e.tx.inline));
+        assert_eq!(dry_run(&s, &r, &e, &draft(ALICE)).status, Status::Accepted);
+        // Five: over 1 KiB, refused before pe-world.
+        let o = run(ALICE, creates(5), &|_| None);
+        let f = o.refusal.expect("refused");
+        assert_eq!((o.status, f.code), (Status::Refused, RefusalCode::TooLarge));
+        assert!(f.message.contains("split this change"), "{}", f.message);
+        // A name one byte too long.
+        let long = String::from_utf8(vec![b'x'; crate::edit::NAME_MAX + 1]).unwrap();
+        let tx: ApiTx = serde_json::from_value(
+            json!({ "label": "t", "ops": [{"op": "create", "parent": "/Floor", "name": "ok"}, {"op": "create", "parent": "/Floor", "name": long}] }),
+        )
+        .unwrap();
+        let r = resolve_tx(&v, &tx, &|_| None).map_err(|e| e.message).unwrap();
+        match to_world(&r, Actor::Person, &s, None) {
+            Err(crate::edit::Unmapped::Refused(f)) => assert_eq!((f.code, f.op), (RefusalCode::Invalid, Some(1))),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// An undo's size (ruling): a change whose undo would carry over 1 KiB is refused at its dry run;
+    /// a revert may carry up to pe-world's 2 KiB, and past that is refused "undo this in parts".
+    #[test]
+    fn undos_over_the_limits_are_refused() {
+        let blobs = |n: u8| -> Vec<Vec<u8>> {
+            let mut v: Vec<Vec<u8>> = (0..n).map(|k| vec![k; 255]).collect();
+            v.sort_by_key(|b| pe_world::BlobRef::of(b).hash);
+            v
+        };
+        let tx = |inline| pe_world::edit::Transaction {
+            inline,
+            actor: Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops: vec![],
+            blobs: vec![],
+        };
+        let forward = WorldEdit { tx: tx(vec![]), blobs: vec![], op_of: vec![], undo: false };
+        let big = tx(blobs(5)).encode();
+        let f = undo_refusal(&forward, Some(&big)).expect("refused");
+        assert!(f.message.contains("Undoing this change") && f.message.contains("split this change"), "{}", f.message);
+        assert!(undo_refusal(&forward, Some(&tx(blobs(4)).encode())).is_none());
+        // A revert: 1,275 bytes is fine; 2,295 is refused in parts, as is pe-world's own TooLarge at its cap.
+        let revert = |n| WorldEdit { tx: tx(blobs(n)), blobs: vec![], op_of: vec![], undo: true };
+        assert!(inline_refusal(&revert(5)).is_none());
+        assert!(undo_refusal(&revert(5), Some(&big)).is_none());
+        assert!(inline_refusal(&revert(9)).expect("refused").message.contains("undo this in parts"));
+        let (snap, _) = world();
+        let limit = pe_world::inline::MAX_INLINE_BYTES as u32;
+        let f = map_refusal(&snap, &revert(9), None, &Reason::TooLarge { limit });
+        assert!(f.message.contains("undo this in parts"), "{}", f.message);
     }
 
     #[test]

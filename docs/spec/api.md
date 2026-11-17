@@ -850,6 +850,17 @@ and templates count their whole subtree; pe-world owns the bound) and 1 MiB of p
 (world-model.md 7.1); at most 1,000,000 objects examined by one change's `where` selectors, each distinct selector
 once [I]; 4 queries and 2 long polls in flight per principal. pe-agree's per-member entry rule (plan 4.3) bounds the member as a whole, whatever its principals do.
 
+**Names travel inside the entry** (world-model.md 3.4; rulings). A name is at most 255
+bytes of UTF-8, so it is always of pe-world's inline class (at most 256 B), and its bytes go into the signed entry
+(`Transaction::inline`, each once, in ascending order of hash). Every machine that has the entry or the state can
+then show it. A longer name is refused `invalid` on its op. pe-api refuses a change that carries more than 1 KiB of
+names `too_large` ("split this change"), and it refuses one whose undo would carry more than 1 KiB, predicted at its
+dry run from the inverse pe-world records ("undoing this change … split this change"). A delete's undo names objects
+rather than bytes, so it carries none. A `revert` may carry up to pe-world's hard cap of 2 KiB per entry, which
+leaves room for an inverse grown through a race. Past that cap the revert is refused `too_large`: "undo this in
+parts". There is no split undo. Blobs over 256 B (hulls, meshes) don't travel inline; they wait for fetch (M1's
+known gaps).
+
 ### 9.4 The re-send backstop
 
 "Delayed, never lost" holds for edits whatever the cause (coordinator, rule 3; agreement.md 3, "An
