@@ -16,6 +16,7 @@ pub mod api;
 pub mod builds;
 pub mod clock;
 pub mod genesis;
+pub mod leave;
 pub mod local;
 pub mod net;
 pub mod sim;

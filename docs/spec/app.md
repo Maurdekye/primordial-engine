@@ -1,8 +1,10 @@
 # pe-app: the application (WS-app)
 
-Owner: @engine-architect. Draft 4, 2026-11-13: what the code slices settled (the network hook, step 2 once per frame
-and its pacing, the M1 interim's two-machine start, the demo's commands). Draft 3, 2026-11-11 (@design-reviewer's
-reviews of drafts 1 and 2, mf5074c5ab2fd and m94ee513a61ac; pe-render's desktop view, @ballpit-viz, mf78a9a2a2ecc).
+Owner: @engine-architect. Draft 6, 2026-11-17: the graceful quit (section 4's shutdown) and the step budget's keep-up
+floor (3). Draft 5, 2026-11-13: pe-api's ports (3.1). Draft 4, 2026-11-13: what the code slices settled (the network
+hook, step 2 once per frame and its pacing, the M1 interim's two-machine start, the demo's commands). Draft 3,
+2026-11-11 (@design-reviewer's reviews of drafts 1 and 2, mf5074c5ab2fd and m94ee513a61ac; pe-render's desktop view,
+@ballpit-viz, mf78a9a2a2ecc).
 Plan: docs/refound-plan.md 3.1 and 3.2 (threads are WS-app's to decide with WS-state, WS-render and WS-xr). Seams:
 crates/pe-seams (S1-S6, RULINGS.md).
 
@@ -251,12 +253,46 @@ join from a cut yet, so the second machine becomes a member at genesis, and step
   aren't the record's, which are pe-agree's voters (`GenesisError::Governance`), since logic.md 6.2a's voter
   snapshot relies on every member voting in M1 (@design-reviewer m1a02a35a8a8e).
 
-**Shutdown**, in reverse:
-1. Stop MCP.
-2. Submit a leave entry, and no local entry after it. The simulation and network threads keep ticking while pe-app
-   waits, because the leaver's own vote may be needed for the cut that includes the leave (at n = 2, q = 2).
-3. Stop waiting as soon as a final cut includes the leave, after 2 s (a duration), or at once when no other member is
-   connected. Then the others drop this member without a pause (plan 4.3).
+**Shutdown**, in reverse (draft 6: the graceful quit,
+@item:primordial-engine/pe-app-m1-leave-a-graceful-quit-submits-leave-ke; rulings @coordinator-opus m5311a2afc635,
+with @fable-reviewer's refinements m2226c5aab7da, and m5bb3ed6ddcd5):
+1. Stop MCP and the build service's attester, so no new edit or attestation is queued.
+2. **In a session with others** (`--open` or `--join`), leave gracefully (`SimThread::leave_and_stop`, `crate::leave`).
+   A world alone just stops (step 4).
+   - The simulation thread's next tick submits this member's `Leave` (a class Protocol entry whose payload is
+     `pe_seams::LEAVE`) first in its frame, at the present frame (stamp-ahead's stamp once it lands). It is the
+     chain's last entry: step 2 makes no hand entry or edit after it, and an edit still in pe-api's queue is refused
+     `SubmitError::AfterLeave`, as agreement would refuse it.
+   - The simulation and network threads keep ticking, so the leaver still votes E's suffix: at n = 2 the other member
+     can't finish E without it (agreement.md 8; @design-reviewer's (b), m42d63893d68a).
+   - The console says "leaving the session…". The wait ends when every remaining member has told this one that E is
+     final there (S3's `leave_settled`), or at once when no other member's link is up. Waiting only for a final cut
+     that includes the `Leave` isn't enough: whoever forms E's certificate has E final first, and a leaver that quit
+     then stranded the other in 3 of 9 pe-agree runs.
+   - **The bound adapts to the link:** eight smoothed view times, clamped to 5-15 s, overridable locally
+     (`Sim::with_leave_wait`). pe-agree's own smoothed view time isn't in S3, so pe-app measures the same thing: the
+     smoothed interval between S3's proposals (`AgreeEvent::Proposed`), weighted 1/8 as pe-agree weights its own. The
+     bound is taken when the quit starts, so slower views during the wait don't stretch it. pe-agree's leavers
+     quit 355-558 ms after their `Leave` on simulated links; a 1.2 s link's views give the 15 s cap [I].
+   - A second quit request ends the wait at once: Ctrl-C on the console ends the process wherever the quit is.
+   - When the wait ends, the console says "left the session.", or, if the bound passed first, "Left before
+     <player> confirmed it. <player> can keep playing, but their changes won't be shared from now on."
+3. **The remaining member** keeps its link to the leaver after the epoch switch until the leaver disconnects or 30 s
+   pass, since the leaver's `leave_settled` depends on its `Wire::EpochFinal`, sent each second while its old core is
+   kept (@design-reviewer's (a)). Nothing in pe-app or pe-net drops a peer on an epoch change, and the confirmations
+   keep the link from idling out [I]. When a member's link drops, its console says at once, in player words, what
+   happened, with no wait for the idle close:
+   - the member had already left (E final here): "<player> left the session.";
+   - this machine holds the member's signed `Leave`, but E isn't final here: "<player> left before the session could
+     confirm it. You can keep playing, but changes from now on won't be shared, and this world ends when you quit.";
+   - no `Leave` from it is in hand: "<player>'s connection dropped. They may come back; until then, changes wait to
+     be confirmed."
+
+   M1 keeps no world past any quit (saves are M5), so a stranded member loses nothing a normal quit doesn't; "delayed,
+   never lost" is about edits within a live session (m5bb3ed6ddcd5). In M1 these lines go to the console only, in
+   both modes. A window or headset overlay, and a "stranded" health state in S5 for pe-render to show, come later.
+   The remaining member carrying on alone (at n = 2, a re-founding under a new line id) isn't M1: a candidate first
+   M3 slice.
 4. Stop the simulation, worker, XR and network threads; flush the I/O thread; release the GPU.
 
 ## 5. What pe-app needs from each crate

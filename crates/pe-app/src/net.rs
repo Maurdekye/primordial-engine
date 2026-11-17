@@ -702,6 +702,7 @@ pub fn transport(handle: NetHandle) -> Box<dyn Transport + Send> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::leave::LeaveStatus;
     use crate::sim::{Budget, Sim};
     use pe_render::present::FrameSlot;
     use pe_seams::{Hand, HandFeed, HandInput, HandSource, RigPose};
@@ -758,6 +759,85 @@ mod tests {
         OpenParams { seed: 3, balls: 8, rate: RATE, epoch_lead: Duration::from_millis(1500) }
     }
 
+    /// One machine of [`joined_pair`]: its simulation, frame slot, member and clock.
+    type Machine = (Sim, Arc<FrameSlot>, MemberKey, Arc<dyn FrameClock>);
+
+    /// The M1 interim's two machines over real UDP on loopback: A opens and invites, B replies and dials, A takes the
+    /// reply and admits B with the genesis record, and B checks and rebuilds it. Each is a `Sim` with still hands at
+    /// its feed, on pe-agree over pe-net: A first, then B.
+    fn joined_pair(host: &crate::clock::HostClock) -> (Vec<Machine>, [[f32; 3]; 2]) {
+        let a = Endpoint::bind([21; 32], loopback(), Vec::new(), true, host.clone(), None).unwrap();
+        let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
+        let invite = a.invite(Duration::from_secs(600)).unwrap();
+        let reply = b.reply(&invite);
+        b.dial(&invite).unwrap();
+        let theirs = invite.clone();
+        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(10), runner()));
+        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(10), runner()).expect("A's session");
+        let sb = joiner.join().unwrap().expect("B's session");
+        assert_eq!(sa.members, sb.members);
+        assert_eq!(sa.frames.rate_hz(), sb.frames.rate_hz());
+        let feeds = [[-0.5f32, 1.0, -0.4], [0.5, 1.1, -0.3]];
+        let mut sims = Vec::new();
+        for (s, feed) in [sa, sb].into_iter().zip(feeds) {
+            let slot = Arc::new(FrameSlot::new());
+            let me = s.me;
+            let sim = Sim::new(Box::new(s.node), s.replica, s.frames.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, crate::local::chain_nonce(), Arc::new(StillHands(feed)))
+                .with_transport(transport(s.handle), Some(Box::new(s.hook)));
+            sims.push((sim, slot, me, s.frames));
+        }
+        (sims, feeds)
+    }
+
+    /// The graceful quit over real UDP on loopback (app.md 4; @design-reviewer's Low 2 on the leave, which the
+    /// in-process hub couldn't show). After 2 s together B leaves. The remaining member keeps its link to B after the
+    /// epoch switch, and its confirmation reaches B over pe-net, so B's leave settles within the longest bound. Then B
+    /// stops, and A goes on alone: its epoch is A alone, B's hands are gone, and its final frame keeps moving.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "release only, as a two-machine run (@coordinator-opus mce61106b6b96): run with --release"
+    )]
+    fn a_member_that_leaves_over_the_network_settles_and_the_other_goes_on() {
+        let host = crate::clock::shared();
+        let (mut sims, _) = joined_pair(&host);
+        let run_for = |sims: &mut Vec<Machine>, d: Duration| {
+            let end = Instant::now() + d;
+            while Instant::now() < end {
+                for (sim, ..) in sims.iter_mut() {
+                    let _ = sim.tick(host());
+                }
+                std::thread::sleep(Duration::from_millis(4));
+            }
+        };
+        run_for(&mut sims, Duration::from_millis(1500 + 2500));
+        sims[1].0.leave();
+        let (asked, b) = (Instant::now(), sims[1].2);
+        while sims[1].0.leave_status() != LeaveStatus::Settled {
+            let status = sims[1].0.leave_status();
+            assert!(
+                asked.elapsed() < crate::leave::MAX_WAIT,
+                "B's leave didn't settle: {status:?}, {:?}",
+                sims[1].0.stats()
+            );
+            for (sim, ..) in sims.iter_mut() {
+                let _ = sim.tick(host());
+            }
+            std::thread::sleep(Duration::from_millis(4));
+        }
+        println!("B's leave settled over the network after {:?}", asked.elapsed());
+        drop(sims.pop());
+        let before = sims[0].1.newest().and_then(|v| v.final_frame).expect("A has a final frame");
+        run_for(&mut sims, Duration::from_secs(2));
+        let (sim, slot, ..) = &sims[0];
+        assert_eq!(sim.other_members(), Vec::<MemberKey>::new(), "A's epoch is A alone");
+        let v = slot.newest().expect("a view");
+        assert!(v.objects.iter().all(|o| o.hand_of.is_none_or(|(m, _)| m != b)), "B's hands are gone");
+        let after = v.final_frame.expect("A's final frame");
+        assert!(after.0 >= before.0 + 30, "A finalizes alone: final {before:?} then {after:?}");
+    }
+
     #[test]
     #[cfg_attr(
         debug_assertions,
@@ -770,28 +850,7 @@ mod tests {
         // reply and admits B with the genesis record, B checks and rebuilds it, and both simulate the ball pit on
         // pe-agree over pe-net: each sees the other's hands, and cuts become final.
         let host = crate::clock::shared();
-        let a = Endpoint::bind([21; 32], loopback(), Vec::new(), true, host.clone(), None).unwrap();
-        let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
-        let invite = a.invite(Duration::from_secs(600)).unwrap();
-        let reply = b.reply(&invite);
-        b.dial(&invite).unwrap();
-        let theirs = invite.clone();
-        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(10), runner()));
-        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(10), runner()).expect("A's session");
-        let sb = joiner.join().unwrap().expect("B's session");
-        assert_eq!(sa.members, sb.members);
-        assert_eq!(sa.frames.rate_hz(), sb.frames.rate_hz());
-
-        let feeds = [[-0.5f32, 1.0, -0.4], [0.5, 1.1, -0.3]];
-        let mut sims = Vec::new();
-        for (s, feed) in [sa, sb].into_iter().zip(feeds) {
-            let slot = Arc::new(FrameSlot::new());
-            let me = s.me;
-            let sim = Sim::new(Box::new(s.node), s.replica, s.frames.clone(), slot.clone(), Budget::new(RATE))
-                .with_local(me, crate::local::chain_nonce(), Arc::new(StillHands(feed)))
-                .with_transport(transport(s.handle), Some(Box::new(s.hook)));
-            sims.push((sim, slot, me, s.frames));
-        }
+        let (mut sims, feeds) = joined_pair(&host);
         // Run both in real time to 2 s after frame 0.
         let end = Instant::now() + Duration::from_millis(1500 + 2500);
         while Instant::now() < end {

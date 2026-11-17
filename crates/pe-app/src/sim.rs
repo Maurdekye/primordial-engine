@@ -25,6 +25,7 @@ use pe_seams::{
 };
 
 use crate::clock::HostClock;
+use crate::leave::{LeaveStatus, Leaving, ViewTime};
 use crate::local::{self, Chain};
 
 /// The replica's per-call budget (app.md 3; S2 v1.1), in simulated time. It is a local setting: it changes how fast the
@@ -200,6 +201,8 @@ pub struct SimStats {
     pub edits_refused: u64,
     pub votes: u64,
     pub finalized: u64,
+    /// This member's `Leave` submissions agreement refused (app.md 4): each is tried again at the next tick.
+    pub leave_refused: u64,
 }
 
 /// The simulation thread's state: agreement, the replica and the loop around them.
@@ -227,6 +230,16 @@ pub struct Sim {
     event_log: Option<Arc<std::sync::Mutex<Vec<AgreeEvent>>>>,
     /// pe-api's ports (app.md 3.1), with what this loop keeps for them.
     api: Option<ApiLoop>,
+    /// The graceful quit (app.md 4, [`crate::leave`]).
+    leaving: Leaving,
+    /// The smoothed view time the quit's bound follows, from S3's proposals.
+    view_time: ViewTime,
+    /// The quit's bound, if set locally ([`Sim::with_leave_wait`]); otherwise it follows the view time.
+    leave_wait: Option<Duration>,
+    /// The members whose link is down (S4's `LinkDown`, until a `LinkUp`).
+    down: std::collections::BTreeSet<MemberKey>,
+    /// What the console should say (app.md 4), drained by [`Sim::take_notices`].
+    notices: Vec<String>,
 }
 
 /// pe-api's ports and the loop's own state for them (app.md 3.1).
@@ -293,6 +306,11 @@ impl Sim {
             net_hook: None,
             event_log: None,
             api: None,
+            leaving: Leaving::Staying,
+            view_time: ViewTime::default(),
+            leave_wait: None,
+            down: std::collections::BTreeSet::new(),
+            notices: Vec::new(),
         }
     }
 
@@ -332,6 +350,81 @@ impl Sim {
         self.net = Some(net);
         self.net_hook = hook;
         self
+    }
+
+    /// The quit's bound, set locally (app.md 4): `None` follows the link ([`crate::leave::bound`]).
+    pub fn with_leave_wait(mut self, wait: Option<Duration>) -> Sim {
+        self.leave_wait = wait;
+        self
+    }
+
+    /// Asks this member to leave (app.md 4): step 2 submits its `Leave` at the next tick, and nothing local after it.
+    /// A machine with no member has nothing to leave.
+    pub fn leave(&mut self) {
+        if self.leaving == Leaving::Staying && self.local.is_some() {
+            self.leaving = Leaving::Asked;
+        }
+    }
+
+    /// Where the quit's wait stands ([`LeaveStatus`]).
+    pub fn leave_status(&self) -> LeaveStatus {
+        if !matches!(self.leaving, Leaving::Left { .. }) {
+            return LeaveStatus::Pending;
+        }
+        if self.agree.leave_settled() {
+            return LeaveStatus::Settled;
+        }
+        let me = self.local_member();
+        let others: Vec<MemberKey> = self.agree.members().into_iter().filter(|m| Some(*m) != me).collect();
+        if others.iter().all(|m| self.down.contains(m)) { LeaveStatus::Alone } else { LeaveStatus::Waiting }
+    }
+
+    /// The quit's bound: the local setting, or [`crate::leave::VIEWS`] smoothed view times between 5 and 15 s.
+    pub fn leave_bound(&self) -> Duration {
+        self.leave_wait.unwrap_or_else(|| crate::leave::bound(self.view_time.get()))
+    }
+
+    /// The other members of this member's epoch: those its `Leave` waits for.
+    pub fn other_members(&self) -> Vec<MemberKey> {
+        let me = self.local_member();
+        self.agree.members().into_iter().filter(|m| Some(*m) != me).collect()
+    }
+
+    /// What the console should say since the last call (app.md 4: the leave's messages).
+    pub fn take_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notices)
+    }
+
+    /// Whether this machine holds a signed `Leave` by `m` that isn't final yet: S3's entries from a little below the
+    /// final frame to past the present by stamp-ahead's largest lead, read only when a link drops.
+    fn holds_leave_of(&self, m: MemberKey, present: Frame) -> bool {
+        let final_frame = self.agree.final_cut().map_or(0, |fc| fc.cut.at.frame.0);
+        let ahead = (u64::try_from(crate::leave::SCAN.as_millis()).unwrap_or(u64::MAX))
+            .saturating_mul(u64::from(self.clock.rate_hz()))
+            .div_ceil(1000);
+        (final_frame.saturating_sub(ahead)..present.0.saturating_add(ahead)).any(|f| {
+            self.agree
+                .entries_at(Frame(f))
+                .is_some_and(|es| es.iter().any(|e| e.entry.author == m && pe_seams::is_leave(e)))
+        })
+    }
+
+    /// A link went down (S4): the console says why, at once (app.md 4). A member still in this epoch whose `Leave` is
+    /// in hand left before the session confirmed it; one with no `Leave` dropped and may come back; one already out of
+    /// the epoch left as it should.
+    fn link_down(&mut self, peer: MemberKey, present: Frame) {
+        // A member that is leaving itself says only how its own quit ended (`SimThread::leave_and_stop`).
+        if !self.down.insert(peer) || self.local_member() == Some(peer) || self.leaving != Leaving::Staying {
+            return;
+        }
+        let notice = if !self.agree.members().contains(&peer) {
+            crate::leave::left(peer)
+        } else if self.holds_leave_of(peer, present) {
+            crate::leave::stranded(peer)
+        } else {
+            crate::leave::dropped(peer)
+        };
+        self.notices.push(notice);
     }
 
     /// Keep S3's events in `log` as well as counting them (a test's, or a diagnostic's: it grows without a bound).
@@ -388,6 +481,7 @@ impl Sim {
         };
         // 1. Messages in. Protocol and Action go to agreement; a refusal is a peer's fault, counted and never fatal.
         // TODO(pe-diverge): Repair to pe-diverge; TODO(blob store): Bulk; Pose is display-only.
+        let mut links = Vec::new();
         if let Some(net) = &mut self.net {
             for _ in 0..MAX_IN_PER_TICK {
                 let Some(r) = net.poll() else { break };
@@ -407,9 +501,21 @@ impl Sim {
                 if let Some(hook) = &mut self.net_hook {
                     hook.on_event(&e, &mut *self.agree);
                 }
+                match e {
+                    NetEvent::LinkUp { peer } => links.push((peer, true)),
+                    NetEvent::LinkDown { peer } => links.push((peer, false)),
+                    _ => {}
+                }
             }
             if let Some(hook) = &mut self.net_hook {
                 hook.on_tick(now, &mut *self.agree);
+            }
+        }
+        for (peer, up) in links {
+            if up {
+                self.down.remove(&peer);
+            } else {
+                self.link_down(peer, p);
             }
         }
         // 2. Local input: both hands at frame `p`'s host time, through the newest view's rig, one input entry each.
@@ -422,7 +528,28 @@ impl Sim {
         // The frame's edit goes first, before its hand entries, so that a dry run made while pe-api's queue was empty
         // names the seq the edit gets (app.md 3.1). One a frame, never paced: an edit is never void as late for
         // being held back, and the queue's wake (step 7) brings its frame's tick.
-        if let (Some(l), Some(api)) = (&mut self.local, &mut self.api)
+        // The graceful quit (app.md 4): once asked, this member's `Leave` goes out first in the frame, at the present
+        // frame, and it is the chain's last entry. No edit or hand entry follows it, and an edit still queued is
+        // refused as agreement would refuse it.
+        if self.leaving == Leaving::Asked
+            && let Some(l) = &mut self.local
+        {
+            let leave = l.chain.entry(self.replica.domain(), p, Class::Protocol, pe_seams::LEAVE.to_vec());
+            match self.agree.submit(leave) {
+                Ok(signed) => {
+                    l.chain.took(&signed);
+                    self.leaving = Leaving::Left { stamp: p };
+                }
+                Err(_) => self.stats.leave_refused += 1,
+            }
+        }
+        let leaving = self.leaving != Leaving::Staying;
+        if leaving && let Some(api) = &mut self.api {
+            for (ticket, _) in api.ports.queue.drain(usize::MAX) {
+                api.ports.queue.settle(ticket, Receipt::Refused(pe_seams::agree::SubmitError::AfterLeave));
+            }
+        }
+        if let (false, Some(l), Some(api)) = (leaving, &mut self.local, &mut self.api)
             && api.edit_frame.is_none_or(|f| p > f)
         {
             api.edit_frame = Some(p);
@@ -452,7 +579,7 @@ impl Sim {
                 api.ports.queue.settle(ticket, receipt);
             }
         }
-        let fresh = self.input_frame.is_none_or(|f| p > f);
+        let fresh = !leaving && self.input_frame.is_none_or(|f| p > f);
         if let (true, Some(l), Some(view)) = (fresh, &mut self.local, &self.published) {
             if self.agree.backlogged() {
                 self.stats.hands_paced += 1;
@@ -508,6 +635,10 @@ impl Sim {
         // 5. S3's events. pe-diverge will take them in one ordered list with the finalize results.
         let events = self.agree.events();
         self.stats.events += events.len() as u64;
+        // A proposal opens each view: the quit's bound follows the smoothed interval between them (app.md 4).
+        for _ in events.iter().filter(|e| matches!(e, AgreeEvent::Proposed { .. })) {
+            self.view_time.proposed(now);
+        }
         if let Some(api) = &mut self.api {
             api.voided.extend(events.iter().filter_map(|e| match e {
                 AgreeEvent::Voided { entry, reason, .. } => Some((*entry, *reason)),
@@ -607,6 +738,35 @@ impl Waker {
 pub struct SimThread {
     join: JoinHandle<SimStats>,
     stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
+}
+
+/// What the simulation thread and its owner share beyond the stop flag: the graceful quit (app.md 4).
+#[derive(Default)]
+struct Shared {
+    /// The owner asks this member to leave.
+    leave: AtomicBool,
+    /// The loop has ticked since the request, so `bound_ms` is the quit's bound.
+    asked: AtomicBool,
+    /// The quit's [`LeaveStatus`], as [`LeaveStatus::code`], after the latest tick.
+    status: std::sync::atomic::AtomicU8,
+    /// The quit's bound in milliseconds after the latest tick; 0 before the first.
+    bound_ms: std::sync::atomic::AtomicU64,
+    /// The other members of this member's epoch, after the latest tick.
+    others: std::sync::Mutex<Vec<MemberKey>>,
+}
+
+/// How a graceful quit ended (app.md 4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeaveOutcome {
+    /// Every remaining member confirmed it, after `after`.
+    Settled { after: Duration },
+    /// No other member was connected.
+    Alone,
+    /// The bound passed first: these members hadn't confirmed it.
+    Unconfirmed { others: Vec<MemberKey> },
+    /// The bound passed before agreement ever took the `Leave` (each try refused): the others see a dropped link.
+    NotSent { others: Vec<MemberKey> },
 }
 
 impl SimThread {
@@ -614,12 +774,53 @@ impl SimThread {
         Waker(self.join.thread().clone())
     }
 
-    /// Stops the loop after its current tick, and returns what it counted. The leave entry, and the wait for the cut
-    /// that includes it (app.md 4), come with pe-agree and pe-net.
+    /// Stops the loop after its current tick, and returns what it counted.
     pub fn stop(self) -> thread::Result<SimStats> {
         self.stop.store(true, Ordering::Release);
         self.join.thread().unpark();
         self.join.join()
+    }
+
+    /// The graceful quit (app.md 4): asks the loop to submit this member's `Leave`, which then goes on ticking, so
+    /// this member still votes E's suffix. Waits until every remaining member has confirmed E (S3's
+    /// `leave_settled`), until no other member is connected, or until the quit's bound passes, then stops the loop.
+    /// `say` takes the console's lines: "leaving…" first. Ctrl-C ends the process at once, which is how a second quit
+    /// request ends the wait.
+    pub fn leave_and_stop(self, say: &mut dyn FnMut(&str)) -> (LeaveOutcome, thread::Result<SimStats>) {
+        self.shared.leave.store(true, Ordering::Release);
+        self.join.thread().unpark();
+        say("leaving the session…");
+        let started = Instant::now();
+        // The bound is taken from the first tick after the request, so slower views during the wait don't stretch
+        // it; until that tick, the shortest.
+        let mut bound = None;
+        let outcome = loop {
+            let status = LeaveStatus::from_code(self.shared.status.load(Ordering::Acquire));
+            match status {
+                LeaveStatus::Settled => break LeaveOutcome::Settled { after: started.elapsed() },
+                LeaveStatus::Alone => break LeaveOutcome::Alone,
+                LeaveStatus::Pending | LeaveStatus::Waiting => {}
+            }
+            if bound.is_none() && self.shared.asked.load(Ordering::Acquire) {
+                bound = Some(Duration::from_millis(self.shared.bound_ms.load(Ordering::Acquire)));
+            }
+            if started.elapsed() >= bound.unwrap_or(crate::leave::MIN_WAIT) {
+                let others = self.shared.others.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                // Still pending: agreement refused every try, so no `Leave` ever went out (@design-reviewer's Low 1).
+                break if status == LeaveStatus::Pending {
+                    LeaveOutcome::NotSent { others }
+                } else {
+                    LeaveOutcome::Unconfirmed { others }
+                };
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        match &outcome {
+            LeaveOutcome::Settled { .. } | LeaveOutcome::Alone => say("left the session."),
+            LeaveOutcome::Unconfirmed { others } => say(&crate::leave::left_unconfirmed(others)),
+            LeaveOutcome::NotSent { others } => say(&crate::leave::leave_not_sent(others)),
+        }
+        (outcome, self.stop())
     }
 }
 
@@ -627,15 +828,30 @@ impl SimThread {
 /// it runs wasm guests), reading the time from `host`.
 pub fn spawn(sim: Sim, host: HostClock, stack: usize) -> std::io::Result<SimThread> {
     let stop = Arc::new(AtomicBool::new(false));
-    let flag = stop.clone();
-    let join = thread::Builder::new().name("pe-sim".into()).stack_size(stack).spawn(move || run(sim, &host, &flag))?;
-    Ok(SimThread { join, stop })
+    let shared = Arc::new(Shared::default());
+    let (flag, inner) = (stop.clone(), shared.clone());
+    let join =
+        thread::Builder::new().name("pe-sim".into()).stack_size(stack).spawn(move || run(sim, &host, &flag, &inner))?;
+    Ok(SimThread { join, stop, shared })
 }
 
-fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool) -> SimStats {
+fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool, shared: &Shared) -> SimStats {
     while !stop.load(Ordering::Acquire) {
+        if shared.leave.load(Ordering::Acquire) {
+            sim.leave();
+        }
         let now = host();
         let ticked = sim.tick(now).map(|(p, _)| p);
+        // The graceful quit's standing for the owner's wait, and the console's lines (app.md 4).
+        shared.status.store(sim.leave_status().code(), Ordering::Release);
+        shared.bound_ms.store(u64::try_from(sim.leave_bound().as_millis()).unwrap_or(u64::MAX), Ordering::Release);
+        if sim.leaving != Leaving::Staying {
+            *shared.others.lock().unwrap_or_else(|e| e.into_inner()) = sim.other_members();
+            shared.asked.store(true, Ordering::Release);
+        }
+        for line in sim.take_notices() {
+            println!("{line}");
+        }
         // 7. Wait for the next frame or a wake. A tick that ran long leaves no wait, and the next one jumps ahead.
         let due = sim.next_due(ticked, now);
         let left = due.0.saturating_sub(host().0);
@@ -1529,5 +1745,186 @@ mod tests {
         // Loose bounds: the tests may run at low priority on a busy machine.
         assert!(stats.ticks >= 3 && stats.published >= 3, "{stats:?}");
         assert!(slot.newest().is_some_and(|v| v.frame.0 >= 3));
+    }
+
+    // ---- the graceful quit (app.md 4; @item:primordial-engine/pe-app-m1-leave-a-graceful-quit-submits-leave-ke) ----
+
+    /// A pair of members (A first, then B) of a small ball pit over the in-process network, each with its own pe-agree
+    /// node, as in `two_members_see_each_others_hands_and_finalize_over_a_network`, with each port's event queue.
+    #[allow(clippy::type_complexity)]
+    fn agreeing_pair(
+        clock: &Arc<dyn FrameClock>,
+        hub: &Hub,
+    ) -> Vec<(Sim, Arc<FrameSlot>, MemberKey, Arc<std::sync::Mutex<Vec<NetEvent>>>)> {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::Pos;
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let at = [[-0.5, 1.0, -0.4], [0.5, 1.1, -0.3]];
+        let mut pair = Vec::new();
+        for (i, feed) in at.iter().enumerate() {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+            let replica =
+                crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let slot = Arc::new(FrameSlot::new());
+            let port = Port::new(me, hub.clone());
+            let events = port.events.clone();
+            let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))
+                .with_transport(Box::new(port), None);
+            pair.push((sim, slot, me, events));
+        }
+        pair
+    }
+
+    /// Ticks the members `who` of `pair` at frame `f`'s host time, with the network's time set to it.
+    #[allow(clippy::type_complexity)]
+    fn tick_at(
+        pair: &mut [(Sim, Arc<FrameSlot>, MemberKey, Arc<std::sync::Mutex<Vec<NetEvent>>>)],
+        clock: &Arc<dyn FrameClock>,
+        hub: &Hub,
+        who: &[usize],
+        f: u64,
+    ) {
+        let now = clock.host_time_of(Frame(f));
+        hub.now.store(now.0, Ordering::SeqCst);
+        for &i in who {
+            pair[i].0.tick(now).expect("ticked");
+        }
+    }
+
+    /// M1's demo step 8 (app.md 4): after 3 s together, B leaves. Its `Leave` is its last entry, it keeps ticking, and
+    /// its wait ends once A has confirmed E (S3's `leave_settled`). Then B stops, and A goes on alone: its epoch is A
+    /// alone, it finalizes on its own, B's hands are gone from its view, and when B's link drops A's console says B
+    /// left the session.
+    #[test]
+    fn a_member_leaves_and_the_other_finalizes_alone() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let hub = Hub::default();
+        let mut pair = agreeing_pair(&clock, &hub);
+        let mut f = 0;
+        for _ in 0..180 {
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0, 1], f);
+        }
+        assert_eq!(pair[1].0.leave_status(), LeaveStatus::Pending);
+        pair[1].0.leave();
+        let (left_at, inputs) = (f, pair[1].0.stats().inputs);
+        let settled = (0..600).find(|_| {
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0, 1], f);
+            pair[1].0.leave_status() == LeaveStatus::Settled
+        });
+        assert!(settled.is_some(), "B's leave settles within 10 s");
+        println!("B's leave settled after {} frames", f - left_at);
+        assert_eq!(pair[1].0.stats().inputs, inputs, "no hand entry after the Leave");
+        assert_eq!(pair[1].0.stats().leave_refused, 0);
+        for _ in 0..300 {
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0], f);
+        }
+        let (a, b) = (&pair[0], pair[1].2);
+        assert_eq!(a.0.other_members(), Vec::<MemberKey>::new(), "A's epoch is A alone");
+        let v = a.1.newest().expect("published");
+        assert!(v.objects.iter().all(|o| o.hand_of.is_none_or(|(m, _)| m != b)), "B's hands are gone");
+        assert!(v.final_frame.is_some_and(|ff| ff.0 + 60 >= f), "A finalizes alone: final {:?} at {f}", v.final_frame);
+        pair[0].3.lock().expect("the events").push(NetEvent::LinkDown { peer: b });
+        f += 1;
+        tick_at(&mut pair, &clock, &hub, &[0], f);
+        assert_eq!(pair[0].0.take_notices(), vec![crate::leave::left(b)]);
+    }
+
+    /// The remaining member is told at once why the other went (app.md 4, @coordinator-opus m5311a2afc635). B signs its
+    /// `Leave` and vanishes before A can confirm E: when B's link drops, A, holding the `Leave` with B still in its
+    /// epoch, says B left before the session could confirm it. Without a `Leave` in hand, a dropped link says the other
+    /// may come back.
+    #[test]
+    fn the_remaining_member_hears_at_once_why_the_other_went() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        for leaves in [true, false] {
+            let hub = Hub::default();
+            let mut pair = agreeing_pair(&clock, &hub);
+            let mut f = 0;
+            for _ in 0..120 {
+                f += 1;
+                tick_at(&mut pair, &clock, &hub, &[0, 1], f);
+            }
+            if leaves {
+                pair[1].0.leave();
+            }
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0, 1], f);
+            for _ in 0..30 {
+                f += 1;
+                tick_at(&mut pair, &clock, &hub, &[0], f);
+            }
+            let b = pair[1].2;
+            assert_eq!(pair[0].0.other_members(), vec![b], "E isn't final at A: B is still in its epoch");
+            pair[0].3.lock().expect("the events").push(NetEvent::LinkDown { peer: b });
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0], f);
+            let want = if leaves { crate::leave::stranded(b) } else { crate::leave::dropped(b) };
+            assert_eq!(pair[0].0.take_notices(), vec![want], "with a Leave in hand: {leaves}");
+        }
+    }
+
+    /// The quit on the simulation thread (app.md 4). A world alone has nobody to wait for: its `Leave` settles at once.
+    /// A member whose peer never answers waits for its bound (set short here), then says the peer hadn't confirmed it.
+    #[test]
+    fn the_quit_waits_for_the_confirmation_or_its_bound() {
+        let host = clock::shared();
+        let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), RATE));
+        let (s, _slot) = in_the_ball_pit(frames.clone(), Budget::new(RATE));
+        let s = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])));
+        let t = spawn(s, host.clone(), 16 << 20).expect("spawned");
+        thread::sleep(Duration::from_millis(100));
+        let mut lines = Vec::new();
+        let (outcome, stats) = t.leave_and_stop(&mut |l| lines.push(l.to_string()));
+        assert!(matches!(outcome, LeaveOutcome::Settled { .. }), "{outcome:?}");
+        assert_eq!(lines, ["leaving the session…", "left the session."]);
+        assert_eq!(stats.expect("joined").leave_refused, 0);
+
+        let hub = Hub::default();
+        let mut pair = agreeing_pair(&frames, &hub);
+        let (b, a) = (pair.pop().expect("B"), pair[0].2);
+        let t = spawn(b.0.with_leave_wait(Some(Duration::from_millis(300))), host, 16 << 20).expect("spawned");
+        thread::sleep(Duration::from_millis(100));
+        let mut lines = Vec::new();
+        let started = Instant::now();
+        let (outcome, stats) = t.leave_and_stop(&mut |l| lines.push(l.to_string()));
+        assert_eq!(outcome, LeaveOutcome::Unconfirmed { others: vec![a] });
+        assert!(started.elapsed() >= Duration::from_millis(300), "{:?}", started.elapsed());
+        assert_eq!(lines, ["leaving the session…".to_string(), crate::leave::left_unconfirmed(&[a])]);
+        stats.expect("joined");
+    }
+
+    /// A `Leave` that agreement refuses every time never goes out, so the quit doesn't claim it left unconfirmed: it
+    /// says the leave couldn't be sent and the others will see a dropped connection (@design-reviewer's Low 1).
+    #[test]
+    fn a_leave_that_never_goes_out_says_so() {
+        let host = clock::shared();
+        let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, frames.clone(), runner()).expect("pit");
+        let agree = SoloAgreement::new(LineId::origin());
+        agree.refuse_protocol.store(true, Ordering::Relaxed);
+        let slot = Arc::new(FrameSlot::new());
+        let s = Sim::new(Box::new(agree), replica, frames, slot, Budget::new(RATE))
+            .with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])))
+            .with_leave_wait(Some(Duration::from_millis(300)));
+        let t = spawn(s, host, 16 << 20).expect("spawned");
+        thread::sleep(Duration::from_millis(100));
+        let mut lines = Vec::new();
+        let (outcome, stats) = t.leave_and_stop(&mut |l| lines.push(l.to_string()));
+        assert_eq!(outcome, LeaveOutcome::NotSent { others: Vec::new() });
+        assert_eq!(lines, ["leaving the session…".to_string(), crate::leave::leave_not_sent(&[])]);
+        assert!(stats.expect("joined").leave_refused > 0, "each tick tried again");
     }
 }
