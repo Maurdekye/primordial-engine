@@ -12,6 +12,9 @@
 //! - Receipts are kept until taken or for `RECEIPT_TTL`, so an abandoned ticket can't grow memory.
 //! - The re-send backstop (api.md 9.4): `drain` takes a prepared re-send or follow-up from the change log ahead of
 //!   fresh changes, so one edit a frame in order keeps the order; its receipt goes back to the log.
+//! - The machine lane (api.md 7.1): `submit_machine`, for the build worker's `AttestBuild` and `BuildFailed`, drained
+//!   ahead of everything else (an attestation has a deadline; nothing an API change depends on is a machine entry).
+//!   No principal, no bucket, no `mine`, never re-sent.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
@@ -24,6 +27,8 @@ use pe_world::edit::Transaction;
 
 /// The most changes waiting for the simulation thread [I].
 pub const CAPACITY: usize = 256;
+/// The most machine entries waiting [I]: one per pending script version is the normal case.
+pub const MACHINE_CAPACITY: usize = 64;
 /// How long a receipt waits to be taken.
 pub const RECEIPT_TTL: Duration = Duration::from_secs(5);
 
@@ -61,11 +66,14 @@ enum Tag {
     Resend { origin: TxId, op_back: Arc<[u32]> },
     /// A re-point follow-up.
     FollowUp,
+    /// The machine's own entry (`submit_machine`).
+    Machine,
 }
 
 struct Inner {
     next: u64,
     pending: VecDeque<(Ticket, Submission)>,
+    machine: VecDeque<(Ticket, Submission)>,
     receipts: HashMap<Ticket, (Receipt, Instant)>,
     tags: HashMap<Ticket, Tag>,
 }
@@ -88,6 +96,7 @@ impl EditQueue {
             inner: Mutex::new(Inner {
                 next: 1,
                 pending: VecDeque::new(),
+                machine: VecDeque::new(),
                 receipts: HashMap::new(),
                 tags: HashMap::new(),
             }),
@@ -127,6 +136,24 @@ impl EditQueue {
         self.submit_tagged(s, Some(Tag::Fresh(owner, Some(kept))))
     }
 
+    /// The machine lane (api.md 7.1): the build worker's `AttestBuild` or `BuildFailed`, drained ahead of the
+    /// backstop's re-sends and fresh changes. Never blocks; `Full` past [`MACHINE_CAPACITY`].
+    pub fn submit_machine(&self, tx: Transaction) -> Result<Ticket, Full> {
+        let t = {
+            let mut g = self.lock();
+            if g.machine.len() >= MACHINE_CAPACITY {
+                return Err(Full { retry_after: Duration::from_millis(50) });
+            }
+            let t = Ticket(g.next);
+            g.next += 1;
+            g.machine.push_back((t, Submission { tx, base: 0 }));
+            g.tags.insert(t, Tag::Machine);
+            t
+        };
+        (self.wake)();
+        Ok(t)
+    }
+
     fn submit_tagged(&self, s: Submission, tag: Option<Tag>) -> Result<Ticket, Full> {
         let t = {
             let mut g = self.lock();
@@ -146,9 +173,14 @@ impl EditQueue {
         Ok(t)
     }
 
-    /// Simulation side: at most `max` waiting changes, oldest first; the backstop's re-sends and follow-ups first.
+    /// Simulation side: at most `max` waiting changes, oldest first: the machine's own entries, then the backstop's
+    /// re-sends and follow-ups, then fresh changes.
     pub fn drain(&self, max: usize) -> Vec<(Ticket, Submission)> {
-        let mut out = vec![];
+        let mut out = {
+            let mut g = self.lock();
+            let n = max.min(g.machine.len());
+            g.machine.drain(..n).collect::<Vec<_>>()
+        };
         if let Some(log) = self.log.get() {
             while out.len() < max {
                 let Some(taken) = log.take(Instant::now()) else { break };
@@ -189,7 +221,7 @@ impl EditQueue {
                 (Receipt::Submitted { change, frame, chain, seq }, Some(Tag::Fresh(owner, None))) => {
                     log.track(*change, *chain, *seq, *frame, Some(owner));
                 }
-                (Receipt::Submitted { change, frame, chain, seq }, Some(Tag::FollowUp) | None) => {
+                (Receipt::Submitted { change, frame, chain, seq }, Some(Tag::FollowUp | Tag::Machine) | None) => {
                     log.track(*change, *chain, *seq, *frame, None);
                 }
                 (Receipt::Refused(_), _) => {}
@@ -220,7 +252,8 @@ impl EditQueue {
 
     /// Changes waiting for the simulation thread.
     pub fn len(&self) -> usize {
-        self.lock().pending.len()
+        let g = self.lock();
+        g.pending.len() + g.machine.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -246,6 +279,23 @@ mod tests {
             },
             base: 4,
         }
+    }
+
+    #[test]
+    fn the_machine_lane_drains_first_and_is_nobodys() {
+        let q = EditQueue::new(8, || {});
+        q.submit(sub("fresh")).unwrap();
+        let m = q.submit_machine(sub("attest").tx).unwrap();
+        assert_eq!(q.len(), 2);
+        let got = q.drain(2);
+        let labels: Vec<_> = got.iter().map(|(_, s)| s.tx.label.clone().unwrap()).collect();
+        assert_eq!((got[0].0, labels), (m, vec!["attest".to_string(), "fresh".to_string()]));
+        // Its own bound, apart from the API's.
+        for _ in 0..MACHINE_CAPACITY {
+            q.submit_machine(sub("x").tx).unwrap();
+        }
+        assert!(q.submit_machine(sub("x").tx).is_err());
+        assert!(q.submit(sub("fresh")).is_ok());
     }
 
     #[test]

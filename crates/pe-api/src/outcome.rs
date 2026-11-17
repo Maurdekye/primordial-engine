@@ -183,6 +183,7 @@ pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft)
         diff: None,
         resent_as: None,
         held: None,
+        activation: None,
     };
     let (outcome, after) = snap.dry_run_state(CoreFrame(snap.frame().0), draft, &e.tx);
     match outcome {

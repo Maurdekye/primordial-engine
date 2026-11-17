@@ -508,6 +508,8 @@ impl Sim {
     /// transactions of the edit entries the records name, each decoded once.
     fn feed_api(&self, api: &ApiLoop, view: &FrameView) {
         let shared = &api.ports.shared;
+        // Activations first: the publication's final frame then tells those it passes (api.md 7).
+        api.ports.log.activations(&view.activations, &view.activations_retracted);
         api.ports.log.publish(&view.changes, view.final_frame.map(|f| f.0), view.health);
         if let Some(s) = crate::api::snapshot_of(&*self.replica) {
             shared.keep(s);
