@@ -220,16 +220,36 @@ pub struct DesktopView {
 /// creation lock.
 pub fn surface_and_context(window: Arc<Window>) -> Result<(wgpu::Surface<'static>, GpuContext), ContextError> {
     let order = desktop_order(BackendOverride::from_env()?);
-    let mut last = ContextError::NoAdapter;
+    let mut failed = Vec::new();
     for software in [false, true] {
         for &backends in &order {
             match surface_and_context_on(window.clone(), backends, software) {
                 Ok(made) => return Ok(made),
-                Err(e) => last = e,
+                Err(e) => failed.push((backends, software, e)),
             }
         }
     }
-    Err(last)
+    Err(attempts_failed(failed))
+}
+
+/// Every failed attempt's reason in one error, so a machine that fails everywhere still reports why hardware D3D12
+/// failed (@shader-reviewer, on review of the backend order). `NoAdapter` when no attempt found an adapter at all.
+fn attempts_failed(failed: Vec<(wgpu::Backends, bool, ContextError)>) -> ContextError {
+    if failed.iter().all(|(_, _, e)| *e == ContextError::NoAdapter) {
+        return ContextError::NoAdapter;
+    }
+    let each: Vec<String> = failed
+        .iter()
+        .map(|(b, software, e)| {
+            let name = match *b {
+                wgpu::Backends::DX12 => "D3D12".to_string(),
+                wgpu::Backends::VULKAN => "Vulkan".to_string(),
+                other => format!("{other:?}"),
+            };
+            format!("{name} {}: {e}", if *software { "software" } else { "hardware" })
+        })
+        .collect();
+    ContextError::Device(format!("no desktop context; {}", each.join("; ")))
 }
 
 fn surface_and_context_on(
@@ -648,5 +668,31 @@ pub fn run_desktop(
         (Some(e), _) => Err(e),
         (None, Some(v)) => Ok(v.report),
         (None, None) => Err(ContextError::Device("the window was never made".into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failure_everywhere_keeps_every_attempts_reason() {
+        let hw = |b, e| (b, false, e);
+        let failed = vec![
+            hw(wgpu::Backends::DX12, ContextError::Device("adapter lost".into())),
+            hw(wgpu::Backends::VULKAN, ContextError::NoAdapter),
+            (wgpu::Backends::DX12, true, ContextError::NoAdapter),
+            (wgpu::Backends::VULKAN, true, ContextError::NoAdapter),
+        ];
+        let ContextError::Device(m) = attempts_failed(failed) else { panic!("a device error expected") };
+        assert!(m.contains("D3D12 hardware: device: adapter lost"), "{m}");
+        assert!(m.contains("Vulkan hardware: no GPU adapter"), "{m}");
+        assert!(m.contains("Vulkan software: no GPU adapter"), "{m}");
+        // Nothing found anywhere is still NoAdapter, which a capture reports as unavailable.
+        let none = vec![
+            hw(wgpu::Backends::DX12, ContextError::NoAdapter),
+            hw(wgpu::Backends::VULKAN, ContextError::NoAdapter),
+        ];
+        assert_eq!(attempts_failed(none), ContextError::NoAdapter);
     }
 }

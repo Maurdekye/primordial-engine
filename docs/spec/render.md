@@ -124,7 +124,9 @@ pub struct GpuContext { pub instance: wgpu::Instance, pub adapter: wgpu::Adapter
   backend whose turn never comes is never loaded. There is no probe process and no list of bad drivers. A desktop
   window that mirrors VR stays on pe-xr's Vulkan context (`DesktopView::on`); only a window pe-render makes its own
   context for (`surface_and_context`) takes this order. D3D12 compiles shaders with FXC, so a first frame may compile
-  more slowly.
+  more slowly. The fallback covers making the context only: a D3D12 context that is made but then fails in
+  `DesktopView::on` (configuring the surface, or a pipeline FXC can't compile) is an error, never retried on Vulkan,
+  as the no-probe ruling intends. When every attempt fails, the error names each one's reason.
   - **Override:** `PE_RENDER_BACKEND=vulkan` or `dx12` (also `d3d12`, any case) forces one backend for every context
     pe-render makes itself: the desktop window and headless contexts. Any other value is an error, never ignored.
     pe-xr's context is the runtime's device and ignores it.
