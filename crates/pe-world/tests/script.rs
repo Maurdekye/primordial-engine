@@ -99,7 +99,7 @@ fn named(t: AssetTarget) -> [u8; 32] {
 }
 
 fn tx(ops: Vec<Op>) -> Transaction {
-    Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
+    Transaction { inline: vec![], actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
 }
 
 struct Fx {

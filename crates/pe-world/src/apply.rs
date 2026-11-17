@@ -373,7 +373,14 @@ impl World {
             let i = i as u32;
             work.op(&mut cx, i, op).map_err(|r| (Some(i), r))?;
         }
+        // The inline blobs against what the ops introduced, with the registry after them (3.4).
+        crate::inline::check(work.store.registry(), tx, &tx.inline).map_err(|r| (None, r))?;
         *self = work;
+        // An applied edit's inline blobs go into the machine's store, on every machine that applies it (3.4). A
+        // refused one stores nothing.
+        for b in &tx.inline {
+            self.blobs().put(b);
+        }
         // An applied commit's source goes into the machine's store, on every machine that applies it, so each can
         // build the version (5.3; @coordinator-opus m3b68151991e0). A refused edit stores nothing; what a rollback,
         // or a dry run on the author's machine, leaves behind is store garbage, pruned with the store.
@@ -392,7 +399,16 @@ impl World {
                 .collect(),
             ops: cx.undo.into_iter().rev().collect(),
             blobs: Vec::new(),
+            inline: Vec::new(),
         };
+        // The inverse carries the bytes of the inline-class blobs its ops restore, from this machine's store (3.4).
+        let mut inverse = inverse;
+        let mut restored: Vec<Vec<u8>> = crate::inline::introduced(self.store.registry(), &inverse)
+            .iter()
+            .filter_map(|r| self.blobs().get(r).map(|b| b.to_vec()))
+            .collect();
+        restored.sort_by_key(|b| crate::components::BlobRef::of(b).hash);
+        inverse.inline = restored;
         let outcome = Outcome::Applied {
             created: cx.created,
             overwrote: cx.overwrote,

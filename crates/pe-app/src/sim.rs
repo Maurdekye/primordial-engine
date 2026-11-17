@@ -1089,8 +1089,14 @@ mod tests {
         s.tick(clock.host_time_of(Frame(1))).expect("ticked");
         let draft = world.draft_for(me.into());
         let create = Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] };
-        let tx =
-            Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops: vec![create], blobs: vec![] };
+        let tx = Transaction {
+            inline: vec![],
+            actor: Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops: vec![create],
+            blobs: vec![],
+        };
         let ticket = ports.queue.submit(Submission { tx: tx.clone(), base: 1 }).expect("room in the queue");
         s.tick(clock.host_time_of(Frame(2))).expect("ticked");
         let Some(Receipt::Submitted { change, frame, seq, .. }) = ports.queue.receipt(ticket, Instant::now()) else {
@@ -1138,7 +1144,14 @@ mod tests {
             Op::Register { components: vec![tag_desc(&v)] },
             Op::commit_script(AssetTarget::New(0), None, archive, Hash([1; 32]), Hash([2; 32]), Hash([3; 32]), 0),
         ];
-        let tx = Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+        let tx = Transaction {
+            inline: vec![],
+            actor: Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops,
+            blobs: vec![],
+        };
         let ticket = ports.queue.submit(Submission { tx, base: 1 }).expect("room in the queue");
         s.tick(clock.host_time_of(Frame(2))).expect("ticked");
         let Some(Receipt::Submitted { change, frame, .. }) = ports.queue.receipt(ticket, Instant::now()) else {
@@ -1608,6 +1621,7 @@ mod tests {
             if f % 10 == 0 {
                 let create = Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] };
                 let tx = Transaction {
+                    inline: vec![],
                     actor: Actor::Person,
                     label: None,
                     preconditions: vec![],

@@ -80,7 +80,7 @@ fn big_stack(f: impl FnOnce() + Send + 'static) {
 }
 
 fn tx(ops: Vec<Op>) -> Transaction {
-    Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
+    Transaction { inline: vec![], actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
 }
 
 /// A world of two editors, A (key 0) and B (key 1), where A has committed `source` at frame 0 with its tag and the

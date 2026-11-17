@@ -583,7 +583,14 @@ pub fn build_failed(
 }
 
 fn machine_entry(op: Op) -> Transaction {
-    Transaction { actor: Actor::Person, label: None, preconditions: Vec::new(), ops: vec![op], blobs: Vec::new() }
+    Transaction {
+        inline: vec![],
+        actor: Actor::Person,
+        label: None,
+        preconditions: Vec::new(),
+        ops: vec![op],
+        blobs: Vec::new(),
+    }
 }
 
 /// An attestation to submit, with the commit it attests: its edit queue receipt goes back to [`Attester::posted`].

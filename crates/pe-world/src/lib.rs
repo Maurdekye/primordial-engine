@@ -15,6 +15,7 @@ mod apply;
 pub mod components;
 pub mod edit;
 mod import;
+pub mod inline;
 pub mod input;
 mod leave;
 pub mod preset;

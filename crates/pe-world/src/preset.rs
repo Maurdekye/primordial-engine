@@ -259,6 +259,7 @@ fn transaction(seed: u64, blobs: &BlobStore, origin: Pos, balls: usize) -> Trans
         create(&mut ops, under, rows);
     }
     Transaction {
+        inline: vec![],
         actor: Actor::Person,
         label: Some("M1 ball pit (disposable genesis)".into()),
         preconditions: Vec::new(),

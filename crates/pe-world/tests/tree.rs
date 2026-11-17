@@ -276,7 +276,14 @@ fn the_cached_root_equals_the_root_from_scratch() {
     cached.set_member(keys.key(0), perm::EDIT);
     let mut scratch = cached.clone();
     let mut edit = |ops: Vec<Op>| {
-        let t = Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+        let t = Transaction {
+            inline: vec![],
+            actor: Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops,
+            blobs: vec![],
+        };
         author.next(Class::Edit, Frame(1), Bytes::from(t.encode()))
     };
     let balls: Vec<ObjectId> =

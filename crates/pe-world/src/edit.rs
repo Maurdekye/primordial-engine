@@ -40,6 +40,9 @@ pub struct Transaction {
     pub preconditions: Vec<Precondition>,
     pub ops: Vec<Op>,
     pub blobs: Vec<BlobRef>,
+    /// The bytes of the inline-class blobs the ops introduce (3.4, [`crate::inline`]), inside the signed entry: each
+    /// 1 to 256 bytes, in ascending order of hash, at most 1 KiB in all. Apply refuses a blob no op introduces.
+    pub inline: Vec<Vec<u8>>,
 }
 
 /// Who produced the transaction (7.1). An honest client's statement: permissions come from the author alone.
@@ -472,6 +475,11 @@ impl Transaction {
             w.raw(&b.hash);
             w.raw(&b.len.to_le_bytes());
         }
+        w.len(self.inline.len());
+        for b in &self.inline {
+            w.len(b.len());
+            w.raw(b);
+        }
         w.0
     }
 
@@ -712,6 +720,19 @@ impl<'a> R<'a> {
         for _ in 0..n {
             blobs.push(BlobRef { hash: self.arr()?, len: u64::from_le_bytes(self.arr()?) });
         }
-        Some(Transaction { actor, label, preconditions, ops, blobs })
+        // The inline blobs (3.4): one encoding per value, so each 1 to 256 bytes, in ascending order of hash.
+        let n = self.count(5, crate::inline::MAX_INLINE_BYTES)?;
+        let mut inline = Vec::with_capacity(n);
+        for _ in 0..n {
+            let len = self.u32()? as usize;
+            if len > crate::inline::MAX_INLINE_BLOB {
+                return None;
+            }
+            inline.push(self.take(len)?.to_vec());
+        }
+        if !crate::inline::canonical(&inline) {
+            return None;
+        }
+        Some(Transaction { actor, label, preconditions, ops, blobs, inline })
     }
 }

@@ -219,7 +219,8 @@ pub fn push_payload(ball: ObjectId, to: [f64; 3]) -> Vec<u8> {
     let t = Transform::local(to);
     let row = Row { component: Transform::ID, instance: 0, bytes: bytemuck::bytes_of(&t).to_vec() };
     let ops = vec![Op::SetRow { id: Target::Existing(ball), row }];
-    Transaction { actor: Actor::Person, label: None, preconditions: Vec::new(), ops, blobs: Vec::new() }.encode()
+    Transaction { inline: vec![], actor: Actor::Person, label: None, preconditions: Vec::new(), ops, blobs: Vec::new() }
+        .encode()
 }
 
 /// Each member's view of one frame.

@@ -773,7 +773,7 @@ pub fn to_world_built(
         });
     }
     op_of.resize(ops.len(), prev);
-    let tx = Transaction { actor, label: Some(r.label.clone()), preconditions, ops, blobs: blob_refs };
+    let tx = Transaction { inline: vec![], actor, label: Some(r.label.clone()), preconditions, ops, blobs: blob_refs };
     Ok(WorldEdit { tx, blobs, op_of })
 }
 
