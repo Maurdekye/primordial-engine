@@ -1451,7 +1451,7 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
     the source out of the entry without moving this check with it.
   - `activate_at` must equal the entry's frame stamp (logic.md 6.1); anything else is `Invalid`. Only the submitting
     machine knows the stamp, so a client leaves it at 0 and that machine sets it as it stamps the entry
-    (`Transaction::set_activation(frame)`, which stamps every `CommitScript` of the transaction; api.md 7.1).
+    (`Transaction::set_activation(frame)`, which stamps every `CommitScript` of the transaction; api.md 7).
   - `base: None` makes a new script and is refused as `Stale` if the asset has a row. `base: Some(v)` must equal
     the row's version, or the op is refused as `Stale { precondition: OWN_CHECK, current, winner }`, with the row's
     version as `current` and its entry as `winner`: the loser rebases (R7).
@@ -2209,9 +2209,9 @@ Each is a test in pe-world, pe-sim or pe-core unless marked [I on all thresholds
      governance, a claim, a script component row, a module version, `BodyState`, a pending attestation, the
      registry, a cooldown, a tombstone, a hand pack, a push window) each move the root, a walk from the root names
      exactly the damaged object or table, and every table but the empty `LINES` is reached. tests/tree.rs adds the
-     config, the seed, the settings, `physics_global` and the frame.
-   - Not yet tested [I]: a row version changed alone, with its row's bytes unchanged. M1 makes no `Local` objects
-     (6.6), so that case waits for them.
+     seed, a setting (the depth limit), pe-agree's settings record, `physics_global` and the frame.
+   - Not yet tested [I]: a row version changed alone, with its row's bytes unchanged.
+   - Waits for `Local` objects, which M1 doesn't make (6.6): a change to one changes nothing.
    - The repair half (rungs 1 and 2 cure each kind on the real replica) is @diverge-eng's, on the same hook.
 10. **Canonical trie and caches:** random insert and delete orders give equal roots and shapes; after random steps,
     snapshots and rollbacks the incremental root equals the root from scratch (`verify`).
