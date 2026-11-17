@@ -25,7 +25,7 @@ use winit::window::{Window, WindowId};
 use crate::camera::{Camera, DepthRange, Fov};
 use crate::desktop_hand::{DesktopHand, DesktopHandFeed, DesktopHandSettings, PointerInput, Target};
 use crate::effects::EffectCommand;
-use crate::gpu::{ContextError, GpuContext, backends, instance_descriptor};
+use crate::gpu::{BackendOverride, ContextError, GpuContext, desktop_order, instance_descriptor};
 use crate::notices::{StripCache, window_overlay, window_text_px};
 use crate::pacing::{DESKTOP_LADDER, Pacer, PacerSettings, PeriodSource};
 use crate::pose::quat;
@@ -63,6 +63,9 @@ pub struct DesktopConfig {
 #[derive(Clone, Debug, Default)]
 pub struct DesktopReport {
     pub adapter: String,
+    /// The window's setup, milliseconds: its surface and context, and the renderer's pipelines (FXC compiles them on
+    /// D3D12). 0 for a view on a context the caller made.
+    pub setup_ms: f64,
     pub frames: u64,
     /// Present intervals, milliseconds.
     pub intervals_ms: Vec<f64>,
@@ -205,16 +208,37 @@ pub struct DesktopView {
     report: DesktopReport,
 }
 
-/// The window's surface and a GPU context that can present to it: Vulkan first, then D3D12 (render.md 4). The
-/// instance, adapter and device are made under the creation lock.
+/// A desktop-only window's surface and a GPU context that can present to it (render.md 4): each backend of
+/// [`desktop_order`] (D3D12, then Vulkan, on Windows; or the one [`crate::gpu::BACKEND_VAR`] forces) in an instance of
+/// its own, hardware first, then software. A backend whose turn never comes is never loaded. A window that mirrors
+/// VR draws on pe-xr's context instead ([`DesktopView::on`]). The instance, adapter and device are made under the
+/// creation lock.
 pub fn surface_and_context(window: Arc<Window>) -> Result<(wgpu::Surface<'static>, GpuContext), ContextError> {
+    let order = desktop_order(BackendOverride::from_env()?);
+    let mut last = ContextError::NoAdapter;
+    for software in [false, true] {
+        for &backends in &order {
+            match surface_and_context_on(window.clone(), backends, software) {
+                Ok(made) => return Ok(made),
+                Err(e) => last = e,
+            }
+        }
+    }
+    Err(last)
+}
+
+fn surface_and_context_on(
+    window: Arc<Window>,
+    backends: wgpu::Backends,
+    software: bool,
+) -> Result<(wgpu::Surface<'static>, GpuContext), ContextError> {
     let (instance, surface) = {
         let _one_at_a_time = crate::gpu::creation_lock();
-        let instance = wgpu::Instance::new(instance_descriptor(backends()));
+        let instance = wgpu::Instance::new(instance_descriptor(backends));
         let surface = instance.create_surface(window).map_err(|e| ContextError::Device(e.to_string()))?;
         (instance, surface)
     };
-    let ctx = GpuContext::desktop(instance, Some(&surface))?;
+    let ctx = GpuContext::desktop(instance, Some(&surface), software)?;
     Ok((surface, ctx))
 }
 
@@ -227,8 +251,11 @@ impl DesktopView {
         feed: Arc<DesktopHandFeed>,
         sink: Box<dyn EffectSink>,
     ) -> Result<DesktopView, ContextError> {
+        let t0 = Instant::now();
         let (surface, ctx) = surface_and_context(window.clone())?;
-        Self::on(window, surface, ctx, cfg, slot, feed, sink)
+        let mut view = Self::on(window, surface, ctx, cfg, slot, feed, sink)?;
+        view.report.setup_ms = t0.elapsed().as_secs_f64() * 1e3;
+        Ok(view)
     }
 
     /// The view on a surface and context the caller made (one at a time, under [`crate::gpu::creation_lock`]).

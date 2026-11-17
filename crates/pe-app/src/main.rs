@@ -196,6 +196,8 @@ fn main() {
     let (vr, run_for) = (options.vr, options.run_for);
     let started = Instant::now();
 
+    // Each GPU context's backend, adapter and driver, as it is made (render.md 4).
+    pe_render::gpu::set_context_log(|d| println!("render: {d}"));
     let rate = SimRate::DEFAULT;
     let host = clock::shared();
     let slot = Arc::new(FrameSlot::new());

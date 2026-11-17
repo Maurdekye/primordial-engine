@@ -142,8 +142,8 @@ fn main() {
     iv.sort_by(f64::total_cmp);
     let pct = |p: f64| iv.get(((iv.len().max(1) - 1) as f64 * p) as usize).copied().unwrap_or(0.0);
     println!(
-        "adapter {}; monitor {:?} mHz; frames {}; skipped {}; quality changes {}",
-        r.adapter, r.monitor_mhz, r.frames, r.skipped, r.quality_changes
+        "adapter {}; setup {:.0} ms; monitor {:?} mHz; frames {}; skipped {}; quality changes {}",
+        r.adapter, r.setup_ms, r.monitor_mhz, r.frames, r.skipped, r.quality_changes
     );
     if let Some(s) = &r.snapshot {
         println!("snapshot: {s:?}");
