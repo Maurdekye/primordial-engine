@@ -335,7 +335,8 @@ BASE=$fbase expect feature-policy-own-deleted fail "this landing deletes scripts
 #     test's panic and what a failed linker said. Then the gate: with pe.gate.tier2 on, a red run fails it until
 #     scripts/tier2_explained.txt names the run; with note, it is only reported; a malformed answer, and an answer
 #     that never finishes, don't block it (the hook runs this step while git holds main's locks, so the check gives
-#     up after 20 s in all); and an unknown mode is an error.
+#     up after 20 s in all); and an unknown mode is an error. The check's cache (--cache) answers for a run it has
+#     judged without reading its jobs again, judges a re-run afresh, and lives in the clone's git folder.
 export PE_CI_REPO=example/tier2-fixture
 fx="$tmp/fixture"; mkdir -p "$fx"; fxw=$fx; [ "$win" = 1 ] && fxw=$(cygpath -m "$fx")
 fxu="file:///${fxw#/}"
@@ -349,9 +350,9 @@ jobs_json() {  # run id, then one "name|conclusion|started" per job (started: 1 
   done
   printf '{"total_count":%s,"jobs":[%s]}' "$#" "$out" > "$fx/jobs-$id.json"
 }
-run_json() {  # id, conclusion, [event, [head repository, [created at]]]: one run as GitHub lists it
-  printf '{"id":%s,"conclusion":"%s","head_sha":"%sabcdef0123456789","html_url":"https://example.invalid/%s","created_at":"%s","event":"%s","head_branch":"main","head_repository":{"full_name":"%s"},"jobs_url":"%s/jobs-%s.json"}' \
-    "$1" "$2" "$1" "$1" "${5:-2026-11-17T00:00:00Z}" "${3:-push}" "${4:-$PE_CI_REPO}" "$fxu" "$1"
+run_json() {  # id, conclusion, [event, [head repository, [created at, [attempt]]]]: one run as GitHub lists it
+  printf '{"id":%s,"run_attempt":%s,"conclusion":"%s","head_sha":"%sabcdef0123456789","html_url":"https://example.invalid/%s","created_at":"%s","event":"%s","head_branch":"main","head_repository":{"full_name":"%s"},"jobs_url":"%s/jobs-%s.json"}' \
+    "$1" "${6:-1}" "$2" "$1" "$1" "${5:-2026-11-17T00:00:00Z}" "${3:-push}" "${4:-$PE_CI_REPO}" "$fxu" "$1"
 }
 jobs_json 424242 "tier 2, macos-arm64|failure|1" "native audit and secret scan|success|1"
 jobs_json 424243; jobs_json 424245  # cancelled while waiting: no job started
@@ -370,9 +371,10 @@ printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424248 failure pull_request som
 printf '{"workflow_runs":"not a list"}\n' > "$fx/malformed.json"
 git -C "$R" show "$sha:scripts/ci_status.py" > "$tmp/ci_status.py" || die "$rev has no scripts/ci_status.py"
 : > "$tmp/explained-none.txt"
-ci() {  # name, listing file, wanted exit, regex its last line must match: ci_status.py --check on its own
+ci() {  # name, listing file, wanted exit, regex its last line must match, [cache file]: ci_status.py --check on its own
   local name=$1 f=$2 want=$3 re=$4 rc
-  PE_CI_RUNS_URL="$fxu/$f" "$py" -I "$tmp/ci_status.py" --check "$tmp/explained-none.txt" > "$tmp/$name.log" 2>&1
+  PE_CI_RUNS_URL="$fxu/$f" "$py" -I "$tmp/ci_status.py" --check "$tmp/explained-none.txt" ${5:+--cache "$5"} \
+    > "$tmp/$name.log" 2>&1
   rc=$?
   if [ "$rc" = "$want" ] && tail -1 "$tmp/$name.log" | grep -Eq -- "$re"; then
     pass=$((pass + 1)); echo "test_gate: ok   $name (ci_status exit $rc)"
@@ -408,6 +410,57 @@ done
 printf '{"workflow_runs":[%s%s]}\n' "$gap" "$(run_json 424242 failure)" > "$fx/long-gap.json"
 ci ci-judges-5-runs-at-most long-gap.json 3 \
   "^ci_status: no verdict in the 5 newest runs judged \(not run: macos-arm64 in run 424285; .*; macos-arm64 in run 424281\); older runs not read$"
+# --cache (coordinator) keeps a finished run's verdict under its id and attempt, so a later check reads
+# only the listing. red-gone.json lists red.json's runs with jobs that can't be read: unreadable (3) without a cache,
+# and the same red run as before from a cache that holds them. A re-run (a new attempt) is judged afresh; a cache
+# that isn't JSON, or whose entries aren't in its shape, is judged past (and rewritten); one that can't be written
+# changes no answer and leaves no temporary file behind; a run whose jobs aren't all finished isn't kept, nor a
+# failure that lists no jobs.
+sed 's#/jobs-#/gone-#g' "$fx/red.json" > "$fx/red-gone.json"
+red_re="^ci_status: tier 2 RED: run 424242 \(failure\) .*jobs tier 2, macos-arm64: .*past 1 run"
+ci ci-red-gone-is-unreadable-without-a-cache red-gone.json 3 "^ci_status: GitHub can't be read"
+ci ci-cache-first-check-reads-the-jobs red.json 1 "$red_re" "$tmp/c1.json"
+ci ci-cache-answers-without-the-jobs red-gone.json 1 "$red_re" "$tmp/c1.json"
+jobs_json 424290 "tier 2, linux-x64|failure|1"
+printf '{"workflow_runs":[%s]}\n' "$(run_json 424290 failure)" > "$fx/attempt1.json"
+ci ci-cache-attempt-1-red attempt1.json 1 "^ci_status: tier 2 RED: run 424290 \(failure\)" "$tmp/c2.json"
+jobs_json 424290 "tier 2, linux-x64|success|1"  # the re-run passed
+printf '{"workflow_runs":[%s]}\n' "$(run_json 424290 success push "$PE_CI_REPO" 2026-11-17T00:00:00Z 2)" > "$fx/attempt2.json"
+ci ci-cache-a-re-run-is-judged-afresh attempt2.json 0 "^ci_status: tier 2 green: run 424290 on 424290abcd$" "$tmp/c2.json"
+printf 'not JSON' > "$tmp/c3.json"
+ci ci-cache-not-json-is-judged-past red.json 1 "$red_re" "$tmp/c3.json"
+ci ci-cache-not-json-is-rewritten red-gone.json 1 "$red_re" "$tmp/c3.json"
+printf '{"424242:1":"green","424243:1":{"verdict":"green"}}' > "$tmp/c4.json"
+ci ci-cache-entry-out-of-shape-is-judged-past red.json 1 "$red_re" "$tmp/c4.json"
+mkdir "$tmp/c5.json"
+ci ci-cache-unwritable-changes-no-answer red.json 1 "$red_re" "$tmp/c5.json"
+if ls "$tmp"/c5.json.*.tmp > /dev/null 2>&1; then
+  bad=$((bad + 1)); echo "test_gate: BAD  ci-cache-unwritable-leaves-no-temporary-file"; ls "$tmp"/c5.json.*.tmp | sed 's/^/    /'
+else
+  pass=$((pass + 1)); echo "test_gate: ok   ci-cache-unwritable-leaves-no-temporary-file"
+fi
+# A run with a job that has no conclusion yet (GitHub may list a run as finished before its jobs) is judged, but
+# not kept: the next check reads its jobs again.
+printf '{"total_count":2,"jobs":[{"name":"tier 2, linux-x64","conclusion":"failure","runner_name":"GitHub Actions 1","steps":[{"name":"Run","conclusion":"failure"}]},{"name":"tier 2, macos-arm64","conclusion":null,"runner_name":"","steps":[]}]}' \
+  > "$fx/jobs-424291.json"
+printf '{"workflow_runs":[%s]}\n' "$(run_json 424291 failure)" > "$fx/unfinished.json"
+sed 's#/jobs-#/gone-#g' "$fx/unfinished.json" > "$fx/unfinished-gone.json"
+ci ci-cache-unfinished-jobs-judged unfinished.json 1 "^ci_status: tier 2 RED: run 424291 \(failure\) .*jobs tier 2, linux-x64: " \
+  "$tmp/c6.json"
+ci ci-cache-unfinished-jobs-not-kept unfinished-gone.json 3 "^ci_status: GitHub can't be read" "$tmp/c6.json"
+# A finished run that lists no jobs is kept only when it was cancelled before any started (424243, above) or
+# couldn't start: a failure listing none is judged by its own conclusion but read again next time, since its jobs
+# may show no verdict (chunks-reviewer's nit).
+jobs_json 424292; jobs_json 424293
+printf '{"workflow_runs":[%s]}\n' "$(run_json 424292 failure)" > "$fx/no-jobs.json"
+printf '{"workflow_runs":[%s]}\n' "$(run_json 424293 startup_failure)" > "$fx/no-start.json"
+sed 's#/jobs-#/gone-#g' "$fx/no-jobs.json" > "$fx/no-jobs-gone.json"
+sed 's#/jobs-#/gone-#g' "$fx/no-start.json" > "$fx/no-start-gone.json"
+ci ci-cache-failure-without-jobs-judged no-jobs.json 1 \
+  "^ci_status: tier 2 RED: run 424292 \(failure\) on 424292abcd, jobs \(none named\): " "$tmp/c7.json"
+ci ci-cache-failure-without-jobs-not-kept no-jobs-gone.json 3 "^ci_status: GitHub can't be read" "$tmp/c7.json"
+ci ci-cache-startup-failure-judged no-start.json 1 "^ci_status: tier 2 RED: run 424293 \(startup_failure\) " "$tmp/c8.json"
+ci ci-cache-startup-failure-kept no-start-gone.json 1 "^ci_status: tier 2 RED: run 424293 \(startup_failure\) " "$tmp/c8.json"
 PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --new "$tmp/t2state" > "$tmp/new1.log" 2>&1; r1=$?
 PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --new "$tmp/t2state" > "$tmp/new2.log" 2>&1; r2=$?
 if [ "$r1$r2" = 00 ] && [ "$(cat "$tmp/new1.log")" = "TIER2 RED 424242 failure https://example.invalid/424242 jobs: tier 2, macos-arm64" ] \
@@ -565,6 +618,13 @@ new_case; echo "tier 2 test" >> "$R/README.md"; commit -m "a change while tier 2
 PE_GATE_TIER2=note expect tier2-note pass "^gate: NOTE: tier 2 RED: run 424242" "not blocking yet: pe\.gate\.tier2 is note" "^gate: PASS"
 PE_CI_RUNS_URL="$fxu/malformed.json" expect tier2-malformed pass "^gate: NOTE: tier 2's check failed \(exit 4" "^gate: PASS"
 PE_GATE_TIER2=maybe expect tier2-unknown-mode error "pe\.gate\.tier2 \(or PE_GATE_TIER2\) is 'maybe'; it must be on, note or off"
+# The gate keeps the check's cache in the clone's git folder: the gates above filled it, so red-gone.json's red run
+# still fails the gate while its jobs can't be read. Without that file the same check can't read them, and passes.
+PE_CI_RUNS_URL="$fxu/red-gone.json" expect tier2-cache-in-the-clones-git-folder fail \
+  "^gate: tier 2 RED: run 424242 \(failure\)" "^gate: FAIL"
+rm -f "$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)/pe-tier2-verdicts.json"
+PE_CI_RUNS_URL="$fxu/red-gone.json" expect tier2-without-that-file-unreadable pass \
+  "^gate: NOTE: tier 2's state is unknown \(GitHub can't be read" "^gate: PASS"
 # A server that answers with a status line and then one header byte a second: a socket's own time-out never fires,
 # so only the check's 20 s limit can end the call. It serves until the check is over (15 minutes at most; the exit
 # trap stops it too), since the gate reaches step 5 only after its scans and audit: on a loaded machine that took
