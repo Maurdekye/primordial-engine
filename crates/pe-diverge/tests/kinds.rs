@@ -9,9 +9,11 @@
 //!
 //! - `BodyState`: the replica rewrites every `BodyState` row from its physics world right before it takes each root
 //!   (pe-replica's `take_root`), so a damaged row never reaches a root and there is nothing to repair. That is
-//!   asserted instead. A divergence of the physics world itself is out of `test_util`'s reach.
-//! - `HandPack` needs a hand: pe-world drops a pack whose hand has no `Hand` row on the next frame (input.rs), so
-//!   [`fixture`] gives `five_kinds`' hand one, and the pack (hold 255) lives past the first cuts.
+//!   asserted instead.
+//! - The physics world (@item:primordial-engine/m1-follow-up-a-physics-world-divergence-is-repai): a body's velocity
+//!   is damaged in the replica's own physics world (pe-replica's `test-util` hook `damage_body`), and both rungs cure
+//!   it. Rung 2 fetches the body's object leaf and the honest physics image, which the import builds the new physics
+//!   world from (never from fetched `BodyState` rows).
 //!
 //! Agreement is a stand-in (as in tests/common): every 8 frames a cut 2 frames back, final with the root a quorum of
 //! the three members hold. The replicas, their trees, their replays and their imports are pe-replica's and pe-world's.
@@ -34,7 +36,7 @@ use pe_seams::{
     Tree, ViewObject,
 };
 use pe_sim::{SimStore, Transform};
-use pe_world::components::{Body, Hand, Shape, body_kind, shape_kind};
+use pe_world::components::{Body, Shape, body_kind, shape_kind};
 use pe_world::test_util::{Kind, divergence, five_kinds};
 use pe_world::{GENESIS, World};
 
@@ -348,10 +350,9 @@ impl Net {
 /// A falling ball, so the physics writes a `BodyState` row the live damage can find.
 const BALL: u128 = 0xba11;
 
-/// `five_kinds()`, its hand given a `Hand` row so its pack lives (module doc), plus [`BALL`].
+/// `five_kinds()` plus [`BALL`].
 fn fixture() -> World {
     let mut w = five_kinds();
-    w.insert(ObjectId::from_u128(101), Hand { owner: MemberKey([1; 32]), ..Hand::default() }).expect("the hand");
     let id = ObjectId::from_u128(BALL);
     w.create(id, None, MemberKey([1; 32]), GENESIS).expect("fresh id");
     w.insert(id, Transform::at(Pos::ORIGIN)).expect("live object");
@@ -441,6 +442,63 @@ fn a_damaged_body_state_row_never_reaches_a_root() {
         for p in &net.peers {
             let c = p.d.counters();
             assert_eq!((c.diverged, c.cuts_compared, c.cuts_matched), (0, 4, 4), "{c:?}");
+        }
+    }
+}
+
+/// The ball's velocity off by 1 cm/s along x in the victim's physics world.
+const DV: [f32; 3] = [0.01, 0.0, 0.0];
+
+#[test]
+fn a_physics_world_divergence_after_a_verified_cut_is_cured_by_rung_1() {
+    let ball = ObjectId::from_u128(BALL);
+    let mut net = Net::new(fixture(), None);
+    net.run(18);
+    assert!(net.converged());
+    assert_eq!(net.peers[VICTIM].d.verified_cut().map(|(c, _)| c.frame), Some(Frame(14)));
+    // Live, at frame 18: the next cut (22) takes its root after the physics writes the ball's rows.
+    assert!(net.peers[VICTIM].r.damage_body(ball, DV), "the ball has a moving body");
+    net.run(14);
+    let v = &net.peers[VICTIM];
+    let c = v.d.counters().clone();
+    assert_eq!(c.diverged, 1, "the physics damage reached a root: {c:?}");
+    assert_eq!(c.cured_by_rung[..2], [1, 0], "{c:?}");
+    assert!(v.fetched().is_empty(), "rung 1 fetched {:?}", v.fetched());
+    assert!(!v.sent.iter().any(|m| matches!(m, Msg::PhysicsRequest { .. })), "rung 1 asked for a physics image");
+    assert!(v.bundles().is_empty());
+    assert!(net.converged(), "not converged after rung 1");
+    assert!(!v.d.is_repairing());
+}
+
+#[test]
+fn a_physics_world_divergence_from_the_start_is_cured_by_rung_2_with_the_honest_image() {
+    let ball = ObjectId::from_u128(BALL);
+    let mut net = Net::new(fixture(), None);
+    // From the start: the damage is in the victim's saved state at frame 0 too, so a replay reproduces it.
+    let r = &mut net.peers[VICTIM].r;
+    assert!(r.damage_body(ball, DV), "the ball has a moving body");
+    r.rekeyframe();
+    net.run(40);
+    let v = &net.peers[VICTIM];
+    let c = v.d.counters().clone();
+    assert_eq!(c.diverged, 1, "{c:?}");
+    assert_eq!(c.cured_by_rung[..2], [0, 1], "{c:?}");
+    // The walk names the ball's leaf, and only it is fetched; the import needs the honest physics image with it.
+    assert_eq!(v.fetched(), vec![LeafKey::Object(ball)]);
+    assert!(v.sent.iter().any(|m| matches!(m, Msg::PhysicsRequest { .. })), "no physics image asked for");
+    let b = v.bundles().pop().expect("a rung-2 cure writes a bundle");
+    assert!(b.differing.contains(&LeafKey::Object(ball)), "{:?}", b.differing);
+    assert!(net.converged(), "not converged after rung 2");
+    assert!(!v.d.is_repairing());
+    // It stays cured: the next cuts match (the physics world itself was replaced, not just the rows).
+    let matched = c.cuts_matched;
+    let mut net = net;
+    net.run(24);
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert_eq!((c.diverged, c.cuts_matched), (1, matched + 3), "{c:?}");
+    for (i, p) in net.peers.iter().enumerate() {
+        if i != VICTIM {
+            assert_eq!(p.d.counters().diverged, 0, "honest member {i} diverged");
         }
     }
 }
