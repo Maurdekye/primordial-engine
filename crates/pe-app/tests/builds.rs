@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
-use pe_app::builds::{Attester, BuildConfig, Builder, Built, attestation};
+use pe_app::builds::{Attest, Attester, BuildConfig, Builder, Built, attestation};
 use pe_logic::build::Toolchain;
 use pe_replica::logic::{LogicRunner, ModuleInbox};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
@@ -97,7 +97,8 @@ fn a_voter_builds_checks_loads_and_attests_once() {
         let pass = b.pass(w.pending(), blob_of(&w), &builder, &inbox);
         assert!(pass.failed.is_empty(), "{:?}", pass.failed);
         assert_eq!(pass.loaded, [(LAMP, v())]);
-        assert_eq!(pass.attest, [attestation(LAMP, v(), built.described.module)]);
+        let tx = attestation(LAMP, v(), built.described.module);
+        assert_eq!(pass.attest, [Attest { asset: LAMP, version: w.pending()[&LAMP].version, tx }]);
         let again = b.pass(w.pending(), blob_of(&w), &builder, &inbox);
         assert!(again.loaded.is_empty() && again.attest.is_empty() && again.failed.is_empty(), "{again:?}");
     });
@@ -158,5 +159,34 @@ fn a_counted_voter_or_a_voided_commit_gets_no_attestation() {
         assert!(w.pending()[&LAMP].void.is_some(), "unattested at D");
         let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
         assert!(pass.loaded.is_empty() && pass.attest.is_empty() && pass.failed.is_empty(), "{pass:?}");
+    });
+}
+
+/// A posted attestation that the final state still lacks, once the final frame has passed its stamp, is posted again
+/// while D is ahead (it was voided or dropped, whatever the cause). One not yet decided, one counted, and one past D
+/// are not.
+#[test]
+fn an_attestation_the_final_state_lacks_is_posted_again_while_d_is_ahead() {
+    big_stack(|| {
+        let (builder, inbox) = builder("repost");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let module = built.described.module;
+        let mut w = committed(&built, builder.ids(), module);
+        let (version, deadline) = (w.pending()[&LAMP].version, w.pending()[&LAMP].deadline);
+        let mut b = Attester::new(keys().key(1));
+        assert_eq!(b.pass(w.pending(), blob_of(&w), &builder, &inbox).attest.len(), 1);
+        b.posted(LAMP, version, Frame(3));
+        assert!(b.reposts(Frame(5), Frame(3), w.pending()).is_empty(), "frame 3 isn't final yet");
+        let again = Attest { asset: LAMP, version, tx: attestation(LAMP, v(), module) };
+        assert_eq!(b.reposts(Frame(5), Frame(4), w.pending()), std::slice::from_ref(&again));
+        assert!(b.reposts(Frame(6), Frame(5), w.pending()).is_empty(), "forgotten until the new receipt");
+        b.posted(LAMP, version, Frame(4));
+        assert!(b.reposts(deadline, Frame(5), w.pending()).is_empty(), "D has come");
+        b.posted(LAMP, version, Frame(4));
+        let mut voter = EntryBuilder::new(keys(), 1);
+        let entry = voter.next(Class::Edit, Frame(4), Bytes::from(again.tx.encode()));
+        assert!(matches!(w.apply_edit(Frame(4), &entry).0, Outcome::Applied { .. }));
+        assert!(b.reposts(Frame(6), Frame(5), w.pending()).is_empty(), "counted");
+        assert!(b.reposts(Frame(6), Frame(5), w.pending()).is_empty(), "and forgotten");
     });
 }
