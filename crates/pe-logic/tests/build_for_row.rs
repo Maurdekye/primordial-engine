@@ -341,3 +341,77 @@ fn the_authors_commit_carries_rustcs_warnings_about_the_script_only() {
     .unwrap_or_else(|r| panic!("{r}"));
     assert!(quiet.warnings.is_empty(), "{:?}", quiet.warnings);
 }
+
+#[test]
+fn a_mismatch_saves_a_bug_bundle_with_what_finding_the_gap_needs() {
+    // logic.md 6.2b: a Mismatch that survives the clean rebuild means prevention has a gap; the machine keeps the
+    // archive, both hashes, B, the module, the dep-info and the toolchain's file hashes, locally.
+    let root = scratch("bundle");
+    let archive = pack(&lamp_dir()).unwrap();
+    let other = pe_core::Hash::of("pe.logic.module", b"a module nobody built");
+    let f = for_row(&archive, &root, &tc(), other).err().expect("a mismatch");
+    assert!(f.wants_bundle(false), "a Mismatch is always bundled");
+    let dir = pe_logic::build::save_bug_bundle(
+        &tc(),
+        &root.join("bugs"),
+        &archive,
+        other,
+        &f,
+        &engine_sdk(),
+        &root.join("t"),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(dir.starts_with(root.join("bugs")), "{}", dir.display());
+    assert_eq!(std::fs::read(dir.join("source.pe-src")).unwrap(), archive);
+    let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
+    for want in [
+        "reason: Mismatch".to_string(),
+        format!("author_module: {other}"),
+        format!("this machine's module: {}", f.module.unwrap()),
+        format!("build identity B: {}", pe_logic::build::build_identity(&tc(), &engine_sdk()).unwrap()),
+        "release:".to_string(),
+        format!("os: {}", std::env::consts::OS),
+        "cpu: ".to_string(),
+        "this machine's absolute paths".to_string(),
+    ] {
+        assert!(report.contains(&want), "missing {want:?} in:\n{report}");
+    }
+    assert!(!report.contains("not gathered"), "{report}");
+    // This machine's module, before metering: its metered hash is the one reported.
+    let wasm = std::fs::read(dir.join("module.wasm")).unwrap();
+    let s = Settings::default();
+    assert_eq!(Script::load(&engine(&s).unwrap(), s, &wasm).unwrap().module_hash(), f.module.unwrap());
+    assert!(dir.join("deps/script.d").is_file(), "the script's dep-info");
+    let tool = std::fs::read_to_string(dir.join("toolchain-files.txt")).unwrap();
+    assert!(tool.lines().any(|l| l.starts_with("lib/rustlib/wasm32-unknown-unknown/")), "the wasm32 std");
+    assert!(tool.lines().any(|l| l.contains("rust-lld")), "the linker");
+    assert!(tool.lines().all(|l| l.split(' ').count() == 3), "path size hash");
+    assert!(tool.lines().any(|l| l.starts_with("bin/rustc")), "rustc");
+    assert!(!tool.contains(".pdb") && !tool.contains("clippy") && !tool.contains("llvm-objdump"), "{tool}");
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    assert!(name.is_ascii() && name.starts_with("bug-"), "{name}");
+    let sdk = std::fs::read_to_string(dir.join("sdk-files.txt")).unwrap();
+    assert!(sdk.lines().any(|l| l.starts_with("Cargo.toml ")) && sdk.lines().any(|l| l.starts_with("src/lib.rs ")));
+    // A second bundle of the same failure gets its own folder.
+    let again = pe_logic::build::save_bug_bundle(
+        &tc(),
+        &root.join("bugs"),
+        &archive,
+        other,
+        &f,
+        &engine_sdk(),
+        &root.join("t"),
+    )
+    .unwrap();
+    assert_ne!(again, dir);
+}
+
+#[test]
+fn a_bug_bundle_is_for_a_gap_not_for_this_machines_own_trouble() {
+    let f = |reason| pe_logic::build::Failed { reason, module: None, attempts: 1, detail: String::new() };
+    assert!(f(FailReason::Compile).wants_bundle(true) && f(FailReason::Refused).wants_bundle(true));
+    assert!(!f(FailReason::Compile).wants_bundle(false) && !f(FailReason::Refused).wants_bundle(false));
+    for r in [FailReason::Local, FailReason::Cap] {
+        assert!(!f(r).wants_bundle(true), "{r:?}");
+    }
+}
