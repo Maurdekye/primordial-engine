@@ -440,6 +440,7 @@ impl World {
             let rows: Vec<_> = o.rows.iter().map(|(c, b, v)| (*c, b.as_slice(), *v)).collect();
             w.store.import_object(o.id, &o.node, &rows).map_err(|_| ImportError::BadProof(*i))?;
         }
+        let tables_imported: Vec<u8> = tables.iter().map(|(t, _)| *t).collect();
         for (t, rec) in tables {
             if t == table::REGISTRY {
                 continue;
@@ -458,6 +459,26 @@ impl World {
                 .set_registry(Arc::new(registry_of(entries.into_iter().map(|(_, d)| d))?))
                 .map_err(|_| mismatch())?;
             w.script_ids = Arc::new(keep.into_iter().filter(|(_, a)| *a != [0; 32]).collect());
+        }
+        // The inline blobs (3.4; S2 v1.8): each one an imported row references, in its one order; an inline-class
+        // simulation blob the rows need must arrive or be here already, or this machine could step differently.
+        let ids: Vec<ObjectId> = objects.iter().map(|(_, o)| o.id).collect();
+        let tombstones = tables_imported.contains(&table::TOMBSTONES);
+        let refs = crate::inline::state_refs(&w, &ids, tombstones);
+        let mut given = std::collections::BTreeSet::new();
+        for (i, b) in import.blobs.iter().enumerate() {
+            let r = crate::components::BlobRef::of(b);
+            if !refs.contains_key(&r) || given.last().is_some_and(|l: &crate::components::BlobRef| l.hash >= r.hash) {
+                return Err(ImportError::BadBlob(i));
+            }
+            given.insert(r);
+        }
+        if let Some((r, _)) = refs.iter().find(|(r, sim)| **sim && !given.contains(*r) && self.blobs().get(r).is_none())
+        {
+            return Err(ImportError::MissingBlob(Hash(r.hash)));
+        }
+        for b in &import.blobs {
+            w.blobs().put(b);
         }
         w.store.set_frame(import.cut.at.frame);
         Ok(w)

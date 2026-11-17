@@ -3,13 +3,15 @@
 //! Its bytes ride inside the signed entry that introduces it, and in a state import, so every machine that has the
 //! entry or the state has the bytes. A larger blob is never inline.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use pe_core::ObjectId;
 use pe_seams::Reason;
 use pe_sim::{ComponentDesc, FieldKind, Registry};
 
 use crate::components::BlobRef;
 use crate::edit::{Op, Transaction};
+use crate::world::World;
 
 /// The largest inline-class blob, in bytes (3.4).
 pub const MAX_INLINE_BLOB: usize = 256;
@@ -23,19 +25,47 @@ pub fn is_inline(r: &BlobRef) -> bool {
     (1..=MAX_INLINE_BLOB as u64).contains(&r.len)
 }
 
-/// The blob references in a row of `desc`, in field order: every element of every `BlobRef` and `SimBlobRef` field.
-/// `None` if the row is not `desc`'s size.
-pub fn row_blobs(desc: &ComponentDesc, row: &[u8]) -> Option<Vec<BlobRef>> {
+/// The blob references in a row of `desc`, in field order: every element of every `BlobRef` and `SimBlobRef` field,
+/// each with whether it is a simulation blob. `None` if the row is not `desc`'s size.
+pub fn row_blobs(desc: &ComponentDesc, row: &[u8]) -> Option<Vec<(BlobRef, bool)>> {
     if row.len() != desc.size() {
         return None;
     }
     let mut out = Vec::new();
     for f in desc.fields().iter().filter(|f| matches!(f.kind, FieldKind::BlobRef | FieldKind::SimBlobRef)) {
         for k in 0..f.count as usize {
-            out.push(blob_at(row, f.offset as usize + k * 40)?);
+            out.push((blob_at(row, f.offset as usize + k * 40)?, f.kind == FieldKind::SimBlobRef));
         }
     }
     Some(out)
+}
+
+/// The inline-class references the state holds for these objects, and for every tombstone if `tombstones` (their
+/// kept rows, which `Undelete` restores; @engine-architect), each with whether any field holding it is a
+/// simulation blob (3.4).
+pub(crate) fn state_refs(w: &World, objects: &[ObjectId], tombstones: bool) -> BTreeMap<BlobRef, bool> {
+    let reg = w.store.registry();
+    let mut out: BTreeMap<BlobRef, bool> = BTreeMap::new();
+    let mut add = |c, row: &[u8]| {
+        for (r, sim) in reg.get(c).and_then(|d| row_blobs(d, row)).unwrap_or_default() {
+            if is_inline(&r) {
+                *out.entry(r).or_default() |= sim;
+            }
+        }
+    };
+    for &id in objects {
+        for d in reg.iter() {
+            if let Some(row) = w.store.get_raw(d.id(), id) {
+                add(d.id(), row);
+            }
+        }
+    }
+    if tombstones {
+        for t in w.tombstones.values() {
+            t.rows.iter().for_each(|(c, row, _)| add(*c, row));
+        }
+    }
+    out
 }
 
 fn blob_at(bytes: &[u8], at: usize) -> Option<BlobRef> {
@@ -49,7 +79,13 @@ fn blob_at(bytes: &[u8], at: usize) -> Option<BlobRef> {
 /// unknown component or a wrong size introduces nothing (the op itself was refused, or the edit would not be here).
 pub fn introduced(reg: &Registry, tx: &Transaction) -> BTreeSet<BlobRef> {
     let row = |c, bytes: &[u8]| -> Vec<BlobRef> {
-        reg.get(c).and_then(|d| row_blobs(d, bytes)).unwrap_or_default().into_iter().filter(is_inline).collect()
+        reg.get(c)
+            .and_then(|d| row_blobs(d, bytes))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|b| b.0)
+            .filter(is_inline)
+            .collect()
     };
     let mut out = BTreeSet::new();
     for op in &tx.ops {

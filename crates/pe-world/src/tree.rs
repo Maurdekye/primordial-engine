@@ -609,6 +609,19 @@ impl Tree for WorldTree<'_> {
     fn verify(&self) -> Result<(), Mismatch> {
         self.world.verify_tree_cache(self.domain)
     }
+
+    /// The inline-class blobs these leaves reference (3.4; S2 v1.8): an object's rows, and every tombstone's kept
+    /// rows when the tombstones table is among the keys, as far as this machine has the bytes.
+    fn export_blobs(&self, keys: &[LeafKey]) -> Vec<bytes::Bytes> {
+        let ids: Vec<ObjectId> =
+            keys.iter().filter_map(|k| if let LeafKey::Object(id) = k { Some(*id) } else { None }).collect();
+        let tombstones = keys.contains(&LeafKey::Table(table::TOMBSTONES));
+        crate::inline::state_refs(self.world, &ids, tombstones)
+            .keys()
+            .filter_map(|r| self.world.blobs().get(r))
+            .map(|b| bytes::Bytes::copy_from_slice(&b))
+            .collect()
+    }
 }
 
 #[cfg(test)]
