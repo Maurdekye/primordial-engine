@@ -50,11 +50,12 @@ check clippy
 
 check test
   why   the touched crates' own tests (unit, integration and doc tests, default features), never box3d-fork; every
-  why   crate's when the root manifest (its profiles touch determinism), the toolchain or a cargo configuration
-  why   changes. A touched crate's dependents are covered by the job's workspace check and by tier 2. Refound plan
-  why   4.6; coordinator ma3d5082e0516, m71e6124bb214
-  when  crates/** Cargo.toml rust-toolchain rust-toolchain.toml **/.cargo/config **/.cargo/config.toml
-  all   Cargo.toml rust-toolchain rust-toolchain.toml **/.cargo/config **/.cargo/config.toml
+  why   crate's when the root manifest (its profiles touch determinism), Cargo.lock (a dependency bump changes
+  why   behaviour), the toolchain or a cargo configuration changes: 542 s warm, plus up to 609 s to rebuild the
+  why   test binaries (main 4bbc52ea). A touched crate's dependents are covered by the job's workspace check and
+  why   by tier 2. Refound plan 4.6; coordinator ma3d5082e0516, m71e6124bb214, me50d97572fa8
+  when  crates/** Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml **/.cargo/config **/.cargo/config.toml
+  all   Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml **/.cargo/config **/.cargo/config.toml
   skip  box3d-rust
   run   cargo test {crates} --locked
   expect ^test result: ok\.
