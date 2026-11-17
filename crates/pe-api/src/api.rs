@@ -25,14 +25,14 @@ use std::time::{Duration, Instant};
 use pe_core::EntryRef;
 use pe_seams::SubmitError;
 use pe_seams::world_api::{
-    ApiError, ApplyOpts, At, AtName, Caller, Changes, ConnectionId, Cursor, ErrorCode, Filter, Frame, MemberId, Mode,
-    ObjectId, Outcome, ProducerKind, Query, QueryResult, Refusal, RefusalCode, Scope, SessionEvent, Status,
-    Transaction, TxId, Wait,
+    ApiError, ApplyOpts, At, AtName, Caller, Changes, ConnectionId, Cursor, ErrorCode, Filter, Frame, HeldAction,
+    MemberId, Mode, ObjectId, Outcome, ProducerKind, Query, QueryResult, Refusal, RefusalCode, Scope, SessionEvent,
+    Status, Transaction, TxId, Wait,
 };
 use pe_world::edit::Actor;
 use pe_world::{Draft, WorldSnapshot};
 
-use crate::changes::{ChangeLog, FeedItem, Owner};
+use crate::changes::{ChangeLog, FeedItem, Kept, Owner};
 use crate::edit::{Unmapped, WorldEdit, to_world};
 use crate::outcome::{dry_run, map_refusal};
 use crate::ports::{Snapshot, SnapshotSource};
@@ -117,6 +117,8 @@ fn refused_outcome(snap: &WorldSnapshot, f: Refusal) -> Outcome {
         count: 0,
         refusal: Some(f),
         diff: None,
+        resent_as: None,
+        held: None,
     }
 }
 
@@ -194,7 +196,8 @@ impl SnapshotSource for Views<'_> {
 }
 
 pub struct Api<S: WorldSource> {
-    src: S,
+    /// Shared with the change log, which reads the newest snapshot when it prepares a re-send (api.md 9.4).
+    src: Arc<S>,
     queue: Arc<EditQueue>,
     log: Arc<ChangeLog>,
     /// Each connection's table of versions seen, behind its own lock, so one connection's apply never waits on
@@ -231,11 +234,14 @@ fn forbidden(what: &str) -> ApiError {
     ApiError::new(ErrorCode::Forbidden, format!("This token may not {what}."))
 }
 
-impl<S: WorldSource> Api<S> {
+impl<S: WorldSource + 'static> Api<S> {
     /// The API over `src`, queueing live changes on `queue`, which the simulation thread drains, and learning
     /// their fates from `log`, which pe-app feeds from each publication's change record.
     pub fn new(src: S, queue: Arc<EditQueue>, log: Arc<ChangeLog>) -> Self {
         queue.track_into(log.clone());
+        let src = Arc::new(src);
+        let latest = src.clone();
+        log.read_with(move || latest.latest());
         Api {
             src,
             queue,
@@ -279,7 +285,7 @@ impl<S: WorldSource> Api<S> {
         if !c.scopes.contains(&Scope::Read) {
             return Err(forbidden("read the world"));
         }
-        let views = Views { src: &self.src, me: self.src.head_of(c.member) };
+        let views = Views { src: &*self.src, me: self.src.head_of(c.member) };
         let (snap, offset) = pick(&views, q.at, q.cursor.as_ref())?;
         let (res, seen) = run(snap.as_ref(), q, offset)?;
         let table = self.table(c.connection);
@@ -313,6 +319,8 @@ impl<S: WorldSource> Api<S> {
             count: 0,
             refusal: Some(*f),
             diff: None,
+            resent_as: None,
+            held: None,
         };
         let r = resolve_tx(&view, &tx, &lookup);
         drop(table);
@@ -382,7 +390,8 @@ impl<S: WorldSource> Api<S> {
         if let Some((code, message, next)) = blocked {
             return Ok(refused_outcome(snap, refusal_of(code, message, next)));
         }
-        let checked = dry_run(snap, r, &e, &self.src.draft_for(c.member));
+        let draft = self.src.draft_for(c.member);
+        let checked = dry_run(snap, r, &e, &draft);
         if opts.mode == Mode::DryRun {
             return Ok(checked);
         }
@@ -396,9 +405,17 @@ impl<S: WorldSource> Api<S> {
             op_of: e.op_of.clone().into(),
             refs: r.refs.iter().map(|(k, v)| (k.clone(), *v)).collect(),
         };
+        // Kept for the re-send backstop (api.md 9.4): shared, with its slots read from the schema now.
+        let kept = Kept {
+            tx: Arc::new(e.tx.clone()),
+            slots: Arc::new(crate::resend::slots(&e.tx, snap.schema())),
+            line: draft.line,
+            author: draft.author,
+            first: Instant::now(),
+        };
         let ticket = self
             .queue
-            .submit_as(Submission { tx: e.tx.clone(), base: snap.frame().0 }, Some(owner))
+            .submit_kept(Submission { tx: e.tx.clone(), base: snap.frame().0 }, owner, kept)
             .map_err(|f| rate_limited(f.retry_after))?;
         // The dry run's created ids and versions were provisional; the real ones come with the change record.
         let queued = Outcome { dry_run: false, status: Status::Queued, created: Default::default(), ..checked };
@@ -416,6 +433,7 @@ impl<S: WorldSource> Api<S> {
                     frame: fate.frame.or(Some(frame)),
                     ..queued
                 };
+                crate::watch::backstop(&mut o, fate.resent_as, fate.note);
                 match &fate.outcome {
                     None => {}
                     Some(pe_seams::Outcome::Applied { created, .. }) => {
@@ -447,7 +465,21 @@ impl<S: WorldSource> Api<S> {
                     }
                     Some(pe_seams::Outcome::Refused { op, reason }) => {
                         o.count = 0;
-                        o.refusal = Some(map_refusal(snap, &e, *op, reason));
+                        // A re-sent change's refusal names the re-sent entry's ops (the later-word rule may have
+                        // dropped some), mapped back to the API's through its owner.
+                        let carrier = fate
+                            .resent_as
+                            .and(fate.step.as_ref())
+                            .and_then(|s| self.src.edit(s.entry))
+                            .zip(fate.owner.as_ref());
+                        o.refusal = Some(match carrier {
+                            Some((tx, owner)) => {
+                                let tx = pe_world::edit::Transaction::clone(&tx);
+                                let e = WorldEdit { tx, blobs: vec![], op_of: owner.op_of.to_vec() };
+                                map_refusal(snap, &e, *op, reason)
+                            }
+                            None => map_refusal(snap, &e, *op, reason),
+                        });
                     }
                     Some(pe_seams::Outcome::Unknown { repaired_at }) => {
                         o.status = Status::Unknown;
@@ -743,7 +775,7 @@ impl<S: WorldSource> Api<S> {
                         ))));
                     }
                 }
-                FeedItem::Settled { change, status, is_final, step, owner } => {
+                FeedItem::Settled { change, status, is_final, step, owner, resent_as, note } => {
                     let own = is_mine(owner.as_ref(), *change);
                     let undone = *status == Status::Dropped
                         && step.as_ref().is_some_and(|s| matches!(s.outcome, pe_seams::Outcome::Applied { .. }));
@@ -762,15 +794,9 @@ impl<S: WorldSource> Api<S> {
                         }
                     }
                     if own {
-                        out.push(Said::Mine(Box::new(mine(
-                            *change,
-                            (*status, *is_final),
-                            step.as_ref(),
-                            None,
-                            owner.as_ref(),
-                            tx,
-                            &snap,
-                        ))));
+                        let mut o = mine(*change, (*status, *is_final), step.as_ref(), None, owner.as_ref(), tx, &snap);
+                        crate::watch::backstop(&mut o, *resent_as, *note);
+                        out.push(Said::Mine(Box::new(o)));
                     }
                 }
                 FeedItem::Final { frame } => {
@@ -781,6 +807,12 @@ impl<S: WorldSource> Api<S> {
                 FeedItem::Session(e) => {
                     if session_on {
                         out.push(Said::Session(e.clone()));
+                    }
+                }
+                FeedItem::HeldDiscarded { handle, counts } => {
+                    let theirs = counts.iter().find(|(p, _)| **p == *c.principal);
+                    if let (true, Some((_, count))) = (session_on, theirs) {
+                        out.push(Said::Session(SessionEvent::HeldDiscarded { handle: handle.clone(), count: *count }));
                     }
                 }
             }
@@ -902,13 +934,48 @@ impl<S: WorldSource> Api<S> {
                 watch_wait_ms_max: WATCH_WAIT_MAX.as_millis() as u32,
                 capture_size_max: [1920, 1080],
             },
+            held: self.log.held_for(&c.principal),
         }
+    }
+
+    /// `held` (api.md 9.4): applies or discards the caller's own changes in a held batch. Applied changes go to the
+    /// queue again in order, through the backstop's preparation, with a fresh bound; each answers as `apply` with
+    /// `wait: "local"` would, under its original id.
+    pub fn held(&self, c: &Caller, handle: &str, action: HeldAction) -> Result<Vec<Outcome>, ApiError> {
+        if !c.scopes.contains(&Scope::Edit) {
+            return Err(forbidden("change the world"));
+        }
+        let apply = action == HeldAction::Apply;
+        let Some(changes) = self.log.held(&c.principal, handle, apply) else {
+            return Err(ApiError::arg("handle", format!("No held batch {handle} with changes of yours.")));
+        };
+        if !apply {
+            return Ok(vec![]);
+        }
+        let deadline = Instant::now() + Duration::from_millis(2_000);
+        let snap = self.src.latest();
+        Ok(changes
+            .into_iter()
+            .map(|t| {
+                let f = self.log.wait(t, Wait::Local, deadline);
+                let (status, is_final) = f.as_ref().map_or((Status::Queued, false), |f| (f.status, f.is_final));
+                let step = f.as_ref().and_then(|f| f.step.clone());
+                let tx = step.as_ref().and_then(|s| self.src.edit(s.entry));
+                let owner = f.as_ref().and_then(|f| f.owner.clone());
+                let frame = f.as_ref().and_then(|f| f.frame);
+                let mut o = mine(t, (status, is_final), step.as_ref(), frame, owner.as_ref(), tx, &snap);
+                if let Some(f) = &f {
+                    crate::watch::backstop(&mut o, f.resent_as, f.note);
+                }
+                o
+            })
+            .collect())
     }
 }
 
 /// The API as S6's trait, which pe-mcp and pe-app serve (`Arc<dyn WorldApi>`). `capture` and `code_check` answer
 /// that they aren't available yet (view.capture with @ballpit-viz; the logic check with WS-logic).
-impl<S: WorldSource> pe_seams::world_api::WorldApi for Api<S> {
+impl<S: WorldSource + 'static> pe_seams::world_api::WorldApi for Api<S> {
     fn session(&self, c: &Caller) -> pe_seams::world_api::SessionInfo {
         Api::session(self, c)
     }
@@ -953,6 +1020,9 @@ impl<S: WorldSource> pe_seams::world_api::WorldApi for Api<S> {
     ) -> Result<pe_seams::world_api::Diagnostics, ApiError> {
         Err(ApiError::new(ErrorCode::InvalidArgument, "The logic check isn't available yet."))
     }
+    fn held(&self, c: &Caller, handle: &str, action: HeldAction) -> Result<Vec<Outcome>, ApiError> {
+        Api::held(self, c, handle, action)
+    }
 }
 
 /// One thing `watch` says about a stream item.
@@ -990,6 +1060,7 @@ mod tests {
     }
 
     /// One published frame: a Table and a Lamp under it; Alice may edit.
+    #[derive(Clone)]
     struct Src(Arc<WorldSnapshot>);
 
     impl WorldSource for Src {
@@ -1436,6 +1507,44 @@ mod tests {
         (entry, first)
     }
 
+    // api.md 9.4: a change of this caller's void as late is re-sent ahead of fresh changes; `mine` tells it once,
+    // final, under its own id with `resent_as`, while `changes` shows the retraction and the re-sent entry.
+    #[test]
+    fn a_late_void_is_re_sent_and_watch_tells_it_once() {
+        let a = api();
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let (entry, first) = own_change(&a, &c, 4);
+        a.log.confirm_cut(&cut_at(6, entry), &[(entry, pe_seams::VoidReason::Late)]);
+        let got = a.queue.drain(4);
+        assert_eq!(got.len(), 1, "the re-send, taken first");
+        let chain = pe_core::ChainId(Hash([1; 32]));
+        let re = edit_entry(
+            5,
+            vec![pe_world::edit::Op::Create {
+                new: 0,
+                parent: pe_world::edit::Target::Existing(id(10)),
+                index: None,
+                rows: vec![],
+            }],
+        );
+        a.queue.settle(got[0].0, Receipt::Submitted { change: re.into(), frame: 7, chain, seq: 4 });
+        a.log.record(&[stepped(re, ALICE, 7, applied(vec![id(12)]))], None);
+        let at = pe_seams::CutRef { line: LineId(Hash([0; 32])), height: 2, frame: CoreFrame(8) };
+        let head = pe_seams::ChainHead { chain, author: ALICE, seq: 4, entry: re };
+        a.log.confirm_cut(&pe_seams::Cut { at, heads: vec![head] }, &[]);
+        a.log.record(&[], Some(8));
+        let w = a.watch(&c, &Filter::default(), Some(&first), Duration::ZERO).unwrap();
+        let st: Vec<_> = w.mine.iter().map(|o| (o.status, o.change, o.resent_as)).collect();
+        let (ch, rs) = (Some(TxId::from(entry)), Some(TxId::from(re)));
+        assert_eq!(st, vec![(Status::Queued, ch, None), (Status::Accepted, ch, None), (Status::Final, ch, rs)]);
+        assert_eq!(w.mine[2].frame, Some(7), "the re-sent entry's frame");
+        let items: Vec<_> = w.changes.iter().map(|i| i.change).collect();
+        assert_eq!(items, vec![TxId::from(entry), TxId::from(entry), TxId::from(re)], "applied, retracted, re-sent");
+        assert!(a.session(&c).held.is_empty());
+        let f = a.log.get(TxId::from(entry)).unwrap();
+        assert_eq!((f.status, f.resent_as), (Status::Final, rs));
+    }
+
     fn cut_at(frame: u64, entry: EntryRef) -> pe_seams::Cut {
         let at = pe_seams::CutRef { line: LineId(Hash([0; 32])), height: 1, frame: CoreFrame(frame) };
         let head = pe_seams::ChainHead { chain: pe_core::ChainId(Hash([1; 32])), author: ALICE, seq: 3, entry };
@@ -1488,8 +1597,9 @@ mod tests {
             let a = api();
             let c = caller(&[Scope::Read, Scope::Edit]);
             let (entry, first) = own_change(&a, &c, 4);
-            let dropped = pe_seams::Outcome::Dropped { reason: pe_seams::VoidReason::Late };
-            let void = || a.log.confirm_cut(&cut_at(6, entry), &[entry]);
+            // Back-stamped, not late: the re-send backstop leaves it alone (api.md 9.4).
+            let dropped = pe_seams::Outcome::Dropped { reason: pe_seams::VoidReason::BackStamped };
+            let void = || a.log.confirm_cut(&cut_at(6, entry), &[(entry, pe_seams::VoidReason::BackStamped)]);
             let record = || a.log.record(&[stepped(entry, ALICE, 4, dropped.clone())], Some(6));
             if void_first {
                 void();
@@ -1625,7 +1735,7 @@ mod tests {
     fn an_expired_cursor_is_refused_with_a_fresh_one() {
         let src = api().src;
         let a = Api::new(
-            src,
+            Src::clone(&src),
             Arc::new(EditQueue::new(2, || {})),
             Arc::new(ChangeLog::with_retention(crate::stream::Retention {
                 max_items: 2,

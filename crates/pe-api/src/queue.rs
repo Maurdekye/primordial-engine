@@ -10,9 +10,11 @@
 //! - The outcome, and the later final, refused or dropped status, come from the per-frame change record (the same
 //!   one `watch` reads), not from here. Blob bytes go into the store on the API thread before `submit`.
 //! - Receipts are kept until taken or for `RECEIPT_TTL`, so an abandoned ticket can't grow memory.
+//! - The re-send backstop (api.md 9.4): `drain` takes a prepared re-send or follow-up from the change log ahead of
+//!   fresh changes, so one edit a frame in order keeps the order; its receipt goes back to the log.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use pe_core::ChainId;
@@ -51,12 +53,21 @@ pub struct Full {
     pub retry_after: Duration,
 }
 
+/// What a waiting ticket is, until it settles.
+enum Tag {
+    /// A change submitted through the API: who submitted it (for `watch`'s `mine`), and what the backstop keeps.
+    Fresh(crate::changes::Owner, Option<crate::changes::Kept>),
+    /// A re-send of change `origin` (api.md 9.4).
+    Resend { origin: TxId, op_back: Arc<[u32]> },
+    /// A re-point follow-up.
+    FollowUp,
+}
+
 struct Inner {
     next: u64,
     pending: VecDeque<(Ticket, Submission)>,
     receipts: HashMap<Ticket, (Receipt, Instant)>,
-    /// Who submitted each waiting ticket through the API, until it settles (for `watch`'s `mine`).
-    owners: HashMap<Ticket, crate::changes::Owner>,
+    tags: HashMap<Ticket, Tag>,
 }
 
 pub struct EditQueue {
@@ -78,7 +89,7 @@ impl EditQueue {
                 next: 1,
                 pending: VecDeque::new(),
                 receipts: HashMap::new(),
-                owners: HashMap::new(),
+                tags: HashMap::new(),
             }),
             settled: Condvar::new(),
             capacity,
@@ -103,6 +114,20 @@ impl EditQueue {
 
     /// `submit`, remembering who submitted it, so the change log can tell `watch` it is that caller's own.
     pub fn submit_as(&self, s: Submission, owner: Option<crate::changes::Owner>) -> Result<Ticket, Full> {
+        self.submit_tagged(s, owner.map(|o| Tag::Fresh(o, None)))
+    }
+
+    /// `submit_as`, with what the re-send backstop keeps of the change (api.md 9.4).
+    pub fn submit_kept(
+        &self,
+        s: Submission,
+        owner: crate::changes::Owner,
+        kept: crate::changes::Kept,
+    ) -> Result<Ticket, Full> {
+        self.submit_tagged(s, Some(Tag::Fresh(owner, Some(kept))))
+    }
+
+    fn submit_tagged(&self, s: Submission, tag: Option<Tag>) -> Result<Ticket, Full> {
         let t = {
             let mut g = self.lock();
             if g.pending.len() >= self.capacity {
@@ -112,8 +137,8 @@ impl EditQueue {
             let t = Ticket(g.next);
             g.next += 1;
             g.pending.push_back((t, s));
-            if let Some(o) = owner {
-                g.owners.insert(t, o);
+            if let Some(tag) = tag {
+                g.tags.insert(t, tag);
             }
             t
         };
@@ -121,18 +146,54 @@ impl EditQueue {
         Ok(t)
     }
 
-    /// Simulation side: at most `max` waiting changes, oldest first.
+    /// Simulation side: at most `max` waiting changes, oldest first; the backstop's re-sends and follow-ups first.
     pub fn drain(&self, max: usize) -> Vec<(Ticket, Submission)> {
+        let mut out = vec![];
+        if let Some(log) = self.log.get() {
+            while out.len() < max {
+                let Some(taken) = log.take(Instant::now()) else { break };
+                let (sub, tag) = match taken {
+                    crate::changes::Taken::Resend { origin, sub, op_back } => (sub, Tag::Resend { origin, op_back }),
+                    crate::changes::Taken::FollowUp(sub) => (sub, Tag::FollowUp),
+                };
+                let mut g = self.lock();
+                let t = Ticket(g.next);
+                g.next += 1;
+                g.tags.insert(t, tag);
+                out.push((t, sub));
+            }
+        }
         let mut g = self.lock();
-        let n = max.min(g.pending.len());
-        g.pending.drain(..n).collect()
+        let n = (max - out.len()).min(g.pending.len());
+        out.extend(g.pending.drain(..n));
+        out
     }
 
     /// Simulation side: what became of a drained ticket.
     pub fn settle(&self, t: Ticket, r: Receipt) {
-        let owner = self.lock().owners.remove(&t);
-        if let (Receipt::Submitted { change, frame, chain, seq }, Some(log)) = (&r, self.log.get()) {
-            log.track(*change, *chain, *seq, *frame, owner);
+        let tag = self.lock().tags.remove(&t);
+        if let Some(log) = self.log.get() {
+            match (&r, tag) {
+                (Receipt::Submitted { change, frame, chain, seq }, Some(Tag::Resend { origin, op_back })) => {
+                    let carrier = crate::resend::Carrier { entry: (*change).into(), chain: *chain, seq: *seq };
+                    log.carried(origin, carrier, *frame, op_back);
+                    return;
+                }
+                (Receipt::Refused(_), Some(Tag::Resend { origin, .. })) => {
+                    log.resend_refused(origin);
+                    return;
+                }
+                (Receipt::Submitted { change, frame, chain, seq }, Some(Tag::Fresh(owner, Some(kept)))) => {
+                    log.track_own(*change, *chain, *seq, *frame, owner, kept);
+                }
+                (Receipt::Submitted { change, frame, chain, seq }, Some(Tag::Fresh(owner, None))) => {
+                    log.track(*change, *chain, *seq, *frame, Some(owner));
+                }
+                (Receipt::Submitted { change, frame, chain, seq }, Some(Tag::FollowUp) | None) => {
+                    log.track(*change, *chain, *seq, *frame, None);
+                }
+                (Receipt::Refused(_), _) => {}
+            }
         }
         let now = Instant::now();
         let mut g = self.lock();

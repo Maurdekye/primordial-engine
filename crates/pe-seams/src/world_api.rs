@@ -351,6 +351,9 @@ pub struct SessionInfo {
     /// Whether an admin of the world is present: with none, the session keeps nothing (user ruling, file 18).
     pub kept: bool,
     pub limits: Limits,
+    // Held batches with the caller's changes, for world_held.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<HeldBatch>,
 }
 
 // ---- schema (spec 5.6) ---------------------------------------------------------------------------------------------
@@ -764,6 +767,36 @@ pub struct Outcome {
     pub refusal: Option<Refusal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<Diff>,
+    // S6 v1.6 (pe-seams v1.9), api.md 9.4. Kept short: these docs land in the MCP tool list.
+    /// Re-sent as this entry, after arriving too late.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resent_as: Option<TxId>,
+    // S6 v1.6: opaque, `"h:"` and 16 hex digits, valid only in this session on this machine, for the change's
+    // principal; act on it with [`WorldApi::held`].
+    // On a dropped change: its held batch, for world_held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
+}
+
+// What to do with the caller's changes in a held batch (api.md 9.4; S6 v1.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HeldAction {
+    // Through the edit queue under the same rules as any change (preconditions, one edit a frame, seq order), with a
+    // fresh one-minute bound. (Plain comments: the doc lands in the MCP tool list, which has a size budget.)
+    // Apply submits them again, in order, with their usual checks; Discard lets them go.
+    Apply,
+    Discard,
+}
+
+// A held batch with changes of the caller's, as `session` lists it (api.md 9.4; S6 v1.6). `handle` is opaque,
+// `"h:"` and 16 hex digits, valid only in this session on this machine; `count` and `labels` are the caller's
+// changes in it, in order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HeldBatch {
+    pub handle: String,
+    pub count: u32,
+    pub labels: Vec<String>,
 }
 
 // ---- watch (spec 5.4) ----------------------------------------------------------------------------------------------
@@ -851,6 +884,12 @@ pub enum SessionEvent {
     /// The replica's standing with the quorum changed (S6 v1.5).
     HealthChanged {
         health: SessionHealth,
+    },
+    /// The size limit on held batches let the oldest go; their `dropped` stands (api.md 9.4; S6 v1.6). To each
+    /// principal with changes in it, `count` being theirs, as in [`HeldBatch`].
+    HeldDiscarded {
+        handle: String,
+        count: u32,
     },
 }
 
@@ -1105,6 +1144,15 @@ pub trait WorldApi: Send + Sync {
     fn revert(&self, c: &Caller, change: TxId, opts: &ApplyOpts) -> Result<Outcome, ApiError>;
     fn capture(&self, c: &Caller, r: &CaptureRequest, deadline: Instant) -> Result<Capture, ApiError>;
     fn code_check(&self, c: &Caller, r: &CodeCheck) -> Result<Diagnostics, ApiError>;
+    /// Applies or discards the caller's own changes in held batch `handle`, in their order (api.md 9.4; S6 v1.6).
+    /// `Apply` answers each change's outcome as `apply` with `wait: "local"` would, under its original id with
+    /// `resent_as`; `Discard` answers none. An unknown handle, one already applied, discarded or let go, or one
+    /// holding none of the caller's changes is `invalid_argument` on `handle`. The default answers that, for
+    /// implementations without held batches.
+    fn held(&self, c: &Caller, handle: &str, action: HeldAction) -> Result<Vec<Outcome>, ApiError> {
+        let _ = (c, action);
+        Err(ApiError::arg("handle", format!("No held batch {handle} with changes of yours.")))
+    }
 }
 
 #[cfg(test)]
@@ -1214,11 +1262,15 @@ mod tests {
                 details: None,
             }),
             diff: None,
+            resent_as: None,
+            held: None,
         };
         let v = serde_json::to_value(&o).unwrap();
         assert_eq!(v["status"], "refused");
         assert_eq!(v["refusal"]["code"], "stale_version");
         assert!(v.get("dry_run").is_none());
+        // S6 v1.6's fields are left out when empty, so an older reader sees the same outcome.
+        assert!(v.get("resent_as").is_none() && v.get("held").is_none());
     }
 
     #[test]
