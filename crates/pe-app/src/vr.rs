@@ -10,6 +10,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use pe_render::camera::Camera;
+use pe_render::capture_service::CaptureServer;
 use pe_render::gpu::GpuContext;
 use pe_render::present::{Batch, FrameSlot, Presenter};
 use pe_render::scene::{RenderSettings, Renderer};
@@ -40,8 +42,8 @@ pub struct VrSink {
     /// The render scale as a viewport: the rectangle drawn from the origin, or `None` for the whole image. The
     /// swapchain keeps its size (render.md 4).
     extent: Option<[u32; 2]>,
-    /// `view_capture`'s server (api.md 8), with the left eye's camera as the player's.
-    captures: Option<pe_render::capture_service::CaptureServer>,
+    /// `view_capture`'s server (api.md 8), with the left eye's camera as the player's. Served after the frame ends.
+    captures: Option<AfterFrame>,
 }
 
 impl VrSink {
@@ -56,10 +58,33 @@ impl VrSink {
         VrSink { views: ViewReader::new(slot), presenter, renderer, targets, effects, extent, captures: None }
     }
 
-    /// This sink serving `view_capture`'s orders once a frame, after its draw.
+    /// This sink serving `view_capture`'s orders once a drawn frame has ended ([`FrameSink::after_frame`]).
     pub fn with_captures(mut self, queue: Arc<pe_render::capture_service::CaptureQueue>) -> VrSink {
-        self.captures = Some(pe_render::capture_service::CaptureServer::new(queue));
+        self.captures = Some(AfterFrame { server: CaptureServer::new(queue), drawn: None });
         self
+    }
+}
+
+/// `view_capture`'s server on the headset: [`FrameSink::render`] notes the frame it drew, and
+/// [`FrameSink::after_frame`] serves the queue from it once the image is released and `xrEndFrame` has returned, so a
+/// capture never stands between the eyes' draw and the compositor (render.md 11).
+struct AfterFrame {
+    server: CaptureServer,
+    /// The view the last frame drew and its left eye's camera; taken by the next `after_frame`.
+    drawn: Option<(Arc<FrameView>, Camera)>,
+}
+
+impl AfterFrame {
+    /// A frame went out drawn from `view`, with `player` as its left eye.
+    fn drew(&mut self, view: Arc<FrameView>, player: Camera) {
+        self.drawn = Some((view, player));
+    }
+
+    /// The view and camera to serve from, once per drawn frame: `None` when the frame that ended drew nothing, so a
+    /// capture never uses an older frame's view after the sink stopped drawing.
+    fn ended(&mut self, drawn: bool) -> Option<(Arc<FrameView>, Camera)> {
+        let last = self.drawn.take();
+        if drawn { last } else { None }
     }
 }
 
@@ -116,9 +141,19 @@ impl FrameSink for VrSink {
         };
         self.renderer.render_stereo(&presented.scene, cameras, &target);
         if let Some(c) = self.captures.as_mut() {
-            c.serve(&mut self.renderer, &view, Some(&cameras[0]));
+            c.drew(view, cameras[0]);
         }
         true
+    }
+
+    /// Serves `view_capture` from the frame just drawn: its scene build, labels and capture pass run here, after
+    /// `xrEndFrame`, not ahead of it (render.md 11).
+    fn after_frame(&mut self, drawn: bool) {
+        if let Some(c) = self.captures.as_mut()
+            && let Some((view, player)) = c.ended(drawn)
+        {
+            c.server.serve(&mut self.renderer, &view, Some(&player));
+        }
     }
 
     fn extent(&self) -> Option<[u32; 2]> {
@@ -614,6 +649,32 @@ mod tests {
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("VR started without a runtime"),
         }
+    }
+
+    /// A capture is served from the frame that ended, once, and only when that frame was drawn: `render` notes the
+    /// view, `after_frame` takes it (render.md 11).
+    #[test]
+    fn captures_are_served_after_the_frame_from_the_view_it_drew() {
+        let clock = crate::clock::LocalClock::new(HostTime(0), SimRate::DEFAULT);
+        let view = |f: u64| crate::standin::view_at(&clock as &dyn FrameClock, Frame(f));
+        let rig = pe_seams::RigTransform { pos: pe_seams::Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 };
+        let eye = |fov: f32| {
+            let fov = pe_render::camera::Fov::symmetric(fov, 1.0);
+            Camera::of_eye(&rig, &RigPose::IDENTITY, fov, pe_render::camera::DepthRange::VR)
+        };
+        let mut c =
+            AfterFrame { server: CaptureServer::new(pe_render::capture_service::CaptureQueue::new()), drawn: None };
+        assert!(c.ended(true).is_none(), "nothing drawn yet");
+
+        c.drew(view(1), eye(1.0));
+        c.drew(view(2), eye(2.0));
+        let (v, cam) = c.ended(true).expect("the frame drawn last");
+        assert_eq!((v.frame, cam), (Frame(2), eye(2.0)));
+        assert!(c.ended(true).is_none(), "served once per drawn frame");
+
+        c.drew(view(3), eye(3.0));
+        assert!(c.ended(false).is_none(), "a frame that went out undrawn serves nothing");
+        assert!(c.ended(true).is_none(), "and its view is not kept for a later frame");
     }
 
     #[test]
