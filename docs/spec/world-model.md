@@ -993,10 +993,11 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     byte other than 0 or 1, or a kind that is not one of pe-logic's `Fault::code()` values 1 to 13 (logic.md 3.6) does
     not decode; `HostStack` has no code, since it is one machine's own fault and never world state. The pending commit
     is `version entry (32) ‖ op u32 ‖ author (32) ‖ source (hash 32 ‖ len u64) ‖ toolchain (32) ‖ sdk (32) ‖
-    author_module (32) ‖ count u32 ‖ component ids (u128 LE, ascending) ‖ c u64 ‖ D u64 ‖ count u32 ‖ voters (32 each,
-    ascending) ‖ count u32 ‖ attestations (voter 32 ‖ stamp u64, ascending, voters only) ‖ void u8 (0 none, 1
-    Unattested, 2 RekeyBlockedAtActivation, 3 RekeyTooLarge, 4 AuthorRevokedAtActivation, 5 QuorumUnreachable) ‖ its
-    frame u64 if not 0`. A world with no scripts has no entries, so its root is unchanged.
+    author_module (32) ‖ count u32 ‖ component ids (u128 LE, ascending) ‖ c u64 ‖ D u64 ‖ count u32 ‖ voters (32
+    each, ascending) ‖ count u32 ‖ attestations (voter 32 ‖ stamp u64, ascending, voters only) ‖ count u32 ‖ failures
+    (voter 32 ‖ stamp u64 ‖ reason u8, `BuildFailure`'s code 1 to 5; ascending, voters only, none that also attested)
+    ‖ void u8 (0 none, 1 Unattested, 2 RekeyBlockedAtActivation, 3 RekeyTooLarge, 4 AuthorRevokedAtActivation, 5
+    QuorumUnreachable) ‖ its frame u64 if not 0`. A world with no scripts has no entries, so its root is unchanged.
   - governance: key the member key (32); value the permission bits `u32`;
   - claims: key the object id; value `hand u128 ‖ member (32) ‖ since u64 ‖ until u64`;
   - cooldowns: key `member (32) ‖ object id`; value `until u64`;
@@ -1448,18 +1449,40 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
     preconditions, and needs no `EDIT`, only a place among the pending commit's voters. It is refused `Stale` if no
     commit of that V is pending (none, another V, activated or voided), and `Invalid` for a module other than the
     registered `author_module`, a non-voter's, or a voter's second. A refused attestation changes nothing; its
-    signed entry stays in the log as the evidence. A counted one records the voter and its stamp.
+    signed entry stays in the log as the evidence. A counted one records the voter and its stamp, and supersedes the
+    voter's own counted `BuildFailed`.
+  - **`BuildFailed { script, version, reason, toolchain, sdk, module }`** is a voter's statement that its build of V
+    failed, after its local retries (logic.md 6.2 step 3, 6.2a item 2; the user's build-asymmetry rulings
+    mbd847a64c831, m9c280fd75b82). `reason` is a `BuildFailure`: `Compile` (1), `Refused` (2, 6.2b's dep-info check),
+    `Cap` (3), `Mismatch` (4) or `Local` (5); `toolchain` and `sdk` are the failing machine's hashes, and `module`
+    the hash a `Mismatch` built, present exactly for a `Mismatch` and never the registered `author_module`, or the
+    failure is `Invalid` (@chunks-reviewer's L1). It never carries compiler output: the entry goes to every member
+    and stays in the log, and a compiler's message can carry local paths. A slow build is never a failure; nothing in
+    the world times one out. Like `AttestBuild` it stands alone in its transaction and needs no `EDIT`.
+    - **On the pending commit at V** it is counted, one per voter, with its stamp and reason; `Invalid` for a
+      non-voter's, a voter's second, or one after the voter's counted attestation ("a failure after a success is
+      refused"). The voter's later `AttestBuild` supersedes it while the commit is pending.
+    - **For the asset's current version** it is a record only and changes nothing: the log's statement that this
+      member split off (logic.md 6.2 step 3; Q2 (a)). The split itself is the member's own leave (2.4), posted by its
+      replica; pe-world never removes a member. `Invalid` from a non-member.
+    - **Otherwise** it is `Stale`, as an attestation is: no V pending or current, or a voided commit's (nothing
+      changes a void).
   - **`end_frame(f)` activates, then voids** (in asset order). A pending commit with at least `q` counted
     attestations, so `F` is the `q`-th smallest counted stamp, activates at the end of `F`: the re-key below, its
     limits judged again for the author, who must still hold `EDIT`, and then the asset's row (version = the commit,
     the hashes, the component ids, `activate_at = F + 1`, no faulted mark), so the new version runs from `F + 1`. A
     re-key now over `MAX_REKEY_ROWS`, or now losing data on an object its committer may not edit, voids the commit
     instead, as `RekeyTooLarge` or `RekeyBlockedAtActivation`, and an author who has lost `EDIT` since the commit
-    voids it as `AuthorRevokedAtActivation`: revoking someone's rights stops their pending code too (@coordinator-opus
-    m41d775f5d9f9). Otherwise a commit at its deadline `f == D` is voided as `Unattested`. Activation is tested first,
-    so a quorum completed at `D` activates. A voided commit keeps its record (the frame and why) until the asset's
-    next commit replaces it, and the old version stays bound. `end_frame` returns what it did (`FrameEnd`: each
-    activation with its re-key report, each void with its kind, each named by asset and commit), which pe-replica
+    voids it as `AuthorRevokedAtActivation`: revoking someone's rights stops their pending code too
+    (@coordinator-opus m41d775f5d9f9). Otherwise **the shared void rule** (logic.md 6.2a item 4, for a leave and a
+    failed build) voids it as `QuorumUnreachable` once its counted attestations, plus the voters at `c` who are still
+    members and have neither attested nor failed, number fewer than `q`; at n = 2 the other member's first
+    `BuildFailed` voids it at that frame's end. Otherwise a commit at its deadline `f == D` is voided as
+    `Unattested`. Activation is tested first, so a quorum completed at `D` activates. A voided commit keeps its
+    record (the frame, why, and its counted failures) until the asset's next commit replaces it, and the old version
+    stays bound. `end_frame` returns what it did (`FrameEnd`: each activation with its re-key report; each void
+    (`Voided`) with its kind, its blocking objects for `RekeyBlockedAtActivation`, and who could not build it and
+    why, in key order, which is Q1 (c)'s notice to the author; each named by asset and commit), which pe-replica
     publishes as S5's `FrameView.activations`. **A known limit:** any member holding an affected object can void
     another's commit anywhere in `c..F`, where today's rule allowed it only at `c`.
   - **The deadline** is `attest_window(len, hz) = ceil(2 · T_module · hz)` frames, `T_module = W_fg + len / R_thin +

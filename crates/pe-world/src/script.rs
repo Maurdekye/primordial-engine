@@ -184,6 +184,10 @@ impl VoidKind {
     }
 }
 
+/// Why a voter's build of a pending version failed (logic.md 6.2a item 2): S5's type, whose codes 1 to 5 are
+/// consensus here (the op's wire form and the hashed pending row). Never compiler output.
+pub use pe_seams::BuildFailure;
+
 /// A script's pending commit (logic.md 6.2a; 7.9): the version a `CommitScript` wrote, which runs nowhere until a
 /// quorum of the voters at its commit frame has attested its module. Kept, once voided, as the record of why, until
 /// the asset's next commit replaces it.
@@ -207,6 +211,10 @@ pub struct PendingCommit {
     pub voters: Vec<MemberKey>,
     /// The counted attestations, one per voter, in key order, each with its stamp. The author's own is the commit's.
     pub attested: Vec<(MemberKey, Frame)>,
+    /// The counted `BuildFailed`s, one per voter, in key order, each with its stamp and reason; never a voter that has
+    /// a counted attestation (a later success supersedes a failure while the commit is pending; a failure after a
+    /// success is refused).
+    pub failed: Vec<(MemberKey, Frame, BuildFailure)>,
     /// Set when voided: the frame and why. A voided commit no longer counts attestations.
     pub void: Option<(Frame, VoidKind)>,
 }
@@ -222,14 +230,27 @@ impl PendingCommit {
         self.attested.len() >= quorum(self.voters.len())
     }
 
-    /// The shared void rule (logic.md 6.2a item 4): the quorum can no longer be reached, because the counted
-    /// attestations plus the voters at `c` who are still members (`is_member`) and have not attested fall short of
-    /// `q`. The voters stay those at `c`, so an attestation given before a leave still counts. `BuildFailed` adds
-    /// "nor failed" to the second count when it lands.
+    /// The shared void rule for a leave and a failed build (logic.md 6.2a item 4): the quorum can no longer be
+    /// reached, because the counted attestations plus the voters at `c` who are still members (`is_member`) and have
+    /// neither attested nor failed fall short of `q`. The voters stay those at `c`, so an attestation given before a
+    /// leave still counts.
     pub fn quorum_unreachable(&self, is_member: impl Fn(&MemberKey) -> bool) -> bool {
-        let attested = |k: &MemberKey| self.attested.iter().any(|(a, _)| a == k);
-        let could = self.voters.iter().filter(|k| !attested(k) && is_member(k)).count();
+        let could = self.voters.iter().filter(|k| !self.has_attested(k) && !self.has_failed(k) && is_member(k)).count();
         self.attested.len() + could < quorum(self.voters.len())
+    }
+
+    pub fn has_attested(&self, k: &MemberKey) -> bool {
+        self.attested.iter().any(|(a, _)| a == k)
+    }
+
+    pub fn has_failed(&self, k: &MemberKey) -> bool {
+        self.failed.iter().any(|(a, _, _)| a == k)
+    }
+
+    /// Who could not build it and why, in key order: the author's notice on a void (Q1 (c), user ruling
+    /// mbd847a64c831).
+    pub fn failures(&self) -> Vec<(MemberKey, BuildFailure)> {
+        self.failed.iter().map(|&(k, _, r)| (k, r)).collect()
     }
 
     fn write(&self, b: &mut Vec<u8>) {
@@ -255,6 +276,12 @@ impl PendingCommit {
         for (k, f) in &self.attested {
             b.extend_from_slice(&k.0);
             b.extend_from_slice(&f.0.to_le_bytes());
+        }
+        b.extend_from_slice(&(self.failed.len() as u32).to_le_bytes());
+        for (k, f, r) in &self.failed {
+            b.extend_from_slice(&k.0);
+            b.extend_from_slice(&f.0.to_le_bytes());
+            b.push(r.code());
         }
         match self.void {
             None => b.push(0),
@@ -312,6 +339,21 @@ impl PendingCommit {
             }
             attested.push((k, f));
         }
+        let n = u32::from_le_bytes(r.arr()?) as usize;
+        if n > r.0.len() / 41 {
+            return None;
+        }
+        let mut failed: Vec<(MemberKey, Frame, BuildFailure)> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let k = MemberKey(r.arr()?);
+            let f = Frame(u64::from_le_bytes(r.arr()?));
+            let why = BuildFailure::from_code(r.arr::<1>()?[0])?;
+            let after = failed.last().is_none_or(|(l, _, _)| l.0 < k.0);
+            if !after || !voters.contains(&k) || attested.iter().any(|(a, _)| *a == k) {
+                return None;
+            }
+            failed.push((k, f, why));
+        }
         let void = match r.arr::<1>()?[0] {
             0 => None,
             k => {
@@ -331,6 +373,7 @@ impl PendingCommit {
             deadline,
             voters,
             attested,
+            failed,
             void,
         })
     }
@@ -777,5 +820,61 @@ impl World {
             }
         }
         fp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending() -> PendingCommit {
+        let (a, b, c) = (MemberKey([1; 32]), MemberKey([2; 32]), MemberKey([3; 32]));
+        PendingCommit {
+            version: Version { entry: EntryRef(Hash([10; 32])), op: 1 },
+            author: a,
+            source: BlobRef { hash: [8; 32], len: 64 },
+            toolchain: Hash([1; 32]),
+            sdk: Hash([2; 32]),
+            author_module: Hash([3; 32]),
+            components: vec![ComponentId(1 << 100)],
+            commit_frame: Frame(5),
+            deadline: Frame(1205),
+            voters: vec![a, b, c],
+            attested: vec![(a, Frame(5))],
+            failed: vec![(b, Frame(6), BuildFailure::Mismatch), (c, Frame(7), BuildFailure::Local)],
+            void: Some((Frame(7), VoidKind::QuorumUnreachable)),
+        }
+    }
+
+    /// The pending row's failures round-trip, and decoding is strict: out of order, a non-voter, a voter that also
+    /// attested, or an unknown reason does not decode.
+    #[test]
+    fn failures_round_trip_and_decode_strictly() {
+        let p = pending();
+        assert_eq!(modules_value_from(&modules_value(None, Some(&p))), Some((None, Some(p.clone()))));
+        let bad = |edit: &dyn Fn(&mut PendingCommit)| {
+            let mut q = pending();
+            edit(&mut q);
+            modules_value_from(&modules_value(None, Some(&q)))
+        };
+        assert_eq!(bad(&|q| q.failed.reverse()), None, "out of order");
+        assert_eq!(bad(&|q| q.failed[0].0 = MemberKey([9; 32])), None, "a non-voter");
+        assert_eq!(bad(&|q| q.failed[0].0 = MemberKey([1; 32])), None, "the attester");
+        let mut b = modules_value(None, Some(&p));
+        let n = b.len();
+        // The last failure's reason sits before the void (kind u8 + frame u64).
+        b[n - 1 - 1 - 8] = 0;
+        assert_eq!(modules_value_from(&b), None, "an unknown reason");
+    }
+
+    #[test]
+    fn the_shared_void_rule_counts_neither_attested_nor_failed() {
+        let mut p = pending();
+        p.void = None;
+        // q(3) = 2: A attested, B and C failed, so 1 + 0 < 2.
+        assert!(p.quorum_unreachable(|_| true));
+        p.failed.pop();
+        assert!(!p.quorum_unreachable(|_| true), "C could still attest");
+        assert!(p.quorum_unreachable(|k| *k != MemberKey([3; 32])), "unless C left");
     }
 }
