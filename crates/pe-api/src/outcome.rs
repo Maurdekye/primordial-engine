@@ -321,6 +321,7 @@ mod tests {
     fn a_cooldown_is_not_ready_until_its_frame() {
         let (snap, _) = world();
         let tx = pe_world::edit::Transaction {
+            inline: vec![],
             actor: pe_world::edit::Actor::Person,
             label: None,
             preconditions: vec![],

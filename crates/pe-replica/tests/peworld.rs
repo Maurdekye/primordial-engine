@@ -34,7 +34,7 @@ fn row<T: pe_sim::Component>(v: T) -> Row {
 }
 
 fn tx(ops: Vec<Op>) -> Transaction {
-    Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
+    Transaction { inline: vec![], actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
 }
 
 fn sphere(radius: f32) -> Shape {

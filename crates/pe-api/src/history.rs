@@ -199,6 +199,7 @@ mod tests {
         let snap = w.snapshot(pe_core::Frame(0));
         let del = |n: u128| Op::Delete { id: Target::Existing(pe_core::ObjectId::from_u128(n)) };
         let tx = |ops: Vec<Op>| Transaction {
+            inline: vec![],
             actor: pe_world::edit::Actor::Person,
             label: None,
             preconditions: vec![],
@@ -224,6 +225,7 @@ mod tests {
         let target = pe_world::edit::AssetTarget::New(0);
         let commit = Op::commit_script(target, None, src, Hash([2; 32]), Hash([3; 32]), Hash([4; 32]), 9);
         let tx = Transaction {
+            inline: vec![],
             actor: pe_world::edit::Actor::Person,
             label: None,
             preconditions: vec![],

@@ -271,6 +271,7 @@ mod tests {
     fn sub(label: &str) -> Submission {
         Submission {
             tx: Transaction {
+                inline: vec![],
                 actor: Actor::Person,
                 label: Some(label.into()),
                 preconditions: vec![],
