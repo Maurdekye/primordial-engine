@@ -65,6 +65,11 @@ pub struct NodeConfig {
     pub cut_lag_floor_s: f64,
     pub cut_lag_cap_s: f64,
     pub cut_lag_margin_s: f64,
+    /// Silence from a peer longer than this sets its outage mark (see `Node::outage_mark`), seconds. Local: it only
+    /// chooses which arrivals the lateness reports and the adaptive lag sample. 0.3 s is three cut intervals with
+    /// nothing from the peer on any lane (coordinator mddb626a425c8; agreement.md 3 has the measurements). Clamped
+    /// to 0.05-10 s where it's used; NaN reads as 0.3 s.
+    pub outage_silence_s: f64,
     /// Ask again for missing entries after this long, ns.
     pub fetch_retry_ns: i64,
     /// The time cap on final entries kept behind the final frame: `T_diverge` plus `T_keep`, seconds.
@@ -114,6 +119,7 @@ impl NodeConfig {
             cut_lag_floor_s: 0.05,
             cut_lag_cap_s: 1.0,
             cut_lag_margin_s: 0.05,
+            outage_silence_s: 0.3,
             fetch_retry_ns: 500_000_000,
             keep_s: 60.0 + 10.0,
             keep_bytes: 64 << 20,
@@ -180,6 +186,7 @@ impl NodeConfig {
             cut_lag_floor_s: _,
             cut_lag_cap_s: _,
             cut_lag_margin_s: _,
+            outage_silence_s: _,
             fetch_retry_ns: _,
             keep_s: _,
             keep_bytes: _,
@@ -333,7 +340,7 @@ pub struct Node {
     /// When this member last received anything from each peer.
     heard: BTreeMap<MemberKey, HostTime>,
     /// Per author, the outage mark: this member's present frame at the first arrival after silence from that peer
-    /// longer than OUTAGE_SILENCE_NS. Its entries stamped below the mark waited out the outage, so they are an outage's
+    /// longer than `NodeConfig::outage_silence_s`. Its entries stamped below the mark waited out the outage, so they are an outage's
     /// backlog and go unsampled, whatever order they come in (@design-reviewer m7a78b8eaa1e1: a transport that queues
     /// through a dark path flushes the backlog, and the author's votes and timeouts from the outage with it, before any
     /// fresh claim; it was sampled with its whole outage age). Stamps rise, so once the backlog has drained no entry
@@ -362,10 +369,13 @@ pub struct Node {
 }
 
 const LATENESS_SAMPLES: usize = 256;
-/// Silence from a peer longer than this sets its outage mark (see `outage_mark`). A live session sends
-/// votes or timeouts every cut interval (0.1 s) and entries every frame, and a jittered slow link (0.9-1.5 s) spreads
-/// arrivals by 0.6 s at most, so a second of silence is an outage or a stall.
-const OUTAGE_SILENCE_NS: i64 = 1_000_000_000;
+/// `NodeConfig::outage_silence_s` in ns, clamped to 0.05-10 s (@design-reviewer's Low on 117d17d8: 0, a negative
+/// value or NaN would mark every gap, and nothing would ever be sampled); NaN reads as the default 0.3 s.
+fn outage_silence_ns(s: f64) -> i64 {
+    let s = if s.is_nan() { 0.3 } else { s.clamp(0.05, 10.0) };
+    (s * 1e9) as i64
+}
+
 /// Per chain, the samples a lateness report covers.
 const CHAIN_LATENESS_SAMPLES: usize = 128;
 /// Samples of a chain needed before this member reports on it.
@@ -2102,7 +2112,10 @@ impl Agreement for Node {
             Err(_) => return Err(self.fault(from, None, FaultKind::Malformed, "undecodable message".into())),
         };
         // After silence from this peer, its entries stamped before now are an outage's backlog.
-        if self.heard.insert(from, at).is_some_and(|t| at.0.saturating_sub(t.0) > OUTAGE_SILENCE_NS)
+        if self
+            .heard
+            .insert(from, at)
+            .is_some_and(|t| at.0.saturating_sub(t.0) > outage_silence_ns(self.cfg.outage_silence_s))
             && let Some(p) = self.present
         {
             self.outage_mark.insert(from, p);
@@ -2348,5 +2361,18 @@ impl Agreement for Node {
 
     fn events(&mut self) -> Vec<AgreeEvent> {
         std::mem::take(&mut self.events)
+    }
+}
+
+#[cfg(test)]
+mod outage_silence_tests {
+    #[test]
+    fn the_outage_silence_is_clamped() {
+        use super::outage_silence_ns as f;
+        assert_eq!(f(0.3), 300_000_000);
+        assert_eq!(f(0.0), 50_000_000);
+        assert_eq!(f(-1.0), 50_000_000);
+        assert_eq!(f(f64::NAN), 300_000_000);
+        assert_eq!(f(f64::INFINITY), 10_000_000_000);
     }
 }

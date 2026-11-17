@@ -201,7 +201,7 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     lead up alone. A report is a hint from an authenticated link: a wrong one moves only the author's own lead, which
     the driver clamps (a world setting of a few seconds). The samples leave out what the lag leaves out: fetched and
     hinted arrivals, a backlog a vote or timeout claimed first, and an outage's backlog: after silence from a peer
-    longer than 1 s, its entries stamped below this member's present frame at the first arrival after it (the outage
+    longer than 0.3 s (a local setting, `outage_silence_s`; coordinator mddb626a425c8), its entries stamped below this member's present frame at the first arrival after it (the outage
     mark) waited out the outage, however they come, since a transport that queues through a dark path flushes them
     before any fresh claim (@design-reviewer m7a78b8eaa1e1: unmarked, the first report after a 10 s blackout read 22 s
     and pe-app's lead jumped to its 3 s clamp; marked, the reports stay at 16-25 ms and the cut lag at 66-75 ms after
@@ -219,14 +219,23 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   - *Residual:* a faulty leader can name its present (or a frame just behind it) and void entries in flight. That is
     visible as voids per leader.
   - *Residual:* a member with no hand stream (an agent) can stamp up to the lag in the past and win same-frame races.
-  - *Residual (the outage mark's threshold, @engine-architect m3c1131ffd4c4) [I]:* a dropout shorter than 1 s sets no
-    mark, so its flushed backlog is sampled at its age: a 0.5 s dropout puts about 60 hand entries in the 128-sample
-    window and the 95th percentile reads about 0.45 s, which the driver's lead follows until it drains. 1 s stays
-    above a reliable lane's retransmit gap, so a lost-and-resent entry isn't read as an outage; the threshold is to be
-    set from pe-app measurements of 0.3 s and 0.7 s blackouts. And a step up in delay past 1 s (a link handover, say
-    0.1 s to 1.5 s) is read as an outage: the mark falls at the first arrival at the new delay, so about the next
-    delay's worth of arrivals goes unsampled by both the reports and the cut lag, and neither reacts until about
-    twice the new delay after the change. The author's entries void as late meanwhile.
+  - *Residual (the outage mark's threshold, 0.3 s; @engine-architect m3c1131ffd4c4, m40ceaa4a049d; coordinator
+    mddb626a425c8):* 0.3 s is three cut intervals with nothing at all from the peer on any lane, which a single lost
+    datagram doesn't cause, since the other lanes keep arriving. Measured at 1 s [V, pe-app, two machines on loopback,
+    one run each]: a 0.3 s blackout left leads of 20 and 23 frames, a 0.7 s one 49 and 1, held for the 3 s window and
+    then drained. Measured in pe-agree's sim [V, n = 2, 60 Hz, 30 s, 4 seeds, stalls held and flushed,
+    `repeated_stalls_at_two_outage_thresholds`]: with 0.5 s stalls every 3 s, or 0.8 s every 2 s, of both uplinks or of
+    one, 0.3 s against 1 s gives no late voids in either case, the same longest stand-still (0.5-0.9 s), the reports
+    at 16 ms instead of 0.47-0.78 s, and a lower mean final lag (0.37 s against 0.58 s, 0.52 s against 1.1 s). A
+    dropout of 0.3 s or less still sets no mark and is sampled at its age (0.28 s at most). Two costs remain [I]:
+    - A step up in delay of more than 0.3 s (a link handover, say 0.1 s to 0.5 s) is read as an outage: the mark
+      falls at the first arrival at the new delay, so about the next delay's worth of arrivals goes unsampled by both
+      the reports and the cut lag, and neither reacts until about twice the new delay after the change. The author's
+      entries can void as late meanwhile.
+    - At n >= 4 the others finalize through one member's stall, so its entries in flight can void as late. With a
+      1 s mark the lag would learn from a repeated short stall and protect the next one; with 0.3 s each repeat can
+      cost voids. At n = 2 nothing is certified while either side is dark, so the stall's entries wait (measured
+      above).
   - *Residual:* lateness is measured over all authors, so a member that back-stamps its entries raises every
     leader's lag, up to the cap. It costs finality latency, never safety.
 - **The last cut needs a child.** When cuts pause (idle, or the session ends), one empty cut follows, so the last
