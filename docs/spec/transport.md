@@ -443,16 +443,17 @@ seconds (the user's ruling: the tick rate is configurable per world).
   ready (5.4), its session time is its own host clock, which can be days from the members'. A member that sampled
   it would move its target toward it and read its convergence jumps as a rate: the run's opener steered at
   `S_max` until `Pinned` and reported the joiner at -5.2e13 ppb (5.6). So a clock not yet ready ignores a sample
-  request. A first member is ready at once, and every later member was ready before it joined, so a joiner
-  always has someone to sample [I].
+  request. A first member is ready at once, and a joiner samples only clock members, which are ready by rule
+  (5.4), so a joiner always has someone to sample.
 - **Filter** (kept from pe-app): samples from the last `W_clock`, and per `B_clock` bucket the one with the
   smallest δ, since a queued sample is biased by its queue. A peer's offset is the θ of the smallest-δ sample in
   its newest three buckets. Its error is within δ/2.
 
 ### 5.3 The target: the fault-tolerant midpoint
 
-- **The values:** each connected member's θ, plus my own offset once my clock runs (after frame 0). Before
-  frame 0 my offset is not a time yet, so the target is the members' alone (5.4). Counted, it halved a joiner's
+- **The values:** each connected member's θ, plus my own offset once my clock has started (it has frame 0's
+  time: a first member at once, a joiner at its first Ready; both can be before frame 0 itself). Until then my
+  offset is not a time yet, so the target is the members' alone (5.4). Counted, it halved a joiner's
   distance each round instead of closing it: from host clocks days apart, about 27 rounds, past `T_ready`
   [V `pe-net/tests/core.rs`, B's host clock two days ahead: before 1.11 B was ready at 5.5 s, after a
   `NotReady`, and the opener reported a `PeerRate` of -7.7e11 ppb; with 1.11, ready at 0.7 s and no clock event
@@ -471,6 +472,10 @@ seconds (the user's ruling: the tick rate is configurable per world).
 
 - **A joiner** sets its offset to the target at once, each round, while it is not yet in the session. A jump is
   allowed here, since nothing has run.
+- **Clock members are ready clocks** [rule, 1.11]: a welcome and a start cut name as clock members only members
+  whose clocks are ready. Since only a ready clock answers (5.2), two unready joiners that each counted the other
+  would both wait out `T_ready`. Today's pe-app welcome names only the welcomer, so this holds [V by reading,
+  @design-reviewer].
 - **The target comes from the members, not from the inviter alone** [@design-reviewer's Medium 3].
   - Before the welcome, the joiner's only peer is the inviter, so one peer's word would set its clock.
   - So the joiner first connects to the members (6.7), and its target is the midpoint over the members it has
@@ -659,7 +664,8 @@ its frame this way (seam S3).
   its transport) first closes every connection with code 0 (`Left`, 6.6) and sends the closes. Its peers see the
   link go Down at once instead of after `T_idle` [V `pe-net/tests/thread.rs`: within microseconds on loopback,
   for a stop and for a drop; before 1.11 neither closed, and the first two-machine run's opener waited out
-  `T_idle`]. Dropping the handle waits for the thread to send them.
+  `T_idle`]. Dropping the handle waits for the thread to send them. Best effort: each close is sent once and
+  nobody remains to retransmit it, so if it is lost the peer falls back to `T_idle`.
 - **Address changes:** QUIC connection migration is on. A peer's new address is used only after QUIC's path
   validation, so a forged source address can't redirect a link.
 
