@@ -347,13 +347,9 @@ const MAX_HINTS: usize = 256;
 const HINT_TTL_NS: i64 = 5_000_000_000;
 /// Samples needed before the lag adapts.
 const LATENESS_MIN: usize = 32;
-/// The payload of a `Leave` entry, class Protocol (agreement.md 8): the leaver's last entry.
-pub const LEAVE: &[u8] = b"pe.agree.leave.v1";
-
-/// Whether `e` is a `Leave`.
-pub fn is_leave(e: &SignedEntry) -> bool {
-    e.entry.class == pe_seams::Class::Protocol && e.entry.payload[..] == *LEAVE
-}
+/// The payload of a `Leave` entry, class Protocol (agreement.md 8), the leaver's last entry, and its test. They live in
+/// pe-seams, so that S2's replica reads a `Leave` without depending on S3's implementation.
+pub use pe_seams::{LEAVE, is_leave};
 
 /// How long a member keeps its previous epoch's core after its reconfiguring cut E became final there, so members that
 /// missed E's finality can still finish it (agreement.md 8: a member that missed it fetches it like a committed block).
