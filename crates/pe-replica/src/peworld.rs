@@ -51,12 +51,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use pe_seams::{
-    Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LightKind, ObjectClass, ObjectId, Outcome, Pos,
-    Reason, SignedEntry, Stage, Tree, Version, ViewFlags, ViewObject,
+    Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LightKind, MemberKey, ObjectClass, ObjectId, Outcome,
+    Pos, Reason, SignedEntry, Stage, Tree, Version, ViewFlags, ViewObject,
 };
 use pe_sim::transform::rotate;
 use pe_sim::{Component, ComponentId, SimStore, Transform, WorldTransform};
 use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
+use pe_world::edit::{AssetTarget, Op, Transaction};
+use pe_world::script::AssetId;
 use pe_world::{Footprint, World, input_phase};
 
 use crate::logic::{ScriptRow, ScriptRunner, StageWorld};
@@ -72,11 +74,49 @@ const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 pub struct PeWorld {
     world: World,
     domain: DomainId,
+    /// The author's prediction of its own code commit: this machine's state, never the world's, so it stays across
+    /// rollbacks and restores.
+    predict: Predict,
+}
+
+/// The author's prediction of its own code commit (logic.md 6.2a's option (i); @coordinator-opus m303e80fdcd44).
+/// - **Start:** an edit of the local member's that commits a version and leaves it pending without a quorum, at its
+///   frame c. It runs from c + 1, by `World::activate_for_prediction` right after `World::end_frame(c)`, in every step
+///   and replay of frame c while the prediction stands; this machine holds its votes from c + 1 (S2's `vote_holds`).
+/// - **End:** another member's `AttestBuild` or `BuildFailed` of the version, whatever its outcome, a `Leave`
+///   (any of them can decide the commit under the rule: the shared void rule runs before D), or reaching D. The
+///   replica then steps again from c under the rule, at once ([`WorldModel::take_replay_from`]): the old code up to
+///   F and the new code after, or the old code throughout on a void. A commit whose prediction ended is not predicted
+///   again in that replay or later ones. At n = 2 the other member's attestation completes the quorum, so nothing is
+///   left to predict after it. One prediction at a time.
+/// - A prediction that can't activate (`None`: nothing live is pending; `Some(Err)`: its re-key would fail) ends at
+///   once with no replay: this history already runs the old code.
+#[derive(Clone, Debug, Default)]
+struct Predict {
+    local: Option<MemberKey>,
+    now: Option<Prediction>,
+    /// The commits whose prediction ended.
+    ended: BTreeSet<(AssetId, Version)>,
+    /// Where the replica steps again from, once taken.
+    replay_from: Option<Frame>,
+    /// The replica is stepping off its live history: nothing here changes, and nothing is predicted.
+    scratch: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Prediction {
+    asset: AssetId,
+    /// The commit: its entry and op.
+    version: Version,
+    /// The version hash V the attestations name.
+    v: Hash,
+    c: Frame,
+    deadline: Frame,
 }
 
 impl PeWorld {
     pub fn new(world: World, domain: DomainId) -> PeWorld {
-        PeWorld { world, domain }
+        PeWorld { world, domain, predict: Predict::default() }
     }
 
     pub fn world(&self) -> &World {
@@ -109,26 +149,9 @@ impl PeWorld {
             Err(_) => (Outcome::Refused { op: None, reason: Reason::NoPermission }, Effects::default()),
         }
     }
-}
 
-/// An entry applied with nothing to report: a protocol or governance entry's outcome.
-fn applied() -> Outcome {
-    Outcome::Applied { created: Vec::new(), overwrote: Vec::new(), notes: Vec::new(), inverse: None }
-}
-
-impl WorldModel for PeWorld {
-    type Saved = World;
-
-    fn domain(&self) -> DomainId {
-        self.domain
-    }
-
-    /// pe-world's `input_phase`: 0, a hand input, is `First`; anything else is `Second`.
-    fn phase(entry: &SignedEntry) -> Phase {
-        if input_phase(entry) == 0 { Phase::First } else { Phase::Second }
-    }
-
-    fn apply(&mut self, frame: Frame, entry: &SignedEntry) -> (Outcome, Effects) {
+    /// Stage 1 for one entry, by its class (module doc).
+    fn apply_entry(&mut self, frame: Frame, entry: &SignedEntry) -> (Outcome, Effects) {
         match entry.entry.class {
             class @ (Class::Edit | Class::Input) => {
                 let before = self.world.clone();
@@ -155,9 +178,120 @@ impl WorldModel for PeWorld {
         }
     }
 
+    /// The author's prediction ([`Predict`]) around one applied entry. A commit of the local member's starts one. Once
+    /// one stands, another member's attestation or build failure of its version, or a `Leave`, ends it, whatever the
+    /// entry's outcome: in the predicted history an attestation is refused `Stale`, since the pending record is gone.
+    fn watch(&mut self, frame: Frame, entry: &SignedEntry, outcome: &Outcome) {
+        if self.predict.scratch {
+            return;
+        }
+        if let Some(p) = self.predict.now {
+            // Only from c on: a rollback past an earlier entry, a third member's `Leave` say, applies it again.
+            if frame >= p.c && (pe_seams::is_leave(entry) || decides(entry, &p, self.predict.local)) {
+                self.end_prediction();
+            }
+            return;
+        }
+        let applied = matches!(outcome, Outcome::Applied { .. });
+        if !applied || entry.entry.class != Class::Edit || self.predict.local != Some(entry.entry.author) {
+            return;
+        }
+        let Some(tx) = Transaction::decode(&entry.entry.payload) else { return };
+        for (i, op) in tx.ops.iter().enumerate() {
+            let Op::CommitScript { script, .. } = op else { continue };
+            // The asset it commits to: an existing one, or a new one's id derived from the entry (world-model.md 7.9).
+            let e = &entry.entry;
+            let asset = match *script {
+                AssetTarget::Existing(a) => a,
+                AssetTarget::New(k) => pe_world::script::asset_created(e.line, e.author, e.chain, e.seq, k),
+            };
+            let version = Version { entry: entry.id(), op: i as u32 };
+            let pending = self.world.pending().get(&asset);
+            let live = pending.filter(|p| p.version == version && p.void.is_none() && !p.attested_by_quorum());
+            if let Some(p) = live.filter(|_| !self.predict.ended.contains(&(asset, version))) {
+                self.predict.now = Some(Prediction { asset, version, v: p.v(), c: frame, deadline: p.deadline });
+                return;
+            }
+        }
+    }
+
+    /// Ends the prediction that stands: its commit is not predicted again, and the replica steps again from c.
+    fn end_prediction(&mut self) {
+        if let Some(p) = self.predict.now.take() {
+            self.predict.ended.insert((p.asset, p.version));
+            self.predict.replay_from = Some(self.predict.replay_from.map_or(p.c, |f| f.min(p.c)));
+        }
+    }
+}
+
+/// Whether `entry` is another member's `AttestBuild` or `BuildFailed` of `p`'s version: it can decide the commit under
+/// the rule (logic.md 6.2a), so the prediction ends.
+fn decides(entry: &SignedEntry, p: &Prediction, local: Option<MemberKey>) -> bool {
+    if entry.entry.class != Class::Edit || local == Some(entry.entry.author) {
+        return false;
+    }
+    let Some(tx) = Transaction::decode(&entry.entry.payload) else { return false };
+    tx.ops.iter().any(|op| match op {
+        Op::AttestBuild { script, version, .. } | Op::BuildFailed { script, version, .. } => {
+            *script == p.asset && *version == p.v
+        }
+        _ => false,
+    })
+}
+
+/// An entry applied with nothing to report: a protocol or governance entry's outcome.
+fn applied() -> Outcome {
+    Outcome::Applied { created: Vec::new(), overwrote: Vec::new(), notes: Vec::new(), inverse: None }
+}
+
+impl WorldModel for PeWorld {
+    type Saved = World;
+
+    fn domain(&self) -> DomainId {
+        self.domain
+    }
+
+    /// pe-world's `input_phase`: 0, a hand input, is `First`; anything else is `Second`.
+    fn phase(entry: &SignedEntry) -> Phase {
+        if input_phase(entry) == 0 { Phase::First } else { Phase::Second }
+    }
+
+    fn apply(&mut self, frame: Frame, entry: &SignedEntry) -> (Outcome, Effects) {
+        let done = self.apply_entry(frame, entry);
+        self.watch(frame, entry, &done.0);
+        done
+    }
+
     fn end_frame(&mut self, frame: Frame) {
         self.world.end_frame(frame);
+        if let Some(p) = self.predict.now.filter(|_| !self.predict.scratch) {
+            if frame == p.c {
+                if !matches!(self.world.activate_for_prediction(p.asset, frame), Some(Ok(_))) {
+                    self.predict.now = None;
+                    self.predict.ended.insert((p.asset, p.version));
+                }
+            } else if frame >= p.deadline {
+                self.end_prediction();
+            }
+        }
         self.world.set_frame(frame.next());
+    }
+
+    fn set_local(&mut self, local: Option<MemberKey>) {
+        self.predict.local = local;
+    }
+
+    fn take_replay_from(&mut self) -> Option<Frame> {
+        self.predict.replay_from.take()
+    }
+
+    fn vote_holds(&self) -> Vec<Frame> {
+        let c = self.predict.now.map(|p| p.c).or(self.predict.replay_from);
+        c.map(|c| vec![c.next()]).unwrap_or_default()
+    }
+
+    fn set_scratch(&mut self, scratch: bool) {
+        self.predict.scratch = scratch;
     }
 
     fn scripted(&self) -> bool {
