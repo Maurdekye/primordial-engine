@@ -543,7 +543,7 @@ pe-replica puts the physics into it in two places, both written at each cut fram
 
 ### 5.4 A cut the live history matches: the live root and the kept transfer
 
-[V `crates/pe-replica/src/replica.rs`, `from_live`, `take_root`; @coordinator-opus; added after
+[V `crates/pe-replica/src/replica.rs`, `reuse_live_root`, `take_root`; @coordinator-opus; added after
 c9e2829a]
 - **Why** [V, `<notes>`]. In @engine-architect's two-member sessions at 500 balls, every cut a vote or
   `finalize` asked about matched the live history. Each still re-did the live step's work at that frame: it saved the
@@ -552,8 +552,8 @@ c9e2829a]
   finalizes were 55 % of the laptop's busy time.
 - **The live root.** A cut matches when every frame from the base to the cut stepped exactly the cut's entries, in
   apply order (`from == at`, the same test 5.3's re-step starts from). The live step then took the root at the cut's
-  frame, from the same state and through the same frame function. A vote and `finalize` take that root (`from_live`),
-  with no restore, re-step or hash.
+  frame, from the same state and through the same frame function. A vote and `finalize` take that root
+  (`reuse_live_root`), with no restore, re-step or hash.
   - Its snapshot (4.1) is the one already held for that root (as at `finalize` after a vote). Otherwise it is the
     ring's keyframe at the cut's frame, taken after that take_root wrote its rows, with the transfer the take_root
     serialized.
