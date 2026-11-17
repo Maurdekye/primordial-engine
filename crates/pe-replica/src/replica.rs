@@ -1866,8 +1866,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// Saves the live state as the keyframe at the current frame, replacing the one there: damage made since is then
     /// part of the saved state too, as for a member that started from a wrong state, so a replay reproduces it.
-    /// Snapshots held for roots (the floor's, `Cv`'s) are not changed (@vdw-physics).
+    /// Snapshots held for roots (the floor's, `Cv`'s) are not changed (@vdw-physics). The transfer the live take_root
+    /// kept at this frame was the state's before the damage, so it goes: a root at a cut here is re-stepped from the
+    /// keyframe, as before 5.4, never pieced together from this keyframe and that transfer.
     pub fn rekeyframe(&mut self) {
         self.keyframe(self.frame);
+        self.live_transfers.remove(&self.frame);
     }
 }
