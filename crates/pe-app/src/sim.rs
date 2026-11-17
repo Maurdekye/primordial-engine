@@ -174,8 +174,9 @@ pub struct SimStats {
     pub holds: u64,
     /// The longest hold, in ticks.
     pub longest_hold: u64,
-    /// Root splits S3 reported that opened an episode (no root could reach a quorum: divergence.md 5), and episodes
-    /// that ended with a cut final at or past the split's frame.
+    /// Root-split episodes (S3 reported a `RootSplit` while none was open: no root could reach a quorum, divergence.md
+    /// 5), and episodes that ended with a cut final at or past every reported split's frame. A split reported for a
+    /// cut at or below the final cut's frame opens none.
     pub root_splits: u64,
     pub root_splits_ended: u64,
     /// Messages from the network that agreement took (step 1).
@@ -228,9 +229,12 @@ pub struct Sim {
     /// The verdict this tick's votes carry: `NotRun` until pe-diverge asks for a self-test.
     self_test: SelfTest,
     published: Option<Arc<FrameView>>,
-    /// The open root split: the earliest cut S3 reported `RootSplit` for since the last cut final at or past it. While
-    /// it is open, the health this machine reports is `Repairing` from its frame ([`Sim::health`]; divergence.md 7).
-    split: Option<CutRef>,
+    /// The open root splits: the frames of the cuts S3 reported `RootSplit` for, above the final cut's frame. While
+    /// any is open, the health this machine reports is `Repairing` from the first ([`Sim::health_of`]; divergence.md
+    /// 7). A set, not the earliest alone: a revote can settle an early split before a later one (@engine-architect).
+    splits: std::collections::BTreeSet<Frame>,
+    /// The replica's view behind `published`: `published` is a copy with the composed health while a split is open.
+    source_view: Option<Arc<FrameView>>,
     /// Ticks into the current hold.
     hold: Option<u64>,
     stats: SimStats,
@@ -332,7 +336,8 @@ impl Sim {
             budget,
             self_test: SelfTest::NotRun,
             published: None,
-            split: None,
+            splits: std::collections::BTreeSet::new(),
+            source_view: None,
             hold: None,
             stats: SimStats::default(),
             local: None,
@@ -750,37 +755,46 @@ impl Sim {
         if let Some(log) = &self.event_log {
             log.lock().expect("the event log").extend(events);
         }
-        // 6. The replica's newest view. While it catches up the view holds, so nothing new goes out.
+        // 6. The replica's newest view. While it catches up the view holds, so nothing new goes out. It carries the
+        // composed health, so pe-render's "resyncing" line and session_info read one value (@design-reviewer's Low):
+        // while a root split is open, a copy of the view with it, published again when only the health changed.
         let view = self.replica.view();
-        if !self.published.as_ref().is_some_and(|v| Arc::ptr_eq(v, &view)) {
+        let health = self.health_of(&view);
+        let same_view = self.source_view.as_ref().is_some_and(|v| Arc::ptr_eq(v, &view));
+        if !same_view || self.published.as_ref().is_some_and(|v| v.health != health) {
+            let out =
+                if view.health == health { view.clone() } else { Arc::new(FrameView { health, ..(*view).clone() }) };
             if let Some(api) = &self.api {
-                self.feed_api(api, &view);
+                self.feed_api(api, &out);
             }
-            self.slot.publish(view.clone());
-            self.published = Some(view);
+            self.slot.publish(out.clone());
+            self.published = Some(out);
+            self.source_view = Some(view);
             self.stats.published += 1;
         }
         Some((p, report))
     }
 
-    /// Opens a root-split episode on S3's `RootSplit` (the earliest cut wins), and ends it once a cut at or past the
-    /// split's frame is final: votes then reached a quorum on one root (divergence.md 5, step 4).
+    /// Opens a root split on S3's `RootSplit` for a cut above the final cut's frame, and closes every split at or
+    /// below the final cut's frame: votes reached a quorum on one root there (divergence.md 5, step 4). The episode
+    /// lasts while any is open.
     fn track_split(&mut self, events: &[AgreeEvent]) {
+        let final_frame = self.agree.final_cut().map(|fc| fc.cut.at.frame);
+        let was_open = !self.splits.is_empty();
         for e in events {
             if let AgreeEvent::RootSplit { cut, .. } = e
-                && self.split.is_none_or(|s| cut.frame < s.frame)
+                && final_frame.is_none_or(|f| cut.frame > f)
             {
-                if self.split.is_none() {
-                    self.stats.root_splits += 1;
-                }
-                self.split = Some(*cut);
+                self.splits.insert(cut.frame);
             }
         }
-        if let (Some(s), Some(fc)) = (self.split, self.agree.final_cut())
-            && fc.cut.at.frame >= s.frame
-        {
-            self.split = None;
-            self.stats.root_splits_ended += 1;
+        if let Some(f) = final_frame {
+            self.splits.retain(|&s| s > f);
+        }
+        match (was_open, !self.splits.is_empty()) {
+            (false, true) => self.stats.root_splits += 1,
+            (true, false) => self.stats.root_splits_ended += 1,
+            _ => {}
         }
     }
 
@@ -789,16 +803,16 @@ impl Sim {
     /// (divergence.md 7; @coordinator-opus's ruling on
     /// @item:primordial-engine/pe-app-runs-pe-diverge-app-md-step-5-and-health-r).
     fn health_of(&self, view: &FrameView) -> Health {
-        match (view.health, self.split) {
+        match (view.health, self.splits.first()) {
             (h, None) => h,
-            (Health::Agreed, Some(s)) => Health::Repairing { since: s.frame },
-            (Health::Repairing { since }, Some(s)) => Health::Repairing { since: since.min(s.frame) },
+            (Health::Agreed, Some(&s)) => Health::Repairing { since: s },
+            (Health::Repairing { since }, Some(&s)) => Health::Repairing { since: since.min(s) },
         }
     }
 
-    /// [`Sim::health_of`] the newest view published, `Agreed` before the first.
+    /// The health of the newest view published ([`Sim::health_of`] its replica's view), `Agreed` before the first.
     pub fn health(&self) -> Health {
-        self.published.as_deref().map_or(Health::Agreed, |v| self.health_of(v))
+        self.published.as_deref().map_or(Health::Agreed, |v| v.health)
     }
 
     /// Step 6 for pe-api (app.md 3.1): the view's change records, the present world, the world at `Cv`, and the
@@ -807,7 +821,7 @@ impl Sim {
         let shared = &api.ports.shared;
         // Activations first: the publication's final frame then tells those it passes (api.md 7).
         api.ports.log.activations(&view.activations, &view.activations_retracted);
-        api.ports.log.publish(&view.changes, view.final_frame.map(|f| f.0), self.health_of(view));
+        api.ports.log.publish(&view.changes, view.final_frame.map(|f| f.0), view.health);
         if let Some(s) = crate::api::snapshot_of(&*self.replica) {
             shared.keep(s);
         }
@@ -1250,9 +1264,12 @@ pub(crate) mod tests {
         let _ = bare.with_api(ports);
     }
 
-    /// A root split S3 reports opens an episode: the health this machine reports reads `Repairing` from the split's
-    /// frame, though the replica, which only learns of a divergence at a final cut, still says `Agreed`. A cut final
-    /// at or past the split's frame ends it (@item:primordial-engine/pe-app-runs-pe-diverge-app-md-step-5-and-health-r).
+    /// A root split S3 reports opens an episode: the health this machine reports, in the published view and to
+    /// pe-api, reads `Repairing` from the first open split's frame, though the replica, which only learns of a
+    /// divergence at a final cut, still says `Agreed`. Every split stays open until a cut at or past its frame is
+    /// final, and a split reported for a cut already settled opens nothing
+    /// (@item:primordial-engine/pe-app-runs-pe-diverge-app-md-step-5-and-health-r; @engine-architect's and
+    /// @design-reviewer's Lows on 2aad7048).
     #[test]
     fn an_open_root_split_reports_repairing_until_a_cut_past_it_is_final() {
         use pe_seams::{FinalCut, Hash, Health};
@@ -1260,30 +1277,41 @@ pub(crate) mod tests {
         let agree = SoloAgreement::new(LineId::origin());
         let script = agree.script.clone();
         let replica = EmptyReplica::new(clock.clone(), Frame(0));
-        let mut s =
-            Sim::new(Box::new(agree), Box::new(replica), clock.clone(), Arc::new(FrameSlot::new()), Budget::new(RATE));
+        let slot = Arc::new(FrameSlot::new());
+        let mut s = Sim::new(Box::new(agree), Box::new(replica), clock.clone(), slot.clone(), Budget::new(RATE));
         let at = |frame: u64, height: u64| CutRef { line: LineId::origin(), height, frame: Frame(frame) };
         let split = |c: CutRef| AgreeEvent::RootSplit { cut: c, roots: vec![] };
         let final_at = |c: CutRef| FinalCut { cut: Cut { at: c, heads: vec![] }, root: Hash([1; 32]), voters: vec![] };
-        for f in 1..=4 {
+        let mut f = 0;
+        let mut tick = |s: &mut Sim| {
+            f += 1;
             s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+            // One value for both readers: the view the display takes, and what `health` (and pe-api) report.
+            assert_eq!(slot.newest().expect("published").health, s.health());
+            s.health()
+        };
+        for _ in 0..4 {
+            assert_eq!(tick(&mut s), Health::Agreed);
         }
-        assert_eq!(s.health(), Health::Agreed);
-        // Splits at cuts 6 and then 3: the episode is open from the earliest; a second split doesn't open another.
+        // Splits at cuts 6 and then 3: one episode, from the first.
         script.lock().unwrap().events = vec![split(at(6, 2)), split(at(3, 1))];
-        s.tick(clock.host_time_of(Frame(5))).expect("ticked");
-        assert_eq!(s.health(), Health::Repairing { since: Frame(3) });
+        assert_eq!(tick(&mut s), Health::Repairing { since: Frame(3) });
         script.lock().unwrap().events = vec![split(at(9, 3))];
-        s.tick(clock.host_time_of(Frame(6))).expect("ticked");
-        assert_eq!(s.health(), Health::Repairing { since: Frame(3) });
+        assert_eq!(tick(&mut s), Health::Repairing { since: Frame(3) });
         assert_eq!((s.stats().root_splits, s.stats().root_splits_ended), (1, 0));
-        // A final cut below the split's frame doesn't end it; one at its frame does.
+        // A final cut below the first split's frame closes none; one at 3 closes 3, and 6 and 9 stay open.
         script.lock().unwrap().final_cut = Some(final_at(at(2, 0)));
-        s.tick(clock.host_time_of(Frame(7))).expect("ticked");
-        assert_eq!(s.health(), Health::Repairing { since: Frame(3) });
+        assert_eq!(tick(&mut s), Health::Repairing { since: Frame(3) });
         script.lock().unwrap().final_cut = Some(final_at(at(3, 4)));
-        s.tick(clock.host_time_of(Frame(8))).expect("ticked");
-        assert_eq!(s.health(), Health::Agreed);
+        assert_eq!(tick(&mut s), Health::Repairing { since: Frame(6) });
+        // A split reported late, for a cut at or below the final cut's frame, opens nothing.
+        script.lock().unwrap().events = vec![split(at(3, 1))];
+        assert_eq!(tick(&mut s), Health::Repairing { since: Frame(6) });
+        script.lock().unwrap().final_cut = Some(final_at(at(9, 5)));
+        assert_eq!(tick(&mut s), Health::Agreed);
+        assert_eq!((s.stats().root_splits, s.stats().root_splits_ended), (1, 1));
+        script.lock().unwrap().events = vec![split(at(8, 3))];
+        assert_eq!(tick(&mut s), Health::Agreed, "a late split opens no episode");
         assert_eq!((s.stats().root_splits, s.stats().root_splits_ended), (1, 1));
     }
 
