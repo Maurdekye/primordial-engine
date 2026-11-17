@@ -8,8 +8,9 @@
 # triggered check's paths (and doesn't mind them elsewhere), a base without a table uses the landing's with a
 # NOTE, and a malformed table is an error. Then, for a check whose command names {crates}: it holds the touched
 # workspace members (by folder, so a path in pe-net-crypto isn't pe-net's) less the skipped packages, every
-# member for a path on an 'all' line, only the landing's members, and nothing to run when none is left; and a
-# landing whose own table is malformed (one that adds an exemption: there is no such keyword) fails, listing too.
+# member for a path on an 'all' line, and nothing to run when none is left; a landing that drops a member while
+# changing its files fails (one that removes the member with its folder doesn't); and a landing whose own table
+# is malformed (one that adds an exemption: there is no such keyword) fails, listing too.
 # It runs no cargo, so it needs no build slot.
 #
 #   bash scripts/test_tier1.sh [<rev>]          (default HEAD; <rev> must have scripts/tier1.sh)
@@ -116,7 +117,9 @@ grep -q '^  exempt pe-core' "$R/scripts/tier1_checks.txt" || die "could not plan
 cbadown=$(commit "touches a crate, and its own table adds an exemption (no such keyword)")
 cbranch; sed -i '/"crates\/pe-xr"/d' "$R/Cargo.toml"; touch_ crates/pe-xr/src/lib.rs
 grep -q '"crates/pe-xr"' "$R/Cargo.toml" && die "could not drop pe-xr from the members"
-cgone=$(commit "drops a member, touches its folder")
+cgone=$(commit "drops a member, changes a file in its folder")
+cbranch; sed -i '/"crates\/pe-xr"/d' "$R/Cargo.toml"; g rm -r -q crates/pe-xr
+crm=$(commit "removes a member with its folder")
 expect crates-expands-the-touched-members "$ctwo" "$cbase" run 0 "expanded:-p pe-core -p pe-world:$" "crates: PASS" \
   "!\{crates\}:" marker
 expect crates-leaves-out-skipped "$cskip" "$cbase" run 0 "expanded:-p pe-net-crypto:$" "\{crates\}: box3d-rust skipped" \
@@ -129,8 +132,11 @@ expect own-table-malformed-fails "$cbadown" "$cbase" run 1 \
   "landing's own scripts/tier1_checks.txt has an error.*unknown keyword 'exempt'" "expanded:-p pe-world:$" marker
 expect own-table-malformed-fails-listing-too "$cbadown" "$cbase" list 1 \
   "landing's own scripts/tier1_checks.txt has an error" nomarker
-expect crates-only-members-of-the-landing "$cgone" "$cbase" run 0 \
-  "crates: nothing to run: no workspace member holds a path that triggers it" nomarker
+expect crates-dropped-member-changed-fails "$cgone" "$cbase" run 1 \
+  "crates: FAIL: the landing changes files in a folder that is a workspace member at the base but not in the landing" \
+  "crates/pe-xr/src/lib.rs \(crates/pe-xr\)" "crates: nothing to run" nomarker
+expect crates-member-removed-with-its-folder "$crm" "$cbase" run 0 \
+  "crates: nothing to run: no workspace member holds a path that triggers it" "!FAIL" nomarker
 # --run with the checkout elsewhere: tier1.sh refuses rather than test the wrong tree.
 g checkout -q -f --detach "$base"
 (cd "$R" && bash scripts/tier1.sh --base "$base" --run "$touches") > "$tmp/out.log" 2>&1; rc=$?
