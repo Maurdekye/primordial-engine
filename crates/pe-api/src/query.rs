@@ -418,7 +418,9 @@ impl Builder<'_> {
                         if let Some(want) = want {
                             f.retain(|k, _| want.contains(k));
                         }
-                        components.insert(key, f);
+                        // Two requests may meet at one full form (`Spin` ambiguous here, and `Spin@a:<prefix>`):
+                        // the object answers once, with both field lists.
+                        components.entry(key).or_default().extend(f);
                     }
                 }
             }
