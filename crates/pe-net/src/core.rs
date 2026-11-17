@@ -760,7 +760,7 @@ impl Core {
             // yet fully handed to quinn (the delay guard holds them mid-write) keep at most half the peer's stream
             // credit, so Protocol and Action always have the other half (both sides run one build, so the peer's
             // `N_streams_in` is ours; @design-reviewer's Low 1 on 9e71ac4c).
-            let low_cap = (self.cfg.n_streams_in / 2) as usize;
+            let low_cap = (self.cfg.n_streams_in / 2).max(1) as usize; // at least 1, or a limit of 0-1 never sends low
             while c.unopened.is_empty()
                 && let Some((lane, seq, bytes)) =
                     c.link.poll_stream(low && c.outbound.iter().filter(|o| o.2).count() < low_cap)
