@@ -1,0 +1,23 @@
+{"asset":"8903","c":404,"event":"pending","frame":405,"t_ms":2440.6093}
+{"asset":"8903","event":"active","frame":453,"runs_from":453,"t_ms":3238.0064}
+{"asset":"c185","c":549,"event":"pending","frame":550,"t_ms":4865.1426}
+{"asset":"c185","event":"active","frame":576,"runs_from":576,"t_ms":5296.654399999999}
+{"asset":"4f6d","c":698,"event":"pending","frame":699,"t_ms":7360.3727}
+{"asset":"4f6d","event":"active","frame":726,"runs_from":726,"t_ms":7793.3662}
+{"asset":"24c0","c":870,"event":"pending","frame":871,"t_ms":10203.228}
+{"asset":"24c0","event":"active","frame":897,"runs_from":897,"t_ms":10630.3724}
+{"asset":"8a93","c":974,"event":"pending","frame":977,"t_ms":11962.3673}
+{"asset":"8a93","event":"active","frame":1002,"runs_from":1002,"t_ms":12388.2212}
+{"asset":"be83","c":1073,"event":"pending","frame":1075,"t_ms":13612.173999999999}
+{"asset":"be83","event":"active","frame":1101,"runs_from":1101,"t_ms":14027.942}
+{"asset":"ff07","c":1218,"event":"pending","frame":1220,"t_ms":16017.924699999998}
+{"asset":"ff07","event":"active","frame":1246,"runs_from":1246,"t_ms":16445.1378}
+{"asset":"2d28","c":1338,"event":"pending","frame":1340,"t_ms":18044.406899999998}
+{"asset":"2d28","event":"active","frame":1367,"runs_from":1367,"t_ms":18461.499799999998}
+{"asset":"0245","c":1560,"event":"pending","frame":1562,"t_ms":21713.7341}
+{"asset":"0245","event":"active","frame":1587,"runs_from":1587,"t_ms":22125.5268}
+{"asset":"9b16","c":1714,"event":"pending","frame":1716,"t_ms":24289.266300000003}
+{"asset":"9b16","event":"active","frame":1742,"runs_from":1742,"t_ms":24711.993599999998}
+{"asset":"4720","c":1829,"event":"pending","frame":1830,"t_ms":26204.4328}
+{"asset":"4720","event":"active","frame":1857,"runs_from":1857,"t_ms":26627.575}
+Player d54207da's connection dropped. They may come back; until then, changes wait to be confirmed.

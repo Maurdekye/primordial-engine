@@ -1,0 +1,18 @@
+COLD
+  F-c frames: n=3 median 49 [48-52]
+  F-c ms: n=3 median 817 [800-867]
+  author call ms: n=3 median 1651 [917-2490]
+  NotReady retries: [0, 0, 0]
+  A_corrected ms after call: n=3 median 1039 [1030-1253]
+  A_final ms after call: n=3 median 1213 [1186-1501]
+  prediction from c+1: True
+WARM
+  F-c frames: n=30 median 27 [25-29]
+  F-c ms: n=30 median 450 [417-483]
+  author call ms: n=30 median 817 [403-2491]
+  NotReady retries: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A_corrected ms after call: n=30 median 562 [475-741]
+  A_final ms after call: n=30 median 757 [697-904]
+  prediction from c+1: True
+B: 33 activated, 0 voids; B's own pending-to-active: ms: n=33 median 427 [412-812]
+B's F equals A's for every commit: True

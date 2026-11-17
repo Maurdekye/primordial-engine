@@ -163,10 +163,14 @@ fn a_rustc_failure_is_compile_only_with_an_error_at_a_place_in_the_source() {
     let gone = "couldn't read `Z:\\no\\such\\file.txt`: The system cannot find the path specified. (os error 3)";
     assert_eq!(r(vec![diag("error", gone, at)]), FailReason::Refused);
     // A relative name is resolved in the crate rustc ran in, not in the engine's working folder.
-    let rel = "couldn't read `scripts\\lamp\\Cargo.toml`: The process cannot access the file. (os error 32)";
-    assert_eq!(r(vec![diag("error", rel, at)]), FailReason::Local);
-    let rel_gone = "couldn't read `src\\no_such.rs`: The system cannot find the file specified. (os error 2)";
-    assert_eq!(r(vec![diag("error", rel_gone, at)]), FailReason::Refused);
+    // The names are built with this OS's separator: a backslash is no separator on Linux (@provenance-eng).
+    let rel = Path::new("scripts").join("lamp").join("Cargo.toml");
+    let rel = format!("couldn't read `{}`: The process cannot access the file. (os error 32)", rel.display());
+    assert_eq!(r(vec![diag("error", &rel, at)]), FailReason::Local);
+    let rel_gone = Path::new("src").join("no_such.rs");
+    let rel_gone =
+        format!("couldn't read `{}`: The system cannot find the file specified. (os error 2)", rel_gone.display());
+    assert_eq!(r(vec![diag("error", &rel_gone, at)]), FailReason::Refused);
     assert_eq!(BuildError::Refused("x".into()).reason(), FailReason::Refused);
     assert_eq!(BuildError::Spawn("x".into()).reason(), FailReason::Local);
 }

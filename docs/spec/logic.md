@@ -78,7 +78,20 @@ Per module:
 - the ABI version and the SDK version;
 - the **components the script declares**: name, fields (name, kind, count), as the store's `ComponentDesc` already
   describes them [V `crates/pe-sim/src/registry.rs:80-172`]. Their ids are assigned by the world model from the
-  script version's content hash (6.1), so two scripts cannot collide on a name;
+  script version's content hash (6.1), so two scripts cannot collide on a name. **A colour field** (world-model.md
+  3.6; @coordinator-opus's colour ruling, item 1, and its syntax ruling after @fable-reviewer) is one
+  whose type is pe-sdk's `LinearRgb` (`[f32; 3]`) or `LinearRgba` (`[f32; 4]`, straight alpha), transparent wrappers
+  of the arrays: the type is the mark, so `component!` needs no attribute and a script can't mark a field that isn't
+  3 or 4 `f32`. A script indexes one like its array (`c[1]`) and converts it out (`<[f32; 3]>::from(c)`), never in:
+  construction names the space, `new` for linear values, `from_srgb8(r, g, b)` / `from_hex(0xRRGGBB)` (and
+  `from_srgba8`, `from_hex(0xRRGGBBAA)` with alpha `a / 255`, no curve) for 8-bit sRGB, through pe-sdk's one 256-entry
+  table (`pe_sdk::color::SRGB8_TO_LINEAR_BITS`, f32 bits computed once in f64), which pe-api's hex is to read too
+  (@api-eng's part, not built yet), so a script's hex and the WorldApi's give the same bits; there is no float sRGB constructor (`powf`). `LinearRgb` adds and
+  scales (`+`, `* f32`). The manifest carries the
+  mark as pe-world's kind byte does, the colour space in the high three bits of the field's kind byte (0 none,
+  1 `LinearSrgb`), so an unmarked field's byte, and every manifest without a colour, is as before; pe-logic refuses a
+  mark on anything but 3 or 4 `f32` and an unknown space, then sets `FieldDesc.color`, which is in the description's
+  schema hash and so in the component's id [V `tests/colour.rs`];
 - implicitly, not in the manifest: the script's **tag** (section 2). Every system binds it as well as its declared
   components, without the module seeing it: the runner joins the tag's column into each system's bound objects and
   never copies it in (`Loaded::bind` takes the tag's id after the declared ones) [V `tests/run.rs`,
@@ -89,7 +102,10 @@ Per module:
   (@coordinator-opus): the world exports a table of the engine components scripts may bind, each with
   its id and a "scripts may write" mark (world-model.md 3.2: `Transform`, `Light`, `Appearance` writable). `Loaded::bind`
   refuses a `pe.` name the table leaves out, a layout that differs from the registry's description (size, and each
-  field's name, kind, offset and count), and a `write` the mark does not allow; reading any listed one is allowed.
+  field's name, kind, offset, count and colour space: pe-sdk's `Light.color` is a `LinearRgb`, as the engine's is
+  marked), and a `write` the mark does not allow. **Marking an existing engine field later is a breaking change** for
+  scripts bound to that component, like a layout change: their declared copy no longer binds until the SDK's type
+  follows and they rebuild; reading any listed one is allowed.
   v0's SDK ships `Light` and `Transform`; `Appearance`, writable in the table, comes when a script needs it (its
   `BlobRef` field has no SDK kind yet) (@design-reviewer)
   [V `tests/run.rs`, `binding_checks_the_engine_table_and_the_layout`, `the_sdk_engine_components_are_the_engine_layouts`];
@@ -939,8 +955,12 @@ The last three columns are wall time after the author's call returned. The autho
 prediction runs from `c + 1` in every case) and one correction about 1 s later; `F - c` is B's build of the version
 plus an entry's latency, within the 0.5-2 s inferred above. In 4 of the 30 warm commits pe-api first answered
 `not_ready` (A was still catching up after the previous correction) and the retry 100 ms later found the build cached.
-On two PCs each machine builds on its own CPU, so `F - c` should not be longer [I]; the second PC's half waits for
-it to be online. The probe also found that pe-app's build port left the version's tag out of the components pe-api
+**On two PCs** [V: A on this desktop, B on the second PC (the laptop, i7-8650U, 4 cores) over Tailscale, each
+building on its own CPU with the same toolchain copy and pe-sdk; the probe's `open` / `join` modes; 3 sessions x 11
+commits; `spikes/out/iter-bench/ctof-2pc/`]: warm `F - c` 27 frames, 0.45 s [0.42-0.48] (n=30), about half the one-PC
+figure, where B's build shared A's CPU; with B's build folder empty, 0.82 s [0.80-0.87] (n=3), and 2.33 s (n=1) on the
+very first run, before the laptop's file cache held the toolchain. The author's prediction was corrected 0.56 s
+[0.48-0.74] after its call and final at 0.76 s; B's own log gives the same `F` for all 33 commits, none voided. The probe also found that pe-app's build port left the version's tag out of the components pe-api
 registers, so every live `code` op was refused `invalid` (fixed with this measurement; pe-app `tests/builds.rs`).
 
 **Not chosen:**
