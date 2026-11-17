@@ -922,17 +922,20 @@ impl<W: WorldModel> ReplicaImpl<W> {
         walk
     }
 
-    /// Where a vote's re-step for a cut at `at` starts (5.3): my root held at the newest voted cut above the ring's
-    /// keyframe for `from`, at or below `at`, computed on this lineage, whose cut's entries up to its frame are this
-    /// cut's (`walk`'s digest there). Otherwise the ring's keyframe.
+    /// Where a vote's re-step for a cut at `at` starts (5.3): my root held at the newest voted cut on the grid above
+    /// the ring's keyframe for `from`, at or below `at`, computed on this lineage, whose cut's entries up to its frame
+    /// are this cut's (`walk`'s digest there). Otherwise the ring's keyframe. A root held off the grid is not one to
+    /// resume from: it was saved after `take_root` wrote its rows, which a step through that frame never writes
+    /// (@chunks-reviewer's L2 on 3aa8180d).
     fn resume_from(&self, from: Frame, at: Frame, walk: &Walk) -> Start {
         let ring = self.ring.at_or_before(from).map_or(Frame(0), |(k, _)| k);
+        let grid = |f: Frame| f.0.is_multiple_of(self.config.cut_every);
         let same = |c: &CutRef, root: &Hash| {
             let mark = walk.digests.get(&c.frame).map(|&history| Mark { lineage: self.lineage, history });
             self.held_here(root).is_some_and(|h| h.frame == c.frame && h.mark.is_some() && h.mark == mark)
         };
         (self.voted.iter())
-            .filter(|(c, root)| c.frame > ring && c.frame <= at && same(c, root))
+            .filter(|(c, root)| c.frame > ring && c.frame <= at && grid(c.frame) && same(c, root))
             .max_by_key(|(c, _)| c.frame)
             .map_or(Start::Ring(from), |(_, &root)| Start::Held(root))
     }

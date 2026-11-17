@@ -1284,3 +1284,20 @@ fn a_vote_never_resumes_from_a_held_root_with_other_entries() {
     assert_eq!(Some(at_32), clean.live_root(Frame(32)));
     assert_eq!(cost, 16, "from the root held at 16");
 }
+
+/// A vote resumes only from a root held at a grid frame (5.3; @chunks-reviewer's L2 on 3aa8180d): one held off the
+/// grid was saved after its rows were written, which a step through that frame never writes. The vote at 24 resumes
+/// from the root held at 16, not from the newer one at 20, off the grid, and it is the full re-step's.
+#[test]
+fn a_vote_never_resumes_from_a_root_held_off_the_grid() {
+    let (clean, _) = reference(32);
+    let (mut a, mut s, _) = with_push_at_10(32);
+    let all = scene();
+    let (_, at_16) = vote(&mut a, &mut s, &cut(&all, 2, 16));
+    assert_eq!(Some(at_16), clean.live_root(Frame(16)));
+    let (cost, _) = vote(&mut a, &mut s, &cut(&all, 3, 20));
+    assert_eq!(cost, 4, "the vote off the grid resumes from the root held at 16");
+    let (cost, at_24) = vote(&mut a, &mut s, &cut(&all, 4, 24));
+    assert_eq!(Some(at_24), clean.live_root(Frame(24)));
+    assert_eq!(cost, K, "from the root held at 16, not the one at 20");
+}
