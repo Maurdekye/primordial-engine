@@ -1,6 +1,6 @@
 # Replica: pe-replica, pe-physics and the Box3D fork (WS-state)
 
-Status: v1.0, 2026-11-17, @vdw-physics. This version describes the replica as built on main fc30b628. v0.2
+Status: v1.0, 2026-11-17, @vdw-physics. This version describes the replica as built on main c9e2829a. v0.2
 (2026-11-10, branch ws/state cb8826d9) was the design before pe-replica existed, and it never landed. The section
 numbers are v0.2's, because code on main cites them; what changed is the text under them. A design that is not built
 is marked **Not built**.
@@ -21,7 +21,7 @@ Aligned with, on main:
 - @coordinator-opus's rulings on WS-diverge 15: deterministic merges are enough; untouched groups
   need not be bit-exact.
 
-Marks: **[V]** verified on main fc30b628, or in the record named; **[I]** design or inference.
+Marks: **[V]** verified on main c9e2829a, or in the record named; **[I]** design or inference.
 
 ## 1. What the replica is
 
@@ -457,8 +457,8 @@ pe-replica puts the physics into it in two places, both written at each cut fram
 - None of that state can be split cleanly out of the fork's serialization. So the complete cover is the hash of the
   whole canonical image.
 - **The per-body digests localize; `physics_global` makes the root complete:**
-  - a differing ball shows in its own `BodyState` leaf too, so a walk down the tree finds which body it is [I;
-    @diverge-eng's physics-damage test measures it on branch ws/diverge-physics, not on main yet];
+  - a differing ball shows in its own `BodyState` leaf too, so a walk down the tree finds which body it is: rung 2
+    fetches exactly that object's leaf and the physics image [V `crates/pe-diverge/tests/kinds.rs`];
   - a difference only in `physics_global` means equal values with a different solver history. That is rare, and the
     whole-image restore repairs it (6.2).
 
@@ -565,7 +565,10 @@ the floor's cut-exact snapshot at once, with the cut-exact outcomes below the fl
     verdicts were made on the wrong state, and one I stepped that the cut leaves out reads `Dropped`. What the views
     carried below the cut is retracted (7).
 - **A divergence in any bound body restores the whole physics image,** along with every world-model row. That keeps
-  the body table equal to the world model (R1).
+  the body table equal to the world model (R1). Tested with real damage: pe-diverge's `tests/kinds.rs` changes a
+  body's velocity in the replica's own physics world, through pe-replica's test-only hook (feature `test-util`, never
+  shipped: `damage_body`, `rekeyframe`), and rung 1 or rung 2 cures it; rung 2's import builds the new physics world
+  from the image, never from fetched `BodyState` rows [V].
 - **Joining** is the same import at the newest final cut, into an empty world: `WorldModel::empty`, a bare world with
   the engine's registry and default settings but this machine's rate. Test [V]:
   `a_joiner_imports_the_whole_state_from_empty`.
