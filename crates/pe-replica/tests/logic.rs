@@ -1036,7 +1036,6 @@ fn a_vote_hold_below_the_cut_keeps_the_live_root_out() {
     let predicted = author.live_root(Frame(8)).expect("the author's live root at 8");
     assert_ne!(predicted, want, "the author's live history runs the predicted code from 6");
     assert_eq!(author.root_at_cut(&cut, &mut s).expect("the author's vote"), predicted, "the keyframe at 8 restored");
-    assert_eq!(author.scratch().reused, 0);
 
     plain.advance(Frame(48), &mut s);
     author.advance(Frame(48), &mut s);
@@ -1044,7 +1043,8 @@ fn a_vote_hold_below_the_cut_keeps_the_live_root_out() {
     let fin = FinalCut { cut, root: want, voters: vec![] };
     let frames = author.scratch().frames;
     assert!(matches!(author.finalize(&fin, &mut s), Finalized::Agreed), "re-stepped without the prediction");
-    assert_eq!((author.scratch().frames - frames, author.scratch().reused), (8, 0), "from the keyframe at 0");
+    assert_eq!(author.scratch().frames - frames, 8, "from the keyframe at 0");
+    assert_eq!(author.scratch().reused, 0, "under the hold, neither the vote nor the finalize took the live root");
     assert!(matches!(plain.finalize(&fin, &mut s), Finalized::Agreed));
     assert_eq!(plain.scratch().reused, 2, "the vote's snapshot, with the live root");
     assert_eq!((author.faults(), plain.faults()), (0, 0));
