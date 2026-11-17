@@ -100,9 +100,18 @@ fn the_codec_keeps_one_encoding() {
     let mut empty = t.clone();
     empty.inline = vec![Vec::new()];
     assert_eq!(Transaction::decode(&empty.encode()), None, "the empty blob is never inline");
-    let mut big = t;
+    let mut big = t.clone();
     big.inline = vec![vec![7; MAX_INLINE_BLOB + 1]];
     assert_eq!(Transaction::decode(&big.encode()), None, "over 256 bytes");
+    // Without inline blobs the section is absent, so the payload is what it was before inline blobs existed; an
+    // explicit empty section is a second encoding and is refused.
+    let mut none = t;
+    none.inline.clear();
+    let bytes = none.encode();
+    assert_eq!(Transaction::decode(&bytes), Some(none));
+    let mut explicit = bytes;
+    explicit.extend_from_slice(&0u32.to_le_bytes());
+    assert_eq!(Transaction::decode(&explicit), None, "an empty section");
 }
 
 #[test]

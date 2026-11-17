@@ -475,10 +475,14 @@ impl Transaction {
             w.raw(&b.hash);
             w.raw(&b.len.to_le_bytes());
         }
-        w.len(self.inline.len());
-        for b in &self.inline {
-            w.len(b.len());
-            w.raw(b);
+        // The inline blobs last, and only when there are any (3.4), so a transaction without them encodes as it
+        // always did: its entry, and the ids derived from it, are unchanged.
+        if !self.inline.is_empty() {
+            w.len(self.inline.len());
+            for b in &self.inline {
+                w.len(b.len());
+                w.raw(b);
+            }
         }
         w.0
     }
@@ -720,8 +724,13 @@ impl<'a> R<'a> {
         for _ in 0..n {
             blobs.push(BlobRef { hash: self.arr()?, len: u64::from_le_bytes(self.arr()?) });
         }
-        // The inline blobs (3.4): one encoding per value, so each 1 to 256 bytes, in ascending order of hash.
-        let n = self.count(5, crate::inline::MAX_INLINE_BYTES)?;
+        // The inline blobs (3.4): absent when there are none, and otherwise one encoding per value, so at least one,
+        // each 1 to 256 bytes, in ascending order of hash. The section is the payload's last.
+        let present = !self.b.is_empty();
+        let n = if present { self.count(5, crate::inline::MAX_INLINE_BYTES)? } else { 0 };
+        if present && n == 0 {
+            return None;
+        }
         let mut inline = Vec::with_capacity(n);
         for _ in 0..n {
             let len = self.u32()? as usize;
