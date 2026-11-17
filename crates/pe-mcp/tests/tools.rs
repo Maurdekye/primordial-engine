@@ -140,7 +140,7 @@ async fn apply_accepts_and_dry_run_changes_nothing() {
         &c,
         "world_apply",
         json!({"label": "make the balls blue", "ops": [
-            {"op": "set", "where": {"has": "Ball"}, "max": 1000, "field": "Appearance.color", "value": "#2b5bd2"}
+            {"op": "set", "where": {"has": "Ball"}, "max": 1000, "field": "Appearance.base", "value": "#2b5bd2"}
         ]}),
     )
     .await;
@@ -163,7 +163,7 @@ async fn a_refused_change_is_an_error_with_the_winner() {
     // A protection refusal names its code.
     err(&c, "world_apply", json!({"label": "x", "ops": [{"op": "delete", "id": "/Lamp (right)"}]}), "protected").await;
     // A selector over its max.
-    err(&c, "world_apply", json!({"label": "x", "ops": [{"op": "set", "where": {"has": "Ball"}, "max": 2, "field": "Appearance.color", "value": "#000000"}]}), "too_many").await;
+    err(&c, "world_apply", json!({"label": "x", "ops": [{"op": "set", "where": {"has": "Ball"}, "max": 2, "field": "Appearance.base", "value": "#000000"}]}), "too_many").await;
 }
 
 #[tokio::test]

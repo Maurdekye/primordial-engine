@@ -220,7 +220,17 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
     right-handed with -z forward (OpenXR's), then data brought in from Resonite (an import, M5) mirrors z: a position
     (x, y, z) becomes (x, y, -z) and Euler angles (ex, ey, ez) become (-ex, -ey, ez), in the same order. That belongs
     to the importer, not to this API [I].
-- **Colours**: `"#rrggbb"` or `"#rrggbbaa"` (sRGB), or `{"srgb": [r, g, b, a]}` in 0-1.
+- **Colours** (rulings): a field pe-sim marks a colour (`FieldDesc::color`:
+  linear light, sRGB primaries, straight alpha; `Appearance.base` and `.emissive`, `Light.color`, and any script's
+  `LinearRgb`/`LinearRgba`) takes `"#rrggbb"`, `"#rrggbbaa"` (only on a colour with alpha), `{"srgb": [r, g, b(,
+  a)]}` in 0-1, or `{"linear": [...]}` with exactly the field's count. A bare list is refused `invalid`, since it
+  says no colour space. An `srgb` value outside 0-1 (beyond 1e-6 of rounding) is refused `invalid`: written in 0-255,
+  as many tools do, every channel would clamp to white (ruling), so hex is the one 0-255 form, and
+  `[1, 0, 0]` means 1.0, 0.0, 0.0. sRGB input is quantised to 8 bits per channel (round(v × 255)) and converted
+  through pe-sdk's one 256-entry table (`SRGB8_TO_LINEAR_BITS`), so a script's hex and the API's give the same bits
+  on every machine. Alpha is a/255, linear, and an alpha left out is 1. `{"linear": [...]}` passes through exact,
+  over 1 included. A read shows lowercase hex only when the stored bits are exactly what that hex converts to, with
+  an alpha of ff left out; otherwise it shows `{"linear": [...]}`. So writing a read back never changes a colour.
 - **Scale**: a multiplier per axis. Metres are the world's metres, not the player's (the player's own scale is in
   `session_info`).
 - **Numbers** are parsed once, on the author's machine, into the field's binary type; the entry carries those bits,
@@ -345,8 +355,8 @@ same frame together.
   "ops": [
     {"op": "create", "as": "$cube", "parent": "/Table", "name": "Red cube", "template": "box",
      "components": {"Transform": {"position": {"relative_to": "parent", "offset": [0, 0.8, 0]}},
-                    "Appearance": {"color": "#d22b2b"}}},
-    {"op": "set", "where": {"has": "Ball"}, "max": 1000, "field": "Appearance.color", "value": "#2b5bd2"},
+                    "Appearance": {"base": "#d22b2b"}}},
+    {"op": "set", "where": {"has": "Ball"}, "max": 1000, "field": "Appearance.base", "value": "#2b5bd2"},
     {"op": "duplicate", "id": "$cube", "as": "$copy", "parent": "/Table"},
     {"op": "set", "id": "$copy", "field": "Transform.position",
      "value": {"relative_to": "$cube", "offset": [0.3, 0, 0]}},
@@ -536,7 +546,8 @@ Behaviour:
   `x-unit` (the registry's unit in its canonical spelling, world-model.md 3.6: `m`, `kg/m^3`, `1/s`, `rad`, …; absent
   for a field without one); `x-sync` (`synced`, or `unsynced` when M2 brings per-player fields; the
   inspector marks unsynchronized fields with a shape, Q12); `x-protected` (part of a protection); `x-read-only` (the
-  engine writes it; an edit is refused as `invalid`).
+  engine writes it; an edit is refused as `invalid`); `x-color` (`linear-srgb`, on a colour field, whose schema is
+  a `oneOf` of the forms 4.4 takes).
 - With a template: what it holds.
 - `version` is a hash of the registry, of each script's active version, and of the template list (so `since`
   notices a template added, removed or renamed, and a version's types appearing at its activation, not at its

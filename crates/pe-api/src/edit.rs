@@ -190,6 +190,12 @@ fn set_field(snap: &WorldSnapshot, on: &On, i: usize, id: Target, key: &str, v: 
         .enumerate()
         .find(|(_, f)| f.name == field && !f.name.starts_with('_'))
         .ok_or_else(|| bad(format!("{comp} has no field {field:?}.")))?;
+    // A colour field takes a colour, never a bare list (api.md 4.4; ruling).
+    if f.color.is_some() {
+        let c = crate::colour::encode(v, f.count as usize).map_err(|why| bad(format!("{key}: {why}")))?;
+        let value = c.iter().flat_map(|x| x.to_le_bytes()).collect();
+        return Ok(Op::SetField { id, component: desc.id(), instance: 0, field: index as u16, value });
+    }
     let items: Vec<&Json> = match (f.count, v) {
         (1, v) => vec![v],
         (n, Json::Array(a)) if a.len() == n as usize => a.iter().collect(),
@@ -1093,6 +1099,48 @@ mod tests {
         assert!(
             matches!(&w.ops[1], Op::SetField { field, value, .. } if *field == idx("grabbable") && value.iter().all(|b| *b == 0))
         );
+    }
+
+    /// A colour field (api.md 4.4; ruling): hex in through pe-sdk's table, a bare list refused, and a
+    /// read shows hex only when exact.
+    #[test]
+    fn colours_are_written_and_read_as_colours() {
+        use crate::ports::Snapshot as _;
+        use pe_sdk::color::srgb8_to_linear;
+        use pe_world::components::Appearance;
+        let red = [srgb8_to_linear(0xd2), srgb8_to_linear(0x2b), srgb8_to_linear(0x2b), 1.0];
+        let (s, v) = world_with(|w| {
+            w.insert(id(30), Appearance { base: red, emissive: [4.0, 0.0, 0.0], ..Default::default() }).unwrap();
+        });
+        // Read: base is exactly #d22b2b; an over-1 emissive has no hex, so it reads as linear.
+        let f = v.fields(id(30).into(), "Appearance", &ObjRef("parent".into())).unwrap();
+        assert_eq!((f["base"].clone(), f["emissive"].clone()), (json!("#d22b2b"), json!({"linear": [4.0, 0.0, 0.0]})));
+        // Write: hex and srgb through the table; linear exact.
+        let r = resolved(
+            &v,
+            json!([{"op": "set", "id": "/Table/Ball", "fields": {"Appearance.base": "#2b5bd280", "Appearance.emissive": {"linear": [0.5, 0, 0]}}}]),
+        );
+        let w = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap().tx;
+        let want = |c: &[f32]| -> Vec<u8> { c.iter().flat_map(|x| x.to_le_bytes()).collect() };
+        let values: Vec<Vec<u8>> = w
+            .ops
+            .iter()
+            .map(|o| if let Op::SetField { value, .. } = o { value.clone() } else { panic!("{o:?}") })
+            .collect();
+        let blue = [srgb8_to_linear(0x2b), srgb8_to_linear(0x5b), srgb8_to_linear(0xd2), 128.0 / 255.0];
+        assert_eq!(values, vec![want(&blue), want(&[0.5, 0.0, 0.0])]);
+        // A bare list says no colour space: refused on its field, naming the forms.
+        let r = resolved(
+            &v,
+            json!([{"op": "set", "id": "/Table/Ball", "field": "Appearance.base", "value": [1, 0, 0, 1]}]),
+        );
+        match to_world(&r, Actor::Person, &s, None) {
+            Err(Unmapped::Refused(f)) => {
+                assert_eq!((f.code, f.field.as_deref()), (RefusalCode::Invalid, Some("Appearance.base")));
+                assert!(f.message.contains("#rrggbb") && f.message.contains("bare list"), "{}", f.message);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
