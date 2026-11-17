@@ -17,6 +17,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use pe_render::HandJoints;
+
 use crate::backend::{Backend, DepthInfo, EyePose, FrameTiming, ImageIndex, Layers, SessionState, XrError, XrEvent};
 use crate::diag::{self, Diag};
 use crate::hands::{GraspConfig, HandState};
@@ -38,6 +40,8 @@ pub struct FrameRequest<'a> {
     pub depth_image: Option<ImageIndex>,
     /// The local player's hands located at the display time, for drawing only: `None` when absent or not tracked.
     pub hands: [Option<RigPose>; 2],
+    /// A tracked hand's joints at the same display time, for drawing the hand (spec 6); `None` for a controller.
+    pub hand_joints: [Option<HandJoints>; 2],
 }
 
 pub trait FrameSink {
@@ -107,6 +111,17 @@ pub struct Counters {
     pub recentres: u64,
     pub events_lost: u64,
     pub last_display_period_ns: i64,
+    /// Per hand (left, right): FOCUSED frames whose reading came from hand tracking, from a controller, or had no
+    /// valid pose (spec 5.4).
+    pub hand_frames: [HandFrames; 2],
+}
+
+/// One hand's FOCUSED frames by where its pose came from (spec 5.4, 9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HandFrames {
+    pub joints: u64,
+    pub controller: u64,
+    pub none: u64,
 }
 
 pub struct XrSession<B: Backend> {
@@ -397,6 +412,16 @@ impl<B: Backend> XrSession<B> {
             let now = self.backend.now();
             for h in Hand::BOTH {
                 let reading = self.backend.read_hand(h, now);
+                let source = diag::PoseSource::of(&reading);
+                let frames = &mut self.counters.hand_frames[h.index()];
+                match source {
+                    diag::PoseSource::Joints => frames.joints += 1,
+                    diag::PoseSource::Controller => frames.controller += 1,
+                    diag::PoseSource::None => frames.none += 1,
+                }
+                if let Some(line) = self.diag.hand_source(h, source, now.0) {
+                    diag::emit(&line);
+                }
                 if let Some(sample) = self.hands[h.index()].update(reading) {
                     self.ring.push(sample);
                 }
@@ -412,11 +437,9 @@ impl<B: Backend> XrSession<B> {
             let located = self.backend.locate_views(timing.predicted_display_time)?;
             if located.valid {
                 // The own hands at the display time, for drawing only (spec 5.6).
-                let hands = if focused {
-                    Hand::BOTH.map(|h| self.backend.read_hand(h, timing.predicted_display_time).pose)
-                } else {
-                    [None, None]
-                };
+                let at = timing.predicted_display_time;
+                let hands = if focused { Hand::BOTH.map(|h| self.backend.read_hand(h, at).pose) } else { [None, None] };
+                let hand_joints = Hand::BOTH.map(|h| hands[h.index()].and_then(|_| self.backend.hand_joints(h, at)));
                 if let Some(line) = self.diag.first_eyes(&located.eyes, timing.predicted_display_period_ns) {
                     diag::emit(&line);
                 }
@@ -424,7 +447,8 @@ impl<B: Backend> XrSession<B> {
                     diag::emit(&line);
                 }
                 let depth_image = self.backend.depth_image();
-                let drawn = sink.render(&FrameRequest { timing, eyes: &located.eyes, image, depth_image, hands });
+                let drawn =
+                    sink.render(&FrameRequest { timing, eyes: &located.eyes, image, depth_image, hands, hand_joints });
                 if drawn {
                     let depth = sink.depth().filter(|_| depth_image.is_some());
                     layers = Layers::Projection { extent: sink.extent(), depth };

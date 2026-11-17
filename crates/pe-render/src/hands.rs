@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn an_untracked_hand_draws_nothing() {
         assert!(markers(&[None, None], &rig(1.0)).is_empty());
-        let one = markers(&[None, Some(DisplayHand { pose: RigPose::IDENTITY })], &rig(1.0));
+        let one = markers(&[None, Some(DisplayHand { pose: RigPose::IDENTITY, joints: None })], &rig(1.0));
         assert_eq!(one.len(), 2);
         assert_eq!(one[0].appearance.base_color[0], COLORS[1][0], "the right hand is orange");
         assert!(one.iter().all(|i| i.id == ObjectId::NONE));
@@ -105,7 +105,7 @@ mod tests {
         let turn = DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2).as_quat();
         let pose = RigPose { position: [0.3, 1.2, 0.0], orientation: [turn.x, turn.y, turn.z, turn.w] };
         let s = 2.0;
-        let items = markers(&[Some(DisplayHand { pose }), None], &rig(s));
+        let items = markers(&[Some(DisplayHand { pose, joints: None }), None], &rig(s));
         assert_eq!(items.len(), 2);
         let block = offset_of(items[0].pose.pos);
         let tip = offset_of(items[1].pose.pos);

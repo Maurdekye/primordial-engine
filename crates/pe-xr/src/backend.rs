@@ -4,6 +4,8 @@
 //! pe-xr is tested with [`crate::fake::FakeRuntime`] and no runtime at all. The real backend wraps the
 //! `openxr` crate and stays thin.
 
+use pe_render::HandJoints;
+
 use crate::hands::Reading;
 use crate::seam::{Hand, HostTime, RigPose};
 
@@ -119,6 +121,11 @@ pub trait Backend {
     fn begin_frame(&mut self) -> Result<(), XrError>;
     /// Locate one hand at a host time: a tracked hand's joints or a controller's grip, as a reading.
     fn read_hand(&mut self, hand: Hand, at: HostTime) -> Reading;
+    /// The joints of the hand that [`Self::read_hand`] last read at exactly `at`, when that reading came from hand
+    /// tracking: for drawing the hand only (spec 6). `None` for a controller, or when the runtime gives none.
+    fn hand_joints(&self, _hand: Hand, _at: HostTime) -> Option<HandJoints> {
+        None
+    }
     /// Acquire, then wait for, this frame's swapchain image.
     fn acquire_image(&mut self) -> Result<ImageIndex, XrError>;
     /// The depth image acquired with the colour image, when the runtime takes depth (spec 4.2).
