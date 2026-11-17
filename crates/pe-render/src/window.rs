@@ -57,6 +57,9 @@ pub struct DesktopConfig {
     /// Write the window's own frame to a PNG once, this long after the window opens: the swapchain image read back
     /// in-process before it is presented, so nothing outside pe-render's drawing can appear in it.
     pub snapshot: Option<(Duration, std::path::PathBuf)>,
+    /// `view_capture`'s orders (api.md 8), served once a frame after the present, from the frame's view, with this
+    /// window's camera as the player's.
+    pub captures: Option<Arc<crate::capture_service::CaptureQueue>>,
 }
 
 /// What a run measured (render.md 13's per-frame numbers, summarized).
@@ -202,6 +205,8 @@ pub struct DesktopView {
     last_frame: Option<HostTime>,
     /// The newest view taken, drawn again when no new one was published.
     last_view: Option<Arc<FrameView>>,
+    /// `view_capture`'s server, when the config gives a queue.
+    captures: Option<crate::capture_service::CaptureServer>,
     targets: Vec<Target>,
     /// The notices strip's image (render.md 8.1).
     strip: StripCache,
@@ -291,6 +296,7 @@ impl DesktopView {
         // The inverse of eye_rot: forward is (-sin yaw cos pitch, sin pitch, -cos yaw cos pitch).
         let (yaw, pitch) = ((-f.x).atan2(-f.z), f.y.clamp(-1.0, 1.0).asin());
         let eye_pos = DVec3::new(cfg.eye.position[0] as f64, cfg.eye.position[1] as f64, cfg.eye.position[2] as f64);
+        let captures = cfg.captures.clone().map(crate::capture_service::CaptureServer::new);
         Ok(DesktopView {
             pacer: Pacer::new(PacerSettings::default(), &DESKTOP_LADDER),
             hand: DesktopHand::new(cfg.hand),
@@ -310,6 +316,7 @@ impl DesktopView {
             last_present: None,
             last_frame: None,
             last_view: None,
+            captures,
             targets: Vec::new(),
             strip: StripCache::default(),
             report,
@@ -487,6 +494,9 @@ impl DesktopView {
         }
         g.window.pre_present_notify();
         g.renderer.context().queue.present(tex);
+        if let Some(c) = self.captures.as_mut() {
+            c.serve(&mut g.renderer, &view, Some(&camera));
+        }
         self.report.frames += 1;
         self.report.cpu_record_ms.push(stats.cpu_record_ms);
         if let Some(ms) = stats.gpu_ms {

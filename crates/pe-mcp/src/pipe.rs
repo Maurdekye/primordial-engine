@@ -210,7 +210,27 @@ mod windows {
             if rc != 0 {
                 return Err(io::Error::from_raw_os_error(rc as i32));
             }
-            let sd = Sd(psd);
+            dacl_sddl(&Sd(psd))
+        }
+    }
+
+    /// `sddl` as Windows writes it back: through a descriptor and out again. Windows writes some accounts' SIDs as
+    /// two-letter aliases (the renamed built-in Administrator, RID 500, as `LA`, which a hosted CI runner's account
+    /// is), so a DACL read back is compared with this, never with the SID's digits.
+    pub fn canonical_sddl(sddl: &str) -> io::Result<String> {
+        let w = wide(sddl);
+        let mut psd: PSECURITY_DESCRIPTOR = null_mut();
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(w.as_ptr(), SDDL_REVISION_1, &mut psd, null_mut())
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        dacl_sddl(&Sd(psd))
+    }
+
+    fn dacl_sddl(sd: &Sd) -> io::Result<String> {
+        unsafe {
             let mut s: *mut u16 = null_mut();
             if ConvertSecurityDescriptorToStringSecurityDescriptorW(
                 sd.0,

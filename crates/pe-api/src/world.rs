@@ -141,6 +141,11 @@ impl WorldView {
         WorldView { snap, me, names }
     }
 
+    /// The snapshot this view reads.
+    pub fn snapshot(&self) -> &WorldSnapshot {
+        &self.snap
+    }
+
     /// This frame's component names (`crate::names`).
     pub fn names(&self) -> &Names {
         &self.names
