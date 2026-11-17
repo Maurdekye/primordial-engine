@@ -9,8 +9,8 @@ use std::any::Any;
 use std::sync::Arc;
 
 use pe_seams::{
-    DomainId, Frame, Hash, ImportError, MemberKey, ObjectClass, ObjectId, Outcome, Pos, SignedEntry, SimRate, Stage,
-    Tree, ViewFlags, ViewObject,
+    Activation, DomainId, Frame, Hash, ImportError, MemberKey, ObjectClass, ObjectId, Outcome, Pos, SignedEntry,
+    SimRate, Stage, Tree, ViewFlags, ViewObject,
 };
 use pe_world::script::AssetId;
 
@@ -62,9 +62,6 @@ pub struct Effects {
     pub changed: Vec<(ObjectId, Change)>,
     pub pushes: Vec<PushFx>,
     pub carried: Option<CarriedFx>,
-    /// The objects a script commit re-keyed, in id order: the entry's record carries them (S5 v1.6,
-    /// `StepRecord::rekeyed`). Not a physics effect.
-    pub rekeyed: Arc<[ObjectId]>,
 }
 
 /// What one logic stage did, for the replica ([`WorldModel::logic_stage`]; logic.md 9.2a).
@@ -82,7 +79,7 @@ pub struct LogicFx {
 }
 
 impl Effects {
-    /// No physics effects (`rekeyed` is not one).
+    /// No physics effects.
     pub fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.pushes.is_empty() && self.carried.is_none()
     }
@@ -241,8 +238,10 @@ pub trait WorldModel: Send {
     /// Stage 1, once per entry in apply order ([`apply_order`]): the outcome, and for an applied entry its physics
     /// effects.
     fn apply(&mut self, frame: Frame, entry: &SignedEntry) -> (Outcome, Effects);
-    /// Claims and cooldowns expire at `frame + 1` (world-model.md 7.2).
-    fn end_frame(&mut self, frame: Frame);
+    /// Claims and cooldowns expire at `frame + 1` (world-model.md 7.2). Returns what became of code commits at this
+    /// frame's end (S5 v1.8's `FrameView.activations`; logic.md 6.2a), in asset order: activated, voided, or
+    /// activated as the local member's prediction (option (i)).
+    fn end_frame(&mut self, frame: Frame) -> Vec<Activation>;
 
     // the logic stages (crate::logic)
 
