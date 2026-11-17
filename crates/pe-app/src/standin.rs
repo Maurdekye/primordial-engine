@@ -21,6 +21,9 @@ pub struct SoloAgreement {
     /// Tests only: what [`Agreement::backlogged`] answers. A member alone has no budget, so it is never backlogged.
     #[cfg(test)]
     pub(crate) backlog: Arc<std::sync::atomic::AtomicBool>,
+    /// Tests only: refuse every class Protocol entry, as agreement refuses a `Leave` it can't take yet.
+    #[cfg(test)]
+    pub(crate) refuse_protocol: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SoloAgreement {
@@ -31,6 +34,8 @@ impl SoloAgreement {
             changed_from: None,
             #[cfg(test)]
             backlog: Arc::default(),
+            #[cfg(test)]
+            refuse_protocol: Arc::default(),
         }
     }
 }
@@ -68,6 +73,10 @@ impl Agreement for SoloAgreement {
 
     /// Kept for the replica, unsigned: nothing leaves this machine, and nothing here checks a signature.
     fn submit(&mut self, entry: Entry) -> Result<SignedEntry, SubmitError> {
+        #[cfg(test)]
+        if entry.class == pe_seams::Class::Protocol && self.refuse_protocol.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(SubmitError::TooLate);
+        }
         let signed = SignedEntry { entry, sig: Signature([0; 64]) };
         let frame = signed.entry.stamp;
         self.entries.entry(frame).or_default().push(signed.clone());
