@@ -150,8 +150,9 @@ re-step for a root at a cut. The stages follow pe-seams's `Stage::ORDER`: entrie
 physics, logic after the physics, events.
 
 A world with scripts needs a runner: a replica built without one does not step a frame of a world that has module
-rows. Nothing changes, and each stop counts one fault; it never steps such a world as if it had no scripts
-(`crate::logic`; 8.2). Otherwise:
+rows. Nothing changes, and each frame it stops at counts one fault however often an advance meets it there (once for
+the live history and once for a re-step off it); it never steps such a world as if it had no scripts (`crate::logic`;
+8.2). Otherwise:
 
 1. **The floating-point guard:** `pe_core::fpenv::check_and_reset()` on the simulation thread. A changed environment
    is reset and counted (`fp_resets` in the view's counters), and the step goes on. The environment is per thread:
@@ -353,8 +354,10 @@ ceil(240 / rate) sub-steps: the user chose the proposal of 13 ("30–120 Hz (rec
   `Log(4)` with its spacing set in time: a keyframe every `rate / 15` frames (4 at 60 Hz, about 67 ms) for the newest
   4 spacings, then about two per doubling of age, so memory grows with the logarithm of the unconfirmed span. Every cut
   frame gets a keyframe too, and each advance trims the ring by the policy, with or without a finalize.
-- **Always kept:** the keyframes at the floor (the newest cut I finalized) and at `Cv` (the newest final cut my root
-  matched), which rung 1 replays from.
+- **Always kept:** the keyframe at `Cv` (the newest final cut my root matched), which rung 1 replays from, and the
+  one at the floor (the newest cut I finalized). The floor's is the exception during a rung-1 replay, which replaces
+  the history above `Cv`, the floor's keyframe included (`Ring::rewind_to`), until the next `finalize` pins the floor
+  again; an abandoned replay puts it back from the floor's held snapshot (6.1).
 - **Held roots are not keyframes.** A root at a cut is the state with exactly the cut's entries, which the live
   history's keyframe at that frame need not share. The replica keeps each as its own snapshot (world state, physics
   image and transfer) until its cut is final or superseded, and a rollback never takes one away (5.3, 8).
@@ -372,8 +375,10 @@ ceil(240 / rate) sub-steps: the user chose the proposal of 13 ("30–120 Hz (rec
   The replica restores the newest keyframe at or before f, and re-steps to the present with the entries as they now
   are.
 - **The floor.** f is never below the floor, nor below the cut of my last import (`base_frame`), whose history the
-  replica no longer has (6.2). A change reported below it is a protocol fault: counted, and not acted on below it, and
-  nothing panics. One report just after a finalize re-based the history is expected and excused (8).
+  replica no longer has (6.2), nor, while a rung-1 replay runs, below the replay's cut frame (`rollback_floor`). A
+  change reported below `base_frame` is a protocol fault: counted, and not acted on below it, and nothing panics. The
+  one exception is expected: after a `finalize` re-based the live history on the floor (6.1), a report inside the
+  re-based span, from its first differing frame g up to the floor, is excused in the first advance after it.
 - **Bounded work per call** (S2 v1.1): `set_budget` gives the simulated time one call may step, at least two frames.
   A rollback, a re-simulation or a rung-1 replay that does not fit resumes on the next call, and the results never
   depend on the split [V test `the_budget_never_changes_the_result`]. Two steps are not budgeted yet (@design-reviewer's
@@ -452,7 +457,8 @@ pe-replica puts the physics into it in two places, both written at each cut fram
 - None of that state can be split cleanly out of the fork's serialization. So the complete cover is the hash of the
   whole canonical image.
 - **The per-body digests localize; `physics_global` makes the root complete:**
-  - a differing ball shows in its own `BodyState` leaf, so the fault bundle names it;
+  - a differing ball shows in its own `BodyState` leaf too, so a walk down the tree finds which body it is [I;
+    @diverge-eng's physics-damage test measures it on branch ws/diverge-physics, not on main yet];
   - a difference only in `physics_global` means equal values with a different solver history. That is rare, and the
     whole-image restore repairs it (6.2).
 
@@ -494,9 +500,10 @@ It is triggered when a cut at frame g is final with agreed root H and my `root(g
 
 1. **Start from `Cv`,** my last agreed cut, at frame a ≤ g: the newest final cut where my root equalled the agreed
    one. Its keyframe stays pinned in the ring (4.1). S3 keeps its entries from a on (S3 v1.2: `finalize` tells the
-   source `keep_final_from(cv, floor)` whenever either moves). If S3 has trimmed past a, or `Cv` is held from before
-   my last import (its physics image is the old world's), the answer is `NotKept` before anything is restored, and
-   the ladder goes on to rung 2.
+   source `keep_final_from(cv, floor)` whenever either moves). The answer is `NotKept`, before anything is restored,
+   when there is no `Cv` yet (before the first agreed `finalize`), when the cut is below `Cv`, when S3 has trimmed
+   past a, or when `Cv` is held from before my last import (its physics image is the old world's); the ladder then
+   goes on to rung 2.
 2. **Check `Cv`'s state,** recomputing everything the root rests on and ignoring every cached value: pe-world's tree
    `verify` rehashes the rows and tables from scratch (world-model.md 6.4), and the restored physics world's check hash
    must equal the `physics_global` held with it, and the world's root `Cv`'s. A stored hash alone proves nothing about
@@ -679,7 +686,9 @@ ruling 3). The calls, and what the replica does behind each:
   (api.md 9.1; @coordinator-opus m22babe2c6375, m926ccfeb16e9).
 - **`vote_holds()`** (S2 v1.7) is the frames from which this machine must not vote yet (8.2).
 - **`runner_identity()` and `module(&hash)`** (S2 v1.7) are the script runner's identity and the metered bytes of a
-  module it holds, for the hello and the fault bundle (divergence.md 6; 8.2).
+  module it holds (8.2), meant for the hello and the fault bundle (divergence.md 6). **Not built:** nothing calls them
+  yet [V: no caller outside pe-replica on main]. The hello's comparison is
+  @item:primordial-engine/pe-app-s-hello-compares-the-script-runner-s-iden; the fault bundle's is O18 (11).
 - **The group selector:** `GroupSel::Domain` or `Objects`. Every import acts as `Domain` until history-free physics
   exists (6.3).
 - **Unchanged since the proposal:**
@@ -740,8 +749,9 @@ are logic.md 6.2 and 6.2a. As built [V `crates/pe-replica/src/logic.rs`, `logic/
   or without it. A run is a pure function of the module bytes, the state it is given and the fuel: no clock, no host
   randomness, nothing kept from one frame to the next. Every runner the repo builds passes `logic::conformance`.
 - **Identity:** a runner reports the canonical bytes of S2's `RunnerIdentity`: the runtime and its version, every
-  setting that can change a result, and the runner's own build. The hello compares them, and a fault bundle records
-  them.
+  setting that can change a result, and the runner's own build. **Not built:** the hello's comparison of runners
+  (@engine-architect's @item:primordial-engine/pe-app-s-hello-compares-the-script-runner-s-iden) and a fault bundle's
+  record of them (O18).
 - **Which scripts run:** every row of the modules table whose activation frame is at or before the frame, in asset
   order. A script runs only where the runner holds the row's module and it binds under the row's ids: the ids its
   version gives each of the manifest's components, the tag among them, and the engine components of logic.md 3.2. A
@@ -846,11 +856,12 @@ The error should be small for an occasional impulse, and grow with how often imp
 | O10 | P5's property test: arbitrary entries never panic a replica (3.1, 4.3) | WS-state |
 | O11 | A body under a hand does not follow a pack's later poses: `end_frame` returning effects (a seam change, @engine-architect's call), or refusing a `Body` under a `Hand`, with a multi-pose test (@design-reviewer's Medium on e6d3ee9c; 3.2) | WS-state, WS-world |
 | O12 | A body that `physical()` lists but `body()` cannot build: a counted fault | WS-state |
-| O13 | A root's re-step resumes from my root held at an earlier cut whose history matches (5.3) | WS-state, after M1 |
+| O13 | A root's re-step resumes from my root held at an earlier cut whose history matches (5.3). It is the pe-replica half of @item:primordial-engine/finality-stall-past-the-lag-cap-with-no-lead-n-2, where every vote re-stepped from the same early frame, at about 0.75 ms a frame; docked as @item:primordial-engine/pe-replica-a-root-s-re-step-resumes-from-a-held-e | WS-state, after M1 |
 | O14 | Vote holds for a version whose module this machine lacks at its activation frame (8.2) | WS-state, after M1, before sessions of 3 or more |
 | O15 | The view's missing parts (7): effects for entry outcomes and contact begins, `trigger_arrived`, and an event for a body stopped at the write-back (3, step 7) | WS-state, with WS-render |
 | O16 | Meshes and hulls (2.1), and compacting the geometry registry after a trim (4.1) | WS-state, WS-world |
 | O17 | The grab spring's overshoot after a block and after a placement (@design-reviewer's Low on the hold bound) | WS-state, at the headset test |
+| O18 | The fault bundle records the runner's identity and the modules the replica held (`runner_identity`, `module`; divergence.md 6, 8) | WS-diverge |
 
 Settled since v0.2:
 - **The cut grid** (was O2): cuts lie at multiples of K, the cut interval in frames (5.3).
