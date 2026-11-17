@@ -1088,65 +1088,15 @@ mod tests {
         use pe_seams::world_api::{Status, Wait};
         use pe_seams::{AgreeEvent, VoidReason};
         use pe_world::edit::{Actor, Op, Target, Transaction};
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::Ordering;
         const BLACKOUT: Duration = Duration::from_secs(10);
         const EDIT_AT: Duration = Duration::from_secs(3);
         let ceiling = Duration::from_nanos(crate::genesis::settings().timing.max_timeout_ns as u64);
         let resume_within = 2 * ceiling + Duration::from_secs(5);
         let host = crate::clock::shared();
-        let dark = Arc::new(AtomicBool::new(false));
-        // Each machine advertises its relay; the relays are started once the machines' own addresses are known.
-        let (sa_sock, sb_sock) = (UdpSocket::bind(loopback()).unwrap(), UdpSocket::bind(loopback()).unwrap());
-        let (ra_addr, rb_addr) = (sa_sock.local_addr().unwrap(), sb_sock.local_addr().unwrap());
-        drop((sa_sock, sb_sock));
-        let a = Endpoint::bind([21; 32], loopback(), vec![ra_addr], true, host.clone(), None).unwrap();
-        let mut b = Endpoint::bind([22; 32], loopback(), vec![rb_addr], false, host.clone(), None).unwrap();
-        let ra = Relay::start_on(ra_addr, a.local_addr(), dark.clone());
-        let rb = Relay::start_on(rb_addr, b.local_addr(), dark.clone());
-        let invite = a.invite(Duration::from_secs(600)).unwrap();
-        let reply = b.reply(&invite);
-        b.dial(&invite).unwrap();
-        let theirs = invite.clone();
-        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(20), runner()));
-        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(20), runner()).expect("A's session");
-        let sb = joiner.join().unwrap().expect("B's session");
-
-        let feeds = [[-0.5f32, 1.0, -0.4], [0.5, 1.1, -0.3]];
-        let mut sims = Vec::new();
-        let mut logs = Vec::new();
-        let mut ports: Vec<Ports> = Vec::new();
-        let mut clocks = Vec::new();
-        for (s, feed) in [sa, sb].into_iter().zip(feeds) {
-            let slot = Arc::new(FrameSlot::new());
-            let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let me = s.me;
-            let sim = Sim::new(Box::new(s.node), s.replica, s.frames.clone(), slot, Budget::new(RATE)).with_local(
-                me,
-                crate::local::chain_nonce(),
-                Arc::new(MovingHands(feed)),
-            );
-            let port = sim.ports("Pit", || {}).expect("pe-api's ports: a pe-world replica and a local player");
-            let sim = sim
-                .with_api(port.clone())
-                .with_transport(transport(s.handle), Some(Box::new(s.hook)))
-                .with_event_log(log.clone());
-            sims.push((sim, me));
-            logs.push(log);
-            ports.push(port);
-            clocks.push(s.frames);
-        }
+        let DarkPair { mut sims, logs, ports, clocks, dark, relays } = dark_pair(&host);
         let run = |sims: &mut Vec<(Sim, MemberKey)>, until: &mut dyn FnMut(&Machines) -> bool, max: Duration| {
-            let end = Instant::now() + max;
-            while Instant::now() < end {
-                for (sim, _) in sims.iter_mut() {
-                    let _ = sim.tick(host());
-                }
-                if until(sims) {
-                    return true;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            false
+            run_pair(&host, sims, until, max)
         };
         // Both finalize before the blackout.
         assert!(
@@ -1289,7 +1239,145 @@ mod tests {
         }
         assert!(resumed, "finality did not resume within {resume_within:?}");
         assert!(all_final, "not every entry made became final on both sides");
-        drop((ra, rb));
+        drop(relays);
+    }
+
+    /// The blackout tests' two machines, over real UDP on loopback, each reached through a [`Relay`] that drops
+    /// everything while `dark` is set. Their hands move (two entries a frame), each has pe-api's ports, and each logs
+    /// its agreement events. A first, then B.
+    struct DarkPair {
+        sims: Vec<(Sim, MemberKey)>,
+        logs: Vec<Arc<std::sync::Mutex<Vec<pe_seams::AgreeEvent>>>>,
+        ports: Vec<crate::api::Ports>,
+        clocks: Vec<Arc<dyn FrameClock>>,
+        dark: Arc<std::sync::atomic::AtomicBool>,
+        relays: [Relay; 2],
+    }
+
+    fn dark_pair(host: &crate::clock::HostClock) -> DarkPair {
+        let dark = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Each machine advertises its relay; the relays are started once the machines' own addresses are known.
+        let (sa_sock, sb_sock) = (UdpSocket::bind(loopback()).unwrap(), UdpSocket::bind(loopback()).unwrap());
+        let (ra_addr, rb_addr) = (sa_sock.local_addr().unwrap(), sb_sock.local_addr().unwrap());
+        drop((sa_sock, sb_sock));
+        let a = Endpoint::bind([21; 32], loopback(), vec![ra_addr], true, host.clone(), None).unwrap();
+        let mut b = Endpoint::bind([22; 32], loopback(), vec![rb_addr], false, host.clone(), None).unwrap();
+        let ra = Relay::start_on(ra_addr, a.local_addr(), dark.clone());
+        let rb = Relay::start_on(rb_addr, b.local_addr(), dark.clone());
+        let invite = a.invite(Duration::from_secs(600)).unwrap();
+        let reply = b.reply(&invite);
+        b.dial(&invite).unwrap();
+        let theirs = invite.clone();
+        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(20), runner()));
+        let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(20), runner()).expect("A's session");
+        let sb = joiner.join().unwrap().expect("B's session");
+
+        let feeds = [[-0.5f32, 1.0, -0.4], [0.5, 1.1, -0.3]];
+        let (mut sims, mut logs, mut ports, mut clocks) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (s, feed) in [sa, sb].into_iter().zip(feeds) {
+            let slot = Arc::new(FrameSlot::new());
+            let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let me = s.me;
+            let sim = Sim::new(Box::new(s.node), s.replica, s.frames.clone(), slot, Budget::new(RATE)).with_local(
+                me,
+                crate::local::chain_nonce(),
+                Arc::new(MovingHands(feed)),
+            );
+            let port = sim.ports("Pit", || {}).expect("pe-api's ports: a pe-world replica and a local player");
+            let sim = sim
+                .with_api(port.clone())
+                .with_transport(transport(s.handle), Some(Box::new(s.hook)))
+                .with_event_log(log.clone());
+            sims.push((sim, me));
+            logs.push(log);
+            ports.push(port);
+            clocks.push(s.frames);
+        }
+        DarkPair { sims, logs, ports, clocks, dark, relays: [ra, rb] }
+    }
+
+    /// Ticks the machines until `until` holds, or for at most `max`: whether it held.
+    fn run_pair(
+        host: &crate::clock::HostClock,
+        sims: &mut [(Sim, MemberKey)],
+        until: &mut dyn FnMut(&Machines) -> bool,
+        max: Duration,
+    ) -> bool {
+        let end = Instant::now() + max;
+        while Instant::now() < end {
+            for (sim, _) in sims.iter_mut() {
+                let _ = sim.tick(host());
+            }
+            if until(sims) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    #[test]
+    #[ignore = "about 10 s in release (debug simulates too slowly to finalize in time): run with --release --include-ignored"]
+    fn a_half_second_dropout_leaves_both_stamp_leads_at_or_near_0() {
+        // A Wi-Fi hiccup: the path goes dark for 0.5 s. pe-agree's outage mark at 0.3 s (`outage_silence_s`,
+        // agreement.md 3; @coordinator-opus m3981d59ac415) keeps the dropout's backlog out of the lateness reports, so
+        // neither member's stamp-ahead lead rises. At the old 1 s mark a 0.3 s blackout left leads of 20 and 23 frames,
+        // and a 0.7 s one 49, each held for the 3 s window and then drained over 2-9 s: seconds of laggy hands after
+        // every hiccup (@engine-architect m40ceaa4a049d).
+        use pe_seams::{AgreeEvent, VoidReason};
+        use std::sync::atomic::Ordering;
+        const DROPOUT: Duration = Duration::from_millis(500);
+        let ceiling = Duration::from_nanos(crate::genesis::settings().timing.max_timeout_ns as u64);
+        let resume_within = 2 * ceiling + Duration::from_secs(5);
+        let host = crate::clock::shared();
+        let DarkPair { mut sims, logs, ports: _ports, clocks: _clocks, dark, relays } = dark_pair(&host);
+        let run = |sims: &mut Vec<(Sim, MemberKey)>, until: &mut dyn FnMut(&Machines) -> bool, max: Duration| {
+            run_pair(&host, sims, until, max)
+        };
+        assert!(
+            run(&mut sims, &mut |s| s.iter().all(|(sim, _)| sim.stats().finalized > 0), Duration::from_secs(20)),
+            "nothing final before the dropout: {:?}",
+            sims.iter().map(|(s, _)| s.stats().clone()).collect::<Vec<_>>()
+        );
+        // A second of steady state, so each lead's window holds the link's own reports.
+        run(&mut sims, &mut |_| false, Duration::from_secs(1));
+        dark.store(true, Ordering::Relaxed);
+        run(&mut sims, &mut |_| false, DROPOUT);
+        dark.store(false, Ordering::Relaxed);
+        let back = Instant::now();
+        let before: Vec<u64> = sims.iter().map(|(s, _)| s.stats().finalized).collect();
+        let resumed = run(
+            &mut sims,
+            &mut |s| s.iter().enumerate().all(|(i, (sim, _))| sim.stats().finalized > before[i]),
+            resume_within,
+        );
+        let resumed_after = back.elapsed();
+        // Past the 3 s window: a lead the dropout's reports called for would have risen by now.
+        run(&mut sims, &mut |_| false, Duration::from_secs(4));
+        println!("after the path came back: finality resumed {resumed} ({resumed_after:?})");
+        for (i, (sim, me)) in sims.iter().enumerate() {
+            let them = sims[1 - i].1;
+            let late = logs[i]
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| matches!(e, AgreeEvent::Voided { author, reason: VoidReason::Late, .. } if *author == them))
+                .count();
+            let st = sim.stats();
+            println!(
+                "machine {i} ({}): largest lead {} frames, lead now {}, longest drain {} frames; voided the other's as \
+                 late {late}",
+                short(me),
+                st.largest_lead,
+                st.lead,
+                st.longest_drain
+            );
+            // A loaded machine's loopback ticks run late, so the bound allows 0.2 s, as the 10 s blackout's does.
+            assert!(st.largest_lead <= 12, "machine {i}'s stamp-ahead lead rose to {} frames", st.largest_lead);
+            assert_eq!(late, 0, "machine {i} voided {late} of the other's entries as late");
+        }
+        assert!(resumed, "finality did not resume within {resume_within:?} of the path's return");
+        drop(relays);
     }
 
     #[test]

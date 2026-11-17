@@ -462,6 +462,10 @@ final on either, though both keep simulating their predictions.
 
   StampLead's and Motion's unit tests cover the two rates, the pose clock's steps, the hysteresis, the wrist flick and
   the jumps.
+- **A dropout leaves the leads alone** (pe-agree's outage mark at 0.3 s, agreement.md 3), in release, with two
+  machines over UDP on loopback: after a 0.5 s blackout, a Wi-Fi hiccup, both leads stay within 12 frames and no entry
+  is void as late; after a 10 s one, the same holds as finality resumes. At the old 1 s mark, a 0.3 s blackout left
+  leads of 20 and 23 frames and a 0.7 s one 49, each held for the 3 s window.
 - **Late entries on every frame** (the keep-up floor's last-call need, section 3): entries 18 frames late on every
   tick no longer hold the view, in the model and with two pe-world members whose B reaches A 300 ms late; with them,
   a 10 s stall still never gives a tick more than the cap; and both members finalize the same roots and show the
