@@ -96,6 +96,9 @@ struct Sim {
     /// (member, from ms, until ms): everything it sends in that window is held and sent at its end (a stalled uplink
     /// flushing).
     stall: Option<(usize, i64, i64)>,
+    /// (from ms, until ms): everything every member sends in that window is held and delivered at its end, as a
+    /// reliable transport flushes its queue when a dark path returns (pe-net), unlike `blackout_until`, which drops.
+    stall_all: Option<(i64, i64)>,
     /// A member whose entries peers may refuse as over the budget (the run counts the errors instead of failing).
     flooder: Option<usize>,
     /// Errors `receive` returned (only with a flooder).
@@ -162,6 +165,7 @@ impl Sim {
             per_frame: vec![None; n as usize],
             last_frame: vec![None; n as usize],
             stall: None,
+            stall_all: None,
             flooder: None,
             refused: 0,
             unpaced: None,
@@ -224,6 +228,12 @@ impl Sim {
             let mut sent = self.now;
             if let Some((k, a, b)) = self.stall
                 && i == k
+                && self.now >= a * MS
+                && self.now < b * MS
+            {
+                sent = b * MS;
+            }
+            if let Some((a, b)) = self.stall_all
                 && self.now >= a * MS
                 && self.now < b * MS
             {
@@ -1691,11 +1701,14 @@ fn no_entry_made_during_a_ten_second_outage_of_four_members_is_voided_as_late() 
 #[test]
 fn each_side_of_the_outage_rule_alone_at_four_members() {
     // At n = 4 three votes make a quorum, so an abstaining owner can't stop a cut that omits its backlog: the
-    // leader's cap must (measured: without it 1-8 edits per run void, seeds 81-83).
+    // leader's cap must (measured: without it 1-8 edits per run void, seeds 81-83). Since an outage's backlog is no
+    // longer sampled as lateness (the outage mark), the cut lag after the return stays near the link's delay, and the
+    // race the control needs comes out differently: without the cap, 4 edits void in seeds 85 and 91 of 81-92 and
+    // none in the other ten [V]. The control runs on 83, 85 and 91.
     use crate::core::Mutation;
     for m in [Mutation::NoAbstention, Mutation::NoBacklogCap] {
         let mut total = 0;
-        for seed in [81, 82, 83] {
+        for seed in [83, 85, 91] {
             let (s, from, until) = outage_run_with(4, 10_000, 30_000, seed, |c| c.mutation = Some(m));
             s.assert_same_final_log();
             let v: Vec<(usize, usize)> = (0..4).map(|i| outage_voids(&s, i, from, until)).collect();
@@ -1799,6 +1812,43 @@ fn slow_link_run_with(extra: i64, jitter: i64, seed: u64, f: impl Fn(&mut NodeCo
     }
     s.assert_same_final_log();
     (s, worst)
+}
+
+#[test]
+fn an_outages_backlog_is_never_sampled_as_lateness() {
+    // @design-reviewer m7a78b8eaa1e1 (@item:primordial-engine/pe-agree-an-outage-s-backlog-must-not-be-sampled): after
+    // a total blackout each member re-pushes its backlog, which can arrive before any vote or timeout claims it. It
+    // was sampled with its whole outage age: the first lateness report read 22 s, and pe-app's stamp lead jumped to its
+    // 3 s clamp. After the return, the reports and the cut lag must stay near the link's real delay (5-30 ms here).
+    for (rate, seed) in [(120u32, 501u64), (120, 502), (60, 503)] {
+        let mut s = Sim::new(2, seed);
+        s.clock = Clock(rate);
+        s.per_frame = vec![Some((2, 0)); 2];
+        s.run(6_000);
+        // The path goes dark for 10 s, and the transport delivers what was sent meanwhile when it returns.
+        s.stall_all = Some((6_000, 16_000));
+        s.run(16_000);
+        let (mut report, mut lag) = (i64::MIN, 0u64);
+        for t in (16_100..=30_000).step_by(100) {
+            s.run(t);
+            for i in 0..2 {
+                for r in Agreement::own_lateness(&s.nodes[i]) {
+                    report = report.max(r.frames);
+                }
+                lag = lag.max(s.nodes[i].cut_lag_frames());
+            }
+        }
+        let counts = s.nodes[0].lateness_counts().get(&s.keys.key(1)).copied().unwrap_or_default();
+        let ms = |f: i64| f * 1000 / rate as i64;
+        eprintln!(
+            "{rate} Hz seed {seed}: after the return, highest report {} ms, highest cut lag {} ms; B's arrivals at A {counts:?}",
+            ms(report),
+            ms(lag as i64)
+        );
+        assert!(ms(report) <= 100, "{rate} Hz seed {seed}: a report read {} ms after the blackout", ms(report));
+        assert!(ms(lag as i64) <= 150, "{rate} Hz seed {seed}: the cut lag reached {} ms", ms(lag as i64));
+        s.assert_same_final_log();
+    }
 }
 
 #[test]
