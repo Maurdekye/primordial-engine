@@ -125,7 +125,7 @@ fn a_script_with_unsafe_code_is_refused_by_the_build() {
         &target,
         true,
     ) {
-        Err(pe_logic::build::BuildError::Rustc(msg)) => assert!(msg.contains("unsafe"), "{msg}"),
+        Err(pe_logic::build::BuildError::Rustc { text, .. }) => assert!(text.contains("unsafe"), "{text}"),
         other => panic!("expected a refusal, got {:?}", other.map(|b| b.len())),
     }
 }
