@@ -114,6 +114,12 @@ Rules for shapes, as built [V `peworld.rs`]:
 - **A sphere or capsule under non-uniform scale, a mesh, a hull, or an unknown kind cannot be built yet,** and the
   object has no body. pe-world's shape kinds are box, sphere, capsule, mesh and hull; there is no plane [V
   `components.rs`]. Meshes and hulls are **not built**.
+- **Such an object is still physical, and each attempt to build it is a fault** (was O12; [V `peworld.rs`,
+  `bodies.rs` and tests/peworld.rs, added after c9e2829a]). So is an unknown body kind, or a body with no world pose.
+  `WorldModel::body` says why (`Unbuildable`: `Kind`, `Shape` or `Pose`), and `physical()` lists exactly the objects
+  whose `body` is not `Ok(None)`. The replica tries at its start, when an entry or a logic stage makes such an object
+  physical (`Created`), and when a body it had can no longer be built (`Rebuilt`, which removes the body); one that
+  stays unbuildable counts no more. The physics is what it would be without the count: the object has no body.
 
 Bodies are simulated in the domain's physics frame: pe-physics takes positions as `pos - origin`, the form
 world-model.md 4.2 allows. The origin is the world's setting (world-model.md 6.6), which every physics world the
@@ -221,7 +227,8 @@ re-simulation (7).
   (`crates/pe-physics/src/desc.rs`, `limits`): positions, sizes, densities, materials, speeds, damping, pushes,
   gravity and shape counts. A value out of bounds is refused by pe-world or pe-physics.
 - **A refused physics call is a fault,** counted and reported (`ReplicaImpl::faults`). It never panics and never
-  stops the frame [V `crates/pe-replica/src/bodies.rs`].
+  stops the frame [V `crates/pe-replica/src/bodies.rs`]. So is each attempt to build a physical object the world
+  model cannot build (2.1).
 - **Internal invariants are checked and reported as faults, not panics.** One of them is the repair count of step 9:
   a repair never passes silently (@chunks-reviewer's review of pe-sim, via @world-model).
 - **Not built:** the property test that arbitrary payload bytes and entries from one member never panic a replica
@@ -234,9 +241,9 @@ For each applied entry, and for each logic stage, every object in the effects is
 
 | Change | What the replica does to the physics |
 |---|---|
-| `Created`: a physical object is created, or gains `Body` and `Shape` | `add_body` at its world transform, at rest |
+| `Created`: a physical object is created, or gains `Body` and `Shape` | `add_body` at its world transform, at rest. One the world model cannot build gets no body, and a fault (2.1) |
 | `Removed`: deleted, or it stops being physical | `remove_body`; its joints go with it, and pe-world releases its claims |
-| `Rebuilt`: its `Body` or `Shape` fields change, or its world scale does | Removed and added again, keeping the pose and velocities a moving body has in the physics. Its contacts are recreated, the same on every replica. A static body takes its row's pose, which is how an ancestor's move reaches it |
+| `Rebuilt`: its `Body` or `Shape` fields change, or its world scale does | Removed and added again, keeping the pose and velocities a moving body has in the physics. Its contacts are recreated, the same on every replica. A static body takes its row's pose, which is how an ancestor's move reaches it. One that can no longer be built is removed, and that is a fault (2.1) |
 | `Teleported`: an edit sets its `Transform`, or that of an ancestor | `set_state`: exactly the new pose, velocities kept, awake, contact history reset. A static body cannot be moved in place, so it is rebuilt at the new pose |
 | `Velocity`: an edit op sets its velocity | `set_velocity` |
 | `Reparented` | Its world pose is kept, and nothing changes in the physics |
@@ -858,7 +865,6 @@ The error should be small for an occasional impulse, and grow with how often imp
 | O9 | A run-time check of R1 (2) | WS-state |
 | O10 | P5's property test: arbitrary entries never panic a replica (3.1, 4.3) | WS-state |
 | O11 | A body under a hand does not follow a pack's later poses: `end_frame` returning effects (a seam change, @engine-architect's call), or refusing a `Body` under a `Hand`, with a multi-pose test (@design-reviewer's Medium on e6d3ee9c; 3.2) | WS-state, WS-world |
-| O12 | A body that `physical()` lists but `body()` cannot build: a counted fault | WS-state |
 | O13 | A root's re-step resumes from my root held at an earlier cut whose history matches (5.3). It is the pe-replica half of @item:primordial-engine/finality-stall-past-the-lag-cap-with-no-lead-n-2, where every vote re-stepped from the same early frame, at about 0.75 ms a frame; docked as @item:primordial-engine/pe-replica-a-root-s-re-step-resumes-from-a-held-e | WS-state, after M1 |
 | O14 | Vote holds for a version whose module this machine lacks at its activation frame (8.2) | WS-state, after M1, before sessions of 3 or more |
 | O15 | The view's missing parts (7): effects for entry outcomes and contact begins, `trigger_arrived`, and an event for a body stopped at the write-back (3, step 7) | WS-state, with WS-render |
@@ -868,6 +874,8 @@ The error should be small for an occasional impulse, and grow with how often imp
 
 Settled since v0.2:
 - **The cut grid** (was O2): cuts lie at multiples of K, the cut interval in frames (5.3).
+- **A physical object the world model cannot build** (was O12) has no body, and each attempt to build it is a fault
+  (2.1).
 - **The hands** follow world-model.md 8.1: the speed cap, with a hand faster than the cap moving at the cap (option
   (b), @coordinator-opus m9fa06577e5b1); the teleport distance; a held object never carried through a wall by a
   trailing placement (m51d8feaf4aa5); and the hold bound (3.3).

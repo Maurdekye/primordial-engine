@@ -280,14 +280,17 @@ pub struct Scratch {
 
 impl<W: WorldModel> ReplicaImpl<W> {
     /// A replica of `world` at frame 0: a body for each of its physical objects, in id order, in a physics world with
-    /// the world's gravity, origin and rate.
+    /// the world's gravity, origin and rate. Each physical object the world model cannot build gets no body and
+    /// counts a fault (2.1).
     pub fn new(mut world: W, config: ReplicaConfig) -> Result<ReplicaImpl<W>, PhysicsError> {
         world.set_local(config.local);
         let settings = world.settings();
         let mut physics = PhysicsWorld::new(physics_config(config.physics, &settings, settings.rate)?)?;
+        let mut unbuilt = 0;
         for id in world.physical() {
-            if let Some(row) = world.body(id) {
-                physics.add_body(id, &bodies::desc(&row, settings.origin))?;
+            match world.body(id) {
+                Ok(Some(row)) => physics.add_body(id, &bodies::desc(&row, settings.origin))?,
+                Ok(None) | Err(_) => unbuilt += 1,
             }
         }
         let domain = world.domain();
@@ -321,7 +324,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             budget: u64::MAX,
             view: Arc::new(empty_view(domain)),
             counters: ViewCounters::default(),
-            faults: 0,
+            faults: unbuilt,
             stopped: 0,
             scratch: Scratch::default(),
             scratch_records: BTreeMap::new(),
@@ -660,9 +663,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
         refused.sort_unstable();
         for id in refused {
             self.stopped += 1;
-            if let Some(row) = self.world.body(id) {
-                let last = Pose { position: (row.pos - self.origin).0, rotation: row.rotation };
-                self.faults += u64::from(self.physics.set_state(id, last, [0.0; 3], [0.0; 3]).is_err());
+            match self.world.body(id) {
+                Ok(Some(row)) => {
+                    let last = Pose { position: (row.pos - self.origin).0, rotation: row.rotation };
+                    self.faults += u64::from(self.physics.set_state(id, last, [0.0; 3], [0.0; 3]).is_err());
+                }
+                Ok(None) => {}
+                // A body in the physics whose row cannot be built (2.1): it cannot be put back.
+                Err(_) => self.faults += 1,
             }
         }
     }
