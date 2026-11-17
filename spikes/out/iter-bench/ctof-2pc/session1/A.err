@@ -1,0 +1,6 @@
+ctof: A wrote its invite to <work>/tmp/ctof2pc/invite.txt; waiting for <work>/tmp/ctof2pc/reply.txt
+ctof: 11 reps, 500 balls, 60 Hz, B on another PC
+ctof: A is d542; world members ["511c", "d542"] at frame Frame(0)
+net: clock fault PeerRate { peer: MemberKey([81, 28, 52, 161, 162, 203, 82, 29, 241, 107, 178, 70, 184, 222, 142, 121, 151, 206, 35, 92, 126, 118, 178, 42, 61, 117, 3, 162, 72, 25, 221, 138]), ppb: -33262732893166 }
+ctof: done; stopping
+ctof: A Ok("SimStats { ticks: 2790, before_frame_0: 1, published: 2132, holds: 315, longest_hold: 3, received: 2865, refused: 0, unrouted: 0, net_events: 0, sent: 3491, unsent: 0, events: 540, inputs: 3054, inputs_refused: 0, hands_paced: 0, edits: 11, edits_refused: 0, votes: 174, finalized: 167, leave_refused: 0, lead: 0, largest_lead: 0, longest_drain: 0, poses_thinned: 0, moving_frames: 1 }")

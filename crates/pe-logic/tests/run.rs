@@ -765,6 +765,15 @@ fn binding_checks_the_engine_table_and_the_layout() {
     let other = ComponentDesc::new(LIGHT, "Light", vec![FieldDesc::new("kind", FieldKind::U32, 0, 8)]).unwrap();
     let other = try_bind(ENGINE, other).unwrap();
     assert!(other.contains("layout differs"), "{other}");
+    // The engine's Light with every byte the same but its colour unmarked: the SDK's copy means its floats otherwise,
+    // so it does not bind (logic.md 3.2; @engine-architect's Low 2 on colour-r0).
+    let unmarked = <pe_world::components::Light as pe_sim::Component>::desc();
+    let fields =
+        unmarked.fields().iter().map(|f| FieldDesc::new(&f.name, f.kind, f.offset as usize, f.count)).collect();
+    let unmarked = ComponentDesc::new(LIGHT, "Light", fields).unwrap();
+    assert_eq!(unmarked.size(), <pe_world::components::Light as pe_sim::Component>::desc().size());
+    let unmarked = try_bind(ENGINE, unmarked).unwrap();
+    assert!(unmarked.contains("layout differs"), "{unmarked}");
 }
 
 #[test]

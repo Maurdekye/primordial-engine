@@ -3,13 +3,13 @@
 //!
 //! Encoding, all integers little-endian, a string is `u32 len` then UTF-8 bytes:
 //! - `MANIFEST_MAGIC`, `u32 abi`, `u32 sdk`, `u32 batch_addr`, `u32 batch_cap`;
-//! - `u32` components, each: name, `u32 size`, `u32 align`, `u32` fields, each: name, `u8 kind`, `u32 count`,
-//!   `u32 offset`;
+//! - `u32` components, each: name, `u32 size`, `u32 align`, `u32` fields, each: name, `u8 kind` (the kind's code,
+//!   and a colour's space in the high three bits: [`crate::layout::field_byte`]), `u32 count`, `u32 offset`;
 //! - `u32` systems, each: name, `u8 stage`, `u8 creates`, `u32` bound, each: component name, `u8 access`; `u32`
 //!   reads_other, each a component name; `u32` emits, each: event name, `u8 once_per_player`.
 
 use crate::component::ComponentInfo;
-use crate::layout::{Access, MANIFEST_MAGIC, SDK_VERSION, Stage};
+use crate::layout::{Access, MANIFEST_MAGIC, SDK_VERSION, Stage, field_byte};
 
 /// One system's declaration.
 #[derive(Clone, Copy, Debug)]
@@ -82,7 +82,7 @@ pub fn encode(
         w.u32(c.fields.len() as u32);
         for f in c.fields {
             w.str(f.name);
-            w.u8(f.kind as u8);
+            w.u8(field_byte(f.kind, f.color));
             w.u32(f.count);
             w.u32(f.offset);
         }

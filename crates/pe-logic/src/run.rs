@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use pe_core::rng::{Rng, mix64};
 use pe_core::{Frame, Hash, LineId, ObjectId};
 use pe_sdk::layout::{
-    Access, BATCH_ALIGN, BatchHeader, CMD_LEN_AT, COMMAND_HEADER, Command, FieldKind, HEADER_BYTES, Stage,
+    Access, BATCH_ALIGN, BatchHeader, CMD_LEN_AT, COMMAND_HEADER, ColorSpace, Command, FieldKind, HEADER_BYTES, Stage,
 };
 use pe_sim::{ComponentDesc, ComponentId, FieldDesc, Registry, SimStore};
 
@@ -65,16 +65,22 @@ pub struct EngineComponent<'a> {
 /// object and the bytes; `Err` names the refused field or the reason, and faults the call.
 pub type Validate<'a> = &'a dyn Fn(ComponentId, ObjectId, &[u8]) -> Result<(), String>;
 
-/// Same size and fields (name, kind, offset, count) as the engine's description: the SDK's copy of an engine
-/// component must be byte-for-byte the engine's.
+/// Same size and fields (name, kind, offset, count, colour space) as the engine's description: the SDK's copy of an
+/// engine component must be byte-for-byte the engine's, and mean its floats the same way.
 fn same_layout(engine: &ComponentDesc, declared: &ComponentDesc) -> bool {
-    let key = |f: &FieldDesc| (f.name.clone(), f.kind, f.offset, f.count);
+    let key = |f: &FieldDesc| (f.name.clone(), f.kind, f.offset, f.count, f.color);
     engine.size() == declared.size() && engine.fields().iter().map(key).eq(declared.fields().iter().map(key))
 }
 
 /// The store's description of a component a script declares, under the id the world model assigned it.
 pub fn component_desc(c: &manifest::Component, id: ComponentId) -> Result<ComponentDesc, pe_core::Error> {
-    let fields = c.fields.iter().map(|f| FieldDesc::new(&f.name, sim_kind(f.kind), f.offset as usize, f.count));
+    let fields = c.fields.iter().map(|f| {
+        let d = FieldDesc::new(&f.name, sim_kind(f.kind), f.offset as usize, f.count);
+        match f.color {
+            Some(ColorSpace::LinearSrgb) => d.with_color(pe_sim::ColorSpace::LinearSrgb),
+            None => d,
+        }
+    });
     ComponentDesc::new(id, &c.name, fields.collect())
 }
 

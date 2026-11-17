@@ -27,6 +27,7 @@
 
 #![no_std]
 
+pub mod color;
 pub mod component;
 pub mod engine;
 pub mod guest;
@@ -38,7 +39,7 @@ pub mod space;
 pub const ABI_VERSION: i32 = 1;
 
 pub mod prelude {
-    pub use crate::component::{Component, ObjectId};
+    pub use crate::component::{Component, LinearRgb, LinearRgba, ObjectId};
     pub use crate::guest::{Ctx, Full};
     pub use crate::space::{ORIGIN, Offset, Own, Parent, Pos, World};
 }

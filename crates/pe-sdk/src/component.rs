@@ -1,7 +1,7 @@
 //! Components a script declares (docs/spec/logic.md 3.2). [`component!`](crate::component!) makes a `#[repr(C)]`
 //! struct whose layout the store checks against its own rules, and its description for the manifest.
 
-use crate::layout::FieldKind;
+use crate::layout::{ColorSpace, FieldKind};
 use crate::space::Pos;
 
 /// A type a component field may have. Arrays of a scalar are one field with a count. `Offset` is deliberately not a
@@ -9,6 +9,22 @@ use crate::space::Pos;
 pub trait Field: Copy {
     const KIND: FieldKind;
     const COUNT: u32;
+    /// The colour space, for a type that holds a colour ([`LinearRgb`], [`LinearRgba`]).
+    const COLOR: Option<ColorSpace> = None;
+}
+
+pub use crate::color::{LinearRgb, LinearRgba};
+
+impl Field for LinearRgb {
+    const KIND: FieldKind = FieldKind::F32;
+    const COUNT: u32 = 3;
+    const COLOR: Option<ColorSpace> = Some(ColorSpace::LinearSrgb);
+}
+
+impl Field for LinearRgba {
+    const KIND: FieldKind = FieldKind::F32;
+    const COUNT: u32 = 4;
+    const COLOR: Option<ColorSpace> = Some(ColorSpace::LinearSrgb);
 }
 
 /// An object id, as the store keeps it (16 bytes, 8-aligned like the store's 8-byte kinds).
@@ -44,6 +60,8 @@ pub struct FieldDesc {
     pub kind: FieldKind,
     pub count: u32,
     pub offset: u32,
+    /// Set by the field's type: [`LinearRgb`] and [`LinearRgba`] are colours.
+    pub color: Option<ColorSpace>,
 }
 
 /// A component type.
@@ -67,7 +85,8 @@ pub const fn info<C: Component>() -> ComponentInfo {
     ComponentInfo { name: C::NAME, size: C::SIZE, align: C::ALIGN, fields: C::FIELDS }
 }
 
-/// Declares a component: a `#[repr(C)]` struct of [`Field`] types.
+/// Declares a component: a `#[repr(C)]` struct of [`Field`] types. A field of type [`LinearRgb`] or [`LinearRgba`] is
+/// marked a colour.
 ///
 /// ```
 /// pe_sdk::component! {
@@ -77,6 +96,13 @@ pub const fn info<C: Component>() -> ComponentInfo {
 /// use pe_sdk::component::Component;
 /// assert_eq!(Blink::NAME, "Blink");
 /// assert_eq!(Blink::FIELDS[1].offset, 4);
+///
+/// pe_sdk::component! {
+///     /// A glow, in linear light.
+///     pub struct Glow { color: pe_sdk::component::LinearRgb, intensity: f32 }
+/// }
+/// assert_eq!(Glow::FIELDS[0].color, Some(pe_sdk::layout::ColorSpace::LinearSrgb));
+/// assert_eq!(Glow::FIELDS[1].color, None);
 /// ```
 #[macro_export]
 macro_rules! component {
@@ -94,6 +120,7 @@ macro_rules! component {
                     kind: <$t as $crate::component::Field>::KIND,
                     count: <$t as $crate::component::Field>::COUNT,
                     offset: ::core::mem::offset_of!($name, $f) as u32,
+                    color: <$t as $crate::component::Field>::COLOR,
                 }),*
             ];
         }
