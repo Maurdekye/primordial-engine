@@ -356,6 +356,20 @@ with @fable-reviewer's refinements m2226c5aab7da, and m5bb3ed6ddcd5):
      bound is taken when the quit starts, so slower views during the wait don't stretch it. pe-agree's leavers
      quit 355-558 ms after their `Leave` on simulated links; a 1.2 s link's views give the 15 s cap [I].
    - A second quit request ends the wait at once: Ctrl-C on the console ends the process wherever the quit is.
+   - **The console's own quit** (`crate::console`): the first Ctrl+C or Ctrl+Break, or closing the console window
+     (SIGINT, SIGTERM or SIGHUP on unix), runs this same shutdown, once, as the end of a run does. Before there is a
+     shutdown to run (setting up, or the opener waiting for the reply code), it ends the process at once. In the
+     window, the request runs it (a close event on a thread of its own), since the window can't be closed from
+     outside; in VR, the main thread waits in 100 ms slices and runs it. Windows ends a process about 5 s after a
+     close event, and the bound above can be longer, so in either mode a close waits 4.5 s and then logs "leave cut
+     short". What that leaves is what the bound passing leaves: if the `Leave` went out, the others see "<player>
+     left before the session could confirm it" or "left the session."; if it didn't, "<player>'s connection
+     dropped".
+   - A log-off or a shut-down doesn't reach pe-app: Windows sends those console events only to services and ends an
+     interactive process first. pe-app simply ends, and the others see "<player>'s connection dropped", as after a
+     crash. Catching them would take the window's WM_QUERYENDSESSION; that is post-M1.
+   - On unix (tier 2), one thread takes the signals: a second signal waits until a desktop quit that SIGINT started
+     has ended, and after SIGTERM or SIGHUP the "leave cut short" line can show although the quit goes on.
    - When the wait ends, the console says "left the session.", or, if the bound passed first, "Left before
      <player> confirmed it. <player> can keep playing, but their changes won't be shared from now on."
 3. **The remaining member** keeps its link to the leaver after the epoch switch until the leaver disconnects or 30 s

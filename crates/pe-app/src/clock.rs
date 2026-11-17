@@ -58,6 +58,8 @@ mod os {
 mod os {
     use pe_seams::HostTime;
 
+    // `time_t` and `c_long` are 32-bit on some unix targets, so `from` widens there and is a no-op on 64-bit ones.
+    #[allow(clippy::useless_conversion)]
     pub fn now() -> HostTime {
         let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
         // SAFETY: a valid out pointer; CLOCK_MONOTONIC is always available.
