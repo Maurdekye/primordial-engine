@@ -985,7 +985,13 @@ measurements: the build-asymmetry draft, section 3 (@iter-bench and @engine-arch
 - **A bug bundle:** a `Compile` or `Refused` failure on a version another member attested, or a `Mismatch` that
   survives the clean rebuild, means prevention has a gap. The machine saves the archive, B, both module hashes,
   the full compiler output and dep-info, the toolchain's file hashes and the OS and CPU locally, and tells the
-  user where. Nothing of it goes into the entry.
+  user where. Nothing of it goes into the entry. Built: `pe_logic::build::save_bug_bundle`, which the build worker
+  calls when `Failed::wants_bundle` says so (it alone knows whether another member attested). Its folder holds the
+  archive, `report.txt` (reason, both hashes, B, the versions, the toolchain's release, OS and CPU, the last error in
+  full, and a warning that it holds this machine's paths), this machine's module for a `Mismatch`, the dep-info
+  files, and the size and hash of each file of pe-sdk and of the toolchain's minimal set (cargo, rustc and its
+  libraries, rust-lld, the wasm32 std: 62 files, 439.8 MiB here [V `tests/build_for_row.rs`]; its time is not
+  measured apart from the test's builds), with a `missing` row for a part this machine lacks.
 - **Permanent tests** (`tests/build_isolation.rs`, each with a red control): an environment variable, a cargo
   configuration and a `rust-toolchain` file around the build leave the hash unchanged; `option_env!`, `env!`, an
   outside `include_bytes!` and a `#[path]` module outside `src` are `Refused`; 1 and 4 jobs give the same hash.
