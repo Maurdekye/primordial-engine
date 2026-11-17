@@ -73,6 +73,11 @@ impl BuildConfig {
     fn target(&self) -> PathBuf {
         self.dir.join("target")
     }
+
+    /// The crate folder `build_archive` unpacks an archive into, which rustc's paths are relative to.
+    fn crate_dir(&self) -> PathBuf {
+        self.work().join("script")
+    }
 }
 
 /// The build folder of the machine whose identity seed is the file `identity`: `<its name>.b` beside it, so two
@@ -124,10 +129,12 @@ impl std::fmt::Display for BuildFail {
 impl BuildFail {
     /// The failure as api.md 7.1's port answers it: the author's own error as diagnostics (rustc's messages, or
     /// pe-logic's refusal), and this machine's as `Unavailable`, never as the author's error.
-    fn refused(self) -> BuildRefused {
+    fn refused(self, crate_dir: &Path) -> BuildRefused {
         match self {
             BuildFail::Build(e) => match (e.reason(), &e) {
-                (FailReason::Compile, BuildError::Rustc(out)) => BuildRefused::Failed(rustc_diagnostics(out)),
+                (FailReason::Compile, BuildError::Rustc(out)) => {
+                    BuildRefused::Failed(rustc_diagnostics(out, crate_dir))
+                }
                 (FailReason::Refused, _) => {
                     BuildRefused::Failed(vec![diagnostic(DiagnosticKind::Manifest, e.to_string())])
                 }
@@ -151,19 +158,33 @@ fn diagnostic(kind: DiagnosticKind, message: String) -> Diagnostic {
     Diagnostic { kind, severity: Severity::Error, message, file: None, line: None, column: None, code: None }
 }
 
+/// The most of rustc's own output a diagnostic carries when none of its lines is in the short format.
+const RAW_MAX: usize = 4096;
+
 /// rustc's short-format messages (`src\lib.rs:3:5: error[E0425]: cannot find value ...`, the format pe-logic asks
 /// for), one diagnostic each (api.md 7.1; @iter-bench). Lines that aren't one are left out. The file is
-/// made crate-relative, with `/`.
-fn rustc_diagnostics(out: &str) -> Vec<Diagnostic> {
-    out.lines().filter_map(short_message).collect()
+/// made relative to `crate_dir`, with `/`. When no line is one (another format, a linker's error), the output itself,
+/// trimmed to [`RAW_MAX`] bytes, is the one diagnostic, so the author still sees why (@api-eng's Medium on 3b8bf923).
+fn rustc_diagnostics(out: &str, crate_dir: &Path) -> Vec<Diagnostic> {
+    let crate_dir = crate_dir.to_string_lossy().replace('\\', "/");
+    let parsed: Vec<Diagnostic> = out.lines().filter_map(|l| short_message(l, &crate_dir)).collect();
+    if !parsed.is_empty() {
+        return parsed;
+    }
+    let raw = out.trim();
+    let mut end = raw.len().min(RAW_MAX);
+    while !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    vec![diagnostic(DiagnosticKind::Rustc, raw[..end].to_string())]
 }
 
-fn short_message(line: &str) -> Option<Diagnostic> {
+fn short_message(line: &str, crate_dir: &str) -> Option<Diagnostic> {
+    // The level is the first tag in the line: a warning's own text can hold ": error" (@api-eng's Low 1).
     let levels = [(": error", Severity::Error), (": warning", Severity::Warning)];
-    let (at, severity, rest) = levels.into_iter().find_map(|(tag, s)| {
-        let i = line.find(tag)?;
-        Some((&line[..i], s, &line[i + tag.len()..]))
-    })?;
+    let (i, tag, severity) =
+        levels.into_iter().filter_map(|(tag, s)| line.find(tag).map(|i| (i, tag, s))).min_by_key(|&(i, ..)| i)?;
+    let (at, rest) = (&line[..i], &line[i + tag.len()..]);
     // Split from the right, so a drive letter's colon stays in the path.
     let mut parts = at.rsplitn(3, ':');
     let (column, number, path) = (parts.next()?, parts.next()?, parts.next()?);
@@ -175,8 +196,9 @@ fn short_message(line: &str) -> Option<Diagnostic> {
         }
         None => (None, rest),
     };
+    // Relative to the crate when it lies in it: the build folder's own path may hold a `src/` (@api-eng's Low 2).
     let path = path.replace('\\', "/");
-    let file = path.find("src/").map_or_else(|| path.clone(), |i| path[i..].to_string());
+    let file = path.strip_prefix(crate_dir).map_or_else(|| path.clone(), |p| p.trim_start_matches('/').to_string());
     Some(Diagnostic {
         kind: DiagnosticKind::Rustc,
         severity,
@@ -263,16 +285,58 @@ pub struct Builder {
     config: BuildConfig,
     inbox: ModuleInbox,
     ids: (Hash, Hash),
-    /// Each version built, by V.
-    built: Mutex<BTreeMap<Hash, Built>>,
+    /// Each version built, by V ([`Cache`]).
+    built: Mutex<Cache<Built>>,
     gate: Gate,
+}
+
+/// How many versions the build cache keeps.
+const CACHED: usize = 16;
+
+/// The versions built, by V: at most [`CACHED`], the least recently used dropped first. Each holds a compiled module,
+/// and an agent iterating with `code_check` builds a new V each time, so the cache can't keep every one; a dropped
+/// version is built again when asked (@engine-architect's Low 2 on 6700586b).
+struct Cache<T> {
+    by_v: BTreeMap<Hash, T>,
+    /// The cached versions, least recently used first.
+    used: VecDeque<Hash>,
+}
+
+impl<T> Default for Cache<T> {
+    fn default() -> Self {
+        Cache { by_v: BTreeMap::new(), used: VecDeque::new() }
+    }
+}
+
+impl<T: Clone> Cache<T> {
+    fn get(&mut self, v: &Hash) -> Option<T> {
+        let b = self.by_v.get(v).cloned();
+        if b.is_some() {
+            self.touch(*v);
+        }
+        b
+    }
+
+    fn insert(&mut self, v: Hash, b: T) {
+        self.by_v.insert(v, b);
+        self.touch(v);
+        while self.by_v.len() > CACHED {
+            let Some(old) = self.used.pop_front() else { break };
+            self.by_v.remove(&old);
+        }
+    }
+
+    fn touch(&mut self, v: Hash) {
+        self.used.retain(|u| *u != v);
+        self.used.push_back(v);
+    }
 }
 
 impl Builder {
     /// A builder that loads and describes modules with `inbox`'s runner, which decides their hashes.
     pub fn new(config: BuildConfig, inbox: ModuleInbox) -> Result<Builder, BuildError> {
         let ids = toolchain_and_sdk(&config.toolchain, &config.sdk)?;
-        Ok(Builder { config, inbox, ids, built: Mutex::new(BTreeMap::new()), gate: Gate::default() })
+        Ok(Builder { config, inbox, ids, built: Mutex::new(Cache::default()), gate: Gate::default() })
     }
 
     /// This machine's toolchain and SDK hashes, as a `CommitScript` carries them ([`toolchain_and_sdk`]).
@@ -318,8 +382,10 @@ impl Builder {
             author_module,
         )?;
         let build_ms = millis(started.elapsed());
+        // A manifest that won't read, or a component that won't take an id, is the module's own fault, the same on
+        // every machine (`Refused`); anything else is this machine's (@engine-architect's Low 1 on 6700586b).
         let described = inbox.describe_script(&script, &v).map_err(|e| Failed {
-            reason: FailReason::Local,
+            reason: if matches!(e, LoadError::Refused(_)) { FailReason::Refused } else { FailReason::Local },
             module: None,
             attempts: 1,
             detail: format!("the built module won't describe: {e}"),
@@ -347,15 +413,15 @@ impl Builder {
     }
 
     fn cached(&self, v: &Hash) -> Option<Built> {
-        self.lock_built().get(v).cloned()
+        self.lock_built().get(v)
     }
 
     fn keep(&self, v: Hash, b: &Built) {
         self.lock_built().insert(v, b.clone());
     }
 
-    fn lock_built(&self) -> MutexGuard<'_, BTreeMap<Hash, Built>> {
-        // Every change to the cache is one insert.
+    fn lock_built(&self) -> MutexGuard<'_, Cache<Built>> {
+        // Every change to the cache is whole within one lock.
         self.built.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
@@ -369,7 +435,20 @@ impl Builds for Builder {
             Some(b) => b,
             None => {
                 let _turn = self.gate.api(deadline).ok_or(BuildRefused::Timeout)?;
-                self.build_in_turn(archive, v).map_err(BuildFail::refused)?
+                // Describing the module reads its manifest, which runs it, so the build runs on a thread with the
+                // inbox's stack, never on the API worker's (pe-mcp's blocking pool has 2 MiB, and a guest may use up
+                // to its wasm stack; @engine-architect's Medium on 6700586b).
+                let built = std::thread::scope(|s| {
+                    let job = std::thread::Builder::new()
+                        .name("pe-build".into())
+                        .stack_size(self.inbox.thread_stack())
+                        .spawn_scoped(s, || self.build_in_turn(archive, v));
+                    match job {
+                        Ok(h) => h.join().map_err(|_| BuildRefused::Unavailable("the build thread panicked".into())),
+                        Err(e) => Err(BuildRefused::Unavailable(format!("the build thread did not start: {e}"))),
+                    }
+                })?;
+                built.map_err(|e| e.refused(&self.config.crate_dir()))?
             }
         };
         if u128::from(b.build_ms) > self.config.margin.as_millis() {
@@ -595,8 +674,9 @@ fn check(p: &PendingCommit, builder: &Builder, archive: &[u8]) -> Result<Built, 
     ids.push(tag_desc(&p.v()).id());
     ids.sort();
     if ids != p.components {
-        // One module under one V declares the same components on every machine, so the difference is this machine's
-        // own description of it.
+        // One module under one V declares the same components on every machine. With the module the author's, a
+        // different list more likely means a commit inconsistent with its own module than a fault here, but M1's
+        // members are trusted: after M1 it deserves a reason of its own (@engine-architect's Low 1 on 6700586b).
         let detail = "the module's components differ from the commit's".to_string();
         return Err(Unchecked::Failed(Failed { reason: FailReason::Local, module: None, attempts: 1, detail }));
     }
@@ -659,12 +739,13 @@ impl AttesterThread {
 }
 
 /// Starts the attester's thread (module doc) over the snapshots pe-app publishes for pe-api (`shared`). After each
-/// new one, or 250 ms (`WAIT`) without one, it makes a pass over the newest snapshot's pending commits, logs what failed,
-/// and submits the attestations, the failures and the reposts (from the agreed snapshot) through pe-api's machine lane
-/// (`EditQueue::submit_machine`, api.md 7.1). Each attestation's receipt stamp goes back to the attester. A submission
-/// the lane has no room for waits for the next pass. An attestation that agreement refuses is treated as posted at the
-/// present frame, so the state-based repost decides it again once that frame is final. The thread runs on the inbox's
-/// stack.
+/// new one, or 250 ms (`WAIT`) without one, it makes a pass over the newest snapshot's pending commits, logs what
+/// failed, and submits the attestations, the failures and the reposts (from the agreed snapshot) through pe-api's
+/// machine lane (`EditQueue::submit_machine`, api.md 7.1). Each attestation's receipt stamp goes back to the attester.
+/// A submission the lane has no room for waits for the next pass. An attestation that agreement refuses is treated as
+/// posted at the present frame, so the state-based repost decides it again once that frame is final. A failure that
+/// agreement refuses is logged and not posted again: its commit then voids at D (`Unattested`) rather than at once.
+/// The thread runs on the inbox's stack.
 pub fn spawn_attester(
     builder: Arc<Builder>,
     inbox: ModuleInbox,
@@ -785,14 +866,16 @@ mod tests {
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["attester", "api 1", "api 2"]);
     }
 
-    /// rustc's short format, with a drive letter, a code or none, and a warning; other lines are left out.
+    /// rustc's short format, with a drive letter, a code or none, and a warning whose text holds ": error"; other
+    /// lines are left out. A path in the crate folder is made relative to it, even when the folder's own path holds a
+    /// `src` (@api-eng's Lows on 3b8bf923).
     #[test]
     fn rustcs_messages_become_diagnostics() {
-        let out = "C:\\pe\\b\\work\\script\\src\\lib.rs:3:5: error[E0425]: cannot find value `x` in this scope\n\
+        let out = "C:\\src\\b\\work\\script\\src\\lib.rs:3:5: error[E0425]: cannot find value `x` in this scope\n\
                    src\\lib.rs:1:9: error: expected `;`, found `}`\n\
-                   src/lib.rs:2:1: warning: unused import\n\
+                   src/lib.rs:2:1: warning: unused variable: error_count\n\
                    error: could not compile `script` (lib) due to 2 previous errors\n";
-        let d = rustc_diagnostics(out);
+        let d = rustc_diagnostics(out, Path::new("C:\\src\\b\\work\\script"));
         let at = |d: &Diagnostic| (d.file.clone().unwrap(), d.line.unwrap(), d.column.unwrap(), d.severity);
         assert_eq!(
             d.iter().map(at).collect::<Vec<_>>(),
@@ -807,6 +890,34 @@ mod tests {
             (Some("E0425"), "cannot find value `x` in this scope")
         );
         assert_eq!((d[1].code.as_deref(), d[1].message.as_str()), (None, "expected `;`, found `}`"));
+        assert_eq!(d[2].message, "unused variable: error_count");
+    }
+
+    /// Output with no short-format line comes back whole, trimmed and bounded, as one diagnostic (@api-eng's Medium on
+    /// 3b8bf923).
+    #[test]
+    fn output_with_no_short_format_line_is_one_diagnostic() {
+        let out = "  error: linking with `rust-lld` failed: exit code: 1\n  = note: rust-lld: undefined symbol\n";
+        let d = rustc_diagnostics(out, Path::new("w/script"));
+        assert_eq!(d.len(), 1);
+        assert_eq!((d[0].kind, d[0].severity, d[0].file.as_deref()), (DiagnosticKind::Rustc, Severity::Error, None));
+        assert!(d[0].message.starts_with("error: linking") && d[0].message.ends_with("undefined symbol"), "{d:?}");
+        let long = "é".repeat(RAW_MAX);
+        assert!(rustc_diagnostics(&long, Path::new("w")).pop().unwrap().message.len() <= RAW_MAX);
+    }
+
+    /// The cache keeps the [`CACHED`] most recently used versions.
+    #[test]
+    fn the_cache_drops_the_least_recently_used_version() {
+        let v = |n: u8| Hash([n; 32]);
+        let mut c = Cache::default();
+        for n in 0..CACHED as u8 {
+            c.insert(v(n), n);
+        }
+        assert_eq!(c.get(&v(0)), Some(0), "used again");
+        c.insert(v(200), 200);
+        assert_eq!((c.get(&v(1)), c.get(&v(0)), c.get(&v(200))), (None, Some(0), Some(200)));
+        assert_eq!(c.by_v.len(), CACHED);
     }
 
     #[test]
