@@ -141,8 +141,7 @@ pub fn m1_session(s: &Session, blobs: BlobStore) -> Result<World, crate::WorldEr
     let mut members = s.members.clone();
     members.sort_by_key(|m| m.0);
     for (i, &(m, perms)) in members.iter().enumerate() {
-        let feet = s.origin.checked_add(Offset([0.6 * i as f64, 0.0, 1.5])).unwrap_or(s.origin);
-        w.admit(s.line, m, perms, Frame(0), feet)?;
+        w.admit(s.line, m, perms, Frame(0), slot_feet(s.origin, i))?;
     }
     Ok(w)
 }
@@ -271,7 +270,40 @@ fn transaction(seed: u64, blobs: &BlobStore, origin: Pos, balls: usize) -> Trans
 /// Where a member's hands start, relative to the spawn point: left, then right.
 const HAND_OFFSETS: [[f64; 3]; 2] = [[-0.25, 1.2, 0.3], [0.25, 1.2, 0.3]];
 
+/// The spacing of the spawn slots along the row just outside the pit's near wall.
+const SLOT_SPACING: f64 = 0.6;
+
+/// Slot `i`'s feet: `origin + (0.6 i, 0, 1.5)`, the row genesis admits its members along ([`m1_session`]).
+fn slot_feet(origin: Pos, i: usize) -> Pos {
+    origin.checked_add(Offset([SLOT_SPACING * i as f64, 0.0, 1.5])).unwrap_or(origin)
+}
+
+/// Whether a hand at `hand` takes the slot whose feet are `feet`: it is horizontally (x, z) closer than half the
+/// spacing to the midpoint of where that slot's two hands start. A hand takes at most one slot that way.
+fn takes(hand: Pos, feet: Pos) -> bool {
+    let mid = [(HAND_OFFSETS[0][0] + HAND_OFFSETS[1][0]) / 2.0, (HAND_OFFSETS[0][2] + HAND_OFFSETS[1][2]) / 2.0];
+    let d = hand - feet;
+    let (dx, dz) = (d.0[0] - mid[0], d.0[2] - mid[1]);
+    let r = SLOT_SPACING / 2.0;
+    dx * dx + dz * dz < r * r
+}
+
 impl World {
+    /// Where a member admitted now stands (world-model.md 2.4, @engine-architect m5193e4c7a3d8): the feet of the
+    /// lowest slot along the genesis row that no current member's hand takes ([`takes`]). A function of the world
+    /// alone, since the hands' poses are hashed state, so every replica applying an `Admit` at the same frame admits
+    /// at the same spot; it keeps no counter, so it changes no root. A leaver's slot comes free when its hands go,
+    /// and a slot someone's tracked hands still crowd is skipped. `n` hands take at most `n` slots, so one of the
+    /// first `n + 1` is free.
+    pub fn join_spawn(&self) -> Pos {
+        let hands: Vec<Pos> =
+            self.store.iter::<Hand>().filter_map(|(id, _)| self.store.world_transform(id).map(|t| t.pos)).collect();
+        (0..=hands.len())
+            .map(|i| slot_feet(self.origin, i))
+            .find(|&feet| !hands.iter().any(|&h| takes(h, feet)))
+            .unwrap_or_else(|| slot_feet(self.origin, hands.len()))
+    }
+
     /// The M1 marker (`Some(m1_line())`) if this world was made by M1's disposable genesis code ([`ball_pit`]).
     pub fn m1_marker(&self) -> Option<LineId> {
         self.m1_marker
