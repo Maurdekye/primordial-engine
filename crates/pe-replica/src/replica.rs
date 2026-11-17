@@ -64,10 +64,11 @@ use std::sync::Arc;
 use bytes::Bytes;
 use pe_physics::{CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Transfer, WorldImage};
 use pe_seams::{
-    Advance, ChainId, Class, Cut, CutImport, CutRef, DomainId, Effect, EffectCause, EffectKey, EffectKind, EntryRef,
-    EntrySource, FinalCut, Finalized, Frame, FrameClock, FrameView, GroupSel, Hash, Health, HostTime, ImportError,
-    MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica, RigTransform, RootError, RunnerIdentity,
-    SignedEntry, SimRate, Stage, StepRecord, Tree, ViewCounters, ViewFlags, VoidReason, frames_ceil,
+    Activation, ActivationKey, Advance, ChainId, Class, Cut, CutImport, CutRef, DomainId, Effect, EffectCause,
+    EffectKey, EffectKind, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameClock, FrameView, GroupSel, Hash,
+    Health, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica, RigTransform,
+    RootError, RunnerIdentity, SignedEntry, SimRate, Stage, StepRecord, Tree, ViewCounters, ViewFlags, VoidReason,
+    frames_ceil,
 };
 
 use crate::bodies;
@@ -240,6 +241,17 @@ pub struct ReplicaImpl<W: WorldModel> {
     retract: Vec<EffectKey>,
     /// The script events of the frames `root_at_cut`'s scratch re-stepped, for a rebase on that history.
     scratch_events: BTreeMap<Frame, Vec<(ScriptEvent, Pos)>>,
+    /// Each frame's activation records (what became of code commits at its end) from its latest live step, until the
+    /// next publication (S5 v1.8).
+    acts: BTreeMap<Frame, Vec<Activation>>,
+    /// The keys of the activation records views have carried, per frame.
+    acts_played: BTreeMap<Frame, BTreeSet<ActivationKey>>,
+    /// The frames whose activation records the next view publishes, or compares with what views carried.
+    acts_stepped: BTreeSet<Frame>,
+    /// Activation keys views carried for frames a history off the live steps replaced (a rung-2 import).
+    acts_retract: Vec<ActivationKey>,
+    /// The activation records of the frames `root_at_cut`'s scratch re-stepped, for a rebase on that history.
+    scratch_acts: BTreeMap<Frame, Vec<Activation>>,
     script_counts: ScriptCounts,
 }
 
@@ -327,6 +339,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
             fx_stepped: BTreeSet::new(),
             retract: Vec::new(),
             scratch_events: BTreeMap::new(),
+            acts: BTreeMap::new(),
+            acts_played: BTreeMap::new(),
+            acts_stepped: BTreeSet::new(),
+            acts_retract: Vec::new(),
+            scratch_acts: BTreeMap::new(),
             script_counts: ScriptCounts::default(),
         };
         if r.is_cut_frame(Frame(0)) {
@@ -489,14 +506,16 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.write_back(awake_before, &hands);
         self.logic(f, Stage::LogicPostPhysics, live, &mut events);
         self.faults += u64::from(self.world.maintain_transforms());
-        self.world.end_frame(f);
+        let acts = self.world.end_frame(f);
         let next = Frame(f.0 + 1);
         self.frame = next;
         let root = self.is_cut_frame(next).then(|| self.take_root());
         if !live {
             self.scratch_events.insert(f, events);
+            self.scratch_acts.insert(f, acts);
         } else {
             self.note_events(f, events, resimulated);
+            self.note_acts(f, acts);
             self.stepped.insert(f, ids);
             if let Some(root) = root {
                 self.live.insert(next, root);
@@ -572,6 +591,42 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.played = self.played.split_off(&keep);
         self.played.retain(|_, keys| !keys.is_empty());
         (effects, retracted)
+    }
+
+    /// Keeps frame `f`'s activation records from its live step (S5 v1.8): the next view publishes them, as every view
+    /// after a step of the frame does, and retracts what the frame no longer produces ([`Self::frame_activations`]).
+    fn note_acts(&mut self, f: Frame, acts: Vec<Activation>) {
+        if acts.is_empty() && !self.acts.contains_key(&f) && !self.acts_played.contains_key(&f) {
+            return;
+        }
+        self.acts.insert(f, acts);
+        self.acts_stepped.insert(f);
+    }
+
+    /// The activation records the next view carries (S5 v1.8). Like `changes`, every record of each frame stepped live
+    /// since the last view, in frame order and each frame's in asset order, carried again whenever the frame is
+    /// stepped again. A record supersedes the one with its key a view carried before, whatever its frame. With them,
+    /// the keys views carried for those frames that no frame of this view produces any more, and those an import's
+    /// history replaced (`activations_retracted`). The frames stepped while a catch-up holds the view back all reach
+    /// its next publication (@api-eng mfcabf8a08891).
+    fn frame_activations(&mut self) -> (Vec<Activation>, Vec<ActivationKey>) {
+        let (mut records, mut gone) = (Vec::new(), std::mem::take(&mut self.acts_retract));
+        for f in std::mem::take(&mut self.acts_stepped) {
+            let now = self.acts.remove(&f).unwrap_or_default();
+            let keys: BTreeSet<ActivationKey> = now.iter().map(|a| a.key).collect();
+            let played = self.acts_played.entry(f).or_default();
+            gone.extend(played.iter().filter(|k| !keys.contains(k)).copied());
+            *played = keys;
+            records.extend(now);
+        }
+        debug_assert!(self.acts.is_empty(), "every frame with activation records was stepped since the last view");
+        let produced: BTreeSet<ActivationKey> = records.iter().map(|a| a.key).collect();
+        let retracted: BTreeSet<ActivationKey> = gone.into_iter().filter(|k| !produced.contains(k)).collect();
+        let base = self.base_frame();
+        let keep = self.cv.as_ref().map_or(base, |c| c.0.at.frame.min(base));
+        self.acts_played = self.acts_played.split_off(&keep);
+        self.acts_played.retain(|_, keys| !keys.is_empty());
+        (records, retracted.into_iter().collect())
     }
 
     /// The awake bodies of world objects: hand bodies are the replica's own (3.3).
@@ -841,6 +896,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let tally = (self.faults, self.stopped, self.counters.fp_resets);
         self.scratch_records.clear();
         self.scratch_events.clear();
+        self.scratch_acts.clear();
         // Off the live history, the model keeps its machine state as it is: no prediction starts or runs in a re-step,
         // so a root given out never includes one (@engine-architect's Medium on 29b02af0).
         self.world.set_scratch(true);
@@ -958,8 +1014,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         }
         // Their effects too: the next view compares them with what it carried there, as a replay's (Low 3).
         let mut events = std::mem::take(&mut self.scratch_events);
+        let mut acts = std::mem::take(&mut self.scratch_acts);
         for f in (g.0..at.0).map(Frame) {
             self.note_events(f, events.remove(&f).unwrap_or_default(), true);
+            self.note_acts(f, acts.remove(&f).unwrap_or_default());
         }
         self.excused.push((g, at));
     }
@@ -1066,6 +1124,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         view.changes = std::mem::take(&mut self.pending);
         view.objects = objects;
         (view.effects, view.retracted) = self.frame_effects();
+        (view.activations, view.activations_retracted) = self.frame_activations();
         view.counters = self.counters;
         self.view = Arc::new(view);
     }
@@ -1454,6 +1513,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.retract.extend(replaced.into_values().flatten());
         self.fx = self.fx.split_off(&c);
         self.fx_stepped = self.fx_stepped.split_off(&c);
+        let kept = self.acts_played.split_off(&c);
+        let replaced = std::mem::replace(&mut self.acts_played, kept);
+        self.acts_retract.extend(replaced.into_values().flatten());
+        self.acts = self.acts.split_off(&c);
+        self.acts_stepped = self.acts_stepped.split_off(&c);
         self.imported = Some((cut.at, root));
         if self.frame >= self.reached {
             self.replayed = Some((cut.at, root));
