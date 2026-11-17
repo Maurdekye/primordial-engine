@@ -546,7 +546,7 @@ which the model does not cover. Each is inert unless the node's configuration na
 ## 8. Membership change: epochs (model v1)
 
 Ruled by the coordinator (mdb308c063fa5: epochs, as DiemBFT v4 reconfigures), with @design-reviewer's gaps
-(m87f0b168298a) and wording (m8d3f04d51b87). Built in pe-agree for `Leave` only (below); `Admit`, `Remove` and
+(m87f0b168298a) and wording (m8d3f04d51b87). Built in pe-agree for `Leave` and `Admit` (below); `Remove` and
 `Rechain` are not built yet.
 
 - **Build order: `Leave` first** (coordinator mda986537a492; @item:primordial-engine/m1-leave-a-member-leaves-gracefully-and-the-rest).
@@ -599,6 +599,65 @@ Ruled by the coordinator (mdb308c063fa5: epochs, as DiemBFT v4 reconfigures), wi
   - Tests (crates/pe-agree/src/node_tests.rs): 2 -> 1 (the leaver stays for E, then quits; the other finalizes
     alone), 3 -> 2, an entry signed after the `Leave` void as `AfterLeave` at the same cut everywhere, the leaver
     waiting for `leave_settled` (and the naive quit as its control), the last member's `Leave` void.
+- **In pe-agree, `Admit`** (coordinator mefc4166f6b41; shape m6cdd383ce41c and mbd24467040cd, after
+  @fable-reviewer m67259b126c19):
+  - **The entry.** A class Protocol entry whose payload is pe-seams' `gov::Admit`: a tag (`pe.agree.admit/`, delimited so no other tag starts with it), a format
+    version, the admitted key, the role it is admitted with (pe-world's permission bits), a `request` (to be signed by
+    the joiner, naming line and epoch) and `vouches`. The last two are empty in M1; they are there so the user's join
+    rules can carry their evidence (friendship, an invite ticket) without a new protocol.
+  - **The decision is a pure fold**, `GovState::step(entry)`: no world state, no callback into the app. It runs in the
+    membership rules beside `Leave`'s, in the final log's order, on final and certified ancestry alike, so every member
+    makes the same `Admit`s effective. An `Admit` takes effect if its author is a member and the fold admits it; else it
+    is void as `NotAuthorized` (a malformed `Admit` too). One whose key is a member, or admitted earlier in the epoch,
+    is void as `NoChange`. S2 is to apply an effective `Admit`'s world side (`World::admit` with the role its verdict
+    names, at the entry's frame). **Not built yet** (@engine-architect's Medium on b84295a2): pe-replica gives a world
+    side to `Leave` only, so today an effective `Admit` changes the members, and the joiner's world at E has no member
+    row, role or hands for it. Its owner is being chosen by the coordinator.
+  - **M1's rule is one row** (an interim; the user's join-rule matrix replaces the fold's rule and data, not the
+    protocol): vouched by an admin, admit, with the signer's own signature as the vouch. An admin chooses the role,
+    ADMIN included (the user: any admin can add another admin).
+  - **`GovState` is per epoch:** every member's role bits, one table like the world's member table. It starts from
+    the genesis record's member roles (`NodeConfig::genesis_gov`, carried by the record like the members, not in the
+    consensus hash) and changes only at an epoch switch, by the `Admit`s (with
+    their roles) and `Leave`s its E made effective. So a line whose opener left can still admit (tested: A admits B as
+    an admin, A leaves, B admits C).
+  - **E is the first cut with any effective change**, a `Leave` or an `Admit`; the next epoch's members are the old
+    ones less the leavers plus the admitted keys. `LastMember` counts the admits made effective before the `Leave`.
+  - **The joiner's start** (crates/pe-agree/src/epoch.rs). When E is final at a member, it records the next epoch's
+    start (`Node::epoch_start`): the epoch certificate (E and its certified descendants up to the highest certified
+    block, each with a quorum certificate of it), the next epoch's members and `GovState`, the head entries E names
+    and each chain's highest final stamp. The inviter's app sends it to the joiner after E is final (app.md 4, `JoinStart`); the joiner starts with
+    `Node::join`, which checks the certificate against the epoch its invite pins: every certificate has a quorum of
+    that epoch's members signing under its domain, the blocks chain, every block above E is a suffix cut, and some
+    block's child was proposed in the very next view (the two-chain rule), so E is final. The joiner then starts in
+    epoch e + 1 with E as its genesis. E's certificate's root is the world's root at E (`Node::start_root`), which the
+    joiner's import must match.
+  - **Trusted from the inviter, not proven by the certificate** (as the world import at E is in M1): the next epoch's
+    members and `GovState`, and the chains' highest final stamps (head entries are checked against the heads E names).
+    Deriving them needs E's entries; that comes with the epoch-certificate fetch. Once S2 writes `Admit`s and `Leave`s
+    into the world, the joiner can instead check the members and roles against the world it imports at E, whose root
+    E's certificate covers (@engine-architect). The invite pins the epoch by `core::members_hash(line, epoch, members)`.
+  - **Limits.** One epoch only: an invite must pin the epoch that ended at E (a joiner of an older invite needs the
+    chain of certificates, the fetch's item). At n >= 3, a member that hasn't switched yet sees a joiner's first
+    messages and entries as a non-member's (a `NotMember` fault, dropped; the entries come back by fetch), as with the
+    stranded member above.
+  - **An admitted joiner that never starts halts the line** (@design-reviewer's Medium on b84295a2). Once the `Admit`
+    is final, epoch e + 1 counts the joiner, and at M1's 1 -> 2, q = 2 needs its vote: if it never runs e + 1 (a lost
+    welcome, an import that doesn't match `start_root`, a crash, a build mismatch found only after the `Admit`), the
+    other member never finalizes again, and can't leave either (its `Leave` needs the joiner's vote; `Remove` isn't
+    built). It is the crash at n = 2 below, reached by any failed join. So pe-app writes the `Admit` only once the
+    joiner has shown it can start (its hello received, consensus hash and build matched, live on the link), and shows
+    the stuck state ("waiting for B to join…") if e + 1 never certifies (@engine-architect). A timed undo comes with
+    `Remove`.
+  - **A `Leave` in the same E as an `Admit`** (Low 1): the joiner tells each member that left at E that it has
+    started from E (`Wire::EpochFinal`, every second for 30 s, as a remaining member does), and `leave_settled`
+    waits for every member of the new epoch, the joiner included. So a leaver never quits before the member it hands
+    the line to has started (tested: A alone admits B and leaves in one cut).
+  - `Node::join` sorts and dedupes the pinned members before checking (Low 2).
+  - The consensus hash is v7: the final log differs from v6's from the first `Admit`.
+  - Tests (node_tests.rs): 1 -> 2 (M1: A alone admits B, both finalize, B's root at E certified), the admin chain
+    through a leave, an `Admit` and a `Leave` in one cut, `NotAuthorized` and `NoChange`, a start refused for another epoch, a forged vote, a truncated
+    certificate and a key not admitted.
 - **A crash at n = 2 is not a leave.** A member that vanishes can't be removed at n = 2 (`Remove` needs its own
   vote), so the other stays unable to finalize; only a graceful quit, which lingers about a round trip for E's
   suffix, ends in an epoch of one. **An interrupted leave ends the same way** (@design-reviewer's L2): if the

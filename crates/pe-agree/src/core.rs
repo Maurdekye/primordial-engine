@@ -272,6 +272,22 @@ pub fn epoch_domain(line: LineId, epoch: u64) -> LineId {
     LineId(h.finish())
 }
 
+/// The hash an invite pins an epoch's members by (agreement.md 8; @engine-architect, pe-app's invite): the line, the
+/// epoch and the members, sorted and distinct.
+pub fn members_hash(line: LineId, epoch: u64, members: &[MemberKey]) -> Hash {
+    let mut sorted = members.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    let mut h = pe_seams::Hasher::new("pe.agree.members");
+    h.write(&line.0.0);
+    h.write_u64(epoch);
+    h.write_u64(sorted.len() as u64);
+    for m in &sorted {
+        h.write(&m.0);
+    }
+    h.finish()
+}
+
 /// The planted defects of the harness's mutation tests, named as the model's controls (docs/spec/agreement.md 6).
 /// The names always exist; a node can be given one only with the `mutants` feature, and none is ever in production
 /// state: without the feature no field holds one, and every check below is the constant `false`.
@@ -599,6 +615,11 @@ impl Core {
         &self.cfg.members
     }
 
+    /// The epoch's genesis block: the line's first cut in epoch 0, the reconfiguring cut E after.
+    pub fn genesis(&self) -> &Block {
+        &self.genesis
+    }
+
     pub fn high_qc(&self) -> &Qc {
         &self.high_qc
     }
@@ -636,6 +657,30 @@ impl Core {
     /// It should stay 0; if it fires, `Cut` should come to name its parent or block (a seam change).
     pub fn shared_cuts(&self) -> u64 {
         self.shared_cuts.get()
+    }
+
+    /// The certified chain from block `to` up to the highest certified block, oldest first, each block with a
+    /// certificate of it: the highest certificate for the top, and each child's `parent_qc` below it. `None` if the
+    /// highest certified block doesn't descend from `to` within [`crate::epoch::MAX_CERT_BLOCKS`] blocks this member
+    /// still holds. An epoch certificate (crate::epoch).
+    pub fn certified_chain(&self, to: BlockId) -> Option<Vec<(Block, Qc)>> {
+        let mut out = Vec::new();
+        let mut qc = self.high_qc.clone();
+        loop {
+            let id = qc.block;
+            let p = self.blocks.get(&id).map(|s| &s.proposal).or_else(|| self.history_bodies.get(&id))?;
+            let next = p.parent_qc.clone();
+            out.push((p.block.clone(), qc));
+            if id == to {
+                break;
+            }
+            if out.len() >= crate::epoch::MAX_CERT_BLOCKS {
+                return None;
+            }
+            qc = next;
+        }
+        out.reverse();
+        Some(out)
     }
 
     pub fn block(&self, id: &BlockId) -> Option<&Block> {
