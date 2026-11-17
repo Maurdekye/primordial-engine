@@ -665,12 +665,44 @@ pub struct Attester {
     done: BTreeSet<(AssetId, Version)>,
     /// This machine's attestations whose fate isn't known yet, with the stamp each got.
     posted: BTreeMap<(AssetId, Version), Frame>,
+    /// The versions, by asset and V, whose modules it loaded into the runner, and why the others it handled failed:
+    /// what [`Attester::not_running`] reports.
+    loaded: BTreeSet<(AssetId, Hash)>,
+    failed: BTreeMap<(AssetId, Hash), String>,
 }
 
 impl Attester {
     /// The attester of this machine's member `me`.
     pub fn new(me: MemberKey) -> Attester {
-        Attester { me, done: BTreeSet::new(), posted: BTreeMap::new() }
+        Attester {
+            me,
+            done: BTreeSet::new(),
+            posted: BTreeMap::new(),
+            loaded: BTreeSet::new(),
+            failed: BTreeMap::new(),
+        }
+    }
+
+    /// The active versions whose module this machine hasn't loaded into its runner, as (asset, the first frame the
+    /// version runs in: the row's `activate_at`, F + 1, why): the scripts this machine can't run (S6's
+    /// `scripts_not_running`, with no object; @coordinator-opus
+    /// m562651ab5aed). Why is the first line of the build's failure, never a local path, or that the module isn't
+    /// built here yet. A script whose module is loaded but won't bind isn't here: the runner knows that one (logged by
+    /// pe-replica's runner only as a count, `ReplicaImpl::script_counts`).
+    pub fn not_running(&self, active: &BTreeMap<AssetId, ModuleRow>) -> Vec<(AssetId, Frame, String)> {
+        let mut out = Vec::new();
+        for (&asset, row) in active {
+            let key = (asset, row.v());
+            if self.loaded.contains(&key) {
+                continue;
+            }
+            let why = match self.failed.get(&key) {
+                Some(f) => format!("its build here failed: {}", f.lines().next().unwrap_or_default()),
+                None => "its module isn't built on this machine yet".to_string(),
+            };
+            out.push((asset, row.activate_at, why));
+        }
+        out
     }
 
     /// Records the stamp the edit queue gave this machine's attestation of `asset`'s commit `version` (its receipt),
@@ -795,6 +827,13 @@ impl Attester {
                 }
             }
         }
+        for &(asset, v) in &pass.loaded {
+            self.loaded.insert((asset, v));
+            self.failed.remove(&(asset, v));
+        }
+        for (asset, v, why) in &pass.failed {
+            self.failed.insert((*asset, *v), why.clone());
+        }
         pass
     }
 }
@@ -915,6 +954,8 @@ pub fn spawn_attester(
     let stack = inbox.thread_stack();
     let run = move || {
         let mut attester = Attester::new(me);
+        // The scripts this machine can't run, as last published: each change is logged.
+        let mut not_running: Vec<(AssetId, Frame, String)> = Vec::new();
         let (mut seen, mut unsent, mut waiting) = (0, Vec::<Post>::new(), Vec::<(Ticket, Post)>::new());
         while !flag.load(Ordering::Relaxed) {
             let (published, snap) = shared.wait_newer(seen, WAIT);
@@ -930,6 +971,26 @@ pub fn spawn_attester(
                     short(&f.asset),
                     f.reason
                 );
+            }
+            let now_not = attester.not_running(snap.modules());
+            if now_not != not_running {
+                for (asset, since, why) in &now_not {
+                    // A newer version that fails for the same reason is logged too (@engine-architect's nit).
+                    if !not_running.iter().any(|(a, s, w)| a == asset && s == since && w == why) {
+                        eprintln!(
+                            "pe-app: script {} doesn't run on this machine (active since frame {}): {why}",
+                            short(asset),
+                            since.0
+                        );
+                    }
+                }
+                for (asset, _, _) in &not_running {
+                    if !now_not.iter().any(|(a, _, _)| a == asset) {
+                        eprintln!("pe-app: script {} runs on this machine now", short(asset));
+                    }
+                }
+                shared.scripts_not_running(now_not.clone());
+                not_running = now_not;
             }
             let agreed = shared.agreed_snapshot();
             unsent.extend(pass.attest.into_iter().map(Post::Attest));
