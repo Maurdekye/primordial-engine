@@ -299,7 +299,10 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     side alone leaves 0-2 edits void per run; at n = 4 (seeds 81-83), where three votes make a quorum without the
     owner, the voter side alone leaves 1-8 edits void when all four come back from a 10 s outage, and the cap alone
     voids nothing. Both together void nothing in either. The mutants `NoAbstention` and
-    `NoBacklogCap` turn each side off.
+    `NoBacklogCap` turn each side off. Since the outage mark keeps the cut lag low after the return, the voter side
+    alone voids at n = 4 on fewer seeds: 4-8 entries on seeds 86, 94 and 99 of 81-100, and none on the others [V,
+    main dd765d0a]; the control runs on those three. The sim is deterministic per seed since pe-agree's maps became BTreeMaps (@design-reviewer); sim figures measured before that carried run-to-run noise from HashMap order, so their ranges
+    hold but don't reproduce exactly by seed.
   - *Residual:* an edit can still be void as late, for example when a member at n >= 4 is cut off while the others
     finalize past its stamps. Edits get a re-send backstop in pe-api (rule 3 of the ruling, placed by @api-eng and
     @engine-architect): the voided edit and the same author's later edits refused because of it are re-sent in

@@ -1695,28 +1695,48 @@ fn no_entry_made_during_a_ten_second_outage_of_four_members_is_voided_as_late() 
     }
 }
 
+/// Late voids of entries stamped during a 10 s outage, summed over the members, at n = 4 with `m`, per seed.
 #[cfg(feature = "mutants")]
-#[test]
-fn each_side_of_the_outage_rule_alone_at_four_members() {
-    // At n = 4 three votes make a quorum, so an abstaining owner can't stop a cut that omits its backlog: the
-    // leader's cap must (measured: without it 1-8 edits per run void, seeds 81-83). Since an outage's backlog is no
-    // longer sampled as lateness (the outage mark), the cut lag after the return stays near the link's delay, and the
-    // race the control needs comes out differently: without the cap, 4 edits void in seeds 85 and 91 of 81-92 and
-    // none in the other ten [V]. The control runs on 83, 85 and 91.
-    use crate::core::Mutation;
-    for m in [Mutation::NoAbstention, Mutation::NoBacklogCap] {
-        let mut total = 0;
-        for seed in [83, 85, 91] {
+fn outage_control(m: crate::core::Mutation, seeds: impl IntoIterator<Item = u64>) -> Vec<(u64, usize)> {
+    seeds
+        .into_iter()
+        .map(|seed| {
             let (s, from, until) = outage_run_with(4, 10_000, 30_000, seed, |c| c.mutation = Some(m));
             s.assert_same_final_log();
-            let v: Vec<(usize, usize)> = (0..4).map(|i| outage_voids(&s, i, from, until)).collect();
-            eprintln!("n = 4 {m:?} seed {seed}: Late voids (hands, edits) {v:?}");
-            total += v.iter().map(|(h, e)| h + e).sum::<usize>();
-        }
-        match m {
-            Mutation::NoAbstention => assert_eq!(total, 0, "the cap alone should hold at n = 4"),
-            _ => assert!(total > 0, "the control didn't bite: without the cap nothing was voided"),
-        }
+            (seed, (0..4).map(|i| outage_voids(&s, i, from, until)).map(|(h, e)| h + e).sum())
+        })
+        .collect()
+}
+
+#[cfg(feature = "mutants")]
+#[test]
+fn at_four_members_the_cap_alone_holds_an_outages_backlog() {
+    // At n = 4 three votes make a quorum, so an abstaining owner can't stop a cut that omits its backlog: the leader's
+    // cap must, and with the cap and no abstention nothing stamped in the outage is voided.
+    let v = outage_control(crate::core::Mutation::NoAbstention, 81..=84);
+    eprintln!("n = 4 NoAbstention: Late voids per seed {v:?}");
+    assert!(v.iter().all(|(_, n)| *n == 0), "the cap alone should hold at n = 4: {v:?}");
+}
+
+#[cfg(feature = "mutants")]
+#[test]
+fn at_four_members_the_outage_rule_without_its_cap_voids_the_backlog() {
+    // The control: without the leader's cap, an omitted backlog can be voided. Which seeds bite depends on races
+    // after the return; the sim is deterministic per seed (BTreeMaps throughout, @design-reviewer; it
+    // used to bite on HashMap order). Measured [V, main dd765d0a + the BTreeMaps]: 4 voids on seed 86, 8 on 94, 8 on
+    // 99, none on the other 17 of 81-100. If a timing change stops these three biting, pick again with
+    // `outage_control_seed_sweep` rather than guessing.
+    let v = outage_control(crate::core::Mutation::NoBacklogCap, [86, 94, 99]);
+    eprintln!("n = 4 NoBacklogCap: Late voids per seed {v:?}");
+    assert!(v.iter().map(|(_, n)| n).sum::<usize>() > 0, "the control didn't bite: without the cap nothing was voided");
+}
+
+#[cfg(feature = "mutants")]
+#[test]
+#[ignore = "seed picker for the control above: cargo test -p pe-agree --release --all-features --lib -- --ignored outage_control_seed_sweep --nocapture"]
+fn outage_control_seed_sweep() {
+    for m in [crate::core::Mutation::NoAbstention, crate::core::Mutation::NoBacklogCap] {
+        eprintln!("n = 4 {m:?}: Late voids per seed {:?}", outage_control(m, 81..=100));
     }
 }
 

@@ -251,7 +251,7 @@ pub struct Node {
     verifier: Box<dyn Verifier>,
     core: Core,
     log: ChainLog,
-    by_ref: HashMap<EntryRef, ChainKey>,
+    by_ref: BTreeMap<EntryRef, ChainKey>,
     /// This member's chain: its key and head.
     my_head: Option<(ChainKey, u64, EntryRef)>,
     out: Vec<Outgoing>,
@@ -265,43 +265,43 @@ pub struct Node {
     final_block: BlockId,
     root_cache: std::cell::RefCell<Option<RootCache>>,
     /// Per author: checked entries over its budget, admitted as it refills.
-    deferred: HashMap<MemberKey, Deferred>,
+    deferred: BTreeMap<MemberKey, Deferred>,
     /// Per (sender, author): how many more entries this member will check (tokens in thousandths), and when.
-    verify_budget: HashMap<(PeerId, MemberKey), (u64, HostTime)>,
+    verify_budget: BTreeMap<(PeerId, MemberKey), (u64, HostTime)>,
     /// Entries dropped unchecked over a sender's verify budget.
     dropped_unchecked: u64,
     /// Per chain: the entries held, by seq (the first at a seq), to serve a range refetch.
-    by_seq: HashMap<ChainKey, BTreeMap<u64, EntryRef>>,
+    by_seq: BTreeMap<ChainKey, BTreeMap<u64, EntryRef>>,
     /// Per chain: the highest seq this member has seen checked (held, waiting or refused). Only the author can raise
     /// it, by signing.
-    seen_high: HashMap<ChainKey, u64>,
+    seen_high: BTreeMap<ChainKey, u64>,
     /// Per chain: the highest seq a verified vote's heads name, and the voter that named it. A claim, not evidence:
     /// it is forgotten once its asks run out unanswered (@design-reviewer's Low 1), and each author has at most
     /// [`MAX_VOTE_CHAINS`] chains claimed this way.
-    vote_high: HashMap<ChainKey, (u64, MemberKey)>,
+    vote_high: BTreeMap<ChainKey, (u64, MemberKey)>,
     /// Per (chain, voter): a voter whose claim on the chain went unanswered, with the seq it claimed. Its claims on
     /// that chain are ignored until the chain's checked seq reaches that (an honest voter's claim is answered by the
     /// voter itself, so only an unreachable or lying voter is ignored, and its entries still come by relay and cuts).
-    vote_ignored: HashMap<(ChainKey, MemberKey), u64>,
+    vote_ignored: BTreeMap<(ChainKey, MemberKey), u64>,
     /// Per chain: a gap seen and not yet asked for (its first missing seq, and since when). A gap is asked for only
     /// once it has lasted [`GAP_WAIT_NS`], so an entry merely reordered in flight isn't fetched twice.
-    gap_since: HashMap<ChainKey, (u64, i64)>,
+    gap_since: BTreeMap<ChainKey, (u64, i64)>,
     /// When this member's own chain reached each seq, recently: pacing counts only entries older than the grace.
     own_times: std::collections::VecDeque<(i64, u64)>,
     /// Per chain: the range refetch asked (from seq, when, how many times).
-    range_asked: HashMap<ChainKey, (u64, i64, u32)>,
+    range_asked: BTreeMap<ChainKey, (u64, i64, u32)>,
     /// Per requester: the entries this member will still serve it by range refetch, in thousandths, and when
     /// (@design-reviewer's Medium 2 and later Low 1): one author's rate and burst across all authors, so a requester
     /// can't make this member upload more than about one author's stream.
-    serve_budget: HashMap<PeerId, (u64, HostTime)>,
+    serve_budget: BTreeMap<PeerId, (u64, HostTime)>,
     /// Per other member: the highest seq of this member's own chain its verified votes name as held, for pacing.
-    acked: HashMap<MemberKey, u64>,
+    acked: BTreeMap<MemberKey, u64>,
     /// Entries inserted into the log so far (never decreases, whatever is pruned): the root cache's version.
     inserted: u64,
     final_by_frame: BTreeMap<Frame, Vec<SignedEntry>>,
     final_bytes: usize,
     predicted: BTreeMap<Frame, Vec<SignedEntry>>,
-    pred_head: HashMap<ChainKey, (u64, EntryRef)>,
+    pred_head: BTreeMap<ChainKey, (u64, EntryRef)>,
     view_by_frame: BTreeMap<Frame, Vec<SignedEntry>>,
     changed_from: Option<Frame>,
     kept_from: Frame,
@@ -313,41 +313,41 @@ pub struct Node {
     /// solicited.
     hinted: BTreeMap<EntryRef, (MemberKey, MemberKey, i64, i64)>,
     /// Per chain, the highest stamp through its final head (void entries included), for back-stamp verdicts.
-    final_high: HashMap<ChainKey, Frame>,
-    arrived: HashMap<EntryRef, HostTime>,
+    final_high: BTreeMap<ChainKey, Frame>,
+    arrived: BTreeMap<EntryRef, HostTime>,
     holds: BTreeMap<Frame, u32>,
     /// Per author: the rate budget's tokens (thousandths of an entry) and when they were last topped up, and how many
     /// of its entries are held beyond the final cut.
-    budget: HashMap<MemberKey, (u64, HostTime)>,
-    pending_by_author: HashMap<MemberKey, usize>,
+    budget: BTreeMap<MemberKey, (u64, HostTime)>,
+    pending_by_author: BTreeMap<MemberKey, usize>,
     /// How late other members' entries arrived, in frames: the last LATENESS_SAMPLES.
     lateness: std::collections::VecDeque<u64>,
     /// The same samples per chain, signed (negative when an entry arrived before its stamp), with each entry's seq:
     /// the last CHAIN_LATENESS_SAMPLES of each other member's chain, which this member's votes and timeouts report
     /// (stamp-ahead, agreement.md 3).
-    chain_lateness: HashMap<ChainKey, std::collections::VecDeque<(i64, u64)>>,
+    chain_lateness: BTreeMap<ChainKey, std::collections::VecDeque<(i64, u64)>>,
     /// Whether a sample came since the reports were last built.
     lateness_dirty: bool,
     /// Per author: the samples taken and the arrivals left out (fetched or hinted, or a claimed backlog).
-    lateness_counts: HashMap<MemberKey, LatenessCounts>,
+    lateness_counts: BTreeMap<MemberKey, LatenessCounts>,
     /// When this member last received anything from each peer.
-    heard: HashMap<MemberKey, HostTime>,
+    heard: BTreeMap<MemberKey, HostTime>,
     /// Per author, the outage mark: this member's present frame at the first arrival after silence from that peer
     /// longer than OUTAGE_SILENCE_NS. Its entries stamped below the mark waited out the outage, so they are an outage's
     /// backlog and go unsampled, whatever order they come in (@design-reviewer: a transport that queues
     /// through a dark path flushes the backlog, and the author's votes and timeouts from the outage with it, before any
     /// fresh claim; it was sampled with its whole outage age). Stamps rise, so once the backlog has drained no entry
     /// falls below the mark.
-    outage_mark: HashMap<MemberKey, Frame>,
+    outage_mark: BTreeMap<MemberKey, Frame>,
     /// The other members' latest reports on this member's own chains: per reporter, the (epoch, view) of the vote or
     /// timeout that carried it (views restart in each epoch), the chain, frames and seq.
-    reported: HashMap<MemberKey, ((u64, u64), ChainKey, i64, u64)>,
+    reported: BTreeMap<MemberKey, ((u64, u64), ChainKey, i64, u64)>,
     /// The outage rule's voter side (agreement.md 3): the views this member abstained in, per own entry.
     abstained: AbstainBook,
     /// The outage rule's leader side: per chain whose claimed head is ahead of what this member holds, when it began
     /// capping its cuts for it and how long it waits. Kept once the wait runs out, so a chain is waited for once,
     /// until it reaches its claim.
-    cap_wait: HashMap<ChainKey, (i64, i64)>,
+    cap_wait: BTreeMap<ChainKey, (i64, i64)>,
     /// The epoch before this one, while it may still be needed (agreement.md 8).
     old_epoch: Option<OldEpoch>,
     /// Members that left in an earlier epoch: their stray messages and entries are dropped without a fault.
@@ -527,7 +527,7 @@ impl Node {
             verifier,
             core,
             log: ChainLog::new(cfg.line),
-            by_ref: HashMap::new(),
+            by_ref: BTreeMap::new(),
             my_head: None,
             out: Vec::new(),
             events: Vec::new(),
@@ -537,22 +537,22 @@ impl Node {
             final_block,
             root_cache: std::cell::RefCell::new(None),
             inserted: 0,
-            deferred: HashMap::new(),
-            verify_budget: HashMap::new(),
+            deferred: BTreeMap::new(),
+            verify_budget: BTreeMap::new(),
             dropped_unchecked: 0,
-            by_seq: HashMap::new(),
-            seen_high: HashMap::new(),
-            vote_high: HashMap::new(),
-            vote_ignored: HashMap::new(),
-            gap_since: HashMap::new(),
+            by_seq: BTreeMap::new(),
+            seen_high: BTreeMap::new(),
+            vote_high: BTreeMap::new(),
+            vote_ignored: BTreeMap::new(),
+            gap_since: BTreeMap::new(),
             own_times: std::collections::VecDeque::new(),
-            range_asked: HashMap::new(),
-            serve_budget: HashMap::new(),
-            acked: HashMap::new(),
+            range_asked: BTreeMap::new(),
+            serve_budget: BTreeMap::new(),
+            acked: BTreeMap::new(),
             final_by_frame: BTreeMap::new(),
             final_bytes: 0,
             predicted: BTreeMap::new(),
-            pred_head: HashMap::new(),
+            pred_head: BTreeMap::new(),
             view_by_frame: BTreeMap::new(),
             changed_from: None,
             kept_from: start,
@@ -560,20 +560,20 @@ impl Node {
             keep_floor: start,
             wanted: BTreeMap::new(),
             hinted: BTreeMap::new(),
-            final_high: HashMap::new(),
-            arrived: HashMap::new(),
+            final_high: BTreeMap::new(),
+            arrived: BTreeMap::new(),
             holds: BTreeMap::new(),
-            budget: HashMap::new(),
-            pending_by_author: HashMap::new(),
+            budget: BTreeMap::new(),
+            pending_by_author: BTreeMap::new(),
             lateness: std::collections::VecDeque::new(),
-            chain_lateness: HashMap::new(),
+            chain_lateness: BTreeMap::new(),
             lateness_dirty: false,
-            lateness_counts: HashMap::new(),
-            reported: HashMap::new(),
-            heard: HashMap::new(),
-            outage_mark: HashMap::new(),
+            lateness_counts: BTreeMap::new(),
+            reported: BTreeMap::new(),
+            heard: BTreeMap::new(),
+            outage_mark: BTreeMap::new(),
             abstained: AbstainBook::default(),
-            cap_wait: HashMap::new(),
+            cap_wait: BTreeMap::new(),
             old_epoch: None,
             former: Vec::new(),
             left: false,
@@ -919,7 +919,7 @@ impl Node {
 
     /// Per author: how its entries counted toward the lateness samples.
     pub fn lateness_counts(&self) -> HashMap<MemberKey, LatenessCounts> {
-        self.lateness_counts.clone()
+        self.lateness_counts.iter().map(|(k, v)| (*k, *v)).collect()
     }
 
     /// A verified vote's heads name `seq` on `key`: remember the claim, within the bounds (see `vote_high`).
