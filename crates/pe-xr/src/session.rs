@@ -57,6 +57,14 @@ pub trait FrameSink {
     fn depth(&self) -> Option<DepthInfo> {
         None
     }
+    /// The frame has ended: its image was released and `xrEndFrame` returned, so nothing done here delays it. Work
+    /// that must not cost a headset frame goes here, such as an agent's view capture (render.md 11). `drawn`: the
+    /// frame went out with a projection layer. It runs before the next `xrWaitFrame`, which waits for the runtime
+    /// anyway, so it delays the next frame only by however much it overruns that wait (spec 7.1, step 9). Not called
+    /// for a frame that failed.
+    fn after_frame(&mut self, drawn: bool) {
+        let _ = drawn;
+    }
     /// The session is about to be destroyed, its swapchain with it: drop every wrapper of the swapchain's images and
     /// wait until the GPU is idle on them before returning (review 1, L4; spec 4.3). Called once, before
     /// `xrDestroySwapchain`.
@@ -460,13 +468,17 @@ impl<B: Backend> XrSession<B> {
             self.backend.release_image()?;
             progress.acquired = false;
         }
-        if matches!(layers, Layers::None) {
-            self.counters.frames_not_rendered += 1;
-        } else {
+        let drawn = !matches!(layers, Layers::None);
+        if drawn {
             self.counters.frames_rendered += 1;
+        } else {
+            self.counters.frames_not_rendered += 1;
         }
         // Step 8. If xrEndFrame itself fails, the frame is over all the same: it is never ended twice.
         progress.began = false;
-        self.backend.end_frame(timing.predicted_display_time, layers)
+        self.backend.end_frame(timing.predicted_display_time, layers)?;
+        // Step 9: the sink's work after the frame.
+        sink.after_frame(drawn);
+        Ok(())
     }
 }

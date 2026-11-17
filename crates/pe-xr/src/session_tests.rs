@@ -613,3 +613,35 @@ fn a_tracked_hands_joints_reach_the_renderer_and_a_controller_has_none() {
     assert!(c[1].controller > 0 && c[1].joints == 0, "{c:?}");
     no_violations(&s);
 }
+
+#[test]
+fn after_frame_follows_each_ended_frame_and_never_a_failed_one() {
+    #[derive(Default)]
+    struct AfterSink {
+        rendered: u32,
+        // (frames rendered so far, drawn) at each call.
+        after: Vec<(u32, bool)>,
+    }
+    impl FrameSink for AfterSink {
+        fn render(&mut self, _: &FrameRequest<'_>) -> bool {
+            self.rendered += 1;
+            true
+        }
+        fn after_frame(&mut self, drawn: bool) {
+            self.after.push((self.rendered, drawn));
+        }
+        fn release_swapchain(&mut self) {}
+    }
+    let other = || XrError::Other("XR_ERROR_RUNTIME_FAILURE".into());
+    let mut rt = FakeRuntime::new().started().failing(Op::ReleaseImage, 3, other()).failing(Op::EndFrame, 5, other());
+    rt.not_rendered = vec![2];
+    let (mut s, _) = session(rt);
+    let mut k = AfterSink::default();
+    for _ in 0..7 {
+        assert_eq!(s.step(&mut k), Step::Frame);
+    }
+    // Frames 3 and 5 failed and get no call; frame 2 ended with no layer.
+    assert_eq!(k.after, vec![(1, true), (1, false), (3, true), (5, true), (6, true)], "{:?}", k.after);
+    assert_eq!(s.counters.frame_errors, 2);
+    no_violations(&s);
+}

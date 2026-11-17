@@ -475,8 +475,11 @@ On the XR thread, which is also the VR render thread:
    hands late-latched (section 5.6).
 8. Submit the frame's work, its last command returning the image to its state (section 4.2); then release the image,
    and `xrEndFrame` with one projection layer (and its depth, when offered).
+9. The sink's work after the frame (`FrameSink::after_frame`), such as an agent's view capture (render.md 11). The
+   frame has gone out by then, so this work delays only the next `xrWaitFrame`, which waits for the runtime anyway: it
+   costs a headset frame only if it overruns that wait. A frame that failed gets no call.
 
-When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits no layers. The loop never skips
+When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits no layers (step 9 still runs). The loop never skips
 `xrWaitFrame`, `xrBeginFrame` and `xrEndFrame`.
 
 ### 7.2 Rates
