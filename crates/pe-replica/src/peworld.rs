@@ -14,8 +14,9 @@
 //!   which gives no effects, so such a body does not follow them yet (@design-reviewer's Medium on e6d3ee9c). Grabs
 //!   hold by claims, not parenting, and the M1 ball pit puts no body under a hand. An input's pushes become
 //!   [`PushFx`], one for one.
-//! - **Entry classes:** edits and inputs as above. Governance and Protocol entries are `Applied` with no effects, as
-//!   pe-world applies neither yet.
+//! - **Entry classes:** edits and inputs as above. A `Leave` (a Protocol entry, `pe_seams::LEAVE`) goes through
+//!   `World::leave` at its stamp ([`PeWorld`]'s `leave`). Other Governance and Protocol entries are `Applied` with no
+//!   effects, as pe-world applies none yet.
 //! - **The order within a frame:** [`WorldModel::phase`] is pe-world's `input_phase`, so a frame's hand inputs apply
 //!   before its other entries, and a grab's reach is measured after the frame's hand movement (world-model.md 8.1).
 //! - **`end_frame(f)`:** `World::end_frame(f)`, which expires claims and push windows and writes each pending hand
@@ -51,7 +52,7 @@ use std::sync::Arc;
 
 use pe_seams::{
     Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LightKind, ObjectClass, ObjectId, Outcome, Pos,
-    SignedEntry, Stage, Tree, Version, ViewFlags, ViewObject,
+    Reason, SignedEntry, Stage, Tree, Version, ViewFlags, ViewObject,
 };
 use pe_sim::transform::rotate;
 use pe_sim::{Component, ComponentId, SimStore, Transform, WorldTransform};
@@ -86,6 +87,33 @@ impl PeWorld {
     pub fn world_mut(&mut self) -> &mut World {
         &mut self.world
     }
+
+    /// A member's graceful leave at its entry's stamp (agreement.md 8; world-model.md 2.4): pe-world removes the
+    /// leaver's hands, moving their children up with their world poses kept, ends its claims and drops its permission
+    /// bits. The physics follows as it would an edit that removed the hands and reparented their children: the
+    /// children's bodies through the effects, and the hands' bodies and grab joints at the frame's hand sync, which
+    /// builds both from the world's hands and claims. A `Leave` that S3 voids (`LastMember`, or one stepped before
+    /// its void is known) is dropped like any voided entry, and the re-simulation brings the hands back.
+    fn leave(&mut self, entry: &SignedEntry) -> (Outcome, Effects) {
+        let before = self.world.clone();
+        match self.world.leave(entry.entry.author, entry.id()) {
+            Ok(report) => {
+                let footprint = Footprint {
+                    removed: report.hands,
+                    reparented: report.moved.into_iter().map(|id| (id, true)).collect(),
+                    ..Footprint::default()
+                };
+                (applied(), effects(&before, &self.world, &footprint))
+            }
+            // A key with no permission bits: S3 admits no such author, and pe-world changed nothing.
+            Err(_) => (Outcome::Refused { op: None, reason: Reason::NoPermission }, Effects::default()),
+        }
+    }
+}
+
+/// An entry applied with nothing to report: a protocol or governance entry's outcome.
+fn applied() -> Outcome {
+    Outcome::Applied { created: Vec::new(), overwrote: Vec::new(), notes: Vec::new(), inverse: None }
 }
 
 impl WorldModel for PeWorld {
@@ -122,11 +150,8 @@ impl WorldModel for PeWorld {
                 };
                 (outcome, effects)
             }
-            Class::Governance | Class::Protocol => {
-                let applied =
-                    Outcome::Applied { created: Vec::new(), overwrote: Vec::new(), notes: Vec::new(), inverse: None };
-                (applied, Effects::default())
-            }
+            Class::Protocol if pe_seams::is_leave(entry) => self.leave(entry),
+            Class::Governance | Class::Protocol => (applied(), Effects::default()),
         }
     }
 
