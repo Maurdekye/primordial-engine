@@ -6,13 +6,18 @@
 #     why <text>       the reason, for whoever reads a failure (more lines add up)
 #     when <glob>...   git pathspecs with glob magic: ** spans folders, and **/x matches x at the root too
 #                      (more lines add up)
+#     all <glob>...    when the diff touches one of these, {crates} is every workspace member (more lines add up)
 #     needs <text>     what the command needs installed, shown before it runs
-#     run <command>    one shell command line, run with bash -c
+#     skip <package>...  never put into {crates} (more lines add up)
+#     run <command>    one shell command line, run with bash -c. {crates} in it becomes -p <package> for each
+#                      workspace member whose folder holds a path that triggers the check; with none left, the
+#                      check has nothing to run
 #     expect <regex>   an extended regex that a line of the command's output must match for the check to pass,
 #                      besides exit 0: a test filter that matches no test (renamed, ignored) then fails
 #
 # Lines starting with # are comments. A check's command runs the landing's own code: a landing that changes what
-# a check runs (its test, or the files the test reads) changes the check, and is read as such.
+# a check runs (its test, or the files the test reads) changes the check, and is read as such. A landing whose
+# own copy of this table is malformed fails, since that copy would stop every landing after it.
 
 check lamp-bytes
   why   a script module's fuel counts follow its bytes, so a change that alters the bytes of a script build (a
@@ -23,3 +28,39 @@ check lamp-bytes
   needs the wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown)
   run   cargo test -p pe-logic --locked --test lamp -- --exact the_module_is_the_same_bytes_from_any_folder_and_from_a_warm_cache
   expect ^test result: ok\. 1 passed;
+
+check fmt
+  why   rustfmt's verdict over the workspace: it builds nothing and takes seconds. box3d-fork opts out in its own
+  why   rustfmt.toml (main e073c160). Refound plan 4.6; coordinator
+  when  **/*.rs **/rustfmt.toml **/.rustfmt.toml rust-toolchain rust-toolchain.toml
+  run   cargo fmt --all --check
+
+check clippy
+  why   clippy with warnings denied, on the crates the landing touches, never box3d-fork (C10; its package is
+  why   box3d-rust); on every crate when the toolchain, Cargo.lock, the root manifest or a cargo or clippy
+  why   configuration changes. --no-deps keeps it to those crates: without it, clippy also lints the workspace
+  why   members they depend on. Every crate passed on main ff9be64b (the census, provenance-eng 2026-11-17), so
+  why   no crate is exempt, and none is ever added (refound plan 4.6; coordinator)
+  when  crates/** Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml **/.cargo/config **/.cargo/config.toml
+  when  **/clippy.toml **/.clippy.toml
+  all   Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml **/.cargo/config **/.cargo/config.toml
+  all   clippy.toml .clippy.toml
+  skip  box3d-rust
+  run   cargo clippy {crates} --all-targets --locked --no-deps -- -D warnings
+
+check test
+  why   the touched crates' own tests (unit, integration and doc tests, default features), never box3d-fork; every
+  why   crate's when the toolchain or a cargo configuration changes. A touched crate's dependents are covered by
+  why   the job's workspace check and by tier 2. Refound plan 4.6; coordinator
+  when  crates/** rust-toolchain rust-toolchain.toml **/.cargo/config **/.cargo/config.toml
+  all   rust-toolchain rust-toolchain.toml **/.cargo/config **/.cargo/config.toml
+  skip  box3d-rust
+  run   cargo test {crates} --locked
+  expect ^test result: ok\.
+
+check model-fast
+  why   the agreement model's fast profile (models/cuts/README.md, about 2 minutes); its bounded n = 4 checks are
+  why   for milestones. Refound plan 4.6; coordinator
+  when  models/cuts/**
+  run   cargo run --release --locked --manifest-path models/cuts/Cargo.toml -- n3-chain n3-sig n3-crash n3-chain-live n3-crash-live n4-byz-live n4-crash-live n3-root bound-n3-byz ctl-d1 ctl-unchecked ctl-quorum ctl-nolock ctl-nosig ctl-noroot ctl-notimeout
+  expect ^all 16 check\(s\) met their expectation
