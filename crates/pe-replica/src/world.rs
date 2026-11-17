@@ -1,9 +1,8 @@
 //! What pe-replica needs from pe-world: the calls of docs/spec/replica.md 8.1, proposed to @world-model under
 //! pe-seams's ruling 9 (both crates sit behind S2, so they agree on these between them).
 //!
-//! Until pe-world is written, the replica runs against this trait, and its tests against [`crate::mock::MockWorld`].
-//! When pe-world lands, `pe_world::World` implements it (or the trait gives way to pe-world's own API, if
-//! @world-model reshapes it), and the row types below become pe-world's.
+//! [`crate::peworld::PeWorld`] implements it over pe-world's `World`, and [`crate::mock::MockWorld`] is a small
+//! world model for tests and the harness.
 
 use std::any::Any;
 use std::sync::Arc;

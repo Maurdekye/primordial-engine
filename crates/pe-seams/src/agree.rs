@@ -79,9 +79,10 @@ pub fn quorum(n: usize) -> usize {
 }
 
 /// The payload of a member's graceful leave (agreement.md 8): a [`Class::Protocol`](crate::Class::Protocol) entry
-/// signed by the leaver, and the last entry of its chain. Once a final cut includes it, S3 starts the next epoch
-/// without the leaver, and S2's replica applies the world side at the entry's stamp (pe-world's `World::leave`). S3
-/// voids it with [`VoidReason::LastMember`] when it would empty the epoch, and any later entry of the leaver with
+/// signed by the leaver, and the last entry of its chain. S2's replica applies its world side live at the entry's
+/// stamp, like any entry (pe-world's `World::leave`): a void drops it, and the re-simulation brings the leaver's
+/// hands back. Once a final cut includes it, S3 starts the next epoch without the leaver. S3 voids it with
+/// [`VoidReason::LastMember`] when it would empty the epoch, and any later entry of the leaver with
 /// [`VoidReason::AfterLeave`]. It lives here so that S2 reads it without depending on S3's implementation; pe-agree
 /// re-exports it.
 pub const LEAVE: &[u8] = b"pe.agree.leave.v1";
