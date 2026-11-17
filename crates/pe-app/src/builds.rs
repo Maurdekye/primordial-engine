@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use pe_logic::build::{BuildError, Toolchain};
 use pe_replica::logic::{Described, ModuleInbox};
-use pe_seams::{Hash, MemberKey, Version};
+use pe_seams::{Frame, Hash, MemberKey, Version};
 use pe_world::edit::{Actor, Op, Transaction};
 use pe_world::script::{AssetId, tag_desc};
 use pe_world::{BlobRef, PendingCommit};
@@ -129,13 +129,22 @@ pub fn attestation(asset: AssetId, v: Hash, module: Hash) -> Transaction {
     }
 }
 
+/// An attestation to submit, with the commit it attests: its edit queue receipt goes back to [`Attester::posted`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attest {
+    pub asset: AssetId,
+    /// The commit: its entry and op.
+    pub version: Version,
+    pub tx: Transaction,
+}
+
 /// What one [`Attester::pass`] did.
 #[derive(Debug, Default)]
 pub struct Pass {
     /// The versions whose modules it loaded into the runner, as (asset, V).
     pub loaded: Vec<(AssetId, Hash)>,
-    /// The attestations to submit, one transaction each.
-    pub attest: Vec<Transaction>,
+    /// The attestations to submit.
+    pub attest: Vec<Attest>,
     /// The commits this machine couldn't build, or whose build differs from the author's, as (asset, V, why).
     pub failed: Vec<(AssetId, Hash, String)>,
 }
@@ -146,12 +155,47 @@ pub struct Attester {
     /// The commits handled, by asset and commit (its entry and op): a version committed again after a void is a new
     /// commit, built from the cache and attested again.
     done: BTreeSet<(AssetId, Version)>,
+    /// This machine's attestations whose fate isn't known yet, with the stamp each got.
+    posted: BTreeMap<(AssetId, Version), Frame>,
 }
 
 impl Attester {
     /// The attester of this machine's member `me`.
     pub fn new(me: MemberKey) -> Attester {
-        Attester { me, done: BTreeSet::new() }
+        Attester { me, done: BTreeSet::new(), posted: BTreeMap::new() }
+    }
+
+    /// Records the stamp the edit queue gave this machine's attestation of `asset`'s commit `version` (its receipt),
+    /// so that [`Attester::reposts`] can tell when its fate is final.
+    pub fn posted(&mut self, asset: AssetId, version: Version, stamp: Frame) {
+        self.posted.insert((asset, version), stamp);
+    }
+
+    /// The attestations to post again (api.md 7.1; @design-reviewer m19210137e1cb). The rule is state-based. Once
+    /// `final_frame` has passed an attestation's stamp (S5: an entry stamped below it is final), `agreed`, the final
+    /// snapshot's pending commits, has decided it. If its commit is still pending there, not voided, and this member
+    /// still isn't counted, the attestation was voided or dropped, whatever the cause. It's posted again while the
+    /// commit's deadline D is ahead of `now`. At n = 2 (q = 2), one late-voided attestation would otherwise leave a
+    /// good commit `Unattested` at D. An attestation is forgotten once decided: counted, activated, voided, replaced or
+    /// past D, or posted again, until the new post's receipt records it.
+    pub fn reposts(
+        &mut self,
+        now: Frame,
+        final_frame: Frame,
+        agreed: &BTreeMap<AssetId, PendingCommit>,
+    ) -> Vec<Attest> {
+        let (me, mut again) = (self.me, Vec::new());
+        self.posted.retain(|&(asset, version), stamp| {
+            if stamp.0 >= final_frame.0 {
+                return true;
+            }
+            let p = agreed.get(&asset).filter(|p| p.version == version && p.void.is_none());
+            if let Some(p) = p.filter(|p| !p.attested.iter().any(|(k, _)| *k == me) && now.0 < p.deadline.0) {
+                again.push(Attest { asset, version, tx: attestation(asset, p.v(), p.author_module) });
+            }
+            false
+        });
+        again
     }
 
     /// One pass over `pending`, a world's pending commits (`World::pending`), in asset order (module doc). `blob` gives
@@ -186,7 +230,7 @@ impl Attester {
             pass.loaded.push((asset, v));
             let counted = p.attested.iter().any(|(k, _)| *k == self.me);
             if p.voters.contains(&self.me) && !counted {
-                pass.attest.push(attestation(asset, v, p.author_module));
+                pass.attest.push(Attest { asset, version: p.version, tx: attestation(asset, v, p.author_module) });
             }
         }
         pass
