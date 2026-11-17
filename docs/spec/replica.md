@@ -1,6 +1,7 @@
 # Replica: pe-replica, pe-physics and the Box3D fork (WS-state)
 
-Status: v1.0, 2026-11-17, @vdw-physics. This version describes the replica as built on main c9e2829a. v0.2
+Status: v1.0, 2026-11-17, @vdw-physics. This version describes the replica as built on main c9e2829a; 8's and 8.2's
+notes on the hello were brought up to date when the hello's runner comparison landed (@engine-architect). v0.2
 (2026-11-10, branch ws/state cb8826d9) was the design before pe-replica existed, and it never landed. The section
 numbers are v0.2's, because code on main cites them; what changed is the text under them. A design that is not built
 is marked **Not built**.
@@ -689,9 +690,11 @@ ruling 3). The calls, and what the replica does behind each:
   (api.md 9.1; @coordinator-opus m22babe2c6375, m926ccfeb16e9).
 - **`vote_holds()`** (S2 v1.7) is the frames from which this machine must not vote yet (8.2).
 - **`runner_identity()` and `module(&hash)`** (S2 v1.7) are the script runner's identity and the metered bytes of a
-  module it holds (8.2), meant for the hello and the fault bundle (divergence.md 6). **Not built:** nothing calls them
-  yet [V: no caller outside pe-replica on main]. The hello's comparison is
-  @item:primordial-engine/pe-app-s-hello-compares-the-script-runner-s-iden; the fault bundle's is O18 (11).
+  module it holds (8.2), meant for the hello and the fault bundle (divergence.md 6). The hello compares the runner's
+  identity without calling them: pe-app's build id carries a hash of the identity of the settings its runner starts
+  with, and a test checks it against what that runner reports (app.md 6; pe-app net.rs `build_id`,
+  @item:primordial-engine/pe-app-s-hello-compares-the-script-runner-s-iden). **Not built:** the fault bundle's
+  record, O18 (11); nothing calls `runner_identity()` or `module(&hash)` yet [V: no caller outside pe-replica].
 - **The group selector:** `GroupSel::Domain` or `Objects`. Every import acts as `Domain` until history-free physics
   exists (6.3).
 - **Unchanged since the proposal:**
@@ -752,9 +755,8 @@ are logic.md 6.2 and 6.2a. As built [V `crates/pe-replica/src/logic.rs`, `logic/
   or without it. A run is a pure function of the module bytes, the state it is given and the fuel: no clock, no host
   randomness, nothing kept from one frame to the next. Every runner the repo builds passes `logic::conformance`.
 - **Identity:** a runner reports the canonical bytes of S2's `RunnerIdentity`: the runtime and its version, every
-  setting that can change a result, and the runner's own build. **Not built:** the hello's comparison of runners
-  (@engine-architect's @item:primordial-engine/pe-app-s-hello-compares-the-script-runner-s-iden) and a fault bundle's
-  record of them (O18).
+  setting that can change a result, and the runner's own build. pe-app's hello compares runners: its build id
+  carries a hash of this identity (8, app.md 6). **Not built:** a fault bundle's record of them (O18).
 - **Which scripts run:** every row of the modules table whose activation frame is at or before the frame, in asset
   order. A script runs only where the runner holds the row's module and it binds under the row's ids: the ids its
   version gives each of the manifest's components, the tag among them, and the engine components of logic.md 3.2. A
