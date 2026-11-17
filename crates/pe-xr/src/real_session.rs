@@ -146,6 +146,8 @@ struct Live<G: xr::Graphics> {
     hand_tracking_ext: bool,
     /// While no trackers exist: when to ask the runtime again (every [`TRACKER_RETRY_NS`]).
     next_tracker_try: Option<HostTime>,
+    /// The last tracker-creation failure logged, so a failure that repeats every retry is logged once.
+    tracker_error_logged: Option<String>,
 }
 
 /// How often pe-xr asks again whether the runtime tracks hands, while it has no hand trackers: a runtime may turn
@@ -347,6 +349,7 @@ impl<G: xr::Graphics> RealBackend<G> {
                 system,
                 hand_tracking_ext: xr.enabled.ext_hand_tracking,
                 next_tracker_try: None,
+                tracker_error_logged: None,
             }),
             joints: [None, None],
             grasp,
@@ -430,9 +433,14 @@ impl<G: xr::Graphics> RealBackend<G> {
                 }
             }
             Err(e) => {
-                if crate::diag::enabled() {
-                    crate::diag::emit(&format!("hand tracking: supported now, but xrCreateHandTrackerEXT failed: {e}"));
+                let e = e.to_string();
+                if crate::diag::enabled() && live.tracker_error_logged.as_ref() != Some(&e) {
+                    crate::diag::emit(&format!(
+                        "hand tracking: supported now, but xrCreateHandTrackerEXT failed: {e} (logged again only if \
+                         it changes)"
+                    ));
                 }
+                live.tracker_error_logged = Some(e);
             }
         }
     }

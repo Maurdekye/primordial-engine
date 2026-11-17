@@ -42,8 +42,9 @@ pub struct Diag {
 /// Where a hand's pose came from in one frame (spec 5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoseSource {
-    /// XR_EXT_hand_tracking's joints.
-    Joints,
+    /// Hand tracking (XR_EXT_hand_tracking): the hand's joints are drawn. The pose itself comes from the joints, or,
+    /// with XR_EXT_hand_interaction, from the grip action space.
+    Tracked,
     /// A controller's grip pose.
     Controller,
     /// No valid pose.
@@ -54,7 +55,7 @@ impl PoseSource {
     pub fn of(r: &Reading) -> PoseSource {
         match (r.pose, r.source) {
             (None, _) => PoseSource::None,
-            (Some(_), HandSource::Tracked) => PoseSource::Joints,
+            (Some(_), HandSource::Tracked) => PoseSource::Tracked,
             (Some(_), _) => PoseSource::Controller,
         }
     }
@@ -174,10 +175,10 @@ mod tests {
         let first = d.hand_source(Hand::Left, PoseSource::Controller, 1).expect("the first source is logged");
         assert!(first.contains("Left hand pose from Controller (was None)"), "{first}");
         assert!(d.hand_source(Hand::Left, PoseSource::Controller, 2).is_none(), "unchanged");
-        let put_down = d.hand_source(Hand::Left, PoseSource::Joints, 3).expect("controllers put down");
-        assert!(put_down.contains("from Joints (was Some(Controller)) at 3 ns"), "{put_down}");
-        assert!(d.hand_source(Hand::Right, PoseSource::Joints, 4).is_some(), "each hand on its own");
-        assert!(Diag::new(false).hand_source(Hand::Left, PoseSource::Joints, 5).is_none(), "off logs nothing");
+        let put_down = d.hand_source(Hand::Left, PoseSource::Tracked, 3).expect("controllers put down");
+        assert!(put_down.contains("from Tracked (was Some(Controller)) at 3 ns"), "{put_down}");
+        assert!(d.hand_source(Hand::Right, PoseSource::Tracked, 4).is_some(), "each hand on its own");
+        assert!(Diag::new(false).hand_source(Hand::Left, PoseSource::Tracked, 5).is_none(), "off logs nothing");
     }
 
     #[test]

@@ -127,7 +127,8 @@ pub struct Counters {
 /// One hand's FOCUSED frames by where its pose came from (spec 5.4, 9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HandFrames {
-    pub joints: u64,
+    /// From hand tracking ([`diag::PoseSource::Tracked`]).
+    pub tracked: u64,
     pub controller: u64,
     pub none: u64,
 }
@@ -423,7 +424,7 @@ impl<B: Backend> XrSession<B> {
                 let source = diag::PoseSource::of(&reading);
                 let frames = &mut self.counters.hand_frames[h.index()];
                 match source {
-                    diag::PoseSource::Joints => frames.joints += 1,
+                    diag::PoseSource::Tracked => frames.tracked += 1,
                     diag::PoseSource::Controller => frames.controller += 1,
                     diag::PoseSource::None => frames.none += 1,
                 }
