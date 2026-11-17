@@ -15,9 +15,10 @@ use crate::world::World;
 
 /// The largest inline-class blob, in bytes (3.4).
 pub const MAX_INLINE_BLOB: usize = 256;
-/// The most inline bytes one entry may carry (3.4): over it, apply refuses the transaction with `TooLarge`, the
-/// verdict pe-api gives first.
-pub const MAX_INLINE_BYTES: usize = 1024;
+/// The most inline bytes one entry may carry (3.4): over it, apply refuses the transaction with `TooLarge`. pe-api
+/// refuses any edit over 1 KiB first; this hard cap is twice that, so an undo whose old values grew through a race
+/// still fits (@coordinator-opus).
+pub const MAX_INLINE_BYTES: usize = 2048;
 
 /// Whether a reference is of the inline class (3.4): 1 to [`MAX_INLINE_BLOB`] bytes long. "None" and the empty
 /// blob are not: every machine has the empty blob's bytes (@engine-architect).

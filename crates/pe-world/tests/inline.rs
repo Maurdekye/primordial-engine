@@ -127,22 +127,31 @@ fn a_blob_no_op_introduces_is_refused_and_nothing_is_stored() {
 }
 
 #[test]
-fn over_a_kibibyte_is_too_large() {
-    let mut f = fx();
-    let names: Vec<Vec<u8>> = (0..5u8).map(|i| vec![b'a' + i; 220]).collect();
-    let ops = names.iter().enumerate().map(|(i, n)| match named(n) {
-        Op::Create { rows, parent, index, .. } => Op::Create { new: i as u32, parent, index, rows },
-        _ => unreachable!(),
-    });
-    let o = both(&mut f, &tx(ops.collect(), sorted(names.clone())));
-    assert_eq!(refused(&o), Reason::TooLarge { limit: MAX_INLINE_BYTES as u32 });
-    // Four of them fit.
-    let mut f = fx();
-    let ops = names[..4].iter().enumerate().map(|(i, n)| match named(n) {
-        Op::Create { rows, parent, index, .. } => Op::Create { new: i as u32, parent, index, rows },
-        _ => unreachable!(),
-    });
-    assert!(matches!(both(&mut f, &tx(ops.collect(), sorted(names[..4].to_vec()))), Outcome::Applied { .. }));
+fn over_two_kibibytes_is_too_large() {
+    // pe-world's hard cap is 2 KiB, so an undo that grew past pe-api's 1 KiB still fits (@coordinator-opus, point 3); exactly 2,048 bytes apply and 2,049 do not (@engine-architect).
+    let names = |extra: bool| -> Vec<Vec<u8>> {
+        let mut v: Vec<Vec<u8>> = (0..8u8).map(|i| vec![b'a' + i; MAX_INLINE_BLOB]).collect();
+        if extra {
+            v.push(b"z".to_vec());
+        }
+        v
+    };
+    let ops = |names: &[Vec<u8>]| -> Vec<Op> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| match named(n) {
+                Op::Create { rows, parent, index, .. } => Op::Create { new: i as u32, parent, index, rows },
+                _ => unreachable!(),
+            })
+            .collect()
+    };
+    let at = names(false);
+    assert_eq!(at.iter().map(Vec::len).sum::<usize>(), MAX_INLINE_BYTES);
+    assert!(matches!(both(&mut fx(), &tx(ops(&at), sorted(at.clone()))), Outcome::Applied { .. }));
+    let over = names(true);
+    let o = both(&mut fx(), &tx(ops(&over), sorted(over.clone())));
+    assert_eq!(refused(&o), Reason::TooLarge { limit: 2048 });
 }
 
 #[test]
@@ -289,6 +298,13 @@ fn a_deleted_objects_name_travels_with_the_tombstones() {
     both(&mut f, &tx(vec![Op::Delete { id: Target::Existing(id) }], vec![]));
     let imp = import_of(&f.here);
     assert_eq!(imp.blobs, vec![Bytes::from_static(b"Cup")]);
-    let got = joiner().import(pe_seams::DomainId(0), &imp).unwrap();
+    let mut got = joiner().import(pe_seams::DomainId(0), &imp).unwrap();
     assert_eq!(got.blobs().get(&BlobRef::of(b"Cup")).as_deref(), Some(&b"Cup"[..]));
+    // The tombstones are imported state, so the joiner can apply the undo, a bare `Undelete` that carries no bytes
+    // (@coordinator-opus, point 1).
+    let undo = tx(vec![Op::Undelete { id }], vec![]);
+    let e = entry(&mut f, &undo);
+    let (o, _) = got.apply_edit(Frame(1), &e);
+    assert!(matches!(o, Outcome::Applied { .. }), "{o:?}");
+    assert_eq!(got.snapshot(Frame(1)).name(id).as_deref(), Some("Cup"));
 }
