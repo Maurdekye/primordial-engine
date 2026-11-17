@@ -11,7 +11,7 @@ use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId, Pos};
 use pe_seams::{LeafKey, Version};
 use pe_sim::{ComponentDesc, ComponentId, FieldDesc, FieldKind, Transform};
 
-use crate::components::BodyState;
+use crate::components::{BodyState, Hand};
 use crate::input::{HandPose, Pack};
 use crate::script::{ModuleRow, PendingCommit, script_component_id, tag_desc};
 use crate::tree::table;
@@ -87,14 +87,18 @@ pub fn five_kinds() -> World {
         w.create(id, None, a, GENESIS).expect("fresh id");
         w.insert(id, Transform::at(Pos::ORIGIN)).expect("live object");
     }
+    // A hand is an object with a `Hand` row; without one the input stage drops its pack on the next frame
+    // (@diverge-eng m401e3bd562b5).
+    w.insert(hand, Hand { owner: a, ..Hand::default() }).expect("live object");
     let stone = crate::apply::tombstone_of(&w.store, gone, EntryRef(Hash([11; 32])), Frame(3), Frame(3603), None, 2);
     w.store.destroy(gone).expect("live object");
     Arc::make_mut(&mut w.tombstones).insert(gone, stone);
     let inputs = Arc::make_mut(&mut w.inputs);
     inputs.cooldowns.insert((b, lamp), Frame(30));
     let pose = HandPose { pos: Pos::ORIGIN, rot: [0.0, 0.0, 0.0, 1.0], grip: 0.5, engaged: true };
-    // The longest hold a pack can carry, so it lives to frame 258, past a replica's first cuts, and a repair test on
-    // the real replica can see it (@diverge-eng m42757b24c271: with hold 1 it was gone at frame 4).
+    // The longest hold a pack can carry, so with the `Hand` row above it lives to frame 258, past a replica's first
+    // cuts, and a repair test on the real replica can see it (@diverge-eng m42757b24c271: with hold 1 it was gone at
+    // frame 4).
     inputs.packs.insert(hand, Pack { stamp: Frame(2), poses: vec![pose], hold: u8::MAX });
     inputs.pushes.insert(b, [(Frame(3), 0.25)].into());
     let body = BodyState {

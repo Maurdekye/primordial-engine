@@ -173,3 +173,15 @@ fn a_row_version_alone_is_found() {
     assert_ne!(twin.root_hash(D), base.root_hash(D));
     assert_eq!(differing_leaves(&base, &twin), vec![LeafKey::Object(id)]);
 }
+
+/// The fixture's hand pack outlives a replica's first cuts (@diverge-eng m401e3bd562b5): stepped through frame 20,
+/// the world still has a pack to damage, so a repair test that cuts first can see the `HandPack` kind.
+#[test]
+fn the_fixture_hand_pack_outlives_the_first_cuts() {
+    use pe_core::Frame;
+    let mut w = five_kinds();
+    for f in 1..=20 {
+        w.end_frame(Frame(f));
+    }
+    assert!(divergence(&mut w, Kind::HandPack).is_some(), "the pack is still pending at frame 20");
+}
