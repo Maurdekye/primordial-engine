@@ -50,6 +50,11 @@
 //!   epoch's final log: its suffix cuts are never reported. Entries of the leaver after its `Leave` are void as
 //!   [`VoidReason::AfterLeave`]; the world side (hands, claims, permissions) is the replica's, from the same entry.
 //!   A leaver quits once [`Agreement::leave_settled`]: every remaining member has E final.
+//! - **Admission** (S3 v1.10; agreement.md 8): an admin admits a key with an `Admit` entry (class Protocol; payload
+//!   [`crate::gov::Admit`]), decided by the pure governance fold [`crate::gov::GovState::step`] at its place in the
+//!   final log, the same at every member: void as [`VoidReason::NotAuthorized`] or [`VoidReason::NoChange`], or
+//!   effective, and then the key is a member from the next epoch on. The joiner starts from the inviter's start record
+//!   (pe-agree's epoch certificate), which the inviter's app sends it (app.md 4).
 //! - **A cut's identity is its [`CutRef`]: line, height and frame** (S3 v1.7): heights go on across a membership
 //!   change, so the old epoch's suffix cuts and the new epoch's first cuts share heights with different frames.
 //!   Never key a cut on its height alone.
@@ -361,6 +366,12 @@ pub enum VoidReason {
     /// (S3 v1.7; agreement.md 8, @design-reviewer's L1 on e3597563.) A `Leave` that would leave its epoch with no
     /// members: the line keeps its last member, which stays a member.
     LastMember,
+    /// (S3 v1.10; agreement.md 8.) A membership change its author may not make: an `Admit` by a key that isn't one of
+    /// the line's admitters, or by a key that isn't a member.
+    NotAuthorized,
+    /// (S3 v1.10; agreement.md 8.) A membership change that changes nothing: an `Admit` of a key that is a member
+    /// already, or that an earlier `Admit` in the same epoch admits.
+    NoChange,
 }
 
 /// (S3 v1.8; agreement.md 3, stamp-ahead.) One member's report of how late this member's own entries reach it: the

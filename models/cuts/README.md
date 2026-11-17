@@ -397,6 +397,7 @@ final after the change).
 
 | Row | What | Search | Result |
 |---|---|---|---|
+| join-1to2 | 1, alone (q = 1), admits 2 (M1's join; q = 2 after) | every behaviour of up to 22 steps (4.0 M states, 12 s) | OK, examples found |
 | join-2to3 | 1 admits 3 | every behaviour of up to 22 steps (1.6 M states, 11 s); also 24 steps (5.8 M, 41 s) | OK, examples found |
 | burst-2to4 | 1 admits 3 and 2 admits 0 at once | every behaviour of up to 22 steps (1.5 M, 11 s) | OK |
 | leave-3to2, join-3to4, remove-4to3 (the Byzantine member removed), restart-3 (Rechain, with a zombie old process) | | bounded to 22 steps, UNFINISHED at 100 s (14-17 M states each); examples by random walks | no violation in what was searched, not a proof |
@@ -411,7 +412,7 @@ final after the change).
 
 **Bounded searches, not proofs.** leave-3to2, join-3to4, remove-4to3 and restart-3 were searched over every behaviour
 of up to 22 steps only partly (UNFINISHED at 100 s, 14-17 M states each): no violation in what was searched. join-2to3,
-burst-2to4 and leave-2to1 are exhaustive to their bounds (22 steps; join-2to3 also 24).
+burst-2to4, leave-2to1 and join-1to2 are exhaustive to their bounds (22 steps; join-2to3 also 24).
 
 **(f1) and (f2) break agreement, by fixed schedules** (@design-reviewer). The bounded and random
 searches don't reach the forks (each needs 30-60 steps with the Byzantine member proposing), so each is a scripted
