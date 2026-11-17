@@ -610,8 +610,8 @@ fn a_tracked_hands_joints_reach_the_renderer_and_a_controller_has_none() {
     assert!((wrist.position[0] - (now + lead)).abs() < 1e-3, "late-latched with the pose: {:?}", wrist.position);
     assert!(drawn[1].is_none(), "a controller draws no joints");
     let c = &s.counters.hand_frames;
-    assert!(c[0].joints > 0 && c[0].controller == 0 && c[0].none == 0, "{c:?}");
-    assert!(c[1].controller > 0 && c[1].joints == 0, "{c:?}");
+    assert!(c[0].tracked > 0 && c[0].controller == 0 && c[0].none == 0, "{c:?}");
+    assert!(c[1].controller > 0 && c[1].tracked == 0, "{c:?}");
     no_violations(&s);
 }
 
