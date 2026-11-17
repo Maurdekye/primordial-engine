@@ -137,11 +137,13 @@ fn a_world_without_a_kind_reports_none() {
 }
 
 /// Every hashed table has a kind that damages it (@coordinator-opus m4494d7113f6d item 2), so a table added later
-/// fails here until it has one. `LINES` is the exception: it holds no entries yet, so nothing in it can diverge.
+/// fails here until it has one. `LINES` is the exception: it holds no entries yet, so nothing in it can diverge, and
+/// the day it does this test fails until it has a kind too (@design-reviewer's nit).
 #[test]
 fn every_hashed_table_has_a_kind() {
     use pe_world::tree::table;
     let base = five_kinds();
+    assert!(base.table_entries(table::LINES).is_empty(), "LINES holds entries now: give it a kind");
     let mut reached: Vec<u8> = Kind::ALL
         .iter()
         .filter_map(|&k| match divergence(&mut base.clone(), k) {
