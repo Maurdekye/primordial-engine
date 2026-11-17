@@ -439,6 +439,7 @@ fn a_joiner_imports_the_scripts_registry_and_modules() {
     keys.extend((0..table::COUNT as u8).map(LeafKey::Table));
     keys.push(LeafKey::Config);
     let imp = CutImport {
+        blobs: vec![],
         cut: pe_seams::Cut {
             at: pe_seams::CutRef { line: target.line(), height: 0, frame: target.frame() },
             heads: Vec::new(),

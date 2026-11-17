@@ -123,7 +123,8 @@ pub fn replay_with(b: &FaultBundle, max_frames: u64, blobs: BlobStore) -> Result
     for e in &entries {
         source.entries.entry(e.entry.stamp).or_default().push(e.clone());
     }
-    let import = CutImport { blobs: vec![],
+    let import = CutImport {
+        blobs: vec![],
         cut: state.cv.clone(),
         target_root: state.root,
         records: state.records.clone(),
