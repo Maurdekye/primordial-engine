@@ -315,9 +315,11 @@ join from a cut yet, so the second machine becomes a member at genesis, and step
   close code 8; B waits through it, and A's own dial carries the session.
 - **B** (`--join <invite>`) prints its reply code for A and dials. The welcome names the fixed pre-genesis line that
   every hello carries; B derives the session's line from the record itself, never from the welcome (transport.md
-  6.4). B checks that the record names exactly itself and the invite's key, the build, that the welcome's epoch and
-  rate equal the record's and the rate its own, and, once its clock has converged, the epoch (at most 20 s past and
-  10 s ahead). It then builds the world from the record and refuses, by name, a frame-0 root that differs from A's.
+  6.4). B checks that the record names exactly itself and the invite's key, and the build (pe-app's version, the
+  script build identity B and the script runner's identity: net.rs `build_id`, which every hello carries too); that
+  the welcome's epoch and rate equal the record's and the rate its own; and, once its clock has converged, the epoch
+  (at most 20 s past and 10 s ahead). It then builds the world from the record and refuses, by name, a frame-0 root
+  that differs from A's.
 - **Anyone else's join request is refused** ("not admitted"). When pe-agree's join from a cut lands, only B's path
   changes: it imports the state at a final cut (step 5) instead of building genesis.
 - **The consensus settings and the voters** (the gate's item 1, main bf521179): the record's `agree` is this build's
