@@ -23,11 +23,13 @@ pub struct Chain {
     id: ChainId,
     next: u64,
     prev: Option<EntryRef>,
+    /// The stamp of the last entry agreement took: an entry stamped ahead never steps below it (stamp-ahead).
+    last: Option<Frame>,
 }
 
 impl Chain {
     pub fn new(line: LineId, me: MemberKey, nonce: [u8; 32]) -> Chain {
-        Chain { line, me, nonce, id: ChainId::new(line, me, nonce), next: 1, prev: None }
+        Chain { line, me, nonce, id: ChainId::new(line, me, nonce), next: 1, prev: None, last: None }
     }
 
     pub fn me(&self) -> MemberKey {
@@ -59,6 +61,12 @@ impl Chain {
     pub fn took(&mut self, e: &SignedEntry) {
         self.next += 1;
         self.prev = Some(e.id());
+        self.last = Some(e.entry.stamp);
+    }
+
+    /// The stamp of the last entry agreement took, `None` before the first.
+    pub fn last_stamp(&self) -> Option<Frame> {
+        self.last
     }
 }
 
@@ -116,6 +124,11 @@ pub fn world_pose(rig: &RigTransform, h: &HandInput) -> Option<HandPose> {
 /// differs from the `engaged` last sent for that side (`sent`, left then right): that is pe-xr's deliberate release
 /// of a lost hand that held something, after the grace period or on focus loss, and it goes out at the last valid
 /// pose, so nothing stays held by a frozen hand (@xr-eng's Medium on cc8d0a96).
+///
+/// `thin`: the frame's stamp stands still (stamp-ahead is shedding its lead, app.md 3.2), so a pose would only replace
+/// the previous frame's at the same stamp. Such poses aren't sent; a grasp that changed (a grab or a release) still
+/// goes out, at the stamp (@coordinator-opus m744fc393cdf9). Returns the entries agreement took, those it refused, and
+/// the poses thinned.
 #[allow(clippy::too_many_arguments)]
 pub fn submit_hands(
     chain: &mut Chain,
@@ -126,10 +139,15 @@ pub fn submit_hands(
     p: Frame,
     domain: DomainId,
     agree: &mut dyn Agreement,
-) -> (u32, u32) {
-    let (mut took, mut refused) = (0, 0);
+    thin: bool,
+) -> (u32, u32, u32) {
+    let (mut took, mut refused, mut thinned) = (0, 0, 0);
     for (i, side) in [Hand::Left, Hand::Right].into_iter().enumerate() {
         let Some(h) = feed.hand_at(side, at).filter(|h| h.tracked || h.closed != sent[i]) else { continue };
+        if thin && h.closed == sent[i] {
+            thinned += 1;
+            continue;
+        }
         let Some(hand) = view.objects.iter().find(|o| o.hand_of == Some((chain.me(), side))).map(|o| o.id) else {
             continue;
         };
@@ -144,7 +162,7 @@ pub fn submit_hands(
             Err(_) => refused += 1,
         }
     }
-    (took, refused)
+    (took, refused, thinned)
 }
 
 /// The Hamilton product `a b` of two quaternions in OpenXR's order, (x, y, z, w).

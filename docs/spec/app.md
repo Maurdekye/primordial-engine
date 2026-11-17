@@ -76,7 +76,7 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    and logs pe-net's lifecycle outcomes (@design-reviewer's Low on 5ca43067).
 2. **Local input, once per frame.** On the first tick at frame `p`, read both hands with
    `hand_at(hand, clock.host_time_of(p))`, take at most one edit from pe-api's edit queue (3.1), and build the
-   frame's entries
+   frame's entries, stamped at `p` plus stamp-ahead's lead (3.2), never below the chain's last stamp
    (pe-world's input and edit codecs), all on the member's one chain. Each goes through `Agreement::submit`, which
    signs it. A second tick in the same frame (a wake by the inbox or the edit queue) submits nothing. So a member
    makes at most two hand entries and one edit a frame, which pe-agree's rate budget passes at any world rate
@@ -203,6 +203,84 @@ the MCP thread's handlers read them (@coordinator-opus m7af16ffc372e, m22babe2c6
 - **Not yet:** an edit's blobs reaching another machine's store. pe-world stores none from an applied transaction,
   and the Bulk lane isn't wired.
 
+### 3.2 Stamp-ahead: a slow member's entries
+
+A member whose entries reach the others later than the target stamps its own entries ahead of its present. They
+then arrive above the cuts' frames, are never void as late, and cost the receivers little re-stepping (agreement.md
+3; @coordinator-opus m5b8dd76f18a3 and me3c27b7c5e18, after @fable-reviewer;
+@item:primordial-engine/pe-app-stamps-a-slow-member-s-entries-ahead-by-i).
+- **The stamp.** Step 2 stamps the frame's entries (the hands, the edit and the build worker's machine entries) at
+  `max(p + lead, the chain's last stamp)`. So a shrinking lead never steps a stamp down, which pe-agree would refuse
+  (`SubmitError::BelowOwnStamp`). An edit's code commits carry that stamp as their `activate_at` (step 2), or
+  pe-world would refuse them. A hand's pose is the one sampled at `p`'s host time (up to a frame earlier while the
+  lead sheds: the pose clock, below), so only this member's influence lags by the lead. pe-xr draws the member's own hands at the tracked pose, never the simulated one.
+- **One signal, two controllers.** Each other member reports, in its votes and timeouts, the p95 lateness of this
+  member's entries at their first arrival, relayed or direct (S3 v1.8 `own_lateness`, @world-chunks):
+  - signed, negative when they arrive before their stamps, so a lead that is too large shows;
+  - with the seq of the entry at the percentile, so the correction is exact: `delay = report + lead at seq`
+    (`StampLead::lead_at`).
+
+  The receivers' adaptive cut lag absorbs the delay first, up to the target, and the lead takes only the excess:
+  `lead = delay - target + margin`, at least 0. On recovery the lead drains first, so the receivers' lag stays near
+  the target until the lead is gone.
+- **The target** is a setting, at most the lag's cap, and 0.1 s by default (me3c27b7c5e18). Measured [V], in the
+  200-ball pit on a 1.2 s link (_teams/1827/stamp-ahead-measurement.md):
+  - with the target at the cap, a receiver re-steps about 57 frames for every entry against a budget of about 10,
+    and its view was published on 583 of 1,800 ticks;
+  - with the target at the floor, it re-steps nothing and its view equals the slow member's.
+
+  At 0.1 s the receivers see a slow member's entries about 3 frames late, the cost of an ordinary link. A slower
+  member pays its excess as its own input lag, as the user's thin-link rulings put it (mf572d26b5986,
+  mf380d36d79db). LAN and Tailscale links, as in M1's first two-machine run, get no lead.
+- **The largest report, clamped.** The lead follows the largest corrected report over the members, so the slowest
+  receiver decides. It is clamped at `max_lead`, 3 s by default (a local setting), so a faulty member's inflated
+  report can hold this member's input back by at most that. Past the clamp, this member's hand entries void as late
+  at the members it is slowest to reach, and its edits go to pe-api's re-send backstop and its held batch (api.md
+  9.4): the stated limit.
+- **Lead changes** (@coordinator-opus m744fc393cdf9 and ma5cf896aacca, after @fable-reviewer, on @design-reviewer's
+  Medium on a6b1035a):
+  - The lead follows the largest lead the reports called for over about the last 3 s, as a jitter buffer follows the
+    worst recent delay, so one spike doesn't cause cycles of rising and draining.
+  - A rise takes effect at once.
+  - A fall sheds one frame at a time, at one of two rates decided every frame:
+    - while both hands are slow, one frame every `second / surplus` frames, clamped to 2..=30. A 3 s surplus drains
+      in about 8 s, starting at half speed;
+    - while either hand moves, at most one frame in 11, so the others see the hand at most 1.1 times its tracking
+      speed and a strike lands at most about 10% harder. A 3 s lead then drains in about 34 s.
+
+    There is no hold and no backstop. Under the old rate (one frame each half second) a 3 s drain took 90 s.
+  - **The speed test** (`stamp::Motion`). A hand's speed is its fastest point's: the pose's linear speed plus its
+    angular speed times the hand collider's radius (0.09 m), so a wrist flick counts. With hysteresis, a moving hand
+    becomes slow below 0.25 m/s and a slow one moving above 0.35 m/s. A tracking jump counts as moving: the first pose
+    after the hand was away, or one whose `discontinuity` changed. A hand the feed doesn't track sends no pose, so a
+    shed can't speed it up: it counts as slow, as does a hand never seen (a desktop feed with one hand). pe-replica
+    coasts a lost hand in world frames, which the stamps don't touch.
+  - While it sheds, a frame's stamp can stand still. Its poses would only replace the last frame's at that stamp, so
+    step 2 doesn't send them (`SimStats::poses_thinned`); a grasp that changed (a grab or a release) and an edit
+    still go out, at the stamp.
+  - **The pose clock** (`StampLead::pose_time`). Sampled at the present, the stamp after a shed would carry a pose two
+    tracking frames on: one stamp in 11 at twice the speed. So each stamp advances the moment the poses are sampled at
+    by at most `every / (every - 1)` frames (1.1 while a hand moves, 2 otherwise), never past the present. That
+    spreads the frame a shed takes out over the stamps up to the next shed, and the poses trail the tracking by at
+    most a frame while the lead drains. A frame whose stamp stood still keeps the last frame's moment, so a grasp it
+    sends goes at the last pose.
+  - The others see this member's hand move faster while the lead drains, never pause: at most 1.1 times its tracking
+    speed while a hand moves, up to twice while both are slow (@fable-reviewer's reading, measured in section 7).
+  - `SimStats::largest_lead`, `longest_drain` and `moving_frames` record the run's largest lead, its longest drain
+    and the frames the speed test found a hand moving.
+- **Entries in a receiver's future.** On a link fast one way and slow the other, or at a third member it reaches
+  quickly, an entry stamped ahead arrives before its stamp. Receivers hold it without refusing it. pe-agree bounds
+  a cut's frame by the voters' present plus the tolerance (`Reject::FrameInFuture`), never an entry's stamp [V,
+  cuts.rs]. What bounds such entries is the per-author pending cap: at most `pending_s` (4 s) of the author's rate
+  budget held beyond the final cut. That's 1,020 entries at 60 Hz, 5.7 s of two hands and an edit every frame. An
+  entry stamped ahead is pending for about the lead, plus the target, plus a vote's latency, so a `max_lead` of 3 s
+  fits with room for a vote of up to a second or so.
+- **Attestations** go out at the stamp too, so a slow member's attestation counts later by up to its lead. `F`
+  moves later by at most the lead, and the deadline `D` is at least 44 s after `c` (twice `T_module`, logic.md
+  6.2a), far beyond `max_lead`.
+- **Receivers re-step up to the target's worth every tick,** so they rely on the keep-up floor's last-call need
+  (section 3) to keep their views at the present.
+
 ## 4. Startup and shutdown
 
 **Startup**, in this order:
@@ -260,8 +338,9 @@ with @fable-reviewer's refinements m2226c5aab7da, and m5bb3ed6ddcd5):
 2. **In a session with others** (`--open` or `--join`), leave gracefully (`SimThread::leave_and_stop`, `crate::leave`).
    A world alone just stops (step 4).
    - The simulation thread's next tick submits this member's `Leave` (a class Protocol entry whose payload is
-     `pe_seams::LEAVE`) first in its frame, at the present frame (stamp-ahead's stamp once it lands). It is the
-     chain's last entry: step 2 makes no hand entry or edit after it, and an edit still in pe-api's queue is refused
+     `pe_seams::LEAVE`) first in its frame, at the frame's stamp: the present plus stamp-ahead's lead, never below
+     the chain's last stamp (3.2), since a lead can hold that stamp above the present. It is the chain's last
+     entry: step 2 makes no hand entry or edit after it, and an edit still in pe-api's queue is refused
      `SubmitError::AfterLeave`, as agreement would refuse it.
    - The simulation and network threads keep ticking, so the leaver still votes E's suffix: at n = 2 the other member
      can't finish E without it (agreement.md 8; @design-reviewer's (b), m42d63893d68a).
@@ -361,6 +440,28 @@ final on either, though both keep simulating their predictions.
   10 s stall never gives a tick more than the cap of stepping; frames dearer than a period keep every tick within the
   cap and hold; and the floor changes no state (a replica back from a stall publishes the same objects at the same
   frame as one ticked every frame, with the same root at a grid frame).
+- **A slow member's entries** (stamp-ahead, 3.2), in release: on a fixed 1.2 s link and a jittered 0.9-1.5 s one,
+  with B's hands sweeping and an edit every 10 frames, B's lead settles at the excess (68 and 85 frames measured), no
+  entry of B's, hand or edit, is void as late once it has, and A's view stays at the present; without stamp-ahead the
+  same fixed link voids 35 of B's entries. StampLead's unit tests cover the corrected reports, early arrivals (a
+  negative report) shedding the lead, the slow fall, the largest report and the clamp.
+- **A lead that drains** (3.2's lead changes, @coordinator-opus ma5cf896aacca), in release, with two pe-world members
+  on a 25 ms link [V]:
+  - *A strike through a drain.* B's closed hands sweep at 0.63 m/s while its 3 s lead drains. A sees them at most
+    1.10 times their tracking speed (0.691 against 0.628 m/s), and never slower. The sweep's first turn through the
+    resting balls drives the fastest to 0.767 m/s. That's 1.06 times the most of four no-lead runs at sub-frame
+    phases (0.678-0.724), and as hard as a no-lead run with the hands 10% faster (0.773). Over the whole drain the
+    fastest ball reached 2.17 m/s, against 0.92-2.50 in the no-lead runs: later turns meet balls the earlier ones
+    scattered, so those aren't compared.
+  - *A wrist flick with a nearly still origin* (0.08 m/s, turning at 6 rad/s). The speed test finds the hands moving
+    on 479 of 480 frames, sheds come at least 11 frames apart, and A sees the origin at 1.09 times its speed. Without
+    the turn the hands are slow: sheds come 2 frames apart, and a 1 s lead is gone in 4.7 s.
+  - *A player who never pauses.* A 3 s lead is gone at 34.05 s, with a hand moving on 2,159 of 2,160 frames. The
+    first shed comes at 0.37 s; the first 175 frames go at one in 11 and the last 5 at the small surplus's slower
+    rate.
+
+  StampLead's and Motion's unit tests cover the two rates, the pose clock's steps, the hysteresis, the wrist flick and
+  the jumps.
 - **Late entries on every frame** (the keep-up floor's last-call need, section 3): entries 18 frames late on every
   tick no longer hold the view, in the model and with two pe-world members whose B reaches A 300 ms late; with them,
   a 10 s stall still never gives a tick more than the cap; and both members finalize the same roots and show the
