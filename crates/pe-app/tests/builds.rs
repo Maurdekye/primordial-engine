@@ -1,0 +1,162 @@
+//! The build service's machine side (src/builds.rs): a voter builds a pending version, checks it against the commit,
+//! loads it into its runner and attests once; the author loads and attests nothing; a build that differs, or a commit
+//! that is voided or already counted, gets no attestation. With pe-logic's lamp, built for real.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+
+use bytes::Bytes;
+use pe_app::builds::{Attester, BuildConfig, Builder, Built, attestation};
+use pe_logic::build::Toolchain;
+use pe_replica::logic::{LogicRunner, ModuleInbox};
+use pe_seams::test_util::{EntryBuilder, TestKeys};
+use pe_seams::{Class, Frame, Hash, Outcome};
+use pe_world::edit::{Actor, Op, Transaction};
+use pe_world::script::tag_desc;
+use pe_world::{BlobRef, BlobStore, World, perm};
+
+const LAMP: [u8; 32] = [11; 32];
+
+fn keys() -> &'static TestKeys {
+    static K: OnceLock<TestKeys> = OnceLock::new();
+    K.get_or_init(|| TestKeys::new(5, 2))
+}
+
+/// The lamp's source archive, as its author commits it (`pe_logic::build::pack`).
+fn archive() -> &'static [u8] {
+    static A: OnceLock<Vec<u8>> = OnceLock::new();
+    A.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/lamp");
+        pe_logic::build::pack(&dir).unwrap_or_else(|e| panic!("{e}"))
+    })
+}
+
+fn v() -> Hash {
+    Hash(BlobRef::of(archive()).hash)
+}
+
+/// A build folder of the test's own: tests run at once, and a build rewrites its work folder.
+fn config(test: &str) -> BuildConfig {
+    BuildConfig {
+        toolchain: Toolchain::current().unwrap_or_else(|e| panic!("{e}")),
+        sdk: pe_logic::build::engine_sdk(),
+        dir: PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("b").join(test),
+    }
+}
+
+/// A builder over a fresh runner's inbox, and that inbox.
+fn builder(test: &str) -> (Builder, ModuleInbox) {
+    let inbox = LogicRunner::with_defaults().expect("a runner").inbox();
+    (Builder::new(config(test), inbox.clone()).expect("a builder"), inbox)
+}
+
+/// Runs `f` on a thread with the stack describing and loading a module need.
+fn big_stack(f: impl FnOnce() + Send + 'static) {
+    let stack = pe_logic::Settings::default().thread_stack();
+    std::thread::Builder::new().stack_size(stack).spawn(f).unwrap().join().unwrap();
+}
+
+fn tx(ops: Vec<Op>) -> Transaction {
+    Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
+}
+
+/// A world of two editors, A (key 0) and B (key 1), where A has committed the lamp at frame 0 as its build gave it,
+/// with the toolchain, SDK and module hashes `ids` and `module`: pending, A's attestation the commit's own.
+fn committed(built: &Built, ids: (Hash, Hash), module: Hash) -> World {
+    let mut w = World::new(1, BlobStore::default());
+    for k in 0..2 {
+        w.set_member(keys().key(k), perm::EDIT);
+    }
+    let mut components = vec![tag_desc(&v())];
+    components.extend(built.described.components.iter().cloned());
+    let commit = tx(vec![
+        Op::Register { components },
+        Op::commit_script(LAMP, None, Bytes::from_static(archive()), ids.0, ids.1, module, 0),
+    ]);
+    let mut a = EntryBuilder::new(keys(), 0);
+    let entry = a.next(Class::Edit, Frame(0), Bytes::from(commit.encode()));
+    let (outcome, _) = w.apply_edit(Frame(0), &entry);
+    assert!(matches!(outcome, Outcome::Applied { .. }), "the commit: {outcome:?}");
+    assert_eq!(w.pending()[&LAMP].attested.len(), 1, "A's own");
+    w
+}
+
+fn blob_of(w: &World) -> impl Fn(&BlobRef) -> Option<Arc<[u8]>> + '_ {
+    |r| w.blobs().get(r)
+}
+
+/// B, a voter, builds the version, finds it the author's, loads it into its runner and gives one `AttestBuild` with
+/// the commit's V and module. A second pass does nothing.
+#[test]
+fn a_voter_builds_checks_loads_and_attests_once() {
+    big_stack(|| {
+        let (builder, inbox) = builder("voter");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let w = committed(&built, builder.ids(), built.described.module);
+        let mut b = Attester::new(keys().key(1));
+        let pass = b.pass(w.pending(), blob_of(&w), &builder, &inbox);
+        assert!(pass.failed.is_empty(), "{:?}", pass.failed);
+        assert_eq!(pass.loaded, [(LAMP, v())]);
+        assert_eq!(pass.attest, [attestation(LAMP, v(), built.described.module)]);
+        let again = b.pass(w.pending(), blob_of(&w), &builder, &inbox);
+        assert!(again.loaded.is_empty() && again.attest.is_empty() && again.failed.is_empty(), "{again:?}");
+    });
+}
+
+/// The author loads its own module, since it too must hold it at F, but gives no attestation: its commit counts as
+/// one, and pe-world refuses a second as `Invalid`.
+#[test]
+fn the_author_loads_but_does_not_attest() {
+    big_stack(|| {
+        let (builder, inbox) = builder("author");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let w = committed(&built, builder.ids(), built.described.module);
+        let pass = Attester::new(keys().key(0)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        assert_eq!((pass.loaded, pass.attest.len(), pass.failed.len()), (vec![(LAMP, v())], 0, 0));
+    });
+}
+
+/// A commit whose module, or whose toolchain and SDK, differ from this machine's build is neither loaded nor
+/// attested, and the pass says why.
+#[test]
+fn a_build_that_differs_from_the_commit_is_not_attested() {
+    big_stack(|| {
+        let (builder, inbox) = builder("differs");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let cases = [
+            ((builder.ids(), Hash([9; 32])), "the module differs"),
+            (((Hash([7; 32]), builder.ids().1), built.described.module), "another toolchain or SDK"),
+        ];
+        for ((ids, module), why) in cases {
+            let w = committed(&built, ids, module);
+            let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+            assert!(pass.loaded.is_empty() && pass.attest.is_empty(), "{pass:?}");
+            assert!(matches!(&pass.failed[..], [(LAMP, f, w)] if *f == v() && w.contains(why)), "{pass:?}");
+        }
+    });
+}
+
+/// A voter already counted loads the module but attests nothing; a voided commit is skipped.
+#[test]
+fn a_counted_voter_or_a_voided_commit_gets_no_attestation() {
+    big_stack(|| {
+        let (builder, inbox) = builder("counted");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let module = built.described.module;
+        let mut w = committed(&built, builder.ids(), module);
+        let mut b = EntryBuilder::new(keys(), 1);
+        let attest = b.next(Class::Edit, Frame(0), Bytes::from(attestation(LAMP, v(), module).encode()));
+        assert!(matches!(w.apply_edit(Frame(0), &attest).0, Outcome::Applied { .. }));
+        let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        assert_eq!((pass.loaded, pass.attest.len()), (vec![(LAMP, v())], 0));
+
+        let mut w = committed(&built, builder.ids(), module);
+        let deadline = w.pending()[&LAMP].deadline;
+        for f in 0..=deadline.0 {
+            let _ = w.end_frame(Frame(f));
+        }
+        assert!(w.pending()[&LAMP].void.is_some(), "unattested at D");
+        let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        assert!(pass.loaded.is_empty() && pass.attest.is_empty() && pass.failed.is_empty(), "{pass:?}");
+    });
+}
