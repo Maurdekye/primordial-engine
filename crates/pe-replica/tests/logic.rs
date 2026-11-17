@@ -12,8 +12,8 @@ use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl, ScriptRunner, event_kind};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
     Activation, ActivationKey, ActivationOutcome, ChainHead, Class, Cut, CutImport, CutRef, DomainId, EffectCause,
-    EffectKey, EffectKind, EntrySource, FinalCut, Frame, FrameView, GroupSel, Hash, HostTime, LeafKey, LineId,
-    MemberKey, ObjectId, Offset, Outcome, Pos, Replica, RootError, RunnerIdentity, SignedEntry, Stage, Version,
+    EffectKey, EffectKind, EntrySource, FinalCut, Finalized, Frame, FrameView, GroupSel, Hash, HostTime, LeafKey,
+    LineId, MemberKey, ObjectId, Offset, Outcome, Pos, Replica, RootError, RunnerIdentity, SignedEntry, Stage, Version,
     VoidedWhy,
 };
 use pe_sim::{Component, ComponentId, SimStore, Transform};
@@ -1006,6 +1006,48 @@ fn a_re_step_for_a_cut_s_root_never_predicts() {
     assert_eq!(author.root_at_cut(&cut, &mut s).expect("the author's root"), want);
     assert!(author.vote_holds().is_empty(), "the re-step started no prediction");
     assert_eq!(author.world().world().pending()[&asset()].author, keys.key(1), "the live state is as it was");
+}
+
+/// A vote hold at or below a cut keeps the live root out of it (replica.md 5.4). A predicts its own commit at 5, so
+/// its live history runs the new code from 6, which no cut's root does, and A holds its votes from 6. A vote at 8
+/// while the keyframe there is young restores it, as before, and holds that state's root. At 48 the ring has thinned
+/// the keyframes at 4 and 8, and the cut at 8 goes final (as at n >= 3, without A's vote) with a plain replica's root:
+/// A re-steps from 0, where nothing is predicted, and agrees, rather than take its live root, which the vote's held
+/// snapshot would have given it. The plain replica, with no hold, takes its live root both times.
+#[test]
+fn a_vote_hold_below_the_cut_keeps_the_live_root_out() {
+    let keys = keys();
+    let mut a = EntryBuilder::new(&keys, 0);
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    let mine = [commit(&mut a, 5), edit(&mut a, 6, tag_ball())];
+    let mut s = Source::default();
+    for e in &mine {
+        s.add(e.clone());
+    }
+    let cut = cut_at(&mine, 1, 8);
+    let mut plain = replica_for(world.clone(), None);
+    let mut author = replica_for(world, Some(keys.key(0)));
+    plain.advance(Frame(12), &mut s);
+    author.advance(Frame(12), &mut s);
+    assert_eq!((plain.vote_holds(), author.vote_holds()), (vec![], vec![Frame(6)]));
+    let want = plain.root_at_cut(&cut, &mut s).expect("the plain replica's root");
+    assert_eq!((plain.live_root(Frame(8)), plain.scratch().reused), (Some(want), 1), "no hold: the live root");
+    let predicted = author.live_root(Frame(8)).expect("the author's live root at 8");
+    assert_ne!(predicted, want, "the author's live history runs the predicted code from 6");
+    assert_eq!(author.root_at_cut(&cut, &mut s).expect("the author's vote"), predicted, "the keyframe at 8 restored");
+    assert_eq!(author.scratch().reused, 0);
+
+    plain.advance(Frame(48), &mut s);
+    author.advance(Frame(48), &mut s);
+    assert_eq!(author.vote_holds(), [Frame(6)], "still predicting");
+    let fin = FinalCut { cut, root: want, voters: vec![] };
+    let frames = author.scratch().frames;
+    assert!(matches!(author.finalize(&fin, &mut s), Finalized::Agreed), "re-stepped without the prediction");
+    assert_eq!((author.scratch().frames - frames, author.scratch().reused), (8, 0), "from the keyframe at 0");
+    assert!(matches!(plain.finalize(&fin, &mut s), Finalized::Agreed));
+    assert_eq!(plain.scratch().reused, 2, "the vote's snapshot, with the live root");
+    assert_eq!((author.faults(), plain.faults()), (0, 0));
 }
 
 /// Rollbacks while A's prediction stands, from B's late entries (as on a real link): one to c or below predicts again
