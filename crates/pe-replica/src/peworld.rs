@@ -6,14 +6,16 @@
 //!   (pe-world's slice B). The `Footprint` becomes the physics [`Effects`] here by comparing each affected body's row
 //!   before and after the entry: a body that appears is `Created`, one that goes is `Removed`, changed shapes or
 //!   fields are `Rebuilt`, and a moved world pose is `Teleported`. A body whose shapes and pose both changed gets
-//!   `Rebuilt` and then `Teleported`, since a rebuild keeps a moving body's physics pose. Affected bodies: those of
-//!   every object the entry created, removed, wrote a row of or reparented, with each object's body being itself or
-//!   its nearest ancestor with a `Body` (a compound child's), before and after; for a `Transform` write or a
+//!   `Rebuilt` and then `Teleported`, since a rebuild keeps a moving body's physics pose. A physical object that
+//!   cannot be built ([`Unbuildable`]) has no body: it is `Created` when it becomes physical and `Rebuilt` when the
+//!   body it had can no longer be built, and the replica counts a fault for each (replica.md 2.1). Affected bodies:
+//!   those of every object the entry created, removed, wrote a row of or reparented, with each object's body being
+//!   itself or its nearest ancestor with a `Body` (a compound child's), before and after; for a `Transform` write or a
 //!   reparent, those of the whole subtree. A hand input writes its hand's `Transform` for its own frame, so it counts
 //!   as one: a body under the hand moves with it on that frame. The pack's later poses are written by `end_frame`,
 //!   which gives no effects, so such a body does not follow them yet (@design-reviewer's Medium on e6d3ee9c). Grabs
-//!   hold by claims, not parenting, and the M1 ball pit puts no body under a hand. An input's pushes become
-//!   [`PushFx`], one for one.
+//!   hold by claims, not parenting, and the M1 ball pit puts no body under a hand. An input's pushes become [`PushFx`],
+//!   one for one.
 //! - **Entry classes:** edits and inputs as above. A `Leave` (a Protocol entry, `pe_seams::LEAVE`) goes through
 //!   `World::leave` at its stamp ([`PeWorld`]'s `leave`). Other Governance and Protocol entries are `Applied` with no
 //!   effects, as pe-world applies none yet.
@@ -44,7 +46,8 @@
 //! its object's world scale. A child's place composes the local transforms from the body down to it, starting from
 //! the body's world scale, so it does not depend on the body's pose; an object without a `Transform` sits at its
 //! frame (world-model.md 3.3). Boxes scale per axis. A sphere or capsule under non-uniform scale, a mesh, a hull or an
-//! unknown kind cannot be built yet, and the object has no body.
+//! unknown kind cannot be built yet ([`Unbuildable::Shape`]), and neither can an unknown body kind or a body with no
+//! world pose: the object is physical, [`WorldModel::body`] says why it cannot be built, and it has no body.
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,7 +68,7 @@ use pe_world::{Footprint, FrameEnd, RekeyReport, VoidKind, World, input_phase};
 use crate::logic::{ScriptRow, ScriptRunner, StageWorld};
 use crate::world::{
     BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, LogicFx, Phase, PhysicsSettings,
-    PushFx, ShapePart, ShapeRow, WorldModel,
+    PushFx, ShapePart, ShapeRow, Unbuildable, WorldModel,
 };
 
 const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -390,7 +393,7 @@ impl WorldModel for PeWorld {
         LogicFx { effects, events, host_faults: out.host_faults, fp_resets: out.fp_resets, missing: out.missing }
     }
 
-    fn body(&self, id: ObjectId) -> Option<BodyRow> {
+    fn body(&self, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable> {
         body_row(&self.world, id)
     }
 
@@ -604,31 +607,37 @@ fn view_light(l: &Light) -> Option<pe_seams::Light> {
 
 // ---- bodies ---------------------------------------------------------------------------------------------------------
 
-/// The body row of `id`: `None` if it has no `Body`, no world transform, no shape, or a shape that cannot be built.
-fn body_row(world: &World, id: ObjectId) -> Option<BodyRow> {
+/// The body row of `id`: `Ok(None)` if it is not physical (no `Body`, or no shape of its own or a compound child's:
+/// exactly what pe-world's `World::physical` leaves out), and why it cannot be built if it is physical but has an
+/// unknown body kind, no world pose, or a shape that cannot be built.
+fn body_row(world: &World, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable> {
     let store = world.store();
-    let body = store.get::<Body>(id)?;
+    let Some(body) = store.get::<Body>(id) else {
+        return Ok(None);
+    };
+    let own = store.get::<Shape>(id);
+    let children: Vec<(ObjectId, &Shape)> =
+        compound_children(world, id).into_iter().filter_map(|c| Some((c, store.get::<Shape>(c)?))).collect();
+    if own.is_none() && children.is_empty() {
+        return Ok(None);
+    }
     let kind = match body.kind {
         body_kind::STATIC => BodyKind::Static,
         body_kind::KINEMATIC => BodyKind::Kinematic,
         body_kind::DYNAMIC => BodyKind::Dynamic,
-        _ => return None,
+        _ => return Err(Unbuildable::Kind),
     };
-    let at = store.world_transform(id)?;
+    let at = store.world_transform(id).ok_or(Unbuildable::Pose)?;
     let origin = WorldTransform { pos: Pos::ORIGIN, rot: IDENTITY_ROTATION, scale: at.scale };
     let mut shapes = Vec::new();
-    if let Some(shape) = store.get::<Shape>(id) {
+    if let Some(shape) = own {
         shapes.push(part(shape, &origin)?);
     }
-    for child in compound_children(world, id) {
-        if let Some(shape) = store.get::<Shape>(child) {
-            shapes.push(part(shape, &in_body(store, &origin, id, child)?)?);
-        }
+    for (child, shape) in children {
+        let placed = in_body(store, &origin, id, child).ok_or(Unbuildable::Pose)?;
+        shapes.push(part(shape, &placed)?);
     }
-    if shapes.is_empty() {
-        return None;
-    }
-    Some(BodyRow {
+    Ok(Some(BodyRow {
         kind,
         pos: at.pos,
         rotation: at.rot,
@@ -642,7 +651,7 @@ fn body_row(world: &World, id: ObjectId) -> Option<BodyRow> {
         bullet: body.bullet != 0,
         may_sleep: body.may_sleep != 0,
         grabbable: body.grabbable != 0,
-    })
+    }))
 }
 
 /// The descendants of `body` reached without passing another `Body`, in id order.
@@ -682,7 +691,7 @@ fn in_body(store: &SimStore, origin: &WorldTransform, body: ObjectId, child: Obj
 
 /// One shape at `placed`, its place in its body's frame and its world scale. The body's own shape sits at the
 /// body's origin, unturned.
-fn part(shape: &Shape, placed: &WorldTransform) -> Option<ShapePart> {
+fn part(shape: &Shape, placed: &WorldTransform) -> Result<ShapePart, Unbuildable> {
     let center = (placed.pos - Pos::ORIGIN).0.map(|c| c as f32);
     let rotation = placed.rot;
     let scale = placed.scale.map(f32::abs);
@@ -703,9 +712,9 @@ fn part(shape: &Shape, placed: &WorldTransform) -> Option<ShapePart> {
                 radius: size[0] * scale[0],
             }
         }
-        _ => return None,
+        _ => return Err(Unbuildable::Shape),
     };
-    Some(ShapePart { shape: row, density: shape.density })
+    Ok(ShapePart { shape: row, density: shape.density })
 }
 
 // ---- effects --------------------------------------------------------------------------------------------------------
@@ -740,10 +749,14 @@ fn effects(before: &World, after: &World, footprint: &Footprint) -> Effects {
         touched.iter().flat_map(|&id| [owner(before, id), owner(after, id)]).flatten().collect();
     let mut changed = Vec::new();
     for id in bodies {
+        // A physical object that cannot be built has no body (replica.md 2.1). The replica tries to build one that
+        // becomes physical so, and rebuilds one whose body can no longer be built, counting a fault each time; one
+        // that stays unbuildable, or stops being physical, had no body and changes nothing.
         match (body_row(before, id), body_row(after, id)) {
-            (None, Some(_)) => changed.push((id, Change::Created)),
-            (Some(_), None) => changed.push((id, Change::Removed)),
-            (Some(a), Some(b)) => {
+            (Ok(None) | Err(_), Ok(Some(_))) | (Ok(None), Err(_)) => changed.push((id, Change::Created)),
+            (Ok(Some(_)), Err(_)) => changed.push((id, Change::Rebuilt)),
+            (Ok(Some(_)), Ok(None)) => changed.push((id, Change::Removed)),
+            (Ok(Some(a)), Ok(Some(b))) => {
                 let reshaped = BodyRow { pos: a.pos, rotation: a.rotation, ..b.clone() } != a;
                 if reshaped {
                     changed.push((id, Change::Rebuilt));
@@ -752,7 +765,7 @@ fn effects(before: &World, after: &World, footprint: &Footprint) -> Effects {
                     changed.push((id, Change::Teleported));
                 }
             }
-            (None, None) => {}
+            (Ok(None), Ok(None)) | (Err(_), Ok(None) | Err(_)) => {}
         }
     }
     let pushes = footprint.pushes.iter().map(|p| PushFx { object: p.object, impulse: p.impulse, at: p.at }).collect();

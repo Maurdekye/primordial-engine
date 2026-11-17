@@ -2,12 +2,13 @@
 //!
 //! Everything here is a function of the world model's rows and the physics state, applied in id order, so every
 //! replica makes the same calls in the same order. A refused physics call is a fault, counted and reported; it never
-//! panics and never stops the frame (3.1).
+//! panics and never stops the frame (3.1). So is a physical object the world model cannot build ([`Unbuildable`]):
+//! it has no body (2.1).
 
 use pe_physics::{BodyDesc, BodyKind as PhysicsKind, Geometry, PhysicsError, PhysicsWorld, Pose, Push, ShapeDesc};
 use pe_seams::{ObjectId, Pos};
 
-use crate::world::{BodyKind, BodyRow, Change, PushFx, ShapePart, ShapeRow, WorldModel};
+use crate::world::{BodyKind, BodyRow, Change, PushFx, ShapePart, ShapeRow, Unbuildable, WorldModel};
 
 const IDENTITY: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
@@ -73,8 +74,23 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
+/// A refused physics call, or a physical object the world model cannot build (2.1): either is one fault.
+struct Fault;
+
+impl From<PhysicsError> for Fault {
+    fn from(_: PhysicsError) -> Fault {
+        Fault
+    }
+}
+
+impl From<Unbuildable> for Fault {
+    fn from(_: Unbuildable) -> Fault {
+        Fault
+    }
+}
+
 /// Bring the physics in line with what an entry or a logic stage changed (3.2), in the given order (id order).
-/// Returns how many physics calls were refused.
+/// Returns how many faults there were: physics calls refused, and bodies the world model cannot build.
 pub fn reconcile<W: WorldModel + ?Sized>(
     world: &W,
     physics: &mut PhysicsWorld,
@@ -85,10 +101,12 @@ pub fn reconcile<W: WorldModel + ?Sized>(
     for &(id, change) in changed {
         let done = match change {
             Change::Created => create(world, physics, origin, id),
-            Change::Removed => remove(physics, id),
+            Change::Removed => remove(physics, id).map_err(Fault::from),
             Change::Rebuilt => rebuild(world, physics, origin, id),
             Change::Teleported => teleport(world, physics, origin, id),
-            Change::Velocity { linear, angular } if physics.has_body(id) => physics.set_velocity(id, linear, angular),
+            Change::Velocity { linear, angular } if physics.has_body(id) => {
+                physics.set_velocity(id, linear, angular).map_err(Fault::from)
+            }
             Change::Velocity { .. } | Change::Reparented => Ok(()),
         };
         faults += u32::from(done.is_err());
@@ -96,18 +114,32 @@ pub fn reconcile<W: WorldModel + ?Sized>(
     faults
 }
 
-/// Created, or became physical: a body at its world transform, at rest.
+/// Created, or became physical: a body at its world transform, at rest. One the world model cannot build gets none.
 fn create<W: WorldModel + ?Sized>(
     world: &W,
     physics: &mut PhysicsWorld,
     origin: Pos,
     id: ObjectId,
-) -> Result<(), PhysicsError> {
+) -> Result<(), Fault> {
     remove(physics, id)?;
-    match world.body(id) {
-        Some(row) => physics.add_body(id, &desc(&row, origin)),
+    match world.body(id)? {
+        Some(row) => Ok(physics.add_body(id, &desc(&row, origin))?),
         None => Ok(()),
     }
+}
+
+/// `id`'s row, if it is physical and can be built. One that is not physical loses any body it has; so does one the
+/// world model cannot build, which is a fault (2.1).
+fn row_or_remove<W: WorldModel + ?Sized>(
+    world: &W,
+    physics: &mut PhysicsWorld,
+    id: ObjectId,
+) -> Result<Option<BodyRow>, Fault> {
+    let row = world.body(id);
+    if !matches!(row, Ok(Some(_))) {
+        remove(physics, id)?;
+    }
+    Ok(row?)
 }
 
 fn remove(physics: &mut PhysicsWorld, id: ObjectId) -> Result<(), PhysicsError> {
@@ -121,9 +153,9 @@ fn rebuild<W: WorldModel + ?Sized>(
     physics: &mut PhysicsWorld,
     origin: Pos,
     id: ObjectId,
-) -> Result<(), PhysicsError> {
-    let Some(row) = world.body(id) else {
-        return remove(physics, id);
+) -> Result<(), Fault> {
+    let Some(row) = row_or_remove(world, physics, id)? else {
+        return Ok(());
     };
     if !physics.has_body(id) {
         return create(world, physics, origin, id);
@@ -137,7 +169,7 @@ fn rebuild<W: WorldModel + ?Sized>(
         d.linear_velocity = linear;
         d.angular_velocity = angular;
     }
-    physics.add_body(id, &d)
+    Ok(physics.add_body(id, &d)?)
 }
 
 /// An edit set its transform: exactly the new pose, velocities kept, awake, contact history reset (`set_state`). A
@@ -147,15 +179,15 @@ fn teleport<W: WorldModel + ?Sized>(
     physics: &mut PhysicsWorld,
     origin: Pos,
     id: ObjectId,
-) -> Result<(), PhysicsError> {
-    let Some(row) = world.body(id) else {
-        return remove(physics, id);
+) -> Result<(), Fault> {
+    let Some(row) = row_or_remove(world, physics, id)? else {
+        return Ok(());
     };
     if !physics.has_body(id) || row.kind == BodyKind::Static {
         return rebuild(world, physics, origin, id);
     }
     let (linear, angular) = physics.velocity(id)?;
-    physics.set_state(id, Pose { position: (row.pos - origin).0, rotation: row.rotation }, linear, angular)
+    Ok(physics.set_state(id, Pose { position: (row.pos - origin).0, rotation: row.rotation }, linear, angular)?)
 }
 
 /// One push through pe-physics's bounded `push`. A push on an object that has no body does nothing.
