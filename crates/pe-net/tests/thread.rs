@@ -321,3 +321,62 @@ fn the_arrival_callback_fires_when_messages_reach_the_handle() {
     a.stop().unwrap();
     b.stop().unwrap();
 }
+
+/// A and B over loopback with B welcomed and the link up at A: (A, B, B's key, A's events so far).
+fn linked() -> (NetHandle, NetHandle, MemberKey, Vec<NetEvent>) {
+    let start = Instant::now();
+    let clock: HostClock = Arc::new(move || HostTime(start.elapsed().as_nanos() as i64));
+    let (ia, ib) = (Identity::from_seed(&[1; 32]), Identity::from_seed(&[2; 32]));
+    let (ka, kb) = (MemberKey(ia.public()), MemberKey(ib.public()));
+    let sa = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let sb = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr_a = sa.local_addr().unwrap();
+    let ca = Core::new(Config::new(hello(), true), ia, [1; 32]).unwrap();
+    let cb = Core::new(Config::new(hello(), false), ib, [2; 32]).unwrap();
+    let mut a = NetHandle::spawn(ca, sa, clock.clone(), 4096).unwrap();
+    let mut b = NetHandle::spawn(cb, sb, clock, 4096).unwrap();
+    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a] };
+    assert!(b.command(Command::Dial(invite)));
+    let mut a_events = Vec::new();
+    assert!(until(|| {
+        a_events.extend(a.events());
+        a_events.iter().any(|e| matches!(e, NetEvent::JoinRequest { peer, .. } if *peer == kb))
+    }));
+    let welcome = Welcome { line: [9; 32], epoch_ns: 0, rate_hz: 60, members: vec![], agree: vec![] };
+    assert!(a.command(Command::Admit { peer: kb, welcome }));
+    assert!(until(|| {
+        a_events.extend(a.events());
+        a_events.iter().any(|e| matches!(e, NetEvent::LinkUp { peer } if *peer == kb))
+    }));
+    (a, b, kb, a_events)
+}
+
+/// Whether A sees B's link go down within `until`'s 5 s, printing how long it took.
+fn sees_down(a: &mut NetHandle, kb: MemberKey, mut events: Vec<NetEvent>, how: &str) -> bool {
+    let stopped = Instant::now();
+    let down = until(|| {
+        events.extend(a.events());
+        events.iter().any(|e| matches!(e, NetEvent::LinkDown { peer } if *peer == kb))
+    });
+    println!("{how}: A saw B's link go down: {down}, after {:?}", stopped.elapsed());
+    down
+}
+
+/// A stopping endpoint closes its connections (code 0, `Left`), so its peer sees the link go down at once instead of
+/// after `T_idle` (30 s). The first two-machine run: B's exit left A waiting for the idle timeout (@coordinator-opus).
+#[test]
+fn a_stopped_endpoint_closes_its_connections_and_the_peer_sees_the_link_go_down() {
+    let (mut a, b, kb, events) = linked();
+    b.stop().unwrap();
+    assert!(sees_down(&mut a, kb, events, "stop"), "A saw no LinkDown within 5 s of B's stop");
+    a.stop().unwrap();
+}
+
+/// The same when the handle is dropped without `stop`, as pe-app's session drops its transport.
+#[test]
+fn a_dropped_handle_closes_its_connections_and_the_peer_sees_the_link_go_down() {
+    let (mut a, b, kb, events) = linked();
+    drop(b);
+    assert!(sees_down(&mut a, kb, events, "drop"), "A saw no LinkDown within 5 s of dropping B's handle");
+    a.stop().unwrap();
+}

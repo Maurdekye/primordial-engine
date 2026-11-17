@@ -236,15 +236,27 @@ impl NetHandle {
         None
     }
 
-    /// Stop the thread and wait for it.
+    /// Stop the thread and wait for it: it closes every connection first (6.5).
     pub fn stop(mut self) -> io::Result<()> {
+        self.stop_thread()
+    }
+
+    fn stop_thread(&mut self) -> io::Result<()> {
+        let Some(join) = self.join.take() else { return Ok(()) };
         let _ = self.waker.cmd.send(Command::Stop);
         let _ = self.waker.socket.send_to(&[], self.waker.to);
-        match self.join.take().map(JoinHandle::join) {
-            Some(Ok(r)) => r,
-            Some(Err(_)) => Err(io::Error::other("the network thread panicked")),
-            None => Ok(()),
+        match join.join() {
+            Ok(r) => r,
+            Err(_) => Err(io::Error::other("the network thread panicked")),
         }
+    }
+}
+
+/// A handle dropped without `stop` (pe-app's transport, dropped with the simulation) stops the thread the same way,
+/// so its peers see the connections close rather than wait out `T_idle` (the first two-machine run).
+impl Drop for NetHandle {
+    fn drop(&mut self) {
+        let _ = self.stop_thread();
     }
 }
 
@@ -269,6 +281,16 @@ impl Transport for NetHandle {
         self.pump(false);
         std::mem::take(&mut self.events)
     }
+}
+
+/// Close every connection with code 0 (`Left`) and send the closes before the socket goes (6.5), so each peer
+/// sees the link go down at once rather than after `T_idle`.
+fn shut(core: &mut Core, socket: &UdpSocket, now: HostTime) -> io::Result<()> {
+    core.close_all(now);
+    while let Some(t) = core.poll_transmit() {
+        let _ = socket.send_to(&t.bytes, t.to);
+    }
+    Ok(())
 }
 
 fn run(
@@ -296,7 +318,7 @@ fn run(
                 Command::SetMember(m) => core.set_member(m),
                 Command::StartFirstMember { epoch_ns, rate } => core.start_first_member(now, epoch_ns, rate),
                 Command::SetClockMembers(m) => core.set_clock_members(m),
-                Command::Stop => return Ok(()),
+                Command::Stop => return shut(&mut core, &socket, now),
             }
         }
         if core.poll_timeout().is_some_and(|t| t <= now) {
@@ -345,7 +367,8 @@ fn run(
                     backlog.push_front(o);
                     break;
                 }
-                Err(TrySendError::Disconnected(_)) => return Ok(()),
+                // The handle is gone without a stop (its `Drop` stops first, so this is a backstop).
+                Err(TrySendError::Disconnected(_)) => return shut(&mut core, &socket, now),
             }
         }
         if arrived && let Some(a) = &arrival {
