@@ -99,6 +99,9 @@ struct Sim {
     /// (from ms, until ms): everything every member sends in that window is held and delivered at its end, as a
     /// reliable transport flushes its queue when a dark path returns (pe-net), unlike `blackout_until`, which drops.
     stall_all: Option<(i64, i64)>,
+    /// (period ms, length ms, from ms, until ms, member): repeated stalls, each held and flushed at its end like
+    /// `stall_all`; only that member's uplink when a member is given, else every member's.
+    stall_every: Option<(i64, i64, i64, i64, Option<usize>)>,
     /// A member whose entries peers may refuse as over the budget (the run counts the errors instead of failing).
     flooder: Option<usize>,
     /// Errors `receive` returned (only with a flooder).
@@ -166,6 +169,7 @@ impl Sim {
             last_frame: vec![None; n as usize],
             stall: None,
             stall_all: None,
+            stall_every: None,
             flooder: None,
             refused: 0,
             unpaced: None,
@@ -238,6 +242,14 @@ impl Sim {
                 && self.now < b * MS
             {
                 sent = b * MS;
+            }
+            if let Some((period, len, from, until, who)) = self.stall_every
+                && who.is_none_or(|k| k == i)
+                && self.now >= from * MS
+                && self.now < until * MS
+                && (self.now - from * MS) % (period * MS) < len * MS
+            {
+                sent = self.now - (self.now - from * MS) % (period * MS) + len * MS;
             }
             let (a, b) = self.delay[i];
             let (c, d) = self.delay[j];
@@ -1868,6 +1880,99 @@ fn an_outages_backlog_is_never_sampled_as_lateness() {
         assert!(ms(report) <= 100, "{rate} Hz seed {seed}: a report read {} ms after the blackout", ms(report));
         assert!(ms(lag as i64) <= 150, "{rate} Hz seed {seed}: the cut lag reached {} ms", ms(lag as i64));
         s.assert_same_final_log();
+    }
+}
+
+/// Repeated short stalls (coordinator mddb626a425c8: the outage mark's threshold, 1 s against 0.3 s). Measurement
+/// only: n = 2, 60 Hz, 30 s, hands on both and an edit from B every 10 frames; stalls of `len` ms every `period` ms
+/// from 3 s to 27 s, held and flushed. Returns (late voids, edits voided, longest stand-still of member 0's final
+/// frame after 3 s in ms, mean of present minus final at member 0 from 3 s in ms, highest report in ms, highest cut
+/// lag in ms).
+///
+/// Measured [V, release, main 4dcc0574 + this setting] (seeds 601-604; mark 1 s -> 0.3 s):
+/// - 0.5 s every 3 s, both uplinks: late voids 0 -> 0; stand-still 600 -> 600 ms; mean final lag 583 -> 366 ms;
+///   report 466-483 -> 16 ms; cut lag 466-483 -> 66 ms.
+/// - 0.8 s every 2 s, both: 0 -> 0; 900 -> 900 ms; 1,100-1,116 -> 516-533 ms; 766-783 -> 16 ms; 783 -> 66 ms.
+/// - 0.5 s every 3 s, B only: 0 -> 0; 500-600 -> 500-600 ms; 416-433 -> 350-366 ms; 466-483 -> 16 ms.
+/// - 0.8 s every 2 s, B only: 0 -> 0; 900 -> 800-900 ms; 716-733 -> 500 ms; 766-783 -> 16 ms.
+/// - 0.3 s every 1.5 s, both (at the threshold, so no mark either way): 0 -> 0; reports 266-283 ms both.
+fn repeated_stall_run(silence_s: Option<f64>, period: i64, len: i64, who: Option<usize>, seed: u64) -> [i64; 6] {
+    let mut s = Sim::with(2, seed, |c| {
+        if let Some(x) = silence_s {
+            c.outage_silence_s = x;
+        }
+    });
+    s.clock = Clock(60);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.edit_every = vec![0, 10];
+    s.stall_every = Some((period, len, 3_000, 27_000, who));
+    let ms = |f: i64| f * 1000 / 60;
+    let (mut last, mut since, mut worst) = (Frame(0), 3_000, 0);
+    let (mut lag_sum, mut lag_n, mut report, mut cut_lag) = (0i64, 0i64, i64::MIN, 0u64);
+    for t in (100..=30_000).step_by(100) {
+        s.run(t);
+        let f = s.final_frame(0);
+        if f > last {
+            last = f;
+            since = t;
+        } else if t > 3_000 {
+            worst = worst.max(t - since);
+        }
+        if t > 3_000 {
+            let present = s.clock.frame_at(HostTime(t * MS)).unwrap();
+            lag_sum += present.0 as i64 - f.0 as i64;
+            lag_n += 1;
+            for i in 0..2 {
+                for r in Agreement::own_lateness(&s.nodes[i]) {
+                    report = report.max(r.frames);
+                }
+                cut_lag = cut_lag.max(s.nodes[i].cut_lag_frames());
+            }
+        }
+    }
+    s.assert_same_final_log();
+    let late = s.voids(0).iter().filter(|v| matches!(v.1, VoidReason::Late)).count() as i64;
+    let edits: Vec<EntryRef> = s.edits[1].iter().map(|e| e.0).collect();
+    let edit_voids = s.voids(0).iter().filter(|v| edits.contains(&v.0)).count() as i64;
+    [late, edit_voids, worst, ms(lag_sum / lag_n.max(1)), ms(report), ms(cut_lag as i64)]
+}
+
+#[test]
+fn a_half_second_dropout_is_not_sampled_as_lateness() {
+    // The outage mark at 0.3 s (coordinator mddb626a425c8): a 0.5 s dropout of both uplinks, every 3 s, is an outage.
+    // Its flushed backlog must not reach the reports or the cut lag (at 1 s, they read 466-483 ms), and at n = 2 the
+    // stalls' entries wait rather than void.
+    for seed in [601, 602] {
+        let [late, edits, _, _, report, lag] = repeated_stall_run(None, 3_000, 500, None, seed);
+        assert_eq!((late, edits), (0, 0), "seed {seed}: late voids");
+        assert!(report <= 100, "seed {seed}: a report read {report} ms after a 0.5 s dropout");
+        assert!(lag <= 150, "seed {seed}: the cut lag reached {lag} ms after a 0.5 s dropout");
+    }
+}
+
+#[test]
+#[ignore = "measurement (the outage mark's threshold): cargo test -p pe-agree --release --lib -- --ignored repeated_stalls --nocapture"]
+fn repeated_stalls_at_two_outage_thresholds() {
+    for (period, len, who) in
+        [(3_000, 500, None), (2_000, 800, None), (3_000, 500, Some(1)), (2_000, 800, Some(1)), (1_500, 300, None)]
+    {
+        for silence in [1.0, 0.3] {
+            let mut rows = Vec::new();
+            for seed in [601, 602, 603, 604] {
+                rows.push(repeated_stall_run(Some(silence), period, len, who, seed));
+            }
+            let col = |k: usize| rows.iter().map(|r| r[k].to_string()).collect::<Vec<_>>().join("/");
+            eprintln!(
+                "stall {len} ms every {period} ms ({}), mark {silence} s: late voids {}, edits voided {}, stand-still max {} ms, mean final lag {} ms, report max {} ms, cut lag max {} ms",
+                who.map_or("both".to_string(), |k| format!("member {k} only")),
+                col(0),
+                col(1),
+                col(2),
+                col(3),
+                col(4),
+                col(5)
+            );
+        }
     }
 }
 
