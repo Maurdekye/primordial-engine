@@ -534,6 +534,20 @@ hashed bytes.
 - **Scripted components** (logic.md) declare units through the same description; pe-logic passes them into
   `FieldDesc`, and the same check applies.
 
+**Colours** (@coordinator-opus's ruling m42dc307a66de, on @fable-reviewer's advice md0f7fc43f6ec). A field that holds a
+colour says so in its description: `FieldDesc.color`, a `pe_sim::ColorSpace`. The only space is `LinearSrgb`: linear
+light, sRGB (Rec. 709) primaries, and straight (not premultiplied) alpha in a fourth element. The mark changes nothing
+about the stored floats or the simulation. It tells a reader how they are meant, so WorldApi reads and writes the field
+as a colour (api.md 4.4: hex or an explicit space, never a bare array).
+- **Only on 3 or 4 `F32` elements,** never with a unit and never on padding; registration refuses it anywhere else.
+- **Hashed:** it is part of the description, in the high bits of the field's kind byte (6.6) and in pe-sim's schema
+  hash, so it is in a script component's id (7.9). A field without one has the byte it always had, so no unmarked
+  description changes.
+- **The engine's colours:** `Appearance.base` and `Appearance.emissive`, and `Light.color`. Marking them changed the
+  engine registry's descriptions, so every world's root changed once with this mark (the pit's pinned frame-0 root in
+  pe-world's tests/preset.rs was regenerated); nothing else pinned or saved held one.
+- **Scripted components** may mark a field the same way once pe-logic's manifest carries the mark (not yet).
+
 ## 4. Coordinates: `Pos`, `Offset` and the wall
 
 ### 4.1 The user's rulings
@@ -990,9 +1004,10 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     script asset that registered the id (zero for an engine component; slice D, so a script id names its asset, 7.9)
     and **description** = `lp(name) ‖ row
     size u32 ‖ field count u32 ‖ per field, in offset order: lp(name) ‖ kind u8 ‖ offset u32 ‖ count u32 ‖
-    lp(unit)`, the unit in 3.6's canonical spelling, empty for none. The kind
+    lp(unit)`, the unit in 3.6's canonical spelling, empty for none. The kind byte holds the kind's number in its
+    low five bits and the field's colour space (3.6) in its high three: 0 none, 1 `LinearSrgb`. The kind
     numbering is frozen: U8 0, U16 1, U32 2, U64 3, I8 4, I16 5, I32 6, I64 7, F32 8, F64 9, Bool 10, ObjectRef 11,
-    BlobRef 12, SimBlobRef 13, Pos 14, MemberKey 15, EntryRef 16, Hash 17; a new kind takes the next number;
+    BlobRef 12, SimBlobRef 13, Pos 14, MemberKey 15, EntryRef 16, Hash 17; a new kind takes the next number, up to 31;
   - lines: no entries in M1;
   - modules (slice D; pending commits since logic.md 6.2a): key the script asset id (32); value `flags u8` (bit 0: a
     current row, bit 1: a pending commit; at least one), then `u32 len ‖ current row` if present, then the pending

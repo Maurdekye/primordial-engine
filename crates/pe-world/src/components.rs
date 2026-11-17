@@ -52,6 +52,14 @@ macro_rules! fields {
     };
 }
 
+/// Marks the named fields as colours in linear sRGB (3.6; @coordinator-opus m42dc307a66de).
+fn colours(mut fields: Vec<FieldDesc>, names: &[&str]) -> Vec<FieldDesc> {
+    for f in fields.iter_mut().filter(|f| names.contains(&f.name.as_str())) {
+        f.color = Some(pe_sim::ColorSpace::LinearSrgb);
+    }
+    fields
+}
+
 /// An object's name: UTF-8 bytes in a display blob.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
@@ -197,14 +205,15 @@ impl Component for Appearance {
     const ID: ComponentId = ids::APPEARANCE;
     const NAME: &'static str = "Appearance";
     fn fields() -> Vec<FieldDesc> {
-        fields![Appearance;
+        let f = fields![Appearance;
             "base": base, F32, 4;
             "emissive": emissive, F32, 3;
             "roughness": roughness, F32, 1;
             "metalness": metalness, F32, 1;
             "_pad": _pad, U32, 1;
             "material": material, BlobRef, 1;
-        ]
+        ];
+        colours(f, &["base", "emissive"])
     }
 }
 
@@ -257,14 +266,15 @@ impl Component for Light {
     const ID: ComponentId = ids::LIGHT;
     const NAME: &'static str = "Light";
     fn fields() -> Vec<FieldDesc> {
-        fields![Light;
+        let f = fields![Light;
             "kind": kind, U32, 1;
             "intensity": intensity, F32, 1;
             "range": range, F32, 1, "m";
             "color": color, F32, 3;
             "inner_angle": inner_angle, F32, 1, "rad";
             "outer_angle": outer_angle, F32, 1, "rad";
-        ]
+        ];
+        colours(f, &["color"])
     }
 }
 
@@ -393,6 +403,19 @@ mod tests {
                 ("Protection", 32),
             ]
         );
+    }
+
+    /// The engine's colour fields (3.6; @coordinator-opus m42dc307a66de): `Appearance.base` and `emissive` and
+    /// `Light.color` are linear sRGB, and no other engine field is a colour.
+    #[test]
+    fn the_engine_colours() {
+        let r = engine_registry();
+        let colours: Vec<(&str, &str)> = r
+            .iter()
+            .flat_map(|d| d.fields().iter().filter(|f| f.color.is_some()).map(move |f| (d.name(), f.name.as_str())))
+            .collect();
+        assert_eq!(colours, [("Appearance", "base"), ("Appearance", "emissive"), ("Light", "color")]);
+        assert!(r.iter().flat_map(|d| d.fields()).all(|f| f.color.is_none_or(|c| c == pe_sim::ColorSpace::LinearSrgb)));
     }
 
     #[test]

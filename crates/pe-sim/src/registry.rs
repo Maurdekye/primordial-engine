@@ -92,6 +92,27 @@ impl FieldKind {
     }
 }
 
+/// The colour space of a field that holds a colour (world-model.md 3.6; api.md 4.4; @coordinator-opus
+/// m42dc307a66de). It changes nothing about the stored bytes or the simulation: it tells a reader such as WorldApi
+/// how the floats are meant, so a colour is written and read in one space, never guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ColorSpace {
+    /// Linear light with sRGB (Rec. 709) primaries; a fourth element is straight (not premultiplied) alpha.
+    LinearSrgb,
+}
+
+impl ColorSpace {
+    /// Every space, in code order.
+    pub const ALL: [ColorSpace; 1] = [ColorSpace::LinearSrgb];
+
+    /// The space's code in a description's bytes, 1 and up; 0 is "not a colour" (3.6).
+    pub fn code(self) -> u8 {
+        match self {
+            ColorSpace::LinearSrgb => 1,
+        }
+    }
+}
+
 /// One field: `count` elements of `kind` starting at byte `offset` of the row, in `unit`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FieldDesc {
@@ -102,6 +123,9 @@ pub struct FieldDesc {
     /// The field's unit in [`crate::unit`]'s canonical spelling, or empty for none (world-model.md 3.6). Part of
     /// the description and its hashes; [`ComponentDesc::new`] refuses any other spelling.
     pub unit: String,
+    /// The colour space, if the field is a colour: only on 3 or 4 `F32` elements, never with a unit. Part of the
+    /// description and its hashes, in the high bits of the kind's byte (3.6), so a field without one hashes as before.
+    pub color: Option<ColorSpace>,
 }
 
 impl FieldDesc {
@@ -113,7 +137,31 @@ impl FieldDesc {
             offset: u32::try_from(offset).unwrap_or(u32::MAX),
             count,
             unit: String::new(),
+            color: None,
         }
+    }
+
+    /// The same field as a colour in `space` (checked when the description is built).
+    pub fn with_color(mut self, space: ColorSpace) -> Self {
+        self.color = Some(space);
+        self
+    }
+
+    /// The field's kind and colour space as one byte (world-model.md 3.6): the kind's code in the low five bits,
+    /// the space's code (0 for none) in the high three. A kind code past 31 would read as a colour space, so it
+    /// panics (@engine-architect m3c5f75612d5a).
+    pub fn kind_byte(&self, kind_code: u8) -> u8 {
+        assert!(kind_code < 32, "a kind code takes five bits of the kind byte");
+        kind_code | self.color.map_or(0, ColorSpace::code) << 5
+    }
+
+    /// Splits a [`Self::kind_byte`] into the kind's code and the colour space; `None` for an unknown space.
+    pub fn split_kind_byte(b: u8) -> Option<(u8, Option<ColorSpace>)> {
+        let space = match b >> 5 {
+            0 => None,
+            c => Some(*ColorSpace::ALL.iter().find(|s| s.code() == c)?),
+        };
+        Some((b & 0x1F, space))
     }
 
     /// The same field in `unit` (checked when the description is built).
@@ -156,6 +204,14 @@ impl ComponentDesc {
             if let Err(e) = crate::unit::check_unit(&f.unit) {
                 return bad(format!("field {}: {e}", f.name));
             }
+            if f.color.is_some()
+                && (f.kind != FieldKind::F32
+                    || !(3..=4).contains(&f.count)
+                    || !f.unit.is_empty()
+                    || f.name.starts_with('_'))
+            {
+                return bad(format!("field {} is a colour but not 3 or 4 F32 elements without a unit", f.name));
+            }
             if f.offset != at {
                 return bad(format!("field {} at {} leaves a gap or overlaps (expected {at})", f.name, f.offset));
             }
@@ -179,7 +235,7 @@ impl ComponentDesc {
         for f in &fields {
             h.write_u64(f.name.len() as u64);
             h.write(f.name.as_bytes());
-            h.write_u8(f.kind.code());
+            h.write_u8(f.kind_byte(f.kind.code()));
             h.write_u32(f.offset);
             h.write_u32(f.count);
             h.write_u64(f.unit.len() as u64);
@@ -408,6 +464,37 @@ mod tests {
         let mut r = Registry::new();
         r.register(none).unwrap();
         assert_eq!(r.register(si), Err(Error::SchemaMismatch { component: 2005 }));
+    }
+
+    /// world-model.md 3.6 (@coordinator-opus m42dc307a66de): a colour space is part of the description and its
+    /// hash, only on 3 or 4 F32 elements without a unit, and a field without one hashes as it did before.
+    #[test]
+    fn colour_spaces() {
+        let id = ComponentId(2006);
+        let one = |f: FieldDesc| ComponentDesc::new(id, "c", vec![f]);
+        let plain = one(FieldDesc::new("c", FieldKind::F32, 0, 4)).unwrap();
+        let colour = one(FieldDesc::new("c", FieldKind::F32, 0, 4).with_color(ColorSpace::LinearSrgb)).unwrap();
+        assert_eq!(colour.fields()[0].color, Some(ColorSpace::LinearSrgb));
+        assert_ne!(plain.schema_hash(), colour.schema_hash());
+        assert!(one(FieldDesc::new("c", FieldKind::F32, 0, 3).with_color(ColorSpace::LinearSrgb)).is_ok());
+        for bad in [
+            FieldDesc::new("c", FieldKind::F32, 0, 2),
+            FieldDesc::new("c", FieldKind::F32, 0, 5),
+            FieldDesc::new("c", FieldKind::F64, 0, 3),
+            FieldDesc::new("c", FieldKind::U32, 0, 4),
+            FieldDesc::new("c", FieldKind::F32, 0, 3).with_unit("m"),
+            FieldDesc::new("_c", FieldKind::F32, 0, 4),
+        ] {
+            assert!(one(bad.clone().with_color(ColorSpace::LinearSrgb)).is_err(), "{bad:?} accepted as a colour");
+        }
+        // The byte: an unmarked field's is its kind's code alone, so every description without a colour keeps its hash.
+        let f = FieldDesc::new("c", FieldKind::F32, 0, 4);
+        assert_eq!(f.kind_byte(8), 8);
+        let c = f.with_color(ColorSpace::LinearSrgb);
+        assert_eq!(c.kind_byte(8), 8 | 1 << 5);
+        assert_eq!(FieldDesc::split_kind_byte(8 | 1 << 5), Some((8, Some(ColorSpace::LinearSrgb))));
+        assert_eq!(FieldDesc::split_kind_byte(8), Some((8, None)));
+        assert_eq!(FieldDesc::split_kind_byte(8 | 2 << 5), None);
     }
 
     #[test]

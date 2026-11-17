@@ -182,7 +182,9 @@ fn a_session_s_frame_0_root_is_the_same_on_every_machine() {
     };
     let root = |s: &Session| m1_session(s, BlobStore::default()).expect("a session").root_hash(pe_seams::DomainId(0));
     let r = root(&session);
-    assert_eq!(r.to_string(), "8ea77a8d09a7c8b8a41996f7817c9353d560e43b39946d4f55a36a6948f64a21");
+    // Regenerated when the engine's colour fields were marked (3.6; @coordinator-opus m42dc307a66de): the marks
+    // are in the registry's hashed descriptions.
+    assert_eq!(r.to_string(), "bd9c7c6d7aefcf55933ee6b66cf52a8e0cc76118da3563868381d9af16b3dbe8");
     let w = m1_session(&session, BlobStore::default()).expect("a session");
     assert_eq!((w.line(), w.m1_marker()), (session.line, Some(m1_line())));
     assert_eq!(
