@@ -40,6 +40,8 @@ pub struct VrSink {
     /// The render scale as a viewport: the rectangle drawn from the origin, or `None` for the whole image. The
     /// swapchain keeps its size (render.md 4).
     extent: Option<[u32; 2]>,
+    /// `view_capture`'s server (api.md 8), with the left eye's camera as the player's.
+    captures: Option<pe_render::capture_service::CaptureServer>,
 }
 
 impl VrSink {
@@ -51,7 +53,13 @@ impl VrSink {
         effects: Box<dyn EffectSink + Send>,
         extent: Option<[u32; 2]>,
     ) -> VrSink {
-        VrSink { views: ViewReader::new(slot), presenter, renderer, targets, effects, extent }
+        VrSink { views: ViewReader::new(slot), presenter, renderer, targets, effects, extent, captures: None }
+    }
+
+    /// This sink serving `view_capture`'s orders once a frame, after its draw.
+    pub fn with_captures(mut self, queue: Arc<pe_render::capture_service::CaptureQueue>) -> VrSink {
+        self.captures = Some(pe_render::capture_service::CaptureServer::new(queue));
+        self
     }
 }
 
@@ -109,6 +117,9 @@ impl FrameSink for VrSink {
             return false;
         };
         self.renderer.render_stereo(&presented.scene, cameras, &target);
+        if let Some(c) = self.captures.as_mut() {
+            c.serve(&mut self.renderer, &view, Some(&cameras[0]));
+        }
         true
     }
 
@@ -317,15 +328,23 @@ impl fmt::Display for NotStarted {
 /// XR context is made here, before any window's. `guard` is pe-xr's headset guard: [`Guard::from_env`] with VR
 /// turned on by the configuration, or [`Guard::CLOSED`] in tests. `ring` carries the located hands to the
 /// simulation thread.
+/// What the headset's sink draws with: the presenter, the renderer's settings, where effects go, and
+/// `view_capture`'s queue when an agent may capture (api.md 8).
+pub struct Drawing {
+    pub presenter: Presenter,
+    pub render: RenderSettings,
+    pub effects: Box<dyn EffectSink + Send>,
+    pub captures: Option<Arc<pe_render::capture_service::CaptureQueue>>,
+}
+
 pub fn start(
     discovery: &dyn Discovery,
     guard: &Guard,
     ring: Arc<HandRing>,
     slot: Arc<FrameSlot>,
-    presenter: Presenter,
-    render: RenderSettings,
-    effects: Box<dyn EffectSink + Send>,
+    drawing: Drawing,
 ) -> Result<XrThread, NotStarted> {
+    let Drawing { presenter, render, effects, captures } = drawing;
     let parts =
         open::open_vulkan(discovery, guard, GraspConfig::default(), ring).map_err(NotStarted::NotOpened)?.into_parts();
     // Moved out one by one, so on any unwind from here they drop in reverse, in OpenXR's order: the session, then the
@@ -336,7 +355,10 @@ pub fn start(
     let session = parts.session;
     let renderer = Renderer::new(shared(&gpu), render);
     // The whole image until the render scale comes (@xr-eng's L2, with the 90 Hz pacing work).
-    let sink = VrSink::new(slot, presenter, renderer, targets, effects, None);
+    let mut sink = VrSink::new(slot, presenter, renderer, targets, effects, None);
+    if let Some(q) = captures {
+        sink = sink.with_captures(q);
+    }
     spawn_xr(session, sink).map_err(NotStarted::Thread)
 }
 
@@ -587,7 +609,9 @@ mod tests {
             SimRate::DEFAULT.hz(),
         );
         let slot = Arc::new(FrameSlot::new());
-        match start(&NoRuntime, &Guard::CLOSED, ring(), slot, presenter, RenderSettings::default(), Box::new(Quiet)) {
+        let drawing =
+            Drawing { presenter, render: RenderSettings::default(), effects: Box::new(Quiet), captures: None };
+        match start(&NoRuntime, &Guard::CLOSED, ring(), slot, drawing) {
             Err(NotStarted::NotOpened(NotOpened::Runtime(_))) => {}
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("VR started without a runtime"),

@@ -68,6 +68,8 @@ pub struct Ports {
     pub log: Arc<ChangeLog>,
     /// The build port (api.md 7.1): pe-app's `Builder`, without which `code_check` answers `unavailable`.
     pub builds: Option<Arc<dyn Builds>>,
+    /// The capture port (api.md 8): pe-app's renderer, without which `view_capture` answers `capture_unavailable`.
+    pub captures: Option<Arc<dyn pe_api::capture::Captures>>,
 }
 
 impl Ports {
@@ -77,7 +79,7 @@ impl Ports {
         let queue = Arc::new(EditQueue::new(QUEUE, wake));
         let log = Arc::new(ChangeLog::new());
         queue.track_into(log.clone());
-        Ports { shared: Arc::new(ApiShared::new(genesis, facts)), queue, log, builds: None }
+        Ports { shared: Arc::new(ApiShared::new(genesis, facts)), queue, log, builds: None, captures: None }
     }
 
     /// These ports with the machine's build service, which the WorldApi builds through (api.md 7.1).
@@ -86,13 +88,22 @@ impl Ports {
         self
     }
 
+    /// These ports with the machine's renderer, which `view_capture` draws through (api.md 8).
+    pub fn with_captures(mut self, captures: Arc<dyn pe_api::capture::Captures>) -> Ports {
+        self.captures = Some(captures);
+        self
+    }
+
     /// The WorldApi over these ports, which pe-mcp serves (api.md 6.1).
     pub fn api(&self) -> Arc<dyn WorldApi> {
-        let api = Api::new(ApiWorld(self.shared.clone()), self.queue.clone(), self.log.clone());
-        Arc::new(match &self.builds {
-            Some(b) => api.with_builds(b.clone()),
-            None => api,
-        })
+        let mut api = Api::new(ApiWorld(self.shared.clone()), self.queue.clone(), self.log.clone());
+        if let Some(b) = &self.builds {
+            api = api.with_builds(b.clone());
+        }
+        if let Some(c) = &self.captures {
+            api = api.with_captures(c.clone());
+        }
+        Arc::new(api)
     }
 }
 
