@@ -1485,6 +1485,12 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
     why, in key order, which is Q1 (c)'s notice to the author; each named by asset and commit), which pe-replica
     publishes as S5's `FrameView.activations`. **A known limit:** any member holding an affected object can void
     another's commit anywhere in `c..F`, where today's rule allowed it only at `c`.
+  - **The author's prediction** (logic.md 6.2a option (i); @vdw-physics m42dbfa779451):
+    `World::activate_for_prediction(asset, frame)` performs `end_frame`'s activation of one pending commit without
+    the quorum, right after `end_frame(frame)` on the author's own replica, for a history that is only a prediction
+    and never one whose roots are voted on. It gives exactly what a quorum completed at `frame` would; `None` with
+    nothing pending, and a refusal (a blocked or too-large re-key, a revoked author) changes nothing and leaves the
+    commit pending, never voided.
   - **The deadline** is `attest_window(len, hz) = ceil(2 · T_module · hz)` frames, `T_module = W_fg + len / R_thin +
     T_build` in integer milliseconds (2 s, 1,000 B/s, 20 s; divergence.md 4.2, @iter-bench md6045bca63d9): the
     lamp's 1,213 bytes give 2,786 frames at 60 Hz, the 256 KiB cap 34,098.

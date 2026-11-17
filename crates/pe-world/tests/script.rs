@@ -905,3 +905,48 @@ fn set_activation_stamps_the_commits_frame() {
     assert!(matches!(t.ops.first(), Some(Op::Register { .. })), "other ops untouched");
     ok(&run_at(&mut f.w, &mut f.a, &t, 7));
 }
+
+/// The author's prediction (logic.md 6.2a (i)): `activate_for_prediction` right after `end_frame(c)` gives exactly
+/// the world a quorum completed at `c` gives, re-key included; with nothing pending it is `None`.
+#[test]
+fn a_prediction_equals_the_activation_a_quorum_at_the_same_frame_gives() {
+    let mut f = fx();
+    with_v1(&mut f);
+    let base = f.w.modules()[&ASSET].version;
+    let t = commit(ASSET, Some(base), 2, 1);
+    ok(&run(&mut f.w, &mut f.a, &t));
+    let mut real = f.w.clone();
+    // The author's replica: no quorum at the frame's end, then the prediction.
+    assert_eq!(f.w.end_frame(Frame(1)), FrameEnd::default());
+    let predicted = f.w.activate_for_prediction(ASSET, Frame(1)).expect("pending").expect("activates");
+    // The real history: B attests at 1, and the frame's end activates.
+    ok(&run(&mut real, &mut f.b, &attest_of(&t)));
+    let end = real.end_frame(Frame(1));
+    assert_eq!(end.activated.len(), 1);
+    assert!(predicted.is_some(), "v1 -> v2 re-keys");
+    assert_eq!(predicted, end.activated[0].2.clone());
+    assert!(f.w.pending().is_empty());
+    assert_eq!(f.w.modules(), real.modules());
+    assert_eq!(row(&f.w, blink(2).id()), row(&real, blink(2).id()), "the same re-key");
+    assert_eq!(f.w.store().get_raw(blink(1).id(), oid(LAMP)), None);
+    f.w.verify_tree_cache(DomainId(1)).unwrap();
+    assert_eq!(f.w.activate_for_prediction(ASSET, Frame(2)), None, "nothing pending");
+}
+
+/// A prediction that fails changes nothing and leaves the commit pending (not voided): a blocked re-key here.
+#[test]
+fn a_failed_prediction_changes_nothing_and_leaves_the_commit_pending() {
+    let mut f = fx();
+    with_v1(&mut f);
+    let base = f.w.modules()[&ASSET].version;
+    let t = commit(ASSET, Some(base), 3, 1);
+    ok(&run(&mut f.w, &mut f.a, &t));
+    let kb = pe_seams::test_util::TestKeys::new(1, 3).key(1);
+    f.w.set_claim(oid(LAMP), Claim { hand: oid(HAND), member: kb, since: Frame(1), until: Frame(1000) }).unwrap();
+    let root = f.w.root();
+    let blocked = Some(Blocked { objects: vec![oid(LAMP)], more: 0 });
+    assert_eq!(f.w.activate_for_prediction(ASSET, Frame(1)), Some(Err((VoidKind::RekeyBlockedAtActivation, blocked))));
+    assert_eq!(f.w.root(), root, "nothing changed");
+    assert_eq!(f.w.pending()[&ASSET].void, None, "still pending, not voided");
+    assert_eq!(f.w.modules()[&ASSET].version, base);
+}
