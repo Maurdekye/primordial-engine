@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use pe_replica::{PeWorld, ReplicaImpl};
+use pe_replica::{PeWorld, ReplicaImpl, ScriptRunner};
 use pe_seams::{DomainId, Frame, FrameClock, MemberKey, Offset, Pos, Replica, SimRate};
 use pe_world::{BlobStore, World, perm, preset};
 
@@ -16,13 +16,19 @@ pub const DEV_MEMBER: MemberKey = MemberKey([0x1d; 32]);
 /// A new, empty world at frame 0 under pe-replica's replica, at `rate`. The replica takes the frame clock, so the
 /// view's `sim_time` is on the shared time base (S5). `seed` and `rate` are world settings; they come from the world
 /// once configuration names it (app.md 4, step 1). The cut grid is this build's consensus setting, as in a session
-/// ([`crate::genesis::replica_config`]).
-pub fn open_new(seed: u64, rate: SimRate, clock: Arc<dyn FrameClock>) -> Result<Box<dyn Replica>, String> {
+/// ([`crate::genesis::replica_config`]). `runner` runs the world's scripts (pe-replica's `logic`): pe-app owns it,
+/// since the build service hands it its modules.
+pub fn open_new(
+    seed: u64,
+    rate: SimRate,
+    clock: Arc<dyn FrameClock>,
+    runner: Box<dyn ScriptRunner>,
+) -> Result<Box<dyn Replica>, String> {
     let mut world = World::new(seed, BlobStore::default());
     world.set_rate(rate);
     let config = crate::genesis::replica_config(&crate::genesis::settings(), rate, clock);
     let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).map_err(|e| format!("{e:?}"))?;
-    Ok(Box::new(replica))
+    Ok(Box::new(replica.with_runner(runner)))
 }
 
 /// Where the `i`-th admitted member's hands start, before its first hand input moves them: at chest height over the
@@ -43,8 +49,9 @@ pub fn open_ball_pit(
     me: MemberKey,
     rate: SimRate,
     clock: Arc<dyn FrameClock>,
+    runner: Box<dyn ScriptRunner>,
 ) -> Result<Box<dyn Replica>, String> {
-    ball_pit(preset::ball_pit(seed, BlobStore::default(), Pos::ORIGIN), &[me], me, rate, clock)
+    ball_pit(preset::ball_pit(seed, BlobStore::default(), Pos::ORIGIN), &[me], me, rate, clock, runner)
 }
 
 /// A ball pit `world` with every one of `members` admitted at frame 0 as an admin, in key order so that every machine
@@ -56,6 +63,7 @@ pub(crate) fn ball_pit(
     me: MemberKey,
     rate: SimRate,
     clock: Arc<dyn FrameClock>,
+    runner: Box<dyn ScriptRunner>,
 ) -> Result<Box<dyn Replica>, String> {
     if world.rate() != rate {
         return Err(format!("the ball pit runs at {:?}, the frame clock at {rate:?}", world.rate()));
@@ -74,5 +82,5 @@ pub(crate) fn ball_pit(
     let mut config = crate::genesis::replica_config(&crate::genesis::settings(), rate, clock);
     config.local = Some(me);
     let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).map_err(|e| format!("{e:?}"))?;
-    Ok(Box::new(replica))
+    Ok(Box::new(replica.with_runner(runner)))
 }

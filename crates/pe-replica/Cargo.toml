@@ -8,6 +8,12 @@ description = "The replica (seam S2): one domain's deterministic state machine w
 
 # Skeleton from pe-seams v0 (WS-seams). WS-state, @vdw-physics owns this crate and its manifest; the root Cargo.toml
 # already lists it, so adding dependencies here needs no other change.
+[features]
+# pe-logic's wasmtime runner as a `ScriptRunner` (crate::logic::LogicRunner; @coordinator-opus mba546f07b57f). It adds
+# that adapter only: the step is the same code with or without it, and without it pe-replica builds no wasmtime. Each
+# crate that builds a replica with the runner turns it on in its own manifest.
+logic = ["dep:pe-logic", "dep:pe-sdk", "dep:wasmtime"]
+
 [dependencies]
 bytes.workspace = true
 pe-core = { path = "../pe-core" }
@@ -15,6 +21,10 @@ pe-seams = { path = "../pe-seams" }
 pe-world = { path = "../pe-world" }
 pe-sim = { path = "../pe-sim" }
 pe-physics = { path = "../pe-physics" }
+# The `logic` feature's: the runner, the stage type its context takes, and the engine it compiles modules with.
+pe-logic = { path = "../pe-logic", optional = true }
+pe-sdk = { path = "../pe-sdk", optional = true }
+wasmtime = { workspace = true, optional = true }
 
 [dev-dependencies]
 bytemuck = "1.25"

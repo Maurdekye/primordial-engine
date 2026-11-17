@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pe_agree::NodeConfig;
-use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
+use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl, ScriptRunner};
 use pe_seams::agree::{Cut, CutRef};
 use pe_seams::{DomainId, Frame, FrameClock, Hash, LineId, MemberKey, Pos, Replica, SimRate};
 use pe_world::preset::{self, Session};
@@ -224,6 +224,7 @@ impl Genesis {
     pub fn ball_pit(
         params: &Params,
         clock: Arc<dyn FrameClock>,
+        runner: Box<dyn ScriptRunner>,
     ) -> Result<(Genesis, Box<dyn Replica>, NodeConfig), GenesisError> {
         if params.opener == params.joiner {
             return Err(GenesisError::Members("the two keys are the same"));
@@ -254,7 +255,7 @@ impl Genesis {
         genesis.bounds()?;
         let world = genesis.world()?;
         genesis.root = world.root_hash(DomainId(0));
-        let (replica, node, replica_root) = genesis.start(world, params.opener, clock)?;
+        let (replica, node, replica_root) = genesis.start(world, params.opener, clock, runner)?;
         genesis.replica_root = replica_root;
         Ok((genesis, replica, node))
     }
@@ -299,6 +300,7 @@ impl Genesis {
         &self,
         me: MemberKey,
         clock: Arc<dyn FrameClock>,
+        runner: Box<dyn ScriptRunner>,
     ) -> Result<(Box<dyn Replica>, NodeConfig), GenesisError> {
         if !self.members.iter().any(|m| m.0 == me) {
             return Err(GenesisError::Members("this machine is not one of them"));
@@ -308,7 +310,7 @@ impl Genesis {
         if built != self.root {
             return Err(GenesisError::Root { built, record: self.root });
         }
-        let (replica, node, built) = self.start(world, me, clock)?;
+        let (replica, node, built) = self.start(world, me, clock, runner)?;
         if built != self.replica_root {
             return Err(GenesisError::ReplicaRoot { built, record: self.replica_root });
         }
@@ -473,15 +475,16 @@ impl Genesis {
         preset::m1_session(&session, BlobStore::default()).map_err(|e| GenesisError::World(format!("{e:?}")))
     }
 
-    /// The replica over `world` with `me` local, its root at frame 0, and pe-agree's configuration ([`node_config`]).
-    /// Refuses a clock at another rate than the record's, and a configuration whose consensus hash isn't the
-    /// record's `agree`: on A that can't happen, since A's record takes `agree` from the same function; on B it
-    /// holds even if [`Genesis::check`] was skipped.
+    /// The replica over `world` with `me` local and `runner` running its scripts, its root at frame 0, and pe-agree's
+    /// configuration ([`node_config`]). Refuses a clock at another rate than the record's, and a configuration whose
+    /// consensus hash isn't the record's `agree`: on A that can't happen, since A's record takes `agree` from the same
+    /// function; on B it holds even if [`Genesis::check`] was skipped.
     fn start(
         &self,
         world: World,
         me: MemberKey,
         clock: Arc<dyn FrameClock>,
+        runner: Box<dyn ScriptRunner>,
     ) -> Result<(Box<dyn Replica>, NodeConfig, Hash), GenesisError> {
         if clock.rate_hz() != self.rate.hz() {
             return Err(GenesisError::ClockRate { clock: clock.rate_hz(), record: self.rate.hz() });
@@ -510,7 +513,8 @@ impl Genesis {
         let mut config = replica_config(&node, self.rate, clock);
         config.local = Some(me);
         let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config)
-            .map_err(|e| GenesisError::World(format!("{e:?}")))?;
+            .map_err(|e| GenesisError::World(format!("{e:?}")))?
+            .with_runner(runner);
         let root = replica.live_root(Frame(0)).ok_or_else(|| GenesisError::World("no root at frame 0".into()))?;
         Ok((Box::new(replica), node, root))
     }
@@ -606,6 +610,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
     use crate::clock::LocalClock;
+    use pe_replica::logic::LogicRunner;
     use pe_seams::HostTime;
 
     const A: MemberKey = MemberKey([0xa1; 32]);
@@ -614,6 +619,11 @@ mod tests {
 
     fn clock() -> Arc<dyn FrameClock> {
         Arc::new(LocalClock::new(HostTime(0), SimRate::DEFAULT))
+    }
+
+    fn runner() -> Box<dyn ScriptRunner> {
+        let run = pe_logic::run::RunSettings::default();
+        Box::new(LogicRunner::new(pe_logic::Settings::default(), run).expect("a runner"))
     }
 
     fn params() -> Params {
@@ -635,13 +645,13 @@ mod tests {
     /// and each machine's own member marked local. The record survives its bytes.
     #[test]
     fn the_second_machine_rebuilds_the_first_machine_s_world_from_the_record() {
-        let (g, mut a, node_a) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let (g, mut a, node_a) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
         assert_eq!(g.members, vec![(B, Role::Joiner), (A, Role::Opener)], "sorted by key, with roles");
         let bytes = g.encode();
         let got = Genesis::decode(&bytes).expect("a record");
         assert_eq!(got, g);
         got.check(B, A, BUILD).expect("B's check");
-        let (mut b, node_b) = got.build(B, clock()).expect("B's genesis");
+        let (mut b, node_b) = got.build(B, clock(), runner()).expect("B's genesis");
         let mut source = crate::standin::SoloAgreement::new(g.line());
         let ra = a.root_at_cut(&g.genesis_cut(), &mut source).expect("A's root at frame 0");
         let rb = b.root_at_cut(&g.genesis_cut(), &mut source).expect("B's root at frame 0");
@@ -666,7 +676,7 @@ mod tests {
     /// The line is the record without its roots: they don't move it, every parameter does.
     #[test]
     fn the_line_is_the_hash_of_the_record_without_its_root() {
-        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let (g, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
         let bytes = g.encode();
         let want = preset::genesis_line(&bytes[..bytes.len() - 64]);
         assert_eq!(g.line(), want);
@@ -702,12 +712,12 @@ mod tests {
     /// the one its `agree` hash stands for: the line covers the interval, and the grid comes from the settings.
     #[test]
     fn the_record_s_cut_interval_is_the_settings_and_start_refuses_another() {
-        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let (g, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
         assert_eq!(g.cut_interval_ms, 100, "pe-agree's 0.1 s");
         let mut other = g.clone();
         other.cut_interval_ms += 1;
         let world = other.world().expect("the record's world");
-        match other.start(world, A, clock()) {
+        match other.start(world, A, clock(), runner()) {
             Err(GenesisError::World(m)) => assert!(m.contains("cut interval"), "{m}"),
             r => panic!("expected the cut interval refused, got {:?}", r.map(|_| ())),
         }
@@ -717,12 +727,12 @@ mod tests {
     /// (@coordinator-opus mb725d083d0ce).
     #[test]
     fn a_record_with_one_field_altered_is_refused_naming_it() {
-        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let (g, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
         let refused = |change: &dyn Fn(&mut Genesis)| {
             let mut altered = g.clone();
             change(&mut altered);
             let altered = Genesis::decode(&altered.encode()).expect("still a record");
-            altered.check(B, A, BUILD).and_then(|()| altered.build(B, clock()).map(|_| ()))
+            altered.check(B, A, BUILD).and_then(|()| altered.build(B, clock(), runner()).map(|_| ()))
         };
         assert!(matches!(refused(&|r| r.build = b"another build".to_vec()), Err(GenesisError::Build { .. })));
         assert!(matches!(refused(&|r| r.preset.version += 1), Err(GenesisError::Preset { .. })));
@@ -760,12 +770,12 @@ mod tests {
     /// configuration A starts, and B starts one with the same hash (gate item 1, @coordinator-opus m1be30a8c61b1).
     #[test]
     fn the_record_names_the_consensus_settings_both_machines_run() {
-        let (g, _, node_a) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let (g, _, node_a) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
         assert_eq!(g.agree, node_a.consensus_hash(), "A's record names the settings A runs");
         assert_eq!(g.agree, consensus_hash(), "this build's hash");
         let g = Genesis::decode(&g.encode()).expect("a record");
         g.check(B, A, BUILD).expect("B's check");
-        let (_, node_b) = g.build(B, clock()).expect("B's world");
+        let (_, node_b) = g.build(B, clock(), runner()).expect("B's world");
         assert_eq!(node_b.consensus_hash(), g.agree, "and the settings B runs");
     }
 
@@ -773,11 +783,11 @@ mod tests {
     /// settings, its world right for its own line, is refused there, naming both hashes.
     #[test]
     fn a_record_for_other_consensus_settings_is_refused_at_start() {
-        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let (g, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
         let mut other = g.clone();
         other.agree = Hash([8; 32]);
         let world = other.world().expect("its world");
-        let refused = other.start(world, B, clock()).map(|_| ()).expect_err("other settings");
+        let refused = other.start(world, B, clock(), runner()).map(|_| ()).expect_err("other settings");
         assert_eq!(refused, GenesisError::Agree { record: Hash([8; 32]), mine: consensus_hash() });
     }
 
@@ -785,12 +795,12 @@ mod tests {
     /// whose members aren't those of the world it is started with is refused, naming both lists.
     #[test]
     fn a_world_whose_governance_members_are_not_agreement_s_is_refused() {
-        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let (g, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
         let world = g.world().expect("its world");
         let c = MemberKey([0xcc; 32]);
         let mut other = g.clone();
         other.members = vec![(B, Role::Joiner), (c, Role::Opener)];
-        let refused = other.start(world, B, clock()).map(|_| ()).expect_err("other members");
+        let refused = other.start(world, B, clock(), runner()).map(|_| ()).expect_err("other members");
         assert_eq!(refused, GenesisError::Governance { world: vec![B, A], agree: vec![B, c] });
     }
 
@@ -800,11 +810,11 @@ mod tests {
         let mut p = params();
         p.build = vec![b'x'; MAX_BUILD + 1];
         assert_eq!(
-            Genesis::ball_pit(&p, clock()).map(|_| ()),
+            Genesis::ball_pit(&p, clock(), runner()).map(|_| ()),
             Err(GenesisError::TooLong { field: "build id", len: MAX_BUILD + 1, max: MAX_BUILD })
         );
         p.build = vec![b'x'; MAX_BUILD];
-        let (g, _, _) = Genesis::ball_pit(&p, clock()).expect("a build id at the bound");
+        let (g, _, _) = Genesis::ball_pit(&p, clock(), runner()).expect("a build id at the bound");
         assert_eq!(Genesis::decode(&g.encode()).expect("a record"), g);
     }
 
@@ -812,7 +822,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "past its bounds")]
     fn a_record_past_its_bounds_does_not_encode() {
-        let (mut g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let (mut g, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
         g.preset.name = "x".repeat(MAX_NAME + 1);
         g.encode();
     }
@@ -822,9 +832,9 @@ mod tests {
     fn a_clock_at_another_rate_is_refused() {
         let fast: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), SimRate::new(90).expect("90 Hz")));
         let refused = Err(GenesisError::ClockRate { clock: 90, record: SimRate::DEFAULT.hz() });
-        assert_eq!(Genesis::ball_pit(&params(), fast.clone()).map(|_| ()), refused);
-        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
-        assert_eq!(g.build(B, fast).map(|_| ()), refused);
+        assert_eq!(Genesis::ball_pit(&params(), fast.clone(), runner()).map(|_| ()), refused);
+        let (g, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
+        assert_eq!(g.build(B, fast, runner()).map(|_| ()), refused);
     }
 
     /// Each session's nonce is fresh: two draws differ.
@@ -836,7 +846,7 @@ mod tests {
     /// Bytes that are not a whole record are refused, never a panic: cut short at every length, or with a byte more.
     #[test]
     fn bytes_that_are_not_a_record_are_refused() {
-        let (g, _, _) = Genesis::ball_pit(&params(), clock()).expect("A's genesis");
+        let (g, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("A's genesis");
         let bytes = g.encode();
         for n in 0..bytes.len() {
             assert!(Genesis::decode(&bytes[..n]).is_err(), "cut at {n}");

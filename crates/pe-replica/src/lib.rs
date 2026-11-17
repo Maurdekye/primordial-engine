@@ -15,6 +15,7 @@
 pub mod bodies;
 pub mod drive;
 pub mod hands;
+pub mod logic;
 pub mod mock;
 pub mod peworld;
 pub mod replica;
@@ -22,6 +23,7 @@ pub mod ring;
 pub mod world;
 
 pub use drive::{DriveReport, Driver};
+pub use logic::{ScriptRunner, event_kind};
 pub use peworld::PeWorld;
 pub use replica::{ReplicaConfig, ReplicaImpl};
 pub use world::{Phase, WorldModel, apply_order};

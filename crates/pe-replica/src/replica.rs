@@ -50,8 +50,11 @@
 //! history below it (`base_frame`): there, roots answer `Damaged` (rung 2 again), changes are faults, and no replay
 //! starts from an older `Cv`.
 //!
-//! **Not yet here** (the M1 increments that follow): hands, grips and grab joints (3.3), carried checks (3.4), logic
-//! stages (3, steps 3 and 8), and the view's rows beyond bodies (7).
+//! **Logic stages** (3, steps 3 and 8; crate::logic): `LogicPrePhysics` after the entries and `LogicPostPhysics` after
+//! the write-back, through the runner the replica is given. Without one it refuses to step a world with scripts.
+//!
+//! **Not yet here** (the M1 increments that follow): script activation inside the window (logic.md 6.2, the script
+//! binding's increment 2), carried checks (3.4), and the view's rows beyond bodies (7).
 
 use core::time::Duration;
 use std::borrow::Cow;
@@ -61,14 +64,15 @@ use std::sync::Arc;
 use bytes::Bytes;
 use pe_physics::{CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Transfer, WorldImage};
 use pe_seams::{
-    Advance, ChainId, Class, Cut, CutImport, CutRef, DomainId, EntryRef, EntrySource, FinalCut, Finalized, Frame,
-    FrameClock, FrameView, GroupSel, Hash, Health, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome,
-    PhysicsImage, Pos, Replica, RigTransform, RootError, SignedEntry, SimRate, StepRecord, Tree, ViewCounters,
-    ViewFlags, VoidReason, frames_ceil,
+    Advance, ChainId, Class, Cut, CutImport, CutRef, DomainId, Effect, EffectCause, EffectKey, EffectKind, EntryRef,
+    EntrySource, FinalCut, Finalized, Frame, FrameClock, FrameView, GroupSel, Hash, Health, HostTime, ImportError,
+    MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica, RigTransform, RootError, RunnerIdentity,
+    SignedEntry, SimRate, Stage, StepRecord, Tree, ViewCounters, ViewFlags, VoidReason, frames_ceil,
 };
 
 use crate::bodies;
 use crate::hands;
+use crate::logic::{ScriptCounts, ScriptEvent, ScriptRunner, event_kind};
 use crate::ring::{Policy, Ring};
 use crate::world::{BodyStateRow, HandRow, PhysicsSettings, ShapePart, ShapeRow, WorldModel, apply_order};
 
@@ -216,6 +220,25 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// The frame of the final cut where my root first differed, or could not be computed, since I last agreed: the
     /// view's `Health::Repairing { since }` (S5 v1.5).
     repairing_since: Option<Frame>,
+    /// The script runner it was given (crate::logic). Without one it refuses to step a world with scripts.
+    runner: Option<Box<dyn ScriptRunner>>,
+    /// The frame the live history stopped at for want of a runner, so that each stop counts one fault; cleared once a
+    /// live step passes it (@engine-architect's Low 2 on 4ac9019f).
+    refused_at: Option<Frame>,
+    /// The same for the re-steps off the live history (`root_at_cut`'s scratch), kept apart from the live one.
+    scratch_refused_at: Option<Frame>,
+    /// Each frame's script effects from its latest live step, until the next publication (S5).
+    fx: BTreeMap<Frame, Vec<Effect>>,
+    /// The keys of the effects a view has carried, per frame: a key carried is never carried again (D6).
+    played: BTreeMap<Frame, BTreeSet<EffectKey>>,
+    /// The frames stepped live since the last publication, whose effects the next view compares.
+    fx_stepped: BTreeSet<Frame>,
+    /// Keys a view carried for frames a history off the live steps replaced (a rung-2 import), retracted in the next
+    /// view (@engine-architect's Low 3 on 4ac9019f).
+    retract: Vec<EffectKey>,
+    /// The script events of the frames `root_at_cut`'s scratch re-stepped, for a rebase on that history.
+    scratch_events: BTreeMap<Frame, Vec<(ScriptEvent, Pos)>>,
+    script_counts: ScriptCounts,
 }
 
 /// What the replica keeps of an entry it made a change record for, until `final_frame` passes its frame.
@@ -293,6 +316,15 @@ impl<W: WorldModel> ReplicaImpl<W> {
             recorded: BTreeMap::new(),
             unknown_to: Frame(0),
             repairing_since: None,
+            runner: None,
+            refused_at: None,
+            scratch_refused_at: None,
+            fx: BTreeMap::new(),
+            played: BTreeMap::new(),
+            fx_stepped: BTreeSet::new(),
+            retract: Vec::new(),
+            scratch_events: BTreeMap::new(),
+            script_counts: ScriptCounts::default(),
         };
         if r.is_cut_frame(Frame(0)) {
             let root = r.take_root();
@@ -317,6 +349,17 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// Faults counted so far.
     pub fn faults(&self) -> u64 {
         self.faults
+    }
+
+    /// The replica with its script runner (crate::logic): without one it refuses to step a world with scripts.
+    pub fn with_runner(mut self, runner: Box<dyn ScriptRunner>) -> Self {
+        self.runner = Some(runner);
+        self
+    }
+
+    /// The script counts of its live steps: this machine's, never world state.
+    pub fn script_counts(&self) -> ScriptCounts {
+        self.script_counts
     }
 
     /// Bodies stopped because the step took them out of range.
@@ -395,6 +438,21 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// history) records nothing. Returns the root if the next frame is a cut frame.
     fn step(&mut self, entries: &[&SignedEntry], live: bool) -> Option<Hash> {
         let f = self.frame;
+        // A world with scripts needs a runner (crate::logic). Without one the frame is not stepped: nothing changes,
+        // and each stop counts one fault. A frame's own entries never make a script run in it: a code commit is pending
+        // until a quorum attests it, and activates at the end of a frame (logic.md 6.2a).
+        if self.runner.is_none() && self.world.scripted() {
+            let at = if live { &mut self.refused_at } else { &mut self.scratch_refused_at };
+            if *at != Some(f) {
+                *at = Some(f);
+                self.faults += 1;
+            }
+            return None;
+        }
+        // Stepped: a stop at or below this frame is over, and a later one there counts again.
+        let at = if live { &mut self.refused_at } else { &mut self.scratch_refused_at };
+        *at = at.filter(|&r| r > f);
+        let resimulated = f < self.reached;
         if !pe_core::fpenv::check_and_reset() {
             self.counters.fp_resets += 1;
         }
@@ -424,6 +482,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 }
             }
         }
+        let mut events = Vec::new();
+        self.logic(f, Stage::LogicPrePhysics, live, &mut events);
         // The hand bodies for this frame, rebuilt from the world model's hands and the physics state (3.3).
         let hands = self.world.hands();
         let (faults, reaches) = hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f);
@@ -431,12 +491,16 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let awake_before = self.awake(&hands);
         self.faults += u64::from(self.physics.step_holding(self.dt, &reaches).is_err());
         self.write_back(awake_before, &hands);
+        self.logic(f, Stage::LogicPostPhysics, live, &mut events);
         self.faults += u64::from(self.world.maintain_transforms());
         self.world.end_frame(f);
         let next = Frame(f.0 + 1);
         self.frame = next;
         let root = self.is_cut_frame(next).then(|| self.take_root());
-        if live {
+        if !live {
+            self.scratch_events.insert(f, events);
+        } else {
+            self.note_events(f, events, resimulated);
             self.stepped.insert(f, ids);
             if let Some(root) = root {
                 self.live.insert(next, root);
@@ -447,6 +511,71 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.reached = self.reached.max(next);
         }
         root
+    }
+
+    /// One logic stage (crate::logic): the runner over the world's scripts, then the physics effects of what they
+    /// changed, acted on as an entry's are. Only a live step adds to the script counts.
+    fn logic(&mut self, f: Frame, stage: Stage, live: bool, events: &mut Vec<(ScriptEvent, Pos)>) {
+        let Some(runner) = self.runner.as_deref_mut() else { return };
+        if !self.world.scripted() {
+            return;
+        }
+        let out = self.world.logic_stage(f, stage, runner);
+        if !out.effects.is_empty() {
+            let changed = &out.effects.changed;
+            self.faults += u64::from(bodies::reconcile(&self.world, &mut self.physics, self.origin, changed));
+        }
+        self.counters.fp_resets += out.fp_resets;
+        if live {
+            self.script_counts.host_faults += u64::from(out.host_faults);
+            self.script_counts.missing += out.missing.len() as u64;
+        }
+        events.extend(out.events);
+    }
+
+    /// Keeps frame `f`'s script effects from its live step (S5 `EffectKind::Script`): their keys are the same in every
+    /// replay that emits the same events, so the view carries each once ([`Self::frame_effects`]).
+    fn note_events(&mut self, f: Frame, events: Vec<(ScriptEvent, Pos)>, resimulated: bool) {
+        if events.is_empty() && !self.fx.contains_key(&f) && !self.played.contains_key(&f) {
+            return;
+        }
+        let mut ordinals: BTreeMap<(ObjectId, u64), u32> = BTreeMap::new();
+        let list = (events.into_iter())
+            .map(|(e, at)| {
+                let kind = event_kind(&e.asset, &e.name);
+                let n = ordinals.entry((e.object, kind)).or_insert(0);
+                let ordinal = *n;
+                *n += 1;
+                let cause = EffectCause::Logic;
+                let key = EffectKey { frame: f, cause, object: e.object, kind: EffectKind::Script(kind), ordinal };
+                Effect { key, at, own: false, resimulated, trigger_arrived: None, data: Bytes::from(e.bytes) }
+            })
+            .collect();
+        self.fx.insert(f, list);
+        self.fx_stepped.insert(f);
+    }
+
+    /// The effects the next view carries (S5): for each frame stepped live since the last view, in frame order, those
+    /// no view has carried yet, and the keys of carried ones its latest step no longer produced (`retracted`). Frames
+    /// below the base frame, which no rollback reaches, are forgotten.
+    fn frame_effects(&mut self) -> (Vec<Effect>, Vec<EffectKey>) {
+        let (mut effects, mut retracted) = (Vec::new(), std::mem::take(&mut self.retract));
+        for f in std::mem::take(&mut self.fx_stepped) {
+            let now = self.fx.remove(&f).unwrap_or_default();
+            let played = self.played.entry(f).or_default();
+            let keys: BTreeSet<EffectKey> = now.iter().map(|e| e.key).collect();
+            retracted.extend(played.iter().filter(|k| !keys.contains(k)).copied());
+            played.retain(|k| keys.contains(k));
+            effects.extend(now.into_iter().filter(|e| played.insert(e.key)));
+        }
+        // Every frame stepped since the last view was in `fx_stepped`: nothing is left to keep.
+        debug_assert!(self.fx.is_empty(), "every frame with effects was stepped since the last view");
+        // Rung 1 replays from Cv, which may be below the base frame, and compares what it steps with what was carried.
+        let base = self.base_frame();
+        let keep = self.cv.as_ref().map_or(base, |c| c.0.at.frame.min(base));
+        self.played = self.played.split_off(&keep);
+        self.played.retain(|_, keys| !keys.is_empty());
+        (effects, retracted)
     }
 
     /// The awake bodies of world objects: hand bodies are the replica's own (3.3).
@@ -607,7 +736,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 break;
             };
             let resimulated = self.frame < self.reached;
+            let before = self.frame;
             let root = self.step(&entries.iter().collect::<Vec<_>>(), true);
+            // Refused: a world with scripts and no runner (crate::logic). The live history stops here.
+            if self.frame == before {
+                break;
+            }
             if resimulated && self.frame == self.view.frame {
                 self.note_corrections();
             }
@@ -666,7 +800,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             return Err(RootError::Damaged);
         }
         if at > self.frame {
-            let coming = at <= self.reached || self.replay.is_some();
+            // The live history stopped below the cut for want of a runner: its root won't come.
+            let stopped = self.refused_at.is_some_and(|r| r < at);
+            let coming = !stopped && (at <= self.reached || self.replay.is_some());
             return Err(if coming { RootError::Pending } else { RootError::NotYetSimulated });
         }
         if self.replay.as_ref().is_some_and(|r| at > r.cut.at.frame || r.root.is_none()) {
@@ -708,6 +844,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let live = (self.world.save(), self.physics.save_image().map_err(|_| RootError::Damaged)?, self.frame);
         let tally = (self.faults, self.stopped, self.counters.fp_resets);
         self.scratch_records.clear();
+        self.scratch_events.clear();
         let result = self.scratch_to(cut, from.min(cut.at.frame), source);
         // What the re-step counted is the scratch's: the live counts stay as they were (L1).
         self.scratch.faults += self.faults - tally.0;
@@ -741,7 +878,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let mut root = None;
         while self.frame < at {
             let entries = source.entries_for_cut(cut, self.frame).ok_or(RootError::NotKept)?;
+            let before = self.frame;
             root = self.step(&entries.iter().collect::<Vec<_>>(), false);
+            // Refused: a world with scripts and no runner (crate::logic), so this replica cannot compute the root.
+            if self.frame == before {
+                return Err(RootError::NotYetSimulated);
+            }
         }
         // Stepped onto a grid frame: its root was just taken. Otherwise (a keyframe restored at the cut's frame, or a
         // cut off the grid) take it here; at a grid keyframe the rows are already written, so nothing changes.
@@ -813,6 +955,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
         for (id, (r, seen)) in scratch.into_iter().filter(|(_, (r, _))| (g..at).contains(&r.frame)) {
             self.outcomes.insert(id, (r.frame, r.outcome.clone()));
             self.note(r, seen);
+        }
+        // Their effects too: the next view compares them with what it carried there, as a replay's (Low 3).
+        let mut events = std::mem::take(&mut self.scratch_events);
+        for f in (g.0..at.0).map(Frame) {
+            self.note_events(f, events.remove(&f).unwrap_or_default(), true);
         }
         self.excused.push((g, at));
     }
@@ -926,6 +1073,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         view.health = self.repairing_since.map_or(Health::Agreed, |since| Health::Repairing { since });
         view.changes = std::mem::take(&mut self.pending);
         view.objects = objects;
+        (view.effects, view.retracted) = self.frame_effects();
         view.counters = self.counters;
         self.view = Arc::new(view);
     }
@@ -1294,6 +1442,14 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.held.insert(root, held);
         self.voted.clear();
         (self.replay, self.replayed, self.lost, self.stuck_at, self.unkept_met) = (None, None, None, None, None);
+        (self.refused_at, self.scratch_refused_at) = (None, None);
+        // Below the cut, the imported history replaced mine: what the views carried there is retracted (Low 3).
+        let c = cut.at.frame;
+        let kept = self.played.split_off(&c);
+        let replaced = std::mem::replace(&mut self.played, kept);
+        self.retract.extend(replaced.into_values().flatten());
+        self.fx = self.fx.split_off(&c);
+        self.fx_stepped = self.fx_stepped.split_off(&c);
         self.imported = Some((cut.at, root));
         if self.frame >= self.reached {
             self.replayed = Some((cut.at, root));
@@ -1323,5 +1479,15 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     fn agreed_snapshot(&self) -> Option<(Frame, Arc<dyn std::any::Any + Send + Sync>)> {
         let (frame, saved) = self.agreed_state()?;
         W::snapshot_of(saved, frame).map(|s| (frame, s))
+    }
+
+    /// Its runner's identity (crate::logic), or `None` without one.
+    fn runner_identity(&self) -> Option<RunnerIdentity> {
+        self.runner.as_ref().map(|r| RunnerIdentity(r.identity()))
+    }
+
+    /// The metered bytes of a module its runner holds.
+    fn module(&self, hash: &Hash) -> Option<Bytes> {
+        self.runner.as_ref().and_then(|r| r.module(hash))
     }
 }
