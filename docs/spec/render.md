@@ -274,13 +274,22 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
 - **The drawn time `t_draw`** for a display frame is a setting [X8, with @xr-eng]:
   - **Present (VR's default)** [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]: `t_draw` is the host clock's `now` when the display frame is built, not the runtime's predicted
     display time. Each object is moved from the newest frame view by its velocity over the view's age only (`now −
-    sim_time`, about 0-25 ms), capped at `L_max` = 2 simulation frames in case a view is late. It is never extrapolated
-    by the headset's lead.
+    sim_time`, about 0-25 ms), capped at `L_max` = 2 simulation frames plus one display period in case a view is
+    late. It is never extrapolated by the headset's lead.
+    - **Why the display period is in the cap** [R coordinator, after @diverge-eng]: D2
+      resolves the previous view at the new display frame's `t_draw` (review M3). By then that view can be one
+      simulation period, the publish delay and one display period old: 29.2 ms at a 75 Hz simulation and a 72 Hz
+      display, past a 2-frame cap of 26.7 ms. The old prediction would be clamped and the new one not, and steady
+      motion would show a false change of prediction (0.93 mm at 75/72 [V, D8 test]; about 1.1 cm at 1.5 m/s at
+      120/72). The cap still guards a stalled view: nothing is extrapolated much past the newest one.
+    - **The display period** is measured by the layer from its own frames, so a first frame or a long hitch can't
+      inflate it: the median of its last 15 display-frame intervals, clamped to 4-25 ms (240-40 Hz) [I]. Until the
+      first interval it is the clamp's top, 25 ms. At a 60 Hz simulation on a 90 Hz headset the cap is about 44 ms.
     - **In code** (`DrawnTime::Present { l_max }`): pe-render resolves it as (a) does. The contract is the caller's:
       pe-app's VR sink passes the host's `now` as `LocalPresentation.display_time`, never a prediction, and the
       blends, cues and effects run on that clock too. The eye cameras and `hands` keep OpenXR's predicted time. A
       desktop window passes now plus one refresh, so on the desktop Present is (a). `L_max` comes from the world's
-      simulation rate (33 ms at 60 Hz).
+      simulation rate (33 ms at 60 Hz) plus the measured display period.
     - **The user's ruling, verbatim:** "i think you should just ignore all delays between the pc and headset, and
       assume any latency there is just the responsibility of the individual vr user to manage with their particular
       vr setup". So balls are drawn at the engine's present, the same moment as the user's hands are simulated
@@ -731,7 +740,7 @@ For @coordinator-opus unless marked; my proposal first.
 
 | # | Point | Proposal |
 |---|---|---|
-| R1 (with @xr-eng) | X8, the drawn time | **Ruled** [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]: in VR, Present (`t_draw` = the engine's `now`, extrapolated by the view's age only, capped at 2 simulation frames); never extrapolated to the headset's display time. The desktop keeps (a). (a) and (b) stay as overrides for tests. Misses blend, cue and count under every rule (ruled, review M2). Section 7 has why not `L_max` = 0 |
+| R1 (with @xr-eng) | X8, the drawn time | **Ruled** [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]: in VR, Present (`t_draw` = the engine's `now`, extrapolated by the view's age only, capped at 2 simulation frames plus one display period); never extrapolated to the headset's display time. The desktop keeps (a). (a) and (b) stay as overrides for tests. Misses blend, cue and count under every rule (ruled, review M2). Section 7 has why not `L_max` = 0 |
 | R2 (with @xr-eng) | Infinite far plane in VR's depth layer | Finite in VR (100 × rig scale [I]) until Virtual Desktop's runtime is shown to accept infinite |
 | R3 | Shadows in M1 | One shadow-casting key light; lamps unshadowed |
 | R4 | The graphics path and shader compiler | **Ruled** (on review M1): Vulkan first, with multiview; D3D12 with FXC, two passes, as the fallback; no shipped DXC |
