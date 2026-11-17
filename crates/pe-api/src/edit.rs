@@ -444,6 +444,23 @@ fn whole_row(
     Ok(Row { component: desc.id(), instance: 0, bytes })
 }
 
+/// The longest name, in UTF-8 bytes (api.md 5.3; ruling m4461f04f87ed): under pe-world's inline class (256 B), so a
+/// name's bytes always travel inside the entry that sets it and every machine can show it.
+pub const NAME_MAX: usize = 255;
+/// The most inline bytes (names) one change may carry, its undo's included (api.md 5.3; rulings m4461f04f87ed,
+/// m269866b08b7d). pe-world's own cap is twice this, so an undo whose old values grew through a race still fits.
+pub const INLINE_MAX: usize = 1024;
+
+/// The bytes of the inline-class blobs among `blobs` (names), each once, in ascending order of hash: the one
+/// encoding pe-world takes for `Transaction::inline` (world-model.md 3.4).
+pub fn inline_of(blobs: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> =
+        blobs.iter().filter(|b| pe_world::inline::is_inline(&BlobRef::of(b))).cloned().collect();
+    out.sort_by_key(|b| BlobRef::of(b).hash);
+    out.dedup_by_key(|b| BlobRef::of(b).hash);
+    out
+}
+
 /// The `Name` row for `text`, and the blob it refers to.
 fn name_row(snap: &WorldSnapshot, i: usize, text: &str) -> Result<(Row, BlobRef), Unmapped> {
     let desc = snap.component("Name").ok_or_else(|| not_yet(i, "naming (the world has no Name component)"))?;
@@ -464,6 +481,9 @@ pub struct WorldEdit {
     pub blobs: Vec<Vec<u8>>,
     /// For each of `tx.ops`, the index of the API transaction's op it came from, to name it in a refusal.
     pub op_of: Vec<u32>,
+    /// A recorded inverse (revert): its inline bytes may reach pe-world's cap, not [`INLINE_MAX`], and its own undo
+    /// isn't predicted (ruling m269866b08b7d).
+    pub undo: bool,
 }
 
 /// Why a resolved change has no pe-world payload: the change is refused, or the call can't serve it yet.
@@ -654,6 +674,13 @@ pub fn to_world_built(
                 if let Some(p) = place_under(target(*parent)) {
                     new_place.insert(*new, p);
                 }
+                if name.len() > NAME_MAX {
+                    return Err(refused_at(
+                        prev,
+                        RefusalCode::Invalid,
+                        format!("A name is at most {NAME_MAX} bytes of UTF-8; this one is {}.", name.len()),
+                    ));
+                }
                 let (name_row, r) = name_row(snap, i, name)?;
                 if !blob_refs.contains(&r) {
                     blob_refs.push(r);
@@ -785,8 +812,9 @@ pub fn to_world_built(
         });
     }
     op_of.resize(ops.len(), prev);
-    let tx = Transaction { inline: vec![], actor, label: Some(r.label.clone()), preconditions, ops, blobs: blob_refs };
-    Ok(WorldEdit { tx, blobs, op_of })
+    let inline = inline_of(&blobs);
+    let tx = Transaction { inline, actor, label: Some(r.label.clone()), preconditions, ops, blobs: blob_refs };
+    Ok(WorldEdit { tx, blobs, op_of, undo: false })
 }
 
 #[cfg(test)]
@@ -1079,6 +1107,8 @@ mod tests {
         let cup = BlobRef::of(b"Cup");
         assert_eq!(e.tx.blobs, [cup]);
         assert_eq!(e.blobs, [b"Cup".to_vec()]);
+        // The name's bytes ride inside the entry (world-model.md 3.4).
+        assert_eq!(e.tx.inline, [b"Cup".to_vec()]);
         let Op::Create { new: 0, parent, index: None, rows } = &e.tx.ops[0] else { panic!("{:?}", e.tx.ops) };
         assert_eq!(*parent, Target::Existing(id(10)));
         assert_eq!(rows[0].component, s.component("Name").unwrap().id());

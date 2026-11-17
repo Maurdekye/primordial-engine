@@ -439,7 +439,25 @@ pub fn supersede(tx: &Transaction, later: &Later) -> Option<(Transaction, Vec<u3
     if ops.is_empty() {
         return None;
     }
-    Some((Transaction { ops, ..tx.clone() }, back))
+    // Only the inline bytes a kept op still refers to (world-model.md 3.4): pe-world refuses one no op introduces.
+    let inline = tx.inline.iter().filter(|b| refers(&ops, b)).cloned().collect();
+    Some((Transaction { ops, inline, ..tx.clone() }, back))
+}
+
+/// Whether any of `ops` writes a reference to `blob`: its 40 encoded bytes (hash, then length) inside a row or a
+/// field value. Read without the registry: a byte run that only looks like the reference would need the blob's
+/// 32-byte hash.
+fn refers(ops: &[Op], blob: &[u8]) -> bool {
+    let r = pe_world::BlobRef::of(blob);
+    // The reference as a row holds it: the same Pod layout rows are read with.
+    let needle = bytemuck::bytes_of(&r);
+    let has = |bytes: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    ops.iter().any(|op| match op {
+        Op::Create { rows, .. } => rows.iter().any(|r| has(&r.bytes)),
+        Op::SetRow { row, .. } => has(&row.bytes),
+        Op::SetField { value, .. } => has(value),
+        _ => false,
+    })
 }
 
 /// Moves each object precondition whose object's newest version (`current`) was written by one of `mine` (this
@@ -640,6 +658,35 @@ mod tests {
         assert_eq!(u.preconditions, a.preconditions, "another member's write still refuses it");
         move_preconditions(&mut t, |_| Some(mine_v), &mine);
         assert_eq!(t.preconditions, vec![Precondition::ObjectVersion { id: o, is: mine_v }]);
+    }
+
+    /// A superseded re-send keeps exactly the inline bytes its kept ops refer to (world-model.md 3.4; @design-reviewer's
+    /// Low on 0b974117): a dropped op's name goes, a kept op's and a create's stay, in pe-world's one encoding.
+    #[test]
+    fn a_superseded_re_send_keeps_only_the_names_its_kept_ops_write() {
+        let name_row = |text: &[u8]| Row {
+            component: C,
+            instance: 0,
+            bytes: [vec![0; 8], bytemuck::bytes_of(&pe_world::BlobRef::of(text)).to_vec()].concat(),
+        };
+        let (o1, o2) = (ObjectId::from_u128(41), ObjectId::from_u128(42));
+        let mut a = tx(
+            vec![
+                Op::SetRow { id: Target::Existing(o1), row: name_row(b"Alpha") },
+                Op::SetRow { id: Target::Existing(o2), row: name_row(b"Beta") },
+                Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![name_row(b"Gamma")] },
+            ],
+            vec![],
+        );
+        a.inline = crate::edit::inline_of(&[b"Alpha".to_vec(), b"Beta".to_vec(), b"Gamma".to_vec()]);
+        let mut later = Later::default();
+        later.add(&tx(vec![Op::Delete { id: Target::Existing(o1) }], vec![]), &Slots::default());
+        let (t, back) = supersede(&a, &later).unwrap();
+        assert_eq!(back, vec![1, 2]);
+        assert_eq!(t.inline, crate::edit::inline_of(&[b"Beta".to_vec(), b"Gamma".to_vec()]));
+        assert!(pe_world::inline::canonical(&t.inline));
+        // Nothing dropped: every name stays.
+        assert_eq!(supersede(&a, &Later::default()).unwrap().0.inline, a.inline);
     }
 
     #[test]
