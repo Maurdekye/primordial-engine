@@ -228,16 +228,16 @@ fn components_that_differ_from_the_modules_are_refused() {
 }
 
 /// The toolchain hash a commit carries is the build identity B (logic.md 6.2b), the one pe-app's session compares at
-/// join.
+/// join: the build id's scripts part is B's first 6 bytes in hex (net.rs `build_id`).
 #[test]
 fn the_commits_toolchain_hash_is_the_build_identity() {
     let (builder, _) = builder("identity");
     let tc = Toolchain::current().unwrap_or_else(|e| panic!("{e}"));
     let b = pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(builder.ids().0, b);
-    let hex: String = b.0[..16].iter().map(|x| format!("{x:02x}")).collect();
+    let hex: String = b.0[..6].iter().map(|x| format!("{x:02x}")).collect();
     let id = String::from_utf8(pe_app::net::build_id().to_vec()).unwrap();
-    assert!(id.ends_with(&format!("; scripts {hex}")), "{id}");
+    assert!(id.split("; ").any(|part| part == format!("scripts {hex}")), "{id}");
 }
 
 /// A voter already counted loads the module but attests nothing; a voided commit is skipped.
