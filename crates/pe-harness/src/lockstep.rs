@@ -767,6 +767,7 @@ impl Agreement for LockstepAgreement {
             final_frame: self.finals.last().map(|c| c.cut.at.frame),
             unconfirmed_since: None,
             pending_entries: self.held.values().filter(|e| e.entry.stamp.0 >= ff).count(),
+            view: 0,
         }
     }
 
