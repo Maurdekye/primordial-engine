@@ -1,6 +1,6 @@
 # pe-net: the transport
 
-Status: draft 1.8, 2026-11-13, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.9, 2026-11-17, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
 budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.6 records
@@ -9,7 +9,8 @@ Core's interface and network thread as built (7). Draft 1.7 answers @design-revi
 `T_welcome` ends at the first Up (6.4), duplicates from one client are settled by a value both sides hold (6.2),
 rendezvous records come only from members and are bounded (6.7), and a replaced connection's reliable messages
 are lost with it (3.2). Draft 1.8 records how pe-net is fuzzed (9, the coordinator's ruling ma3d421c9f34f) and
-the one finding so far: varints must be minimal (3.6). Draft 1.2 records the user's ruling on the firewall default
+the one finding so far: varints must be minimal (3.6). Draft 1.9 refuses a hello over its bounds where it is built
+(6.3, @iter-bench's finding). Draft 1.2 records the user's ruling on the firewall default
 (m4534df91cc48; 2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings (mc64f7a24509e) and the review's additions.
@@ -560,6 +561,10 @@ its frame this way (seam S3).
   - the invite id or token;
   - its addresses;
   - whether its clock is ready (5.4).
+- **Its bounds:** the build id and the token are at most 64 bytes each (`MAX_BUILD`, `MAX_TOKEN`), and a peer
+  drops a hello over either as malformed. So this side refuses its own hello where it is built: `Core::new`
+  returns `CoreError::Hello`, and pe-app's `bind` returns `NetError::Hello`. Sent, the hello would be dropped on
+  every peer and the connection would only time out (@iter-bench's finding, 2026-11-17).
 - **The guards, in order, on both sides:** protocol version, build id, self-test digest, line id (R-G1 of
   `docs/spec/divergence.md`).
   - The first difference refuses the connection, with a reason code and the two values, so the joiner is told
