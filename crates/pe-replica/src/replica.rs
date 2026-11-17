@@ -94,7 +94,9 @@ pub struct ReplicaConfig {
     /// publishes a time off that base (@design-reviewer's Low on pe-app slice 2, via @engine-architect m440144e592fc).
     pub clock: Arc<dyn FrameClock>,
     /// The local member, whose hands the frame view marks `OWN_HAND` (S5), so the display draws them at the device's
-    /// late-latched poses. `None` for a replica with no local player (tests, a headless host).
+    /// late-latched poses, and whose own code commits the world model predicts (logic.md 6.2a's option (i)). Such a
+    /// replica must vote through a driver that places its vote holds ([`crate::Driver`]), or it would vote predicted
+    /// roots. `None` for a replica with no local player (tests, a headless host).
     pub local: Option<MemberKey>,
 }
 
@@ -267,7 +269,8 @@ pub struct Scratch {
 impl<W: WorldModel> ReplicaImpl<W> {
     /// A replica of `world` at frame 0: a body for each of its physical objects, in id order, in a physics world with
     /// the world's gravity, origin and rate.
-    pub fn new(world: W, config: ReplicaConfig) -> Result<ReplicaImpl<W>, PhysicsError> {
+    pub fn new(mut world: W, config: ReplicaConfig) -> Result<ReplicaImpl<W>, PhysicsError> {
+        world.set_local(config.local);
         let settings = world.settings();
         let mut physics = PhysicsWorld::new(physics_config(config.physics, &settings, settings.rate)?)?;
         for id in world.physical() {
@@ -838,7 +841,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let tally = (self.faults, self.stopped, self.counters.fp_resets);
         self.scratch_records.clear();
         self.scratch_events.clear();
+        // Off the live history, the model keeps its machine state as it is: no prediction starts or runs in a re-step,
+        // so a root given out never includes one (@engine-architect's Medium on 29b02af0).
+        self.world.set_scratch(true);
         let result = self.scratch_to(cut, from.min(cut.at.frame), source);
+        self.world.set_scratch(false);
         // What the re-step counted is the scratch's: the live counts stay as they were (L1).
         self.scratch.faults += self.faults - tally.0;
         self.scratch.stopped += self.stopped - tally.1;
@@ -1162,6 +1169,16 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             }
         }
         self.run(present, &*source, &mut budget, &mut out);
+        // The local member's prediction of its own code commit ended (logic.md 6.2a's option (i)): step again from its
+        // commit frame under the rule, in this advance (`WorldModel::take_replay_from`).
+        if let Some(c) = self.world.take_replay_from() {
+            let to = c.max(self.rollback_floor());
+            if let Some(k) = (to < self.frame).then(|| self.roll_back(to)).flatten() {
+                out.rolled_back_to = Some(out.rolled_back_to.map_or(k, |r| r.min(k)));
+                self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0 - k.0);
+            }
+            self.run(present, &*source, &mut budget, &mut out);
+        }
         // The ring's policy holds without a finalize too, so memory stays logarithmic in the unconfirmed span.
         self.ring.trim(self.config.policy, self.frame, self.floor_frame());
         self.counters.frames_resimulated += out.resimulated;
@@ -1466,6 +1483,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     fn agreed_snapshot(&self) -> Option<(Frame, Arc<dyn std::any::Any + Send + Sync>)> {
         let (frame, saved) = self.agreed_state()?;
         W::snapshot_of(saved, frame).map(|s| (frame, s))
+    }
+
+    /// The world model's holds: the local member's prediction of its own code commit (logic.md 6.2a's option (i)).
+    fn vote_holds(&self) -> Vec<Frame> {
+        self.world.vote_holds()
     }
 
     /// Its runner's identity (crate::logic), or `None` without one.

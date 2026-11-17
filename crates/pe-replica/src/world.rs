@@ -258,6 +258,26 @@ pub trait WorldModel: Send {
         LogicFx::default()
     }
 
+    // the author's prediction of its own code commit (logic.md 6.2a's option (i))
+
+    /// The local member ([`crate::ReplicaConfig::local`]), whose own code commits the model predicts. Called once, when
+    /// the replica is made. The default, a model without scripts, ignores it.
+    fn set_local(&mut self, _local: Option<MemberKey>) {}
+    /// Where a prediction that just ended started, `c`: the replica steps again from there under the rule, at once.
+    /// Taken: `None` until the next prediction ends. The default never predicts.
+    fn take_replay_from(&mut self) -> Option<Frame> {
+        None
+    }
+    /// The frames from which this machine may not vote while it predicts (S2 v1.7's `vote_holds`): `c + 1` while a
+    /// prediction stands or its replay is pending. The default holds none.
+    fn vote_holds(&self) -> Vec<Frame> {
+        Vec::new()
+    }
+    /// Whether the replica is stepping off its live history (`root_at_cut`'s re-step from a first difference): the
+    /// model's machine state must not change there, so no prediction starts or runs in such a step. The default has
+    /// no such state.
+    fn set_scratch(&mut self, _scratch: bool) {}
+
     // what the physics reads
 
     /// An object's physics view, or `None` if it is not physical.
