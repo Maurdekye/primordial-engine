@@ -1367,4 +1367,32 @@ mod lamp {
             assert_eq!(LAMPS.map(|n| intensity(&later, n)), [1.0, 0.0, 0.0]);
         });
     }
+
+    /// The inbox describes a module as a commit of a version registers it, without holding it: the hash of its
+    /// metered bytes and its own components under the version's ids, the lamp's Blink and Glow. A frame later the
+    /// runner still holds nothing, and the lamp is missing.
+    #[test]
+    fn the_inbox_describes_a_module_without_holding_it() {
+        big_stack(|| {
+            let fx = fixture_of(&lit());
+            let mut r = runner(false);
+            let d = r.inbox().describe(wasm(), &v()).expect("the lamp describes");
+            assert_eq!((&d.module, &d.components), (&parts().0, &parts().1));
+            assert_eq!(d.components.iter().map(|c| c.name()).collect::<Vec<_>>(), ["Blink", "Glow"]);
+            let faulted = BTreeSet::new();
+            let guard = |_: ObjectId| false;
+            let check = |_: ComponentId, _: ObjectId, _: &[u8]| -> Result<(), String> { Ok(()) };
+            let world = StageWorld {
+                frame: Frame(0),
+                line: fx.line,
+                rate_hz: 60,
+                guard: &guard,
+                faulted: &faulted,
+                check: &check,
+            };
+            let out = r.run_stage(Stage::LogicPrePhysics, &fx.scripts, &mut fx.store.clone(), &world);
+            assert!(!r.holds(&d.module));
+            assert_eq!(out.missing, vec![LAMP, [8; 32]]);
+        });
+    }
 }
