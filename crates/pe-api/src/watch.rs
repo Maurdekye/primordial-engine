@@ -26,6 +26,7 @@ use pe_world::edit::{Actor, Op, Target, Transaction};
 
 use crate::changes::Owner;
 use crate::edit::WorldEdit;
+use crate::names::Names;
 use crate::outcome::map_refusal;
 use crate::ports::Snapshot;
 use crate::world::{WorldView, version_text};
@@ -43,11 +44,20 @@ pub fn producer(a: &Actor) -> Producer {
     }
 }
 
-/// The API's name for a component, or one of its fields (`"Transform.position"`), as `set` takes it.
-fn field_name(snap: &WorldSnapshot, c: ComponentId, field: Option<u16>) -> String {
-    let Some(d) = snap.schema().find(|d| d.id() == c) else { return format!("#{:x}", c.0) };
-    let Some(f) = field.and_then(|i| d.fields().get(usize::from(i))) else { return d.name().to_string() };
-    format!("{}.{}", d.name(), crate::schema::shown(d.name(), &f.name))
+/// The API's name for a component on `obj`, or one of its fields (`"Transform.position"`), as `set` takes it there
+/// (api.md 4.3): bare where that singles it out, else its full form. A script's tag, which an attach or detach
+/// writes, is `pe.tag@a:<64 hex>` while its version is active.
+fn field_name(snap: &WorldSnapshot, names: &Names, obj: ObjectId, c: ComponentId, field: Option<u16>) -> String {
+    let Some(d) = snap.component_desc(c) else { return format!("#{:x}", c.0) };
+    if d.name() == pe_world::script::TAG_NAME {
+        return names
+            .tags()
+            .find(|(_, t)| **t == c)
+            .map_or_else(|| d.name().to_string(), |(a, _)| format!("{}@{}", d.name(), crate::resolve::asset_text(a)));
+    }
+    let comp = names.shown_on(&names.attached(snap, obj.into()), c).unwrap_or_else(|| d.name().to_string());
+    let Some(f) = field.and_then(|i| d.fields().get(usize::from(i))) else { return comp };
+    format!("{comp}.{}", crate::schema::shown(d.name(), &f.name))
 }
 
 fn value(view: &WorldView, id: ObjectId, field: &str) -> Option<Json> {
@@ -72,6 +82,7 @@ fn touched(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSnapsho
         WorldOutcome::Refused { .. } | WorldOutcome::Unknown { .. } | WorldOutcome::Dropped { .. } => &[],
     };
     let mut t = Touched { created: made.iter().map(|id| ObjectId::from(*id)).collect(), ..Default::default() };
+    let names = Names::new(snap);
     let at = |x: &Target| match x {
         Target::Existing(id) => Some(ObjectId::from(*id)),
         Target::New(k) => made.get(*k as usize).map(|id| ObjectId::from(*id)),
@@ -84,11 +95,13 @@ fn touched(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSnapsho
             Op::Delete { id } => t.deleted.extend(at(id)),
             Op::Reparent { id, .. } => t.reparented.extend(at(id)),
             Op::SetField { id, component, field, .. } => {
-                t.set.extend(at(id).map(|o| (o, field_name(snap, *component, Some(*field)))))
+                t.set.extend(at(id).map(|o| (o, field_name(snap, &names, o, *component, Some(*field)))))
             }
-            Op::SetRow { id, row } => t.set.extend(at(id).map(|o| (o, field_name(snap, row.component, None)))),
+            Op::SetRow { id, row } => {
+                t.set.extend(at(id).map(|o| (o, field_name(snap, &names, o, row.component, None))))
+            }
             Op::RemoveRow { id, component, .. } => {
-                t.set.extend(at(id).map(|o| (o, field_name(snap, *component, None))))
+                t.set.extend(at(id).map(|o| (o, field_name(snap, &names, o, *component, None))))
             }
             // A script's ops create, delete and move nothing; an activation's re-key reaches watch through S5's
             // `FrameView.activations`, not an entry (@coordinator-opus m5dcad30c0dd8).

@@ -72,8 +72,17 @@ pub fn summary(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSna
         Target::New(k) => made.get(*k as usize).map_or_else(|| "a new object".into(), |id| name(snap, *id)),
         Target::Root => "the world".into(),
     };
-    let comp = |c: pe_sim::ComponentId| {
-        snap.schema().find(|d| d.id() == c).map_or_else(|| format!("#{:x}", c.0), |d| d.name().to_string())
+    let names = crate::names::Names::new(snap);
+    let comp =
+        |c: pe_sim::ComponentId| snap.component_desc(c).map_or_else(|| format!("#{:x}", c.0), |d| d.name().to_string());
+    // A script's tag, which only attach and detach write: the script, while that version is active (api.md 4.3).
+    let script_of_tag = |c: pe_sim::ComponentId| {
+        snap.component_desc(c).filter(|d| d.name() == pe_world::script::TAG_NAME).map(|_| {
+            names.tags().find(|(_, t)| **t == c).map_or_else(
+                || "a script".to_string(),
+                |(a, _)| format!("script {}…", a[..4].iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            )
+        })
     };
     let field = |c: pe_sim::ComponentId, f: u16| {
         snap.schema()
@@ -96,8 +105,14 @@ pub fn summary(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSna
             Op::Delete { id } => format!("deleted {}", obj(id)),
             Op::Reparent { id, parent, .. } => format!("moved {} under {}", obj(id), obj(parent)),
             Op::SetField { id, component, field: f, .. } => format!("set {} on {}", field(*component, *f), obj(id)),
-            Op::SetRow { id, row } => format!("set {} on {}", comp(row.component), obj(id)),
-            Op::RemoveRow { id, component, .. } => format!("removed {} from {}", comp(*component), obj(id)),
+            Op::SetRow { id, row } => match script_of_tag(row.component) {
+                Some(s) => format!("attached {s} to {}", obj(id)),
+                None => format!("set {} on {}", comp(row.component), obj(id)),
+            },
+            Op::RemoveRow { id, component, .. } => match script_of_tag(*component) {
+                Some(s) => format!("detached {s} from {}", obj(id)),
+                None => format!("removed {} from {}", comp(*component), obj(id)),
+            },
             Op::Undelete { id } => format!("restored {}", name(snap, *id)),
             // Slice D (world-model.md 7.9): logic ops name no object; the summary's cap trims a long list.
             Op::Register { components } => {

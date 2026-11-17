@@ -20,7 +20,8 @@ pub struct ObjInfo {
     pub creator: MemberId,
     pub held_by: Option<MemberId>,
     pub protected_by: Option<MemberId>,
-    /// Component type names, instances after the first as `Type#n` (api.md 4.1).
+    /// Component type names, instances after the first as `Type#n` (api.md 4.1); a script's component by its full form
+    /// (`Name@a:<64 hex>`) where its bare name doesn't single it out on this object (`crate::names`).
     pub types: Vec<String>,
 }
 
@@ -39,6 +40,16 @@ pub trait Snapshot: Send + Sync {
     /// One component's fields as JSON, positions given relative to `frame` (`"parent"`, an object, `"me"`,
     /// `"world_origin"`; a root's default is its exact `"pos"`, api.md 4.4).
     fn fields(&self, id: ObjectId, component: &str, frame: &ObjRef) -> Option<BTreeMap<String, Json>>;
+    /// A projection's read of `name` on one object: its one component keyed by `name`, or, where the bare name is
+    /// ambiguous on the object, every match keyed by its full form (api.md 4.3; ruling m4336b4c0c296).
+    fn projected(&self, id: ObjectId, name: &str, frame: &ObjRef) -> Vec<(String, BTreeMap<String, Json>)> {
+        self.fields(id, name, frame).map(|f| (name.to_string(), f)).into_iter().collect()
+    }
+    /// Whether the object has a component `name` names, read with no object in mind: a bare name matches any
+    /// component so named, a qualified one only its own (`crate::names`).
+    fn has(&self, info: &ObjInfo, name: &str) -> bool {
+        info.types.iter().any(|x| x == name || x.split(['#', '@']).next() == Some(name))
+    }
     /// Distance in metres between two objects' world positions, or from the caller's own head for `"me"`
     /// (`near`, api.md 5.2). None when either is unknown.
     fn distance(&self, a: ObjectId, b: &ObjRef) -> Option<f64>;

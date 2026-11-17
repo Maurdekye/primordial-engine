@@ -152,6 +152,33 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
   lowercase, with no sign: each id has exactly one spelling, so ids may be compared as text.
 - **Paths**: `"/Table/Lamp (left)"` addresses by names from the root; names need not be unique, so a path matching
   more than one object is refused as `ambiguous`, listing the matches.
+- **Component type names** (ruling mcb82006f558c, after @fable-reviewer mdb2c66012fde; `pe-api/src/names.rs`). Two
+  scripts can declare the same type name, every version of a script registers its own types, and under copy-on-write
+  every forked copy of a script will declare its own `Spin`, so a bare name is resolved where it is used:
+  - **Visible types:** the engine's (`Node` left out) and those of each script's active version. A pending, voided
+    or replaced version's types are never shown and never resolve. A version's tag (`pe.tag`) is never shown; only
+    `attach` and `detach` (section 7) write it.
+  - **A call that names an object** (`set`, `add`, `remove`) resolves a bare name among the
+    engine's types and those of the scripts attached to that object: those whose active tag it carries, including
+    attaches and detaches by earlier ops of the same change. One match resolves. Two are refused as `invalid`,
+    listing the qualified forms. An engine name that an attached script also declares counts as two, so a later
+    engine type can never silently rebind a saved name. No match where some script declares the name is refused
+    with "attach the script first".
+  - **A call with no object** (a query's `has`, `schema`): a read takes every match. `schema` with a `type` that
+    names more than one is refused, listing the qualified forms. A write always names an object.
+  - **A query's projection** reads each selected object by that object's names. Where a bare name is ambiguous on an
+    object, it reads every match, keyed by full form (`{"Spin@a:<A>": …, "Spin@a:<B>": …}`), and a field list
+    applies to each. Elsewhere the key is the bare name. Never silent, never refused for one object of many (ruling
+    m4336b4c0c296).
+  - **Qualified forms** are always accepted, whatever is attached: `Spin@a:<hex>` with the script's id or any unique
+    prefix of at least 4 hex digits, in either case (as git takes commit prefixes), and `Transform@engine`. A prefix that matches more
+    than one script is refused, listing them.
+  - **Responses** name a type bare where the bare name resolves to it on that object, and by its full form
+    (`Spin@a:` and 64 hex digits, or `Name@engine`) where it doesn't: an object's `types`, a `*` projection's keys,
+    a template's `holds`, `watch`'s `set`. `schema`'s list gives each script type's bare name with its `script`. An
+    attach or detach shows in `watch` as `pe.tag@a:<64 hex>` and in `history` as "attached script …".
+  - **An agent's saved bare name** may become ambiguous later, when a second script declaring the name is attached
+    to the object. It then gets the refusal with the qualified forms, never a write to the wrong type.
 - **New objects in a transaction** get a local reference, `"as": "$cube"`, which later ops in the same transaction
   may use. The result maps each reference to its id and version.
 - **Ids of created objects are known before ordering**: an id is BLAKE3 over (the authoring line's id, author key,
@@ -496,16 +523,18 @@ Behaviour:
 
 ### 5.6 `schema`
 
-- Without a type: the list of component types `{type, summary}` and the world's templates `{name, summary}`, and the
-  schema `version`. Small on purpose.
+- Without a type: the list of visible component types `{name, summary}`, a script's with its `script` (`"a:…"`;
+  4.3; S6 v1.8, `Brief.script`), the world's templates `{name, summary}`, and the schema `version`. Small on purpose.
+- `type` takes a name as a read with no object does (4.3). The answer names a script's type by its full form.
 - With a type: a JSON Schema per field, with `x-` annotations standard validators ignore (gnosarium-ux 3.2):
   `x-unit` (the registry's unit in its canonical spelling, world-model.md 3.6: `m`, `kg/m^3`, `1/s`, `rad`, …; absent
   for a field without one); `x-sync` (`synced`, or `unsynced` when M2 brings per-player fields; the
   inspector marks unsynchronized fields with a shape, Q12); `x-protected` (part of a protection); `x-read-only` (the
   engine writes it; an edit is refused as `invalid`).
 - With a template: what it holds.
-- `version` is a hash of the registry and of the template list (so `since` notices a template added, removed or
-  renamed), which is versioned by frame (plan 2.1); a logic edit can add a component type
+- `version` is a hash of the registry, of each script's active version, and of the template list (so `since`
+  notices a template added, removed or renamed, and a version's types appearing at its activation, not at its
+  commit, which registers them), which is versioned by frame (plan 2.1); a logic edit can add a component type
   (section 7). `schema` with `since: <version>` returns `unchanged` when it matches. A schema change also appears in
   `watch` (`session`).
 
@@ -642,7 +671,8 @@ WS-logic (@iter-bench) owns what a script is, how it compiles and how it runs (`
   `quorum_unreachable` or the world's other kinds; `frame`; `failed`: each member who couldn't build it, with the
   reason's name, never compiler output). `history` shows it as the change's status. Without it an agent would see
   `final` for a version that never ran.
-- Component types a script declares appear in `schema` once it is active, with a new schema version.
+- Component types a script declares appear in `schema` once it is active, with a new schema version, each with its
+  `script`. Agents name them as 4.3 says: bare among the scripts attached to the object, else `Spin@a:<hex>`.
 - `code.test` (a fork with random rollbacks) and `fork.*` are M2.
 
 ### 7.1 The build port and the machine lane
@@ -1042,6 +1072,8 @@ advice m82fcb9fcc6d0):
   - **S6 v1.6** (pe-seams v1.9, @engine-architect): `Outcome.resent_as: Option<TxId>` (5.3.2, 9.4); for held
     batches, `Outcome.held`, `WorldApi::held(caller, handle, action) -> Vec<Outcome>`, `SessionInfo.held` and the
     `held_discarded` session event.
+  - **S6 v1.8** (@engine-architect, 88ea0a5c): `Brief.script: Option<String>`, a script component type's script as
+    `"a:<64 hex>"`, left out for the engine's types (4.3, 5.6).
     **Beside S3**, in pe-api's own ports: `ChangeLog::confirm_cut` takes each void with its `VoidReason`, which
     pe-app copies from agreement's `Voided` events.
 

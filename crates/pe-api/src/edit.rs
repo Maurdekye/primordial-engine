@@ -21,6 +21,7 @@ use pe_sim::FieldKind;
 use pe_world::edit::{Actor, AssetTarget, Op, Precondition, Row, Target, Transaction};
 use pe_world::{BlobRef, WorldSnapshot};
 
+use crate::names::Names;
 use crate::resolve::{Obj, ROp, Resolved, Script, asset_text};
 use crate::world::{WorldView, parse_version};
 
@@ -120,7 +121,35 @@ fn encode_one(kind: FieldKind, v: &Json) -> Result<Vec<u8>, &'static str> {
 }
 
 /// `Component.field` = `v` as pe-world's `SetField` on `id`.
-fn set_field(snap: &WorldSnapshot, i: usize, id: Target, key: &str, v: &Json) -> Result<Op, Unmapped> {
+/// The component names on one target object: the frame's names and the scripts attached to it, those an earlier op of
+/// this change attaches or detaches included (`crate::names`; ruling mcb82006f558c).
+struct On<'a> {
+    names: &'a Names,
+    attached: Vec<pe_world::script::AssetId>,
+}
+
+impl On<'_> {
+    /// The component `name` names on the object, or the refusal's text.
+    fn desc<'s>(&self, snap: &'s WorldSnapshot, name: &str) -> Result<&'s pe_sim::ComponentDesc, String> {
+        let c = self.names.resolve_on(&self.attached, name).map_err(|e| e.message(name))?;
+        snap.component_desc(c).ok_or_else(|| format!("There is no component {name:?}."))
+    }
+
+    /// `key` (`Component.field`) with the engine's Transform named `Transform`, if its component resolves to it.
+    fn is_transform(&self, snap: &WorldSnapshot, key: &str) -> Option<String> {
+        let (comp, field) = key.split_once('.')?;
+        let d = self.desc(snap, comp).ok()?;
+        (d.id() == pe_sim::ComponentId::TRANSFORM).then(|| format!("Transform.{field}"))
+    }
+}
+
+/// Whether `name` is written as the engine's Transform (bare or qualified): for [`Dirty`], which only needs to know
+/// that a placement may change (a bare name a script also declares is refused when it maps).
+fn transform_name(name: &str) -> bool {
+    name == "Transform" || name == "Transform@engine"
+}
+
+fn set_field(snap: &WorldSnapshot, on: &On, i: usize, id: Target, key: &str, v: &Json) -> Result<Op, Unmapped> {
     let bad = |message: String| {
         let mut f = refusal(RefusalCode::Invalid, message);
         f.op = Some(i as u32);
@@ -131,8 +160,10 @@ fn set_field(snap: &WorldSnapshot, i: usize, id: Target, key: &str, v: &Json) ->
         Unmapped::Refused(f)
     };
     let (comp, field) = key.split_once('.').ok_or_else(|| bad(format!("{key:?} isn't Component.field.")))?;
+    let desc = on.desc(snap, comp).map_err(bad)?;
+    let transform = desc.id() == pe_sim::ComponentId::TRANSFORM;
     // Rotations are written as the stored quaternion, from either form (api.md 4.4).
-    if comp == "Transform" && (field == "rotation_deg" || field == "rotation_quat") {
+    if transform && (field == "rotation_deg" || field == "rotation_quat") {
         let n: Option<Vec<f64>> = v.as_array().and_then(|a| a.iter().map(Json::as_f64).collect());
         let q = match (field, n.as_deref()) {
             ("rotation_deg", Some(&[x, y, z])) if [x, y, z].iter().all(|f| f.is_finite()) => {
@@ -148,12 +179,11 @@ fn set_field(snap: &WorldSnapshot, i: usize, id: Target, key: &str, v: &Json) ->
             ("rotation_deg", _) => return Err(bad(format!("{key} takes [x, y, z] in degrees."))),
             _ => return Err(bad(format!("{key} takes [x, y, z, w]."))),
         };
-        return set_field(snap, i, id, "Transform.rot", &serde_json::json!(q));
+        return set_field(snap, on, i, id, "Transform@engine.rot", &serde_json::json!(q));
     }
-    if comp == "Transform" && (field == "pos" || field == "chunk") {
+    if transform && (field == "pos" || field == "chunk") {
         return Err(bad("Set Transform.position, in a named frame, rather than the stored pos and chunk.".into()));
     }
-    let desc = snap.component(comp).ok_or_else(|| bad(format!("There is no component {comp:?}.")))?;
     let (index, f) = desc
         .fields()
         .iter()
@@ -187,6 +217,9 @@ struct Dirty {
     reframed: std::collections::HashSet<(bool, u128)>,
 }
 
+/// Attaches and detaches by target ([`tkey`]), in op order.
+type Tagged = std::collections::HashMap<(bool, u128), Vec<([u8; 32], bool)>>;
+
 fn tkey(t: Target) -> Option<(bool, u128)> {
     match t {
         Target::Existing(o) => Some((false, o.to_u128())),
@@ -217,9 +250,13 @@ impl Dirty {
         };
         match op {
             ROp::Reparent { target: t, .. } => mark(t, true),
-            ROp::Set { target: t, fields } if fields.keys().any(|k| k.starts_with("Transform.")) => mark(t, false),
+            ROp::Set { target: t, fields }
+                if fields.keys().any(|k| k.split_once('.').is_some_and(|(c, _)| transform_name(c))) =>
+            {
+                mark(t, false)
+            }
             ROp::Add { target: t, component, .. } | ROp::Remove { target: t, component }
-                if component == "Transform" =>
+                if transform_name(component) =>
             {
                 mark(t, true)
             }
@@ -232,7 +269,7 @@ impl Dirty {
 fn frame_of(snap: &WorldSnapshot, id: pe_core::ObjectId) -> Option<pe_core::ObjectId> {
     let mut at = snap.parent(id);
     while let Some(p) = at {
-        if snap.info(p).is_some_and(|i| i.types.iter().any(|t| t == "Transform")) {
+        if snap.components_on(p).contains(&pe_sim::ComponentId::TRANSFORM) {
             return Some(p);
         }
         at = snap.parent(p);
@@ -285,7 +322,7 @@ fn set_position(
     };
     let range = || bad("That position is outside the world's range.".into());
     if let Target::Existing(o) = id
-        && !snap.info(o).is_some_and(|x| x.types.iter().any(|t| t == "Transform"))
+        && !snap.components_on(o).contains(&pe_sim::ComponentId::TRANSFORM)
     {
         let name = snap.name(o).unwrap_or_else(|| "This object".into());
         return Err(bad(format!("{name} has no Transform; add one first.")));
@@ -383,22 +420,23 @@ fn set_position(
 /// A whole row of `component` for `t`: zeros, then each given field encoded at its offset.
 fn whole_row(
     snap: &WorldSnapshot,
+    on: &On,
     i: usize,
     t: Target,
     component: &str,
     fields: &BTreeMap<String, Json>,
 ) -> Result<Row, Unmapped> {
-    if component == "Transform" {
-        return Err(not_yet(i, "a Transform row in an add or create"));
-    }
-    let desc = snap.component(component).ok_or_else(|| {
-        let mut f = refusal(RefusalCode::Invalid, format!("There is no component {component:?}."));
+    let desc = on.desc(snap, component).map_err(|m| {
+        let mut f = refusal(RefusalCode::Invalid, m);
         f.op = Some(i as u32);
         Unmapped::Refused(f)
     })?;
+    if desc.id() == pe_sim::ComponentId::TRANSFORM {
+        return Err(not_yet(i, "a Transform row in an add or create"));
+    }
     let mut bytes = vec![0u8; desc.size()];
     for (k, v) in fields {
-        if let Op::SetField { field, value, .. } = set_field(snap, i, t, &format!("{component}.{k}"), v)? {
+        if let Op::SetField { field, value, .. } = set_field(snap, on, i, t, &format!("{component}.{k}"), v)? {
             let at = desc.fields()[field as usize].offset as usize;
             bytes[at..at + value.len()].copy_from_slice(&value);
         }
@@ -528,7 +566,7 @@ pub fn to_world_built(
     // Each new object's frame, for a position set in the same change: its create's parent (or that parent's own
     // frame). A copy's inner objects, or a parent created in this change, have no known frame yet.
     let mut new_place: std::collections::HashMap<u32, Place> = Default::default();
-    let has_transform = |o: pe_core::ObjectId| snap.info(o).is_some_and(|i| i.types.iter().any(|t| t == "Transform"));
+    let has_transform = |o: pe_core::ObjectId| snap.components_on(o).contains(&pe_sim::ComponentId::TRANSFORM);
     let place_for = |t: Target, new_place: &std::collections::HashMap<u32, Place>| match t {
         Target::Existing(o) => Some(Place { frame: frame_of(snap, o), parent: snap.parent(o) }),
         Target::New(k) => new_place.get(&k).copied(),
@@ -553,10 +591,31 @@ pub fn to_world_built(
     let mut prev = 0u32;
     let mut dirty = Dirty::default();
     let mut last: Option<&ROp> = None;
+    // Earlier attaches and detaches of this change, by target, in order: they count for a later op's names.
+    let mut tagged: Tagged = Default::default();
+    let names = view.names();
+    let on_for = |t: Target, tagged: &Tagged| {
+        let mut attached = match t {
+            Target::Existing(o) => names.attached(snap, o),
+            _ => vec![],
+        };
+        for (a, on) in tkey(t).and_then(|k| tagged.get(&k)).into_iter().flatten() {
+            attached.retain(|x| x != a);
+            if *on {
+                attached.push(*a);
+            }
+        }
+        On { names, attached }
+    };
     for (i, op) in r.ops.iter().enumerate() {
-        // What the previous op did to placements (done here, so `continue` arms count too).
+        // What the previous op did to placements and attachments (done here, so `continue` arms count too).
         if let Some(p) = last.replace(op) {
             dirty.note(p);
+            if let ROp::Tag { script: Script::Existing(a), target: t, on } = p
+                && let Some(k) = tkey(target(*t))
+            {
+                tagged.entry(k).or_default().push((*a, *on));
+            }
         }
         // The ops the previous resolved op pushed came from its source op (done here, so `continue` arms count too).
         op_of.resize(ops.len(), prev);
@@ -575,8 +634,9 @@ pub fn to_world_built(
             ROp::Set { target: t, fields } => {
                 // One SetField per field, in field-name order (the map's), all on the same object; a position is
                 // converted to the object's frame first.
+                let on = on_for(target(*t), &tagged);
                 for (k, v) in fields {
-                    if k == "Transform.position" {
+                    if on.is_transform(snap, k).as_deref() == Some("Transform.position") {
                         let Some(place) = place_for(target(*t), &new_place) else {
                             return Err(not_yet(
                                 i,
@@ -585,7 +645,7 @@ pub fn to_world_built(
                         };
                         ops.extend(set_position(&view, snap, i, target(*t), place, v, &dirty)?);
                     } else {
-                        ops.push(set_field(snap, i, target(*t), k, v)?);
+                        ops.push(set_field(snap, &on, i, target(*t), k, v)?);
                     }
                 }
                 continue;
@@ -600,11 +660,12 @@ pub fn to_world_built(
                     blobs.push(name.as_bytes().to_vec());
                 }
                 let me = Target::New(*new);
+                let on = on_for(me, &tagged);
                 match template {
                     None => {
                         let mut rows = vec![name_row];
                         for (c, fields) in components {
-                            rows.push(whole_row(snap, i, me, c, fields)?);
+                            rows.push(whole_row(snap, &on, i, me, c, fields)?);
                         }
                         ops.push(Op::Create { new: *new, parent: target(*parent), index: None, rows });
                     }
@@ -616,13 +677,14 @@ pub fn to_world_built(
                         ops.push(Op::SetRow { id: me, row: name_row });
                         for (c, fields) in components {
                             for (k, v) in fields {
-                                if (c.as_str(), k.as_str()) == ("Transform", "position") {
+                                let key = format!("{c}.{k}");
+                                if on.is_transform(snap, &key).as_deref() == Some("Transform.position") {
                                     let Some(place) = new_place.get(new).copied() else {
                                         return Err(not_yet(i, "a position under a parent made in this change"));
                                     };
                                     ops.extend(set_position(&view, snap, i, me, place, v, &dirty)?);
                                 } else {
-                                    ops.push(set_field(snap, i, me, &format!("{c}.{k}"), v)?);
+                                    ops.push(set_field(snap, &on, i, me, &key, v)?);
                                 }
                             }
                         }
@@ -631,15 +693,20 @@ pub fn to_world_built(
                 continue;
             }
             ROp::Add { target: t, component, fields } => {
-                Op::SetRow { id: target(*t), row: whole_row(snap, i, target(*t), component, fields)? }
+                let on = on_for(target(*t), &tagged);
+                Op::SetRow { id: target(*t), row: whole_row(snap, &on, i, target(*t), component, fields)? }
             }
             ROp::Remove { target: t, component } => {
                 let Obj::Existing(o) = t else { return Err(not_yet(i, "removing a row this change adds")) };
-                let desc = snap.component(component);
-                let tag = snap.row_tag((*o).into(), component);
-                match (desc, tag) {
-                    (Some(d), Some(tag)) => Op::RemoveRow { id: target(*t), component: d.id(), instance: 0, tag },
-                    _ => {
+                let on = on_for(target(*t), &tagged);
+                let desc = on.desc(snap, component).map_err(|m| {
+                    let mut f = refusal(RefusalCode::Invalid, m);
+                    f.op = Some(i as u32);
+                    Unmapped::Refused(f)
+                })?;
+                match snap.row_tag_of((*o).into(), desc.id()) {
+                    Some(tag) => Op::RemoveRow { id: target(*t), component: desc.id(), instance: 0, tag },
+                    None => {
                         let mut f =
                             refusal(RefusalCode::NotFound, format!("The object has no {component:?} component."));
                         f.op = Some(i as u32);
