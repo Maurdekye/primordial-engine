@@ -1565,8 +1565,8 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     }
 }
 
-/// Test-only damage to the physics world (feature `test-util`, never in a shipped build; the gate checks pe-app's
-/// normal edges): M1's "What the hash covers" for the physics, the divergence most likely in practice. A body's state
+/// Test-only damage to the physics world (feature `test-util`; it stays out of shipped builds only because no crate
+/// turns it on outside its `[dev-dependencies]`, and the gate doesn't check it): M1's "What the hash covers" for the physics, the divergence most likely in practice. A body's state
 /// lives in the physics world, and `take_root` rewrites every `BodyState` row from it before each root, so damage to
 /// the world model's row never reaches a root (pe-diverge tests/kinds.rs); damage here does.
 #[cfg(feature = "test-util")]
@@ -1583,6 +1583,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// Saves the live state as the keyframe at the current frame, replacing the one there: damage made since is then
     /// part of the saved state too, as for a member that started from a wrong state, so a replay reproduces it.
+    /// Snapshots held for roots (the floor's, `Cv`'s) are not changed (@vdw-physics).
     pub fn rekeyframe(&mut self) {
         self.keyframe(self.frame);
     }
