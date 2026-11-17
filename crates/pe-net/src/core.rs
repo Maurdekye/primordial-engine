@@ -399,7 +399,7 @@ impl Core {
             c.state = LinkState::Welcomed;
             let mut b = vec![K_WELCOME];
             b.extend_from_slice(&welcome.encode());
-            open_stream(c, 0, b.into());
+            open_stream(c, 10, b.into());
             c.open_recv = true;
             // Between two members, the peer's welcome may already be here, held until now (6.4).
             c.open_send = c.welcomed;
@@ -756,9 +756,14 @@ impl Core {
                 }
             }
             // A lane message leaves its lane's queue only once nothing waits for a stream, so at most one is outside
-            // it, and the lane order and the delay guard still apply to the rest (3.5).
+            // it, and the lane order and the delay guard still apply to the rest (3.5). Repair and Bulk streams not
+            // yet fully handed to quinn (the delay guard holds them mid-write) keep at most half the peer's stream
+            // credit, so Protocol and Action always have the other half (both sides run one build, so the peer's
+            // `N_streams_in` is ours; @design-reviewer's Low 1 on 9e71ac4c).
+            let low_cap = (self.cfg.n_streams_in / 2) as usize;
             while c.unopened.is_empty()
-                && let Some((lane, seq, bytes)) = c.link.poll_stream(low)
+                && let Some((lane, seq, bytes)) =
+                    c.link.poll_stream(low && c.outbound.iter().filter(|o| o.2).count() < low_cap)
             {
                 let mut b = vec![lane as u8];
                 put_varint(&mut b, seq);

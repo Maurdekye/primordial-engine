@@ -297,7 +297,11 @@ R18's failure again [@design-reviewer's High].
     sender's message waits, it is never dropped [V `pe-net/tests/core.rs`, 200 Repair and 200 Bulk messages each
     way: before 1.10, one side received 62 of the 200 Repair messages]. pe-net's own records (the hello, welcome, up and lifecycle records)
     wait in the connection's queue, highest priority first, and at most one lane message waits there with them;
-    the rest stay in their lanes' queues, where the lane order and the delay guard (4.3) still apply. The peer's
+    the rest stay in their lanes' queues, where the lane order and the delay guard (4.3) still apply. That one
+    message takes the first credit that frees, even if it is Bulk and a Protocol message waits in its lane: an
+    inversion of one message at most. Repair and Bulk streams the delay guard holds mid-write keep at most half
+    of `N_streams_in`, so Protocol and Action messages on streams always have the other half (both sides run one
+    build, so the peer's limit is the sender's own) [@design-reviewer's Lows on 9e71ac4c]. The peer's
     credit arrives in a packet, and each packet reruns the send path. pe-net gives the caller no signal of how
     much waits [I: a queue-depth signal is out of scope (coordinator)];
   - at most `L_bulk` bytes per message. Larger transfers are split by the caller, for example by hash ranges of a
