@@ -1255,9 +1255,8 @@ mod lamp {
             assert!(!r.holds(&parts().0), "not before the next frame");
             let post = r.run_stage(Stage::LogicPostPhysics, &fx.scripts, &mut store, &world(0));
             assert!(pre.report.written.is_empty(), "{pre:?}");
-            // Both scripts, in asset order (the lamp's id is derived from its commit, 7.9).
-            let mut both = vec![asset(), [8; 32]];
-            both.sort();
+            // Both scripts, in the fixture's order (the lamp's id is derived from its commit, 7.9).
+            let both = vec![asset(), [8; 32]];
             assert_eq!((pre.missing, post.missing), (both.clone(), both));
             let next = r.run_stage(Stage::LogicPrePhysics, &fx.scripts, &mut store, &world(1));
             assert!(r.holds(&parts().0));
