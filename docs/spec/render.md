@@ -586,12 +586,12 @@ As agreed with @api-eng (api.md 8):
   readback is deferred: the buffer map completes on a later frame, so a capture never stalls a present, and if the
   frame budget is tight it waits a frame. The caller's deadline bounds the wait. PNG encoding runs on a worker
   thread.
-  - **In VR a capture may cost a headset frame** [I, @shader-reviewer, not measured]. The headset's loop serves
-    captures inside `VrSink::render`, after `render_stereo` but before the swapchain image is released and before
-    `xrEndFrame`. A frame that starts a capture therefore puts the scene build, the label placement and the capture
-    pass in front of the compositor's wait. The fix is a `FrameSink` hook called after `xrEndFrame`
-    (@item:primordial-engine/vr-captures-serve-view-capture-after-xrendframe-a). The first VR run with an agent
-    reads pe-xr's `missed_frames` around a capture.
+  - **In VR a capture runs after the frame ends.** `VrSink::render` only notes the view it drew and its left eye's
+    camera; `FrameSink::after_frame` serves the queue from them once the swapchain image is released and `xrEndFrame`
+    has returned (xr.md 7.1, step 9). The scene build, the label placement and the capture pass then run before the
+    next `xrWaitFrame`, in time it would spend waiting, and delay the next frame only by however much they overrun it. A frame that went out undrawn serves
+    nothing (@item:primordial-engine/vr-captures-serve-view-capture-after-xrendframe-a). Not yet measured: the first
+    VR run with an agent reads pe-xr's `missed_frames` around a capture.
   - Measured [V M0]: 1280×720, about 40 bodies, 4.5-5.2 ms with readback on an RTX 3080 Ti; two draws give
     identical pixels.
 - **Highlight and labels:**
