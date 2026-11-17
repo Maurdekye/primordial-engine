@@ -193,3 +193,93 @@ fn a_copy_introduces_nothing() {
     assert_eq!(refused(&both(&mut f, &tx(vec![copy.clone()], vec![b"Cup".to_vec()]))), Reason::Invalid { field: None });
     assert!(matches!(both(&mut f, &tx(vec![copy], vec![])), Outcome::Applied { .. }));
 }
+
+/// A whole-world import of `w`, its inline blobs as `Tree::export_blobs` gives them (S2 v1.8).
+fn import_of(w: &World) -> pe_seams::CutImport {
+    use pe_seams::{LeafKey, PhysicsImage, Tree};
+    let d = pe_seams::DomainId(0);
+    let t = w.tree(d);
+    let mut keys: Vec<LeafKey> = w.store().objects().iter().map(|&id| LeafKey::Object(id)).collect();
+    keys.extend((0..pe_world::tree::table::COUNT as u8).map(LeafKey::Table));
+    keys.push(LeafKey::Config);
+    pe_seams::CutImport {
+        cut: pe_seams::Cut { at: pe_seams::CutRef { line: w.line(), height: 0, frame: w.frame() }, heads: Vec::new() },
+        target_root: t.root(),
+        records: t.export(&keys),
+        absent: Vec::new(),
+        physics: Some(PhysicsImage { domain: d, frame: w.frame(), global: pe_core::Hash::ZERO, bytes: Bytes::new() }),
+        blobs: t.export_blobs(&keys),
+    }
+}
+
+/// A joiner with its own, empty blob store.
+fn joiner() -> World {
+    World::new(0, BlobStore::default())
+}
+
+#[test]
+fn a_joiner_gets_the_names_of_the_state_it_imports() {
+    let mut f = fx();
+    let id = created(&both(&mut f, &tx(vec![named(b"Cup")], vec![b"Cup".to_vec()])));
+    let imp = import_of(&f.here);
+    assert_eq!(imp.blobs, vec![Bytes::from_static(b"Cup")]);
+    let got = joiner().import(pe_seams::DomainId(0), &imp).unwrap();
+    assert_eq!(got.snapshot(Frame(1)).name(id).as_deref(), Some("Cup"));
+    // A display blob may be missing: without the bytes the import still lands, and the name waits.
+    let mut bare = imp.clone();
+    bare.blobs.clear();
+    let got = joiner().import(pe_seams::DomainId(0), &bare).unwrap();
+    assert_eq!(got.snapshot(Frame(1)).name(id), None);
+}
+
+#[test]
+fn an_import_refuses_a_blob_no_row_references_or_out_of_order() {
+    let mut f = fx();
+    both(&mut f, &tx(vec![named(b"Cup")], vec![b"Cup".to_vec()]));
+    both(&mut f, &tx(vec![named(b"Mug")], vec![b"Mug".to_vec()]));
+    let imp = import_of(&f.here);
+    assert_eq!(imp.blobs.len(), 2);
+    let mut stray = imp.clone();
+    stray.blobs.push(Bytes::from_static(b"stray"));
+    stray.blobs.sort_by_key(|b| BlobRef::of(b).hash);
+    let at = stray.blobs.iter().position(|b| &b[..] == b"stray").unwrap();
+    assert_eq!(joiner().import(pe_seams::DomainId(0), &stray).err(), Some(pe_seams::ImportError::BadBlob(at)));
+    let mut swapped = imp;
+    swapped.blobs.reverse();
+    assert_eq!(joiner().import(pe_seams::DomainId(0), &swapped).err(), Some(pe_seams::ImportError::BadBlob(1)));
+}
+
+#[test]
+fn an_import_without_a_small_sim_blob_is_refused() {
+    let mut f = fx();
+    let mesh = vec![3u8; 200];
+    let create = Op::Create {
+        new: 0,
+        parent: Target::Root,
+        index: None,
+        rows: vec![row(Transform::at(Pos::ORIGIN)), row(Shape { mesh: BlobRef::of(&mesh), ..Default::default() })],
+    };
+    both(&mut f, &tx(vec![create], vec![mesh.clone()]));
+    let mut imp = import_of(&f.here);
+    assert_eq!(imp.blobs, vec![Bytes::from(mesh.clone())]);
+    imp.blobs.clear();
+    assert_eq!(
+        joiner().import(pe_seams::DomainId(0), &imp).err(),
+        Some(pe_seams::ImportError::MissingBlob(pe_core::Hash(BlobRef::of(&mesh).hash)))
+    );
+    // One that already has the bytes needs none.
+    let here = World::new(0, f.there.blobs().clone());
+    assert!(here.import(pe_seams::DomainId(0), &imp).is_ok());
+}
+
+#[test]
+fn a_deleted_objects_name_travels_with_the_tombstones() {
+    // Undelete restores a tombstone's kept rows, so their blobs are referenced (@engine-architect ma16d20a4d421).
+    let mut f = fx();
+    let id = created(&both(&mut f, &tx(vec![named(b"Cup")], vec![b"Cup".to_vec()])));
+    both(&mut f, &tx(vec![Op::Delete { id: Target::Existing(id) }], vec![]));
+    let imp = import_of(&f.here);
+    assert_eq!(imp.blobs, vec![Bytes::from_static(b"Cup")]);
+    let got = joiner().import(pe_seams::DomainId(0), &imp).unwrap();
+    assert_eq!(got.blobs().get(&BlobRef::of(b"Cup")).as_deref(), Some(&b"Cup"[..]));
+}

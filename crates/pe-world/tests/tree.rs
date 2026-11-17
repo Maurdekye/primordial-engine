@@ -338,6 +338,7 @@ fn the_cached_root_equals_the_root_from_scratch() {
                     (Vec::new(), vec![LeafKey::Object(id)])
                 };
                 let imp = CutImport {
+                    blobs: vec![],
                     cut: pe_seams::Cut {
                         at: pe_seams::CutRef { line: other.line(), height: 0, frame: other.frame() },
                         heads: Vec::new(),
