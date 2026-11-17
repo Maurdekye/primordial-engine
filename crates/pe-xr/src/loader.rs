@@ -323,12 +323,17 @@ mod tests {
 
     #[test]
     fn relative_library_path_resolves_against_the_manifest_folder() {
-        let m = parse_manifest(
-            Path::new(r"C:\Program Files\VD\OpenXR\vd.json"),
-            r#"{"file_format_version":"1.0.0","runtime":{"library_path":".\\vd.dll","name":"VD"}}"#,
-        )
-        .unwrap();
-        assert_eq!(m.library, Path::new(r"C:\Program Files\VD\OpenXR").join(r".\vd.dll"));
+        // The host's own absolute folder and separator (Virtual Desktop's manifest says `.\\vd.dll` on Windows), so the
+        // test means the same on every platform (tier 2, @provenance-eng).
+        let folder = std::env::temp_dir().join("VD").join("OpenXR");
+        let relative = format!(".{}vd.dll", std::path::MAIN_SEPARATOR);
+        let text = format!(
+            r#"{{"file_format_version":"1.0.0","runtime":{{"library_path":{},"name":"VD"}}}}"#,
+            serde_json::to_string(&relative).unwrap()
+        );
+        let m = parse_manifest(&folder.join("vd.json"), &text).unwrap();
+        assert!(m.library.is_absolute(), "{:?}", m.library);
+        assert_eq!(m.library, folder.join(&relative));
         assert_eq!(m.name, "VD");
         assert_eq!(m.negotiate_symbol, NEGOTIATE_SYMBOL);
     }
