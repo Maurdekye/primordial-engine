@@ -17,11 +17,25 @@ use pe_seams::{
 };
 use pe_sim::{Component, ComponentId, SimStore, Transform};
 use pe_world::components::{Body, Shape, body_kind, shape_kind};
-use pe_world::edit::{Actor, Op, Row, Target, Transaction};
+use pe_world::edit::{Actor, AssetTarget, Op, Row, Target, Transaction};
 use pe_world::script::tag_desc;
 use pe_world::{BlobRef, BlobStore, Claim, GENESIS, World, perm};
 
-const ASSET: [u8; 32] = [7; 32];
+/// `event_kind`'s known-answer input.
+const KNOWN: [u8; 32] = [7; 32];
+
+/// The id of the asset member `i`'s `seq`-th entry creates as `New(0)` (world-model.md 7.9: derived from the entry).
+fn asset_of(i: usize, seq: u64) -> [u8; 32] {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, i);
+    let e = (0..seq).map(|_| b.next(Class::Edit, Frame(1), Bytes::new())).last().expect("seq >= 1").entry;
+    pe_world::script::asset_created(e.line, e.author, e.chain, e.seq, 0)
+}
+
+/// The tests' script asset: the one member 0's first entry creates.
+fn asset() -> [u8; 32] {
+    asset_of(0, 1)
+}
 const MODULE: Hash = Hash([3; 32]);
 const BALL: u128 = 60;
 const K: u64 = 8;
@@ -68,7 +82,7 @@ fn commit(b: &mut EntryBuilder, at: u64) -> SignedEntry {
 fn commit_activating(b: &mut EntryBuilder, at: u64, activate_at: u64) -> SignedEntry {
     let t = tx(vec![
         Op::Register { components: vec![tag_desc(&v1())] },
-        Op::commit_script(ASSET, None, archive(), Hash([1; 32]), Hash([2; 32]), MODULE, activate_at),
+        Op::commit_script(AssetTarget::New(0), None, archive(), Hash([1; 32]), Hash([2; 32]), MODULE, activate_at),
     ]);
     b.next(Class::Edit, Frame(at), Bytes::from(t.encode()))
 }
@@ -235,7 +249,7 @@ fn ball_x(r: &ReplicaImpl<PeWorld>) -> f64 {
 }
 
 fn ping(frame: u64) -> EffectKey {
-    let kind = EffectKind::Script(event_kind(&ASSET, "ping"));
+    let kind = EffectKind::Script(event_kind(&asset(), "ping"));
     EffectKey { frame: Frame(frame), cause: EffectCause::Logic, object: oid(BALL), kind, ordinal: 0 }
 }
 
@@ -374,7 +388,7 @@ fn without_a_runner_the_replica_stops_once_a_code_commit_activates() {
     let mut bare = replica_of(floor_and_ball());
     bare.advance(Frame(10), &mut s);
     assert_eq!((bare.frame(), bare.faults()), (Frame(6), 1));
-    assert_eq!(bare.world().world().modules()[&ASSET].activate_at, Frame(6));
+    assert_eq!(bare.world().world().modules()[&asset()].activate_at, Frame(6));
 
     let mut s = entries();
     let mut r = replica_of(floor_and_ball()).with_runner(mover());
@@ -397,11 +411,13 @@ fn without_a_runner_a_pending_commit_does_not_stop_the_replica_until_it_activate
     let mut s = Source::default();
     s.add(commit_activating(&mut author, 3, 9));
     s.add(commit(&mut author, 5));
-    s.add(edit(&mut voter, 12, vec![Op::AttestBuild { script: ASSET, version: v1(), module: MODULE }]));
+    // The refused commit was the author's first entry, so the asset is its second's.
+    let asset = asset_of(0, 2);
+    s.add(edit(&mut voter, 12, vec![Op::AttestBuild { script: asset, version: v1(), module: MODULE }]));
     let mut bare = replica_of(world);
     bare.advance(Frame(20), &mut s);
     assert_eq!((bare.frame(), bare.faults()), (Frame(13), 1));
-    assert_eq!(bare.world().world().modules()[&ASSET].activate_at, Frame(13));
+    assert_eq!(bare.world().world().modules()[&asset].activate_at, Frame(13));
 }
 
 /// A script's move of an object without a body reaches the physics of the bodies beneath it (@engine-architect's
@@ -490,13 +506,13 @@ fn an_event_from_an_object_the_stage_removed_plays_where_it_was() {
 /// the first 8 bytes, little-endian, of `Hash::of("pe.script.event", asset ++ name)`.
 #[test]
 fn event_kind_has_its_known_answer() {
-    assert_eq!(event_kind(&ASSET, "ping"), 9_909_364_129_443_047_667);
-    let mut b = ASSET.to_vec();
+    assert_eq!(event_kind(&KNOWN, "ping"), 9_909_364_129_443_047_667);
+    let mut b = KNOWN.to_vec();
     b.extend_from_slice(b"ping");
     let h = Hash::of("pe.script.event", &b);
-    assert_eq!(event_kind(&ASSET, "ping"), u64::from_le_bytes(h.0[..8].try_into().unwrap()));
-    assert_ne!(event_kind(&ASSET, "ping"), event_kind(&ASSET, "pong"));
-    assert_ne!(event_kind(&ASSET, "ping"), event_kind(&[8; 32], "ping"));
+    assert_eq!(event_kind(&KNOWN, "ping"), u64::from_le_bytes(h.0[..8].try_into().unwrap()));
+    assert_ne!(event_kind(&KNOWN, "ping"), event_kind(&KNOWN, "pong"));
+    assert_ne!(event_kind(&KNOWN, "ping"), event_kind(&[8; 32], "ping"));
 }
 
 /// A script whose module this machine lacks does not run here, and each skipped run is counted: a build fault on
@@ -524,7 +540,7 @@ fn a_script_fault_is_world_state_and_stops_the_script() {
     let mut r = replica_of(world.clone()).with_runner(mover());
     r.advance(Frame(16), &mut s);
     assert_eq!(r.faults(), 0);
-    let row = &r.world().world().modules()[&ASSET];
+    let row = &r.world().world().modules()[&asset()];
     assert_eq!(row.faulted, Some((Frame(1), REFUSED)), "its first frame");
     assert!(ball_x(&r).abs() < 1e-9, "the held ball was never moved");
     assert!(r.view().effects.is_empty(), "faulted before its first ping");
@@ -667,7 +683,7 @@ impl ScriptRunner for Glitching {
         if w.frame == Frame(20) && stage == Stage::LogicPostPhysics && !self.glitched {
             self.glitched = true;
             let glitch = ScriptEvent {
-                asset: ASSET,
+                asset: asset(),
                 system: "pinger".into(),
                 name: "glitch".into(),
                 object: oid(BALL),
@@ -693,7 +709,7 @@ fn rung_one_carries_each_effect_once_and_retracts_what_a_glitch_emitted() {
     let mut bad =
         replica_of(scripted()).with_runner(Box::new(Glitching { inner: Mover { holds: MODULE }, glitched: false }));
     bad.advance(Frame(48), &mut s);
-    let kind = EffectKind::Script(event_kind(&ASSET, "glitch"));
+    let kind = EffectKind::Script(event_kind(&asset(), "glitch"));
     let glitch = EffectKey { frame: Frame(20), cause: EffectCause::Logic, object: oid(BALL), kind, ordinal: 0 };
     let first = keys_of(&bad.view());
     assert!(first.contains(&glitch) && first.len() == 48, "47 pings, from frame 1, and the glitch: {first:?}");
@@ -777,7 +793,7 @@ fn a_rung_two_import_retracts_what_the_views_carried_below_its_cut() {
     bad.advance(Frame(49), &mut s);
     let after = bad.view();
     assert_eq!(keys_of(&after), [ping(48)], "the replay from the cut carried nothing twice");
-    let kind = EffectKind::Script(event_kind(&ASSET, "glitch"));
+    let kind = EffectKind::Script(event_kind(&asset(), "glitch"));
     let glitch = EffectKey { frame: Frame(20), cause: EffectCause::Logic, object: oid(BALL), kind, ordinal: 0 };
     let below: BTreeSet<EffectKey> = (1..32).map(ping).chain([glitch]).collect();
     assert_eq!(after.retracted.iter().copied().collect::<BTreeSet<_>>(), below);
@@ -861,7 +877,6 @@ mod lamp {
 
     use super::*;
 
-    const LAMP: [u8; 32] = [11; 32];
     const LAMPS: [u128; 3] = [70, 71, 72];
     /// Each lamp blinks with a 1 s period from its phase (logic.md appendix A).
     const PHASES: [f32; 3] = [0.0, 0.5, 0.25];
@@ -931,7 +946,7 @@ mod lamp {
         components.extend(descs.iter().cloned());
         let commit = tx(vec![
             Op::Register { components },
-            Op::commit_script(LAMP, None, source(), Hash([1; 32]), Hash([2; 32]), *module, 0),
+            Op::commit_script(AssetTarget::New(0), None, source(), Hash([1; 32]), Hash([2; 32]), *module, 0),
         ]);
         applied(&w.apply_edit(Frame(0), &b.next(Class::Edit, Frame(0), Bytes::from(commit.encode()))).0);
         assert_eq!(w.end_frame(Frame(0)).activated.len(), 1, "active from frame 1 (6.2a)");
@@ -1001,7 +1016,6 @@ mod lamp {
     #[test]
     fn the_logic_runner_conforms_where_its_copy_in_skip_fires() {
         big_stack(|| {
-            const TALLY: [u8; 32] = [14; 32];
             let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/tally");
             let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
             let wasm = pe_logic::build::build(&toolchain(), &dir, &pe_logic::build::engine_sdk(), &target, true)
@@ -1024,7 +1038,7 @@ mod lamp {
             components.extend(descs.iter().cloned());
             let commit = tx(vec![
                 Op::Register { components },
-                Op::commit_script(TALLY, None, source(), Hash([1; 32]), Hash([2; 32]), module, 0),
+                Op::commit_script(AssetTarget::New(0), None, source(), Hash([1; 32]), Hash([2; 32]), module, 0),
             ]);
             applied(&w.apply_edit(Frame(0), &b.next(Class::Edit, Frame(0), Bytes::from(commit.encode()))).0);
             assert_eq!(w.end_frame(Frame(0)).activated.len(), 1, "active from frame 1 (6.2a)");
@@ -1057,7 +1071,7 @@ mod lamp {
                 .map(|e| run::EngineComponent { name: e.name, id: e.id, scripts_may_write: e.scripts_may_write })
                 .collect();
             let bound =
-                run::Loaded::bind(Hash(TALLY), script, m, &own, tag_desc(&v()).id(), &table, w.store().registry());
+                run::Loaded::bind(Hash(asset()), script, m, &own, tag_desc(&v()).id(), &table, w.store().registry());
             logic.insert(bound.expect("tally binds"));
             let mut store = w.store().clone();
             let none = BTreeSet::new();
@@ -1115,7 +1129,6 @@ mod lamp {
     #[test]
     fn a_script_event_reaches_the_view_and_a_fault_stops_the_script() {
         big_stack(|| {
-            const TALLY: [u8; 32] = [13; 32];
             const SPAWNER: u128 = 80;
             const TROUBLE: u128 = 81;
             let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/tally");
@@ -1142,7 +1155,7 @@ mod lamp {
             components.extend(descs.iter().cloned());
             let commit = tx(vec![
                 Op::Register { components },
-                Op::commit_script(TALLY, None, source(), Hash([1; 32]), Hash([2; 32]), module, 0),
+                Op::commit_script(AssetTarget::New(0), None, source(), Hash([1; 32]), Hash([2; 32]), module, 0),
             ]);
             applied(&w.apply_edit(Frame(0), &b.next(Class::Edit, Frame(0), Bytes::from(commit.encode()))).0);
             assert_eq!(w.end_frame(Frame(0)).activated.len(), 1, "active from frame 1 (6.2a)");
@@ -1168,11 +1181,11 @@ mod lamp {
             let objects = r.world().world().store().objects().len();
             r.advance(Frame(3), &mut Source::default());
             assert_eq!((r.frame(), r.faults(), r.script_counts().missing), (Frame(3), 0, 0));
-            let row = r.world().world().modules()[&TALLY].clone();
+            let row = r.world().world().modules()[&asset()].clone();
             assert!(row.faulted.is_some_and(|(f, _)| f == Frame(1)), "its first frame: {:?}", row.faulted);
             assert_eq!(r.script_counts().host_faults, 0);
             let view = r.view();
-            let kind = EffectKind::Script(event_kind(&TALLY, "spawned"));
+            let kind = EffectKind::Script(event_kind(&asset(), "spawned"));
             let key = EffectKey { frame: Frame(1), cause: EffectCause::Logic, object: oid(SPAWNER), kind, ordinal: 0 };
             assert_eq!(keys_of(&view), [key]);
             assert_eq!(view.effects[0].data, Bytes::from(0u32.to_le_bytes().to_vec()));
@@ -1242,7 +1255,10 @@ mod lamp {
             assert!(!r.holds(&parts().0), "not before the next frame");
             let post = r.run_stage(Stage::LogicPostPhysics, &fx.scripts, &mut store, &world(0));
             assert!(pre.report.written.is_empty(), "{pre:?}");
-            assert_eq!((pre.missing, post.missing), (vec![LAMP, [8; 32]], vec![LAMP, [8; 32]]));
+            // Both scripts, in asset order (the lamp's id is derived from its commit, 7.9).
+            let mut both = vec![asset(), [8; 32]];
+            both.sort();
+            assert_eq!((pre.missing, post.missing), (both.clone(), both));
             let next = r.run_stage(Stage::LogicPrePhysics, &fx.scripts, &mut store, &world(1));
             assert!(r.holds(&parts().0));
             assert_eq!(next.missing, vec![[8; 32]]);
@@ -1269,7 +1285,7 @@ mod lamp {
                 faulted: &faulted,
                 check: &check,
             };
-            let without: Vec<ScriptRow> = fx.scripts.iter().filter(|s| s.asset != LAMP).cloned().collect();
+            let without: Vec<ScriptRow> = fx.scripts.iter().filter(|s| s.asset != asset()).cloned().collect();
             let mut stage = |scripts: &[ScriptRow]| {
                 let mut store = fx.store.clone();
                 let out = r.run_stage(Stage::LogicPrePhysics, scripts, &mut store, &world);

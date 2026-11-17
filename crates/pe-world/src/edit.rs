@@ -90,6 +90,16 @@ pub struct Row {
     pub bytes: Vec<u8>,
 }
 
+/// The asset a `CommitScript` commits to (7.9; @coordinator-opus mf144e154826e): an existing asset, or a new one
+/// whose id is derived from the creating entry and `k`, its index among the entry's new assets
+/// ([`crate::script::asset_created`]), as a new object's is. No op names a new asset's id itself, so a modified client
+/// can't squat on another's pending id or reuse a destroyed one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetTarget {
+    Existing([u8; 32]),
+    New(u32),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     /// Creates object `new` (its id derives from the entry and `new`, 2.1) under `parent`, at `index` among its
@@ -124,7 +134,7 @@ pub enum Op {
     /// whose hash is the version V. Only `archive` is encoded: decoding derives `source` from it, so the two always
     /// agree on the wire. Build one with [`Op::commit_script`].
     CommitScript {
-        script: [u8; 32],
+        script: AssetTarget,
         base: Option<Version>,
         source: BlobRef,
         archive: bytes::Bytes,
@@ -153,7 +163,7 @@ pub enum Op {
 impl Op {
     /// A `CommitScript` whose `source` is `archive`'s reference.
     pub fn commit_script(
-        script: [u8; 32],
+        script: AssetTarget,
         base: Option<Version>,
         archive: bytes::Bytes,
         toolchain: Hash,
@@ -409,7 +419,16 @@ impl Transaction {
                 }
                 Op::CommitScript { script, base, archive, toolchain, sdk, author_module, activate_at, .. } => {
                     w.u8(9);
-                    w.raw(script);
+                    match script {
+                        AssetTarget::Existing(a) => {
+                            w.u8(0);
+                            w.raw(a);
+                        }
+                        AssetTarget::New(k) => {
+                            w.u8(1);
+                            w.raw(&k.to_le_bytes());
+                        }
+                    }
                     match base {
                         None => w.u8(0),
                         Some(v) => {
@@ -653,7 +672,11 @@ impl<'a> R<'a> {
                     Op::Register { components }
                 }
                 9 => {
-                    let script = self.arr()?;
+                    let script = match self.u8()? {
+                        0 => AssetTarget::Existing(self.arr()?),
+                        1 => AssetTarget::New(u32::from_le_bytes(self.arr()?)),
+                        _ => return None,
+                    };
                     let base = if self.flag()? { Some(self.version()?) } else { None };
                     // Not row bytes: the payload's own bound limits it, and apply refuses it over
                     // `MAX_SOURCE_BYTES` as `TooLarge` (7.9).
