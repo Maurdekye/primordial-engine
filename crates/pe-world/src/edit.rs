@@ -410,7 +410,7 @@ impl Transaction {
                         w.len(d.fields().len());
                         for f in d.fields() {
                             w.text(&f.name);
-                            w.u8(crate::tree::kind_code(f.kind));
+                            w.u8(crate::tree::field_byte(f));
                             w.u32(f.offset);
                             w.u32(f.count);
                             w.text(&f.unit);
@@ -656,11 +656,13 @@ impl<'a> R<'a> {
                         let mut fields = Vec::with_capacity(k);
                         for _ in 0..k {
                             let fname = self.text(u16::MAX as usize)?;
-                            let kind = crate::tree::kind_of_code(self.u8()?)?;
+                            let (kind, color) = crate::tree::field_of_byte(self.u8()?)?;
                             let offset = self.u32()?;
                             let count = self.u32()?;
                             let unit = self.text(u16::MAX as usize)?;
-                            fields.push(FieldDesc::new(&fname, kind, offset as usize, count).with_unit(&unit));
+                            let mut f = FieldDesc::new(&fname, kind, offset as usize, count).with_unit(&unit);
+                            f.color = color;
+                            fields.push(f);
                         }
                         let d = ComponentDesc::new(id, &name, fields.clone()).ok()?;
                         // One encoding per value: the fields as given must be the description's own, in offset order.

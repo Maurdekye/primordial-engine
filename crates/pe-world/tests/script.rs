@@ -5,7 +5,7 @@ use bytes::Bytes;
 use pe_core::{Frame, Hash, ObjectId, Pos};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{Class, CutImport, DomainId, LeafKey, Outcome, PhysicsImage, Reason, SignedEntry, Tree};
-use pe_sim::{ComponentDesc, ComponentId, FieldDesc, FieldKind, Transform};
+use pe_sim::{ColorSpace, ComponentDesc, ComponentId, FieldDesc, FieldKind, Transform};
 use pe_world::components::{Hand, Light, ids};
 use pe_world::edit::{Actor, AssetTarget, Op, Row, Target, Transaction};
 use pe_world::script::{ModuleRow, TAG_NAME, attest_window, pack_source, quorum, script_component_id, tag_desc};
@@ -22,7 +22,7 @@ fn oid(n: u128) -> ObjectId {
 }
 
 /// Blink's fields in source version `src`: 1 and 2 have `period` and `phase` as f32 (2 adds `red`); 3 retypes `phase`
-/// as f64 (a loss); 4 drops `phase` (a loss).
+/// as f64 (a loss); 4 drops `phase` (a loss); 6 adds `tint`, a colour (3.6).
 fn blink_fields(src: u8) -> Vec<FieldDesc> {
     let f32f = |n: &str, at| FieldDesc::new(n, FieldKind::F32, at, 1);
     match src {
@@ -33,6 +33,7 @@ fn blink_fields(src: u8) -> Vec<FieldDesc> {
             FieldDesc::new("_pad", FieldKind::U8, 4, 4),
             FieldDesc::new("phase", FieldKind::F64, 8, 1),
         ],
+        6 => vec![f32f("period", 0), FieldDesc::new("tint", FieldKind::F32, 4, 3).with_color(ColorSpace::LinearSrgb)],
         _ => vec![f32f("period", 0)],
     }
 }
@@ -1046,4 +1047,37 @@ fn a_commits_target_round_trips() {
     let mut bad = a.clone();
     bad[at] = 2;
     assert_eq!(Transaction::decode(&bad), None);
+}
+
+/// A script's colour field (3.6; @coordinator-opus): the colour space is part of its id, survives the
+/// `Register` op's bytes and the registry's import, and a field without one keeps the id it had.
+#[test]
+fn a_colour_field_is_kept_by_the_op_the_registry_and_import() {
+    let unmarked: Vec<FieldDesc> = blink_fields(6).into_iter().map(|f| FieldDesc { color: None, ..f }).collect();
+    assert_ne!(blink(6).id(), script_component_id(&v_of(6), "Blink", unmarked).unwrap(), "the space is in the id");
+    let t = first(6, 1);
+    assert_eq!(Transaction::decode(&t.encode()), Some(t.clone()), "the op round-trips the space");
+    let mut f = fx();
+    ok(&land(&mut f, false, &t).0);
+    let id = blink(6).id();
+    let tint = |w: &World| w.store().registry().get(id).map(|d| d.fields()[1].color);
+    assert_eq!(tint(&f.w), Some(Some(ColorSpace::LinearSrgb)));
+    let d = DomainId(1);
+    let t = f.w.tree(d);
+    let mut keys: Vec<LeafKey> = f.w.store().objects().iter().map(|&id| LeafKey::Object(id)).collect();
+    keys.extend((0..table::COUNT as u8).map(LeafKey::Table));
+    keys.push(LeafKey::Config);
+    let imp = CutImport {
+        cut: pe_seams::Cut {
+            at: pe_seams::CutRef { line: f.w.line(), height: 0, frame: f.w.frame() },
+            heads: Vec::new(),
+        },
+        target_root: t.root(),
+        records: t.export(&keys),
+        absent: Vec::new(),
+        physics: Some(PhysicsImage { domain: d, frame: f.w.frame(), global: Hash::ZERO, bytes: Default::default() }),
+    };
+    let got = World::new(0, f.w.blobs().clone()).import(d, &imp).unwrap();
+    assert_eq!(got.root_hash(d), f.w.root_hash(d));
+    assert_eq!(tint(&got), Some(Some(ColorSpace::LinearSrgb)));
 }
