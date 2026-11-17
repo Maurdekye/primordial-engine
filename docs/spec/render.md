@@ -350,6 +350,15 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
     4 × 6 × 12 cm block along its pose's Z with a 12 cm pointer out of the −Z face, blue for the left hand and
     orange for the right, sized in the rig frame. They carry `ObjectId::NONE`, so no highlight, label or
     `visible_list` entry lands on them, and go in `Scene::front` (8.1).
+  - **A tracked hand is drawn as its joints** [R coordinator; the user: "my hands wrre
+    just the same spheres that were drawn for my controllers"]. When `DisplayHand.joints` is `Some` (pe-xr's 26
+    late-latched joints, xr.md 6), the hand is drawn as a sphere per joint the runtime located, at the runtime's
+    radius (at least 4 mm [I]), and a capsule per bone whose two joints it located: the wrist to each metacarpal,
+    then along each digit, 0.7 of the thinner joint wide [I]. Blue left, orange right, sized in the rig frame,
+    `ObjectId::NONE`, in `Scene::front`. They replace the `OWN_HAND` object's own shape (`hands::draw_tracked_joints`,
+    only while the own hands are late-latched) or the block and pointer (`markers`). It is display only: the
+    simulation's hand body stays the 9 cm sphere, the capture still draws that sphere, and a controller or the
+    desktop hand (`joints: None`) draws as before. A skinned or meshed hand is out of scope.
   - **When a hold ends** (released, thrown, or undone because a race was lost), the object enters the display layer
     with its last drawn pose and velocity. Its offset is set from there and blends; a lost grab also plays its short
     cue (D7).

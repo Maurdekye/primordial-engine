@@ -230,7 +230,7 @@ fn own_hand_markers_show_in_both_eyes_where_the_hand_is() {
     let Some(mut r) = renderer(RenderSettings { multiview: false, ..Default::default() }) else { return };
     let rig = RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 };
     let hand = RigPose { position: [0.2, 1.4, -0.4], orientation: [0.0, 0.0, 0.0, 1.0] };
-    let s = Scene { items: markers(&[None, Some(DisplayHand { pose: hand })], &rig), ..Scene::default() };
+    let s = Scene { items: markers(&[None, Some(DisplayHand { pose: hand, joints: None })], &rig), ..Scene::default() };
     assert_eq!(s.items.len(), 2);
     let fov = Fov { left: -0.8, right: 0.7, up: 0.75, down: -0.8 };
     let eye = |x: f64| Camera::placed(WorldPose { pos: at([x, 1.6, 0.0]), rot: DQuat::IDENTITY }, fov, DepthRange::VR);
