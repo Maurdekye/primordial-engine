@@ -19,7 +19,8 @@ bytemuck = "1.25"
 pe-replica = { path = "../pe-replica", features = ["logic"] }
 pe-seams = { path = "../pe-seams", features = ["test-util"] }
 pe-sim = { path = "../pe-sim" }
-pe-world = { path = "../pe-world" }
+# `test-util`: the damage M1's "What the hash covers" injects (tests/kinds.rs).
+pe-world = { path = "../pe-world", features = ["test-util"] }
 
 [features]
 # Planted defects for the harness's mutation tests (pe-harness DESIGN.md 6.1): inert unless a node's configuration
