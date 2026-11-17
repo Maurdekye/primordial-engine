@@ -321,8 +321,9 @@ impl Clock {
             .filter(|(k, _)| self.members.contains(k))
             .filter_map(|(_, c)| c.estimate())
             .collect();
-        // Before frame 0 my offset is not a time yet, so the target is the members' alone (5.4); counting it, a
-        // joiner only halved its distance each round (days away: about 27 rounds, past `T_ready`).
+        // Until my clock has started (a first member at once, a joiner at its first Ready) my offset is not a
+        // time yet, so the target is the members' alone (5.3, 5.4); counting it, a joiner only halved its
+        // distance each round (days away: about 27 rounds, past `T_ready`).
         if self.running {
             values.push(own);
         }
