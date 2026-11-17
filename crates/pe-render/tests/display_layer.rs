@@ -5,11 +5,13 @@ use std::time::Duration;
 
 use glam::DQuat;
 use pe_render::camera::{Camera, DepthRange, Fov, ViewVolume};
-use pe_render::display::{Controls, DisplayLayer, DisplaySettings, FrameInput};
+use pe_render::display::{Controls, DisplayLayer, DisplaySettings, FrameInput, OwnHands};
 use pe_render::drawn_time::DrawnTime;
 use pe_render::effects::{EffectCommand, EffectGate, EffectSettings};
 use pe_render::pose::{WorldPose, offset_vec};
-use pe_render::{DisplayHand, LocalPresentation};
+use pe_render::present::Presenter;
+use pe_render::scene::Environment;
+use pe_render::{DisplayHand, HandJoint, HandJoints, LocalPresentation};
 use pe_seams::{
     DomainId, Effect, EffectCause, EffectKey, EffectKind, Frame, FrameView, Hand, Holder, HostTime, MemberKey,
     ObjectClass, ObjectId, Offset, Pos, RigPose, RigTransform, Shape, ViewCounters, ViewFlags, ViewObject,
@@ -769,4 +771,49 @@ fn a_gap_stops_only_effects_whose_retraction_may_be_lost() {
         .collect();
     assert_eq!(stops, vec![keyed(24, 1).key], "only the effect that wasn't final before the gap stops");
     assert_eq!(gate.counters().gap_stops, 1);
+}
+
+/// A tracked own hand is drawn as its joints in place of its hand body's sphere; a controller keeps the sphere, and so
+/// does a hand drawn where simulated (render.md 8, D4; m4d74359c836f).
+#[test]
+fn a_tracked_own_hand_is_drawn_as_its_joints_and_a_controller_as_its_sphere() {
+    let me = MemberKey([7; 32]);
+    let mut left = ball(10, at(-0.2, 1.0, -0.4), [0.0; 3]);
+    left.hand_of = Some((me, Hand::Left));
+    left.flags = ViewFlags::OWN_HAND;
+    let mut right = ball(11, at(0.2, 1.0, -0.4), [0.0; 3]);
+    right.hand_of = Some((me, Hand::Right));
+    right.flags = ViewFlags::OWN_HAND;
+    let v = view(1, frame_time(1, 60), vec![left, right, ball(1, at(0.0, 1.0, -1.0), [0.0; 3])]);
+    let mut joints = [HandJoint::default(); HandJoints::COUNT];
+    for (i, j) in joints.iter_mut().enumerate() {
+        *j = HandJoint { position: [-0.2, 1.0, -0.4 - 0.01 * i as f32], radius: 0.008, valid: i != 25 };
+    }
+    let pose = |x: f32| RigPose { position: [x, 1.0, -0.4], orientation: [0.0, 0.0, 0.0, 1.0] };
+    let local = LocalPresentation {
+        display_time: frame_time(1, 60),
+        hands: [
+            Some(DisplayHand { pose: pose(-0.2), joints: Some(HandJoints(joints)) }),
+            Some(DisplayHand { pose: pose(0.2), joints: None }),
+        ],
+    };
+    for own_hands in [OwnHands::LateLatched, OwnHands::Simulated] {
+        let settings = DisplaySettings { own_hands, ..DisplaySettings::default() };
+        let mut p = Presenter::new(settings, EffectSettings::default(), Environment::default(), 60);
+        let f = p.frame(&v, &local, &[]);
+        let front = &f.scene.front;
+        let ids = |id: u128| front.iter().filter(|i| i.id == ObjectId::from_u128(id)).count();
+        let spheres =
+            front.iter().filter(|i| i.id == ObjectId::NONE && matches!(i.shape, Shape::Sphere { .. })).count();
+        let bones = front.iter().filter(|i| matches!(i.shape, Shape::Capsule { .. })).count();
+        assert_eq!(ids(11), 1, "the controller hand keeps its sphere ({own_hands:?})");
+        assert_eq!(f.scene.items.iter().filter(|i| i.id == ObjectId::from_u128(1)).count(), 1, "the ball is untouched");
+        if own_hands == OwnHands::LateLatched {
+            assert_eq!(ids(10), 0, "the tracked hand's body sphere is replaced");
+            // 25 valid joints; the little finger's tip is invalid, so its last bone (24-25) goes too.
+            assert_eq!((spheres, bones), (25, 23));
+        } else {
+            assert_eq!((ids(10), spheres, bones), (1, 0, 0), "drawn where simulated: the body, no joints");
+        }
+    }
 }
