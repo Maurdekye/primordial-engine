@@ -174,9 +174,10 @@ impl core::convert::From<LineId> for crate::LineId {
     }
 }
 
-/// An object's version (spec 4.2): opaque to callers. pe-api issues `"v:"` and 16 hex digits, a prefix of the id of
-/// the last edit entry that changed the object, and sends the full expected entry id in the edit entry.
-/// `"any"` in an `if_version` makes a plain write.
+// Spec 4.2: pe-api issues `"v:"` and 16 hex digits, a prefix of the id of the last edit entry that changed the
+// object, and sends the full expected entry id in the edit entry. Plain comment here, the short doc below is the
+// schema's: it repeats in every tool that names a version, and the tool list has a byte budget (api.md 6.2).
+/// An object's or script's version, opaque. `"any"` in an `if_version` makes a plain write.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct Version(pub String);
@@ -188,11 +189,17 @@ impl Version {
     }
 }
 
+// Resolved by pe-api against a snapshot. (Plain comment: the doc below repeats in five tools, api.md 6.2's budget.)
 /// An object named by id (`"o:…"`), path (`"/Table/Lamp (left)"`), a `$ref` created in the same transaction, or
-/// `"me"` (the player the caller acts for; positions and `near` only). Resolved by pe-api against a snapshot.
+/// `"me"` (the player the caller acts for; positions and `near` only).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct ObjRef(pub String);
+
+/// A script by id (`"a:<64 hex>"`), or a `$name` for a new one in this change.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ScriptRef(pub String);
 
 /// An opaque position in this process's change stream, or a page token.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -581,17 +588,37 @@ pub enum Op {
         #[serde(flatten)]
         target: Target,
     },
-    /// The logic edit of U1 (spec 7): WS-logic's semantics. `target.id` is the script asset id, or a `$ref` for a
-    /// new script; its version is the hash of its source tree.
+    // The logic edit of U1 (api.md 7).
+    // `id`: `"a:<64 hex>"`, or a `$name` for a new script; `if_version`: its current version (default) or one
+    // named. `source`: the text of `lib.rs` in M1 (a blob tree `"b:…"` later). `attach`: objects to tag with its
+    // active version (api.md 7). Plain comments: the tool list's byte budget.
     Code {
-        #[serde(flatten)]
-        target: Target,
-        /// The text of `lib.rs` (M1), or a blob tree hash `"b:…"` (later).
+        id: ScriptRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_version: Option<Version>,
         source: String,
-        /// Objects to bind the script to, through a `Script` component.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attach: Vec<ObjRef>,
     },
+    // S6 v1.7 (api.md 7): bind an active script (`"a:<64 hex>"`) to objects by its tag; `mode` is required, M1
+    // accepts only `linked`. Plain comments: the tool list's byte budget.
+    Attach {
+        script: ScriptRef,
+        to: Vec<ObjRef>,
+        mode: AttachMode,
+    },
+    // S6 v1.7: unbind it; the script's other rows stay on the objects.
+    Detach {
+        script: ScriptRef,
+        from: Vec<ObjRef>,
+    },
+}
+
+// S6 v1.7 (api.md 7): `linked` follows the script's later commits; `local` (copy-on-write) comes later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachMode {
+    Linked,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -780,6 +807,18 @@ pub struct Outcome {
     // code change reports twice, final and then this (5.3.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation: Option<ActivationNote>,
+    // S6 v1.7 (api.md 7): the scripts this change commits, by `$name` for a new one or by id: the asset id and the
+    // version a next commit names as its precondition. Objects stay in `created`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scripts: BTreeMap<String, ScriptVersion>,
+}
+
+// S6 v1.7 (api.md 7): a committed script: `id` is `"a:<64 hex>"`; `version` names this commit, and becomes the
+// script's current version once it activates.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ScriptVersion {
+    pub id: String,
+    pub version: Version,
 }
 
 // S6 v1.7 (api.md 7): what became of a code change's version, from S5's `FrameView.activations` at final frames
@@ -1320,6 +1359,7 @@ mod tests {
             resent_as: None,
             held: None,
             activation: None,
+            scripts: Default::default(),
         };
         let v = serde_json::to_value(&o).unwrap();
         assert_eq!(v["status"], "refused");
