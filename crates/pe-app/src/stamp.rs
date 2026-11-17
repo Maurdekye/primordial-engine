@@ -104,7 +104,8 @@ pub struct StampLead {
     floor: u64,
     /// The present when the lead last changed.
     changed: Option<Frame>,
-    /// The leads the reports called for, with the present each was taken at, within the window.
+    /// The largest lead the reports called for at each present within the window, oldest first: one item per frame,
+    /// however many ticks a frame has, so at most `window` + 1 (@design-reviewer's Low on f06bb3a4).
     recent: VecDeque<(Frame, u64)>,
     /// Where the drain under way began, if one is.
     drain_from: Option<Frame>,
@@ -191,7 +192,10 @@ impl StampLead {
     pub fn update(&mut self, p: Frame, reports: &[(i64, u64)], next_seq: u64, moving: bool) -> u64 {
         if let Some(delay) = self.delay(reports) {
             let want = self.wanted(delay);
-            self.recent.push_back((p, want));
+            match self.recent.back_mut() {
+                Some(last) if last.0 == p => last.1 = last.1.max(want),
+                _ => self.recent.push_back((p, want)),
+            }
         }
         while self.recent.front().is_some_and(|&(f, _)| f.0.saturating_add(self.cfg.window) < p.0) {
             self.recent.pop_front();
@@ -515,6 +519,24 @@ mod tests {
         assert_eq!(s.delay(&[(10_000, 1), (72, 1), (70, 1)]), Some(10_000));
         assert_eq!(s.wanted(10_000), 300);
         assert_eq!(s.delay(&[]), None);
+    }
+
+    /// The sim thread ticks many times a frame (inbox and queue wakes), each with reports: the window keeps one item
+    /// per frame, the largest lead its ticks called for, so it holds at most `window` + 1 items.
+    #[test]
+    fn the_window_keeps_one_item_per_frame() {
+        let mut s = StampLead::new(cfg());
+        let mut next_seq = 2;
+        for p in 0..400u64 {
+            for late in [72, 90, 80] {
+                // Seq 1 went out before any lead, so each report is the delay itself.
+                s.update(Frame(p), &[(late, 1)], next_seq, false);
+                next_seq += 1;
+            }
+        }
+        assert_eq!(s.recent.len(), 181, "one item per frame of the window");
+        assert!(s.recent.iter().all(|&(_, want)| want == 33), "each frame's largest: {:?}", s.recent.front());
+        assert_eq!(s.lead(), 33, "the largest of the frame's ticks, 1.5 s less the target plus the margin");
     }
 
     #[test]
