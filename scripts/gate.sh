@@ -12,13 +12,14 @@
 # The gate never judges a change to itself with the changed code (coordinator ruling). When
 # there is a base, the gate's code comes from it:
 #   * this script (it hands over to the base's copy at once), scripts/audit_native.py, scripts/install_gitleaks.sh
-#     (the pinned gitleaks and the SHA-256 of its binary), the hook, the publication check's scripts;
+#     (the pinned gitleaks and the SHA-256 of its binary), the hook, the publication check's scripts,
+#     scripts/ci_status.py;
 #   * the rules of .gitleaks.toml, the feature policy (scripts/feature_policy.txt), and the cargo and rustup
 #     configuration files the audit runs with.
-# Only the allow files come from <rev>: scripts/native_allow.txt, and the [[allowlists]] entries of
-# .gitleaks.toml. A landing that changes any of these files gets a NOTE naming them, and its reviewer approves
-# those lines. A change to the gate's code takes effect from the next landing. With --full-history, or when the
-# base has no gate yet, the code comes from <rev>.
+# Only the allow files come from <rev>: scripts/native_allow.txt, the [[allowlists]] entries of .gitleaks.toml,
+# and scripts/tier2_explained.txt. A landing that changes any of these files gets a NOTE naming them, and its
+# reviewer approves those lines. A change to the gate's code takes effect from the next landing. With
+# --full-history, or when the base has no gate yet, the code comes from <rev>.
 #
 # The steps:
 #   1. export the tree of <rev>, byte for byte, with no attributes applied (export-ignore, eol conversion or a
@@ -38,7 +39,12 @@
 #      and, blocking, the added lines and messages of <base>..<rev> (identities are left to the publishing step,
 #      which maps them). The terms are local files that must never be published, so hosted CI skips this step;
 #      a whole-history run reports the old history's terms without failing on them (the user kept that
-#      history, 2026-10-31 11:49Z).
+#      history, 2026-10-31 11:49Z);
+#   5. tier 2's state (decision C7), where this clone asks for it (git config pe.gate.tier2, or PE_GATE_TIER2):
+#      scripts/ci_status.py --check reads the latest finished hosted run on the public main, and gives up after
+#      20 s. With "on", a red run fails the gate until it is fixed, or explained in scripts/tier2_explained.txt;
+#      with "note", the gate only reports it (until the first four-platform run is green or explained,
+#      coordinator). If GitHub can't be read in time, the gate says so and passes.
 # Every git command runs with in-tree attributes off (GIT_ATTR_SOURCE is the empty tree), so a committed
 # .gitattributes can't change what a scan reads.
 #
@@ -47,9 +53,9 @@
 # Environment: PE_GITLEAKS (a gitleaks binary; it must be the pinned build), PE_PYTHON (a Python 3.10+),
 # PE_GATE_WRAP (a command line to run the audit under, such as the org's build-slot wrapper; read with eval,
 # so quote paths in it as in a shell), PE_PUBLISH_TERMS and PE_PUBLISH_ALLOW (the term file and the
-# allowlist; default: git config pe.gate.terms and pe.gate.allow). git config pe.gate.tmpdir names a folder for
-# its temporary files (it exports the whole tree there), as an absolute path, when that folder exists; else
-# TMPDIR's is used.
+# allowlist; default: git config pe.gate.terms and pe.gate.allow), PE_GATE_TIER2 (on, note or off: step 5;
+# default: git config pe.gate.tier2, else off). git config pe.gate.tmpdir names a folder for its temporary files
+# (it exports the whole tree there), as an absolute path, when that folder exists; else TMPDIR's is used.
 set -u
 die() { echo "gate: ERROR: $*" >&2; exit 2; }
 gtmp=$(git config --get pe.gate.tmpdir 2> /dev/null) &&
@@ -248,11 +254,11 @@ if [ -n "$bsha" ] && [ "$code" = "$sha" ]; then
   echo "gate: NOTE: the base ${bsha:0:10} has no gate yet, so this landing is judged by its own code"
 fi
 if [ -n "$bsha" ]; then
-  allowd=$(G diff --name-only "$bsha" "$sha" -- .gitleaks.toml scripts/native_allow.txt)
+  allowd=$(G diff --name-only "$bsha" "$sha" -- .gitleaks.toml scripts/native_allow.txt scripts/tier2_explained.txt)
   coded=$(G diff --name-only "$bsha" "$sha" -- scripts/gate.sh scripts/audit_native.py scripts/install_gitleaks.sh \
     scripts/install_gate_hook.sh scripts/hooks scripts/publish_check.sh scripts/publish_history.py \
-    scripts/publish_allow.py scripts/feature_policy.txt .github/workflows ':(glob,icase)**/.cargo/config' \
-    ':(glob,icase)**/.cargo/config.toml' \
+    scripts/publish_allow.py scripts/feature_policy.txt scripts/ci_status.py .github/workflows \
+    ':(glob,icase)**/.cargo/config' ':(glob,icase)**/.cargo/config.toml' \
     ':(glob,icase)**/rust-toolchain' ':(glob,icase)**/rust-toolchain.toml')
   if [ -n "$allowd" ]; then
     echo "gate: NOTE: this landing changes the gate's allow files, which apply to it; its reviewer approves these lines:"
@@ -527,6 +533,40 @@ else
   fi
 fi
 
+# 5. Tier 2's state (C7): a red hosted run blocks the next landing until it is fixed or explained. ci_status.py
+#    gives up after 20 s in all, so the hook never waits on GitHub for longer while git holds main's locks.
+t2=${PE_GATE_TIER2:-$(git config --get pe.gate.tier2 2> /dev/null)}
+case ${t2:-off} in
+  on|note)
+    if ! G show "$code:scripts/ci_status.py" > "$c/scripts/ci_status.py" 2> /dev/null; then
+      echo "gate: NOTE: ${code:0:10} has no scripts/ci_status.py; tier 2's state not checked"
+    else
+      t0=$(date +%s)
+      "$py" -I "$(native "$c/scripts/ci_status.py")" --check "$(native "$x/scripts/tier2_explained.txt")" > "$tmp/tier2.log" 2>&1
+      r=$?
+      dt=$(( $(date +%s) - t0 ))
+      msg=$(sed 's/^ci_status: //' "$tmp/tier2.log" | tail -1)
+      # Exit 1 is a red run only with ci_status's own words for it: Python exits 1 on a crash too.
+      [ $r = 1 ] && ! grep -q '^ci_status: tier 2 RED: ' "$tmp/tier2.log" && r=4
+      case $r in
+        0) echo "gate: tier 2: $msg ($dt s)" ;;
+        1) if [ "$t2" = on ]; then
+             echo "gate: $msg"
+             echo "gate:   fix it, or add '<run id> -- <reason>' to scripts/tier2_explained.txt (decision C7; WS-ci triages)"
+             fail=1
+           else
+             echo "gate: NOTE: $msg"
+             echo "gate:   not blocking yet: pe.gate.tier2 is note until the first four-platform run is green or explained"
+           fi ;;
+        3) echo "gate: NOTE: tier 2's state is unknown ($msg; $dt s); not blocking" ;;
+        *) echo "gate: NOTE: tier 2's check failed (exit $r; $dt s); not blocking:"
+           sed 's/^/gate:   /' "$tmp/tier2.log" | tail -5 ;;
+      esac
+    fi ;;
+  off) ;;
+  *) die "pe.gate.tier2 (or PE_GATE_TIER2) is '$t2'; it must be on, note or off" ;;
+esac
+
 "$py" -I - "$(native "$tmp")" << 'PYEOF'
 import json, os, sys
 t = sys.argv[1]
@@ -550,7 +590,8 @@ fi
 if [ "$fail" != 0 ]; then
   echo "gate: FAIL for ${sha:0:10}: not landable. Fix the finding, or accept a reviewed exception with its reason"
   echo "gate:   (scripts/native_allow.txt for native code; an [[allowlists]] entry in .gitleaks.toml for a false secret;"
-  echo "gate:   the publication allowlist, through scripts/publish_allow.py, for a reviewed line that only looks like a term)"
+  echo "gate:   the publication allowlist, through scripts/publish_allow.py, for a reviewed line that only looks like a term;"
+  echo "gate:   a line in scripts/tier2_explained.txt for a red tier-2 run that is explained)"
   exit 1
 fi
 echo "gate: PASS for ${sha:0:10}"

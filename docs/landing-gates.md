@@ -1,10 +1,10 @@
 # The landing gate
 
-One command, `scripts/gate.sh`, checks a commit before it lands on main. Today it runs the native-code audit
-with the feature policy for shipped builds, the secret scan and, where the term files are configured, the
-publication check. The
-re-founding plan (`docs/refound-plan.md`, 4.6) adds the format, lint, test, model and harness checks, in two
-tiers. Owner: WS-ci.
+One command, `scripts/gate.sh`, checks a commit before it lands on main. It runs the native-code audit with the
+feature policy for shipped builds, the secret scan, the publication check where the term files are configured, and,
+where the clone asks for it, tier 2's state. The re-founding plan (`docs/refound-plan.md`, 4.6) adds two tiers:
+tier 1 runs the format, lint, test and model checks by the paths a landing touches, and tier 2 runs every crate's
+tests on four hosted platforms after each landing. Owner: WS-ci.
 
 ## What it checks
 
@@ -16,10 +16,10 @@ fail and 2 on an error.
 **The gate never judges a change to itself with the changed code** (coordinator ruling, 2026-11-10):
 * When there is a base, the gate's code comes from it: `scripts/gate.sh` (a copy run from the landing hands over
   to the base's at once), `scripts/audit_native.py`, `scripts/install_gitleaks.sh`, the hook, the publication
-  check's scripts, the rules of `.gitleaks.toml`, the feature policy (`scripts/feature_policy.txt`), and the cargo
-  and rustup configuration files the audit runs with.
-* Only the allow files come from `<rev>`: `scripts/native_allow.txt` and the `[[allowlists]]` entries of
-  `.gitleaks.toml`.
+  check's scripts, `scripts/ci_status.py`, the rules of `.gitleaks.toml`, the feature policy
+  (`scripts/feature_policy.txt`), and the cargo and rustup configuration files the audit runs with.
+* Only the allow files come from `<rev>`: `scripts/native_allow.txt`, the `[[allowlists]]` entries of
+  `.gitleaks.toml`, and `scripts/tier2_explained.txt`.
 * When a landing changes any of these files, the gate prints a NOTE naming them, and the landing's reviewer
   approves those lines. A change to the gate's code takes effect from the next landing. So a new allow-file
   syntax lands after the code that reads it.
@@ -87,6 +87,9 @@ checks either.
    * The terms are never published, so hosted CI skips this check.
    * A `--full-history` run doesn't fail on the old history's terms: the user chose to keep that history
      (2026-10-31 11:49Z), and the cleaner replaces those terms.
+4. **Tier 2's state** (decision C7), where the clone asks for it with `git config pe.gate.tier2`: the latest
+   finished hosted run on the public main, read through `scripts/ci_status.py --check` within 20 s. A red run
+   fails the gate until it is fixed or explained (below, "Tier 2: the hosted platforms").
 
 On main at 7155e8f (after M0's archive, the seams and the first M1 crates), the audit checks 7 workspaces and 681
 package builds, and every flag is accepted. `archive/` is excluded: the prototype's crates are kept there to read and port from, in no workspace,
@@ -130,12 +133,14 @@ and are never built. The secret scan of the whole history finds nothing.
     `.git/refs/heads/main.lock` behind; remove them only once no git process runs in the clone.
   * When it refuses a merge in the main checkout, main is unchanged. `git merge --abort` puts the checkout back;
     after a fast-forward or a reset, use `git reset --merge HEAD`.
-* **Hosted CI,** `.github/workflows/gate.yml`, runs the gate on every push to main, every pull request, and
-  nightly over the whole history (user ruling Q12). It installs gitleaks and runs the gate from the base too.
-  GitHub runs the workflow file as the landing has it, so the gate's NOTE lists a change to it.
-* **The self-test,** `bash scripts/test_gate.sh`, takes about 20 minutes; run it as one build-slot job
-  (`bash "<team folder>/heavy.sh" bash scripts/test_gate.sh`). In a throwaway clone it runs the gate as the hook
-  does, in 43 checks:
+* **Hosted CI,** `.github/workflows/gate.yml`, runs on every push to main, every pull request, and nightly (user
+  ruling Q12). GitHub runs the workflow file as the landing has it, so the gate's NOTE lists a change to it.
+  * The gate, and nightly over the whole history. It installs gitleaks and runs the gate from the base too.
+  * Tier 2's jobs, on four platforms (below, "Tier 2: the hosted platforms").
+* **The self-test,** `bash scripts/test_gate.sh`, takes about 50 minutes. Its cargo calls are `cargo metadata` and
+  `cargo tree`, which build nothing, so it runs without a build slot, under the hook's idle-priority wrapper in
+  `PE_GATE_WRAP` (coordinator). In a throwaway clone it runs the gate as the hook does, in 56
+  checks:
   * secrets in eleven ways: in the tree, only in the history, only in a message, behind an inline
     `gitleaks:allow`, a pe-app member key file, under an `export-ignore` path, in a file marked `-diff`, added
     only by a merge, behind a committed `.gitleaksignore` or one in the folder the gate runs from, and a session
@@ -149,6 +154,11 @@ and are never built. The secret scan of the whole history finds nothing.
     fails, even when the landing also drops the policy's line. A landing that changes the policy fails when its
     own policy doesn't parse (a crate with two `shipped` lines), names a target cargo can't resolve, or is
     broken by its own tree, even where the base's policy allows it, and one that deletes the policy fails;
+  * tier 2's state, from files standing in for GitHub: a red run fails the gate with `pe.gate.tier2` on, passes
+    once `scripts/tier2_explained.txt` names it, and is only reported with `note`; a cancelled run is looked past,
+    and a fork's pull request from its own `main` counts for nothing, green or red; an unreadable answer, a
+    malformed one and an unknown mode are each handled as stated below; and a server
+    that never finishes its answer is cut off at 20 s, after which the gate passes with a NOTE;
   * the gate's own code: a landing that changes it is judged by the base's, one that runs its own copy hands
     over, one that adds its own exception has it applied, a committed gitleaks binary is refused, a committed
     cargo configuration isn't applied, the export refuses a symbolic link, a submodule and a case twin, and the
@@ -219,7 +229,52 @@ so a renamed or ignored test would otherwise pass). `scripts/tier1.sh` runs the 
   members less the skipped ones (every member for an `all` path), that a landing which drops a member while
   changing its files fails and one which removes it with its folder doesn't, and that a landing whose own table
   is malformed fails.
-* Hosted CI will run it too, later (refound-plan 4.6).
+* Tier 2 runs every crate's tests and clippy on four hosted platforms after each landing (below).
+
+## Tier 2: the hosted platforms
+
+Tier 2 runs on GitHub's hosted runners (user ruling Q12), from `.github/workflows/gate.yml`, after each push to the
+public repository's main and nightly (refound plan 4.6). The public main is main as the publishing step pushes it,
+and its cleaning leaves `crates/`, `models/` and `scripts/` byte for byte as they are. So tier 2 judges what has
+already landed, and a red run holds up the landings after it (decision C7).
+
+* **On each platform** (windows-x64, linux-x64, linux-arm64 and macos-arm64), `scripts/tier2.sh` runs:
+  * the kept determinism base's tests (box3d-rust, pe-core, pe-sim, pe-physics), in release and in debug;
+  * every other crate's tests;
+  * clippy with warnings denied, on every crate but box3d-rust.
+
+  pe-physics's tests compare goldens, traces and snapshot images with the committed records, which were made on
+  Windows, so a pass means bit-identical results. The script runs the same way on a developer's machine:
+  `bash scripts/tier2.sh <out-folder>`.
+* **The digests.** Each platform keeps the RESULT lines its tests printed, per profile. A final job
+  (`scripts/tier2_digests.py`) requires them to be the same as windows-x64's, line for line.
+  * **A RESULT line is a contract** (coordinator). A test prints one only for a value that must be the
+    same on every platform, never a timing or anything else that depends on the machine.
+  * A workstream adds a cross-platform digest by printing a RESULT line from a test (fuel and trap points,
+    replica replays, randsched roots). The workflow doesn't change.
+* **Nightly,** the agreement model's fast profile and its bounded n = 4 Byzantine checks (`models/cuts`) run too.
+* **A red run blocks the next landing** until it is fixed or explained (decision C7). The gate's step 5 reads the
+  latest finished run on the public main (`scripts/ci_status.py --check`, from the base). `git config
+  pe.gate.tier2` (or `PE_GATE_TIER2`) sets what the gate does with it:
+  * `on`: a red run fails the gate, unless `scripts/tier2_explained.txt` lists it. The landing that fixes it, or
+    explains it, adds `<run id> -- <reason>` there. It is an allow file, read from the landing, and its reviewer
+    approves the line;
+  * `note`: the gate only reports a red run. The main clone stays here until the first four-platform run is
+    green or each of its red jobs is fixed or explained (coordinator);
+  * `off`, the default: no check. Any other value is an error.
+  * Only main's own runs count: a push, the nightly run or a manual dispatch, in the public repository itself.
+    A pull request's run never does, not even one from a fork's own branch called `main` (GitHub's branch filter
+    matches that too).
+  * A cancelled, skipped or stale run gives no verdict, so the check looks past it to the run before. A burst
+    of pushes cancels the runs still waiting.
+  * The check gives up after 20 s in all, because the hook runs it while git holds main's locks. If GitHub can't
+    be read in time, or its answer can't be read, the gate says so and passes.
+* **Triage** is WS-ci's.
+  * A watchdog runs `scripts/ci_status.py --new <state file>`, which names each red run once.
+  * `scripts/ci_status.py --run <id>` lists a red run's failed jobs, with their failing tests and differing
+    digests. The jobs write these as error annotations, because GitHub serves those without a login and logs
+    need one.
+  * A run's commit is the public one: the publishing step's map leads back to main's.
 
 ## Accepting an exception
 

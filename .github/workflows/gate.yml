@@ -1,7 +1,17 @@
-# The landing gate on hosted runners (user ruling Q12: "Allow hosted runners").
-# scripts/gate.sh: the native-code audit (the "100% Rust" ruling, D1) and the secret scan, on every push to
-# main, every pull request, and nightly over the whole history. docs/landing-gates.md describes the gate;
-# the same script runs locally on every landing (scripts/hooks/reference-transaction).
+# The landing gate on hosted runners (user ruling Q12: "Allow hosted runners"), on every push
+# to main, every pull request, and nightly. docs/landing-gates.md describes it.
+# - gate: scripts/gate.sh, the native-code audit (the "100% Rust" ruling, D1) and the secret scan, which also
+#   run locally on every landing (scripts/hooks/reference-transaction); nightly over the whole history. Its
+#   code comes from the base, as on a local landing.
+# - tier 2 (docs/refound-plan.md 4.6): scripts/tier2.sh on windows-x64, linux-x64, linux-arm64 and macos-arm64,
+#   that is every crate's tests and clippy, with the kept determinism base's tests in release too. pe-physics's
+#   tests compare goldens, traces and snapshot images with the committed records, so a pass on a platform means
+#   its results are bit-identical with them. A final job then requires the RESULT lines the tests printed to be
+#   the same on all four (scripts/tier2_digests.py; coordinator). Nightly, the agreement model's
+#   fast profile and its bounded n = 4 Byzantine checks run as well.
+# A red run blocks the next landing until it is fixed or explained (decision C7; scripts/gate.sh reads it through
+# scripts/ci_status.py), and WS-ci triages it. The tier-2 jobs write their failures as error annotations, which
+# GitHub's public API serves without a login.
 name: gate
 
 on:
@@ -18,6 +28,9 @@ permissions:
 concurrency:
   group: gate-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
 
 jobs:
   gate:
@@ -61,3 +74,94 @@ jobs:
           path: gate-report
           if-no-files-found: ignore
           retention-days: 14
+
+  tier2:
+    name: tier 2, ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x64, os: windows-latest }
+          - { name: linux-x64, os: ubuntu-latest }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: macos-arm64, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rust-toolchain.toml pins it)
+        run: |
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install 2> /dev/null || rustup show
+          rustc --version --verbose && cargo --version
+      - name: Tests and clippy, then the digests (scripts/tier2.sh)
+        env:
+          PE_TIER2_PLATFORM: ${{ matrix.name }}
+        run: bash scripts/tier2.sh --free-space "tier2-${{ matrix.name }}"
+      - name: Keep the digests and logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tier2-${{ matrix.name }}
+          path: tier2-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 14
+
+  tier2-digests:
+    name: tier 2, the same digests on all four
+    needs: tier2
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tier2-*
+          path: tier2
+      - name: Compare with windows-x64's, the platform the records were made on
+        run: >-
+          python3 -I scripts/tier2_digests.py --annotate tier2/tier2-windows-x64 tier2/tier2-linux-x64
+          tier2/tier2-linux-arm64 tier2/tier2-macos-arm64
+
+  model:
+    name: tier 2, the agreement model (nightly)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rust-toolchain.toml pins it)
+        run: |
+          rustup toolchain install 2> /dev/null || rustup show
+          rustc --version --verbose && cargo --version
+      # The fast profile (tier 1's model-fast) and the bounded n = 4 Byzantine safety checks, 250-313 s each at
+      # 4 threads on the org's machine (models/cuts/README.md, v0.2). A check over 3,599 s counts as failed.
+      - name: The model's checks (models/cuts)
+        run: |
+          cargo run --release --locked --manifest-path models/cuts/Cargo.toml -- n3-chain n3-sig n3-crash \
+            n3-chain-live n3-crash-live n4-byz-live n4-crash-live n3-root bound-n3-byz ctl-d1 ctl-unchecked \
+            ctl-quorum ctl-nolock ctl-nosig ctl-noroot ctl-notimeout n4-byz n4-byz-chain n4-root 2>&1 | tee model.log
+          grep -E "^all 19 check\(s\) met their expectation" model.log
+      - name: Name the failures
+        if: ${{ failure() }}
+        run: |
+          lines=$(grep -E "FAIL|did not meet|panicked at|^error" model.log 2> /dev/null | head -40 | sed 's/%/%25/g' \
+            | awk '{ printf "%s%%0A", $0 }')
+          echo "::error title=tier 2 model::the model's checks failed%0A$lines"
