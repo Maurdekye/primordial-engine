@@ -1,0 +1,13 @@
+== round 1 A 03:20:43Z
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 15.75s
+== round 1 B 03:25:11Z
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 65 filtered out; finished in 15.75s
+== round 2 A 03:28:35Z
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 31.98s
+== round 2 B 03:30:18Z
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 65 filtered out; finished in 15.79s
+== round 3 A 03:32:43Z
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 24.67s
+== round 3 B 03:33:54Z
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 65 filtered out; finished in 15.77s
+ALLDONE

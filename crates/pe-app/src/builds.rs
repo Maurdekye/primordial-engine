@@ -380,7 +380,7 @@ impl Builder {
         // From here to the return, this turn holds the build's output, so a bug bundle sees the failed build's.
         let fail = |failed: Failed| self.failed(failed, archive, p.author_module, attested_by_another);
         if let Some(b) = self.cached(&v).filter(theirs) {
-            return if components_match(&b, p) { Ok(b) } else { Err(fail(components_differ())) };
+            return if components_match(&b, p) { Ok(b) } else { Err(fail(components_differ(true))) };
         }
         let (c, inbox) = (&self.config, &self.inbox);
         let started = Instant::now();
@@ -403,7 +403,7 @@ impl Builder {
         })?;
         let b = Built { script, described, build_ms, warnings: Vec::new() };
         self.keep(v, &b);
-        if components_match(&b, p) { Ok(b) } else { Err(fail(components_differ())) }
+        if components_match(&b, p) { Ok(b) } else { Err(fail(components_differ(false))) }
     }
 
     /// `failed` as [`RowFail::Failed`], with a bug bundle when it wants one (6.2b). Call it in the attester's turn,
@@ -485,11 +485,16 @@ impl Builds for Builder {
             return Err(BuildRefused::Margin { which: Margin::Time, measured: u64::from(b.build_ms) });
         }
         let (toolchain, sdk) = self.ids;
+        // The version's tag with the module's own components: pe-api registers exactly these under the commit, and
+        // pe-world refuses a `Register` without exactly one tag (world-model.md 7.9), so without it every live `code`
+        // op was refused `Invalid` (@iter-bench's c-to-F probe, 2026-11-17).
+        let mut components = b.described.components;
+        components.push(tag_desc(&v));
         Ok(pe_api::builds::Built {
             module: b.described.module,
             toolchain,
             sdk,
-            components: b.described.components,
+            components,
             systems: b.described.systems,
             warnings: b.warnings.iter().filter_map(rustc_diagnostic).collect(),
             build_ms: b.build_ms,
@@ -525,9 +530,16 @@ fn components_match(b: &Built, p: &PendingCommit) -> bool {
 /// components on every machine, so this is the commit's own fault or the same module describing differently on two
 /// machines: `Refused`, the same everywhere (6.2a item 2; @iter-bench's Low 2 on builds-port), and bundled when another
 /// member built the version, since in M1, with every member trusted, the second is the likelier (@engine-architect's
-/// Low 1 on app-b-r0).
-fn components_differ() -> Failed {
-    let detail = "the module's components differ from the commit's".to_string();
+/// Low 1 on app-b-r0). `cached`: the module came from the cache, so nothing was built in this turn and a bug bundle's
+/// dep-info is the last build's, maybe another version's; the detail, which the bundle's report carries, says so
+/// (@engine-architect's nit on app-b-r1).
+fn components_differ(cached: bool) -> Failed {
+    let mut detail = "the module's components differ from the commit's".to_string();
+    if cached {
+        detail.push_str(
+            " (the module came from this machine's build cache: nothing was built for this check, so a bug bundle's              deps/ are the last build's, maybe another version's)",
+        );
+    }
     Failed { reason: FailReason::Refused, module: None, attempts: 1, detail }
 }
 

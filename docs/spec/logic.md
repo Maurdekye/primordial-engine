@@ -932,8 +932,24 @@ frame is `F`, after a quorum has built. Two ways to show it to the author:
   `activate_at` today.
 - **(ii) Wait for `F`:** no correction, but the edit shows only after the quorum has built, about 0.5-2 s later.
 
-The lamp's `c` to `F` is to be measured on this desktop and on the second PC once attestation is built (pe-world
-and pe-replica); the 0.5-2 s above is inferred.
+**The lamp's `c` to `F`, measured on this desktop** [V shared machine, both machines on one PC over UDP loopback,
+500 balls at 60 Hz, idle priority; `spikes/iter-bench/ctof/`, logs `spikes/out/iter-bench/ctof/`]. Two pe-app
+machines wired as the binary wires them (build service and attester each), A committing the lamp through pe-api's
+`code` op 11 times per session, 3 sessions, each commit a new V; the first of each session builds pe-sdk cold on both
+machines. Median [min-max]:
+
+| | `F - c` | author's call (its own build) | B active | A's prediction corrected | final on A |
+|---|---|---|---|---|---|
+| warm, n=30 | 48 frames, 0.80 s [0.62-1.35] | 0.84 s [0.64-1.35] | 0.80 s [0.60-1.34] | 0.98 s [0.71-1.63] | 1.14 s [0.88-1.75] |
+| cold, n=3 | 79 frames, 1.32 s [1.27-1.73] | 1.80 s [1.36-2.38] | 1.27 s [1.27-1.71] | 1.54 s [1.53-2.20] | 1.69 s [1.64-2.29] |
+
+The last three columns are wall time after the author's call returned. The author sees the new code at once (its
+prediction runs from `c + 1` in every case) and one correction about 1 s later; `F - c` is B's build of the version
+plus an entry's latency, within the 0.5-2 s inferred above. In 4 of the 30 warm commits pe-api first answered
+`not_ready` (A was still catching up after the previous correction) and the retry 100 ms later found the build cached.
+On two PCs each machine builds on its own CPU, so `F - c` should not be longer [I]; the second PC's half waits for
+it to be online. The probe also found that pe-app's build port left the version's tag out of the components pe-api
+registers, so every live `code` op was refused `invalid` (fixed with this measurement; pe-app `tests/builds.rs`).
 
 **Not chosen:**
 - **A deadline alone,** with activation at `c`: it voids a module a slow quorum would have built, and finality

@@ -1,0 +1,6 @@
+ctof: 11 reps, 500 balls, 60 Hz, build folders under S:/primordial-engine/tmp/iter-bench-ctof
+ctof: A is d542; world members ["511c", "d542"] at frame Frame(186)
+ctof: B is 511c; world members ["511c", "d542"] at frame Frame(186)
+ctof: done; stopping
+ctof: A Ok("SimStats { ticks: 3229, before_frame_0: 1, published: 2448, holds: 388, longest_hold: 8, received: 4105, refused: 0, unrouted: 0, net_events: 0, sent: 3854, unsent: 0, events: 703, inputs: 3438, inputs_refused: 0, hands_paced: 0, edits: 11, edits_refused: 0, votes: 229, finalized: 217, leave_refused: 0, lead: 0, largest_lead: 0, longest_drain: 0, poses_thinned: 0, moving_frames: 1 }")
+ctof: B Ok("SimStats { ticks: 3442, before_frame_0: 2, published: 2657, holds: 374, longest_hold: 1, received: 3854, refused: 0, unrouted: 0, net_events: 0, sent: 4109, unsent: 0, events: 720, inputs: 3728, inputs_refused: 0, hands_paced: 0, edits: 11, edits_refused: 0, votes: 246, finalized: 217, leave_refused: 0, lead: 0, largest_lead: 0, longest_drain: 0, poses_thinned: 0, moving_frames: 1 }")
