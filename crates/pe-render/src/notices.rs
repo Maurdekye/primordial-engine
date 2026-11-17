@@ -298,6 +298,8 @@ impl Notices {
             VoidReason::BackStamped => "An action of yours was undone: it arrived out of order.",
             VoidReason::AfterLeave => "An action of yours came after you left and was dropped.",
             VoidReason::LastMember => "You are the session's last member, so your leave wasn't applied.",
+            VoidReason::NotAuthorized => "Your invite wasn't applied: you may not admit players.",
+            VoidReason::NoChange => "That player is already in the session.",
         };
         self.tell(text.to_string(), None, now);
     }
