@@ -12,6 +12,8 @@ pe-seams = { path = "../pe-seams", features = ["world-api"] }
 pe-core = { path = "../pe-core" }
 pe-world = { path = "../pe-world" }
 pe-sim = { path = "../pe-sim" }
+# The one sRGB table (colour ruling m18c14b2d02ea item 3): a script's hex and the WorldApi's give the same bits.
+pe-sdk = { path = "../pe-sdk" }
 bytemuck = "1.25"
 serde_json.workspace = true
 schemars.workspace = true

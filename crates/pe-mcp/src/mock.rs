@@ -185,8 +185,8 @@ impl WorldApi for MockWorld {
                 name: t.clone(),
                 summary: "How it looks".into(),
                 fields: BTreeMap::from([(
-                    "color".to_string(),
-                    json!({"type": "string", "x-unit": "srgb", "x-sync": "synced"}),
+                    "base".to_string(),
+                    json!({"description": "a colour", "x-color": "linear-srgb", "x-sync": "synced"}),
                 )]),
             }),
             Some(t) => Err(ApiError::arg("type", format!("no component type named {t:?}"))),

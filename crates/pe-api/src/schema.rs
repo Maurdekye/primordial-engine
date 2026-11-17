@@ -113,6 +113,24 @@ fn kind_schema(k: FieldKind) -> Json {
 
 fn field_schema(d: &ComponentDesc, f: &FieldDesc) -> (String, Json) {
     let name = shown(d.name(), &f.name);
+    if f.color.is_some() {
+        // A colour, written and read as one (api.md 4.4): never a bare list, which carries no colour space.
+        let alpha = f.count == 4;
+        let hex = if alpha { "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$" } else { "^#[0-9a-fA-F]{6}$" };
+        let list =
+            |min: u32| json!({ "type": "array", "items": { "type": "number" }, "minItems": min, "maxItems": f.count });
+        let s = json!({
+            "description": crate::colour::expected(f.count as usize),
+            "x-color": "linear-srgb",
+            "x-sync": "synced",
+            "oneOf": [
+                { "type": "string", "pattern": hex },
+                { "type": "object", "properties": { "srgb": list(3) }, "required": ["srgb"], "additionalProperties": false },
+                { "type": "object", "properties": { "linear": list(f.count) }, "required": ["linear"], "additionalProperties": false },
+            ],
+        });
+        return (name, s);
+    }
     let mut s = kind_schema(f.kind);
     if f.count > 1 {
         s = json!({ "type": "array", "items": s, "minItems": f.count, "maxItems": f.count });

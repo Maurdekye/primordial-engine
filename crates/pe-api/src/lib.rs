@@ -21,6 +21,7 @@ pub mod api;
 pub mod builds;
 pub mod capture;
 pub mod changes;
+pub mod colour;
 pub mod edit;
 pub mod history;
 pub mod names;

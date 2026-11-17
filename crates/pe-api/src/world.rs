@@ -209,6 +209,7 @@ impl Snapshot for WorldView {
         let transform = c == pe_sim::ComponentId::TRANSFORM;
         let desc = self.snap.component_desc(c)?;
         let is_f32 = |name: &str| desc.fields().iter().any(|f| f.name == name && f.kind == pe_sim::FieldKind::F32);
+        let is_colour = |name: &str| desc.fields().iter().any(|f| f.name == name && f.color.is_some());
         let mut out = BTreeMap::new();
         for (name, v) in rows {
             let place = transform && name == "pos";
@@ -219,6 +220,12 @@ impl Snapshot for WorldView {
                         Some(o) => offset_json(&frame.0, &o),
                         None => Json::Null,
                     }
+                }
+                // A colour reads as hex when exact, else linear (api.md 4.4; ruling m18c14b2d02ea, item 4).
+                (Value::List(vs), _) if is_colour(&name) => {
+                    let c: Vec<f32> =
+                        vs.iter().filter_map(|x| if let Value::F(f) = x { Some(*f as f32) } else { None }).collect();
+                    crate::colour::decode(&c)
                 }
                 _ => value_json(&v, is_f32(&name)),
             };

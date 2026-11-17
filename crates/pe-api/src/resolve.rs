@@ -757,8 +757,8 @@ mod tests {
             &m,
             &tx(json!([
                 {"op": "create", "as": "$cube", "parent": "/Table", "name": "Red cube", "template": "box",
-                 "components": {"Appearance": {"color": "#d22b2b"}}},
-                {"op": "set", "where": {"has": "Ball"}, "max": 1000, "field": "Appearance.color", "value": "#2b5bd2"},
+                 "components": {"Appearance": {"base": "#d22b2b"}}},
+                {"op": "set", "where": {"has": "Ball"}, "max": 1000, "field": "Appearance.base", "value": "#2b5bd2"},
                 {"op": "duplicate", "id": "$cube", "as": "$copy"},
                 {"op": "set", "id": "$copy", "field": "Transform.position", "value": {"relative_to": "$cube", "offset": [0.3, 0, 0]}},
                 {"op": "delete", "id": oid(2).to_string()}

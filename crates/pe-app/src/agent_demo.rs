@@ -235,13 +235,13 @@ fn the_agent_demo_script_runs_against_two_machines() {
                     {"op": "create", "as": "$cube", "parent": pit, "name": "Red cube", "components": {
                         "Transform": {"position": {"relative_to": "parent", "offset": [0, 0.5, 0]}},
                         "Shape": {"kind": 1, "density": 500, "size": [0.1, 0.1, 0.1]},
-                        "Appearance": {"base": [0.65, 0.03, 0.03, 1.0]}}}
+                        "Appearance": {"base": "#d22b2b"}}}
                 ]}),
             )
             .await;
             assert_eq!(o["status"], "final", "{o}");
             let cube = o["created"]["$cube"]["id"].as_str().expect("the cube's id").to_string();
-            seen("the red cube", &|api, c| is(field(api, c, &cube, "Appearance", "base"), json!([0.65, 0.03, 0.03, 1.0])));
+            seen("the red cube", &|api, c| is(field(api, c, &cube, "Appearance", "base"), json!("#d22b2b")));
 
             hub_frame.step("2: the blue balls");
             // 2. "Make the balls blue."
@@ -250,7 +250,7 @@ fn the_agent_demo_script_runs_against_two_machines() {
                 &agent,
                 "world_apply",
                 json!({"label": "Make the balls blue", "wait": "final", "ops": [
-                    {"op": "set", "where": balls, "max": 100, "field": "Appearance.base", "value": [0.02, 0.1, 0.65, 1.0]}
+                    {"op": "set", "where": balls, "max": 100, "field": "Appearance.base", "value": "#2b5bd2"}
                 ]}),
             )
             .await;
@@ -258,7 +258,7 @@ fn the_agent_demo_script_runs_against_two_machines() {
             seen("eight blue balls", &|api, c| {
                 let r = query(api, c, json!({"where": balls, "fields": ["Appearance.base"]}));
                 let objs = r["objects"].as_array().expect("objects");
-                let blue = objs.iter().filter(|o| o["components"]["Appearance"]["base"] == json!([0.02, 0.1, 0.65, 1.0]));
+                let blue = objs.iter().filter(|o| o["components"]["Appearance"]["base"] == json!("#2b5bd2"));
                 is(json!(blue.count()), json!(8)).map_err(|_| r.to_string())
             });
 
@@ -276,9 +276,11 @@ fn the_agent_demo_script_runs_against_two_machines() {
             .await;
             assert_eq!(o["status"], "final", "{o}");
             let copy = o["created"]["$copy"]["id"].as_str().expect("the copy's id").to_string();
-            seen("the copy, red", &|api, c| is(field(api, c, &copy, "Appearance", "base"), json!([0.65, 0.03, 0.03, 1.0])));
+            seen("the copy, red", &|api, c| is(field(api, c, &copy, "Appearance", "base"), json!("#d22b2b")));
             // By name on both machines: a created object's name rides inside its entry (world-model.md 3.4).
-            seen("two red cubes, by name", &|api, c| is(json!(names(api, c, json!({"name": "Red cube"})).len()), json!(2)));
+            seen("two red cubes, by name", &|api, c| {
+                is(json!(names(api, c, json!({"name": "Red cube"})).len()), json!(2))
+            });
 
             hub_frame.step("4: the stale case");
             // 4. The stale case: the agent reads the lamp, a person on A dims it, and the agent's delete of what it
@@ -304,14 +306,23 @@ fn the_agent_demo_script_runs_against_two_machines() {
             )
             .await;
             // Over MCP a refusal is the error envelope (api.md 6.3): code and message on top, the rest in details.
-            assert_eq!((o["code"].clone(), o["details"]["status"].clone()), (json!("stale_version"), json!("refused")), "{o}");
+            assert_eq!(
+                (o["code"].clone(), o["details"]["status"].clone()),
+                (json!("stale_version"), json!("refused")),
+                "{o}"
+            );
             let winner = &o["details"]["winner"];
             assert_eq!(winner["by"]["member"], json!(MemberId::from(ma)), "the refusal names A's change: {o}");
-            assert_eq!((winner["label"].clone(), winner["producer"]["kind"].clone()), (json!("Dim the lamp"), json!("hand")), "{o}");
+            assert_eq!(
+                (winner["label"].clone(), winner["producer"]["kind"].clone()),
+                (json!("Dim the lamp"), json!("hand")),
+                "{o}"
+            );
 
             hub_frame.step("5: removing the lamp");
             // 5. "Remove the lamp", after reading it again.
-            let now = tool(&agent, "world_query", json!({"where": {"id": lamp_id}})).await["objects"][0]["version"].clone();
+            let now =
+                tool(&agent, "world_query", json!({"where": {"id": lamp_id}})).await["objects"][0]["version"].clone();
             let o = tool(
                 &agent,
                 "world_apply",
