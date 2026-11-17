@@ -142,7 +142,9 @@ pub fn new_indices(tx: &Transaction) -> impl Iterator<Item = u32> + '_ {
 
 /// A script commit, a registration or an attestation: never re-sent in M1 (api.md 9.4).
 pub fn is_code(tx: &Transaction) -> bool {
-    tx.ops.iter().any(|op| matches!(op, Op::Register { .. } | Op::CommitScript { .. } | Op::AttestBuild { .. }))
+    tx.ops.iter().any(|op| {
+        matches!(op, Op::Register { .. } | Op::CommitScript { .. } | Op::AttestBuild { .. } | Op::BuildFailed { .. })
+    })
 }
 
 /// A rough size, for the memory cap on kept transactions.
@@ -267,7 +269,7 @@ pub fn names(tx: &Transaction, slots: &Slots, m: &Map) -> Option<bool> {
         Op::Copy { source, parent, .. } => tgt(source) || tgt(parent),
         Op::Undelete { id: o } => id(o),
         Op::CommitScript { base, .. } => base.is_some_and(|b| m.entries.contains_key(&b.entry)),
-        Op::Register { .. } | Op::AttestBuild { .. } => false,
+        Op::Register { .. } | Op::AttestBuild { .. } | Op::BuildFailed { .. } => false,
     });
     if pre || op {
         return Some(true);
@@ -310,7 +312,7 @@ pub fn rewrite(tx: &Transaction, slots: &Slots, m: &Map) -> Transaction {
             }
             Op::Undelete { id } => *id = m.id(*id),
             Op::CommitScript { base, .. } => *base = base.map(|b| m.version(b)),
-            Op::Register { .. } | Op::AttestBuild { .. } => {}
+            Op::Register { .. } | Op::AttestBuild { .. } | Op::BuildFailed { .. } => {}
         }
     }
     for s in &slots.refs {
