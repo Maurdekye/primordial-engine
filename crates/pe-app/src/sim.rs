@@ -970,8 +970,8 @@ mod tests {
 
     /// pe-logic's runner, as the binary hands it to each replica it builds.
     fn runner() -> Box<dyn pe_replica::ScriptRunner> {
-        let run = pe_logic::run::RunSettings::default();
-        Box::new(pe_replica::logic::LogicRunner::new(pe_logic::Settings::default(), run).expect("a runner"))
+        let (settings, run) = crate::net::runner_settings();
+        Box::new(pe_replica::logic::LogicRunner::new(settings, run).expect("a runner"))
     }
 
     /// pe-replica's replica over a new, empty pe-world world, as the binary opens it.
