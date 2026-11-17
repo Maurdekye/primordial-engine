@@ -34,7 +34,7 @@ use pe_world::{Draft, WorldSnapshot};
 
 use crate::builds::{BuildRefused, Builds, archive_of, diagnostics_of, margin_diagnostic, refusal_diagnostics};
 use crate::changes::{ChangeLog, FeedItem, Kept, Owner};
-use crate::edit::{Unmapped, WorldEdit, to_world};
+use crate::edit::{Unmapped, WorldEdit, to_world_built};
 use crate::outcome::{dry_run, map_refusal};
 use crate::ports::{Snapshot, SnapshotSource};
 use crate::query::{Budget, EXAMINE_MAX, pick, run, select_in};
@@ -122,6 +122,7 @@ fn refused_outcome(snap: &WorldSnapshot, f: Refusal) -> Outcome {
         resent_as: None,
         held: None,
         activation: None,
+        scripts: Default::default(),
     }
 }
 
@@ -328,6 +329,7 @@ impl<S: WorldSource + 'static> Api<S> {
             resent_as: None,
             held: None,
             activation: None,
+            scripts: Default::default(),
         };
         let r = resolve_tx(&view, &tx, &lookup);
         drop(table);
@@ -335,7 +337,25 @@ impl<S: WorldSource + 'static> Api<S> {
             Ok(r) => r,
             Err(f) => return Ok(outcome_refused(f)),
         };
-        let e = match to_world(&r, actor(c), &snap, self.src.head_of(c.member)) {
+        // A `code` op is compiled once, here, before any entry exists (api.md 7); what can be refused without a build
+        // is refused first.
+        match crate::edit::precheck_scripts(&r, &snap) {
+            Ok(()) => {}
+            Err(Unmapped::Refused(f)) => return Ok(outcome_refused(f)),
+            Err(Unmapped::Failed(err)) => return Err(err),
+        }
+        let built = match r.ops.iter().position(|o| matches!(o, crate::resolve::ROp::Code { .. })) {
+            None => None,
+            Some(i) => {
+                let crate::resolve::ROp::Code { source, .. } = &r.ops[i] else { unreachable!() };
+                let op = r.op_of.get(i).copied().unwrap_or(i as u32);
+                match self.build_for_commit(source, op)? {
+                    Ok(b) => Some(b),
+                    Err(f) => return Ok(outcome_refused(f)),
+                }
+            }
+        };
+        let e = match to_world_built(&r, actor(c), &snap, self.src.head_of(c.member), built.as_ref()) {
             Ok(e) => e,
             Err(Unmapped::Refused(f)) => return Ok(outcome_refused(f)),
             Err(Unmapped::Failed(err)) => return Err(err),
@@ -467,6 +487,28 @@ impl<S: WorldSource + 'static> Api<S> {
                                 o.created.insert(
                                     name.clone(),
                                     pe_seams::world_api::IdVersion { id: (*id).into(), version: v },
+                                );
+                            }
+                        }
+                        // The script it committed: the asset whose pending commit (or row, once active) is this
+                        // entry's, so a re-sent entry's derived id is found as well (api.md 7, 9.4).
+                        let commit = e.tx.ops.iter().find_map(|o| match o {
+                            pe_world::edit::Op::CommitScript { script, .. } => Some(*script),
+                            _ => None,
+                        });
+                        if let (Some(script), Some(entry)) = (commit, fate.step.as_ref().map(|s| s.entry)) {
+                            let found = [Some(&now), then.as_ref()].into_iter().flatten().find_map(|s| {
+                                let p = s.pending().iter().map(|(a, p)| (a, p.version));
+                                let m = s.modules().iter().map(|(a, m)| (a, m.version));
+                                p.chain(m).find(|(_, v)| v.entry == entry).map(|(a, v)| (*a, v))
+                            });
+                            if let Some((a, v)) = found {
+                                o.scripts.insert(
+                                    crate::outcome::script_key(r, &script),
+                                    pe_seams::world_api::ScriptVersion {
+                                        id: crate::resolve::asset_text(&a),
+                                        version: crate::world::version_text(&v),
+                                    },
                                 );
                             }
                         }
@@ -689,6 +731,7 @@ impl<S: WorldSource + 'static> Api<S> {
             ops: vec![],
             preconditions: vec![],
             refs: Default::default(),
+            script_refs: Default::default(),
             new_count: 0,
             count: u64::from(n),
             op_of: vec![],
@@ -1002,6 +1045,45 @@ impl<S: WorldSource + 'static> Api<S> {
     pub fn with_builds(mut self, b: Arc<dyn Builds>) -> Self {
         self.builds = Some(b);
         self
+    }
+
+    /// The author's build of a `code` op's source (api.md 7): a failure or a margin refuses the op as `compile`
+    /// with its diagnostics, and nothing is submitted; no service, or a wait past the deadline, fails the call.
+    fn build_for_commit(
+        &self,
+        source: &str,
+        op: u32,
+    ) -> Result<Result<crate::builds::Built, Box<pe_seams::world_api::Refusal>>, ApiError> {
+        let Some(b) = &self.builds else {
+            return Err(ApiError::new(
+                ErrorCode::Unavailable,
+                "This machine has no build service, so it can't commit scripts.",
+            ));
+        };
+        let archive =
+            archive_of(source).map_err(|e| ApiError::arg("source", format!("The source can't be packed: {e}.")))?;
+        let compile = |d: Vec<pe_seams::world_api::Diagnostic>| {
+            let mut f = refusal_of(
+                RefusalCode::Compile,
+                "The script didn't build, so nothing was submitted.",
+                Some("Fix what the diagnostics say (code_check runs the same build), then apply again."),
+            );
+            f.op = Some(op);
+            f.details = Some(serde_json::json!({ "diagnostics": d }));
+            Box::new(f)
+        };
+        match b.build(&archive, Instant::now() + CODE_CHECK_WAIT) {
+            Ok(built) => Ok(Ok(built)),
+            Err(BuildRefused::Failed(d)) => Ok(Err(compile(d))),
+            Err(BuildRefused::Margin { which, measured }) => Ok(Err(compile(vec![margin_diagnostic(which, measured)]))),
+            Err(BuildRefused::Timeout) => Err(ApiError::new(
+                ErrorCode::Timeout,
+                "The build waited too long behind other builds; try again (a build that started finishes and is kept).",
+            )),
+            Err(BuildRefused::Unavailable(why)) => {
+                Err(ApiError::new(ErrorCode::Unavailable, format!("The build service can't build now: {why}.")))
+            }
+        }
     }
 
     /// `code_check` (api.md 7, 7.1): builds and validates one script's source as its author's machine would for a
@@ -1420,6 +1502,150 @@ mod tests {
         assert!(d.diagnostics[0].message.contains("15.4 s"), "{}", d.diagnostics[0].message);
         assert_eq!(a.code_check(&c, &check, Instant::now()).unwrap_err().code, ErrorCode::Timeout);
         assert_eq!(b.1.load(std::sync::atomic::Ordering::SeqCst), 4, "a forbidden call builds nothing");
+    }
+
+    /// A build service whose every build passes, declaring only the version's tag (world-model.md 7.9).
+    struct Passes(std::sync::atomic::AtomicUsize);
+    impl Builds for Passes {
+        fn build(&self, archive: &[u8], _deadline: Instant) -> Result<crate::builds::Built, BuildRefused> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::builds::Built {
+                module: Hash([3; 32]),
+                toolchain: Hash([1; 32]),
+                sdk: Hash([2; 32]),
+                components: vec![pe_world::script::tag_desc(&v_of_archive(archive))],
+                systems: vec![],
+                warnings: vec![],
+                build_ms: 5,
+                peak_bytes: None,
+            })
+        }
+    }
+
+    fn v_of_archive(archive: &[u8]) -> Hash {
+        Hash(pe_world::BlobRef::of(archive).hash)
+    }
+
+    /// A world where Alice has committed a script with source `"// v1"`, active once Bob attests (both vote, so the
+    /// quorum is 2) if `activate`; and that script's id.
+    fn with_script(w: &mut World, activate: bool) -> [u8; 32] {
+        use pe_world::edit::{Actor, AssetTarget, Op, Transaction as WTx};
+        let archive = archive_of("// v1").unwrap();
+        let v = v_of_archive(&archive);
+        let commit = Op::commit_script(
+            AssetTarget::New(0),
+            None,
+            archive.into(),
+            Hash([1; 32]),
+            Hash([2; 32]),
+            Hash([3; 32]),
+            4,
+        );
+        let ops = vec![Op::Register { components: vec![pe_world::script::tag_desc(&v)] }, commit];
+        let tx = WTx { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+        let draft =
+            pe_world::Draft { author: ALICE, line: LineId(Hash([7; 32])), chain: ChainId(Hash([9; 32])), seq: 1 };
+        let (o, mut after) = w.dry_run_draft_state(CoreFrame(4), &draft, &tx);
+        assert!(matches!(o, pe_seams::Outcome::Applied { .. }), "{o:?}");
+        let asset = pe_world::script::asset_created(draft.line, draft.author, draft.chain, draft.seq, 0);
+        if activate {
+            let attest = Op::AttestBuild { script: asset, version: v, module: Hash([3; 32]) };
+            let tx = WTx { actor: Actor::Person, label: None, preconditions: vec![], ops: vec![attest], blobs: vec![] };
+            let bob = pe_world::Draft { author: BOB, line: draft.line, chain: ChainId(Hash([10; 32])), seq: 1 };
+            let (o, attested) = after.dry_run_draft_state(CoreFrame(4), &bob, &tx);
+            assert!(matches!(o, pe_seams::Outcome::Applied { .. }), "{o:?}");
+            after = attested;
+            let end = after.end_frame(CoreFrame(4));
+            assert_eq!(end.activated.len(), 1, "{end:?}");
+        }
+        *w = after;
+        asset
+    }
+
+    #[test]
+    fn a_code_op_builds_once_and_commits_a_new_script_by_a_derived_id() {
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        let code = || tx(json!([{"op": "code", "id": "$spin", "source": "pub fn spin() {}"}]));
+        // No build service: the call fails, nothing is refused as the author's.
+        assert_eq!(api().apply(&c, code(), &dry).unwrap_err().code, ErrorCode::Unavailable);
+        let b = Arc::new(Passes(Default::default()));
+        let a = api().with_builds(b.clone());
+        let o = a.apply(&c, code(), &dry).unwrap();
+        assert_eq!(o.status, Status::Accepted, "{:?}", o.refusal);
+        let d = a.src.draft_for(ALICE.into());
+        let want = pe_world::script::asset_created(d.line, d.author, d.chain, d.seq, 0);
+        assert_eq!(o.scripts["$spin"].id, crate::resolve::asset_text(&want));
+        assert!(o.created.is_empty(), "a script is not an object");
+        assert_eq!(b.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // A new script can't be attached until it activates.
+        let o = a
+            .apply(&c, tx(json!([{"op": "code", "id": "$s", "source": "pub fn s() {}", "attach": ["/Table"]}])), &dry)
+            .unwrap();
+        let f = o.refusal.unwrap();
+        assert_eq!((f.code, f.op), (RefusalCode::NotReady, Some(0)));
+        assert!(f.message.starts_with("Nothing was submitted."), "{}", f.message);
+        // Refused before any build, as is a code op on an unknown script.
+        let unknown = crate::resolve::asset_text(&[9; 32]);
+        let o = a.apply(&c, tx(json!([{"op": "code", "id": unknown, "source": "// x"}])), &dry).unwrap();
+        assert_eq!(o.refusal.unwrap().code, RefusalCode::NotFound);
+        assert_eq!(b.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // A failed build refuses the op as `compile`, with the diagnostics.
+        let rustc = pe_seams::world_api::Diagnostic {
+            kind: pe_seams::world_api::DiagnosticKind::Rustc,
+            severity: pe_seams::world_api::Severity::Error,
+            message: "expected `;`".into(),
+            file: Some("src/lib.rs".into()),
+            line: Some(1),
+            column: Some(9),
+            code: None,
+        };
+        let fails = FakeBuilds(Mutex::new(vec![Err(BuildRefused::Failed(vec![rustc]))]), Default::default());
+        let o = api().with_builds(Arc::new(fails)).apply(&c, code(), &dry).unwrap();
+        let f = o.refusal.unwrap();
+        assert_eq!((o.status, f.code, f.op), (Status::Refused, RefusalCode::Compile, Some(0)));
+        assert_eq!(f.details.unwrap()["diagnostics"][0]["line"], 1);
+    }
+
+    #[test]
+    fn an_active_script_is_committed_on_its_version_and_attached_by_its_tag() {
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        let mut asset = [0; 32];
+        let a = api_with(|w| asset = with_script(w, true)).with_builds(Arc::new(Passes(Default::default())));
+        let id = crate::resolve::asset_text(&asset);
+        // A new version, attached to the table in the same change: the current version's tag.
+        let o =
+            a.apply(&c, tx(json!([{"op": "code", "id": id, "source": "// v2", "attach": ["/Table"]}])), &dry).unwrap();
+        assert_eq!(o.status, Status::Accepted, "{:?}", o.refusal);
+        assert!(o.scripts.contains_key(&id));
+        // On a stale base, `stale_version`, with the current version.
+        let old = crate::world::version_text(&pe_seams::Version { entry: EntryRef(Hash([5; 32])), op: 1 });
+        let stale = json!([{"op": "code", "id": id, "source": "// v3", "if_version": old}]);
+        let f = a.apply(&c, tx(stale), &dry).unwrap().refusal.unwrap();
+        assert_eq!(f.code, RefusalCode::StaleVersion, "{f:?}");
+        let attach = json!([{"op": "attach", "script": id, "to": ["/Table", "/Table/Lamp"], "mode": "linked"}]);
+        let o = a.apply(&c, tx(attach), &dry).unwrap();
+        assert_eq!((o.status, o.count), (Status::Accepted, 2), "{:?}", o.refusal);
+        // Not attached: nothing to detach.
+        let detach = json!([{"op": "detach", "script": id, "from": ["/Table"]}]);
+        assert_eq!(a.apply(&c, tx(detach), &dry).unwrap().refusal.unwrap().code, RefusalCode::NotFound);
+        // An unknown script.
+        let other = crate::resolve::asset_text(&[9; 32]);
+        let o = a.apply(&c, tx(json!([{"op": "code", "id": other, "source": "// x"}])), &dry).unwrap();
+        assert_eq!(o.refusal.unwrap().code, RefusalCode::NotFound);
+    }
+
+    #[test]
+    fn a_pending_first_version_is_attached_only_after_it_activates() {
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        let mut asset = [0; 32];
+        let a = api_with(|w| asset = with_script(w, false));
+        let id = crate::resolve::asset_text(&asset);
+        let attach = json!([{"op": "attach", "script": id, "to": ["/Table"], "mode": "linked"}]);
+        let f = a.apply(&c, tx(attach), &dry).unwrap().refusal.unwrap();
+        assert_eq!((f.code, f.op), (RefusalCode::NotReady, Some(0)));
     }
 
     fn caller(scopes: &[Scope]) -> Caller {

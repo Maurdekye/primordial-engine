@@ -600,8 +600,27 @@ WS-logic (@iter-bench) owns what a script is, how it compiles and how it runs (`
     as for objects, and pe-world derives the id from the creating entry (line, author, chain, seq, k) under its own
     domain tag, so an asset id never equals an object id and nobody can squat on a pending id or reuse a destroyed
     one (@world-model's). The outcome returns it in `scripts` (`$name` to `{ id, version }`, S6 v1.7), beside
-    `created`, which stays objects only. A re-sent entry derives a new id, and its dependents are rewritten by k as
-    9.4 rewrites created objects.
+    `created`, which stays objects only. pe-api finds the id after the entry applies as the asset whose pending
+    commit is that entry's. The backstop never re-sends a code entry in M1 (9.4, `resend::is_code`); if a later
+    milestone does, the re-sent entry derives a new id and its dependents are rewritten by k, as 9.4 rewrites
+    created objects.
+  - **`attach` binds only an active version** (ruling m87afca8e4575, after @fable-reviewer m3b2c14adf0cf).
+    Attaching adds the script's tag row, and pe-world takes a tag only of an asset's current, active version
+    (world-model.md 7.9). On a script with an active version, `code`'s `attach` adds that version's tag in the same
+    entry, and the activation's re-key moves it to the new version; if the commit is voided, the objects keep the old
+    version. On a script with no active version, `attach` is refused: a pending first version as `not_ready`
+    ("attach after it activates"), a voided first version as `invalid` ("commit again"; there is nothing to wait
+    for). The agent attaches after its `mine` item says `activated`.
+  - **`attach` and `detach` ops** (S6 v1.7): `{"op": "attach", "script": "a:…", "to": [objects], "mode":
+    "linked"}` adds the active version's tag to each object (`SetRow`, empty row), and `{"op": "detach", "script",
+    "from": [objects]}` removes it (`RemoveRow`); detaching leaves the script's other rows on the object. Each needs
+    the object's edit right, checked by pe-api before submission and by pe-world at apply. `mode` is required and M1
+    accepts only `"linked"`: every tagged object follows the script's later commits. Copy-on-write local logic
+    becomes the default later, as `"local"` (the user's asset ruling), and requiring the field now keeps today's
+    calls meaning the same then. A commit that names its first holder, with pe-world attaching at activation, is
+    the logic-on-objects item's, not M1's.
+  - **Editors show the two steps.** A person's editor commits, shows "waiting for the script to activate", and
+    offers the attach once the version is active; it queues nothing silently on the person's behalf.
 - **Compiling is checked once, at submission.** The author's machine compiles and validates before it submits; a
   failure refuses the `code` op as `compile`, with the diagnostics (a margin, 7.1, is named as such), and no entry
   is made. Once the entry exists, its

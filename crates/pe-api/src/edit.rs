@@ -18,10 +18,10 @@ use pe_seams::world_api::{
     ApiError, ErrorCode, Json, MemberId, ObjRef, ObjectBrief, ObjectId, Refusal, RefusalCode, Version,
 };
 use pe_sim::FieldKind;
-use pe_world::edit::{Actor, Op, Precondition, Row, Target, Transaction};
+use pe_world::edit::{Actor, AssetTarget, Op, Precondition, Row, Target, Transaction};
 use pe_world::{BlobRef, WorldSnapshot};
 
-use crate::resolve::{Obj, ROp, Resolved};
+use crate::resolve::{Obj, ROp, Resolved, Script, asset_text};
 use crate::world::{WorldView, parse_version};
 
 fn target(o: Obj) -> Target {
@@ -443,6 +443,87 @@ pub fn to_world(
     snap: &Arc<WorldSnapshot>,
     me: Option<ObjectId>,
 ) -> Result<WorldEdit, Unmapped> {
+    to_world_built(r, actor, snap, me, None)
+}
+
+fn refused_at(op: u32, code: RefusalCode, message: String) -> Unmapped {
+    let mut f = refusal(code, message);
+    f.op = Some(op);
+    Unmapped::Refused(f)
+}
+
+/// The tag of `script`'s active version, which attach and detach write (world-model.md 7.9; ruling m87afca8e4575),
+/// or why there is none: a script this change commits, or a pending first version, isn't active yet; a voided first
+/// version has nothing to wait for.
+fn active_tag(snap: &WorldSnapshot, script: &Script, op: u32) -> Result<(pe_sim::ComponentId, [u8; 32]), Unmapped> {
+    let a = match script {
+        Script::New(_) => {
+            return Err(refused_at(
+                op,
+                RefusalCode::NotReady,
+                "Nothing was submitted. A new script can't be attached in the same change: commit it without `attach`,                  then attach it once its `mine` item says `activated`."
+                    .into(),
+            ));
+        }
+        Script::Existing(a) => a,
+    };
+    let Some(m) = snap.modules().get(a) else {
+        return Err(match snap.pending().get(a) {
+            Some(p) if p.void.is_none() => refused_at(
+                op,
+                RefusalCode::NotReady,
+                "Nothing was submitted. The script's first version isn't active yet: attach it once its `mine` item                  says `activated`."
+                    .into(),
+            ),
+            Some(_) => refused_at(
+                op,
+                RefusalCode::Invalid,
+                "The script's first version was voided, so there is nothing to attach: commit it again.".into(),
+            ),
+            None => refused_at(op, RefusalCode::NotFound, format!("There's no script {}.", asset_text(a))),
+        });
+    };
+    let tag = pe_world::script::script_component_id(&m.v(), pe_world::script::TAG_NAME, vec![])
+        .filter(|c| m.components.contains(c))
+        .ok_or_else(|| {
+            Unmapped::Failed(ApiError::new(ErrorCode::Internal, "The script's tag isn't in its version."))
+        })?;
+    Ok((tag, *a))
+}
+
+/// The refusals of a change's script ops that need no build, run before `apply` builds (a build can take up to the
+/// 15 s margin): an unknown script, or an attach or detach with no active version to tag.
+pub fn precheck_scripts(r: &Resolved, snap: &WorldSnapshot) -> Result<(), Unmapped> {
+    for (i, op) in r.ops.iter().enumerate() {
+        let at = r.op_of.get(i).copied().unwrap_or(i as u32);
+        match op {
+            ROp::Code { script: Script::Existing(a), .. }
+                if !snap.modules().contains_key(a) && !snap.pending().contains_key(a) =>
+            {
+                return Err(refused_at(at, RefusalCode::NotFound, format!("There's no script {}.", asset_text(a))));
+            }
+            ROp::Tag { script, .. } => {
+                active_tag(snap, script, at)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// [`to_world`], with the author's build of the change's `code` op (api.md 7: compiled once, at submission).
+pub fn to_world_built(
+    r: &Resolved,
+    actor: Actor,
+    snap: &Arc<WorldSnapshot>,
+    me: Option<ObjectId>,
+    built: Option<&crate::builds::Built>,
+) -> Result<WorldEdit, Unmapped> {
+    let refused = |op: u32, code: RefusalCode, message: String| {
+        let mut f = refusal(code, message);
+        f.op = Some(op);
+        Unmapped::Refused(f)
+    };
     let view = WorldView::new(snap.clone(), me);
     // Each new object's frame, for a position set in the same change: its create's parent (or that parent's own
     // frame). A copy's inner objects, or a parent created in this change, have no known frame yet.
@@ -568,7 +649,60 @@ pub fn to_world(
                     }
                 }
             }
-            ROp::Code { .. } => return Err(not_yet(i, "code")),
+            ROp::Code { script, if_version, source } => {
+                let Some(b) = built else {
+                    return Err(Unmapped::Failed(ApiError::new(
+                        ErrorCode::Unavailable,
+                        "This machine has no build service, so it can't commit scripts.",
+                    )));
+                };
+                let archive = crate::builds::archive_of(source)
+                    .map_err(|e| refused(prev, RefusalCode::Invalid, format!("The source can't be packed: {e}")))?;
+                let (target, base) = match script {
+                    Script::New(k) => (AssetTarget::New(*k), None),
+                    Script::Existing(a) => {
+                        let current = snap.modules().get(a).map(|m| m.version);
+                        if current.is_none() && !snap.pending().contains_key(a) {
+                            return Err(refused(
+                                prev,
+                                RefusalCode::NotFound,
+                                format!("There's no script {}.", asset_text(a)),
+                            ));
+                        }
+                        // The caller's base, else the current version; pe-world refuses a stale one with the
+                        // winner (`stale_version`, api.md 7).
+                        let base = match if_version {
+                            Some(v) => Some(version(v).map_err(Unmapped::Refused)?),
+                            None => current,
+                        };
+                        (AssetTarget::Existing(*a), base)
+                    }
+                };
+                // Its components, the tag included, registered under the commit (world-model.md 7.9), then the
+                // commit; `activate_at` is set by the submitting machine's step 2 (api.md 7).
+                ops.push(Op::Register { components: b.components.clone() });
+                ops.push(Op::commit_script(target, base, archive.into(), b.toolchain, b.sdk, b.module, 0));
+                continue;
+            }
+            ROp::Tag { script, target: t, on } => {
+                let (tag, a) = active_tag(snap, script, prev)?;
+                if *on {
+                    Op::SetRow { id: target(*t), row: Row { component: tag, instance: 0, bytes: vec![] } }
+                } else {
+                    // The script's other rows stay (api.md 7).
+                    let Obj::Existing(o) = t else {
+                        return Err(not_yet(i, "detaching from an object this change makes"));
+                    };
+                    let Some(row) = snap.row_tag_of((*o).into(), tag) else {
+                        return Err(refused(
+                            prev,
+                            RefusalCode::NotFound,
+                            format!("The object isn't attached to script {}.", asset_text(&a)),
+                        ));
+                    };
+                    Op::RemoveRow { id: target(*t), component: tag, instance: 0, tag: row }
+                }
+            }
         });
     }
     op_of.resize(ops.len(), prev);

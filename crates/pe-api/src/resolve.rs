@@ -92,11 +92,50 @@ pub enum ROp {
     Delete {
         target: Obj,
     },
+    /// A commit of a script's source (api.md 7); its `attach` follows as [`ROp::Tag`]s.
     Code {
-        script: Obj,
+        script: Script,
+        /// The caller's precondition on the script's current version, else the current one.
+        if_version: Option<Version>,
         source: String,
-        attach: Vec<Obj>,
     },
+    /// Add (`on`) or remove a script's tag on one object (api.md 7's attach and detach).
+    Tag {
+        script: Script,
+        target: Obj,
+        on: bool,
+    },
+}
+
+/// A script named by an op: one this change commits first (`New(k)`, k its index among the change's new scripts,
+/// apart from new objects'), or an existing asset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Script {
+    New(u32),
+    Existing([u8; 32]),
+}
+
+/// A script's id as the API writes it, `"a:<64 hex>"` (api.md 7).
+pub fn asset_text(a: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(66);
+    s.push_str("a:");
+    for b in a {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// The inverse of [`asset_text`].
+pub fn parse_asset(s: &str) -> Option<[u8; 32]> {
+    let h = s.strip_prefix("a:")?;
+    if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return None;
+    }
+    let mut a = [0u8; 32];
+    for (i, x) in a.iter_mut().enumerate() {
+        *x = u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(a)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,6 +146,8 @@ pub struct Resolved {
     pub preconditions: Vec<(ObjectId, Version)>,
     /// `$ref` -> its new index.
     pub refs: BTreeMap<String, u32>,
+    /// A new script's `$ref` -> its index among the change's new scripts (pe-world's `AssetTarget::New`).
+    pub script_refs: BTreeMap<String, u32>,
     /// How many new indices the transaction uses.
     pub new_count: u32,
     /// Objects written (api.md's `count`).
@@ -134,6 +175,17 @@ fn whole(code: RefusalCode, message: impl Into<String>) -> Box<Refusal> {
         winner: None,
         next: None,
         details: None,
+    })
+}
+
+/// An existing script's id, `"a:<64 hex>"`.
+fn script_id(op: usize, r: &str) -> Result<[u8; 32], Box<Refusal>> {
+    parse_asset(r).ok_or_else(|| {
+        refusal(
+            RefusalCode::Invalid,
+            op,
+            format!("{r:?} isn't a script id: a script is named \"a:<64 hex>\", or a $name this change creates."),
+        )
     })
 }
 
@@ -165,8 +217,8 @@ struct Ctx<'a> {
     ops: Vec<ROp>,
     op_of: Vec<u32>,
     count: u64,
-    /// New indices that are scripts, not objects (Low 7).
-    scripts: BTreeSet<u32>,
+    /// New scripts' `$ref`s, apart from new objects' (Low 7).
+    scripts: BTreeMap<String, u32>,
     /// `where` results by selector, within this change (M3).
     selected: BTreeMap<String, Vec<ObjectId>>,
     /// Every object any walk of this change visits: selectors, paths in ids, parents, attachments, templates (M3).
@@ -183,6 +235,13 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     fn obj(&self, i: usize, r: &ObjRef) -> Result<Obj, Box<Refusal>> {
         if let Some(name) = r.0.strip_prefix('$') {
+            if self.scripts.contains_key(&r.0) {
+                return Err(refusal(
+                    RefusalCode::Invalid,
+                    i,
+                    format!("${name} is a script this change creates, not an object."),
+                ));
+            }
             let k = *self.refs.get(&r.0).ok_or_else(|| {
                 refusal(
                     RefusalCode::InChange,
@@ -190,13 +249,6 @@ impl Ctx<'_> {
                     format!("Op {i} refers to ${name}, which this change doesn't create before it."),
                 )
             })?;
-            if self.scripts.contains(&k) {
-                return Err(refusal(
-                    RefusalCode::Invalid,
-                    i,
-                    format!("${name} is a script this change creates, not an object; attach it with `code`."),
-                ));
-            }
             return Ok(Obj::New(k));
         }
         let named = resolve_in(self.snap, r, &self.budget);
@@ -509,7 +561,7 @@ pub fn resolve_tx(
         ops: vec![],
         op_of: vec![],
         count: 0,
-        scripts: BTreeSet::new(),
+        scripts: BTreeMap::new(),
         selected: BTreeMap::new(),
         budget: Budget::default(),
         grown: BTreeSet::new(),
@@ -616,19 +668,49 @@ pub fn resolve_tx(
                     c.push(i, ROp::Delete { target: o })?;
                 }
             }
-            Op::Code { target, source, attach } => {
-                let script = match (&target.id, &target.select) {
-                    // A new script: a $ref this op introduces.
-                    (Some(r), None) if r.0.starts_with('$') && !c.refs.contains_key(&r.0) => {
-                        let k = c.new_ref(i, Some(&r.0), Obj::New(u32::MAX), 1)?;
-                        c.scripts.insert(k);
-                        Obj::New(k)
+            Op::Code { id, if_version, source, attach } => {
+                // One commit per change: pe-world takes one `CommitScript` per entry (world-model.md 7.9).
+                if c.ops.iter().any(|o| matches!(o, ROp::Code { .. })) {
+                    return Err(refusal(RefusalCode::Invalid, i, "A change commits at most one script; split it."));
+                }
+                let script = if id.0.starts_with('$') {
+                    // A new script: a $ref this op introduces; its id is derived from the entry (api.md 7).
+                    if id.0.len() < 2 || c.refs.contains_key(&id.0) || c.scripts.contains_key(&id.0) {
+                        return Err(refusal(
+                            RefusalCode::InChange,
+                            i,
+                            format!("{} is already used in this change.", id.0),
+                        ));
                     }
-                    _ => c.targets(i, target, false)?[0],
+                    let k = c.scripts.len() as u32;
+                    c.scripts.insert(id.0.clone(), k);
+                    Script::New(k)
+                } else {
+                    Script::Existing(script_id(i, &id.0)?)
                 };
-                let attach = attach.iter().map(|r| c.obj(i, r)).collect::<Result<Vec<_>, _>>()?;
+                let if_version = if_version.clone().filter(|v| !v.is_any());
                 c.count += 1;
-                c.push(i, ROp::Code { script, source: source.clone(), attach })?;
+                c.push(i, ROp::Code { script, if_version, source: source.clone() })?;
+                for r in attach {
+                    let target = c.obj(i, r)?;
+                    c.count += 1;
+                    c.push(i, ROp::Tag { script, target, on: true })?;
+                }
+            }
+            Op::Attach { script, to, mode: _ } | Op::Detach { script, from: to } => {
+                let on = matches!(op, Op::Attach { .. });
+                let script = match c.scripts.get(&script.0) {
+                    Some(&k) => Script::New(k),
+                    None => Script::Existing(script_id(i, &script.0)?),
+                };
+                if to.is_empty() {
+                    return Err(refusal(RefusalCode::Invalid, i, "Name at least one object."));
+                }
+                for r in to {
+                    let target = c.obj(i, r)?;
+                    c.count += 1;
+                    c.push(i, ROp::Tag { script, target, on })?;
+                }
             }
         }
     }
@@ -637,6 +719,7 @@ pub fn resolve_tx(
         ops: c.ops,
         preconditions: c.pre.into_iter().map(|(id, v, _)| (id, v)).collect(),
         refs: c.refs,
+        script_refs: c.scripts,
         new_count: c.next_new,
         count: c.count,
         op_of: c.op_of,
@@ -1022,8 +1105,55 @@ mod tests {
             &none,
         )
         .unwrap();
-        assert!(
-            matches!(&r.ops[0], ROp::Code { script: Obj::New(0), attach, .. } if attach == &vec![Obj::Existing(oid(10))])
+        assert!(matches!(&r.ops[0], ROp::Code { script: Script::New(0), if_version: None, .. }));
+        assert_eq!(r.ops[1], ROp::Tag { script: Script::New(0), target: Obj::Existing(oid(10)), on: true });
+        // Its own index space: a new object after it is still new object 0.
+        assert_eq!((r.script_refs.get("$spin"), r.new_count), (Some(&0), 0));
+    }
+
+    #[test]
+    fn scripts_are_named_by_asset_id_and_one_commit_per_change() {
+        let m = Mem::pit(1);
+        let a = format!("a:{}", "ab".repeat(32));
+        assert_eq!(parse_asset(&a), Some([0xab; 32]));
+        assert_eq!(asset_text(&[0xab; 32]), a);
+        for bad in ["a:AB", "o:00000000000000000000000000000001", "/Ball 0"] {
+            assert_eq!(parse_asset(bad), None);
+            let e = resolve_tx(&m, &tx(json!([{"op": "code", "id": bad, "source": ""}])), &none).unwrap_err();
+            assert_eq!((e.code, e.op), (RefusalCode::Invalid, Some(0)), "{bad}");
+        }
+        let r = resolve_tx(
+            &m,
+            &tx(json!([
+                {"op": "code", "id": a, "source": "", "if_version": "v:1"},
+                {"op": "detach", "script": a, "from": ["/Ball 0"]},
+                {"op": "attach", "script": a, "to": ["/Ball 0"], "mode": "linked"},
+            ])),
+            &none,
+        )
+        .unwrap();
+        assert!(matches!(&r.ops[0], ROp::Code { script: Script::Existing(_), if_version: Some(_), .. }));
+        let s = Script::Existing([0xab; 32]);
+        assert_eq!(
+            r.ops[1..],
+            [
+                ROp::Tag { script: s, target: Obj::Existing(oid(10)), on: false },
+                ROp::Tag { script: s, target: Obj::Existing(oid(10)), on: true },
+            ]
         );
+        let two = json!([{"op": "code", "id": "$a", "source": ""}, {"op": "code", "id": "$b", "source": ""}]);
+        assert_eq!(resolve_tx(&m, &tx(two), &none).unwrap_err().op, Some(1));
+        // A mode is required.
+        assert!(
+            serde_json::from_value::<Transaction>(
+                json!({"label": "x", "ops": [{"op": "attach", "script": a, "to": ["/Ball 0"]}]})
+            )
+            .is_err()
+        );
+        // A new script's $name is not an object.
+        let e =
+            resolve_tx(&m, &tx(json!([{"op": "code", "id": "$s", "source": ""}, {"op": "delete", "id": "$s"}])), &none)
+                .unwrap_err();
+        assert_eq!((e.code, e.op), (RefusalCode::Invalid, Some(1)));
     }
 }

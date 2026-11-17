@@ -124,6 +124,7 @@ impl MockWorld {
             resent_as: None,
             held: None,
             activation: None,
+            scripts: Default::default(),
         }
     }
 }
@@ -276,6 +277,7 @@ impl WorldApi for MockWorld {
             resent_as: None,
             held: None,
             activation: None,
+            scripts: Default::default(),
         })
     }
 
