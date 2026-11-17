@@ -28,7 +28,7 @@ use pe_diverge::msg::Msg;
 use pe_diverge::{Action, Config, Diverge};
 use pe_replica::logic::{ScriptRow, ScriptRunner, StageOutcome, StageWorld};
 use pe_replica::mock::MockClock;
-use pe_replica::world::{BodyRow, BodyStateRow, ClaimRow, Effects, HandRow, LogicFx, PhysicsSettings};
+use pe_replica::world::{BodyRow, BodyStateRow, ClaimRow, Effects, HandRow, LogicFx, PhysicsSettings, Unbuildable};
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl, WorldModel};
 use pe_seams::{
     Activation, Cut, CutImport, CutRef, DomainId, EntrySource, FinalCut, Frame, FrameClock, Hash, HostTime,
@@ -119,7 +119,7 @@ impl WorldModel for Faulty {
     fn snapshot_of(saved: &World, final_frame: Frame) -> Option<Arc<dyn Any + Send + Sync>> {
         <PeWorld as WorldModel>::snapshot_of(saved, final_frame)
     }
-    fn body(&self, id: ObjectId) -> Option<BodyRow> {
+    fn body(&self, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable> {
         self.inner.body(id)
     }
     fn physical(&self) -> Vec<ObjectId> {

@@ -15,7 +15,7 @@ use pe_seams::{
 
 use crate::world::{
     BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HandRow, Phase, PhysicsSettings, PushFx, ShapePart,
-    ShapeRow, WorldModel,
+    ShapeRow, Unbuildable, WorldModel,
 };
 
 /// Farthest a body may be from the origin, in metres: pe-physics's `MAX_POSITION`.
@@ -395,8 +395,9 @@ impl WorldModel for MockWorld {
         Vec::new()
     }
 
-    fn body(&self, id: ObjectId) -> Option<BodyRow> {
-        self.bodies.get(&id).cloned()
+    /// The mock builds every body it has.
+    fn body(&self, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable> {
+        Ok(self.bodies.get(&id).cloned())
     }
 
     fn physical(&self) -> Vec<ObjectId> {

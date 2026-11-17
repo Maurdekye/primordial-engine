@@ -17,10 +17,13 @@ use crate::logic::{ScriptEvent, ScriptRunner};
 
 // ---- what an applied entry or a logic stage changed ----------------------------------------------------------------
 
-/// What changed about one object's physics-relevant rows (replica.md 3.2).
+/// What changed about one object's physics-relevant rows (replica.md 3.2). A physical object the world model cannot
+/// build ([`Unbuildable`]) is `Created` when it becomes physical and `Rebuilt` when a body it had can no longer be
+/// built: the replica tries, gives it no body and counts a fault.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Change {
-    /// Created, or became physical (gained `Body` and `Shape`): a body is added at its world transform, at rest.
+    /// Created, or became physical (gained `Body` and `Shape`), or can be built again: a body is added at its world
+    /// transform, at rest.
     Created,
     /// Deleted, or stopped being physical: its body goes, with its joints.
     Removed,
@@ -127,6 +130,21 @@ pub struct BodyRow {
     pub bullet: bool,
     pub may_sleep: bool,
     pub grabbable: bool,
+}
+
+/// Why the world model cannot build a physical object's body (replica.md 2.1). The object has no body, and each time
+/// the replica tries to build it, at its start or when an entry or a logic stage makes it physical or changes it,
+/// it counts a fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unbuildable {
+    /// A body kind the physics does not have.
+    Kind,
+    /// A shape the replica cannot build yet: a mesh, a hull, an unknown kind, or a sphere or capsule under
+    /// non-uniform scale.
+    Shape,
+    /// No world pose: the body has no `Transform` or its frame is out of range, or a compound child's place in the
+    /// body cannot be composed.
+    Pose,
 }
 
 /// A hand's radius in metres: the sphere a hand without a `Shape` of its own is drawn as (S5), and the body it will
@@ -278,9 +296,11 @@ pub trait WorldModel: Send {
 
     // what the physics reads
 
-    /// An object's physics view, or `None` if it is not physical.
-    fn body(&self, id: ObjectId) -> Option<BodyRow>;
-    /// Every physical object, in id order: for building a physics world from scratch.
+    /// An object's physics view: `Ok(None)` if it is not physical, and an error if it is but its body cannot be
+    /// built (2.1).
+    fn body(&self, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable>;
+    /// Every physical object, in id order: for building a physics world from scratch. Exactly the objects whose
+    /// [`body`](WorldModel::body) is not `Ok(None)`.
     fn physical(&self) -> Vec<ObjectId>;
     /// Every `Hand` row, in id order.
     fn hands(&self) -> Vec<HandRow>;
@@ -294,13 +314,13 @@ pub trait WorldModel: Send {
     /// its world pose and scale, with its shape, appearance, light, bounding radius, hand owner, holder and edit
     /// version. The model leaves the velocities zero and the flags empty: the replica fills the velocities from its
     /// physics and marks the local member's hands `OWN_HAND` ([`crate::ReplicaConfig::local`]). The default draws
-    /// each physical body at its pose with its bounding radius and nothing else, which is all a model without
-    /// visuals (the mock) can say.
+    /// each physical body it can build at its pose with its bounding radius and nothing else, which is all a model
+    /// without visuals (the mock) can say.
     fn view_objects(&self) -> Vec<ViewObject> {
         self.physical()
             .into_iter()
             .filter_map(|id| {
-                let row = self.body(id)?;
+                let row = self.body(id).ok().flatten()?;
                 Some(ViewObject {
                     id,
                     class: ObjectClass::World,
