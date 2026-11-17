@@ -37,8 +37,27 @@ use crate::sim::{NetHook, Waker};
 use crate::world::DEV_MEMBER;
 
 /// The engine build both sides' hellos carry and the genesis record names: connections between different builds are
-/// refused at the hello (transport.md 6.3), and a record from another build at the welcome.
-pub const BUILD: &[u8] = concat!("pe-app ", env!("CARGO_PKG_VERSION")).as_bytes();
+/// refused at the hello (transport.md 6.3), and a record from another build at the welcome, by name.
+///
+/// It is pe-app's version and the script build service's identity B (logic.md 6.2b, `pe_logic::build::build_identity`:
+/// the toolchain's release, its wasm32 std, pe-sdk, the build service's and pe-logic's result versions), so two
+/// machines whose builds of one script could differ never share a session, and a build that one member passes and
+/// another fails, which the build-asymmetry ruling makes a split, cannot come from a different engine
+/// or toolchain. Computed once per process. Without a toolchain the service can run (no `CARGO` until D75 installs
+/// the pinned one) it reads "scripts unavailable", with no detail, so the text is the same on every such machine
+/// [I: two such machines can still share a session, and neither can build a script]. B appears as its first 16
+/// bytes in hex, since a hello's build id is at most `MAX_BUILD` (64) bytes, and `bind` refuses a longer one.
+pub fn build_id() -> &'static [u8] {
+    static ID: OnceLock<Vec<u8>> = OnceLock::new();
+    ID.get_or_init(|| {
+        let scripts = pe_logic::build::Toolchain::current()
+            .and_then(|tc| pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()))
+            // B's first 16 bytes: the hello carries at most pe-net's 64-byte build id (lifecycle.rs MAX_BUILD).
+            .map(|b| b.0[..16].iter().map(|x| format!("{x:02x}")).collect::<String>())
+            .unwrap_or_else(|_| "unavailable".into());
+        format!("pe-app {}; scripts {scripts}", env!("CARGO_PKG_VERSION")).into_bytes()
+    })
+}
 
 /// pe-net's protocol version in the hello.
 pub const PROTOCOL: u16 = 1;
@@ -284,7 +303,7 @@ impl Endpoint {
         }
         let hello = Hello {
             protocol: PROTOCOL,
-            build: BUILD.to_vec(),
+            build: build_id().to_vec(),
             // TODO(pe-diverge): the physics self-test's digest and time, once the worker runs it (app.md 1).
             selftest: [0; 32],
             selftest_unix_s: 0,
@@ -426,7 +445,7 @@ impl Endpoint {
         let epoch_ns = (self.host)().plus(p.epoch_lead).0;
         let params = Params {
             nonce: fresh_nonce().map_err(NetError::Genesis)?,
-            build: BUILD.to_vec(),
+            build: build_id().to_vec(),
             opener: self.me,
             joiner: them,
             rate: p.rate,
@@ -579,7 +598,7 @@ pub fn check_welcome(w: &Welcome, me: MemberKey, opener: MemberKey, rate_pin: Si
     // The session's line is the record's own (`Genesis::line`), derived here, never taken from the welcome: every
     // pe-agree signature commits to it, so a record A didn't send can't yield signatures B accepts.
     let genesis = Genesis::decode(&w.agree).map_err(NetError::Genesis)?;
-    genesis.check(me, opener, BUILD).map_err(NetError::Genesis)?;
+    genesis.check(me, opener, build_id()).map_err(NetError::Genesis)?;
     if w.epoch_ns != genesis.epoch_ns {
         return Err(NetError::Welcome(format!("epoch {} against the record's {}", w.epoch_ns, genesis.epoch_ns)));
     }
@@ -722,7 +741,7 @@ mod tests {
     /// This build's id fits the hello's bound, or no peer could decode its hello (@iter-bench's finding).
     #[test]
     fn the_build_id_fits_the_hello() {
-        assert!(BUILD.len() <= pe_net::lifecycle::MAX_BUILD, "{} bytes", BUILD.len());
+        assert!(build_id().len() <= pe_net::lifecycle::MAX_BUILD, "{} bytes", build_id().len());
     }
 
     /// A build id over the hello's bound is refused by `bind` with a typed error, never sent to time out.
@@ -823,7 +842,7 @@ mod tests {
         let frames: Arc<dyn FrameClock> = Arc::new(crate::clock::LocalClock::new(host(), RATE));
         let p = Params {
             nonce: [7; 32],
-            build: BUILD.to_vec(),
+            build: build_id().to_vec(),
             opener,
             joiner: me,
             rate: RATE,
@@ -1205,5 +1224,18 @@ mod tests {
         assert!(resumed, "finality did not resume within {resume_within:?}");
         assert!(all_final, "not every entry made became final on both sides");
         drop((ra, rb));
+    }
+
+    #[test]
+    fn the_build_id_names_pe_app_and_the_script_build_identity() {
+        let id = String::from_utf8(build_id().to_vec()).unwrap();
+        assert!(id.starts_with(concat!("pe-app ", env!("CARGO_PKG_VERSION"), "; scripts ")), "{id}");
+        let scripts = id.rsplit("; scripts ").next().unwrap();
+        // Under cargo the toolchain is known, so B is there: its first 16 bytes in hex.
+        assert_eq!(scripts.len(), 32, "{id}");
+        assert!(scripts.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        // The hello's limit is the tighter: `bind` refuses an id over it (NetError::Hello).
+        assert!(build_id().len() <= pe_net::lifecycle::MAX_BUILD, "over the hello's bound: {}", build_id().len());
+        assert_eq!(build_id(), build_id());
     }
 }

@@ -820,10 +820,18 @@ author can stop finality, and the outcome is identical on every machine.
    local retries a voter posts `BuildFailed { script, version: V, reason, toolchain, sdk, module: Option<Hash> }`.
    The reason is an enum, `Compile`, `Refused` (6.2b's dep-info check), `Cap`, `Mismatch` or `Local`, plus the
    hashes, **never compiler output**: the entry goes to every member and stays in the log, and a rustc message can
-   carry local paths. One per voter, counted against the quorum like an attestation, in these orders: a later
+   carry local paths. `module` is present exactly for a `Mismatch`: the metered module this machine built, or the
+   raw module's hash (domain `pe.logic.raw`) when the metering pass refused it; a `Mismatch` module equal to
+   `author_module` is refused as `Invalid` (@world-model, after @chunks-reviewer's L1). One per voter,
+   counted against the quorum like an attestation, in these orders: a later
    success by the same voter supersedes its failure while the commit is pending; a failure after a success is
    refused; nothing changes a void. A failure for a version that is already active is accepted as a record only:
    it is the log's statement that this member split off (6.2 step 3), which the notices read.
+   **The attestation re-post is state-based** (@design-reviewer, agreed in api.md 7.1 with @api-eng; the build
+   worker's job, @vdw-physics): once the final frame passes its `AttestBuild`'s stamp, if the pending
+   commit's attested set in the final snapshot lacks this member and `D` is still ahead, the worker posts it again.
+   At n = 2 (q = 2) one late-voided attestation would otherwise leave a good commit `Unattested` at `D`; being
+   state-based, the rule needs no void plumbing and covers a void from any cause.
 3. **Activation frame `F`:** the least frame `f` such that at least `q` distinct voters at `c` have a counted
    attestation stamped at or before `f` (agreement.md: `t = floor((n-1)/3)`, `q = floor((n+t)/2) + 1`, over the
    voters at `c`); that is, the `q`-th smallest stamp among the counted attestations, one per voter
