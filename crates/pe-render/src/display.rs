@@ -218,7 +218,9 @@ struct ObjState {
     own: bool,
     last_drawn: Option<WorldPose>,
     pending: Vec<Pending>,
-    /// In contact with an own hand in the newest view; and a first contact `frame` has yet to measure.
+    /// In contact with an own hand in the newest view; and a first contact `frame` has yet to measure. An object the
+    /// next `frame` doesn't draw keeps it, and is measured when it is next drawn, at that pose: rare, and accepted
+    /// (@shader-reviewer's nit on 197fc122).
     in_contact: bool,
     contact_new: bool,
 }
@@ -260,6 +262,9 @@ pub struct DisplayLayer {
     /// measured display period that Present's cap adds (render.md 7).
     last_display: Option<HostTime>,
     periods: VecDeque<i64>,
+    /// Their median, clamped ([`DisplayLayer::display_period`]): computed once a display frame in `measure`, since
+    /// every resolve reads it (@shader-reviewer's Low on 197fc122).
+    period: Duration,
 }
 
 /// How many display intervals the measured period is the median of: a median of 15 shrugs off a first frame and up
@@ -304,16 +309,14 @@ impl DisplayLayer {
             gap_drawn: BTreeMap::new(),
             last_display: None,
             periods: VecDeque::new(),
+            period: Duration::from_nanos(PERIOD_MAX_NS.unsigned_abs()),
         }
     }
 
     /// The measured display period: the median of the newest intervals between display frames, clamped to 240-40 Hz.
     /// Before the first interval, the clamp's top: the first frames' cap is generous rather than tight.
     pub fn display_period(&self) -> Duration {
-        let mut p: Vec<i64> = self.periods.iter().copied().collect();
-        p.sort_unstable();
-        let ns = p.get(p.len() / 2).copied().unwrap_or(PERIOD_MAX_NS).clamp(PERIOD_MIN_NS, PERIOD_MAX_NS);
-        Duration::from_nanos(ns.unsigned_abs())
+        self.period
     }
 
     /// The drawn-time rule in force. Present's cap is the setting's (two simulation frames) plus the measured display
@@ -338,6 +341,10 @@ impl DisplayLayer {
                 self.periods.pop_front();
             }
             self.periods.push_back(now.0 - last.0);
+            let mut p: Vec<i64> = self.periods.iter().copied().collect();
+            p.sort_unstable();
+            let ns = p[p.len() / 2].clamp(PERIOD_MIN_NS, PERIOD_MAX_NS);
+            self.period = Duration::from_nanos(ns.unsigned_abs());
         }
         if self.last_display.is_none_or(|l| now.0 > l.0) {
             self.last_display = Some(now);
