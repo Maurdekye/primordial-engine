@@ -5,12 +5,18 @@
 //! is built. Messages, local input, S3's `tick` and pe-diverge stay outside it, in pe-app and in the harness. One
 //! [`Driver::drive`] call, once per tick:
 //! 1. **advances** the replica to `present` (every frame below it is simulated, with the entries held so far);
-//! 2. **votes:** each cut S3 wants a root for gets `root_at_cut`, then `vote` with the caller's self-test verdict.
-//!    A cut is voted on once; a revote after a repair is pe-diverge's, through the caller;
-//! 3. **finalizes:** when S3's final cut changed, or was not ready last time, it goes to `finalize`.
+//! 2. **holds:** reconciles the replica's [`Replica::vote_holds`] with S3's `hold_votes_from` and
+//!    `release_votes_from` (S2 v1.7), so S3 holds exactly the frames the replica lists now. It is level-triggered: a
+//!    partial advance, a rollback that removed a commit, or a rebuilt replica never leaves a hold behind;
+//! 3. **votes:** each cut S3 wants a root for gets `root_at_cut`, then `vote` with the caller's self-test verdict.
+//!    A cut is voted on once; a revote after a repair is pe-diverge's, through the caller. A cut at or past a hold
+//!    waits, unasked, until the hold is released;
+//! 4. **finalizes:** when S3's final cut changed, or was not ready last time, it goes to `finalize`.
 //!
-//! The driver keeps only which cuts it voted on and which final cut it last finalized. That is loop state, not
-//! simulation state: dropping it costs at most one repeated vote or `finalize`, which both seams allow.
+//! The driver keeps which cuts it voted on, which final cut it last finalized, and which holds it placed. The first
+//! two are loop state, not simulation state: dropping them costs at most one repeated vote or `finalize`, which both
+//! seams allow. The holds are not disposable: S3 counts them, so a driver must live as long as the agreement it
+//! drives, as pe-app's simulation thread and the harness's node keep both together.
 
 use std::collections::BTreeSet;
 
@@ -24,6 +30,8 @@ pub struct DriveReport {
     pub votes: Vec<(CutRef, Hash)>,
     /// The cuts S3 wanted a root for that the replica could not give one for yet.
     pub no_root: Vec<(CutRef, RootError)>,
+    /// The cuts S3 wanted a root for that wait for a vote hold: at or past the earliest frame the replica holds.
+    pub held_back: Vec<CutRef>,
     /// Each final cut passed to `finalize`, with what the replica found.
     pub finalized: Vec<(CutRef, Finalized)>,
 }
@@ -35,6 +43,8 @@ pub struct Driver {
     voted: BTreeSet<CutRef>,
     /// The final cut last finalized with a verdict (not `NotReady`).
     finalized: Option<CutRef>,
+    /// The vote holds this driver placed with S3, one per frame: the replica's `vote_holds()` at the last call.
+    held: BTreeSet<Frame>,
 }
 
 impl Driver {
@@ -53,14 +63,31 @@ impl Driver {
     ) -> DriveReport {
         let mut report = DriveReport { advance: replica.advance(present, agree), ..DriveReport::default() };
 
+        // Vote holds, after the advance and before any vote: S3 holds exactly the frames the replica lists now.
+        let want: BTreeSet<Frame> = replica.vote_holds().into_iter().collect();
+        for &f in want.difference(&self.held) {
+            agree.hold_votes_from(f);
+        }
+        for &f in self.held.difference(&want) {
+            agree.release_votes_from(f);
+        }
+        self.held = want;
+        let hold = self.held.first().copied();
+
         for cut in agree.wants_roots() {
             if self.voted.contains(&cut.at) {
                 continue;
             }
+            // A cut at or past a hold is not asked yet, and not marked: S3 need not leave it out of `wants_roots`,
+            // and a vote refused for the hold would otherwise never be asked again once the hold is released.
+            if hold.is_some_and(|h| cut.at.frame >= h) {
+                report.held_back.push(cut.at);
+                continue;
+            }
             match replica.root_at_cut(&cut, agree) {
                 Ok(root) => {
-                    // A first vote is cast, or not votable (the cut went final, or lies past a hold); either way
-                    // this cut is not asked again. A revote after a repair is pe-diverge's, through its actions.
+                    // A first vote is cast, or not votable (the cut went final meanwhile); either way this cut is
+                    // not asked again. A revote after a repair is pe-diverge's, through its actions.
                     let _ = agree.vote(&cut.at, root, self_test);
                     self.voted.insert(cut.at);
                     report.votes.push((cut.at, root));
