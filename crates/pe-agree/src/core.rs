@@ -236,6 +236,22 @@ pub struct Config {
     /// The line's first cut (height 0); its frame is where the line starts.
     pub genesis: Cut,
     pub timing: Timing,
+    /// The membership epoch (agreement.md 8): 0 from genesis, then one more at each reconfiguring cut, whose cut is
+    /// this epoch's `genesis`. Votes, timeouts and proposals are signed under the epoch's domain, so a message of
+    /// another epoch counts for nothing in this one.
+    pub epoch: u64,
+}
+
+/// The domain an epoch's messages are signed under: the line itself in epoch 0 (so its signatures are unchanged), a
+/// hash of the line and the epoch after.
+pub fn epoch_domain(line: LineId, epoch: u64) -> LineId {
+    if epoch == 0 {
+        return line;
+    }
+    let mut h = pe_seams::Hasher::new("pe.agree.epoch");
+    h.write(&line.0.0);
+    h.write_u64(epoch);
+    LineId(h.finish())
 }
 
 /// The planted defects of the harness's mutation tests, named as the model's controls (docs/spec/agreement.md 6).
@@ -444,7 +460,7 @@ impl Core {
     pub fn new(cfg: Config, me: MemberKey, now: HostTime) -> Core {
         let q = quorum(cfg.members.len());
         let offset = {
-            let h = Hash::of("pe.agree.rotation", &cfg.line.0.0);
+            let h = Hash::of("pe.agree.rotation", &epoch_domain(cfg.line, cfg.epoch).0.0);
             u64::from_le_bytes(h.0[..8].try_into().unwrap_or([0; 8]))
         };
         let genesis =
@@ -520,6 +536,15 @@ impl Core {
     #[inline(always)]
     pub fn mutated(&self, _m: Mutation) -> bool {
         false
+    }
+
+    /// The domain this epoch's messages are signed under.
+    fn domain(&self) -> LineId {
+        epoch_domain(self.cfg.line, self.cfg.epoch)
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.cfg.epoch
     }
 
     pub fn view(&self) -> u64 {
@@ -688,7 +713,7 @@ impl Core {
         if qc.view == 0 || qc.votes.len() < self.q {
             return Err(CoreFault::BadCertificate);
         }
-        let msg = vote_bytes(self.cfg.line, qc.view, qc.block, qc.root);
+        let msg = vote_bytes(self.domain(), qc.view, qc.block, qc.root);
         for (i, (k, s)) in qc.votes.iter().enumerate() {
             if i > 0 && qc.votes[i - 1].0 >= *k {
                 return Err(CoreFault::BadCertificate);
@@ -710,7 +735,7 @@ impl Core {
             }
             if *hv >= tc.view
                 || !self.is_member(k)
-                || !verifier.verify(k, &timeout_bytes(self.cfg.line, tc.view, *hv), s)
+                || !verifier.verify(k, &timeout_bytes(self.domain(), tc.view, *hv), s)
             {
                 return Err(CoreFault::BadCertificate);
             }
@@ -985,7 +1010,7 @@ impl Core {
         if !self.is_member(&v.voter) {
             return Err(CoreFault::NotMember);
         }
-        if !verifier.verify(&v.voter, &vote_bytes(self.cfg.line, v.view, v.block, v.root), &v.sig) {
+        if !verifier.verify(&v.voter, &vote_bytes(self.domain(), v.view, v.block, v.root), &v.sig) {
             return Err(CoreFault::BadSignature);
         }
         self.on_vote(v, now)
@@ -997,7 +1022,7 @@ impl Core {
         if !self.is_member(&b.proposer) {
             return Err(CoreFault::NotMember);
         }
-        if !verifier.verify(&b.proposer, &propose_bytes(self.cfg.line, id), &p.sig) {
+        if !verifier.verify(&b.proposer, &propose_bytes(self.domain(), id), &p.sig) {
             return Err(CoreFault::BadSignature);
         }
         if b.cut.at.line != self.cfg.line || p.parent_qc.block != b.parent || b.view <= p.parent_qc.view {
@@ -1144,7 +1169,7 @@ impl Core {
     }
 
     fn on_timeout(&mut self, t: Timeout, now: HostTime, verifier: &dyn Verifier) -> Result<(), CoreFault> {
-        if !verifier.verify(&t.voter, &timeout_bytes(self.cfg.line, t.view, t.high_qc.view), &t.sig) {
+        if !verifier.verify(&t.voter, &timeout_bytes(self.domain(), t.view, t.high_qc.view), &t.sig) {
             return Err(CoreFault::BadSignature);
         }
         if t.high_qc.view >= t.view {
@@ -1198,7 +1223,7 @@ impl Core {
                 high_qc: self.high_qc.clone(),
                 voter: self.me,
                 heads: self.timeout_heads.clone(),
-                sig: signer.sign(&timeout_bytes(self.cfg.line, self.view, self.high_qc.view)),
+                sig: signer.sign(&timeout_bytes(self.domain(), self.view, self.high_qc.view)),
             };
             self.out.push((To::All, Msg::Timeout(t.clone())));
             self.recent_timeouts.insert(t.view, t.clone());
@@ -1275,7 +1300,7 @@ impl Core {
         }
         let block = Block { view: lead.view, parent: lead.parent.id(), proposer: self.me, cut };
         let id = block.id();
-        let sig = signer.sign(&propose_bytes(self.cfg.line, id));
+        let sig = signer.sign(&propose_bytes(self.domain(), id));
         let p = Proposal { block, parent_qc: lead.parent_qc, tc: lead.tc, sig };
         self.proposed_view = lead.view;
         self.out.push((To::All, Msg::Propose(p.clone())));
@@ -1329,7 +1354,7 @@ impl Core {
             voter: self.me,
             self_test,
             heads,
-            sig: signer.sign(&vote_bytes(self.cfg.line, view, block, root)),
+            sig: signer.sign(&vote_bytes(self.domain(), view, block, root)),
         };
         self.out.push((To::All, Msg::Vote(v.clone())));
         let _ = self.on_vote(v.clone(), now);

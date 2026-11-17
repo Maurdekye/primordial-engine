@@ -189,7 +189,8 @@ impl NodeConfig {
         } = self;
         // v2: defer_bytes joined the set (the stall fix); v3: cut_interval_s (the cut grid); v4: no new setting, but
         // timeouts carry heads (the outage rule), a wire change, so builds before and after refuse each other at start.
-        let mut h = Hasher::new("pe.agree.consensus.v4");
+        // v5: membership by epochs (Leave): AfterLeave and LastMember voids, members-only cuts, Wire::Epoch.
+        let mut h = Hasher::new("pe.agree.consensus.v5");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
@@ -326,6 +327,14 @@ pub struct Node {
     /// capping its cuts for it and how long it waits. Kept once the wait runs out, so a chain is waited for once,
     /// until it reaches its claim.
     cap_wait: HashMap<ChainKey, (i64, i64)>,
+    /// The epoch before this one, while it may still be needed (agreement.md 8).
+    old_epoch: Option<OldEpoch>,
+    /// Members that left in an earlier epoch: their stray messages and entries are dropped without a fault.
+    former: Vec<MemberKey>,
+    /// This member signed its own `Leave`: it signs nothing after it.
+    left: bool,
+    /// Per epoch: the members that told this one the reconfiguring cut starting it is final there.
+    settled: BTreeMap<u64, std::collections::BTreeSet<MemberKey>>,
     now: HostTime,
     present: Option<Frame>,
     rate_hz: u32,
@@ -338,6 +347,34 @@ const MAX_HINTS: usize = 256;
 const HINT_TTL_NS: i64 = 5_000_000_000;
 /// Samples needed before the lag adapts.
 const LATENESS_MIN: usize = 32;
+/// The payload of a `Leave` entry, class Protocol (agreement.md 8): the leaver's last entry.
+pub const LEAVE: &[u8] = b"pe.agree.leave.v1";
+
+/// Whether `e` is a `Leave`.
+pub fn is_leave(e: &SignedEntry) -> bool {
+    e.entry.class == pe_seams::Class::Protocol && e.entry.payload[..] == *LEAVE
+}
+
+/// How long a member keeps its previous epoch's core after its reconfiguring cut E became final there, so members that
+/// missed E's finality can still finish it (agreement.md 8: a member that missed it fetches it like a committed block).
+const OLD_EPOCH_KEEP_NS: i64 = 30_000_000_000;
+
+/// How often a member that switched epochs tells the leavers that E is final here, while its old core is kept.
+const EPOCH_FINAL_EVERY_NS: i64 = 1_000_000_000;
+
+/// The epoch that ended at E: its core, kept for [`OLD_EPOCH_KEEP_NS`] to finish E's suffix with members that lag.
+struct OldEpoch {
+    core: Core,
+    members: Vec<MemberKey>,
+    until: i64,
+    /// E's cut, which every suffix cut repeats, and its root.
+    cut: Cut,
+    root: Hash,
+    /// The members that left at E, told that E is final here every [`EPOCH_FINAL_EVERY_NS`].
+    leavers: Vec<MemberKey>,
+    told: i64,
+}
+
 /// A member abstains for one own entry in at most this many views, then votes (the outage rule's bound).
 const ABSTAIN_VIEWS: usize = 2;
 /// The outage rule's bounds (agreement.md 3). By progress (coordinator, @fable-reviewer's concern): at
@@ -434,6 +471,7 @@ impl Node {
                 members: cfg.members.clone(),
                 genesis: cfg.genesis.clone(),
                 timing: cfg.timing,
+                epoch: 0,
             },
             me,
             now,
@@ -493,6 +531,10 @@ impl Node {
             lateness: std::collections::VecDeque::new(),
             abstained: AbstainBook::default(),
             cap_wait: HashMap::new(),
+            old_epoch: None,
+            former: Vec::new(),
+            left: false,
+            settled: BTreeMap::new(),
             now,
             present: None,
             rate_hz: 60,
@@ -553,6 +595,10 @@ impl Node {
     fn hold(&mut self, e: SignedEntry, from: PeerId, at: HostTime) -> Result<bool, Fault> {
         let id = e.id();
         let author = e.entry.author;
+        if self.former.contains(&author) {
+            // A leaver's entry after its epoch ended: void anyway, and honest stragglers aren't faults.
+            return Ok(false);
+        }
         if !self.cfg.members.contains(&author) {
             self.events.push(AgreeEvent::Refused { entry: id, author, kind: FaultKind::NotMember });
             return Err(self.fault(from, Some(author), FaultKind::NotMember, "entry by a non-member".into()));
@@ -1089,17 +1135,14 @@ impl Node {
             let at = block.cut.at;
             let old_ff = parent.at.frame;
             let mut touched: Vec<Frame> = Vec::new();
+            let mut effective: Vec<SignedEntry> = Vec::new();
             for (key, id, v) in verdicts {
                 let Some(e) = self.log.get(&key, &id).cloned() else { continue };
                 if let Some(c) = self.pending_by_author.get_mut(&key.author) {
                     *c = c.saturating_sub(1);
                 }
                 match v {
-                    Verdict::Effective => {
-                        touched.push(e.entry.stamp);
-                        self.final_bytes += e.entry.payload.len() + 200;
-                        self.final_by_frame.entry(e.entry.stamp).or_default().push(e);
-                    }
+                    Verdict::Effective => effective.push(e),
                     Verdict::Void(pe_log::VoidReason::Late) => {
                         self.events.push(AgreeEvent::Voided {
                             entry: id,
@@ -1119,6 +1162,21 @@ impl Node {
                     // A fork of an included entry: the equivocation was reported when it arrived; it never applies.
                     Verdict::Void(pe_log::VoidReason::Fork) => {}
                 }
+            }
+            // The epoch's final log has no earlier `Leave`: the epoch ends at the first cut with one.
+            let mut leaves = BTreeMap::new();
+            let (effective, after) = self.leave_rules(effective, &mut leaves);
+            for e in effective {
+                touched.push(e.entry.stamp);
+                self.final_bytes += e.entry.payload.len() + 200;
+                self.final_by_frame.entry(e.entry.stamp).or_default().push(e);
+            }
+            for (e, reason) in after {
+                if reason == pe_seams::agree::VoidReason::LastMember && e.entry.author == self.me {
+                    // This member's Leave didn't apply: it stays, and may sign again.
+                    self.left = false;
+                }
+                self.events.push(AgreeEvent::Voided { entry: e.id(), author: e.entry.author, reason, cut: at });
             }
             self.final_heads = block.cut.clone();
             let own_final = self.my_head.map_or(0, |(key, _, _)| {
@@ -1146,7 +1204,157 @@ impl Node {
                 self.repredict(k);
             }
             self.trim();
+            if !leaves.is_empty() {
+                self.switch_epoch(&block, qc.root, leaves.into_keys().collect());
+            }
         }
+    }
+
+    /// The `Leave` rules over one cut's newly effective entries (agreement.md 8), with `leaves` the leaves made
+    /// effective earlier in this epoch (author to its leave's place in the final log's order). In the final log's
+    /// order: an entry of a key after its `Leave` is void as `AfterLeave`; a member's first `Leave` takes effect,
+    /// unless it would leave the epoch with no members (void as `LastMember`, @design-reviewer's L1). Returns the
+    /// effective entries and the voided ones with their reasons.
+    fn leave_rules(
+        &self,
+        mut es: Vec<SignedEntry>,
+        leaves: &mut BTreeMap<MemberKey, (Frame, pe_seams::ChainId, u64)>,
+    ) -> (Vec<SignedEntry>, Vec<(SignedEntry, pe_seams::agree::VoidReason)>) {
+        if leaves.is_empty() && !es.iter().any(is_leave) {
+            return (es, Vec::new());
+        }
+        let line = self.cfg.line;
+        es.sort_by_cached_key(|e| {
+            (e.entry.stamp, tie_rank(line, e.entry.stamp, &e.entry.author), e.entry.author, e.entry.chain, e.entry.seq)
+        });
+        let (mut eff, mut after) = (Vec::new(), Vec::new());
+        for e in es {
+            let place = (e.entry.stamp, e.entry.chain, e.entry.seq);
+            if leaves.get(&e.entry.author).is_some_and(|l| place > *l) {
+                after.push((e, pe_seams::agree::VoidReason::AfterLeave));
+                continue;
+            }
+            if is_leave(&e) && self.cfg.members.contains(&e.entry.author) && !leaves.contains_key(&e.entry.author) {
+                if leaves.len() + 1 >= self.cfg.members.len() {
+                    after.push((e, pe_seams::agree::VoidReason::LastMember));
+                    continue;
+                }
+                leaves.insert(e.entry.author, place);
+            }
+            eff.push(e);
+        }
+        (eff, after)
+    }
+
+    /// E, the reconfiguring cut, became final with `leavers` leaving: the epoch ends at it, and the next starts from it
+    /// with the remaining members (agreement.md 8). The old core is kept a while to finish E's suffix with members
+    /// that lag.
+    fn switch_epoch(&mut self, e: &Block, root: Hash, leavers: Vec<MemberKey>) {
+        let old_members = self.cfg.members.clone();
+        self.cfg.members.retain(|m| !leavers.contains(m));
+        self.former.extend(leavers.iter().copied());
+        #[allow(unused_mut)]
+        let mut core = Core::new(
+            CoreConfig {
+                line: self.cfg.line,
+                members: self.cfg.members.clone(),
+                genesis: e.cut.clone(),
+                timing: self.cfg.timing,
+                epoch: self.core.epoch() + 1,
+            },
+            self.me,
+            self.now,
+        );
+        #[cfg(feature = "mutants")]
+        core.set_mutation(self.cfg.mutation);
+        let old = std::mem::replace(&mut self.core, core);
+        self.final_block = self.core.committed().0;
+        self.final_queue.clear();
+        self.abstained = AbstainBook::default();
+        self.old_epoch = Some(OldEpoch {
+            core: old,
+            members: old_members,
+            until: self.now.0 + OLD_EPOCH_KEEP_NS,
+            cut: e.cut.clone(),
+            root,
+            leavers,
+            told: i64::MIN,
+        });
+        self.tell_leavers();
+    }
+
+    /// Tell the members that left at E that E is final here (agreement.md 8: a leaver quits once every remaining
+    /// member has), every [`EPOCH_FINAL_EVERY_NS`] while the old core is kept.
+    fn tell_leavers(&mut self) {
+        let now = self.now.0;
+        let epoch = self.core.epoch();
+        if !self.cfg.members.contains(&self.me) {
+            return;
+        }
+        let Some(old) = self.old_epoch.as_mut() else { return };
+        if now.saturating_sub(old.told) < EPOCH_FINAL_EVERY_NS {
+            return;
+        }
+        old.told = now;
+        let bytes = Bytes::from(codec::encode(&Wire::EpochFinal { epoch }));
+        for m in old.leavers.clone() {
+            self.out.push(Outgoing { to: m, lane: Lane::Protocol, bytes: bytes.clone() });
+        }
+    }
+
+    /// The previous epoch's core, while kept: time it out, propose and vote suffix cuts (E's frame and heads, with
+    /// E's root), and send what it says to the old members.
+    fn tick_old_epoch(&mut self) {
+        let now = self.now;
+        let Some(old) = self.old_epoch.as_mut() else { return };
+        if now.0 > old.until {
+            self.old_epoch = None;
+            return;
+        }
+        self.tell_leavers();
+        let Some(old) = self.old_epoch.as_mut() else { return };
+        old.core.tick(now, self.signer.as_ref());
+        if let Some(lead) = old.core.lead()
+            && now >= lead.not_before
+        {
+            let cut = Cut {
+                at: CutRef { line: old.cut.at.line, height: lead.parent.height() + 1, frame: old.cut.at.frame },
+                heads: old.cut.heads.clone(),
+            };
+            old.core.propose(cut, now, self.signer.as_ref(), self.verifier.as_ref());
+        }
+        let suffix = old
+            .core
+            .votable()
+            .filter(|p| p.block.cut.at.frame == old.cut.at.frame && p.block.cut.heads == old.cut.heads)
+            .map(|p| p.block.id());
+        if let Some(id) = suffix {
+            old.core.vote(id, old.root, SelfTest::NotRun, Vec::new(), now, self.signer.as_ref());
+        }
+        let epoch = old.core.epoch();
+        let members = old.members.clone();
+        let out = old.core.take_out();
+        let _ = old.core.take_events();
+        for (to, msg) in out {
+            let w = if epoch == 0 { Wire::Core(msg) } else { Wire::Epoch(epoch, msg) };
+            let bytes = Bytes::from(codec::encode(&w));
+            match to {
+                To::All => {
+                    for m in members.iter().filter(|m| **m != self.me) {
+                        self.out.push(Outgoing { to: *m, lane: Lane::Protocol, bytes: bytes.clone() });
+                    }
+                }
+                To::One(k) => self.out.push(Outgoing { to: k, lane: Lane::Protocol, bytes }),
+            }
+        }
+    }
+
+    /// E, the epoch's reconfiguring cut, if `cut`'s ancestry from the final cut (itself included) has one: the first
+    /// block that makes a `Leave` effective. Its descendants in this epoch must be suffix cuts.
+    fn reconfig_of(&self, cut: &Cut) -> Result<Option<Cut>, Vec<EntryRef>> {
+        let Some(chain) = self.ancestry(cut) else { return Ok(None) };
+        let (_, at) = self.effective_by_block(&chain)?;
+        Ok(at.map(|i| chain[i].cut.clone()))
     }
 
     fn trim(&mut self) {
@@ -1195,8 +1403,9 @@ impl Node {
     // ---- the core's output ----
 
     fn pump(&mut self) {
+        let epoch = self.core.epoch();
         for (to, msg) in self.core.take_out() {
-            let w = Wire::Core(msg);
+            let w = if epoch == 0 { Wire::Core(msg) } else { Wire::Epoch(epoch, msg) };
             match to {
                 To::All => self.send_all(Lane::Protocol, &w, &[]),
                 To::One(k) => {
@@ -1212,6 +1421,11 @@ impl Node {
                     }
                 }
                 CoreEvent::Final { block, qc } => {
+                    // A suffix cut (its parent's frame and heads) is never reported: the epoch's final log ends at E.
+                    let parent = self.core.block(&block.parent).map(|p| p.cut.clone());
+                    if parent.is_some_and(|p| p.at.frame == block.cut.at.frame && p.heads == block.cut.heads) {
+                        continue;
+                    }
                     self.events.push(AgreeEvent::CutFinal {
                         cut: block.cut.at,
                         root: qc.root,
@@ -1340,10 +1554,21 @@ impl Node {
         if self.core.mutated(Mutation::AcceptProposalUnchecked) {
             return Some((p, Check::Ok));
         }
+        // Past the epoch's reconfiguring cut E, only a suffix cut: E's frame and heads (agreement.md 8).
+        match self.reconfig_of(&parent.cut) {
+            Ok(Some(e)) => {
+                let suffix = p.block.cut.at.frame == e.at.frame
+                    && p.block.cut.heads == e.heads
+                    && p.block.cut.at.height == parent.cut.at.height + 1;
+                return Some((p, if suffix { Check::Ok } else { Check::Reject(cuts::Reject::AfterReconfig) }));
+            }
+            Err(missing) if !missing.is_empty() => return Some((p, Check::Missing(missing))),
+            _ => {}
+        }
         let mut c = if p.block.cut.at.frame.0 % self.cfg.cut_every(self.rate_hz) != 0 {
             Check::Reject(cuts::Reject::OffGrid)
         } else {
-            cuts::check(&self.log, &parent.cut, &p.block.cut, present, self.tolerance_frames())
+            cuts::check(&self.log, &parent.cut, &p.block.cut, present, self.tolerance_frames(), &self.cfg.members)
         };
         // The d1 rule counts from the previous final cut, not the parent: every entry the cut's uncommitted ancestry
         // includes must be held too, or the root can't be the final log's (the pipelined-void fix).
@@ -1443,11 +1668,20 @@ impl Node {
     /// The entries `chain` (oldest first, from just above the final cut) makes effective, each block judged against
     /// its parent as at finalization; or every entry missing for that.
     fn effective_in(&self, chain: &[Block]) -> Result<Vec<SignedEntry>, Vec<EntryRef>> {
+        self.effective_by_block(chain).map(|(out, _)| out)
+    }
+
+    /// As [`Node::effective_in`], with the `Leave` rules applied block by block, and the index of the first block that
+    /// makes a `Leave` effective (the epoch's reconfiguring cut E), if any.
+    fn effective_by_block(&self, chain: &[Block]) -> Result<(Vec<SignedEntry>, Option<usize>), Vec<EntryRef>> {
         let mut parent = &self.final_heads;
         let mut highs = self.final_high.clone();
         let mut out = Vec::new();
         let mut missing = Vec::new();
-        for b in chain {
+        let mut leaves = BTreeMap::new();
+        let mut reconfig = None;
+        for (i, b) in chain.iter().enumerate() {
+            let mut block_out = Vec::new();
             for h in &b.cut.heads {
                 let key = ChainKey { author: h.author, chain: h.chain };
                 let from = parent.heads.binary_search_by(|p| p.chain.cmp(&h.chain)).ok().map(|i| parent.heads[i].entry);
@@ -1461,7 +1695,7 @@ impl Node {
                         }
                         for (id, v) in verdicts {
                             if v == Verdict::Effective {
-                                out.extend(self.log.get(&key, &id).cloned());
+                                block_out.extend(self.log.get(&key, &id).cloned());
                             }
                         }
                     }
@@ -1470,9 +1704,15 @@ impl Node {
                     Err(_) => return Err(Vec::new()),
                 }
             }
+            let had = leaves.len();
+            let (eff, _) = self.leave_rules(block_out, &mut leaves);
+            out.extend(eff);
+            if leaves.len() > had && reconfig.is_none() {
+                reconfig = Some(i);
+            }
             parent = &b.cut;
         }
-        if missing.is_empty() { Ok(out) } else { Err(missing) }
+        if missing.is_empty() { Ok((out, reconfig)) } else { Err(missing) }
     }
 
     /// How many of this member's own entries are beyond the final cut (a diagnostic). It grows with the cut lag, so
@@ -1712,6 +1952,15 @@ impl Agreement for Node {
         if entry.stamp < self.final_frame() {
             return Err(SubmitError::TooLate);
         }
+        if self.left {
+            return Err(SubmitError::AfterLeave);
+        }
+        // Never sign an entry that would be void as back-stamped (S3 v1.7): the caller re-stamps at its present.
+        if let Some((k, _, id)) = self.my_head
+            && self.log.get(&k, &id).is_some_and(|h| entry.stamp < h.entry.stamp)
+        {
+            return Err(SubmitError::BelowOwnStamp);
+        }
         let e = entry.sign(self.signer.as_ref());
         let id = e.id();
         let now = self.now;
@@ -1719,6 +1968,7 @@ impl Agreement for Node {
             return Err(SubmitError::NotNext);
         }
         self.my_head = Some((key, e.entry.seq, id));
+        self.left |= is_leave(&e);
         self.note_own(e.entry.seq);
         self.send_all(Lane::Action, &Wire::Entries(vec![e.clone()]), &[]);
         Ok(e)
@@ -1726,13 +1976,32 @@ impl Agreement for Node {
 
     fn receive(&mut self, from: PeerId, lane: Lane, bytes: &[u8], at: HostTime) -> Result<(), Fault> {
         let _ = lane;
-        if !self.cfg.members.contains(&from) {
+        if !self.cfg.members.contains(&from) && !self.former.contains(&from) {
             return Err(self.fault(from, None, FaultKind::NotMember, "not a member".into()));
         }
         let w = match codec::decode(bytes) {
             Ok(w) => w,
             Err(_) => return Err(self.fault(from, None, FaultKind::Malformed, "undecodable message".into())),
         };
+        // A core message counts only in its own epoch (agreement.md 8): the current one, or the previous one while its
+        // core is kept to finish E's suffix. Any other epoch's is dropped, without a fault: honest members lag.
+        let (epoch, w) = match w {
+            Wire::Epoch(e, m) => (Some(e), Wire::Core(m)),
+            Wire::Core(m) => (Some(0), Wire::Core(m)),
+            other => (None, other),
+        };
+        if let (Some(e), Wire::Core(m)) = (epoch, &w)
+            && e != self.core.epoch()
+        {
+            if let Some(old) = self.old_epoch.as_mut().filter(|o| o.core.epoch() == e) {
+                let _ = old.core.receive(from, m.clone(), at, self.verifier.as_ref());
+                self.tick_old_epoch();
+            }
+            return Ok(());
+        }
+        if self.former.contains(&from) && !matches!(w, Wire::FetchEntries(_) | Wire::FetchRange { .. }) {
+            return Ok(());
+        }
         let r = match w {
             Wire::Core(m) => {
                 // Heads beyond the cut in a vote, once the core has verified the vote: fetch what this member lacks, so
@@ -1765,6 +2034,15 @@ impl Agreement for Node {
                     }
                     Err(f) => Err(self.fault(from, None, fault_kind(&f), format!("{f:?}"))),
                 }
+            }
+            // Routed above: never reaches here.
+            Wire::Epoch(..) => Ok(()),
+            Wire::EpochFinal { epoch } => {
+                // Kept for a few epochs at most: a stray or forged one costs nothing more.
+                if epoch > self.core.epoch().saturating_sub(1) && epoch <= self.core.epoch() + 4 {
+                    self.settled.entry(epoch).or_default().insert(from);
+                }
+                Ok(())
             }
             Wire::FetchEntries(ids) => {
                 let es: Vec<SignedEntry> = ids
@@ -1828,7 +2106,19 @@ impl Agreement for Node {
         self.core.tick(now, self.signer.as_ref());
         let lag = self.cut_lag_frames();
         let cap = self.backlog_cap();
-        if let (Some(lead), Some(present)) = (self.core.lead(), self.present) {
+        self.tick_old_epoch();
+        let lead = self.core.lead();
+        let reconfig = lead.as_ref().and_then(|l| self.reconfig_of(&l.parent.cut).ok().flatten());
+        if let (Some(lead), Some(e)) = (&lead, reconfig) {
+            // Past E: only suffix cuts, E's frame and heads, until E is final (agreement.md 8).
+            if now >= lead.not_before {
+                let cut = Cut {
+                    at: CutRef { line: e.at.line, height: lead.parent.height() + 1, frame: e.at.frame },
+                    heads: e.heads.clone(),
+                };
+                self.core.propose(cut, now, self.signer.as_ref(), self.verifier.as_ref());
+            }
+        } else if let (Some(lead), Some(present)) = (lead, self.present) {
             // On the grid: the latest grid frame at or below the present less the lag, and at or below the backlog
             // cap (the outage rule). A cap at or below the parent's frame proposes nothing yet.
             let k = self.cfg.cut_every(self.rate_hz);
@@ -1836,7 +2126,7 @@ impl Agreement for Node {
             let frame = Frame(below / k * k);
             let uncapped = Frame(present.0.saturating_sub(lag) / k * k);
             if now >= lead.not_before && frame > lead.parent.frame() {
-                let cut = cuts::build(&self.log, &lead.parent.cut, frame);
+                let cut = cuts::build(&self.log, &lead.parent.cut, frame, &self.cfg.members);
                 self.core.propose(cut, now, self.signer.as_ref(), self.verifier.as_ref());
             } else if now >= lead.not_before && uncapped > lead.parent.frame() {
                 // Only the cap stops a cut (coordinator: "no cut possible" isn't a failed leader): if the
@@ -1896,6 +2186,15 @@ impl Agreement for Node {
 
     fn members(&self) -> Vec<MemberKey> {
         self.cfg.members.clone()
+    }
+
+    fn leave_settled(&self) -> bool {
+        if !self.left {
+            return true;
+        }
+        // Left, and every remaining member has E final: they all told this one so for the epoch it ended.
+        self.former.contains(&self.me)
+            && self.settled.get(&self.core.epoch()).is_some_and(|s| self.cfg.members.iter().all(|m| s.contains(m)))
     }
 
     fn stats(&self) -> AgreeStats {

@@ -416,11 +416,163 @@ which the model does not cover. Each is inert unless the node's configuration na
 - The model has one or two entries per author and two or three content cuts; its bounds and what is exhaustive are in
   `models/cuts/README.md`.
 
-## 8. Not in v0
+## 8. Membership change: epochs (model v1)
 
-Join, leave, return and a restarted chain (model v1, the main open risk: pe-agree does not depend on membership
-change before that model is checked); one branch merging with the main line (model v2); quorum loss,
-unconfirmed play, the one-minute bound and split groups (model v3).
+Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-reviewer's gaps and wording. Built in pe-agree for `Leave` only (below); `Admit`, `Remove` and
+`Rechain` are not built yet.
+
+- **Build order: `Leave` first** (coordinator; @item:primordial-engine/m1-leave-a-member-leaves-gracefully-and-the-rest).
+  M1's demo has a member leave and the other carry on alone, and at n = 2 that is impossible without epochs: q = 2,
+  so once the leaver is gone nothing becomes final again. pe-agree builds the epoch machinery (the epoch in
+  messages, the reconfiguring cut, suffix cuts, the switch at E's finality) with `Leave` only; `Admit`, `Remove`
+  and `Rechain` follow on the same machinery. The persisted vote state below comes with `Rechain`, the only change
+  a restarted member makes. At n = 1, `quorum(1)` = 1, so the remaining member certifies alone and finality is the
+  usual two-chain (model v1's leave-2to1). The world side is pe-world's, from the same final `Leave` entry, as
+  `World::admit` applies a join: it removes the leaver's two hands, releases its claims and drops its permissions
+  at the leave's stamp (@world-model).
+- **In pe-agree** (crates/pe-agree/src/node.rs, `Leave` only):
+  - A `Leave` is a class Protocol entry whose payload is `pe_agree::LEAVE`. The `Leave` rules run over each cut's
+    newly effective entries in the final log's order, the same in `finalize` and in the roots' `effective_in`: a
+    member's first `Leave` takes effect, and a later entry of its key is void as `AfterLeave`.
+  - E is the first block above the final cut whose effective entries include a `Leave`. Past it, the leader proposes
+    only suffix cuts and a voter refuses anything else (`Reject::AfterReconfig`); a suffix cut is never reported
+    final (`CutFinal`), so the epoch's final log ends at E.
+  - When E is final, the node starts the next epoch's core: E's cut is its genesis (heights go on from E's), its
+    members are the old ones less the leavers, and q follows. Each epoch signs under its own domain (the line in
+    epoch 0, so its signatures are unchanged, then a hash of the line and the epoch), and its core messages travel in
+    an epoch envelope (`Wire::Epoch`); a message of an epoch the node isn't in is dropped without a fault.
+  - The old core is kept 30 s after the switch: it times out, proposes suffix cuts and votes them with E's root, so a
+    member that missed E's finality finishes it.
+  - Cuts advance only members' chains: a former member's chain keeps its head, and a cut that advances it is refused
+    (`Reject::NotMember`). Its stray entries and messages are dropped without a fault.
+  - `submit` refuses anything after the member's own `Leave` (`SubmitError::AfterLeave`).
+  - **A `Leave` that would empty the epoch is void as `LastMember`** (@design-reviewer's L1 on e3597563): the line
+    keeps its last member, which stays a member and may sign again. With several in one cut, the earlier ones in the
+    final log's order take effect.
+  - **When the leaver may quit** (@design-reviewer's M2, coordinator). E's finality is local: at n = 2
+    whoever forms the certificate on E's suffix child has E final first, and if that is the leaver and it quits then,
+    losing what it hadn't sent, the other stays in the old epoch with q = 2, stuck as after a crash (measured: 3 of 9
+    runs). So each remaining member, once E is final there, tells every leaver so (`Wire::EpochFinal`, unsigned: a
+    forged one can only make a leaver quit early), every second while its old core is kept, and S3's
+    `leave_settled()` is true once every remaining member has. pe-app waits for it before quitting, with a visible
+    bound ("leaving…"; @engine-architect). Measured: waiting for it strands no one in the same 9 runs, quitting
+    355-558 ms after the `Leave`.
+  - **Not built: a member that misses E for more than 30 s is stranded** (@design-reviewer's M3; coordinator: a limit for now). "Fetches it like a committed block" above isn't built: a member still in epoch
+    e drops every message of e + 1, and once the others' old cores are gone nothing finishes E for it. At 2 -> 1 the
+    laggard is the remaining member, no worse than a crash; at 3 -> 2 it strands both remaining members (q = 2 needs
+    it). **So leaves at n >= 3 aren't supported until the epoch-certificate fetch is built** (a member that receives a
+    later epoch's message asks its sender for E, the suffix and the finalizing certificate; its own docket item).
+  - **A cut's identity is its `CutRef`** (S3 v1.7; L2): heights go on across the switch, so the old epoch's suffix
+    cuts and the new epoch's first cuts share heights with different frames.
+  - The consensus hash is v5: this build's final log differs from v4's from the first `Leave`.
+  - Tests (crates/pe-agree/src/node_tests.rs): 2 -> 1 (the leaver stays for E, then quits; the other finalizes
+    alone), 3 -> 2, an entry signed after the `Leave` void as `AfterLeave` at the same cut everywhere, the leaver
+    waiting for `leave_settled` (and the naive quit as its control), the last member's `Leave` void.
+- **A crash at n = 2 is not a leave.** A member that vanishes can't be removed at n = 2 (`Remove` needs its own
+  vote), so the other stays unable to finalize; only a graceful quit, which lingers about a round trip for E's
+  suffix, ends in an epoch of one. **An interrupted leave ends the same way** (@design-reviewer's L2): if the
+  leaver's process exits after E's proposal but before E is final, or the remaining member is unreachable when it
+  quits, the remaining member is stuck as after a crash, and worse, since inclusion has paused since E's proposal.
+  So pe-app's quit waits for E to be final, with a visible bound ("leaving…"), and says what the remaining member
+  shows if it never comes (app.md, @engine-architect).
+
+- **Epochs.** A line's members are fixed within an epoch; epoch 0's are the genesis members. A membership change
+  ends the epoch at a final cut, and the next epoch starts from that cut with the changed members. Proposals, votes,
+  timeouts and their certificates name their epoch, and a message of another epoch counts for nothing in this one
+  (control c). The quorum, the rotation and the views are the epoch's own; views restart at 1.
+- **Membership entries** are ordinary signed entries (class Protocol), validated in chain order like any other:
+  - `Admit{key}`, by a member: the key becomes a member.
+  - `Leave`, by the leaver. **It is the last entry of the leaver's chain** (coordinator, from
+    @world-chunks's answer): pe-agree refuses to sign anything after it on any chain of that key
+    (a local `SubmitError`), and an entry of that key in epoch e that comes after its `Leave` in the final log's
+    order, on any chain, is void as `AfterLeave` (@design-reviewer's L1: a key may have two chains in an epoch, and
+    a returning member's new chain is in a later epoch), so hand entries stamped after the leave can't enter E. A
+    void, not a fault (@design-reviewer): verdicts stay per cut, and the key stops being a member at E
+    anyway. Both names are S3 changes, to confirm
+    with @engine-architect when the seam's version is bumped.
+  - `Remove{key}`, by an authorized member other than the one removed, so a crashed, departed or Byzantine member
+    can be removed. Who is authorized, for `Admit` too, is governance's (admins, the user's ruling); in the model it
+    is abstract, and the Byzantine member runs both authorized (it may sign `Remove{honest}` and `Admit{sybil}`) and
+    not (@design-reviewer, Low 4).
+  - **Assumption: governance never authorizes a Byzantine member.** The authorized run breaks agreement, as
+    expected (model v1's remove-auth-byz): removing an honest member at n = 4 leaves n = 3 with t = 0 and the
+    Byzantine member still in. Agreement holds only while every key that may sign `Admit` or `Remove` is honest
+    (@design-reviewer).
+  - `Rechain{epoch, old head}`: seq 1 of a restarted member's new chain under the same key (below).
+
+  A change takes effect only through a final cut, never at inclusion (control a). Several changes in one cut apply
+  in the final log's order; one that changes nothing (admitting a member, removing a non-member) is void.
+- **The reconfiguring cut E** is the first cut of a chain in epoch e that includes an effective change. Every
+  descendant of E in epoch e is a **suffix cut**: E's frame and E's heads, nothing new. Voters refuse any other
+  descendant (`Reject::AfterReconfig`; control b). Suffix cuts are exempt from `FrameNotAbove`; E is on the grid, so
+  they are too. They exist only so that E can become final under the two-chain rule. Whichever certificate finalizes
+  E or a suffix cut above it, epoch e's final log ends exactly at E (control e), so no epoch has two final
+  reconfiguring cuts. After a view change during the suffix, the next leader proposes an empty child of the highest
+  certified block (E or a suffix cut) under the usual lock.
+- **Epoch e+1 starts** at a member when E is final there. Its genesis is E, its members are e's with E's changes
+  applied, and t and q are recomputed. A leaver keeps voting in e until E is final; at n = 2 the suffix always needs
+  its vote, so a graceful quit lingers about a round trip (@fable-reviewer, via). The epoch
+  certificate is E's proof of finality: E, the suffix up to the block finalized with it, and the quorum certificate
+  of that block's child in the next view. A member that missed it fetches it like a committed block (section 4).
+- **Entries across the change.** Only inclusion pauses, from E's proposal until E is final (about one round trip).
+  Members whose chains continue keep authoring, and their replicas keep predicting; what they make meanwhile goes
+  into e+1's first cut. That cut's parent is E, so "late" is measured against E's frame by the ordinary rule
+  (section 3, pe-agree's own predicate). Changes that arrive during the suffix wait for e+1 and are judged against
+  e+1's members.
+  - **Expected voids:** a leaver's or removed member's entries that E doesn't cover (their author isn't a member of
+    e+1), and a restarted member's old-chain entries above E's heads.
+  - **Property:** no entry of a member that stays a member across the change, on a chain that continues, is void
+    because of the change.
+- **A joiner** admitted at E imports the world at E through `World::admit` (the M1 interim's path; E's root covers
+  the admission). Its invite pins an epoch: the epoch's id and a hash of its members, signed by the inviter. The
+  joiner verifies each epoch certificate from there to E, against the members each epoch had. Its chain starts at
+  seq 1 with entries stamped at or above E's frame (lower is late). Admits pending together go into one E, so a burst
+  of joins (ten at once, say) takes one epoch, not ten.
+  - **Open test:** a joiner entering a frame clock that is already running. Epochs don't change it, and nothing
+    tests it yet (@fable-reviewer).
+- **Return** is a `Leave` (or a `Remove`), then later an `Admit`; the returning member starts a new chain.
+- **Restart in place (`Rechain`).** A member whose process restarted has lost its chain's head. Its new chain under
+  the same key starts with `Rechain{epoch, old head}` (the head it can fetch from peers, if any). Naming the epoch
+  and the old head is its replay protection outside the chain: an old `Rechain` can't restart the key again in a
+  later epoch (@fable-reviewer). It is the one extra chain a key may have in an epoch; two chains under one key are
+  otherwise as in section 2. The restarted member signs nothing else until its `Rechain` is final: its authoring
+  pauses, unlike a continuing member's. At E the old chain closes at E's heads, and its entries above them are void.
+  The new chain's later entries are stamped at or above E's frame: the per-key stamp floor across chains (section 2;
+  control d). The `Rechain` entry itself is included in E, so it is stamped below E's frame, possibly below old-chain
+  entries E includes; it has no world effect and is exempt from the floor (Low 3).
+  - **A second restart before the `Rechain` is final** loses the new chain too. The member fetches its `Rechain`
+    (seq 1) from peers and continues that chain. If no peer has it, the earlier `Rechain` was never included, so a
+    fresh one is still the only extra chain, and allowed (Low 2).
+  - **Votes after a restart** (coordinator; @design-reviewer's Medium). A restarted
+    member that forgot which views it voted in could vote twice in one view: an equivocation by an honest key. One
+    that kept its views but forgot its `high_qc` could time out with an older one, so a timeout certificate's
+    `high_view` falls below a committed block and the lock rule lets a fork through. So the vote state is safety
+    data: the epoch, the highest view voted in, the highest view timed out, and `high_qc` (the certificate itself,
+    since timeouts carry it), written before each vote or timeout is sent. Those two moments suffice: the lock's
+    proof uses only members that voted for the committing child. A restarted member votes and times out only above
+    the stored (epoch, view), compared lexicographically since views restart in each epoch; one that missed epoch
+    changes fetches their certificates first. (Not voting in epoch e at all would make a restart impossible at
+    n = 2, where q = 2.) It is a requirement on the node: pe-app keeps it in the same per-machine data folder as
+    `identity.seed`. The model checks two forgetting variants as control f.
+- **Out of scope:** at n = 2 an absent member can't be removed, since q = 2 needs its vote. That case is the user's
+  branch rule.
+- **Model v1** (models/cuts) checks sizes 2→3, 2→1, 3→2, 3→4 and 4→3, and a restart, with one Byzantine member at n = 4
+  (the removed one). Properties: agreement across epochs; the same members per epoch; no epoch with two final
+  reconfiguring cuts; the property above on continuing chains; a burst of joins takes one epoch. Controls, each of
+  which must give a counterexample:
+  - (a) a change takes effect at inclusion;
+  - (b) voters accept a descendant of E with new entries;
+  - (c) a vote counted in another epoch, a removed member's included;
+  - (d) the `Rechain` stamp floor broken (old-chain entries accepted above E's heads, or the new chain's below E's
+    frame);
+  - (e) the epoch's final log ends at the cut that finalized E, not at E;
+  - (f1) a restart that forgets the views it voted and timed out in; (f2) one that keeps them but forgets its
+    `high_qc` (n = 4 with the Byzantine member).
+
+## 9. Not in v0
+
+One branch merging with the main line (model v2); quorum loss, unconfirmed play, the one-minute bound and split
+groups (model v3).
 
 - **Catching up from far behind needs an import.** Peers serve only their last 256 committed blocks. They serve
   entries from a ChainLog that is never pruned today; once pruning comes, a member behind by more than the kept

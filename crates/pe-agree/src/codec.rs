@@ -18,19 +18,20 @@ pub const MAX_FETCH: usize = 256;
 #[allow(clippy::large_enum_variant)] // decoded one at a time, never stored in bulk
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wire {
+    /// A core message of epoch 0 (agreement.md 8).
     Core(Msg),
+    /// A core message of a later epoch: the epoch, then the message as [`Wire::Core`] encodes it.
+    Epoch(u64, Msg),
+    /// Unsigned, to former members (agreement.md 8): the sender has the reconfiguring cut that starts `epoch` final. A
+    /// leaver quits once every remaining member has sent it; a forged one can only make a leaver quit early.
+    EpochFinal { epoch: u64 },
     /// Ask for entries by name.
     FetchEntries(Vec<EntryRef>),
     /// Entries: the author's own, a relay, or a fetch's answer.
     Entries(Vec<SignedEntry>),
     /// Ask for an author's chain from `from_seq`, at most `count` entries (at most [`MAX_FETCH`]): the range refetch
     /// that heals holes after a stall or a loss (coordinator).
-    FetchRange {
-        author: MemberKey,
-        chain: ChainId,
-        from_seq: u64,
-        count: u32,
-    },
+    FetchRange { author: MemberKey, chain: ChainId, from_seq: u64, count: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +45,8 @@ const T_FETCH_ENTRIES: u8 = 5;
 const T_ENTRIES: u8 = 6;
 const T_REPORT: u8 = 7;
 const T_FETCH_RANGE: u8 = 8;
+const T_EPOCH: u8 = 9;
+const T_EPOCH_FINAL: u8 = 10;
 
 struct W(Vec<u8>);
 
@@ -203,6 +206,14 @@ impl W {
 }
 
 pub fn encode(m: &Wire) -> Vec<u8> {
+    if let Wire::Epoch(epoch, msg) = m {
+        let inner = encode(&Wire::Core(msg.clone()));
+        let mut w = W(Vec::with_capacity(inner.len() + 9));
+        w.u8(T_EPOCH);
+        w.u64(*epoch);
+        w.0.extend_from_slice(&inner);
+        return w.0;
+    }
     let mut w = W(Vec::with_capacity(256));
     match m {
         Wire::Core(Msg::Propose(p)) => {
@@ -262,6 +273,12 @@ pub fn encode(m: &Wire) -> Vec<u8> {
                 w.b32(&id.0.0);
             }
         }
+        // Encoded above, as an envelope around the plain core message.
+        Wire::Epoch(..) => {}
+        Wire::EpochFinal { epoch } => {
+            w.u8(T_EPOCH_FINAL);
+            w.u64(*epoch);
+        }
         Wire::FetchRange { author, chain, from_seq, count } => {
             w.u8(T_FETCH_RANGE);
             w.b32(&author.0);
@@ -283,6 +300,15 @@ pub fn encode(m: &Wire) -> Vec<u8> {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
+    if bytes.first() == Some(&T_EPOCH) {
+        let mut r = R(&bytes[1..]);
+        let epoch = r.u64()?;
+        // Epoch 0 travels as a plain core message, and an envelope never nests.
+        return match decode(r.0)? {
+            Wire::Core(m) if epoch > 0 => Ok(Wire::Epoch(epoch, m)),
+            _ => Err(DecodeError),
+        };
+    }
     let mut r = R(bytes);
     let m = match r.u8()? {
         T_PROPOSE => {
@@ -333,6 +359,7 @@ pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
             Wire::Core(Msg::Report(Report { cut, verdict, voter, sig }))
         }
         T_FETCH_BLOCK => Wire::Core(Msg::Fetch(BlockId(r.hash()?))),
+        T_EPOCH_FINAL => Wire::EpochFinal { epoch: r.u64()? },
         T_FETCH_ENTRIES => {
             let n = r.count(MAX_FETCH)?;
             let mut ids = Vec::with_capacity(n);
@@ -434,6 +461,8 @@ mod tests {
                 sig: Signature([2; 64]),
             })),
             Wire::Core(Msg::Fetch(BlockId(h(b"f")))),
+            Wire::Epoch(3, Msg::Fetch(BlockId(h(b"g")))),
+            Wire::EpochFinal { epoch: 4 },
             Wire::FetchEntries(vec![EntryRef(h(b"1")), EntryRef(h(b"2"))]),
             Wire::Entries(Vec::new()),
             Wire::FetchRange { author: MemberKey([3; 32]), chain: ChainId(h(b"c")), from_seq: 7, count: 12 },
