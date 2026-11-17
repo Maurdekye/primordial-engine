@@ -27,6 +27,7 @@ use pe_mcp::host::{self, HostOpts};
 use pe_seams::world_api::{self, Link, MemberId, WorldApi};
 use pe_seams::{ChainId, EntryRef, Frame, LineId, MemberKey, Replica, SimRate};
 use pe_world::edit::Transaction;
+use pe_world::script::AssetId;
 use pe_world::{Draft, WorldSnapshot};
 
 /// How long the kept snapshots serve `at(f)`: pe-api's retention (api.md 9.1).
@@ -128,6 +129,8 @@ struct Inner {
     edits: EditIndex,
     here: BTreeSet<MemberKey>,
     caught_up: bool,
+    /// The scripts this machine can't run, as the attester last found them (`Attester::not_running`).
+    scripts_not_running: Vec<(AssetId, Frame, String)>,
 }
 
 impl ApiShared {
@@ -146,6 +149,7 @@ impl ApiShared {
             // Until the first advance says otherwise, so pe-api refuses live changes with `not_ready` meanwhile
             // (@api-eng's Low on slice 1).
             caught_up: false,
+            scripts_not_running: Vec::new(),
         };
         ApiShared { facts, keep_frames, inner: Mutex::new(inner), fresh: Condvar::new() }
     }
@@ -204,6 +208,12 @@ impl ApiShared {
 
     pub fn caught_up(&self, caught_up: bool) {
         self.lock().caught_up = caught_up;
+    }
+
+    /// The scripts this machine can't run, for session_info (S6's `scripts_not_running`): the attester's thread
+    /// sets them after each pass (builds.rs).
+    pub fn scripts_not_running(&self, list: Vec<(AssetId, Frame, String)>) {
+        self.lock().scripts_not_running = list;
     }
 
     /// A member's link came up or went down (pe-net's `LinkUp`, `LinkDown`).
@@ -315,8 +325,7 @@ impl WorldSource for ApiWorld {
             caught_up: g.caught_up,
             tick_hz: self.0.facts.rate.hz(),
             agents_move_user: false,
-            // pe-app's attester fills this from ApiShared (@vdw-physics, ws/author-module).
-            scripts_not_running: vec![],
+            scripts_not_running: g.scripts_not_running.clone(),
         }
     }
 }
