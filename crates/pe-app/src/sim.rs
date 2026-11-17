@@ -498,6 +498,11 @@ impl Sim {
         &self.stats
     }
 
+    /// Agreement's own statistics (S3's `stats`).
+    pub fn agree_stats(&self) -> pe_seams::AgreeStats {
+        self.agree.stats()
+    }
+
     pub fn budget(&self) -> &Budget {
         &self.budget
     }

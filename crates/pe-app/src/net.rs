@@ -1094,13 +1094,13 @@ mod tests {
     type Machines = [(Sim, MemberKey)];
 
     #[test]
-    #[ignore = "16-25 s in release, up to about 70 s if it fails (debug simulates too slowly to finalize in time): run with --release --include-ignored"]
+    #[ignore = "16-25 s in release, longer under load or if it fails (debug simulates too slowly to finalize in time): run with --release --include-ignored"]
     fn a_ten_second_blackout_resumes_and_every_entry_becomes_final() {
         // @coordinator-opus, @design-reviewer, @world-chunks: two
         // machines with hands moving (two entries a frame) lose their path for 10 s, under T_IDLE_M1 (30 s). After
-        // it, the session resumes on the same connections: finality comes back within two of the view timeout's
-        // ceilings plus a margin (the view running when the path returns may wait out one ceiling, and the next one
-        // may time out once more; @engine-architect measured 3.9-13.3 s and once past 15 s under load, @coordinator-opus), every entry either member made becomes final, and neither side refuses or blames the
+        // it, the session resumes on the same connections: finality comes back within RESUME_VIEWS views of each
+        // member's consensus, counted from the path's return (S3 v1.9's `AgreeStats::view`), every entry either member
+        // made becomes final, and neither side refuses or blames the
         // other (no Refused or Fault naming it, no message refused). Each member also queues an edit through pe-api's
         // port 3 s into the blackout, so an edit sits in each outage backlog: no entry of either is voided as late
         // (pe-agree's outage rule, gate item 4; @coordinator-opus), and both edits reach the final order
@@ -1113,8 +1113,17 @@ mod tests {
         use std::sync::atomic::Ordering;
         const BLACKOUT: Duration = Duration::from_secs(10);
         const EDIT_AT: Duration = Duration::from_secs(3);
-        let ceiling = Duration::from_nanos(crate::genesis::settings().timing.max_timeout_ns as u64);
-        let resume_within = 2 * ceiling + Duration::from_secs(5);
+        // Views, not seconds (@coordinator-opus): a loaded machine's ticks and roots run late, so its views
+        // time out and back off and last longer, but their count doesn't grow with the load. A 25 s wall-time bound
+        // (two of the timeout's 10 s ceilings plus 5 s) failed at 32 s under heavy.sh with nothing wrong
+        // (@iter-bench). The view running when the path returns, one more that may time out, then a
+        // certified view and its certified child (the two-chain rule): 4 views. Measured [V, release, 6 runs, this
+        // test]: 3-4 views on both machines, 3.9-13.5 s. RESUME_VIEWS leaves two views for a loaded machine's slow
+        // roots. In wall time at the default timeouts (0.1 s cadence, 0.3-10 s timeout), each view lasts at most
+        // about 10.1 s, so 6 views are at most about 61 s; unloaded they took 1-3.4 s each.
+        const RESUME_VIEWS: u64 = 6;
+        // Only a hang guard: the bound is in views.
+        const HANG: Duration = Duration::from_secs(90);
         let host = crate::clock::shared();
         let DarkPair { mut sims, logs, ports, clocks, dark, relays } = dark_pair(&host);
         let run = |sims: &mut Vec<(Sim, MemberKey)>, until: &mut dyn FnMut(&Machines) -> bool, max: Duration| {
@@ -1173,15 +1182,23 @@ mod tests {
         // Counted from the path's return, not from before the blackout: a cut voted just before it went dark can
         // finalize during the blackout, and would count as resumed at once.
         let before: Vec<u64> = sims.iter().map(|(s, _)| s.stats().finalized).collect();
+        let views_back: Vec<u64> = sims.iter().map(|(s, _)| s.agree_stats().view).collect();
         // Every entry made up to the blackout's end, both chains, must become final on both sides.
         let heads: Vec<_> = sims.iter().map(|(s, _)| s.local_head().expect("a local chain")).collect();
         let made: Vec<u64> = sims.iter().map(|(s, _)| s.stats().inputs).collect();
         let resumed = run(
             &mut sims,
-            &mut |s| s.iter().enumerate().all(|(i, (sim, _))| sim.stats().finalized > before[i]),
-            resume_within,
+            &mut |s| {
+                // Done once both resumed, or once either is past the bound (it fails below).
+                s.iter().enumerate().all(|(i, (sim, _))| sim.stats().finalized > before[i])
+                    || s.iter().zip(&views_back).any(|((sim, _), v)| sim.agree_stats().view > v + RESUME_VIEWS)
+            },
+            HANG,
         );
+        let resumed = resumed && sims.iter().enumerate().all(|(i, (sim, _))| sim.stats().finalized > before[i]);
         let resumed_after = back.elapsed();
+        let views_to_resume: Vec<u64> =
+            sims.iter().zip(&views_back).map(|((s, _), v)| s.agree_stats().view.saturating_sub(*v)).collect();
         let all_final = run(
             &mut sims,
             &mut |s| {
@@ -1204,7 +1221,7 @@ mod tests {
         };
         run(&mut sims, &mut |_| (0..2).all(|i| (0..2).all(|j| done(i, j))), Duration::from_secs(10));
         println!(
-            "after the path came back: finality resumed {resumed} ({resumed_after:?}); every entry final {all_final} ({all_final_after:?})"
+            "after the path came back: finality resumed {resumed} ({resumed_after:?}, views per machine {views_to_resume:?}); every entry final {all_final} ({all_final_after:?})"
         );
         for (i, p) in ports.iter().enumerate() {
             for (j, c) in edits.iter().enumerate() {
@@ -1259,7 +1276,20 @@ mod tests {
             let lead = sim.stats().largest_lead;
             assert!(lead <= 12, "machine {i}'s stamp-ahead lead rose to {lead} frames over the blackout");
         }
-        assert!(resumed, "finality did not resume within {resume_within:?}");
+        assert!(
+            resumed,
+            "finality did not resume (views per machine since the return {views_to_resume:?}, {resumed_after:?})"
+        );
+        // Resuming takes a new view at least (the one running at the return can't commit alone); 0 would mean the
+        // agreement reports no view, and the bound below would hold vacuously.
+        assert!(
+            views_to_resume.iter().all(|v| *v >= 1),
+            "no view counted: {views_to_resume:?} (S3 v1.9's view unreported?)"
+        );
+        assert!(
+            views_to_resume.iter().all(|v| *v <= RESUME_VIEWS),
+            "finality took {views_to_resume:?} views to resume, over {RESUME_VIEWS} ({resumed_after:?})"
+        );
         assert!(all_final, "not every entry made became final on both sides");
         drop(relays);
     }
