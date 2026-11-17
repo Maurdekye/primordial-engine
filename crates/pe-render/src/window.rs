@@ -23,6 +23,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::camera::{Camera, DepthRange, Fov};
+use crate::counters::RunReport;
 use crate::desktop_hand::{DesktopHand, DesktopHandFeed, DesktopHandSettings, PointerInput, Target};
 use crate::effects::EffectCommand;
 use crate::gpu::{BackendOverride, ContextError, GpuContext, desktop_order, instance_descriptor};
@@ -80,6 +81,8 @@ pub struct DesktopReport {
     pub monitor_mhz: Option<u32>,
     /// The snapshot's outcome, when one was asked for.
     pub snapshot: Option<Result<std::path::PathBuf, String>>,
+    /// The presenter's counters for the whole run (render.md 13), set when the window closes; None before.
+    pub render: Option<RunReport>,
 }
 
 /// A lost surface is made again on the same window and device (review L3). False if that fails, so the caller backs
@@ -666,7 +669,10 @@ pub fn run_desktop(
     el.run_app(&mut app).map_err(|e| ContextError::Device(format!("event loop: {e}")))?;
     match (app.error, app.view) {
         (Some(e), _) => Err(e),
-        (None, Some(v)) => Ok(v.report),
+        (None, Some(mut v)) => {
+            v.report.render = Some(v.cfg.presenter.counters().run());
+            Ok(v.report)
+        }
         (None, None) => Err(ContextError::Device("the window was never made".into())),
     }
 }

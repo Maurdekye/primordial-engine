@@ -4,20 +4,22 @@
 //! (option (a), agreed with @xr-eng).
 
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pe_render::camera::Camera;
 use pe_render::capture_service::CaptureServer;
+use pe_render::counters::{Histogram, RunReport, Summary};
+use pe_render::drawn_time::DrawnTime;
 use pe_render::gpu::GpuContext;
 use pe_render::present::{Batch, FrameSlot, Presenter};
 use pe_render::scene::{RenderSettings, Renderer};
 use pe_render::window::EffectSink;
 use pe_render::{DisplayHand, LocalPresentation};
-use pe_seams::FrameView;
+use pe_seams::{FrameView, HostTime};
 use pe_xr::backend::{Backend, DepthInfo};
 use pe_xr::binding::{self, XrTargets};
 use pe_xr::guard::Guard;
@@ -44,7 +46,25 @@ pub struct VrSink {
     extent: Option<[u32; 2]>,
     /// `view_capture`'s server (api.md 8), with the left eye's camera as the player's. Served after the frame ends.
     captures: Option<AfterFrame>,
+    /// X8's Present (render.md 7, VR's default): the presenter gets this host's now as the display time, so the world
+    /// is drawn at the engine's present; the eye cameras and the hands keep the runtime's predicted display time.
+    present: bool,
+    /// The display lead, ms: the runtime's predicted display time minus now, at each frame drawn.
+    lead_ms: Histogram,
+    /// Where the run's counters go when the sink drops (`VrReport`).
+    report: ReportSlot,
 }
+
+/// What a VR run reports at its end (@coordinator-opus): the presenter's counters for
+/// the run, and the measured display lead.
+#[derive(Clone, Debug)]
+pub struct VrReport {
+    pub render: RunReport,
+    pub lead_ms: Summary,
+}
+
+/// Filled by the sink when it drops, on the XR thread; read once the XR thread has ended.
+pub type ReportSlot = Arc<Mutex<Option<VrReport>>>;
 
 impl VrSink {
     pub fn new(
@@ -54,8 +74,21 @@ impl VrSink {
         targets: XrTargets,
         effects: Box<dyn EffectSink + Send>,
         extent: Option<[u32; 2]>,
+        report: ReportSlot,
     ) -> VrSink {
-        VrSink { views: ViewReader::new(slot), presenter, renderer, targets, effects, extent, captures: None }
+        let present = matches!(presenter.display().settings().drawn_time, DrawnTime::Present { .. });
+        VrSink {
+            views: ViewReader::new(slot),
+            presenter,
+            renderer,
+            targets,
+            effects,
+            extent,
+            captures: None,
+            present,
+            lead_ms: Histogram::default(),
+            report,
+        }
     }
 
     /// This sink serving `view_capture`'s orders once a drawn frame has ended ([`FrameSink::after_frame`]).
@@ -88,6 +121,15 @@ impl AfterFrame {
     }
 }
 
+impl Drop for VrSink {
+    fn drop(&mut self) {
+        let r = VrReport { render: self.presenter.counters().run(), lead_ms: self.lead_ms.summary() };
+        if let Ok(mut slot) = self.report.lock() {
+            *slot = Some(r);
+        }
+    }
+}
+
 /// What a display frame reads from the frame slot (render.md 3): every view published since the last frame, once and
 /// in order, and the newest of them, which the cameras use. An empty batch keeps the last view, so the frame draws it
 /// again. A slot has one reader: views taken here are gone for anyone else.
@@ -112,11 +154,12 @@ impl ViewReader {
     }
 }
 
-/// The local player's part of a display frame: shown at the runtime's predicted display time, with the hands pe-xr
-/// located for it, and a tracked hand's joints for drawing it (xr.md 6, render.md 5).
-fn local_presentation(frame: &FrameRequest<'_>) -> LocalPresentation {
+/// The local player's part of a display frame: the hands pe-xr located for the runtime's predicted display time, with
+/// a tracked hand's joints for drawing it (xr.md 6, render.md 5), and as its display time `now` under Present (the
+/// engine's present, render.md 7), else that predicted time.
+fn local_presentation(frame: &FrameRequest<'_>, now: Option<HostTime>) -> LocalPresentation {
     let hand = |i: usize| frame.hands[i].map(|pose| DisplayHand { pose, joints: frame.hand_joints[i] });
-    LocalPresentation { display_time: frame.timing.predicted_display_time, hands: [hand(0), hand(1)] }
+    LocalPresentation { display_time: now.unwrap_or(frame.timing.predicted_display_time), hands: [hand(0), hand(1)] }
 }
 
 impl FrameSink for VrSink {
@@ -130,7 +173,10 @@ impl FrameSink for VrSink {
             return false;
         };
         let cameras = binding::eye_cameras(&view.local_rig, frame.eyes);
-        let Some(presented) = self.presenter.frame_batch(&batch, &local_presentation(frame), &cameras) else {
+        let now = crate::clock::now();
+        self.lead_ms.record(frame.timing.predicted_display_time.secs_since(now) * 1e3);
+        let local = local_presentation(frame, self.present.then_some(now));
+        let Some(presented) = self.presenter.frame_batch(&batch, &local, &cameras) else {
             return false;
         };
         for c in &presented.effects {
@@ -368,6 +414,8 @@ pub struct Drawing {
     pub render: RenderSettings,
     pub effects: Box<dyn EffectSink + Send>,
     pub captures: Option<Arc<pe_render::capture_service::CaptureQueue>>,
+    /// Receives the presenter's counters and the display lead when the sink drops (the end-of-run line).
+    pub report: ReportSlot,
 }
 
 pub fn start(
@@ -377,7 +425,7 @@ pub fn start(
     slot: Arc<FrameSlot>,
     drawing: Drawing,
 ) -> Result<XrThread, NotStarted> {
-    let Drawing { presenter, render, effects, captures } = drawing;
+    let Drawing { presenter, render, effects, captures, report } = drawing;
     let parts =
         open::open_vulkan(discovery, guard, GraspConfig::default(), ring).map_err(NotStarted::NotOpened)?.into_parts();
     // Moved out one by one, so on any unwind from here they drop in reverse, in OpenXR's order: the session, then the
@@ -388,7 +436,7 @@ pub fn start(
     let session = parts.session;
     let renderer = Renderer::new(shared(&gpu), render);
     // The whole image until the render scale comes (@xr-eng's L2, with the 90 Hz pacing work).
-    let mut sink = VrSink::new(slot, presenter, renderer, targets, effects, None);
+    let mut sink = VrSink::new(slot, presenter, renderer, targets, effects, None, report);
     if let Some(q) = captures {
         sink = sink.with_captures(q);
     }
@@ -642,8 +690,13 @@ mod tests {
             SimRate::DEFAULT.hz(),
         );
         let slot = Arc::new(FrameSlot::new());
-        let drawing =
-            Drawing { presenter, render: RenderSettings::default(), effects: Box::new(Quiet), captures: None };
+        let drawing = Drawing {
+            presenter,
+            render: RenderSettings::default(),
+            effects: Box::new(Quiet),
+            captures: None,
+            report: ReportSlot::default(),
+        };
         match start(&NoRuntime, &Guard::CLOSED, ring(), slot, drawing) {
             Err(NotStarted::NotOpened(NotOpened::Runtime(_))) => {}
             Err(e) => panic!("{e}"),
@@ -695,10 +748,14 @@ mod tests {
             hands: [None, Some(right)],
             hand_joints: [None, Some(joints)],
         };
-        let local = local_presentation(&frame);
+        let local = local_presentation(&frame, None);
         assert_eq!(local.display_time, HostTime(7_000_000));
         assert!(local.hands[0].is_none(), "an untracked hand is not drawn");
         assert_eq!(local.hands[1].map(|h| h.pose), Some(right));
         assert_eq!(local.hands[1].and_then(|h| h.joints), Some(joints), "a tracked hand's joints are drawn with it");
+        // Present: the world at now, the hands still located for the predicted display time.
+        let local = local_presentation(&frame, Some(HostTime(5_000_000)));
+        assert_eq!(local.display_time, HostTime(5_000_000));
+        assert_eq!(local.hands[1].map(|h| h.pose), Some(right));
     }
 }
