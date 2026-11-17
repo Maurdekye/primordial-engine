@@ -1,5 +1,6 @@
-//! The glue between S2 and S3 that pe-app's simulation tick and the harness's node driver both run (pe-seams ruling 3;
-//! docs/spec/app.md 3, @engine-architect): so the loop that ships is the loop the properties check.
+//! The glue between S2 and S3 that pe-app's simulation tick runs (pe-seams ruling 3; docs/spec/app.md 3,
+//! @engine-architect), meant to be the loop the harness's properties check too. pe-harness's `SeamNode` still runs its
+//! own copy of it (seamnode.rs), which places no vote holds, until it moves to this driver (@harness-eng).
 //!
 //! It is written against the seam traits only ([`Replica`] and [`Agreement`]), so it does not depend on how either
 //! is built. Messages, local input, S3's `tick` and pe-diverge stay outside it, in pe-app and in the harness. One
@@ -16,7 +17,7 @@
 //! The driver keeps which cuts it voted on, which final cut it last finalized, and which holds it placed. The first
 //! two are loop state, not simulation state: dropping them costs at most one repeated vote or `finalize`, which both
 //! seams allow. The holds are not disposable: S3 counts them, so a driver must live as long as the agreement it
-//! drives, as pe-app's simulation thread and the harness's node keep both together.
+//! drives, as pe-app's simulation thread keeps both together.
 
 use std::collections::BTreeSet;
 
