@@ -116,6 +116,39 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
         880 of 960 frames per member, the backlog none. Votes name heads beyond the cut they vote on, so the backlog
         doesn't grow with the lag. It does grow during a view change with no votes: past the grace plus a burst's
         worth of entries (about 1.4 s at two hands and 120 Hz), hand entries pause until votes resume.
+      - **Only the return path is allowed for.** On a slow link a peer's votes name the author's entries a round
+        trip late, so with only the grace the backlog counted entries in flight, and a member was paced because the
+        other member's link was slow (@item:primordial-engine/pe-agree-on-a-slow-not-stalled-link-backlogged-r). For
+        each other member the author now also allows that member's ack delay, less how late that member reports the
+        author's entries arriving against their stamps (its latest lateness report, at least 0). What is left is the
+        return path and the vote cadence. The ack delay is the least of that member's latest 32 samples, each the time
+        from an own entry to the first vote of that member naming it. A stall takes no samples (no vote names anything
+        new), and its flush's one outsized sample is outvoted, whatever the outage's length (a 10 s time window let a
+        10 s outage age the earlier samples out). The backlog is then the (q - 1)th least of the members' missing
+        counts. Entries that reach a member late against their stamps still pace their author: they would be void as
+        late or cost abstentions.
+      - **Near the pending cap.** The author also paces once its own entries beyond the final cut are within a burst of
+        the pending cap every receiver holds per author (`Node::near_pending_cap()`; 1,020 at 60 Hz, 1,920 at 120 Hz).
+        Past the cap, receivers defer its new entries (2, the queue), so they can't hold the cuts that name them and
+        can't vote, and a finality stand-still feeds itself. Found with A unpaced on a slow return link past the lead's
+        clamp [V, sim, 60 Hz, B -> A +1.2 s, no lead, seeds 301-312]: A reached B's cap about 8.5 s into the no-lead
+        stand-still, and finality stood still 21.5 s on 4 of 12 seeds, against at most 8.4 s while the old rule
+        happened to pace A (control: with `pending_s` = 30, at most 8.4 s). At the lag cap a healthy member stays far
+        below the cap (about 400 entries against 1,920 at three a frame and 120 Hz), so only a long stand-still gets
+        here.
+      - Measured [V, pe-agree sim, n = 2, 60 Hz, two hands a frame, 30 s, seeds 301-302, B -> A one-way +D, A -> B
+        fast]. Before, with no lead: A (the fast uplink) was paced on 748-890 of its 1,800 frames at D = 1.2 s and
+        383-562 at 0.9 s, B on 724-750 and 481-576; at 0.3 s neither. With B stamping D + 0.1 s ahead (pe-app's case):
+        A on 640-970 and B on 660-750 at 1.2 s. Now: with no lead, A on none at 0.3 and 0.9 s, B on 526-577 at 0.9 s
+        (its entries arrive late); with the lead, neither at 0.9 or 1.2 s. With no lead at 1.2 s, A is paced only near
+        the cap, on 0-223 frames, and the stand-still stays within 8.4 s (seeds 301-312).
+      - Residuals: a stall is told an ack delay later. On the 1.2 s link with B's lead, a 4 s stall of A's uplink paces
+        A from about 2.7 s into it (the grace, the ack delay and the burst), on 84-89 of its 240 frames. A link that
+        turns slower for good paces its author until 32 slower samples replace the faster ones (about 3-10 s of
+        votes). A transport that drains a long stall slowly would have its acks of the drained entries sampled with
+        their age, and over 32 of them lift the allowance until fresh samples replace them (the sim flushes at once,
+        so this is [I], not measured). Lateness reports are unsigned hints: a peer that under-reports makes its
+        author pace less, which costs only that author's own entries (void as late).
     - Measured [V, pe-agree sim, 120 Hz, two hands a frame, seeds 31-33]: with pacing, stalls of 1, 3 and 10 s give no
       refusal and no fault, and the member's entries are final again from the stall's end. In every stall run, paced
       or not, every peer's copy of the member's chain links through every entry it made up to 2 s before the end
