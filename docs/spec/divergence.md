@@ -491,6 +491,17 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `merges`, `merge_conflicts`, `merge_replay_frames` | From M2 | pe-diverge |
 | `unconfirmed_time` | Time played since the last final cut, as a distribution | pe-agree (M3) |
 
+**Health.** The health a machine reports (WorldApi's `session`, api.md 5.1) is `Repairing { since }` while either:
+- the replica reports it: a final cut I finalized diverged or was damaged (S5 `Health`); or
+- a root split is open: S3 reported `RootSplit` for a cut, and no cut at or past its frame is final yet. `since` is the
+  earliest split cut's frame.
+
+The replica alone can't show a split: it learns of a divergence only at a final cut, and in a split none is final. At
+`n = 2` every divergence is a split (3.2), so without the second clause a stalled world read "agreed" (found by
+@engine-architect's two-process demo, 2026-11-17). pe-app composes the two (`Sim::health`), with no seam change
+[R @coordinator-opus, @item:primordial-engine/pe-app-runs-pe-diverge-app-md-step-5-and-health-r]. Until pe-app runs
+pe-diverge, the split clause reads S3's events directly; afterwards, pe-diverge's open episode.
+
 ## 8. The display layer: requirements for WS-render
 
 pe-render builds it (plan 3.1, WS-render); WS-diverge states what it must do and how it is tested. The numbers are
