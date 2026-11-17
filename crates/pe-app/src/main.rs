@@ -3,10 +3,12 @@
 //! (`pe_app::world`), drawn in VR, where the member's hands follow the headset's tracking, or in the window on the
 //! main thread. The network, MCP, configuration and invites join as their crates land.
 //!
-//! `pe-app [--vr] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] [--advertise <addr>]... [--identity <path>]`.
-//! `--vr` turns VR on, as the configuration will (pe-xr's headset guard): VR opens first, and pe-app goes to the
-//! desktop when VR does not open or when its session ends. `--seconds` ends the run after `n` seconds, in VR or on the
-//! desktop; without it the window runs until it is closed.
+//! `pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] [--advertise <addr>]...
+//! [--identity <path>]`. `--vr` turns VR on, as the configuration will (pe-xr's headset guard): VR opens first, and
+//! pe-app goes to the desktop when VR does not open or when its session ends. `--headless` opens neither a window nor
+//! VR: the world runs, with no hands, until `--seconds` passes or the console asks to quit (tests, and machines with
+//! no display). `--seconds` ends the run after `n` seconds, in any mode; without it the window runs until it is
+//! closed.
 //!
 //! Without `--open` or `--join` the world runs alone (the headset tests need that). With them, two machines share one
 //! (the M1 interim, `pe_app::net`): `--open` prints an invite and waits for the joiner's reply code on standard input;
@@ -81,6 +83,8 @@ enum Shared {
 /// The command line, until configuration lands (app.md 4 step 1).
 struct Options {
     vr: bool,
+    /// No window and no VR (app.md 4): the main thread waits for `--seconds` or the console's quit.
+    headless: bool,
     run_for: Option<Duration>,
     shared: Option<Shared>,
     listen: std::net::SocketAddr,
@@ -103,6 +107,7 @@ const INVITE_VALID: Duration = Duration::from_secs(3600);
 fn options() -> Options {
     let mut o = Options {
         vr: false,
+        headless: false,
         run_for: None,
         shared: None,
         listen: "0.0.0.0:4433".parse().unwrap_or_else(|_| usage()),
@@ -116,6 +121,7 @@ fn options() -> Options {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--vr" => o.vr = true,
+            "--headless" => o.headless = true,
             "--open" => o.shared = Some(Shared::Open),
             "--join" => {
                 let text = args.next().unwrap_or_else(|| usage());
@@ -188,6 +194,7 @@ fn shared_sim(
     Sim::new(Box::new(session.node), session.replica, session.frames, slot, Budget::new(rate))
         .with_local(session.me, chain_nonce(), hands)
         .with_transport(net::transport(session.handle), Some(Box::new(session.hook)))
+        .with_linked(session.linked)
 }
 
 fn main() {
@@ -199,7 +206,10 @@ fn main() {
     let options = options();
     // Others share the world (`--open` or `--join`): the quit then leaves gracefully (app.md 4).
     let networked = options.shared.is_some();
-    let (vr, run_for) = (options.vr, options.run_for);
+    let (vr, headless, run_for) = (options.vr, options.headless, options.run_for);
+    if vr && headless {
+        fail("--vr and --headless exclude each other");
+    }
     let started = Instant::now();
 
     // Each GPU context's backend, adapter and driver, as it is made (render.md 4).
@@ -271,8 +281,9 @@ fn main() {
         (Some(p), Some(b)) => Some(p.with_builds(b)),
         (p, _) => p,
     };
-    // view_capture's queue (api.md 8), served by the headset's loop or the window's, whichever draws.
-    let captures = mcp_wanted.then(pe_render::capture_service::CaptureQueue::new);
+    // view_capture's queue (api.md 8), served by the headset's loop or the window's, whichever draws. Headless draws
+    // nothing, so it has no queue, and pe-api answers view_capture with `capture_unavailable` at once.
+    let captures = (mcp_wanted && !headless).then(pe_render::capture_service::CaptureQueue::new);
     let ports = match (ports, &captures) {
         (Some(p), Some(q)) => Some(p.with_captures(Arc::new(pe_app::capture::RenderCaptures(q.clone())))),
         (p, _) => p,
@@ -293,6 +304,17 @@ fn main() {
         stop_builds(attester);
         finish(quit(sim, networked));
     });
+
+    if headless {
+        // No window and no VR (app.md 4): the world runs until `--seconds` passes or the console asks to quit, and the
+        // main thread runs the quit itself, as in VR. The desktop hand has no window to feed it, so no hands move.
+        console.poll();
+        wait_headless(run_for.map(|d| started + d), &console);
+        console.quitting();
+        shutdown();
+        console.finished();
+        return;
+    }
 
     if vr {
         console.poll();
@@ -384,6 +406,19 @@ fn wait_vr(xr: &vr::XrThread, deadline: Option<Instant>, console: &Quit) -> XrWa
         if waited != XrWait::Running || over || console.requested() {
             return waited;
         }
+    }
+}
+
+/// Headless's wait (app.md 4): until `deadline` passes or the console asks to quit, in short slices so a request is
+/// seen within one. Without a deadline it waits for the console alone.
+fn wait_headless(deadline: Option<Instant>, console: &Quit) {
+    const SLICE: Duration = Duration::from_millis(100);
+    while !console.requested() {
+        let left = deadline.map_or(SLICE, |t| t.saturating_duration_since(Instant::now()).min(SLICE));
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left);
     }
 }
 
@@ -481,8 +516,8 @@ fn finish<S: Debug, E>(stats: Result<S, E>) {
 
 fn usage() -> ! {
     fail(
-        "usage: pe-app [--vr] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] [--advertise <addr>]... \
-         [--identity <path>] [--mcp-pipe] [--mcp-http] [--agent <command> <args>...]",
+        "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] \
+         [--advertise <addr>]... [--identity <path>] [--mcp-pipe] [--mcp-http] [--agent <command> <args>...]",
     )
 }
 
