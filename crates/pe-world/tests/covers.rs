@@ -1,9 +1,9 @@
 //! M1's "What the hash covers", pe-world's half
 //! (@item:primordial-engine/m1-test-a-divergence-in-each-hashed-kind-is-foun): a divergence injected into each of
 //! the five hashed kinds (fields, governance, claims, logic state, module versions), into a body's physics state and
-//! a pending commit's attestations, and into each other hashed table (registry, cooldowns, tombstones, hand packs,
-//! push windows), moves the root, and descending the two trees from the root, as a peer's walk
-//! does, finds exactly the damaged leaf. The repair by rungs 1 and 2 is @diverge-eng's, on the same hook
+//! a pending commit's attestations, into each other hashed table (registry, cooldowns, tombstones, hand packs, push
+//! windows), and into a row version alone, moves the root, and descending the two trees from the root, as a peer's
+//! walk does, finds exactly the damaged leaf. The repair by rungs 1 and 2 is @diverge-eng's, on the same hook
 //! (`pe_world::test_util`).
 
 use pe_core::Hash;
@@ -155,4 +155,21 @@ fn every_hashed_table_has_a_kind() {
     reached.dedup();
     let want: Vec<u8> = (0..table::COUNT as u8).filter(|&t| t != table::LINES).collect();
     assert_eq!(reached, want);
+}
+
+/// A row version that differs alone (@chunks-reviewer m02caf199661d): the row's bytes are equal on both sides, yet
+/// the root differs and the walk names the object, so a repair that compares only row bytes can't call them equal.
+#[test]
+fn a_row_version_alone_is_found() {
+    use pe_sim::ComponentId;
+    let base = five_kinds();
+    let mut twin = base.clone();
+    let Some(LeafKey::Object(id)) = divergence(&mut twin, Kind::RowVersion) else {
+        panic!("the fixture has a Transform row");
+    };
+    let (a, b) = (base.store(), twin.store());
+    assert_eq!(a.get_raw(ComponentId::TRANSFORM, id), b.get_raw(ComponentId::TRANSFORM, id), "the bytes are equal");
+    assert_ne!(a.row_version(ComponentId::TRANSFORM, id), b.row_version(ComponentId::TRANSFORM, id));
+    assert_ne!(twin.root_hash(D), base.root_hash(D));
+    assert_eq!(differing_leaves(&base, &twin), vec![LeafKey::Object(id)]);
 }
