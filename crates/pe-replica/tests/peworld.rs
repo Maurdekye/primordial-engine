@@ -1929,3 +1929,82 @@ fn a_script_commit_activates_at_its_frame_s_end_and_no_record_names_the_re_key()
         assert!(w.store().get_raw(blink(2).id(), l).is_some() && w.store().get_raw(blink(1).id(), l).is_none());
     }
 }
+
+// ---- leave (agreement.md 8; world-model.md 2.4) --------------------------------------------------------------------
+
+const B_HAND: u128 = 51;
+const TOY: u128 = 62;
+
+/// `with_hand_and_ball`, and a second editor B (key 1) whose hand rests on the ball, holding a toy as the hand's
+/// child.
+fn with_bs_hand() -> World {
+    let mut w = with_hand_and_ball();
+    let b = keys().key(1);
+    w.set_member(b, perm::EDIT);
+    w.create(oid(B_HAND), None, b, GENESIS).expect("B's hand");
+    w.insert(oid(B_HAND), Transform::at(pos(2.0, 0.1, 0.0))).expect("its transform");
+    w.insert(oid(B_HAND), Hand { owner: b, ..Hand::default() }).expect("its row");
+    w.create(oid(TOY), Some(oid(B_HAND)), b, GENESIS).expect("a toy in B's hand");
+    w.insert(oid(TOY), Transform::at(pos(0.0, 0.3, 0.0))).expect("its transform");
+    w
+}
+
+/// B grabs the ball at frame 3, and leaves at frame 10 (`pe_seams::LEAVE`, the last entry of its chain).
+fn grab_then_leave() -> (SignedEntry, SignedEntry) {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 1);
+    let grab = input(&mut b, 3, &Input::Grab { object: oid(BALL), hand: Some(oid(B_HAND)) });
+    let leave = b.next(Class::Protocol, Frame(10), Bytes::from_static(pe_seams::LEAVE));
+    (grab, leave)
+}
+
+/// A member's leave at its stamp (agreement.md 8): its hand goes from the world and from the physics, and so does
+/// the grab joint of what it held. The claim ends. The toy that was the hand's child stays, as a root at the world
+/// pose it had. The other member's hand stays.
+#[test]
+fn a_leave_removes_the_leavers_hand_and_its_grab_and_keeps_what_it_held() {
+    let (grab, leave) = grab_then_leave();
+    let mut s = Source::default();
+    s.add(grab);
+    s.add(leave.clone());
+    let mut r = replica_of(with_bs_hand());
+    r.advance(Frame(10), &mut s);
+    let claims: Vec<_> = r.world().claims().iter().map(|c| (c.object, c.hand)).collect();
+    assert_eq!(claims, [(oid(BALL), oid(B_HAND))]);
+    assert!(r.physics().has_body(oid(B_HAND)) && r.physics().joint_count() == 1, "holding before the leave");
+    let toy = r.world().world().store().world_transform(oid(TOY)).expect("the toy");
+    r.advance(Frame(20), &mut s);
+    assert_eq!(r.faults(), 0);
+    assert!(matches!(r.outcome(&leave.id()).map(|o| o.1), Some(Outcome::Applied { .. })));
+    let store = r.world().world().store();
+    assert!(!store.exists(oid(B_HAND)), "B's hand is gone");
+    assert!(store.exists(oid(HAND)), "A's stays");
+    assert_eq!(store.parent(oid(TOY)), None, "the toy is a root");
+    assert_eq!(store.world_transform(oid(TOY)).expect("the toy"), toy, "at the world pose it had");
+    assert!(r.world().claims().is_empty());
+    assert!(!r.physics().has_body(oid(B_HAND)) && r.physics().joint_count() == 0, "no hand body, no grab");
+}
+
+/// A leave that arrives late rolls the replica back to its stamp and reaches the roots of a replica that had it in
+/// order. Until then the hand and the grab stay.
+#[test]
+fn a_late_leave_reaches_the_in_order_roots() {
+    let (grab, leave) = grab_then_leave();
+    let mut s = Source::default();
+    s.add(grab.clone());
+    s.add(leave.clone());
+    let mut in_order = replica_of(with_bs_hand());
+    in_order.advance(Frame(32), &mut s);
+    let mut s = Source::default();
+    s.add(grab);
+    let mut late = replica_of(with_bs_hand());
+    late.advance(Frame(20), &mut s);
+    assert!(late.world().world().store().exists(oid(B_HAND)) && late.physics().joint_count() == 1);
+    s.add(leave);
+    let adv = late.advance(Frame(32), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 10), "{adv:?}");
+    assert_eq!((in_order.faults(), late.faults()), (0, 0));
+    assert_eq!(roots(&late, 32), roots(&in_order, 32));
+    assert_eq!(roots(&late, 32).len(), 5);
+    assert!(!late.world().world().store().exists(oid(B_HAND)) && late.physics().joint_count() == 0);
+}
