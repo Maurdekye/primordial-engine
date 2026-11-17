@@ -27,14 +27,16 @@ pub mod test_util;
 pub mod tree;
 mod world;
 
-pub use apply::{Blocked, Draft, Footprint, FrameEnd, Push};
+pub use apply::{Blocked, Draft, Footprint, FrameEnd, Push, Voided};
 pub use components::BlobRef;
 pub use input::{HandPose, Input, InputSettings, input_phase};
 pub use leave::LeaveReport;
 pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
 pub use replica::{GRAVITY, Settings};
-pub use script::{EngineComponent, LogicReport, ModuleRow, PendingCommit, RekeyReport, VoidKind, script_component_id};
+pub use script::{
+    BuildFailure, EngineComponent, LogicReport, ModuleRow, PendingCommit, RekeyReport, VoidKind, script_component_id,
+};
 pub use tree::WorldTree;
 pub use world::{
     BlobStore, Claim, DEPTH_LIMIT, DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, perm,

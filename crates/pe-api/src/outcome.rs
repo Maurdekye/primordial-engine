@@ -161,7 +161,7 @@ fn op_object(op: &Op) -> Option<pe_core::ObjectId> {
         Op::Create { parent, .. } => parent,
         Op::Undelete { id } => return Some(*id),
         // A script's ops name no object (world-model.md 7.9).
-        Op::Register { .. } | Op::CommitScript { .. } | Op::AttestBuild { .. } => return None,
+        Op::Register { .. } | Op::CommitScript { .. } | Op::AttestBuild { .. } | Op::BuildFailed { .. } => return None,
     };
     if let Target::Existing(id) = t { Some(*id) } else { None }
 }

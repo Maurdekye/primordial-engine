@@ -15,6 +15,7 @@ use pe_seams::Version;
 use pe_sim::{ComponentDesc, ComponentId, FieldDesc};
 
 use crate::components::BlobRef;
+use crate::script::BuildFailure;
 
 /// The most ops a transaction may have (7.1).
 pub const MAX_OPS: usize = 4096;
@@ -136,6 +137,17 @@ pub enum Op {
     /// every check of logic.md 6.2 step 3 (6.2a; 7.9). The only op of its transaction; it needs no `EDIT`, only to
     /// be a voter of the pending commit.
     AttestBuild { script: [u8; 32], version: Hash, module: Hash },
+    /// A voter's statement that its build of version `version` (V) of script `script` failed, after its local
+    /// retries (logic.md 6.2a item 2; 7.9): why, this machine's toolchain and SDK hashes, and the module hash a
+    /// `Mismatch` built. Never compiler output. The only op of its transaction; it needs no `EDIT`.
+    BuildFailed {
+        script: [u8; 32],
+        version: Hash,
+        reason: BuildFailure,
+        toolchain: Hash,
+        sdk: Hash,
+        module: Option<Hash>,
+    },
 }
 
 impl Op {
@@ -407,6 +419,21 @@ impl Transaction {
                     w.raw(&version.0);
                     w.raw(&module.0);
                 }
+                Op::BuildFailed { script, version, reason, toolchain, sdk, module } => {
+                    w.u8(11);
+                    w.raw(script);
+                    w.raw(&version.0);
+                    w.u8(reason.code());
+                    w.raw(&toolchain.0);
+                    w.raw(&sdk.0);
+                    match module {
+                        None => w.u8(0),
+                        Some(m) => {
+                            w.u8(1);
+                            w.raw(&m.0);
+                        }
+                    }
+                }
             }
         }
         w.len(self.blobs.len());
@@ -632,6 +659,14 @@ impl<'a> R<'a> {
                     }
                 }
                 10 => Op::AttestBuild { script: self.arr()?, version: Hash(self.arr()?), module: Hash(self.arr()?) },
+                11 => Op::BuildFailed {
+                    script: self.arr()?,
+                    version: Hash(self.arr()?),
+                    reason: BuildFailure::from_code(self.u8()?)?,
+                    toolchain: Hash(self.arr()?),
+                    sdk: Hash(self.arr()?),
+                    module: if self.flag()? { Some(Hash(self.arr()?)) } else { None },
+                },
                 _ => return None,
             });
         }

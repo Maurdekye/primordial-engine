@@ -117,6 +117,10 @@ pub fn summary(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSna
                 let hex: String = script[..4].iter().map(|b| format!("{b:02x}")).collect();
                 format!("attested a build of script {hex}…")
             }
+            Op::BuildFailed { script, reason, .. } => {
+                let hex: String = script[..4].iter().map(|b| format!("{b:02x}")).collect();
+                format!("could not build script {hex}… ({})", reason.name())
+            }
         })
         .collect();
     let mut s = String::new();
