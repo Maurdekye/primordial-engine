@@ -78,7 +78,10 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    (pe-world's input and edit codecs), all on the member's one chain. Each goes through `Agreement::submit`, which
    signs it. A second tick in the same frame (a wake by the inbox or the edit queue) submits nothing. So a member
    makes at most two hand entries and one edit a frame, which pe-agree's rate budget passes at any world rate
-   (agreement.md 2); a longer edit queue waits a frame per edit. While `Agreement::backlogged()` is true (after a
+   (agreement.md 2); a longer edit queue waits a frame per edit. Before encoding an edit, step 2 sets each
+   `CommitScript`'s `activate_at` to the frame it stamps the entry at (`Transaction::set_activation`): pe-api leaves
+   it at 0, since only this machine knows the stamp, and pe-world refuses a commit whose `activate_at` is not its
+   stamp (api.md 7.1, world-model.md 7.9). While `Agreement::backlogged()` is true (after a
    stall, more of this member's own entries unacknowledged by its peers than a burst's worth; S3 v1.5), the frame
    makes no hand entries, which would be refused or void as late; edits are never held back, and
    `SimStats::hands_paced` counts the frames. Peers see none of its hand entries meanwhile, so a backlog that

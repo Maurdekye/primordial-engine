@@ -426,7 +426,11 @@ impl Sim {
             && api.edit_frame.is_none_or(|f| p > f)
         {
             api.edit_frame = Some(p);
-            for (ticket, sub) in api.ports.queue.drain(1) {
+            for (ticket, mut sub) in api.ports.queue.drain(1) {
+                // A code commit's `activate_at` is the frame its entry is stamped at, which only this machine knows.
+                // pe-api leaves it at 0, and pe-world refuses a commit whose `activate_at` is not its stamp (api.md
+                // 7.1, world-model.md 7.9).
+                sub.tx.set_activation(p);
                 let payload = sub.tx.encode();
                 let bytes = payload.len();
                 let entry = l.chain.entry(self.replica.domain(), p, Class::Edit, payload);
@@ -806,6 +810,53 @@ mod tests {
         assert_eq!(world.latest().all().len(), objects + 1, "the new object is in the newest snapshot");
         assert_eq!(world.edit(change.into()).as_deref(), Some(&tx), "and its transaction in the index");
         assert_eq!((s.stats().edits, s.stats().edits_refused), (1, 0));
+    }
+
+    /// A code commit through pe-api's queue (api.md 7.1): pe-api leaves `activate_at` at 0, and step 2 sets it to the
+    /// frame it stamps the entry at, so pe-world takes the commit rather than refusing it `Invalid` (world-model.md
+    /// 7.9).
+    #[test]
+    fn a_code_commit_from_pe_api_s_queue_carries_its_own_stamp_as_activate_at() {
+        use crate::api::{ApiWorld, Facts, Ports};
+        use pe_api::api::WorldSource;
+        use pe_api::queue::Submission;
+        use pe_seams::Hash;
+        use pe_seams::world_api::Wait;
+        use pe_world::edit::{Actor, Op, Transaction};
+        use pe_world::script::{pack_source, tag_desc};
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
+        let genesis = crate::api::snapshot_of(&*replica).expect("a pe-world replica");
+        let facts = Facts { world_name: "Pit".into(), line: LineId::origin(), rate: RATE, me: Some(me) };
+        let ports = Ports::new(genesis, facts, || {});
+        let (s, _slot) = with_replica(replica, clock.clone(), Budget::new(RATE));
+        let mut s = s.with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4]))).with_api(ports.clone());
+        let world = ApiWorld(ports.shared.clone());
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        let archive: bytes::Bytes = pack_source(&[("src/lib.rs", b"// a script\n".as_slice())]).expect("one").into();
+        let v = Hash(pe_world::BlobRef::of(&archive).hash);
+        let ops = vec![
+            Op::Register { components: vec![tag_desc(&v)] },
+            Op::commit_script([9; 32], None, archive, Hash([1; 32]), Hash([2; 32]), Hash([3; 32]), 0),
+        ];
+        let tx = Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+        let ticket = ports.queue.submit(Submission { tx, base: 1 }).expect("room in the queue");
+        s.tick(clock.host_time_of(Frame(2))).expect("ticked");
+        let Some(Receipt::Submitted { change, frame, .. }) = ports.queue.receipt(ticket, Instant::now()) else {
+            panic!("not submitted");
+        };
+        for f in 3..=4 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        let fate = ports.log.wait(change, Wait::Local, Instant::now()).expect("stepped here");
+        assert!(matches!(fate.outcome, Some(pe_seams::Outcome::Applied { .. })), "taken, not refused: {fate:?}");
+        let indexed = world.edit(change.into()).expect("in the index");
+        let activate_at = indexed.ops.iter().find_map(|op| match op {
+            Op::CommitScript { activate_at, .. } => Some(*activate_at),
+            _ => None,
+        });
+        assert_eq!(activate_at, Some(frame), "the frame step 2 stamped the entry at");
     }
 
     /// A machine with no member has no edit port: no ports, and `with_api` refuses to attach any (@design-reviewer's
