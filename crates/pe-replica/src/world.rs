@@ -9,9 +9,12 @@ use std::any::Any;
 use std::sync::Arc;
 
 use pe_seams::{
-    DomainId, Frame, Hash, ImportError, MemberKey, ObjectClass, ObjectId, Outcome, Pos, SignedEntry, SimRate, Tree,
-    ViewFlags, ViewObject,
+    DomainId, Frame, Hash, ImportError, MemberKey, ObjectClass, ObjectId, Outcome, Pos, SignedEntry, SimRate, Stage,
+    Tree, ViewFlags, ViewObject,
 };
+use pe_world::script::AssetId;
+
+use crate::logic::{ScriptEvent, ScriptRunner};
 
 // ---- what an applied entry or a logic stage changed ----------------------------------------------------------------
 
@@ -62,6 +65,20 @@ pub struct Effects {
     /// The objects a script commit re-keyed, in id order: the entry's record carries them (S5 v1.6,
     /// `StepRecord::rekeyed`). Not a physics effect.
     pub rekeyed: Arc<[ObjectId]>,
+}
+
+/// What one logic stage did, for the replica ([`WorldModel::logic_stage`]; logic.md 9.2a).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LogicFx {
+    /// The physics effects of what the scripts created, removed, reparented and moved.
+    pub effects: Effects,
+    /// The events the scripts emitted, in order, each with its object's world position after the stage.
+    pub events: Vec<(ScriptEvent, Pos)>,
+    /// Local counts, not world state: host-stack faults and floating-point resets (N11).
+    pub host_faults: u32,
+    pub fp_resets: u32,
+    /// Scripts that did not run on this machine (a build fault here: [`crate::logic::StageOutcome::missing`]).
+    pub missing: Vec<AssetId>,
 }
 
 impl Effects {
@@ -225,6 +242,20 @@ pub trait WorldModel: Send {
     fn apply(&mut self, frame: Frame, entry: &SignedEntry) -> (Outcome, Effects);
     /// Claims and cooldowns expire at `frame + 1` (world-model.md 7.2).
     fn end_frame(&mut self, frame: Frame);
+
+    // the logic stages (crate::logic)
+
+    /// Whether the world has scripts: a row in its modules table (logic.md 6.1). A replica without a runner refuses
+    /// to step it. A model without scripts, the default, has none.
+    fn scripted(&self) -> bool {
+        false
+    }
+    /// One logic stage of `frame` (`stage` is `LogicPrePhysics` or `LogicPostPhysics`), run by `runner` over the
+    /// scripts the modules table lists (crate::logic): what they changed, as physics effects, and what they emitted.
+    /// A model without scripts, the default, does nothing.
+    fn logic_stage(&mut self, _frame: Frame, _stage: Stage, _runner: &mut dyn ScriptRunner) -> LogicFx {
+        LogicFx::default()
+    }
 
     // what the physics reads
 

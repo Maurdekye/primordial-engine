@@ -634,15 +634,21 @@ mod tests {
         with_replica(Box::new(replica), clock, budget)
     }
 
+    /// pe-logic's runner, as the binary hands it to each replica it builds.
+    fn runner() -> Box<dyn pe_replica::ScriptRunner> {
+        let run = pe_logic::run::RunSettings::default();
+        Box::new(pe_replica::logic::LogicRunner::new(pe_logic::Settings::default(), run).expect("a runner"))
+    }
+
     /// pe-replica's replica over a new, empty pe-world world, as the binary opens it.
     fn on_pe_world(clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
-        let replica = crate::world::open_new(0, RATE, clock.clone()).expect("a replica");
+        let replica = crate::world::open_new(0, RATE, clock.clone(), runner()).expect("a replica");
         with_replica(replica, clock, budget)
     }
 
     fn in_the_ball_pit(clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
         let me = crate::world::DEV_MEMBER;
-        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone()).expect("pit");
+        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
         with_replica(replica, clock, budget)
     }
 
@@ -738,7 +744,7 @@ mod tests {
         use pe_world::edit::{Actor, Op, Target, Transaction};
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let me = crate::world::DEV_MEMBER;
-        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone()).expect("pit");
+        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
         let genesis = crate::api::snapshot_of(&*replica).expect("a pe-world replica");
         let objects = genesis.all().len();
         let facts = Facts { world_name: "Pit".into(), line: LineId::origin(), rate: RATE, me: Some(me) };
@@ -788,7 +794,7 @@ mod tests {
     fn hand_inputs_wait_while_agreement_reports_a_backlog() {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let me = crate::world::DEV_MEMBER;
-        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone()).expect("pit");
+        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
         let agree = SoloAgreement::new(LineId::origin());
         let backlog = agree.backlog.clone();
         let slot = Arc::new(FrameSlot::new());
@@ -938,7 +944,8 @@ mod tests {
             let config = NodeConfig::new(line, members.clone(), genesis);
             let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
             let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
-            let replica = crate::world::ball_pit(world, &members, me, RATE, clock.clone()).expect("a replica");
+            let replica =
+                crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
             let slot = Arc::new(FrameSlot::new());
             let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
                 .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))

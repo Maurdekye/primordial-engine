@@ -2356,10 +2356,13 @@ dependencies = [
  "bytemuck",
  "bytes",
  "pe-core",
+ "pe-logic",
  "pe-physics",
+ "pe-sdk",
  "pe-seams",
  "pe-sim",
  "pe-world",
+ "wasmtime",
 ]
 
 [[package]]

@@ -51,16 +51,17 @@ use std::sync::Arc;
 
 use pe_seams::{
     Class, DomainId, EntryRef, Frame, Hash, Holder, ImportError, LightKind, ObjectClass, ObjectId, Outcome, Pos,
-    SignedEntry, Tree, Version, ViewFlags, ViewObject,
+    SignedEntry, Stage, Tree, Version, ViewFlags, ViewObject,
 };
 use pe_sim::transform::rotate;
-use pe_sim::{Component, SimStore, Transform, WorldTransform};
+use pe_sim::{Component, ComponentId, SimStore, Transform, WorldTransform};
 use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
 use pe_world::{Footprint, World, input_phase};
 
+use crate::logic::{ScriptRow, ScriptRunner, StageWorld};
 use crate::world::{
-    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, Phase, PhysicsSettings, PushFx,
-    ShapePart, ShapeRow, WorldModel,
+    BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, LogicFx, Phase, PhysicsSettings,
+    PushFx, ShapePart, ShapeRow, WorldModel,
 };
 
 const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -132,6 +133,67 @@ impl WorldModel for PeWorld {
     fn end_frame(&mut self, frame: Frame) {
         self.world.end_frame(frame);
         self.world.set_frame(frame.next());
+    }
+
+    fn scripted(&self) -> bool {
+        !self.world.modules().is_empty()
+    }
+
+    /// pe-world's hooks around the runner: `World::logic_stage` hands it the store, the guard, the faulted assets and
+    /// the row check; `World::after_logic` records what it reported and gives the footprint, whose physics effects are
+    /// found as an entry's are (module doc), with every `Transform` write and removal the runner reported. Each event
+    /// is placed at its object's world position after the stage, or where it was at the stage's start if the stage
+    /// removed it.
+    fn logic_stage(&mut self, frame: Frame, stage: Stage, runner: &mut dyn ScriptRunner) -> LogicFx {
+        let scripts: Vec<ScriptRow> = self
+            .world
+            .modules()
+            .iter()
+            .filter(|(_, m)| m.activate_at <= frame)
+            .map(|(&asset, m)| ScriptRow {
+                asset,
+                module: m.author_module,
+                version: m.v(),
+                components: m.components.clone(),
+            })
+            .collect();
+        if scripts.is_empty() {
+            return LogicFx::default();
+        }
+        let (line, rate_hz) = (self.world.line(), self.world.rate().hz());
+        let before = self.world.clone();
+        let out = self.world.logic_stage(|store, guard, faulted, check| {
+            let world = StageWorld { frame, line, rate_hz, guard, faulted, check };
+            runner.run_stage(stage, &scripts, store, &world)
+        });
+        let mut footprint = self.world.after_logic(frame, &out.report);
+        // `after_logic` names a moved or removed object only if it has a body. The physics needs the rest too: a moved
+        // parent without one carries the bodies beneath it, and a removed shape changes its owner's body
+        // (@engine-architect's Medium on 4ac9019f).
+        // Sets for the membership tests, so a stage moving thousands of objects stays linear; the lists keep their order.
+        let mut rows: BTreeSet<(ObjectId, ComponentId)> = footprint.rows.iter().copied().collect();
+        for &(c, o) in &out.report.written {
+            if c == Transform::ID && rows.insert((o, c)) {
+                footprint.rows.push((o, c));
+            }
+        }
+        let mut removed: BTreeSet<ObjectId> = footprint.removed.iter().copied().collect();
+        for &o in &out.report.removed {
+            if removed.insert(o) {
+                footprint.removed.push(o);
+            }
+        }
+        let effects = effects(&before, &self.world, &footprint);
+        let (now, then) = (self.world.store(), before.store());
+        let events = (out.events.into_iter())
+            .map(|e| {
+                // An emitter the stage removed plays where it was at the stage's start.
+                let t = now.world_transform(e.object).or_else(|| then.world_transform(e.object));
+                let at = t.map_or(Pos::ORIGIN, |t| t.pos);
+                (e, at)
+            })
+            .collect();
+        LogicFx { effects, events, host_faults: out.host_faults, fp_resets: out.fp_resets, missing: out.missing }
     }
 
     fn body(&self, id: ObjectId) -> Option<BodyRow> {

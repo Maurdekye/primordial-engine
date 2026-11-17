@@ -10,7 +10,8 @@ description = "Deterministic session harness: network model, scenario runner, pr
 # already lists it, so adding dependencies here needs no other change.
 [dependencies]
 pe-seams = { path = "../pe-seams", features = ["test-util"] }
-pe-replica = { path = "../pe-replica" }
+# The `logic` feature: every member's replica steps with pe-logic's runner, as pe-app's do (src/ballpit.rs).
+pe-replica = { path = "../pe-replica", features = ["logic"] }
 pe-agree = { path = "../pe-agree" }
 pe-world = { path = "../pe-world" }
 pe-sim = { path = "../pe-sim" }
