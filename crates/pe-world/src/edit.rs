@@ -10,7 +10,7 @@
 //! Not in M1: `Local` or `Session` classes, which no edit creates (3.1).
 
 use pe_core::commit::Hasher;
-use pe_core::{ChainId, EntryRef, Hash, LineId, MemberKey, ObjectId};
+use pe_core::{ChainId, EntryRef, Frame, Hash, LineId, MemberKey, ObjectId};
 use pe_seams::Version;
 use pe_sim::{ComponentDesc, ComponentId, FieldDesc};
 
@@ -250,6 +250,18 @@ impl W {
 }
 
 impl Transaction {
+    /// Sets every `CommitScript`'s `activate_at` to `frame`, which must be the frame the entry is applied at (its
+    /// stamp), or the commit is refused `Invalid` (7.9). The submitting machine calls it with the entry's stamp before
+    /// encoding, since only it knows that frame (with stamp-ahead, the present plus a lead); a dry run calls it with
+    /// its own frame (@engine-architect mbff4667dfe81, agreed with @api-eng).
+    pub fn set_activation(&mut self, frame: Frame) {
+        for op in &mut self.ops {
+            if let Op::CommitScript { activate_at, .. } = op {
+                *activate_at = frame.0;
+            }
+        }
+    }
+
     /// The canonical bytes. A transaction that breaks a limit encodes, but its bytes do not decode.
     pub fn encode(&self) -> Vec<u8> {
         let mut w = W(Vec::new());
