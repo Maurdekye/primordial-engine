@@ -304,8 +304,8 @@ impl World {
         {
             return Err((None, invalid()));
         }
-        // An attestation or a failed build (logic.md 6.2a) stands alone and needs no `EDIT`, only a voter's place on the pending
-        // commit, which its op checks.
+        // An attestation or a failed build (logic.md 6.2a) stands alone and needs no `EDIT`, only a voter's place on
+        // the pending commit (or, for a failure, a member's on the current version), which its op checks.
         let attest = tx.ops.iter().any(|o| matches!(o, Op::AttestBuild { .. } | Op::BuildFailed { .. }));
         if attest && (tx.ops.len() != 1 || !tx.preconditions.is_empty()) {
             return Err((None, invalid()));
@@ -523,7 +523,9 @@ impl World {
                 self.op_commit(cx, i, *script, *base, row)
             }
             Op::AttestBuild { script, version, module } => self.op_attest(cx, *script, *version, *module),
-            Op::BuildFailed { script, version, reason, .. } => self.op_build_failed(cx, *script, *version, *reason),
+            Op::BuildFailed { script, version, reason, module, .. } => {
+                self.op_build_failed(cx, *script, *version, *reason, *module)
+            }
         }
     }
 
@@ -555,14 +557,28 @@ impl World {
     /// rule at this frame's end); `Invalid` for a non-voter, a second failure, or a failure after the voter's counted
     /// attestation. For the asset's current version it is a record only, the log's statement that this member split
     /// off (6.2 step 3), and changes nothing; `Invalid` from a non-member. Otherwise `Stale`, as for `AttestBuild`:
-    /// nothing changes a void. The hashes ride in the entry as evidence; the world keeps the reason.
-    fn op_build_failed(&mut self, cx: &mut Cx, script: AssetId, v: Hash, why: BuildFailure) -> Result<(), Reason> {
+    /// nothing changes a void. The hashes ride in the entry as evidence; the world keeps the reason. The evidence must
+    /// agree with itself: `module` is present exactly for a `Mismatch`, the hash it built, which is not the one it
+    /// failed to match; anything else is `Invalid` (@chunks-reviewer's L1).
+    fn op_build_failed(
+        &mut self,
+        cx: &mut Cx,
+        script: AssetId,
+        v: Hash,
+        why: BuildFailure,
+        module: Option<Hash>,
+    ) -> Result<(), Reason> {
         let stale = |current: Version| Reason::Stale { precondition: OWN_CHECK, current, winner: current.entry };
+        if module.is_some() != (why == BuildFailure::Mismatch) {
+            return Err(invalid());
+        }
         let row = self.modules.get(&script);
+        let matched = |against: Hash| module == Some(against);
         let current = row.map_or(Version { entry: EntryRef(Hash::ZERO), op: 0 }, |m| m.version);
         match self.pending.get(&script) {
             Some(p) if p.void.is_none() && p.v() == v => {
-                if !p.voters.contains(&cx.author) || p.has_attested(&cx.author) || p.has_failed(&cx.author) {
+                let refused = !p.voters.contains(&cx.author) || p.has_attested(&cx.author) || p.has_failed(&cx.author);
+                if refused || matched(p.author_module) {
                     return Err(invalid());
                 }
                 let p = Arc::make_mut(&mut self.pending).get_mut(&script).expect("present");
@@ -571,11 +587,8 @@ impl World {
                 Ok(())
             }
             _ if row.is_some_and(|m| m.v() == v) => {
-                if self.members.contains_key(&cx.author) {
-                    Ok(())
-                } else {
-                    Err(invalid())
-                }
+                let m = row.expect("checked");
+                if self.members.contains_key(&cx.author) && !matched(m.author_module) { Ok(()) } else { Err(invalid()) }
             }
             Some(p) if p.void.is_none() => Err(stale(p.version)),
             _ => Err(stale(current)),

@@ -1455,7 +1455,8 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
     failed, after its local retries (logic.md 6.2 step 3, 6.2a item 2; the user's build-asymmetry rulings
     mbd847a64c831, m9c280fd75b82). `reason` is a `BuildFailure`: `Compile` (1), `Refused` (2, 6.2b's dep-info check),
     `Cap` (3), `Mismatch` (4) or `Local` (5); `toolchain` and `sdk` are the failing machine's hashes, and `module`
-    the hash a `Mismatch` built. It never carries compiler output: the entry goes to every member and stays in the
+    the hash a `Mismatch` built, present exactly for a `Mismatch` and never the registered `author_module`, or the
+    failure is `Invalid` (@chunks-reviewer's L1). It never carries compiler output: the entry goes to every member and stays in the
     log, and a compiler's message can carry local paths. A slow build is never a failure; nothing in the world times
     one out. Like `AttestBuild` it stands alone in its transaction and needs no `EDIT`.
     - **On the pending commit at V** it is counted, one per voter, with its stamp and reason; `Invalid` for a
