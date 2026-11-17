@@ -943,7 +943,7 @@ fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool, shared: &Shared) -> Si
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::clock::{self, LocalClock};
     use crate::standin::{EmptyReplica, SoloAgreement};
@@ -951,7 +951,7 @@ mod tests {
     use pe_replica::{ReplicaConfig, ReplicaImpl};
     use pe_seams::{DomainId, LineId, LinkStats, Received};
 
-    const RATE: SimRate = SimRate::DEFAULT;
+    pub(crate) const RATE: SimRate = SimRate::DEFAULT;
 
     type MakeSim = fn(Arc<dyn FrameClock>, Budget) -> (Sim, Arc<FrameSlot>);
 
@@ -969,7 +969,7 @@ mod tests {
     }
 
     /// pe-logic's runner, as the binary hands it to each replica it builds.
-    fn runner() -> Box<dyn pe_replica::ScriptRunner> {
+    pub(crate) fn runner() -> Box<dyn pe_replica::ScriptRunner> {
         let (settings, run) = crate::net::runner_settings();
         Box::new(pe_replica::logic::LogicRunner::new(settings, run).expect("a runner"))
     }
@@ -1005,7 +1005,7 @@ mod tests {
     }
 
     /// Both of the local player's hands, tracked and open, at fixed rig-frame poses either side of `centre`.
-    struct StillHands([f32; 3]);
+    pub(crate) struct StillHands(pub(crate) [f32; 3]);
 
     impl pe_seams::HandFeed for StillHands {
         fn hand_at(&self, hand: pe_seams::Hand, at: HostTime) -> Option<pe_seams::HandInput> {
@@ -1254,9 +1254,9 @@ mod tests {
     /// An in-process network (S4) for `Sim`s in one test: what one sends, the addressee polls, stamped with the host
     /// time the test last set, plus the one-way delay from the sender to it (none unless set).
     #[derive(Clone, Default)]
-    struct Hub {
+    pub(crate) struct Hub {
         boxes: Arc<std::sync::Mutex<std::collections::BTreeMap<MemberKey, std::collections::VecDeque<Received>>>>,
-        now: Arc<std::sync::atomic::AtomicI64>,
+        pub(crate) now: Arc<std::sync::atomic::AtomicI64>,
         /// One-way delays in host nanoseconds by (from, to): a message is polled once the test's time reaches its
         /// arrival. Each box is kept in arrival order, those arriving together in the order sent.
         delay: ByLink<i64>,
@@ -1267,14 +1267,14 @@ mod tests {
         sent: Arc<std::sync::atomic::AtomicU64>,
     }
 
-    struct Port {
+    pub(crate) struct Port {
         me: MemberKey,
         hub: Hub,
         events: Arc<std::sync::Mutex<Vec<NetEvent>>>,
     }
 
     impl Port {
-        fn new(me: MemberKey, hub: Hub) -> Port {
+        pub(crate) fn new(me: MemberKey, hub: Hub) -> Port {
             Port { me, hub, events: Arc::default() }
         }
     }

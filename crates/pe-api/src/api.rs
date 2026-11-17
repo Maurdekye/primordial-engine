@@ -419,7 +419,10 @@ impl<S: WorldSource + 'static> Api<S> {
             return Ok(refused_outcome(snap, refusal_of(code, message, next)));
         }
         let draft = self.src.draft_for(c.member);
-        let checked = dry_run(snap, r, &e, &draft);
+        let mut checked = dry_run(snap, r, &e, &draft);
+        if let Some(f) = checked.refusal.as_mut() {
+            self.with_winner(f);
+        }
         if opts.mode == Mode::DryRun {
             return Ok(checked);
         }
@@ -457,8 +460,11 @@ impl<S: WorldSource + 'static> Api<S> {
                 let Some(fate) = self.log.wait(change, opts.wait, deadline) else { return Ok(queued) };
                 let mut o = Outcome {
                     status: fate.status,
-                    is_final: fate.is_final,
+                    // As watch reports it: a final change is final, as a final refusal is.
+                    is_final: fate.is_final || fate.status == Status::Final,
                     frame: fate.frame.or(Some(frame)),
+                    // As of the answer, not of the read it was checked against: a final change's is past its frame.
+                    final_frame: self.src.latest().final_frame().0.max(queued.final_frame),
                     ..queued
                 };
                 crate::watch::backstop(&mut o, fate.resent_as, fate.note);
@@ -530,6 +536,9 @@ impl<S: WorldSource + 'static> Api<S> {
                             }
                             None => map_refusal(snap, &e, *op, reason),
                         });
+                        if let Some(f) = o.refusal.as_mut() {
+                            self.with_winner(f);
+                        }
                     }
                     Some(pe_seams::Outcome::Unknown { repaired_at }) => {
                         o.status = Status::Unknown;
@@ -937,6 +946,43 @@ pub fn role_of(perms: u32) -> (&'static str, Vec<String>) {
 }
 
 impl<S: WorldSource + 'static> Api<S> {
+    /// A stale refusal's winner (api.md 5.3.2: the winner's change, member, producer and value), from the change log
+    /// and the winning entry, once this machine has stepped it; the refusal is left as it was otherwise.
+    fn with_winner(&self, f: &mut Refusal) {
+        let Some(change) =
+            f.details.as_ref().and_then(|d| d.get("winner_change")).and_then(|v| v.as_str()).and_then(TxId::parse)
+        else {
+            return;
+        };
+        let Some(step) = self.log.get(change).and_then(|fate| fate.step) else { return };
+        // Without the winning entry its producer is unknown here: no winner rather than a guess.
+        let Some(tx) = self.src.edit(step.entry) else { return };
+        // The field's value, only while the object's newest version is still the winner's: then it is the value the
+        // winner wrote, not a later change's or a prediction's.
+        let latest = self.src.latest();
+        let value = match (&f.object, f.field.as_deref().and_then(|k| k.split_once('.'))) {
+            (Some(o), Some((comp, field)))
+                if latest.info(o.id.into()).is_some_and(|i| i.version.entry == step.entry) =>
+            {
+                WorldView::new(latest, None)
+                    .fields(o.id, comp, &pe_seams::world_api::ObjRef("parent".into()))
+                    .and_then(|mut m| m.remove(field))
+            }
+            _ => None,
+        };
+        f.winner = Some(pe_seams::world_api::Winner {
+            change,
+            frame: step.frame.0,
+            by: pe_seams::world_api::MemberBrief {
+                member: step.author.into(),
+                name: self.src.member_name(step.author.into()).unwrap_or_default(),
+            },
+            producer: crate::watch::producer(&tx.actor),
+            label: tx.label.clone(),
+            value,
+        });
+    }
+
     /// `session` (api.md 5.1): pe-app's facts, and the world state (frame, members and their roles, scale) from the
     /// newest snapshot. Every member of the world is listed, each marked whether it is here, and then anyone here
     /// whose admission hasn't stepped yet, as a watcher (@chunks-reviewer's Low on 930cd094); `kept` is whether an
@@ -1462,7 +1508,7 @@ mod tests {
             module: pe_core::Hash([3; 32]),
             toolchain: pe_core::Hash([1; 32]),
             sdk: pe_core::Hash([2; 32]),
-            components: vec![],
+            components: vec![pe_world::script::tag_desc(&pe_core::Hash([4; 32]))],
             systems: vec!["pulse".into()],
             warnings: vec![],
             build_ms: 812,
@@ -1494,6 +1540,7 @@ mod tests {
         let d = a.code_check(&c, &check, Instant::now()).unwrap();
         assert!(d.ok);
         assert_eq!((d.module, d.systems, d.build_ms), (Some("03".repeat(32)), vec!["pulse".to_string()], Some(812)));
+        assert!(d.components.is_empty(), "the version's tag isn't shown: {:?}", d.components);
         let d = a.code_check(&c, &check, Instant::now()).unwrap();
         assert_eq!((d.ok, d.diagnostics), (false, vec![rustc]));
         // A margin is named as such, never as a compile error.
@@ -2104,6 +2151,31 @@ mod tests {
 
     fn applied(created: Vec<pe_core::ObjectId>) -> pe_seams::Outcome {
         pe_seams::Outcome::Applied { created, overwrote: vec![], notes: vec![], inverse: None }
+    }
+
+    /// A stale refusal names its winner: the change, its member, producer and label, from the change log and the
+    /// winning entry (api.md 5.3.2).
+    #[test]
+    fn a_stale_refusal_names_the_winner() {
+        let a = api();
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let won = edit_entry(20, vec![]);
+        a.log.record(&[stepped(won, ALICE, 4, applied(vec![]))], None);
+        let old = crate::world::version_text(&pe_seams::Version { entry: EntryRef(Hash([5; 32])), op: 0 });
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        let del = json!([{"op": "delete", "id": "/Table/Lamp", "if_version": old}]);
+        let f = a.apply(&c, tx(del), &dry).unwrap().refusal.unwrap();
+        assert_eq!(f.code, RefusalCode::StaleVersion, "{f:?}");
+        let w = f.winner.expect("the winner");
+        assert_eq!((w.change, w.frame, w.by.member), (won.into(), 4, ALICE.into()));
+        assert_eq!((w.producer.kind, w.label.as_deref()), (ProducerKind::Agent, Some("t")));
+        // A winning entry this machine doesn't hold: no winner, rather than a guessed producer.
+        EDITS.with(|m| m.borrow_mut().remove(&won));
+        let a = api();
+        a.log.record(&[stepped(EntryRef(Hash([20; 32])), ALICE, 4, applied(vec![]))], None);
+        let del = json!([{"op": "delete", "id": "/Table/Lamp", "if_version": old}]);
+        let f = a.apply(&c, tx(del), &dry).unwrap().refusal.unwrap();
+        assert_eq!((f.code, f.winner), (RefusalCode::StaleVersion, None));
     }
 
     #[test]
