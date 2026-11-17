@@ -18,9 +18,10 @@ ruling, cited by message id. Where this file and a user ruling disagree, the rul
 - **The world is data.** A world is a tree of objects. Each object has a 128-bit id, a parent, ordered children and
   components. Variable-length data (names, meshes, textures, script sources) lives in content-addressed blobs,
   referenced by a 256-bit hash. The ball-pit template is a set of edits, not code.
-- **Everything that matters is hashed** in one tree: objects, their components and physics state, and the world
-  tables (governance, claims, the component registry, script versions, edit versions, tombstones). The root goes in
-  every cut. A mismatch descends to the objects that differ, in a few rounds.
+- **Everything that matters is hashed** in one tree: objects, their components, edit versions and physics state, and
+  the world tables (the component registry, script versions and their pending commits, governance, claims,
+  cooldowns, tombstones, pending hand packs and push windows). The root goes in every cut. A mismatch descends to
+  the objects that differ, in a few rounds.
 - **One edit entry, three conflict rules,** applied in the agreed order:
   1. *exclusive holds* (grabs): the first wins;
   2. *edits with a precondition* (the version the author read): refused if stale, naming the entry that won;
@@ -28,8 +29,9 @@ ruling, cited by message id. Where this file and a user ruling disagree, the rul
 
   A transaction applies all or nothing. The user's rule for a delete against an add-on is the
   ordinary rule, live and in a merge, not a special case.
-- **Ids are derived, never counted.** An object's id is a hash of the entry that created it, so it is the same on
-  every machine, before and after a rollback, and in a merge, whatever the arrival order.
+- **Ids are derived, never counted.** An object's id, and a new script asset's (7.9), is a hash of the entry that
+  created it, so it is the same on every machine, before and after a rollback, and in a merge, whatever the arrival
+  order.
 - **Positions cannot become numbers by accident** (the user). `Pos` has no readable fields. The only
   way to raw numbers is `pos - Pos::ORIGIN`, which gives an `Offset`. The engine obeys the same wall as scripts. The
   chunk index never saturates: an out-of-range result is a refusal, and its encoding already reaches past 64 bits.
@@ -693,6 +695,11 @@ World
   - the faulted mark: per asset, not per object (@coordinator-opus, item 4). A fault stops all of
     the script's systems; the mark is set after the stage (9.2a) and cleared by the asset's next commit.
 
+  Beside an asset's row, its **pending commit** (logic.md 6.2a; 7.9): the committed version, its author, hashes and
+  components, the commit frame and deadline, the voters at the commit and each one's counted attestation or
+  `BuildFailed`, or, once voided, the void's frame, kind and failures, kept until the asset's next commit. A first
+  version has a pending commit and no row until it activates.
+
   No module bytes are in the world (3.4). The byte layout is 6.6's.
 - **Governance:** the tables only. M1 stores the member list (keys and roles), the role table (permission bits) and
   the ban list, all hashed. The one permission M1 checks is `EDIT` (section 7.6). Roles follow the user's rulings,
@@ -711,6 +718,9 @@ World
 - **Claims and cooldowns:** ported from pe-session's tables (plan 2.2: `session/store.rs` → pe-world)
   [V `crates/pe-session/src/session/store.rs:28-55`], keyed by `ObjectId` and `MemberKey` instead of indices.
 - **Tombstones:** section 7.5.
+- **Inputs** (8.1): each member's grab cooldowns (with the claims above), each hand's pending pose pack, and each
+  member's push window (its pushes in the last second).
+- **Lines:** the table is second in the tables root (6.2) but holds no entries in M1, so nothing in it can differ.
 
 ## 6. The hash tree
 
@@ -1431,7 +1441,9 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
   - **The bytes come from the entry on every path that applies a commit:** live, a re-simulation after a late
     entry, rung 1's replay, and pe-diverge's bundle replay all hold the entry and so the archive. Nothing may move
     the source out of the entry without moving this check with it.
-  - `activate_at` must equal the entry's frame stamp (logic.md 6.1); anything else is `Invalid`.
+  - `activate_at` must equal the entry's frame stamp (logic.md 6.1); anything else is `Invalid`. Only the submitting
+    machine knows the stamp, so a client leaves it at 0 and that machine sets it as it stamps the entry
+    (`Transaction::set_activation(frame)`, which stamps every `CommitScript` of the transaction; api.md 7.1).
   - `base: None` makes a new script and is refused as `Stale` if the asset has a row. `base: Some(v)` must equal
     the row's version, or the op is refused as `Stale { precondition: OWN_CHECK, current, winner }`, with the row's
     version as `current` and its entry as `winner`: the loser rebases (R7).
@@ -1489,9 +1501,10 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
   - **The author's prediction** (logic.md 6.2a option (i); @vdw-physics):
     `World::activate_for_prediction(asset, frame)` performs `end_frame`'s activation of one pending commit without
     the quorum, right after `end_frame(frame)` on the author's own replica, for a history that is only a prediction
-    and never one whose roots are voted on. It gives exactly what a quorum completed at `frame` would; `None` with
-    nothing pending, and a refusal (a blocked or too-large re-key, a revoked author) changes nothing and leaves the
-    commit pending, never voided.
+    and never one whose roots are voted on. It returns `Option<ActivationResult>`, the type `FrameEnd` gives each
+    activation: `Some(Ok(report))` is exactly what a quorum completed at `frame` would do, the pending record
+    included; `None` with nothing live pending; and `Some(Err(why))`, a refusal (a blocked or too-large re-key, a
+    revoked author), changes nothing and leaves the commit pending, never voided.
   - **The deadline** is `attest_window(len, hz) = ceil(2 · T_module · hz)` frames, `T_module = W_fg + len / R_thin +
     T_build` in integer milliseconds (2 s, 1,000 B/s, 20 s; divergence.md 4.2, @iter-bench): the
     lamp's 1,213 bytes give 2,786 frames at 60 Hz, the 256 KiB cap 34,098.
@@ -2109,6 +2122,12 @@ outcomes (7.7), and the edit history by version. Two points for WS-api [I]:
   types), `fields` decoded by name (padding hidden; a `Transform`'s place is one `pos` field, a `Pos` for a root and an
   `Offset` in its frame's space otherwise), `world_transform`, `offset_in(id, frame)` and `distance`. pe-app adapts
   it to pe-api's port.
+- **For edits and scripts** the snapshot also gives `members` and `perms`, `claim` and `protected_by`, a row's
+  instance tag for a `RemoveRow` (`row_tag(id, name)`, or `row_tag_of(id, ComponentId)` where a name doesn't single
+  out the component, as with every script's `pe.tag`), the modules table (`modules()`) and the pending commits
+  (`pending()`, voided ones kept as their record), and `dry_run`: the outcome the edit path would give a transaction
+  from a draft, changing nothing (7.6), with `dry_run_state` also returning the world after it. A new script's
+  asset id is computed by the client with `script::asset_created` (7.9).
 
 ## 10. Changes to pe-core and pe-sim, and their tests
 
@@ -2165,6 +2184,14 @@ Each is a test in pe-world, pe-sim or pe-core unless marked [I on all thresholds
 9. **What the hash covers:** a one-bit change injected into each covered part (a component row, a row version,
    `BodyState`, each world table, the registry) changes the root, and the diff walk names exactly that object or
    table. A change to a `Local` object changes nothing.
+   - [V] tests/covers.rs, on `pe_world::test_util` (feature `test-util`): twelve kinds of damage (a component row,
+     governance, a claim, a script component row, a module version, `BodyState`, a pending attestation, the
+     registry, a cooldown, a tombstone, a hand pack, a push window) each move the root, a walk from the root names
+     exactly the damaged object or table, and every table but the empty `LINES` is reached. tests/tree.rs adds the
+     config, the seed, the settings, `physics_global` and the frame.
+   - Not yet tested [I]: a row version changed alone, with its row's bytes unchanged. M1 makes no `Local` objects
+     (6.6), so that case waits for them.
+   - The repair half (rungs 1 and 2 cure each kind on the real replica) is @diverge-eng's, on the same hook.
 10. **Canonical trie and caches:** random insert and delete orders give equal roots and shapes; after random steps,
     snapshots and rollbacks the incremental root equals the root from scratch (`verify`).
 11. **Diff and patch:** two worlds that differ in k of n objects are reconciled by the walk and a patch to equal
