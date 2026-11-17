@@ -1,17 +1,25 @@
-//! The build service's machine side (logic.md 6.2 steps 3-4, 6.2a; M1's n = 2 path, @coordinator-opus m303e80fdcd44;
-//! split with @engine-architect m668e8458cf86, design m7855d4a97816; api.md 7.1 with @api-eng).
+//! The build service's machine side (logic.md 6.2 steps 3-4, 6.2a, 6.2b; M1's n = 2 path, @coordinator-opus
+//! m303e80fdcd44; split with @engine-architect m668e8458cf86, design m7855d4a97816; api.md 7.1 with @api-eng).
 //!
-//! - **[`Builder`]** builds a source archive with pe-logic's `build_archive` and describes the module through the
-//!   runner's [`ModuleInbox`]: its metered hash and its components under V's ids, as the runner would bind them. It
-//!   keeps each result by V, the archive's hash, so a check, the author's commit and the attestation build a version
-//!   once (api.md 7.1). One build at a time: callers queue on one lock. The order api.md 7.1 gives (attesting builds
-//!   first, then the API's) comes with pe-api's `Builds` port, its second caller.
+//! - **[`Builder`]** is the machine's one build service. It builds a source archive with pe-logic, loads the module
+//!   with the runner's engine and settings, and describes it through the runner's [`ModuleInbox`]: its metered hash and
+//!   its components under V's ids, as the runner would bind them. It keeps each result by V, the archive's hash, so a
+//!   check, the author's commit and the attestation build a version once (api.md 7.1). One build runs at a time, in
+//!   api.md 7.1's order: the attester's builds first, then pe-api's through the [`Builds`] port (`code_check` and the
+//!   `code` op), first in, first out. A queued API build whose deadline passes leaves unbuilt; a started one finishes
+//!   into the cache, so a retry answers at once.
+//!   - The attester's build of a commit is pe-logic's `build_for_row`: the module must be the commit's, and a failure
+//!     is retried as logic.md 6.2b says (`Local` twice, the last from clean; `Mismatch` once, from clean) before this
+//!     machine reports it.
+//!   - An API build is the author's: past the author's time margin (`AUTHOR_MAX_BUILD`, 15 s; Q4 (b)) it is refused,
+//!     cached or not. The memory margin waits for pe-logic's measure of a build's peak.
 //! - **[`Attester`]** makes one pass over a world's pending commits (`World::pending`). For each commit this machine
-//!   hasn't handled, it builds the version, checks the build against the commit, and loads the module into the runner
-//!   through its inbox, since every machine must hold the module at F, the author's included. If this member is one
-//!   of the commit's voters and isn't counted yet, the pass also gives the `AttestBuild` to submit.
-//!   **The author's own pass loads but attests nothing:** its commit already counts as its attestation, and pe-world
-//!   refuses a voter's second attestation as `Invalid` (`op_attest`). Don't "fix" that into a second attestation.
+//!   hasn't handled, it builds and checks the version and loads the module into the runner through its inbox, since
+//!   every machine must hold the module at F, the author's included. If this member is one of the commit's voters and
+//!   isn't counted yet, the pass gives the `AttestBuild` to submit, or, for a build that failed after its retries, the
+//!   `BuildFailed` (6.2a item 2).
+//!   **The author's own pass loads but posts nothing:** its commit already counts as its attestation, and pe-world
+//!   refuses a voter's second attestation, or a failure after it, as `Invalid`. Don't "fix" that into a post.
 //! - **[`toolchain_and_sdk`]** stands in for the toolchain and SDK hashes until @iter-bench's 6.2b slice B defines
 //!   them.
 //!
@@ -19,43 +27,236 @@
 //! thread that calls them needs [`ModuleInbox::thread_stack`] of native stack: describing and loading a module read
 //! its manifest, which runs it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use pe_api::queue::{EditQueue, Receipt, Submission, Ticket};
-use pe_logic::build::{BuildError, Toolchain};
+use pe_api::builds::{BuildRefused, Builds, Margin};
+use pe_api::queue::{EditQueue, Receipt, Ticket};
+use pe_logic::build::{AUTHOR_MAX_BUILD, BuildError, FailReason, Failed, Toolchain};
+use pe_logic::meter::RefusalKind;
+use pe_logic::runtime::{LoadError, Script};
 use pe_replica::logic::{Described, ModuleInbox};
-use pe_seams::{Frame, Hash, MemberKey, Version};
+use pe_seams::world_api::{Diagnostic, DiagnosticKind, Severity};
+use pe_seams::{BuildFailure, Frame, Hash, MemberKey, Version};
 use pe_world::edit::{Actor, Op, Transaction};
 use pe_world::script::{AssetId, tag_desc};
 use pe_world::{BlobRef, PendingCommit};
 
-/// Where the build service builds (logic.md 4.2).
+/// Where the build service builds (logic.md 4.2), and the author's margin.
 #[derive(Clone, Debug)]
 pub struct BuildConfig {
     /// The pinned toolchain, by absolute path (pe-logic's `Toolchain`).
     pub toolchain: Toolchain,
     /// pe-sdk's source folder: `pe_logic::build::engine_sdk()` for the dev engine.
     pub sdk: PathBuf,
-    /// The service's own folder. `work` under it is `build_archive`'s work folder, so keep this folder's path short:
+    /// The service's own folder ([`build_dir`]). `work` under it is the work folder, so keep this folder's path short:
     /// logic.md 4.1a's paths are at most 128 bytes below it. `target` is the cargo target folder, kept between builds.
     pub dir: PathBuf,
+    /// The author's time margin on an API build ([`Builds`]): `AUTHOR_MAX_BUILD`, other than in tests.
+    pub margin: Duration,
+}
+
+impl BuildConfig {
+    /// A configuration with the author's margin, `pe_logic::build::AUTHOR_MAX_BUILD`.
+    pub fn new(toolchain: Toolchain, sdk: PathBuf, dir: PathBuf) -> BuildConfig {
+        BuildConfig { toolchain, sdk, dir, margin: AUTHOR_MAX_BUILD }
+    }
+
+    fn work(&self) -> PathBuf {
+        self.dir.join("work")
+    }
+
+    fn target(&self) -> PathBuf {
+        self.dir.join("target")
+    }
+}
+
+/// The build folder of the machine whose identity seed is the file `identity`: `<its name>.b` beside it, so two
+/// instances on one PC, each with its own `--identity`, never share a work folder (@engine-architect's Low 1 on
+/// ed51a6ac).
+pub fn build_dir(identity: &Path) -> PathBuf {
+    let mut name = identity.file_name().map_or_else(|| "identity".into(), |n| n.to_os_string());
+    name.push(".b");
+    identity.with_file_name(name)
 }
 
 /// A version this machine built (the machine's side of api.md 7.1's `Built`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct Built {
-    /// The module as the build gave it, for the runner's inbox.
-    pub wasm: Arc<[u8]>,
-    /// Its metered hash (what `CommitScript::author_module` names) and its components under V's ids.
+    /// The module, loaded with the runner's engine and settings, for the runner's inbox.
+    pub script: Script,
+    /// Its metered hash (what `CommitScript::author_module` names), its components under V's ids and its systems.
     pub described: Described,
-    /// How long the build took: api.md 7.1 applies the author's 15 s margin (Q4 (b)) to it.
+    /// How long the build took (for the attester's build of a commit, its retries included): api.md 7.1 applies the
+    /// author's margin to it.
     pub build_ms: u32,
+}
+
+impl std::fmt::Debug for Built {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Built")
+            .field("module", &self.described.module)
+            .field("build_ms", &self.build_ms)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Why a [`Builder::build`] failed: pe-logic's build, or the built module's load.
+#[derive(Debug)]
+pub enum BuildFail {
+    Build(BuildError),
+    Load(LoadError),
+}
+
+impl std::fmt::Display for BuildFail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuildFail::Build(e) => e.fmt(f),
+            BuildFail::Load(e) => write!(f, "the built module won't load: {e}"),
+        }
+    }
+}
+
+impl BuildFail {
+    /// The failure as api.md 7.1's port answers it: the author's own error as diagnostics (rustc's messages, or
+    /// pe-logic's refusal), and this machine's as `Unavailable`, never as the author's error.
+    fn refused(self) -> BuildRefused {
+        match self {
+            BuildFail::Build(e) => match (e.reason(), &e) {
+                (FailReason::Compile, BuildError::Rustc(out)) => BuildRefused::Failed(rustc_diagnostics(out)),
+                (FailReason::Refused, _) => {
+                    BuildRefused::Failed(vec![diagnostic(DiagnosticKind::Manifest, e.to_string())])
+                }
+                _ => BuildRefused::Unavailable(e.to_string()),
+            },
+            BuildFail::Load(LoadError::Refused(r)) => {
+                let kind = match r.kind {
+                    RefusalKind::Import => DiagnosticKind::Import,
+                    RefusalKind::Feature => DiagnosticKind::Feature,
+                    RefusalKind::ReservedName => DiagnosticKind::ReservedName,
+                    RefusalKind::Malformed | RefusalKind::Abi => DiagnosticKind::Manifest,
+                };
+                BuildRefused::Failed(vec![diagnostic(kind, r.message)])
+            }
+            BuildFail::Load(e) => BuildRefused::Unavailable(e.to_string()),
+        }
+    }
+}
+
+fn diagnostic(kind: DiagnosticKind, message: String) -> Diagnostic {
+    Diagnostic { kind, severity: Severity::Error, message, file: None, line: None, column: None, code: None }
+}
+
+/// rustc's short-format messages (`src\lib.rs:3:5: error[E0425]: cannot find value ...`, the format pe-logic asks
+/// for), one diagnostic each (api.md 7.1; @iter-bench m2704bc958fb8). Lines that aren't one are left out. The file is
+/// made crate-relative, with `/`.
+fn rustc_diagnostics(out: &str) -> Vec<Diagnostic> {
+    out.lines().filter_map(short_message).collect()
+}
+
+fn short_message(line: &str) -> Option<Diagnostic> {
+    let levels = [(": error", Severity::Error), (": warning", Severity::Warning)];
+    let (at, severity, rest) = levels.into_iter().find_map(|(tag, s)| {
+        let i = line.find(tag)?;
+        Some((&line[..i], s, &line[i + tag.len()..]))
+    })?;
+    // Split from the right, so a drive letter's colon stays in the path.
+    let mut parts = at.rsplitn(3, ':');
+    let (column, number, path) = (parts.next()?, parts.next()?, parts.next()?);
+    let (number, column) = (number.parse::<u32>().ok()?, column.parse::<u32>().ok()?);
+    let (code, message) = match rest.strip_prefix('[') {
+        Some(r) => {
+            let end = r.find(']')?;
+            (Some(r[..end].to_string()), &r[end + 1..])
+        }
+        None => (None, rest),
+    };
+    let path = path.replace('\\', "/");
+    let file = path.find("src/").map_or_else(|| path.clone(), |i| path[i..].to_string());
+    Some(Diagnostic {
+        kind: DiagnosticKind::Rustc,
+        severity,
+        message: message.trim_start_matches(':').trim().to_string(),
+        file: Some(file),
+        line: Some(number),
+        column: Some(column),
+        code,
+    })
+}
+
+/// One build at a time, in api.md 7.1's order: the attester's builds first, then the API's, first in, first out.
+#[derive(Default)]
+struct Gate {
+    state: Mutex<GateState>,
+    turn: Condvar,
+}
+
+#[derive(Default)]
+struct GateState {
+    busy: bool,
+    /// The attester's builds waiting: they go before any API build.
+    attesting: usize,
+    /// The API builds waiting, by ticket, in their order of arrival.
+    api: VecDeque<u64>,
+    next: u64,
+}
+
+/// A turn at the build service: its build runs while it is held.
+struct Turn<'a>(&'a Gate);
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        self.0.lock().busy = false;
+        self.0.turn.notify_all();
+    }
+}
+
+impl Gate {
+    fn lock(&self) -> MutexGuard<'_, GateState> {
+        // Every change to the state is whole within one lock, so a thread that panicked left it consistent.
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The attester's turn: after the build in progress, and before any API build.
+    fn attester(&self) -> Turn<'_> {
+        let mut g = self.lock();
+        g.attesting += 1;
+        while g.busy {
+            g = self.turn.wait(g).unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        g.attesting -= 1;
+        g.busy = true;
+        Turn(self)
+    }
+
+    /// An API build's turn: after every attester build waiting and the API builds that came before it. `None` once
+    /// `deadline` passes first, and the build leaves the queue.
+    fn api(&self, deadline: Instant) -> Option<Turn<'_>> {
+        let mut g = self.lock();
+        let me = g.next;
+        g.next += 1;
+        g.api.push_back(me);
+        loop {
+            if !g.busy && g.attesting == 0 && g.api.front() == Some(&me) {
+                g.api.pop_front();
+                g.busy = true;
+                return Some(Turn(self));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                g.api.retain(|&t| t != me);
+                drop(g);
+                self.turn.notify_all();
+                return None;
+            }
+            g = self.turn.wait_timeout(g, deadline - now).unwrap_or_else(|poisoned| poisoned.into_inner()).0;
+        }
+    }
 }
 
 /// The build service (module doc).
@@ -63,15 +264,16 @@ pub struct Builder {
     config: BuildConfig,
     inbox: ModuleInbox,
     ids: (Hash, Hash),
-    /// Each version built, by V. Held for the whole of a build: one build at a time.
+    /// Each version built, by V.
     built: Mutex<BTreeMap<Hash, Built>>,
+    gate: Gate,
 }
 
 impl Builder {
-    /// A builder that describes modules with `inbox`'s runner, which decides their hashes.
+    /// A builder that loads and describes modules with `inbox`'s runner, which decides their hashes.
     pub fn new(config: BuildConfig, inbox: ModuleInbox) -> Result<Builder, BuildError> {
         let ids = toolchain_and_sdk(&config.toolchain, &config.sdk)?;
-        Ok(Builder { config, inbox, ids, built: Mutex::new(BTreeMap::new()) })
+        Ok(Builder { config, inbox, ids, built: Mutex::new(BTreeMap::new()), gate: Gate::default() })
     }
 
     /// This machine's toolchain and SDK hashes, as a `CommitScript` carries them ([`toolchain_and_sdk`]).
@@ -80,24 +282,120 @@ impl Builder {
     }
 
     /// The version `archive` holds (V is its hash), built as the build service builds it, or what an earlier build of
-    /// it gave. A failure is not kept: the next call builds again. Blocks for the build, which takes seconds.
-    pub fn build(&self, archive: &[u8]) -> Result<Built, String> {
-        let v = Hash(BlobRef::of(archive).hash);
-        let mut built = self.built.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(b) = built.get(&v) {
-            return Ok(b.clone());
+    /// it gave. A failure is not kept: the next call builds again. Blocks for the build, which takes seconds, and goes
+    /// before any API build.
+    pub fn build(&self, archive: &[u8]) -> Result<Built, BuildFail> {
+        let v = version_of(archive);
+        if let Some(b) = self.cached(&v) {
+            return Ok(b);
         }
+        let _turn = self.gate.attester();
+        self.build_in_turn(archive, v)
+    }
+
+    /// The attester's build of a commit's version (logic.md 6.2 step 3, 6.2b): pe-logic's `build_for_row`, whose module
+    /// must be `author_module`, with its retries. A build this machine already has with that module answers at once.
+    pub fn build_for_row(&self, archive: &[u8], author_module: Hash) -> Result<Built, Failed> {
+        let v = version_of(archive);
+        let theirs = |b: &Built| b.described.module == author_module;
+        if let Some(b) = self.cached(&v).filter(theirs) {
+            return Ok(b);
+        }
+        let _turn = self.gate.attester();
+        if let Some(b) = self.cached(&v).filter(theirs) {
+            return Ok(b);
+        }
+        let (c, inbox) = (&self.config, &self.inbox);
         let started = Instant::now();
-        let (work, target) = (self.config.dir.join("work"), self.config.dir.join("target"));
-        let wasm =
-            pe_logic::build::build_archive(&self.config.toolchain, archive, &self.config.sdk, &work, &target, true)
-                .map_err(|e| e.to_string())?;
-        let build_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
-        let described = self.inbox.describe(&wasm, &v).map_err(|e| format!("the built module won't load: {e}"))?;
-        let b = Built { wasm: wasm.into(), described, build_ms };
-        built.insert(v, b.clone());
+        let script = pe_logic::build::build_for_row(
+            &c.toolchain,
+            archive,
+            &c.sdk,
+            &c.work(),
+            &c.target(),
+            true,
+            inbox.engine(),
+            inbox.settings(),
+            author_module,
+        )?;
+        let build_ms = millis(started.elapsed());
+        let described = inbox.describe_script(&script, &v).map_err(|e| Failed {
+            reason: FailReason::Local,
+            module: None,
+            attempts: 1,
+            detail: format!("the built module won't describe: {e}"),
+        })?;
+        let b = Built { script, described, build_ms };
+        self.keep(v, &b);
         Ok(b)
     }
+
+    /// A build in a turn the caller holds; one that finished while the caller waited for it answers.
+    fn build_in_turn(&self, archive: &[u8], v: Hash) -> Result<Built, BuildFail> {
+        if let Some(b) = self.cached(&v) {
+            return Ok(b);
+        }
+        let c = &self.config;
+        let started = Instant::now();
+        let wasm = pe_logic::build::build_archive(&c.toolchain, archive, &c.sdk, &c.work(), &c.target(), true)
+            .map_err(BuildFail::Build)?;
+        let build_ms = millis(started.elapsed());
+        let script = Script::load(self.inbox.engine(), self.inbox.settings(), &wasm).map_err(BuildFail::Load)?;
+        let described = self.inbox.describe_script(&script, &v).map_err(BuildFail::Load)?;
+        let b = Built { script, described, build_ms };
+        self.keep(v, &b);
+        Ok(b)
+    }
+
+    fn cached(&self, v: &Hash) -> Option<Built> {
+        self.lock_built().get(v).cloned()
+    }
+
+    fn keep(&self, v: Hash, b: &Built) {
+        self.lock_built().insert(v, b.clone());
+    }
+
+    fn lock_built(&self) -> MutexGuard<'_, BTreeMap<Hash, Built>> {
+        // Every change to the cache is one insert.
+        self.built.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Builds for Builder {
+    /// An author's build (api.md 7.1): after the attester's builds and the API builds before it, and refused past the
+    /// author's time margin, cached or not. pe-logic's build gives no warnings yet, so none are reported.
+    fn build(&self, archive: &[u8], deadline: Instant) -> Result<pe_api::builds::Built, BuildRefused> {
+        let v = version_of(archive);
+        let b = match self.cached(&v) {
+            Some(b) => b,
+            None => {
+                let _turn = self.gate.api(deadline).ok_or(BuildRefused::Timeout)?;
+                self.build_in_turn(archive, v).map_err(BuildFail::refused)?
+            }
+        };
+        if u128::from(b.build_ms) > self.config.margin.as_millis() {
+            return Err(BuildRefused::Margin { which: Margin::Time, measured: u64::from(b.build_ms) });
+        }
+        let (toolchain, sdk) = self.ids;
+        Ok(pe_api::builds::Built {
+            module: b.described.module,
+            toolchain,
+            sdk,
+            components: b.described.components,
+            systems: b.described.systems,
+            warnings: Vec::new(),
+            build_ms: b.build_ms,
+            peak_bytes: None,
+        })
+    }
+}
+
+fn version_of(archive: &[u8]) -> Hash {
+    Hash(BlobRef::of(archive).hash)
+}
+
+fn millis(d: Duration) -> u32 {
+    u32::try_from(d.as_millis()).unwrap_or(u32::MAX)
 }
 
 /// The toolchain and SDK hashes a `CommitScript` carries and an attester compares with its own (logic.md 6.2 step 3,
@@ -124,13 +422,24 @@ pub fn toolchain_and_sdk(toolchain: &Toolchain, sdk: &Path) -> Result<(Hash, Has
 /// only op of its transaction (logic.md 6.2a). The member's machine makes it for the member, so its actor is the
 /// person's; pe-api's machine lane (api.md 7.1) is how it reaches the edit queue.
 pub fn attestation(asset: AssetId, v: Hash, module: Hash) -> Transaction {
-    Transaction {
-        actor: Actor::Person,
-        label: None,
-        preconditions: Vec::new(),
-        ops: vec![Op::AttestBuild { script: asset, version: v, module }],
-        blobs: Vec::new(),
-    }
+    machine_entry(Op::AttestBuild { script: asset, version: v, module })
+}
+
+/// The transaction that reports this machine's failed build of version `v` of `asset` (logic.md 6.2a item 2):
+/// `Op::BuildFailed` alone, with its reason, this machine's toolchain and SDK hashes (`ids`) and, for a `Mismatch`,
+/// the module hash it built. Never compiler output, which can carry local paths. Made and sent as [`attestation`] is.
+pub fn build_failed(
+    asset: AssetId,
+    v: Hash,
+    reason: BuildFailure,
+    ids: (Hash, Hash),
+    module: Option<Hash>,
+) -> Transaction {
+    machine_entry(Op::BuildFailed { script: asset, version: v, reason, toolchain: ids.0, sdk: ids.1, module })
+}
+
+fn machine_entry(op: Op) -> Transaction {
+    Transaction { actor: Actor::Person, label: None, preconditions: Vec::new(), ops: vec![op], blobs: Vec::new() }
 }
 
 /// An attestation to submit, with the commit it attests: its edit queue receipt goes back to [`Attester::posted`].
@@ -142,6 +451,16 @@ pub struct Attest {
     pub tx: Transaction,
 }
 
+/// A `BuildFailed` to submit, with the commit it reports on (logic.md 6.2a item 2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Failure {
+    pub asset: AssetId,
+    /// The commit: its entry and op.
+    pub version: Version,
+    pub reason: BuildFailure,
+    pub tx: Transaction,
+}
+
 /// What one [`Attester::pass`] did.
 #[derive(Debug, Default)]
 pub struct Pass {
@@ -149,7 +468,10 @@ pub struct Pass {
     pub loaded: Vec<(AssetId, Hash)>,
     /// The attestations to submit.
     pub attest: Vec<Attest>,
-    /// The commits this machine couldn't build, or whose build differs from the author's, as (asset, V, why).
+    /// The failures to report: this voter's builds that failed after their retries.
+    pub failures: Vec<Failure>,
+    /// What went wrong, as (asset, V, why), for this machine's log: every failure, reported or not. The text can name
+    /// local paths, so it never leaves the machine.
     pub failed: Vec<(AssetId, Hash, String)>,
 }
 
@@ -204,7 +526,8 @@ impl Attester {
 
     /// One pass over `pending`, a world's pending commits (`World::pending`), in asset order (module doc). `blob` gives
     /// a commit's source archive from the world's store. A commit whose archive isn't there yet is tried again at the
-    /// next pass; a voided one is skipped. `inbox` is the runner's.
+    /// next pass; a voided one is skipped. `inbox` is the runner's. A build's retries (6.2b) happen inside the pass, so
+    /// a commit is handled once: attested, reported as failed, or, when this machine can't judge it, only logged.
     pub fn pass(
         &mut self,
         pending: &BTreeMap<AssetId, PendingCommit>,
@@ -221,50 +544,104 @@ impl Attester {
             let Some(archive) = blob(&p.source) else { continue };
             self.done.insert(key);
             let v = p.v();
-            let loaded = check(p, builder, &archive)
-                .and_then(|built| inbox.load(&built.wasm).map_err(|e| format!("the module won't load: {e}")));
-            if let Err(why) = loaded {
-                // TODO(BuildFailed): post `BuildFailed` once @world-model's op lands, and only after the local retries
-                // of logic.md 6.2b (`Local` twice, `Mismatch` once from a clean build), since under the
-                // build-asymmetry rulings a post can cost this member its session (@engine-architect m7855d4a97816).
-                // Until then a failure is only reported, and the commit voids at D.
-                pass.failed.push((asset, v, why));
-                continue;
-            }
-            pass.loaded.push((asset, v));
-            let counted = p.attested.iter().any(|(k, _)| *k == self.me);
-            if p.voters.contains(&self.me) && !counted {
-                pass.attest.push(Attest { asset, version: p.version, tx: attestation(asset, v, p.author_module) });
+            // A voter not yet counted either way. The author's commit counts as its attestation (module doc).
+            let voter = p.voters.contains(&self.me) && !p.has_attested(&self.me) && !p.has_failed(&self.me);
+            match check(p, builder, &archive) {
+                Ok(built) => {
+                    if let Err(e) = inbox.load_script(built.script) {
+                        pass.failed.push((asset, v, format!("the module won't load into the runner: {e}")));
+                        continue;
+                    }
+                    pass.loaded.push((asset, v));
+                    if voter {
+                        pass.attest.push(Attest {
+                            asset,
+                            version: p.version,
+                            tx: attestation(asset, v, p.author_module),
+                        });
+                    }
+                }
+                Err(Unchecked::Ids) => pass.failed.push((asset, v, "the commit names another toolchain or SDK".into())),
+                Err(Unchecked::Failed(f)) => {
+                    pass.failed.push((asset, v, format!("{:?} after {} build(s): {}", f.reason, f.attempts, f.detail)));
+                    if voter {
+                        let reason = reported(f.reason);
+                        let tx = build_failed(asset, v, reason, builder.ids(), f.module);
+                        pass.failures.push(Failure { asset, version: p.version, reason, tx });
+                    }
+                }
             }
         }
         pass
     }
 }
 
+/// Why a commit's version isn't this machine's to run.
+enum Unchecked {
+    /// The commit names another toolchain or SDK than this machine's. Until 6.2b slice B defines those hashes this
+    /// machine reports nothing for it: its commit voids at D unless the quorum attests without this member.
+    Ids,
+    /// The build failed after its retries (6.2b), or its module isn't the commit's.
+    Failed(Failed),
+}
+
 /// This machine's build of `p`'s version, checked against the commit (logic.md 6.2 step 3): the same toolchain and
-/// SDK, the same module, and the same components, the tag among them.
-fn check(p: &PendingCommit, builder: &Builder, archive: &[u8]) -> Result<Built, String> {
+/// SDK, the same module (pe-logic's `build_for_row`), and the same components, the tag among them.
+fn check(p: &PendingCommit, builder: &Builder, archive: &[u8]) -> Result<Built, Unchecked> {
     if (p.toolchain, p.sdk) != builder.ids() {
-        return Err("the commit names another toolchain or SDK".into());
+        return Err(Unchecked::Ids);
     }
-    let built = builder.build(archive)?;
-    if built.described.module != p.author_module {
-        return Err(format!(
-            "the module differs from the author's: {:?} here, {:?} committed",
-            built.described.module, p.author_module
-        ));
-    }
+    let built = builder.build_for_row(archive, p.author_module).map_err(Unchecked::Failed)?;
     let mut ids: Vec<_> = built.described.components.iter().map(|c| c.id()).collect();
     ids.push(tag_desc(&p.v()).id());
     ids.sort();
     if ids != p.components {
-        return Err("the module's components differ from the commit's".into());
+        // One module under one V declares the same components on every machine, so the difference is this machine's
+        // own description of it.
+        let detail = "the module's components differ from the commit's".to_string();
+        return Err(Unchecked::Failed(Failed { reason: FailReason::Local, module: None, attempts: 1, detail }));
     }
     Ok(built)
 }
 
+/// The reason a failure is reported with (`BuildFailed`'s, logic.md 6.2a item 2): pe-logic's. pe-logic's `Failed`
+/// carries a module exactly for a `Mismatch` (the raw module's hash when its metering pass refused it), which is what
+/// pe-world's `op_build_failed` requires.
+fn reported(reason: FailReason) -> BuildFailure {
+    match reason {
+        FailReason::Compile => BuildFailure::Compile,
+        FailReason::Refused => BuildFailure::Refused,
+        FailReason::Cap => BuildFailure::Cap,
+        FailReason::Mismatch => BuildFailure::Mismatch,
+        FailReason::Local => BuildFailure::Local,
+    }
+}
+
 /// How long the attester's thread waits for a newer snapshot before it looks at its receipts and reposts again.
 const WAIT: Duration = Duration::from_millis(250);
+
+/// A machine entry the attester's thread submits: an attestation, whose receipt the attester keeps for its reposts,
+/// or a failure.
+enum Post {
+    Attest(Attest),
+    Failure(Failure),
+}
+
+impl Post {
+    fn tx(&self) -> &Transaction {
+        match self {
+            Post::Attest(a) => &a.tx,
+            Post::Failure(f) => &f.tx,
+        }
+    }
+
+    fn asset(&self) -> &AssetId {
+        match self {
+            Post::Attest(a) => &a.asset,
+            Post::Failure(f) => &f.asset,
+        }
+    }
+}
 
 /// The attester's thread ([`spawn_attester`]).
 pub struct AttesterThread {
@@ -283,11 +660,12 @@ impl AttesterThread {
 }
 
 /// Starts the attester's thread (module doc) over the snapshots pe-app publishes for pe-api (`shared`). After each
-/// new one, or [`WAIT`] without one, it makes a pass over the newest snapshot's pending commits, logs what failed,
-/// and submits the attestations and the reposts (from the agreed snapshot) through pe-api's edit queue (`queue`;
-/// api.md 7.1's machine lane once it exists). Each receipt's stamp goes back to the attester. A submission the queue
-/// has no room for waits for the next pass. One that agreement refuses is treated as posted at the present frame, so
-/// the state-based repost decides it again once that frame is final. The thread runs on the inbox's stack.
+/// new one, or 250 ms (`WAIT`) without one, it makes a pass over the newest snapshot's pending commits, logs what failed,
+/// and submits the attestations, the failures and the reposts (from the agreed snapshot) through pe-api's machine lane
+/// (`EditQueue::submit_machine`, api.md 7.1). Each attestation's receipt stamp goes back to the attester. A submission
+/// the lane has no room for waits for the next pass. An attestation that agreement refuses is treated as posted at the
+/// present frame, so the state-based repost decides it again once that frame is final. The thread runs on the inbox's
+/// stack.
 pub fn spawn_attester(
     builder: Arc<Builder>,
     inbox: ModuleInbox,
@@ -300,7 +678,7 @@ pub fn spawn_attester(
     let stack = inbox.thread_stack();
     let run = move || {
         let mut attester = Attester::new(me);
-        let (mut seen, mut unsent, mut waiting) = (0, Vec::<Attest>::new(), Vec::<(Ticket, Attest)>::new());
+        let (mut seen, mut unsent, mut waiting) = (0, Vec::<Post>::new(), Vec::<(Ticket, Post)>::new());
         while !flag.load(Ordering::Relaxed) {
             let (published, snap) = shared.wait_newer(seen, WAIT);
             seen = published;
@@ -309,23 +687,35 @@ pub fn spawn_attester(
             for (asset, v, why) in &pass.failed {
                 eprintln!("pe-app: this machine's build of script {} at {v:?} failed: {why}", short(asset));
             }
+            for f in &pass.failures {
+                eprintln!(
+                    "pe-app: reporting this machine's failed build of script {}: {:?}",
+                    short(&f.asset),
+                    f.reason
+                );
+            }
             let agreed = shared.agreed_snapshot();
-            unsent.extend(pass.attest);
-            unsent.extend(attester.reposts(now, agreed.frame(), agreed.pending()));
-            for a in std::mem::take(&mut unsent) {
-                match queue.submit(Submission { tx: a.tx.clone(), base: now.0 }) {
-                    Ok(t) => waiting.push((t, a)),
-                    Err(_) => unsent.push(a),
+            unsent.extend(pass.attest.into_iter().map(Post::Attest));
+            unsent.extend(pass.failures.into_iter().map(Post::Failure));
+            unsent.extend(attester.reposts(now, agreed.frame(), agreed.pending()).into_iter().map(Post::Attest));
+            for post in std::mem::take(&mut unsent) {
+                match queue.submit_machine(post.tx().clone()) {
+                    Ok(t) => waiting.push((t, post)),
+                    Err(_) => unsent.push(post),
                 }
             }
-            waiting.retain(|(t, a)| match queue.receipt(*t, Instant::now()) {
+            waiting.retain(|(t, post)| match queue.receipt(*t, Instant::now()) {
                 Some(Receipt::Submitted { frame, .. }) => {
-                    attester.posted(a.asset, a.version, Frame(frame));
+                    if let Post::Attest(a) = post {
+                        attester.posted(a.asset, a.version, Frame(frame));
+                    }
                     false
                 }
                 Some(Receipt::Refused(e)) => {
-                    eprintln!("pe-app: the attestation of script {} was not submitted: {e:?}", short(&a.asset));
-                    attester.posted(a.asset, a.version, now);
+                    eprintln!("pe-app: a machine entry of script {} was not submitted: {e:?}", short(post.asset()));
+                    if let Post::Attest(a) = post {
+                        attester.posted(a.asset, a.version, now);
+                    }
                     false
                 }
                 None => true,
@@ -339,4 +729,92 @@ pub fn spawn_attester(
 /// An asset's first bytes, in hex, for a log line.
 fn short(asset: &AssetId) -> String {
     asset.iter().take(4).map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+
+    use super::*;
+
+    /// An API build waits for the build in progress, and leaves unbuilt once its deadline passes.
+    #[test]
+    fn an_api_build_leaves_the_queue_at_its_deadline() {
+        let gate = Gate::default();
+        let held = gate.attester();
+        let t0 = Instant::now();
+        assert!(gate.api(t0 + Duration::from_millis(60)).is_none(), "timed out");
+        assert!(t0.elapsed() >= Duration::from_millis(60));
+        assert!(gate.lock().api.is_empty(), "left the queue");
+        drop(held);
+        assert!(gate.api(Instant::now() + Duration::from_secs(1)).is_some(), "free again");
+    }
+
+    /// The attester's builds go before API builds that came first, and API builds go in their order of arrival.
+    #[test]
+    fn the_attesters_builds_go_first_then_the_apis_in_order() {
+        let gate = Arc::new(Gate::default());
+        let held = gate.attester();
+        let (tx, rx) = mpsc::channel();
+        let queued = || {
+            let g = gate.lock();
+            (g.api.len(), g.attesting)
+        };
+        let wait_for = |want: (usize, usize)| {
+            let t0 = Instant::now();
+            while queued() != want {
+                assert!(t0.elapsed() < Duration::from_secs(10), "the waiters never queued");
+                thread::yield_now();
+            }
+        };
+        let mut threads = Vec::new();
+        for (name, attester) in [("api 1", false), ("api 2", false), ("attester", true)] {
+            let (gate, tx) = (gate.clone(), tx.clone());
+            threads.push(thread::spawn(move || {
+                let _turn =
+                    if attester { Some(gate.attester()) } else { gate.api(Instant::now() + Duration::from_secs(30)) };
+                tx.send(name).unwrap();
+            }));
+            let n = threads.len();
+            wait_for((n.min(2), usize::from(n == 3)));
+        }
+        drop(held);
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["attester", "api 1", "api 2"]);
+    }
+
+    /// rustc's short format, with a drive letter, a code or none, and a warning; other lines are left out.
+    #[test]
+    fn rustcs_messages_become_diagnostics() {
+        let out = "C:\\pe\\b\\work\\script\\src\\lib.rs:3:5: error[E0425]: cannot find value `x` in this scope\n\
+                   src\\lib.rs:1:9: error: expected `;`, found `}`\n\
+                   src/lib.rs:2:1: warning: unused import\n\
+                   error: could not compile `script` (lib) due to 2 previous errors\n";
+        let d = rustc_diagnostics(out);
+        let at = |d: &Diagnostic| (d.file.clone().unwrap(), d.line.unwrap(), d.column.unwrap(), d.severity);
+        assert_eq!(
+            d.iter().map(at).collect::<Vec<_>>(),
+            [
+                ("src/lib.rs".to_string(), 3, 5, Severity::Error),
+                ("src/lib.rs".to_string(), 1, 9, Severity::Error),
+                ("src/lib.rs".to_string(), 2, 1, Severity::Warning),
+            ]
+        );
+        assert_eq!(
+            (d[0].code.as_deref(), d[0].message.as_str()),
+            (Some("E0425"), "cannot find value `x` in this scope")
+        );
+        assert_eq!((d[1].code.as_deref(), d[1].message.as_str()), (None, "expected `;`, found `}`"));
+    }
+
+    #[test]
+    fn the_build_folder_is_the_identity_files_own() {
+        let dir = |p: &str| build_dir(Path::new(p));
+        assert_eq!(dir("data/identity.seed"), Path::new("data/identity.seed.b"));
+        assert_eq!(dir("data/alice"), Path::new("data/alice.b"));
+        assert_ne!(dir("data/a.seed"), dir("data/b.seed"));
+    }
 }
