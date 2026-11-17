@@ -971,17 +971,19 @@ mod tests {
     type Machines = [(Sim, MemberKey)];
 
     #[test]
-    #[ignore = "16-25 s in release (debug simulates too slowly to finalize in time); needs agree/stall's                 Node::backlogged override: run with --release --ignored"]
+    #[ignore = "16-25 s in release, up to about 70 s if it fails (debug simulates too slowly to finalize in time): run with --release --include-ignored"]
     fn a_ten_second_blackout_resumes_and_every_entry_becomes_final() {
         // @coordinator-opus, @design-reviewer, @world-chunks: two
         // machines with hands moving (two entries a frame) lose their path for 10 s, under T_IDLE_M1 (30 s). After
-        // it, the session resumes on the same connections: finality comes back within the view timeout's ceiling
-        // (10 s) plus a margin, every entry either member made becomes final (a late void is final too), and neither
+        // it, the session resumes on the same connections: finality comes back within two of the view timeout's
+        // ceilings plus a margin (the view running when the path returns may wait out one ceiling, and the next one
+        // may time out once more; @engine-architect measured 3.9-13.3 s and once past 15 s under load, @coordinator-opus), every entry either member made becomes final (a late void is final too), and neither
         // side refuses or blames the other (no Refused or Fault naming it, no message refused).
         use pe_seams::{AgreeEvent, VoidReason};
         use std::sync::atomic::{AtomicBool, Ordering};
         const BLACKOUT: Duration = Duration::from_secs(10);
-        const RESUME_WITHIN: Duration = Duration::from_secs(15);
+        let ceiling = Duration::from_nanos(crate::genesis::settings().timing.max_timeout_ns as u64);
+        let resume_within = 2 * ceiling + Duration::from_secs(5);
         let host = crate::clock::shared();
         let dark = Arc::new(AtomicBool::new(false));
         // Each machine advertises its relay; the relays are started once the machines' own addresses are known.
@@ -1033,18 +1035,20 @@ mod tests {
             "nothing final before the blackout: {:?}",
             sims.iter().map(|(s, _)| s.stats().clone()).collect::<Vec<_>>()
         );
-        let before: Vec<u64> = sims.iter().map(|(s, _)| s.stats().finalized).collect();
         dark.store(true, Ordering::Relaxed);
         run(&mut sims, &mut |_| false, BLACKOUT);
         dark.store(false, Ordering::Relaxed);
         let back = Instant::now();
+        // Counted from the path's return, not from before the blackout: a cut voted just before it went dark can
+        // finalize during the blackout, and would count as resumed at once.
+        let before: Vec<u64> = sims.iter().map(|(s, _)| s.stats().finalized).collect();
         // Every entry made up to the blackout's end, both chains, must become final on both sides.
         let heads: Vec<_> = sims.iter().map(|(s, _)| s.local_head().expect("a local chain")).collect();
         let made: Vec<u64> = sims.iter().map(|(s, _)| s.stats().inputs).collect();
         let resumed = run(
             &mut sims,
             &mut |s| s.iter().enumerate().all(|(i, (sim, _))| sim.stats().finalized > before[i]),
-            RESUME_WITHIN,
+            resume_within,
         );
         let resumed_after = back.elapsed();
         let all_final = run(
@@ -1088,7 +1092,7 @@ mod tests {
             assert!(blamed.is_empty(), "machine {i} blamed the other: {} events, first {:?}", blamed.len(), blamed[0]);
             assert_eq!(sim.stats().refused, 0, "machine {i} refused messages");
         }
-        assert!(resumed, "finality did not resume within {RESUME_WITHIN:?}");
+        assert!(resumed, "finality did not resume within {resume_within:?}");
         assert!(all_final, "not every entry made became final on both sides");
         drop((ra, rb));
     }
