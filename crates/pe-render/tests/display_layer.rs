@@ -129,8 +129,8 @@ impl Run {
 
 // ---- test 3: rates (D8) ------------------------------------------------------------------------------------------
 
-/// Steady motion keeps a zero offset across every frame-view arrival, at every rate pair, under both rules, and the
-/// drawn pose's step is bounded by velocity × display period (review M3).
+/// Steady motion keeps a zero offset across every frame-view arrival, at every rate pair, under all three rules, and
+/// the drawn pose's step is bounded by velocity × display period (review M3; render.md 14 test 3).
 #[test]
 fn steady_motion_never_hitches_at_any_rate_pair() {
     let v = [1.5f32, 0.0, -0.75];
@@ -147,12 +147,18 @@ fn steady_motion_never_hitches_at_any_rate_pair() {
     for rule in [
         DrawnTime::Extrapolate { l_max: Duration::from_millis(80) },
         DrawnTime::InterpolateLate { d_render: Duration::from_millis(70) },
+        DrawnTime::present(60),
     ] {
         // The supported simulation range is 30-120 Hz (SimRate, @engine-architect): both ends, the default, and
         // two rates between.
         for sim_hz in [30, 60, 75, 90, 120] {
+            // Present: two frames at this rate, and the caller passes its now as the display time (no lead).
+            let (rule, lead) = match rule {
+                DrawnTime::Present { .. } => (DrawnTime::present(sim_hz), Duration::ZERO),
+                _ => (rule, Duration::from_millis(30)),
+            };
             for display_hz in [72, 90, 120, 165] {
-                let run = Run { sim_hz, display_hz, lead: Duration::from_millis(30) };
+                let run = Run { sim_hz, display_hz, lead };
                 let mut layer = DisplayLayer::new(DisplaySettings { drawn_time: rule, ..Default::default() });
                 let mut last: Option<Pos> = None;
                 let mut worst_step = 0.0f64;
@@ -180,6 +186,42 @@ fn steady_motion_never_hitches_at_any_rate_pair() {
             }
         }
     }
+}
+
+/// Present's cap adds the measured display period (render.md 7): the median of the last 15 intervals, clamped to
+/// 240-40 Hz, and the clamp's top before the first interval, so neither a first frame nor a long hitch inflates it
+/// (@coordinator-opus mdea84e0128c0).
+#[test]
+fn the_measured_display_period_ignores_a_hitch_and_is_clamped() {
+    let v = view(1, HostTime(0), vec![ball(1, at(0.0, 0.0, -5.0), [0.0; 3])]);
+    let vols = volumes();
+    let mut layer = DisplayLayer::new(DisplaySettings { drawn_time: DrawnTime::present(60), ..Default::default() });
+    let frame = |layer: &mut DisplayLayer, t: i64| {
+        let local = LocalPresentation { display_time: HostTime(t), hands: [None, None] };
+        layer.frame(FrameInput { view: &v, display_time: local.display_time, volumes: &vols, local: &local });
+    };
+    let top = Duration::from_nanos((NS / 40) as u64);
+    assert_eq!(layer.display_period(), top, "before any frame: the clamp's top");
+    frame(&mut layer, 0);
+    assert_eq!(layer.display_period(), top, "nothing measured after one frame");
+    // One interval of a whole second: clamped to 40 Hz.
+    frame(&mut layer, NS);
+    assert_eq!(layer.display_period(), top);
+    // 90 Hz frames with 500 ms hitches among them (7 of the last 15 intervals at most): the median stays at the
+    // display's period.
+    let p = NS / 90;
+    let mut t = NS;
+    for k in 0..20 {
+        t += if k % 3 == 0 { NS / 2 } else { p };
+        frame(&mut layer, t);
+    }
+    assert_eq!(layer.display_period(), Duration::from_nanos(p as u64));
+    // A faster display than 240 Hz is clamped to it.
+    for _ in 0..15 {
+        t += 1_000_000;
+        frame(&mut layer, t);
+    }
+    assert_eq!(layer.display_period(), Duration::from_nanos((NS / 240) as u64));
 }
 
 /// Gravity under X8 (a): velocity-only extrapolation misses every tick by about g × tick × span. Those misses blend
@@ -816,4 +858,73 @@ fn a_tracked_own_hand_is_drawn_as_its_joints_and_a_controller_as_its_sphere() {
             assert_eq!((ids(10), spheres, bones), (1, 0, 0), "drawn where simulated: the body, no joints");
         }
     }
+}
+
+/// The gap at first contact (render.md 13): a ball comes within reach of the own hand's sphere twice; each first
+/// contact counts once and measures the drawn ball against the drawn (late-latched) hand, here 3 cm apart centre to
+/// centre, so 3 − 9 − 5 = −11 cm: the hand the player saw was already inside the ball.
+#[test]
+fn a_first_contact_with_an_own_hand_measures_the_drawn_gap_once() {
+    // No blending, so the drawn ball is at its target and the expected gap is exact.
+    let settings = DisplaySettings { controls: Controls { blend: false, ..Controls::default() }, ..extrapolating() };
+    let mut layer = DisplayLayer::new(settings);
+    let vols = volumes();
+    let me = MemberKey([7; 32]);
+    let local = LocalPresentation {
+        display_time: HostTime(0),
+        hands: [
+            None,
+            Some(DisplayHand {
+                pose: RigPose { position: [0.12, 0.0, -0.5], orientation: [0.0, 0.0, 0.0, 1.0] },
+                joints: None,
+            }),
+        ],
+    };
+    for f in 0..40u64 {
+        let t = frame_time(f, 60);
+        let mut hand = ball(10, at(0.0, 0.0, -0.5), [0.0; 3]);
+        hand.radius = 0.09;
+        hand.hand_of = Some((me, Hand::Right));
+        hand.flags = ViewFlags::OWN_HAND;
+        // Out of reach, in reach (centres 15 cm apart: within 9 + 5 + 2 cm), out, in again.
+        let x = if (f / 10) % 2 == 1 { 0.15 } else { 0.5 };
+        let v = view(f, t, vec![hand, ball(1, at(x, 0.0, -0.5), [0.0; 3])]);
+        let local = LocalPresentation { display_time: t, ..local };
+        layer.frame(FrameInput { view: &v, display_time: t, volumes: &vols, local: &local });
+    }
+    let c = layer.counters();
+    assert_eq!(c.own_contacts, 2, "{c:?}");
+    for g in [c.own_contact_gap_min, c.own_contact_gap_max] {
+        let g = g.expect("measured");
+        assert!((g + 0.11).abs() < 1e-6, "gap {g}");
+    }
+    assert!((c.own_contact_gap_sum + 0.22).abs() < 1e-6, "{c:?}");
+}
+
+/// Two views in one batch, both touching: the first contact the earlier view started is still measured once
+/// (@ballpit-viz's read of 5e985f12).
+#[test]
+fn a_first_contact_in_a_batch_of_two_views_is_measured_once() {
+    let mut layer = DisplayLayer::new(extrapolating());
+    let vols = volumes();
+    let me = MemberKey([7; 32]);
+    let make = |f: u64, x: f64| {
+        let mut hand = ball(10, at(0.0, 0.0, -0.5), [0.0; 3]);
+        hand.radius = 0.09;
+        hand.hand_of = Some((me, Hand::Right));
+        hand.flags = ViewFlags::OWN_HAND;
+        view(f, frame_time(f, 60), vec![hand, ball(1, at(x, 0.0, -0.5), [0.0; 3])])
+    };
+    let local = |t: HostTime| LocalPresentation { display_time: t, hands: [None, None] };
+    for f in 0..5u64 {
+        let v = make(f, 0.5);
+        let t = frame_time(f, 60);
+        layer.frame(FrameInput { view: &v, display_time: t, volumes: &vols, local: &local(t) });
+    }
+    // Frames 5 and 6 arrive together; the ball touches from frame 5 on.
+    let t = frame_time(6, 60);
+    layer.take(&make(5, 0.15), t, &vols);
+    let v = make(6, 0.15);
+    layer.frame(FrameInput { view: &v, display_time: t, volumes: &vols, local: &local(t) });
+    assert_eq!(layer.counters().own_contacts, 1, "{:?}", layer.counters());
 }

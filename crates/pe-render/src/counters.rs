@@ -187,6 +187,18 @@ fn fold(acc: &mut DisplayCounters, c: &DisplayCounters) {
     acc.display_frames += c.display_frames;
     acc.views_taken += c.views_taken;
     acc.gaps += c.gaps;
+    acc.own_contacts += c.own_contacts;
+    acc.own_contact_gap_sum += c.own_contact_gap_sum;
+    acc.own_contact_gap_min = fold_extreme(acc.own_contact_gap_min, c.own_contact_gap_min, f64::min);
+    acc.own_contact_gap_max = fold_extreme(acc.own_contact_gap_max, c.own_contact_gap_max, f64::max);
+}
+
+/// Two optional extremes folded by `f`; `None` only while both are (a zero default would win every `min` or `max`).
+fn fold_extreme(a: Option<f64>, b: Option<f64>, f: fn(f64, f64) -> f64) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(f(x, y)),
+        (x, y) => x.or(y),
+    }
 }
 
 /// The run so far: totals, and distributions per display frame and per second.

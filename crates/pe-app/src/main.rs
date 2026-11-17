@@ -15,6 +15,11 @@
 //! then be specific), and `--identity` this machine's identity file (default: `identity.seed` in the per-user data
 //! folder, `%LOCALAPPDATA%\Primordial Engine` on Windows; made on first use).
 //!
+//! `--drawn-time present:<ms> | a:<ms> | b:<ms>` overrides X8, the drawn time (render.md 7), for tests: Present with
+//! that `L_max`, (a) with that `L_max`, or (b) with that `D_render`. By default VR draws Present at two simulation
+//! frames and the desktop (a) (@coordinator-opus m4ead69b6e74e, me48e560e5151). Every run ends by printing the
+//! presenter's counters (`display:`), and a VR run the measured display lead too.
+//!
 //! `--mcp-pipe` and `--mcp-http` start pe-mcp's transports over pe-api, so an agent can read and edit the world for
 //! this machine's member (app.md 3.1); `--agent <command> <args>...`, the rest of the line, launches it with the
 //! transport's address and a token in its environment.
@@ -38,6 +43,7 @@ use pe_mcp::host::HostOpts;
 use pe_net_crypto::identity::{Invite, Reply};
 use pe_render::desktop_hand::{DesktopHandFeed, DesktopHandSettings};
 use pe_render::display::DisplaySettings;
+use pe_render::drawn_time::DrawnTime;
 use pe_render::effects::{EffectCommand, EffectSettings};
 use pe_render::gpu::ContextError;
 use pe_render::present::{FrameSlot, Presenter};
@@ -91,6 +97,8 @@ struct Options {
     mcp_http: bool,
     /// The agent's command line, launched with the transport's address and a token in its environment.
     agent: Vec<String>,
+    /// `--drawn-time`: X8 for every presenter, in place of the defaults (VR Present, the desktop (a)).
+    drawn_time: Option<DrawnTime>,
 }
 
 /// The joiner's wait for the opener to take its reply, admit it and start frame 0: a person copies the reply over.
@@ -111,6 +119,7 @@ fn options() -> Options {
         mcp_pipe: false,
         mcp_http: false,
         agent: Vec::new(),
+        drawn_time: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -129,6 +138,7 @@ fn options() -> Options {
             "--mcp-http" => o.mcp_http = true,
             // The rest of the command line is the agent's.
             "--agent" => o.agent = args.by_ref().collect(),
+            "--drawn-time" => o.drawn_time = Some(args.next().and_then(|a| drawn_time(&a)).unwrap_or_else(|| usage())),
             "--seconds" => {
                 let s = args.next().and_then(|n| n.parse::<f64>().ok()).filter(|s| *s > 0.0);
                 o.run_for = Some(s.and_then(|s| Duration::try_from_secs_f64(s).ok()).unwrap_or_else(|| usage()));
@@ -139,8 +149,22 @@ fn options() -> Options {
     o
 }
 
-fn presenter(rate: SimRate) -> Presenter {
-    Presenter::new(DisplaySettings::default(), EffectSettings::default(), Environment::default(), rate.hz())
+/// `present:<ms>`, `a:<ms>` or `b:<ms>` (milliseconds, may be fractional).
+fn drawn_time(arg: &str) -> Option<DrawnTime> {
+    let (rule, ms) = arg.split_once(':')?;
+    let d = Duration::try_from_secs_f64(ms.parse::<f64>().ok()? / 1e3).ok()?;
+    match rule {
+        "present" => Some(DrawnTime::Present { l_max: d }),
+        "a" => Some(DrawnTime::Extrapolate { l_max: d }),
+        "b" => Some(DrawnTime::InterpolateLate { d_render: d }),
+        _ => None,
+    }
+}
+
+/// A presenter drawing by `drawn_time`.
+fn presenter(rate: SimRate, drawn_time: DrawnTime) -> Presenter {
+    let display = DisplaySettings { drawn_time, ..DisplaySettings::default() };
+    Presenter::new(display, EffectSettings::default(), Environment::default(), rate.hz())
 }
 
 /// The M1 interim's session (app.md 4 step 4): open or join, then the simulation over pe-agree and pe-net.
@@ -302,16 +326,19 @@ fn main() {
         hands.use_vr(true);
         let guard = Guard::from_env(true);
         let effects = Box::new(LogEffects);
+        let report = vr::ReportSlot::default();
+        let drawn_time = options.drawn_time.unwrap_or_else(|| DrawnTime::present(rate.hz()));
         match vr::start(
             &SystemDiscovery,
             &guard,
             ring,
             slot.clone(),
             vr::Drawing {
-                presenter: presenter(rate),
+                presenter: presenter(rate, drawn_time),
                 render: RenderSettings::default(),
                 effects,
                 captures: captures.clone(),
+                report: report.clone(),
             },
         ) {
             Ok(xr) => {
@@ -321,6 +348,13 @@ fn main() {
                 // here; xr.md 3.3's retry after a lost session comes with it.
                 let waited = wait_vr(&xr, run_for.map(|d| started + d), &console);
                 println!("vr: {waited:?}; at its end {:?}", xr.stop());
+                match report.lock().ok().and_then(|mut r| r.take()) {
+                    Some(r) => {
+                        println!("vr display lead (ms): {:?}", r.lead_ms);
+                        println!("display (vr, {drawn_time:?}): {:?}", r.render);
+                    }
+                    None => println!("display (vr): no report (the XR thread has not ended)"),
+                }
                 if waited == XrWait::Running || console.requested() {
                     console.quitting();
                     shutdown();
@@ -346,7 +380,7 @@ fn main() {
         present_mode: pe_render::wgpu::PresentMode::Fifo,
         vertical_fov: 1.0,
         clock: host,
-        presenter: presenter(rate),
+        presenter: presenter(rate, options.drawn_time.unwrap_or_default()),
         render: RenderSettings::default(),
         hand: DesktopHandSettings::default(),
         eye: RigPose { position: [0.0, 1.4, 0.0], orientation: [0.0, 0.0, 0.0, 1.0] },
@@ -470,7 +504,12 @@ fn stop_mcp(mcp: Option<api::McpThread>) {
 
 fn report_window(window: Result<DesktopReport, ContextError>) {
     match window {
-        Ok(r) => println!("window: {} frames on {}, {} skipped", r.frames, r.adapter, r.skipped),
+        Ok(r) => {
+            println!("window: {} frames on {}, {} skipped", r.frames, r.adapter, r.skipped);
+            if let Some(d) = &r.render {
+                println!("display (desktop): {d:?}");
+            }
+        }
         Err(e) => eprintln!("window: {e:?}"),
     }
 }
@@ -485,7 +524,8 @@ fn finish<S: Debug, E>(stats: Result<S, E>) {
 fn usage() -> ! {
     fail(
         "usage: pe-app [--vr] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] [--advertise <addr>]... \
-         [--identity <path>] [--mcp-pipe] [--mcp-http] [--agent <command> <args>...]",
+         [--identity <path>] [--drawn-time present:<ms>|a:<ms>|b:<ms>] [--mcp-pipe] [--mcp-http] \
+         [--agent <command> <args>...]",
     )
 }
 

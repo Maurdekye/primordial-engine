@@ -2,8 +2,11 @@
 //!
 //! Frame views arrive at the simulation rate, a world setting never tied to the display. Each display frame picks
 //! a drawn time by the configured rule and resolves every object to it:
-//! - **(a) extrapolate** (default): `t_draw = display_time`; each object is moved from the newest frame view by its
-//!   velocity, over a span capped at `l_max`;
+//! - **Present** (VR's default; render.md 7, R1 ruled): `t_draw` is the host's now when the display frame is built.
+//!   pe-render resolves it as (a); the contract is the caller's, which passes now as the display time, never a
+//!   display prediction, so each object is moved by its view's age only, capped at `l_max` (2 simulation frames);
+//! - **(a) extrapolate** (the desktop's default): `t_draw = display_time`; each object is moved from the newest frame
+//!   view by its velocity, over a span capped at `l_max`;
 //! - **(b) interpolate late:** `t_draw = display_time − d_render`, between the two frame views around it. Past the
 //!   newest view, the newest pose is held: nothing is drawn from a guess.
 //!
@@ -24,6 +27,12 @@ pub enum DrawnTime {
     Extrapolate { l_max: Duration },
     /// (b): draw `d_render` before the display time, between the two frame views around it.
     InterpolateLate { d_render: Duration },
+    /// Present (render.md 7; the user 2026-11-17 13:50Z, coordinator m5fd06b784814, mf069edef3ae4): resolved as (a),
+    /// but the caller passes the host's now when the display frame is built as `LocalPresentation::display_time`, never
+    /// the runtime's predicted display time. So the world is drawn at the engine's present, moved by each view's age
+    /// only, with `l_max` (2 simulation frames, [`DrawnTime::present`]) for a late view. VR's default: head and hands
+    /// keep OpenXR's predicted time, late-latched.
+    Present { l_max: Duration },
 }
 
 impl Default for DrawnTime {
@@ -35,10 +44,15 @@ impl Default for DrawnTime {
 }
 
 impl DrawnTime {
-    /// The drawn time for a display frame shown at `display_time`.
+    /// Present, capped at two simulation frames at `sim_hz` (render.md 7).
+    pub fn present(sim_hz: u32) -> DrawnTime {
+        DrawnTime::Present { l_max: Duration::from_nanos(2_000_000_000 / u64::from(sim_hz.max(1))) }
+    }
+
+    /// The drawn time for a display frame shown at `display_time` (under Present, the host's now).
     pub fn t_draw(&self, display_time: HostTime) -> HostTime {
         match *self {
-            DrawnTime::Extrapolate { .. } => display_time,
+            DrawnTime::Extrapolate { .. } | DrawnTime::Present { .. } => display_time,
             DrawnTime::InterpolateLate { d_render } => {
                 HostTime(display_time.0.saturating_sub(i64::try_from(d_render.as_nanos()).unwrap_or(i64::MAX)))
             }
@@ -70,7 +84,7 @@ pub fn resolve(
     let Some(newest) = history.last() else { return Resolved::default() };
     let Some(n) = newest.object(id) else { return Resolved::default() };
     match *rule {
-        DrawnTime::Extrapolate { l_max } => {
+        DrawnTime::Extrapolate { l_max } | DrawnTime::Present { l_max } => {
             let cap = l_max.as_secs_f64();
             let span = t_draw.secs_since(newest.sim_time).clamp(-cap, cap);
             Resolved { pose: Some(extrapolate(n, span)), span }
