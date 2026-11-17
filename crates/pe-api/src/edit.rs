@@ -661,13 +661,24 @@ pub fn to_world_built(
                 }
                 let me = Target::New(*new);
                 let on = on_for(me, &tagged);
-                match template {
+                // The components given as field writes after the object exists: a template's, or a Transform.
+                let writes: Vec<_> = match template {
                     None => {
+                        // A Transform starts at the parent's origin (a root's at the world's), and its fields are
+                        // then written as on any object, so a position can be given in any frame (api.md 5.3).
                         let mut rows = vec![name_row];
+                        let mut writes = vec![];
                         for (c, fields) in components {
-                            rows.push(whole_row(snap, &on, i, me, c, fields)?);
+                            if on.desc(snap, c).is_ok_and(|d| d.id() == pe_sim::ComponentId::TRANSFORM) {
+                                let bytes = bytemuck::bytes_of(&pe_sim::Transform::IDENTITY).to_vec();
+                                rows.push(Row { component: pe_sim::ComponentId::TRANSFORM, instance: 0, bytes });
+                                writes.push((c, fields));
+                            } else {
+                                rows.push(whole_row(snap, &on, i, me, c, fields)?);
+                            }
                         }
                         ops.push(Op::Create { new: *new, parent: target(*parent), index: None, rows });
+                        writes
                     }
                     Some(tpl) => {
                         // The copy brings the template's rows; the name replaces its Name row, and the components
@@ -675,18 +686,19 @@ pub fn to_world_built(
                         let source = Target::Existing((*tpl).into());
                         ops.push(Op::Copy { source, new: *new, parent: target(*parent), index: None, size: *size });
                         ops.push(Op::SetRow { id: me, row: name_row });
-                        for (c, fields) in components {
-                            for (k, v) in fields {
-                                let key = format!("{c}.{k}");
-                                if on.is_transform(snap, &key).as_deref() == Some("Transform.position") {
-                                    let Some(place) = new_place.get(new).copied() else {
-                                        return Err(not_yet(i, "a position under a parent made in this change"));
-                                    };
-                                    ops.extend(set_position(&view, snap, i, me, place, v, &dirty)?);
-                                } else {
-                                    ops.push(set_field(snap, &on, i, me, &key, v)?);
-                                }
-                            }
+                        components.iter().collect()
+                    }
+                };
+                for (c, fields) in writes {
+                    for (k, v) in fields {
+                        let key = format!("{c}.{k}");
+                        if on.is_transform(snap, &key).as_deref() == Some("Transform.position") {
+                            let Some(place) = new_place.get(new).copied() else {
+                                return Err(not_yet(i, "a position under a parent made in this change"));
+                            };
+                            ops.extend(set_position(&view, snap, i, me, place, v, &dirty)?);
+                        } else {
+                            ops.push(set_field(snap, &on, i, me, &key, v)?);
                         }
                     }
                 }
@@ -1171,9 +1183,16 @@ mod tests {
                 matches!(to_world(&r, Actor::Person, &s, None), Err(Unmapped::Failed(e)) if e.code == ErrorCode::Internal)
             );
         };
-        failed(
-            json!([{"op": "create", "parent": "/Table", "name": "x", "components": {"Transform": {"scale": [1, 1, 1]}}}]),
+        failed(json!([{"op": "add", "id": "/Table/Ball", "component": "Transform", "fields": {"scale": [1, 1, 1]}}]));
+        // A create without a template takes a Transform: a default row, then its fields as writes.
+        let r = resolved(
+            &v,
+            json!([{"op": "create", "parent": "/Table", "name": "x", "components": {"Transform": {"scale": [2, 2, 2]}}}]),
         );
+        let w = to_world(&r, Actor::Person, &s, None).expect("mapped");
+        let Op::Create { rows, .. } = &w.tx.ops[0] else { panic!("{:?}", w.tx.ops) };
+        assert!(rows.iter().any(|r| r.component == pe_sim::ComponentId::TRANSFORM), "{rows:?}");
+        assert!(matches!(w.tx.ops[1], Op::SetField { .. }), "{:?}", w.tx.ops);
         // A version this API didn't give out.
         let m = crate::query::mem::Mem::pit(0);
         let r = resolve_tx(&m, &tx(json!([{"op": "delete", "id": "/Table"}])), &|_| None).unwrap();

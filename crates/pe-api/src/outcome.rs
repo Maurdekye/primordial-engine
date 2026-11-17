@@ -7,9 +7,10 @@
 //! provisional, as the outcome's `dry_run` flag says; a live change's come from its receipt and the next snapshot. A refusal names the API op it came from (a `where` or a `set` of several fields is
 //! many pe-world ops).
 //!
-//! Not yet: `Note::Orphaned` in the outcome (it needs `Outcome.orphaned` in pe-seams), the winner's frame, member and
-//! producer in a stale refusal (they come from history, with the live path; the winning change's id is in
-//! `details.winner_change` meanwhile), and the dry run's field diff.
+//! A stale refusal carries the winning change's id in `details.winner_change`; `Api` fills the refusal's `winner`
+//! (frame, member, producer, label, value) from the change log once this machine has stepped it.
+//!
+//! Not yet: `Note::Orphaned` in the outcome (it needs `Outcome.orphaned` in pe-seams), and the dry run's field diff.
 
 use pe_core::Frame as CoreFrame;
 use pe_seams::world_api::{

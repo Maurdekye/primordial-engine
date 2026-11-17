@@ -31,6 +31,10 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync"] }
 [dev-dependencies]
 pe-seams = { path = "../pe-seams", features = ["world-api", "test-util"] }
 bytes.workspace = true
+# The agent demo script (src/agent_demo.rs): an MCP client over pe-mcp's server, as pe-mcp's own tests use it.
+rmcp = { version = "=3.8.0", default-features = false, features = ["client", "transport-async-rw"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "io-util"] }
+serde_json.workspace = true
 
 # The host clock reads CLOCK_MONOTONIC there (src/clock.rs); on Windows it reads QPC, which needs no crate.
 [target.'cfg(unix)'.dependencies]

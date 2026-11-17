@@ -2206,6 +2206,8 @@ dependencies = [
  "pe-seams",
  "pe-world",
  "pe-xr",
+ "rmcp",
+ "serde_json",
  "tokio",
 ]
 
