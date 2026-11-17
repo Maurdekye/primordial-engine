@@ -229,8 +229,12 @@ impl Snapshot for WorldView {
         Some(out)
     }
     fn projected(&self, id: ObjectId, name: &str, frame: &ObjRef) -> Vec<(String, BTreeMap<String, Json>)> {
-        let forms = match self.names.resolve_on(&self.names.attached(&self.snap, id.into()), name) {
+        // Keyed as the object's `types` name it, however it was asked (api.md 4.3, "Responses"), so two requests for
+        // one component meet at one key.
+        let attached = self.names.attached(&self.snap, id.into());
+        let forms = match self.names.resolve_on(&attached, name) {
             Err(crate::names::NameError::Ambiguous(forms)) => forms,
+            Ok(c) => vec![self.names.shown_on(&attached, c).unwrap_or_else(|| name.to_string())],
             _ => vec![name.to_string()],
         };
         forms.into_iter().filter_map(|k| self.fields(id, &k, frame).map(|f| (k, f))).collect()
