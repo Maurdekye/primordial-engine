@@ -5,7 +5,7 @@ use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId, Offset, Pos};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{Class, FieldPath, Outcome, Reason, SignedEntry};
 use pe_sim::Transform;
-use pe_world::components::{Appearance, Body, BodyState, Protection, Shape, ids, shape_kind};
+use pe_world::components::{Appearance, Body, BodyState, Hand, Protection, Shape, ids, shape_kind};
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
 use pe_world::preset::m1_line;
 use pe_world::{BlobStore, Footprint, Input, World, WorldError, perm};
@@ -13,6 +13,7 @@ use pe_world::{BlobStore, Footprint, Input, World, WorldError, perm};
 const D: pe_seams::DomainId = pe_seams::DomainId(7);
 const BALL: u128 = 10;
 const BOX: u128 = 11;
+const HELD: u128 = 12;
 
 fn oid(n: u128) -> ObjectId {
     ObjectId::from_u128(n)
@@ -213,16 +214,62 @@ fn no_edit_deletes_a_hand_or_a_subtree_holding_one() {
         let del = edit(&mut f.w, 0, b, vec![Op::Delete { id: Target::Existing(hand) }]);
         assert_eq!(reason(&del), refused);
     }
-    // Nor a subtree a hand was moved into.
-    let up = vec![Op::Reparent {
-        id: Target::Existing(f.hands_b[1]),
-        parent: Target::Existing(oid(BALL)),
-        index: None,
-        keep_world: true,
-    }];
-    let moved = edit(&mut f.w, 0, &mut f.a, up);
-    assert!(applied(&moved), "{moved:?}");
+    // Nor a subtree that holds one (built by trusted calls, since no edit can move a hand).
+    f.w.create(oid(HELD), Some(oid(BALL)), f.kb, pe_world::GENESIS).unwrap();
+    f.w.insert(oid(HELD), Transform::default()).unwrap();
+    f.w.insert(oid(HELD), Hand { owner: f.kb, ..Hand::default() }).unwrap();
     let del = edit(&mut f.w, 0, &mut f.a, vec![Op::Delete { id: Target::Existing(oid(BALL)) }]);
     assert_eq!(reason(&del), refused);
     assert!(f.w.tombstone(f.hands_b[0]).is_none());
+}
+
+/// Hands are logic's alone (7.5; @coordinator-opus m7821f3319dc2, mb4ecbbb53073): no edit moves a hand, its owner's
+/// included, or writes or removes its transform, body or shape; an object may still be moved under a hand, and a
+/// subtree holding a hand may move.
+#[test]
+fn no_edit_moves_a_hand_or_writes_its_transform() {
+    let mut f = fx();
+    let refused = Reason::Invalid { field: Some(FieldPath { component: ids::HAND.0, field: u32::MAX }) };
+    let hand = f.hands_b[0];
+    let tag = u128::from_le_bytes(f.w.store().row_version(pe_sim::ComponentId::TRANSFORM, hand).unwrap().tag);
+    let up = |id, parent| Op::Reparent { id: Target::Existing(id), parent, index: None, keep_world: true };
+    let refusals = [
+        up(hand, Target::Existing(oid(BALL))),
+        up(hand, Target::Root),
+        Op::SetRow { id: Target::Existing(hand), row: row(Transform::at(at(0.0, 2.0, 0.0))) },
+        Op::SetField {
+            id: Target::Existing(hand),
+            component: pe_sim::ComponentId::TRANSFORM,
+            instance: 0,
+            field: 1,
+            value: bytemuck::bytes_of(&[0.0f64, 2.0, 0.0]).to_vec(),
+        },
+        Op::RemoveRow { id: Target::Existing(hand), component: pe_sim::ComponentId::TRANSFORM, instance: 0, tag },
+        // Nor makes it a body, which physics would then move (@chunks-reviewer's Medium).
+        Op::SetRow { id: Target::Existing(hand), row: row(Body::default()) },
+        Op::SetRow {
+            id: Target::Existing(hand),
+            row: row(Shape { kind: shape_kind::SPHERE, size: [0.05, 0.0, 0.0], ..Shape::default() }),
+        },
+    ];
+    for op in refusals {
+        for b in [&mut f.a, &mut f.b] {
+            let o = edit(&mut f.w, 0, b, vec![op.clone()]);
+            assert_eq!(reason(&o), refused, "{op:?}");
+        }
+    }
+    // Another of the hand's rows is the edit's to write, and an object may be moved under it.
+    f.w.create(oid(BOX), None, f.kb, pe_world::GENESIS).unwrap();
+    f.w.insert(oid(BOX), Transform::at(at(0.5, 1.0, 0.0))).unwrap();
+    let name =
+        edit(&mut f.w, 0, &mut f.b, vec![Op::SetRow { id: Target::Existing(hand), row: row(Appearance::default()) }]);
+    assert!(applied(&name), "{name:?}");
+    let under = edit(&mut f.w, 0, &mut f.a, vec![up(oid(BOX), Target::Existing(hand))]);
+    assert!(applied(&under), "{under:?}");
+    // A subtree that holds a hand (built by trusted calls) may move.
+    f.w.create(oid(HELD), Some(oid(BOX)), f.kb, pe_world::GENESIS).unwrap();
+    f.w.insert(oid(HELD), Transform::default()).unwrap();
+    f.w.insert(oid(HELD), Hand { owner: f.kb, ..Hand::default() }).unwrap();
+    let moved = edit(&mut f.w, 0, &mut f.a, vec![up(oid(BOX), Target::Root)]);
+    assert!(applied(&moved), "{moved:?}");
 }
