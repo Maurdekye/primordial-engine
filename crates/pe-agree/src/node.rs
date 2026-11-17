@@ -190,7 +190,8 @@ impl NodeConfig {
         // v2: defer_bytes joined the set (the stall fix); v3: cut_interval_s (the cut grid); v4: no new setting, but
         // timeouts carry heads (the outage rule), a wire change, so builds before and after refuse each other at start.
         // v5: membership by epochs (Leave): AfterLeave and LastMember voids, members-only cuts, Wire::Epoch.
-        let mut h = Hasher::new("pe.agree.consensus.v5");
+        // v6: no new setting, but votes and timeouts carry lateness reports (stamp-ahead), a wire change.
+        let mut h = Hasher::new("pe.agree.consensus.v6");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
@@ -321,6 +322,17 @@ pub struct Node {
     pending_by_author: HashMap<MemberKey, usize>,
     /// How late other members' entries arrived, in frames: the last LATENESS_SAMPLES.
     lateness: std::collections::VecDeque<u64>,
+    /// The same samples per chain, signed (negative when an entry arrived before its stamp), with each entry's seq:
+    /// the last CHAIN_LATENESS_SAMPLES of each other member's chain, which this member's votes and timeouts report
+    /// (stamp-ahead, agreement.md 3).
+    chain_lateness: HashMap<ChainKey, std::collections::VecDeque<(i64, u64)>>,
+    /// Whether a sample came since the reports were last built.
+    lateness_dirty: bool,
+    /// Per author: the samples taken and the arrivals left out (fetched or hinted, or a claimed backlog).
+    lateness_counts: HashMap<MemberKey, LatenessCounts>,
+    /// The other members' latest reports on this member's own chains: per reporter, the (epoch, view) of the vote or
+    /// timeout that carried it (views restart in each epoch), the chain, frames and seq.
+    reported: HashMap<MemberKey, ((u64, u64), ChainKey, i64, u64)>,
     /// The outage rule's voter side (agreement.md 3): the views this member abstained in, per own entry.
     abstained: AbstainBook,
     /// The outage rule's leader side: per chain whose claimed head is ahead of what this member holds, when it began
@@ -341,6 +353,22 @@ pub struct Node {
 }
 
 const LATENESS_SAMPLES: usize = 256;
+/// Per chain, the samples a lateness report covers.
+const CHAIN_LATENESS_SAMPLES: usize = 128;
+/// Samples of a chain needed before this member reports on it.
+const CHAIN_LATENESS_MIN: usize = 16;
+
+/// How one author's entries counted toward the lateness samples (@design-reviewer's Low on stamp-ahead: on a jittery
+/// slow link a vote's claim can overtake the entries it names, which then count as backlog and go unsampled).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LatenessCounts {
+    /// Arrivals sampled.
+    pub sampled: u64,
+    /// Arrivals left out as a claimed backlog (a vote or timeout had named them first).
+    pub backlog: u64,
+    /// Arrivals left out as fetched or hinted: late by construction.
+    pub fetched: u64,
+}
 /// At most this many entries fetched on a vote's hint at once.
 const MAX_HINTS: usize = 256;
 /// A hinted fetch is dropped after this long if the entry hasn't come (no cut named it).
@@ -525,6 +553,10 @@ impl Node {
             budget: HashMap::new(),
             pending_by_author: HashMap::new(),
             lateness: std::collections::VecDeque::new(),
+            chain_lateness: HashMap::new(),
+            lateness_dirty: false,
+            lateness_counts: HashMap::new(),
+            reported: HashMap::new(),
             abstained: AbstainBook::default(),
             cap_wait: HashMap::new(),
             old_epoch: None,
@@ -818,6 +850,63 @@ impl Node {
         self.vote_high.get(key).map_or(checked, |(s, _)| checked.max(*s))
     }
 
+    /// Build the lateness reports this member's votes and timeouts carry, when a sample came since the last build:
+    /// per other member's chain with CHAIN_LATENESS_MIN samples, the 95th percentile sample's lateness and seq. The
+    /// percentile sample's own seq, not the window's highest (@design-reviewer's M1 on 0238ca46): the author corrects
+    /// a report by the lead that very entry was stamped with, so a rising lead never reads as a longer delay.
+    fn report_lateness(&mut self) {
+        if !self.lateness_dirty {
+            return;
+        }
+        self.lateness_dirty = false;
+        let members = &self.cfg.members;
+        self.chain_lateness.retain(|k, _| members.contains(&k.author));
+        let mut out: Vec<crate::core::Lateness> = self
+            .chain_lateness
+            .iter()
+            .filter(|(k, w)| k.author != self.me && w.len() >= CHAIN_LATENESS_MIN)
+            .map(|(k, w)| {
+                let mut v: Vec<(i64, u64)> = w.iter().copied().collect();
+                v.sort_unstable();
+                let (frames, seq) = v[(v.len() * 95 / 100).min(v.len() - 1)];
+                crate::core::Lateness { author: k.author, chain: k.chain, frames, seq }
+            })
+            .collect();
+        out.sort_unstable_by_key(|l| (l.author, l.chain.0));
+        out.truncate(crate::codec::MAX_HEADS);
+        self.core.set_lateness(out);
+    }
+
+    /// A verified vote's or timeout's lateness reports: keep the voter's latest on this member's own chain.
+    fn take_lateness(
+        &mut self,
+        voter: MemberKey,
+        view: u64,
+        mine: Option<ChainKey>,
+        lateness: &[crate::core::Lateness],
+    ) {
+        let Some(mine) = mine else { return };
+        if voter == self.me || !self.cfg.members.contains(&voter) {
+            return;
+        }
+        // Only the current epoch's messages reach here (older ones go to the old core), and its views restart at 1:
+        // compare (epoch, view), so a stale report from a high view of the old epoch can't win (@engine-architect).
+        let view = (self.core.epoch(), view);
+        for l in lateness.iter().filter(|l| l.author == mine.author && l.chain == mine.chain) {
+            let r = self.reported.entry(voter).or_insert((view, mine, l.frames, l.seq));
+            // Messages can arrive out of order: keep the report of the latest (epoch, view). Not the highest seq, since the
+            // percentile sample's seq can fall from one report to the next.
+            if r.1 != mine || view >= r.0 {
+                *r = (view, mine, l.frames, l.seq);
+            }
+        }
+    }
+
+    /// Per author: how its entries counted toward the lateness samples.
+    pub fn lateness_counts(&self) -> HashMap<MemberKey, LatenessCounts> {
+        self.lateness_counts.clone()
+    }
+
     /// A verified vote's heads name `seq` on `key`: remember the claim, within the bounds (see `vote_high`).
     fn claim_from_vote(&mut self, voter: MemberKey, key: ChainKey, seq: u64) {
         let checked = self.seen_high.get(&key).copied().unwrap_or(0);
@@ -910,13 +999,29 @@ impl Node {
                 // Lateness from unsolicited entries only: a fetched one arrives late by construction.
                 // Nor from a claimed backlog (the outage rule): its entries arrive late by construction too.
                 let backlog = self.vote_high.get(&key).is_some_and(|(s, _)| *s >= e_seq);
-                if let Some(p) = self.present.filter(|_| author != self.me && !solicited && !hinted && !backlog) {
-                    {
+                if let Some(p) = self.present.filter(|_| author != self.me) {
+                    let c = self.lateness_counts.entry(author).or_default();
+                    if solicited || hinted {
+                        c.fetched += 1;
+                    } else if backlog {
+                        c.backlog += 1;
+                    } else {
+                        c.sampled += 1;
                         let stamp = self.log.get(&key, &id).map_or(p, |e| e.entry.stamp);
+                        // Signed for the reports (@engine-architect's Medium on 0238ca46): an entry stamped ahead by
+                        // more than its delay arrives early, and a report clamped at 0 would hide a lead that is too
+                        // large. The lag counts an early one as on time.
+                        let late = p.0 as i64 - stamp.0 as i64;
                         if self.lateness.len() == LATENESS_SAMPLES {
                             self.lateness.pop_front();
                         }
-                        self.lateness.push_back(p.0.saturating_sub(stamp.0));
+                        self.lateness.push_back(late.max(0) as u64);
+                        let w = self.chain_lateness.entry(key).or_default();
+                        if w.len() == CHAIN_LATENESS_SAMPLES {
+                            w.pop_front();
+                        }
+                        w.push_back((late, e_seq));
+                        self.lateness_dirty = true;
                     }
                 }
                 self.by_ref.insert(id, key);
@@ -2005,14 +2110,15 @@ impl Agreement for Node {
                 // solicited, so they pass the author's budget like any other, and the hint expires.
                 // A timeout's heads count the same (the outage rule: an abstaining member's timeout carries them).
                 let heads = match &m {
-                    core::Msg::Vote(v) => (v.voter, v.heads.clone()),
-                    core::Msg::Timeout(t) => (t.voter, t.heads.clone()),
-                    _ => (from, Vec::new()),
+                    core::Msg::Vote(v) => (v.voter, v.heads.clone(), v.view, v.lateness.clone()),
+                    core::Msg::Timeout(t) => (t.voter, t.heads.clone(), t.view, t.lateness.clone()),
+                    _ => (from, Vec::new(), 0, Vec::new()),
                 };
                 match self.core.receive(from, m, at, self.verifier.as_ref()) {
                     Ok(()) => {
-                        let (voter, heads) = heads;
+                        let (voter, heads, view, lateness) = heads;
                         let mine = self.my_head.map(|(k, _, _)| k);
+                        self.take_lateness(voter, view, mine, &lateness);
                         for h in heads {
                             let key = ChainKey { author: h.author, chain: h.chain };
                             if Some(key) == mine && voter != self.me {
@@ -2099,6 +2205,7 @@ impl Agreement for Node {
         self.note_abstention();
         let heads = self.heads_beyond_final();
         self.core.set_timeout_heads(heads);
+        self.report_lateness();
         self.core.tick(now, self.signer.as_ref());
         let lag = self.cut_lag_frames();
         let cap = self.backlog_cap();
@@ -2191,6 +2298,18 @@ impl Agreement for Node {
         // Left, and every remaining member has E final: they all told this one so for the epoch it ended.
         self.former.contains(&self.me)
             && self.settled.get(&self.core.epoch()).is_some_and(|s| self.cfg.members.iter().all(|m| s.contains(m)))
+    }
+
+    fn own_lateness(&self) -> Vec<pe_seams::LatenessReport> {
+        let Some((mine, _, _)) = self.my_head else { return Vec::new() };
+        let mut out: Vec<pe_seams::LatenessReport> = self
+            .reported
+            .iter()
+            .filter(|(r, (_, k, _, _))| *k == mine && self.cfg.members.contains(r))
+            .map(|(r, (_, _, frames, seq))| pe_seams::LatenessReport { reporter: *r, frames: *frames, seq: *seq })
+            .collect();
+        out.sort_unstable_by_key(|l| l.reporter);
+        out
     }
 
     fn stats(&self) -> AgreeStats {
