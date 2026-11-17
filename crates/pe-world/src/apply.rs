@@ -536,13 +536,24 @@ impl World {
         let due: Vec<AssetId> = self
             .pending
             .iter()
-            .filter(|(_, p)| p.void.is_none() && (p.attested_by_quorum() || frame >= p.deadline))
+            .filter(|(_, p)| {
+                p.void.is_none()
+                    && (p.attested_by_quorum()
+                        || p.quorum_unreachable(|k| self.members.contains_key(k))
+                        || frame >= p.deadline)
+            })
             .map(|(a, _)| *a)
             .collect();
         for a in due {
             let p = self.pending[&a].clone();
-            let done =
-                if p.attested_by_quorum() { self.activate(a, &p, frame) } else { Err((VoidKind::Unattested, None)) };
+            // Activation first, then the shared void rule, then the deadline (logic.md 6.2a).
+            let done = if p.attested_by_quorum() {
+                self.activate(a, &p, frame)
+            } else if p.quorum_unreachable(|k| self.members.contains_key(k)) {
+                Err((VoidKind::QuorumUnreachable, None))
+            } else {
+                Err((VoidKind::Unattested, None))
+            };
             match done {
                 Ok(report) => {
                     Arc::make_mut(&mut self.pending).remove(&a);
@@ -708,7 +719,7 @@ impl World {
             WorldError::TooDeep { object, limit } => too_deep(object, limit),
             WorldError::Duplicate(id) => Reason::Exists(id),
             WorldError::UnknownObject(id) => Reason::Unknown(id),
-            WorldError::Store(_) => invalid(),
+            WorldError::Store(_) | WorldError::NotAMember(_) => invalid(),
         })?;
         cx.new.insert(new, id);
         for r in rows {
@@ -754,6 +765,11 @@ impl World {
             Res::Live(o) => o,
         };
         let doomed = self.store.subtree(o);
+        // Hands are made and removed only by logic (`admit`, `leave`), so a subtree holding one is no edit's to delete,
+        // as it is no edit's to copy (7.5; @coordinator-opus md7f2148e0db5).
+        if doomed.iter().any(|&d| self.store.get_raw(ids::HAND, d).is_some()) {
+            return Err(invalid_field(ids::HAND, u32::MAX));
+        }
         // A hold by anyone but the author refuses the delete (7.2). The author's own holds end with it, so a player
         // can delete what they hold without letting go first (@coordinator-opus m6d5969e46cb1, option (b)).
         for d in &doomed {

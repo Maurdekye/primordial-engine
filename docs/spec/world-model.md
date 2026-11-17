@@ -265,8 +265,36 @@ which fixes the origin's role deliberately.
   that, every machine must admit identically, so `perms`, `spawn` and the frame come from the agreed join record
   (8), never from local state. The hands' versions are `GENESIS`, since no edit made them; naming the join's entry
   instead is open until 9.2 gives the join an id (@design-reviewer's Low). A rejoin at a later frame gets two new hands (the ids
-  include the admission frame, as 8 intends); removing a leaver's hands belongs to the leave, which is not built yet,
-  so until then an M1 world never readmits a member (@chunks-reviewer's note). The avatar root that should parent the hands (3.5) is not built yet; its id derivation is open.
+  include the admission frame, as 8 intends), once a leave has removed the old ones. The avatar root that should
+  parent the hands (3.5) is not built yet; its id derivation is open.
+- **A leave** (`World::leave(member, entry)`; @coordinator-opus m003987d0d045 and mbdc0966ab9ab, after
+  @fable-reviewer m4598f19943d3): the world side of the member's final `Leave` entry (pe-agree's epoch change,
+  agreement.md 8), applied at its stamp on every replica, as a join is by `admit`. It is all or nothing, and refused
+  with `WorldError::NotAMember` for a key that holds no permission bits. That is its only error, since every step
+  below is infallible: a hand's child that can't keep its world pose under the hand's parent becomes a root. In
+  order:
+  1. **The hands are removed outright,** with no tombstone, so no edit can undelete one; their hand packs go with
+     them, and so does any tombstone of a hand of the member's that an edit deleted. A hand's children first move to
+     the hand's parent (M1's hands are roots, so they become roots), keeping their world pose and the hand's child
+     order, versioned by the leave's entry.
+  2. **Every claim by the member ends,** as a release does (7.2): the object keeps its velocity and no cooldown
+     starts, so another member may grab it on the next frame.
+  3. **The member's input rows go:** its cooldowns and its push window. A later readmission starts clean. A leave and
+     rejoin can't be used to skip a cooldown or refill a push budget at will, since a rejoin needs an admin's
+     `Admit`: two epoch changes and a person.
+  4. **Its permission bits are dropped,** so any later entry of its is refused (`NoPermission` for an edit; an input
+     names a hand that no longer exists). pe-agree also makes `Leave` the last entry of the leaver's chain.
+  5. **Pending script commits are left to logic.md 6.2a:** the voters stay those at `c`, and an attestation given
+     before the leave still counts. A commit whose quorum the leave makes unreachable is voided at that frame's end
+     by 6.2a's shared void rule, as `QuorumUnreachable` (`VoidKind` 5), rather than at `D`. The leaver's own pending
+     commit voids at activation as `AuthorRevokedAtActivation` if it reaches its quorum, at that frame's end as
+     `QuorumUnreachable` if the leave leaves it unreachable, or else at `D` as `Unattested`; a readmission with
+     `EDIT` before its `F` would let it activate, since `EDIT` is checked at `F`.
+
+  Everything else the member made or set stays: a leave is not a delete. Its objects keep their rows, and the
+  protections it set stay. Until agent powers (8.1) lets an admin clear a lock, nobody can lift those protections,
+  and with no admin left they stay frozen for good. The root after an admit and its leave equals the root before
+  the admit, apart from what the member made and changed.
 - **An interim session's world** (@engine-architect's `pe_app::genesis`; @coordinator-opus m9571fcf519b9,
   m4d09145cb902) is `preset::m1_session(&Session, blobs)`: the pit of `ball_pit_on` on the session's line, at the
   session's rate, with its gravity and pe-agree's settings record (config item 4; in M1 that is pe-agree's 32-byte
@@ -967,8 +995,8 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     is `version entry (32) ‖ op u32 ‖ author (32) ‖ source (hash 32 ‖ len u64) ‖ toolchain (32) ‖ sdk (32) ‖
     author_module (32) ‖ count u32 ‖ component ids (u128 LE, ascending) ‖ c u64 ‖ D u64 ‖ count u32 ‖ voters (32 each,
     ascending) ‖ count u32 ‖ attestations (voter 32 ‖ stamp u64, ascending, voters only) ‖ void u8 (0 none, 1
-    Unattested, 2 RekeyBlockedAtActivation, 3 RekeyTooLarge, 4 AuthorRevokedAtActivation) ‖ its frame u64 if not 0`. A
-    world with no scripts has no entries, so its root is unchanged.
+    Unattested, 2 RekeyBlockedAtActivation, 3 RekeyTooLarge, 4 AuthorRevokedAtActivation, 5 QuorumUnreachable) ‖ its
+    frame u64 if not 0`. A world with no scripts has no entries, so its root is unchanged.
   - governance: key the member key (32); value the permission bits `u32`;
   - claims: key the object id; value `hand u128 ‖ member (32) ‖ since u64 ‖ until u64`;
   - cooldowns: key `member (32) ‖ object id`; value `until u64`;
@@ -1172,6 +1200,9 @@ orphaned. if the delete occured second, then everything is destroyed."
 
 - **Delete second:** `Delete` destroys the object and its whole subtree, add-ons included, as today
   [V `store.rs:131-153`].
+- **No edit deletes a hand** (@coordinator-opus md7f2148e0db5): a `Delete` whose subtree holds a `Hand`, anyone's,
+  the author's own included, is refused as `Invalid` naming `Hand`, as `Copy` is (7.6). Hands are made and removed
+  only by logic: `admit` and the leave (2.4).
 - **Delete first:** an edit that creates an object under, or reparents an object to, an object already deleted does
   not fail (@diverge-eng's R-O1, `docs/spec/divergence.md` §10). The object becomes a root:
   - a created object is placed where the deleted parent last was: its last world transform, composed with the op's
@@ -1478,7 +1509,7 @@ pe-world decodes and applies the `Input` class too, because inputs write world s
   `BLAKE3("pe.hand" ‖ line id ‖ member key ‖ side ‖ admission frame)[..16]` (@chunks-reviewer's N3), so a rejoin
   gets fresh hands.
   No edit ever writes a `Hand` row (7.6), so no edit can create a hand owned by someone else's key. A leave removes
-  them the same way.
+  them the same way, with the rest of 2.4's leave.
 - **Validity:** finite values, positions in range, impulses within a world limit [I]; a failure refuses the entry.
 
 ### 8.1 The input payload, claims and pushes (r14)

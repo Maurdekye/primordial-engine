@@ -77,6 +77,8 @@ pub enum WorldError {
     TooDeep { object: ObjectId, limit: u32 },
     /// pe-sim refused the write (an invalid value, an unknown component, a cycle).
     Store(pe_core::Error),
+    /// A leave by a key that holds no permission bits (2.4).
+    NotAMember(MemberKey),
 }
 
 impl From<pe_core::Error> for WorldError {
