@@ -387,6 +387,9 @@ reparents whose parent was gone, 4.2), `resent_as` (the entry that carried it, w
 - **A re-sent change keeps its id.** The caller's `change` stays the one `apply` returned; `resent_as` names the
   entry now carrying it, and `frame`, `created` and `changed` are that entry's. Its created objects have new ids
   (ids derive from the entry, 4.3), which `created` gives under the caller's `$names` (9.4).
+- **A `code` change reports twice** (7): once when its entry is final, as any change, and once more when its
+  version activates or is voided (`activated`/`voided` in `mine`, 7). 9.4's "one notice" covers only the re-send
+  backstop, which never takes code.
 
 #### 5.3.3 Refusals
 
@@ -584,7 +587,7 @@ WS-logic (@iter-bench) owns what a script is, how it compiles and how it runs (`
   diagnostics (file, line, column, severity, message, code) plus pe-logic's own refusals as kinds (`import`,
   `feature`, `manifest`, `reserved_name`); on success also the module hash, the declared systems and components, and
   the build time. It changes nothing. Builds run one at a time per machine at idle priority, so a check may queue
-  behind a commit's build; it runs on a worker through the logic port, never the simulation thread, and the call's
+  behind a commit's build; it runs on a worker through the build port (7.1), never the simulation thread, and the call's
   deadline bounds it.
 - **A script is an asset, not an object.** It is bound to objects through a `Script` component.
 - **The `code` op** of `apply`: `{"op": "code", "id": <script asset id, or a $ref for a new script>, "source":
@@ -592,17 +595,96 @@ WS-logic (@iter-bench) owns what a script is, how it compiles and how it runs (`
   pe-sdk; a blob tree (`"b:…"`) for multi-file crates comes later, and the schema keeps both forms. Its
   precondition is the script's current version (the hash of its source tree): two agents committing on one base get
   one winner and one `stale_version`.
+  - **A script's id** is an asset id, written `"a:<64 hex>"`, apart from object ids (ruling me2c6f95478cf, after
+    @fable-reviewer m4ee9b0ed3628). A new script's id is never chosen by the client: its `$name` maps to `New(k)`
+    as for objects, and pe-world derives the id from the creating entry (line, author, chain, seq, k) under its own
+    domain tag, so an asset id never equals an object id and nobody can squat on a pending id or reuse a destroyed
+    one (@world-model's). The outcome returns it in `scripts` (`$name` to `{ id, version }`, S6 v1.7), beside
+    `created`, which stays objects only. A re-sent entry derives a new id, and its dependents are rewritten by k as
+    9.4 rewrites created objects.
 - **Compiling is checked once, at submission.** The author's machine compiles and validates before it submits; a
-  failure refuses the `code` op as `compile`, with the diagnostics, and no entry is made. Once the entry exists, its
+  failure refuses the `code` op as `compile`, with the diagnostics (a margin, 7.1, is named as such), and no entry
+  is made. Once the entry exists, its
   outcome is the same everywhere: `accepted`, then `final` at the cut, or `stale_version` by its precondition. An
   outcome is world state, so it cannot depend on one machine's compiler.
-- **Activation follows Q3** (mf7daea6446ca): the author's machine runs the change at once; every other machine
-  compiles the same source itself and activates at the agreed frame (`activate_at`, stamped by the simulation thread
-  at submission; the API never sets it); no machine runs another's build (Q3c). If another machine's own build fails
-  or differs, that is a local fault on that machine, reported with both module hashes and recovered as a diverged
-  member (WS-diverge). It is not a refusal, and the author's outcome does not change.
+- **Activation is by attestation** (logic.md 6.2a): every voting machine builds the same source itself, no machine
+  runs another's build (Q3c), and the version activates at the frame its quorum of attestations reaches, or the
+  commit is voided (`Unattested`, `QuorumUnreachable`). The commit counts as its author's attestation.
+  `CommitScript.activate_at` is the entry's own stamp: pe-api leaves it at 0, "set by the submitting machine's step
+  2", and step 2 sets it in every transaction it drains (@engine-architect me97cb2e93a60). A dry run sets it to the
+  frame it applies at. A version's activation or void reaches pe-api through S5 v1.8's `FrameView.activations`
+  (@engine-architect, @item:primordial-engine/s5-v1-8-frameview-activations-the-code-commit-re): per (asset,
+  version), `Activated { rekeyed }` or `Voided { why, objects, more, failed }`, with `activations_retracted` for
+  records a re-simulation no longer produces. It is world state, the same on every machine, and the source of
+  `history`'s entry and of Q1 (c)'s "who couldn't build it and why" (`failed`, by `BuildFailure::name()`).
+- **The author is told, in M1** (rulings m5dcad30c0dd8, m9dae7344d1af; @design-reviewer m86cc1ceec001): from
+  `FrameView.activations` at final frames only, one more `mine` item to the commit's principal under the commit's
+  `change` id: `activated` (`frame`, the objects re-keyed) or `voided` (`kind`: `unattested`,
+  `quorum_unreachable` or the world's other kinds; `frame`; `failed`: each member who couldn't build it, with the
+  reason's name, never compiler output). `history` shows it as the change's status. Without it an agent would see
+  `final` for a version that never ran.
 - Component types a script declares appear in `schema` once it is active, with a new schema version.
 - `code.test` (a fork with random rollbacks) and `fork.*` are M2.
+
+### 7.1 The build port and the machine lane
+
+Agreed with @vdw-physics (m30a7e05b2344) and @engine-architect (me97cb2e93a60). pe-api doesn't depend on pe-logic, so
+it never links the compiler or the runtime; pe-app gives it a handle to the machine's one build service.
+
+```rust
+pub trait Builds: Send + Sync {
+    /// Build and validate a source archive (logic.md 4.1a) as its author's machine: blocking, on an API worker
+    /// thread, never the simulation thread. `deadline` bounds the wait in the queue.
+    fn build(&self, archive: &[u8], deadline: Instant) -> Result<Built, BuildRefused>;
+}
+pub struct Built {
+    pub module: Hash,          // the metered bytes' hash, Script::module_hash(): exactly CommitScript.author_module
+    pub toolchain: Hash,
+    pub sdk: Hash,             // as CommitScript carries them
+    pub components: Vec<ComponentDesc>, // as declared, under V's ids
+    pub systems: Vec<String>,
+    pub warnings: Vec<Diagnostic>,
+    pub build_ms: u32,
+    pub peak_bytes: Option<u64>, // None until pe-logic measures a build's peak (6.2a item 5)
+}
+pub enum BuildRefused {
+    Failed(Vec<Diagnostic>),                 // rustc's, or pe-logic's kinds
+    Margin { which: Margin, measured: u64 }, // the author's margins: 15 s (Q4 (b)), 512 MiB (M1's cap)
+    Timeout,                                 // the deadline passed in the queue
+    Unavailable(String),
+}
+```
+
+- **Given at `Api::new`** as `Option<Arc<dyn Builds>>`; with none, `code_check` and the `code` op answer
+  `unavailable`. pe-app starts the build service before it creates the ports.
+- **One build at a time per machine**, on the build service's thread: the replica's builds of others' pending
+  commits first (they have a deadline D), then API builds, first in, first out within each. A queued API build
+  whose deadline has passed leaves the queue unbuilt; one that has started finishes into the cache, so a retry
+  answers at once.
+- **One cache, by V** (the archive's hash; enough because the machine's toolchain and SDK are fixed for the
+  process's life, and the commit carries both hashes for the attesters' comparison), shared by `code_check`, the `code` op and the build thread, so a check
+  and then a commit of the same source build once. A committed V stays until its commit activates or is voided;
+  checks keep the last 16 [I]. The build thread loads a module into the runner only for a pending commit, the
+  author's included, so a check that is never committed costs the runner nothing.
+- **Margins** are applied by the service when building as author (every `Builds::build` is one; the replica's
+  attesting builds don't come through this port). A margin refusal names the margin, never `compile`. `build_ms`
+  and `peak_bytes` measure the build itself at the pinned job count (logic.md 6.2b), never the time in the queue:
+  an author queued behind others' attesting builds is not refused at 15 s. The service times the build itself today, so the 15 s
+  margin applies now; the 512 MiB margin applies once pe-logic reports the peak of the build's process tree (a job
+  object on Windows, `RUSAGE_CHILDREN` on Unix; @iter-bench's), and until then `peak_bytes` is `None` and no memory
+  margin is applied (@vdw-physics mb6af7eecd6a7).
+- **Diagnostics** are rustc's JSON messages with paths remapped to `/script/...`, once pe-logic returns them
+  (@iter-bench, m3a9e4e09e60c: `BuildError::Rustc { text, diagnostics }`). Until then a failure is one `rustc`
+  diagnostic holding the text.
+- **The machine lane**: `EditQueue::submit_machine(tx)` for the build worker's `AttestBuild` and `BuildFailed`
+  (pe-app's build worker calls it; pe-replica never submits). No principal, no bucket, no `mine`, never re-sent
+  (a voided attestation is the build worker's to post again while D allows); `history` shows it as the machine's.
+  The re-post is state-based, so it needs no void plumbing and covers a void from any cause: once the final frame
+  passes its attestation's stamp, if the pending commit's `attested` in the final snapshot lacks this member and D
+  is still ahead, the worker posts again (@design-reviewer m86cc1ceec001; at n = 2 one late-voided attestation would
+  otherwise leave a good commit `unattested` at D).
+  Step 2 drains it ahead of the backstop's re-sends and fresh changes: an attestation has a deadline, and nothing an
+  API change depends on is a machine entry, so moving them up breaks no order.
 
 ## 8. `view_capture`
 
