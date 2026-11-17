@@ -20,6 +20,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use pe_api::api::{Api, SessionFacts, WorldSource};
+use pe_api::builds::Builds;
 use pe_api::changes::{CAPACITY, ChangeLog};
 use pe_api::queue::EditQueue;
 use pe_mcp::host::{self, HostOpts};
@@ -58,12 +59,15 @@ pub fn agreed_of(replica: &dyn Replica) -> Option<Arc<WorldSnapshot>> {
     replica.agreed_snapshot()?.1.downcast::<WorldSnapshot>().ok()
 }
 
-/// pe-api's ports over one simulation: the shared state [`ApiWorld`] reads, the edit queue and the change log.
+/// pe-api's ports over one simulation: the shared state [`ApiWorld`] reads, the edit queue and the change log, and
+/// the machine's build service once it has started.
 #[derive(Clone)]
 pub struct Ports {
     pub shared: Arc<ApiShared>,
     pub queue: Arc<EditQueue>,
     pub log: Arc<ChangeLog>,
+    /// The build port (api.md 7.1): pe-app's `Builder`, without which `code_check` answers `unavailable`.
+    pub builds: Option<Arc<dyn Builds>>,
 }
 
 impl Ports {
@@ -73,12 +77,22 @@ impl Ports {
         let queue = Arc::new(EditQueue::new(QUEUE, wake));
         let log = Arc::new(ChangeLog::new());
         queue.track_into(log.clone());
-        Ports { shared: Arc::new(ApiShared::new(genesis, facts)), queue, log }
+        Ports { shared: Arc::new(ApiShared::new(genesis, facts)), queue, log, builds: None }
+    }
+
+    /// These ports with the machine's build service, which the WorldApi builds through (api.md 7.1).
+    pub fn with_builds(mut self, builds: Arc<dyn Builds>) -> Ports {
+        self.builds = Some(builds);
+        self
     }
 
     /// The WorldApi over these ports, which pe-mcp serves (api.md 6.1).
     pub fn api(&self) -> Arc<dyn WorldApi> {
-        Arc::new(Api::new(ApiWorld(self.shared.clone()), self.queue.clone(), self.log.clone()))
+        let api = Api::new(ApiWorld(self.shared.clone()), self.queue.clone(), self.log.clone());
+        Arc::new(match &self.builds {
+            Some(b) => api.with_builds(b.clone()),
+            None => api,
+        })
     }
 }
 

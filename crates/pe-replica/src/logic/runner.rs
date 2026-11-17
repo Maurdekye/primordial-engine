@@ -54,12 +54,23 @@ impl Held {
     /// Loads `wasm` as the build service gives it: validated, metered and compiled, and its manifest read, which runs
     /// the module (so the calling thread needs `Settings::thread_stack` of native stack). With its hash.
     fn load(engine: &wasmtime::Engine, settings: Settings, wasm: &[u8]) -> Result<(Hash, Held), LoadError> {
-        let script = Script::load(engine, settings, wasm)?;
-        let manifest = run::read_manifest(&script).map_err(|e| LoadError::Compile(e.0))?;
+        Held::of(Script::load(engine, settings, wasm)?)
+    }
+
+    /// A module pe-logic has loaded, with its manifest read (which runs it) and its hash. A manifest that won't read
+    /// is the module's own fault, the same everywhere, so it is refused (the API's `Manifest` kind), never a
+    /// `LoadError::Compile`, which pe-logic keeps for this machine's own faults.
+    fn of(script: Script) -> Result<(Hash, Held), LoadError> {
+        let manifest = run::read_manifest(&script).map_err(|e| refused(format!("its manifest: {}", e.0)))?;
         let hash = script.module_hash();
         let metered = Bytes::from(script.metered.clone());
         Ok((hash, Held { metered, manifest, script }))
     }
+}
+
+/// A refusal of the module's own making that the metering pass's kinds don't name: its manifest or its components.
+fn refused(message: String) -> LoadError {
+    LoadError::Refused(pe_logic::meter::Refusal { kind: pe_logic::meter::RefusalKind::Abi, message })
 }
 
 /// Modules loaded through a [`ModuleInbox`], in their order of arrival, until the runner takes them.
@@ -95,8 +106,32 @@ impl ModuleInbox {
     /// from the settings it meters with.
     pub fn describe(&self, wasm: &[u8], v: &Hash) -> Result<Described, LoadError> {
         let (module, held) = Held::load(&self.engine, self.settings, wasm)?;
-        let components = own_components(&held.manifest, v).map_err(LoadError::Compile)?;
-        Ok(Described { module, components })
+        Described::of(module, &held.manifest, v)
+    }
+
+    /// [`ModuleInbox::load`] for a module pe-logic has already loaded with this inbox's engine and settings
+    /// ([`ModuleInbox::engine`], [`ModuleInbox::settings`]), as its `build_for_row` gives it: the runner holds this one,
+    /// without loading it again. A module loaded with another engine must not come here.
+    pub fn load_script(&self, script: Script) -> Result<Hash, LoadError> {
+        let (hash, held) = Held::of(script)?;
+        lock(&self.arrived).push((hash, held));
+        Ok(hash)
+    }
+
+    /// [`ModuleInbox::describe`] for a module pe-logic has already loaded with this inbox's engine and settings.
+    pub fn describe_script(&self, script: &Script, v: &Hash) -> Result<Described, LoadError> {
+        let (module, held) = Held::of(script.clone())?;
+        Described::of(module, &held.manifest, v)
+    }
+
+    /// The engine this inbox's runner compiles with: a module loaded with it can go to [`ModuleInbox::load_script`].
+    pub fn engine(&self) -> &wasmtime::Engine {
+        &self.engine
+    }
+
+    /// The settings this inbox's runner meters and compiles with, which decide a module's hash.
+    pub fn settings(&self) -> Settings {
+        self.settings
     }
 
     /// The native stack a thread that calls [`ModuleInbox::load`] or [`ModuleInbox::describe`] needs: reading a
@@ -114,6 +149,18 @@ pub struct Described {
     /// Its own components under the ids V gives them (`pe_world::script::script_component_id`), in the manifest's
     /// order. With the tag `tag_desc(V)` these are the version's components, which the commit registers.
     pub components: Vec<ComponentDesc>,
+    /// Its systems' names, in the manifest's order (what pe-api's `code_check` reports).
+    pub systems: Vec<String>,
+}
+
+impl Described {
+    /// The description of the module `module` whose manifest is `manifest`, under version `v`. A component that
+    /// won't take an id is the module's own fault, so it is refused like a manifest that won't read.
+    fn of(module: Hash, manifest: &Manifest, v: &Hash) -> Result<Described, LoadError> {
+        let components = own_components(manifest, v).map_err(refused)?;
+        let systems = manifest.systems.iter().map(|s| s.name.clone()).collect();
+        Ok(Described { module, components, systems })
+    }
 }
 
 /// `manifest`'s own components (not the engine's) under the ids version `v` gives them, in the manifest's order. An
