@@ -20,8 +20,8 @@ use pe_render::present::FrameSlot;
 use pe_replica::{DriveReport, Driver};
 use pe_seams::world_api::TxId;
 use pe_seams::{
-    AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, HandFeed, HostTime,
-    Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate, Transport, VoidReason,
+    AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, Hand, HandFeed,
+    HostTime, Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate, Transport, VoidReason,
 };
 
 use crate::clock::HostClock;
@@ -203,6 +203,15 @@ pub struct SimStats {
     pub finalized: u64,
     /// This member's `Leave` submissions agreement refused (app.md 4): each is tried again at the next tick.
     pub leave_refused: u64,
+    /// Stamp-ahead's lead at the latest tick, in frames (app.md 3.2).
+    pub lead: u64,
+    /// The largest lead so far, and the longest drain of a surplus, in frames (@coordinator-opus m744fc393cdf9).
+    pub largest_lead: u64,
+    pub longest_drain: u64,
+    /// Hand poses not sent because the frame's stamp stood still while the lead shed (app.md 3.2).
+    pub poses_thinned: u64,
+    /// Frames stamp-ahead's speed test found a hand moving, so the lead shed at most one frame in 11 (app.md 3.2).
+    pub moving_frames: u64,
 }
 
 /// The simulation thread's state: agreement, the replica and the loop around them.
@@ -223,6 +232,13 @@ pub struct Sim {
     local: Option<Local>,
     /// The frame step 2 last submitted the local player's inputs for.
     input_frame: Option<Frame>,
+    /// The stamp of the last frame's inputs: a frame whose stamp equals it thins its poses (app.md 3.2).
+    input_stamp: Option<Frame>,
+    /// Stamp-ahead (app.md 3.2, [`crate::stamp`]): the lead this member's own entries are stamped ahead by, fed each
+    /// tick from the other members' lateness reports (S3 v1.8). `None` stamps them at the present.
+    lead: Option<crate::stamp::StampLead>,
+    /// Stamp-ahead's speed test (app.md 3.2): whether a hand moves, which slows the lead's shedding.
+    motion: crate::stamp::Motion,
     /// The network (S4): pe-net's handle, or a test's in-process network. `None` is a world alone.
     net: Option<Box<dyn Transport + Send>>,
     net_hook: Option<Box<dyn NetHook>>,
@@ -271,6 +287,15 @@ pub trait NetHook: Send {
 /// in the transport's bounded queue for the next one.
 pub const MAX_IN_PER_TICK: usize = 1024;
 
+/// The host time of `t`, a present in fractional frames (stamp-ahead's pose clock): between its frame's start and the
+/// next's, in proportion.
+fn host_time_at(clock: &dyn FrameClock, t: f64) -> HostTime {
+    let f = t.max(0.0).floor();
+    let (a, b) = (clock.host_time_of(Frame(f as u64)), clock.host_time_of(Frame(f as u64 + 1)));
+    // A float-to-integer cast saturates, and the fraction is in [0, 1), so this stays between the two.
+    HostTime(a.0 + ((b.0 - a.0) as f64 * (t - f)) as i64)
+}
+
 /// The local player's chain and hand feed (app.md 3, step 2).
 struct Local {
     chain: Chain,
@@ -289,6 +314,9 @@ impl Sim {
         budget: Budget,
     ) -> Sim {
         replica.set_budget(budget.current());
+        // Stamp-ahead on by default (app.md 3.2): with no reports, or reports within the target, the lead stays 0.
+        let lead = SimRate::new(clock.rate_hz()).map(|r| crate::stamp::StampLead::new(crate::stamp::LeadConfig::m1(r)));
+        let motion = crate::stamp::Motion::new(crate::stamp::MotionConfig::m1(clock.rate_hz()));
         Sim {
             agree,
             replica,
@@ -302,6 +330,9 @@ impl Sim {
             stats: SimStats::default(),
             local: None,
             input_frame: None,
+            input_stamp: None,
+            lead,
+            motion,
             net: None,
             net_hook: None,
             event_log: None,
@@ -427,6 +458,14 @@ impl Sim {
         self.notices.push(notice);
     }
 
+    /// Stamp-ahead's lead (app.md 3.2), M1's settings by default: `None` stamps this member's entries at the present,
+    /// as a test of the receivers' side does; `Some` replaces the controller, for one with other settings or a fixed
+    /// lead ([`crate::stamp::StampLead::fixed`]).
+    pub fn with_stamp_lead(mut self, lead: Option<crate::stamp::StampLead>) -> Sim {
+        self.lead = lead;
+        self
+    }
+
     /// Keep S3's events in `log` as well as counting them (a test's, or a diagnostic's: it grows without a bound).
     pub fn with_event_log(mut self, log: Arc<std::sync::Mutex<Vec<AgreeEvent>>>) -> Sim {
         self.event_log = Some(log);
@@ -528,17 +567,46 @@ impl Sim {
         // The frame's edit goes first, before its hand entries, so that a dry run made while pe-api's queue was empty
         // names the seq the edit gets (app.md 3.1). One a frame, never paced: an edit is never void as late for
         // being held back, and the queue's wake (step 7) brings its frame's tick.
-        // The graceful quit (app.md 4): once asked, this member's `Leave` goes out first in the frame, at the present
-        // frame, and it is the chain's last entry. No edit or hand entry follows it, and an edit still queued is
-        // refused as agreement would refuse it.
+        // Stamp-ahead (app.md 3.2): the lead follows the other members' reports, and the frame's entries go that far
+        // ahead of the present, never below the chain's last stamp. The speed test reads both hands at `p`'s host time
+        // once a frame: while either moves, the lead sheds at most one frame in 11. The pose clock then says which
+        // moment the frame's poses carry, so a shed is spread over the stamps up to the next. A member that is leaving
+        // sends no more hands, so it reads none.
+        let fresh = self.leaving == Leaving::Staying && self.input_frame.is_none_or(|f| p > f);
+        if let (true, Some(_), Some(l), Some(view)) = (fresh, &self.lead, &self.local, &self.published) {
+            let at = self.clock.host_time_of(p);
+            for (i, side) in [Hand::Left, Hand::Right].into_iter().enumerate() {
+                let pose = l
+                    .hands
+                    .hand_at(side, at)
+                    .filter(|h| h.tracked)
+                    .and_then(|h| local::world_pose(&view.local_rig, &h).map(|w| (w.pos, w.rot, h.discontinuity)));
+                self.motion.observe(p, i, pose);
+            }
+            self.stats.moving_frames += u64::from(self.motion.moving());
+        }
+        let moving = self.motion.moving();
+        let (stamp, pose_time) = match (&mut self.lead, &self.local) {
+            (Some(lead), Some(l)) => {
+                let reports: Vec<(i64, u64)> = self.agree.own_lateness().iter().map(|r| (r.frames, r.seq)).collect();
+                self.stats.lead = lead.update(p, &reports, l.chain.head().1 + 1, moving);
+                (self.stats.largest_lead, self.stats.longest_drain) = (lead.largest(), lead.longest_drain());
+                let stamp = lead.stamp(p, l.chain.last_stamp());
+                (stamp, fresh.then(|| lead.pose_time(p, stamp, moving)))
+            }
+            _ => (p, None),
+        };
+        // The graceful quit (app.md 4): once asked, this member's `Leave` goes out first in the frame, at the frame's
+        // stamp (never below the chain's last, which a lead may hold above the present), and it is the chain's last
+        // entry. No edit or hand entry follows it, and an edit still queued is refused as agreement would refuse it.
         if self.leaving == Leaving::Asked
             && let Some(l) = &mut self.local
         {
-            let leave = l.chain.entry(self.replica.domain(), p, Class::Protocol, pe_seams::LEAVE.to_vec());
+            let leave = l.chain.entry(self.replica.domain(), stamp, Class::Protocol, pe_seams::LEAVE.to_vec());
             match self.agree.submit(leave) {
                 Ok(signed) => {
                     l.chain.took(&signed);
-                    self.leaving = Leaving::Left { stamp: p };
+                    self.leaving = Leaving::Left { stamp };
                 }
                 Err(_) => self.stats.leave_refused += 1,
             }
@@ -554,13 +622,13 @@ impl Sim {
         {
             api.edit_frame = Some(p);
             for (ticket, mut sub) in api.ports.queue.drain(1) {
-                // A code commit's `activate_at` is the frame its entry is stamped at, which only this machine knows.
-                // pe-api leaves it at 0, and pe-world refuses a commit whose `activate_at` is not its stamp (api.md
-                // 7.1, world-model.md 7.9).
-                sub.tx.set_activation(p);
+                // A code commit's `activate_at` is the frame its entry is stamped at, which only this machine knows:
+                // the present plus the lead. pe-api leaves it at 0, and pe-world refuses a commit whose `activate_at`
+                // is not its stamp (api.md 7.1, world-model.md 7.9).
+                sub.tx.set_activation(stamp);
                 let payload = sub.tx.encode();
                 let bytes = payload.len();
-                let entry = l.chain.entry(self.replica.domain(), p, Class::Edit, payload);
+                let entry = l.chain.entry(self.replica.domain(), stamp, Class::Edit, payload);
                 let receipt = match self.agree.submit(entry) {
                     Ok(signed) => {
                         l.chain.took(&signed);
@@ -569,7 +637,7 @@ impl Sim {
                         // own change at once (@api-eng's Low on slice 1).
                         api.ports.shared.index_edit(signed.id(), Arc::new(sub.tx), bytes);
                         let (chain, seq) = l.chain.head();
-                        Receipt::Submitted { change: TxId::from(signed.id()), frame: p.0, chain, seq }
+                        Receipt::Submitted { change: TxId::from(signed.id()), frame: stamp.0, chain, seq }
                     }
                     Err(e) => {
                         self.stats.edits_refused += 1;
@@ -579,19 +647,31 @@ impl Sim {
                 api.ports.queue.settle(ticket, receipt);
             }
         }
-        let fresh = !leaving && self.input_frame.is_none_or(|f| p > f);
         if let (true, Some(l), Some(view)) = (fresh, &mut self.local, &self.published) {
             if self.agree.backlogged() {
                 self.stats.hands_paced += 1;
             } else {
-                let at = self.clock.host_time_of(p);
+                let at = pose_time.map_or_else(|| self.clock.host_time_of(p), |t| host_time_at(&*self.clock, t));
                 let domain = self.replica.domain();
-                let (took, refused) =
-                    local::submit_hands(&mut l.chain, &mut l.sent, &*l.hands, view, at, p, domain, &mut *self.agree);
+                // While the lead sheds, a frame's stamp can stand still: its poses would only replace the last frame's.
+                let thin = self.input_stamp == Some(stamp);
+                let (took, refused, thinned) = local::submit_hands(
+                    &mut l.chain,
+                    &mut l.sent,
+                    &*l.hands,
+                    view,
+                    at,
+                    stamp,
+                    domain,
+                    &mut *self.agree,
+                    thin,
+                );
                 self.stats.inputs += u64::from(took);
                 self.stats.inputs_refused += u64::from(refused);
+                self.stats.poses_thinned += u64::from(thinned);
             }
             self.input_frame = Some(p);
+            self.input_stamp = Some(stamp);
         }
         if let (Some(l), Some(api)) = (&self.local, &self.api) {
             let (chain, last) = l.chain.head();
@@ -1028,12 +1108,13 @@ mod tests {
         assert_eq!((s.stats().edits, s.stats().edits_refused), (1, 0));
     }
 
-    /// A code commit through pe-api's queue (api.md 7.1): pe-api leaves `activate_at` at 0, and step 2 sets it to the
-    /// frame it stamps the entry at, so pe-world takes the commit rather than refusing it `Invalid` (world-model.md
-    /// 7.9).
-    #[test]
-    fn a_code_commit_from_pe_api_s_queue_carries_its_own_stamp_as_activate_at() {
+    /// A code commit through pe-api's queue (api.md 7.1), made with stamp-ahead's `lead` (none: at the present):
+    /// pe-api leaves `activate_at` at 0, and step 2 sets it to the frame it stamps the entry at, so pe-world takes the
+    /// commit rather than refusing it `Invalid` (world-model.md 7.9). Returns the receipt's frame and the indexed
+    /// transaction's `activate_at`.
+    fn code_commit_through_the_queue(lead: Option<u64>) -> (u64, Option<u64>) {
         use crate::api::{ApiWorld, Facts, Ports};
+        use crate::stamp::{LeadConfig, StampLead};
         use pe_api::api::WorldSource;
         use pe_api::queue::Submission;
         use pe_seams::Hash;
@@ -1047,6 +1128,7 @@ mod tests {
         let facts = Facts { world_name: "Pit".into(), line: LineId::origin(), rate: RATE, me: Some(me) };
         let ports = Ports::new(genesis, facts, || {});
         let (s, _slot) = with_replica(replica, clock.clone(), Budget::new(RATE));
+        let s = s.with_stamp_lead(lead.map(|n| StampLead::fixed(LeadConfig::m1(RATE), n)));
         let mut s = s.with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4]))).with_api(ports.clone());
         let world = ApiWorld(ports.shared.clone());
         s.tick(clock.host_time_of(Frame(1))).expect("ticked");
@@ -1062,17 +1144,32 @@ mod tests {
         let Some(Receipt::Submitted { change, frame, .. }) = ports.queue.receipt(ticket, Instant::now()) else {
             panic!("not submitted");
         };
-        for f in 3..=4 {
+        for f in 3..=frame + 2 {
             s.tick(clock.host_time_of(Frame(f))).expect("ticked");
         }
         let fate = ports.log.wait(change, Wait::Local, Instant::now()).expect("stepped here");
+        assert_eq!(fate.frame, Some(frame), "stepped at its stamp");
         assert!(matches!(fate.outcome, Some(pe_seams::Outcome::Applied { .. })), "taken, not refused: {fate:?}");
         let indexed = world.edit(change.into()).expect("in the index");
         let activate_at = indexed.ops.iter().find_map(|op| match op {
             Op::CommitScript { activate_at, .. } => Some(*activate_at),
             _ => None,
         });
-        assert_eq!(activate_at, Some(frame), "the frame step 2 stamped the entry at");
+        (frame, activate_at)
+    }
+
+    /// At the present, the commit's `activate_at` is the frame the receipt names.
+    #[test]
+    fn a_code_commit_from_pe_api_s_queue_carries_its_own_stamp_as_activate_at() {
+        let (frame, activate_at) = code_commit_through_the_queue(None);
+        assert_eq!((frame, activate_at), (2, Some(2)), "the frame step 2 stamped the entry at");
+    }
+
+    /// Stamped ahead by a lead of 5 frames, the commit's `activate_at` is its stamp, not the present it was made at.
+    #[test]
+    fn a_code_commit_stamped_ahead_carries_its_stamp_as_activate_at() {
+        let (frame, activate_at) = code_commit_through_the_queue(Some(5));
+        assert_eq!((frame, activate_at), (7, Some(7)), "the present 2 plus the lead");
     }
 
     /// A machine with no member has no edit port: no ports, and `with_api` refuses to attach any (@design-reviewer's
@@ -1151,6 +1248,9 @@ mod tests {
         assert_eq!(s.stats().inputs, 4);
     }
 
+    /// A test hub's setting per one-way link, by (from, to).
+    type ByLink<T> = Arc<std::sync::Mutex<std::collections::BTreeMap<(MemberKey, MemberKey), T>>>;
+
     /// An in-process network (S4) for `Sim`s in one test: what one sends, the addressee polls, stamped with the host
     /// time the test last set, plus the one-way delay from the sender to it (none unless set).
     #[derive(Clone, Default)]
@@ -1158,8 +1258,13 @@ mod tests {
         boxes: Arc<std::sync::Mutex<std::collections::BTreeMap<MemberKey, std::collections::VecDeque<Received>>>>,
         now: Arc<std::sync::atomic::AtomicI64>,
         /// One-way delays in host nanoseconds by (from, to): a message is polled once the test's time reaches its
-        /// arrival. Each box is first in, first out, which holds with one sender per box (two members).
-        delay: Arc<std::sync::Mutex<std::collections::BTreeMap<(MemberKey, MemberKey), i64>>>,
+        /// arrival. Each box is kept in arrival order, those arriving together in the order sent.
+        delay: ByLink<i64>,
+        /// Jittered one-way delays by (from, to), in place of `delay`: each message's is drawn uniformly from the
+        /// range, inclusive, by a fixed sequence, so a run repeats.
+        jitter: ByLink<(i64, i64)>,
+        /// Messages sent, for the jitter's sequence.
+        sent: Arc<std::sync::atomic::AtomicU64>,
     }
 
     struct Port {
@@ -1176,10 +1281,24 @@ mod tests {
 
     impl Transport for Port {
         fn send(&mut self, to: MemberKey, lane: Lane, bytes: bytes::Bytes) {
-            let d = self.hub.delay.lock().expect("the delays").get(&(self.me, to)).copied().unwrap_or(0);
+            let jitter = self.hub.jitter.lock().expect("the jitter").get(&(self.me, to)).copied();
+            let d = match jitter {
+                Some((lo, hi)) => {
+                    // splitmix64 over the count of messages sent.
+                    let mut z = self.hub.sent.fetch_add(1, Ordering::SeqCst).wrapping_add(0x9e37_79b9_7f4a_7c15);
+                    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                    z ^= z >> 31;
+                    lo + (z % (hi - lo + 1) as u64) as i64
+                }
+                None => self.hub.delay.lock().expect("the delays").get(&(self.me, to)).copied().unwrap_or(0),
+            };
             let at = HostTime(self.hub.now.load(Ordering::SeqCst) + d);
             let r = Received { from: self.me, lane, bytes, at };
-            self.hub.boxes.lock().expect("the hub").entry(to).or_default().push_back(r);
+            let mut boxes = self.hub.boxes.lock().expect("the hub");
+            let q = boxes.entry(to).or_default();
+            let i = q.partition_point(|m| m.at <= at);
+            q.insert(i, r);
         }
         fn poll(&mut self) -> Option<Received> {
             let now = self.hub.now.load(Ordering::SeqCst);
@@ -1286,31 +1405,53 @@ mod tests {
         }
     }
 
-    /// B's hands, closed (physical under the default `CLOSED_HAND` mode), circling at about 0.6 m/s half a turn apart,
-    /// the left one through the front row of the pit's balls, until `until`, then still where they were.
+    /// B's hands, closed (physical under the default `CLOSED_HAND` mode), circling 0.3 m around half a turn apart, a
+    /// turn every `period` seconds (3 s: 0.63 m/s), the left one through the front row of the pit's balls, until
+    /// `until`, then still where they were. With `spin`, each also turns about its forearm (x) at that many rad/s.
+    /// `offset` shifts the whole motion in time, in seconds.
     struct SweepHands {
         until: HostTime,
+        period: f64,
+        spin: f64,
+        offset: f64,
     }
 
     impl SweepHands {
+        /// The sweep at 0.63 m/s until `until`, with no turn.
+        fn until(until: HostTime) -> SweepHands {
+            SweepHands { until, period: 3.0, spin: 0.0, offset: 0.0 }
+        }
+
         /// The rig-frame position of `hand` at host time `at` (the rig is at the origin).
         fn at(&self, hand: pe_seams::Hand, at: HostTime) -> [f64; 3] {
-            let t = at.min(self.until).0 as f64 * 1e-9;
+            let t = self.t(at);
             let (cx, phase) = if hand == pe_seams::Hand::Left { (-0.45, 0.0) } else { (0.45, std::f64::consts::PI) };
-            let a = std::f64::consts::TAU * t / 3.0 + phase;
+            let a = std::f64::consts::TAU * t / self.period + phase;
             [cx + 0.3 * a.cos(), 0.08, -0.85 + 0.3 * a.sin()]
+        }
+
+        /// The motion's time at host time `at`, in seconds.
+        fn t(&self, at: HostTime) -> f64 {
+            at.min(self.until).0 as f64 * 1e-9 + self.offset
+        }
+
+        /// The tracking speed of a hand's origin, in m/s.
+        fn speed(&self) -> f64 {
+            std::f64::consts::TAU * 0.3 / self.period
         }
     }
 
     impl pe_seams::HandFeed for SweepHands {
         fn hand_at(&self, hand: pe_seams::Hand, at: HostTime) -> Option<pe_seams::HandInput> {
             let [x, y, z] = self.at(hand, at);
+            let h = self.spin * self.t(at) / 2.0;
+            let orientation = [h.sin() as f32, 0.0, 0.0, h.cos() as f32];
             Some(pe_seams::HandInput {
                 hand,
                 source: pe_seams::HandSource::Tracked,
                 sampled_at: at,
                 tracked: true,
-                pose: pe_seams::RigPose { position: [x as f32, y as f32, z as f32], orientation: [0.0, 0.0, 0.0, 1.0] },
+                pose: pe_seams::RigPose { position: [x as f32, y as f32, z as f32], orientation },
                 linear_velocity: None,
                 angular_velocity: None,
                 grip: 1.0,
@@ -1357,10 +1498,12 @@ mod tests {
                 crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
             let slot = Arc::new(FrameSlot::new());
             let hands: Arc<dyn pe_seams::HandFeed> =
-                if i == 0 { Arc::new(StillHands([-0.5, 1.0, -0.4])) } else { Arc::new(SweepHands { until: still }) };
+                if i == 0 { Arc::new(StillHands([-0.5, 1.0, -0.4])) } else { Arc::new(SweepHands::until(still)) };
+            // No stamp-ahead: this test is the receivers' side, every frame bringing A an entry 18 frames late.
             let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::with_share(RATE, 0.0))
                 .with_local(me, keys.nonce(i, 0), hands)
-                .with_transport(Box::new(Port::new(me, hub.clone())), None);
+                .with_transport(Box::new(Port::new(me, hub.clone())), None)
+                .with_stamp_lead(None);
             sims.push((sim, slot));
         }
         let (mut current, mut most) = (0u64, 0u64);
@@ -1397,6 +1540,144 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(state(&va), state(&vb));
+    }
+
+    /// Stamp-ahead's acceptance (@item:primordial-engine/pe-app-stamps-a-slow-member-s-entries-ahead-by-i; app.md
+    /// 3.2): B's messages reach A `lo_ms..=hi_ms` late (uniform, delivered in arrival order), A's reach B in 25 ms;
+    /// B's closed hands sweep the balls and B makes an edit every 10 frames, with M1's stamp-ahead settings. Returns
+    /// B's lead at the end, B's entries voided as late over the whole run (@design-reviewer counted none there
+    /// either), the share of ticks past 6 s at which A's view was at the present, both final frames, and the edits B
+    /// made.
+    fn a_slow_member_run(lo_ms: i64, hi_ms: i64, stamp_ahead: bool) -> (u64, usize, f64, [u64; 2], u64) {
+        use crate::api::{Facts, Ports};
+        use pe_agree::{Node, NodeConfig};
+        use pe_api::queue::Submission;
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        use pe_seams::{Pos, VoidReason};
+        use pe_world::edit::{Actor, Op, Target, Transaction};
+        const FRAMES: u64 = 720;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let hub = Hub::default();
+        let (a, b) = (keys.key(0), keys.key(1));
+        hub.jitter.lock().expect("the jitter").insert((b, a), (lo_ms * 1_000_000, hi_ms * 1_000_000));
+        hub.delay.lock().expect("the delays").insert((a, b), 25_000_000);
+        let mut sims = Vec::new();
+        let mut b_ports = None;
+        for i in 0..2 {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+            let replica =
+                crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let slot = Arc::new(FrameSlot::new());
+            let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let hands: Arc<dyn pe_seams::HandFeed> = if i == 0 {
+                Arc::new(StillHands([-0.5, 1.0, -0.4]))
+            } else {
+                Arc::new(SweepHands::until(HostTime(i64::MAX)))
+            };
+            let ports = (i == 1).then(|| {
+                let snapshot = crate::api::snapshot_of(&*replica).expect("a pe-world replica");
+                let facts = Facts { world_name: "Pit".into(), line, rate: RATE, me: Some(me) };
+                Ports::new(snapshot, facts, || {})
+            });
+            let mut sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), hands)
+                .with_transport(Box::new(Port::new(me, hub.clone())), None)
+                .with_event_log(log.clone());
+            if let Some(p) = &ports {
+                sim = sim.with_api(p.clone());
+            }
+            if i == 1 && !stamp_ahead {
+                sim = sim.with_stamp_lead(None);
+            }
+            b_ports = b_ports.or(ports);
+            sims.push((sim, slot, log));
+        }
+        let ports = b_ports.expect("B's ports");
+        let (mut current, mut counted) = (0u64, 0u64);
+        for f in 1..=FRAMES {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            if f % 10 == 0 {
+                let create = Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] };
+                let tx = Transaction {
+                    actor: Actor::Person,
+                    label: None,
+                    preconditions: vec![],
+                    ops: vec![create],
+                    blobs: vec![],
+                };
+                ports.queue.submit(Submission { tx, base: 1 }).expect("room in the queue");
+            }
+            sims[0].0.tick(now);
+            sims[1].0.tick(now);
+            if f > 360 {
+                counted += 1;
+                current += u64::from(sims[0].1.newest().is_some_and(|v| v.frame == Frame(f + 1)));
+            }
+        }
+        let late = sims
+            .iter()
+            .map(|(_, _, log)| {
+                let log = log.lock().expect("the log");
+                let late = |e: &&AgreeEvent| {
+                    matches!(e, AgreeEvent::Voided { author, reason: VoidReason::Late, .. } if *author == b)
+                };
+                log.iter().filter(late).count()
+            })
+            .max()
+            .unwrap_or(0);
+        let fin = |i: usize| sims[i].1.newest().and_then(|v| v.final_frame).map_or(0, |f| f.0);
+        let lead = sims[1].0.stats().lead;
+        (lead, late, current as f64 / counted as f64, [fin(0), fin(1)], sims[1].0.stats().edits)
+    }
+
+    /// The acceptance on a fixed 1.2 s link: B's lead settles at the excess (72 - 6 + 3 = 69 frames, give or take the
+    /// p95's rounding), none of B's entries, hands or edits, is voided as late, from the start, A's view stays at the
+    /// present, and both members keep finalizing.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "12 s of two members in the ball pit: release (--include-ignored)")]
+    fn a_slow_member_stamps_ahead_and_none_of_its_entries_is_void_on_a_fixed_link() {
+        let (lead, late, current, fin, edits) = a_slow_member_run(1200, 1200, true);
+        println!(
+            "fixed 1.2 s: lead {lead}, late voids {late}, A at present {current:.3}, finals {fin:?}, edits {edits}"
+        );
+        assert!((66..=72).contains(&lead), "B's lead {lead}");
+        assert_eq!(late, 0, "B's entries voided as late");
+        assert!(current >= 0.9, "A's view at the present on {current:.3} of the ticks");
+        // Still finalizing past the first 6 s: cuts that name stamped-ahead entries become final. A's final frame
+        // trails by about 3.6 s here (B's votes take 1.2 s each way round), which the acceptance doesn't bound.
+        assert!(fin.iter().all(|&f| f > 360), "final frames {fin:?}");
+        assert!(edits >= 70, "B's edits {edits}");
+    }
+
+    /// The acceptance on a jittered 0.9-1.5 s link: the lead follows the p95, so nothing of B's is voided as late.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "12 s of two members in the ball pit: release (--include-ignored)")]
+    fn a_slow_member_stamps_ahead_and_none_of_its_entries_is_void_on_a_jittered_link() {
+        let (lead, late, current, fin, edits) = a_slow_member_run(900, 1500, true);
+        println!("0.9-1.5 s: lead {lead}, late voids {late}, A at present {current:.3}, finals {fin:?}, edits {edits}");
+        assert!((70..=93).contains(&lead), "B's lead {lead}");
+        assert_eq!(late, 0, "B's entries voided as late");
+        assert!(current >= 0.8, "A's view at the present on {current:.3} of the ticks");
+        assert!(fin.iter().all(|&f| f > 360), "final frames {fin:?}");
+        assert!(edits >= 70, "B's edits {edits}");
+    }
+
+    /// The red control: the same fixed link without stamp-ahead voids B's entries as late, or stalls finality.
+    #[test]
+    #[ignore = "a control, in release: without stamp-ahead the slow member's entries void or finality stalls"]
+    fn without_stamp_ahead_a_slow_member_s_entries_void_or_finality_stalls() {
+        let (lead, late, current, fin, edits) = a_slow_member_run(1200, 1200, false);
+        println!("no lead: lead {lead}, late voids {late}, A at present {current:.3}, finals {fin:?}, edits {edits}");
+        assert!(late > 0 || fin.iter().any(|&f| f < 540), "late voids {late}, finals {fin:?}");
     }
 
     fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
@@ -1926,5 +2207,238 @@ mod tests {
         assert_eq!(outcome, LeaveOutcome::NotSent { others: Vec::new() });
         assert_eq!(lines, ["leaving the session…".to_string(), crate::leave::leave_not_sent(&[])]);
         assert!(stats.expect("joined").leave_refused > 0, "each tick tried again");
+    }
+
+    /// One frame of A's view in a drain run: its frame, B's faster hand's speed and the fastest ball's speed in it.
+    #[derive(Clone, Copy, Debug)]
+    struct DrainFrame {
+        frame: u64,
+        hand: f32,
+        ball: f32,
+    }
+
+    /// A drain run: each frame A's view advanced by, B's lead after each present frame's tick, and B's stats.
+    struct DrainRun {
+        view: Vec<DrainFrame>,
+        /// From present frame 1.
+        leads: Vec<u64>,
+        stats: SimStats,
+    }
+
+    impl DrainRun {
+        /// The stamp of B's entries at the present `f` (from 1): a stamp that stands still is the same either way.
+        fn stamp(&self, f: u64) -> u64 {
+            f + self.leads[(f - 1) as usize]
+        }
+
+        /// The present frames at which B shed a frame of lead.
+        fn sheds(&self) -> Vec<u64> {
+            (2..=self.leads.len() as u64).filter(|&f| self.leads[f as usize - 1] < self.leads[f as usize - 2]).collect()
+        }
+
+        /// The shortest gap between two sheds, in frames.
+        fn shortest_shed(&self) -> Option<u64> {
+            self.sheds().windows(2).map(|w| w[1] - w[0]).min()
+        }
+
+        /// The first present frame with no lead.
+        fn gone(&self) -> Option<u64> {
+            self.leads.iter().position(|&l| l == 0).map(|i| i as u64 + 1)
+        }
+
+        /// The view frames at which A plays what B stamped at the presents `from..=to`: A plays stamp `s` at its view
+        /// frame `s + 1`.
+        fn played(&self, from: u64, to: u64) -> std::ops::RangeInclusive<u64> {
+            self.stamp(from) + 1..=self.stamp(to) + 1
+        }
+
+        /// B's faster hand's speeds at A over the view frames `frames`.
+        fn hand(&self, frames: &std::ops::RangeInclusive<u64>) -> Vec<f32> {
+            self.view.iter().filter(|d| frames.contains(&d.frame)).map(|d| d.hand).collect()
+        }
+
+        /// The fastest ball A sees over the view frames `frames`.
+        fn ball(&self, frames: &std::ops::RangeInclusive<u64>) -> f32 {
+            self.view.iter().filter(|d| frames.contains(&d.frame)).map(|d| d.ball).fold(0.0, f32::max)
+        }
+    }
+
+    /// Two pe-agree members on a fast link (25 ms each way) for `frames` frames: A still, B's hands fed by `hands`. B
+    /// starts with `lead` frames of lead (`None`: stamp-ahead off), which the reports, finding no delay, soon drain.
+    fn drain_run(lead: Option<u64>, hands: Arc<dyn pe_seams::HandFeed>, frames: u64) -> DrainRun {
+        use crate::stamp::{LeadConfig, StampLead};
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::Pos;
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let hub = Hub::default();
+        let (a, b) = (keys.key(0), keys.key(1));
+        hub.delay.lock().expect("the delays").insert((a, b), 25_000_000);
+        hub.delay.lock().expect("the delays").insert((b, a), 25_000_000);
+        let mut sims = Vec::new();
+        for i in 0..2 {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+            let replica =
+                crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let slot = Arc::new(FrameSlot::new());
+            let feed: Arc<dyn pe_seams::HandFeed> =
+                if i == 0 { Arc::new(StillHands([-0.5, 1.0, -0.4])) } else { hands.clone() };
+            let mut sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), feed)
+                .with_transport(Box::new(Port::new(me, hub.clone())), None);
+            if i == 1 {
+                sim = sim.with_stamp_lead(lead.map(|n| StampLead::fixed(LeadConfig::m1(RATE), n)));
+            }
+            sims.push((sim, slot));
+        }
+        let speed = |v: [f32; 3]| v.iter().map(|c| c * c).sum::<f32>().sqrt();
+        let (mut view, mut leads, mut last) = (Vec::new(), Vec::new(), None);
+        for f in 1..=frames {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            sims[0].0.tick(now);
+            sims[1].0.tick(now);
+            leads.push(sims[1].0.stats().lead);
+            let Some(v) = sims[0].1.newest() else { continue };
+            if last == Some(v.frame) {
+                continue;
+            }
+            last = Some(v.frame);
+            let hands = v.objects.iter().filter(|o| o.hand_of.is_some_and(|(m, _)| m == b));
+            let ball = v.objects.iter().filter(|o| o.hand_of.is_none()).map(|o| speed(o.linear_velocity));
+            view.push(DrainFrame {
+                frame: v.frame.0,
+                hand: hands.map(|o| speed(o.linear_velocity)).fold(0.0, f32::max),
+                ball: ball.fold(0.0, f32::max),
+            });
+        }
+        DrainRun { view, leads, stats: sims[1].0.stats().clone() }
+    }
+
+    fn median(mut v: Vec<f32>) -> f32 {
+        v.sort_by(f32::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    }
+
+    /// A strike through a drain (@coordinator-opus ma5cf896aacca, test 1). B's closed hands sweep at 0.63 m/s, above
+    /// the speed test's threshold all run, while its 3 s lead drains. In M1 a player sends only hand inputs, so a strike
+    /// is a closed hand pushing balls.
+    ///
+    /// - A sees B's hands at most 1.1 times their tracking speed while the lead drains, and never paused: the pose
+    ///   clock spreads each shed frame over the next ten stamps (without it, one stamp in eleven carried two frames).
+    /// - The sweep's first turn, through the pit's resting balls, strikes them at most 10% harder than the no-lead
+    ///   maximum: the hardest the same turn strikes with no lead, over four sub-frame phases (a strike's speed depends
+    ///   on where the contact falls between frames). The same turn with no lead and the hands 10% faster is printed
+    ///   beside it.
+    /// - Later turns meet balls the earlier ones scattered, which differ from run to run, so the fastest ball over the
+    ///   whole drain is printed for each run, not compared.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "six 36 s runs of two members in the ball pit: release (--include-ignored)")]
+    fn a_strike_through_a_drain_lands_at_most_about_10_percent_harder() {
+        let sweep = || SweepHands::until(HostTime(i64::MAX));
+        let tracking = sweep().speed() as f32;
+        let frames = 36 * 60;
+        let drained = drain_run(Some(180), Arc::new(sweep()), frames);
+        let gone = drained.gone().expect("the lead drained");
+        let draining = drained.played(drained.sheds().first().copied().expect("a shed"), gone - 1);
+        let hand = drained.hand(&draining);
+        let (fastest, slowest) = hand.iter().fold((0.0f32, f32::INFINITY), |(a, b), &h| (a.max(h), b.min(h)));
+        // The first turn of the sweep, B's presents 1 to 180, as each run's A plays them.
+        let first = |r: &DrainRun| r.ball(&r.played(1, 180));
+        let phases: Vec<DrainRun> = (0..4)
+            .map(|k| drain_run(None, Arc::new(SweepHands { offset: f64::from(k) / 240.0, ..sweep() }), frames))
+            .collect();
+        let faster = drain_run(None, Arc::new(SweepHands { period: 3.0 / 1.1, ..sweep() }), frames);
+        let no_lead: Vec<f32> = phases.iter().map(first).collect();
+        let most = no_lead.iter().copied().fold(0.0f32, f32::max);
+        let strike = first(&drained);
+        let whole: Vec<f32> = phases.iter().map(|r| r.ball(&draining)).collect();
+        println!(
+            "B's hands at A while draining (view frames {draining:?}): median {:.3}, fastest {fastest:.3}, slowest \
+             {slowest:.3} m/s against tracking {tracking:.3}. The first turn's fastest ball: {strike:.3} m/s, against \
+             {no_lead:.3?} with no lead at phases 0, 1/4, 1/2 and 3/4 of a frame ({:.3}x their most) and {:.3} with no \
+             lead and the hands 10% faster. Over the whole drain: {:.3} m/s, against {whole:.3?} and {:.3}. B's stats \
+             {:?}",
+            median(hand.clone()),
+            strike / most.max(1e-6),
+            first(&faster),
+            drained.ball(&draining),
+            faster.ball(&draining),
+            drained.stats
+        );
+        assert!(hand.len() > 600, "a drain of {} view frames", hand.len());
+        assert!(fastest <= 1.1 * tracking * 1.01, "the hand at {:.3}x its tracking speed", fastest / tracking);
+        assert!(slowest >= 0.95 * tracking, "a pause: {slowest:.3} m/s");
+        assert!(most > 0.2, "the first turn strikes: {no_lead:?}");
+        assert!(strike <= 1.1 * most, "the first turn's strike {:.3}x the no-lead maximum", strike / most);
+    }
+
+    /// A wrist flick with a nearly still origin (@coordinator-opus ma5cf896aacca, test 2). B's closed hands circle at
+    /// 0.08 m/s, below the speed test's thresholds, each turning about its forearm at 6 rad/s, so its farthest point
+    /// moves at 0.08 + 6 x 0.09 = 0.62 m/s: the speed test finds them moving, and B's 1 s lead sheds one frame in 11 at
+    /// most. Without the turn the same hands are slow and the lead sheds up to one frame in 2. In M1 a hand's collider
+    /// is a sphere about its pose's origin, so the turn itself strikes nothing; what the shed may not do is play the
+    /// origin faster than 1.1 times its tracking speed.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "two 8 s runs of two members in the ball pit: release (--include-ignored)")]
+    fn a_wrist_flick_with_a_nearly_still_origin_sheds_one_frame_in_11_at_most() {
+        let frames = 8 * 60;
+        let flick = || SweepHands { period: 24.0, spin: 6.0, ..SweepHands::until(HostTime(i64::MAX)) };
+        let tracking = flick().speed() as f32;
+        let flicked = drain_run(Some(60), Arc::new(flick()), frames);
+        let still = drain_run(Some(60), Arc::new(SweepHands { spin: 0.0, ..flick() }), frames);
+        let draining = flicked.played(flicked.sheds().first().copied().expect("a shed"), frames);
+        let fastest = flicked.hand(&draining).into_iter().fold(0.0f32, f32::max);
+        println!(
+            "with the flick: moving on {} frames, shortest gap between sheds {:?}, lead {} at the end, the origin at A \
+             {fastest:.3} m/s against {tracking:.3}; without: moving on {} frames, shortest gap {:?}, lead gone at \
+             frame {:?}",
+            flicked.stats.moving_frames,
+            flicked.shortest_shed(),
+            flicked.leads.last().copied().unwrap_or(0),
+            still.stats.moving_frames,
+            still.shortest_shed(),
+            still.gone()
+        );
+        assert!(flicked.stats.moving_frames + 10 >= frames, "moving on {} frames", flicked.stats.moving_frames);
+        assert!(flicked.shortest_shed().is_some_and(|g| g >= 11), "{:?}", flicked.shortest_shed());
+        assert!(fastest <= 1.1 * tracking * 1.01, "the origin at {:.3}x its tracking speed", fastest / tracking);
+        assert!(still.stats.moving_frames <= 5, "without the turn: moving on {} frames", still.stats.moving_frames);
+        assert_eq!(still.shortest_shed(), Some(2), "without the turn the lead sheds at the slow hands' rate");
+        assert!(still.gone().is_some_and(|f| f < frames), "and is gone within the run");
+    }
+
+    /// A player who never pauses (@coordinator-opus ma5cf896aacca, test 3): B's hands sweep at 0.63 m/s all run, so the
+    /// speed test finds them moving on every frame, and B's 3 s lead sheds one frame in 11 at most. It is gone within
+    /// 35 s. From the first report, its first 175 frames go at one in 11 and its last 5 at the small surplus's slower
+    /// rate (12, 15, 20, 30 and 30 frames): 33.7 s. A's view stays at the present.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "a 36 s run of two members in the ball pit: release (--include-ignored)")]
+    fn a_player_who_never_pauses_sheds_a_3_s_lead_within_35_s() {
+        let frames = 36 * 60;
+        let run = drain_run(Some(180), Arc::new(SweepHands::until(HostTime(i64::MAX))), frames);
+        let behind = run.view.last().map_or(u64::MAX, |d| frames.saturating_sub(d.frame));
+        println!(
+            "moving on {} of {frames} frames, shortest gap between sheds {:?}, first shed at {:?}, lead gone at frame \
+             {:?} ({:.1} s), longest drain {} frames, A's view {behind} frames behind at the end",
+            run.stats.moving_frames,
+            run.shortest_shed(),
+            run.sheds().first(),
+            run.gone(),
+            run.gone().unwrap_or(0) as f64 / 60.0,
+            run.stats.longest_drain
+        );
+        assert!(run.stats.moving_frames + 10 >= frames, "moving on {} frames", run.stats.moving_frames);
+        assert!(run.shortest_shed().is_some_and(|g| g >= 11), "{:?}", run.shortest_shed());
+        assert!(run.gone().is_some_and(|f| f <= 35 * 60), "gone at frame {:?}", run.gone());
+        assert!(behind <= 2, "A's view {behind} frames behind");
     }
 }
