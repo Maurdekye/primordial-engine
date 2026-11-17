@@ -181,6 +181,9 @@ struct Taken {
     global: Hash,
 }
 
+/// Every bound body's `BodyState` row, the canonical physics transfer's bytes and their check hash (`physics_rows`).
+type PhysicsRows = (Vec<(ObjectId, BodyStateRow)>, Bytes, Hash);
+
 /// How many of the live history's newest grid frames keep the transfer their take_root serialized (5.4): a vote comes
 /// about one cut interval after the live history passes its cut, and `finalize` takes the vote's snapshot.
 const LIVE_TRANSFERS: usize = 4;
@@ -807,7 +810,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// Every bound body's `BodyState` row, and the physics check hash with the canonical transfer it hashes, whose
     /// bytes a snapshot of this state takes (5.4).
-    fn physics_rows(&mut self) -> Result<(Vec<(ObjectId, BodyStateRow)>, Bytes, Hash), PhysicsError> {
+    fn physics_rows(&mut self) -> Result<PhysicsRows, PhysicsError> {
         let digests = self.physics.body_digests()?;
         // Hand bodies are the replica's own: the world model has no `Body` for them, so no `BodyState` row either.
         // `physics_global` still covers them.
@@ -1073,7 +1076,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         };
         // The live history stepped exactly the cut's entries to its frame: my root is the live one there (5.4).
         if from == at
-            && let Some(root) = self.from_live(at, history)
+            && let Some(root) = self.reuse_live_root(at, history)
         {
             return Ok(root);
         }
@@ -1105,7 +1108,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// the ring's keyframe at `at` (taken after that take_root) with the transfer the take_root serialized. `None`,
     /// for the caller to re-step, with `reuse_live` off, under a vote hold at or below `at`, where the live history
     /// took no root at `at`, or where neither snapshot source is there.
-    fn from_live(&mut self, at: Frame, history: Option<Hash>) -> Option<Hash> {
+    fn reuse_live_root(&mut self, at: Frame, history: Option<Hash>) -> Option<Hash> {
         if !self.config.reuse_live || self.held_at_or_below(at) {
             return None;
         }
