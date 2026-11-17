@@ -6,7 +6,7 @@ notes on the hello were brought up to date when the hello's runner comparison la
 numbers are v0.2's, because code on main cites them; what changed is the text under them. A design that is not built
 is marked **Not built**.
 
-The seams are pe-seams's: S2 (the replica) through v1.7 and S5 (the frame view) through v1.8, with their rulings in
+The seams are pe-seams's: S2 (the replica) through v1.8 and S5 (the frame view) through v1.8, with their rulings in
 `crates/pe-seams/RULINGS.md`. Where this file and a seam's doc comment differ, the seam is right, and this file is to
 fix.
 
@@ -562,6 +562,11 @@ the floor's cut-exact snapshot at once, with the cut-exact outcomes below the fl
     m23b0df2d6170). Tests [V]:
     `a_joiner_takes_gravity_and_origin_from_the_world_it_imports_and_rung_one_agrees_with_the_host` and
     `an_import_of_a_world_at_another_rate_is_refused_and_changes_nothing`.
+  - **Inline blobs** (S2 v1.8; world-model.md 3.4, @coordinator-opus m84f3b5262a91): `CutImport.blobs` carries the
+    bytes of the small blobs (1 to 256 bytes) the imported rows reference, from the donor's `Tree::export_blobs`.
+    A blob no imported row references, or one out of hash order, is `BadBlob(i)`; a missing small simulation blob
+    this machine lacks too is `MissingBlob`. pe-world checks both inside `World::import`, so a failure changes
+    nothing.
   - **Then the live state is the imported one at the cut's frame,** in a new physics world, and re-simulates to the
     present through the replay, returning my root at the cut. It moves neither `Cv` nor the floor, and never rehashes
     the rest of the state as a side effect: damage behind a stale cache shows as `RootMismatch` instead of being fixed

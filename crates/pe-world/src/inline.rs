@@ -53,6 +53,8 @@ pub(crate) fn state_refs(w: &World, objects: &[ObjectId], tombstones: bool) -> B
             }
         }
     };
+    // One row per component: M1 has a single instance of each, as the tree's hashing assumes; a second instance
+    // must be read here too when instances come (@engine-architect's nit, me8020ed16e84).
     for &id in objects {
         for d in reg.iter() {
             if let Some(row) = w.store.get_raw(d.id(), id) {
