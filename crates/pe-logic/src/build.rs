@@ -136,7 +136,7 @@ fn parse_json(stdout: &str) -> Vec<(String, RustcMessage, String)> {
         }
         let Some(m) = v.get("message") else { continue };
         let s = |k: &str| m.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned();
-        let spans = m
+        let spans: Vec<RustcSpan> = m
             .get("spans")
             .and_then(|x| x.as_array())
             .into_iter()
@@ -151,7 +151,32 @@ fn parse_json(stdout: &str) -> Vec<(String, RustcMessage, String)> {
         let code = m.get("code").and_then(|c| c.get("code")).and_then(|c| c.as_str()).map(str::to_owned);
         let target =
             v.get("target").and_then(|t| t.get("name")).and_then(|n| n.as_str()).unwrap_or_default().to_owned();
-        out.push((target, RustcMessage { level: s("level"), code, message: s("message"), spans }, s("rendered")));
+        let mut rendered = s("rendered");
+        let notes = if spans.is_empty() && s("level") == "error" { tool_notes(m) } else { String::new() };
+        if !notes.is_empty() {
+            if !rendered.is_empty() && !rendered.ends_with('\n') {
+                rendered.push('\n');
+            }
+            rendered.push_str(&notes);
+        }
+        out.push((target, RustcMessage { level: s("level"), code, message: s("message"), spans }, rendered));
+    }
+    out
+}
+
+/// The notes of an error without a place in the source, which the short rendering leaves out: for a failed
+/// link, the linker's own words (`rust-lld: error: ...`), without the note that lists its arguments (long, and full of
+/// this machine's paths) or the one saying some were omitted. Without them a crashed linker shows only
+/// "linking with `rust-lld` failed: signal: 6" (@provenance-eng m5a132790c484, tier 2's macOS run).
+fn tool_notes(m: &serde_json::Value) -> String {
+    let mut out = String::new();
+    for c in m.get("children").and_then(|x| x.as_array()).into_iter().flatten() {
+        let level = c.get("level").and_then(|x| x.as_str()).unwrap_or_default();
+        let msg = c.get("message").and_then(|x| x.as_str()).unwrap_or_default().trim();
+        if msg.is_empty() || msg.starts_with('"') || msg.starts_with("some arguments are omitted") {
+            continue;
+        }
+        out.push_str(&format!("  = {level}: {}\n", msg.lines().collect::<Vec<_>>().join("\n          ")));
     }
     out
 }
@@ -712,6 +737,33 @@ pub fn build_reporting(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_link_keeps_the_linker_s_own_words_but_not_its_arguments() {
+        // rustc's message for a failed link, as `--message-format=json-diagnostic-short` gives it [V: a bad
+        // `-C link-arg` on a one-function cdylib, rustc 1.99.0, wasm32-unknown-unknown].
+        let line = serde_json::json!({
+            "reason": "compiler-message",
+            "target": { "name": "lamp" },
+            "message": {
+                "level": "error", "code": null, "spans": [],
+                "message": "linking with `rust-lld` failed: exit code: 1",
+                "rendered": "error: linking with `rust-lld` failed: exit code: 1\n",
+                "children": [
+                    { "level": "note", "message": "\"rust-lld\" \"-flavor\" \"wasm\" \"--export\" \"f\"", "spans": [], "children": [] },
+                    { "level": "note", "message": "some arguments are omitted. use `--verbose` to show all linker arguments", "spans": [], "children": [] },
+                    { "level": "note", "message": "rust-lld: error: unknown argument: --bogus-flag\r\n", "spans": [], "children": [] }
+                ]
+            }
+        });
+        let (diags, text) = super::parse_rustc_json(&line.to_string());
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, "linking with `rust-lld` failed: exit code: 1");
+        assert_eq!(
+            text,
+            "error: linking with `rust-lld` failed: exit code: 1\n  = note: rust-lld: error: unknown argument: --bogus-flag\n"
+        );
+    }
+
     #[test]
     fn package_name_is_read() {
         let m = "[package]\nname = \"lamp-x\"\nversion = \"0\"\n[dependencies]\nname = \"no\"\n";
