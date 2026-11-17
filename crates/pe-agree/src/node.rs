@@ -2423,6 +2423,7 @@ impl Agreement for Node {
             final_frame: self.final_cut.as_ref().map(|c| c.cut.at.frame),
             unconfirmed_since: None,
             pending_entries: self.predicted.values().map(|v| v.len()).sum(),
+            view: self.core.view(),
         }
     }
 
