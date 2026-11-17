@@ -587,6 +587,36 @@ fn a_leader_naming_its_present_voids_honest_entries_in_flight() {
 }
 
 #[test]
+fn void_reason_answers_each_final_void() {
+    // S2's `void_reason` (S2 v1.6; P15 in the harness reads it): every entry a final cut voided answers with the
+    // reason the Voided event gave, on every member, and an effective entry answers None.
+    let no_lag = |c: &mut NodeConfig| {
+        c.cut_lag_s = 0.0;
+        c.cut_lag_floor_s = 0.0;
+        c.cut_lag_cap_s = 0.0;
+        c.cut_lag_margin_s = 0.0;
+        c.cut_interval_s = 0.0;
+    };
+    let mut s = Sim::with(4, 1, no_lag);
+    s.run(4_000);
+    for i in 0..4 {
+        let voids = s.voids(i);
+        assert!(!voids.is_empty(), "member {i}: with no lag, in-flight honest entries should be late");
+        for (entry, reason, _) in &voids {
+            assert_eq!(EntrySource::void_reason(&s.nodes[i], entry), Some(*reason), "member {i}");
+        }
+        let f = s.final_frame(i);
+        let effective: Vec<EntryRef> = (1..f.0)
+            .flat_map(|k| EntrySource::entries_at(&s.nodes[i], Frame(k)).unwrap_or(&[]).iter().map(|e| e.id()))
+            .collect();
+        assert!(!effective.is_empty());
+        for e in &effective {
+            assert_eq!(EntrySource::void_reason(&s.nodes[i], e), None, "member {i}: an effective entry");
+        }
+    }
+}
+
+#[test]
 fn the_cut_lag_adapts_to_slow_links() {
     // Links of 150-250 ms one way: the 0.25 s starting lag is too short for the slowest; once measured, the lag
     // covers the 95th percentile plus the margin and no honest entry is void.
