@@ -67,11 +67,14 @@ fn blob_json(r: &Option<BlobRef>) -> Json {
     }
 }
 
-/// A field value in the API's JSON (positions are handled by the caller, who knows the frame).
-fn value_json(v: &Value) -> Json {
+/// A field value in the API's JSON (positions are handled by the caller, who knows the frame). `f32`: the field is
+/// stored as f32, so its floats print in their shortest f32 form (api.md 4.4: `0.65`, not `0.6499999761581421`), which
+/// parses back to the same bits.
+fn value_json(v: &Value, f32: bool) -> Json {
     match v {
         Value::U(x) => json!(x),
         Value::I(x) => json!(x),
+        Value::F(x) if f32 => json!((*x as f32).to_string().parse::<f64>().unwrap_or(*x)),
         Value::F(x) => json!(x),
         Value::Bool(x) => json!(x),
         Value::Object(o) => o.map_or(Json::Null, |id| json!(ObjectId::from(id).to_string())),
@@ -81,7 +84,7 @@ fn value_json(v: &Value) -> Json {
         Value::Member(m) => json!(MemberId::from(*m).to_string()),
         Value::Entry(e) => json!(EntryId::from(*e).to_string()),
         Value::Hash(h) => json!(hex(&h.0)),
-        Value::List(vs) => Json::Array(vs.iter().map(value_json).collect()),
+        Value::List(vs) => Json::Array(vs.iter().map(|v| value_json(v, f32)).collect()),
     }
 }
 
@@ -199,6 +202,8 @@ impl Snapshot for WorldView {
         let c = self.component_on(id.into(), component)?;
         let rows = self.snap.fields_of(id.into(), c)?;
         let transform = c == pe_sim::ComponentId::TRANSFORM;
+        let desc = self.snap.component_desc(c)?;
+        let is_f32 = |name: &str| desc.fields().iter().any(|f| f.name == name && f.kind == pe_sim::FieldKind::F32);
         let mut out = BTreeMap::new();
         for (name, v) in rows {
             let place = transform && name == "pos";
@@ -210,7 +215,7 @@ impl Snapshot for WorldView {
                         None => Json::Null,
                     }
                 }
-                _ => value_json(&v),
+                _ => value_json(&v, is_f32(&name)),
             };
             if transform
                 && name == "rot"
@@ -262,6 +267,17 @@ mod tests {
     use pe_core::{Frame as CoreFrame, MemberKey};
     use pe_seams::world_api::Selector;
     use pe_sim::Transform;
+
+    /// An f32 field prints its shortest f32 form, which parses back to the same bits; an f64 field keeps every digit.
+    #[test]
+    fn f32_fields_print_their_shortest_form() {
+        let x = 0.65f32;
+        assert_eq!(value_json(&Value::F(x as f64), true), json!(0.65));
+        assert_eq!(value_json(&Value::F(x as f64), true).as_f64().map(|v| v as f32), Some(x));
+        assert_eq!(value_json(&Value::F(x as f64), false), json!(x as f64));
+        let list = Value::List(vec![Value::F(0.1f32 as f64), Value::F(1.0)]);
+        assert_eq!(value_json(&list, true), json!([0.1, 1.0]));
+    }
 
     #[test]
     fn euler_degrees_round_trip_and_turn_the_unity_way() {

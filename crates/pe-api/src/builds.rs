@@ -103,7 +103,13 @@ pub fn diagnostics_of(b: &Built) -> Diagnostics {
         diagnostics: b.warnings.clone(),
         module: Some(b.module.to_string()),
         systems: b.systems.clone(),
-        components: b.components.iter().map(|d| d.name().to_string()).collect(),
+        // The version's tag is the engine's bookkeeping, never a component an agent writes (api.md 4.3).
+        components: b
+            .components
+            .iter()
+            .map(|d| d.name().to_string())
+            .filter(|n| n != pe_world::script::TAG_NAME)
+            .collect(),
         build_ms: Some(b.build_ms),
     }
 }
