@@ -14,6 +14,7 @@
 //! - `query`: references, paths, selectors, paging and projection over one snapshot (spec 5.2).
 //! - `strict`: unknown fields in ops are refused, not ignored.
 //! - `resolve`: a transaction to explicit edits against its base snapshot (spec 5.3, 9.2 step 2).
+//! - `resend`: the re-send backstop's work on one transaction (spec 9.4); its state is in `changes`.
 
 pub mod api;
 pub mod changes;
@@ -24,6 +25,7 @@ pub mod ports;
 pub mod query;
 pub mod queue;
 pub mod rate;
+pub mod resend;
 pub mod resolve;
 pub mod schema;
 pub mod stream;

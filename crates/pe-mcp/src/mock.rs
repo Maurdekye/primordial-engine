@@ -121,6 +121,8 @@ impl MockWorld {
                 details: None,
             }),
             diff: None,
+            resent_as: None,
+            held: None,
         }
     }
 }
@@ -157,6 +159,7 @@ impl WorldApi for MockWorld {
                 watch_wait_ms_max: 30_000,
                 capture_size_max: [1920, 1080],
             },
+            held: vec![],
         }
     }
 
@@ -269,6 +272,8 @@ impl WorldApi for MockWorld {
             count,
             refusal: None,
             diff: dry.then(Diff::default),
+            resent_as: None,
+            held: None,
         })
     }
 

@@ -69,7 +69,7 @@ async fn err(c: &Client, name: &str, args: Value, code: &str) -> Value {
 }
 
 #[tokio::test]
-async fn nine_tools_with_underscore_names_and_clean_schemas() {
+async fn ten_tools_with_underscore_names_and_clean_schemas() {
     let (_w, c) = client().await;
     let tools = c.list_all_tools().await.unwrap();
     let mut names: Vec<_> = tools.iter().map(|t| t.name.to_string()).collect();
@@ -83,6 +83,7 @@ async fn nine_tools_with_underscore_names_and_clean_schemas() {
             "session_info",
             "view_capture",
             "world_apply",
+            "world_held",
             "world_query",
             "world_schema",
             "world_watch"
@@ -232,4 +233,14 @@ async fn an_unknown_op_field_is_refused() {
     let ops = json!([{"op": "create", "parent": "/Table", "name": "Cup", "if_version": "any"}]);
     let e = err(&c, "world_apply", json!({"label": "x", "ops": ops}), "invalid_argument").await;
     assert!(e["message"].as_str().unwrap().contains("if_version"), "{e}");
+}
+
+#[tokio::test]
+async fn world_held_needs_edit_and_a_known_handle() {
+    // api.md 9.4: a handle with none of the caller's changes is invalid_argument; a read-only token can't act.
+    let (_w, c) = client().await;
+    err(&c, "world_held", json!({"held": "h:0000000000000000", "action": "apply"}), "invalid_argument").await;
+    err(&c, "world_held", json!({"held": "h:0000000000000000", "action": "later"}), "invalid_argument").await;
+    let r = client_as(Arc::new(MockWorld::new(1)), &[Scope::Read]).await;
+    err(&r, "world_held", json!({"held": "h:0000000000000000", "action": "discard"}), "forbidden").await;
 }
