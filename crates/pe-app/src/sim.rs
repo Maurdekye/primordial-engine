@@ -219,6 +219,26 @@ pub struct SimStats {
     pub moving_frames: u64,
 }
 
+/// `view` published again with only its health changed: a publication with nothing new since the last (S5): no
+/// changes, effects, retractions, activations or counters, and no object marked `CORRECTED`, since those were the
+/// last publication's (@engine-architect's and @design-reviewer's Lows on 785ab327).
+fn health_only(view: &FrameView, health: Health) -> FrameView {
+    let mut v = FrameView {
+        health,
+        changes: Vec::new(),
+        effects: Vec::new(),
+        retracted: Vec::new(),
+        activations: Vec::new(),
+        activations_retracted: Vec::new(),
+        counters: pe_seams::ViewCounters::default(),
+        ..view.clone()
+    };
+    for o in &mut v.objects {
+        o.flags = pe_seams::ViewFlags(o.flags.0 & !pe_seams::ViewFlags::CORRECTED.0);
+    }
+    v
+}
+
 /// The simulation thread's state: agreement, the replica and the loop around them.
 pub struct Sim {
     agree: Box<dyn Agreement>,
@@ -758,13 +778,20 @@ impl Sim {
         }
         // 6. The replica's newest view. While it catches up the view holds, so nothing new goes out. It carries the
         // composed health, so pe-render's "resyncing" line and session_info read one value (@design-reviewer's Low):
-        // while a root split is open, a copy of the view with it, published again when only the health changed.
+        // while a root split is open, a copy of the view with it. When only the health changed (a split opened or
+        // closed while the replica's view held), the copy is a publication with nothing new since the last
+        // ([`health_only`]): readers that take each publication's records in order see none twice.
         let view = self.replica.view();
         let health = self.health_of(&view);
         let same_view = self.source_view.as_ref().is_some_and(|v| Arc::ptr_eq(v, &view));
         if !same_view || self.published.as_ref().is_some_and(|v| v.health != health) {
-            let out =
-                if view.health == health { view.clone() } else { Arc::new(FrameView { health, ..(*view).clone() }) };
+            let out = if same_view {
+                Arc::new(health_only(&view, health))
+            } else if view.health == health {
+                view.clone()
+            } else {
+                Arc::new(FrameView { health, ..(*view).clone() })
+            };
             if let Some(api) = &self.api {
                 self.feed_api(api, &out);
             }
@@ -1314,6 +1341,34 @@ pub(crate) mod tests {
         script.lock().unwrap().events = vec![split(at(8, 3))];
         assert_eq!(tick(&mut s), Health::Agreed, "a late split opens no episode");
         assert_eq!((s.stats().root_splits, s.stats().root_splits_ended), (1, 1));
+    }
+
+    /// A health-only republish is a publication with nothing new: the last publication's records and corrections
+    /// aren't carried twice (@engine-architect's and @design-reviewer's Lows on 785ab327).
+    #[test]
+    fn a_health_only_republish_carries_nothing_new() {
+        use pe_seams::ViewFlags;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (mut s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        let mut v = (*slot.newest().expect("published")).clone();
+        for o in &mut v.objects {
+            o.flags = o.flags.with(ViewFlags::CORRECTED);
+        }
+        let h = Health::Repairing { since: Frame(1) };
+        let out = health_only(&v, h);
+        assert_eq!(out.health, h);
+        assert!(out.changes.is_empty() && out.effects.is_empty() && out.retracted.is_empty());
+        assert!(out.activations.is_empty() && out.activations_retracted.is_empty());
+        assert_eq!(
+            out.counters,
+            pe_seams::ViewCounters::default(),
+            "the last publication's counters aren't counted twice"
+        );
+        assert!(out.objects.iter().all(|o| !o.flags.contains(ViewFlags::CORRECTED)), "CORRECTED cleared");
+        let own = |w: &FrameView| w.objects.iter().filter(|o| o.flags.contains(ViewFlags::OWN_HAND)).count();
+        assert_eq!(own(&out), 2, "the other flags kept");
+        assert_eq!((out.frame, out.objects.len(), out.final_frame), (v.frame, v.objects.len(), v.final_frame));
     }
 
     /// While agreement reports this member backlogged (S3 v1.5), step 2 makes no hand inputs, and it makes them again
