@@ -1,7 +1,8 @@
 //! Divergence injection for M1's "What the hash covers" test (feature `test-util`, never in a shipped build; the gate
 //! checks pe-app's normal edges). [`divergence`] damages one record of one of the five hashed kinds in a world,
 //! bypassing every check (plus a body's physics state, the leaf most likely to diverge for real; @coordinator-opus
-//! m4494d7113f6d), and returns the leaf it changed, so a test can assert that the hash tree finds exactly that
+//! m4494d7113f6d), and into each of the other hashed tables (registry, cooldowns, tombstones, hand packs, push
+//! windows; m4494d7113f6d item 2), and returns the leaf it changed, so a test can assert that the hash tree finds exactly that
 //! leaf: pe-world's own detection test, and @diverge-eng's repair by rungs 1 and 2 on the real pe-world.
 
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use pe_seams::{LeafKey, Version};
 use pe_sim::{ComponentDesc, FieldDesc, FieldKind, Transform};
 
 use crate::components::BodyState;
+use crate::input::{HandPose, Pack};
 use crate::script::{ModuleRow, PendingCommit, script_component_id, tag_desc};
 use crate::tree::table;
 use crate::{BlobRef, BlobStore, Claim, GENESIS, World, perm};
@@ -32,10 +34,20 @@ pub enum Kind {
     BodyState,
     /// A pending commit's attestations (6.2a), hashed in the modules table beside the current row.
     PendingAttestation,
+    /// The registry table (6.6): the asset that registered a script component.
+    Registry,
+    /// The cooldowns table (8.1): a member's grab cooldown on an object.
+    Cooldown,
+    /// The tombstones table (7.5): a deleted object's tombstone.
+    Tombstone,
+    /// The hand packs table (8.1): a hand's pending pose pack.
+    HandPack,
+    /// The push windows table (8.1): a member's pushes in the last second.
+    PushWindow,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] = [
+    pub const ALL: [Kind; 12] = [
         Kind::Field,
         Kind::Governance,
         Kind::Claim,
@@ -43,6 +55,11 @@ impl Kind {
         Kind::ModuleVersion,
         Kind::BodyState,
         Kind::PendingAttestation,
+        Kind::Registry,
+        Kind::Cooldown,
+        Kind::Tombstone,
+        Kind::HandPack,
+        Kind::PushWindow,
     ];
 }
 
@@ -51,19 +68,29 @@ pub const ASSET: [u8; 32] = [0xA5; 32];
 
 /// A small world with something of every [`Kind`], built by trusted construction: two members, an object with a
 /// `Transform` and a `BodyState`, a hand holding it (a claim), and a script version (its modules row, tag and one
-/// component with a row on the object) with a next version pending, attested by its author. For hashing tests only:
+/// component with a row on the object, both registered by the asset) with a next version pending, attested by its
+/// author; a tombstone of a deleted third object; and an input record of each kind: a cooldown, the hand's pending
+/// pack and a push window. For hashing tests only:
 /// the pending commit reuses the current version's component ids under another V, which no real commit can (ids
 /// derive from V), so don't activate it (@chunks-reviewer's note).
 pub fn five_kinds() -> World {
     let (a, b) = (MemberKey([1; 32]), MemberKey([2; 32]));
-    let (lamp, hand) = (ObjectId::from_u128(100), ObjectId::from_u128(101));
+    let (lamp, hand, gone) = (ObjectId::from_u128(100), ObjectId::from_u128(101), ObjectId::from_u128(102));
     let mut w = World::new(1, BlobStore::default());
     w.set_member(a, perm::EDIT);
     w.set_member(b, perm::EDIT);
-    for id in [lamp, hand] {
+    for id in [lamp, hand, gone] {
         w.create(id, None, a, GENESIS).expect("fresh id");
         w.insert(id, Transform::at(Pos::ORIGIN)).expect("live object");
     }
+    let stone = crate::apply::tombstone_of(&w.store, gone, EntryRef(Hash([11; 32])), Frame(3), Frame(3603), None, 2);
+    w.store.destroy(gone).expect("live object");
+    Arc::make_mut(&mut w.tombstones).insert(gone, stone);
+    let inputs = Arc::make_mut(&mut w.inputs);
+    inputs.cooldowns.insert((b, lamp), Frame(30));
+    let pose = HandPose { pos: Pos::ORIGIN, rot: [0.0, 0.0, 0.0, 1.0], grip: 0.5, engaged: true };
+    inputs.packs.insert(hand, Pack { stamp: Frame(2), poses: vec![pose], hold: 1 });
+    inputs.pushes.insert(b, [(Frame(3), 0.25)].into());
     let body = BodyState {
         linear: [0.5, 0.0, 0.0],
         angular: [0.0; 3],
@@ -82,6 +109,7 @@ pub fn five_kinds() -> World {
     let mut components = vec![tag.id(), blink.id()];
     components.sort();
     for d in [tag.clone(), blink] {
+        Arc::make_mut(&mut w.script_ids).insert(d.id(), ASSET);
         w.store.register(d).expect("new ids");
     }
     w.store.insert_raw(tag.id(), lamp, &[]).expect("registered");
@@ -126,7 +154,12 @@ pub fn five_kinds() -> World {
 ///   bit flipped (a finite `f32` stays finite);
 /// - `ModuleVersion`: the first modules row's version names the next op of its entry;
 /// - `BodyState`: the first body's linear velocity gains 1 mm/s along x;
-/// - `PendingAttestation`: the first pending commit's last attestation is dropped.
+/// - `PendingAttestation`: the first pending commit's last attestation is dropped;
+/// - `Registry`: the first script component's registering asset has its last byte's lowest bit flipped;
+/// - `Cooldown`: the first cooldown ends one frame later;
+/// - `Tombstone`: the first tombstone expires one frame later;
+/// - `HandPack`: the first pending hand pack's stamp is one frame later;
+/// - `PushWindow`: the first member's newest push grows by 0.001 N·s.
 pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
     match kind {
         Kind::Field => {
@@ -173,6 +206,31 @@ pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
             let asset = *w.pending.iter().find(|(_, p)| !p.attested.is_empty())?.0;
             Arc::make_mut(&mut w.pending).get_mut(&asset)?.attested.pop();
             Some(LeafKey::Table(table::MODULES))
+        }
+        Kind::Registry => {
+            let c = *w.script_ids.keys().next()?;
+            Arc::make_mut(&mut w.script_ids).get_mut(&c)?[31] ^= 1;
+            Some(LeafKey::Table(table::REGISTRY))
+        }
+        Kind::Cooldown => {
+            let k = *w.inputs.cooldowns.keys().next()?;
+            Arc::make_mut(&mut w.inputs).cooldowns.get_mut(&k)?.0 += 1;
+            Some(LeafKey::Table(table::COOLDOWNS))
+        }
+        Kind::Tombstone => {
+            let id = *w.tombstones.keys().next()?;
+            Arc::make_mut(&mut w.tombstones).get_mut(&id)?.expires.0 += 1;
+            Some(LeafKey::Table(table::TOMBSTONES))
+        }
+        Kind::HandPack => {
+            let hand = *w.inputs.packs.keys().next()?;
+            Arc::make_mut(&mut w.inputs).packs.get_mut(&hand)?.stamp.0 += 1;
+            Some(LeafKey::Table(table::HAND_PACKS))
+        }
+        Kind::PushWindow => {
+            let m = *w.inputs.pushes.iter().find(|(_, q)| !q.is_empty())?.0;
+            Arc::make_mut(&mut w.inputs).pushes.get_mut(&m)?.back_mut()?.1 += 0.001;
+            Some(LeafKey::Table(table::PUSH_WINDOWS))
         }
     }
 }
