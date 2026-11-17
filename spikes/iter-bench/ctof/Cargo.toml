@@ -18,6 +18,7 @@ pe-replica = { path = "../../../crates/pe-replica", features = ["logic"] }
 pe-logic = { path = "../../../crates/pe-logic" }
 pe-render = { path = "../../../crates/pe-render" }
 serde_json = "1"
+pe-net-crypto = { path = "../../../crates/pe-net-crypto" }
 
 [profile.release]
 debug = false

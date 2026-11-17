@@ -201,7 +201,7 @@ pe_sdk::system! {
                 kind: 0,
                 intensity: 1.0,
                 range: 1.0,
-                color: [1.0; 3],
+                color: pe_sdk::component::LinearRgb([1.0; 3]),
                 inner_angle: 0.0,
                 outer_angle: 0.0,
             };

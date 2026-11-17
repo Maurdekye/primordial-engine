@@ -74,6 +74,7 @@ impl BatchHeader {
 pub const CMD_LEN_AT: usize = core::mem::offset_of!(BatchHeader, cmd_len);
 
 /// The kind of a component field, as the store knows it (pe-sim `FieldKind`, plus `Pos` from WS-world, logic.md 9).
+/// Codes stay below 32: the manifest's field byte keeps a colour's space in its high three bits ([`field_byte`]).
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldKind {
@@ -127,6 +128,49 @@ impl FieldKind {
             _ => return None,
         })
     }
+}
+
+/// The colour space of a field that holds a colour (pe-sim `ColorSpace`; world-model.md 3.6). The only one is linear
+/// light with sRGB (Rec. 709) primaries and straight alpha in a fourth element. It changes nothing about the floats;
+/// it tells a reader, the WorldApi among them, how they are meant. Only on 3 or 4 `F32` elements.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorSpace {
+    LinearSrgb = 1,
+}
+
+impl ColorSpace {
+    pub const fn from_code(c: u8) -> Option<ColorSpace> {
+        match c {
+            1 => Some(ColorSpace::LinearSrgb),
+            _ => None,
+        }
+    }
+}
+
+/// A field's kind and colour space as the manifest's one byte, as pe-world's kind byte holds them (world-model.md
+/// 6.6): the kind's code in the low five bits, the space's code (0 for none) in the high three. An unmarked field's
+/// byte is its kind's code alone, as before the mark.
+pub const fn field_byte(kind: FieldKind, color: Option<ColorSpace>) -> u8 {
+    assert!((kind as u8) < 32, "a kind code takes five bits of the field byte");
+    let space = match color {
+        Some(c) => c as u8,
+        None => 0,
+    };
+    kind as u8 | space << 5
+}
+
+/// Splits a [`field_byte`]; `None` for an unknown kind or space.
+pub const fn split_field_byte(b: u8) -> Option<(FieldKind, Option<ColorSpace>)> {
+    let Some(kind) = FieldKind::from_code(b & 0x1f) else { return None };
+    let color = match b >> 5 {
+        0 => None,
+        c => match ColorSpace::from_code(c) {
+            Some(s) => Some(s),
+            None => return None,
+        },
+    };
+    Some((kind, color))
 }
 
 /// A frame stage a system runs in (pe-seams `Stage`, N1). Only the two logic stages take systems.

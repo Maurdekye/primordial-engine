@@ -4,7 +4,7 @@
 //! world does not allow, and runs the world's edit checks on every row a script writes (world-model.md 7.9).
 //! pe-logic's tests check these layouts against pe-world's descriptions.
 
-use crate::component::{Component, FieldDesc};
+use crate::component::{Component, FieldDesc, LinearRgb};
 use crate::layout::FieldKind;
 
 macro_rules! engine_component {
@@ -22,6 +22,7 @@ macro_rules! engine_component {
                     kind: <$t as crate::component::Field>::KIND,
                     count: <$t as crate::component::Field>::COUNT,
                     offset: ::core::mem::offset_of!($name, $f) as u32,
+                    color: <$t as crate::component::Field>::COLOR,
                 }),*
             ];
         }
@@ -37,7 +38,8 @@ engine_component! {
         intensity: f32,
         /// Metres.
         range: f32,
-        color: [f32; 3],
+        /// Linear light, sRGB primaries (the engine's `Light.color` is marked a colour, world-model.md 3.6).
+        color: LinearRgb,
         inner_angle: f32,
         outer_angle: f32,
     }

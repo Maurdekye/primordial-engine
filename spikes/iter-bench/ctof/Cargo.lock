@@ -796,6 +796,7 @@ version = "0.0.1"
 dependencies = [
  "pe-app",
  "pe-logic",
+ "pe-net-crypto",
  "pe-render",
  "pe-replica",
  "pe-seams",
