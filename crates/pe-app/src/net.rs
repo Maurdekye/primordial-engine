@@ -50,14 +50,15 @@ use crate::world::DEV_MEMBER;
 ///   the limits and the fuel), so two machines whose runners could compute one script's frame differently never
 ///   share a session either (Q1, @coordinator-opus; S2 v1.7: "the hello compares it").
 ///
-/// Each appears as the first 8 bytes of its hash in hex, since a hello's build id is at most `MAX_BUILD` (64) bytes and
-/// `bind` refuses a longer one: 63 at version 0.1.0. Computed once per process.
+/// Each appears as the first 6 bytes of its hash in hex, since a hello's build id is at most `MAX_BUILD` (64) bytes and
+/// `bind` refuses a longer one: 55 at version 0.1.0, which leaves the version 9 bytes to grow, and 48 bits still tell
+/// any two builds apart by accident (a peer can claim any build id at any length). Computed once per process.
 pub fn build_id() -> &'static [u8] {
     static ID: OnceLock<Vec<u8>> = OnceLock::new();
     ID.get_or_init(|| {
         let scripts = pe_logic::build::Toolchain::current()
             .and_then(|tc| pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()))
-            .map(|b| hex8(&b))
+            .map(|b| hex6(&b))
             .unwrap_or_else(|_| "unavailable".into());
         let (settings, run) = runner_settings();
         let runner = runner_part(&settings, &run);
@@ -73,12 +74,12 @@ pub fn runner_settings() -> (pe_logic::Settings, pe_logic::run::RunSettings) {
 
 /// [`build_id`]'s runner part: the hash of the identity a runner with these settings reports (`pe_logic::identity`).
 fn runner_part(settings: &pe_logic::Settings, run: &pe_logic::run::RunSettings) -> String {
-    hex8(&pe_seams::Hash::of("pe.app.runner", &pe_logic::identity(settings, run)))
+    hex6(&pe_seams::Hash::of("pe.app.runner", &pe_logic::identity(settings, run)))
 }
 
-/// A hash's first 8 bytes in hex.
-fn hex8(h: &pe_seams::Hash) -> String {
-    h.0[..8].iter().map(|x| format!("{x:02x}")).collect()
+/// A hash's first 6 bytes in hex.
+fn hex6(h: &pe_seams::Hash) -> String {
+    h.0[..6].iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// pe-net's protocol version in the hello.
@@ -731,8 +732,8 @@ mod tests {
 
     /// pe-logic's runner, as the binary hands it to each replica it builds.
     fn runner() -> Box<dyn ScriptRunner> {
-        let run = pe_logic::run::RunSettings::default();
-        Box::new(pe_replica::logic::LogicRunner::new(pe_logic::Settings::default(), run).expect("a runner"))
+        let (settings, run) = runner_settings();
+        Box::new(pe_replica::logic::LogicRunner::new(settings, run).expect("a runner"))
     }
 
     struct StillHands([f32; 3]);
@@ -1318,16 +1319,16 @@ mod tests {
         let id = String::from_utf8(build_id().to_vec()).unwrap();
         assert!(id.starts_with(concat!("pe-app ", env!("CARGO_PKG_VERSION"), "; scripts ")), "{id}");
         let (scripts, runner) = id.split_once("; scripts ").and_then(|(_, r)| r.split_once("; runner ")).expect("both");
-        // Under cargo the toolchain is known, so B is there. Each part is its hash's first 8 bytes in hex.
+        // Under cargo the toolchain is known, so B is there. Each part is its hash's first 6 bytes in hex.
         for part in [scripts, runner] {
-            assert!(part.len() == 16 && part.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+            assert!(part.len() == 12 && part.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
         }
         let tc = pe_logic::build::Toolchain::current().expect("a toolchain under cargo");
-        assert_eq!(scripts, hex8(&pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()).unwrap()));
+        assert_eq!(scripts, hex6(&pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()).unwrap()));
         // The runner part is the identity main.rs's runner reports, from the same settings (Q1; S2 v1.7).
         let (settings, run) = runner_settings();
         let reported = pe_replica::logic::LogicRunner::new(settings, run).expect("a runner").identity();
-        assert_eq!(runner, hex8(&pe_seams::Hash::of("pe.app.runner", &reported)));
+        assert_eq!(runner, hex6(&pe_seams::Hash::of("pe.app.runner", &reported)));
         // Other fuel can change what a script computes, so the part differs; the same settings give the same part.
         let more_fuel = pe_logic::run::RunSettings { fuel_per_call: run.fuel_per_call + 1, ..run };
         assert_ne!(runner_part(&settings, &more_fuel), runner);
