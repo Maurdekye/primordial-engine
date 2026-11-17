@@ -1,0 +1,6 @@
+# Red tier-2 runs that are explained (decision C7, docs/refound-plan.md 4.6; docs/landing-gates.md, "Tier 2"). A
+# red hosted run of .github/workflows/gate.yml on the public main blocks the next landing, where the clone has
+# git config pe.gate.tier2 on (scripts/gate.sh, through scripts/ci_status.py --check), until it is fixed or explained
+# here. The landing that fixes it, or explains it, adds one line, which its reviewer approves:
+#   <run id> -- <what failed, why, and what fixes it or why it may wait>
+# This is an allow file: the gate reads it from the landing. WS-ci triages red runs.

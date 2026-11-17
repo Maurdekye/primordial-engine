@@ -41,6 +41,8 @@ term="qz$(printf -- '-%s-' planted)term"
 printf 'fixed %s\n' "$term" > "$tmp/terms"
 : > "$tmp/allow"
 export PE_PUBLISH_TERMS="$tmp/terms" PE_PUBLISH_ALLOW="$tmp/allow"
+# Tier 2's state is checked only where case 25 asks for it, against files standing in for GitHub.
+unset PE_GATE_TIER2 PE_CI_RUNS_URL PE_CI_REPO
 
 # Made-up secrets, built here so that no file holds one.
 fake() { "$py" -I -c "
@@ -320,7 +322,99 @@ from_fbase; rm "$R/scripts/feature_policy.txt"; commit -m "the landing deletes t
 BASE=$fbase expect feature-policy-own-deleted fail "this landing deletes scripts/feature_policy\.txt" \
   "^gate: native audit PASS" "^gate: FAIL"
 
-# 25. The hook, through its trampoline: refuses a merge into main that fails, leaves main where it was, refuses
+# 25. Tier 2's state (C7), with files standing in for GitHub's answers (PE_CI_RUNS_URL). First scripts/ci_status.py
+#     on its own: it looks past a cancelled run, counts no pull request's run (a fork's own branch may be called
+#     main), says an answer it can't read is unreadable (3), never exits 1 (red) on a malformed one (4), and names
+#     each red run once for the triage watchdog. Then the gate: with pe.gate.tier2 on, a red run fails it until
+#     scripts/tier2_explained.txt names the run; with note, it is only reported; a malformed answer, and an answer
+#     that never finishes, don't block it (the hook runs this step while git holds main's locks, so the check gives
+#     up after 20 s in all); and an unknown mode is an error.
+export PE_CI_REPO=example/tier2-fixture
+fx="$tmp/fixture"; mkdir -p "$fx"; fxw=$fx; [ "$win" = 1 ] && fxw=$(cygpath -m "$fx")
+fxu="file:///${fxw#/}"
+printf '{"jobs":[{"name":"tier 2, macos-arm64","conclusion":"failure"},{"name":"gate","conclusion":"success"}]}' > "$fx/jobs.json"
+run_json() {  # id, conclusion, [event, [head repository]]: one run as GitHub lists it
+  printf '{"id":%s,"conclusion":"%s","head_sha":"0123456789abcdef","html_url":"https://example.invalid/%s","created_at":"2026-11-17T00:00:00Z","event":"%s","head_branch":"main","head_repository":{"full_name":"%s"},"jobs_url":"%s/jobs.json"}' \
+    "$1" "$2" "$1" "${3:-push}" "${4:-$PE_CI_REPO}" "$fxu"
+}
+printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424243 cancelled)" "$(run_json 424242 failure)" > "$fx/red.json"
+printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424245 cancelled)" "$(run_json 424244 success schedule)" > "$fx/green.json"
+# A fork's pull request from its own branch called main: green above main's red push, then red above main's green.
+printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424247 success pull_request someone/tier2-fixture)" \
+  "$(run_json 424242 failure)" > "$fx/fork-green.json"
+printf '{"workflow_runs":[%s,%s]}\n' "$(run_json 424248 failure pull_request someone/tier2-fixture)" \
+  "$(run_json 424244 success)" > "$fx/fork-red.json"
+printf '{"workflow_runs":"not a list"}\n' > "$fx/malformed.json"
+git -C "$R" show "$sha:scripts/ci_status.py" > "$tmp/ci_status.py" || die "$rev has no scripts/ci_status.py"
+: > "$tmp/explained-none.txt"
+ci() {  # name, listing file, wanted exit, regex its last line must match: ci_status.py --check on its own
+  local name=$1 f=$2 want=$3 re=$4 rc
+  PE_CI_RUNS_URL="$fxu/$f" "$py" -I "$tmp/ci_status.py" --check "$tmp/explained-none.txt" > "$tmp/$name.log" 2>&1
+  rc=$?
+  if [ "$rc" = "$want" ] && tail -1 "$tmp/$name.log" | grep -Eq -- "$re"; then
+    pass=$((pass + 1)); echo "test_gate: ok   $name (ci_status exit $rc)"
+  else
+    bad=$((bad + 1)); echo "test_gate: BAD  $name (ci_status exit $rc, wanted $want and /$re/)"; sed 's/^/    /' "$tmp/$name.log"
+  fi
+}
+ci ci-looks-past-cancelled-red red.json 1 "^ci_status: tier 2 RED: run 424242 \(failure\) .*jobs tier 2, macos-arm64: .*past 1 run"
+ci ci-looks-past-cancelled-green green.json 0 "^ci_status: tier 2 green: run 424244 .*past 1 run"
+ci ci-fork-green-hides-no-red fork-green.json 1 "^ci_status: tier 2 RED: run 424242 \(failure\)"
+ci ci-fork-red-blocks-nothing fork-red.json 0 "^ci_status: tier 2 green: run 424244 on"
+ci ci-unreadable missing.json 3 "^ci_status: GitHub can't be read"
+ci ci-malformed malformed.json 4 "^ci_status: failed: "
+PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --new "$tmp/t2state" > "$tmp/new1.log" 2>&1; r1=$?
+PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --new "$tmp/t2state" > "$tmp/new2.log" 2>&1; r2=$?
+if [ "$r1$r2" = 00 ] && [ "$(cat "$tmp/new1.log")" = "TIER2 RED 424242 failure https://example.invalid/424242 jobs: tier 2, macos-arm64" ] \
+  && [ ! -s "$tmp/new2.log" ]; then
+  pass=$((pass + 1)); echo "test_gate: ok   ci-new-names-a-red-run-once"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  ci-new-names-a-red-run-once (exits $r1 $r2)"; sed 's/^/    /' "$tmp/new1.log" "$tmp/new2.log"
+fi
+export PE_GATE_TIER2=on PE_CI_RUNS_URL="$fxu/red.json"
+new_case; echo "tier 2 test" >> "$R/README.md"; commit -m "a change while tier 2 is red"
+expect tier2-red fail "^gate: tier 2 RED: run 424242 \(failure\)" "add '<run id> -- <reason>' to scripts/tier2_explained\.txt" "^gate: FAIL"
+new_case; echo "424242 -- tier 2 on macos-arm64: a test fixture" >> "$R/scripts/tier2_explained.txt"; commit -m "explain run 424242"
+expect tier2-explained pass "^gate: tier 2: tier 2 failure in run 424242, explained in tier2_explained\.txt" \
+  "NOTE: this landing changes the gate's allow files" "^gate:   scripts/tier2_explained\.txt$" "^gate: PASS"
+new_case; echo "tier 2 test" >> "$R/README.md"; commit -m "a change while tier 2 is red, reported only"
+PE_GATE_TIER2=note expect tier2-note pass "^gate: NOTE: tier 2 RED: run 424242" "not blocking yet: pe\.gate\.tier2 is note" "^gate: PASS"
+PE_CI_RUNS_URL="$fxu/malformed.json" expect tier2-malformed pass "^gate: NOTE: tier 2's check failed \(exit 4" "^gate: PASS"
+PE_GATE_TIER2=maybe expect tier2-unknown-mode error "pe\.gate\.tier2 \(or PE_GATE_TIER2\) is 'maybe'; it must be on, note or off"
+# A server that answers with a status line and then one header byte a second, for two minutes: a socket's own
+# time-out never fires, so only the check's 20 s limit can end the call.
+cat > "$tmp/stall.py" << 'PYEOF'
+import socket, sys, time
+end = time.time() + float(sys.argv[2])
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(4)
+with open(sys.argv[1], "w") as f:
+    f.write(str(s.getsockname()[1]))
+s.settimeout(1.0)
+held = []
+while time.time() < end:
+    try:
+        c, _ = s.accept()
+        c.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+        held.append(c)
+    except socket.timeout:
+        pass
+    for c in list(held):
+        try:
+            c.sendall(b"a")
+        except OSError:
+            held.remove(c)
+PYEOF
+"$py" -I "$tmp/stall.py" "$tmp/stall.port" 120 > "$tmp/stall.log" 2>&1 & spid=$!
+for _ in $(seq 100); do [ -s "$tmp/stall.port" ] && break; sleep 0.1; done
+[ -s "$tmp/stall.port" ] || die "the stalling server didn't start: $(cat "$tmp/stall.log")"
+PE_CI_RUNS_URL="http://127.0.0.1:$(cat "$tmp/stall.port")/runs" expect tier2-stalled-answer-cut-at-20-s pass \
+  "^gate: NOTE: tier 2's state is unknown \(GitHub can't be read: no answer within 20 s; (19|2[0-9]) s\); not blocking" "^gate: PASS"
+kill "$spid" 2> /dev/null; wait "$spid" 2> /dev/null
+unset PE_GATE_TIER2 PE_CI_RUNS_URL PE_CI_REPO
+
+# 26. The hook, through its trampoline: refuses a merge into main that fails, leaves main where it was, refuses
 #     an update-ref, lets a clean merge in, and runs the base's hook and gate when a landing changes both, also
 #     when it comes as a forced update (git gives the hook zeros as the old value). An update that leaves main
 #     where it is, or moves only HEAD, returns at once, even while the audit's wrapper stalls (as a build-slot
