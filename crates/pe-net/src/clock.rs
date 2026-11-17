@@ -321,7 +321,11 @@ impl Clock {
             .filter(|(k, _)| self.members.contains(k))
             .filter_map(|(_, c)| c.estimate())
             .collect();
-        values.push(own);
+        // Before frame 0 my offset is not a time yet, so the target is the members' alone (5.4); counting it, a
+        // joiner only halved its distance each round (days away: about 27 rounds, past `T_ready`).
+        if self.running {
+            values.push(own);
+        }
         let target = ft_midpoint(&values).unwrap_or(own);
 
         if !self.running {
