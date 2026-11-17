@@ -24,6 +24,20 @@ pub struct SoloAgreement {
     /// Tests only: refuse every class Protocol entry, as agreement refuses a `Leave` it can't take yet.
     #[cfg(test)]
     pub(crate) refuse_protocol: Arc<std::sync::atomic::AtomicBool>,
+    /// Tests only: events the next [`Agreement::events`] returns, and the final cut it then reports (a split, and
+    /// the cut that ends it, without a second member).
+    #[cfg(test)]
+    pub(crate) script: Arc<std::sync::Mutex<Script>>,
+    #[cfg(test)]
+    final_now: Option<FinalCut>,
+}
+
+/// Tests only: what a [`SoloAgreement`] reports next.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Script {
+    pub(crate) events: Vec<AgreeEvent>,
+    pub(crate) final_cut: Option<FinalCut>,
 }
 
 impl SoloAgreement {
@@ -36,13 +50,23 @@ impl SoloAgreement {
             backlog: Arc::default(),
             #[cfg(test)]
             refuse_protocol: Arc::default(),
+            #[cfg(test)]
+            script: Arc::default(),
+            #[cfg(test)]
+            final_now: None,
         }
     }
 }
 
 impl EntrySource for SoloAgreement {
+    #[cfg(not(test))]
     fn final_cut(&self) -> Option<&FinalCut> {
         None
+    }
+
+    #[cfg(test)]
+    fn final_cut(&self) -> Option<&FinalCut> {
+        self.final_now.as_ref()
     }
 
     fn entries_at(&self, frame: Frame) -> Option<&[SignedEntry]> {
@@ -117,8 +141,19 @@ impl Agreement for SoloAgreement {
         AgreeStats::default()
     }
 
+    #[cfg(not(test))]
     fn events(&mut self) -> Vec<AgreeEvent> {
         Vec::new()
+    }
+
+    /// Tests only: the scripted events, and the scripted final cut from now on.
+    #[cfg(test)]
+    fn events(&mut self) -> Vec<AgreeEvent> {
+        let mut s = self.script.lock().expect("the script");
+        if let Some(fc) = s.final_cut.take() {
+            self.final_now = Some(fc);
+        }
+        std::mem::take(&mut s.events)
     }
 }
 

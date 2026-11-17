@@ -688,7 +688,8 @@ pub struct ApplyOpts {
 }
 
 /// The replica's standing with the quorum, from S5's `Health` (api.md 5.1; S6 v1.5): `"agreed"`, or
-/// `{"repairing": {"since": frame}}` while a repair is under way.
+/// `{"repairing": {"since": frame}}` while a repair is under way, or while a root split is open: S3 reported
+/// `RootSplit` and no cut at or past it is final yet (divergence.md 7).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionHealth {
