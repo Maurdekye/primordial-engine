@@ -74,6 +74,15 @@ wasmtime = { path = "crates/pe-logic/vendor/wasmtime-50.0.1" }
 [profile.release]
 debug = false
 
+# Dependencies optimized in debug builds (@coordinator-opus's ruling mce61106b6b96, after @fable-reviewer
+# m0abfbabee158). At opt-level 0 a pe-app tick spent 50-200 ms signing, verifying and decrypting (ed25519-dalek,
+# curve25519, aes-gcm with ghash and polyval, rustls, quinn-proto, x25519), many frame periods, so a debug run
+# could not keep real time. "*" names every package that is not a workspace member: the members, box3d-fork and
+# the simulation among them, stay at opt-level 0 with their assertions. Build scripts and proc macros keep the
+# dev settings (build-override). pe-logic's module builds set their own profile (crates/pe-logic/src/build.rs).
+[profile.dev.package."*"]
+opt-level = 3
+
 # The wasm guest profile, kept for guest builds (the logic guests' own workspace uses the same settings):
 # cargo build -p <guest> --target wasm32-unknown-unknown --profile wasm-guest
 [profile.wasm-guest]

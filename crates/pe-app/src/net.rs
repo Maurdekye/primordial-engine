@@ -719,10 +719,9 @@ mod tests {
     #[test]
     #[cfg_attr(
         debug_assertions,
-        ignore = "release only: in a debug build a tick's signing, verifying and decryption (ed25519, AES-GCM, \
-                  unoptimized) take 50-200 ms under load, while the step budget is sized from stepping alone, so \
-                  the replica falls further behind every tick (9 of 9 failures at 77-100 % CPU; release passes at \
-                  95 %; @coordinator-opus me534c81118ea, mccf5762cee74): run with --release"
+        ignore = "release only, as a two-machine run (@coordinator-opus mce61106b6b96): it passes in debug since the \
+                  dev profile optimizes dependencies (a tick's fixed cost 0.5 ms, from 50-200 ms with them at \
+                  opt-level 0), but timing assertions and two-machine runs stay in release: run with --release"
     )]
     fn a_second_machine_joins_from_an_invite_and_both_finalize() {
         // The M1 interim end to end over real UDP on loopback: A opens and invites, B replies and dials, A takes the
