@@ -123,6 +123,7 @@ impl MockWorld {
             diff: None,
             resent_as: None,
             held: None,
+            activation: None,
         }
     }
 }
@@ -274,6 +275,7 @@ impl WorldApi for MockWorld {
             diff: dry.then(Diff::default),
             resent_as: None,
             held: None,
+            activation: None,
         })
     }
 
@@ -321,6 +323,7 @@ impl WorldApi for MockWorld {
                 status: Status::Accepted,
                 repaired_at: None,
                 summary: l.clone(),
+                activation: None,
             })
             .collect();
         Ok(History { entries, more: None })

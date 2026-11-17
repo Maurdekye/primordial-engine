@@ -776,6 +776,54 @@ pub struct Outcome {
     // On a dropped change: its held batch, for world_held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+    // S6 v1.7 (api.md 7): for a `code` change, its version's activation or void, once a final frame passed it; a
+    // code change reports twice, final and then this (5.3.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ActivationNote>,
+}
+
+// S6 v1.7 (api.md 7): what became of a code change's version, from S5's `FrameView.activations` at final frames
+// only, so every machine says the same. Plain comments: the MCP tool list's byte budget is tight.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum ActivationNote {
+    // Runs from `frame + 1`; `rekeyed`: the objects whose rows moved to the new version's ids, the first 64, and
+    // how many more.
+    Activated {
+        frame: Frame,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rekeyed: Vec<ObjectId>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        more: u32,
+    },
+    // Voided: the old version stays. `failed`: each member who couldn't build it, with the reason's name, never
+    // compiler output (Q1 (c)); `blocked`: for `rekey_blocked`, the objects in the way (first 16) and how many more.
+    Voided {
+        frame: Frame,
+        why: VoidWhy,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed: Vec<BuildFailedBy>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        blocked: Vec<ObjectId>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        more: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VoidWhy {
+    Unattested,
+    RekeyBlocked,
+    RekeyTooLarge,
+    AuthorRevoked,
+    QuorumUnreachable,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BuildFailedBy {
+    pub member: MemberBrief,
+    pub reason: String,
 }
 
 // What to do with the caller's changes in a held batch (api.md 9.4; S6 v1.6).
@@ -953,6 +1001,9 @@ pub struct HistoryEntry {
     pub repaired_at: Option<Frame>,
     /// Engine-written, capped: "Created Red cube under Table".
     pub summary: String,
+    // S6 v1.7 (api.md 7): for a code change, its version's activation or void, once told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ActivationNote>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1062,6 +1113,8 @@ pub enum DiagnosticKind {
     Feature,
     Manifest,
     ReservedName,
+    /// The build passed but went past one of the author's margins, 15 s or 512 MiB (api.md 7.1; S6 v1.7).
+    Margin,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1107,6 +1160,8 @@ pub enum ErrorCode {
     RateLimited,
     Timeout,
     SessionEnded,
+    /// A service this call needs isn't on this machine, or can't serve now (api.md 7.1: no build service; S6 v1.7).
+    Unavailable,
     Internal,
 }
 
@@ -1264,6 +1319,7 @@ mod tests {
             diff: None,
             resent_as: None,
             held: None,
+            activation: None,
         };
         let v = serde_json::to_value(&o).unwrap();
         assert_eq!(v["status"], "refused");

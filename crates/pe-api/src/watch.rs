@@ -260,6 +260,7 @@ pub fn mine(
         diff: None,
         resent_as: None,
         held: None,
+        activation: None,
     };
     match step.map(|s| &s.outcome) {
         Some(WorldOutcome::Applied { created, .. }) if status != Status::Dropped => {
