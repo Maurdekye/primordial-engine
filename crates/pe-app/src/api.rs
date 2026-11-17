@@ -315,6 +315,8 @@ impl WorldSource for ApiWorld {
             caught_up: g.caught_up,
             tick_hz: self.0.facts.rate.hz(),
             agents_move_user: false,
+            // pe-app's attester fills this from ApiShared (@vdw-physics, ws/author-module).
+            scripts_not_running: vec![],
         }
     }
 }

@@ -299,6 +299,16 @@ with `not_ready`.
 - `session` carries `health`, read from the view, never inferred from two frame numbers: `agreed`, or
   `{"repairing": {"since": frame}}`. `watch`'s `session` items report each change of it as `health_changed`:
   `repairing` before the rest of its view's news, `agreed` after the repair's verdicts.
+- `session` lists `scripts_not_running`: each script this machine can't run, with `script` (`"a:…"`), `object`
+  (for a bind that fails on one object; left out when the script can't run at all), `since_frame` (the frame it
+  stopped running from, or never ran from, here) and `why` (its module isn't held on this machine, or it won't
+  bind, and the reason). The field is left out when the list is empty. pe-app also logs each one. An entry leaves
+  the list once the script runs here, or once its version stops being active (superseded, unbound, or its objects
+  deleted). `health: agreed` only says that the machines agree on the world, not that every script runs here
+  (coordinator mc23ec29ef096: a script skipped without a word is what once hid a lamp that never ran on one
+  machine; S6 v1.9). For a script that writes only display state, such as a lamp's glow, which no root covers,
+  this list is the only sign. One that writes simulated state also makes this machine diverge, and health then
+  reads `repairing` within a cut or so.
 
 ### 5.2 `query`
 
@@ -714,8 +724,14 @@ pub enum BuildRefused {
 - **One cache, by V** (the archive's hash; enough because the machine's toolchain and SDK are fixed for the
   process's life, and the commit carries both hashes for the attesters' comparison), shared by `code_check`, the `code` op and the build thread, so a check
   and then a commit of the same source build once. A committed V stays until its commit activates or is voided;
-  checks keep the last 16 [I]. The build thread loads a module into the runner only for a pending commit, the
-  author's included, so a check that is never committed costs the runner nothing.
+  checks keep the last 16 [I]. The build thread loads a module into the runner for a pending commit, and for an
+  active version whose module it hasn't loaded, the author's included, so a check that is never committed costs the
+  runner nothing. An active version is loaded without an attestation, since it needs none. The author never sees
+  its own commit pending: its prediction (logic.md 6.2a, option (i)) activates the commit at the end of the
+  commit's frame, before any snapshot the build thread reads, so the author's module is loaded as an active version
+  (@vdw-physics). Until @item:primordial-engine/m1-blocker-binding-an-activated-script-to-an-obj the thread read
+  pending commits only, and the author's runner never held its own module. A script that still can't run here is
+  listed in `session` (5.1).
 - **Margins** are applied by the service when building as author (every `Builds::build` is one; the replica's
   attesting builds don't come through this port). A margin refusal names the margin, never `compile`. `build_ms`
   and `peak_bytes` measure the build itself at the pinned job count (logic.md 6.2b), never the time in the queue:
@@ -1112,6 +1128,8 @@ advice m82fcb9fcc6d0):
     `held_discarded` session event.
   - **S6 v1.8** (@engine-architect, 88ea0a5c): `Brief.script: Option<String>`, a script component type's script as
     `"a:<64 hex>"`, left out for the engine's types (4.3, 5.6).
+  - **S6 v1.9** (@engine-architect): `SessionInfo.scripts_not_running: Vec<ScriptNotRunning { script, since_frame,
+    why }>`, left out when empty (5.1).
     **Beside S3**, in pe-api's own ports: `ChangeLog::confirm_cut` takes each void with its `VoidReason`, which
     pe-app copies from agreement's `Voided` events.
 

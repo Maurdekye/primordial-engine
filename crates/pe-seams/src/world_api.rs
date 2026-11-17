@@ -361,6 +361,25 @@ pub struct SessionInfo {
     // Held batches with the caller's changes, for world_held.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held: Vec<HeldBatch>,
+    /// Scripts this machine can't run, so `health: agreed` never hides one (api.md 5.1; S6 v1.9). Left out when
+    /// empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scripts_not_running: Vec<ScriptNotRunning>,
+}
+
+/// A script this machine doesn't run (api.md 5.1; S6 v1.9, coordinator mc23ec29ef096): its module isn't held here,
+/// or it won't bind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ScriptNotRunning {
+    /// `"a:<64 hex>"`.
+    pub script: String,
+    /// The object it won't bind to, for a bind that fails on one object; none when the script can't run at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<ObjectId>,
+    /// The frame it stopped running from, or never ran from, on this machine.
+    pub since_frame: Frame,
+    /// Why, in a sentence: "its module isn't held on this machine", "it won't bind: …".
+    pub why: String,
 }
 
 // ---- schema (spec 5.6) ---------------------------------------------------------------------------------------------
