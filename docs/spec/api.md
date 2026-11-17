@@ -1112,7 +1112,8 @@ lamp in the inspector between the agent's query and its apply.
 
 ## 14. Tests (M1)
 
-In `crates/pe-api` and `crates/pe-mcp`, against mock ports, and in the two-process session through pe-harness:
+In `crates/pe-api` and `crates/pe-mcp`, against mock ports, and with two machines: in CI, two members in one test
+process over pe-app's in-process network (`crates/pe-app/src/agent_demo.rs`), and the two-process session of app.md 6:
 
 - **The edit tests of plan M1:** create, delete, set, add, remove, reparent and duplicate work; a transaction applies
   all or nothing (a refused third op leaves the first two unapplied, on both machines); a dry run changes nothing (the
@@ -1139,7 +1140,8 @@ In `crates/pe-api` and `crates/pe-mcp`, against mock ports, and in the two-proce
 - **MCP:** the kept transport and token tests move over (HTTP host and origin rules, pipe DACL, handshake, revocation,
   scope filtering); the schema file is current; the tool list stays within its budget; no tool argument panics the
   server (property tests over arbitrary JSON).
-- **The agent's demo script in CI:** "put a red cube on the table", "make the balls blue", "double the cube", "remove
+- **The agent's demo script in CI** (`agent_demo.rs`; app.md 6 runs the same script as two processes). M1's ball pit
+  has no table and one lamp, so the CI form puts the cube in the pit and removes that lamp: "put a red cube on the table", "make the balls blue", "double the cube", "remove
   the left lamp", with a stale case (another member edits the lamp between the agent's query and apply) and a held
   case (the lamp held by hand), and the logic edit, against the two-process session, checked by query and capture on
   both machines.
