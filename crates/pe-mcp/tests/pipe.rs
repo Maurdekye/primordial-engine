@@ -123,8 +123,10 @@ async fn pipe_dacl_admits_only_the_current_user() {
     let (_path, server) = pipe::bind(&name).unwrap();
     let sddl = pipe::dacl_of(&server).unwrap();
     let sid = pipe::current_user_sid().unwrap();
-    // Protected DACL, one ACE: full access for this user (GA maps to FA on a pipe).
-    assert_eq!(sddl, format!("D:P(A;;FA;;;{sid})"));
+    // Protected DACL, one ACE: full access for this user (GA maps to FA on a pipe). Compared as Windows writes it,
+    // since an account like the built-in Administrator reads back as an alias (`LA`), not its SID's digits.
+    assert_eq!(sddl, pipe::canonical_sddl(&format!("D:P(A;;FA;;;{sid})")).unwrap());
+    assert!(sddl.starts_with("D:P(A;;FA;;;") && sddl.matches('(').count() == 1, "{sddl}");
     // The name cannot be squatted: a second first instance fails.
     assert!(pipe::bind(&name).is_err());
 }

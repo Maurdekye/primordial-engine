@@ -265,6 +265,12 @@ fn main() {
         (Some(p), Some(b)) => Some(p.with_builds(b)),
         (p, _) => p,
     };
+    // view_capture's queue (api.md 8), served by the headset's loop or the window's, whichever draws.
+    let captures = mcp_wanted.then(pe_render::capture_service::CaptureQueue::new);
+    let ports = match (ports, &captures) {
+        (Some(p), Some(q)) => Some(p.with_captures(Arc::new(pe_app::capture::RenderCaptures(q.clone())))),
+        (p, _) => p,
+    };
     let mcp = ports.filter(|_| mcp_wanted).map(|p| {
         let member = me.unwrap_or_else(|| fail("an agent acts for this machine's member, and there is none"));
         match api::spawn_mcp(p.api(), mcp_opts(&options, member)) {
@@ -282,9 +288,12 @@ fn main() {
             &guard,
             ring,
             slot.clone(),
-            presenter(rate),
-            RenderSettings::default(),
-            effects,
+            vr::Drawing {
+                presenter: presenter(rate),
+                render: RenderSettings::default(),
+                effects,
+                captures: captures.clone(),
+            },
         ) {
             Ok(xr) => {
                 // TODO(pe-render): in VR mode the main thread pumps a window's events and input, the desktop window
@@ -295,6 +304,7 @@ fn main() {
                 let waited = xr.wait(left);
                 println!("vr: {waited:?}; at its end {:?}", xr.stop());
                 if waited == XrWait::Running {
+                    close_captures(&captures);
                     stop_mcp(mcp);
                     stop_builds(attester);
                     finish(quit(sim, networked), None);
@@ -320,10 +330,12 @@ fn main() {
         // What is left of the run after VR, never zero, which the window would take as no time at all.
         run_for: run_for.map(|d| d.saturating_sub(started.elapsed()).max(Duration::from_millis(1))),
         snapshot: None,
+        captures: captures.clone(),
     };
     // The window, its surface and its GPU context are made on this thread, one context at a time (app.md 4): the XR
     // thread has dropped its own context before `wait` answers.
     let window = run_desktop(cfg, slot, desktop_hand, Box::new(LogEffects));
+    close_captures(&captures);
     stop_mcp(mcp);
     stop_builds(attester);
     finish(quit(sim, networked), Some(window));
@@ -385,6 +397,14 @@ fn start_builds(
 fn stop_builds(attester: Option<builds::AttesterThread>) {
     if let Some(a) = attester {
         a.stop();
+    }
+}
+
+/// Refuses any capture still waiting, so an agent's view_capture doesn't hold the MCP thread, and with it the quit,
+/// until its deadline. Nothing draws any more by then.
+fn close_captures(captures: &Option<Arc<pe_render::capture_service::CaptureQueue>>) {
+    if let Some(q) = captures {
+        q.close();
     }
 }
 
