@@ -32,7 +32,6 @@ use pe_app::sim::{self, Budget, Sim};
 use pe_app::standin::SoloAgreement;
 use pe_app::vr::{self, XrWait};
 use pe_app::world;
-use pe_logic::run::RunSettings;
 use pe_mcp::auth::Grant;
 use pe_mcp::host::HostOpts;
 use pe_net_crypto::identity::{Invite, Reply};
@@ -201,7 +200,9 @@ fn main() {
     let host = clock::shared();
     let slot = Arc::new(FrameSlot::new());
     // The script runner (pe-replica's `logic`): pe-app owns it, and the simulation thread gets the stack it needs.
-    let runner = match LogicRunner::new(pe_logic::Settings::default(), RunSettings::default()) {
+    // Its settings are the ones the hello's build id names (net.rs `runner_settings`), so peers compare this runner.
+    let (settings, run) = pe_app::net::runner_settings();
+    let runner = match LogicRunner::new(settings, run) {
         Ok(r) => r,
         Err(e) => fail(&format!("the script runner did not start: {e}")),
     };
