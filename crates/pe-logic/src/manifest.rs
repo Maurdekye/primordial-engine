@@ -1,6 +1,6 @@
 //! The manifest, decoded and checked (docs/spec/logic.md 3.2). The encoding is pe-sdk's [`pe_sdk::manifest`].
 
-use pe_sdk::layout::{Access, BATCH_ALIGN, FieldKind, MANIFEST_MAGIC, MAX_BOUND, Stage};
+use pe_sdk::layout::{Access, BATCH_ALIGN, ColorSpace, FieldKind, MANIFEST_MAGIC, MAX_BOUND, Stage, split_field_byte};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
@@ -8,6 +8,8 @@ pub struct Field {
     pub kind: FieldKind,
     pub count: u32,
     pub offset: u32,
+    /// The field's colour space when it holds a colour (world-model.md 3.6).
+    pub color: Option<ColorSpace>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,11 +116,11 @@ pub fn decode(b: &[u8]) -> Result<Manifest, ManifestError> {
         let mut fields = Vec::new();
         for _ in 0..r.count(256, "fields")? {
             let fname = r.str()?;
-            let kind =
-                FieldKind::from_code(r.u8()?).ok_or_else(|| ManifestError(format!("{name}.{fname}: unknown kind")))?;
+            let (kind, color) = split_field_byte(r.u8()?)
+                .ok_or_else(|| ManifestError(format!("{name}.{fname}: unknown kind or colour space")))?;
             let count = r.u32()?;
             let offset = r.u32()?;
-            fields.push(Field { name: fname, kind, count, offset });
+            fields.push(Field { name: fname, kind, count, offset, color });
         }
         check_layout(&name, size, align, &fields)?;
         if components.iter().any(|c: &Component| c.name == name) {
@@ -195,6 +197,10 @@ fn check_layout(name: &str, size: u32, align: u32, fields: &[Field]) -> Result<(
         let Some(len) = len else { return bad(format!("{}: count {}", f.name, f.count)) };
         if f.offset % a != 0 || f.offset.checked_add(len).is_none_or(|e| e > size) {
             return bad(format!("{}: offset {} does not fit", f.name, f.offset));
+        }
+        // pe-sim's registration refuses it too; here the author reads why (world-model.md 3.6).
+        if f.color.is_some() && !(f.kind == FieldKind::F32 && (f.count == 3 || f.count == 4)) {
+            return bad(format!("{}: a colour is 3 or 4 f32 elements", f.name));
         }
         spans.push((f.offset, f.offset + len, &f.name));
     }

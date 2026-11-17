@@ -29,7 +29,10 @@ pub use runtime::Settings;
 /// the crate's version does not move with its code. That includes pe-logic's own code, the vendored wasmtime patch
 /// (`vendor/wasmtime-50.0.1`, `vendor/PATCHES.md`) and wasmtime's cargo features in the workspace manifest, none of
 /// which [`WASMTIME_VERSION`] sees (@shader-reviewer's Low on v4-r1). Part of [`identity`].
-pub const RESULT_VERSION: u32 = 1;
+/// - 2: the colour mark (logic.md 3.2): the manifest decoder accepts a marked field byte it refused before, and binding
+///   refuses a `pe.` component whose colour marks differ from the engine's, which it accepted before
+///   (@engine-architect's Low 1 on colour-r0).
+pub const RESULT_VERSION: u32 = 2;
 
 /// The wasmtime release pe-logic runs on, as pinned in the workspace manifest (`=50.0.1`). A test checks it against
 /// Cargo.lock.

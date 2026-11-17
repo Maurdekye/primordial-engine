@@ -1,0 +1,7 @@
+net: clock fault NotReady { heard: 1, needed: 1 }
+ctof: B joined; build identity pe-app 0.1.0; scripts fb99912292d494a89620d67e5ec7db64
+net: clock fault PeerRate { peer: MemberKey([213, 66, 7, 218, 25, 73, 119, 220, 244, 106, 219, 254, 194, 188, 46, 117, 181, 45, 90, 138, 66, 24, 79, 237, 253, 192, 0, 36, 240, 227, 232, 218]), ppb: 1240105 }
+net: link to d54207da down
+net: refused by d54207da: Fault timed out
+ctof: B stopping
+ctof: B Ok("SimStats { ticks: 13458, before_frame_0: 0, published: 11989, holds: 69, longest_hold: 8, received: 3491, refused: 0, unrouted: 0, net_events: 2, sent: 3469, unsent: 0, events: 535, inputs: 2600, inputs_refused: 0, hands_paced: 10527, edits: 11, edits_refused: 0, votes: 181, finalized: 167, leave_refused: 0, lead: 0, largest_lead: 0, longest_drain: 0, poses_thinned: 0, moving_frames: 1 }")
