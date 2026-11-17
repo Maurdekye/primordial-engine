@@ -224,6 +224,8 @@ fn components_that_differ_from_the_modules_are_refused() {
         assert_eq!(pass.failures, [Failure { asset: lamp(), version, reason: BuildFailure::Refused, tx }]);
         let report = std::fs::read_to_string(bundle_in(&pass.failed[0].2).join("report.txt")).expect("a report");
         assert!(report.contains("reason: Refused") && report.contains("components differ"), "{report}");
+        // The lamp came from the cache (built above), so the report says its dep-info may be another version's.
+        assert!(report.contains("deps/ are the last build's"), "{report}");
     });
 }
 
@@ -306,7 +308,20 @@ fn the_build_port_answers_as_the_authors_build() {
         let deadline = Instant::now() + Duration::from_secs(300);
         let api = port.build(archive(), deadline).expect("the lamp passes");
         assert_eq!((api.module, api.toolchain, api.sdk), (built.described.module, builder.ids().0, builder.ids().1));
-        assert_eq!((api.components, api.build_ms, api.peak_bytes), (built.described.components, built.build_ms, None));
+        let mut want = built.described.components.clone();
+        want.push(tag_desc(&v()));
+        assert_eq!((&api.components, api.build_ms, api.peak_bytes), (&want, built.build_ms, None));
+        // What pe-api's `code` op registers under the commit is exactly these, and pe-world takes the commit.
+        let mut w = World::new(1, BlobStore::default());
+        w.set_member(keys().key(0), perm::EDIT);
+        let (ids, module) = ((api.toolchain, api.sdk), api.module);
+        let commit = tx(vec![
+            Op::Register { components: api.components.clone() },
+            Op::commit_script(AssetTarget::New(0), None, Bytes::copy_from_slice(archive()), ids.0, ids.1, module, 0),
+        ]);
+        let entry = EntryBuilder::new(keys(), 0).next(Class::Edit, Frame(0), Bytes::from(commit.encode()));
+        let (outcome, _) = w.apply_edit(Frame(0), &entry);
+        assert!(matches!(outcome, Outcome::Applied { .. }), "the port's commit: {outcome:?}");
         assert!(!api.systems.is_empty() && api.warnings.is_empty(), "{:?}", api.systems);
 
         let Err(BuildRefused::Failed(d)) = port.build(&broken(), deadline) else { panic!("rustc's error") };

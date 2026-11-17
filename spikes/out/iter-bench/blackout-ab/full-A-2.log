@@ -1,0 +1,2 @@
+test net::tests::a_ten_second_blackout_resumes_and_every_entry_becomes_final ... ok
+test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.72s
