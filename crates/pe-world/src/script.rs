@@ -182,48 +182,9 @@ impl VoidKind {
     }
 }
 
-/// Why a voter's build of a pending version failed (logic.md 6.2a item 2), after its local retries (6.2b). Hashes
-/// and this code only, never compiler output: the entry goes to every member and stays in the log, and a compiler's
-/// message can carry local paths. The codes are consensus (the op's wire form and the hashed pending row), matching
-/// S5's `BuildFailure` (@engine-architect, @world-model).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum BuildFailure {
-    /// The source does not compile.
-    Compile = 1,
-    /// The build read something outside its archive and pe-sdk (6.2b's dep-info check).
-    Refused = 2,
-    /// The build went past the memory cap (6.2a item 5).
-    Cap = 3,
-    /// It built, but its module hash is not the registered `author_module`, after one rebuild from a clean folder.
-    Mismatch = 4,
-    /// A fault of this machine's (an I/O error, a crashed tool), after two retries.
-    Local = 5,
-}
-
-impl BuildFailure {
-    pub const ALL: [BuildFailure; 5] =
-        [BuildFailure::Compile, BuildFailure::Refused, BuildFailure::Cap, BuildFailure::Mismatch, BuildFailure::Local];
-
-    pub fn code(self) -> u8 {
-        self as u8
-    }
-
-    pub fn from_code(b: u8) -> Option<BuildFailure> {
-        BuildFailure::ALL.into_iter().find(|f| f.code() == b)
-    }
-
-    /// A reader's words for it (pe-api's history).
-    pub fn name(self) -> &'static str {
-        match self {
-            BuildFailure::Compile => "compile error",
-            BuildFailure::Refused => "refused input",
-            BuildFailure::Cap => "memory cap",
-            BuildFailure::Mismatch => "module mismatch",
-            BuildFailure::Local => "local fault",
-        }
-    }
-}
+/// Why a voter's build of a pending version failed (logic.md 6.2a item 2): S5's type, whose codes 1 to 5 are
+/// consensus here (the op's wire form and the hashed pending row). Never compiler output.
+pub use pe_seams::BuildFailure;
 
 /// A script's pending commit (logic.md 6.2a; 7.9): the version a `CommitScript` wrote, which runs nowhere until a
 /// quorum of the voters at its commit frame has attested its module. Kept, once voided, as the record of why, until

@@ -761,7 +761,9 @@ fn a_failures_module_is_present_exactly_for_a_mismatch_and_is_not_the_authors() 
 #[test]
 fn a_build_failure_round_trips() {
     let t = commit(ASSET, None, 1, 1);
-    for why in BuildFailure::ALL {
+    let all =
+        [BuildFailure::Compile, BuildFailure::Refused, BuildFailure::Cap, BuildFailure::Mismatch, BuildFailure::Local];
+    for why in all {
         let f = failed_of(&t, why);
         assert_eq!(Transaction::decode(&f.encode()), Some(f));
     }
