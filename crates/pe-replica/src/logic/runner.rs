@@ -3,6 +3,12 @@
 //! - **Modules come ready** (increment 1): [`LogicRunner::insert`] takes a module as the build service gives it, and
 //!   pe-logic validates, meters and compiles it. The runner keys it by the hash of its metered bytes, which a row's
 //!   `author_module` names (logic.md 6.2 step 3).
+//! - **Modules loaded on another thread** (logic.md 6.2 steps 3-4: a member builds a pending version and holds its
+//!   module before it attests): a [`ModuleInbox`], taken from the runner before the replica owns it, loads a module on
+//!   the thread that calls it, so the sim thread never compiles a built module: loading the 18 KB tally takes about
+//!   5 ms and a 264 KB module 50-84 ms [V logic.md 4.2, 5.2a], against a 13.9 ms frame at 72 Hz. The runner takes
+//!   what has arrived at the start of a frame, its `LogicPrePhysics` stage, so both stages of a frame see the same
+//!   modules.
 //! - **Binding** (logic.md 3.2, 6.2; world-model.md 7.9): a row binds its module under the ids its version V gives
 //!   (`pe_world::script::script_component_id` over each of the manifest's own components, the tag `tag_desc(V)`),
 //!   every one of which must be among the row's ids, and under the engine components of 3.2's table. A script stays
@@ -12,6 +18,7 @@
 //!   wasmtime checks its own stack limit against the stack it entered on (pe-logic `Settings::thread_stack`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::Bytes;
 use pe_core::Hash;
@@ -27,13 +34,62 @@ use super::{ScriptEvent, ScriptRow, ScriptRunner, StageOutcome, StageWorld};
 
 /// A module the runner holds.
 struct Held {
-    /// The bytes as the build service gave them: each binding loads them again, since a bound script owns its
-    /// compiled module.
-    wasm: Vec<u8>,
     metered: Bytes,
     manifest: Manifest,
-    /// The module loaded at [`LogicRunner::insert`], for its first binding.
-    spare: Option<Script>,
+    /// The module as [`LogicRunner::insert`] or [`ModuleInbox::load`] compiled it. Each binding takes a clone, which
+    /// shares the compiled code, so a re-binding (a rollback across the script's activation, or its row leaving and
+    /// coming back) never compiles on the sim thread. Re-binding the 9.5 KB lamp took a median 12.1 ms when it
+    /// loaded the module again and takes 0.15 ms with a clone [V release, 40 re-bindings each, under load]. The cost
+    /// is memory: every module held keeps its compiled code, where it kept the wasm before (an M1 session holds a
+    /// few). A clone carries the settings the module was loaded with, which are the runner's, fixed at
+    /// [`LogicRunner::new`]: a runner whose settings could change would load again rather than clone (@iter-bench,
+    /// m752c4d0b714b).
+    script: Script,
+}
+
+impl Held {
+    /// Loads `wasm` as the build service gives it: validated, metered and compiled, and its manifest read, which runs
+    /// the module (so the calling thread needs `Settings::thread_stack` of native stack). With its hash.
+    fn load(engine: &wasmtime::Engine, settings: Settings, wasm: &[u8]) -> Result<(Hash, Held), LoadError> {
+        let script = Script::load(engine, settings, wasm)?;
+        let manifest = run::read_manifest(&script).map_err(|e| LoadError::Compile(e.0))?;
+        let hash = script.module_hash();
+        let metered = Bytes::from(script.metered.clone());
+        Ok((hash, Held { metered, manifest, script }))
+    }
+}
+
+/// Modules loaded through a [`ModuleInbox`], in their order of arrival, until the runner takes them.
+type Arrived = Arc<Mutex<Vec<(Hash, Held)>>>;
+
+fn lock(arrived: &Arrived) -> MutexGuard<'_, Vec<(Hash, Held)>> {
+    // A thread that panicked while holding the lock left the list whole: every change to it is one push or one take.
+    arrived.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Loads modules for a [`LogicRunner`] on another thread, such as pe-app's build thread (module doc). Clone it for
+/// each thread that loads; every clone feeds the same runner.
+#[derive(Clone)]
+pub struct ModuleInbox {
+    engine: wasmtime::Engine,
+    settings: Settings,
+    arrived: Arrived,
+}
+
+impl ModuleInbox {
+    /// Loads a module as [`LogicRunner::insert`] does, but on the calling thread, which needs
+    /// [`ModuleInbox::thread_stack`] of native stack. The runner takes it at the start of its next frame. Returns the
+    /// hash of its metered bytes, the `author_module` a row names it by. A module that won't load leaves nothing.
+    pub fn load(&self, wasm: &[u8]) -> Result<Hash, LoadError> {
+        let (hash, held) = Held::load(&self.engine, self.settings, wasm)?;
+        lock(&self.arrived).push((hash, held));
+        Ok(hash)
+    }
+
+    /// The native stack a thread that calls [`ModuleInbox::load`] needs: reading a module's manifest runs it.
+    pub fn thread_stack(&self) -> usize {
+        self.settings.thread_stack()
+    }
 }
 
 /// What a row binds.
@@ -56,6 +112,8 @@ pub struct LogicRunner {
     settings: Settings,
     run: RunSettings,
     held: BTreeMap<Hash, Held>,
+    /// What its [`ModuleInbox`]es have loaded since the last frame's start.
+    arrived: Arrived,
     logic: Logic,
     /// The binding of each script in `logic`.
     bound: BTreeMap<AssetId, Binding>,
@@ -72,10 +130,17 @@ impl LogicRunner {
             settings,
             run,
             held: BTreeMap::new(),
+            arrived: Arrived::default(),
             logic: Logic::new(run),
             bound: BTreeMap::new(),
             refused: BTreeMap::new(),
         })
+    }
+
+    /// A handle that loads modules for this runner on another thread (module doc). Take it before the replica owns the
+    /// runner.
+    pub fn inbox(&self) -> ModuleInbox {
+        ModuleInbox { engine: self.engine.clone(), settings: self.settings, arrived: Arc::clone(&self.arrived) }
     }
 
     /// A runner with pe-logic's default settings (`Settings::default()`, `RunSettings::default()`).
@@ -91,19 +156,28 @@ impl LogicRunner {
     /// Takes a module as the build service gives it: validated, metered and compiled. Returns the hash of its metered
     /// bytes, the `author_module` a row names it by.
     pub fn insert(&mut self, wasm: &[u8]) -> Result<Hash, LoadError> {
-        let script = Script::load(&self.engine, self.settings, wasm)?;
-        let manifest = run::read_manifest(&script).map_err(|e| LoadError::Compile(e.0))?;
-        let hash = script.module_hash();
-        let metered = Bytes::from(script.metered.clone());
-        self.held.insert(hash, Held { wasm: wasm.to_vec(), metered, manifest, spare: Some(script) });
-        self.refused.clear();
+        let (hash, held) = Held::load(&self.engine, self.settings, wasm)?;
+        self.hold(hash, held);
         Ok(hash)
+    }
+
+    fn hold(&mut self, hash: Hash, held: Held) {
+        self.held.insert(hash, held);
+        self.refused.clear();
+    }
+
+    /// Holds what the inboxes have loaded since the last take.
+    fn take_arrived(&mut self) {
+        let arrived = std::mem::take(&mut *lock(&self.arrived));
+        for (hash, held) in arrived {
+            self.hold(hash, held);
+        }
     }
 
     /// `row`'s module bound under its ids, or why not. `Err((reason, of_the_module))`: `of_the_module` is true when
     /// the reason is the module's own, so the same module, version and ids would fail again whatever the world holds.
-    fn bind(&mut self, row: &ScriptRow, registry: &Registry) -> Result<Loaded, (String, bool)> {
-        let held = self.held.get_mut(&row.module).ok_or_else(|| ("the module is not held".to_string(), false))?;
+    fn bind(&self, row: &ScriptRow, registry: &Registry) -> Result<Loaded, (String, bool)> {
+        let held = self.held.get(&row.module).ok_or_else(|| ("the module is not held".to_string(), false))?;
         let tag = tag_desc(&row.version).id();
         let mut own = Vec::new();
         for c in held.manifest.components.iter().filter(|c| !c.name.starts_with(ENGINE_PREFIX)) {
@@ -123,10 +197,7 @@ impl LogicRunner {
         if let Some(id) = own.iter().chain([&tag]).find(|id| row.components.binary_search(id).is_err()) {
             return Err((format!("id {:?} is not among the row's", id), false));
         }
-        let script = match held.spare.take() {
-            Some(s) => s,
-            None => Script::load(&self.engine, self.settings, &held.wasm).map_err(|e| (e.to_string(), true))?,
-        };
+        let script = held.script.clone();
         debug_assert_eq!(script.module_hash(), row.module, "a held module is keyed by its metered bytes' hash");
         let engine: Vec<EngineComponent<'_>> = ENGINE_COMPONENTS
             .iter()
@@ -188,6 +259,7 @@ impl ScriptRunner for LogicRunner {
         Bytes::from(pe_logic::identity(&self.settings, &self.run))
     }
 
+    /// A module an inbox loads counts from the start of the runner's next frame.
     fn holds(&self, module: &Hash) -> bool {
         self.held.contains_key(module)
     }
@@ -204,7 +276,10 @@ impl ScriptRunner for LogicRunner {
         world: &StageWorld<'_>,
     ) -> StageOutcome {
         let sdk_stage = match stage {
-            Stage::LogicPrePhysics => SdkStage::PrePhysics,
+            Stage::LogicPrePhysics => {
+                self.take_arrived();
+                SdkStage::PrePhysics
+            }
             Stage::LogicPostPhysics => SdkStage::PostPhysics,
             _ => return StageOutcome::default(),
         };
