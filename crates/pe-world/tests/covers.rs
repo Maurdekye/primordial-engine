@@ -1,7 +1,8 @@
 //! M1's "What the hash covers", pe-world's half
 //! (@item:primordial-engine/m1-test-a-divergence-in-each-hashed-kind-is-foun): a divergence injected into each of
-//! the five hashed kinds (fields, governance, claims, logic state, module versions), and into a body's physics state
-//! and a pending commit's attestations, moves the root, and descending the two trees from the root, as a peer's walk
+//! the five hashed kinds (fields, governance, claims, logic state, module versions), into a body's physics state and
+//! a pending commit's attestations, and into each other hashed table (registry, cooldowns, tombstones, hand packs,
+//! push windows), moves the root, and descending the two trees from the root, as a peer's walk
 //! does, finds exactly the damaged leaf. The repair by rungs 1 and 2 is @diverge-eng's, on the same hook
 //! (`pe_world::test_util`).
 
@@ -133,4 +134,23 @@ fn a_world_without_a_kind_reports_none() {
     for kind in Kind::ALL {
         assert_eq!(divergence(&mut empty, kind), None, "{kind:?}");
     }
+}
+
+/// Every hashed table has a kind that damages it (@coordinator-opus item 2), so a table added later
+/// fails here until it has one. `LINES` is the exception: it holds no entries yet, so nothing in it can diverge.
+#[test]
+fn every_hashed_table_has_a_kind() {
+    use pe_world::tree::table;
+    let base = five_kinds();
+    let mut reached: Vec<u8> = Kind::ALL
+        .iter()
+        .filter_map(|&k| match divergence(&mut base.clone(), k) {
+            Some(LeafKey::Table(t)) => Some(t),
+            _ => None,
+        })
+        .collect();
+    reached.sort();
+    reached.dedup();
+    let want: Vec<u8> = (0..table::COUNT as u8).filter(|&t| t != table::LINES).collect();
+    assert_eq!(reached, want);
 }
