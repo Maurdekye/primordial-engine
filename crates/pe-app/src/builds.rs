@@ -14,9 +14,14 @@
 //!   - An API build is the author's: past the author's time margin (`AUTHOR_MAX_BUILD`, 15 s; Q4 (b)) it is refused,
 //!     cached or not. The memory margin waits for pe-logic's measure of a build's peak. rustc's errors and its
 //!     warnings about the script's own source come back as diagnostics, from pe-logic's parse of rustc's JSON.
-//! - **[`Attester`]** makes one pass over a world's pending commits (`World::pending`). For each commit this machine
-//!   hasn't handled, it builds and checks the version and loads the module into the runner through its inbox, since
-//!   every machine must hold the module at F, the author's included. If this member is one of the commit's voters and
+//! - **[`Attester`]** makes one pass over a world's pending commits (`World::pending`) and its active versions
+//!   (`World::modules`). For each commit or version this machine hasn't handled, it builds and checks the version and
+//!   loads the module into the runner through its inbox, since every machine must hold the module at F, the author's
+//!   included (logic.md 6.2 item 3). An active version needs no attestation, so it is only loaded: it is one this
+//!   machine never saw pending, above all the author's own, which the author's prediction (logic.md 6.2a's option
+//!   (i)) activates at the end of its commit's frame, so that no snapshot shows it pending there. Before
+//!   @item:primordial-engine/m1-blocker-binding-an-activated-script-to-an-obj the pass read pending commits only, and
+//!   the author's runner never held its own module. If this member is one of the commit's voters and
 //!   isn't counted yet, the pass gives the `AttestBuild` to submit, or, for a build that failed after its retries, the
 //!   `BuildFailed` (6.2a item 2). A module that built as the commit's but won't describe here, for a reason of this
 //!   machine's, is only logged: the member holds its vote, as for a module the runner won't load.
@@ -47,7 +52,7 @@ use pe_seams::world_api::{Diagnostic, DiagnosticKind, Severity};
 use pe_seams::{BuildFailure, Frame, Hash, MemberKey, Version};
 use pe_world::edit::{Actor, Op, Transaction};
 use pe_world::script::{AssetId, tag_desc};
-use pe_world::{BlobRef, PendingCommit};
+use pe_world::{BlobRef, ModuleRow, PendingCommit};
 
 /// Where the build service builds (logic.md 4.2), and the author's margin.
 #[derive(Clone, Debug)]
@@ -370,16 +375,34 @@ impl Builder {
         p: &PendingCommit,
         attested_by_another: bool,
     ) -> Result<Built, RowFail> {
+        self.build_checked(archive, p.author_module, |b| components_match(b, p), attested_by_another)
+    }
+
+    /// The build of active version `row`, which this machine never saw pending (the author's own under its
+    /// prediction, module doc): the same build and checks as a pending commit's, by a member other than this one.
+    pub fn build_for_active(&self, archive: &[u8], row: &ModuleRow) -> Result<Built, RowFail> {
+        self.build_checked(archive, row.author_module, |b| active_components_match(b, row), true)
+    }
+
+    /// pe-logic's `build_for_row` of `archive`, whose module must be `author_module` and whose components, with the
+    /// version's tag, must be the record's (`matches`).
+    fn build_checked(
+        &self,
+        archive: &[u8],
+        author_module: Hash,
+        matches: impl Fn(&Built) -> bool,
+        attested_by_another: bool,
+    ) -> Result<Built, RowFail> {
         let v = version_of(archive);
-        let theirs = |b: &Built| b.described.module == p.author_module;
-        if let Some(b) = self.cached(&v).filter(theirs).filter(|b| components_match(b, p)) {
+        let theirs = |b: &Built| b.described.module == author_module;
+        if let Some(b) = self.cached(&v).filter(theirs).filter(|b| matches(b)) {
             return Ok(b);
         }
         let _turn = self.gate.attester();
         // From here to the return, this turn holds the build's output, so a bug bundle sees the failed build's.
-        let fail = |failed: Failed| self.failed(failed, archive, p.author_module, attested_by_another);
+        let fail = |failed: Failed| self.failed(failed, archive, author_module, attested_by_another);
         if let Some(b) = self.cached(&v).filter(theirs) {
-            return if components_match(&b, p) { Ok(b) } else { Err(fail(components_differ(true))) };
+            return if matches(&b) { Ok(b) } else { Err(fail(components_differ(true))) };
         }
         let (c, inbox) = (&self.config, &self.inbox);
         let started = Instant::now();
@@ -392,7 +415,7 @@ impl Builder {
             true,
             inbox.engine(),
             inbox.settings(),
-            p.author_module,
+            author_module,
         )
         .map_err(fail)?;
         let build_ms = millis(started.elapsed());
@@ -402,7 +425,7 @@ impl Builder {
         })?;
         let b = Built { script, described, build_ms, warnings: Vec::new() };
         self.keep(v, &b);
-        if components_match(&b, p) { Ok(b) } else { Err(fail(components_differ(false))) }
+        if matches(&b) { Ok(b) } else { Err(fail(components_differ(false))) }
     }
 
     /// `failed` as [`RowFail::Failed`], with a bug bundle when it wants one (6.2b). Call it in the attester's turn,
@@ -523,6 +546,14 @@ fn components_match(b: &Built, p: &PendingCommit) -> bool {
     ids.push(tag_desc(&p.v()).id());
     ids.sort();
     ids == p.components
+}
+
+/// Whether `b`'s components, with the version's tag, are active version `row`'s.
+fn active_components_match(b: &Built, row: &ModuleRow) -> bool {
+    let mut ids: Vec<_> = b.described.components.iter().map(|c| c.id()).collect();
+    ids.push(tag_desc(&row.v()).id());
+    ids.sort();
+    ids == row.components
 }
 
 /// Components that differ from the commit's, with the module the author's. One module under one V declares the same
@@ -674,13 +705,16 @@ impl Attester {
         again
     }
 
-    /// One pass over `pending`, a world's pending commits (`World::pending`), in asset order (module doc). `blob` gives
-    /// a commit's source archive from the world's store. A commit whose archive isn't there yet is tried again at the
-    /// next pass; a voided one is skipped. `inbox` is the runner's. A build's retries (6.2b) happen inside the pass, so
-    /// a commit is handled once: attested, reported as failed, or, when this machine can't judge it, only logged.
+    /// One pass over `pending`, a world's pending commits (`World::pending`), then `active`, its active versions
+    /// (`World::modules`), each in asset order (module doc). `blob` gives a source archive from the world's store. A
+    /// commit or version whose archive isn't there yet is tried again at the next pass; a voided commit is skipped.
+    /// `inbox` is the runner's. A build's retries (6.2b) happen inside the pass, so each is handled once: a commit is
+    /// attested, reported as failed, or, when this machine can't judge it, only logged; an active version is loaded,
+    /// or its failure logged, never attested or reported (it needs no attestation).
     pub fn pass(
         &mut self,
         pending: &BTreeMap<AssetId, PendingCommit>,
+        active: &BTreeMap<AssetId, ModuleRow>,
         blob: impl Fn(&BlobRef) -> Option<Arc<[u8]>>,
         builder: &Builder,
         inbox: &ModuleInbox,
@@ -730,6 +764,33 @@ impl Attester {
                         let tx = build_failed(asset, v, reason, builder.ids(), f.module);
                         pass.failures.push(Failure { asset, version: p.version, reason, tx });
                     }
+                }
+            }
+        }
+        // Every active version this machine hasn't handled: logic.md 6.2 item 3 has every member build what its line
+        // activates. The author never sees its own commit pending (module doc), and no machine sees one pending that
+        // activated before its attester looked. A version handled while pending is not built again.
+        for (&asset, row) in active {
+            let key = (asset, row.version);
+            if self.done.contains(&key) {
+                continue;
+            }
+            let Some(archive) = blob(&row.source) else { continue };
+            self.done.insert(key);
+            let v = row.v();
+            if (row.toolchain, row.sdk) != builder.ids() {
+                pass.failed.push((asset, v, "the active version names another build identity".into()));
+                continue;
+            }
+            match builder.build_for_active(&archive, row) {
+                Ok(built) => match inbox.load_script(built.script) {
+                    Ok(_) => pass.loaded.push((asset, v)),
+                    Err(e) => pass.failed.push((asset, v, format!("the module won't load into the runner: {e}"))),
+                },
+                Err(RowFail::Held(why)) => pass.failed.push((asset, v, why)),
+                Err(RowFail::Failed { failed: f, .. }) => {
+                    let why = format!("{:?} after {} build(s): {}", f.reason, f.attempts, f.detail);
+                    pass.failed.push((asset, v, format!("an active version: {why}")));
                 }
             }
         }
@@ -858,7 +919,7 @@ pub fn spawn_attester(
             let (published, snap) = shared.wait_newer(seen, WAIT);
             seen = published;
             let now = snap.frame();
-            let pass = attester.pass(snap.pending(), |r| snap.blob(r), &builder, &inbox);
+            let pass = attester.pass(snap.pending(), snap.modules(), |r| snap.blob(r), &builder, &inbox);
             for (asset, v, why) in &pass.failed {
                 eprintln!("pe-app: this machine's build of script {} at {v:?} failed: {why}", short(asset));
             }
