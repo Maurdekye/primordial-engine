@@ -683,8 +683,9 @@ impl Attester {
         }
     }
 
-    /// The active versions whose module this machine hasn't loaded into its runner, as (asset, the frame the version
-    /// activated at, why): the scripts this machine can't run (S6's `scripts_not_running`; @coordinator-opus
+    /// The active versions whose module this machine hasn't loaded into its runner, as (asset, the first frame the
+    /// version runs in: the row's `activate_at`, F + 1, why): the scripts this machine can't run (S6's
+    /// `scripts_not_running`, with no object; @coordinator-opus
     /// m562651ab5aed). Why is the first line of the build's failure, never a local path, or that the module isn't
     /// built here yet. A script whose module is loaded but won't bind isn't here: the runner knows that one (logged by
     /// pe-replica's runner only as a count, `ReplicaImpl::script_counts`).
@@ -974,7 +975,8 @@ pub fn spawn_attester(
             let now_not = attester.not_running(snap.modules());
             if now_not != not_running {
                 for (asset, since, why) in &now_not {
-                    if !not_running.iter().any(|(a, _, w)| a == asset && w == why) {
+                    // A newer version that fails for the same reason is logged too (@engine-architect's nit).
+                    if !not_running.iter().any(|(a, s, w)| a == asset && s == since && w == why) {
                         eprintln!(
                             "pe-app: script {} doesn't run on this machine (active since frame {}): {why}",
                             short(asset),
