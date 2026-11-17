@@ -1099,6 +1099,20 @@ pub fn join_2to3() -> Epochs {
     )
 }
 
+/// Join 1 -> 2 (M1's join from a cut): member 1 plays alone (q = 1) and admits 2, then makes an entry of its own; 2
+/// authors once admitted. Epoch 1 has q = 2, so the joiner's vote is needed from its first cut on.
+pub fn join_1to2() -> Epochs {
+    base(
+        "join-1to2",
+        0b0010,
+        vec![
+            ent("admit(2)", 1, 0, NONE, 0, Kind::Admit(2), true),
+            ent("o1", 1, 0, 0, 1, Kind::Ord, true),
+            ent("j2", 2, 0, NONE, NONE, Kind::Ord, false),
+        ],
+    )
+}
+
 pub fn leave_3to2() -> Epochs {
     base(
         "leave-3to2",
@@ -1233,6 +1247,13 @@ pub fn suite() -> Vec<Row> {
         m
     };
     vec![
+        Row {
+            model: join_1to2(),
+            expect_fail: &[],
+            depth: d,
+            random: false,
+            what: "join 1 -> 2 (q 1 -> 2; M1's join)",
+        },
         Row { model: join_2to3(), expect_fail: &[], depth: d, random: false, what: "join 2 -> 3 (q 2 -> 2)" },
         Row { model: leave_3to2(), expect_fail: &[], depth: d, random: false, what: "leave 3 -> 2 (q 2 -> 2)" },
         Row {

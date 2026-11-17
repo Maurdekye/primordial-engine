@@ -1,0 +1,7 @@
+    Finished `release` profile [optimized] target(s) in 0.12s
+     Running `<work>/target/model-9b4753897d\release\cuts-model.exe --epochs join-1to2`
+== join-1to2
+Checking (bounded). unique=2858185, visits=13792599
+join-1to2               4016510      19752657     22      15.2  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+    join 1 -> 2 (q 1 -> 2; M1's join)
+all 1 epoch check(s) met their expectation

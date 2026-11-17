@@ -228,6 +228,92 @@ impl W {
     }
 }
 
+/// The tag a start record begins with, and its version.
+const START_TAG: &[u8] = b"pe.agree.start";
+const START_VERSION: u8 = 1;
+
+/// A joiner's start record ([`crate::epoch::EpochStart`]): tag, version, the epoch, the certificate (count, then each
+/// block as a proposal encodes it, and its certificate), the members, the governance state, the head entries and the
+/// final stamps.
+pub fn encode_start(s: &crate::epoch::EpochStart) -> Vec<u8> {
+    let mut w = W(Vec::with_capacity(1024));
+    w.0.extend_from_slice(START_TAG);
+    w.u8(START_VERSION);
+    w.u64(s.epoch);
+    w.u32(s.chain.len() as u32);
+    for (b, q) in &s.chain {
+        w.u64(b.view);
+        w.b32(&b.parent.0.0);
+        w.b32(&b.proposer.0);
+        w.cut(&b.cut);
+        w.qc(q);
+    }
+    w.u32(s.members.len() as u32);
+    for m in &s.members {
+        w.b32(&m.0);
+    }
+    let gov = s.gov.encode();
+    w.u32(gov.len() as u32);
+    w.0.extend_from_slice(&gov);
+    w.u32(s.heads.len() as u32);
+    for e in &s.heads {
+        let b = e.encode();
+        w.u32(b.len() as u32);
+        w.0.extend_from_slice(&b);
+    }
+    w.u32(s.final_high.len() as u32);
+    for (k, f) in &s.final_high {
+        w.b32(&k.author.0);
+        w.b32(&k.chain.0.0);
+        w.u64(f.0);
+    }
+    w.0
+}
+
+/// [`encode_start`]'s inverse.
+pub fn decode_start(bytes: &[u8]) -> Result<crate::epoch::EpochStart, DecodeError> {
+    let rest = bytes.strip_prefix(START_TAG).ok_or(DecodeError)?;
+    let mut r = R(rest);
+    if r.u8()? != START_VERSION {
+        return Err(DecodeError);
+    }
+    let epoch = r.u64()?;
+    let n = r.count(crate::epoch::MAX_CERT_BLOCKS)?;
+    let mut chain = Vec::with_capacity(n);
+    for _ in 0..n {
+        let view = r.u64()?;
+        let parent = BlockId(r.hash()?);
+        let proposer = MemberKey(r.b32()?);
+        let cut = r.cut()?;
+        let q = r.qc()?;
+        chain.push((Block { view, parent, proposer, cut }, q));
+    }
+    let n = r.count(MAX_SIGNERS)?;
+    let mut members = Vec::with_capacity(n);
+    for _ in 0..n {
+        members.push(MemberKey(r.b32()?));
+    }
+    let len = r.count(MAX_SIGNERS * 36 + 4)?;
+    let gov = pe_seams::GovState::decode(r.take(len)?).ok_or(DecodeError)?;
+    let n = r.count(MAX_HEADS)?;
+    let mut heads = Vec::with_capacity(n);
+    for _ in 0..n {
+        let len = r.u32()? as usize;
+        heads.push(SignedEntry::decode(r.take(len)?).map_err(|_| DecodeError)?);
+    }
+    let n = r.count(MAX_HEADS)?;
+    let mut final_high = Vec::with_capacity(n);
+    for _ in 0..n {
+        let author = MemberKey(r.b32()?);
+        let chain = ChainId(r.hash()?);
+        final_high.push((pe_log::ChainKey { author, chain }, Frame(r.u64()?)));
+    }
+    if !r.0.is_empty() {
+        return Err(DecodeError);
+    }
+    Ok(crate::epoch::EpochStart { epoch, chain, members, gov, heads, final_high })
+}
+
 pub fn encode(m: &Wire) -> Vec<u8> {
     if let Wire::Epoch(epoch, msg) = m {
         let inner = encode(&Wire::Core(msg.clone()));

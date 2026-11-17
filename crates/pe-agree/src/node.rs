@@ -19,8 +19,9 @@
 //!
 //! - **Self-test reports** (S3 v1.3): only signed verdicts count, relayed once; see [`crate::core`].
 //!
-//! Not yet: the idle pause, join and leave (docs/spec/agreement.md 8). Back-stamp verdicts read only the new segment
-//! (the node keeps each chain's highest final stamp), so pe-log may later prune final chains.
+//! Not yet: the idle pause, `Remove` and `Rechain` (docs/spec/agreement.md 8; `Leave` and `Admit` are built).
+//! Back-stamp verdicts read only the new segment (the node keeps each chain's highest final stamp), so pe-log may
+//! later prune final chains.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -52,6 +53,11 @@ pub struct NodeConfig {
     pub members: Vec<MemberKey>,
     /// The line's first cut.
     pub genesis: Cut,
+    /// The governance state the line starts with (agreement.md 8; pe-seams' gov): every genesis member's role bits, so
+    /// who may admit. pe-app sets it from the genesis record's member roles; [`NodeConfig::new`] makes every genesis
+    /// member an admin. Like `genesis`, it is
+    /// only the start: the node keeps the current epoch's state, which each epoch's changes update.
+    pub genesis_gov: pe_seams::GovState,
     pub timing: Timing,
     /// How far beyond its present frame a voter accepts a cut's frame, in seconds (a world setting).
     pub frame_tolerance_s: f64,
@@ -111,6 +117,7 @@ impl NodeConfig {
     pub fn new(line: LineId, members: Vec<MemberKey>, genesis: Cut) -> NodeConfig {
         NodeConfig {
             line,
+            genesis_gov: pe_seams::GovState::genesis(members.iter().map(|m| (*m, pe_seams::ROLE_ADMIN))),
             members,
             genesis,
             timing: Timing::default(),
@@ -166,6 +173,7 @@ impl NodeConfig {
             line: _,
             members: _,
             genesis: _,
+            genesis_gov: _,
             // Must match.
             timing,
             frame_tolerance_s,
@@ -198,7 +206,8 @@ impl NodeConfig {
         // timeouts carry heads (the outage rule), a wire change, so builds before and after refuse each other at start.
         // v5: membership by epochs (Leave): AfterLeave and LastMember voids, members-only cuts, Wire::Epoch.
         // v6: no new setting, but votes and timeouts carry lateness reports (stamp-ahead), a wire change.
-        let mut h = Hasher::new("pe.agree.consensus.v6");
+        // v7: membership by epochs (Admit): the governance fold's NotAuthorized and NoChange voids, epochs that admit.
+        let mut h = Hasher::new("pe.agree.consensus.v7");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
@@ -364,6 +373,16 @@ pub struct Node {
     cap_wait: BTreeMap<ChainKey, (i64, i64)>,
     /// The epoch before this one, while it may still be needed (agreement.md 8).
     old_epoch: Option<OldEpoch>,
+    /// The current epoch's governance state (agreement.md 8): who may admit.
+    gov: GovState,
+    /// The start record of the epoch this member is in, if it began at a reconfiguring cut: what a joiner admitted at
+    /// it starts from ([`Node::epoch_start`]).
+    start: Option<Vec<u8>>,
+    /// A joiner's: the world's root at E, certified by the start it joined from.
+    start_root: Option<Hash>,
+    /// A joiner's: the members that left at the E it started from, told that it has E final (as a remaining member
+    /// tells them, `Wire::EpochFinal`), every [`EPOCH_FINAL_EVERY_NS`] until the deadline, ns: (to, until, last told).
+    greet: Option<(Vec<MemberKey>, i64, i64)>,
     /// Members that left in an earlier epoch: their stray messages and entries are dropped without a fault.
     former: Vec<MemberKey>,
     /// This member signed its own `Leave`: it signs nothing after it.
@@ -407,7 +426,26 @@ const HINT_TTL_NS: i64 = 5_000_000_000;
 const LATENESS_MIN: usize = 32;
 /// The payload of a `Leave` entry, class Protocol (agreement.md 8), the leaver's last entry, and its test. They live in
 /// pe-seams, so that S2's replica reads a `Leave` without depending on S3's implementation.
-pub use pe_seams::{LEAVE, is_leave};
+pub use pe_seams::{ADMIT, Admit, GovState, GovVerdict, LEAVE, ROLE_ADMIN, is_leave};
+
+/// The membership changes made effective in an epoch so far (agreement.md 8), each key to its change's place in the
+/// final log's order (stamp, chain, seq).
+#[derive(Default)]
+struct Changes {
+    leaves: BTreeMap<MemberKey, (Frame, pe_seams::ChainId, u64)>,
+    /// Each admitted key's place and the role its verdict names.
+    admits: BTreeMap<MemberKey, ((Frame, pe_seams::ChainId, u64), u32)>,
+}
+
+impl Changes {
+    fn len(&self) -> usize {
+        self.leaves.len() + self.admits.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
 
 /// How long a member keeps its previous epoch's core after its reconfiguring cut E became final there, so members that
 /// missed E's finality can still finish it (agreement.md 8: a member that missed it fetches it like a committed block).
@@ -525,6 +563,50 @@ fn fault_kind(f: &CoreFault) -> FaultKind {
 
 impl Node {
     pub fn new(cfg: NodeConfig, signer: Box<dyn Signer>, verifier: Box<dyn Verifier>, now: HostTime) -> Node {
+        Node::build(cfg, signer, verifier, now, 0)
+    }
+
+    /// A joiner's node (agreement.md 8), from the start record its inviter sent ([`Node::epoch_start`]), checked
+    /// against the epoch its invite pins (`pinned`, with `pinned_members`). `cfg` is the line's configuration as at
+    /// genesis (line and settings); its members, genesis and governance state are replaced by the start's. The node
+    /// starts in epoch `pinned + 1` with E as its genesis. The world's root at E, which the joiner's import must match,
+    /// is [`Node::start_root`].
+    pub fn join(
+        mut cfg: NodeConfig,
+        start: &[u8],
+        pinned: u64,
+        pinned_members: &[MemberKey],
+        signer: Box<dyn Signer>,
+        verifier: Box<dyn Verifier>,
+        now: HostTime,
+    ) -> Result<Node, crate::epoch::StartError> {
+        use crate::epoch::StartError;
+        let start = codec::decode_start(start).map_err(|_| StartError::Malformed)?;
+        // Sorted and distinct, as `verify` expects (@design-reviewer's Low 2 on b84295a2).
+        let mut pinned_members = pinned_members.to_vec();
+        pinned_members.sort();
+        pinned_members.dedup();
+        let pinned_members = &pinned_members[..];
+        let e = start.verify(cfg.line, pinned, pinned_members, signer.key(), verifier.as_ref())?.clone();
+        let (_, eqc) = start.chain[0].clone();
+        cfg.members = start.members.clone();
+        cfg.genesis = e.clone();
+        cfg.genesis_gov = start.gov.clone();
+        let mut node = Node::build(cfg, signer, verifier, now, pinned + 1);
+        node.former = pinned_members.iter().filter(|m| !start.members.contains(m)).copied().collect();
+        for h in start.heads {
+            let _ = node.log.insert(h, node.verifier.as_ref());
+        }
+        node.final_high = start.final_high.into_iter().collect();
+        node.final_cut = Some(FinalCut { cut: e, root: eqc.root, voters: eqc.votes });
+        node.start_root = Some(eqc.root);
+        if !node.former.is_empty() {
+            node.greet = Some((node.former.clone(), now.0 + OLD_EPOCH_KEEP_NS, i64::MIN));
+        }
+        Ok(node)
+    }
+
+    fn build(cfg: NodeConfig, signer: Box<dyn Signer>, verifier: Box<dyn Verifier>, now: HostTime, epoch: u64) -> Node {
         let me = signer.key();
         let core = Core::new(
             CoreConfig {
@@ -532,7 +614,7 @@ impl Node {
                 members: cfg.members.clone(),
                 genesis: cfg.genesis.clone(),
                 timing: cfg.timing,
-                epoch: 0,
+                epoch,
             },
             me,
             now,
@@ -601,6 +683,10 @@ impl Node {
             abstained: AbstainBook::default(),
             cap_wait: BTreeMap::new(),
             old_epoch: None,
+            start: None,
+            start_root: None,
+            greet: None,
+            gov: cfg.genesis_gov.clone(),
             former: Vec::new(),
             left: false,
             settled: BTreeMap::new(),
@@ -1297,9 +1383,9 @@ impl Node {
                     Verdict::Void(pe_log::VoidReason::Fork) => {}
                 }
             }
-            // The epoch's final log has no earlier `Leave`: the epoch ends at the first cut with one.
-            let mut leaves = BTreeMap::new();
-            let (effective, after) = self.leave_rules(effective, &mut leaves);
+            // The epoch's final log has no earlier change: the epoch ends at the first cut with one.
+            let mut changes = Changes::default();
+            let (effective, after) = self.membership_rules(effective, &mut changes);
             for e in effective {
                 touched.push(e.entry.stamp);
                 self.final_bytes += e.entry.payload.len() + 200;
@@ -1338,23 +1424,28 @@ impl Node {
                 self.repredict(k);
             }
             self.trim();
-            if !leaves.is_empty() {
-                self.switch_epoch(&block, qc.root, leaves.into_keys().collect());
+            if !changes.is_empty() {
+                self.switch_epoch(&block, qc.root, changes);
             }
         }
     }
 
-    /// The `Leave` rules over one cut's newly effective entries (agreement.md 8), with `leaves` the leaves made
-    /// effective earlier in this epoch (author to its leave's place in the final log's order). In the final log's
-    /// order: an entry of a key after its `Leave` is void as `AfterLeave`; a member's first `Leave` takes effect,
-    /// unless it would leave the epoch with no members (void as `LastMember`, @design-reviewer's L1). Returns the
-    /// effective entries and the voided ones with their reasons.
-    fn leave_rules(
+    /// The membership rules over one cut's newly effective entries (agreement.md 8), with `changes` the changes made
+    /// effective earlier in this epoch. In the final log's order:
+    /// - an entry of a key after its `Leave` is void as `AfterLeave`;
+    /// - a member's first `Leave` takes effect, unless it would leave the epoch with no members (void as `LastMember`,
+    ///   @design-reviewer's L1), counting the admits made effective before it;
+    /// - an `Admit` takes effect if its author is a member and the epoch's governance fold allows it
+    ///   ([`GovState::step`]; else void as `NotAuthorized`), and its key is neither a member nor admitted earlier in the
+    ///   epoch (else void as `NoChange`).
+    ///
+    /// Returns the effective entries and the voided ones with their reasons.
+    fn membership_rules(
         &self,
         mut es: Vec<SignedEntry>,
-        leaves: &mut BTreeMap<MemberKey, (Frame, pe_seams::ChainId, u64)>,
+        changes: &mut Changes,
     ) -> (Vec<SignedEntry>, Vec<(SignedEntry, pe_seams::agree::VoidReason)>) {
-        if leaves.is_empty() && !es.iter().any(is_leave) {
+        if changes.leaves.is_empty() && !es.iter().any(|e| is_leave(e) || Admit::of(e).is_some()) {
             return (es, Vec::new());
         }
         let line = self.cfg.line;
@@ -1363,30 +1454,75 @@ impl Node {
         });
         let (mut eff, mut after) = (Vec::new(), Vec::new());
         for e in es {
+            let author = e.entry.author;
             let place = (e.entry.stamp, e.entry.chain, e.entry.seq);
-            if leaves.get(&e.entry.author).is_some_and(|l| place > *l) {
+            if changes.leaves.get(&author).is_some_and(|l| place > *l) {
                 after.push((e, pe_seams::agree::VoidReason::AfterLeave));
                 continue;
             }
-            if is_leave(&e) && self.cfg.members.contains(&e.entry.author) && !leaves.contains_key(&e.entry.author) {
-                if leaves.len() + 1 >= self.cfg.members.len() {
+            if is_leave(&e) && self.cfg.members.contains(&author) && !changes.leaves.contains_key(&author) {
+                if changes.leaves.len() + 1 >= self.cfg.members.len() + changes.admits.len() {
                     after.push((e, pe_seams::agree::VoidReason::LastMember));
                     continue;
                 }
-                leaves.insert(e.entry.author, place);
+                changes.leaves.insert(author, place);
+            }
+            match self.gov.step(&e) {
+                None => {}
+                Some(GovVerdict::Admit { key, role }) if self.cfg.members.contains(&author) => {
+                    if self.cfg.members.contains(&key) || changes.admits.contains_key(&key) {
+                        after.push((e, pe_seams::agree::VoidReason::NoChange));
+                        continue;
+                    }
+                    changes.admits.insert(key, (place, role));
+                }
+                Some(_) => {
+                    after.push((e, pe_seams::agree::VoidReason::NotAuthorized));
+                    continue;
+                }
             }
             eff.push(e);
         }
         (eff, after)
     }
 
-    /// E, the reconfiguring cut, became final with `leavers` leaving: the epoch ends at it, and the next starts from it
-    /// with the remaining members (agreement.md 8). The old core is kept a while to finish E's suffix with members
-    /// that lag.
-    fn switch_epoch(&mut self, e: &Block, root: Hash, leavers: Vec<MemberKey>) {
+    /// E, the reconfiguring cut, became final with `changes`: the epoch ends at it, and the next starts from it with the
+    /// members less the leavers and with the admitted keys (agreement.md 8). The old core is kept a while to finish E's
+    /// suffix with members that lag.
+    fn switch_epoch(&mut self, e: &Block, root: Hash, changes: Changes) {
         let old_members = self.cfg.members.clone();
+        let leavers: Vec<MemberKey> = changes.leaves.into_keys().collect();
+        let admitted_roles: Vec<(MemberKey, u32)> = changes.admits.into_iter().map(|(k, (_, r))| (k, r)).collect();
+        let admitted: Vec<MemberKey> = admitted_roles.iter().map(|(k, _)| *k).collect();
+        self.gov = self.gov.next(&admitted_roles, &leavers);
         self.cfg.members.retain(|m| !leavers.contains(m));
+        self.cfg.members.extend(admitted.iter().copied());
+        self.cfg.members.sort();
         self.former.extend(leavers.iter().copied());
+        self.former.retain(|m| !admitted.contains(m));
+        self.start = self.core.certified_chain(e.id()).map(|chain| {
+            let heads = e
+                .cut
+                .heads
+                .iter()
+                .filter_map(|h| self.log.get(&ChainKey { author: h.author, chain: h.chain }, &h.entry).cloned())
+                .collect();
+            let final_high = e
+                .cut
+                .heads
+                .iter()
+                .map(|h| ChainKey { author: h.author, chain: h.chain })
+                .filter_map(|k| self.final_high.get(&k).map(|f| (k, *f)))
+                .collect();
+            codec::encode_start(&crate::epoch::EpochStart {
+                epoch: self.core.epoch(),
+                chain,
+                members: self.cfg.members.clone(),
+                gov: self.gov.clone(),
+                heads,
+                final_high,
+            })
+        });
         #[allow(unused_mut)]
         let mut core = Core::new(
             CoreConfig {
@@ -1432,6 +1568,25 @@ impl Node {
         old.told = now;
         let bytes = Bytes::from(codec::encode(&Wire::EpochFinal { epoch }));
         for m in old.leavers.clone() {
+            self.out.push(Outgoing { to: m, lane: Lane::Protocol, bytes: bytes.clone() });
+        }
+    }
+
+    /// A joiner: tell the members that left at its E that it has started from E (see `greet`).
+    fn greet_former(&mut self) {
+        let now = self.now.0;
+        let epoch = self.core.epoch();
+        let Some((to, until, told)) = self.greet.as_mut() else { return };
+        if now > *until {
+            self.greet = None;
+            return;
+        }
+        if now.saturating_sub(*told) < EPOCH_FINAL_EVERY_NS {
+            return;
+        }
+        *told = now;
+        let bytes = Bytes::from(codec::encode(&Wire::EpochFinal { epoch }));
+        for m in to.clone() {
             self.out.push(Outgoing { to: m, lane: Lane::Protocol, bytes: bytes.clone() });
         }
     }
@@ -1484,7 +1639,8 @@ impl Node {
     }
 
     /// E, the epoch's reconfiguring cut, if `cut`'s ancestry from the final cut (itself included) has one: the first
-    /// block that makes a `Leave` effective. Its descendants in this epoch must be suffix cuts.
+    /// block that makes a membership change (a `Leave` or an `Admit`) effective. Its descendants in this epoch must be
+    /// suffix cuts.
     fn reconfig_of(&self, cut: &Cut) -> Result<Option<Cut>, Vec<EntryRef>> {
         let Some(chain) = self.ancestry(cut) else { return Ok(None) };
         let (_, at) = self.effective_by_block(&chain)?;
@@ -1819,7 +1975,7 @@ impl Node {
         let mut highs = self.final_high.clone();
         let mut out = Vec::new();
         let mut missing = Vec::new();
-        let mut leaves = BTreeMap::new();
+        let mut changes = Changes::default();
         let mut reconfig = None;
         for (i, b) in chain.iter().enumerate() {
             let mut block_out = Vec::new();
@@ -1845,15 +2001,37 @@ impl Node {
                     Err(_) => return Err(Vec::new()),
                 }
             }
-            let had = leaves.len();
-            let (eff, _) = self.leave_rules(block_out, &mut leaves);
+            let had = changes.len();
+            let (eff, _) = self.membership_rules(block_out, &mut changes);
             out.extend(eff);
-            if leaves.len() > had && reconfig.is_none() {
+            if changes.len() > had && reconfig.is_none() {
                 reconfig = Some(i);
             }
             parent = &b.cut;
         }
         if missing.is_empty() { Ok((out, reconfig)) } else { Err(missing) }
+    }
+
+    /// The epoch this member is in (agreement.md 8; 0 from genesis).
+    pub fn epoch(&self) -> u64 {
+        self.core.epoch()
+    }
+
+    /// The start record of the epoch this member is in (agreement.md 8): what a member admitted at its reconfiguring
+    /// cut E starts from with [`Node::join`]. The inviter's app sends it to the joiner (app.md 4). `None` in epoch 0,
+    /// and if this member no longer held E's certified chain when E became final here.
+    pub fn epoch_start(&self) -> Option<&[u8]> {
+        self.start.as_deref()
+    }
+
+    /// A joiner's: the world's root at E that its start certified, which its import at E must match.
+    pub fn start_root(&self) -> Option<Hash> {
+        self.start_root
+    }
+
+    /// The current epoch's governance state (agreement.md 8).
+    pub fn gov(&self) -> &GovState {
+        &self.gov
     }
 
     /// How many of this member's own entries are beyond the final cut (a diagnostic). It grows with the cut lag, so
@@ -2313,6 +2491,7 @@ impl Agreement for Node {
         let lag = self.cut_lag_frames();
         let cap = self.backlog_cap();
         self.tick_old_epoch();
+        self.greet_former();
         let lead = self.core.lead();
         let reconfig = lead.as_ref().and_then(|l| self.reconfig_of(&l.parent.cut).ok().flatten());
         if let (Some(lead), Some(e)) = (&lead, reconfig) {
@@ -2398,7 +2577,9 @@ impl Agreement for Node {
         if !self.left {
             return true;
         }
-        // Left, and every remaining member has E final: they all told this one so for the epoch it ended.
+        // Left, and every remaining member has E final: they all told this one so for the epoch it ended. A member
+        // admitted at the same E tells it once it has started from E (`Node::join`), so a leaver never hands the line
+        // to a joiner that hasn't started (@design-reviewer's Low 1 on b84295a2).
         self.former.contains(&self.me)
             && self.settled.get(&self.core.epoch()).is_some_and(|s| self.cfg.members.iter().all(|m| s.contains(m)))
     }

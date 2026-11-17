@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use pe_seams::agree::{AgreeEvent, Agreement, Cut, CutRef, VoidReason, VoteResult};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
-use pe_seams::{Class, EntryRef, EntrySource, Frame, FrameClock, Hash, Hasher, HostTime, Lane, LineId, SelfTest};
+use pe_seams::{
+    Class, EntryRef, EntrySource, Frame, FrameClock, Hash, Hasher, HostTime, Lane, LineId, MemberKey, SelfTest,
+};
 
 use crate::core::Timing;
 use crate::{Node, NodeConfig};
@@ -135,6 +137,11 @@ struct Sim {
     edit_every: Vec<u64>,
     /// Per member: the edits submitted through `edit_every`, with their stamps.
     edits: Vec<Vec<(EntryRef, Frame)>>,
+    /// Per member: not started yet (a joiner before its join): it neither acts nor receives, and what is sent to it is
+    /// lost.
+    absent: Vec<bool>,
+    /// The configuration every member started from (a joiner's template).
+    base: NodeConfig,
 }
 
 impl Sim {
@@ -148,10 +155,22 @@ impl Sim {
 
     /// Each member's config set apart (a member with different settings).
     fn with_each(n: u32, seed: u64, f: impl Fn(usize, &mut NodeConfig)) -> Sim {
+        Sim::build(n, n, seed, f)
+    }
+
+    /// `n` keys, of which only the first `present` are genesis members; the others are joiners, absent until
+    /// [`Sim::join`] starts them.
+    fn with_joiners(n: u32, present: u32, seed: u64) -> Sim {
+        Sim::build(n, present, seed, |_, _| {})
+    }
+
+    fn build(n: u32, present: u32, seed: u64, f: impl Fn(usize, &mut NodeConfig)) -> Sim {
         let keys = TestKeys::new(seed, n);
         let line = LineId::origin();
         let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
-        let mut cfg = NodeConfig::new(line, keys.sorted_keys(), genesis);
+        let mut members: Vec<MemberKey> = (0..present as usize).map(|i| keys.key(i)).collect();
+        members.sort();
+        let mut cfg = NodeConfig::new(line, members, genesis);
         cfg.timing = Timing { cadence_ns: 100 * MS, min_timeout_ns: 300 * MS, max_timeout_ns: 5_000 * MS };
         let nodes = (0..n as usize)
             .map(|i| {
@@ -191,6 +210,8 @@ impl Sim {
             range_asks: vec![0; n as usize],
             edit_every: vec![0; n as usize],
             edits: vec![Vec::new(); n as usize],
+            absent: (0..n).map(|i| i >= present).collect(),
+            base: cfg,
             seq: 0,
             now: 0,
             rng: Rng(seed),
@@ -240,7 +261,7 @@ impl Sim {
             {
                 continue;
             }
-            if self.cut_off.is_some_and(|k| i == k || j == k) || self.now < self.blackout_until {
+            if self.cut_off.is_some_and(|k| i == k || j == k) || self.now < self.blackout_until || self.absent[j] {
                 continue;
             }
             if self.holding == Some(i) {
@@ -379,6 +400,9 @@ impl Sim {
                     break;
                 }
                 let (from, to, lane, bytes) = self.net.remove(&k).unwrap();
+                if self.absent[to] {
+                    continue;
+                }
                 let fk = self.keys.key(from);
                 let r = self.nodes[to].receive(fk, lane, &bytes, HostTime(k.0));
                 if self.flooder.is_some() && r.is_err() {
@@ -389,7 +413,9 @@ impl Sim {
             }
             self.now = step;
             for i in 0..self.nodes.len() {
-                self.act(i);
+                if !self.absent[i] {
+                    self.act(i);
+                }
             }
         }
     }
@@ -1005,6 +1031,7 @@ fn the_consensus_hash_covers_exactly_the_must_match_settings() {
         ("line", Box::new(|c| c.line = LineId(Hash::of("l", b"other")))),
         ("members", Box::new(|c| c.members.truncate(1))),
         ("genesis frame", Box::new(|c| c.genesis.at.frame = Frame(5))),
+        ("genesis_gov", Box::new(|c| c.genesis_gov = pe_seams::GovState::default())),
     ];
     for (what, f) in locals {
         let mut c = base.clone();
@@ -2625,4 +2652,260 @@ fn a_no_lead_stand_still_never_feeds_itself_through_the_pending_cap() {
         near += s.near_cap_frames[0];
     }
     assert!(near > 0, "A never came near the pending cap: the test doesn't bite");
+}
+
+// Membership change by epochs, Admit (agreement.md 8; pe-seams gov; coordinator).
+
+/// Member `i` signs an `Admit` of member `j`'s key with `role`.
+fn admit(s: &mut Sim, i: usize, j: usize, role: u32) -> EntryRef {
+    let present = s.clock.frame_at(HostTime(s.now)).unwrap();
+    let payload = crate::node::Admit::new(s.keys.key(j), role).encode();
+    let e = s.builders[i].next_unsigned(Class::Protocol, present, payload);
+    let e = s.nodes[i].submit(e).expect("own Admit refused");
+    s.submitted[i].push(e.id());
+    s.submitted_at[i].push(present);
+    e.id()
+}
+
+impl Sim {
+    /// Run until member `i` is in `epoch`, at most `within_ms` more.
+    fn run_to_epoch(&mut self, i: usize, epoch: u64, within_ms: i64) {
+        let end = self.now / MS + within_ms;
+        while self.nodes[i].epoch() < epoch && self.now / MS < end {
+            let next = self.now / MS + 10;
+            self.run(next);
+        }
+        assert_eq!(self.nodes[i].epoch(), epoch, "member {i} didn't reach epoch {epoch} within {within_ms} ms");
+    }
+
+    /// Start joiner `j` from inviter `i`'s start record, its invite pinning the epoch before `i`'s (`pinned_members`
+    /// its members). It makes `per_frame` entries from then on.
+    fn join(&mut self, j: usize, i: usize, pinned_members: &[usize], per_frame: Option<(u32, u32)>) {
+        let start = self.nodes[i].epoch_start().expect("the inviter's start").to_vec();
+        let pinned = self.sorted(pinned_members);
+        let node = Node::join(
+            self.base.clone(),
+            &start,
+            self.nodes[i].epoch() - 1,
+            &pinned,
+            Box::new(self.keys.signer(j)),
+            Box::new(self.keys.clone()),
+            HostTime(self.now),
+        )
+        .expect("a valid start refused");
+        self.nodes[j] = node;
+        self.builders[j] = EntryBuilder::new(&self.keys, j);
+        self.absent[j] = false;
+        self.per_frame[j] = per_frame;
+    }
+
+    /// The final logs of `who` agree frame by frame from `from` up to their lowest final frame; how many entries.
+    fn assert_same_final_log_among(&self, who: &[usize], from: Frame) -> usize {
+        let low = who.iter().map(|&i| self.final_frame(i)).min().unwrap();
+        let ids =
+            |i: usize, f: u64| self.nodes[i].entries_at(Frame(f)).map(|v| v.iter().map(|e| e.id()).collect::<Vec<_>>());
+        let mut count = 0;
+        for f in from.0..low.0 {
+            let a = ids(who[0], f);
+            for &i in &who[1..] {
+                assert_eq!(a, ids(i, f), "members {} and {i} differ at frame {f}", who[0]);
+            }
+            count += a.map_or(0, |v| v.len());
+        }
+        count
+    }
+
+    fn faults(&self, i: usize) -> usize {
+        self.events[i].iter().filter(|e| matches!(e, AgreeEvent::Fault(_))).count()
+    }
+
+    fn sorted(&self, who: &[usize]) -> Vec<MemberKey> {
+        let mut v: Vec<MemberKey> = who.iter().map(|&i| self.keys.key(i)).collect();
+        v.sort();
+        v
+    }
+
+    /// Whether `id` is in member `i`'s final log below frame `below`.
+    fn is_final(&self, i: usize, id: EntryRef, below: Frame) -> bool {
+        (0..below.0).any(|f| self.nodes[i].entries_at(Frame(f)).is_some_and(|v| v.iter().any(|e| e.id() == id)))
+    }
+}
+
+#[test]
+fn a_lone_member_admits_a_joiner_and_the_two_finalize() {
+    // M1's join from a cut (model v1's join-1to2): A plays alone and admits B at 2 s; E is final at A at once (q = 1),
+    // and B starts from A's start record in epoch 1, with E as its genesis. Both then finalize together (q = 2), and
+    // B's certified root at E is the root of A's E.
+    for seed in [401u64, 402] {
+        let mut s = Sim::with_joiners(2, 1, seed);
+        s.clock = Clock(120);
+        s.per_frame = vec![Some((2, 0)), None];
+        s.run(2_000);
+        let ad = admit(&mut s, 0, 1, 3);
+        s.run_to_epoch(0, 1, 3_000);
+        assert_eq!(s.nodes[0].members(), s.sorted(&[0, 1]), "seed {seed}: A's epoch 1");
+        let e_cut = s.nodes[0].core().genesis().cut.clone();
+        let e_frame = e_cut.at.frame;
+        let next = s.now / MS + 200;
+        s.run(next);
+        s.join(1, 0, &[0], Some((2, 0)));
+        assert_eq!(s.nodes[1].epoch(), 1);
+        assert_eq!(s.nodes[1].start_root(), Some(root(&e_cut)), "seed {seed}: B's certified root at E");
+        s.run(12_000);
+        for i in 0..2 {
+            assert_eq!(s.nodes[i].members(), s.sorted(&[0, 1]), "seed {seed}: member {i}");
+            assert_eq!(s.faults(i), 0, "seed {seed}: faults at {i}: {:?}", s.events[i]);
+        }
+        let n = s.assert_same_final_log_among(&[0, 1], e_frame);
+        let fin = [s.final_frame(0).0 as f64 / 120.0, s.final_frame(1).0 as f64 / 120.0];
+        let b_final = s.submitted[1].iter().filter(|id| s.is_final(0, **id, s.final_frame(0))).count();
+        eprintln!(
+            "seed {seed}: E at {:.2} s; final at {fin:?} of 12 s; {n} entries agreed from E; {b_final} of B's final",
+            e_frame.0 as f64 / 120.0
+        );
+        assert!(fin.iter().all(|f| *f >= 11.0), "seed {seed}: the pair didn't finalize after the join: {fin:?}");
+        assert!(b_final > 1_000, "seed {seed}: only {b_final} of B's entries final at A");
+        assert!(s.is_final(0, ad, e_frame), "seed {seed}: the Admit isn't in A's final log below E");
+    }
+}
+
+#[test]
+fn an_admin_admits_an_admin_leaves_and_the_new_admin_admits_a_third() {
+    // Coordinator: governance is per epoch, so a line whose opener left can still admit. A admits B as
+    // an admin, A leaves (B alone, epoch 2), and B admits C (epoch 3: B and C).
+    let mut s = Sim::with_joiners(3, 1, 411);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)), None, None];
+    s.run(1_000);
+    admit(&mut s, 0, 1, crate::node::ROLE_ADMIN | 3);
+    s.run_to_epoch(0, 1, 3_000);
+    s.join(1, 0, &[0], Some((2, 0)));
+    s.run(4_000);
+    assert!(s.nodes[1].gov().is_admin(&s.keys.key(1)), "B wasn't admitted as an admin");
+    leave(&mut s, 0);
+    s.run_to_epoch(1, 2, 5_000);
+    let mut waited = 0;
+    while !Agreement::leave_settled(&s.nodes[0]) && waited < 5_000 {
+        let next = s.now / MS + 10;
+        s.run(next);
+        waited += 10;
+    }
+    s.cut_off = Some(0);
+    assert_eq!(s.nodes[1].members(), s.sorted(&[1]), "A didn't leave");
+    assert_eq!(s.nodes[1].gov().admins().collect::<Vec<_>>(), vec![s.keys.key(1)]);
+    let next = s.now / MS + 1_000;
+    s.run(next);
+    admit(&mut s, 1, 2, 3);
+    s.run_to_epoch(1, 3, 3_000);
+    s.join(2, 1, &[1], Some((2, 0)));
+    let e_frame = s.nodes[1].core().genesis().cut.at.frame;
+    let end = s.now / MS + 8_000;
+    s.run(end);
+    for i in 1..3 {
+        assert_eq!(s.nodes[i].members(), s.sorted(&[1, 2]), "member {i}");
+        assert_eq!(s.faults(i), 0, "faults at {i}: {:?}", s.events[i]);
+    }
+    let n = s.assert_same_final_log_among(&[1, 2], e_frame);
+    let fin = s.final_frame(2).0 as f64 / 120.0;
+    eprintln!("B and C agree on {n} entries from E3; C final at {fin:.2} s of {:.2}", s.now as f64 / 1e9);
+    assert!(fin >= s.now as f64 / 1e9 - 1.0, "B and C didn't finalize");
+}
+
+#[test]
+fn an_admit_by_a_non_admin_is_not_authorized_and_a_second_admit_changes_nothing() {
+    // The governance fold's two voids: B, admitted without ADMIN, admits C: void as NotAuthorized at both members; A
+    // admits B again: void as NoChange. Neither starts an epoch.
+    let mut s = Sim::with_joiners(3, 1, 421);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)), None, None];
+    s.run(1_000);
+    admit(&mut s, 0, 1, 3);
+    s.run_to_epoch(0, 1, 3_000);
+    s.join(1, 0, &[0], Some((2, 0)));
+    s.run(3_000);
+    let by_b = admit(&mut s, 1, 2, 3);
+    let again = admit(&mut s, 0, 1, 3);
+    s.run(6_000);
+    for i in 0..2 {
+        let v: Vec<_> = s.voids(i).into_iter().filter(|v| v.0 == by_b || v.0 == again).map(|v| (v.0, v.1)).collect();
+        eprintln!("member {i}: {v:?}");
+        assert!(v.contains(&(by_b, VoidReason::NotAuthorized)), "member {i}: B's Admit: {v:?}");
+        assert!(v.contains(&(again, VoidReason::NoChange)), "member {i}: the second Admit of B: {v:?}");
+        assert_eq!(s.nodes[i].epoch(), 1, "member {i} changed epochs");
+        assert_eq!(s.faults(i), 0, "faults at {i}");
+    }
+}
+
+#[test]
+fn a_start_is_refused_for_another_epoch_a_forged_vote_or_a_key_not_admitted() {
+    use crate::epoch::StartError;
+    let mut s = Sim::with_joiners(3, 1, 431);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)), None, None];
+    s.run(1_000);
+    admit(&mut s, 0, 1, 3);
+    s.run_to_epoch(0, 1, 3_000);
+    let bytes = s.nodes[0].epoch_start().unwrap().to_vec();
+    let a = [s.keys.key(0)];
+    let join = |bytes: &[u8], pinned: u64, who: usize| {
+        Node::join(
+            s.base.clone(),
+            bytes,
+            pinned,
+            &a,
+            Box::new(s.keys.signer(who)),
+            Box::new(s.keys.clone()),
+            HostTime(0),
+        )
+        .map(|_| ())
+    };
+    assert_eq!(join(&bytes, 0, 1), Ok(()));
+    assert_eq!(join(&bytes, 1, 1), Err(StartError::OtherEpoch { start: 0, pinned: 1 }));
+    assert_eq!(join(&bytes, 0, 2), Err(StartError::NotAdmitted));
+    assert_eq!(join(&bytes[..bytes.len() - 1], 0, 1), Err(StartError::Malformed));
+    let mut start = crate::codec::decode_start(&bytes).unwrap();
+    start.chain[0].1.votes[0].1.0[0] ^= 1;
+    assert_eq!(join(&crate::codec::encode_start(&start), 0, 1), Err(StartError::Certificate("a bad vote signature")));
+    let mut start = crate::codec::decode_start(&bytes).unwrap();
+    start.chain.truncate(1);
+    assert!(matches!(join(&crate::codec::encode_start(&start), 0, 1), Err(StartError::Certificate(_))));
+}
+
+#[test]
+fn a_leaver_admitting_its_successor_in_the_same_cut_waits_until_it_has_started() {
+    // @design-reviewer's Low 1 on b84295a2: A alone admits B and leaves in one cut, so epoch 1 is B alone. A must not
+    // quit (leave_settled) until B has started from E and told it so; B, alone (q = 1), then finalizes on its own.
+    let mut s = Sim::with_joiners(2, 1, 441);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)), None];
+    s.run(1_000);
+    admit(&mut s, 0, 1, crate::node::ROLE_ADMIN | 3);
+    leave(&mut s, 0);
+    s.run_to_epoch(0, 1, 3_000);
+    assert_eq!(s.nodes[0].members(), s.sorted(&[1]), "A's epoch 1 should be B alone");
+    let next = s.now / MS + 2_000;
+    s.run(next);
+    assert!(!Agreement::leave_settled(&s.nodes[0]), "A settled before B started");
+    s.join(1, 0, &[0], Some((2, 0)));
+    let mut waited = 0;
+    while !Agreement::leave_settled(&s.nodes[0]) && waited < 3_000 {
+        let next = s.now / MS + 10;
+        s.run(next);
+        waited += 10;
+    }
+    eprintln!("A settled {waited} ms after B started");
+    assert!(Agreement::leave_settled(&s.nodes[0]), "A never settled after B started");
+    s.cut_off = Some(0);
+    let e_frame = s.nodes[1].core().genesis().cut.at.frame;
+    let end = s.now / MS + 5_000;
+    s.run(end);
+    let fin = s.final_frame(1).0 as f64 / 120.0;
+    let b_final = s.submitted[1].iter().filter(|id| s.is_final(1, **id, s.final_frame(1))).count();
+    eprintln!(
+        "B alone: final at {fin:.2} s of {:.2}; {b_final} of its entries final; E at {e_frame:?}",
+        s.now as f64 / 1e9
+    );
+    assert!(fin >= s.now as f64 / 1e9 - 1.0, "B alone didn't finalize");
+    assert!(b_final > 500, "B's entries didn't become final");
+    assert_eq!(s.faults(1), 0, "faults at B: {:?}", s.events[1]);
 }
