@@ -89,8 +89,20 @@ pub(crate) fn kind_code(k: FieldKind) -> u8 {
     }
 }
 
+/// A field's kind byte (6.6, 3.6): the kind's code in the low five bits, its colour space's code (0 for none) in the
+/// high three, so a field without a colour space has the byte it always had.
+pub(crate) fn field_byte(f: &pe_sim::FieldDesc) -> u8 {
+    f.kind_byte(kind_code(f.kind))
+}
+
+/// The kind and colour space of a [`field_byte`]; `None` for an unknown kind or space.
+pub(crate) fn field_of_byte(b: u8) -> Option<(FieldKind, Option<pe_sim::ColorSpace>)> {
+    let (k, space) = pe_sim::FieldDesc::split_kind_byte(b)?;
+    Some((kind_of_code(k)?, space))
+}
+
 /// A component description's bytes (6.6): `lp(name) ‖ row size ‖ field count ‖ per field, in offset order: lp(name)
-/// ‖ kind ‖ offset ‖ count ‖ lp(unit)`. pe-sim keeps fields sorted by offset.
+/// ‖ kind byte ([`field_byte`]) ‖ offset ‖ count ‖ lp(unit)`. pe-sim keeps fields sorted by offset.
 pub(crate) fn desc_bytes(d: &ComponentDesc) -> Vec<u8> {
     let mut b = Vec::new();
     lp(&mut b, d.name().as_bytes());
@@ -98,7 +110,7 @@ pub(crate) fn desc_bytes(d: &ComponentDesc) -> Vec<u8> {
     b.extend_from_slice(&(d.fields().len() as u32).to_le_bytes());
     for f in d.fields() {
         lp(&mut b, f.name.as_bytes());
-        b.push(kind_code(f.kind));
+        b.push(field_byte(f));
         b.extend_from_slice(&f.offset.to_le_bytes());
         b.extend_from_slice(&f.count.to_le_bytes());
         lp(&mut b, f.unit.as_bytes());

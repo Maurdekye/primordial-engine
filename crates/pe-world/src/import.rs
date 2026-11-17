@@ -272,11 +272,13 @@ fn decode_registry(bytes: &[u8]) -> Option<Vec<(AssetId, pe_sim::ComponentDesc)>
         let mut fields = Vec::with_capacity(n);
         for _ in 0..n {
             let fname = std::str::from_utf8(r.lp()?).ok()?.to_string();
-            let kind = crate::tree::kind_of_code(r.arr::<1>()?[0])?;
+            let (kind, color) = crate::tree::field_of_byte(r.arr::<1>()?[0])?;
             let offset = r.u32()?;
             let count = r.u32()?;
             let unit = std::str::from_utf8(r.lp()?).ok()?.to_string();
-            fields.push(pe_sim::FieldDesc::new(&fname, kind, offset as usize, count).with_unit(&unit));
+            let mut f = pe_sim::FieldDesc::new(&fname, kind, offset as usize, count).with_unit(&unit);
+            f.color = color;
+            fields.push(f);
         }
         r.end()?;
         let d = pe_sim::ComponentDesc::new(id, &name, fields).ok()?;

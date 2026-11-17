@@ -26,7 +26,7 @@ pub mod unit;
 
 pub use column::RowVersion;
 pub use hierarchy::Node;
-pub use registry::{Component, ComponentDesc, ComponentId, FieldDesc, FieldKind, Registry};
+pub use registry::{ColorSpace, Component, ComponentDesc, ComponentId, FieldDesc, FieldKind, Registry};
 pub use schedule::{Schedule, SystemFn, TickCtx};
 pub use snapshot::Snapshot;
 pub use store::SimStore;
