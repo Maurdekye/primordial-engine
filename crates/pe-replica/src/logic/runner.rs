@@ -9,10 +9,10 @@
 //!   5 ms and a 264 KB module 50-84 ms [V logic.md 4.2, 5.2a], against a 13.9 ms frame at 72 Hz. The runner takes
 //!   what has arrived at the start of a frame, its `LogicPrePhysics` stage, so both stages of a frame see the same
 //!   modules. When a module arrives is this machine's timing, not the world's: a take can land inside a re-simulation,
-//!   so one advance can step some frames without the module and later ones with it. That is harmless only because a
-//!   replica that stepped frames at or past an activation F without the module holds its votes from F, and steps
-//!   again from F once it holds it (S2 v1.7's `vote_holds`; at n = 2 every member holds the module at F, since it
-//!   attests after loading it; @engine-architect's Low 1 on 1dd85502).
+//!   so one advance can step some frames without the module and later ones with it. At n = 2 that is harmless:
+//!   every member holds the module at F, since it attests only after loading it. With 3 or more, a replica that
+//!   stepped frames at or past F without the module must hold its votes from F and step again from F once it holds
+//!   it (S2 v1.7's `vote_holds`); that is not built yet (replica.md 8.2; @engine-architect's Low 1 on 1dd85502).
 //! - **Binding** (logic.md 3.2, 6.2; world-model.md 7.9): a row binds its module under the ids its version V gives
 //!   (`pe_world::script::script_component_id` over each of the manifest's own components, the tag `tag_desc(V)`),
 //!   every one of which must be among the row's ids, and under the engine components of 3.2's table. A script stays

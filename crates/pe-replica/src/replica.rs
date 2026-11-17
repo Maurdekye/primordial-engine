@@ -53,8 +53,8 @@
 //! **Logic stages** (3, steps 3 and 8; crate::logic): `LogicPrePhysics` after the entries and `LogicPostPhysics` after
 //! the write-back, through the runner the replica is given. Without one it refuses to step a world with scripts.
 //!
-//! **Not yet here** (the M1 increments that follow): script activation inside the window (logic.md 6.2, the script
-//! binding's increment 2), carried checks (3.4), and the view's rows beyond bodies (7).
+//! **Not yet here** (replica.md 11): carried checks (3.4), vote holds for a version whose module this machine lacks
+//! (8.2), and the view's effects beyond the scripts' (7).
 
 use core::time::Duration;
 use std::borrow::Cow;
