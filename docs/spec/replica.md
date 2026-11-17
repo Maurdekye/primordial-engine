@@ -368,7 +368,9 @@ ceil(240 / rate) sub-steps: the user chose the proposal of 13 ("30–120 Hz (rec
   again; an abandoned replay puts it back from the floor's held snapshot (6.1).
 - **Held roots are not keyframes.** A root at a cut is the state with exactly the cut's entries, which the live
   history's keyframe at that frame need not share. The replica keeps each as its own snapshot (world state, physics
-  image and transfer) until its cut is final or superseded, and a rollback never takes one away (5.3, 8).
+  image and transfer) until its cut is final or superseded, and a rollback never takes one away (5.3, 8). Where the
+  live history did step exactly the cut's entries, the snapshot is a copy of the ring's keyframe at the cut's frame,
+  with the transfer the live take_root serialized (5.4).
   - **Thinned in a long stall** (was O19; @coordinator-opus mc19bd7c38ea8, with @chunks-reviewer's points
     m7b30149e2b72) [V `replica.rs`, `release`]. A finality stall votes at every cut and finalizes none, and a snapshot
     costs about 1.15 MB at 200 balls and 3.84 MB at 500 [V, a diagnostic run, `_teams/1827/held-bytes`]: up to 11 and
@@ -496,9 +498,8 @@ pe-replica puts the physics into it in two places, both written at each cut fram
 - **A root at a cut** (`root_at_cut`, 8) needs the state with exactly the cut's entries. The replica starts from the
   newest keyframe at or before the first frame whose live entries are not exactly the cut's (`first_difference`), or
   at the cut's frame when they all are, and re-steps to the cut's frame through the same frame function, off the live
-  history; then it puts the live state back. When the live history stepped exactly the cut's entries, nothing is
-  re-stepped, and the root equals the live one (debug builds assert it). The re-step is not budgeted yet (4.2):
-  normally one or two cut intervals.
+  history; then it puts the live state back. When the live history stepped exactly the cut's entries, the root is
+  the live one, taken with no restore (5.4). The re-step is not budgeted yet (4.2): normally one or two cut intervals.
 - **A vote's re-step resumes from a held root** (was O13) [V `replica.rs`, `walk` and `resume_from`; added after
   c9e2829a]. It starts instead from my root held at an earlier voted cut on the grid, the newest one above that
   keyframe, when two things hold. The root was computed on the same lineage: the same base (the floor, or my last
@@ -506,7 +507,8 @@ pe-replica puts the physics into it in two places, both written at each cut fram
   A held root records both: the lineage, and a BLAKE3 digest of its cut's entry ids, frame by frame from the base, in
   apply order. One pass over this cut's entries, with no physics, finds the first difference and the digests to
   compare. Determinism makes the root the same as a full re-step's. `finalize` always re-steps from the first
-  difference, since its re-base on the floor (4.2) takes that re-step's records from there.
+  difference, since its re-base on the floor (4.2) takes that re-step's records from there; at a cut the live history
+  matches it takes the live root (5.4).
   `ReplicaImpl::scratch().frames` counts the frames re-stepped.
   - **Two limits** (@chunks-reviewer's L1 and L2 on 3aa8180d). A root held off the grid is never resumed from: it was
     saved after its rows were written (`take_root`), which a step through that frame never writes, and no honest
@@ -523,16 +525,60 @@ pe-replica puts the physics into it in two places, both written at each cut fram
     438 ms for the vote at 600 (about 0.7 ms a frame). Over 374 votes from 16 to 3000, with the thinning of 4.1, each
     vote after the first still re-stepped 8 frames (median 5.5 ms); the last 50 votes' median was 0.5 ms above the
     first 50's, the walk over the cut's entries from the floor.
-- **Cost per cut:**
-  - `physics_global`: one canonical serialization and one BLAKE3 pass. Serializing costs about 1.1-1.3 µs and 2.3-2.5
-    kB per body [V file 02's bench], plus BLAKE3 over that, about 1-2 µs per body [I].
-  - The per-body digests: about 0.2 ms at 500 balls [I].
-  - Together about 1-2 ms at 500 balls: 1-2% of one core with a cut every 133 ms (K = 8 at 60 Hz) [I]. The cost per
-    second follows the cut interval, not the tick rate.
-  - At 4,096 bodies it is about 10-15 ms a cut [I]. M2's incremental images cache the hashes of unchanged chunks, and
-    sleeping bodies' digests.
+- **Cost per cut** [V, @engine-architect's two-member sessions at 500 balls, on the laptop and the desktop, with the
+  diagnostic timers of branch diag/root-split bedac9fe; `_teams/1827/root-split`]. It had been estimated at 1-2 ms.
+  - A take_root costs 9.5-10 ms:
+    - the per-body digests and `physics_global`, 3.7-4.2 ms. Most of that is serializing the canonical transfer
+      (1.59 MB at 500 balls) and hashing it;
+    - pe-world's `write_physics`, 4.9-5.9 ms. It rewrites every `BodyState` row, so every object's leaf is rehashed,
+      sleeping balls' included;
+    - the root, 0.3-0.4 ms.
+  - At 200 balls, alone on the laptop, a take_root costs 3.1 ms.
+  - With a cut every 8 frames at 60 Hz that is about 1.2 ms a frame of the live history. The cost per second follows
+    the cut interval, not the tick rate.
+  - **Not built:** writing only the rows that changed (pe-world's `write_physics`). It waits on a measurement of how
+    many balls are awake in a session. M2's incremental images cache the hashes of unchanged chunks, and sleeping
+    bodies' digests.
 - **pe-physics's per-frame XXH64 state hash** (`state_hash`) stays internal, as a cheap "did anything change" check.
   Nobody votes with it.
+
+### 5.4 A cut the live history matches: the live root and the kept transfer
+
+[V `crates/pe-replica/src/replica.rs`, `reuse_live_root`, `take_root`; @coordinator-opus m2a2aa5381bc7; added after
+c9e2829a]
+- **Why** [V, `_teams/1827/root-split`]. In @engine-architect's two-member sessions at 500 balls, every cut a vote or
+  `finalize` asked about matched the live history. Each still re-did the live step's work at that frame: it saved the
+  live physics, restored the very keyframe the live step had saved there, took the root again and put the live state
+  back. That is 18.5 ms a root on the laptop (24.4 ms with its display on) and 16.9 ms on the desktop. Votes and
+  finalizes were 55 % of the laptop's busy time.
+- **The live root.** A cut matches when every frame from the base to the cut stepped exactly the cut's entries, in
+  apply order (`from == at`, the same test 5.3's re-step starts from). The live step then took the root at the cut's
+  frame, from the same state and through the same frame function. A vote and `finalize` take that root
+  (`reuse_live_root`), with no restore, re-step or hash.
+  - Its snapshot (4.1) is the one already held for that root (as at `finalize` after a vote). Otherwise it is the
+    ring's keyframe at the cut's frame, taken after that take_root wrote its rows, with the transfer the take_root
+    serialized.
+  - Where the live history took no root at the cut's frame, or neither snapshot source is there, the root is
+    re-stepped as in 5.3.
+- **Not under a vote hold at or below the cut** (`held_at_or_below`). The live history runs my own predicted code
+  commit from c + 1 (logic.md 6.2a's option (i); 8.2), and a re-step never does. So a live root there is not the
+  cut's root, and the re-step decides, as before. Test: `a_vote_hold_below_the_cut_keeps_the_live_root_out`.
+- **The transfer is serialized once.** `physics_global` is the check hash of the canonical transfer (5.1), so every
+  take_root serializes it. take_root now keeps those bytes and their hash (`Taken`), and a computed root's snapshot
+  takes them instead of serializing and hashing the same state again. That saves about 4 ms a root at 500 balls. The
+  live history keeps its take_roots' transfers for the newest four grid frames, for the snapshots above.
+- **The same values.** Nothing given out changes: the roots, transfers and check hashes are the same, so no build
+  identity changes [I]. The live root at a matched cut is the root of the keyframe the old path restored, and the
+  kept bytes are the same function of the same physics state.
+  - `ReplicaConfig::reuse_live` off takes the old paths.
+  - `the_live_root_and_the_kept_transfer_give_what_a_re_step_gives` runs both through a session-shaped run (late
+    entries, rollbacks, a stall, a re-base on the floor) and compares every root, transfer and check hash.
+  - `ReplicaImpl::scratch().reused` counts the roots taken from the live history.
+- **Expected saving** [I, from the sessions' measured parts]:
+  - the laptop from 64 % busy to about 31 %, or from 79 % to about 34 % with its display on;
+  - the desktop from 65 % to about 36 %.
+  - M1's bar is the laptop with its display on, at 500 balls, under 50 % busy with no hold over 2 ticks. It is
+    measured on reneglade after this lands.
 
 ## 6. Repair
 

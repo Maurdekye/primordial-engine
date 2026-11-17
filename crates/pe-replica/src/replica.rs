@@ -22,6 +22,14 @@
 //! makes the root the same as a full re-step's. `finalize` always re-steps from the first difference: its re-base on
 //! the floor takes that re-step's records from there.
 //!
+//! **A cut the live history matches** (replica.md 5.4). When every frame from the base to the cut stepped exactly the
+//! cut's entries, the live step already took my root at the cut's frame, from the same state: a vote and `finalize`
+//! take it from there, with no restore, re-step or hash, unless a vote hold lies at or below the cut (the live history
+//! then runs my own predicted code commit, which a re-step never does). Its snapshot is the one already held for that
+//! root, or the ring's keyframe at the cut's frame with the transfer the live take_root serialized. Each take_root
+//! keeps the physics transfer it serializes for the check hash, so a snapshot of the same state never serializes or
+//! hashes it again. `ReplicaConfig::reuse_live` off restores the old paths, for tests that compare the two.
+//!
 //! **Bounded work.** Each call steps at most the budget's frames (never fewer than two). A rollback, a re-simulation
 //! or a rung-1 replay that does not fit resumes on the next call; the results never depend on the split. Two steps
 //! are not budgeted yet (@design-reviewer's Lows on 3d13ff88):
@@ -110,6 +118,11 @@ pub struct ReplicaConfig {
     /// replica must vote through a driver that places its vote holds ([`crate::Driver`]), or it would vote predicted
     /// roots. `None` for a replica with no local player (tests, a headless host).
     pub local: Option<MemberKey>,
+    /// Whether a root at a cut the live history matches is taken from the live history, and a snapshot's physics
+    /// transfer from the take_root that serialized it (5.4). Off, every root is re-stepped from a keyframe and every
+    /// snapshot's transfer serialized again, as before: the same roots and transfers, at more cost. On by default;
+    /// tests turn it off to compare.
+    pub reuse_live: bool,
 }
 
 impl ReplicaConfig {
@@ -123,6 +136,7 @@ impl ReplicaConfig {
             policy: Policy::log4(rate.hz()),
             clock,
             local: None,
+            reuse_live: true,
         }
     }
 }
@@ -156,6 +170,23 @@ struct Mark {
     lineage: u64,
     history: Hash,
 }
+
+/// The physics transfer a take_root serialized for the check hash, kept so that a snapshot of the same state never
+/// serializes or hashes it again (5.4): the frame and root it was taken at, the transfer's bytes and their check hash
+/// (`physics_global`).
+struct Taken {
+    frame: Frame,
+    root: Hash,
+    transfer: Bytes,
+    global: Hash,
+}
+
+/// Every bound body's `BodyState` row, the canonical physics transfer's bytes and their check hash (`physics_rows`).
+type PhysicsRows = (Vec<(ObjectId, BodyStateRow)>, Bytes, Hash);
+
+/// How many of the live history's newest grid frames keep the transfer their take_root serialized (5.4): a vote comes
+/// about one cut interval after the live history passes its cut, and `finalize` takes the vote's snapshot.
+const LIVE_TRANSFERS: usize = 4;
 
 /// The digest of a cut's entries from the base up to a frame: for each frame in order, the count of the entries it
 /// steps, then their ids in apply order.
@@ -212,6 +243,10 @@ pub struct ReplicaImpl<W: WorldModel> {
     ring: Ring<Key<W::Saved>>,
     /// Roots at cut-grid frames of the live history, from the floor.
     live: BTreeMap<Frame, Hash>,
+    /// The transfers the live history's take_roots serialized at its newest grid frames (5.4).
+    live_transfers: BTreeMap<Frame, Taken>,
+    /// The transfer the last take_root serialized, until the live history or a snapshot of that state takes it.
+    taken: Option<Taken>,
     /// The ids of the entries each live frame stepped, in apply order, from the floor.
     stepped: BTreeMap<Frame, Vec<EntryRef>>,
     outcomes: BTreeMap<EntryRef, (Frame, Outcome)>,
@@ -332,6 +367,8 @@ pub struct Scratch {
     pub fp_resets: u32,
     /// The frames re-stepped: what a root at a cut costs (5.3).
     pub frames: u64,
+    /// Roots at cuts taken from the live history, with no restore, re-step or hash (5.4).
+    pub reused: u64,
 }
 
 impl<W: WorldModel> ReplicaImpl<W> {
@@ -364,6 +401,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
             cv: None,
             ring: Ring::new(),
             live: BTreeMap::new(),
+            live_transfers: BTreeMap::new(),
+            taken: None,
             stepped: BTreeMap::new(),
             outcomes: BTreeMap::new(),
             held: BTreeMap::new(),
@@ -410,6 +449,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         if r.is_cut_frame(Frame(0)) {
             let root = r.take_root();
             r.live.insert(Frame(0), root);
+            r.keep_live_transfer();
         }
         r.keyframe(Frame(0));
         r.ring.pin([Frame(0)]);
@@ -586,6 +626,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.stepped.insert(f, ids);
             if let Some(root) = root {
                 self.live.insert(next, root);
+                self.keep_live_transfer();
             }
             if self.config.policy.takes(next) || self.is_cut_frame(next) {
                 self.keyframe(next);
@@ -741,14 +782,35 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// Step 10, at a cut frame: every bound body's `BodyState` and the domain's `physics_global`, then the root.
     fn take_root(&mut self) -> Hash {
-        match self.physics_rows() {
-            Ok((rows, global)) => self.world.write_physics(&rows, global),
-            Err(_) => self.faults += 1,
-        }
-        self.world.root()
+        let taken = match self.physics_rows() {
+            Ok((rows, transfer, global)) => {
+                self.world.write_physics(&rows, global);
+                Some((transfer, global))
+            }
+            Err(_) => {
+                self.faults += 1;
+                None
+            }
+        };
+        let root = self.world.root();
+        self.taken = taken.map(|(transfer, global)| Taken { frame: self.frame, root, transfer, global });
+        root
     }
 
-    fn physics_rows(&mut self) -> Result<(Vec<(ObjectId, BodyStateRow)>, Hash), PhysicsError> {
+    /// The live history just took its root at a grid frame: the transfer its take_root serialized stays for a vote or
+    /// `finalize` at that frame (5.4), for the newest few grid frames.
+    fn keep_live_transfer(&mut self) {
+        if let Some(t) = self.taken.take() {
+            self.live_transfers.insert(t.frame, t);
+            while self.live_transfers.len() > LIVE_TRANSFERS {
+                self.live_transfers.pop_first();
+            }
+        }
+    }
+
+    /// Every bound body's `BodyState` row, and the physics check hash with the canonical transfer it hashes, whose
+    /// bytes a snapshot of this state takes (5.4).
+    fn physics_rows(&mut self) -> Result<PhysicsRows, PhysicsError> {
         let digests = self.physics.body_digests()?;
         // Hand bodies are the replica's own: the world model has no `Body` for them, so no `BodyState` row either.
         // `physics_global` still covers them.
@@ -760,7 +822,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
             let sleep_time = self.sleep_time(id);
             rows.push((id, BodyStateRow { linear, angular, awake, sleep_time, digest: digest.0 }));
         }
-        Ok((rows, Hash(self.physics.check_hash()?.0)))
+        // `PhysicsWorld::check_hash`, with the transfer's bytes kept.
+        let transfer = Bytes::from(self.physics.save_transfer()?.to_bytes());
+        let global = Hash(CheckHash::of(&transfer).0);
+        Ok((rows, transfer, global))
     }
 
     /// The body's sleep timer, read from Box3D's body (pe-physics has no accessor yet; the digest covers it too).
@@ -816,6 +881,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.lineage += 1;
         // The replay's history below the floor goes; the next `advance` trims its keyframes there.
         self.live.retain(|f, _| *f >= at);
+        self.live_transfers.retain(|f, _| *f >= at);
         self.stepped.retain(|f, _| *f >= at);
         self.live.insert(at, root);
         self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0.saturating_sub(at.0));
@@ -825,6 +891,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// The live history after frame `k` is being replaced: its roots, stepped ids and outcomes go.
     fn forget_after(&mut self, k: Frame) {
         self.live.retain(|f, _| *f <= k);
+        self.live_transfers.retain(|f, _| *f <= k);
         self.stepped.retain(|f, _| *f < k);
         self.outcomes.retain(|_, (f, _)| *f < k);
     }
@@ -1007,8 +1074,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
             let from = self.first_difference(cut, source).unwrap_or(at);
             (from, Start::Ring(from), None)
         };
+        // The live history stepped exactly the cut's entries to its frame: my root is the live one there (5.4).
+        if from == at
+            && let Some(root) = self.reuse_live_root(at, history)
+        {
+            return Ok(root);
+        }
         let (root, mut held) = self.state_at_cut(cut, start, source)?;
-        if from == at {
+        if from == at && !self.held_at_or_below(at) {
             // The live history stepped exactly the cut's entries, through the same frame function.
             debug_assert!(self.live.get(&at).is_none_or(|&live| live == root), "the live root at {at:?} is the cut's");
         }
@@ -1022,6 +1095,45 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
         }
         Ok(root)
+    }
+
+    /// Whether a vote hold lies at or below `at`: the live history then runs my own predicted code commit from the
+    /// hold's frame, which a re-step never does (logic.md 6.2a's option (i)), so no live root there is a cut's.
+    fn held_at_or_below(&self, at: Frame) -> bool {
+        self.world.vote_holds().iter().any(|&h| h <= at)
+    }
+
+    /// My root at a cut whose entries the live history stepped exactly, to the cut's frame `at` (5.4): the root the
+    /// live step took there, with no restore, re-step or hash. Its snapshot is the one already held for that root, or
+    /// the ring's keyframe at `at` (taken after that take_root) with the transfer the take_root serialized. `None`,
+    /// for the caller to re-step, with `reuse_live` off, under a vote hold at or below `at`, where the live history
+    /// took no root at `at`, or where neither snapshot source is there.
+    fn reuse_live_root(&mut self, at: Frame, history: Option<Hash>) -> Option<Hash> {
+        if !self.config.reuse_live || self.held_at_or_below(at) {
+            return None;
+        }
+        let root = *self.live.get(&at)?;
+        let mark = history.map(|history| Mark { lineage: self.lineage, history });
+        match self.held.get_mut(&root).filter(|h| h.epoch == self.epoch) {
+            // A vote's records what it was stepped from this time, as a re-step's does.
+            Some(h) => h.mark = mark.or(h.mark),
+            None => {
+                let key = self.ring.get(at)?;
+                let t = self.live_transfers.get(&at).filter(|t| t.root == root)?;
+                let held = Held {
+                    frame: at,
+                    world: key.world.clone(),
+                    image: key.image.clone(),
+                    transfer: t.transfer.clone(),
+                    global: t.global,
+                    epoch: self.epoch,
+                    mark,
+                };
+                self.held.insert(root, held);
+            }
+        }
+        self.scratch.reused += 1;
+        Some(root)
     }
 
     /// My root at the cut and its snapshot, from `start` (the newest keyframe at or before a frame, or a held root),
@@ -1096,12 +1208,16 @@ impl<W: WorldModel> ReplicaImpl<W> {
             Some(root) => root,
             None => self.take_root(),
         };
-        let (Ok(transfer), Ok(image)) = (self.physics.save_transfer(), self.physics.save_image()) else {
+        // The transfer that take_root serialized for the check hash (5.4); serialized again with `reuse_live` off.
+        let taken = self.taken.take().filter(|t| self.config.reuse_live && t.frame == at && t.root == root);
+        let transfer = match taken {
+            Some(t) => Ok((t.transfer, t.global)),
+            None => self.physics.save_transfer().map(|t| (Bytes::from(t.to_bytes()), Hash(t.check_hash().0))),
+        };
+        let (Ok((transfer, global)), Ok(image)) = (transfer, self.physics.save_image()) else {
             self.faults += 1;
             return Err(RootError::Damaged);
         };
-        let global = Hash(transfer.check_hash().0);
-        let transfer = Bytes::from(transfer.to_bytes());
         let held = Held { frame: at, world: self.world.save(), image, transfer, global, epoch: self.epoch, mark: None };
         Ok((root, held))
     }
@@ -1147,6 +1263,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.ring.pin([Some(at), cv].into_iter().flatten());
         self.ring.trim(self.config.policy, self.frame, at);
         self.live.retain(|f, _| *f >= at);
+        self.live_transfers.retain(|f, _| *f >= at);
         self.stepped.retain(|f, _| *f >= at);
         let oldest = self.finals.front().map_or(at, |f| f.0.frame);
         self.outcomes.retain(|_, (f, _)| *f >= oldest);
@@ -1658,6 +1775,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.forget_after(c);
         self.live.retain(|f, _| *f < floor);
         self.live.insert(c, root);
+        self.live_transfers.clear();
         self.stepped.retain(|f, _| *f < floor);
         self.outcomes.retain(|_, (f, _)| *f < floor);
         // A new physics world: the snapshots held from before keep their records and transfers for exports, but none
@@ -1748,8 +1866,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// Saves the live state as the keyframe at the current frame, replacing the one there: damage made since is then
     /// part of the saved state too, as for a member that started from a wrong state, so a replay reproduces it.
-    /// Snapshots held for roots (the floor's, `Cv`'s) are not changed (@vdw-physics).
+    /// Snapshots held for roots (the floor's, `Cv`'s) are not changed (@vdw-physics). The transfer the live take_root
+    /// kept at this frame was the state's before the damage, so it goes: a root at a cut here is re-stepped from the
+    /// keyframe, as before 5.4, never pieced together from this keyframe and that transfer.
     pub fn rekeyframe(&mut self) {
         self.keyframe(self.frame);
+        self.live_transfers.remove(&self.frame);
     }
 }
