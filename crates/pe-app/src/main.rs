@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 use pe_app::api;
 use pe_app::builds;
 use pe_app::clock::{self, LocalClock};
+use pe_app::console::{EXIT_INTERRUPTED, Quit, REQUEST_QUIT_LIMIT, Shutdown};
 use pe_app::local::{SwitchedHands, chain_nonce};
 use pe_app::net::{self, Endpoint, OpenParams, WakeLater};
 use pe_app::sim::{self, Budget, Sim};
@@ -190,6 +191,11 @@ fn shared_sim(
 }
 
 fn main() {
+    // First, before any thread starts (console.rs): Ctrl+C or closing the console quits gracefully.
+    let console = Quit::install().unwrap_or_else(|e| {
+        eprintln!("pe-app: {e}; Ctrl+C ends the process without leaving");
+        Quit::new()
+    });
     let options = options();
     // Others share the world (`--open` or `--join`): the quit then leaves gracefully (app.md 4).
     let networked = options.shared.is_some();
@@ -279,7 +285,17 @@ fn main() {
         }
     });
 
+    // The quit (app.md 4), run once: by the main thread at the end of the run, or by the console's request.
+    let quit_captures = captures.clone();
+    let shutdown: Shutdown = Box::new(move || {
+        close_captures(&quit_captures);
+        stop_mcp(mcp);
+        stop_builds(attester);
+        finish(quit(sim, networked));
+    });
+
     if vr {
+        console.poll();
         hands.use_vr(true);
         let guard = Guard::from_env(true);
         let effects = Box::new(LogEffects);
@@ -300,14 +316,12 @@ fn main() {
                 // draws on the XR device while the session is idle or stopping (xr.md 3.1), and the XR thread draws
                 // the desktop mirror (app.md 1, render.md 10). Until pe-render has that window the main thread waits
                 // here; xr.md 3.3's retry after a lost session comes with it.
-                let left = run_for.map_or(Duration::MAX, |d| d.saturating_sub(started.elapsed()));
-                let waited = xr.wait(left);
+                let waited = wait_vr(&xr, run_for.map(|d| started + d), &console);
                 println!("vr: {waited:?}; at its end {:?}", xr.stop());
-                if waited == XrWait::Running {
-                    close_captures(&captures);
-                    stop_mcp(mcp);
-                    stop_builds(attester);
-                    finish(quit(sim, networked), None);
+                if waited == XrWait::Running || console.requested() {
+                    console.quitting();
+                    shutdown();
+                    console.finished();
                     return;
                 }
                 eprintln!("pe-app: the VR session ended; the desktop instead");
@@ -317,6 +331,12 @@ fn main() {
         hands.use_vr(false);
     }
 
+    // A request during VR, or before the window: quit now. Otherwise a request runs the quit on its own thread.
+    if let Some(now) = console.arm(shutdown) {
+        now();
+        console.finished();
+        return;
+    }
     let cfg = DesktopConfig {
         title: "Primordial Engine".into(),
         size: [1280, 720],
@@ -335,10 +355,36 @@ fn main() {
     // The window, its surface and its GPU context are made on this thread, one context at a time (app.md 4): the XR
     // thread has dropped its own context before `wait` answers.
     let window = run_desktop(cfg, slot, desktop_hand, Box::new(LogEffects));
-    close_captures(&captures);
-    stop_mcp(mcp);
-    stop_builds(attester);
-    finish(quit(sim, networked), Some(window));
+    report_window(window);
+    match console.take() {
+        Some(shutdown) => {
+            shutdown();
+            console.finished();
+        }
+        // A console request is running the quit, and ends the process when it is done; if it hasn't within the leave's
+        // longest bound (a panic in it), end the process here.
+        None => {
+            let done = console.wait_quit(REQUEST_QUIT_LIMIT);
+            if !done {
+                eprintln!("pe-app: the console's quit did not finish; ending now");
+            }
+            std::process::exit(if done { 0 } else { EXIT_INTERRUPTED });
+        }
+    }
+}
+
+/// VR's wait (app.md 4): until the session ends, `--seconds` passes or the console asks to quit, in short slices so a
+/// request is seen within one.
+fn wait_vr(xr: &vr::XrThread, deadline: Option<Instant>, console: &Quit) -> XrWait {
+    const SLICE: Duration = Duration::from_millis(100);
+    loop {
+        let left = deadline.map_or(SLICE, |t| t.saturating_duration_since(Instant::now()).min(SLICE));
+        let waited = xr.wait(left);
+        let over = deadline.is_some_and(|t| Instant::now() >= t);
+        if waited != XrWait::Running || over || console.requested() {
+            return waited;
+        }
+    }
 }
 
 /// The quit (app.md 4), once MCP and the attester have stopped. In a session with others this member leaves
@@ -401,7 +447,9 @@ fn stop_builds(attester: Option<builds::AttesterThread>) {
 }
 
 /// Refuses any capture still waiting, so an agent's view_capture doesn't hold the MCP thread, and with it the quit,
-/// until its deadline. Nothing draws any more by then.
+/// until its deadline; the queue stays closed, so a later order is refused at once. At the end of a run nothing draws
+/// any more by then. On a console request the window may still draw while the quit runs, but it serves no capture
+/// after this.
 fn close_captures(captures: &Option<Arc<pe_render::capture_service::CaptureQueue>>) {
     if let Some(q) = captures {
         q.close();
@@ -417,12 +465,14 @@ fn stop_mcp(mcp: Option<api::McpThread>) {
     }
 }
 
-fn finish<S: Debug, E>(stats: Result<S, E>, window: Option<Result<DesktopReport, ContextError>>) {
+fn report_window(window: Result<DesktopReport, ContextError>) {
     match window {
-        Some(Ok(r)) => println!("window: {} frames on {}, {} skipped", r.frames, r.adapter, r.skipped),
-        Some(Err(e)) => eprintln!("window: {e:?}"),
-        None => {}
+        Ok(r) => println!("window: {} frames on {}, {} skipped", r.frames, r.adapter, r.skipped),
+        Err(e) => eprintln!("window: {e:?}"),
     }
+}
+
+fn finish<S: Debug, E>(stats: Result<S, E>) {
     match stats {
         Ok(s) => println!("simulation: {s:?}"),
         Err(_) => fail("the simulation thread panicked"),
