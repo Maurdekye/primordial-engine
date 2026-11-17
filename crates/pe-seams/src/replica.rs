@@ -598,6 +598,11 @@ pub enum ImportError {
 /// S2. Object-safe, so the harness can wrap it (`Recorder<dyn Replica>`); a constructor from a world config and a
 /// seed is pe-replica's, and deterministic.
 ///
+/// **A wrapper forwards every method,** the provided ones included: one it leaves out answers with the default
+/// instead of the wrapped replica's own, and the compiler doesn't say so. pe-app's `phases::Timed` wraps the replica
+/// on every tick, so a new method here, provided or not, is forwarded there in the same change (@design-reviewer's
+/// Low on app/phase-times 1668eada).
+///
 /// **Only [`Replica::finalize`] moves `Cv` and the floor.** A repair ([`Replica::replay_to`],
 /// [`Replica::import_at_cut`]) changes the live state only, so it may run at a cut that is not final, as in a root
 /// split; if that cut is then superseded, nothing below it was given up. When the repaired cut is final, the driver
