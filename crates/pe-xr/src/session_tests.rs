@@ -564,3 +564,85 @@ fn abandon_ends_a_running_session_at_the_next_step_and_tears_down_once() {
     assert_eq!(s.backend().count(&Call::WaitFrame), 3, "no frame after the session was abandoned");
     no_violations(&s);
 }
+
+/// Spec 6 (item vr-draw-tracked-hands-from-their-joints): a hand-tracked reading's joints reach the renderer with its
+/// pose; a controller's do not, so it draws as before. The counters say where each hand's pose came from.
+#[test]
+fn a_tracked_hands_joints_reach_the_renderer_and_a_controller_has_none() {
+    use pe_render::{HandJoint, HandJoints};
+    struct JointSink(Vec<[Option<HandJoints>; 2]>);
+    impl FrameSink for JointSink {
+        fn render(&mut self, f: &FrameRequest<'_>) -> bool {
+            for (i, j) in f.hand_joints.iter().enumerate() {
+                assert!(j.is_none() || f.hands[i].is_some(), "joints only with a pose");
+            }
+            self.0.push(f.hand_joints);
+            true
+        }
+        fn release_swapchain(&mut self) {}
+    }
+    // The left hand is a bare tracked hand, the right one a controller.
+    let joints_at = |at: pe_seams::HostTime| {
+        let mut j = HandJoints([HandJoint::default(); HandJoints::COUNT]);
+        j.0[1] = HandJoint { position: [at.0 as f32 * 1e-9, 1.0, -0.3], radius: 0.02, valid: true };
+        j
+    };
+    let rt = FakeRuntime::new()
+        .started()
+        .hands(|hand, at| Reading {
+            source: if hand == Hand::Left { HandSource::Tracked } else { HandSource::Controller },
+            at,
+            pose: Some(RigPose { position: [0.0, 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] }),
+            linear_velocity: None,
+            angular_velocity: None,
+            grip: Some(0.0),
+        })
+        .joints(move |hand, at| (hand == Hand::Left).then(|| joints_at(at)));
+    let (mut s, _) = session(rt);
+    let mut k = JointSink(Vec::new());
+    for _ in 0..3 {
+        s.step(&mut k);
+    }
+    let lead = s.backend().lead_ns as f32 * 1e-9;
+    let now = s.backend().now_for_test().0 as f32 * 1e-9;
+    let drawn = k.0.last().unwrap();
+    let wrist = drawn[0].expect("the tracked hand's joints").0[1];
+    assert!((wrist.position[0] - (now + lead)).abs() < 1e-3, "late-latched with the pose: {:?}", wrist.position);
+    assert!(drawn[1].is_none(), "a controller draws no joints");
+    let c = &s.counters.hand_frames;
+    assert!(c[0].tracked > 0 && c[0].controller == 0 && c[0].none == 0, "{c:?}");
+    assert!(c[1].controller > 0 && c[1].tracked == 0, "{c:?}");
+    no_violations(&s);
+}
+
+#[test]
+fn after_frame_follows_each_ended_frame_and_never_a_failed_one() {
+    #[derive(Default)]
+    struct AfterSink {
+        rendered: u32,
+        // (frames rendered so far, drawn) at each call.
+        after: Vec<(u32, bool)>,
+    }
+    impl FrameSink for AfterSink {
+        fn render(&mut self, _: &FrameRequest<'_>) -> bool {
+            self.rendered += 1;
+            true
+        }
+        fn after_frame(&mut self, drawn: bool) {
+            self.after.push((self.rendered, drawn));
+        }
+        fn release_swapchain(&mut self) {}
+    }
+    let other = || XrError::Other("XR_ERROR_RUNTIME_FAILURE".into());
+    let mut rt = FakeRuntime::new().started().failing(Op::ReleaseImage, 3, other()).failing(Op::EndFrame, 5, other());
+    rt.not_rendered = vec![2];
+    let (mut s, _) = session(rt);
+    let mut k = AfterSink::default();
+    for _ in 0..7 {
+        assert_eq!(s.step(&mut k), Step::Frame);
+    }
+    // Frames 3 and 5 failed and get no call; frame 2 ended with no layer.
+    assert_eq!(k.after, vec![(1, true), (1, false), (3, true), (5, true), (6, true)], "{:?}", k.after);
+    assert_eq!(s.counters.frame_errors, 2);
+    no_violations(&s);
+}

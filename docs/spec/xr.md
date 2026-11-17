@@ -476,8 +476,11 @@ On the XR thread, which is also the VR render thread:
    hands late-latched (section 5.6).
 8. Submit the frame's work, its last command returning the image to its state (section 4.2); then release the image,
    and `xrEndFrame` with one projection layer (and its depth, when offered).
+9. The sink's work after the frame (`FrameSink::after_frame`), such as an agent's view capture (render.md 11). The
+   frame has gone out by then, so this work delays only the next `xrWaitFrame`, which waits for the runtime anyway: it
+   costs a headset frame only if it overruns that wait. A frame that failed gets no call.
 
-When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits no layers. The loop never skips
+When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits no layers (step 9 still runs). The loop never skips
 `xrWaitFrame`, `xrBeginFrame` and `xrEndFrame`.
 
 ### 7.2 Rates
@@ -493,8 +496,10 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
   nothing in pe-xr counts simulation frames: its limits are durations.
 - **The drawn time.** The newest frame view is for a simulation frame at or before now, and the predicted display
   time is well past now: 38-63 ms on Virtual Desktop's runtime (section 5.6), about five periods at 120 Hz. So the display time is almost always past the newest frame view,
-  and interpolating between frame views cannot reach it. The time the world is drawn at is WS-render's choice, one
-  of:
+  and interpolating between frame views cannot reach it. **Ruled 2026-11-17:** in VR, world objects are drawn at the
+  engine's present (`Present`), never extrapolated to the display time; the head and the own hands stay late-latched
+  [R user, render.md X8 (coordinator m5fd06b784814, mf069edef3ae4)]. That replaces my proposal (a) below, which is
+  kept for the record. The time the world is drawn at was WS-render's choice, one of:
   - **(a) extrapolate** from the newest frame view to the display time, up to the measured lead, with the display
     layer's smoothing. This is design.md 18.3's rule, and my proposal [I];
   - **(b) interpolate** between the two newest frame views at the display time minus a render delay. Nothing is

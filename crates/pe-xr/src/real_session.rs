@@ -8,6 +8,7 @@
 //! f8e9c776).
 
 use openxr as xr;
+use pe_render::{HandJoint, HandJoints};
 
 use crate::backend::{Backend, EyePose, Fov, FrameTiming, ImageIndex, Layers, Located, SessionState, XrError, XrEvent};
 use crate::hands::{GraspConfig, Joint, Reading, grip_from_joints, joint};
@@ -139,7 +140,19 @@ struct Live<G: xr::Graphics> {
     /// unchanged, never a value converted through host time.
     display_time: Option<(HostTime, xr::Time)>,
     views: Option<Vec<xr::View>>,
+    /// The system, to ask again whether it tracks hands while no trackers exist.
+    system: xr::SystemId,
+    /// XR_EXT_hand_tracking was enabled, so trackers can be made once the runtime says it tracks hands.
+    hand_tracking_ext: bool,
+    /// While no trackers exist: when to ask the runtime again (every [`TRACKER_RETRY_NS`]).
+    next_tracker_try: Option<HostTime>,
+    /// The last tracker-creation failure logged, so a failure that repeats every retry is logged once.
+    tracker_error_logged: Option<String>,
 }
+
+/// How often pe-xr asks again whether the runtime tracks hands, while it has no hand trackers: a runtime may turn
+/// hand tracking on mid-session (Virtual Desktop's forwarding setting), and the trackers are made then.
+pub const TRACKER_RETRY_NS: i64 = 2_000_000_000;
 
 pub struct RealBackend<G: xr::Graphics> {
     live: Option<Live<G>>,
@@ -151,6 +164,8 @@ pub struct RealBackend<G: xr::Graphics> {
     /// The reference space chosen (spec 3.2): "STAGE", "LOCAL_FLOOR" or "LOCAL"; the application logs it at
     /// start-up. In LOCAL the floor is not at y = 0 (the origin is at the head's starting pose).
     pub reference_space: &'static str,
+    /// Each hand's joints from the last `read_hand`, with its time, when it came from hand tracking (`hand_joints`).
+    joints: [Option<(HostTime, HandJoints)>; 2],
     /// Declared last, so it drops after the session.
     xr: XrInstance,
 }
@@ -233,7 +248,8 @@ impl<G: xr::Graphics> RealBackend<G> {
             crate::diag::emit(&format!("reference space {reference_space} (offered: {})", offered.join(", ")));
         }
 
-        let trackers = if xr.enabled.ext_hand_tracking && instance.supports_hand_tracking(system).unwrap_or(false) {
+        let supported = xr.enabled.ext_hand_tracking.then(|| instance.supports_hand_tracking(system));
+        let trackers = if matches!(supported, Some(Ok(true))) {
             Some([
                 session.create_hand_tracker(xr::Hand::LEFT).map_err(ce("hand tracker"))?,
                 session.create_hand_tracker(xr::Hand::RIGHT).map_err(ce("hand tracker"))?,
@@ -241,6 +257,18 @@ impl<G: xr::Graphics> RealBackend<G> {
         } else {
             None
         };
+        if crate::diag::enabled() {
+            crate::diag::emit(&format!(
+                "hand tracking: XR_EXT_hand_tracking {}; the runtime says {}; trackers {}",
+                if xr.enabled.ext_hand_tracking { "enabled" } else { "not offered" },
+                match supported {
+                    None => "nothing".to_string(),
+                    Some(Ok(b)) => format!("supportsHandTracking = {b}"),
+                    Some(Err(e)) => format!("an error ({e})"),
+                },
+                if trackers.is_some() { "made" } else { "not made (asked again every 2 s)" },
+            ));
+        }
 
         let views = instance.enumerate_view_configuration_views(system, VIEW).map_err(ce("view configuration"))?;
         if views.len() < 2 {
@@ -318,7 +346,12 @@ impl<G: xr::Graphics> RealBackend<G> {
                 format: G::lower_format(format),
                 display_time: None,
                 views: None,
+                system,
+                hand_tracking_ext: xr.enabled.ext_hand_tracking,
+                next_tracker_try: None,
+                tracker_error_logged: None,
             }),
+            joints: [None, None],
             grasp,
             binding_warnings,
             pose_path: if hand_interaction { PosePath::GripSpace } else { PosePath::PalmJoint },
@@ -376,7 +409,43 @@ impl<G: xr::Graphics> RealBackend<G> {
         self.xr.to_xr(at).map_err(|e| XrError::Other(e.to_string()))
     }
 
-    fn read_tracked(&self, hand: Hand, t: xr::Time, at: HostTime) -> Option<Reading> {
+    /// While no hand trackers exist, ask the runtime again every [`TRACKER_RETRY_NS`] whether it tracks hands, and
+    /// make them once it does.
+    fn retry_trackers(&mut self, at: HostTime) {
+        let instance = self.xr.instance.clone();
+        let Some(live) = self.live.as_mut() else { return };
+        if live.trackers.is_some() || !live.hand_tracking_ext || live.next_tracker_try.is_some_and(|t| at.0 < t.0) {
+            return;
+        }
+        live.next_tracker_try = Some(HostTime(at.0.saturating_add(TRACKER_RETRY_NS)));
+        if !instance.supports_hand_tracking(live.system).unwrap_or(false) {
+            return;
+        }
+        let made = live
+            .session
+            .create_hand_tracker(xr::Hand::LEFT)
+            .and_then(|l| live.session.create_hand_tracker(xr::Hand::RIGHT).map(|r| [l, r]));
+        match made {
+            Ok(t) => {
+                live.trackers = Some(t);
+                if crate::diag::enabled() {
+                    crate::diag::emit(&format!("hand tracking: trackers made mid-session at {} ns", at.0));
+                }
+            }
+            Err(e) => {
+                let e = e.to_string();
+                if crate::diag::enabled() && live.tracker_error_logged.as_ref() != Some(&e) {
+                    crate::diag::emit(&format!(
+                        "hand tracking: supported now, but xrCreateHandTrackerEXT failed: {e} (logged again only if \
+                         it changes)"
+                    ));
+                }
+                live.tracker_error_logged = Some(e);
+            }
+        }
+    }
+
+    fn read_tracked(&self, hand: Hand, t: xr::Time, at: HostTime) -> Option<(Reading, HandJoints)> {
         let live = self.live.as_ref()?;
         let tracker = &live.trackers.as_ref()?[hand.index()];
         let located = live.space.locate_hand_joints(tracker, t).ok()??;
@@ -388,6 +457,12 @@ impl<G: xr::Graphics> RealBackend<G> {
         if !pose_valid(palm.location_flags) {
             return None;
         }
+        // For drawing the hand (spec 6): every joint's position and radius, in the same space and at the same time.
+        let drawn = HandJoints(std::array::from_fn(|i| HandJoint {
+            position: joints[i].position,
+            radius: located[i].radius,
+            valid: joints[i].valid,
+        }));
         // The pose is the grip pose (spec 5.1): from the grip action space when XR_EXT_hand_interaction binds it to
         // the tracked hand, with its velocities; otherwise the palm joint, which is the nearest joint to the grip
         // point (spec 5.1 says so).
@@ -401,7 +476,10 @@ impl<G: xr::Graphics> RealBackend<G> {
         } else {
             grip_from_joints(&joints, &self.grasp)
         };
-        Some(Reading { source: HandSource::Tracked, at, pose: Some(pose), linear_velocity, angular_velocity, grip })
+        Some((
+            Reading { source: HandSource::Tracked, at, pose: Some(pose), linear_velocity, angular_velocity, grip },
+            drawn,
+        ))
     }
 
     /// The grip action space's pose and velocities, if valid.
@@ -507,9 +585,14 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             angular_velocity: None,
             grip: None,
         };
+        self.joints[hand.index()] = None;
+        if hand == Hand::Left {
+            self.retry_trackers(at);
+        }
         let Ok(t) = self.xr_time(at) else { return absent };
         // The tracked hand while it is tracked; the controller otherwise (spec 5.4).
-        if let Some(r) = self.read_tracked(hand, t, at) {
+        if let Some((r, drawn)) = self.read_tracked(hand, t, at) {
+            self.joints[hand.index()] = Some((at, drawn));
             return r;
         }
         let Some(live) = self.live.as_ref() else { return absent };
@@ -535,6 +618,10 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             angular_velocity: ang,
             grip: self.squeeze_value(hand),
         }
+    }
+
+    fn hand_joints(&self, hand: Hand, at: HostTime) -> Option<HandJoints> {
+        self.joints[hand.index()].filter(|(t, _)| *t == at).map(|(_, j)| j)
     }
 
     fn acquire_image(&mut self) -> Result<ImageIndex, XrError> {

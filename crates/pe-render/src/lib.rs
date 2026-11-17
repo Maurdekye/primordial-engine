@@ -49,6 +49,29 @@ use pe_seams::{HostTime, RigPose};
 pub struct DisplayHand {
     /// In the rig frame.
     pub pose: RigPose,
+    /// A tracked hand's joints at the same display time (xr.md 6, render.md 5); `None` for a controller or the
+    /// desktop hand, which draw as before.
+    pub joints: Option<HandJoints>,
+}
+
+/// XR_EXT_hand_tracking's 26 joints in OpenXR's order (`XrHandJointEXT`): palm 0, wrist 1, thumb 2-5 (metacarpal,
+/// proximal, distal, tip), then index 6-10, middle 11-15, ring 16-20 and little 21-25 (metacarpal, proximal,
+/// intermediate, distal, tip). In the rig frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HandJoints(pub [HandJoint; HandJoints::COUNT]);
+
+impl HandJoints {
+    pub const COUNT: usize = 26;
+}
+
+/// One joint of a tracked hand.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HandJoint {
+    pub position: [f32; 3],
+    /// The runtime's joint radius (`XrHandJointLocationEXT::radius`), in metres.
+    pub radius: f32,
+    /// The runtime located its position this frame (`POSITION_VALID`); an invalid joint draws nothing.
+    pub valid: bool,
 }
 
 /// What the local player's presentation gives a display frame (render.md 5).

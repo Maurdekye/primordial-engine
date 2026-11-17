@@ -68,7 +68,7 @@ impl FrameSink for Smoke {
                 }
             }
         }
-        let shown = frame.hands.map(|h| h.map(|pose| DisplayHand { pose }));
+        let shown = [0, 1].map(|i| frame.hands[i].map(|pose| DisplayHand { pose, joints: frame.hand_joints[i] }));
         self.scene.items.truncate(self.base_items);
         self.scene.items.extend(hands::markers(&shown, &self.rig));
         let cameras = binding::eye_cameras(&self.rig, frame.eyes);

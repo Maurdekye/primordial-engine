@@ -563,6 +563,11 @@ impl Renderer {
         let mut meshes = BTreeMap::new();
         meshes.insert(MeshKey::Sphere, upload(device, sphere_mesh(32, 16)));
         meshes.insert(MeshKey::Box, upload(device, box_mesh()));
+        // A tracked hand's bones (hands.rs): every whole-number aspect up to MAX_BONE_ASPECT, made now so the first
+        // tracked frame uploads nothing.
+        for k in 1..=crate::hands::MAX_BONE_ASPECT {
+            meshes.insert(MeshKey::Capsule(k * 64), upload(device, capsule_mesh(k as f32, 32, 8)));
+        }
         Renderer {
             ctx,
             settings,
