@@ -184,9 +184,451 @@ fn suite() -> Vec<Check> {
     ]
 }
 
+/// Model v1's suite (agreement.md 8): `cuts-model --epochs [--depth D] [--budget S] [--threads N] [filter...]`.
+fn run_epochs(args: &[String], threads: usize) {
+    use cuts_model::epochs;
+    let mut depth: Option<usize> = None;
+    let mut budget = 600u64;
+    let mut filters = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--epochs" => i += 1,
+            "--depth" => {
+                depth = Some(args[i + 1].parse().expect("--depth D"));
+                i += 2;
+            }
+            "--budget" => {
+                budget = args[i + 1].parse().expect("--budget S");
+                i += 2;
+            }
+            "--threads" => i += 2,
+            a => {
+                filters.push(a.to_string());
+                i += 1;
+            }
+        }
+    }
+    let (mut bad, mut ran, mut partial) = (0, 0, 0);
+    for row in epochs::suite() {
+        let m = &row.model;
+        if !filters.is_empty() && !filters.iter().any(|f| m.name.contains(f.as_str())) {
+            continue;
+        }
+        ran += 1;
+        let d = depth.unwrap_or(row.depth);
+        let t0 = Instant::now();
+        eprintln!("== {}", m.name);
+        let tick = |u: usize, v: usize| eprintln!("Checking (bounded). unique={u}, visits={v}");
+        let r = if row.random {
+            let mut walk = m.clone();
+            walk.productive_only = true;
+            let mut b = walk.checker().threads(threads).timeout(Duration::from_secs(budget));
+            if !row.expect_fail.is_empty() {
+                b = b.finish_when(HasDiscoveries::AnyOf(row.expect_fail.iter().copied().collect()));
+            }
+            let mut err = std::io::stderr();
+            let mut rep = WriteReporter::new(&mut err);
+            let ch = b.spawn_simulation(20261113, UniformChooser).report(&mut rep);
+            let found = ch.discoveries().into_iter().map(|(k, p)| (k, p.into_actions())).collect();
+            bounded::Bounded { unique: ch.unique_state_count(), visits: ch.state_count(), depth: ch.max_depth(), found, unfinished: false }
+        } else {
+            let mut r = bounded::check(m, d, threads, row.expect_fail, Some(Duration::from_secs(budget)), &tick);
+            // A base row cut off by its budget may not have reached its examples yet: look for those by random walks
+            // (an example needs one path, not the whole space).
+            let missing: Vec<&'static str> = m
+                .properties()
+                .iter()
+                .filter(|p| matches!(p.expectation, stateright::Expectation::Sometimes) && !r.found.contains_key(p.name))
+                .map(|p| p.name)
+                .collect();
+            if row.expect_fail.is_empty() && r.unfinished && !missing.is_empty() {
+                let mut walk = m.clone();
+                walk.productive_only = true;
+                let b = walk.checker().threads(threads).timeout(Duration::from_secs(120)).finish_when(HasDiscoveries::AllOf(missing.iter().copied().collect()));
+                let ch = b.spawn_simulation(20261113, UniformChooser).join();
+                for (k, p) in ch.discoveries() {
+                    if missing.contains(&k) {
+                        r.found.insert(k, p.into_actions());
+                        eprintln!("example \"{k}\" found by random walks");
+                    }
+                }
+            }
+            r
+        };
+        let secs = t0.elapsed().as_secs_f64();
+        let props = m.properties();
+        let mut verdict = Vec::new();
+        let ok = if row.expect_fail.is_empty() {
+            let mut ok = true;
+            for p in &props {
+                let found = r.found.contains_key(p.name);
+                let sometimes = matches!(p.expectation, stateright::Expectation::Sometimes);
+                if sometimes && !found {
+                    verdict.push(format!("MISSING example \"{}\"", p.name));
+                    ok = false;
+                } else if !sometimes && found {
+                    verdict.push(format!("COUNTEREXAMPLE \"{}\"", p.name));
+                    ok = false;
+                }
+            }
+            if ok {
+                verdict.push("all properties hold; examples found".into());
+            }
+            ok
+        } else {
+            let hit: Vec<&&str> = row.expect_fail.iter().filter(|p| r.found.contains_key(**p)).collect();
+            if hit.is_empty() {
+                verdict.push("NO COUNTEREXAMPLE (the control does not bite)".into());
+                false
+            } else {
+                verdict.push(format!("counterexample as expected: {}", hit.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ")));
+                true
+            }
+        };
+        let scope = if row.random {
+            format!(" (random walks, {budget} s at most)")
+        } else if r.unfinished { format!(" (UNFINISHED at its {budget} s budget: behaviours of up to {d} steps, partly)") } else { format!(" (every behaviour of up to {d} steps)") };
+        println!("{:<18} {:>12} {:>13} {:>6} {:>9.1}  {}{} {}", m.name, r.unique, r.visits, r.depth, secs, if ok { "OK  " } else { "FAIL" }, scope, verdict.join("; "));
+        println!("    {}", row.what);
+        for p in &props {
+            let sometimes = matches!(p.expectation, stateright::Expectation::Sometimes);
+            if let Some(path) = r.found.get(p.name) {
+                if sometimes && row.expect_fail.is_empty() {
+                    continue;
+                }
+                println!("    {} \"{}\" ({} steps):", if sometimes { "example" } else { "counterexample to" }, p.name, path.len());
+                for a in path {
+                    println!("      {a:?}");
+                }
+            }
+        }
+        if !ok {
+            bad += 1;
+        } else if r.unfinished && row.expect_fail.is_empty() {
+            partial += 1;
+        }
+    }
+    if bad > 0 {
+        println!("{bad} check(s) did not meet their expectation");
+        std::process::exit(1);
+    }
+    println!("all {ran} epoch check(s) met their expectation{}", if partial > 0 { format!("; {partial} of them UNFINISHED at a time budget") } else { String::new() });
+}
+
+/// Model v1, a lemma control's state run forward to see whether the broken lemma forks the line (@design-reviewer
+/// ma6414f4faeeb): the control's shortest counterexample to its lemma is replayed as a fixed prefix, then a bounded
+/// search from the state it reaches checks agreement only. The same prefix replayed on the model without the mutation
+/// (each step matched by kind, sender and target, since a message's content can differ) must hold.
+mod directed {
+    use crate::bounded;
+    use cuts_model::epochs::{Blk, EAction, EState, Epochs, Msg};
+    use stateright::{Checker, Model, Property};
+    use std::time::Duration;
+
+    #[derive(Clone)]
+    pub struct From {
+        pub inner: Epochs,
+        pub start: EState,
+        pub cond: fn(&Epochs, &EState) -> bool,
+    }
+
+    impl Model for From {
+        type State = EState;
+        type Action = EAction;
+        fn init_states(&self) -> Vec<EState> {
+            vec![self.start.clone()]
+        }
+        fn actions(&self, s: &EState, acts: &mut Vec<EAction>) {
+            self.inner.actions(s, acts)
+        }
+        fn next_state(&self, s: &EState, a: EAction) -> Option<EState> {
+            self.inner.next_state(s, a)
+        }
+        fn properties(&self) -> Vec<Property<Self>> {
+            vec![Property::always("agreement", |w: &From, s: &EState| (w.cond)(&w.inner, s))]
+        }
+    }
+
+    /// The same step, up to a message's content: kind, sender and target.
+    fn like(a: &EAction, b: &EAction) -> bool {
+        use EAction::*;
+        match (a, b) {
+            (Deliver(t1, m1), Deliver(t2, m2)) => {
+                t1 == t2
+                    && match (m1, m2) {
+                        (Msg::Entry { to: x, e: y }, Msg::Entry { to: u, e: v }) => x == u && y == v,
+                        (Msg::Propose { b: x }, Msg::Propose { b: y }) => x.h == y.h && x.ev() == y.ev() && x.by == y.by,
+                        (Msg::Vote { voter: x, b: bx }, Msg::Vote { voter: y, b: by }) => x == y && bx.h == by.h && bx.ev() == by.ev(),
+                        (Msg::Timeout { voter: x, ev: ex, .. }, Msg::Timeout { voter: y, ev: ey, .. }) => x == y && ex == ey,
+                        _ => false,
+                    }
+            }
+            (Observe(x, bx), Observe(y, by)) => x == y && bx.h == by.h && bx.ev() == by.ev(),
+            (AdvTimeout(x, _), AdvTimeout(y, _)) => x == y,
+            _ => a == b,
+        }
+    }
+
+    /// Replay `trace` on `m`: each step exactly if it is enabled, else the one enabled step like it. Returns the state
+    /// and how many steps were matched by likeness, or the step that has no match.
+    pub fn replay(m: &Epochs, trace: &[EAction]) -> Result<(EState, usize), String> {
+        let mut s = m.init_states().remove(0);
+        let mut fuzzy = 0;
+        for (i, a) in trace.iter().enumerate() {
+            let mut acts = Vec::new();
+            m.actions(&s, &mut acts);
+            let pick = if acts.contains(a) {
+                a.clone()
+            } else if let Some(b) = acts.iter().find(|b| like(a, b)) {
+                fuzzy += 1;
+                b.clone()
+            } else {
+                return Err(format!("step {i} {a:?} has no match"));
+            };
+            s = m.next_state(&s, pick).ok_or_else(|| format!("step {i} {a:?} leads nowhere"))?;
+        }
+        Ok((s, fuzzy))
+    }
+
+    /// The continuation runs with `views` views and the Byzantine member proposing (the attack's fork is its proposal;
+    /// the lemma controls keep it quiet to keep their space small).
+    type Step = (&'static str, Box<dyn Fn(&EAction, &[Blk]) -> bool>);
+
+    /// The (f2) attack as one fixed schedule from the start (@design-reviewer ma6414f4faeeb's five steps), at n = 4
+    /// with member 0 Byzantine (q = 3). Member 1 votes B2 in view 2 and restarts before it sees B2 certified; with its
+    /// high_qc forgotten it times out in view 2 at genesis. Member 3 never saw a certificate, so a timeout certificate
+    /// for view 2 from members 0, 1 and 3 has genesis as its highest: member 3, leading view 3, proposes off its
+    /// high_qc, members 1 and 3 vote for it (the lock allows it), and the Byzantine leader of view 4 proposes its child.
+    /// B1 is final at member 2 (B1, B2 certified in views 1, 2) and the view-3 block at member 3.
+    fn f2_attack() -> Vec<Step> {
+        use EAction::*;
+        let at = |v: u8| move |b: &Blk| b.ev() == v;
+        let fork4 = |b: &Blk| b.ev() == 4 && b.h >= 1 && b.parent().ev() == 3 && b.frame() > b.parent().frame() && b.inc() == b.parent().inc();
+        vec![
+            ("1 proposes B1 in view 1", Box::new(|a, _| *a == Propose(1))),
+            ("1 votes B1", Box::new(move |a, _| matches!(a, Deliver(1, Msg::Propose { b }) if at(1)(b)))),
+            ("2 votes B1", Box::new(move |a, _| matches!(a, Deliver(2, Msg::Propose { b }) if at(1)(b)))),
+            ("0 votes B1: certified", Box::new(move |a, _| matches!(a, AdvVote(b) if at(1)(b)))),
+            ("1 times out in view 1 (high genesis)", Box::new(|a, _| *a == Timeout(1))),
+            ("2 times out in view 1 (high genesis)", Box::new(|a, _| *a == Timeout(2))),
+            ("2 sees B1 certified: view 2", Box::new(move |a, _| matches!(a, Observe(2, b) if at(1)(b)))),
+            ("1 sees B1 certified: view 2", Box::new(move |a, _| matches!(a, Observe(1, b) if at(1)(b)))),
+            ("2 proposes B2 in view 2", Box::new(|a, _| *a == Propose(2))),
+            ("1 votes B2", Box::new(move |a, _| matches!(a, Deliver(1, Msg::Propose { b }) if at(2)(b)))),
+            ("2 votes B2", Box::new(move |a, _| matches!(a, Deliver(2, Msg::Propose { b }) if at(2)(b)))),
+            ("0 votes B2: certified", Box::new(move |a, _| matches!(a, AdvVote(b) if at(2)(b)))),
+            ("2 sees B2 certified: B1 final at 2", Box::new(move |a, _| matches!(a, Observe(2, b) if at(2)(b)))),
+            ("1 restarts", Box::new(|a, _| *a == Restart(1))),
+            ("1 times out in view 2", Box::new(|a, _| *a == Timeout(1))),
+            ("3 times out in view 1", Box::new(|a, _| *a == Timeout(3))),
+            ("0 times out in view 1", Box::new(|a, _| *a == AdvTimeout(1, Blk::GENESIS))),
+            ("3 enters view 2 by the view-1 TC", Box::new(|a, _| *a == AdvanceTc(3))),
+            ("3 times out in view 2", Box::new(|a, _| *a == Timeout(3))),
+            ("0 times out in view 2", Box::new(|a, _| *a == AdvTimeout(2, Blk::GENESIS))),
+            ("3 enters view 3 by the view-2 TC {0, 1, 3}", Box::new(|a, _| *a == AdvanceTc(3))),
+            ("1 enters view 3 by it", Box::new(|a, _| *a == AdvanceTc(1))),
+            ("3 proposes in view 3 off its high_qc", Box::new(|a, _| *a == Propose(3))),
+            ("1 votes it", Box::new(move |a, _| matches!(a, Deliver(1, Msg::Propose { b }) if at(3)(b)))),
+            ("3 votes it", Box::new(move |a, _| matches!(a, Deliver(3, Msg::Propose { b }) if at(3)(b)))),
+            ("0 votes it: certified", Box::new(move |a, _| matches!(a, AdvVote(b) if at(3)(b)))),
+            ("3 sees it certified: view 4", Box::new(move |a, _| matches!(a, Observe(3, b) if at(3)(b)))),
+            ("1 sees it certified: view 4", Box::new(move |a, _| matches!(a, Observe(1, b) if at(3)(b)))),
+            ("0 proposes its child in view 4", Box::new(move |a, _| matches!(a, AdvPropose(b) if fork4(b)))),
+            ("1 votes it", Box::new(move |a, _| matches!(a, Deliver(1, Msg::Propose { b }) if fork4(b)))),
+            ("3 votes it", Box::new(move |a, _| matches!(a, Deliver(3, Msg::Propose { b }) if fork4(b)))),
+            ("0 votes it: certified", Box::new(move |a, _| matches!(a, AdvVote(b) if fork4(b)))),
+            ("3 sees it certified: the view-3 block final at 3", Box::new(move |a, _| matches!(a, Observe(3, b) if fork4(b)))),
+        ]
+    }
+
+    /// The (f1) attack: a double vote, then a fork. n = 4, member 0 Byzantine. Every member times out to view 4, led by
+    /// member 0, which proposes two siblings off genesis: A (empty) and A' (with entry o2). A is certified by 0, 1, 2.
+    /// Member 1 restarts and forgets its views, catches up to view 4 by the timeout certificates, and votes A' too: A'
+    /// is certified by 0, 1, 3. Member 1 leads view 5 with A's child, so A is final at member 1. Member 2, whose
+    /// high_qc is A', leads view 6 with E off A' (the view-5 timeout certificate's highest is A' too), member 3 leads
+    /// view 7 with E's child, and E is final at member 3: two final blocks on two branches.
+    fn f1_attack() -> Vec<Step> {
+        use EAction::*;
+        let a = |b: &Blk| b.h == 1 && b.ev() == 4 && b.frame() > 0 && b.inc() == 0;
+        let a2 = |b: &Blk| b.h == 1 && b.ev() == 4 && b.frame() > 0 && b.inc() != 0;
+        let c = move |b: &Blk| b.h == 2 && b.ev() == 5 && a(&b.parent());
+        let e = move |b: &Blk| b.h == 2 && b.ev() == 6 && a2(&b.parent());
+        let f = move |b: &Blk| b.h == 3 && b.ev() == 7 && e(&b.parent());
+        let mut v: Vec<Step> = Vec::new();
+        for view in 1..=3u8 {
+            for k in 1..=3u8 {
+                v.push(("times out", Box::new(move |x, _| *x == Timeout(k))));
+            }
+            let _ = view;
+            for k in 1..=3u8 {
+                v.push(("enters the next view by the TC", Box::new(move |x, _| *x == AdvanceTc(k))));
+            }
+        }
+        let more: Vec<Step> = vec![
+            ("0 proposes A in view 4", Box::new(move |x, _| matches!(x, AdvPropose(b) if a(b)))),
+            ("0 proposes A' in view 4", Box::new(move |x, _| matches!(x, AdvPropose(b) if a2(b)))),
+            ("1 votes A", Box::new(move |x, _| matches!(x, Deliver(1, Msg::Propose { b }) if a(b)))),
+            ("2 votes A", Box::new(move |x, _| matches!(x, Deliver(2, Msg::Propose { b }) if a(b)))),
+            ("0 votes A: certified", Box::new(move |x, _| matches!(x, AdvVote(b) if a(b)))),
+            ("3 gets o2", Box::new(|x, _| matches!(x, Deliver(3, Msg::Entry { .. })))),
+            ("3 votes A'", Box::new(move |x, _| matches!(x, Deliver(3, Msg::Propose { b }) if a2(b)))),
+            ("0 votes A'", Box::new(move |x, _| matches!(x, AdvVote(b) if a2(b)))),
+            ("1 restarts", Box::new(|x, _| *x == Restart(1))),
+            ("1 catches up: view 2", Box::new(|x, _| *x == AdvanceTc(1))),
+            ("1 catches up: view 3", Box::new(|x, _| *x == AdvanceTc(1))),
+            ("1 catches up: view 4", Box::new(|x, _| *x == AdvanceTc(1))),
+            ("1 gets o2", Box::new(|x, _| matches!(x, Deliver(1, Msg::Entry { .. })))),
+            ("1 votes A' too: A' certified", Box::new(move |x, _| matches!(x, Deliver(1, Msg::Propose { b }) if a2(b)))),
+            ("1 sees A certified: view 5", Box::new(move |x, _| matches!(x, Observe(1, b) if a(b)))),
+            ("2 sees A' certified: view 5", Box::new(move |x, _| matches!(x, Observe(2, b) if a2(b)))),
+            ("1 proposes C off A in view 5", Box::new(|x, _| *x == Propose(1))),
+            ("1 votes C", Box::new(move |x, _| matches!(x, Deliver(1, Msg::Propose { b }) if c(b)))),
+            ("2 votes C", Box::new(move |x, _| matches!(x, Deliver(2, Msg::Propose { b }) if c(b)))),
+            ("0 votes C: certified", Box::new(move |x, _| matches!(x, AdvVote(b) if c(b)))),
+            ("1 sees C certified: A final at 1", Box::new(move |x, _| matches!(x, Observe(1, b) if c(b)))),
+            ("3 sees A' certified: view 5", Box::new(move |x, _| matches!(x, Observe(3, b) if a2(b)))),
+            ("2 times out in view 5 (high A')", Box::new(|x, _| *x == Timeout(2))),
+            ("3 times out in view 5 (high A')", Box::new(|x, _| *x == Timeout(3))),
+            ("0 times out in view 5", Box::new(|x, _| *x == AdvTimeout(5, Blk::GENESIS))),
+            ("2 enters view 6", Box::new(|x, _| *x == AdvanceTc(2))),
+            ("3 enters view 6", Box::new(|x, _| *x == AdvanceTc(3))),
+            ("2 proposes E off A' in view 6", Box::new(|x, _| *x == Propose(2))),
+            ("2 votes E", Box::new(move |x, _| matches!(x, Deliver(2, Msg::Propose { b }) if e(b)))),
+            ("3 votes E", Box::new(move |x, _| matches!(x, Deliver(3, Msg::Propose { b }) if e(b)))),
+            ("0 votes E: certified", Box::new(move |x, _| matches!(x, AdvVote(b) if e(b)))),
+            ("3 sees E certified: view 7", Box::new(move |x, _| matches!(x, Observe(3, b) if e(b)))),
+            ("2 sees E certified: view 7", Box::new(move |x, _| matches!(x, Observe(2, b) if e(b)))),
+            ("3 proposes F off E in view 7", Box::new(|x, _| *x == Propose(3))),
+            ("3 votes F", Box::new(move |x, _| matches!(x, Deliver(3, Msg::Propose { b }) if f(b)))),
+            ("2 votes F", Box::new(move |x, _| matches!(x, Deliver(2, Msg::Propose { b }) if f(b)))),
+            ("0 votes F: certified", Box::new(move |x, _| matches!(x, AdvVote(b) if f(b)))),
+            ("3 sees F certified: E final at 3", Box::new(move |x, _| matches!(x, Observe(3, b) if f(b)))),
+        ];
+        v.extend(more);
+        v
+    }
+
+    /// Run a scripted schedule from `s`; each step is the first enabled action it matches. Stops at the first step with
+    /// no match and says so, with the enabled actions there.
+    fn script(m: &Epochs, mut s: EState, steps: &[Step], cond: fn(&Epochs, &EState) -> bool) {
+        let mut made: Vec<Blk> = Vec::new();
+        for (i, (what, f)) in steps.iter().enumerate() {
+            let mut acts = Vec::new();
+            m.actions(&s, &mut acts);
+            let Some((a, next)) = acts.iter().filter(|a| f(a, &made)).find_map(|a| m.next_state(&s, a.clone()).map(|n| (a.clone(), n))) else {
+                println!("    step {}: \"{what}\": NOT ENABLED. Enabled here:", i + 1);
+                for a in &acts {
+                    println!("      {a:?}");
+                }
+                println!("    agreement {} at the stop", if cond(m, &s) { "holds" } else { "BROKEN" });
+                for (k, mm) in s.m.iter().enumerate() {
+                    println!("    member {k}: view {} voted {:#x} tout {:#x} high {:?} fin {:?}", mm.view, mm.voted, mm.tout, mm.high, mm.fin);
+                }
+                return;
+            };
+            if let EAction::AdvPropose(b) = &a {
+                made.push(*b);
+            }
+            println!("    step {}: {what}: {a:?}", i + 1);
+            s = next;
+        }
+        println!("    agreement {} after the script", if cond(m, &s) { "holds" } else { "BROKEN" });
+    }
+
+    pub fn run(row: &str, lemma: &'static str, depth: usize, budget: u64, threads: usize, views: u8) {
+        let row_m = cuts_model::epochs::suite().into_iter().find(|r| r.model.name == row).expect("a v1 row").model;
+        let tick = |_: usize, _: usize| {};
+        let pre = bounded::check(&row_m, 22, threads, &[lemma], Some(Duration::from_secs(600)), &tick);
+        let trace = pre.found.get(lemma).expect("the control's lemma counterexample").clone();
+        println!("{row}: prefix, the shortest counterexample to \"{lemma}\": {} steps", trace.len());
+        for a in &trace {
+            println!("      {a:?}");
+        }
+        let cond = row_m.properties().into_iter().find(|p| p.name == "agreement").expect("agreement").condition;
+        let mut wide = row_m.clone();
+        wide.views = views;
+        wide.byz_proposes = true;
+        let mut plain = wide.clone();
+        plain.mutation = None;
+        println!("continuation: {views} views, the Byzantine member proposing");
+        for (label, m) in [("with the mutation", &wide), ("without it (the rule kept)", &plain)] {
+            if depth == 0 {
+                println!("{label}: the scripted attack, from the start");
+                let steps = if row == "ctl-f1-views" { f1_attack() } else { f2_attack() };
+                script(m, m.init_states().remove(0), &steps, cond);
+                continue;
+            }
+            match replay(m, &trace) {
+                Err(e) => println!("{label}: the prefix doesn't replay: {e}"),
+                Ok((start, fuzzy)) => {
+                    let w = From { inner: m.clone(), start, cond };
+                    let t0 = std::time::Instant::now();
+                    let r = bounded::check(&w, depth, threads, &["agreement"], Some(Duration::from_secs(budget)), &tick);
+                    let secs = t0.elapsed().as_secs_f64();
+                    let scope = if r.unfinished { format!("UNFINISHED at {budget} s, up to {depth} more steps partly") } else { format!("every continuation of up to {depth} steps") };
+                    println!(
+                        "{label} ({fuzzy} prefix steps matched by likeness): {} states, {secs:.1} s, {scope}: {}",
+                        r.unique,
+                        if r.found.contains_key("agreement") { "AGREEMENT BROKEN" } else { "agreement holds" }
+                    );
+                    if let Some(path) = r.found.get("agreement") {
+                        println!("    continuation ({} steps):", path.len());
+                        for a in path {
+                            println!("      {a:?}");
+                        }
+                        continue;
+                    }
+                    // Deeper than the bound: seeded random walks from the same state (productive steps only).
+                    let mut walker = w.clone();
+                    walker.inner.productive_only = true;
+                    let t0 = std::time::Instant::now();
+                    let ch = walker
+                        .checker()
+                        .threads(threads)
+                        .timeout(Duration::from_secs(budget))
+                        .finish_when(stateright::HasDiscoveries::AnyOf(["agreement"].into_iter().collect()))
+                        .spawn_simulation(20261117, stateright::UniformChooser)
+                        .join();
+                    let found = ch.discoveries().remove("agreement");
+                    println!(
+                        "{label}, random walks: {} states, depth {}, {:.1} s: {}",
+                        ch.unique_state_count(),
+                        ch.max_depth(),
+                        t0.elapsed().as_secs_f64(),
+                        if found.is_some() { "AGREEMENT BROKEN" } else { "agreement holds" }
+                    );
+                    if let Some(p) = found {
+                        let path = p.into_actions();
+                        println!("    continuation ({} steps):", path.len());
+                        for a in path {
+                            println!("      {a:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--directed") {
+        // cuts-model --directed <row> "<lemma>" <depth> <budget s> <threads> <views>
+        let threads: usize = args.get(i + 5).and_then(|t| t.parse().ok()).unwrap_or(4);
+        let views: u8 = args.get(i + 6).and_then(|t| t.parse().ok()).unwrap_or(6);
+        let lemma: &'static str = Box::leak(args[i + 2].clone().into_boxed_str());
+        directed::run(&args[i + 1], lemma, args[i + 3].parse().unwrap(), args[i + 4].parse().unwrap(), threads, views);
+        return;
+    }
     let mut threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if let Some(i) = args.iter().position(|a| a == "--threads") {
+        threads = args[i + 1].parse().expect("--threads N");
+    }
+    if args.iter().any(|a| a == "--epochs") {
+        run_epochs(&args, threads);
+        return;
+    }
     let mut filters = Vec::new();
     let mut max_states: Option<usize> = None;
     // Depth-first by default: it keeps only fingerprints and the current path, where breadth-first keeps the whole

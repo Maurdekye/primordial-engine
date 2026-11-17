@@ -8,13 +8,12 @@
 //! then depth-first from each state there on several threads sharing the table. Memory is about one fingerprint and
 //! one byte per state.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use cuts_model::{Action, Cuts, State};
 use stateright::{Expectation, Model, Property};
 
 /// The keys are already hashes.
@@ -36,27 +35,27 @@ impl Hasher for Identity {
 type Table = HashMap<u64, u8, BuildHasherDefault<Identity>>;
 const SHARDS: usize = 256;
 
-fn fp(s: &State) -> u64 {
+fn fp<S: Hash>(s: &S) -> u64 {
     let mut h = DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
 }
 
-pub struct Bounded {
+pub struct Bounded<A> {
     pub unique: usize,
     pub visits: usize,
     pub depth: usize,
     /// Each property with a discovery: a counterexample (always) or an example (sometimes), as its action trace.
-    pub found: HashMap<&'static str, Vec<Action>>,
+    pub found: HashMap<&'static str, Vec<A>>,
     /// The search stopped at its time budget before covering every behaviour up to the bound.
     pub unfinished: bool,
 }
 
-struct Shared<'a> {
-    m: &'a Cuts,
-    props: Vec<Property<Cuts>>,
+struct Shared<'a, M: Model> {
+    m: &'a M,
+    props: Vec<Property<M>>,
     seen: Vec<Mutex<Table>>,
-    found: Mutex<HashMap<&'static str, Vec<Action>>>,
+    found: Mutex<HashMap<&'static str, Vec<M::Action>>>,
     stop_on: &'a [&'static str],
     stop: AtomicBool,
     visits: AtomicUsize,
@@ -64,9 +63,13 @@ struct Shared<'a> {
     max_depth: usize,
 }
 
-impl Shared<'_> {
+impl<M: Model> Shared<'_, M>
+where
+    M::State: Hash,
+    M::Action: Clone,
+{
     /// Record a visit at depth d; true if the state is new or now reached at a shallower depth.
-    fn fresh(&self, s: &State, d: usize) -> bool {
+    fn fresh(&self, s: &M::State, d: usize) -> bool {
         self.visits.fetch_add(1, Ordering::Relaxed);
         let f = fp(s);
         let mut t = self.seen[(f >> 56) as usize % SHARDS].lock().unwrap();
@@ -79,7 +82,7 @@ impl Shared<'_> {
         }
     }
 
-    fn judge(&self, s: &State, trace: &dyn Fn() -> Vec<Action>, d: usize) {
+    fn judge(&self, s: &M::State, trace: &dyn Fn() -> Vec<M::Action>, d: usize) {
         self.deepest.fetch_max(d, Ordering::Relaxed);
         for p in &self.props {
             let holds = (p.condition)(self.m, s);
@@ -100,15 +103,15 @@ impl Shared<'_> {
         }
     }
 
-    fn successors(&self, s: &State) -> Vec<(Action, State)> {
+    fn successors(&self, s: &M::State) -> Vec<(M::Action, M::State)> {
         let mut acts = Vec::new();
         self.m.actions(s, &mut acts);
         acts.into_iter().filter_map(|a| self.m.next_state(s, a.clone()).map(|n| (a, n))).collect()
     }
 
     /// Depth-first from a root already recorded at depth `d0`.
-    fn dfs(&self, root: State, d0: usize, prefix: Vec<Action>) {
-        let mut stack: Vec<(Vec<(Action, State)>, Option<Action>)> = Vec::new();
+    fn dfs(&self, root: M::State, d0: usize, prefix: Vec<M::Action>) {
+        let mut stack: Vec<(Vec<(M::Action, M::State)>, Option<M::Action>)> = Vec::new();
         if d0 < self.max_depth {
             let mut k = self.successors(&root);
             k.reverse();
@@ -142,7 +145,19 @@ impl Shared<'_> {
     }
 }
 
-pub fn check(m: &Cuts, max_depth: usize, threads: usize, stop_on: &[&'static str], budget: Option<std::time::Duration>, progress: &(dyn Fn(usize, usize) + Sync)) -> Bounded {
+pub fn check<M>(
+    m: &M,
+    max_depth: usize,
+    threads: usize,
+    stop_on: &[&'static str],
+    budget: Option<std::time::Duration>,
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> Bounded<M::Action>
+where
+    M: Model + Sync,
+    M::State: Hash + Send + Sync,
+    M::Action: Clone + Send + Sync,
+{
     let t0 = std::time::Instant::now();
     let out_of_time = AtomicBool::new(false);
     let sh = Shared {
@@ -161,7 +176,7 @@ pub fn check(m: &Cuts, max_depth: usize, threads: usize, stop_on: &[&'static str
     let init = m.init_states().remove(0);
     sh.fresh(&init, 0);
     sh.judge(&init, &Vec::new, 0);
-    let mut level: Vec<(State, Vec<Action>)> = vec![(init, Vec::new())];
+    let mut level: Vec<(M::State, Vec<M::Action>)> = vec![(init, Vec::new())];
     let mut d = 0;
     while d < max_depth && level.len() < threads * 64 && !sh.stop.load(Ordering::Relaxed) {
         let mut next = Vec::new();
@@ -210,5 +225,11 @@ pub fn check(m: &Cuts, max_depth: usize, threads: usize, stop_on: &[&'static str
     });
     let unique = sh.seen.iter().map(|t| t.lock().unwrap().len()).sum();
     let unfinished = out_of_time.load(Ordering::Relaxed);
-    Bounded { unique, visits: sh.visits.load(Ordering::Relaxed), depth: sh.deepest.load(Ordering::Relaxed), found: sh.found.into_inner().unwrap(), unfinished }
+    Bounded {
+        unique,
+        visits: sh.visits.load(Ordering::Relaxed),
+        depth: sh.deepest.load(Ordering::Relaxed),
+        found: sh.found.into_inner().unwrap(),
+        unfinished,
+    }
 }

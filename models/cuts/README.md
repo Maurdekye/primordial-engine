@@ -373,6 +373,85 @@ content height, so `h + 2` excused every entry.
   from before it stay out): fails the property, 7.8 M states at depth bound 20, a 15-step counterexample after
   shrinking. ctl-ownonly still fails it (16 steps after shrinking).
 
+## v1: membership change by epochs
+
+`cuts-model --epochs [--depth D] [--budget S] [--threads N] [filter...]` runs model v1 (`src/epochs.rs`), the rule in
+docs/spec/agreement.md 8 (coordinator mdb308c063fa5; @design-reviewer m27d9369eca11). It is its own model, at a
+coarser grain than v0, so the state stays small enough across an epoch change. Chained two-chain voting with
+timeouts and the lock on a timeout certificate's highest certificate, per epoch. A certificate moves a member to
+the next view, and a voter takes the proposal's parent certificate as its `high_qc`. The entries are a handful:
+the membership changes (Admit, Leave, Remove, Rechain) and a few ordinary ones, each with a stamp. A cut names its
+parent's frame + 2 and the entries it covers. Messages name their epoch, and a certificate counts only its block's
+epoch's members. A joiner, or a member that missed a change, adopts an epoch from the certificate that finalized
+its E (that is the epoch certificate). The vote state (views and `high_qc`) survives a restart unless a control
+forgets it.
+
+**Properties:** agreement across epochs (and no final cut undone); the same members per epoch (E agreed); the final
+log ends at E (nothing new finalized after E in its epoch); one live chain per key (no old-chain entry of a
+rechained key covered after its Rechain's E); no honest double vote; timeouts keep the lock (an honest timeout's
+`high_qc` is at or above the parent of every block it voted for earlier in that epoch). The last two are the
+invariants the agreement argument rests on. Examples: "a cut final", "epoch changed", "changed and went on" (a cut
+final after the change).
+
+**Results** [V, results/v1-*.txt, 3 threads, 2026-11-13 ~08:00Z]:
+
+| Row | What | Search | Result |
+|---|---|---|---|
+| join-2to3 | 1 admits 3 | every behaviour of up to 22 steps (1.6 M states, 11 s); also 24 steps (5.8 M, 41 s) | OK, examples found |
+| burst-2to4 | 1 admits 3 and 2 admits 0 at once | every behaviour of up to 22 steps (1.5 M, 11 s) | OK |
+| leave-3to2, join-3to4, remove-4to3 (the Byzantine member removed), restart-3 (Rechain, with a zombie old process) | | bounded to 22 steps, UNFINISHED at 100 s (14-17 M states each); examples by random walks | no violation in what was searched, not a proof |
+| remove-auth-byz | BOUNDARY: an authorized Byzantine member removes an honest one (n = 3, t = 0 after) | random walks | breaks agreement, as expected: governance must not authorize a Byzantine member |
+| ctl-a-inclusion | (a) a change takes effect at inclusion | exhaustive to 22 (1.5 k states) | counterexample: agreement, same members |
+| ctl-b-suffix | (b) a non-empty suffix proposed and accepted (leave-3to2, 4 views) | random walks, 1 s | counterexample: final log ends at E |
+| ctl-c-epochvote | (c) a removed member's votes and timeouts counted in e+1 | random walks, 37 s | counterexample: agreement |
+| ctl-d-oldchain | (d) the old chain stays open after E (a zombie old process) | random walks, 78 s | counterexample: one live chain per key |
+| ctl-e-finalizer | (e) the final log ends at the finalizing cut, not E (5 views) | random walks, 120 s and 300 s (88 M states) | **NO COUNTEREXAMPLE yet** |
+| ctl-f1-views | (f1) a restart forgets its views | exhaustive to 22 (5 M, 34 s) | counterexample: no honest double vote |
+| ctl-f2-highqc | (f2) a restart keeps its views but forgets `high_qc` (n = 4, Byzantine member voting and timing out) | exhaustive to 22 (1.3 M, 9 s) | counterexample: timeouts keep the lock |
+
+**Bounded searches, not proofs.** leave-3to2, join-3to4, remove-4to3 and restart-3 were searched over every behaviour
+of up to 22 steps only partly (UNFINISHED at 100 s, 14-17 M states each): no violation in what was searched. join-2to3,
+burst-2to4 and leave-2to1 are exhaustive to their bounds (22 steps; join-2to3 also 24).
+
+**(f1) and (f2) break agreement, by fixed schedules** (@design-reviewer ma6414f4faeeb). The bounded and random
+searches don't reach the forks (each needs 30-60 steps with the Byzantine member proposing), so each is a scripted
+schedule: `cuts-model --directed ctl-f2-highqc "timeouts keep the lock" 0 60 4 6` (and `ctl-f1-views "no honest
+double vote" 0 60 4 8`), with n = 4, member 0 Byzantine (q = 3). Each step is the first enabled action of its kind,
+so the model's own rules decide what every step does. Results in results/v1-f2-directed.txt and v1-f1-directed.txt.
+- **(f2), 33 steps.** Member 1 votes B2 in view 2 and restarts before it sees B2 certified. Its `high_qc` is forgotten,
+  so it times out in view 2 at genesis. Member 3 never saw a certificate, so the view-2 timeout certificate from
+  members 0, 1 and 3 has genesis as its highest. Member 3 leads view 3 off its `high_qc`, members 1 and 3 vote for
+  it, and the Byzantine leader of view 4 proposes its child. B1 is final at member 2 (B1, B2 in views 1, 2), and the
+  view-3 block, not extending B1, is final at member 3: **agreement broken**. The same schedule with `high_qc`
+  persisted: member 1's timeout carries B1, the view-3 proposal extends B1, and **agreement holds**.
+- **(f1), 56 steps.** Everyone times out to view 4, led by member 0, which proposes two siblings off genesis: A
+  (empty) and A' (with an entry). A is certified by 0, 1 and 2. Member 1 restarts, forgets its views, catches up to
+  view 4 by the timeout certificates and votes A' too, so A' is certified by 0, 1 and 3. Member 1 leads view 5 with
+  A's child (A final at member 1); member 2, whose `high_qc` is A', leads view 6 with E off A', member 3 leads view 7
+  with E's child, and E is final at member 3: **agreement broken**. With the views persisted, member 1 is still in view 4
+  after the restart, having voted A there, so it can't vote A': A' is never certified, and the schedule stops at
+  step 28 with **agreement holding**. That shows this attack schedule can't go on, not that every continuation is
+  safe.
+- The searches that didn't find these forks are kept in the results for the record: from the (f2) lemma
+  counterexample, every continuation of up to 16 steps (64 M states, unfinished) and random walks to depth 83 (17 M
+  states) held. The shortest lemma counterexample was the wrong prefix: there member 1 restarts after it saw B2
+  certified, so no all-genesis timeout certificate can form.
+
+**(e) is redundant given the rule as modelled; argued, not checked by a control.** The rule ends epoch e's final log at
+E, and the suffix rule makes every descendant of E in epoch e an empty copy of E (same frame and heads; voters refuse
+anything else; ctl-b bites when it is off). So whichever descendant of E finalizes it, and whenever each member sees
+that, every member ends epoch e at the same E with the same entries, and starts e + 1 from it; members leave epoch e
+when E is final, and anything certified in e after that is an empty copy that changes no entry's fate ("final log
+ends at E" holds in every base row). (e) changes both at once: no suffix rule, and the log ends at the finalizer F.
+Its break needs a member to see F certified and leave while two others time out in F's view, certify a sibling F' of
+F and finalize it two views later: epoch e then ends at F for one member and at F' for the others. That needs five
+views and specific skipped observations, and random walks didn't find it in 88 M states; a fixed schedule like the
+ones above would show it, but the argument above is why the modelled rule doesn't depend on it.
+
+**Open:**
+- The n = 3 and n = 4 base rows need longer budgets (the integration queue's guard), and a random-walk twin each.
+- Not modelled yet: Admit by a non-member's request, the invite's pinned epoch, more than two epochs in one run.
+
 ## Not in v0
 
 - **Bounded progress** (coordinator m33c08e879042, still to add): an entry an honest member holds is covered within a

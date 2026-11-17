@@ -1,0 +1,5 @@
+== leave-2to1
+Checking (bounded). unique=868532, visits=3185894
+leave-2to1              1131076       4266418     22      14.8  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+    leave 2 -> 1 (q 2 -> 1; M1 step 8)
+all 1 epoch check(s) met their expectation
