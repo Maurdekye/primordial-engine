@@ -33,7 +33,7 @@ use pe_world::script::AssetId;
 #[cfg(feature = "logic")]
 mod runner;
 #[cfg(feature = "logic")]
-pub use runner::LogicRunner;
+pub use runner::{LogicRunner, ModuleInbox};
 
 /// One script a logic stage runs: its row of the world's modules table (world-model.md 5.4 and 7.9).
 #[derive(Clone, Debug, PartialEq, Eq)]
