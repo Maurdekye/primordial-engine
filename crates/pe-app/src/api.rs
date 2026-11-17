@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io;
 use std::process::ExitStatus;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -88,10 +88,14 @@ pub struct ApiShared {
     /// The kept snapshots' retention in frames, at the world's rate.
     keep_frames: u64,
     inner: Mutex<Inner>,
+    /// Signalled at each [`ApiShared::keep`], for a thread that follows the newest snapshot (the build thread).
+    fresh: Condvar,
 }
 
 struct Inner {
     latest: Arc<WorldSnapshot>,
+    /// How many snapshots [`ApiShared::keep`] has had.
+    published: u64,
     agreed: Arc<WorldSnapshot>,
     kept: BTreeMap<u64, Arc<WorldSnapshot>>,
     /// The member's chain and the seq its next entry gets.
@@ -108,6 +112,7 @@ impl ApiShared {
         kept.insert(genesis.frame().0, genesis.clone());
         let inner = Inner {
             latest: genesis.clone(),
+            published: 0,
             agreed: genesis,
             kept,
             draft: None,
@@ -117,7 +122,7 @@ impl ApiShared {
             // (@api-eng's Low on slice 1).
             caught_up: false,
         };
-        ApiShared { facts, keep_frames, inner: Mutex::new(inner) }
+        ApiShared { facts, keep_frames, inner: Mutex::new(inner), fresh: Condvar::new() }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -131,6 +136,23 @@ impl ApiShared {
         g.kept.retain(|&k, _| k + self.keep_frames >= f);
         g.kept.insert(f, snap.clone());
         g.latest = snap;
+        g.published += 1;
+        drop(g);
+        self.fresh.notify_all();
+    }
+
+    /// The newest snapshot, and how many [`ApiShared::keep`] has had, once that count is past `seen` or `timeout` has
+    /// passed: the build thread's wait (builds.rs). It returns at once when `seen` is behind.
+    pub fn wait_newer(&self, seen: u64, timeout: Duration) -> (u64, Arc<WorldSnapshot>) {
+        let g = self.lock();
+        let wait = self.fresh.wait_timeout_while(g, timeout, |g| g.published <= seen);
+        let (g, _) = wait.unwrap_or_else(|e| e.into_inner());
+        (g.published, g.latest.clone())
+    }
+
+    /// The replica's world at `Cv`, as `final_()` reads it: the build thread's final state.
+    pub fn agreed_snapshot(&self) -> Arc<WorldSnapshot> {
+        self.lock().agreed.clone()
     }
 
     /// The replica rolled back to the state at frame `k`: every kept snapshot above it belongs to the timeline it

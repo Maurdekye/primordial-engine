@@ -4,13 +4,15 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use pe_app::builds::{Attest, Attester, BuildConfig, Builder, Built, attestation};
+use pe_app::api::{Facts, Ports};
+use pe_app::builds::{Attest, Attester, BuildConfig, Builder, Built, attestation, spawn_attester};
 use pe_logic::build::Toolchain;
 use pe_replica::logic::{LogicRunner, ModuleInbox};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
-use pe_seams::{Class, Frame, Hash, Outcome};
+use pe_seams::{Class, Frame, Hash, LineId, Outcome, SimRate};
 use pe_world::edit::{Actor, Op, Transaction};
 use pe_world::script::tag_desc;
 use pe_world::{BlobRef, BlobStore, World, perm};
@@ -188,5 +190,33 @@ fn an_attestation_the_final_state_lacks_is_posted_again_while_d_is_ahead() {
         assert!(matches!(w.apply_edit(Frame(4), &entry).0, Outcome::Applied { .. }));
         assert!(b.reposts(Frame(6), Frame(5), w.pending()).is_empty(), "counted");
         assert!(b.reposts(Frame(6), Frame(5), w.pending()).is_empty(), "and forgotten");
+    });
+}
+
+/// The attester's thread over pe-app's ports: from the newest snapshot (the frame-0 one here, with A's commit
+/// pending), B's thread builds, loads, and submits exactly one attestation through pe-api's edit queue. Stopping it
+/// ends the thread.
+#[test]
+fn the_attesters_thread_submits_through_the_edit_queue() {
+    big_stack(|| {
+        let (builder, inbox) = builder("thread");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let w = committed(&built, builder.ids(), built.described.module);
+        let me = keys().key(1);
+        let facts = Facts { world_name: "test".into(), line: LineId::origin(), rate: SimRate::DEFAULT, me: Some(me) };
+        let ports = Ports::new(w.snapshot(Frame(0)), facts, || {});
+        let thread = spawn_attester(Arc::new(builder), inbox, ports.shared.clone(), ports.queue.clone(), me)
+            .expect("the attester's thread");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut drained = Vec::new();
+        while drained.is_empty() && Instant::now() < deadline {
+            drained = ports.queue.drain(1);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let txs: Vec<_> = drained.iter().map(|(_, sub)| sub.tx.clone()).collect();
+        assert_eq!(txs, [attestation(LAMP, v(), built.described.module)]);
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(ports.queue.drain(1).is_empty(), "submitted once");
+        thread.stop();
     });
 }

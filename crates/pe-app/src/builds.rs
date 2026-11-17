@@ -20,10 +20,14 @@
 //! its manifest, which runs it.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
+use pe_api::queue::{EditQueue, Receipt, Submission, Ticket};
 use pe_logic::build::{BuildError, Toolchain};
 use pe_replica::logic::{Described, ModuleInbox};
 use pe_seams::{Frame, Hash, MemberKey, Version};
@@ -257,4 +261,82 @@ fn check(p: &PendingCommit, builder: &Builder, archive: &[u8]) -> Result<Built, 
         return Err("the module's components differ from the commit's".into());
     }
     Ok(built)
+}
+
+/// How long the attester's thread waits for a newer snapshot before it looks at its receipts and reposts again.
+const WAIT: Duration = Duration::from_millis(250);
+
+/// The attester's thread ([`spawn_attester`]).
+pub struct AttesterThread {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl AttesterThread {
+    /// Stops the thread and waits for it, which takes as long as a build in progress.
+    pub fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// Starts the attester's thread (module doc) over the snapshots pe-app publishes for pe-api (`shared`). After each
+/// new one, or [`WAIT`] without one, it makes a pass over the newest snapshot's pending commits, logs what failed,
+/// and submits the attestations and the reposts (from the agreed snapshot) through pe-api's edit queue (`queue`;
+/// api.md 7.1's machine lane once it exists). Each receipt's stamp goes back to the attester. A submission the queue
+/// has no room for waits for the next pass. One that agreement refuses is treated as posted at the present frame, so
+/// the state-based repost decides it again once that frame is final. The thread runs on the inbox's stack.
+pub fn spawn_attester(
+    builder: Arc<Builder>,
+    inbox: ModuleInbox,
+    shared: Arc<crate::api::ApiShared>,
+    queue: Arc<EditQueue>,
+    me: MemberKey,
+) -> io::Result<AttesterThread> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let stack = inbox.thread_stack();
+    let run = move || {
+        let mut attester = Attester::new(me);
+        let (mut seen, mut unsent, mut waiting) = (0, Vec::<Attest>::new(), Vec::<(Ticket, Attest)>::new());
+        while !flag.load(Ordering::Relaxed) {
+            let (published, snap) = shared.wait_newer(seen, WAIT);
+            seen = published;
+            let now = snap.frame();
+            let pass = attester.pass(snap.pending(), |r| snap.blob(r), &builder, &inbox);
+            for (asset, v, why) in &pass.failed {
+                eprintln!("pe-app: this machine's build of script {} at {v:?} failed: {why}", short(asset));
+            }
+            let agreed = shared.agreed_snapshot();
+            unsent.extend(pass.attest);
+            unsent.extend(attester.reposts(now, agreed.frame(), agreed.pending()));
+            for a in std::mem::take(&mut unsent) {
+                match queue.submit(Submission { tx: a.tx.clone(), base: now.0 }) {
+                    Ok(t) => waiting.push((t, a)),
+                    Err(_) => unsent.push(a),
+                }
+            }
+            waiting.retain(|(t, a)| match queue.receipt(*t, Instant::now()) {
+                Some(Receipt::Submitted { frame, .. }) => {
+                    attester.posted(a.asset, a.version, Frame(frame));
+                    false
+                }
+                Some(Receipt::Refused(e)) => {
+                    eprintln!("pe-app: the attestation of script {} was not submitted: {e:?}", short(&a.asset));
+                    attester.posted(a.asset, a.version, now);
+                    false
+                }
+                None => true,
+            });
+        }
+    };
+    let handle = std::thread::Builder::new().name("pe-attester".into()).stack_size(stack).spawn(run)?;
+    Ok(AttesterThread { stop, handle: Some(handle) })
+}
+
+/// An asset's first bytes, in hex, for a log line.
+fn short(asset: &AssetId) -> String {
+    asset.iter().take(4).map(|b| format!("{b:02x}")).collect()
 }

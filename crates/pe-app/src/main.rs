@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pe_app::api;
+use pe_app::builds;
 use pe_app::clock::{self, LocalClock};
 use pe_app::local::{SwitchedHands, chain_nonce};
 use pe_app::net::{self, Endpoint, OpenParams, WakeLater};
@@ -202,6 +203,9 @@ fn main() {
         Err(e) => fail(&format!("the script runner did not start: {e}")),
     };
     let sim_stack = SIM_STACK.max(runner.thread_stack());
+    // The build service loads modules into the runner from its own thread (builds.rs), through the runner's inbox,
+    // which is taken before the replica owns the runner.
+    let inbox = runner.inbox();
     let runner: Box<dyn ScriptRunner> = Box::new(runner);
     // The local player's hands (app.md 3, step 2): VR's ring while an XR session runs, the desktop hand otherwise.
     let ring = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, VR_PERIOD_NS));
@@ -221,16 +225,21 @@ fn main() {
                 .with_local(world::DEV_MEMBER, chain_nonce(), hands.clone())
         }
     };
-    // pe-api's ports and the MCP thread (app.md 3.1), when a transport is asked for.
+    // pe-api's ports (app.md 3.1) whenever the replica is pe-world's and this machine has a member: the build thread
+    // submits its attestations through their edit queue (@engine-architect m668e8458cf86). The MCP thread only when a
+    // transport is asked for.
     let mcp_wanted = options.mcp_pipe || options.mcp_http;
     if !mcp_wanted && !options.agent.is_empty() {
         fail("--agent needs --mcp-pipe or --mcp-http");
     }
     let me = sim.local_member();
-    let ports = mcp_wanted.then(|| {
+    let ports = {
         let arrival = wake.arrival();
-        sim.ports(WORLD_NAME, move || arrival()).unwrap_or_else(|| fail("pe-api needs a pe-world replica"))
-    });
+        sim.ports(WORLD_NAME, move || arrival())
+    };
+    if mcp_wanted && ports.is_none() {
+        fail("pe-api needs a pe-world replica");
+    }
     let sim = match &ports {
         Some(p) => sim.with_api(p.clone()),
         None => sim,
@@ -240,7 +249,8 @@ fn main() {
         Err(e) => fail(&format!("the simulation thread did not start: {e}")),
     };
     wake.set(sim.waker());
-    let mcp = ports.map(|p| {
+    let attester = ports.as_ref().zip(me).and_then(|(p, me)| start_builds(inbox, p, me));
+    let mcp = ports.filter(|_| mcp_wanted).map(|p| {
         let member = me.unwrap_or_else(|| fail("an agent acts for this machine's member, and there is none"));
         match api::spawn_mcp(p.api(), mcp_opts(&options, member)) {
             Ok(t) => t,
@@ -271,6 +281,7 @@ fn main() {
                 println!("vr: {waited:?}; at its end {:?}", xr.stop());
                 if waited == XrWait::Running {
                     stop_mcp(mcp);
+                    stop_builds(attester);
                     finish(sim.stop(), None);
                     return;
                 }
@@ -299,6 +310,7 @@ fn main() {
     // thread has dropped its own context before `wait` answers.
     let window = run_desktop(cfg, slot, desktop_hand, Box::new(LogEffects));
     stop_mcp(mcp);
+    stop_builds(attester);
     finish(sim.stop(), Some(window));
 }
 
@@ -318,6 +330,31 @@ fn mcp_opts(o: &Options, member: MemberKey) -> HostOpts {
     opts.http = o.mcp_http;
     opts.cmd = o.agent.clone();
     opts
+}
+
+/// The build service and its attester (builds.rs): pe-logic's toolchain (`Toolchain::current` until D75's installed
+/// copy), the engine's pe-sdk, and the folder `b` beside this machine's identity seed. Without a toolchain this machine
+/// still runs but attests no script build: at n = 2 a commit then voids at its deadline.
+fn start_builds(
+    inbox: pe_replica::logic::ModuleInbox,
+    ports: &api::Ports,
+    me: MemberKey,
+) -> Option<builds::AttesterThread> {
+    let started = (|| -> Result<builds::AttesterThread, String> {
+        let toolchain = pe_logic::build::Toolchain::current().map_err(|e| e.to_string())?;
+        let dir = net::default_identity_path().map_err(|e| e.to_string())?.with_file_name("b");
+        let config = builds::BuildConfig { toolchain, sdk: pe_logic::build::engine_sdk(), dir };
+        let builder = builds::Builder::new(config, inbox.clone()).map_err(|e| e.to_string())?;
+        builds::spawn_attester(Arc::new(builder), inbox, ports.shared.clone(), ports.queue.clone(), me)
+            .map_err(|e| e.to_string())
+    })();
+    started.map_err(|e| eprintln!("pe-app: the build service did not start, so no script build is attested: {e}")).ok()
+}
+
+fn stop_builds(attester: Option<builds::AttesterThread>) {
+    if let Some(a) = attester {
+        a.stop();
+    }
 }
 
 fn stop_mcp(mcp: Option<api::McpThread>) {
