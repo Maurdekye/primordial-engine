@@ -39,24 +39,47 @@ use crate::world::DEV_MEMBER;
 /// The engine build both sides' hellos carry and the genesis record names: connections between different builds are
 /// refused at the hello (transport.md 6.3), and a record from another build at the welcome, by name.
 ///
-/// It is pe-app's version and the script build service's identity B (logic.md 6.2b, `pe_logic::build::build_identity`:
-/// the toolchain's release, its wasm32 std, pe-sdk, the build service's and pe-logic's result versions), so two
-/// machines whose builds of one script could differ never share a session, and a build that one member passes and
-/// another fails, which the build-asymmetry ruling makes a split (m327e1d2d1222), cannot come from a different engine
-/// or toolchain. Computed once per process. Without a toolchain the service can run (no `CARGO` until D75 installs
-/// the pinned one) it reads "scripts unavailable", with no detail, so the text is the same on every such machine
-/// [I: two such machines can still share a session, and neither can build a script]. B appears as its first 16
-/// bytes in hex, since a hello's build id is at most `MAX_BUILD` (64) bytes, and `bind` refuses a longer one.
+/// It is pe-app's version, the script build service's identity B and the script runner's identity:
+/// - B (logic.md 6.2b, `pe_logic::build::build_identity`: the toolchain's release, its wasm32 std, pe-sdk, the build
+///   service's and pe-logic's result versions), so two machines whose builds of one script could differ never share a
+///   session, and a build that one member passes and another fails, which the build-asymmetry ruling makes a split
+///   (m327e1d2d1222), cannot come from a different engine or toolchain. Without a toolchain the service can run (no
+///   `CARGO` until D75 installs the pinned one) it reads "scripts unavailable", with no detail, so the text is the same
+///   on every such machine [I: two such machines can still share a session, and neither can build a script].
+/// - The runner's identity ([`runner_settings`]' `pe_logic::identity`, the bytes the runner reports as S2's
+///   `runner_identity`: pe-logic's result version, the wasmtime release, the metering pass's and the ABI's versions,
+///   the limits and the fuel), so two machines whose runners could compute one script's frame differently never
+///   share a session either (Q1, @coordinator-opus m339785d800ca; S2 v1.7: "the hello compares it").
+///
+/// Each appears as the first 8 bytes of its hash in hex, since a hello's build id is at most `MAX_BUILD` (64) bytes and
+/// `bind` refuses a longer one: 63 at version 0.1.0. Computed once per process.
 pub fn build_id() -> &'static [u8] {
     static ID: OnceLock<Vec<u8>> = OnceLock::new();
     ID.get_or_init(|| {
         let scripts = pe_logic::build::Toolchain::current()
             .and_then(|tc| pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()))
-            // B's first 16 bytes: the hello carries at most pe-net's 64-byte build id (lifecycle.rs MAX_BUILD).
-            .map(|b| b.0[..16].iter().map(|x| format!("{x:02x}")).collect::<String>())
+            .map(|b| hex8(&b))
             .unwrap_or_else(|_| "unavailable".into());
-        format!("pe-app {}; scripts {scripts}", env!("CARGO_PKG_VERSION")).into_bytes()
+        let (settings, run) = runner_settings();
+        let runner = runner_part(&settings, &run);
+        format!("pe-app {}; scripts {scripts}; runner {runner}", env!("CARGO_PKG_VERSION")).into_bytes()
     })
+}
+
+/// The script runner's settings: main.rs starts its `LogicRunner` with these, and [`build_id`] carries their identity,
+/// so the hello compares what the runner computes with.
+pub fn runner_settings() -> (pe_logic::Settings, pe_logic::run::RunSettings) {
+    (pe_logic::Settings::default(), pe_logic::run::RunSettings::default())
+}
+
+/// [`build_id`]'s runner part: the hash of the identity a runner with these settings reports (`pe_logic::identity`).
+fn runner_part(settings: &pe_logic::Settings, run: &pe_logic::run::RunSettings) -> String {
+    hex8(&pe_seams::Hash::of("pe.app.runner", &pe_logic::identity(settings, run)))
+}
+
+/// A hash's first 8 bytes in hex.
+fn hex8(h: &pe_seams::Hash) -> String {
+    h.0[..8].iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// pe-net's protocol version in the hello.
@@ -1293,13 +1316,25 @@ mod tests {
     }
 
     #[test]
-    fn the_build_id_names_pe_app_and_the_script_build_identity() {
+    fn the_build_id_names_pe_app_the_script_build_identity_and_the_runner() {
+        use pe_replica::logic::ScriptRunner;
         let id = String::from_utf8(build_id().to_vec()).unwrap();
         assert!(id.starts_with(concat!("pe-app ", env!("CARGO_PKG_VERSION"), "; scripts ")), "{id}");
-        let scripts = id.rsplit("; scripts ").next().unwrap();
-        // Under cargo the toolchain is known, so B is there: its first 16 bytes in hex.
-        assert_eq!(scripts.len(), 32, "{id}");
-        assert!(scripts.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        let (scripts, runner) = id.split_once("; scripts ").and_then(|(_, r)| r.split_once("; runner ")).expect("both");
+        // Under cargo the toolchain is known, so B is there. Each part is its hash's first 8 bytes in hex.
+        for part in [scripts, runner] {
+            assert!(part.len() == 16 && part.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        }
+        let tc = pe_logic::build::Toolchain::current().expect("a toolchain under cargo");
+        assert_eq!(scripts, hex8(&pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()).unwrap()));
+        // The runner part is the identity main.rs's runner reports, from the same settings (Q1; S2 v1.7).
+        let (settings, run) = runner_settings();
+        let reported = pe_replica::logic::LogicRunner::new(settings, run).expect("a runner").identity();
+        assert_eq!(runner, hex8(&pe_seams::Hash::of("pe.app.runner", &reported)));
+        // Other fuel can change what a script computes, so the part differs; the same settings give the same part.
+        let more_fuel = pe_logic::run::RunSettings { fuel_per_call: run.fuel_per_call + 1, ..run };
+        assert_ne!(runner_part(&settings, &more_fuel), runner);
+        assert_eq!(runner_part(&settings, &run), runner);
         // The hello's limit is the tighter: `bind` refuses an id over it (NetError::Hello).
         assert!(build_id().len() <= pe_net::lifecycle::MAX_BUILD, "over the hello's bound: {}", build_id().len());
         assert_eq!(build_id(), build_id());
