@@ -732,6 +732,31 @@ fn across_a_3_to_2_leave_the_leavers_attestation_counts_and_a_reachable_quorum_s
     assert_eq!(f.w.end_frame(Frame(1)).activated.len(), 1);
 }
 
+/// A failure's evidence must agree with itself (7.9; @chunks-reviewer's L1): a module exactly for a `Mismatch`, and
+/// never the registered `author_module` it failed to match.
+#[test]
+fn a_failures_module_is_present_exactly_for_a_mismatch_and_is_not_the_authors() {
+    let mut f = fx();
+    let t = commit(ASSET, None, 1, 1);
+    ok(&run(&mut f.w, &mut f.a, &t));
+    let with = |why: BuildFailure, module: Option<Hash>| {
+        let mut x = failed_of(&t, why);
+        if let Op::BuildFailed { reason, module: m, .. } = &mut x.ops[0] {
+            (*reason, *m) = (why, module);
+        }
+        x
+    };
+    for bad in [
+        with(BuildFailure::Compile, Some(Hash([9; 32]))),
+        with(BuildFailure::Mismatch, None),
+        with(BuildFailure::Mismatch, Some(Hash([3; 32]))),
+    ] {
+        assert!(matches!(refused(&run_at(&mut f.w, &mut f.b, &bad, 2)), Reason::Invalid { .. }), "{bad:?}");
+    }
+    assert!(f.w.pending()[&ASSET].failed.is_empty());
+    ok(&run_at(&mut f.w, &mut f.b, &with(BuildFailure::Mismatch, Some(Hash([9; 32]))), 2));
+}
+
 /// `BuildFailed` round-trips, with and without the module a `Mismatch` built, and an unknown reason does not decode.
 #[test]
 fn a_build_failure_round_trips() {
