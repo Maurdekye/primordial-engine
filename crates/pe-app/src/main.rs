@@ -17,7 +17,9 @@
 //!
 //! `--drawn-time present:<ms> | a:<ms> | b:<ms>` overrides X8, the drawn time (render.md 7), for tests: Present with
 //! that `L_max`, (a) with that `L_max`, or (b) with that `D_render`. By default VR draws Present at two simulation
-//! frames and the desktop (a) (@coordinator-opus). Every run ends by printing the
+//! frames and the desktop (a) (@coordinator-opus). `present:` is Present only in VR: the
+//! desktop's display time is the next refresh, not now, so there it is (a) with the measured display period added to
+//! `L_max` (render.md 7; @shader-reviewer's nit on 197fc122). Every run ends by printing the
 //! presenter's counters (`display:`), and a VR run the measured display lead too.
 //!
 //! `--mcp-pipe` and `--mcp-http` start pe-mcp's transports over pe-api, so an agent can read and edit the world for
@@ -524,7 +526,7 @@ fn finish<S: Debug, E>(stats: Result<S, E>) {
 fn usage() -> ! {
     fail(
         "usage: pe-app [--vr] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] [--advertise <addr>]... \
-         [--identity <path>] [--drawn-time present:<ms>|a:<ms>|b:<ms>] [--mcp-pipe] [--mcp-http] \
+         [--identity <path>] [--drawn-time present:<ms> (VR)|a:<ms>|b:<ms>] [--mcp-pipe] [--mcp-http] \
          [--agent <command> <args>...]",
     )
 }
