@@ -155,6 +155,7 @@ fn shared_sim(
 ) -> Sim {
     let rate = SimRate::DEFAULT;
     let path = o.identity.clone().map_or_else(net::default_identity_path, Ok).unwrap_or_else(|e| fail(&e.to_string()));
+    // The build service's folder follows this path too (start_builds).
     let seed =
         net::identity_seed(&path).unwrap_or_else(|e| fail(&format!("the identity file {}: {e}", path.display())));
     let opener = matches!(shared, Shared::Open);
@@ -251,7 +252,16 @@ fn main() {
         Err(e) => fail(&format!("the simulation thread did not start: {e}")),
     };
     wake.set(sim.waker());
-    let attester = ports.as_ref().zip(me).and_then(|(p, me)| start_builds(inbox, p, me));
+    let builds = ports.as_ref().zip(me).and_then(|(p, me)| start_builds(inbox, p, me, options.identity.as_deref()));
+    let (attester, builder) = match builds {
+        Some((a, b)) => (Some(a), Some(b)),
+        None => (None, None),
+    };
+    // pe-api builds through the attester's own service (api.md 7.1): one build at a time and one cache by V.
+    let ports = match (ports, builder) {
+        (Some(p), Some(b)) => Some(p.with_builds(b)),
+        (p, _) => p,
+    };
     let mcp = ports.filter(|_| mcp_wanted).map(|p| {
         let member = me.unwrap_or_else(|| fail("an agent acts for this machine's member, and there is none"));
         match api::spawn_mcp(p.api(), mcp_opts(&options, member)) {
@@ -345,22 +355,28 @@ fn mcp_opts(o: &Options, member: MemberKey) -> HostOpts {
 }
 
 /// The build service and its attester (builds.rs): pe-logic's toolchain (`Toolchain::current` until D75's installed
-/// copy), the engine's pe-sdk, and the folder `b` beside this machine's identity seed. Without a toolchain this machine
-/// still runs but attests no script build: at n = 2 a commit then voids at its deadline.
+/// copy), the engine's pe-sdk, and the build folder beside this machine's identity file, the `--identity` given or the
+/// default (`builds::build_dir`). Without a toolchain this machine still runs but builds no script: it attests none (at
+/// n = 2 a commit then voids at its deadline), and pe-api's `code_check` answers `unavailable`.
 fn start_builds(
     inbox: pe_replica::logic::ModuleInbox,
     ports: &api::Ports,
     me: MemberKey,
-) -> Option<builds::AttesterThread> {
-    let started = (|| -> Result<builds::AttesterThread, String> {
+    identity: Option<&std::path::Path>,
+) -> Option<(builds::AttesterThread, Arc<builds::Builder>)> {
+    let started = (|| -> Result<_, String> {
         let toolchain = pe_logic::build::Toolchain::current().map_err(|e| e.to_string())?;
-        let dir = net::default_identity_path().map_err(|e| e.to_string())?.with_file_name("b");
-        let config = builds::BuildConfig { toolchain, sdk: pe_logic::build::engine_sdk(), dir };
-        let builder = builds::Builder::new(config, inbox.clone()).map_err(|e| e.to_string())?;
-        builds::spawn_attester(Arc::new(builder), inbox, ports.shared.clone(), ports.queue.clone(), me)
-            .map_err(|e| e.to_string())
+        let identity =
+            identity.map_or_else(net::default_identity_path, |p| Ok(p.to_path_buf())).map_err(|e| e.to_string())?;
+        let config = builds::BuildConfig::new(toolchain, pe_logic::build::engine_sdk(), builds::build_dir(&identity));
+        let builder = Arc::new(builds::Builder::new(config, inbox.clone()).map_err(|e| e.to_string())?);
+        let thread = builds::spawn_attester(builder.clone(), inbox, ports.shared.clone(), ports.queue.clone(), me)
+            .map_err(|e| e.to_string())?;
+        Ok((thread, builder))
     })();
-    started.map_err(|e| eprintln!("pe-app: the build service did not start, so no script build is attested: {e}")).ok()
+    started
+        .map_err(|e| eprintln!("pe-app: the build service did not start, so this machine builds no script: {e}"))
+        .ok()
 }
 
 fn stop_builds(attester: Option<builds::AttesterThread>) {
