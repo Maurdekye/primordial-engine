@@ -1003,7 +1003,7 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     lp(unit)`, the unit in 3.6's canonical spelling, empty for none. The kind byte holds the kind's number in its
     low five bits and the field's colour space (3.6) in its high three: 0 none, 1 `LinearSrgb`. The kind
     numbering is frozen: U8 0, U16 1, U32 2, U64 3, I8 4, I16 5, I32 6, I64 7, F32 8, F64 9, Bool 10, ObjectRef 11,
-    BlobRef 12, SimBlobRef 13, Pos 14, MemberKey 15, EntryRef 16, Hash 17; a new kind takes the next number;
+    BlobRef 12, SimBlobRef 13, Pos 14, MemberKey 15, EntryRef 16, Hash 17; a new kind takes the next number, up to 31;
   - lines: no entries in M1;
   - modules (slice D; pending commits since logic.md 6.2a): key the script asset id (32); value `flags u8` (bit 0: a
     current row, bit 1: a pending commit; at least one), then `u32 len ‖ current row` if present, then the pending

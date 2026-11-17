@@ -147,8 +147,10 @@ impl FieldDesc {
     }
 
     /// The field's kind and colour space as one byte (world-model.md 3.6): the kind's code in the low five bits,
-    /// the space's code (0 for none) in the high three.
+    /// the space's code (0 for none) in the high three. A kind code past 31 would read as a colour space, so it
+    /// panics (@engine-architect).
     pub fn kind_byte(&self, kind_code: u8) -> u8 {
+        assert!(kind_code < 32, "a kind code takes five bits of the kind byte");
         kind_code | self.color.map_or(0, ColorSpace::code) << 5
     }
 
