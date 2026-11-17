@@ -194,6 +194,10 @@ struct Conn {
     inbound: HashMap<StreamId, (Vec<u8>, usize)>,
     /// Outgoing stream bytes quinn hasn't taken yet, and whether the stream is a low lane (Repair, Bulk).
     outbound: VecDeque<(StreamId, Bytes, bool)>,
+    /// Stream messages quinn can't open yet, the peer's `N_streams_in` credit being used up (3.5), with their
+    /// priority: highest first, in order within one priority. They wait for the peer's MAX_STREAMS, which comes in a
+    /// packet, so each `drive` retries them. Nothing is dropped.
+    unopened: VecDeque<(i32, Bytes)>,
     /// A welcome that overtook the peer's hello (streams aren't ordered): handled once the hello is in.
     early_welcome: Option<Vec<u8>>,
     /// `L_msg` and `L_bulk`, the bounds of incoming lane streams.
@@ -395,7 +399,7 @@ impl Core {
             c.state = LinkState::Welcomed;
             let mut b = vec![K_WELCOME];
             b.extend_from_slice(&welcome.encode());
-            open_stream(c, 0, b.into());
+            open_stream(c, 10, b.into());
             c.open_recv = true;
             // Between two members, the peer's welcome may already be here, held until now (6.4).
             c.open_send = c.welcomed;
@@ -729,6 +733,8 @@ impl Core {
         c.budget.observe(now, st.rtt, st.rtt, st.cwnd);
         c.link.set_rtt(st.rtt, st.rtt.saturating_sub(st.min_rtt).max(st.rtt / 8));
         let low = c.budget.low_lanes_may_send();
+        // Streams that waited for the peer's credit first (3.5).
+        open_waiting(c);
         // Lanes out: datagrams while quinn has room (4.2), then streams.
         if c.open_send {
             let max_size = c.q.datagrams().max_size().unwrap_or(MIN_DGRAM);
@@ -749,7 +755,16 @@ impl Core {
                     break;
                 }
             }
-            while let Some((lane, seq, bytes)) = c.link.poll_stream(low) {
+            // A lane message leaves its lane's queue only once nothing waits for a stream, so at most one is outside
+            // it, and the lane order and the delay guard still apply to the rest (3.5). Repair and Bulk streams not
+            // yet fully handed to quinn (the delay guard holds them mid-write) keep at most half the peer's stream
+            // credit, so Protocol and Action always have the other half (both sides run one build, so the peer's
+            // `N_streams_in` is ours; @design-reviewer's Low 1 on 9e71ac4c).
+            let low_cap = (self.cfg.n_streams_in / 2).max(1) as usize; // at least 1, or a limit of 0-1 never sends low
+            while c.unopened.is_empty()
+                && let Some((lane, seq, bytes)) =
+                    c.link.poll_stream(low && c.outbound.iter().filter(|o| o.2).count() < low_cap)
+            {
                 let mut b = vec![lane as u8];
                 put_varint(&mut b, seq);
                 b.extend_from_slice(&bytes);
@@ -1071,6 +1086,7 @@ impl Conn {
             superseded: false,
             inbound: HashMap::new(),
             outbound: VecDeque::new(),
+            unopened: VecDeque::new(),
             early_welcome: None,
             limits: (lanes.l_msg, lanes.l_bulk),
         }
@@ -1129,9 +1145,21 @@ fn update_open(c: &mut Conn, events: &mut Vec<NetEvent>) {
     }
 }
 
-/// Open a stream at `priority`: the lanes at `4 - lane` (Protocol highest), the lifecycle records at 10.
+/// Open a stream at `priority`: the lanes at `4 - lane` (Protocol highest), the lifecycle records at 10. At the
+/// peer's stream limit the message waits in `unopened`, behind every message of the same or a higher priority.
 fn open_stream(c: &mut Conn, priority: i32, bytes: Bytes) {
-    if let Some(id) = c.q.streams().open(Dir::Uni) {
+    let at = c.unopened.iter().position(|(p, _)| *p < priority).unwrap_or(c.unopened.len());
+    c.unopened.insert(at, (priority, bytes));
+    open_waiting(c);
+}
+
+/// Open streams for the waiting messages, in order, while the peer's stream credit lasts.
+fn open_waiting(c: &mut Conn) {
+    while let Some((priority, bytes)) = c.unopened.pop_front() {
+        let Some(id) = c.q.streams().open(Dir::Uni) else {
+            c.unopened.push_front((priority, bytes));
+            break;
+        };
         let _ = c.q.send_stream(id).set_priority(priority);
         c.outbound.push_back((id, bytes, priority < 2));
     }
