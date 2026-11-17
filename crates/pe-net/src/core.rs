@@ -241,12 +241,15 @@ pub struct Core {
 #[derive(Debug)]
 pub enum CoreError {
     Tls(String),
+    /// The configured hello breaks a bound its peers enforce (6.3): refused here rather than sent and dropped.
+    Hello(crate::lifecycle::HelloError),
 }
 
 impl std::fmt::Display for CoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CoreError::Tls(e) => write!(f, "TLS configuration: {e}"),
+            CoreError::Hello(e) => write!(f, "{e}"),
         }
     }
 }
@@ -264,6 +267,7 @@ fn key(p: &PeerId) -> [u8; 32] {
 impl Core {
     /// `seed` seeds quinn's own randomness (packet numbers, padding); the harness passes a fixed one (8).
     pub fn new(cfg: Config, identity: Identity, seed: [u8; 32]) -> Result<Self, CoreError> {
+        cfg.hello.check().map_err(CoreError::Hello)?;
         let rng = cfg.random;
         let mut ecfg = EndpointConfig::new(Arc::new(ResetKey::new(rng).map_err(tls)?));
         ecfg.cid_generator(move || Box::new(Cids::new(rng)));

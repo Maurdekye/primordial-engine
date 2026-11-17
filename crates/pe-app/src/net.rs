@@ -23,8 +23,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use pe_agree::Node;
+use pe_net::core::CoreError;
 use pe_net::core::{Config, Core, Lifecycle};
-use pe_net::lifecycle::{CloseCode, Hello, Refusal, Welcome};
+use pe_net::lifecycle::{CloseCode, Hello, HelloError, Refusal, Welcome};
 use pe_net::thread::{Arrival, Command, HostClock, NetControl, NetHandle};
 use pe_net_crypto::identity::{Identity, Invite, Reply, StrictVerifier};
 use pe_seams::{Agreement, FrameClock, HostTime, MemberKey, NetEvent, Replica, SimRate, Transport};
@@ -98,6 +99,8 @@ pub enum NetError {
     /// The welcome didn't match: which part.
     Welcome(String),
     Genesis(GenesisError),
+    /// This machine's hello breaks a bound its peers enforce (transport.md 6.3): a build id over `MAX_BUILD`.
+    Hello(HelloError),
 }
 
 impl fmt::Display for NetError {
@@ -109,6 +112,7 @@ impl fmt::Display for NetError {
             NetError::Refused(why) => write!(f, "refused: {why}"),
             NetError::Welcome(why) => write!(f, "the welcome doesn't match: {why}"),
             NetError::Genesis(e) => write!(f, "the genesis record is refused: {e}"),
+            NetError::Hello(e) => write!(f, "this build can't connect: {e}"),
         }
     }
 }
@@ -298,7 +302,10 @@ impl Endpoint {
         pe_net_crypto::random::os().fill(&mut quinn_seed).map_err(|_| NetError::Core("no randomness".into()))?;
         let mut cfg = Config::new(hello, member);
         tweak(&mut cfg);
-        let core = Core::new(cfg, identity, quinn_seed).map_err(|e| NetError::Core(format!("{e:?}")))?;
+        let core = Core::new(cfg, identity, quinn_seed).map_err(|e| match e {
+            CoreError::Hello(e) => NetError::Hello(e),
+            e => NetError::Core(format!("{e:?}")),
+        })?;
         let handle = NetHandle::spawn_with(core, socket, host.clone(), QUEUE, arrival)?;
         Ok(Endpoint { seed, me, handle, addrs, local, host, welcome: None })
     }
@@ -711,6 +718,22 @@ mod tests {
     }
 
     const RATE: SimRate = SimRate::DEFAULT;
+
+    /// This build's id fits the hello's bound, or no peer could decode its hello (@iter-bench's finding).
+    #[test]
+    fn the_build_id_fits_the_hello() {
+        assert!(BUILD.len() <= pe_net::lifecycle::MAX_BUILD, "{} bytes", BUILD.len());
+    }
+
+    /// A build id over the hello's bound is refused by `bind` with a typed error, never sent to time out.
+    #[test]
+    fn bind_refuses_a_build_id_over_the_hello_s_bound() {
+        let long = vec![b'x'; pe_net::lifecycle::MAX_BUILD + 1];
+        let r = Endpoint::bind_with([21; 32], loopback(), Vec::new(), true, crate::clock::shared(), None, |c| {
+            c.hello.build = long
+        });
+        assert!(matches!(r, Err(NetError::Hello(HelloError::TooLong { field: "build id", .. }))), "{:?}", r.err());
+    }
 
     fn params() -> OpenParams {
         OpenParams { seed: 3, balls: 8, rate: RATE, epoch_lead: Duration::from_millis(1500) }
