@@ -195,6 +195,10 @@ pub struct FrameEnd {
     pub voided: Vec<Voided>,
 }
 
+/// What activating one pending commit gave (logic.md 6.2a): its re-key's report (`None` when nothing re-keyed), or
+/// why it is voided instead and, for a blocked re-key, what blocked it.
+pub type ActivationResult = Result<Option<RekeyReport>, (VoidKind, Option<Blocked>)>;
+
 /// One pending commit [`World::end_frame`] voided: its asset and version, why, the objects that blocked it (only for
 /// `RekeyBlockedAtActivation`), and who could not build it and why, in key order (Q1 (c)'s notice to the author; S5's
 /// `Voided.failed`).
@@ -636,12 +640,7 @@ impl World {
     /// Makes `p` asset `a`'s current version at the end of `frame` (`F`): the re-key of 7.9, judged again now for
     /// its author, then the row, which runs from `frame + 1`. All or nothing: an author who no longer holds `EDIT`,
     /// or a re-key that is now blocked or too large, voids the commit instead; a block names its objects.
-    fn activate(
-        &mut self,
-        a: AssetId,
-        p: &PendingCommit,
-        frame: Frame,
-    ) -> Result<Option<RekeyReport>, (VoidKind, Option<Blocked>)> {
+    fn activate(&mut self, a: AssetId, p: &PendingCommit, frame: Frame) -> ActivationResult {
         // An author whose `EDIT` was revoked since the commit: their pending code stops too.
         if !self.permits(p.author, perm::EDIT) {
             return Err((VoidKind::AuthorRevokedAtActivation, None));
@@ -1077,6 +1076,26 @@ impl World {
             d += 1;
         }
         d
+    }
+
+    /// The author's prediction of its own pending commit (logic.md 6.2a's option (i); @vdw-physics):
+    /// activates `asset`'s pending commit at the end of `frame` as `end_frame` would with a quorum, without the
+    /// quorum: the same re-key, its limits and the author's `EDIT` judged now, and the row, which runs from
+    /// `frame + 1`. Call it right after `end_frame(frame)` on the author's own replica, for a history that is only a
+    /// prediction: **never on a history whose roots are voted on**, since there the quorum decides (the replica holds
+    /// its votes from `c + 1` and replays under the rule when an `AttestBuild`, a `BuildFailed`, a leave or `D`
+    /// arrives).
+    ///
+    /// `None` if no commit is pending at `asset` (none, or voided). `Some(Ok(report))` activated it and removed the
+    /// pending record, as a real activation does; the report is `end_frame`'s. `Some(Err(why))` changed nothing and
+    /// leaves the record pending: a failed prediction is not a void, and the replica simply keeps the old code.
+    pub fn activate_for_prediction(&mut self, asset: AssetId, frame: Frame) -> Option<ActivationResult> {
+        let p = self.pending.get(&asset).filter(|p| p.void.is_none())?.clone();
+        let done = self.activate(asset, &p, frame);
+        if done.is_ok() {
+            Arc::make_mut(&mut self.pending).remove(&asset);
+        }
+        Some(done)
     }
 
     /// Ends a frame (7.2, 7.5, 8.1): expires claims and cooldowns, writes each pending hand pack's pose for
