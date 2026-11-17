@@ -278,6 +278,11 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
     display time. Each object is moved from the newest frame view by its velocity over the view's age only (`now −
     sim_time`, about 0-25 ms), capped at `L_max` = 2 simulation frames in case a view is late. It is never extrapolated
     by the headset's lead.
+    - **In code** (`DrawnTime::Present { l_max }`): pe-render resolves it as (a) does. The contract is the caller's:
+      pe-app's VR sink passes the host's `now` as `LocalPresentation.display_time`, never a prediction, and the
+      blends, cues and effects run on that clock too. The eye cameras and `hands` keep OpenXR's predicted time. A
+      desktop window passes now plus one refresh, so on the desktop Present is (a). `L_max` comes from the world's
+      simulation rate (33 ms at 60 Hz).
     - **The user's ruling, verbatim:** "i think you should just ignore all delays between the pc and headset, and
       assume any latency there is just the responsibility of the individual vr user to manage with their particular
       vr setup". So balls are drawn at the engine's present, the same moment as the user's hands are simulated
@@ -305,8 +310,8 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
   - (b) shows every object 40-60 ms or more after its simulated time.
   - Neither makes a pushed ball react sooner: the simulation hasn't seen the push yet.
 - **Counted under every rule** (for pe-xr's counters too): `t_draw − display_time`, the extrapolation span, the age
-  of the frame view drawn, and `extrapolation_error` under (a) and Present. Under Present in VR, `display_time −
-  t_draw` is the measured lead.
+  of the frame view drawn, and `extrapolation_error` under (a) and Present. Under Present in VR the display time
+  passed in is now, so pe-app measures the lead itself: OpenXR's predicted display time minus now, per frame.
 - **Desktop:** the display time is the next present, estimated as now plus one refresh period; the same rule applies.
 - **The test of D8:** displays at 72, 90, 120 and 165 Hz against simulations at 60 Hz, 90 Hz and one odd rate in
   the range, in a fake clock. Each
