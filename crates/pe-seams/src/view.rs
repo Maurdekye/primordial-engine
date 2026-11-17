@@ -11,14 +11,15 @@
 //!   a GPU float.
 //! - **One-shot effects fire once:** each has a stable [`EffectKey`] across replays, and a replay that removes one
 //!   lists its key in [`FrameView::retracted`].
+//! - **Code commits activate or are voided at a frame's end** (logic.md 6.2a): [`FrameView::activations`] records
+//!   each, keyed by [`ActivationKey`], and [`FrameView::activations_retracted`] names those a re-simulation no longer
+//!   produced (S5 v1.8).
 //! - **No GPU types here.** `GpuContext`, eye views and `render_views` are pe-render's, agreed between WS-render
 //!   and WS-xr.
 //!
 //! **Provisional in v0:** the drawable component shapes ([`Shape`], [`Appearance`], [`Light`]) follow
 //! world-model.md 3 and may gain fields with pe-world; [`Effect`]'s freshness fields, which WS-render and WS-diverge
 //! settle with the display layer's tests.
-
-use std::sync::Arc;
 
 use bytes::Bytes;
 
@@ -309,10 +310,130 @@ pub struct StepRecord {
     /// The frame it was stepped at.
     pub frame: Frame,
     pub outcome: Outcome,
-    /// Empty since logic.md 6.2a, whose re-key happens when a version activates, at the end of a frame and not in any
-    /// entry's step (pe-world's FrameEnd). Removed in the seam version that adds FrameView.activations
-    /// (@coordinator-opus).
-    pub rekeyed: Arc<[ObjectId]>,
+}
+
+/// A code commit's key in [`FrameView::activations`]: the script asset and the commit, its entry and op (S5 v1.8). A
+/// record published later with the same key supersedes the earlier one, whatever its frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ActivationKey {
+    /// The script asset (pe-world's `AssetId`).
+    pub asset: [u8; 32],
+    /// The commit: its entry and op, the version it brings.
+    pub version: Version,
+}
+
+/// What became of a code commit at the end of a frame (logic.md 6.2a; pe-world's `FrameEnd`; S5 v1.8,
+/// @coordinator-opus). Under 6.2a a commit only makes a pending version; it activates
+/// once a quorum of its voters has attested their builds, or is voided, both at a frame's end and never in an entry's
+/// step, so no [`StepRecord`] names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Activation {
+    pub key: ActivationKey,
+    /// The frame at whose end it happened: an activated version runs from `frame + 1`.
+    pub frame: Frame,
+    pub outcome: ActivationOutcome,
+}
+
+/// An [`Activation`]'s outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActivationOutcome {
+    /// The new version runs from the next frame. `rekeyed` names the objects whose rows the re-key moved to the new
+    /// version's ids, in id order; it is empty when no re-key was needed (a script's first version, or a same-source
+    /// commit, logic.md 6.1).
+    Activated { rekeyed: Vec<ObjectId> },
+    /// The commit was voided, and the old version stays bound.
+    Voided {
+        why: VoidedWhy,
+        /// For [`VoidedWhy::RekeyBlockedAtActivation`], the objects that blocked the re-key, in id order: the first 16
+        /// and how many more (pe-world's `Blocked`). Empty and 0 for every other reason.
+        objects: Vec<ObjectId>,
+        more: u32,
+        /// Every counted `BuildFailed` at the void, in voter key order, each with why: who could not build it, for
+        /// the author's notice (Q1 (c) of the user's build-asymmetry ruling). The failures explain the
+        /// void when `why` is `QuorumUnreachable` (with any voters who left) or `Unattested` (the rest had not
+        /// attested by `D`); a `QuorumUnreachable` with no failure is one that voters' leaving caused
+        /// (@api-eng). Empty when none failed.
+        failed: Vec<(MemberKey, BuildFailure)>,
+    },
+}
+
+/// Why a code commit was voided (logic.md 6.2a). The codes are pe-world's `VoidKind`'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum VoidedWhy {
+    /// No quorum of its voters attested it by its deadline `D` (6.2a item 4).
+    Unattested = 1,
+    /// At its activation frame, its re-key would lose data on an object its committer may not edit (world-model.md 7.9).
+    RekeyBlockedAtActivation = 2,
+    /// At its activation frame, its re-key would move more rows than pe-world allows.
+    RekeyTooLarge = 3,
+    /// At its activation frame, its author no longer held `EDIT`.
+    AuthorRevokedAtActivation = 4,
+    /// The voters that attested, plus those still members that had neither attested nor failed, could no longer
+    /// reach the quorum (6.2a item 4, for `BuildFailed` and for Leave).
+    QuorumUnreachable = 5,
+}
+
+impl VoidedWhy {
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(code: u8) -> Option<VoidedWhy> {
+        match code {
+            1 => Some(VoidedWhy::Unattested),
+            2 => Some(VoidedWhy::RekeyBlockedAtActivation),
+            3 => Some(VoidedWhy::RekeyTooLarge),
+            4 => Some(VoidedWhy::AuthorRevokedAtActivation),
+            5 => Some(VoidedWhy::QuorumUnreachable),
+            _ => None,
+        }
+    }
+}
+
+/// Why a member's build of a pending version failed (logic.md 6.2a item 2): the reason a `BuildFailed` entry carries.
+/// The codes are fixed, since pe-world writes them into the entry and into the hashed pending row (@world-model), and pe-world's op uses this type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum BuildFailure {
+    /// The compiler refused the source.
+    Compile = 1,
+    /// The build service refused what the build read (logic.md 6.2b's dep-info check).
+    Refused = 2,
+    /// The build passed the memory cap (6.2a item 5).
+    Cap = 3,
+    /// The module or the manifest differs from the author's, after a clean rebuild.
+    Mismatch = 4,
+    /// The machine failed with no compiler diagnostic (a disk, an antivirus, a killed process), after its retries.
+    Local = 5,
+}
+
+impl BuildFailure {
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(code: u8) -> Option<BuildFailure> {
+        match code {
+            1 => Some(BuildFailure::Compile),
+            2 => Some(BuildFailure::Refused),
+            3 => Some(BuildFailure::Cap),
+            4 => Some(BuildFailure::Mismatch),
+            5 => Some(BuildFailure::Local),
+            _ => None,
+        }
+    }
+
+    /// A short name for history lines and notices (@api-eng).
+    pub fn name(self) -> &'static str {
+        match self {
+            BuildFailure::Compile => "compile error",
+            BuildFailure::Refused => "refused input",
+            BuildFailure::Cap => "memory cap",
+            BuildFailure::Mismatch => "module mismatch",
+            BuildFailure::Local => "local fault",
+        }
+    }
 }
 
 /// This replica's standing with the quorum, so a reader never infers it from two frame numbers (S5 v1.5;
@@ -353,6 +474,17 @@ pub struct FrameView {
     /// The entries stepped since the last publication, with their outcomes; complete at `final_frame` (see
     /// [`StepRecord`]).
     pub changes: Vec<StepRecord>,
+    /// The code commits activated or voided at the ends of the frames this view's steps covered, in step order, then
+    /// asset order (S5 v1.8; logic.md 6.2a). Like `changes`, a record a reader takes in every view, in order: a
+    /// re-simulated frame end publishes its records again, and a record with the same [`ActivationKey`] supersedes
+    /// the earlier one. Provisional above `final_frame`, as `changes` are.
+    pub activations: Vec<Activation>,
+    /// Keys of activation records an earlier view published that this view's steps no longer produce: a
+    /// re-simulation without them, as when a late entry removes the attestation that completed a quorum, or when the
+    /// author's prediction of its own commit (6.2a's option (i)) is replaced. The reader drops what it held for each
+    /// key; a later record with the same key may follow (S5 v1.8; @vdw-physics, as [`FrameView::retracted`]
+    /// does for effects).
+    pub activations_retracted: Vec<ActivationKey>,
 }
 
 impl FrameView {
@@ -365,6 +497,17 @@ impl FrameView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_codes_round_trip() {
+        for c in 1..=5u8 {
+            assert_eq!(BuildFailure::from_code(c).map(BuildFailure::code), Some(c));
+            assert_eq!(VoidedWhy::from_code(c).map(VoidedWhy::code), Some(c));
+        }
+        assert_eq!((BuildFailure::from_code(0), BuildFailure::from_code(6)), (None, None));
+        assert_eq!((VoidedWhy::from_code(0), VoidedWhy::from_code(6)), (None, None));
+        assert_eq!(BuildFailure::Mismatch.name(), "module mismatch");
+    }
 
     #[test]
     fn flags_compose() {

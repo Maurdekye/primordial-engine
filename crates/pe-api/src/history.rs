@@ -168,7 +168,6 @@ mod tests {
             class: pe_seams::Class::Edit,
             frame: pe_core::Frame(frame),
             outcome: WorldOutcome::Applied { created: vec![], overwrote: vec![], notes: vec![], inverse: None },
-            rekeyed: Default::default(),
         }
     }
 
