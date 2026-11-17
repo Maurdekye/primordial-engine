@@ -6,7 +6,10 @@
 # the base's copy), a failing command fails the run and so does one that exits 0 without its expected output,
 # --run refuses a checkout that isn't at the landing, has uncommitted changes or untracked files under a
 # triggered check's paths (and doesn't mind them elsewhere), a base without a table uses the landing's with a
-# NOTE, and a malformed table is an error.
+# NOTE, and a malformed table is an error. Then, for a check whose command names {crates}: it holds the touched
+# workspace members (by folder, so a path in pe-net-crypto isn't pe-net's) less the skipped packages, every
+# member for a path on an 'all' line, only the landing's members, and nothing to run when none is left; and a
+# landing whose own table is malformed (one that adds an exemption: there is no such keyword) fails, listing too.
 # It runs no cargo, so it needs no build slot.
 #
 #   bash scripts/test_tier1.sh [<rev>]          (default HEAD; <rev> must have scripts/tier1.sh)
@@ -90,6 +93,44 @@ expect failing-check-fails "$failing" "$fbase" run 1 "marker: FAIL \(exit 3\)" "
 expect exit-0-without-expected-output-fails "$empty" "$ebase" run 1 "marker: FAIL \(exit 0, but no line of its output matches" marker
 expect base-without-table "$newtab" "$notab" run 0 "NOTE: .* has no scripts/tier1_checks.txt yet" "marker: PASS" marker
 expect malformed-table "$overmal" "$malformed" list 2 "unknown keyword 'wen'"
+
+# {crates}: a check whose command names it, over the workspace members of the landing's root Cargo.toml.
+ctable() {  # the one check, which echoes what {crates} became
+  printf '%s\n' '# a test table' 'check crates' '  why  the test' '  when crates/** rust-toolchain.toml' \
+    '  all  rust-toolchain.toml' '  skip box3d-rust' \
+    "  run  echo \"expanded:{crates}:\" > \"\$TIER1_TEST_OUT/marker\"; echo \"expanded:{crates}:\"; echo marker-ok" \
+    '  expect ^marker-ok$'
+}
+touch_() { local f; for f in "$@"; do mkdir -p "$R/$(dirname "$f")"; echo "# tier1 test" >> "$R/$f"; done; }
+g checkout -q -f --detach "$sha"; ctable > "$R/scripts/tier1_checks.txt"
+g add -A; g commit -q -m "base: a {crates} check"; cbase=$(g rev-parse HEAD)
+cbranch() { g checkout -q -f --detach "$cbase"; }
+cbranch; touch_ crates/pe-world/src/lib.rs crates/pe-core/src/lib.rs; ctwo=$(commit "touches two crates")
+cbranch; touch_ crates/box3d-fork/Cargo.toml crates/pe-net-crypto/src/lib.rs
+cskip=$(commit "touches a skipped crate and a prefix-named one")
+cbranch; touch_ crates/box3d-fork/Cargo.toml; cnone=$(commit "touches only a skipped crate")
+cbranch; touch_ rust-toolchain.toml; call=$(commit "touches a path on the 'all' line")
+cbranch; touch_ crates/pe-world/src/lib.rs
+sed -i 's/^  skip box3d-rust$/&\n  exempt pe-core @someone 1 lint/' "$R/scripts/tier1_checks.txt"
+grep -q '^  exempt pe-core' "$R/scripts/tier1_checks.txt" || die "could not plant the exemption"
+cbadown=$(commit "touches a crate, and its own table adds an exemption (no such keyword)")
+cbranch; sed -i '/"crates\/pe-xr"/d' "$R/Cargo.toml"; touch_ crates/pe-xr/src/lib.rs
+grep -q '"crates/pe-xr"' "$R/Cargo.toml" && die "could not drop pe-xr from the members"
+cgone=$(commit "drops a member, touches its folder")
+expect crates-expands-the-touched-members "$ctwo" "$cbase" run 0 "expanded:-p pe-core -p pe-world:$" "crates: PASS" \
+  "!\{crates\}:" marker
+expect crates-leaves-out-skipped "$cskip" "$cbase" run 0 "expanded:-p pe-net-crypto:$" "\{crates\}: box3d-rust skipped" \
+  marker
+expect crates-nothing-left-to-run "$cnone" "$cbase" run 0 "crates: nothing to run: box3d-rust skipped" \
+  "1 check\(s\) triggered: 0 passed, 0 failed, 1 with nothing to run" nomarker
+expect crates-all-line-means-every-member "$call" "$cbase" run 0 "every member, for a path on its 'all' lines" \
+  "expanded:-p pe-core -p pe-sim -p pe-physics .*-p pe-app:$" "!expanded:.*box3d-rust" marker
+expect own-table-malformed-fails "$cbadown" "$cbase" run 1 \
+  "landing's own scripts/tier1_checks.txt has an error.*unknown keyword 'exempt'" "expanded:-p pe-world:$" marker
+expect own-table-malformed-fails-listing-too "$cbadown" "$cbase" list 1 \
+  "landing's own scripts/tier1_checks.txt has an error" nomarker
+expect crates-only-members-of-the-landing "$cgone" "$cbase" run 0 \
+  "crates: nothing to run: no workspace member holds a path that triggers it" nomarker
 # --run with the checkout elsewhere: tier1.sh refuses rather than test the wrong tree.
 g checkout -q -f --detach "$base"
 (cd "$R" && bash scripts/tier1.sh --base "$base" --run "$touches") > "$tmp/out.log" 2>&1; rc=$?

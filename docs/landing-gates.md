@@ -155,6 +155,18 @@ so a renamed or ignored test would otherwise pass). `scripts/tier1.sh` runs the 
   Without `--run` it lists the checks the landing triggers and the paths that trigger them. `--run` refuses
   uncommitted changes, and untracked files under a triggered check's paths, which would be tested in place of
   the landing's.
+* **`{crates}` scopes a check to the crates a landing touches** (refound plan 4.6). In a command it becomes
+  `-p <package>` for each workspace member (the root `Cargo.toml`'s members, as the landing has them) whose
+  folder holds a path that triggers the check. A path on the check's `all` lines (the toolchain pin, a cargo
+  configuration, for clippy also `Cargo.lock` and the root manifest) makes it every member instead. The check's
+  `skip` packages are never included (box3d-fork, whose package is `box3d-rust`, by C10). When none is left, the
+  check has nothing to run, which isn't a failure. A touched crate's dependents aren't tier 1's: the job's
+  workspace check compiles them, and tier 2 tests them.
+* **No crate is exempt.** The coordinator's ruling (ma3d5082e0516) allowed an exempt list that only shrinks, for
+  crates that failed clippy when the check started. The census on main ff9be64b found none: every one of the 19
+  crates passed `clippy --no-deps -- -D warnings` on its own, with no warning. So the table has no exempt list,
+  and the runner has no way to write one: a landing whose own table is malformed (an unknown keyword included)
+  fails tier 1, since that table would stop every landing after it.
 * **A check runs the landing's own code** (its test, and the files the test reads), so a landing that changes
   what a check runs changes the check that judges it. Read such a diff as a change to the check.
 * **The table and the runner come from the base,** like the gate's code (the runner hands over to the base's
@@ -167,11 +179,21 @@ so a renamed or ignored test would otherwise pass). `scripts/tier1.sh` runs the 
     builds the lamp test script in two folders and again from a warm cache, and checks that the modules are the
     same bytes. It needs the `wasm32-unknown-unknown` target. The same check across two operating systems isn't
     tier 1 but periodic: tier 2's hosted matrix after 2026-11-16, and until then a run on WSL after a landing.
+  * `fmt`: `cargo fmt --all --check`, when a Rust file or a rustfmt configuration changes. It builds nothing.
+  * `clippy`: `cargo clippy {crates} --all-targets --locked --no-deps -- -D warnings`. `--no-deps` keeps it to
+    the touched crates: without it, clippy also lints the workspace members they depend on.
+  * `test`: `cargo test {crates} --locked`, the touched crates' unit, integration and doc tests, with default
+    features.
+  * `model-fast`: the agreement model's fast profile (`models/cuts/README.md`, about 2 minutes), when
+    `models/cuts/` changes. Its output must say that all 16 checks met their expectation.
+  * The harness's fast profile follows once its owner names the command.
 * **Its self-test,** `bash scripts/test_tier1.sh`, runs no cargo, so it needs no build slot. In a throwaway clone
-  it checks, in fourteen cases, that a landing triggers and runs the checks its paths name and no others, that
+  it checks, in twenty-one cases, that a landing triggers and runs the checks its paths name and no others, that
   the table and the runner come from the base, that a failing command fails the run and so does one that exits 0
   without its expected output, that `--run` refuses a checkout that isn't at the landing or isn't clean where it
-  matters, and that a malformed table is an error.
+  matters, and that a malformed table is an error. For `{crates}`, it checks that it holds exactly the touched
+  members less the skipped ones (every member for an `all` path, and only the landing's members), and that a
+  landing whose own table is malformed fails.
 * Hosted CI will run it too, later (refound-plan 4.6).
 
 ## Accepting an exception

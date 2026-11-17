@@ -12,12 +12,18 @@
 # check's paths; every triggered check runs, and each result prints. A check passes when its command exits 0 and,
 # if the check has an `expect` line, a line of the command's output matches that regex (so a test filter that
 # matches no test can't pass).
+# A command may name {crates}. It becomes `-p <package>` for each workspace member (the members of the root
+# Cargo.toml, as the landing has them) whose folder holds a path that triggers the check, or for every member
+# when the diff touches a path on the check's `all` lines, less the check's `skip` packages. When none is left,
+# the check has nothing to run.
 # The table and this script come from the base, like the gate's code (it hands over to the base's copy at once),
 # so a landing can't drop or skip a check it triggers; a change to either applies from the next landing. When the
-# base has no table yet, the landing's own is used, with a NOTE.
+# base has no table yet, the landing's own is used, with a NOTE. The landing's own table is read too: a landing
+# whose table is malformed fails, since that table would stop every landing after it.
 # Environment: PE_TIER1_WRAP, a command line to run each command under, such as the org's build-slot wrapper
 # (read with eval, so quote paths in it as in a shell).
-# Exit 0 if every triggered check passes (without --run: after listing), 1 if one fails, 2 on an error.
+# Exit 0 if every triggered check passes (without --run: after listing), 1 if one fails or the landing's own
+# table is refused (in both modes), 2 on an error.
 set -u
 die() { echo "tier1: ERROR: $*" >&2; exit 2; }
 usage="usage: scripts/tier1.sh [--base <rev>] [--run] [<rev>]"
@@ -43,47 +49,142 @@ if [ "${PE_TIER1_CODE:-}" != "$bsha" ] && git cat-file -e "$bsha:scripts/tier1.s
   exit $rc
 fi
 table=scripts/tier1_checks.txt
+own=0
 if tab=$(git show "$bsha:$table" 2> /dev/null); then
   :
 elif tab=$(git show "$sha:$table" 2> /dev/null); then
   echo "tier1: NOTE: $(short "$bsha") has no $table yet; the landing's own table applies"
+  own=1
 else
   echo "tier1: neither $(short "$bsha") nor $(short "$sha") has $table: nothing to check"
   exit 0
 fi
 
-# The table: "check <name>" starts a check; "why", "when", "needs", "run" and "expect" lines belong to the last one.
-names=() whens=() needs=() runs=() expects=()
-n=-1 lineno=0
-while IFS= read -r line || [ -n "$line" ]; do
-  lineno=$((lineno + 1))
-  line=${line%$'\r'}
-  set -f; set -- $line; set +f
-  [ $# -gt 0 ] || continue
-  case "$1" in '#'*) continue ;; esac
-  key=$1; shift
-  rest=${line#*"$key"}; rest=${rest#"${rest%%[![:space:]]*}"}
-  if [ "$key" = check ]; then
-    [ $# = 1 ] || die "$table line $lineno: 'check' takes one name"
-    n=$((n + 1)); names[n]=$1; whens[n]= needs[n]= runs[n]= expects[n]=
-    continue
+# parse_table <text>: reads a table. "check <name>" starts a check; "why", "when", "all", "needs", "skip", "run"
+# and "expect" lines belong to the last one. It fills names, whens, alls, needs, skips (packages,
+# space-separated), runs and expects. On an error it sets perr and returns 1.
+pkgre='^[A-Za-z0-9_-]+$'
+parse_table() {
+  local text=$1 n=-1 lineno=0 line key rest w
+  names=() whens=() alls=() needs=() skips=() runs=() expects=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    line=${line%$'\r'}
+    set -f; set -- $line; set +f
+    [ $# -gt 0 ] || continue
+    case "$1" in '#'*) continue ;; esac
+    key=$1; shift
+    rest=${line#*"$key"}; rest=${rest#"${rest%%[![:space:]]*}"}
+    if [ "$key" = check ]; then
+      [ $# = 1 ] || { perr="line $lineno: 'check' takes one name"; return 1; }
+      for w in ${names[@]+"${names[@]}"}; do
+        [ "$w" != "$1" ] || { perr="line $lineno: a second check named $1"; return 1; }
+      done
+      n=$((n + 1)); names[n]=$1; whens[n]= alls[n]= needs[n]= skips[n]= runs[n]= expects[n]=
+      continue
+    fi
+    [ $n -ge 0 ] || { perr="line $lineno: '$key' before the first 'check'"; return 1; }
+    [ -n "$rest" ] || { perr="line $lineno: '$key' needs a value"; return 1; }
+    case "$key" in
+      why) ;;
+      when) whens[n]="${whens[n]} $rest" ;;
+      all) alls[n]="${alls[n]} $rest" ;;
+      needs) needs[n]="${needs[n]:+${needs[n]}; }$rest" ;;
+      skip)
+        for w in "$@"; do
+          [[ $w =~ $pkgre ]] || { perr="line $lineno: 'skip' takes package names, and '$w' isn't one"; return 1; }
+        done
+        skips[n]="${skips[n]} $*" ;;
+      run)
+        [ -z "${runs[n]}" ] || { perr="line $lineno: check ${names[n]} has two 'run' lines"; return 1; }
+        runs[n]=$rest ;;
+      expect)
+        [ -z "${expects[n]}" ] || { perr="line $lineno: check ${names[n]} has two 'expect' lines"; return 1; }
+        expects[n]=$rest ;;
+      *) perr="line $lineno: unknown keyword '$key' (check, why, when, all, needs, skip, run, expect)"; return 1 ;;
+    esac
+  done <<< "$text"
+  for w in "${!names[@]}"; do
+    [ -n "${whens[w]}" ] || { perr="check ${names[w]} has no 'when' line"; return 1; }
+    [ -n "${runs[w]}" ] || { perr="check ${names[w]} has no 'run' line"; return 1; }
+    case "${runs[w]}" in
+      *'{crates}'*) ;;
+      *) [ -z "${alls[w]}${skips[w]}" ] ||
+           { perr="check ${names[w]}: 'all' and 'skip' need {crates} in its 'run' line"; return 1; } ;;
+    esac
+  done
+  return 0
+}
+
+# The landing's own table, when it differs from the base's, must read cleanly: it judges the landings after it.
+lerr=
+if [ $own = 0 ] && ltab=$(git show "$sha:$table" 2> /dev/null) && [ "$ltab" != "$tab" ]; then
+  parse_table "$ltab" || lerr=$perr
+fi
+parse_table "$tab" || die "$table: $perr"
+
+# The workspace members as the landing has them: each member's folder and its package name. Read once, the
+# first time a triggered check names {crates}.
+mdirs=() mpkgs=() mread=0
+read_members() {
+  [ $mread = 0 ] || return 0
+  mread=1
+  local man line d name section= inm=0 qre='"([^"]*)"' hre='^[[:space:]]*\[' mre='^[[:space:]]*members[[:space:]]*='
+  man=$(git show "$sha:Cargo.toml" 2> /dev/null) || die "{crates} needs a Cargo.toml at the root of $(short "$sha")"
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%#*}
+    if [ $inm = 0 ]; then
+      if [[ $line =~ $hre ]]; then section=$(printf '%s' "$line" | tr -d '[:space:]'); continue; fi
+      [ "$section" = '[workspace]' ] && [[ $line =~ $mre ]] || continue
+      inm=1; line=${line#*=}
+    fi
+    while [[ $line =~ $qre ]]; do
+      d=${BASH_REMATCH[1]}
+      case "$d" in *[*?[]*) die "the root Cargo.toml's member '$d' is a pattern; {crates} needs each member's folder" ;; esac
+      mdirs+=("${d%/}")
+      line=${line#*"\"$d\""}
+    done
+    case "$line" in *']'*) break ;; esac
+  done <<< "$man"
+  [ ${#mdirs[@]} -gt 0 ] || die "can't read the workspace members from the root Cargo.toml of $(short "$sha")"
+  for d in "${mdirs[@]}"; do
+    name=$(git show "$sha:$d/Cargo.toml" 2> /dev/null |
+      sed -n '/^\[package\]/,/^\[/s/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+    [[ $name =~ $pkgre ]] || die "can't read the package name of the workspace member $d"
+    mpkgs+=("$name")
+  done
+}
+
+# expand <check index> <its triggering paths>: sets crates to the check's -p list, and notes to how it was
+# chosen and the packages it leaves out. Returns 1 when none is left.
+expand() {
+  local i=$1 paths=$2 k p sel all=0 allhit g specs
+  read_members
+  if [ -n "${alls[i]}" ]; then
+    specs=()
+    set -f; for g in ${alls[i]}; do specs+=(":(glob)$g"); done; set +f
+    allhit=$(git -c core.quotepath=off diff --name-only --no-renames "$bsha" "$sha" -- "${specs[@]}") ||
+      die "git diff failed for check ${names[i]}"
+    [ -z "$allhit" ] || all=1
   fi
-  [ $n -ge 0 ] || die "$table line $lineno: '$key' before the first 'check'"
-  [ -n "$rest" ] || die "$table line $lineno: '$key' needs a value"
-  case "$key" in
-    why) ;;
-    when) whens[n]="${whens[n]} $rest" ;;
-    needs) needs[n]="${needs[n]:+${needs[n]}; }$rest" ;;
-    run) [ -z "${runs[n]}" ] || die "$table line $lineno: check ${names[n]} has two 'run' lines"; runs[n]=$rest ;;
-    expect) [ -z "${expects[n]}" ] || die "$table line $lineno: check ${names[n]} has two 'expect' lines"
-      expects[n]=$rest ;;
-    *) die "$table line $lineno: unknown keyword '$key' (check, why, when, needs, run, expect)" ;;
-  esac
-done <<< "$tab"
-for i in "${!names[@]}"; do
-  [ -n "${whens[i]}" ] || die "$table: check ${names[i]} has no 'when' line"
-  [ -n "${runs[i]}" ] || die "$table: check ${names[i]} has no 'run' line"
-done
+  crates= notes=
+  for k in "${!mdirs[@]}"; do
+    p=${mpkgs[k]} sel=$all
+    if [ $sel = 0 ]; then
+      while IFS= read -r g; do
+        case "$g" in "${mdirs[k]}"/*) sel=1; break ;; esac
+      done <<< "$paths"
+    fi
+    [ $sel = 1 ] || continue
+    case " ${skips[i]} " in *" $p "*) notes="$notes; $p skipped"; continue ;; esac
+    crates="$crates -p $p"
+  done
+  [ $all = 0 ] || notes="every member, for a path on its 'all' lines$notes"
+  notes=${notes#; }
+  [ -z "$crates" ] || return 0
+  [ -n "$notes" ] || notes="no workspace member holds a path that triggers it"
+  return 1
+}
 
 if [ $run = 1 ]; then
   [ "$(git rev-parse HEAD)" = "$sha" ] || die "--run needs the checkout at $(short "$sha"); HEAD is $(short HEAD)"
@@ -98,7 +199,12 @@ fi
 wrap=(); if [ -n "${PE_TIER1_WRAP:-}" ]; then eval "wrap=($PE_TIER1_WRAP)"; fi
 
 echo "tier1: $(short "$sha") against $(short "$bsha"): ${#names[@]} check(s) in the table"
-hit=0 passed=0 failed=0
+refused=0
+if [ -n "$lerr" ]; then
+  echo "tier1: FAIL: the landing's own $table has an error, which would stop every landing after it: $lerr"
+  refused=1
+fi
+hit=0 passed=0 failed=0 empty=0
 for i in "${!names[@]}"; do
   specs=()
   set -f
@@ -113,13 +219,23 @@ for i in "${!names[@]}"; do
   hit=$((hit + 1))
   count=$(printf '%s\n' "$paths" | wc -l | tr -d ' ')
   echo "tier1: ${names[i]}: triggered by $count path(s): $(printf '%s\n' "$paths" | head -3 | tr '\n' ' ')"
-  [ $run = 1 ] || { echo "tier1:   run: ${runs[i]}"; continue; }
+  cmd=${runs[i]}
+  case "$cmd" in
+    *'{crates}'*)
+      if ! expand "$i" "$paths"; then
+        empty=$((empty + 1)); echo "tier1: ${names[i]}: nothing to run: $notes"
+        continue
+      fi
+      [ -z "$notes" ] || echo "tier1:   {crates}: $notes"
+      cmd=${cmd//'{crates}'/${crates# }} ;;
+  esac
+  [ $run = 1 ] || { echo "tier1:   run: $cmd"; continue; }
   stray=$(git -c core.quotepath=off status --porcelain --untracked-files=all -- "${specs[@]}" | sed -n 's/^?? //p')
   [ -z "$stray" ] || die "untracked files under check ${names[i]}'s paths would be tested with the landing:
 $(printf '%s\n' "$stray" | head -5)"
   [ -z "${needs[i]}" ] || echo "tier1:   needs: ${needs[i]}"
-  echo "tier1:   running: ${runs[i]}"
-  ${wrap[@]+"${wrap[@]}"} bash -c "${runs[i]}" 2>&1 | tee "$out"; rc=${PIPESTATUS[0]}
+  echo "tier1:   running: $cmd"
+  ${wrap[@]+"${wrap[@]}"} bash -c "$cmd" 2>&1 | tee "$out"; rc=${PIPESTATUS[0]}
   if [ "$rc" != 0 ]; then
     failed=$((failed + 1)); echo "tier1: ${names[i]}: FAIL (exit $rc)"
   elif [ -n "${expects[i]}" ] && ! grep -qE -- "${expects[i]}" "$out"; then
@@ -128,9 +244,10 @@ $(printf '%s\n' "$stray" | head -5)"
     passed=$((passed + 1)); echo "tier1: ${names[i]}: PASS"
   fi
 done
+nothing=; [ $empty = 0 ] || nothing=", $empty with nothing to run"
 if [ $run = 0 ]; then
-  echo "tier1: $hit check(s) triggered (listed only; --run runs them)"
-  exit 0
+  echo "tier1: $hit check(s) triggered$nothing (listed only; --run runs them)"
+  [ $refused = 0 ]; exit
 fi
-echo "tier1: $hit check(s) triggered: $passed passed, $failed failed"
-[ $failed = 0 ]
+echo "tier1: $hit check(s) triggered: $passed passed, $failed failed$nothing"
+[ $failed = 0 ] && [ $refused = 0 ]
