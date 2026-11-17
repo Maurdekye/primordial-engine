@@ -13,6 +13,9 @@ description = "The replica (seam S2): one domain's deterministic state machine w
 # that adapter only: the step is the same code with or without it, and without it pe-replica builds no wasmtime. Each
 # crate that builds a replica with the runner turns it on in its own manifest.
 logic = ["dep:pe-logic", "dep:pe-sdk", "dep:wasmtime"]
+# Test-only damage to the physics world (`ReplicaImpl::damage_body`, `rekeyframe`): pe-diverge's repair tests. Never in a
+# shipped build.
+test-util = []
 
 [dependencies]
 bytes.workspace = true
