@@ -765,6 +765,32 @@ Rules, agreed with @ballpit-viz (WS-render writes them into pe-render's spec):
   all, `capture_unavailable`.
 - At most one capture in flight per principal; another gets `rate_limited`.
 
+**The capture port in M1** (@coordinator-opus):
+- **pe-api** (`capture.rs`) resolves the request in the newest snapshot: object references (paths, ids) to ids,
+  positions (4.4's forms, from `world_origin` or an object; a camera has no `parent`) to world positions, and the
+  highlighted objects' names for `label`. It keeps the rules: `at` other than `latest` is `invalid_argument` (M1 draws
+  the newest frame only; views kept by frame wait until someone needs them), the size bound, the read scope, one in
+  flight per principal. It calls the port `Captures::capture(Order, deadline)` and answers with the camera as
+  `{"relative_to": "world_origin", "offset"}` and `visible` largest first, at most 50, named, with
+  `visible_approx: true`.
+- **Aims:** `player: "me"` (or my member) is this machine's own view, the window's or the headset's left eye, at the
+  capture's aspect. Another player's view is `capture_unavailable` until heads exist. An orbit stands `yaw_deg`
+  (default 30) about world +y from the object's world +z side (its rotation is ignored) and `pitch_deg` (default 20,
+  within ±89) above it, at `distance_m` (at most 10 km) or three bounding radii (at least 0.5 m), with a 50° vertical
+  field of view. A camera that would stand outside the world's range is refused `invalid_argument` on `from`. A placed
+  camera looks from `at` at an object or a position, with `fov_deg` (default 50, within 1-170). A placed `at` given
+  relative to an object resolves when the request arrives, while the look-at object and an orbit's object resolve in
+  the frame drawn, so for a moving object the two can differ by a frame or two.
+- **pe-render** (`capture_service.rs`): a `CaptureQueue` the port's caller blocks on, and a `CaptureServer` that the
+  loop drawing on this machine calls once a frame, after its present: the desktop window (`DesktopConfig.captures`),
+  the headset (`VrSink::with_captures`), or pe-app's headless thread. It resolves each object's pose in the view it
+  draws, so the camera and the picture agree. At most one capture is in flight per loop, and an order past its
+  deadline is answered `timeout` and never drawn.
+- **Headless:** with neither window nor headset, pe-app's thread (`pe_app::capture::spawn_headless`) opens a GPU
+  context only at the first order. Tests take a software adapter (WARP, lavapipe) and report themselves skipped
+  without one. With no adapter at all an order is `capture_unavailable`, and the next one tries again. A headless
+  machine draws no view of its own, so `player` is `capture_unavailable` there with "capture with orbit or at".
+
 ## 9. Inside pe-api
 
 ### 9.1 Snapshots and retention

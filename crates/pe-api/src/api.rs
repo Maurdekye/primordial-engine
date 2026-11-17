@@ -210,6 +210,10 @@ pub struct Api<S: WorldSource> {
     rate: Rate,
     /// The machine's build service (api.md 7.1); `None` answers `unavailable`.
     builds: Option<Arc<dyn Builds>>,
+    /// The machine's renderer (api.md 8); `None` answers `capture_unavailable`.
+    captures: Option<Arc<dyn crate::capture::Captures>>,
+    /// Principals with a capture in flight: one each (api.md 8).
+    capturing: Mutex<HashSet<String>>,
 }
 
 fn rate_limited(wait: Duration) -> ApiError {
@@ -255,6 +259,8 @@ impl<S: WorldSource + 'static> Api<S> {
             rates: Mutex::new(HashMap::new()),
             rate: Rate::TX_DEFAULT,
             builds: None,
+            captures: None,
+            capturing: Mutex::new(HashSet::new()),
         }
     }
 
@@ -1090,6 +1096,49 @@ impl<S: WorldSource + 'static> Api<S> {
         self
     }
 
+    /// The machine's renderer, for `view_capture` (api.md 8).
+    pub fn with_captures(mut self, c: Arc<dyn crate::capture::Captures>) -> Self {
+        self.captures = Some(c);
+        self
+    }
+
+    /// `view_capture` (api.md 8): the request read in the newest snapshot, drawn by the machine's renderer, one at
+    /// a time per principal.
+    pub fn capture(
+        &self,
+        c: &Caller,
+        r: &pe_seams::world_api::CaptureRequest,
+        deadline: Instant,
+    ) -> Result<pe_seams::world_api::Capture, ApiError> {
+        if !c.scopes.contains(&Scope::Read) {
+            return Err(forbidden("look at the world"));
+        }
+        let Some(captures) = &self.captures else {
+            return Err(ApiError::new(ErrorCode::CaptureUnavailable, "This machine has no renderer for captures."));
+        };
+        let view = WorldView::new(self.src.latest(), self.src.head_of(c.member));
+        let order = crate::capture::order(&view, c.member, r)?;
+        if !self.capturing.lock().expect("captures").insert(c.principal.clone()) {
+            return Err(ApiError::new(ErrorCode::RateLimited, "One capture at a time; wait for the one in flight."));
+        }
+        // Removes the caller from the in-flight set however the capture ends, a panic in the port included, so one
+        // failure can't leave the agent rate-limited until restart.
+        struct InFlight<'a>(&'a Mutex<HashSet<String>>, &'a str);
+        impl Drop for InFlight<'_> {
+            fn drop(&mut self) {
+                self.0.lock().unwrap_or_else(|p| p.into_inner()).remove(self.1);
+            }
+        }
+        let in_flight = InFlight(&self.capturing, &c.principal);
+        let visible = order.visible;
+        let shot = captures.capture(order, deadline);
+        drop(in_flight);
+        match shot {
+            Ok(s) => Ok(crate::capture::answer(&view, s, visible)),
+            Err(e) => Err(crate::capture::refusal(e, &view)),
+        }
+    }
+
     /// The author's build of a `code` op's source (api.md 7): a failure or a margin refuses the op as `compile`
     /// with its diagnostics, and nothing is submitted; no service, or a wait past the deadline, fails the call.
     fn build_for_commit(
@@ -1227,11 +1276,11 @@ impl<S: WorldSource + 'static> pe_seams::world_api::WorldApi for Api<S> {
     }
     fn capture(
         &self,
-        _c: &Caller,
-        _r: &pe_seams::world_api::CaptureRequest,
-        _deadline: Instant,
+        c: &Caller,
+        r: &pe_seams::world_api::CaptureRequest,
+        deadline: Instant,
     ) -> Result<pe_seams::world_api::Capture, ApiError> {
-        Err(ApiError::new(ErrorCode::CaptureUnavailable, "view_capture isn't available on this machine yet."))
+        Api::capture(self, c, r, deadline)
     }
     fn code_check(&self, c: &Caller, r: &CodeCheck) -> Result<Diagnostics, ApiError> {
         Api::code_check(self, c, r, Instant::now() + CODE_CHECK_WAIT)
@@ -1481,6 +1530,118 @@ mod tests {
         more(&mut w);
         w.set_frame(CoreFrame(4));
         Api::new(Src(w.snapshot(CoreFrame(4))), Arc::new(EditQueue::new(2, || {})), Arc::new(ChangeLog::new()))
+    }
+
+    /// A renderer that records each order and answers a fixed shot.
+    struct FakeCaptures(Mutex<Vec<crate::capture::Order>>, Mutex<Option<crate::capture::Refused>>);
+    impl crate::capture::Captures for FakeCaptures {
+        fn capture(
+            &self,
+            order: crate::capture::Order,
+            _deadline: Instant,
+        ) -> Result<crate::capture::Shot, crate::capture::Refused> {
+            self.0.lock().unwrap().push(order);
+            if let Some(r) = self.1.lock().unwrap().take() {
+                return Err(r);
+            }
+            let at = |x: f64| Pos::ORIGIN.checked_add(Offset([x, 0.0, 0.0])).unwrap();
+            Ok(crate::capture::Shot {
+                png: vec![1, 2, 3],
+                frame: 4,
+                eye: at(3.0),
+                target: at(1.0),
+                fov_deg: 50.0,
+                visible: vec![(id(20), [10.0, 10.0, 20.0, 20.0]), (id(10), [0.0, 0.0, 100.0, 50.0])],
+            })
+        }
+    }
+
+    /// `view_capture` (api.md 8): the request resolved in the snapshot (objects, positions, labels), the rules kept
+    /// (scope, latest only, size), and the shot answered with the camera in world_origin terms and `visible`
+    /// largest first with names.
+    #[test]
+    fn a_capture_is_resolved_here_and_drawn_by_the_renderer() {
+        use crate::capture::{Aim, LookAt, Refused};
+        use pe_seams::world_api::CaptureRequest;
+        let c = caller(&[Scope::Read]);
+        let req = |v: serde_json::Value| -> CaptureRequest { serde_json::from_value(v).unwrap() };
+        let soon = || Instant::now() + Duration::from_secs(1);
+        // No renderer: capture_unavailable.
+        assert_eq!(api().capture(&c, &req(json!({})), soon()).unwrap_err().code, ErrorCode::CaptureUnavailable);
+        let fake = Arc::new(FakeCaptures(Mutex::new(vec![]), Mutex::new(None)));
+        let a = api().with_captures(fake.clone());
+        assert_eq!(a.capture(&caller(&[]), &req(json!({})), soon()).unwrap_err().code, ErrorCode::Forbidden);
+        // The default: my own view, at the default size; the answer's camera and visible list.
+        let cap = a.capture(&c, &req(json!({"visible_list": true})), soon()).unwrap();
+        let o = fake.0.lock().unwrap().pop().unwrap();
+        assert_eq!((o.aim, o.size, o.visible), (Aim::Player, crate::capture::SIZE_DEFAULT, true));
+        assert_eq!((cap.png, cap.frame, cap.visible_approx), (vec![1, 2, 3], 4, true));
+        assert_eq!(cap.camera.at, json!({"relative_to": "world_origin", "offset": [3.0, 0.0, 0.0]}));
+        let vis: Vec<_> = cap.visible.unwrap().into_iter().map(|v| (v.name, v.rect)).collect();
+        assert_eq!(vis, [("Table".to_string(), [0, 0, 100, 50]), ("Lamp".to_string(), [10, 10, 10, 10])]);
+        // An orbit by path with defaults; a placed camera relative to an object, looking at another; labels.
+        a.capture(&c, &req(json!({"from": {"orbit": "/Table/Lamp"}})), soon()).unwrap();
+        let o = fake.0.lock().unwrap().pop().unwrap();
+        assert_eq!(o.aim, Aim::Orbit { id: id(20), yaw_deg: 30.0, pitch_deg: 20.0, distance_m: None });
+        let placed = json!({"from": {"at": {"relative_to": "/Table", "offset": [0, 2, 0]}, "look_at": "/Table/Lamp"},
+                            "highlight": ["/Table/Lamp"], "label": true});
+        a.capture(&c, &req(placed), soon()).unwrap();
+        let o = fake.0.lock().unwrap().pop().unwrap();
+        let eye = Pos::ORIGIN.checked_add(Offset([1.0, 2.0, 0.0])).unwrap();
+        assert_eq!(o.aim, Aim::Placed { at: eye, look_at: LookAt::Object(id(20)), fov_deg: None });
+        assert_eq!((o.highlight, o.labels), (vec![id(20)], vec![(id(20), "Lamp".to_string())]));
+        // Refused here, never drawn: another frame, a bad size, an object that isn't there, another player.
+        let n = fake.0.lock().unwrap().len();
+        for (bad, field) in [
+            (json!({"at": 3}), Some("at")),
+            (json!({"size": [4000, 10]}), Some("size")),
+            (json!({"from": {"orbit": "/Nope"}}), Some("from.orbit")),
+            (json!({"from": {"orbit": "/Table", "distance_m": 20_000.0}}), Some("from.distance_m")),
+            (json!({"from": {"player": crate::resolve::asset_text(&[1; 32])}}), None),
+        ] {
+            let e = a.capture(&c, &req(bad.clone()), soon()).unwrap_err();
+            assert_eq!(e.field.as_deref(), field, "{bad}: {e:?}");
+        }
+        assert_eq!(fake.0.lock().unwrap().len(), n, "nothing reached the renderer");
+        // The renderer's refusals, as the API's errors.
+        *fake.1.lock().unwrap() = Some(Refused::NoView);
+        let e = a.capture(&c, &req(json!({})), soon()).unwrap_err();
+        assert_eq!(e.code, ErrorCode::CaptureUnavailable, "{e:?}");
+        assert!(e.message.contains("orbit or at"), "{}", e.message);
+        *fake.1.lock().unwrap() = Some(Refused::TimedOut);
+        assert_eq!(a.capture(&c, &req(json!({})), soon()).unwrap_err().code, ErrorCode::Timeout);
+        // A camera outside the world's range is the agent's argument, not an internal failure.
+        *fake.1.lock().unwrap() = Some(Refused::OutOfRange);
+        let e = a.capture(&c, &req(json!({})), soon()).unwrap_err();
+        assert_eq!((e.code, e.field.as_deref()), (ErrorCode::InvalidArgument, Some("from")), "{e:?}");
+    }
+
+    /// A renderer that panics on its first capture, then answers.
+    struct PanicOnce(std::sync::atomic::AtomicBool);
+    impl crate::capture::Captures for PanicOnce {
+        fn capture(
+            &self,
+            _order: crate::capture::Order,
+            _deadline: Instant,
+        ) -> Result<crate::capture::Shot, crate::capture::Refused> {
+            if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                panic!("the port failed");
+            }
+            Err(crate::capture::Refused::TimedOut)
+        }
+    }
+
+    /// A panic in the port doesn't leave the agent marked in flight, so its next capture isn't `rate_limited`.
+    #[test]
+    fn a_panicking_capture_leaves_nothing_in_flight() {
+        use pe_seams::world_api::CaptureRequest;
+        let c = caller(&[Scope::Read]);
+        let req: CaptureRequest = serde_json::from_value(json!({})).unwrap();
+        let a = api().with_captures(Arc::new(PanicOnce(std::sync::atomic::AtomicBool::new(false))));
+        let soon = || Instant::now() + Duration::from_secs(1);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.capture(&c, &req, soon())));
+        assert!(r.is_err(), "the port panicked");
+        assert_eq!(a.capture(&c, &req, soon()).unwrap_err().code, ErrorCode::Timeout);
     }
 
     /// A build service that answers what it was given, and counts its builds.

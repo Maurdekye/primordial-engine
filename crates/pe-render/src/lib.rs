@@ -22,6 +22,7 @@
 
 pub mod camera;
 pub mod capture;
+pub mod capture_service;
 pub mod counters;
 pub mod desktop_hand;
 pub mod display;
