@@ -70,6 +70,18 @@ pub enum Mutation {
     SkipEmptyCut,
 }
 
+/// How a member's adaptive timeout comes back down (the backoff profile; coordinator mdf35a62dc095, @fable-reviewer
+/// m208fc6590a7d). Each timeout a member fires raises its backoff count by one, up to K; while the count is below K
+/// its timeout is still shorter than the round trip, so it may fire before the network settles (an early timeout).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Backoff {
+    /// pe-agree's rule: the count halves when the member's final cut rises, never resets to zero.
+    HalveOnCommit,
+    /// The rule it replaced (the control): the count resets to zero whenever the member enters a view on a quorum
+    /// certificate, so a timeout shorter than the round trip comes back after every certified view.
+    ResetOnCert,
+}
+
 #[derive(Clone, Debug)]
 pub struct EntryDef {
     pub name: String,
@@ -135,6 +147,9 @@ pub struct Cuts {
     /// Liveness profile: how many timeouts may fire before the network has settled (v0.1, condition 2). Each stands for
     /// a timeout shorter than the round trip; an adaptive timeout that grows after each one makes them finite.
     pub early: u8,
+    /// Backoff profile (liveness): replaces the global early budget with a per-member count capped at K, and the rule
+    /// that lowers it. None keeps the early budget.
+    pub backoff: Option<(u8, Backoff)>,
     /// Bounded progress (v0.2, @design-reviewer m72d5174e95f9): track, per entry, the highest certified height any
     /// honest member knew when every honest member first held it and its earlier chain. On in the liveness profile and the n = 2 checks.
     pub progress: bool,
@@ -176,7 +191,7 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true, early: 0, progress: false, reputation: false }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true, early: 0, backoff: None, progress: false, reputation: false }
     }
 
     pub fn progress(mut self) -> Self {
@@ -198,6 +213,12 @@ impl Cuts {
 
     pub fn early_timeouts(mut self, p: u8) -> Self {
         self.early = p;
+        self
+    }
+
+    /// The backoff profile: per-member early timeouts while its count is below `k`, lowered by `rule`.
+    pub fn backoff(mut self, k: u8, rule: Backoff) -> Self {
+        self.backoff = Some((k, rule));
         self
     }
 
@@ -285,7 +306,8 @@ impl Cuts {
     }
 
     fn hcap(&self) -> u8 {
-        self.heights + 1 + self.early.min(HMAX as u8 - 1 - self.heights)
+        let spoiled = self.backoff.map_or(self.early, |_| HMAX as u8);
+        self.heights + 1 + spoiled.min(HMAX as u8 - 1 - self.heights)
     }
 
     fn byz(&self) -> bool {
@@ -576,6 +598,9 @@ impl Cuts {
         }
         if x.view() >= mm.view {
             mm.view = x.view() + 1;
+            if x.h > 0 && matches!(self.backoff, Some((_, Backoff::ResetOnCert))) {
+                mm.backoff = 0;
+            }
         }
         if x.h >= 2 {
             let p = x.parent();
@@ -583,6 +608,9 @@ impl Cuts {
                 if mm.committed.extends(&p) {
                 } else if p.extends(&mm.committed) {
                     mm.committed = p;
+                    if matches!(self.backoff, Some((_, Backoff::HalveOnCommit))) {
+                        mm.backoff /= 2;
+                    }
                     // Fetch by name (coordinator m33e5f610374b): a member reports a cut final only once it holds every
                     // entry the cut covers, fetched from the voters (at least one honest voter holds each). Modelled as
                     // done at the commit. The d1 defect finalizes without it.
@@ -882,11 +910,13 @@ pub struct Member {
     pub undone: bool,
     /// It has seen a quorum certify a root it did not compute (RootSplit).
     pub split: bool,
+    /// Its backoff count (the backoff profile): timeouts fired, lowered by the profile's rule, capped at K.
+    pub backoff: u8,
 }
 
 impl Member {
     fn new(held: u16) -> Member {
-        Member { view: 1, voted: 0, timed_out: 0, proposed: 0, high: Cert::GENESIS, held, committed: Block::GENESIS, undone: false, split: false }
+        Member { view: 1, voted: 0, timed_out: 0, proposed: 0, high: Cert::GENESIS, held, committed: Block::GENESIS, undone: false, split: false, backoff: 0 }
     }
 }
 
@@ -939,7 +969,9 @@ impl Model for Cuts {
     }
 
     fn actions(&self, s: &State, acts: &mut Vec<Action>) {
-        let timeouts = self.mutation != Some(Mutation::NoTimeouts) && (!self.liveness || s.early < self.early || self.quiescent(s));
+        // In the backoff profile each Timeout checks its own member's count (next_state).
+        let timeouts = self.mutation != Some(Mutation::NoTimeouts)
+            && (!self.liveness || self.backoff.is_some() || s.early < self.early || self.quiescent(s));
         self.honest_actions(s, acts, timeouts);
         self.adversary_actions(s, acts);
         if self.productive_only {
@@ -963,14 +995,21 @@ impl Model for Cuts {
                 s.m[m as usize] = mm;
             }
             Action::Timeout(m) => {
+                let early = self.liveness && (self.early > 0 || self.backoff.is_some()) && !self.quiescent(s0);
                 let mm = &mut s.m[m as usize];
                 if mm.timed_out >= mm.view || mm.view > self.views {
                     return None;
                 }
+                if let Some((k, _)) = self.backoff {
+                    if early && mm.backoff >= k {
+                        return None; // its timeout has grown past the round trip
+                    }
+                    mm.backoff = (mm.backoff + 1).min(k);
+                }
                 mm.timed_out = mm.view;
                 let (view, high) = (mm.view, mm.high);
                 s.net.insert(Msg::Timeout { voter: m, view, high });
-                if self.liveness && self.early > 0 && !self.quiescent(s0) {
+                if early && self.backoff.is_none() {
                     s.early += 1; // fired before the network settled
                 }
             }

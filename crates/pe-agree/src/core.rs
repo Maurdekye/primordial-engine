@@ -416,9 +416,26 @@ pub struct Core {
     /// Time out this view at the next tick: t + 1 members timed out in it, so at least one honest member is there.
     join_view: u64,
     proposed_view: u64,
+    /// The timeout's backoff: views that timed out, halved at each commit, never reset by a certificate alone. On an
+    /// asymmetric link a member can form every other view's certificate early and time out the next before its leader
+    /// can propose, so views alternate certified and timed out, and the two-chain rule never commits (finality-stall
+    /// item, @coordinator-opus md72c13f27272 and mdf35a62dc095; halving, not zeroing, so a steady slow link doesn't
+    /// drop back to a too-short timeout after each commit, @fable-reviewer m208fc6590a7d).
     consecutive_timeouts: u32,
     /// Exponentially weighted time from entering a view to its certificate, ns.
     view_time_ns: i64,
+    /// Exponentially weighted time from entering a view to its rightful leader's proposal arriving, ns (None until the
+    /// first sample, which is taken whole; a sample of 0, as when the proposal's own certificate starts the view, is a
+    /// real sample, @design-reviewer's Low on 3ab9c3be). It includes the cadence the leader waits before proposing,
+    /// which the view time leaves out, so the timeout's 2 x wait counts the cadence (0.1 s) twice over: harmless at
+    /// that size, and it only lengthens the timeout (the reviewer's nit). Sampled once per view, from another member's proposal that passed the checks (and decayed by a
+    /// view this member led and saw certified), clamped at this
+    /// view's timeout, and also in a view that timed out before the proposal came (@fable-reviewer m208fc6590a7d):
+    /// the view time alone samples only views that succeeded, and misses a member that enters views ahead of its
+    /// leader. The clamp means a leader can raise others' timeouts no faster than it already can by proposing late.
+    proposal_wait_ns: Option<i64>,
+    /// The last view whose proposal wait was sampled.
+    wait_sampled: u64,
 
     committed: BlockId,
     committed_height: u64,
@@ -522,6 +539,8 @@ impl Core {
             proposed_view: 0,
             consecutive_timeouts: 0,
             view_time_ns: base,
+            proposal_wait_ns: None,
+            wait_sampled: 0,
             committed: genesis_id,
             committed_height: 0,
             committed_view: 0,
@@ -703,7 +722,9 @@ impl Core {
 
     fn timeout_ns(&self) -> i64 {
         let t = self.cfg.timing;
-        let mut d = (self.view_time_ns.saturating_mul(3)).max(t.min_timeout_ns);
+        let mut d = (self.view_time_ns.saturating_mul(3))
+            .max(self.proposal_wait_ns.unwrap_or(0).saturating_mul(2))
+            .max(t.min_timeout_ns);
         for _ in 0..self.consecutive_timeouts.min(32) {
             d = d.saturating_add(d / 2);
             if d >= t.max_timeout_ns {
@@ -711,6 +732,16 @@ impl Core {
             }
         }
         t.cadence_ns.saturating_add(d.min(t.max_timeout_ns))
+    }
+
+    /// The current view's timeout, ns (beyond the cadence included).
+    pub fn timeout(&self) -> i64 {
+        self.timeout_ns()
+    }
+
+    /// The proposal-wait estimate, ns (0 before the first sample).
+    pub fn proposal_wait(&self) -> i64 {
+        self.proposal_wait_ns.unwrap_or(0)
     }
 
     /// When this view times out.
@@ -772,11 +803,16 @@ impl Core {
         self.certs.entry(qc.block).or_insert_with(|| qc.clone());
         if qc.view >= self.view {
             if qc.view == self.view {
-                // A view that succeeded: measure it, and the timeout stops growing.
+                // A view that succeeded: measure it. The backoff resets only at a commit (`consecutive_timeouts`).
                 let took = now.0.saturating_sub(self.view_entered.0).saturating_sub(self.cfg.timing.cadence_ns).max(0);
                 self.view_time_ns = (self.view_time_ns.saturating_mul(7).saturating_add(took)) / 8;
+                // A view this member led and saw certified waited for no one's proposal: the wait estimate decays, so
+                // a member that leads every view (the reputation rule at n = 2) doesn't keep a slow link's estimate
+                // after the link recovered. Its own view time still covers its certificate's round trip.
+                if self.proposed_view == qc.view {
+                    self.proposal_wait_ns = self.proposal_wait_ns.map(|w| w.saturating_mul(7) / 8);
+                }
             }
-            self.consecutive_timeouts = 0;
             self.enter(qc.view + 1, now);
         }
         self.try_commit_from(qc.block);
@@ -842,6 +878,7 @@ impl Core {
             x = b.parent;
         }
         self.commit_target = None;
+        let mut decayed = false;
         for id in chain.into_iter().rev() {
             let block = self.block(&id).cloned().expect("walked above");
             let Some(qc) = self.certs.get(&id).cloned() else {
@@ -852,6 +889,10 @@ impl Core {
             self.committed = id;
             self.committed_height = block.height();
             self.committed_view = block.view;
+            if !decayed {
+                decayed = true;
+                self.consecutive_timeouts /= 2;
+            }
             if let Some(h) = self.hdr(&id) {
                 self.history.insert(id, h);
                 if let Some(s) = self.blocks.get(&id) {
@@ -1092,6 +1133,18 @@ impl Core {
             return Ok(());
         }
         self.proposed_in.insert((b.view, b.proposer), id);
+        // The proposal wait: once per view, from the view's rightful leader (another member), clamped at the timeout.
+        // A proposal that comes after this member timed out in the view still counts, at the clamp.
+        if b.view == self.view
+            && self.wait_sampled < b.view
+            && b.proposer != self.me
+            && self.leader_on(b.view, &b.parent) == Some(b.proposer)
+        {
+            self.wait_sampled = b.view;
+            let wait = now.0.saturating_sub(self.view_entered.0).clamp(0, self.timeout_ns());
+            self.proposal_wait_ns =
+                Some(self.proposal_wait_ns.map_or(wait, |w| (w.saturating_mul(7).saturating_add(wait)) / 8));
+        }
         let parent_rep = self.hdr(&b.parent).map(|h| h.rep).unwrap_or_default();
         let rep = self.rep_step(parent_rep, b.view);
         self.blocks.insert(id, Stored { proposal: p.clone(), seen: now, rep });

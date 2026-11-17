@@ -200,6 +200,22 @@ Results in `results/v0.1-run.txt` (24 checks at 7f2ee241, all as expected), `res
     the adaptive timeout is needed for liveness at all, not only for speed.
   - The early profile lets blocks go P heights above the content (HMAX 6): a real chain has no height cap, and each
     spoiled view can cost a height.
+  - **The backoff profile** (pe-agree's stall fix; coordinator mdf35a62dc095 item 4, @fable-reviewer m208fc6590a7d):
+    the global budget P assumes a timeout that only ever grows. pe-agree's comes back down, so the profile gives each
+    member its own count, raised by each timeout it fires and capped at K. While its count is below K a member's
+    timeout is still shorter than the round trip and may fire early. Two rules lower the count:
+    - **HalveOnCommit** (pe-agree's rule): the count halves when the member's final cut rises. **n2-live-backoff**
+      (K = 1, 6 views) holds. Measured: live in 4 views and not in 3 (**bound-n2-backoff**). With rotation, each
+      member's one early timeout can spoil only a view it doesn't lead, so the two spoiled views can't alternate with
+      good ones the way bound-n2-early's do.
+    - **ResetOnCert** (the rule it replaced, the control **ctl-backoff-reset**): the count resets whenever the member
+      enters a view on a quorum certificate. A timeout shorter than the round trip then comes back after every
+      certified view, spoiled and certified views alternate, and no 2-chain ever forms: never final in 8 views. That
+      is the stall pe-agree's sim showed on a 1.2 s link (finality-stall item, mechanism 2).
+    - Not checked: two content cuts, where halving at the first commit re-arms early timeouts. The run passed 28 M
+      states at 8 views without finishing. pe-agree's stall-seed and delay-sweep tests cover that case [V there, not
+      here]. The model also doesn't capture how fast the count halves compared with resetting it at a commit: that
+      changes how bursty finality is, not whether it comes.
 - **The last cut needs a child** (condition 5): a liveness property, "every content cut ends final" (n2-live-h2,
   two content cuts). Its control, **ctl-skipempty** (a proposer with nothing new proposes nothing), fails it.
 - **README notes from the review:**
@@ -249,6 +265,9 @@ frames, are unchanged (n4-byz 65.7 M).
 | n2-live-early-h2 | 2 members, two content cuts, 2 early timeouts, leader reputation | 368,248 | 595,333 | 44 | 4.0 | OK: all properties hold; examples found |
 | ctl-skipall | reputation without its window: skip every member that ever timed out | 6,738 | 10,774 | 41 | 1.0 | OK: counterexample as expected: "liveness: every content cut ends final" |
 | ctl-early | 2 members, timeouts may always fire before delivery (no adaptive timeout) | 1,547 | 2,908 | 30 | 1.0 | OK: counterexample as expected: "liveness: every end state has a final cut at every honest member" |
+| n2-live-backoff | 2 members, backoff K = 1 halved at each commit, 6 views | 1,455,880 | 2,999,674 | 43 | 18.0 | OK: all properties hold; examples found |
+| bound-n2-backoff | the same, 3 views: live in 4 (bound): each member's one early timeout can spoil only a view it does not lead | 1,516 | 3,005 | 22 | 1.0 | OK: counterexample as expected: "liveness: every end state has a final cut at every honest member" |
+| ctl-backoff-reset | backoff K = 1 reset on every certified view (the old rule), 8 views: finality never comes | 1,553 | 2,712 | 42 | 1.0 | OK: counterexample as expected: "liveness: every end state has a final cut at every honest member" |
 | n4-crash-live | 4 members, one silent, liveness | 130 | 301 | 24 | 1.0 | OK: all properties hold; examples found |
 | n4-byz-v4 | 4 members, Byzantine leads view 3 of 4 (the lock's case), safety | 216,739,069 | 1,803,875,044 | 18 | 1520.1 | OK: (every behaviour of up to 18 steps) all properties hold; examples found |
 | n3-root | 3 members, author-faulty, member 2's replica computes a wrong root, safety | 2,275,248 | 13,415,359 | 30 | 7.3 | OK: all properties hold; examples found |

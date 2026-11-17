@@ -6,7 +6,7 @@ mod bounded;
 
 use std::time::{Duration, Instant};
 
-use cuts_model::{Adversary, Cuts, Fault, Mutation};
+use cuts_model::{Adversary, Backoff, Cuts, Fault, Mutation};
 use stateright::report::WriteReporter;
 use stateright::{Checker, HasDiscoveries, Model, UniformChooser};
 
@@ -152,6 +152,14 @@ fn suite() -> Vec<Check> {
         Check { name: "n2-live-early-h2", model: Cuts::new(2, None, 8, 2, 1, none, 0).live().early_timeouts(2), expect_fail: &[], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "2 members, two content cuts, 2 early timeouts, leader reputation" },
         Check { name: "ctl-skipall", model: Cuts::new(2, None, 8, 2, 1, none, 0).live().early_timeouts(2).mutate(SkipEveryTimedOut), expect_fail: &["liveness: every content cut ends final"], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "reputation without its window: skip every member that ever timed out" },
         Check { name: "ctl-early", model: Cuts::new(2, None, 6, 1, 1, none, 0).live().early_timeouts(12), expect_fail: &["liveness: every end state has a final cut at every honest member"], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "2 members, timeouts may always fire before delivery (no adaptive timeout)" },
+        // The backoff profile (pe-agree's stall fix, coordinator mdf35a62dc095 item 4): each member's timeout may fire
+        // early while its count is below K. Its count halves at each commit (pe-agree's rule), so a slow link spoils a
+        // bounded number of views per final cut. The control is the rule it replaced, reset on every certified view.
+        // Two content cuts with K = 1 (so early timeouts come back after the first commit) passed 28 M states at 8 views
+        // without finishing; the re-armed case is covered by pe-agree's sim tests instead.
+        Check { name: "n2-live-backoff", model: Cuts::new(2, None, 6, 1, 1, none, 0).live().backoff(1, Backoff::HalveOnCommit), expect_fail: &[], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "2 members, backoff K = 1 halved at each commit, 6 views" },
+        Check { name: "bound-n2-backoff", model: Cuts::new(2, None, 3, 1, 1, none, 0).live().backoff(1, Backoff::HalveOnCommit), expect_fail: &["liveness: every end state has a final cut at every honest member"], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "the same, 3 views: live in 4 (bound): each member's one early timeout can spoil only a view it does not lead" },
+        Check { name: "ctl-backoff-reset", model: Cuts::new(2, None, 8, 1, 1, none, 0).live().backoff(1, Backoff::ResetOnCert), expect_fail: &["liveness: every end state has a final cut at every honest member"], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "backoff K = 1 reset on every certified view (the old rule), 8 views: finality never comes" },
         Check { name: "n4-crash-live", model: Cuts::new(4, Silent, 3, 1, 2, none, 0).live(), expect_fail: &[], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "4 members, one silent, liveness" },
         Check { name: "n4-byz-v4", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2).fixed_frames(), expect_fail: &[], random: false, depth: Some(18), budget_s: NO_BUDGET, what: "4 members, Byzantine leads view 3 of 4 (the lock's case), safety" },
         Check { name: "n3-root", model: n3(none).corrupt(2), expect_fail: &[], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "3 members, author-faulty, member 2's replica computes a wrong root, safety" },
