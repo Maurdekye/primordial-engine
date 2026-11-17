@@ -259,8 +259,23 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   - **The adaptive timeout is required at n = 2** (model v0.1, measured). At q = 2 one premature timeout spoils its
     view, and P of them alternating with good views hold finality off for 2P + 1 views: with P = 3 the model is live
     in 8 views and not in 7 (bound-n2-early), and with timeouts that may always fire early (a timeout that never
-    grows past the round trip) it never finalizes (ctl-early). So pe-agree's timeout grows after each timeout until
-    views succeed.
+    grows past the round trip) it never finalizes (ctl-early). So pe-agree's timeout grows after each timeout, and
+    shrinks only as cuts become final, never merely because a view succeeded.
+  - **An asymmetric link** (@item:primordial-engine/finality-stall-past-the-lag-cap-with-no-lead-n-2, rulings). With B -> A slow and A -> B fast, B gets A's proposals and votes at
+    once, so it forms each certificate first and enters the next view at once, while A, who needs B's vote over the
+    slow link, proposes a slow trip later. B's own views look short, so a timeout derived only from views that
+    succeeded expires before A can propose; when a certificate also reset the growth, views alternated certified and
+    timed out and nothing became final (measured [V], pe-agree sim, n = 2, 60 Hz, 1.2 s one way: 4 of 12 seeds
+    stood still 23.9 s). Two rules fix it. The growth halves at each commit instead of resetting at each certificate
+    (@fable-reviewer: halving, so a steady slow link doesn't drop back to a too-short timeout after each
+    final). And the timeout covers twice the measured wait for a view's proposal (below). With both, the same 12
+    seeds stand still at most 8.4 s, mean lag at most 6.14 s.
+  - **The known limit past stamp-ahead's clamp** (ruling). Without a lead, a member whose entries take
+    longer than the lag cap abstains in every view whose cut omits them (section 3's outage rule), twice per final by
+    its progress bound, and each abstention costs a slow round trip. Measured [V], same sim, with the fix, 2 seeds
+    per cell, both directions, 60 and 120 Hz: a 0.3-0.6 s one-way delay stands still at most 0.3-0.7 s; 2 s at most
+    18.0 s (mean lag 6.2-11.5 s); 3 s at most 22.1 s (mean lag 10.2-15.1 s). Main before the fix stood still 9-25 s
+    at 2 s. Stamp-ahead keeps links up to its clamp (about 4 s) out of this regime.
 - **Finality: two-chain.** A cut is final when its child, proposed in the very next view, is certified. On good links
   that is about two cut intervals.
 - **Verdicts at the cut** (S3 v1.1, coordinator). Only an included entry can be void. A final cut's
@@ -461,9 +476,17 @@ which the model does not cover. Each is inert unless the node's configuration na
 - **Blocks travel by name once certified.** A proposal whose parent this member lacks waits (one per view) while
   the parent is fetched by name from every member; a final block's missing ancestors are fetched the same way
   before any of them is reported final. The model delivers every proposal to every member.
-- **The adaptive timeout** (crates/pe-agree/src/core.rs): the cadence, plus the larger of a floor and three times
-  the measured time from entering a view to its certificate (an average weighted 1/8 to the newest), growing by
-  half after each timeout certificate until a view succeeds, up to a ceiling. All three limits are durations. A view
+- **The adaptive timeout** (crates/pe-agree/src/core.rs): the cadence, plus the largest of a floor, three times the
+  measured time from entering a view to its certificate, and twice the measured wait from entering a view to its
+  proposal (both averages weighted 1/8 to the newest), growing by half after each timeout certificate, up to a
+  ceiling; the count of growths halves at each commit (section 3). The proposal wait is sampled once per view, only
+  from the view's rightful leader's proposal that passed the core's checks, clamped at this member's current timeout
+  (so a leader can raise others' timeouts no faster than by proposing late), and also when the proposal comes after
+  this member timed out in the view; a view this member led and saw certified decays it by 7/8, so a member that
+  leads every view (the reputation rule at n = 2) doesn't keep a slow link's estimate after the link recovers
+  (measured: timeouts back under 1 s within 2 s of a drop from 1.2 s to 50 ms). The first sample sets the estimate
+  directly (ruling): a slow first view is real information, and the per-view clamp bounds it. All
+  three limits are durations. A view
   ended at once (a root split, an abstention, more than n - q timeouts held) or a leader's view its backlog cap kept
   empty doesn't grow it, so the timeout grows only at a member whose own timer fired: at n = 2, where the members
   alternate, it grows about every second timed-out view (@design-reviewer's L2).

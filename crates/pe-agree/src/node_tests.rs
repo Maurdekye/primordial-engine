@@ -69,6 +69,10 @@ struct Sim {
     delay: Vec<(i64, i64)>,
     /// Every member's stamp lags its present by this many frames (a slow or lying author).
     stamp_lag: Vec<u64>,
+    /// A member that withholds its own proposal in every second view it leads (a Byzantine leader), and per view
+    /// it led, whether that view's proposal was withheld.
+    withhold: Option<usize>,
+    led: BTreeMap<u64, bool>,
     /// Per member, per-frame entries are stamped this many frames ahead of its present (stamp-ahead, pe-app's side).
     stamp_lead: Vec<u64>,
     /// Submit an entry every this many ms (0: never).
@@ -189,6 +193,8 @@ impl Sim {
             rng: Rng(seed),
             delay: vec![(5, 30); n as usize],
             stamp_lag: vec![0; n as usize],
+            withhold: None,
+            led: BTreeMap::new(),
             stamp_lead: vec![0; n as usize],
             every_ms: vec![50; n as usize],
             events: vec![Vec::new(); n as usize],
@@ -207,6 +213,15 @@ impl Sim {
                 self.range_asks[i] += 1;
             }
             let j = (0..self.nodes.len()).find(|&j| self.keys.key(j) == o.to).unwrap();
+            if self.withhold == Some(i)
+                && o.lane == Lane::Protocol
+                && let Ok(crate::codec::Wire::Core(crate::core::Msg::Propose(p))) = crate::codec::decode(&o.bytes)
+            {
+                let n = self.led.len();
+                if *self.led.entry(p.block.view).or_insert(n % 2 == 1) {
+                    continue;
+                }
+            }
             if let Some((k, a, b)) = self.partition
                 && (i == k || j == k)
                 && self.now >= a * MS
@@ -1874,6 +1889,149 @@ fn slow_link_run_with(extra: i64, jitter: i64, seed: u64, f: impl Fn(&mut NodeCo
     (s, worst)
 }
 
+/// n = 2 with one slow direction (B -> A, or A -> B when `rev`) and no lead, for 30 s: the mean of (present -
+/// final frame) after 5 s, the longest stand-still of the final frame after 5 s (ms), and the first final (ms).
+fn one_way_run(rate: u32, seed: u64, delay: i64, rev: bool) -> (f64, i64, i64) {
+    let mut s = Sim::new(2, seed);
+    s.clock = Clock(rate);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.slow_link = Some(if rev { (0, 1, delay, 0) } else { (1, 0, delay, 0) });
+    let (mut last, mut since, mut worst, mut lag_sum, mut n, mut first) = (Frame(0), 5_000, 0, 0.0, 0, None);
+    for t in (100..=30_000).step_by(100) {
+        s.run(t);
+        let f = s.final_frame(0);
+        if f.0 > 0 && first.is_none() {
+            first = Some(t);
+        }
+        if t > 5_000 {
+            lag_sum += t as f64 / 1000.0 - f.0 as f64 / rate as f64;
+            n += 1;
+            if f > last {
+                since = t;
+            } else {
+                worst = worst.max(t - since);
+            }
+        }
+        last = f;
+    }
+    s.assert_same_final_log();
+    (lag_sum / n as f64, worst, first.unwrap_or(i64::MAX))
+}
+
+#[test]
+fn an_asymmetric_link_never_alternates_certified_and_timed_out_views_for_good() {
+    // The finality-stall item (@coordinator-opus): n = 2, B -> A +1.2 s,
+    // A -> B fast, no lead. B gets A's proposals and votes at once, so it forms each certificate first and enters the
+    // next view at once; A, who needs B's vote over the slow link, proposes 1.2 s later. With the backoff reset by
+    // every certificate and the timeout based only on succeeded views, B's ~1.1 s timeout expired first in every
+    // other view: views alternated certified and timed out, and at 60 Hz 4 of these 12 seeds stood still 23.9 s.
+    // With the backoff halved at commits and the proposal wait in the timeout, every stand-still stays within 8.5 s
+    // and the mean lag within 6.5 s (ruling; measured 8.4 s and 6.14 s at worst). (The first sample of the proposal wait is unclamped, by ruling: a
+    // slow first view is real information, so one seed's first final moves from 6.3 s to 8.8 s.)
+    let mut out = Vec::new();
+    for (rate, seeds) in [(60u32, 301..=312u64), (120, 301..=306)] {
+        for seed in seeds {
+            let (lag, worst, first) = one_way_run(rate, seed, 1_200, false);
+            eprintln!(
+                "{rate} Hz seed {seed}: mean lag {lag:.2} s; stood still at most {worst} ms; first final {first} ms"
+            );
+            out.push((rate, seed, lag, worst));
+        }
+    }
+    for (rate, seed, lag, worst) in out {
+        assert!(worst <= 8_500, "{rate} Hz seed {seed}: the final frame stood still {worst} ms");
+        assert!(lag <= 6.5, "{rate} Hz seed {seed}: mean lag {lag:.2} s");
+    }
+}
+
+fn one_way_sweep(rev: bool) {
+    // One-way delays from 0.3 to 3 s, at 60 and 120 Hz (rulings): no stand-still past
+    // 5 x delay + 8 s (measured at worst: 0.7 s at 0.6 s, 18.0 s at 2 s, 22.1 s at 3 s).
+    // Past the lag cap without a lead, the slow member abstains twice per final and each abstention costs a slow round
+    // trip (agreement.md 3, the known limit past stamp-ahead's clamp), so the bound grows with the delay.
+    let mut out = Vec::new();
+    for delay in [300i64, 600, 2_000, 3_000] {
+        for rate in [60u32, 120] {
+            for seed in [301u64, 302] {
+                let (lag, worst, _) = one_way_run(rate, seed, delay, rev);
+                eprintln!(
+                    "rev {rev} {delay} ms {rate} Hz seed {seed}: mean lag {lag:.2} s; stood still at most {worst} ms"
+                );
+                out.push((delay, rate, seed, worst));
+            }
+        }
+    }
+    for (delay, rate, seed, worst) in out {
+        assert!(worst <= 5 * delay + 8_000, "rev {rev} {delay} ms {rate} Hz seed {seed}: stood still {worst} ms");
+    }
+}
+
+#[test]
+fn one_way_delays_up_to_3_s_from_b_never_stall_finality() {
+    one_way_sweep(false);
+}
+
+#[test]
+fn one_way_delays_up_to_3_s_from_a_never_stall_finality() {
+    one_way_sweep(true);
+}
+
+#[test]
+fn the_timeout_comes_back_down_when_a_slow_link_recovers() {
+    // The finality-stall item (@coordinator-opus): B -> A +1.2 s for 10 s, then 50 ms. The backoff
+    // (halved at each commit) and the proposal wait (an average over views) grew on the slow link; both must come
+    // back down, so a recovered link isn't left with multi-second view timeouts.
+    for (rate, seed) in [(60u32, 311u64), (60, 312), (120, 311)] {
+        let mut s = Sim::new(2, seed);
+        s.clock = Clock(rate);
+        s.per_frame = vec![Some((2, 0)); 2];
+        s.slow_link = Some((1, 0, 1_200, 0));
+        s.run(10_000);
+        let high: Vec<i64> = (0..2).map(|i| s.nodes[i].core().timeout() / 1_000_000).collect();
+        s.slow_link = Some((1, 0, 50, 0));
+        let mut down = None;
+        for t in (10_100..=25_000).step_by(100) {
+            s.run(t);
+            let worst = (0..2).map(|i| s.nodes[i].core().timeout()).max().unwrap();
+            if down.is_none() && worst < 1_000_000_000 {
+                down = Some(t - 10_000);
+            }
+        }
+        let end: Vec<i64> = (0..2).map(|i| s.nodes[i].core().timeout() / 1_000_000).collect();
+        eprintln!(
+            "{rate} Hz seed {seed}: timeouts at the drop {high:?} ms; under 1 s from {down:?} ms after it; at 25 s {end:?} ms"
+        );
+        assert!(down.is_some_and(|ms| ms <= 10_000), "{rate} Hz seed {seed}: the timeout stayed up: {down:?}");
+        assert!(end.iter().all(|ms| *ms < 1_000), "{rate} Hz seed {seed}: timeouts at 25 s {end:?} ms");
+    }
+}
+
+#[test]
+fn a_leader_withholding_every_second_view_is_demoted_after_its_first() {
+    // The finality-stall item (@coordinator-opus): n = 4 at 120 Hz, member 3 withholds its proposal in
+    // every second view it leads. The reputation rule (the latest timed-out view's leader is skipped) demotes it after
+    // its first withheld view, so it leads at most two views and withholds one. The proposal wait (sampled only from
+    // proposals that arrive, clamped at the timeout) must not let it raise the others' timeouts: they end under 1 s.
+    for seed in [401u64, 402, 403] {
+        let mut s = Sim::new(4, seed);
+        s.clock = Clock(120);
+        s.per_frame = vec![Some((2, 0)); 4];
+        s.withhold = Some(3);
+        s.run(30_000);
+        let withheld = s.led.values().filter(|w| **w).count();
+        let timeouts: Vec<i64> = (0..3).map(|i| s.nodes[i].core().timeout() / 1_000_000).collect();
+        let final_s = s.final_frame(0).0 as f64 / 120.0;
+        eprintln!(
+            "seed {seed}: member 3 led {} views, withheld {withheld}; final at {final_s:.1} s of 30; honest timeouts {timeouts:?} ms",
+            s.led.len()
+        );
+        assert!(s.led.len() <= 2 && withheld <= 1, "seed {seed}: member 3 led {:?}", s.led);
+        assert!(final_s >= 28.0, "seed {seed}: final at {final_s:.1} s");
+        assert!(timeouts.iter().all(|ms| *ms < 1_000), "seed {seed}: honest timeouts {timeouts:?} ms");
+        s.assert_same_final_log();
+    }
+}
+
 #[test]
 fn an_outages_backlog_is_never_sampled_as_lateness() {
     // @design-reviewer (@item:primordial-engine/pe-agree-an-outage-s-backlog-must-not-be-sampled): after
@@ -2104,7 +2262,9 @@ fn a_rising_lead_never_reads_as_a_longer_delay() {
             eprintln!(
                 "B -> A +{extra} ms (+0-{jitter} ms) seed {seed}: corrected delay at most {worst_ms} ms after a {STEP}-frame step; {newer} of 100 reports past the step"
             );
-            assert!(newer > 50, "seed {seed}: the reports never moved past the step ({newer})");
+            // A guard that the window rolled past the step (votes, and so reports, are sparser on this link since the
+            // backoff fix).
+            assert!(newer >= 30, "seed {seed}: the reports never moved past the step ({newer})");
             assert!(
                 worst_ms <= extra + jitter + 50,
                 "seed {seed}: corrected delay {worst_ms} ms on a {extra}+{jitter} ms link"
