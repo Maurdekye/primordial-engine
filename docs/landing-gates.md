@@ -158,7 +158,7 @@ so a renamed or ignored test would otherwise pass). `scripts/tier1.sh` runs the 
 * **`{crates}` scopes a check to the crates a landing touches** (refound plan 4.6). In a command it becomes
   `-p <package>` for each workspace member (the root `Cargo.toml`'s members, as the landing has them) whose
   folder holds a path that triggers the check. A path on the check's `all` lines (the toolchain pin, a cargo
-  configuration, for clippy also `Cargo.lock` and the root manifest) makes it every member instead. The check's
+  configuration and the root manifest, for clippy also `Cargo.lock`) makes it every member instead. The check's
   `skip` packages are never included (box3d-fork, whose package is `box3d-rust`, by C10). When none is left, the
   check has nothing to run, which isn't a failure. A landing that drops a crate from the members while it
   changes files in the crate's folder fails, since no check would build them (removing the member together
@@ -185,7 +185,8 @@ so a renamed or ignored test would otherwise pass). `scripts/tier1.sh` runs the 
   * `clippy`: `cargo clippy {crates} --all-targets --locked --no-deps -- -D warnings`. `--no-deps` keeps it to
     the touched crates: without it, clippy also lints the workspace members they depend on.
   * `test`: `cargo test {crates} --locked`, the touched crates' unit, integration and doc tests, with default
-    features.
+    features; every crate's when the root manifest (its profiles touch determinism), the toolchain pin or a cargo
+    configuration changes.
   * `model-fast`: the agreement model's fast profile (`models/cuts/README.md`, about 2 minutes), when
     `models/cuts/` changes. Its output must say that all 16 checks met their expectation.
   * The harness's fast profile follows once its owner names the command.
