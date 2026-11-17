@@ -386,6 +386,10 @@ pub struct AgreeStats {
     pub final_frame: Option<Frame>,
     pub unconfirmed_since: Option<Frame>,
     pub pending_entries: usize,
+    /// (S3 v1.9; a diagnostic.) This member's current view in its epoch's consensus (views restart at 1 in each epoch).
+    /// A test bounds a recovery in views rather than seconds: a loaded machine's views time out and back off, so they
+    /// last longer, but their count doesn't grow with the load.
+    pub view: u64,
 }
 
 /// S3. pe-agree implements it; it is also the replica's [`EntrySource`].
