@@ -315,6 +315,9 @@ pub struct Node {
     /// Per chain, the highest stamp through its final head (void entries included), for back-stamp verdicts.
     final_high: BTreeMap<ChainKey, Frame>,
     arrived: BTreeMap<EntryRef, HostTime>,
+    /// Per entry a final cut voided: its stamp and the reason, kept while its frame is kept (`kept_from`), for
+    /// S2's `void_reason`.
+    void_reasons: BTreeMap<EntryRef, (Frame, pe_seams::agree::VoidReason)>,
     holds: BTreeMap<Frame, u32>,
     /// Per author: the rate budget's tokens (thousandths of an entry) and when they were last topped up, and how many
     /// of its entries are held beyond the final cut.
@@ -562,6 +565,7 @@ impl Node {
             hinted: BTreeMap::new(),
             final_high: BTreeMap::new(),
             arrived: BTreeMap::new(),
+            void_reasons: BTreeMap::new(),
             holds: BTreeMap::new(),
             budget: BTreeMap::new(),
             pending_by_author: BTreeMap::new(),
@@ -1262,20 +1266,10 @@ impl Node {
                 match v {
                     Verdict::Effective => effective.push(e),
                     Verdict::Void(pe_log::VoidReason::Late) => {
-                        self.events.push(AgreeEvent::Voided {
-                            entry: id,
-                            author: key.author,
-                            reason: pe_seams::agree::VoidReason::Late,
-                            cut: at,
-                        });
+                        self.voided(&e, pe_seams::agree::VoidReason::Late, at);
                     }
                     Verdict::Void(pe_log::VoidReason::BackStamped) => {
-                        self.events.push(AgreeEvent::Voided {
-                            entry: id,
-                            author: key.author,
-                            reason: pe_seams::agree::VoidReason::BackStamped,
-                            cut: at,
-                        });
+                        self.voided(&e, pe_seams::agree::VoidReason::BackStamped, at);
                     }
                     // A fork of an included entry: the equivocation was reported when it arrived; it never applies.
                     Verdict::Void(pe_log::VoidReason::Fork) => {}
@@ -1294,7 +1288,7 @@ impl Node {
                     // This member's Leave didn't apply: it stays, and may sign again.
                     self.left = false;
                 }
-                self.events.push(AgreeEvent::Voided { entry: e.id(), author: e.entry.author, reason, cut: at });
+                self.voided(&e, reason, at);
             }
             self.final_heads = block.cut.clone();
             let own_final = self.my_head.map_or(0, |(key, _, _)| {
@@ -1475,6 +1469,12 @@ impl Node {
         Ok(at.map(|i| chain[i].cut.clone()))
     }
 
+    /// A final cut at `cut` voided `e`: report it, and keep the reason for `void_reason`.
+    fn voided(&mut self, e: &SignedEntry, reason: pe_seams::agree::VoidReason, cut: CutRef) {
+        self.void_reasons.insert(e.id(), (e.entry.stamp, reason));
+        self.events.push(AgreeEvent::Voided { entry: e.id(), author: e.entry.author, reason, cut });
+    }
+
     fn trim(&mut self) {
         let window = (self.cfg.keep_s * self.rate_hz as f64).ceil() as u64;
         let cap = Frame(self.final_frame().0.saturating_sub(window));
@@ -1499,6 +1499,7 @@ impl Node {
                 self.view_by_frame.remove(&f);
             }
             self.prune_by_seq();
+            self.void_reasons.retain(|_, (stamp, _)| *stamp >= to);
         }
     }
 
@@ -2042,6 +2043,12 @@ impl EntrySource for Node {
 
     fn arrived_at(&self, entry: &EntryRef) -> Option<HostTime> {
         self.arrived.get(entry).copied()
+    }
+
+    /// The reason a final cut voided `entry` for, kept as long as its frame (S2 v1.6). `None` for an entry no final
+    /// cut voided, or one stamped below `kept_from`.
+    fn void_reason(&self, entry: &EntryRef) -> Option<pe_seams::agree::VoidReason> {
+        self.void_reasons.get(entry).map(|(_, r)| *r)
     }
 }
 

@@ -125,6 +125,8 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
 - **Retention.** Final entries are kept from the later of the driver's Cv frame and a cap: the one-minute divergence
   bound plus a margin, as a duration converted with the world's SimRate, and limited in bytes. `kept_from()` says
   where the log is complete; below it `entries_at` answers "not kept", never an empty set (coordinator m01e5762d1fcc).
+  `void_reason(entry)` (S2 v1.6) gives the reason a final cut voided an entry for (late, back-stamped, after a
+  leave, last member), kept as long as the entry's frame is kept; `None` for an entry no final cut voided.
 
 ## 3. Cuts (pe-agree)
 
