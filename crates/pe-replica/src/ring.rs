@@ -32,6 +32,22 @@ impl Policy {
     pub fn takes(&self, frame: Frame) -> bool {
         frame.0.is_multiple_of(self.spacing)
     }
+
+    /// Whether a saved state at `frame` stays at `present`: every one while young (the newest `dense` spacings);
+    /// past that, one in band `b` (age in `[young * 2^b, young * 2^(b+1))`) stays only if its frame is a multiple of
+    /// `spacing * 2^(b+1)`: two per band when `dense` is 4. That alignment only tightens as a frame ages, so applying
+    /// it at every frame keeps exactly what applying it once would (counting the newest of each band instead thinned
+    /// the old ones far below two per band when applied at every frame).
+    pub fn keeps(&self, frame: Frame, present: Frame) -> bool {
+        let young = self.spacing.saturating_mul(self.dense).max(1);
+        let age = present.0.saturating_sub(frame.0);
+        if age <= young {
+            return true;
+        }
+        let band = (age / young).ilog2();
+        let step = 1u64.checked_shl(band + 1).and_then(|p| self.spacing.checked_mul(p)).unwrap_or(u64::MAX);
+        frame.0.is_multiple_of(step)
+    }
 }
 
 /// Saved states by frame.
@@ -103,32 +119,13 @@ impl<K> Ring<K> {
         self.pinned = frames.into_iter().collect();
     }
 
-    /// Apply the policy at `present`, and drop everything below `floor` that is not pinned. The newest keyframe at or
-    /// below the floor is kept too, so a re-simulation can always start at or below any frame above it.
-    ///
-    /// Past the young span, a keyframe in band `b` (age in `[young * 2^b, young * 2^(b+1))`) stays only if its frame is
-    /// a multiple of `spacing * 2^(b+1)`: two per band when `dense` is 4. That alignment only tightens as a frame ages,
-    /// so trimming at every frame keeps exactly what trimming once would (counting the newest keyframes of each band
-    /// instead thinned the old ones far below two per band when applied at every frame).
+    /// Apply the policy at `present` ([`Policy::keeps`]), and drop everything below `floor` that is not pinned. The
+    /// newest keyframe at or below the floor is kept too, so a re-simulation can always start at or below any frame
+    /// above it.
     pub fn trim(&mut self, policy: Policy, present: Frame, floor: Frame) {
         let base = self.at_or_before(floor).map(|(f, _)| f);
-        let young = policy.spacing.saturating_mul(policy.dense).max(1);
         let pinned = &self.pinned;
-        self.keys.retain(|&f, _| {
-            if pinned.contains(&f) || Some(f) == base {
-                return true;
-            }
-            if f < floor {
-                return false;
-            }
-            let age = present.0.saturating_sub(f.0);
-            if age <= young {
-                return true;
-            }
-            let band = (age / young).ilog2();
-            let step = 1u64.checked_shl(band + 1).and_then(|p| policy.spacing.checked_mul(p)).unwrap_or(u64::MAX);
-            f.0.is_multiple_of(step)
-        });
+        self.keys.retain(|&f, _| pinned.contains(&f) || Some(f) == base || (f >= floor && policy.keeps(f, present)));
     }
 }
 
