@@ -41,7 +41,8 @@ pub struct Transaction {
     pub ops: Vec<Op>,
     pub blobs: Vec<BlobRef>,
     /// The bytes of the inline-class blobs the ops introduce (3.4, [`crate::inline`]), inside the signed entry: each
-    /// 1 to 256 bytes, in ascending order of hash, at most 1 KiB in all. Apply refuses a blob no op introduces.
+    /// 1 to 256 bytes, in ascending order of hash. Apply refuses a blob no op introduces, and over 2 KiB in all
+    /// ([`crate::inline::MAX_INLINE_BYTES`]); pe-api refuses any edit over its own 1 KiB first.
     pub inline: Vec<Vec<u8>>,
 }
 
