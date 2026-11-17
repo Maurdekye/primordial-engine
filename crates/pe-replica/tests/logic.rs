@@ -863,6 +863,276 @@ fn a_runner_that_remembers_fails_the_conformance_check() {
     assert!(err.contains("replay"), "{err}");
 }
 
+// ---- the author's prediction of its own code commit (logic.md 6.2a's option (i)) --------------------------------
+
+/// A replica with the mover, whose local member is `local`: the author whose own commits it predicts.
+fn replica_for(world: World, local: Option<MemberKey>) -> ReplicaImpl<PeWorld> {
+    let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
+    config.cut_every = K;
+    config.local = local;
+    ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica").with_runner(mover())
+}
+
+/// Two editors: A (key 0) commits the mover at frame 5 and puts its tag on the ball at 6 and again at 13. Then B
+/// (key 1) decides the commit at 12 with `decide`.
+fn predicted_entries(decide: impl FnOnce(&mut EntryBuilder) -> SignedEntry) -> (World, Source) {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    let tag_row = || Row { component: tag(), instance: 0, bytes: vec![] };
+    let mut s = Source::default();
+    s.add(commit(&mut a, 5));
+    s.add(edit(&mut a, 6, vec![Op::SetRow { id: Target::Existing(oid(BALL)), row: tag_row() }]));
+    s.add(decide(&mut b));
+    s.add(edit(&mut a, 13, vec![Op::SetRow { id: Target::Existing(oid(BALL)), row: tag_row() }]));
+    (world, s)
+}
+
+/// A's replica predicts A's own commit at 5: the mover runs from frame 6, and A holds its votes from 6. B's
+/// attestation at 12 ends the prediction: the replica steps again from 5 under the rule, in the same advance. The
+/// commit activates at 12's end, the tag at 6 is refused, and the mover runs from 13 once the tag at 13 is on the ball.
+/// The roots are those of a replica that never predicted, and the holds are gone.
+#[test]
+fn the_author_predicts_its_commit_and_steps_again_from_c_when_it_is_decided() {
+    let attest =
+        |b: &mut EntryBuilder| edit(b, 12, vec![Op::AttestBuild { script: asset(), version: v1(), module: MODULE }]);
+    let (world, mut all) = predicted_entries(attest);
+    let mut plain = replica_for(world.clone(), None);
+    plain.advance(Frame(24), &mut all);
+    assert!((ball_x(&plain) - 0.11).abs() < 1e-4, "frames 13 to 23: {}", ball_x(&plain));
+
+    let (_, mut s) = predicted_entries(attest);
+    let mut author = replica_for(world, Some(keys().key(0)));
+    author.advance(Frame(11), &mut s);
+    assert_eq!(author.vote_holds(), [Frame(6)]);
+    assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(6), "predicted");
+    assert!((ball_x(&author) - 0.05).abs() < 1e-4, "frames 6 to 10: {}", ball_x(&author));
+    let adv = author.advance(Frame(24), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 5), "stepped again from c or below: {adv:?}");
+    assert!(author.vote_holds().is_empty());
+    assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
+    assert_eq!((author.faults(), plain.faults()), (0, 0));
+    assert_eq!(roots(&author, 24), roots(&plain, 24));
+    assert!((ball_x(&author) - ball_x(&plain)).abs() < 1e-9);
+}
+
+/// B leaves at 12 instead, so its attestation can never come and the shared void rule voids the commit at 12's end
+/// (`QuorumUnreachable`). The leave ends A's prediction: A steps again from 5 under the rule, the old code runs
+/// throughout, and the script effects the prediction carried are retracted. The roots are a plain replica's.
+#[test]
+fn a_prediction_voided_before_d_steps_again_with_the_old_code_throughout() {
+    let leave = |b: &mut EntryBuilder| b.next(Class::Protocol, Frame(12), Bytes::from_static(pe_seams::LEAVE));
+    let (world, mut all) = predicted_entries(leave);
+    let mut plain = replica_for(world.clone(), None);
+    plain.advance(Frame(24), &mut all);
+
+    let (_, mut s) = predicted_entries(leave);
+    let mut author = replica_for(world, Some(keys().key(0)));
+    author.advance(Frame(11), &mut s);
+    assert_eq!(keys_of(&author.view()), (6..11).map(ping).collect::<Vec<_>>(), "predicted pings");
+    author.advance(Frame(24), &mut s);
+    assert!(author.vote_holds().is_empty());
+    let p = &author.world().world().pending()[&asset()];
+    assert_eq!(p.void, Some((Frame(12), pe_world::VoidKind::QuorumUnreachable)));
+    assert!(ball_x(&author).abs() < 1e-9, "the old code throughout: {}", ball_x(&author));
+    assert_eq!(author.view().retracted, (6..11).map(ping).collect::<Vec<_>>());
+    assert_eq!((author.faults(), plain.faults()), (0, 0));
+    assert_eq!(roots(&author, 24), roots(&plain, 24));
+}
+
+/// The mover's tag on the ball.
+fn tag_ball() -> Vec<Op> {
+    vec![Op::SetRow { id: Target::Existing(oid(BALL)), row: Row { component: tag(), instance: 0, bytes: vec![] } }]
+}
+
+/// A commit of the mover's second version (its source changed: another V, so another tag) over `base`, stamped `at`.
+fn commit_second(b: &mut EntryBuilder, at: u64, base: pe_world::Version) -> SignedEntry {
+    let source: Bytes = pe_world::script::pack_source(&[("src/lib.rs", b"// the mover, again\n".as_slice())])
+        .expect("an archive")
+        .into();
+    let v2 = Hash(BlobRef::of(&source).hash);
+    let t = tx(vec![
+        Op::Register { components: vec![tag_desc(&v2)] },
+        Op::commit_script(AssetTarget::Existing(asset()), Some(base), source, Hash([1; 32]), Hash([2; 32]), MODULE, at),
+    ]);
+    b.next(Class::Edit, Frame(at), Bytes::from(t.encode()))
+}
+
+/// A re-step for a cut's root predicts nothing (@engine-architect's Medium on 29b02af0). The mover runs from the start,
+/// and B and A each commit a second version of it: B at 3, so A's at 5 is refused live (one pending commit per asset)
+/// and A predicts nothing. A cut at 8 that leaves B's commit out makes the replica re-step from 3, and A's commit
+/// applies there. A's root at the cut is a plain replica's, and the re-step leaves A holding no votes.
+#[test]
+fn a_re_step_for_a_cut_s_root_never_predicts() {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mut world = scripted();
+    world.set_member(keys.key(1), perm::EDIT);
+    let first = world.modules()[&asset()].version;
+    let (theirs, mine) = (commit_second(&mut b, 3, first), commit_second(&mut a, 5, first));
+    let mut s = Source::default();
+    s.add(theirs);
+    s.add(mine.clone());
+    let mut plain = replica_for(world.clone(), None);
+    plain.advance(Frame(12), &mut s);
+    let mut author = replica_for(world, Some(keys.key(0)));
+    author.advance(Frame(12), &mut s);
+    assert!(matches!(author.outcome(&mine.id()), Some((_, Outcome::Refused { .. }))), "refused live");
+    assert!(author.vote_holds().is_empty());
+    let cut = cut_at(std::slice::from_ref(&mine), 1, 8);
+    let want = plain.root_at_cut(&cut, &mut s).expect("the plain replica's root");
+    assert_eq!(author.root_at_cut(&cut, &mut s).expect("the author's root"), want);
+    assert!(author.vote_holds().is_empty(), "the re-step started no prediction");
+    assert_eq!(author.world().world().pending()[&asset()].author, keys.key(1), "the live state is as it was");
+}
+
+/// Rollbacks while A's prediction stands, from B's late entries (as on a real link): one to c or below predicts again
+/// at c, and one to a frame after c restores a state that has the prediction. A goes on predicting, and once B's
+/// attestation decides the commit, its roots are a plain replica's.
+#[test]
+fn rollbacks_while_a_prediction_stands_keep_it_and_the_roots_agree() {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    let push = |b: &mut EntryBuilder, at: u64| {
+        let input = pe_world::Input::Push { object: oid(BALL), impulse: [0.0, 0.2, 0.0], at: None };
+        b.next(Class::Input, Frame(at), Bytes::from(input.encode()))
+    };
+    let mine = [commit(&mut a, 5), edit(&mut a, 6, tag_ball()), edit(&mut a, 13, tag_ball())];
+    let (push3, push8) = (push(&mut b, 3), push(&mut b, 8));
+    let attest = edit(&mut b, 12, vec![Op::AttestBuild { script: asset(), version: v1(), module: MODULE }]);
+    let mut all = Source::default();
+    for e in mine.iter().chain([&push3, &push8, &attest]) {
+        all.add(e.clone());
+    }
+    let mut plain = replica_for(world.clone(), None);
+    plain.advance(Frame(24), &mut all);
+
+    let mut s = Source::default();
+    for e in &mine {
+        s.add(e.clone());
+    }
+    let mut author = replica_for(world, Some(keys.key(0)));
+    author.advance(Frame(10), &mut s);
+    s.add(push3);
+    let adv = author.advance(Frame(10), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 3), "to c or below: {adv:?}");
+    assert_eq!(author.vote_holds(), [Frame(6)]);
+    assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(6), "predicted again at c");
+    s.add(push8);
+    let adv = author.advance(Frame(11), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 > 5 && f.0 <= 8), "after c: {adv:?}");
+    assert_eq!(author.vote_holds(), [Frame(6)]);
+    assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(6), "still predicted");
+    assert!((ball_x(&author) - 0.05).abs() < 1e-4, "frames 6 to 10: {}", ball_x(&author));
+    s.add(attest);
+    author.advance(Frame(24), &mut s);
+    assert!(author.vote_holds().is_empty());
+    assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
+    assert_eq!((author.faults(), plain.faults()), (0, 0));
+    assert_eq!(roots(&author, 24), roots(&plain, 24));
+}
+
+/// A prediction that nothing decides ends at D: A steps again from 5, the commit is voided `Unattested` at D, the old
+/// code runs throughout, and the roots are a plain replica's.
+#[test]
+fn a_prediction_that_reaches_d_steps_again_with_the_old_code_throughout() {
+    let keys = keys();
+    let mut a = EntryBuilder::new(&keys, 0);
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    let mut s = Source::default();
+    s.add(commit(&mut a, 5));
+    s.add(edit(&mut a, 6, tag_ball()));
+    let mut plain = replica_for(world.clone(), None);
+    plain.advance(Frame(6), &mut s);
+    let deadline = plain.world().world().pending()[&asset()].deadline;
+    let end = deadline.0 + K;
+    plain.advance(Frame(end), &mut s);
+
+    let mut author = replica_for(world, Some(keys.key(0)));
+    author.advance(deadline, &mut s);
+    assert_eq!(author.vote_holds(), [Frame(6)], "predicting until D");
+    let adv = author.advance(Frame(end), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 5), "stepped again from c or below: {adv:?}");
+    assert!(author.vote_holds().is_empty());
+    let p = &author.world().world().pending()[&asset()];
+    assert_eq!(p.void, Some((deadline, pe_world::VoidKind::Unattested)));
+    assert!(ball_x(&author).abs() < 1e-9, "the old code throughout: {}", ball_x(&author));
+    assert_eq!((author.faults(), plain.faults()), (0, 0));
+    assert_eq!(roots(&author, end), roots(&plain, end));
+}
+
+/// B's `BuildFailed` at 12 decides the commit as a `Leave` would: the quorum can't be reached, the shared void rule
+/// voids it at 12's end, and A steps again from 5 with the old code throughout. The roots are a plain replica's.
+#[test]
+fn a_build_failure_ends_the_prediction_and_the_commit_voids() {
+    let failed = |b: &mut EntryBuilder| {
+        let (toolchain, sdk, reason) = (Hash([1; 32]), Hash([2; 32]), pe_seams::BuildFailure::Compile);
+        edit(b, 12, vec![Op::BuildFailed { script: asset(), version: v1(), reason, toolchain, sdk, module: None }])
+    };
+    let (world, mut all) = predicted_entries(failed);
+    let mut plain = replica_for(world.clone(), None);
+    plain.advance(Frame(24), &mut all);
+
+    let (_, mut s) = predicted_entries(failed);
+    let mut author = replica_for(world, Some(keys().key(0)));
+    author.advance(Frame(11), &mut s);
+    assert_eq!(author.vote_holds(), [Frame(6)]);
+    let adv = author.advance(Frame(24), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 5), "stepped again from c or below: {adv:?}");
+    assert!(author.vote_holds().is_empty());
+    let p = &author.world().world().pending()[&asset()];
+    assert_eq!(p.void, Some((Frame(12), pe_world::VoidKind::QuorumUnreachable)));
+    assert_eq!(p.failures(), [(keys().key(1), pe_seams::BuildFailure::Compile)]);
+    assert!(ball_x(&author).abs() < 1e-9, "the old code throughout: {}", ball_x(&author));
+    assert_eq!((author.faults(), plain.faults()), (0, 0));
+    assert_eq!(roots(&author, 24), roots(&plain, 24));
+}
+
+/// Only entries at or after c end a prediction (@engine-architect's Low 1 on 29b02af0): B's `Leave` at 3 arrives after
+/// A began predicting its commit at 5, and the rollback past it applies it again. A goes on predicting: the commit's
+/// voters at 5 are then A and C, and C's attestation can still come. It comes at 12 and decides the commit, and A's
+/// roots are a plain replica's.
+#[test]
+fn a_late_leave_before_c_does_not_end_the_prediction() {
+    let keys = TestKeys::new(5, 3);
+    let [mut a, mut b, mut c] = [0, 1, 2].map(|i| EntryBuilder::new(&keys, i));
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    world.set_member(keys.key(2), perm::EDIT);
+    let mine = [commit(&mut a, 5), edit(&mut a, 6, tag_ball()), edit(&mut a, 13, tag_ball())];
+    let leave = b.next(Class::Protocol, Frame(3), Bytes::from_static(pe_seams::LEAVE));
+    let attest = edit(&mut c, 12, vec![Op::AttestBuild { script: asset(), version: v1(), module: MODULE }]);
+    let mut all = Source::default();
+    for e in mine.iter().chain([&leave, &attest]) {
+        all.add(e.clone());
+    }
+    let mut plain = replica_for(world.clone(), None);
+    plain.advance(Frame(24), &mut all);
+
+    let mut s = Source::default();
+    for e in &mine {
+        s.add(e.clone());
+    }
+    let mut author = replica_for(world, Some(keys.key(0)));
+    author.advance(Frame(10), &mut s);
+    assert_eq!(author.vote_holds(), [Frame(6)]);
+    s.add(leave);
+    let adv = author.advance(Frame(10), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 3), "past the leave: {adv:?}");
+    assert_eq!(author.vote_holds(), [Frame(6)], "still predicting");
+    assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(6), "predicted again at c");
+    s.add(attest);
+    author.advance(Frame(24), &mut s);
+    assert!(author.vote_holds().is_empty());
+    assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
+    assert_eq!((author.faults(), plain.faults()), (0, 0));
+    assert_eq!(roots(&author, 24), roots(&plain, 24));
+}
+
 /// pe-logic's runner (the `logic` feature) on the lamp of logic.md appendix A, which the build service builds.
 #[cfg(feature = "logic")]
 mod lamp {
