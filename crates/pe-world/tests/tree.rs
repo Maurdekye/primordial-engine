@@ -257,7 +257,7 @@ fn root_cost() {
     }
     let cached = t.elapsed() / runs;
     println!(
-        "RESULT root_cost objects={n} per_root={per:?} leaves={leaves:?} records={records:?} tables={tables:?}          cached_root={cached:?}"
+        "MEASURED root_cost objects={n} per_root={per:?} leaves={leaves:?} records={records:?} tables={tables:?}          cached_root={cached:?}"
     );
 }
 
