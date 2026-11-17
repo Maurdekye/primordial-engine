@@ -22,6 +22,8 @@ pe-mcp = { path = "../pe-mcp" }
 pe-render = { path = "../pe-render" }
 pe-xr = { path = "../pe-xr" }
 pe-diverge = { path = "../pe-diverge" }
+# The physics self-test pe-diverge asks for (src/diverge.rs; divergence.md 5, step 2).
+pe-physics = { path = "../pe-physics" }
 # The genesis record's session nonce: the OS's randomness, the getrandom pe-net-crypto uses (src/genesis.rs).
 getrandom = "0.4"
 # The MCP thread's runtime (app.md 1): pe-mcp's transports run on tokio, the version pe-mcp uses.
@@ -30,6 +32,8 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync"] }
 # The two-member test: pe-seams's test keys, and Bytes for its in-process Transport.
 [dev-dependencies]
 pe-seams = { path = "../pe-seams", features = ["world-api", "test-util"] }
+# The damage hook the split test injects a divergence through (sim.rs); never in the shipped binary (resolver 3).
+pe-replica = { path = "../pe-replica", features = ["logic", "test-util"] }
 bytes.workspace = true
 # The agent demo script (src/agent_demo.rs): an MCP client over pe-mcp's server, as pe-mcp's own tests use it.
 rmcp = { version = "=3.8.0", default-features = false, features = ["client", "transport-async-rw"] }

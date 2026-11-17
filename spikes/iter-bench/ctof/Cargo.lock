@@ -2213,6 +2213,7 @@ dependencies = [
  "pe-mcp",
  "pe-net",
  "pe-net-crypto",
+ "pe-physics",
  "pe-render",
  "pe-replica",
  "pe-seams",

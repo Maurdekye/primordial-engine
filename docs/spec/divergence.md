@@ -350,6 +350,14 @@ pair: body and contact ids come from free-list pools [V `crates/box3d-fork/src/i
      every voter's newest verdict, and the newest supersedes the older. A member whose verdict is `Failed`, or
      whose connection guard reported a difference (WS-net, section 10), adopts another's root. At `n = 2` a failed
      self-test is the only real evidence of which machine is wrong.
+     **M1's self-test** (pe-physics `self_test_digest`; @coordinator-opus md87066c865f0) steps a fixed scene a fixed
+     number of frames and takes its whole-state check hash. pe-app takes the digest at start-up and again for each
+     split, each on a thread in the simulation's floating-point mode, which the digest depends on (app.md 3, step 5):
+     `Passed` if they are equal, `Failed`
+     otherwise or if either run fails. A vote never claims a test that did not run. The scene is a fresh world, so it
+     sees how the machine computes now (CPU, floating-point mode, code), never a fault in the session's state, which
+     the pick decides. The start-up digest is the value R-G1's hello will carry: once it does, it is taken before the
+     hello.
   3. A **reference member** is chosen (@coordinator-opus's L4' rulings, m9cef15c38b88 and m012a33b972f6, on
      @fable-reviewer's rule):
      - **The latch:** a member any of whose verdicts for this split shows `Failed` is out for the rest of the
@@ -496,14 +504,18 @@ and in WorldApi's `session` (api.md 5.1), is one value: `Repairing { since }` wh
 - the replica reports it: a final cut I finalized diverged or was damaged (S5 `Health`); or
 - a root split is open: S3 reported `RootSplit` for a cut above the final cut's frame, and no cut at or past that
   split's frame is final yet. Every reported split stays open until then, so a revote that settles an early split
-  leaves a later one open (@engine-architect). `since` is the first open split's frame, or the replica's, whichever
-  is earlier.
+  leaves a later one open (@engine-architect); or
+- pe-diverge has an episode open: a root split not yet settled by an agreed cut, or a replay or repair under way
+  (`Diverge::open_since`, the earlier of the split's cut and the cut it repairs toward).
+
+`since` is the earliest of their frames.
 
 The replica alone can't show a split: it learns of a divergence only at a final cut, and in a split none is final. At
 `n = 2` every divergence is a split (3.2), so without the second clause a stalled world read "agreed" (found by
 @engine-architect's two-process demo, 2026-11-17). pe-app composes the two and publishes a view carrying the result (`Sim::health_of`), with no seam change
 [R @coordinator-opus, @item:primordial-engine/pe-app-runs-pe-diverge-app-md-step-5-and-health-r]. Until pe-app runs
-pe-diverge, the split clause reads S3's events directly; afterwards, pe-diverge's open episode.
+pe-diverge, the split clause read S3's events directly. Now pe-app runs it (app.md 3, step 5) and keeps both: S3's
+open splits, and pe-diverge's open episode.
 
 ## 8. The display layer: requirements for WS-render
 
@@ -1198,7 +1210,7 @@ pe-diverge's `merge` replays the model's traces (plan 4.1, rule 2).
   is refused, **with a notice to its author** (through the refusal's reason, as every refusal is reported:
   WS-api and pe-render, P4).
 - **R-G1, the connection guard (WS-net).** Before a join, compare: the engine build id, the physics self-test's
-  digest, and (from M2) each module's hash. A difference refuses the join with its reason (plan M1 acceptance). The
+  digest (pe-app's start-up digest, 5 step 2), and (from M2) each module's hash. A difference refuses the join with its reason (plan M1 acceptance). The
   last self-test result is part of a member's state that section 5 reads.
 - **R-E1, stable effect keys (WS-state, through S5).** Events carry the key of D6.
 - **R-M1, witness statements (WS-agree, from M2).** A signed statement `(m, heads, f)` by which a member shows it

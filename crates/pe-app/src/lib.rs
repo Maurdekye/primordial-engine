@@ -18,6 +18,7 @@ pub mod api;
 pub mod builds;
 pub mod capture;
 pub mod clock;
+pub mod diverge;
 pub mod genesis;
 pub mod leave;
 pub mod local;
