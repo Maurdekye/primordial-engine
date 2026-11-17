@@ -977,11 +977,19 @@ mod tests {
         // it, the session resumes on the same connections: finality comes back within two of the view timeout's
         // ceilings plus a margin (the view running when the path returns may wait out one ceiling, and the next one
         // may time out once more; @engine-architect measured 3.9-13.3 s and once past 15 s under load, @coordinator-opus
-        // me1c7fc4e8bf5), every entry either member made becomes final (a late void is final too), and neither
-        // side refuses or blames the other (no Refused or Fault naming it, no message refused).
+        // me1c7fc4e8bf5), every entry either member made becomes final, and neither side refuses or blames the
+        // other (no Refused or Fault naming it, no message refused). Each member also queues an edit through pe-api's
+        // port 3 s into the blackout, so an edit sits in each outage backlog: no entry of either is voided as late
+        // (pe-agree's outage rule, gate item 4; @coordinator-opus md904d9b1a9c7), and both edits reach the final order
+        // on both machines.
+        use crate::api::Ports;
+        use pe_api::queue::{Receipt, Submission};
+        use pe_seams::world_api::{Status, Wait};
         use pe_seams::{AgreeEvent, VoidReason};
+        use pe_world::edit::{Actor, Op, Target, Transaction};
         use std::sync::atomic::{AtomicBool, Ordering};
         const BLACKOUT: Duration = Duration::from_secs(10);
+        const EDIT_AT: Duration = Duration::from_secs(3);
         let ceiling = Duration::from_nanos(crate::genesis::settings().timing.max_timeout_ns as u64);
         let resume_within = 2 * ceiling + Duration::from_secs(5);
         let host = crate::clock::shared();
@@ -1005,16 +1013,26 @@ mod tests {
         let feeds = [[-0.5f32, 1.0, -0.4], [0.5, 1.1, -0.3]];
         let mut sims = Vec::new();
         let mut logs = Vec::new();
+        let mut ports: Vec<Ports> = Vec::new();
+        let mut clocks = Vec::new();
         for (s, feed) in [sa, sb].into_iter().zip(feeds) {
             let slot = Arc::new(FrameSlot::new());
             let log = Arc::new(std::sync::Mutex::new(Vec::new()));
             let me = s.me;
-            let sim = Sim::new(Box::new(s.node), s.replica, s.frames.clone(), slot, Budget::new(RATE))
-                .with_local(me, crate::local::chain_nonce(), Arc::new(MovingHands(feed)))
+            let sim = Sim::new(Box::new(s.node), s.replica, s.frames.clone(), slot, Budget::new(RATE)).with_local(
+                me,
+                crate::local::chain_nonce(),
+                Arc::new(MovingHands(feed)),
+            );
+            let port = sim.ports("Pit", || {}).expect("pe-api's ports: a pe-world replica and a local player");
+            let sim = sim
+                .with_api(port.clone())
                 .with_transport(transport(s.handle), Some(Box::new(s.hook)))
                 .with_event_log(log.clone());
             sims.push((sim, me));
             logs.push(log);
+            ports.push(port);
+            clocks.push(s.frames);
         }
         let run = |sims: &mut Vec<(Sim, MemberKey)>, until: &mut dyn FnMut(&Machines) -> bool, max: Duration| {
             let end = Instant::now() + max;
@@ -1036,7 +1054,46 @@ mod tests {
             sims.iter().map(|(s, _)| s.stats().clone()).collect::<Vec<_>>()
         );
         dark.store(true, Ordering::Relaxed);
-        run(&mut sims, &mut |_| false, BLACKOUT);
+        let dark_since = Instant::now();
+        run(&mut sims, &mut |_| false, EDIT_AT);
+        let tickets: Vec<_> = ports
+            .iter()
+            .zip(&clocks)
+            .map(|(p, clock)| {
+                let create = Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] };
+                let tx = Transaction {
+                    actor: Actor::Person,
+                    label: None,
+                    preconditions: vec![],
+                    ops: vec![create],
+                    blobs: vec![],
+                };
+                let base = clock.frame_at(host()).expect("a frame").0;
+                p.queue.submit(Submission { tx, base }).expect("room in pe-api's queue")
+            })
+            .collect();
+        let mut receipts: Vec<Option<Receipt>> = vec![None, None];
+        run(
+            &mut sims,
+            &mut |_| {
+                for (i, r) in receipts.iter_mut().enumerate() {
+                    if r.is_none() {
+                        *r = ports[i].queue.receipt(tickets[i], Instant::now());
+                    }
+                }
+                receipts.iter().all(Option::is_some)
+            },
+            Duration::from_secs(2),
+        );
+        let edits: Vec<_> = receipts
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| match r {
+                Some(Receipt::Submitted { change, .. }) => change,
+                other => panic!("machine {i}'s edit was not submitted during the blackout: {other:?}"),
+            })
+            .collect();
+        run(&mut sims, &mut |_| false, BLACKOUT.saturating_sub(dark_since.elapsed()));
         dark.store(false, Ordering::Relaxed);
         let back = Instant::now();
         // Counted from the path's return, not from before the blackout: a cut voted just before it went dark can
@@ -1061,9 +1118,39 @@ mod tests {
             Duration::from_secs(30),
         );
         let all_final_after = back.elapsed();
+        // Both edits' fates on both machines. In M1 a machine decides finality only for its own changes (api.md 5.4,
+        // `mine`), so its own edit must settle as final, and the other's must be stepped here; the final cuts above
+        // include both, and the Late count below shows neither was voided.
+        let fate = |p: &Ports, c| p.log.wait(c, Wait::Final, Instant::now());
+        let settled = |s: Status, is_final: bool| {
+            matches!(s, Status::Final | Status::Dropped | Status::Unknown) || (s == Status::Refused && is_final)
+        };
+        let done = |i: usize, j: usize| {
+            fate(&ports[i], edits[j]).is_some_and(|f| settled(f.status, f.is_final) || (i != j && f.frame.is_some()))
+        };
+        run(&mut sims, &mut |_| (0..2).all(|i| (0..2).all(|j| done(i, j))), Duration::from_secs(10));
         println!(
             "after the path came back: finality resumed {resumed} ({resumed_after:?}); every entry final {all_final} ({all_final_after:?})"
         );
+        for (i, p) in ports.iter().enumerate() {
+            for (j, c) in edits.iter().enumerate() {
+                let f = fate(p, *c);
+                println!("machine {i}: machine {j}'s edit {:?}", f.as_ref().map(|f| (f.status, f.frame, &f.outcome)));
+                // Unknown: in the final order, but a repair replaced the state it was stepped on here (api.md 5.4).
+                let expected: &[Status] =
+                    if i == j { &[Status::Final, Status::Unknown] } else { &[Status::Accepted, Status::Unknown] };
+                assert!(
+                    f.as_ref().is_some_and(|f| expected.contains(&f.status)),
+                    "machine {i}: machine {j}'s edit, queued during the blackout, is not {expected:?}: {f:?}"
+                );
+                if let Some(f) = f.filter(|f| f.status != Status::Unknown) {
+                    assert!(
+                        matches!(f.outcome, Some(pe_seams::Outcome::Applied { .. })),
+                        "machine {i}: machine {j}'s edit was not applied: {f:?}"
+                    );
+                }
+            }
+        }
         for (i, (sim, me)) in sims.iter().enumerate() {
             let them = sims[1 - i].1;
             let log = logs[i].lock().unwrap();
@@ -1075,14 +1162,14 @@ mod tests {
                     _ => false,
                 })
                 .collect();
-            // A void is a final outcome, not blame: an entry made during the outage reaches the other member past
-            // its frame tolerance and is voided as late, as S3 says. Counted and printed, not asserted.
+            // Under pe-agree's outage rule an entry made during the outage is delayed, never voided as late.
             let late = log
                 .iter()
                 .filter(|e| matches!(e, AgreeEvent::Voided { author, reason: VoidReason::Late, .. } if *author == them))
                 .count();
             println!(
-                "machine {i} ({}): {:?}; entries made {}; voided the other's as late {late}; blamed the other {} times,                  first {:?}",
+                "machine {i} ({}): {:?}; entries made {}; voided the other's as late {late}; blamed the other {} times, \
+                 first {:?}",
                 short(me),
                 sim.stats(),
                 made[i],
@@ -1091,6 +1178,7 @@ mod tests {
             );
             assert!(blamed.is_empty(), "machine {i} blamed the other: {} events, first {:?}", blamed.len(), blamed[0]);
             assert_eq!(sim.stats().refused, 0, "machine {i} refused messages");
+            assert_eq!(late, 0, "machine {i} voided {late} of the other's entries as late (pe-agree's outage rule)");
         }
         assert!(resumed, "finality did not resume within {resume_within:?}");
         assert!(all_final, "not every entry made became final on both sides");
