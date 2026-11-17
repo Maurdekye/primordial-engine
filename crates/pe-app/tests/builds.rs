@@ -129,12 +129,12 @@ fn a_voter_builds_checks_loads_and_attests_once() {
         let built = builder.build(archive()).expect("the lamp builds");
         let w = committed(&built, builder.ids(), built.described.module);
         let mut b = Attester::new(keys().key(1));
-        let pass = b.pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let pass = b.pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         assert!(pass.failed.is_empty() && pass.failures.is_empty(), "{pass:?}");
         assert_eq!(pass.loaded, [(lamp(), v())]);
         let tx = attestation(lamp(), v(), built.described.module);
         assert_eq!(pass.attest, [Attest { asset: lamp(), version: w.pending()[&lamp()].version, tx }]);
-        let again = b.pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let again = b.pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         assert!(again.loaded.is_empty() && again.attest.is_empty() && again.failed.is_empty(), "{again:?}");
     });
 }
@@ -147,9 +147,57 @@ fn the_author_loads_but_does_not_attest() {
         let (builder, inbox) = builder("author");
         let built = builder.build(archive()).expect("the lamp builds");
         let w = committed(&built, builder.ids(), built.described.module);
-        let pass = Attester::new(keys().key(0)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let pass = Attester::new(keys().key(0)).pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         assert_eq!((pass.loaded, pass.attest.len(), pass.failed.len()), (vec![(lamp(), v())], 0, 0));
         assert!(pass.failures.is_empty());
+    });
+}
+
+/// `w` after the author's prediction of its own pending lamp commit (logic.md 6.2a's option (i)): activated at the end
+/// of its frame 0, which removes the pending record, as on the author's machine before any snapshot is published.
+fn predicted(mut w: World) -> World {
+    let _ = w.end_frame(Frame(0));
+    assert!(matches!(w.activate_for_prediction(lamp(), Frame(0)), Some(Ok(_))), "the prediction activates it");
+    assert!(w.pending().is_empty() && w.modules().contains_key(&lamp()), "active, no longer pending");
+    w
+}
+
+/// The author never sees its own commit pending: its prediction activates it in the commit's own frame. The pass loads
+/// the module as an active version, from the author's own build, and attests nothing; a second pass does nothing.
+/// Before, the author's runner never held its own module
+/// (@item:primordial-engine/m1-blocker-binding-an-activated-script-to-an-obj).
+#[test]
+fn the_author_loads_its_own_commit_that_its_prediction_activated() {
+    big_stack(|| {
+        let (builder, inbox) = builder("author-predicted");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let w = predicted(committed(&built, builder.ids(), built.described.module));
+        let mut a = Attester::new(keys().key(0));
+        let pass = a.pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
+        assert!(pass.failed.is_empty() && pass.failures.is_empty(), "{pass:?}");
+        assert_eq!((pass.loaded, pass.attest.len()), (vec![(lamp(), v())], 0), "loaded, not attested");
+        let again = a.pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
+        assert!(again.loaded.is_empty() && again.failed.is_empty(), "loaded once: {again:?}");
+    });
+}
+
+/// A version is loaded once: a voter that handled it pending (loaded and attested) does nothing more once it is active,
+/// and one that only ever sees it active loads it and attests nothing, since an active version needs no attestation.
+#[test]
+fn an_active_version_is_loaded_once_and_never_attested() {
+    big_stack(|| {
+        let (builder, inbox) = builder("active");
+        let built = builder.build(archive()).expect("the lamp builds");
+        let w = committed(&built, builder.ids(), built.described.module);
+        let mut seen = Attester::new(keys().key(1));
+        let first = seen.pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
+        assert_eq!((first.loaded.len(), first.attest.len()), (1, 1), "pending: loaded and attested: {first:?}");
+        let a = predicted(committed(&built, builder.ids(), built.described.module));
+        let later = seen.pass(a.pending(), a.modules(), blob_of(&a), &builder, &inbox);
+        assert!(later.loaded.is_empty() && later.attest.is_empty(), "handled while pending: {later:?}");
+        let late = Attester::new(keys().key(1)).pass(a.pending(), a.modules(), blob_of(&a), &builder, &inbox);
+        assert!(late.failed.is_empty() && late.failures.is_empty(), "{late:?}");
+        assert_eq!((late.loaded, late.attest.len()), (vec![(lamp(), v())], 0), "active only: loaded, not attested");
     });
 }
 
@@ -163,7 +211,7 @@ fn a_build_that_differs_from_the_commit_is_reported_and_not_attested() {
         let built = builder.build(archive()).expect("the lamp builds");
         let mine = built.described.module;
         let w = committed(&built, builder.ids(), Hash([9; 32]));
-        let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let pass = Attester::new(keys().key(1)).pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         assert!(pass.loaded.is_empty() && pass.attest.is_empty(), "{pass:?}");
         let tx = build_failed(lamp(), v(), BuildFailure::Mismatch, builder.ids(), Some(mine));
         let version = w.pending()[&lamp()].version;
@@ -179,7 +227,7 @@ fn a_build_that_differs_from_the_commit_is_reported_and_not_attested() {
         assert!(report.contains("reason: Mismatch") && bundle.join("module.wasm").is_file(), "{report}");
 
         let w = committed(&built, (Hash([7; 32]), builder.ids().1), mine);
-        let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let pass = Attester::new(keys().key(1)).pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         assert!(pass.loaded.is_empty() && pass.attest.is_empty() && pass.failures.is_empty(), "{pass:?}");
         let why = "another build identity";
         assert!(matches!(&pass.failed[..], [(a, f, w)] if *a == lamp() && *f == v() && w.contains(why)), "{pass:?}");
@@ -194,7 +242,7 @@ fn a_voter_reports_a_compile_error_at_once() {
         let (builder, inbox) = builder("compile");
         let source = broken();
         let w = commit_world(&source, None, builder.ids(), Hash([5; 32]));
-        let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let pass = Attester::new(keys().key(1)).pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         let v = Hash(BlobRef::of(&source).hash);
         let tx = build_failed(lamp(), v, BuildFailure::Compile, builder.ids(), None);
         let version = w.pending()[&lamp()].version;
@@ -204,7 +252,7 @@ fn a_voter_reports_a_compile_error_at_once() {
         // in its report.
         let report = std::fs::read_to_string(bundle_in(&pass.failed[0].2).join("report.txt")).expect("a report");
         assert!(report.contains("reason: Compile") && report.contains("src/lib.rs"), "{report}");
-        let author = Attester::new(keys().key(0)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let author = Attester::new(keys().key(0)).pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         assert!(author.failures.is_empty() && author.attest.is_empty(), "{author:?}");
     });
 }
@@ -218,7 +266,7 @@ fn components_that_differ_from_the_modules_are_refused() {
         let (builder, inbox) = builder("components");
         let built = builder.build(archive()).expect("the lamp builds");
         let w = commit_world(archive(), None, builder.ids(), built.described.module);
-        let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let pass = Attester::new(keys().key(1)).pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         let tx = build_failed(lamp(), v(), BuildFailure::Refused, builder.ids(), None);
         let version = w.pending()[&lamp()].version;
         assert_eq!(pass.failures, [Failure { asset: lamp(), version, reason: BuildFailure::Refused, tx }]);
@@ -253,7 +301,7 @@ fn a_counted_voter_or_a_voided_commit_gets_no_attestation() {
         let mut b = EntryBuilder::new(keys(), 1);
         let attest = b.next(Class::Edit, Frame(0), Bytes::from(attestation(lamp(), v(), module).encode()));
         assert!(matches!(w.apply_edit(Frame(0), &attest).0, Outcome::Applied { .. }));
-        let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let pass = Attester::new(keys().key(1)).pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         assert_eq!((pass.loaded, pass.attest.len()), (vec![(lamp(), v())], 0));
 
         let mut w = committed(&built, builder.ids(), module);
@@ -262,7 +310,7 @@ fn a_counted_voter_or_a_voided_commit_gets_no_attestation() {
             let _ = w.end_frame(Frame(f));
         }
         assert!(w.pending()[&lamp()].void.is_some(), "unattested at D");
-        let pass = Attester::new(keys().key(1)).pass(w.pending(), blob_of(&w), &builder, &inbox);
+        let pass = Attester::new(keys().key(1)).pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox);
         assert!(pass.loaded.is_empty() && pass.attest.is_empty() && pass.failed.is_empty(), "{pass:?}");
     });
 }
@@ -279,7 +327,7 @@ fn an_attestation_the_final_state_lacks_is_posted_again_while_d_is_ahead() {
         let mut w = committed(&built, builder.ids(), module);
         let (version, deadline) = (w.pending()[&lamp()].version, w.pending()[&lamp()].deadline);
         let mut b = Attester::new(keys().key(1));
-        assert_eq!(b.pass(w.pending(), blob_of(&w), &builder, &inbox).attest.len(), 1);
+        assert_eq!(b.pass(w.pending(), w.modules(), blob_of(&w), &builder, &inbox).attest.len(), 1);
         b.posted(lamp(), version, Frame(3));
         assert!(b.reposts(Frame(5), Frame(3), w.pending()).is_empty(), "frame 3 isn't final yet");
         let again = Attest { asset: lamp(), version, tx: attestation(lamp(), v(), module) };
