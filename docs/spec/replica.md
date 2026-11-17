@@ -368,7 +368,8 @@ ceil(240 / rate) sub-steps: the user chose the proposal of 13 ("30–120 Hz (rec
   again; an abandoned replay puts it back from the floor's held snapshot (6.1).
 - **Held roots are not keyframes.** A root at a cut is the state with exactly the cut's entries, which the live
   history's keyframe at that frame need not share. The replica keeps each as its own snapshot (world state, physics
-  image and transfer) until its cut is final or superseded, and a rollback never takes one away (5.3, 8).
+  image and transfer) until its cut is final or superseded, and a rollback never takes one away (5.3, 8). In a long
+  finality stall that is one snapshot per voted cut (O19).
 - **Not built:** compacting pe-physics's geometry registry after a trim, which the old loop did (review P22-12)
   [V: pe-replica never calls `compact_images`].
 
@@ -419,7 +420,7 @@ pe-world (`tests/peworld.rs`, `tests/logic.rs`) [V]:
 |---|---|---|
 | P1 | Two replicas fed the same entries have equal roots at every cut frame | `equal_entries_give_equal_roots` |
 | P2 | A replica that gets entries late, in any order, ends with the same roots as one that got them on time | `late_entries_roll_back_to_the_same_roots` |
-| P3 | Restoring the state at a cut and re-stepping with the final log reproduces the roots | `a_cuts_root_takes_exactly_its_entries`, `rung_one_repairs_a_transient_fault`, `a_vote_resumes_from_the_root_held_at_the_previous_cut`, `a_vote_never_resumes_from_a_held_root_with_other_entries` |
+| P3 | Restoring the state at a cut and re-stepping with the final log reproduces the roots | `a_cuts_root_takes_exactly_its_entries`, `rung_one_repairs_a_transient_fault`, `a_vote_resumes_from_the_root_held_at_the_previous_cut`, `a_vote_never_resumes_from_a_held_root_with_other_entries`, `a_vote_never_resumes_from_a_root_held_off_the_grid` |
 | P4 | No rollback goes below the final cut | `finalize_moves_the_floor_and_nothing_below_it_changes`, `a_change_below_the_floor_outside_the_rebased_span_is_still_a_fault` |
 | P5 | No input from any member panics a replica; bad input is refused with a reason | **Not built** as a property test (3.1) |
 | P6 | The worker count changes nothing | M2 (D2) |
@@ -483,14 +484,19 @@ pe-replica puts the physics into it in two places, both written at each cut fram
   re-stepped, and the root equals the live one (debug builds assert it). The re-step is not budgeted yet (4.2):
   normally one or two cut intervals.
 - **A vote's re-step resumes from a held root** (was O13) [V `replica.rs`, `walk` and `resume_from`; added after
-  c9e2829a]. It starts instead from my root held at an earlier voted cut, the newest one above that keyframe, when two
-  things hold. The root was computed on the same lineage: the same base (the floor, or my last import), with no
-  rung-1 replay since. And that cut's entries from the base up to its frame are exactly this cut's. A held root
-  records both: the lineage, and a BLAKE3 digest of its cut's entry ids, frame by frame from the base, in apply
-  order. One pass over this cut's entries, with no physics, finds the first difference and the digests to compare.
-  Determinism makes the root the same as a full re-step's. `finalize` always re-steps from the first difference,
-  since its re-base on the floor (4.2) takes that re-step's records from there. `ReplicaImpl::scratch().frames`
-  counts the frames re-stepped.
+  c9e2829a]. It starts instead from my root held at an earlier voted cut on the grid, the newest one above that
+  keyframe, when two things hold. The root was computed on the same lineage: the same base (the floor, or my last
+  import), with no rung-1 replay since. And that cut's entries from the base up to its frame are exactly this cut's.
+  A held root records both: the lineage, and a BLAKE3 digest of its cut's entry ids, frame by frame from the base, in
+  apply order. One pass over this cut's entries, with no physics, finds the first difference and the digests to
+  compare. Determinism makes the root the same as a full re-step's. `finalize` always re-steps from the first
+  difference, since its re-base on the floor (4.2) takes that re-step's records from there.
+  `ReplicaImpl::scratch().frames` counts the frames re-stepped.
+  - **Two limits** (@chunks-reviewer's L1 and L2 on 3aa8180d). A root held off the grid is never resumed from: it was
+    saved after its rows were written (`take_root`), which a step through that frame never writes, and no honest
+    voter accepts such a cut (`Reject::OffGrid`). And whatever changes what a frame steps to, for the same state and
+    entries, must start a new lineage, or a vote would resume from a root stepped the old way. The catch-up after a
+    vote hold is one (8.2, not built).
   - **Why** [V, diagnostic branch diag/stall-root 5d83d592, `<notes>`]: entries that are void
     in every cut's ancestry stay in the live history until a final cut voids them. So while finality stalls, every
     root re-stepped from the same early frame, at a cost that grew with the distance, about 0.75 ms a frame.
@@ -796,8 +802,9 @@ are logic.md 6.2 and 6.2a. As built [V `crates/pe-replica/src/logic.rs`, `logic/
 - **Events** become S5 effects whose keys are stable across replays (7).
 - **Not built** (after M1, @item:primordial-engine/pe-replica-build-asymmetry-at-3-players-vote-hol): vote holds for a
   version whose module this machine lacks at its activation frame. At n = 2 none is needed; at n ≥ 3 a member whose
-  build is slow or failed would step that frame without the script. `logic/runner.rs`'s notes describe these holds as
-  if built, and are to fix.
+  build is slow or failed would step that frame without the script. The catch-up that steps again from F once the
+  module arrives must also start a new lineage for the resume (5.3): roots held at or past F were stepped without the
+  script, though their cuts' entries still match (@chunks-reviewer's L1 on 3aa8180d).
 
 ## 9. pe-physics and the fork
 
@@ -878,11 +885,12 @@ The error should be small for an occasional impulse, and grow with how often imp
 | O9 | A run-time check of R1 (2) | WS-state |
 | O10 | P5's property test: arbitrary entries never panic a replica (3.1, 4.3) | WS-state |
 | O11 | A body under a hand does not follow a pack's later poses: `end_frame` returning effects (a seam change, @engine-architect's call), or refusing a `Body` under a `Hand`, with a multi-pose test (@design-reviewer's Medium on e6d3ee9c; 3.2) | WS-state, WS-world |
-| O14 | Vote holds for a version whose module this machine lacks at its activation frame (8.2) | WS-state, after M1, before sessions of 3 or more |
+| O14 | Vote holds for a version whose module this machine lacks at its activation frame, and a new lineage for the resume at their catch-up (8.2, 5.3) | WS-state, after M1, before sessions of 3 or more |
 | O15 | The view's missing parts (7): effects for entry outcomes and contact begins, `trigger_arrived`, and an event for a body stopped at the write-back (3, step 7) | WS-state, with WS-render |
 | O16 | Meshes and hulls (2.1), and compacting the geometry registry after a trim (4.1) | WS-state, WS-world |
 | O17 | The grab spring's overshoot after a block and after a placement (@design-reviewer's Low on the hold bound) | WS-state, at the headset test |
 | O18 | The fault bundle records the runner's identity and the modules the replica held (`runner_identity`, `module`; divergence.md 6, 8) | WS-diverge |
+| O19 | Held roots in a long finality stall: the replica holds a snapshot for each voted cut until it is final (4.1), about 1.15 MB at 200 balls and 3.8 MB at 500 [V, a diagnostic run of `measure_vote_cost_in_a_stall`, `<notes>`], so memory grows by up to 11 and 38 MB a second at 10 cuts a second. Before the cut is final, only the resume (5.3) and an import at that cut, as its patch base (6.2), read the snapshot; thinning the snapshots like the ring while keeping every root would bound it (@chunks-reviewer's note on 3aa8180d) | WS-state; whether M1 needs it, @coordinator-opus |
 
 Settled since v0.2:
 - **The cut grid** (was O2): cuts lie at multiples of K, the cut interval in frames (5.3).
