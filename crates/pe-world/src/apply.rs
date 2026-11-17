@@ -15,11 +15,11 @@ use pe_sim::{ComponentId, Node, RowVersion, Transform};
 
 use crate::components::{Hand, Light, Protection, SimSize, ids};
 use crate::edit::{
-    Actor, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
+    Actor, AssetTarget, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
 };
 use crate::script::{
     AssetId, BuildFailure, MAX_REKEY_ROWS, MAX_SOURCE_BYTES, ModuleRow, PendingCommit, RekeyReport, VoidKind,
-    attest_window, check_source,
+    asset_created, attest_window, check_source,
 };
 use crate::world::{DEPTH_LIMIT_MAX, GENESIS, TOMBSTONE_SECONDS, Tombstone, World, WorldError, depth, perm};
 
@@ -326,8 +326,15 @@ impl World {
         if commits > 1 || registers > 1 || register.is_some_and(|r| commit.is_none_or(|c| r > c)) {
             return Err((None, invalid()));
         }
+        // The asset it commits to: an existing one, or a new one's id derived from this entry (7.9).
         let script = commit.and_then(|c| match &tx.ops[c] {
-            Op::CommitScript { script, source, .. } => Some((*script, Hash(source.hash))),
+            Op::CommitScript { script, source, .. } => {
+                let asset = match *script {
+                    AssetTarget::Existing(a) => a,
+                    AssetTarget::New(k) => asset_created(src.line, src.author, src.chain, src.seq, k),
+                };
+                Some((asset, Hash(source.hash)))
+            }
             _ => None,
         });
         // The commit's source before any op, so its `Register` is judged against a valid version (logic.md 4.1a;
@@ -522,7 +529,16 @@ impl World {
                     activate_at: Frame(*activate_at),
                     faulted: None,
                 };
-                self.op_commit(cx, i, *script, *base, row)
+                // A new asset only by `New(k)`; `Existing` names one the world knows (current or pending), never a
+                // creation (@coordinator-opus).
+                let (asset, _) = cx.script.ok_or_else(invalid)?;
+                if let AssetTarget::Existing(a) = script
+                    && !self.modules.contains_key(a)
+                    && !self.pending.contains_key(a)
+                {
+                    return Err(invalid());
+                }
+                self.op_commit(cx, i, asset, *base, row)
             }
             Op::AttestBuild { script, version, module } => self.op_attest(cx, *script, *version, *module),
             Op::BuildFailed { script, version, reason, module, .. } => {

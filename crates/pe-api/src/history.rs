@@ -106,7 +106,10 @@ pub fn summary(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSna
                     components.iter().map(|d| d.name()).filter(|n| *n != pe_world::script::TAG_NAME).collect();
                 format!("registered {}", names.join(", "))
             }
-            Op::CommitScript { script, base, .. } => {
+            Op::CommitScript { script: pe_world::edit::AssetTarget::New(_), .. } => {
+                "committed a new script for attestation".to_string()
+            }
+            Op::CommitScript { script: pe_world::edit::AssetTarget::Existing(script), base, .. } => {
                 let hex: String = script[..4].iter().map(|b| format!("{b:02x}")).collect();
                 format!(
                     "committed {} of script {hex}… for attestation",
@@ -203,7 +206,8 @@ mod tests {
         let f = pe_sim::FieldDesc::new("hp", pe_sim::FieldKind::U32, 0, 1);
         let d = pe_sim::ComponentDesc::new(pe_sim::ComponentId(0x7000_0000_0000_0001), "Health", vec![f]).unwrap();
         let src = b"src".to_vec().into();
-        let commit = Op::commit_script([0xab; 32], None, src, Hash([2; 32]), Hash([3; 32]), Hash([4; 32]), 9);
+        let target = pe_world::edit::AssetTarget::New(0);
+        let commit = Op::commit_script(target, None, src, Hash([2; 32]), Hash([3; 32]), Hash([4; 32]), 9);
         let tx = Transaction {
             actor: pe_world::edit::Actor::Person,
             label: None,
@@ -213,7 +217,7 @@ mod tests {
         };
         let applied = WorldOutcome::Applied { created: vec![], overwrote: vec![], notes: vec![], inverse: None };
         let s = summary(Some(&tx), &applied, &snap);
-        assert_eq!(s, "Registered Health; committed the first version of script abababab… for attestation.");
+        assert_eq!(s, "Registered Health; committed a new script for attestation.");
         assert!(crate::watch::touched_ids(Some(&tx), &applied).is_empty());
     }
 

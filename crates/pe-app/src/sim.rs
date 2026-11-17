@@ -821,7 +821,7 @@ mod tests {
         use pe_api::queue::Submission;
         use pe_seams::Hash;
         use pe_seams::world_api::Wait;
-        use pe_world::edit::{Actor, Op, Transaction};
+        use pe_world::edit::{Actor, AssetTarget, Op, Transaction};
         use pe_world::script::{pack_source, tag_desc};
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let me = crate::world::DEV_MEMBER;
@@ -837,7 +837,7 @@ mod tests {
         let v = Hash(pe_world::BlobRef::of(&archive).hash);
         let ops = vec![
             Op::Register { components: vec![tag_desc(&v)] },
-            Op::commit_script([9; 32], None, archive, Hash([1; 32]), Hash([2; 32]), Hash([3; 32]), 0),
+            Op::commit_script(AssetTarget::New(0), None, archive, Hash([1; 32]), Hash([2; 32]), Hash([3; 32]), 0),
         ];
         let tx = Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
         let ticket = ports.queue.submit(Submission { tx, base: 1 }).expect("room in the queue");

@@ -583,6 +583,9 @@ fn a_stale_remove_cannot_take_out_a_later_instance() {
     let mut f = fx();
     let (_, ball, _) = table_and_ball(&mut f);
     let read = f.w.snapshot(Frame(0)).row_tag(ball, "Body").unwrap();
+    // By component id, the same tag (for components whose name doesn't single them out, like scripts' `pe.tag`).
+    assert_eq!(f.w.snapshot(Frame(0)).row_tag_of(ball, ids::BODY), Some(read));
+    assert_eq!(f.w.snapshot(Frame(0)).row_tag_of(ball, ComponentId(u128::MAX)), None);
     let remove = tx(vec![Op::RemoveRow { id: Target::Existing(ball), component: ids::BODY, instance: 0, tag: read }]);
     // B removes the body, then adds a new one.
     created_ok(&apply(&mut f.w, &entry(&mut f.b, &remove)).0);

@@ -1403,6 +1403,18 @@ an implicit **tag** component; there is no binding row and no spawn mark; compon
   no-op; with another description or asset, the transaction is refused (a collision). The registry is a world
   table (5.4), rolled back like the rest; registered ids are never removed in M1.
 - **`CommitScript { script, base, source, archive, toolchain, sdk, author_module, activate_at }`** needs `EDIT`.
+  - **`script` is an `AssetTarget`** (@coordinator-opus, after @fable-reviewer):
+    `Existing(id)`, an asset the world knows (a current row or a pending record, a voided first version's included,
+    so its author can re-commit it), or `New(k)`, a new asset whose id the world derives from the creating entry,
+    `script::asset_created(line, author, chain, seq, k) = Hash("pe.asset", line ‖ author ‖ chain ‖ seq u64 ‖ k u32)`,
+    from the same coordinates as `ObjectId::created` under its own domain tag, so an asset id never equals an object
+    id. No op names a new asset's id, so a modified client can neither squat on another's pending id nor reuse a
+    destroyed one; `Existing` with an id the world doesn't know is refused `Invalid`. The id is known before the
+    entry is signed: the client computes it with `script::asset_created` from the coordinates it is about to sign.
+    `k` is free, as for objects' `New(k)`. A re-sent entry gets a new seq, so a new id, its dependents rewritten by
+    `k` (api.md 9.4). The asset design's shared entries derive from the creating entry's id instead
+    (assets-on-objects.md, BLAKE3(entry id | index)); both are unique per entry and index, and the coordinates are
+    used here because they are known before signing. Wire form: `u8` 0 then the id (32), or 1 then `k` u32.
   - **The source comes first, before any op of the transaction** (logic.md 4.1a; @coordinator-opus). `archive` is the version's source, a canonical archive, carried inside the entry; `source` is
     its reference, derived from it when the entry is decoded (only the archive is encoded), so the two never
     disagree. Over `MAX_SOURCE_BYTES` (256 KiB) the transaction is refused `TooLarge { limit }`, judged from the
