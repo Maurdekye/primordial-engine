@@ -21,10 +21,12 @@
 //!   path ([`Toolchain`]), never a rustup proxy, which picks the compiler from a `rust-toolchain` file around the
 //!   working folder; a cleared environment with a short fixed list ([`KEEP_ENV`]); the crate itself as the working
 //!   folder; and a `CARGO_HOME` of the service's own, inside the target directory. [`build_archive`], the path every
-//!   module takes (4.2), also refuses a work folder that sits under a cargo configuration.
+//!   module takes (4.2), also refuses a work folder that sits under a cargo configuration, and after the build
+//!   refuses a module whose compile read a file outside its archive and pe-sdk, or any environment variable
+//!   ([`check_reads`], from rustc's dep-info).
 //!
 //! Not yet in v0: the pinned toolchain's hash and fetching it (D75), idle priority for the child, one build at a
-//! time per machine, the dep-info check, the pinned job count and the retries of 6.2b, and rustc's JSON
+//! time per machine, the pinned job count and the retries of 6.2b, and rustc's JSON
 //! diagnostics for `code_check` (the messages are returned as text).
 
 use std::path::{Path, PathBuf};
@@ -50,6 +52,9 @@ pub enum BuildError {
     Toolchain(String),
     /// The machine around the build could change it: a cargo configuration above the work folder (6.2b).
     Environment(String),
+    /// The compile read something outside the archive and pe-sdk: a file, or an environment variable (6.2b's
+    /// dep-info check). `BuildFailed`'s reason `Refused`, the same on every machine.
+    Refused(String),
 }
 
 impl std::fmt::Display for BuildError {
@@ -64,6 +69,7 @@ impl std::fmt::Display for BuildError {
             BuildError::Io(e) => write!(f, "the build service's files: {e}"),
             BuildError::Toolchain(e) => write!(f, "the build service's toolchain (logic.md 6.2b): {e}"),
             BuildError::Environment(e) => write!(f, "the build service's folder (logic.md 6.2b): {e}"),
+            BuildError::Refused(e) => write!(f, "the script reads outside its source (logic.md 6.2b): {e}"),
         }
     }
 }
@@ -360,7 +366,80 @@ pub fn build_archive(
          pe-sdk = {{ path = \"{sdk_path}\" }}\n"
     );
     std::fs::write(dir.join("Cargo.toml"), manifest).map_err(io)?;
-    build(tc, &dir, sdk, target_dir, offline)
+    let module = build(tc, &dir, sdk, target_dir, offline)?;
+    check_reads(&dir, sdk, target_dir, "script")?;
+    Ok(module)
+}
+
+/// The dep-info check (logic.md 6.2b): refuses a build whose compile read anything but the crate's `src` and
+/// pe-sdk's. rustc's dep-info files (`deps/<crate>.d`) list every file a crate read, `include!`, `include_str!`,
+/// `include_bytes!` and `#[path]` modules among them, and an `# env-dep:` line for every environment variable it
+/// asked for, set or not [V `spikes/out/iter-bench/build-asym/depinfo.log`]. Without build scripts and proc macros
+/// (4.1) nothing else can read on rustc's behalf [I]. It refuses what the script tried to read, not what it got, so
+/// it refuses on every machine alike: a file present on one machine and missing on another is a refusal on the
+/// first and a compile error on the second, both failures. `name` is the script crate's (`script` for an archive).
+pub fn check_reads(crate_dir: &Path, sdk: &Path, target_dir: &Path, name: &str) -> Result<(), BuildError> {
+    let deps = target_dir.join("wasm32-unknown-unknown").join("release").join("deps");
+    let mut files = vec![(deps.join(format!("{name}.d")), crate_dir.to_path_buf())];
+    let entries = std::fs::read_dir(&deps).map_err(|e| BuildError::Refused(format!("no dep-info: {e}")))?;
+    for e in entries.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.starts_with("pe_sdk-") && n.ends_with(".d") {
+            files.push((e.path(), sdk.to_path_buf()));
+        }
+    }
+    let allowed = [canonical(&crate_dir.join("src")), canonical(&sdk.join("src"))];
+    for (file, base) in files {
+        let text = std::fs::read_to_string(&file)
+            .map_err(|e| BuildError::Refused(format!("no dep-info at {}: {e}", file.display())))?;
+        check_dep_info(&text, &base, &allowed)?;
+    }
+    Ok(())
+}
+
+/// One dep-info file's half of [`check_reads`]: `base` resolves its relative paths, `allowed` are the folders (as
+/// [`canonical`] gives them) a compile may read in. **Strict** (@shader-reviewer's Medium on v8-r1): rustc escapes
+/// only spaces in a file name, and Linux and macOS allow a newline in one, which would split a rule over lines that
+/// each look harmless. So every non-empty line must be one of
+/// - `# env-dep:NAME[=VALUE]`: refused, since any variable can differ between machines;
+/// - a target rule, `<output>: <deps>`, the only kind of line with an unescaped `": "` (every space in a file name is
+///   escaped), whose dependencies each have a rule of their own below;
+/// - a per-file rule, `<path>:`, whose path must **resolve** (everything listed was read moments ago, so a path that
+///   does not is never legitimate) to a file inside an allowed folder;
+///
+/// and anything else, such as a fragment of a split name, is refused.
+pub fn check_dep_info(text: &str, base: &Path, allowed: &[PathBuf]) -> Result<(), BuildError> {
+    let refuse = |why: String| Err(BuildError::Refused(why));
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(var) = line.strip_prefix("# env-dep:") {
+            let var = var.split('=').next().unwrap_or(var);
+            return refuse(format!("the compile asked for the environment variable {var}"));
+        }
+        let unescaped_colon_space = line
+            .as_bytes()
+            .windows(2)
+            .enumerate()
+            .any(|(k, w)| w == b": " && !(k > 0 && line.as_bytes()[k - 1] == b'\\'));
+        if unescaped_colon_space {
+            continue;
+        }
+        let Some(path) = line.strip_suffix(':').filter(|p| !p.is_empty() && !p.starts_with('#')) else {
+            return refuse(format!("an unexpected line in the dep-info: {line:?}"));
+        };
+        let path = PathBuf::from(path.replace("\\ ", " "));
+        let path = if path.is_absolute() { path } else { base.join(path) };
+        let Ok(read) = std::fs::canonicalize(&path) else {
+            return refuse(format!("the compile read {}, which does not resolve", path.display()));
+        };
+        let read = canonical(&read);
+        if !allowed.iter().any(|a| read.starts_with(a)) {
+            return refuse(format!("the compile read {}, outside the script's src and pe-sdk's", path.display()));
+        }
+    }
+    Ok(())
 }
 
 /// The pe-sdk of the engine's own source tree, for callers that build from it (tests, the dev engine).

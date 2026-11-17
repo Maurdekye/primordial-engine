@@ -2,7 +2,7 @@
 //! only on its archive and the build identity. Each test is a probe of `scripts/iter_bench_build_asym.py` or
 //! `iter_bench_toolchain_min.py` made permanent (@fable-reviewer).
 
-use pe_logic::build::{BuildError, Toolchain, build_archive, engine_sdk, pack};
+use pe_logic::build::{BuildError, Toolchain, build, build_archive, check_dep_info, engine_sdk, pack};
 use std::path::{Path, PathBuf};
 
 fn tc() -> Toolchain {
@@ -46,21 +46,22 @@ fn leaky_lamp(root: &Path) -> PathBuf {
     dir
 }
 
-/// One test, since it changes the process's environment and working folder, which other tests would share.
+/// One test, since it changes the process's environment and working folder, which other tests would share. It
+/// drives the raw compile, [`build`], on the unpacked folder: [`build_archive`] refuses this script outright for
+/// asking for a variable (the dep-info check, below), and the cleared environment must hold without that check too.
 #[test]
 fn nothing_of_the_engines_environment_or_working_folder_reaches_the_module() {
     let root = scratch("leak");
     let archive = pack(&leaky_lamp(&root)).unwrap_or_else(|e| panic!("{e}"));
+    let unpacked = root.join("w");
+    assert!(matches!(
+        build_archive(&tc(), &archive, &engine_sdk(), &unpacked, &root.join("t-archive"), true),
+        Err(BuildError::Refused(_))
+    ));
+    let crate_dir = unpacked.join("script");
     let build = |tag: &str| {
-        build_archive(
-            &tc(),
-            &archive,
-            &engine_sdk(),
-            &root.join(format!("w-{tag}")),
-            &root.join(format!("t-{tag}")),
-            true,
-        )
-        .unwrap_or_else(|e| panic!("{tag}: {e}"))
+        build(&tc(), &crate_dir, &engine_sdk(), &root.join(format!("t-{tag}")), true)
+            .unwrap_or_else(|e| panic!("{tag}: {e}"))
     };
     let plain = build("plain");
 
@@ -117,4 +118,90 @@ fn a_rustup_proxy_folder_is_not_a_toolchain() {
 
 fn tc_current_folder() -> PathBuf {
     tc().cargo.parent().unwrap().to_path_buf()
+}
+
+/// The lamp plus `extra` appended to its `src/lib.rs`, packed: one archive per way of reading outside it.
+fn lamp_plus(root: &Path, tag: &str, extra: &str) -> Vec<u8> {
+    let dir = root.join(tag);
+    copy_tree(&lamp_dir(), &dir);
+    let lib = dir.join("src/lib.rs");
+    let src = std::fs::read_to_string(&lib).unwrap() + extra;
+    std::fs::write(&lib, src).unwrap();
+    pack(&dir).unwrap_or_else(|e| panic!("{tag}: {e}"))
+}
+
+#[test]
+fn a_script_that_reads_outside_its_archive_is_refused_on_every_machine_alike() {
+    let root = scratch("reads");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("far.rs"), "pub fn f() -> u32 { 7 }\n").unwrap();
+    std::fs::write(outside.join("data.bin"), b"X").unwrap();
+    let fwd = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    let cases = [
+        (
+            "option_env",
+            "\npub const P: usize = match option_env!(\"PE_UNSET_FOR_SURE\") { Some(s) => s.len(), None => 0 };\n"
+                .to_string(),
+        ),
+        ("env", "\npub const D: &str = env!(\"CARGO_MANIFEST_DIR\");\n".to_string()),
+        ("include_bytes", format!("\npub static B: &[u8] = include_bytes!(\"{}\");\n", fwd(&outside.join("data.bin")))),
+        ("path_module", format!("\n#[path = \"{}\"]\nmod far;\n", fwd(&outside.join("far.rs")))),
+    ];
+    for (tag, extra) in cases {
+        let archive = lamp_plus(&root, tag, &extra);
+        match build_archive(
+            &tc(),
+            &archive,
+            &engine_sdk(),
+            &root.join(format!("w-{tag}")),
+            &root.join(format!("t-{tag}")),
+            true,
+        ) {
+            Err(BuildError::Refused(e)) => eprintln!("{tag}: refused: {e}"),
+            other => panic!("{tag}: {other:?}"),
+        }
+    }
+    // Reading a file inside src is allowed.
+    let dir = root.join("inside");
+    copy_tree(&lamp_dir(), &dir);
+    std::fs::write(dir.join("src/table.rs"), "[1u8, 2, 3]").unwrap();
+    let lib = dir.join("src/lib.rs");
+    let src = std::fs::read_to_string(&lib).unwrap() + "\npub static T: [u8; 3] = include!(\"table.rs\");\n";
+    std::fs::write(&lib, src).unwrap();
+    let archive = pack(&dir).unwrap();
+    build_archive(&tc(), &archive, &engine_sdk(), &root.join("w-inside"), &root.join("t-inside"), true)
+        .unwrap_or_else(|e| panic!("inside: {e}"));
+}
+
+/// The parser on hand-written dep-info, so it runs on Windows too (@shader-reviewer's Medium on v8-r1): a newline in
+/// a file name, which Linux and macOS allow, splits a rule over lines; and a path through `src/..` that does not
+/// resolve must not read as inside `src`.
+#[test]
+fn the_dep_info_check_parses_strictly_and_refuses_what_does_not_resolve() {
+    let root = scratch("dep-info");
+    let krate = root.join("crate");
+    std::fs::create_dir_all(krate.join("src")).unwrap();
+    std::fs::write(krate.join("src/lib.rs"), "").unwrap();
+    std::fs::write(krate.join("src/a b.rs"), "").unwrap();
+    // As the service compares them: canonical, without Windows' `\\?\` prefix.
+    let src = std::fs::canonicalize(krate.join("src")).unwrap().to_string_lossy().into_owned();
+    let allowed = [PathBuf::from(src.strip_prefix(r"\\?\").unwrap_or(&src))];
+    let ok = |t: &str| check_dep_info(t, &krate, &allowed);
+    // What rustc writes: two target rules, then one rule per file read; a space is escaped.
+    let normal = "/t/deps/script.d: src/lib.rs src/a\\ b.rs\n\n/t/deps/script.wasm: src/lib.rs src/a\\ b.rs\n\nsrc/lib.rs:\nsrc/a\\ b.rs:\n";
+    ok(normal).unwrap_or_else(|e| panic!("{e}"));
+    // A name with a newline, `/tmp/e<LF>src/lib.rs`, split over two lines: the fragment is refused.
+    let split = "/t/deps/script.d: src/lib.rs /tmp/e\nsrc/lib.rs\n\nsrc/lib.rs:\n/tmp/e\nsrc/lib.rs:\n";
+    assert!(matches!(ok(split), Err(BuildError::Refused(e)) if e.contains("unexpected line")));
+    // A path through src/.. that does not resolve is refused, though it starts with src component-wise.
+    let missing = "/t/deps/script.d: src/../../evil.rs\n\nsrc/lib.rs:\nsrc/../../evil.rs:\n";
+    assert!(matches!(ok(missing), Err(BuildError::Refused(e)) if e.contains("does not resolve")));
+    // An existing file outside src, and an env-dep, are refused.
+    std::fs::write(root.join("outside.rs"), "").unwrap();
+    let outside = format!("{}:\n", root.join("outside.rs").display());
+    assert!(matches!(ok(&outside), Err(BuildError::Refused(e)) if e.contains("outside")));
+    assert!(
+        matches!(ok("# env-dep:HOME=/home/x\n"), Err(BuildError::Refused(e)) if e.contains("HOME") && !e.contains("/home/x"))
+    );
 }
