@@ -9,6 +9,8 @@
 //! Entries a final cut covers take effect in chain order; one stamped strictly below a stamp earlier in its author's
 //! chain (an equal stamp is valid, ordered by seq), or before the previous cut's frame, is void; an entry stamped before the cut's frame and not covered is void.
 
+pub mod epochs;
+
 use std::collections::BTreeSet;
 use std::fmt;
 

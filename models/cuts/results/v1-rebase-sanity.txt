@@ -1,0 +1,10 @@
+    no timeouts: a faulty proposer stalls the line; q = 3; entries 0=f.1a
+    counterexample to "liveness: every end state has a final cut at every honest member" (3 steps as found, 0 after shrinking):
+all 22 check(s) met their expectation
+join-2to3               1592095       6756791     22      16.7  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+leave-2to1              1131076       4266442     22      11.0  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+burst-2to4              1504241       6243074     22      18.0  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+ctl-a-inclusion            2631          6321     22       1.0  OK   (every behaviour of up to 22 steps) counterexample as expected: "agreement", "same members per epoch"
+ctl-f1-views            2732181      13435485     22      26.0  OK   (every behaviour of up to 22 steps) counterexample as expected: "no honest double vote"
+ctl-f2-highqc           1077839       4324038     22       8.0  OK   (every behaviour of up to 22 steps) counterexample as expected: "timeouts keep the lock"
+all 6 epoch check(s) met their expectation

@@ -1,0 +1,9 @@
+join-2to3               1592095       6756791     22      11.0  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+    join 2 -> 3 (q 2 -> 2)
+leave-3to2             18290820      87235644     22     101.1  FAIL (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) MISSING example "changed and went on"
+    leave 3 -> 2 (q 2 -> 2)
+join-3to4              15172693      71659532     22     101.7  FAIL (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) MISSING example "changed and went on"
+    join 3 -> 4 (q 2 -> 3)
+burst-2to4              1504241       6242167     22      11.1  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+    two joins at once 2 -> 4
+2 check(s) did not meet their expectation
