@@ -58,13 +58,25 @@ pub fn open_ball_pit(
 /// builds the same state (pe-agree M1's membership is fixed at the line's start), and `me`'s hands marked as the
 /// local player's.
 pub(crate) fn ball_pit(
-    mut world: World,
+    world: World,
     members: &[MemberKey],
     me: MemberKey,
     rate: SimRate,
     clock: Arc<dyn FrameClock>,
     runner: Box<dyn ScriptRunner>,
 ) -> Result<Box<dyn Replica>, String> {
+    Ok(Box::new(ball_pit_replica(world, members, me, rate, clock, runner)?))
+}
+
+/// [`ball_pit`]'s replica, unboxed: a test reaches pe-replica's test-only damage through it.
+pub(crate) fn ball_pit_replica(
+    mut world: World,
+    members: &[MemberKey],
+    me: MemberKey,
+    rate: SimRate,
+    clock: Arc<dyn FrameClock>,
+    runner: Box<dyn ScriptRunner>,
+) -> Result<ReplicaImpl<PeWorld>, String> {
     if world.rate() != rate {
         return Err(format!("the ball pit runs at {:?}, the frame clock at {rate:?}", world.rate()));
     }
@@ -82,5 +94,5 @@ pub(crate) fn ball_pit(
     let mut config = crate::genesis::replica_config(&crate::genesis::settings(), rate, clock);
     config.local = Some(me);
     let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).map_err(|e| format!("{e:?}"))?;
-    Ok(Box::new(replica.with_runner(runner)))
+    Ok(replica.with_runner(runner))
 }

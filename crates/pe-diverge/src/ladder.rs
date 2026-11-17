@@ -411,6 +411,18 @@ impl Diverge {
         self.repair.is_some() || self.replay.is_some()
     }
 
+    /// The frame an open episode is about, for the health the embedding reports (divergence.md 7): the earliest of a
+    /// root split's cut and the cut a replay or repair runs toward. `None` while nothing is open. A split stays open
+    /// until a cut at or past it agrees, even while no rung runs (this machine is the reference, or waits to pick).
+    pub fn open_since(&self) -> Option<Frame> {
+        let split = self.episode.as_ref().map(|e| e.cut.at.frame);
+        let busy = self.busy().map(|(at, _, _)| at.frame);
+        match (split, busy) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     /// The cut of the replay or repair under way, and whether it is final.
     fn busy(&self) -> Option<(CutRef, bool, u8)> {
         if let Some(r) = &self.replay {

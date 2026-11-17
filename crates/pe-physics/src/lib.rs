@@ -21,6 +21,9 @@
 //! state. [`PhysicsWorld::body_digests`] gives one digest per body, which localizes a divergence
 //! but does not cover the state that belongs to no body (docs/spec/replica.md 5.1).
 //!
+//! The physics self-test ([`self_test_digest`]): a fixed scene's check hash, taken at start-up and again when a root
+//! split asks for a verdict (docs/spec/divergence.md 5).
+//!
 //! Feature `raw` exposes `PhysicsWorld::raw_mut`, for test scenes and tools only.
 
 mod config;
@@ -28,6 +31,7 @@ mod desc;
 mod digest;
 mod error;
 mod image;
+mod selftest;
 mod world;
 
 pub use config::{
@@ -38,4 +42,5 @@ pub use digest::BodyDigest;
 pub use error::PhysicsError;
 pub use image::{CheckHash, Transfer, WorldImage};
 pub use pe_core::ids::ObjectId;
+pub use selftest::{SELF_TEST_DT, SELF_TEST_FRAMES, self_test_digest};
 pub use world::{GrabSpring, HoldReach, JointDesc, JointKey, JointKind, PhysicsWorld, Pose, Push, WriteBack};

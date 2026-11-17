@@ -184,9 +184,12 @@ fn shared_sim(
         session.me.0[..4].iter().map(|b| format!("{b:02x}")).collect::<String>()
     );
     // With two members, both are needed for finality: if one leaves, the other's finality stops until both restart.
+    // pe-diverge (app.md 3, step 5): detection and repair, with fault bundles beside the identity file.
     Sim::new(Box::new(session.node), session.replica, session.frames, slot, Budget::new(rate))
         .with_local(session.me, chain_nonce(), hands)
         .with_transport(net::transport(session.handle), Some(Box::new(session.hook)))
+        .with_diverge(pe_diverge::Config::default(), Some(pe_app::diverge::bundle_dir(&path)))
+        .unwrap_or_else(|e| fail(&format!("pe-diverge did not start: {e}")))
 }
 
 fn main() {
