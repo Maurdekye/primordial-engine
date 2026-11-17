@@ -643,7 +643,9 @@ impl BuildError {
 #[derive(Debug)]
 pub struct Failed {
     pub reason: FailReason,
-    /// This machine's module hash, when it built one (a `Mismatch`).
+    /// Present exactly for a `Mismatch` (pe-world refuses a `BuildFailed` otherwise, @world-model m4bd3e101e652): the
+    /// hash of the metered module this machine built, or, when the metering pass refused it, the raw module's
+    /// `Hash::of("pe.logic.raw", wasm)`, a domain no `author_module` is in.
     pub module: Option<pe_core::Hash>,
     /// How many builds were tried.
     pub attempts: u32,
@@ -697,8 +699,9 @@ pub fn build_for_row(
                 ),
                 Err(crate::runtime::LoadError::Refused(r)) => fail(
                     FailReason::Mismatch,
-                    None,
-                    // The raw module's hash, for the bug bundle: no metered hash exists (@shader-reviewer on v9-r1).
+                    // No metered hash exists, so the raw module's, in its own domain: it never equals a metered
+                    // `author_module`, as pe-world requires of a `Mismatch` (@world-model m4bd3e101e652).
+                    Some(pe_core::Hash::of("pe.logic.raw", &wasm)),
                     format!(
                         "the metering pass refused the module (raw {:?}): {r}",
                         pe_core::Hash::of("pe.logic.raw", &wasm)
@@ -749,7 +752,8 @@ impl std::fmt::Display for CommitRefusal {
             CommitRefusal::Load(e) => write!(f, "the module did not load: {e}"),
             CommitRefusal::TooSlow { took, max } => write!(
                 f,
-                "the script took {:.1} s to build here, over the {:.0} s margin that keeps it buildable on slower                  machines (logic.md 6.2a item 5)",
+                "the script took {:.1} s to build here, over the {:.1} s margin that keeps it buildable on slower \
+                 machines (logic.md 6.2a item 5)",
                 took.as_secs_f64(),
                 max.as_secs_f64()
             ),
@@ -788,4 +792,127 @@ pub fn build_for_commit(
     }
     let script = crate::runtime::Script::load(engine, settings, &wasm).map_err(CommitRefusal::Load)?;
     Ok(Commit { archive, script, took })
+}
+
+/// The build service's own version (logic.md 6.2b), part of [`build_identity`]: bumped on any change to what decides
+/// a module's bytes or a build's verdict that the toolchain and pe-sdk hashes do not see: the template, the profile
+/// and codegen flags, the remaps, [`KEEP_ENV`], [`BUILD_JOBS`], and the checks (the dep-info check, the compiler
+/// limits, the archive rules it applies before building).
+pub const BUILD_SERVICE_VERSION: u32 = 1;
+
+/// The toolchain's release, as [`build_identity`] takes it: rustc's `release`, `commit-hash` and `LLVM version`
+/// lines from `rustc -vV`, in that order, and not its `host`, since machines on different OSes run different rustc
+/// binaries of one release, which give the same wasm32 bytes [V `iter_bench_xos.sh`, Windows and Linux on one PC].
+pub fn toolchain_release(tc: &Toolchain) -> Result<String, BuildError> {
+    let out = run_rustc(tc, &["-vV"])?;
+    let mut lines = Vec::new();
+    for key in ["release:", "commit-hash:", "LLVM version:"] {
+        let l = out
+            .lines()
+            .find(|l| l.starts_with(key))
+            .ok_or_else(|| BuildError::Toolchain(format!("rustc -vV has no {key} line")))?;
+        lines.push(l.trim().to_string());
+    }
+    Ok(lines.join("\n"))
+}
+
+fn run_rustc(tc: &Toolchain, args: &[&str]) -> Result<String, BuildError> {
+    let mut cmd = Command::new(&tc.rustc);
+    cmd.args(args).env_clear();
+    for k in KEEP_ENV {
+        if let Some(v) = std::env::var_os(k) {
+            cmd.env(k, v);
+        }
+    }
+    let out = cmd.output().map_err(|e| BuildError::Toolchain(format!("{}: {e}", tc.rustc.display())))?;
+    if !out.status.success() {
+        return Err(BuildError::Toolchain(format!("{} {args:?} failed", tc.rustc.display())));
+    }
+    String::from_utf8(out.stdout).map_err(|_| BuildError::Toolchain("rustc printed non-UTF-8".into()))
+}
+
+/// Every file under `dir`, relative to it with `/` separators, sorted, with its size.
+fn tree_sizes(dir: &Path) -> Result<Vec<(String, u64)>, BuildError> {
+    fn walk(root: &Path, at: &Path, out: &mut Vec<(String, u64)>) -> Result<(), BuildError> {
+        let io = |e: std::io::Error| BuildError::Toolchain(format!("{}: {e}", root.join(at).display()));
+        for e in std::fs::read_dir(root.join(at)).map_err(io)? {
+            let e = e.map_err(io)?;
+            let rel = at.join(e.file_name());
+            let meta = e.metadata().map_err(io)?;
+            if meta.is_dir() {
+                walk(root, &rel, out)?;
+            } else {
+                let name: Vec<String> =
+                    rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                out.push((name.join("/"), meta.len()));
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, Path::new(""), &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+/// Every file under `dir`, relative to it with `/` separators, sorted, with its bytes.
+fn tree_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, BuildError> {
+    fn walk(root: &Path, at: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Result<(), BuildError> {
+        let io = |e: std::io::Error| BuildError::Toolchain(format!("{}: {e}", root.join(at).display()));
+        for e in std::fs::read_dir(root.join(at)).map_err(io)? {
+            let e = e.map_err(io)?;
+            let rel = at.join(e.file_name());
+            if e.file_type().map_err(io)?.is_dir() {
+                walk(root, &rel, out)?;
+            } else {
+                let name: Vec<String> =
+                    rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                out.push((name.join("/"), std::fs::read(root.join(&rel)).map_err(io)?));
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, Path::new(""), &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+/// The build identity B (logic.md 6.2b): a hash of everything besides the archive that decides a module's bytes or a
+/// build's verdict, so two machines with equal B build every version alike, and the session compares B when a member
+/// joins (pe-app's build id). It covers:
+/// - [`BUILD_SERVICE_VERSION`] and pe-logic's [`crate::RESULT_VERSION`] (the metering pass's results);
+/// - [`toolchain_release`], and every file of the toolchain's wasm32 std (`lib/rustlib/wasm32-unknown-unknown`,
+///   one artifact for every host [I]) by name and size. The names carry each std crate's metadata hash
+///   (`libcore-79bd1e8c3e3cb812.rlib`), so with the release's commit they pin the std without reading its 99 MiB,
+///   which took about 4.5 s a time in a debug build [V `tests/build_identity.rs`, this desktop];
+/// - pe-sdk at `sdk`: its `Cargo.toml` and every file under its `src`, by path and hash.
+///
+/// A caller computes it once per process. D75's pinned toolchain hash is to replace the release lines and the std
+/// listing once the toolchain is installed by hash.
+pub fn build_identity(tc: &Toolchain, sdk: &Path) -> Result<pe_core::Hash, BuildError> {
+    let mut b = Vec::new();
+    let mut lp = |part: &[u8]| {
+        b.extend_from_slice(&(part.len() as u64).to_le_bytes());
+        b.extend_from_slice(part);
+    };
+    lp(b"pe.logic.build.v1");
+    lp(&BUILD_SERVICE_VERSION.to_le_bytes());
+    lp(&crate::RESULT_VERSION.to_le_bytes());
+    lp(toolchain_release(tc)?.as_bytes());
+    let sysroot = PathBuf::from(run_rustc(tc, &["--print", "sysroot"])?.trim());
+    let std_dir = sysroot.join("lib").join("rustlib").join("wasm32-unknown-unknown");
+    for (name, size) in tree_sizes(&std_dir)? {
+        lp(name.as_bytes());
+        lp(&size.to_le_bytes());
+    }
+    lp(b"pe-sdk");
+    let manifest = std::fs::read(sdk.join("Cargo.toml"))
+        .map_err(|e| BuildError::Toolchain(format!("{}: {e}", sdk.join("Cargo.toml").display())))?;
+    lp(&pe_core::Hash::of("pe.logic.build.file", &manifest).0);
+    for (name, bytes) in tree_files(&sdk.join("src"))? {
+        lp(name.as_bytes());
+        lp(&pe_core::Hash::of("pe.logic.build.file", &bytes).0);
+    }
+    Ok(pe_core::Hash::of("pe.logic.build", &b))
 }

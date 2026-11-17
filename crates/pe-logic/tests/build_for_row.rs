@@ -182,7 +182,10 @@ fn a_build_slower_than_the_authors_margin_is_not_committed() {
         s,
         std::time::Duration::ZERO,
     );
-    assert!(matches!(r, Err(CommitRefusal::TooSlow { .. })), "{:?}", r.err());
+    let r = r.err().expect("too slow");
+    assert!(matches!(r, CommitRefusal::TooSlow { .. }), "{r:?}");
+    let text = r.to_string();
+    assert!(text.contains("over the 0.0 s margin") && !text.contains("  "), "{text}");
 }
 
 #[test]
