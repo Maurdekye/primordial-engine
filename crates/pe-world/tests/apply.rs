@@ -14,7 +14,7 @@ fn row<T: pe_sim::Component>(v: T) -> Row {
 }
 
 fn tx(ops: Vec<Op>) -> Transaction {
-    Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
+    Transaction { inline: vec![], actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] }
 }
 
 fn at(x: f64) -> Pos {
@@ -383,6 +383,7 @@ fn edits_may_not_write_engine_rows_or_cycles() {
 #[test]
 fn codec_is_canonical_and_total() {
     let t = Transaction {
+        inline: vec![],
         actor: Actor::Agent { harness: "h".into(), principal: pe_core::MemberKey([3; 32]), requested_by: None },
         label: Some("make the balls blue".into()),
         preconditions: vec![Precondition::Exists(ObjectId::from_u128(5)), Precondition::Absent(ObjectId::from_u128(6))],

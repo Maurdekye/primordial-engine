@@ -59,7 +59,8 @@ fn input(w: &mut World, f: u64, b: &mut EntryBuilder, i: Input) -> (Outcome, Foo
 }
 
 fn edit(w: &mut World, f: u64, b: &mut EntryBuilder, ops: Vec<Op>) -> Outcome {
-    let t = Transaction { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+    let t =
+        Transaction { inline: vec![], actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
     let e: SignedEntry = b.next(Class::Edit, Frame(f), Bytes::from(t.encode()));
     w.apply_edit(Frame(f), &e).0
 }

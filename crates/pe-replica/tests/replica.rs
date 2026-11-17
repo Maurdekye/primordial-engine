@@ -611,7 +611,14 @@ fn a_cut_over_frames_trimmed_above_the_floor_is_damaged_not_a_silent_stall() {
 fn import_from(donor: &mut ReplicaImpl<MockWorld>, ds: &mut Source, cut: &Cut) -> CutImport {
     let root = donor.root_at_cut(cut, ds).expect("the donor's root");
     let records = donor.tree(&root).expect("held").export(&donor.world().leaves());
-    CutImport { cut: cut.clone(), target_root: root, records, absent: Vec::new(), physics: donor.physics_image(&root) }
+    CutImport {
+        blobs: vec![],
+        cut: cut.clone(),
+        target_root: root,
+        records,
+        absent: Vec::new(),
+        physics: donor.physics_image(&root),
+    }
 }
 
 /// Ask until the import has re-simulated to the present, advancing between asks; how many times it was `Pending`.

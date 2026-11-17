@@ -1333,6 +1333,7 @@ mod tests {
         // A revert that would delete the head goes through the same check.
         let made = edit_entry(13, vec![]);
         let inverse = pe_world::edit::Transaction {
+            inline: vec![],
             actor: pe_world::edit::Actor::Person,
             label: None,
             preconditions: vec![],
@@ -1542,7 +1543,7 @@ mod tests {
             4,
         );
         let ops = vec![Op::Register { components: vec![pe_world::script::tag_desc(&v)] }, commit];
-        let tx = WTx { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+        let tx = WTx { inline: vec![], actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
         let draft =
             pe_world::Draft { author: ALICE, line: LineId(Hash([7; 32])), chain: ChainId(Hash([9; 32])), seq: 1 };
         let (o, mut after) = w.dry_run_draft_state(CoreFrame(4), &draft, &tx);
@@ -1550,7 +1551,14 @@ mod tests {
         let asset = pe_world::script::asset_created(draft.line, draft.author, draft.chain, draft.seq, 0);
         if activate {
             let attest = Op::AttestBuild { script: asset, version: v, module: Hash([3; 32]) };
-            let tx = WTx { actor: Actor::Person, label: None, preconditions: vec![], ops: vec![attest], blobs: vec![] };
+            let tx = WTx {
+                inline: vec![],
+                actor: Actor::Person,
+                label: None,
+                preconditions: vec![],
+                ops: vec![attest],
+                blobs: vec![],
+            };
             let bob = pe_world::Draft { author: BOB, line: draft.line, chain: ChainId(Hash([10; 32])), seq: 1 };
             let (o, attested) = after.dry_run_draft_state(CoreFrame(4), &bob, &tx);
             assert!(matches!(o, pe_seams::Outcome::Applied { .. }), "{o:?}");
@@ -1567,7 +1575,7 @@ mod tests {
     /// One world op as `who` on chain `chain`, applied to `w` (a test's setup).
     fn world_op(w: &mut World, who: MemberKey, chain: u8, ops: Vec<pe_world::edit::Op>) -> pe_world::Draft {
         use pe_world::edit::{Actor, Transaction as WTx};
-        let tx = WTx { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+        let tx = WTx { inline: vec![], actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
         let draft =
             pe_world::Draft { author: who, line: LineId(Hash([7; 32])), chain: ChainId(Hash([chain; 32])), seq: 1 };
         let (o, after) = w.dry_run_draft_state(CoreFrame(4), &draft, &tx);
@@ -1832,7 +1840,14 @@ mod tests {
             Op::SetRow { id: lamp, row: Row { component: tag, instance: 0, bytes: vec![] } },
             Op::RemoveRow { id: lamp, component: tag, instance: 0, tag: 0 },
         ];
-        let tx = WTx { actor: pe_world::edit::Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+        let tx = WTx {
+            inline: vec![],
+            actor: pe_world::edit::Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops,
+            blobs: vec![],
+        };
         let applied = pe_seams::Outcome::Applied { created: vec![], overwrote: vec![], notes: vec![], inverse: None };
         let hex: String = sa[..4].iter().map(|b| format!("{b:02x}")).collect();
         let s = crate::history::summary(Some(&tx), &applied, &snap);
@@ -2088,6 +2103,7 @@ mod tests {
     fn edit_entry(e: u8, ops: Vec<pe_world::edit::Op>) -> EntryRef {
         let entry = EntryRef(Hash([e; 32]));
         let t = pe_world::edit::Transaction {
+            inline: vec![],
             actor: pe_world::edit::Actor::Agent { harness: "test".into(), principal: ALICE, requested_by: None },
             label: Some("t".into()),
             preconditions: vec![],
@@ -2516,6 +2532,7 @@ mod tests {
         );
         let lamp_now = pe_seams::Version { entry: EntryRef(Hash([20; 32])), op: 0 };
         let inverse = |is: pe_seams::Version| pe_world::edit::Transaction {
+            inline: vec![],
             actor: pe_world::edit::Actor::Person,
             label: None,
             preconditions: vec![pe_world::edit::Precondition::ObjectVersion { id: id(20), is }],
