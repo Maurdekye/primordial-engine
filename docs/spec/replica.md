@@ -419,7 +419,7 @@ pe-world (`tests/peworld.rs`, `tests/logic.rs`) [V]:
 |---|---|---|
 | P1 | Two replicas fed the same entries have equal roots at every cut frame | `equal_entries_give_equal_roots` |
 | P2 | A replica that gets entries late, in any order, ends with the same roots as one that got them on time | `late_entries_roll_back_to_the_same_roots` |
-| P3 | Restoring the state at a cut and re-stepping with the final log reproduces the roots | `a_cuts_root_takes_exactly_its_entries`, `rung_one_repairs_a_transient_fault` |
+| P3 | Restoring the state at a cut and re-stepping with the final log reproduces the roots | `a_cuts_root_takes_exactly_its_entries`, `rung_one_repairs_a_transient_fault`, `a_vote_resumes_from_the_root_held_at_the_previous_cut`, `a_vote_never_resumes_from_a_held_root_with_other_entries` |
 | P4 | No rollback goes below the final cut | `finalize_moves_the_floor_and_nothing_below_it_changes`, `a_change_below_the_floor_outside_the_rebased_span_is_still_a_fault` |
 | P5 | No input from any member panics a replica; bad input is refused with a reason | **Not built** as a property test (3.1) |
 | P6 | The worker count changes nothing | M2 (D2) |
@@ -482,11 +482,23 @@ pe-replica puts the physics into it in two places, both written at each cut fram
   history; then it puts the live state back. When the live history stepped exactly the cut's entries, nothing is
   re-stepped, and the root equals the live one (debug builds assert it). The re-step is not budgeted yet (4.2):
   normally one or two cut intervals.
-  - **Measured in a finality stall** [V, diagnostic branch diag/stall-root 5d83d592, `_teams/1827/stall-rootdiag.log`]:
-    entries that are void in every cut's ancestry stay in the live history until a final cut voids them, so while
-    finality stalls, every root re-steps from the same early frame, at a cost that grows with the distance, about
-    0.75 ms a frame. The fix, to resume from my root held at an earlier cut whose history matches, is docked for after
-    M1 (@item:primordial-engine/pe-replica-a-root-s-re-step-resumes-from-a-held-e).
+- **A vote's re-step resumes from a held root** (was O13) [V `replica.rs`, `walk` and `resume_from`; added after
+  c9e2829a]. It starts instead from my root held at an earlier voted cut, the newest one above that keyframe, when two
+  things hold. The root was computed on the same lineage: the same base (the floor, or my last import), with no
+  rung-1 replay since. And that cut's entries from the base up to its frame are exactly this cut's. A held root
+  records both: the lineage, and a BLAKE3 digest of its cut's entry ids, frame by frame from the base, in apply
+  order. One pass over this cut's entries, with no physics, finds the first difference and the digests to compare.
+  Determinism makes the root the same as a full re-step's. `finalize` always re-steps from the first difference,
+  since its re-base on the floor (4.2) takes that re-step's records from there. `ReplicaImpl::scratch().frames`
+  counts the frames re-stepped.
+  - **Why** [V, diagnostic branch diag/stall-root 5d83d592, `_teams/1827/stall-rootdiag.log`]: entries that are void
+    in every cut's ancestry stay in the live history until a final cut voids them. So while finality stalls, every
+    root re-stepped from the same early frame, at a cost that grew with the distance, about 0.75 ms a frame.
+  - **Measured** [V, `measure_vote_cost_in_a_stall` in release on a loaded machine at idle priority: the M1 ball pit
+    of 200 balls at 60 Hz, K = 8, an entry at frame 10 that no cut covers, a vote at every cut from 16 to 600]. With
+    the resume, each vote after the first re-stepped 8 frames, in 5-11 ms (median 7.4 ms), whatever its distance; all
+    74 votes re-stepped 600 frames in 0.57 s. Without it, each re-stepped from frame 0: 22,792 frames in 15.9 s, up to
+    438 ms for the vote at 600 (about 0.7 ms a frame).
 - **Cost per cut:**
   - `physics_global`: one canonical serialization and one BLAKE3 pass. Serializing costs about 1.1-1.3 µs and 2.3-2.5
     kB per body [V file 02's bench], plus BLAKE3 over that, about 1-2 µs per body [I].
@@ -867,7 +879,6 @@ The error should be small for an occasional impulse, and grow with how often imp
 | O9 | A run-time check of R1 (2) | WS-state |
 | O10 | P5's property test: arbitrary entries never panic a replica (3.1, 4.3) | WS-state |
 | O11 | A body under a hand does not follow a pack's later poses: `end_frame` returning effects (a seam change, @engine-architect's call), or refusing a `Body` under a `Hand`, with a multi-pose test (@design-reviewer's Medium on e6d3ee9c; 3.2) | WS-state, WS-world |
-| O13 | A root's re-step resumes from my root held at an earlier cut whose history matches (5.3). It is the pe-replica half of @item:primordial-engine/finality-stall-past-the-lag-cap-with-no-lead-n-2, where every vote re-stepped from the same early frame, at about 0.75 ms a frame; docked as @item:primordial-engine/pe-replica-a-root-s-re-step-resumes-from-a-held-e | WS-state, after M1 |
 | O14 | Vote holds for a version whose module this machine lacks at its activation frame (8.2) | WS-state, after M1, before sessions of 3 or more |
 | O15 | The view's missing parts (7): effects for entry outcomes and contact begins, `trigger_arrived`, and an event for a body stopped at the write-back (3, step 7) | WS-state, with WS-render |
 | O16 | Meshes and hulls (2.1), and compacting the geometry registry after a trim (4.1) | WS-state, WS-world |
@@ -878,6 +889,8 @@ Settled since v0.2:
 - **The cut grid** (was O2): cuts lie at multiples of K, the cut interval in frames (5.3).
 - **A physical object the world model cannot build** (was O12) has no body, and each attempt to build it is a fault
   (2.1).
+- **A vote's re-step resumes from a held root** whose cut's entries match, on the same lineage (was O13; 5.3): the
+  pe-replica half of @item:primordial-engine/finality-stall-past-the-lag-cap-with-no-lead-n-2.
 - **The hands** follow world-model.md 8.1: the speed cap, with a hand faster than the cap moving at the cap (option
   (b), @coordinator-opus m9fa06577e5b1); the teleport distance; a held object never carried through a wall by a
   trailing placement (m51d8feaf4aa5); and the hold bound (3.3).

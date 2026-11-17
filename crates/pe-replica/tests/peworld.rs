@@ -383,6 +383,52 @@ fn a_replay_that_moves_a_ball_marks_it_corrected() {
     assert_eq!(corrected(&r), Vec::<ObjectId>::new(), "a correction is marked once");
 }
 
+/// A measurement, in release (replica.md 5.3; was O13): what each vote's root costs in a finality stall's shape over
+/// the M1 ball pit (200 balls), against the cut's distance from the pinned first difference. Every 30 frames one
+/// member pushes four balls, so the pit keeps moving; the other member's push at frame 10, which no cut covers,
+/// stays in S3's live view and pins every cut's first difference there. It votes at every cut from 16 to
+/// `PE_VOTE_FRAMES` (600) and prints, per cut: its frame, its distance from 10, the frames re-stepped and the
+/// milliseconds taken. Run it on a red with no resume to compare.
+#[test]
+#[ignore = "a measurement, in release: PE_VOTE_FRAMES (600)"]
+fn measure_vote_cost_in_a_stall() {
+    let to: u64 = std::env::var("PE_VOTE_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(600);
+    let keys = keys();
+    let mut world = pe_world::preset::ball_pit(7, BlobStore::default(), Pos::ORIGIN);
+    world.set_member(keys.key(0), perm::EDIT);
+    world.set_member(keys.key(1), perm::EDIT);
+    let ball = |i: usize| pe_world::preset::find(&world, &format!("Ball {i}")).expect("a ball");
+    let balls: Vec<ObjectId> = (0..5).map(ball).collect();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mut s = Source::default();
+    let mut covered = Vec::new();
+    for f in (5..to).step_by(30) {
+        for (i, &object) in balls[..4].iter().enumerate() {
+            let impulse = [0.02 * (i as f32 - 1.5), 0.03, 0.01];
+            let e = input(&mut a, f, &Input::Push { object, impulse, at: None });
+            covered.push(e.clone());
+            s.add(e);
+        }
+    }
+    s.add(input(&mut b, 10, &Input::Push { object: balls[4], impulse: [0.0, 0.03, 0.0], at: None }));
+    let mut r = replica_of(world);
+    r.advance(Frame(to), &mut s);
+    assert_eq!(r.frame(), Frame(to));
+    println!("vote: cut frame | distance from 10 | frames re-stepped | ms");
+    let (mut frames, mut ms) = (0, 0.0);
+    for (h, f) in (16..=to).step_by(K as usize).enumerate() {
+        let cut = cut_at(&covered, h as u64 + 2, f);
+        let before = r.scratch().frames;
+        let t = std::time::Instant::now();
+        r.root_at_cut(&cut, &mut s).expect("a root");
+        let took = t.elapsed().as_secs_f64() * 1e3;
+        let stepped = r.scratch().frames - before;
+        println!("vote {f:5} | {:5} | {stepped:5} | {took:8.3}", f - 10);
+        (frames, ms) = (frames + stepped, ms + took);
+    }
+    println!("total: {frames} frames re-stepped, {ms:.1} ms");
+}
+
 // ---- inputs (pe-world's slice B) ------------------------------------------------------------------------------------
 
 const HAND: u128 = 50;

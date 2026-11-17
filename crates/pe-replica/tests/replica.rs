@@ -1212,3 +1212,75 @@ fn a_root_at_a_cut_steps_exactly_what_s3_answers_for_that_cut() {
     assert_eq!(r.finalize(&FinalCut { cut: c8, root: r8, voters: vec![] }, &mut s), Finalized::Agreed);
     assert_eq!(r.replay_to(&c16, &mut s), Ok(root), "rung 1's replay steps the answer too");
 }
+
+// ---- a vote's re-step resumes from a held root (replica.md 5.3; was O13) -------------------------------------------
+
+/// The scene with a third author's push at 10 that no cut covers, run to `to`. The push stays in S3's live view, so
+/// every cut's first difference is frame 10: the shape of the finality stall, where entries void in every cut's
+/// history stayed in the live view until a final cut voided them.
+fn with_push_at_10(to: u64) -> (ReplicaImpl<MockWorld>, Source, SignedEntry) {
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    let keys = TestKeys::new(7, 3);
+    let push = Bytes::from(encode(&[MockOp::Push { id: id(10), impulse: [0.2, 0.0, 0.0] }]));
+    let late = EntryBuilder::new(&keys, 2).next(Class::Edit, Frame(10), push);
+    s.add(late.clone());
+    let mut r = replica();
+    r.advance(Frame(to), &mut s);
+    (r, s, late)
+}
+
+/// The frames `root_at_cut` re-stepped for one vote, and its root.
+fn vote(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, cut: &Cut) -> (u64, Hash) {
+    let before = r.scratch().frames;
+    let root = r.root_at_cut(cut, s).expect("a root");
+    (r.scratch().frames - before, root)
+}
+
+/// In the stall's shape, each vote after the first resumes from my root held at the previous voted cut and re-steps
+/// one cut interval, not the distance from the first difference, which grows with each cut. Every root is the full
+/// re-step's: that of a replica that never had the push. A final cut that voids the push then moves the floor, and
+/// a vote after it starts from the new floor (5.3).
+#[test]
+fn a_vote_resumes_from_the_root_held_at_the_previous_cut() {
+    let (clean, _) = reference(112);
+    let (mut a, mut s, late) = with_push_at_10(112);
+    assert_ne!(a.live_root(Frame(96)), clean.live_root(Frame(96)), "the push moves the scene");
+    let all = scene();
+    let mut costs = Vec::new();
+    for (h, f) in (16..=96).step_by(K as usize).enumerate() {
+        let (cost, root) = vote(&mut a, &mut s, &cut(&all, h as u64 + 2, f));
+        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        costs.push(cost);
+    }
+    assert!((6..=16).contains(&costs[0]), "the first re-steps from a keyframe at or before 10: {costs:?}");
+    assert!(costs[1..].iter().all(|&c| c == K), "the others one cut interval each: {costs:?}");
+    // S3 voids the push as the cut at 24 goes final: the floor moves there, and the live history is re-based on it.
+    void(&mut s, &late, Frame(10));
+    let quorum = clean.live_root(Frame(24)).expect("live");
+    let fin = FinalCut { cut: cut(&all, 3, 24), root: quorum, voters: vec![] };
+    assert_eq!(a.finalize(&fin, &mut s), Finalized::Agreed);
+    a.advance(Frame(112), &mut s);
+    let (_, root) = vote(&mut a, &mut s, &cut(&all, 13, 104));
+    assert_eq!(Some(root), clean.live_root(Frame(104)));
+    assert_eq!(a.live_root(Frame(112)), clean.live_root(Frame(112)));
+}
+
+/// A vote resumes only from a held root whose cut's entries up to its frame are the new cut's (5.3). The cut at 24
+/// covers the push at 10 and the cuts at 16 and 32 do not, so the root at 32 resumes from the one held at 16, not
+/// from the newer one at 24, and it is the full re-step's.
+#[test]
+fn a_vote_never_resumes_from_a_held_root_with_other_entries() {
+    let (clean, _) = reference(48);
+    let (mut a, mut s, late) = with_push_at_10(48);
+    let all = scene();
+    let (_, at_16) = vote(&mut a, &mut s, &cut(&all, 2, 16));
+    assert_eq!(Some(at_16), clean.live_root(Frame(16)));
+    let mut covered = all.clone();
+    covered.push(late);
+    let (cost, at_24) = vote(&mut a, &mut s, &cut(&covered, 3, 24));
+    assert_eq!((cost, Some(at_24)), (0, a.live_root(Frame(24))), "the live history is exactly the cut at 24's");
+    let (cost, at_32) = vote(&mut a, &mut s, &cut(&all, 4, 32));
+    assert_eq!(Some(at_32), clean.live_root(Frame(32)));
+    assert_eq!(cost, 16, "from the root held at 16");
+}
