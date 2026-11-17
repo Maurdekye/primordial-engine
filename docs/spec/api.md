@@ -369,7 +369,8 @@ what each holds, so an agent can make "a box" without knowing every component a 
 An `Outcome`: `status`, `change` (the transaction id), `frame` (its stamp, once it has one), `final_frame`, `dry_run`
 (first, when true), `created` (each `$ref` with its id and version), `changed` (ids with their new versions), `count`
 (objects written or created; a copy or a template counts every object it makes), `orphaned` (creates and
-reparents whose parent was gone, 4.2), and, when refused or dropped, the refusal (5.3.3). Versions in it enter the connection's table.
+reparents whose parent was gone, 4.2), `resent_as` (the entry that carried it, when the re-send backstop re-sent it,
+9.4), and, when refused or dropped, the refusal (5.3.3). Versions in it enter the connection's table.
 
 | `status` | Meaning |
 |---|---|
@@ -377,12 +378,15 @@ reparents whose parent was gone, 4.2), and, when refused or dropped, the refusal
 | `accepted` | Applied on this machine at frame F, its stamp. Others see it within about one network delay. Not final |
 | `final` | Applied by the ordered step at F, a final cut covering F includes it without voiding it (never the frame alone), and `final_frame` (5.1) is past F, so this machine's verdict is the quorum's. It can no longer be undone except by a new change |
 | `refused` | Refused, with a reason. `final: false` while this machine's check refused it before ordering or the refusal is still predicted; `final: true` once a final cut includes it and `final_frame` is past F |
-| `dropped` | Voided by a final cut (late, or back-stamped; S3 v1.1), or recorded by the replica as left out of the final order, so no replica applies it: its local effect is undone everywhere. Whichever says it first is told; the other adds nothing. A change stamped below a final cut's frame that the cut does not include is still pending, not dropped, until a later cut includes or voids it |
+| `dropped` | Voided by a final cut (late, or back-stamped; S3 v1.1), or recorded by the replica as left out of the final order, so no replica applies it: its local effect is undone everywhere. Whichever says it first is told; the other adds nothing. A change stamped below a final cut's frame that the cut does not include is still pending, not dropped, until a later cut includes or voids it. A change of this machine's API voided as late is not dropped but re-sent (9.4): it is `dropped` only if no re-send of it applied within the one-minute bound, and is then held for its author to apply or discard (`held`) |
 | `unknown` | In the final order, but stepped here on a state a repair replaced (5.1): whether it happened is not known here. `repaired_at` names the cut's frame; re-read the state by query. Final: it never changes again |
 
 - An `accepted` change can still become `refused` when an earlier conflicting change from another machine arrives
   and the replica re-steps (file 14, P4). That is the stale edit seen from the loser.
 - Every change of status after `apply` returns is reported through `watch` (`mine`, 5.4), so no refusal is silent.
+- **A re-sent change keeps its id.** The caller's `change` stays the one `apply` returned; `resent_as` names the
+  entry now carrying it, and `frame`, `created` and `changed` are that entry's. Its created objects have new ids
+  (ids derive from the entry, 4.3), which `created` gives under the caller's `$names` (9.4).
 
 #### 5.3.3 Refusals
 
@@ -414,9 +418,9 @@ One envelope for every refusal, in `apply`'s outcome, in `watch`, and in a dry r
 | `held` | A held object (or an object under it) may not be deleted, nor its `Transform`, `Body`, `Shape` or parent edited, while a player holds it; other edits, such as a colour, pass (world-model.md 7.2) | `held_by` |
 | `too_large` | Past the size limits (9.3) | `limit` |
 | `rate_limited` | Past the principal's rate (9.3) | `retry_after_ms` |
-| `not_ready` | This machine is still catching up | — |
+| `not_ready` | This machine is still catching up; or its frame clock is catching up with its own last stamp (agreement's `BelowOwnStamp`: retry in a moment) | — |
 | `compile` | A `code` op whose source does not compile on the author's machine. Only at submission: no entry is made (section 7) | `diagnostics` |
-| `dropped` | The change arrived too late and was undone (status `dropped`) | — |
+| `dropped` | The change arrived too late and was undone (status `dropped`); for this machine's own changes, only once re-sending it for a minute failed, and then held (9.4) | `resent_as`, when it was re-sent; `held`, the batch to apply or discard |
 
 - `message` is one sentence, engine-written, safe to show a player; peer text in it is quoted (rule 6). Its wording
   is @gnosarium-ux's (api-surface.md 3.5). `next` is for agents; a person's interface shows buttons instead
@@ -441,7 +445,9 @@ A change feed with a cursor. `Filter`:
 - `changes`: edits by anyone: `{change, by, producer, label, frame, final, created: [...], deleted: [...],
   reparented: [...], set: [{id, field, value?}]}`. Values are included only for fields `fields` names, or 500
   recoloured balls would flood the agent.
-- `mine`: status changes of this caller's own transactions, with the refusal envelope (always on). After a repair
+- `mine`: status changes of this caller's own transactions, with the refusal envelope (always on). A change the
+  re-send backstop takes up (9.4) reports nothing more until its final outcome, which comes as one item, with
+  `resent_as`. After a repair
   (5.1), each affected change of the caller's resolves once, explicitly, as `unknown` with `repaired_at` (the cut
   it was repaired to), never left pending: whether it happened is not known, so the agent re-reads the state by
   query. A client matching on status must handle `unknown`.
@@ -536,6 +542,7 @@ Tool names use underscores: the Anthropic API accepts only `[a-zA-Z0-9_-]` in to
 | `world_watch` | `watch` | read | `wait_ms` at most 30,000 |
 | `history_list` | `history` | read | — |
 | `history_revert` | `revert` | edit | As `world_apply` |
+| `world_held` | `held` | edit | `{held, action}` (9.4); answers `{outcomes}` |
 | `view_capture` | `capture` | read | An MCP image content block (PNG) plus a structured part (section 8) |
 | `code_check` | `code_check` | edit | Section 7 |
 
@@ -639,24 +646,29 @@ Rules, agreed with @ballpit-viz (mcd68d4325ea7; WS-render writes them into pe-re
   (pe-world's, cheap by structural sharing, plan 2.1), the frame, the newest final frame, and the frame's change
   record: the edit entries stepped, with their outcomes (including re-stepped frames, whose newest verdict wins) and
   their inverses (5.5).
-- pe-api keeps the newest published value, the newest final one, and those of the last 2 s (a parameter) for `at`,
-  `base` and dry runs. A handler holds its snapshot only for the call.
+- pe-api keeps the newest published value and those of the last 2 s (a parameter) for `latest`, `at`, `base` and
+  dry runs; `final` is not kept but asked for (below). A handler holds its snapshot only for the call.
 - The snapshot is S2's `Replica::world_snapshot`, pe-world's `WorldSnapshot` at the replica's frame, which pe-app
   downcasts once per published view (S2 v1.7; @coordinator-opus m22babe2c6375). pe-app takes it only when it
   publishes a new view (`Arc::ptr_eq` on `view()` says it is new), and S2 publishes a view only once the replica has
   reached the present, never mid-catch-up, so every kept snapshot is of the tip. The frame view stays render-only.
-- `final` (and `at`) answer from the kept snapshots, so `final` is the newest kept snapshot at or below the newest
-  final frame: after a catch-up it may lag that frame by a few frames (the 2026-11-13 pe-api snapshot decision,
-  m22babe2c6375, D2 (a)). Its frame is in the result, as for every read.
-- A kept snapshot belongs to the timeline it was taken on. pe-app drops the kept snapshots at or above each
-  advance's `rolled_back_to` (S2's `Advance`: the earliest frame it re-stepped, which also covers a late hand or
-  input entry that leaves no change record), and all of them on a `Diverged` or `Damaged` finalize or a repair
-  (rung 1's replay or rung 2's import) (app.md, pe-api's wiring). Otherwise `final` could answer a state the agreed
-  cut never had. Until a fresh snapshot is kept, `final` lags further, and `at` for the dropped frames answers
+- `final` is S2's `Replica::agreed_snapshot()`: pe-world's snapshot of the state at the replica's last agreed cut,
+  exactly at the final frame, never lagging it, and never a state a repair replaced (S2 v1.7; @coordinator-opus
+  m11bbd4ab1b44, replacing the 2026-11-13 decision D2 (a)). Before the first agreed cut it is the frame-0 snapshot.
+  Its frame is in the result, as for every read.
+- A kept snapshot belongs to the timeline it was taken on (a snapshot at frame f is the state before f is stepped).
+  pe-app drops the kept snapshots above each advance's `rolled_back_to` (S2's `Advance`: the frame of the state the
+  replica restored, which also covers a late hand or input entry that leaves no change record), and all of them on
+  a `Diverged` or `Damaged` finalize or a repair (rung 1's replay or rung 2's import) (app.md 3.1). Otherwise `at`
+  could answer a state the replica replaced. Until a fresh snapshot is kept, `at` for the dropped frames answers
   `snapshot_gone`.
+- `final` and the statuses agree: a change reads `final` only once a cut includes it *and* the final frame (Cv's,
+  the same cut `final` answers from) is past it (5.3.2), so a change told final is always in `final`'s state.
 - The change stream behind `watch` and the history index are built from the change records. The stream keeps the
   last 60 s or 100,000 items, whichever is less; history keeps the session's changes within a memory cap (parameters)
-  [I].
+  [I]: `ChangeLog` holds up to 10,000 entries, and pe-app keeps each edit's decoded contents (`WorldSource::edit`)
+  as long as `ChangeLog` holds the entry, oldest dropped first, up to 10,000 entries and 64 MiB of payloads [I]
+  (app.md 3.1). Past either cap, history describes an older change without its contents.
 
 ### 9.2 The path of one `apply`
 
@@ -672,7 +684,8 @@ Rules, agreed with @ballpit-viz (mcd68d4325ea7; WS-render writes them into pe-re
    prediction. It never waits on pe-api.
 6. The outcome appears in that frame's change record; an `apply` waiting on the transaction returns it.
 7. Agreement orders the entry; every machine's replica steps it; the status becomes `final`, `refused` or `dropped`
-   when its frame is final, or `unknown` if a repair replaced the state it was stepped on (5.1).
+   when its frame is final, or `unknown` if a repair replaced the state it was stepped on (5.1). A change voided as
+   late is re-sent before it is called `dropped` (9.4).
 
 Step 3 checks against the base and step 5 against the present: the present wins. The replica's ordered check is the
 one that counts (2, rule 3).
@@ -685,6 +698,134 @@ and templates count their whole subtree; pe-world owns the bound) and 1 MiB of p
 (world-model.md 7.1); at most 1,000,000 objects examined by one change's `where` selectors, each distinct selector
 once [I]; 4 queries and 2 long polls in flight per principal. pe-agree's per-member entry rule (plan 4.3) bounds the member as a whole, whatever its principals do.
 
+### 9.4 The re-send backstop
+
+"Delayed, never lost" holds for edits whatever the cause (coordinator mee410239a85a, rule 3; agreement.md 3, "An
+outage's entries are delayed, never void as late"). Agreement's outage rule keeps an outage's entries from being void
+as late, but a few can still be: a member at n >= 4 cut off while the others finalize past its stamps, or entries
+from a member whose link is slower than the lag cap (agreement.md 3 measured 2-5 of 397 edits on a 1.2 s link).
+pe-api re-sends those edits. It is the one place every edit source passes through, an agent's MCP calls and a
+person's inspector or editor alike; pe-app's step 2 drains the queue as before, and hand entries never pass through
+pe-api, so they are never re-sent (placed with @engine-architect, m6a275be6792c).
+
+- **What starts it**: a change submitted through this machine's API voided with `VoidReason::Late`, by a final cut
+  (`confirm_cut`'s voids, which carry their reason) or by the replica's `Dropped { reason: Late }` record, whichever
+  says it first. Never a world refusal: pe-world's verdict stands and the author is told why. Never `BackStamped`:
+  once pe-agree refuses an own entry stamped below its chain's last stamp before signing it (@world-chunks,
+  `BelowOwnStamp`), an honest member never makes one, so that void means a misbehaving or forked author, and
+  re-sending would launder it. Never a change of another machine, and never a `code` change in M1 [I]: a script
+  commit's `activate_at` must be its own stamp, and an attestation belongs to its build, so the author commits
+  again.
+- **What it re-sends, in order**: the voided change, then this machine's later API changes that depend on it, in
+  their original order (by seq on the member's chain). A later change depends on it by content, not by its refusal
+  (@design-reviewer's M2): it names an object the voided change created, or a version `{entry, op}` it wrote, in a
+  target, a precondition, an `Undelete` or an `ObjectRef` field of a row or value. pe-world doesn't check that an
+  `ObjectRef` names a live object [V: no such check in pe-world's apply], so a change that only stores the id is
+  accepted, and only content finds it. Followed transitively, so a change depending on a dependent joins too.
+  - **A refused dependent is re-sent**, rewritten (below), after the change it depends on.
+  - **An accepted dependent is not re-sent**: it applied, and re-sending would make its creates twice. If it stored
+    a reference to an object the voided change created, a follow-up re-points it: a plain write of just the
+    `ObjectRef` fields that held such a reference, rewritten, each as its own field write, so it overwrites nothing
+    else of the row that another member set since (@design-reviewer's code-review Low 1); under its producer,
+    labelled "Re-point after a re-send: <label>". The
+    follow-up goes after the re-send it points at, takes no notice in `mine` (the dependent's own outcome stands),
+    and appears in `changes`. It passes the same later-word rule: a reference the author re-set later is not
+    written over.
+  - A dependent found once the re-send is under way (its refusal, or its step, arrives later) joins it after the
+    ones already sent.
+  - A dependent already re-sent, whose re-send is refused because a change before it went back to waiting (that
+    one's re-send was void as late too), goes again after it: at once if it names that change in a target, a
+    precondition, an `Undelete` or a script's base (that refusal can't be undone), otherwise once the refusal is
+    final (@design-reviewer's code-review Low 2). A change only joins once: one the backstop already gave its final
+    notice is settled.
+- **The author's later word wins** (@design-reviewer's M1). Before a re-send is queued, each of its ops that this
+  machine's later accepted API changes already overwrote is dropped, so a re-send never undoes the same author's
+  later work: a field set later (`SetField` on that field, the whole row, the row removed, the object deleted); a
+  whole row written later or removed; a `remove` of a row written later; a `reparent` of an object reparented
+  later. A row written whole by the re-send whose fields were set later keeps those later values (pe-api patches
+  them into the row; it knows each field's place from the schema at submission). If no op is left, nothing is sent
+  and the change is `dropped`, its message saying the author's later changes had replaced all of it.
+  - **Preconditions are kept, and rewritten, never dropped** (@design-reviewer's M1′): a precondition on X may
+    guard ops on Y. Where the newest version of object X in the latest snapshot was written by one of this
+    machine's later accepted API changes, an object precondition is moved to that version. The guard then still
+    means "nobody else has touched X since"; the author's own later writes don't trip it; another member's write
+    after them still refuses it as `stale_version`. A row precondition is not moved [I]: one on a row the author
+    rewrote later refuses the re-send as `stale_version`, the safe side (revert's inverse is its main user, and a
+    revert re-sent after its author's own later edit of that row should be refused).
+  - Writes by other members are not protected: a re-send applies over them, within its preconditions. That is the
+    accepted price the ruling names below.
+- **Each re-send is a new entry** with the same transaction, through the edit queue, taken by step 2 at the frame it
+  drains and stamped with it, with the next seq on the member's chain (@engine-architect). One edit a frame in queue
+  order keeps the order. Before a re-send is queued it is rewritten to the entries now carrying the changes before
+  it: an object an earlier change created (its id is derived from that entry's chain, seq and index k, 4.3) becomes
+  the same index k of the re-sent entry, and a version `{entry, op}` it wrote becomes the re-sent entry's, at that
+  op's place in the re-sent entry (ops the later-word rule dropped move the rest up), in targets, preconditions,
+  `Undelete` and `ObjectRef` fields of rows and values. A version written by an op that was dropped is left as it
+  was: the author's own later change wrote there instead, so what names it is refused as `stale_version`
+  (@design-reviewer's code-review M1). A dependent waits in pe-api until
+  the entry before it has its seq, normally the next frame. A dependent is rewritten from its original transaction
+  each time, to the newest entries carrying the changes before it, so a second re-send of either stays consistent.
+- **Preconditions still apply.** A re-send carries its preconditions, rewritten as above, and nothing else is
+  relaxed: if someone changed the object since, it is refused as `stale_version` like any change, and that refusal
+  is its outcome.
+- **Back-off.** The first re-send goes at once. If a re-send is voided as late again, or agreement refuses it at
+  submission (`TooLate`, or `BelowOwnStamp` once it exists), the next waits 0.5 s, then 1, 2, 4, 8 and 16 s, then
+  every 16 s [I]. Re-sends keep the original order: one that waits holds back the dependents after it. It stops at
+  the one-minute bound (refound-plan, "The one-minute bound": unconfirmed play never lasts longer than a minute),
+  counted from the change's first submission (coordinator mc0ad8bf783c6, (a)). A re-send already in agreement is
+  left to its cut.
+- **Held, never discarded** (coordinator mc0ad8bf783c6, (c), after @fable-reviewer m4e6301209066). A change still
+  unapplied when automatic re-sending stops, at the bound or because its void was learned past it (a member at
+  n >= 4 cut off for more than a minute learns its voids on reconnecting; @design-reviewer's L2), goes with its
+  dependents into a **held batch**, in original order, kept as 9.4 would re-send them.
+  - **One batch per outage**: a batch stays open while the backstop has re-sends waiting; changes that reach the
+    bound meanwhile join it. Its handle is `"h:"` and 16 hex digits.
+  - **The notice**: each change in it reports its one final outcome, `dropped`, with `held` (the batch's handle)
+    and the message "Arrived too late and wasn't applied; it is held, so you can apply it now or discard it." A
+    person's interface shows one notice per batch ("N edits from the outage weren't applied", Apply now and
+    Discard; @gnosarium-ux's to word); `session` lists the open batches (`held`: handle, count, labels).
+  - **Apply now** (`held` with `action: "apply"`; pe-mcp's `world_held`): the batch's changes go to the queue in
+    order as ordinary new submissions of their own principals, prepared as a re-send is (rewritten, the later-word
+    rule, preconditions kept and moved), with a fresh one-minute bound and the backstop again. It answers each
+    change's outcome as `apply` would (`wait: "local"`), under the change's original id with `resent_as`, and
+    `mine` reports each once more. It doesn't take from the principal's bucket again.
+  - **Discard** (`action: "discard"`): the batch is gone; each change's `dropped` stands.
+  - **Each principal acts on its own changes** (@design-reviewer's Low): `held` applies or discards only the
+    caller's own changes in the batch (submitted under its principal; `edit` scope), in their order, and the rest
+    stay held for their principals. A batch from one outage can hold an agent's and a person's changes together,
+    and section 10 keeps principals apart. A change of the caller's that depends on another principal's held change
+    is refused at apply, normally as `not_found`, until that principal applies theirs.
+  - **Kept for the session, within a size limit, not a time limit**: at most 64 MiB of transactions and 64
+    batches on this machine [I]. Past it the oldest batch is discarded, with a `session` event
+    (`held_discarded`, its handle and count) to each principal with changes in it, `count` being theirs as in
+    `held`, and the changes' `dropped` standing. Acting on a handle that is unknown,
+    already applied, discarded or let go, or that holds none of the caller's changes, answers `invalid_argument`
+    on `handle`.
+- **One notice, with only the final outcome.** From the void on, `watch`'s `mine` reports nothing for the change,
+  for its dependents (once they join) or for the re-sent entries. When a re-send is final, refused, `unknown` or
+  given up, the change reports once, under its original `change` id, with `resent_as` and the re-sent entry's
+  `frame`, `created` and `changed` (its versions enter the connection's table). `apply` with `wait: "final"` waits
+  through the re-sends, within its own timeout; `history` lists the change once, under its original id, with
+  the status of its newest re-send. `changes` is the world's record and reports every entry as it is: the void retracts the
+  original's item, and the re-sent entry appears as its own change.
+  - **Voids first** (@design-reviewer's L3): pe-api takes a publication's voids (and the cut's, which come before
+    it) before the same publication's refusals and steps, so a dependent refused in the record that reports the
+    void joins before `mine` could report it.
+- **Its created objects get new ids.** A re-sent entry derives new ids for the objects it creates; the final notice
+  maps the caller's `$names` to them. Until a re-send applies, the objects the voided change made are absent, so a
+  new `apply` naming one is refused as `not_found` at once (step 3), before anything is queued.
+- **Kept, and bounded.** pe-api keeps each of its own submissions' transactions (shared, not copied) until a final
+  cut settles it, within 64 MiB [I]; past that the oldest let go, and a late void of one of those is `dropped` as
+  before. A re-send counts against the member's entry rate in agreement, not against the principal's bucket again
+  (9.3): the change was charged once.
+- **The slow-link residual.** A re-send is stamped fresh and crosses the same link, so on a link slower than the lag
+  cap it can be void again; recovery is by chance until pe-app stamps a slow member's entries ahead
+  (@item:primordial-engine/pe-app-stamps-a-slow-member-s-entries-ahead-by-i, @engine-architect). The back-off and the
+  bound keep it from churning meanwhile.
+- **It should rarely fire** once agreement's outage rule is in. The frame a re-sent change applies at differs from
+  the one the author saw, and it applies over other members' writes made since, within its preconditions: the
+  accepted price of never losing work in the rare case (@design-reviewer's worry, accepted in the ruling).
+
 ## 10. Principals, scopes and safety
 
 ### 10.1 Scopes
@@ -692,7 +833,7 @@ once [I]; 4 queries and 2 long polls in flight per principal. pe-agree's per-mem
 | Scope | Allows |
 |---|---|
 | `read` | `session_info`, `world_schema`, `world_query`, `world_watch`, `history_list`, `view_capture` |
-| `edit` | `world_apply`, `history_revert`, `code_check` |
+| `edit` | `world_apply`, `history_revert`, `world_held`, `code_check` |
 
 There is no `control` scope on a live world: pe-harness drives time through its own API, not through MCP. The old
 `interact` scope (an impulse, the agent's own hand) is not carried; an agent changes the world by edits. An agent
@@ -797,6 +938,11 @@ advice m82fcb9fcc6d0):
   - **S1**: the edit payload is pe-world's `Transaction { actor, preconditions, ops, blobs }` plus `label`
     (world-model.md 7.1). pe-api turns `if_version`s into `ObjectVersion` preconditions in its separate list;
     created ids derive from (world, key, chain id, seq, k).
+  - **S6 v1.6** (pe-seams v1.9, @engine-architect): `Outcome.resent_as: Option<TxId>` (5.3.2, 9.4); for held
+    batches, `Outcome.held`, `WorldApi::held(caller, handle, action) -> Vec<Outcome>`, `SessionInfo.held` and the
+    `held_discarded` session event.
+    **Beside S3**, in pe-api's own ports: `ChangeLog::confirm_cut` takes each void with its `VoidReason`, which
+    pe-app copies from agreement's `Voided` events.
 
 ## 12. Open points, and whose they are
 

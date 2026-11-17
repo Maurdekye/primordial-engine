@@ -196,6 +196,42 @@ impl Describe<'_> {
     }
 }
 
+/// What the re-send backstop adds to a change's outcome (api.md 9.4): the entry now carrying it, and why it is
+/// `dropped` when that is more than a void: held, or replaced by the author's later changes.
+pub fn backstop(o: &mut Outcome, resent_as: Option<TxId>, note: Option<crate::changes::DropNote>) {
+    use crate::changes::DropNote;
+    use pe_seams::world_api::{Refusal, RefusalCode};
+    o.resent_as = resent_as;
+    let r = |message: &str, next: Option<&str>| Refusal {
+        code: RefusalCode::Dropped,
+        message: message.into(),
+        op: None,
+        object: None,
+        field: None,
+        read: None,
+        now: None,
+        winner: None,
+        next: next.map(Into::into),
+        details: None,
+    };
+    match note {
+        Some(DropNote::Held(b)) => {
+            o.held = Some(crate::changes::handle(b));
+            o.refusal = Some(r(
+                "Arrived too late and wasn't applied; it is held, so you can apply it now or discard it.",
+                Some("Call world_held with this handle: action \"apply\" submits it again, \"discard\" lets it go."),
+            ));
+        }
+        Some(DropNote::Superseded) => {
+            o.refusal = Some(r(
+                "Arrived too late; your later changes had already replaced all of it, so it wasn't re-sent.",
+                None,
+            ));
+        }
+        None => {}
+    }
+}
+
 /// A status report on one of the caller's own changes, for `mine`.
 pub fn mine(
     change: TxId,
@@ -222,6 +258,8 @@ pub fn mine(
         count: 0,
         refusal: None,
         diff: None,
+        resent_as: None,
+        held: None,
     };
     match step.map(|s| &s.outcome) {
         Some(WorldOutcome::Applied { created, .. }) if status != Status::Dropped => {

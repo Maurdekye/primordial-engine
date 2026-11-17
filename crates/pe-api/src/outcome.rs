@@ -181,6 +181,8 @@ pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft)
         count: r.count,
         refusal: None,
         diff: None,
+        resent_as: None,
+        held: None,
     };
     let (outcome, after) = snap.dry_run_state(CoreFrame(snap.frame().0), draft, &e.tx);
     match outcome {
