@@ -186,8 +186,11 @@ pub unsafe fn vulkan_context(xr_instance: &XrInstance, system: xr::SystemId) -> 
     let (device, queue) = unsafe { adapter.create_device_from_hal(open, &desc) }
         .map_err(|e| be("wgpu create_device_from_hal")(e.to_string()))?;
 
+    let gpu = GpuContext { instance: wgpu_instance, adapter, device, queue };
+    // Logged like every context pe-render makes, for the console at start and fault bundles (render.md 4).
+    pe_render::gpu::record_context(&gpu);
     Ok(VulkanContext {
-        gpu: GpuContext { instance: wgpu_instance, adapter, device, queue },
+        gpu,
         session_info: xr::vulkan::SessionCreateInfo {
             instance: raw_inst,
             physical_device: phd.as_raw() as _,

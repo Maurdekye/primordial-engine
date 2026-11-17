@@ -116,8 +116,25 @@ pub struct GpuContext { pub instance: wgpu::Instance, pub adapter: wgpu::Adapter
 
 - **Accepted from outside** (xr.md 4.1). In VR mode pe-xr creates it on the runtime's adapter. In desktop mode
   pe-render creates it.
-- **Vulkan everywhere first** [R coordinator, on review M1]. The desktop context is Vulkan on Windows and Linux,
-  with `Features::MULTIVIEW` when offered.
+- **Vulkan first for VR and headless contexts** [R coordinator, on review M1], with `Features::MULTIVIEW` when offered.
+- **A desktop-only window on Windows tries D3D12 first, then Vulkan** [R coordinator mf5033d135994, after
+  @fable-reviewer mae2f5aa0eaae]. Intel's Vulkan driver (igvk64.dll 31.0.101.2134, UHD 620) crashed with an access
+  violation when pe-app's window opened in the first two-machine run; D3D12 drew 11,285 frames there with 0 skipped
+  [V engine-architect/m1run]. Each backend gets an instance of its own, hardware adapters first, then software, so a
+  backend whose turn never comes is never loaded. There is no probe process and no list of bad drivers. A desktop
+  window that mirrors VR stays on pe-xr's Vulkan context (`DesktopView::on`); only a window pe-render makes its own
+  context for (`surface_and_context`) takes this order. D3D12 compiles shaders with FXC, so a first frame may compile
+  more slowly.
+  - **Override:** `PE_RENDER_BACKEND=vulkan` or `dx12` (also `d3d12`, any case) forces one backend for every context
+    pe-render makes itself: the desktop window and headless contexts. Any other value is an error, never ignored.
+    pe-xr's context is the runtime's device and ignores it.
+  - **Test coverage** [R coordinator ma968d3ddccfa]: headless contexts keep Vulkan first on any one class of device,
+    so hardware test runs (`PE_RENDER_TEST_HARDWARE=1`) and hardware captures land on Vulkan. Software tests on Windows
+    run on D3D12 (WARP), since Windows has no software Vulkan adapter; pinning them to Vulkan would skip them silently.
+    Vulkan coverage comes from hardware runs and VR.
+  - **Logged:** every context records its backend, adapter, PCI ids and driver (`gpu::record_context`, pe-xr's
+    included). pe-app prints each at start (`render: ...`), and `gpu::contexts_made` gives them to a fault bundle's
+    build line (divergence.md 6).
   - **When VR is configured at start,** pe-xr creates the context through the runtime from the start
     (`xrCreateVulkanInstanceKHR` and `xrCreateVulkanDeviceKHR`), and the window draws on it. Entering and leaving VR
     then re-create nothing: those Vulkan objects are the application's to destroy, so they outlive the session
@@ -130,8 +147,9 @@ pub struct GpuContext { pub instance: wgpu::Instance, pub adapter: wgpu::Adapter
     after `xrDestroyInstance`, because the runtime may have hooked the Vulkan dispatch. pe-xr's loader owns the
     library (xr.md 4.1); pe-render only drops the context first.
   - **The D3D12 fallback,** chosen at start if the runtime's Vulkan path fails: a DX12 context on the runtime's LUID,
-    drawing two passes (FXC, section 2). Since the desktop is Vulkan, this is the only case in which a DX12 context
-    is kept across entering and leaving VR.
+    drawing two passes (FXC, section 2). This is the only case in which a DX12 context is kept across entering and
+    leaving VR: a desktop-only window's own D3D12 context is replaced on entering VR, like any context pe-render made
+    itself.
   - M0 measured both on the user's headset: Vulkan 944 of 944 frames, D3D12 941 of 941, at 120 Hz [V].
 - **Limits:** pe-render states its own limit set, `Limits::default()` raised only where it needs more. It never asks
   for an adapter's full limits: wgpu-core asserts `max_buffer_size <= u32::MAX`, and the full limits break that
