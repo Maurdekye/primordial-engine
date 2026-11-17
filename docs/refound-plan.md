@@ -56,7 +56,7 @@ calendar time, not writing.
 - **The MVP (draft amendment, section 10).** The user put programmable physics, character controllers, health,
   brought code, avatars with fallbacks, and GPU particles and details in the MVP. Section 10 places
   them in M2, M3 and M5, and proposes that the MVP end with M5, with M4 moved after it. The user confirms the
-  boundary.
+  boundary and answers 10.7's questions.
 - **M0 comes before M1, and it is short.** It lays the ground every workstream needs: the archive, one small interface
   crate (the seams), the gate on hosted runners, the first model of agreed cuts, and four feasibility checks.
 - **What is kept, ported and archived.**
@@ -81,7 +81,7 @@ calendar time, not writing.
   - Every safety rule has a control that bites: a mutation that a test must catch.
 - **Every ruling of the user's carries over.** Section 5 says where each lands. The design phase is closed. File 20
   answered the last point that was open (after two branches merge, both sides' admins are admins).
-  Since 2026-11-17 the MVP boundary is open with the user (section 10.5).
+  Since 2026-11-17 the MVP boundary is open with the user (section 10.6).
 - **All 27 live docket items are triaged:** 17 carry and 10 park.
 - **Every decision the plan asked for has been made.** The user answered U1-U4, and the coordinator ruled C1-C13 with
   conditions (section 9).
@@ -1051,7 +1051,7 @@ All of the user's earlier requirements still apply. These are the ones the rewri
 | R10: full VR | pe-xr, in M1 |
 | R11 and the rulings on logic, shaders and assets as objects: copy-on-write ("b, 1 always"); linked scripts only when set up explicitly; scope U; plain Delete unlinks; an in-game editor, but not the main way | pe-world (M1) and pe-logic (M1-M2), from @item:primordial-engine/logic-shaders-and-assets-as-objects-unified-hier |
 | R14: several worlds, portals | M5 |
-| R15: replaceable physics | **Superseded** by the user's per-object hooks (2026-11-17; section 10): every physics object's frames and collisions are hooked, and each hook starts as a null definition that calls the stock physics. There is no whole-engine replacement. From M2, after the hook-cost spike (10.3) |
+| R15: replaceable physics | **Superseded** by the user's per-object hooks (2026-11-17; section 10): every physics object's frames and collisions are hooked, and each hook starts as a null definition that calls the stock physics. There is no whole-engine replacement. From M2, after the hook spike S1 (10.4) |
 | R16 and R17: huge worlds; culling by size; avatar culling | M4, with the coordinate ruling |
 | R18: detect collapse and recover; keep congestion with the thin player | Covered by cuts, the link budget and the merge, in M3:<br>- a slow member keeps its vote, and nobody demotes it;<br>- cuts wait for a quorum, not for it, and its own view follows by state at cuts;<br>- a member diverged for more than 2 s merges with the main line;<br>- each link gets its own rate budget in pe-net;<br>- late actions past the tolerance are void, decided by the cut, and the engine sets the tolerance from measured links;<br>- "fewer than 0.01% dropped on acceptable connections" is measured |
 | The premise: distributed verification of a change record (answered "all current") | Cuts are the verified record, and the full record is kept. The order comes from the authors' frame stamps; the earlier change wins a conflict; each scale keeps its own record |
@@ -1086,7 +1086,7 @@ targets, answer 8) are all settled above.
 
 File 18's four questions are answered too (section 5.1).
 
-**Open with the user since 2026-11-17:** section 10's MVP boundary (10.5) and its open points (10.6). Before that,
+**Open with the user since 2026-11-17:** section 10's MVP boundary (10.6) and its questions (10.7). Before that,
 file 20 answered the last point: after two branches merge, both sides' admins are admins.
 
 **One reading still to confirm:** the coordinator's reading of the merge against finality (a three-way merge at
@@ -1207,10 +1207,11 @@ conditions shown:
 - the missing controls are named (section 4.4);
 - membership is re-founded per line at the one-minute mark (model v3).
 
-## 10. Amendment (draft, 2026-11-18): the MVP's programmable physics, controllers, avatars and GPU effects
+## 10. Amendment (draft 2, 2026-11-18): the MVP's programmable physics, controllers, avatars and GPU effects
 
-**Status:** a draft by @engine-architect for @fable-reviewer's review (@coordinator-opus). The coordinator takes the MVP boundary (10.5) to the user. Nothing here is authorized to build until
-the coordinator says so. M1 is untouched. Sizes are in this plan's units and are all inferred [I].
+**Status:** a draft by @engine-architect, revised after @fable-reviewer's review of draft 1. The
+coordinator takes the MVP boundary (10.6) and the questions in 10.7 to the user. Nothing here is authorized to build
+until the coordinator says so. M1 is untouched. Sizes are in this plan's units and are all inferred [I].
 
 ### 10.1 What the user ruled
 
@@ -1223,17 +1224,18 @@ The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `<notes
   hooked. A hook starts as a "null definition": it gets the physics state, calls a function that is the stock physics,
   and returns that function's result. A player edits it like a harmony patch: work before or after the stock call,
   call it conditionally or several times, or drop it.
-- **A custom object hitting a stock one**: the stock object is pushed as if a stock object of a
-  standard mass hit it. The custom object gets the stock object's impulse back each step, and its collision hook may
-  react to it.
+- **A custom object hitting a stock one**, in the user's words: "the stock object behaves as though
+  the custom object hit it with a standard amount of mass as though it were also stock, and the custom object receives
+  a recurring impulse from the stock object back that it can then choose to react to with a custom physics collision
+  hook if it chooses to install one". Which mass that is stays open (10.7).
 - **Character controllers** use the same hooks: a modified physics for players that moves them and
   keeps their collider upright unless replaced, for any locomotion, from first person to 6DOF flight, parkour and
   third-person combat.
   - The controller is a component of the player's avatar, which the player saves. It holds the locomotion methods and the player's health.
   - Players choose their avatar, and so their controller. A world may restrict them to the default avatar or to its
     own set, and that is all "custom locomotion" means; there is no separate locomotion-module system.
-- **Health**: built in and off by default, a template and a common interface for showing health,
-  dealing damage and receiving it, not a fixed system.
+- **Health for players and objects**: a "player and object health system", built in and off by
+  default, a template and a common interface for showing health, dealing damage and receiving it, not a fixed system.
 - **Brought code runs**: "just like resonite, any player bringing in custom code can run that code".
 - **Fallback avatars**:
   - every player has a primary avatar (anything) and a lightweight fallback: humanoid, a fixed number of skinned
@@ -1251,36 +1253,70 @@ The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `<notes
   - Audio is not part of this ruling.
 - **Principles:** a development platform first, with social elements. Strangers day one (D21).
 
-### 10.2 The pieces, and what each needs
+### 10.2 How hooks work: proposed semantics, which S1 checks first
+
+@fable-reviewer's analysis of draft 1 [I, not yet measured]:
+- **Collisions are solved as stock.** Box3D's solver iterates on relative velocity, so a custom body whose velocity
+  the solve doesn't change would converge on the kinematic answer within one step. To meet the user's rule, the solve
+  treats the custom body as an ordinary dynamic body. At write-back, its solved change is handed to its collision hook
+  and not applied. The stock body keeps the change the solve gave it.
+- **That makes a null definition exact by construction.** The hook accepts, changes or rejects only its own body's
+  outcome. A hook that accepts gives the stock result bit for bit. It needs no call-out between the fork's parallel
+  stages, so D2 is untouched, and it runs once a step, not once a solver pass. This is S1's candidate A, ahead of a
+  hook inside the solver (candidate B).
+- **"Before" and "after" a collision's stock call:**
+  - "before" changes the contact's inputs, through the fork's pre-solve callback [V, box3d-fork contact/update.rs
+    335-339, called during contact update], which must therefore be pure;
+  - "after" edits the solved outcome;
+  - "call it several times" has no meaning for one contact, whose stock response is the coupled solve of every
+    contact, unless a repeat is an isolated two-body response. The user asked for repeated calls, so
+    this limit is a question for the user (10.7).
+- **A step hook can't be per frame and exact.** At 60 Hz the step has 4 sub-steps [V, pe-physics config.rs:7], and a
+  per-frame `stock(state)` can't reproduce a sub-stepped solve with contacts. Two exact forms are left:
+  - per sub-step;
+  - wrapping the whole step. Run the hook up to its stock call to capture its inputs, run the engine's step, then
+    run the pure hook a second time, deterministically, with the stock result. WebAssembly has no suspension in the
+    feature set we allow.
+
+  S1 measures both.
+- **Hooks are pure.** A hook reads only its own body, its components and the contact, and returns values. Writes to
+  other objects, spawns and events are queued until after the step. Binding refuses a hook that asks for more.
+- **A hook out of fuel returns the stock result** for that step, the same way on every machine (proposed).
+
+### 10.3 The pieces, and what each needs
 
 1. **Physics as world state.** The world's gravity and each object's mass, centre of mass, friction, restitution,
    damping and gravity scale become fields scripts may write. As with every other field, only agreed entries change
    them, at frame boundaries. This lifts world-model.md's "No change mid-session in M1" for gravity. Box3D already
    has the per-body setters [V, box3d-fork body/api.rs, e.g. `body_set_gravity_scale`]. Owners: WS-world, WS-state.
-2. **Step hooks.** Each simulation frame, an object's step hook gets its body's state. It may call `stock(state)`
-   (gravity, damping and integration) any number of times, and it returns what to apply. An object with no hook
-   installed takes the stock path and pays nothing. Needs:
-   - pe-logic host functions to read a body's state, apply forces and call the stock step;
-   - a call-out point in the fork's step, and S1 (10.3) to say whether it is per frame or per sub-step (4 a frame at
-     60 Hz [V, pe-physics config.rs]).
+2. **Step hooks** (10.2). Each step, an object's step hook gets its body's state, may call the stock step, and returns
+   what to apply. An object with no hook takes the stock path and pays nothing. Needs:
+   - pe-logic host functions to read a body's state and to call the stock step;
+   - the exact form from S1, per sub-step or wrapping the whole step;
+   - the purity rule at bind.
 
    Owners: WS-logic, WS-state.
-3. **Collision hooks, and the rule for custom against stock.** Each step a contact lasts, the hook gets the contact
-   (the other object, point, normal and impulse) and may change how the contact acts on its own object. Needs:
-   - in the fork's contact solver, the user's rule for a custom object against a stock one;
-   - the fork's per-contact pre-solve callback [V, box3d-fork contact/mod.rs `pre_solve_fcn`], made deterministic
-     across worker counts (D2);
-   - S1's per-contact cost.
+3. **Collision hooks, and the rule for custom against stock** (10.2). Each step a contact lasts, the custom body's
+   hook gets the contact (the other object, point, normal and the solved change) and accepts, changes or rejects its
+   own body's outcome. Needs:
+   - in the fork, the solved change withheld at write-back and handed to the hook (candidate A), or S1's result;
+   - the pre-solve callback for "before", kept pure and deterministic across worker counts (D2).
 4. **World queries for scripts.** Ray, sweep and overlap queries, deterministic, against the agreed state at the
    frame. A controller's ground check and a vehicle's wheels need them. Owners: WS-state, WS-logic.
 5. **Joints and motors as components,** for vehicles: wheels, hinges and motors over the fork's joints. Owner:
    WS-world.
 6. **Player-written shaders.** Shaders become world objects that each machine compiles, validates and runs under a
    GPU budget. This lifts render.md 2's "User shaders are out of M1". They are visual only, so they never enter
-   agreement. Owner: WS-render.
-7. **A per-player agreed input.** Movement intent and buttons, every frame, as entries in the member's chain,
-   predicted by repetition, paced by pe-agree's backlog, and stamped ahead like hands (app.md 3.2). Owners: WS-agree,
-   WS-state, WS-xr.
+   agreement. GPU time can't be metered like fuel, so S3 chooses how a budget is enforced: static limits, or timing
+   queries that cull. That matters most for strangers' shaders. Owner: WS-render.
+7. **A per-player agreed input.** Movement intent and buttons, as entries in the member's chain, predicted by
+   repetition. An unchanged input sends nothing. It is paced by pe-agree's backlog and stamped ahead like hands
+   (app.md 3.2). Also:
+   - with roomscale walking the head moves the collider, so the head pose becomes a simulation input;
+   - once a controller moves the avatar root, hand poses must be relative to the root, or a correction of the root
+     leaves the hands behind. world-model.md's `Input::Hand` carries `poses: Vec<HandPose>`; their frame is unchecked.
+
+   Owners: WS-agree, WS-state, WS-xr.
 8. **The default avatar and its controller:**
    - a capsule body with head and hands, under the member's avatar root (world-model.md 3.5);
    - stock locomotion methods: walking, running, jumping, VR turning and 6DOF flight;
@@ -1288,8 +1324,9 @@ The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `<notes
    - health's interface, off by default.
 
    It is built from pieces 2, 4 and 7. Owners: WS-xr, WS-logic, WS-world.
-9. **Health:** the template and the common interface (damage, healing, death and display events), off by default,
-   carried by the controller. Owner: WS-logic.
+9. **Health, for players and objects:** the template and the common interface (damage, healing, death and display
+   events), off by default. A player's health is carried by its controller, and an object's by a health component.
+   Owners: WS-logic, WS-world.
 10. **Avatars and fallbacks:**
     - an avatar becomes a player's saved object, controller included, imported first from glTF and VRM (M5's
       avatars track);
@@ -1309,55 +1346,70 @@ The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `<notes
     attestation like any other code. Needs:
     - a joiner that builds every active version first
       (@item:primordial-engine/build-asymmetry-after-m1-a-member-that-can-t-bui);
-    - a fuel cap per player, so that one player's code can't stall the others' simulation.
+    - a fuel cap per player, so that one player's code can't stall the others' simulation;
+    - a cap on build time, and a build cache keyed by the module's hash, since every member compiles each new avatar's
+      module. The player uses the default controller until its own activates;
+    - a rule for what a module may write with. Today a script's writes are the engine's: world logic holds `EDIT`
+      while the preset applies [V, pe-world preset.rs:101], and @fable-reviewer found no rule tying a script's writes
+      to a member [I, a grep]. So a brought module would write with the engine's authority. Whose authority it acts
+      with is a question for the user (10.7).
 
     Owner: WS-logic.
 12. **GPU particles and instanced details:** player-programmed compute and drawing, visual only. Needs player shaders
-    (piece 6) and S3's budgets. Owner: WS-render.
+    (piece 6) and S3's budgets. A detail's inputs (the surface, a seed, a painted density map) are world data. Owners:
+    WS-render, with WS-world for those inputs.
+13. **The controller's view:** for third person and 6DOF, the controller defines the camera, locally
+    and at the display's rate, outside the simulation. A personal comfort limit on that camera is @fable-reviewer's
+    suggestion, not a ruling (10.7). Owners: WS-xr, WS-render.
 
 **Seen through the lens**, and built only where the controller or the hooks need them anyway: input
 history visible to hooks, overlap queries (piece 4), and a per-object frame counter.
 
-### 10.3 Spikes, before any dates
+### 10.4 Spikes, before any dates
 
-- **S1, the CPU cost of hooks** (WS-logic with WS-state; first in M2, before pieces 2 and 3). Measures:
-  - a WebAssembly step hook, compiled by Cranelift with M1's metering and NaN handling, on N bodies (10, 100, 500 and
-    2,000), once a frame and once a sub-step;
-  - two kinds of hook: a null definition (calls the stock step and returns its result), and a working hook (a Magnus
-    force, then buoyancy);
-  - a collision hook once a contact a step, at M contacts (100, 1,000 and 5,000);
-  - all of these under rollback at M1's measured re-simulation rate, and with eight members;
-  - what it costs to call out between the fork's parallel stages in a fixed order, which keeps results bit-identical
-    for every worker count (D2).
+**S1, hooks on the CPU** (WS-logic with WS-state; first in M2, before pieces 2 and 3). Two gates, in this order:
+- **Gate 0, exactness, before any cost.** A null definition must give the stock result bit for bit: the same roots
+  over 10,000 frames of the 500-ball pit with every ball hooked, on both machines. It is checked for:
+  - the collision hook, as candidate A, and as candidate B if A fails;
+  - the step hook, per sub-step and wrapping the whole step.
 
-  It runs in release on the desktop and on the laptop, the slow machine, in a quiet window. What it decides:
-  - whether step hooks run once a frame or once a sub-step. A hook's force held across sub-steps is a known trap;
-  - whether the collision hook runs inside the solver, or after the step with its reaction one step later
-    (@fable-reviewer's suggestion);
-  - how many hooked bodies and contacts a world may have within M1's bar, where the laptop is under 50 % busy.
-
-  The baseline is known [V, logic.md 5.2a]: M1's whole physics step compiled to WebAssembly cost 1.65-1.80 ms a
+  A form that fails gate 0 is out.
+- **Gate 1, cost, for the forms that pass.** In release, in a quiet window, with the hooks compiled by Cranelift with
+  M1's metering and NaN handling:
+  - the measures are step hooks on N bodies (10, 100, 500 and 2,000) and collision hooks at M contacts (100, 1,000
+    and 5,000), each as a null definition and as a working hook (a Magnus force, then buoyancy);
+  - the pass line is M1's bar on the laptop: in a two-member session, B under 50 % busy with no hold over 2 ticks, at
+    the re-simulation depth M1's session runs measured (phase timers). It must hold with 100 step-hooked bodies and
+    every contact of theirs hooked, and S2 adds eight controllers to that;
+  - the result is the largest N and M that pass. If 100 bodies fail, the plan records the largest count that passes,
+    and the user hears it before M2 has dates: a cap per world on hooked bodies.
+- **The baseline is known** [V, logic.md 5.2a]: M1's whole physics step compiled to WebAssembly cost 1.65-1.80 ms a
   frame, against 0.31 ms native. A hook is far smaller, but it is called once per body.
-- **S2, the controller under rollback** (WS-state, early in M3): the default controller for eight players, with
-  inputs predicted by repetition, over thin links. It measures the cost per player and the visible error after a
-  mispredicted input.
-- **S3, the VR GPU budget** (WS-render with WS-xr, before pieces 6 and 12). It measures:
-  - the M1 world's GPU time per eye at the headset's rate on the desktop;
-  - the headroom left for particles and for instanced details, as counts;
-  - the desktop mode on the laptop's integrated GPU.
 
-  These set the GPU budgets that player shaders and effects run under, per world and per player.
-- **S4, the converter's libraries** (WS-render, a desk survey, before piece 10's converter): mesh reduction and
-  texture baking under the 100% Rust rule.
+**S2, the controller under rollback** (WS-state, early in M3). The default controller for eight players, with inputs
+predicted by repetition. The pass line is gate 1's, with eight controllers added. It reports:
+- the cost per player;
+- the visible error after a mispredicted input;
+- the input's bytes per second, on the 8-12 kbit/s cells and with a VR player.
 
-### 10.4 Placement in M2-M5
+**S3, the VR GPU budget** (WS-render with WS-xr, before pieces 6 and 12). It measures:
+- the M1 world's GPU time per eye at the headset's rate on the desktop;
+- the headroom left for particles and for instanced details, as counts;
+- the desktop mode on the laptop's integrated GPU.
+
+These set the GPU budgets per world and per player. S3 also chooses how a budget is enforced (piece 6).
+
+**S4, the converter's libraries** (WS-render, a desk survey, before piece 10's converter): mesh reduction and texture
+baking under the 100% Rust rule.
+
+### 10.5 Placement in M2-M5
 
 | Milestone | Adds | Size [I] |
 |---|---|---|
 | M2, authoring in depth | S1; pieces 1-5 (physics as state, step hooks, collision hooks with the custom-against-stock rule, world queries, joints and motors); S3, then piece 6 (player shaders) | 18-28 |
-| M3, sessions that survive real life | S2; piece 7 (the per-player input), pieces 8 and 9 (the default avatar and controller with health's interface); piece 12 (GPU particles and details), by WS-render in parallel; hooks with eight members, as acceptance | 12-18 |
+| M3, sessions that survive real life | S2; piece 7 (the per-player input with the head and root-relative hands), pieces 8, 9 and 13 (the default avatar, its controller and view, health for players and objects); piece 12 (GPU particles and details), by WS-render in parallel; hooks with eight members, as acceptance | 13-20 |
 | M4, regions | Only a wording change: a world limits locomotion by limiting avatars | 0 |
-| M5, the platform | Pieces 10 and 11 (avatars as saved objects, fallbacks, the converter after S4, and brought code with custom controllers and health logic) | 10-15 |
+| M5, the platform | Pieces 10 and 11 (avatars as saved objects, fallbacks, the converter after S4, brought code with its build cap and cache, and custom controllers with health logic) | 11-17 |
 
 **Demos:**
 - **M2:** an agent writes a hook that makes a spun ball curve, and one that makes a raft float.
@@ -1367,14 +1419,15 @@ history visible to hooks, overlap queries (piece 4), and a per-object frame coun
 
 **Acceptance**, each with a red control that must fail:
 - an object with no hook steps exactly as the stock physics does today;
-- a null-definition hook gives exactly the stock result;
+- a null-definition hook, step or collision, gives exactly the stock result (gate 0);
 - a hooked world gives the same roots on every member and in the offline replay;
-- a custom object hitting a stock one moves the stock one as a stock object of the standard mass would. While they
-  touch, the custom object's hook sees the impulse each step;
+- binding refuses a hook that writes outside its own body, and a hook out of fuel gives the stock result;
+- when a custom object hits a stock one, the stock one moves as the solve gives it, and the custom one's hook gets
+  its solved change each step while they touch;
 - particle and detail programs can't change the simulation: they have no path that writes to it;
 - a player restricted to fallbacks shows others only the fallback.
 
-### 10.5 The MVP boundary (proposed)
+### 10.6 The MVP boundary (proposed)
 
 "MVP" names no milestone in this plan.
 
@@ -1385,25 +1438,39 @@ reasons:
 - **Controllers, health and brought code ride on avatars,** and avatars are M5's.
 - **D23 already sets eight players for the MVP** (section 5.2). M3 tests eight, and the plan calls regions the way
   beyond.
-- **No part of this ruling needs regions,** which serve huge worlds and more than eight players. Moving M4 after the
-  MVP saves its 14-22 before the MVP.
+- **No part of this ruling needs regions.** Moving M4 after the MVP saves its 14-22 before the MVP.
+
+**What that costs, in the user's terms:** M4 carries R16 and R17, huge worlds and culling by size, avatar culling
+included (section 5.2). The user's first five minutes name "huge open worlds that you can explore freely"
+(user-design-decisions.md, the tour). Under this proposal, the MVP's worlds stay within one region's reach.
 
 The alternatives:
-- **The MVP at the end of M5 with M4 in place.** This is right if the user wants huge worlds in the MVP. The order and
-  the milestones stay as they are.
+- **The MVP at the end of M5 with M4 in place,** if the user wants huge worlds in the MVP. The order and the
+  milestones stay as they are.
 - **The MVP at the end of M3, plus this ruling.** Not proposed: it would leave out identities, invites and vouching,
   and so strangers.
 
-### 10.6 Open points
+### 10.7 Open points
 
-- **R15** is superseded (5.2).
-- **Fallback limits** aren't chosen: skinned meshes, materials, texture sizes and the file size.
-- **Deterministic animation** (root motion, bone hitboxes) isn't in the user's list. Third-person combat through the
-  lens needs it (@fable-reviewer's gap). To ask with the boundary.
-- **Per-player budgets** for brought code (fuel) and for GPU programs: values come after S1 and S3.
-- **The custom-against-stock rule:** @fable-reviewer's reading went to the user for correction and hasn't been
-  confirmed. In that reading the contact is solved with the custom body's real mass, and the impulse on the custom
-  body is reported to its hook rather than applied.
+**For the user** (@coordinator-opus asks them, with 10.6):
+1. **Repeated collision calls** (10.2). A contact's stock response is the coupled solve of every contact, so calling
+   it several times means nothing for one contact unless a repeat is an isolated two-body response. Is that limit
+   acceptable, or should a repeat be that two-body response?
+2. **The mass in the custom-against-stock rule**: "a standard amount of mass as though it were also
+   stock". @fable-reviewer read it as the custom body's own ordinary mass and told the user so, without being
+   corrected; that is the reading 10.2 uses. Or is it a fixed standard mass?
+3. **Brought code's authority** (piece 11). Today a module writes with the engine's authority. Should a brought module
+   act with its bringer's permissions (@fable-reviewer's reading, unconfirmed), or with another rule?
+4. **Moving M4 after the MVP** (10.6): the MVP's worlds would stay within one region's reach, and huge open worlds
+   would come after it.
+5. **Deterministic animation** (root motion, bone hitboxes) isn't in the user's list, but third-person combat through
+   the lens needs it (@fable-reviewer's gap). Is it in the MVP?
+
+**For the plan, settled by the spikes or later:**
+- R15 is superseded (5.2).
+- Fallback limits aren't chosen: skinned meshes, materials, texture sizes and the file size.
+- Per-player budgets for brought code (fuel) and for GPU programs: values after S1 and S3.
+- A personal comfort limit on the controller's camera (piece 13): @fable-reviewer's suggestion, not yet asked.
 
 ## Appendix A. A sketch of the seams (v0 is fixed in M0)
 
