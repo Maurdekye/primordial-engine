@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use pe_core::commit::Hasher;
-use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId};
+use pe_core::{ChainId, EntryRef, Frame, Hash, LineId, MemberKey, ObjectId};
 use pe_seams::{Reason, Version};
 use pe_sim::{ComponentDesc, ComponentId, FieldDesc, RowVersion, SimStore};
 
@@ -136,6 +136,16 @@ pub const W_FG_MS: u64 = 2_000;
 pub const T_BUILD_MS: u64 = 20_000;
 /// The thin links' rate `R_thin`, in bytes per second.
 pub const R_THIN: u64 = 1_000;
+
+/// A new script asset's id (7.9; @coordinator-opus): derived from the creating entry's coordinates
+/// and `k`, the index `AssetTarget::New(k)` names, as [`ObjectId::created`] derives a new object's, under its own
+/// domain tag so an asset id never equals an object id. A re-sent entry has a new seq, so its asset gets a new id and
+/// its dependents are rewritten by `k` (api.md 9.4).
+pub fn asset_created(line: LineId, author: MemberKey, chain: ChainId, seq: u64, k: u32) -> AssetId {
+    let mut h = Hasher::new("pe.asset");
+    h.write_hash(&line.0).write(&author.0).write_hash(&chain.0).write_u64(seq).write_u32(k);
+    h.finish().0
+}
 
 /// How many frames after its commit frame `c` a pending commit is voided if no quorum has attested it (logic.md
 /// 6.2a item 4): `ceil(2 · T_module · hz)`, with `T_module = W_fg + len / R_thin + T_build` from the source's length,
