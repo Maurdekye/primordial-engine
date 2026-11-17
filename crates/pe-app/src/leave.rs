@@ -27,9 +27,9 @@ pub const MIN_WAIT: Duration = Duration::from_secs(5);
 /// The longest wait, however slow the views.
 pub const MAX_WAIT: Duration = Duration::from_secs(15);
 /// How far around the present a remaining member looks for a member's signed `Leave` when that member's link drops:
-/// past stamp-ahead's largest lead (3 s, `LeadConfig::MAX_LEAD`, once stamp-ahead lands) plus a second's margin, and
-/// as far below the final frame. Once stamp-ahead is on main this follows its clamp (@design-reviewer's Low 3).
-pub const SCAN: Duration = Duration::from_secs(4);
+/// past stamp-ahead's largest lead (its clamp, `LeadConfig::MAX_LEAD`) plus a second's margin, and as far below the
+/// final frame (@design-reviewer's Low 3).
+pub const SCAN: Duration = Duration::from_secs(crate::stamp::LeadConfig::MAX_LEAD.as_secs() + 1);
 
 /// Where this member is in its graceful quit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -1279,6 +1279,11 @@ mod tests {
             assert!(blamed.is_empty(), "machine {i} blamed the other: {} events, first {:?}", blamed.len(), blamed[0]);
             assert_eq!(sim.stats().refused, 0, "machine {i} refused messages");
             assert_eq!(late, 0, "machine {i} voided {late} of the other's entries as late (pe-agree's outage rule)");
+            // pe-agree's outage mark keeps the outage's backlog out of the lateness reports, so stamp-ahead's lead
+            // stays at or near 0 through the return (2 and 4 frames measured): before it, both leads rose to the 3 s
+            // clamp, 180 frames, and took 90 s to drain (@design-reviewer's Medium on a6b1035a; @coordinator-opus). A loaded machine's loopback ticks run late, so the bound allows 0.2 s.
+            let lead = sim.stats().largest_lead;
+            assert!(lead <= 12, "machine {i}'s stamp-ahead lead rose to {lead} frames over the blackout");
         }
         assert!(resumed, "finality did not resume within {resume_within:?}");
         assert!(all_final, "not every entry made became final on both sides");

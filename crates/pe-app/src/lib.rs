@@ -20,6 +20,7 @@ pub mod leave;
 pub mod local;
 pub mod net;
 pub mod sim;
+pub mod stamp;
 pub mod standin;
 pub mod vr;
 pub mod world;
