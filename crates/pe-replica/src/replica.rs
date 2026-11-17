@@ -161,6 +161,9 @@ struct Mark {
 /// steps, then their ids in apply order.
 const HISTORY: &str = "pe-replica.history";
 
+/// The cut intervals of the newest votes whose cuts all keep their snapshots; past them, two per doubling of age (4.1).
+const HELD_DENSE: u64 = 4;
+
 /// Where a re-step for a root at a cut starts.
 #[derive(Clone, Copy, Debug)]
 enum Start {
@@ -222,6 +225,9 @@ pub struct ReplicaImpl<W: WorldModel> {
     replay: Option<Replay>,
     /// The last rung-1 replay that finished, and its root: asked again, it answers at once.
     replayed: Option<(CutRef, Hash)>,
+    /// The cuts a rung-1 replay was asked for that are not final yet: a root split's (divergence.md 5). While the
+    /// episode lasts, a peer may fetch my root at the split's cut (11.1 there), so its snapshot is never thinned (4.1).
+    split_cuts: BTreeSet<CutRef>,
     /// The cut of my last import (rung 2 or joining) and my root there, until the floor reaches it. The replica
     /// keeps no history below it: its physics world is new, and older keyframes cannot be restored into it.
     imported: Option<(CutRef, Hash)>,
@@ -366,6 +372,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             diverged: None,
             replay: None,
             replayed: None,
+            split_cuts: BTreeSet::new(),
             imported: None,
             epoch: 0,
             lineage: 0,
@@ -444,6 +451,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// What re-steps off the live history counted: never part of [`Self::faults`] or [`Self::stopped`].
     pub fn scratch(&self) -> Scratch {
         self.scratch
+    }
+
+    /// How many snapshots the replica holds (4.1): the floor's, `Cv`'s, the finals', and those of my roots at cuts not
+    /// final yet that it keeps.
+    pub fn held_count(&self) -> usize {
+        self.held.len()
     }
 
     /// The live root at a cut-grid frame, if it has been taken and is still kept.
@@ -982,7 +995,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
         }
         let (from, start, history) = if resume {
             let base = self.base_frame();
-            let marks: BTreeSet<Frame> = self.voted.keys().map(|c| c.frame).filter(|&f| f >= base && f < at).collect();
+            // A digest only where a snapshot is held: a thinned root is never resumed from (4.1).
+            let marks: BTreeSet<Frame> = (self.voted.iter())
+                .filter(|&(c, root)| c.frame >= base && c.frame < at && self.held.contains_key(root))
+                .map(|(c, _)| c.frame)
+                .collect();
             let walk = self.walk(cut, source, &marks);
             let from = walk.difference.unwrap_or(at);
             (from, self.resume_from(from, at, &walk), walk.digests.get(&at).copied())
@@ -1090,7 +1107,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
     }
 
     /// Release held roots nobody needs: kept are the floor's, `Cv`'s, the finals within `T_keep` (at least two), the
-    /// diverged root, and my roots at cuts not final yet.
+    /// diverged root, my last import's, and, of my roots at cuts not final yet, those something may read (4.1).
     fn release(&mut self) {
         let keep_frames = self.rate.frames(self.config.keep_finals);
         while self.finals.len() > 2 {
@@ -1104,8 +1121,16 @@ impl<W: WorldModel> ReplicaImpl<W> {
         keep.extend(self.floor.as_ref().map(|f| f.root));
         keep.extend(self.cv.as_ref().map(|c| c.1));
         keep.extend(self.diverged.map(|d| d.1));
-        keep.extend(self.voted.values().copied());
         keep.extend(self.imported.map(|i| i.1));
+        // My roots at cuts not final yet all stay, as votes; their snapshots only where something reads them before
+        // the cut is final (4.1, was O19; @coordinator-opus mc19bd7c38ea8). The resume needs the newest (5.3), which
+        // the ring's policy over the cut grid keeps. A root split's reference serves its root at the split's cut, so
+        // every cut a rung-1 replay was asked for keeps its snapshot until a finalize at or above it (divergence.md 5,
+        // 11.1). A snapshot kept for anything above stays in any case: `keep` is their union.
+        let policy = Policy { spacing: self.config.cut_every, dense: HELD_DENSE };
+        let newest = self.voted.keys().map(|c| c.frame).max().unwrap_or(Frame(0));
+        let read = |c: &CutRef| policy.keeps(c.frame, newest) || self.split_cuts.contains(c);
+        keep.extend(self.voted.iter().filter(|(c, _)| read(c)).map(|(_, &root)| root));
         self.held.retain(|h, _| keep.contains(h));
     }
 
@@ -1407,6 +1432,8 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         }
         let root = self.my_root(cut, &*source, true)?;
         self.voted.insert(cut.at, root);
+        // A long stall votes at every cut and finalizes none: the snapshots are thinned at each vote (4.1).
+        self.release();
         Ok(root)
     }
 
@@ -1436,6 +1463,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // moves past those frames.
         let differs = self.first_difference(&cut.cut, &*source);
         self.voted.retain(|c, _| c.height > at.height);
+        self.split_cuts.retain(|c| c.height > at.height);
         self.finals.retain(|f| f.0 != at);
         self.finals.push_back((at, mine));
         let verdict = if mine == cut.root {
@@ -1469,6 +1497,8 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     }
 
     fn replay_to(&mut self, cut: &Cut, source: &mut dyn EntrySource) -> Result<Hash, RootError> {
+        // A root split's cut, whether or not this replay can run: my root there stays served (4.1).
+        self.split_cuts.insert(cut.at);
         if let Some((_, root)) = self.replayed.filter(|r| r.0 == cut.at) {
             return Ok(root);
         }

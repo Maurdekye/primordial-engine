@@ -414,7 +414,7 @@ fn measure_vote_cost_in_a_stall() {
     let mut r = replica_of(world);
     r.advance(Frame(to), &mut s);
     assert_eq!(r.frame(), Frame(to));
-    println!("vote: cut frame | distance from 10 | frames re-stepped | ms");
+    println!("vote: cut frame | distance from 10 | frames re-stepped | ms | snapshots held");
     let (mut frames, mut ms) = (0, 0.0);
     for (h, f) in (16..=to).step_by(K as usize).enumerate() {
         let cut = cut_at(&covered, h as u64 + 2, f);
@@ -423,7 +423,7 @@ fn measure_vote_cost_in_a_stall() {
         r.root_at_cut(&cut, &mut s).expect("a root");
         let took = t.elapsed().as_secs_f64() * 1e3;
         let stepped = r.scratch().frames - before;
-        println!("vote {f:5} | {:5} | {stepped:5} | {took:8.3}", f - 10);
+        println!("vote {f:5} | {:5} | {stepped:5} | {took:8.3} | {:3}", f - 10, r.held_count());
         (frames, ms) = (frames + stepped, ms + took);
     }
     println!("total: {frames} frames re-stepped, {ms:.1} ms");
