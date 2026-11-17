@@ -9,18 +9,21 @@
 //!   into the cache, so a retry answers at once.
 //!   - The attester's build of a commit is pe-logic's `build_for_row`: the module must be the commit's, and a failure
 //!     is retried as logic.md 6.2b says (`Local` twice, the last from clean; `Mismatch` once, from clean) before this
-//!     machine reports it.
+//!     machine reports it. A failure that means 6.2b's prevention has a gap (`Failed::wants_bundle`) leaves a bug
+//!     bundle in the service's `bugs` folder, saved while the build's output is still the failed build's.
 //!   - An API build is the author's: past the author's time margin (`AUTHOR_MAX_BUILD`, 15 s; Q4 (b)) it is refused,
-//!     cached or not. The memory margin waits for pe-logic's measure of a build's peak.
+//!     cached or not. The memory margin waits for pe-logic's measure of a build's peak. rustc's errors and its
+//!     warnings about the script's own source come back as diagnostics, from pe-logic's parse of rustc's JSON.
 //! - **[`Attester`]** makes one pass over a world's pending commits (`World::pending`). For each commit this machine
 //!   hasn't handled, it builds and checks the version and loads the module into the runner through its inbox, since
 //!   every machine must hold the module at F, the author's included. If this member is one of the commit's voters and
 //!   isn't counted yet, the pass gives the `AttestBuild` to submit, or, for a build that failed after its retries, the
-//!   `BuildFailed` (6.2a item 2).
+//!   `BuildFailed` (6.2a item 2). A module that built as the commit's but won't describe here, for a reason of this
+//!   machine's, is only logged: the member holds its vote, as for a module the runner won't load.
 //!   **The author's own pass loads but posts nothing:** its commit already counts as its attestation, and pe-world
 //!   refuses a voter's second attestation, or a failure after it, as `Invalid`. Don't "fix" that into a post.
-//! - **[`toolchain_and_sdk`]** stands in for the toolchain and SDK hashes until @iter-bench's 6.2b slice B defines
-//!   them.
+//! - **[`toolchain_and_sdk`]** gives the hashes a commit carries: the build identity B (logic.md 6.2b) and pe-sdk's
+//!   source hash.
 //!
 //! A pass and a build block their thread, and a build takes seconds, so neither runs on the simulation thread. The
 //! thread that calls them needs [`ModuleInbox::thread_stack`] of native stack: describing and loading a module read
@@ -36,7 +39,7 @@ use std::time::{Duration, Instant};
 
 use pe_api::builds::{BuildRefused, Builds, Margin};
 use pe_api::queue::{EditQueue, Receipt, Ticket};
-use pe_logic::build::{AUTHOR_MAX_BUILD, BuildError, FailReason, Failed, Toolchain};
+use pe_logic::build::{AUTHOR_MAX_BUILD, BuildError, FailReason, Failed, RustcMessage, Toolchain};
 use pe_logic::meter::RefusalKind;
 use pe_logic::runtime::{LoadError, Script};
 use pe_replica::logic::{Described, ModuleInbox};
@@ -74,9 +77,9 @@ impl BuildConfig {
         self.dir.join("target")
     }
 
-    /// The crate folder `build_archive` unpacks an archive into, which rustc's paths are relative to.
-    fn crate_dir(&self) -> PathBuf {
-        self.work().join("script")
+    /// Where bug bundles go (logic.md 6.2b): local only, for the user to hand to whoever chases the gap.
+    fn bugs(&self) -> PathBuf {
+        self.dir.join("bugs")
     }
 }
 
@@ -99,6 +102,9 @@ pub struct Built {
     /// How long the build took (for the attester's build of a commit, its retries included): api.md 7.1 applies the
     /// author's margin to it.
     pub build_ms: u32,
+    /// rustc's warnings about the script's own source (pe-logic's `Built.warnings`). An attester's build doesn't keep
+    /// them: a version the attester built first answers an API build with none.
+    pub warnings: Vec<RustcMessage>,
 }
 
 impl std::fmt::Debug for Built {
@@ -129,11 +135,11 @@ impl std::fmt::Display for BuildFail {
 impl BuildFail {
     /// The failure as api.md 7.1's port answers it: the author's own error as diagnostics (rustc's messages, or
     /// pe-logic's refusal), and this machine's as `Unavailable`, never as the author's error.
-    fn refused(self, crate_dir: &Path) -> BuildRefused {
+    fn refused(self) -> BuildRefused {
         match self {
             BuildFail::Build(e) => match (e.reason(), &e) {
-                (FailReason::Compile, BuildError::Rustc { text, .. }) => {
-                    BuildRefused::Failed(rustc_diagnostics(text, crate_dir))
+                (FailReason::Compile, BuildError::Rustc { text, diagnostics, .. }) => {
+                    BuildRefused::Failed(rustc_diagnostics(diagnostics, text))
                 }
                 (FailReason::Refused, _) => {
                     BuildRefused::Failed(vec![diagnostic(DiagnosticKind::Manifest, e.to_string())])
@@ -161,53 +167,49 @@ fn diagnostic(kind: DiagnosticKind, message: String) -> Diagnostic {
 /// The most of rustc's own output a diagnostic carries when none of its lines is in the short format.
 const RAW_MAX: usize = 4096;
 
-/// rustc's short-format messages (`src\lib.rs:3:5: error[E0425]: cannot find value ...`, the format pe-logic asks
-/// for), one diagnostic each (api.md 7.1; @iter-bench), from `BuildError::Rustc`'s `text`: each
-/// diagnostic's short rendering, then cargo's output (pe-logic v11). Lines that aren't one are left out. The file is
-/// made relative to `crate_dir`, with `/`. When no line is one (another format, a linker's error), the output itself,
-/// trimmed to [`RAW_MAX`] bytes, is the one diagnostic, so the author still sees why (@api-eng's Medium on 3b8bf923).
-fn rustc_diagnostics(out: &str, crate_dir: &Path) -> Vec<Diagnostic> {
-    let crate_dir = crate_dir.to_string_lossy().replace('\\', "/");
-    let parsed: Vec<Diagnostic> = out.lines().filter_map(|l| short_message(l, &crate_dir)).collect();
-    if !parsed.is_empty() {
+/// rustc's errors and warnings (api.md 7.1), from pe-logic's parse of rustc's JSON (`BuildError::Rustc`'s
+/// `diagnostics`, pe-logic v11), one diagnostic each, at the first primary span. Files are as pe-logic gives them:
+/// crate-relative for the script (`src/lib.rs`), `/pe-sdk/...` for pe-sdk, never this machine's folders. Notes, helps
+/// and rustc's summary lines (no place, `aborting due to ...`) are left out. When no error is left (cargo failed first,
+/// a linker's error), the output itself (`text`), trimmed to [`RAW_MAX`] bytes, is the one diagnostic, so the author
+/// still sees why (@api-eng's Medium on 3b8bf923).
+fn rustc_diagnostics(diagnostics: &[RustcMessage], text: &str) -> Vec<Diagnostic> {
+    let parsed: Vec<Diagnostic> = diagnostics.iter().filter_map(rustc_diagnostic).collect();
+    if parsed.iter().any(|d| d.severity == Severity::Error) {
         return parsed;
     }
-    let raw = out.trim();
+    let raw = text.trim();
     let mut end = raw.len().min(RAW_MAX);
     while !raw.is_char_boundary(end) {
         end -= 1;
     }
-    vec![diagnostic(DiagnosticKind::Rustc, raw[..end].to_string())]
+    let mut out = vec![diagnostic(DiagnosticKind::Rustc, raw[..end].to_string())];
+    out.extend(parsed);
+    out
 }
 
-fn short_message(line: &str, crate_dir: &str) -> Option<Diagnostic> {
-    // The level is the first tag in the line: a warning's own text can hold ": error" (@api-eng's Low 1).
-    let levels = [(": error", Severity::Error), (": warning", Severity::Warning)];
-    let (i, tag, severity) =
-        levels.into_iter().filter_map(|(tag, s)| line.find(tag).map(|i| (i, tag, s))).min_by_key(|&(i, ..)| i)?;
-    let (at, rest) = (&line[..i], &line[i + tag.len()..]);
-    // Split from the right, so a drive letter's colon stays in the path.
-    let mut parts = at.rsplitn(3, ':');
-    let (column, number, path) = (parts.next()?, parts.next()?, parts.next()?);
-    let (number, column) = (number.parse::<u32>().ok()?, column.parse::<u32>().ok()?);
-    let (code, message) = match rest.strip_prefix('[') {
-        Some(r) => {
-            let end = r.find(']')?;
-            (Some(r[..end].to_string()), &r[end + 1..])
-        }
-        None => (None, rest),
+/// One of rustc's messages as a diagnostic: an error (an internal compiler error included) or a warning with a place,
+/// or an error with none; anything else is `None`.
+fn rustc_diagnostic(m: &RustcMessage) -> Option<Diagnostic> {
+    let severity = if m.level.starts_with("error") {
+        Severity::Error
+    } else if m.level == "warning" {
+        Severity::Warning
+    } else {
+        return None;
     };
-    // Relative to the crate when it lies in it: the build folder's own path may hold a `src/` (@api-eng's Low 2).
-    let path = path.replace('\\', "/");
-    let file = path.strip_prefix(crate_dir).map_or_else(|| path.clone(), |p| p.trim_start_matches('/').to_string());
+    let at = m.spans.first();
+    if at.is_none() && (severity == Severity::Warning || m.message.starts_with("aborting due to")) {
+        return None;
+    }
     Some(Diagnostic {
         kind: DiagnosticKind::Rustc,
         severity,
-        message: message.trim_start_matches(':').trim().to_string(),
-        file: Some(file),
-        line: Some(number),
-        column: Some(column),
-        code,
+        message: m.message.clone(),
+        file: at.map(|s| s.file.clone()),
+        line: at.map(|s| s.line),
+        column: at.map(|s| s.column),
+        code: m.code.clone(),
     })
 }
 
@@ -357,17 +359,27 @@ impl Builder {
         self.build_in_turn(archive, v)
     }
 
-    /// The attester's build of a commit's version (logic.md 6.2 step 3, 6.2b): pe-logic's `build_for_row`, whose module
-    /// must be `author_module`, with its retries. A build this machine already has with that module answers at once.
-    pub fn build_for_row(&self, archive: &[u8], author_module: Hash) -> Result<Built, Failed> {
+    /// The attester's build of commit `p`'s version (logic.md 6.2 step 3, 6.2b): pe-logic's `build_for_row`, whose
+    /// module must be the commit's `author_module`, with its retries, and whose components, the tag among them, must be
+    /// the commit's. A build this machine already has with that module answers at once. `attested_by_another`: whether
+    /// a member other than this one has built the version (the author, or another attester), which decides whether a
+    /// failure is bundled ([`RowFail::Failed`]).
+    pub fn build_for_row(
+        &self,
+        archive: &[u8],
+        p: &PendingCommit,
+        attested_by_another: bool,
+    ) -> Result<Built, RowFail> {
         let v = version_of(archive);
-        let theirs = |b: &Built| b.described.module == author_module;
-        if let Some(b) = self.cached(&v).filter(theirs) {
+        let theirs = |b: &Built| b.described.module == p.author_module;
+        if let Some(b) = self.cached(&v).filter(theirs).filter(|b| components_match(b, p)) {
             return Ok(b);
         }
         let _turn = self.gate.attester();
+        // From here to the return, this turn holds the build's output, so a bug bundle sees the failed build's.
+        let fail = |failed: Failed| self.failed(failed, archive, p.author_module, attested_by_another);
         if let Some(b) = self.cached(&v).filter(theirs) {
-            return Ok(b);
+            return if components_match(&b, p) { Ok(b) } else { Err(fail(components_differ())) };
         }
         let (c, inbox) = (&self.config, &self.inbox);
         let started = Instant::now();
@@ -380,20 +392,36 @@ impl Builder {
             true,
             inbox.engine(),
             inbox.settings(),
-            author_module,
-        )?;
+            p.author_module,
+        )
+        .map_err(fail)?;
         let build_ms = millis(started.elapsed());
-        // A manifest that won't read, or a component that won't take an id, is the module's own fault, the same on
-        // every machine (`Refused`); anything else is this machine's (@engine-architect's Low 1 on 6700586b).
-        let described = inbox.describe_script(&script, &v).map_err(|e| Failed {
-            reason: if matches!(e, LoadError::Refused(_)) { FailReason::Refused } else { FailReason::Local },
-            module: None,
-            attempts: 1,
-            detail: format!("the built module won't describe: {e}"),
+        let described = inbox.describe_script(&script, &v).map_err(|e| match describe_failed(e) {
+            Ok(failed) => fail(failed),
+            Err(why) => RowFail::Held(why),
         })?;
-        let b = Built { script, described, build_ms };
+        let b = Built { script, described, build_ms, warnings: Vec::new() };
         self.keep(v, &b);
-        Ok(b)
+        if components_match(&b, p) { Ok(b) } else { Err(fail(components_differ())) }
+    }
+
+    /// `failed` as [`RowFail::Failed`], with a bug bundle when it wants one (6.2b). Call it in the attester's turn,
+    /// while the build's output is still the failed build's: the bundle copies its module and dep-info.
+    fn failed(&self, failed: Failed, archive: &[u8], author_module: Hash, attested_by_another: bool) -> RowFail {
+        let c = &self.config;
+        let bundle = failed.wants_bundle(attested_by_another).then(|| {
+            pe_logic::build::save_bug_bundle(
+                &c.toolchain,
+                &c.bugs(),
+                archive,
+                author_module,
+                &failed,
+                &c.sdk,
+                &c.target(),
+            )
+            .map_err(|e| e.to_string())
+        });
+        RowFail::Failed { failed, bundle }
     }
 
     /// A build in a turn the caller holds; one that finished while the caller waited for it answers.
@@ -403,12 +431,12 @@ impl Builder {
         }
         let c = &self.config;
         let started = Instant::now();
-        let wasm = pe_logic::build::build_archive(&c.toolchain, archive, &c.sdk, &c.work(), &c.target(), true)
+        let out = pe_logic::build::build_archive_reporting(&c.toolchain, archive, &c.sdk, &c.work(), &c.target(), true)
             .map_err(BuildFail::Build)?;
         let build_ms = millis(started.elapsed());
-        let script = Script::load(self.inbox.engine(), self.inbox.settings(), &wasm).map_err(BuildFail::Load)?;
+        let script = Script::load(self.inbox.engine(), self.inbox.settings(), &out.wasm).map_err(BuildFail::Load)?;
         let described = self.inbox.describe_script(&script, &v).map_err(BuildFail::Load)?;
-        let b = Built { script, described, build_ms };
+        let b = Built { script, described, build_ms, warnings: out.warnings };
         self.keep(v, &b);
         Ok(b)
     }
@@ -429,7 +457,7 @@ impl Builder {
 
 impl Builds for Builder {
     /// An author's build (api.md 7.1): after the attester's builds and the API builds before it, and refused past the
-    /// author's time margin, cached or not. pe-logic's build gives no warnings yet, so none are reported.
+    /// author's time margin, cached or not. rustc's warnings about the script's own source come back with it.
     fn build(&self, archive: &[u8], deadline: Instant) -> Result<pe_api::builds::Built, BuildRefused> {
         let v = version_of(archive);
         let b = match self.cached(&v) {
@@ -449,7 +477,7 @@ impl Builds for Builder {
                         Err(e) => Err(BuildRefused::Unavailable(format!("the build thread did not start: {e}"))),
                     }
                 })?;
-                built.map_err(|e| e.refused(&self.config.crate_dir()))?
+                built.map_err(BuildFail::refused)?
             }
         };
         if u128::from(b.build_ms) > self.config.margin.as_millis() {
@@ -462,11 +490,44 @@ impl Builds for Builder {
             sdk,
             components: b.described.components,
             systems: b.described.systems,
-            warnings: Vec::new(),
+            warnings: b.warnings.iter().filter_map(rustc_diagnostic).collect(),
             build_ms: b.build_ms,
             peak_bytes: None,
         })
     }
+}
+
+/// What a built module that won't describe means (logic.md 6.2a item 2). A manifest that won't read, or a component
+/// that won't take an id, is the module's own fault, the same on every machine: `Refused` (@engine-architect's Low 1 on
+/// 6700586b). Anything else is this machine's own, and describing again in this process is unlikely to clear it, so
+/// it's no `BuildFailed`, which would cost the member the session if the version activates (Q2a): the member holds
+/// its vote, and `Err` says why (@vdw-physics, @iter-bench).
+fn describe_failed(e: LoadError) -> Result<Failed, String> {
+    match e {
+        LoadError::Refused(_) => {
+            let detail = format!("the built module won't describe: {e}");
+            Ok(Failed { reason: FailReason::Refused, module: None, attempts: 1, detail })
+        }
+        e => Err(format!("the built module won't describe here: {e}")),
+    }
+}
+
+/// Whether `b`'s components, with the version's tag, are commit `p`'s.
+fn components_match(b: &Built, p: &PendingCommit) -> bool {
+    let mut ids: Vec<_> = b.described.components.iter().map(|c| c.id()).collect();
+    ids.push(tag_desc(&p.v()).id());
+    ids.sort();
+    ids == p.components
+}
+
+/// Components that differ from the commit's, with the module the author's. One module under one V declares the same
+/// components on every machine, so this is the commit's own fault or the same module describing differently on two
+/// machines: `Refused`, the same everywhere (6.2a item 2; @iter-bench's Low 2 on builds-port), and bundled when another
+/// member built the version, since in M1, with every member trusted, the second is the likelier (@engine-architect's
+/// Low 1 on app-b-r0).
+fn components_differ() -> Failed {
+    let detail = "the module's components differ from the commit's".to_string();
+    Failed { reason: FailReason::Refused, module: None, attempts: 1, detail }
 }
 
 fn version_of(archive: &[u8]) -> Hash {
@@ -478,23 +539,14 @@ fn millis(d: Duration) -> u32 {
 }
 
 /// The toolchain and SDK hashes a `CommitScript` carries and an attester compares with its own (logic.md 6.2 step 3,
-/// D75). A stand-in until @iter-bench's 6.2b slice B defines them, which replaces this body and keeps the signature
-/// (@engine-architect): the toolchain's `rustc -vV` with pe-logic's result version, and pe-sdk's sources
-/// packed as a script's are (`pe_logic::build::pack`). Two machines with one toolchain and one engine build give the
-/// same pair. The module's hash is the comparison that decides; these two refuse a mismatched build early.
+/// D75): the build identity B (`pe_logic::build::build_identity`: the toolchain's release and wasm32 std, pe-sdk, the
+/// service's data and versions), the same B pe-app's session `BUILD` carries, and pe-sdk's sources packed as a
+/// script's are (`pe_logic::build::pack`). B covers pe-sdk already; its own hash names it apart in a commit. Two
+/// machines with one toolchain and one engine build give the same pair. The module's hash is the comparison that
+/// decides; these refuse a mismatched build early.
 pub fn toolchain_and_sdk(toolchain: &Toolchain, sdk: &Path) -> Result<(Hash, Hash), BuildError> {
-    let out = std::process::Command::new(&toolchain.rustc)
-        .arg("-vV")
-        .output()
-        .map_err(|e| BuildError::Toolchain(format!("{} -vV: {e}", toolchain.rustc.display())))?;
-    if !out.status.success() {
-        return Err(BuildError::Toolchain(format!("{} -vV: {}", toolchain.rustc.display(), out.status)));
-    }
-    let mut id = pe_logic::RESULT_VERSION.to_le_bytes().to_vec();
-    id.extend_from_slice(&out.stdout);
-    let tc = Hash::of("pe.app.toolchain.stand-in", &id);
-    let sdk = Hash::of("pe.app.sdk.stand-in", &pe_logic::build::pack(sdk)?);
-    Ok((tc, sdk))
+    let b = pe_logic::build::build_identity(toolchain, sdk)?;
+    Ok((b, Hash::of("pe.app.sdk", &pe_logic::build::pack(sdk)?)))
 }
 
 /// The transaction that attests this machine's build of version `v` of `asset` into `module`: `Op::AttestBuild`, the
@@ -625,7 +677,9 @@ impl Attester {
             let v = p.v();
             // A voter not yet counted either way. The author's commit counts as its attestation (module doc).
             let voter = p.voters.contains(&self.me) && !p.has_attested(&self.me) && !p.has_failed(&self.me);
-            match check(p, builder, &archive) {
+            // The author built it, voter or not, and so did any other member counted (@engine-architect's Low 2).
+            let attested_by_another = p.author != self.me || p.attested.iter().any(|(k, _)| *k != self.me);
+            match check(p, builder, &archive, attested_by_another) {
                 Ok(built) => {
                     if let Err(e) = inbox.load_script(built.script) {
                         pass.failed.push((asset, v, format!("the module won't load into the runner: {e}")));
@@ -640,9 +694,18 @@ impl Attester {
                         });
                     }
                 }
-                Err(Unchecked::Ids) => pass.failed.push((asset, v, "the commit names another toolchain or SDK".into())),
-                Err(Unchecked::Failed(f)) => {
-                    pass.failed.push((asset, v, format!("{:?} after {} build(s): {}", f.reason, f.attempts, f.detail)));
+                Err(Unchecked::Ids) => pass.failed.push((asset, v, "the commit names another build identity".into())),
+                Err(Unchecked::Held(why)) => pass.failed.push((asset, v, why)),
+                Err(Unchecked::Failed { failed: f, bundle }) => {
+                    let mut why = format!("{:?} after {} build(s): {}", f.reason, f.attempts, f.detail);
+                    match bundle {
+                        Some(Ok(dir)) => {
+                            why.push_str(&format!("\nbug bundle (local, see report.txt): {}", dir.display()))
+                        }
+                        Some(Err(e)) => why.push_str(&format!("\nthe bug bundle wasn't saved: {e}")),
+                        None => {}
+                    }
+                    pass.failed.push((asset, v, why));
                     if voter {
                         let reason = reported(f.reason);
                         let tx = build_failed(asset, v, reason, builder.ids(), f.module);
@@ -657,31 +720,43 @@ impl Attester {
 
 /// Why a commit's version isn't this machine's to run.
 enum Unchecked {
-    /// The commit names another toolchain or SDK than this machine's. Until 6.2b slice B defines those hashes this
-    /// machine reports nothing for it: its commit voids at D unless the quorum attests without this member.
+    /// The commit names another build identity B or SDK than this machine's. The session compares B at join, so a
+    /// member's commit can't differ from this machine's; if one does, this machine can't judge it and reports
+    /// nothing: the commit voids at D unless the quorum attests without this member.
     Ids,
-    /// The build failed after its retries (6.2b), or its module isn't the commit's.
-    Failed(Failed),
+    /// This machine's own trouble with a module that built as the commit's: logged, nothing reported.
+    Held(String),
+    /// The build failed after its retries (6.2b), or its module or components aren't the commit's. `bundle` is the
+    /// bug bundle's folder when the failure wants one.
+    Failed { failed: Failed, bundle: Option<Result<PathBuf, String>> },
 }
 
-/// This machine's build of `p`'s version, checked against the commit (logic.md 6.2 step 3): the same toolchain and
-/// SDK, the same module (pe-logic's `build_for_row`), and the same components, the tag among them.
-fn check(p: &PendingCommit, builder: &Builder, archive: &[u8]) -> Result<Built, Unchecked> {
+/// Why [`Builder::build_for_row`] gave no module.
+#[derive(Debug)]
+pub enum RowFail {
+    /// The build failed after its retries (6.2b): `BuildFailed`'s to report. `bundle` is set when the failure means
+    /// prevention has a gap (`Failed::wants_bundle`): the bug bundle's folder, or why it wasn't saved.
+    Failed { failed: Failed, bundle: Option<Result<PathBuf, String>> },
+    /// The module built as the commit's but won't describe here, for a reason of this machine's: nothing to report.
+    Held(String),
+}
+
+impl From<RowFail> for Unchecked {
+    fn from(f: RowFail) -> Unchecked {
+        match f {
+            RowFail::Failed { failed, bundle } => Unchecked::Failed { failed, bundle },
+            RowFail::Held(why) => Unchecked::Held(why),
+        }
+    }
+}
+
+/// This machine's build of `p`'s version, checked against the commit (logic.md 6.2 step 3): the same build identity
+/// and SDK, then [`Builder::build_for_row`]: the same module and the same components, the tag among them.
+fn check(p: &PendingCommit, builder: &Builder, archive: &[u8], attested_by_another: bool) -> Result<Built, Unchecked> {
     if (p.toolchain, p.sdk) != builder.ids() {
         return Err(Unchecked::Ids);
     }
-    let built = builder.build_for_row(archive, p.author_module).map_err(Unchecked::Failed)?;
-    let mut ids: Vec<_> = built.described.components.iter().map(|c| c.id()).collect();
-    ids.push(tag_desc(&p.v()).id());
-    ids.sort();
-    if ids != p.components {
-        // One module under one V declares the same components on every machine. With the module the author's, a
-        // different list more likely means a commit inconsistent with its own module than a fault here, but M1's
-        // members are trusted: after M1 it deserves a reason of its own (@engine-architect's Low 1 on 6700586b).
-        let detail = "the module's components differ from the commit's".to_string();
-        return Err(Unchecked::Failed(Failed { reason: FailReason::Local, module: None, attempts: 1, detail }));
-    }
-    Ok(built)
+    Ok(builder.build_for_row(archive, p, attested_by_another)?)
 }
 
 /// The reason a failure is reported with (`BuildFailed`'s, logic.md 6.2a item 2): pe-logic's. pe-logic's `Failed`
@@ -867,44 +942,66 @@ mod tests {
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["attester", "api 1", "api 2"]);
     }
 
-    /// rustc's short format, with a drive letter, a code or none, and a warning whose text holds ": error"; other
-    /// lines are left out. A path in the crate folder is made relative to it, even when the folder's own path holds a
-    /// `src` (@api-eng's Lows on 3b8bf923).
+    fn msg(level: &str, code: Option<&str>, message: &str, at: Option<(u32, u32)>) -> RustcMessage {
+        let spans = at.map(|(line, column)| pe_logic::build::RustcSpan { file: "src/lib.rs".into(), line, column });
+        RustcMessage {
+            level: level.into(),
+            code: code.map(Into::into),
+            message: message.into(),
+            spans: spans.into_iter().collect(),
+        }
+    }
+
+    /// rustc's parsed messages: errors and placed warnings become diagnostics at their first span, with their codes;
+    /// notes, helps, an unplaced warning and the "aborting" summary are left out.
     #[test]
     fn rustcs_messages_become_diagnostics() {
-        let out = "C:\\src\\b\\work\\script\\src\\lib.rs:3:5: error[E0425]: cannot find value `x` in this scope\n\
-                   src\\lib.rs:1:9: error: expected `;`, found `}`\n\
-                   src/lib.rs:2:1: warning: unused variable: error_count\n\
-                   error: could not compile `script` (lib) due to 2 previous errors\n";
-        let d = rustc_diagnostics(out, Path::new("C:\\src\\b\\work\\script"));
+        let ms = [
+            msg("error", Some("E0425"), "cannot find value `x` in this scope", Some((3, 5))),
+            msg("help", None, "a local variable with a similar name exists", Some((3, 5))),
+            msg("warning", Some("unused_variables"), "unused variable: `error_count`", Some((2, 1))),
+            msg("warning", None, "1 warning emitted", None),
+            msg("error", None, "aborting due to 1 previous error", None),
+        ];
+        let d = rustc_diagnostics(&ms, "cargo's text");
         let at = |d: &Diagnostic| (d.file.clone().unwrap(), d.line.unwrap(), d.column.unwrap(), d.severity);
         assert_eq!(
             d.iter().map(at).collect::<Vec<_>>(),
-            [
-                ("src/lib.rs".to_string(), 3, 5, Severity::Error),
-                ("src/lib.rs".to_string(), 1, 9, Severity::Error),
-                ("src/lib.rs".to_string(), 2, 1, Severity::Warning),
-            ]
+            [("src/lib.rs".to_string(), 3, 5, Severity::Error), ("src/lib.rs".to_string(), 2, 1, Severity::Warning)]
         );
         assert_eq!(
             (d[0].code.as_deref(), d[0].message.as_str()),
             (Some("E0425"), "cannot find value `x` in this scope")
         );
-        assert_eq!((d[1].code.as_deref(), d[1].message.as_str()), (None, "expected `;`, found `}`"));
-        assert_eq!(d[2].message, "unused variable: error_count");
+        assert_eq!(
+            (d[1].code.as_deref(), d[1].message.as_str()),
+            (Some("unused_variables"), "unused variable: `error_count`")
+        );
     }
 
-    /// Output with no short-format line comes back whole, trimmed and bounded, as one diagnostic (@api-eng's Medium on
-    /// 3b8bf923).
+    /// With no error among rustc's messages (cargo failed first, a linker's error), the output comes back whole,
+    /// trimmed and bounded, as the first diagnostic (@api-eng's Medium on 3b8bf923); an ICE is an error.
     #[test]
-    fn output_with_no_short_format_line_is_one_diagnostic() {
+    fn output_with_no_error_message_is_one_diagnostic() {
         let out = "  error: linking with `rust-lld` failed: exit code: 1\n  = note: rust-lld: undefined symbol\n";
-        let d = rustc_diagnostics(out, Path::new("w/script"));
+        let d = rustc_diagnostics(&[], out);
         assert_eq!(d.len(), 1);
         assert_eq!((d[0].kind, d[0].severity, d[0].file.as_deref()), (DiagnosticKind::Rustc, Severity::Error, None));
         assert!(d[0].message.starts_with("error: linking") && d[0].message.ends_with("undefined symbol"), "{d:?}");
         let long = "é".repeat(RAW_MAX);
-        assert!(rustc_diagnostics(&long, Path::new("w")).pop().unwrap().message.len() <= RAW_MAX);
+        assert!(rustc_diagnostics(&[], &long).pop().unwrap().message.len() <= RAW_MAX);
+        let ice = [msg("error: internal compiler error", None, "unexpected panic", None)];
+        assert_eq!(rustc_diagnostics(&ice, "text")[0].message, "unexpected panic");
+    }
+
+    /// A module that won't describe for this machine's own reason holds the vote (@engine-architect's nit on
+    /// app-b-r0).
+    #[test]
+    fn a_module_that_wont_describe_here_holds_the_vote() {
+        let held = describe_failed(LoadError::Compile("cranelift ran out of memory".into()));
+        let ok = matches!(&held, Err(why) if why.contains("won't describe here") && why.contains("out of memory"));
+        assert!(ok, "{held:?}");
+        assert!(describe_failed(LoadError::OtherRunner).is_err());
     }
 
     /// The cache keeps the [`CACHED`] most recently used versions.
