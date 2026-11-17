@@ -18,7 +18,7 @@ use pe_seams::{
 };
 use pe_sim::Transform;
 use pe_world::components::{Appearance, Body, BodyState, Hand, Name, Shape, body_kind, shape_kind};
-use pe_world::edit::{Actor, Op, Row, Target, Transaction};
+use pe_world::edit::{Actor, AssetTarget, Op, Row, Target, Transaction};
 use pe_world::{BlobStore, GENESIS, HandPose, Input, World, perm};
 
 fn oid(n: u128) -> ObjectId {
@@ -1865,7 +1865,6 @@ fn a_script_commit_activates_at_its_frame_s_end_and_no_record_names_the_re_key()
     use pe_sim::{ComponentDesc, FieldDesc, FieldKind};
     use pe_world::BlobRef;
     use pe_world::script::{pack_source, script_component_id, tag_desc};
-    const ASSET: [u8; 32] = [7; 32];
     let archive = |src: u8| -> bytes::Bytes {
         let lib = format!("// blink {src}\n");
         pack_source(&[("src/lib.rs", lib.as_bytes())]).expect("an archive").into()
@@ -1879,10 +1878,10 @@ fn a_script_commit_activates_at_its_frame_s_end_and_no_record_names_the_re_key()
         let id = script_component_id(&version(src), "Blink", fields(src)).expect("an id");
         ComponentDesc::new(id, "Blink", fields(src)).expect("a description")
     };
-    let commit = |base, src: u8, at: u64| {
+    let commit = |target, base, src: u8, at: u64| {
         tx(vec![
             Op::Register { components: vec![tag_desc(&version(src)), blink(src)] },
-            Op::commit_script(ASSET, base, archive(src), Hash([1; 32]), Hash([2; 32]), Hash([3; 32]), at),
+            Op::commit_script(target, base, archive(src), Hash([1; 32]), Hash([2; 32]), Hash([3; 32]), at),
         ])
     };
     let lamps = [oid(21), oid(20)];
@@ -1899,7 +1898,7 @@ fn a_script_commit_activates_at_its_frame_s_end_and_no_record_names_the_re_key()
     let mut b = EntryBuilder::new(&keys, 0);
     // Version 1 at frame 1 (active from 2), attached to both lamps at 2; version 2 at frame 3 re-keys their rows
     // when it activates, at the end of frame 3.
-    let first = b.next(Class::Edit, Frame(1), Bytes::from(commit(None, 1, 1).encode()));
+    let first = b.next(Class::Edit, Frame(1), Bytes::from(commit(AssetTarget::New(0), None, 1, 1).encode()));
     let tag = tag_desc(&version(1)).id();
     let attach =
         lamps.iter().flat_map(|&l| [set(l, tag, vec![]), set(l, blink(1).id(), 2.0f32.to_le_bytes().to_vec())]);
@@ -1907,8 +1906,12 @@ fn a_script_commit_activates_at_its_frame_s_end_and_no_record_names_the_re_key()
     let mut scratch = world.clone();
     assert!(matches!(scratch.apply_edit(Frame(1), &first).0, Outcome::Applied { .. }), "version 1 commits");
     assert_eq!(scratch.end_frame(Frame(1)).activated.len(), 1, "its author is its quorum");
-    let base = scratch.modules()[&ASSET].version;
-    let second = b.next(Class::Edit, Frame(3), Bytes::from(commit(Some(base), 2, 3).encode()));
+    // The asset's id is derived from the entry that created it (world-model.md 7.9).
+    let e = &first.entry;
+    let asset = pe_world::script::asset_created(e.line, e.author, e.chain, e.seq, 0);
+    let base = scratch.modules()[&asset].version;
+    let second =
+        b.next(Class::Edit, Frame(3), Bytes::from(commit(AssetTarget::Existing(asset), Some(base), 2, 3).encode()));
     // A replica without a runner refuses a frame with a code commit (crate::logic): this one holds no module, so the
     // script never runs here, but its commits step.
     let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config()).expect("a replica");
@@ -1924,7 +1927,7 @@ fn a_script_commit_activates_at_its_frame_s_end_and_no_record_names_the_re_key()
         assert!(matches!(c.outcome, Outcome::Applied { .. }), "{:?}", c.outcome);
     }
     let w = r.world().world();
-    assert_eq!(w.modules()[&ASSET].version, pe_world::Version { entry: second.id(), op: 1 }, "version 2 runs");
+    assert_eq!(w.modules()[&asset].version, pe_world::Version { entry: second.id(), op: 1 }, "version 2 runs");
     for l in lamps {
         assert!(w.store().get_raw(blink(2).id(), l).is_some() && w.store().get_raw(blink(1).id(), l).is_none());
     }
