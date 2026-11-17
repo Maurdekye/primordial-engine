@@ -1,0 +1,9 @@
+leave-3to2             16686053      79250694     22     102.1  OK   (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    leave 3 -> 2 (q 2 -> 2)
+join-3to4              16183428      75954987     22     102.6  OK   (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    join 3 -> 4 (q 2 -> 3)
+remove-4to3            14110739      71318051     22     101.2  OK   (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    remove the Byzantine member 4 -> 3 (q 3 -> 2)
+restart-3              15390485      68225391     22     102.6  OK   (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    restart in place at n = 3 (Rechain)
+all 4 epoch check(s) met their expectation; 4 of them UNFINISHED at a time budget
