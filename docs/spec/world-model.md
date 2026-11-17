@@ -2145,10 +2145,13 @@ outcomes (7.7), and the edit history by version. Two points for WS-api [I]:
   it to pe-api's port.
 - **For edits and scripts** the snapshot also gives `members` and `perms`, `claim` and `protected_by`, a row's
   instance tag for a `RemoveRow` (`row_tag(id, name)`, or `row_tag_of(id, ComponentId)` where a name doesn't single
-  out the component, as with every script's `pe.tag`), the modules table (`modules()`) and the pending commits
-  (`pending()`, voided ones kept as their record), and `dry_run`: the outcome the edit path would give a transaction
-  from a draft, changing nothing (7.6), with `dry_run_state` also returning the world after it. A new script's
-  asset id is computed by the client with `script::asset_created` (7.9).
+  out the component, as with every script's `pe.tag`), the same by id for a row's fields (`fields_of(id,
+  ComponentId)`), an object's components (`components_on`) and a description (`component_desc`), since a name finds
+  only the first registered component of that name and the registry keeps every script version's, the modules
+  table (`modules()`) and the pending commits (`pending()`, voided ones kept as their record), and `dry_run`: the
+  outcome the edit path would give a transaction from a draft, changing nothing (7.6), with `dry_run_state` also
+  returning the world after it. A new script's asset id is computed by the client with `script::asset_created`
+  (7.9).
 
 ## 10. Changes to pe-core and pe-sim, and their tests
 

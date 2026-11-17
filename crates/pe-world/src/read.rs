@@ -145,8 +145,30 @@ impl WorldSnapshot {
         self.store.registry().iter()
     }
 
+    /// The first registered component named `name`. A name need not single out one component: the registry keeps
+    /// every script version's components, each version has its own `pe.tag`, and two scripts can declare the same
+    /// name. Name script components by id ([`Self::component_desc`], [`Self::components_on`], [`Self::fields_of`]).
     pub fn component(&self, name: &str) -> Option<&ComponentDesc> {
         self.store.registry().iter().find(|d| d.name() == name)
+    }
+
+    /// A component's description by id, `None` if it isn't registered.
+    pub fn component_desc(&self, c: ComponentId) -> Option<&ComponentDesc> {
+        self.store.registry().get(c)
+    }
+
+    /// The components with a row on the object, in the order of [`ObjectInfo::types`] (registry order) and without
+    /// the internal `Node`; empty if the object doesn't exist (@api-eng m099155899761).
+    pub fn components_on(&self, id: ObjectId) -> Vec<ComponentId> {
+        if !self.store.exists(id) {
+            return Vec::new();
+        }
+        self.store
+            .registry()
+            .iter()
+            .map(|d| d.id())
+            .filter(|&c| c != ComponentId::NODE && self.store.get_raw(c, id).is_some())
+            .collect()
     }
 
     /// A blob's bytes, if this machine has them.
@@ -183,11 +205,9 @@ impl WorldSnapshot {
         }
         let n = self.store.node(id);
         let types = self
-            .store
-            .registry()
-            .iter()
-            .filter(|d| d.id() != ComponentId::NODE && self.store.get_raw(d.id(), id).is_some())
-            .map(|d| d.name().to_string())
+            .components_on(id)
+            .into_iter()
+            .filter_map(|c| self.component_desc(c).map(|d| d.name().to_string()))
             .collect();
         Some(ObjectInfo {
             id,
@@ -226,7 +246,14 @@ impl WorldSnapshot {
     /// `Transform` is special: its `chunk` and `pos` come out as one `pos` field, a [`Value::Pos`] for an object
     /// without a frame and a [`Value::Offset`] in its frame's space otherwise, so no position is ever three numbers.
     pub fn fields(&self, id: ObjectId, component: &str) -> Option<Vec<(String, Value)>> {
-        let desc = self.component(component)?;
+        self.fields_of(id, self.component(component)?.id())
+    }
+
+    /// [`Self::fields`] by component id, for a component whose name doesn't single it out (a script's, after a
+    /// second version or beside another script's of the same name; @api-eng m099155899761). `None` for `Node`, an
+    /// unregistered id, or an object without the row.
+    pub fn fields_of(&self, id: ObjectId, component: ComponentId) -> Option<Vec<(String, Value)>> {
+        let desc = self.component_desc(component)?;
         if desc.id() == ComponentId::NODE {
             return None;
         }
@@ -341,4 +368,47 @@ fn decode(kind: FieldKind, b: &[u8]) -> Option<Value> {
         FieldKind::EntryRef => Value::Entry(EntryRef(Hash(arr(b)?))),
         FieldKind::Hash => Value::Hash(Hash(arr(b)?)),
     })
+}
+
+#[cfg(all(test, feature = "test-util"))]
+mod tests {
+    use pe_core::{Frame, Hash, ObjectId};
+    use pe_sim::{ComponentDesc, ComponentId, FieldDesc, FieldKind};
+
+    use crate::Value;
+    use crate::script::script_component_id;
+    use crate::test_util::five_kinds;
+
+    /// After a second version of a script, its row lives under the new version's component while the old one,
+    /// same name, stays registered: the name-keyed reads find the old one, the id-keyed ones the row
+    /// (@api-eng m099155899761).
+    #[test]
+    fn id_keyed_reads_single_out_a_component_a_name_does_not() {
+        let mut w = five_kinds();
+        let lamp = ObjectId::from_u128(100);
+        let fields =
+            vec![FieldDesc::new("period", FieldKind::F32, 0, 1), FieldDesc::new("phase", FieldKind::F32, 4, 1)];
+        let v1 = script_component_id(&Hash([7; 32]), "Blink", fields.clone()).expect("valid");
+        let v2 = script_component_id(&Hash([8; 32]), "Blink", fields.clone()).expect("valid");
+        w.store.register(ComponentDesc::new(v2, "Blink", fields).expect("valid")).expect("a new id");
+        let row = w.store.get_raw(v1, lamp).expect("v1's row").to_vec();
+        w.store.insert_raw(v2, lamp, &row).expect("registered");
+        assert!(w.store.remove_raw(v1, lamp).expect("registered"));
+        let s = w.snapshot(Frame(4));
+
+        assert_eq!(s.component("Blink").map(|d| d.id()), Some(v1), "a name finds the first registered");
+        assert!(s.fields(lamp, "Blink").is_none(), "v1 has no row left");
+        let got = s.fields_of(lamp, v2).expect("v2's row");
+        assert_eq!(got, [("period".to_string(), Value::F(2.0)), ("phase".to_string(), Value::F(0.5))]);
+        assert!(s.fields_of(lamp, v1).is_none());
+        assert_eq!(s.component_desc(v2).map(|d| d.name()), Some("Blink"));
+
+        let on = s.components_on(lamp);
+        assert!(on.contains(&v2) && !on.contains(&v1) && !on.contains(&ComponentId::NODE));
+        let names: Vec<_> = on.iter().map(|&c| s.component_desc(c).expect("registered").name().to_string()).collect();
+        assert_eq!(names, s.info(lamp).expect("live").types, "the same order as info's types");
+        assert!(s.components_on(ObjectId::from_u128(999)).is_empty());
+        assert!(s.fields_of(lamp, ComponentId::NODE).is_none());
+        assert!(s.component_desc(ComponentId(u128::MAX)).is_none());
+    }
 }
