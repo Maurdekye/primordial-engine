@@ -46,8 +46,8 @@ pub mod world_api;
 pub mod test_util;
 
 pub use agree::{
-    AgreeEvent, AgreeStats, Agreement, ChainHead, Cut, CutRef, Fault, FaultKind, FinalCut, Outgoing, SelfTest,
-    SubmitError, VoidReason, VoteResult, quorum,
+    AgreeEvent, AgreeStats, Agreement, ChainHead, Cut, CutRef, Fault, FaultKind, FinalCut, LEAVE, Outgoing, SelfTest,
+    SubmitError, VoidReason, VoteResult, is_leave, quorum,
 };
 pub use entry::{Class, DomainId, Entry, EntryError, MAX_PAYLOAD, Signature, SignedEntry, Signer, Verifier};
 pub use ids::{
