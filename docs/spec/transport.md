@@ -1,6 +1,6 @@
 # pe-net: the transport
 
-Status: draft 1.10, 2026-11-17, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.11, 2026-11-17, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
 budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.6 records
@@ -11,7 +11,9 @@ rendezvous records come only from members and are bounded (6.7), and a replaced 
 are lost with it (3.2). Draft 1.8 records how pe-net is fuzzed (9, the coordinator's ruling) and
 the one finding so far: varints must be minimal (3.6). Draft 1.9 refuses a hello over its bounds where it is built
 (6.3, @iter-bench's finding). Draft 1.10 holds a stream message at the peer's stream limit until it has credit,
-where it was dropped (3.5, @engine-architect's finding). Draft 1.2 records the user's ruling on the firewall default (2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
+where it was dropped (3.5, @engine-architect's finding). Draft 1.11 fixes what the first two-machine run found: only
+a ready clock answers a sample (5.2), a clock counts its own offset only once it runs (5.3), and a stopping
+endpoint closes its connections (6.5). Draft 1.2 records the user's ruling on the firewall default (2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
   feasibility check settled, with the coordinator's rulings and the review's additions.
 - **Draft 1** adds sections 3-12, the rest of WS-net's M1 scope (`docs/refound-plan.md`, branch
@@ -437,13 +439,24 @@ seconds (the user's ruling: the tick rate is configurable per world).
 
   Then the offset `θ = ((t2 - t1) + (t3 - t4)) / 2` (the peer's session time minus my HostTime), and the delay
   `δ = (t4 - t1) - (t3 - t2)`. The peer's time to answer drops out.
+- **Only a ready clock answers** [the first two-machine run, @engine-architect]. Until a clock is
+  ready (5.4), its session time is its own host clock, which can be days from the members'. A member that sampled
+  it would move its target toward it and read its convergence jumps as a rate: the run's opener steered at
+  `S_max` until `Pinned` and reported the joiner at -5.2e13 ppb (5.6). So a clock not yet ready ignores a sample
+  request. A first member is ready at once, and every later member was ready before it joined, so a joiner
+  always has someone to sample [I].
 - **Filter** (kept from pe-app): samples from the last `W_clock`, and per `B_clock` bucket the one with the
   smallest δ, since a queued sample is biased by its queue. A peer's offset is the θ of the smallest-δ sample in
   its newest three buckets. Its error is within δ/2.
 
 ### 5.3 The target: the fault-tolerant midpoint
 
-- **The values:** each connected member's θ, plus my own offset.
+- **The values:** each connected member's θ, plus my own offset once my clock runs (after frame 0). Before
+  frame 0 my offset is not a time yet, so the target is the members' alone (5.4). Counted, it halved a joiner's
+  distance each round instead of closing it: from host clocks days apart, about 27 rounds, past `T_ready`
+  [V `pe-net/tests/core.rs`, B's host clock two days ahead: before 1.11 B was ready at 5.5 s, after a
+  `NotReady`, and the opener reported a `PeerRate` of -7.7e11 ppb; with 1.11, ready at 0.7 s and no clock event
+  in 45 s].
 - **The midpoint:** n values, t = floor((n - 1) / 3). Drop the t lowest and the t highest, and take the
   midpoint of the lowest and highest that remain.
 - **Why this one:** with n ≥ 3t + 1, every honest target stays inside the honest range, and the honest spread
@@ -642,6 +655,11 @@ its frame this way (seam S3).
   v1), a redial replaces this, and `T_idle` can shrink. Nothing else in pe-net gives up sooner: `T_degraded`
   only reports, `T_welcome` applies before the link is first Up, the clock drops samples older than `W_clock`
   (30 s) and then holds its offset, and the lanes resend without a limit while the connection stands.
+- **Stopping:** an endpoint that stops (its thread told to stop, or its handle dropped, as pe-app's session drops
+  its transport) first closes every connection with code 0 (`Left`, 6.6) and sends the closes. Its peers see the
+  link go Down at once instead of after `T_idle` [V `pe-net/tests/thread.rs`: within microseconds on loopback,
+  for a stop and for a drop; before 1.11 neither closed, and the first two-machine run's opener waited out
+  `T_idle`]. Dropping the handle waits for the thread to send them.
 - **Address changes:** QUIC connection migration is on. A peer's new address is used only after QUIC's path
   validation, so a forged source address can't redirect a link.
 

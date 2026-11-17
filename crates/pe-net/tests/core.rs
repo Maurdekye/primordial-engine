@@ -502,6 +502,62 @@ fn a_joiner_converges_on_the_first_members_clock() {
     assert!(fa.frame_at(ta).is_some(), "past frame 0");
 }
 
+/// Two machines whose host clocks are two days apart, which a loopback test can't show (both ends share one host
+/// clock). A opens a world whose genesis lists B, so A's clock counts B as a member from the start, as pe-app's
+/// genesis does (`SetClockMembers`), while B's clock still converges. Neither side may report a clock fault, B is
+/// clock-ready within `T_ready`, and both then read one session time (the first two-machine run: A reported
+/// PeerRate of -5.2e13 ppb and Pinned, B NotReady; @engine-architect).
+#[test]
+fn a_genesis_member_whose_host_clock_is_days_away_converges_without_a_clock_fault() {
+    let mut net = Net::new();
+    let a = net.add(1, "10.0.0.1:4433", true, "pe 0.1");
+    let b = net.add(2, "10.0.0.2:4433", false, "pe 0.1");
+    let skew = 2 * 86_400 * 1_000_000_000i64;
+    net.nodes[b].skew = skew;
+    let (ka, kb) = (net.nodes[a].key, net.nodes[b].key);
+    let epoch = net.now.0 + 8_000_000_000;
+    let now = net.now;
+    net.nodes[a].core.start_first_member(now, epoch, SimRate::DEFAULT);
+    let inv = net.invite(a);
+    net.nodes[b].core.dial(net.now.plus_nanos(skew), &inv);
+    net.run(100);
+    net.nodes[a].core.set_clock_members(vec![kb]);
+    let w = Welcome { line: [9; 32], epoch_ns: epoch, rate_hz: 60, members: vec![(ka, vec![])], agree: vec![] };
+    let now = net.now;
+    net.nodes[a].core.admit(now, kb, &w);
+    // The clock events of both sides, with the time each was first seen, ms after the welcome.
+    let mut timeline: Vec<(u32, &str, Lifecycle)> = Vec::new();
+    let mut seen = [0usize; 2];
+    let mut ready_ms = None;
+    for step in 1..=450u32 {
+        net.run(100);
+        for (j, (name, i)) in [("A", a), ("B", b)].into_iter().enumerate() {
+            for l in &net.nodes[i].life[seen[j]..] {
+                if matches!(l, Lifecycle::ClockFault(_) | Lifecycle::ClockReady) {
+                    timeline.push((step * 100, name, l.clone()));
+                    if name == "B" && *l == Lifecycle::ClockReady {
+                        ready_ms.get_or_insert(step * 100);
+                    }
+                }
+            }
+            seen[j] = net.nodes[i].life.len();
+        }
+    }
+    // T_ready is 5 s from the welcome. The run lasts 45 s, past W_clock (30 s) and T_pinned (10 s), so a
+    // PeerRate or Pinned would have shown.
+    let faults = timeline.iter().filter(|e| matches!(e.2, Lifecycle::ClockFault(_))).count();
+    println!("B ready at {ready_ms:?} ms; clock events: {timeline:?}");
+    assert!(
+        ready_ms.is_some_and(|t| t <= 5_000) && faults == 0,
+        "B ready at {ready_ms:?} ms; clock events (ms after the welcome, side, event): {timeline:?}"
+    );
+    let (fa, fb) = (net.nodes[a].core.frame_clock(), net.nodes[b].core.frame_clock());
+    let (ta, tb) = (net.now, net.now.plus_nanos(skew));
+    let diff = fa.session_ns(ta) - fb.session_ns(tb);
+    assert!(diff.abs() < 1_000_000, "session times differ by {diff} ns");
+    assert_eq!(fa.frame_at(ta), fb.frame_at(tb));
+}
+
 #[test]
 fn a_silent_link_is_degraded_and_recovers() {
     let (mut net, a, b) = joined();

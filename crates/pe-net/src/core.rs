@@ -420,6 +420,16 @@ impl Core {
         self.drive(now);
     }
 
+    /// This endpoint stops: every open connection closes with code 0 (`Left`), so each peer learns at once rather
+    /// than after `T_idle` (6.5). The close packets are in `poll_transmit` when this returns.
+    pub fn close_all(&mut self, now: HostTime) {
+        let t = self.inst(now);
+        for c in self.conns.values_mut().filter(|c| !c.closed) {
+            close(c, t, &Refusal { code: CloseCode::Left, detail: "stopped".into() });
+        }
+        self.drive(now);
+    }
+
     /// A UDP datagram arrived.
     pub fn handle_datagram(&mut self, now: HostTime, from: SocketAddr, data: &[u8]) {
         let t = self.inst(now);
@@ -667,10 +677,13 @@ impl Core {
                         }
                         for ctl in inc.control {
                             match ctl {
-                                Control::ClockPing { t1 } => {
+                                // Only a ready clock answers (5.2): a converging one's session time is still
+                                // its host clock, which would pull a member's target and its rate estimate.
+                                Control::ClockPing { t1 } if self.clock.is_ready() => {
                                     let s = self.clock.session_ns(now);
                                     c.link.send_control(Control::ClockPong { t1, t2: s, t3: s });
                                 }
+                                Control::ClockPing { .. } => {}
                                 Control::ClockPong { t1, t2, t3 } => {
                                     self.clock.on_sample(from, Sample { t1: HostTime(t1), t2, t3, t4: now });
                                 }
