@@ -24,7 +24,7 @@
 //!
 //! Sans-IO: time comes in as [`HostTime`], messages as values. Bad input is an `Err(CoreFault)`, never a panic.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use pe_seams::{
     Cut, CutRef, Frame, Hash, Hasher, HostTime, LineId, MemberKey, SelfTest, Signature, Signer, Verifier, quorum,
@@ -372,9 +372,9 @@ pub struct Core {
     offset: u64,
     genesis: Block,
     genesis_id: BlockId,
-    blocks: HashMap<BlockId, Stored>,
+    blocks: BTreeMap<BlockId, Stored>,
     /// Certificates by block.
-    certs: HashMap<BlockId, Qc>,
+    certs: BTreeMap<BlockId, Qc>,
     /// Proposals waiting for their parent block, per (view, proposer).
     orphans: BTreeMap<(u64, MemberKey), Proposal>,
     /// Blocks taken in after their parent arrived later than they did (a child before its parent).
@@ -387,7 +387,7 @@ pub struct Core {
     proposed_in: BTreeMap<(u64, MemberKey), BlockId>,
     // Votes: per view, per voter, the vote; per block, by root.
     votes_by_voter: BTreeMap<(u64, MemberKey), (BlockId, Hash)>,
-    votes: HashMap<BlockId, VoteSet>,
+    votes: BTreeMap<BlockId, VoteSet>,
     split_reported: BTreeSet<BlockId>,
     /// Views abandoned at once, whose timeout does not grow the next one: a root split was seen, this member
     /// abstained (the outage rule, agreement.md 3), or more than n - q members timed out in it, so it can't be
@@ -426,10 +426,10 @@ pub struct Core {
     /// A block whose finality is known but whose ancestors are still being fetched.
     commit_target: Option<BlockId>,
     /// Headers of recently committed blocks, oldest first (leader derivation below the committed block).
-    history: HashMap<BlockId, Hdr>,
+    history: BTreeMap<BlockId, Hdr>,
     history_order: VecDeque<BlockId>,
     /// The proposals of the same recently committed blocks, served to a member that fetches them to catch up.
-    history_bodies: HashMap<BlockId, Proposal>,
+    history_bodies: BTreeMap<BlockId, Proposal>,
     /// Self-test verdicts per split cut and member (S3 v1.3).
     verdicts: BTreeMap<CutRef, BTreeMap<MemberKey, Verdict>>,
 
@@ -487,14 +487,14 @@ impl Core {
             Block { view: 0, parent: BlockId(Hash::ZERO), proposer: MemberKey([0; 32]), cut: cfg.genesis.clone() };
         let genesis_id = genesis.id();
         let gqc = Qc { block: genesis_id, view: 0, root: Hash::ZERO, votes: Vec::new() };
-        let mut certs = HashMap::new();
+        let mut certs = BTreeMap::new();
         certs.insert(genesis_id, gqc.clone());
         let base = cfg.timing.min_timeout_ns;
         Core {
             q,
             offset,
             genesis_id,
-            blocks: HashMap::new(),
+            blocks: BTreeMap::new(),
             certs,
             orphans: BTreeMap::new(),
             orphans_adopted: 0,
@@ -503,7 +503,7 @@ impl Core {
             requested: BTreeSet::new(),
             proposed_in: BTreeMap::new(),
             votes_by_voter: BTreeMap::new(),
-            votes: HashMap::new(),
+            votes: BTreeMap::new(),
             split_reported: BTreeSet::new(),
             quick_views: BTreeSet::new(),
             timeout_heads: Vec::new(),
@@ -526,9 +526,9 @@ impl Core {
             committed_height: 0,
             committed_view: 0,
             commit_target: None,
-            history: HashMap::new(),
+            history: BTreeMap::new(),
             history_order: VecDeque::new(),
-            history_bodies: HashMap::new(),
+            history_bodies: BTreeMap::new(),
             verdicts: BTreeMap::new(),
             out: Vec::new(),
             events: Vec::new(),
