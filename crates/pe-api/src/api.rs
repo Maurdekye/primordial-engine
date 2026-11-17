@@ -1559,6 +1559,266 @@ mod tests {
         asset
     }
 
+    use pe_seams::world_api::{Schema, SchemaQuery};
+
+    /// One world op as `who` on chain `chain`, applied to `w` (a test's setup).
+    fn world_op(w: &mut World, who: MemberKey, chain: u8, ops: Vec<pe_world::edit::Op>) -> pe_world::Draft {
+        use pe_world::edit::{Actor, Transaction as WTx};
+        let tx = WTx { actor: Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+        let draft =
+            pe_world::Draft { author: who, line: LineId(Hash([7; 32])), chain: ChainId(Hash([chain; 32])), seq: 1 };
+        let (o, after) = w.dry_run_draft_state(CoreFrame(4), &draft, &tx);
+        assert!(matches!(o, pe_seams::Outcome::Applied { .. }), "{o:?}");
+        *w = after;
+        draft
+    }
+
+    /// A script with source `source`, committed by Alice on chain `chain` and declaring `declares` (one `F32` field
+    /// `speed` each) besides its tag; active once Bob attests if `activate`. Its id, and each declared component's id.
+    fn script_declaring(
+        w: &mut World,
+        source: &str,
+        chain: u8,
+        declares: &[&str],
+        activate: bool,
+    ) -> ([u8; 32], Vec<pe_sim::ComponentId>) {
+        use pe_world::edit::{AssetTarget, Op};
+        let archive = archive_of(source).unwrap();
+        let v = v_of_archive(&archive);
+        let fields = vec![pe_sim::FieldDesc::new("speed", pe_sim::FieldKind::F32, 0, 1)];
+        let mut components = vec![pe_world::script::tag_desc(&v)];
+        let mut ids = vec![];
+        for n in declares {
+            let c = pe_world::script::script_component_id(&v, n, fields.clone()).unwrap();
+            components.push(pe_sim::ComponentDesc::new(c, n, fields.clone()).unwrap());
+            ids.push(c);
+        }
+        let commit = Op::commit_script(
+            AssetTarget::New(0),
+            None,
+            archive.into(),
+            Hash([1; 32]),
+            Hash([2; 32]),
+            Hash([3; 32]),
+            4,
+        );
+        let d = world_op(w, ALICE, chain, vec![Op::Register { components }, commit]);
+        let asset = pe_world::script::asset_created(d.line, d.author, d.chain, d.seq, 0);
+        if activate {
+            world_op(w, BOB, chain + 100, vec![Op::AttestBuild { script: asset, version: v, module: Hash([3; 32]) }]);
+            assert_eq!(w.end_frame(CoreFrame(4)).activated.len(), 1);
+        }
+        (asset, ids)
+    }
+
+    /// Attaches `asset` (its active version's tag) to `obj`, with a row of each of `rows` (`speed` = `speed`).
+    fn attach_with(w: &mut World, chain: u8, asset: [u8; 32], obj: u128, rows: &[pe_sim::ComponentId], speed: f32) {
+        use pe_world::edit::{Op, Row, Target};
+        let v = w.snapshot(CoreFrame(4)).modules()[&asset].v();
+        let tag = pe_world::script::tag_desc(&v).id();
+        let mut ops =
+            vec![Op::SetRow { id: Target::Existing(id(obj)), row: Row { component: tag, instance: 0, bytes: vec![] } }];
+        for c in rows {
+            let row = Row { component: *c, instance: 0, bytes: speed.to_le_bytes().to_vec() };
+            ops.push(Op::SetRow { id: Target::Existing(id(obj)), row });
+        }
+        world_op(w, ALICE, chain, ops);
+    }
+
+    /// Two active scripts that both declare `Spin` (B also a `Transform`), a pending one declaring `Glow`: A on the
+    /// table with a Spin row, A and B both on the lamp; and A's and B's ids.
+    fn two_spins() -> (Api<Src>, [u8; 32], [u8; 32]) {
+        let (mut a, mut b) = ([0; 32], [0; 32]);
+        let api = api_with(|w| {
+            let (sa, ca) = script_declaring(w, "// a", 30, &["Spin"], true);
+            let (sb, cb) = script_declaring(w, "// b", 40, &["Spin", "Transform"], true);
+            script_declaring(w, "// c", 50, &["Glow"], false);
+            attach_with(w, 60, sa, 10, &ca, 2.0);
+            attach_with(w, 61, sa, 20, &ca, 3.0);
+            attach_with(w, 62, sb, 20, &cb[..1], 4.0);
+            (a, b) = (sa, sb);
+        });
+        (api, a, b)
+    }
+
+    #[test]
+    fn schema_lists_only_active_script_types_with_their_script() {
+        let (a, sa, sb) = two_spins();
+        let c = caller(&[Scope::Read]);
+        let Schema::List { types, .. } = a.schema(&c, &Default::default()).unwrap() else { panic!() };
+        let named = |n: &str| types.iter().filter(|t| t.name == n).map(|t| t.script.clone()).collect::<Vec<_>>();
+        let (ta, tb) = (crate::resolve::asset_text(&sa), crate::resolve::asset_text(&sb));
+        let (mut spins, mut want) = (named("Spin"), vec![Some(ta.clone()), Some(tb.clone())]);
+        spins.sort();
+        want.sort();
+        assert_eq!(spins, want);
+        assert_eq!(named("Transform"), [None, Some(tb.clone())], "the engine's, then B's");
+        assert!(named("Glow").is_empty(), "a pending version's types aren't shown");
+        assert!(named(pe_world::script::TAG_NAME).is_empty(), "nor are tags");
+        // A bare type two scripts declare is refused with both full forms; a prefix picks one.
+        let q = |t: &str| SchemaQuery { type_name: Some(t.into()), ..Default::default() };
+        let e = a.schema(&c, &q("Spin")).unwrap_err();
+        assert!(
+            e.message.contains(&format!("Spin@{ta}")) && e.message.contains(&format!("Spin@{tb}")),
+            "{}",
+            e.message
+        );
+        let Schema::Type { name, fields, .. } = a.schema(&c, &q(&format!("Spin@{}", &ta[..8]))).unwrap() else {
+            panic!()
+        };
+        assert_eq!((name, fields.contains_key("speed")), (format!("Spin@{ta}"), true));
+        // The engine's Transform and B's share a bare name in a read with no object; `@engine` names the engine's.
+        assert!(a.schema(&c, &q("Transform")).unwrap_err().message.contains("Transform@engine"));
+        let Schema::Type { name, .. } = a.schema(&c, &q("Transform@engine")).unwrap() else { panic!() };
+        assert_eq!(name, "Transform");
+        assert!(a.schema(&c, &q("Spin@a:12")).unwrap_err().message.contains("at least 4 hex digits"));
+    }
+
+    #[test]
+    fn the_schema_version_moves_when_a_version_activates() {
+        let c = caller(&[Scope::Read]);
+        let version = |activate| {
+            let a = api_with(|w| {
+                script_declaring(w, "// a", 30, &["Spin"], activate);
+            });
+            match a.schema(&c, &Default::default()).unwrap() {
+                Schema::List { version, .. } => version,
+                _ => unreachable!(),
+            }
+        };
+        assert_ne!(version(false), version(true));
+    }
+
+    #[test]
+    fn a_bare_name_resolves_among_the_scripts_attached_to_the_object() {
+        let (a, sa, sb) = two_spins();
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        let (ta, tb) = (crate::resolve::asset_text(&sa), crate::resolve::asset_text(&sb));
+        let set = |obj: &str, field: &str| {
+            a.apply(&c, tx(json!([{"op": "set", "id": obj, "field": field, "value": 1.5}])), &dry).unwrap()
+        };
+        // The table carries only A: `Spin` is A's.
+        assert_eq!(set("/Table", "Spin.speed").status, Status::Accepted);
+        // The lamp carries A and B: refused, with both full forms; qualified, either is fine.
+        let f = set("/Table/Lamp", "Spin.speed").refusal.unwrap();
+        assert_eq!(f.code, RefusalCode::Invalid);
+        assert!(
+            f.message.contains(&format!("Spin@{ta}")) && f.message.contains(&format!("Spin@{tb}")),
+            "{}",
+            f.message
+        );
+        assert_eq!(set("/Table/Lamp", &format!("Spin@{}.speed", &tb[..10])).status, Status::Accepted);
+        // An engine name B also declares, on an object B is attached to: ambiguous, never silently the engine's.
+        let pos = |obj: &str, comp: &str| {
+            let op = json!([{"op": "set", "id": obj, "field": format!("{comp}.rotation_deg"), "value": [0, 90, 0]}]);
+            a.apply(&c, tx(op), &dry).unwrap()
+        };
+        assert_eq!(pos("/Table/Lamp", "Transform").refusal.unwrap().code, RefusalCode::Invalid);
+        assert_eq!(pos("/Table/Lamp", "Transform@engine").status, Status::Accepted);
+        let o = pos("/Table", "Transform");
+        assert_eq!(o.status, Status::Accepted, "B isn't on the table: {:?}", o.refusal);
+    }
+
+    #[test]
+    fn adding_a_scripts_row_needs_the_script_attached_first() {
+        let (a, sa, _) = two_spins();
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        let ta = crate::resolve::asset_text(&sa);
+        let create = json!({"op": "create", "as": "$cup", "parent": "/Table", "name": "Cup"});
+        let add = json!({"op": "add", "id": "$cup", "component": "Spin", "fields": {"speed": 1.0}});
+        let o = a.apply(&c, tx(json!([create, add])), &dry).unwrap();
+        let f = o.refusal.unwrap();
+        assert_eq!((f.code, f.op), (RefusalCode::Invalid, Some(1)));
+        assert!(f.message.contains("attach the script first"), "{}", f.message);
+        // Attached by an earlier op of the same change, it resolves.
+        let attach = json!({"op": "attach", "script": ta, "to": ["$cup"], "mode": "linked"});
+        let o = a.apply(&c, tx(json!([create, attach, add])), &dry).unwrap();
+        assert_ne!(o.refusal.as_ref().map(|f| f.code), Some(RefusalCode::Invalid), "{:?}", o.refusal);
+    }
+
+    #[test]
+    fn query_names_script_components_on_each_object_and_has_reads_every_match() {
+        let (a, sa, sb) = two_spins();
+        let c = caller(&[Scope::Read]);
+        let (ta, tb) = (crate::resolve::asset_text(&sa), crate::resolve::asset_text(&sb));
+        let one = |name: &str, fields: Option<&str>| {
+            let q = Query {
+                select: Some(Selector::Name(name.into())),
+                fields: fields.map(|f| vec![f.to_string()]),
+                ..Default::default()
+            };
+            a.query(&c, &q).unwrap().objects.remove(0)
+        };
+        assert!(one("Table", None).types.contains(&"Spin".to_string()));
+        assert_eq!(one("Table", Some("Spin")).components["Spin"]["speed"], 2.0);
+        // On the lamp `Spin` is ambiguous: each shows by its full form, and a bare projection reads nothing.
+        let types = one("Lamp", None).types;
+        assert!(types.contains(&format!("Spin@{ta}")) && types.contains(&format!("Spin@{tb}")), "{types:?}");
+        assert!(!types.iter().any(|t| t == "Spin" || t.starts_with(pe_world::script::TAG_NAME)), "{types:?}");
+        // A bare projection reads every match on the lamp, keyed by full form (ruling).
+        let spin = one("Lamp", Some("Spin")).components;
+        let mut keys: Vec<_> = spin.keys().cloned().collect();
+        keys.sort();
+        let mut want = vec![format!("Spin@{ta}"), format!("Spin@{tb}")];
+        want.sort();
+        assert_eq!(keys, want);
+        assert_eq!(
+            (&spin[&format!("Spin@{ta}")]["speed"], &spin[&format!("Spin@{tb}")]["speed"]),
+            (&json!(3.0), &json!(4.0))
+        );
+        // A field list applies to each match.
+        let q = Query {
+            select: Some(Selector::Name("Lamp".into())),
+            fields: Some(vec!["Spin.speed".into()]),
+            ..Default::default()
+        };
+        let lamp = a.query(&c, &q).unwrap().objects.remove(0).components;
+        assert_eq!(lamp.len(), 2, "{lamp:?}");
+        let all = one("Lamp", Some("*")).components;
+        assert_eq!(all[&format!("Spin@{ta}")]["speed"], 3.0);
+        assert_eq!(all[&format!("Spin@{tb}")]["speed"], 4.0);
+        assert_eq!(one("Lamp", Some(&format!("Spin@{}", &tb[..6]))).components.len(), 1);
+        let has = |s: &str| {
+            let q = Query { select: Some(Selector::Has(s.into())), ..Default::default() };
+            let mut n: Vec<String> = a.query(&c, &q).unwrap().objects.into_iter().map(|o| o.name).collect();
+            n.sort();
+            n
+        };
+        assert_eq!(has("Spin"), ["Lamp", "Table"]);
+        assert_eq!(has(&format!("Spin@{}", &tb[..8])), ["Lamp"]);
+        assert_eq!(has(&format!("Spin@{}", &ta[..8])), ["Lamp", "Table"]);
+        assert_eq!(
+            has(&format!("Spin@{}", ta[..8].to_ascii_uppercase().replacen("A:", "a:", 1))),
+            ["Lamp", "Table"],
+            "uppercase hex"
+        );
+        assert!(has("Glow").is_empty());
+    }
+
+    #[test]
+    fn history_and_watch_name_an_attach_by_its_script() {
+        use pe_world::edit::{Op, Row, Target, Transaction as WTx};
+        let (a, sa, _) = two_spins();
+        let snap = a.src.latest();
+        let tag = pe_world::script::tag_desc(&snap.modules()[&sa].v()).id();
+        let lamp = Target::Existing(id(20));
+        let ops = vec![
+            Op::SetRow { id: lamp, row: Row { component: tag, instance: 0, bytes: vec![] } },
+            Op::RemoveRow { id: lamp, component: tag, instance: 0, tag: 0 },
+        ];
+        let tx = WTx { actor: pe_world::edit::Actor::Person, label: None, preconditions: vec![], ops, blobs: vec![] };
+        let applied = pe_seams::Outcome::Applied { created: vec![], overwrote: vec![], notes: vec![], inverse: None };
+        let hex: String = sa[..4].iter().map(|b| format!("{b:02x}")).collect();
+        let s = crate::history::summary(Some(&tx), &applied, &snap);
+        assert!(
+            s.contains(&format!("ttached script {hex}… to")) && s.contains(&format!("detached script {hex}… from")),
+            "{s}"
+        );
+        assert!(!s.contains(pe_world::script::TAG_NAME), "{s}");
+    }
+
     #[test]
     fn a_code_op_builds_once_and_commits_a_new_script_by_a_derived_id() {
         let c = caller(&[Scope::Read, Scope::Edit]);

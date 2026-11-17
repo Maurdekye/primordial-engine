@@ -175,9 +175,9 @@ impl WorldApi for MockWorld {
                 version,
                 types: ["Transform", "Shape", "Body", "Appearance", "Light", "Ball", "Protection"]
                     .iter()
-                    .map(|n| Brief { name: n.to_string(), summary: format!("{n} (mock)") })
+                    .map(|n| Brief { name: n.to_string(), summary: format!("{n} (mock)"), script: None })
                     .collect(),
-                templates: vec![Brief { name: "box".into(), summary: "a dynamic 0.2 m box".into() }],
+                templates: vec![Brief { name: "box".into(), summary: "a dynamic 0.2 m box".into(), script: None }],
             }),
             Some(t) if t == "Appearance" => Ok(Schema::Type {
                 version,

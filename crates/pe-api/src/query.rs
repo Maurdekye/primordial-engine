@@ -278,7 +278,7 @@ impl Compiled<'_> {
             Compiled::Set(ids, _) | Compiled::Under(ids, _) => ids.contains(&id),
             Compiled::Name(n) => info.name == *n,
             Compiled::NameLike(n) => info.name.to_lowercase().contains(n.as_str()),
-            Compiled::Has(t) => info.types.iter().any(|x| x == t || x.split('#').next() == Some(*t)),
+            Compiled::Has(t) => snap.has(info, t),
             Compiled::Near(of, within) => snap.distance(id, of).is_some_and(|d| d <= *within),
             Compiled::ChildOf(parents, _) => info.parent.is_some_and(|p| parents.contains(&p)),
             Compiled::All(v) => v.iter().all(|c| c.matches(snap, id, info)),
@@ -412,14 +412,13 @@ impl Builder<'_> {
             }
             Projection::Some(m) => {
                 for (c, want) in m {
-                    if !info.types.contains(c) {
-                        continue;
-                    }
-                    if let Some(mut f) = self.snap.fields(id, c, &self.frame) {
+                    // The snapshot resolves `c` on this object (a script's component by its attached scripts); an
+                    // ambiguous bare name reads every match, keyed by full form (api.md 4.3).
+                    for (key, mut f) in self.snap.projected(id, c, &self.frame) {
                         if let Some(want) = want {
                             f.retain(|k, _| want.contains(k));
                         }
-                        components.insert(c.clone(), f);
+                        components.insert(key, f);
                     }
                 }
             }

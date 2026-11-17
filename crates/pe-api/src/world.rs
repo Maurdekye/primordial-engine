@@ -19,6 +19,7 @@ use pe_seams::world_api::{EntryId, Frame, Json, MemberId, ObjRef, ObjectId, Vers
 use pe_world::{BlobRef, Value, WorldSnapshot};
 use serde_json::json;
 
+use crate::names::Names;
 use crate::ports::{ObjInfo, Snapshot};
 use crate::query::{Named, resolve};
 
@@ -128,11 +129,23 @@ pub fn quat_from_euler_deg(e: [f64; 3]) -> [f32; 4] {
 pub struct WorldView {
     snap: Arc<WorldSnapshot>,
     me: Option<ObjectId>,
+    names: Arc<Names>,
 }
 
 impl WorldView {
     pub fn new(snap: Arc<WorldSnapshot>, me: Option<ObjectId>) -> WorldView {
-        WorldView { snap, me }
+        let names = Arc::new(Names::new(&snap));
+        WorldView { snap, me, names }
+    }
+
+    /// This frame's component names (`crate::names`).
+    pub fn names(&self) -> &Names {
+        &self.names
+    }
+
+    /// The component `name` names on object `id`, by the scripts attached to it.
+    fn component_on(&self, id: pe_core::ObjectId, name: &str) -> Option<pe_sim::ComponentId> {
+        self.names.resolve_on(&self.names.attached(&self.snap, id), name).ok()
     }
 
     /// The frame `r` names, as pe-world's `offset_in` takes it: `Some(None)` for the world origin, `Some(Some(id))`
@@ -172,17 +185,23 @@ impl Snapshot for WorldView {
             creator: i.creator.into(),
             held_by: i.held_by.map(MemberId::from),
             protected_by: i.protected_by.map(MemberId::from),
-            types: i.types,
+            types: {
+                let id = id.into();
+                let attached = self.names.attached(&self.snap, id);
+                self.names.on(&self.snap, id).into_iter().filter_map(|c| self.names.shown_on(&attached, c)).collect()
+            },
         })
     }
     fn children(&self, id: ObjectId) -> Vec<ObjectId> {
         self.snap.children(id.into()).into_iter().map(ObjectId::from).collect()
     }
     fn fields(&self, id: ObjectId, component: &str, frame: &ObjRef) -> Option<BTreeMap<String, Json>> {
-        let rows = self.snap.fields(id.into(), component)?;
+        let c = self.component_on(id.into(), component)?;
+        let rows = self.snap.fields_of(id.into(), c)?;
+        let transform = c == pe_sim::ComponentId::TRANSFORM;
         let mut out = BTreeMap::new();
         for (name, v) in rows {
-            let place = component == "Transform" && name == "pos";
+            let place = transform && name == "pos";
             let j = match (&v, place) {
                 // The place in the frame asked for; "parent" (the default) keeps the stored form.
                 (Value::Pos(_) | Value::Offset(_), true) if frame.0 != "parent" => {
@@ -193,7 +212,7 @@ impl Snapshot for WorldView {
                 }
                 _ => value_json(&v),
             };
-            if component == "Transform"
+            if transform
                 && name == "rot"
                 && let Value::List(vs) = &v
             {
@@ -208,6 +227,17 @@ impl Snapshot for WorldView {
             out.insert(if place { "position".to_string() } else { name }, j);
         }
         Some(out)
+    }
+    fn projected(&self, id: ObjectId, name: &str, frame: &ObjRef) -> Vec<(String, BTreeMap<String, Json>)> {
+        let forms = match self.names.resolve_on(&self.names.attached(&self.snap, id.into()), name) {
+            Err(crate::names::NameError::Ambiguous(forms)) => forms,
+            _ => vec![name.to_string()],
+        };
+        forms.into_iter().filter_map(|k| self.fields(id, &k, frame).map(|f| (k, f))).collect()
+    }
+    fn has(&self, info: &ObjInfo, name: &str) -> bool {
+        let id = info.id.into();
+        self.names.resolve_all(name).is_ok_and(|cs| cs.iter().any(|c| self.snap.row_tag_of(id, *c).is_some()))
     }
     fn distance(&self, a: ObjectId, b: &ObjRef) -> Option<f64> {
         let other: pe_core::ObjectId = match b.0.as_str() {

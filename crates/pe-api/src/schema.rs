@@ -1,8 +1,12 @@
 //! `schema` (api.md 5.6): the world's component types and templates, from the newest snapshot's registry.
 //!
-//! - Without a type or template: each component type `{name, summary}` (pe-sim's internal `Node` left out), the
-//!   world's templates (the direct children of the root `Templates` folder, as `create`'s `template` names them), and
-//!   the schema `version`, a hash of the registry. `since: <version>` answers `unchanged` when it still matches.
+//! - Without a type or template: each component type `{name, summary}` the API shows (`crate::names`: the engine's,
+//!   `Node` left out, and each script's active version's, tags left out, with `script`), the world's templates (the
+//!   direct children of the root `Templates` folder, as `create`'s `template` names them), and the schema `version`,
+//!   a hash of the registry and of which versions are active. `since: <version>` answers `unchanged` when it still
+//!   matches.
+//! - `type` is a name as a read with no object takes it: a bare name two visible types share is refused with their
+//!   qualified forms, and the answer names a script's type by its full form.
 //! - With a type: a JSON Schema per field, under the name `set` takes (`Transform.position` for the stored `pos`;
 //!   fields whose names start with `_` are internal and left out), with `x-unit`, `x-sync`, `x-protected` and
 //!   `x-read-only` annotations. Units come from the registry (`FieldDesc::unit`, pe-sim's canonical spelling, e.g.
@@ -16,15 +20,25 @@ use pe_sim::{ComponentDesc, FieldDesc, FieldKind};
 use pe_world::WorldSnapshot;
 use serde_json::json;
 
+use crate::names::{NameError, Names};
+use crate::resolve::asset_text;
+
 /// The most objects a template's `holds` lists.
 pub const HOLDS_MAX: usize = 200;
 
-/// The schema version: a hash of every component description, in registry order, and of the template list, so
-/// `since` also notices a template added, removed or renamed (@chunks-reviewer's Low 1).
+/// The schema version: a hash of every component description, in registry order, of each script's active version
+/// (a version's types are registered at its commit but shown from its activation, api.md 7), and of the template
+/// list, so `since` also notices a template added, removed or renamed (@chunks-reviewer's Low 1).
 pub fn version(snap: &WorldSnapshot) -> String {
     let mut h = pe_core::hash::Hasher::new(0x5045_4150_4953_4348); // "PEAPISCH"
     for d in snap.schema() {
         h.write_u64(d.schema_hash());
+    }
+    for (a, m) in snap.modules() {
+        for b in a.iter().chain(&m.version.entry.0.0) {
+            h.write_u64(u64::from(*b));
+        }
+        h.write_u64(u64::from(m.version.op));
     }
     for (id, name) in templates(snap) {
         h.write_u64(id.to_u128() as u64);
@@ -120,14 +134,19 @@ fn field_schema(d: &ComponentDesc, f: &FieldDesc) -> (String, Json) {
     (name, s)
 }
 
-fn brief(d: &ComponentDesc) -> Brief {
+fn brief(names: &Names, d: &ComponentDesc) -> Brief {
     let fields: Vec<String> =
         d.fields().iter().filter(|f| !f.name.starts_with('_')).map(|f| shown(d.name(), &f.name)).collect();
-    let summary = match summary(d.name()) {
+    let script = names.script_of(d.id());
+    let what = match script {
+        Some(_) => None,
+        None => summary(d.name()),
+    };
+    let summary = match what {
         Some(s) => format!("{s} Fields: {}.", fields.join(", ")),
         None => format!("Fields: {}.", fields.join(", ")),
     };
-    Brief { name: d.name().to_string(), summary }
+    Brief { name: d.name().to_string(), summary, script: script.map(|a| asset_text(&a)) }
 }
 
 /// The world's templates: the direct children of the one root named `Templates` (none if there are two).
@@ -137,12 +156,14 @@ fn templates(snap: &WorldSnapshot) -> Vec<(pe_core::ObjectId, String)> {
     snap.children(folder).into_iter().filter_map(|c| Some((c, snap.name(c)?))).collect()
 }
 
-fn types_of(snap: &WorldSnapshot, id: pe_core::ObjectId) -> Vec<String> {
-    snap.info(id).map(|i| i.types).unwrap_or_default()
+/// An object's component types as responses name them (`crate::names`).
+fn types_of(snap: &WorldSnapshot, names: &Names, id: pe_core::ObjectId) -> Vec<String> {
+    let attached = names.attached(snap, id);
+    names.on(snap, id).into_iter().filter_map(|c| names.shown_on(&attached, c)).collect()
 }
 
 /// A template's subtree as `{name, types, children}`, depth first, at most `HOLDS_MAX` objects in all.
-fn holds(snap: &WorldSnapshot, id: pe_core::ObjectId, left: &mut usize) -> Json {
+fn holds(snap: &WorldSnapshot, names: &Names, id: pe_core::ObjectId, left: &mut usize) -> Json {
     *left -= 1;
     let mut children = vec![];
     for c in snap.children(id) {
@@ -150,9 +171,9 @@ fn holds(snap: &WorldSnapshot, id: pe_core::ObjectId, left: &mut usize) -> Json 
             children.push(json!({ "more": true }));
             break;
         }
-        children.push(holds(snap, c, left));
+        children.push(holds(snap, names, c, left));
     }
-    let mut o = json!({ "name": snap.name(id).unwrap_or_default(), "types": types_of(snap, id) });
+    let mut o = json!({ "name": snap.name(id).unwrap_or_default(), "types": types_of(snap, names, id) });
     if !children.is_empty() {
         o["children"] = Json::Array(children);
     }
@@ -164,14 +185,31 @@ pub fn schema(snap: &WorldSnapshot, q: &SchemaQuery) -> Result<Schema, ApiError>
     if q.since.as_deref() == Some(version.as_str()) {
         return Ok(Schema::Unchanged { version });
     }
+    let names = Names::new(snap);
     if let Some(t) = &q.type_name {
-        let d = snap.component(t).filter(|d| d.name() != "Node").ok_or_else(|| {
-            ApiError::arg("type", format!("There is no component type {t:?}; schema without a type lists them."))
-        })?;
+        let c = match names.resolve_all(t) {
+            Ok(cs) if cs.len() == 1 => cs[0],
+            Ok(cs) => {
+                let all: Vec<String> = cs.iter().filter_map(|c| names.full(*c)).collect();
+                return Err(ApiError::arg("type", NameError::Ambiguous(all).message(t)));
+            }
+            Err(NameError::Unknown) => {
+                return Err(ApiError::arg(
+                    "type",
+                    format!("There is no component type {t:?}; schema without a type lists them."),
+                ));
+            }
+            Err(e) => return Err(ApiError::arg("type", e.message(t))),
+        };
+        let d = snap.component_desc(c).expect("a visible type is registered");
         let fields: BTreeMap<String, Json> =
             d.fields().iter().filter(|f| !f.name.starts_with('_')).map(|f| field_schema(d, f)).collect();
-        let summary = brief(d).summary;
-        return Ok(Schema::Type { version, name: d.name().to_string(), summary, fields });
+        let summary = brief(&names, d).summary;
+        let name = match names.script_of(c) {
+            Some(_) => names.full(c).expect("visible"),
+            None => d.name().to_string(),
+        };
+        return Ok(Schema::Type { version, name, summary, fields });
     }
     if let Some(name) = &q.template {
         let found: Vec<_> = templates(snap).into_iter().filter(|(_, n)| n == name).collect();
@@ -192,14 +230,18 @@ pub fn schema(snap: &WorldSnapshot, q: &SchemaQuery) -> Result<Schema, ApiError>
             }
         };
         let mut left = HOLDS_MAX;
-        let holds = holds(snap, id, &mut left);
+        let holds = holds(snap, &names, id, &mut left);
         let summary = format!("Holds {} object(s).", HOLDS_MAX - left);
         return Ok(Schema::Template { version, name: name.clone(), summary, holds });
     }
-    let types = snap.schema().filter(|d| d.name() != "Node").map(brief).collect();
+    let types = snap.schema().filter(|d| names.visible(d.id())).map(|d| brief(&names, d)).collect();
     let templates = templates(snap)
         .into_iter()
-        .map(|(id, name)| Brief { summary: format!("Types: {}.", types_of(snap, id).join(", ")), name })
+        .map(|(id, name)| Brief {
+            summary: format!("Types: {}.", types_of(snap, &names, id).join(", ")),
+            name,
+            script: None,
+        })
         .collect();
     Ok(Schema::List { version, types, templates })
 }

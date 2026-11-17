@@ -22,6 +22,7 @@ pub mod builds;
 pub mod changes;
 pub mod edit;
 pub mod history;
+pub mod names;
 pub mod outcome;
 pub mod ports;
 pub mod query;

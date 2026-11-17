@@ -382,6 +382,10 @@ pub struct SchemaQuery {
 pub struct Brief {
     pub name: String,
     pub summary: String,
+    /// For a script's component type, its script (`"a:<64 hex>"`); none for the engine's. `Name@a:<hex>` (4+ digits)
+    /// or `Name@engine` names a type anywhere. S6 v1.8 (api.md 4.3, 5.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
