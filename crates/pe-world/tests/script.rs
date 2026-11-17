@@ -890,3 +890,18 @@ fn a_failure_for_the_active_version_is_a_record_only() {
         Reason::Stale { .. }
     ));
 }
+
+/// `set_activation` stamps every commit's `activate_at`, so a commit built with 0 applies at the frame it is set to
+/// and is refused at any other (7.9; @engine-architect).
+#[test]
+fn set_activation_stamps_the_commits_frame() {
+    let mut f = fx();
+    let mut t = commit(ASSET, None, 1, 1);
+    let Some(Op::CommitScript { activate_at, .. }) = t.ops.last_mut() else { panic!("no commit") };
+    *activate_at = 0;
+    assert!(matches!(refused(&run_at(&mut f.w, &mut f.a, &t, 7)), Reason::Invalid { .. }), "0 is not frame 7");
+    t.set_activation(Frame(7));
+    assert!(matches!(t.ops.last(), Some(Op::CommitScript { activate_at: 7, .. })));
+    assert!(matches!(t.ops.first(), Some(Op::Register { .. })), "other ops untouched");
+    ok(&run_at(&mut f.w, &mut f.a, &t, 7));
+}
