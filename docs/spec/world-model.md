@@ -269,6 +269,15 @@ which fixes the origin's role deliberately.
   instead is open until 9.2 gives the join an id (@design-reviewer's Low). A rejoin at a later frame gets two new hands (the ids
   include the admission frame, as 8 intends), once a leave has removed the old ones. The avatar root that should
   parent the hands (3.5) is not built yet; its id derivation is open.
+- **Where a joiner stands** (`World::join_spawn`; @engine-architect m5193e4c7a3d8): a member admitted by an `Admit`
+  entry at frame F stands at the feet of the lowest slot along genesis's row (slot i at `origin + (0.6 i, 0, 1.5)`,
+  as `m1_session` admits) that no current member's hand takes. A hand takes a slot when it is horizontally (x, z)
+  closer than 0.3 m, half the spacing, to the midpoint of where that slot's two hands start. It is a function of
+  the world at F alone (the hands' poses are hashed state), so every replica admits at the same spot. It keeps no
+  counter and changes no root. A leaver's slot comes free when its hands go, and a slot someone's tracked hands
+  still crowd is skipped. A hand takes at most one slot, so of the first `n + 1` slots, with `n` hands, one is
+  free [V `a_joiner_stands_at_the_lowest_slot_no_hand_takes`]. It is an M1 rule: a spawn point the world carries
+  (an avatar spawn object, a home template's) replaces it when one exists.
 - **A leave** (`World::leave(member, entry)`; @coordinator-opus m003987d0d045 and mbdc0966ab9ab, after
   @fable-reviewer m4598f19943d3): the world side of the member's final `Leave` entry (pe-agree's epoch change,
   agreement.md 8), applied at its stamp on every replica, as a join is by `admit`. It is all or nothing, and refused
@@ -584,7 +593,9 @@ as a colour (api.md 4.4: hex or an explicit space, never a bare array).
 - **The engine's colours:** `Appearance.base` and `Appearance.emissive`, and `Light.color`. Marking them changed the
   engine registry's descriptions, so every world's root changed once with this mark (the pit's pinned frame-0 root in
   pe-world's tests/preset.rs was regenerated); nothing else pinned or saved held one.
-- **Scripted components** may mark a field the same way once pe-logic's manifest carries the mark (not yet).
+- **Scripted components** mark a field the same way (main d7933dc1, @iter-bench) [V, read]: a field of pe-sdk's
+  `LinearRgb` or `LinearRgba` is marked in the manifest's field byte, pe-logic gives the mark to the component's
+  `FieldDesc`, and binding a script to an existing component compares colour spaces with the rest of the fields.
 
 ## 4. Coordinates: `Pos`, `Offset` and the wall
 

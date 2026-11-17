@@ -212,3 +212,33 @@ fn a_session_s_frame_0_root_is_the_same_on_every_machine() {
     twice.members.push((joiner, perm::EDIT));
     assert!(matches!(m1_session(&twice, BlobStore::default()), Err(WorldError::Duplicate(_))), "a key listed twice");
 }
+
+/// A joiner stands at the lowest slot of genesis's row that no current member's hand takes (2.4; @engine-architect
+/// m5193e4c7a3d8): a function of the world alone, so every replica admits at the same spot.
+#[test]
+fn a_joiner_stands_at_the_lowest_slot_no_hand_takes() {
+    let slot = |i: usize| origin().checked_add(Offset([0.6 * i as f64, 0.0, 1.5])).unwrap();
+    let line = m1_line();
+    let mut w = pit(1);
+    let root = w.root_hash(pe_seams::DomainId(0));
+    assert_eq!(w.join_spawn(), slot(0), "no hands: the first slot");
+    assert_eq!(w.root_hash(pe_seams::DomainId(0)), root, "asking changes nothing");
+
+    // Hands far along the row take only their own slot.
+    let (a, b, c, d) = (MemberKey([1; 32]), MemberKey([2; 32]), MemberKey([3; 32]), MemberKey([4; 32]));
+    w.admit(line, a, perm::EDIT, Frame(0), slot(3)).unwrap();
+    assert_eq!(w.join_spawn(), slot(0));
+    w.admit(line, b, perm::EDIT, Frame(0), w.join_spawn()).unwrap();
+    assert_eq!(w.join_spawn(), slot(1), "the slot just given is taken");
+
+    // A member standing between slots 1 and 2 has a hand in each, so both are taken.
+    let between = origin().checked_add(Offset([0.9, 0.0, 1.5])).unwrap();
+    w.admit(line, c, perm::EDIT, Frame(0), between).unwrap();
+    assert_eq!(w.join_spawn(), slot(4), "slots 0-3 are taken");
+
+    // A leave frees the leaver's slot once its hands are gone.
+    w.leave(b, pe_core::EntryRef(pe_core::Hash([0x1e; 32]))).unwrap();
+    assert_eq!(w.join_spawn(), slot(0));
+    w.admit(line, d, perm::EDIT, Frame(5), w.join_spawn()).unwrap();
+    assert_eq!(w.join_spawn(), slot(4));
+}
