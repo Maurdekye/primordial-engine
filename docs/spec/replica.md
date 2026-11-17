@@ -368,8 +368,23 @@ ceil(240 / rate) sub-steps: the user chose the proposal of 13 ("30–120 Hz (rec
   again; an abandoned replay puts it back from the floor's held snapshot (6.1).
 - **Held roots are not keyframes.** A root at a cut is the state with exactly the cut's entries, which the live
   history's keyframe at that frame need not share. The replica keeps each as its own snapshot (world state, physics
-  image and transfer) until its cut is final or superseded, and a rollback never takes one away (5.3, 8). In a long
-  finality stall that is one snapshot per voted cut (O19).
+  image and transfer) until its cut is final or superseded, and a rollback never takes one away (5.3, 8).
+  - **Thinned in a long stall** (was O19; @coordinator-opus, with @chunks-reviewer's points) [V `replica.rs`, `release`]. A finality stall votes at every cut and finalizes none, and a snapshot
+    costs about 1.15 MB at 200 balls and 3.84 MB at 500 [V, a diagnostic run, `<notes>`]: up to 11 and
+    38 MB a second at 10 cuts a second. So every voted root stays, as my vote, but its snapshot only where something
+    reads it before the cut is final, and each vote thins them, not only `finalize`:
+    - the resume (5.3) needs the newest: the ring's policy over the cut grid keeps every voted cut of the newest four
+      cut intervals, then two per doubling of age;
+    - a root split's reference member serves its root at the split's cut (divergence.md 5, 11.1), so each cut a rung-1
+      replay was asked for keeps its snapshot until a finalize at or above it, whether the replay ran or not;
+    - an import at a cut whose snapshot is gone takes the empty state as its base (6.2);
+    - a snapshot kept for anything else (the floor's, `Cv`'s, the finals', the diverged root, my last import's) stays.
+  - **Measured** [V, `measure_vote_cost_in_a_stall` in release, 200 balls at 60 Hz, K = 8, votes from 16 to 3000]: at
+    most 17 snapshots over 374 votes, against one per vote without the thinning, and every vote after the first still
+    re-stepped 8 frames (median 5.5 ms). A 10-minute stall at 60 Hz with the 0.1 s cut interval stays within about 27
+    [I, the policy's bound]: about 100 MB at 500 balls. Tests [V]: `a_long_stall_holds_logarithmically_many_snapshots`,
+    `an_import_at_a_cut_whose_snapshot_was_thinned_takes_the_full_transfer` and
+    `a_root_split_s_cut_keeps_its_snapshot_while_the_stall_thins_the_rest`.
 - **Not built:** compacting pe-physics's geometry registry after a trim, which the old loop did (review P22-12)
   [V: pe-replica never calls `compact_images`].
 
@@ -420,7 +435,7 @@ pe-world (`tests/peworld.rs`, `tests/logic.rs`) [V]:
 |---|---|---|
 | P1 | Two replicas fed the same entries have equal roots at every cut frame | `equal_entries_give_equal_roots` |
 | P2 | A replica that gets entries late, in any order, ends with the same roots as one that got them on time | `late_entries_roll_back_to_the_same_roots` |
-| P3 | Restoring the state at a cut and re-stepping with the final log reproduces the roots | `a_cuts_root_takes_exactly_its_entries`, `rung_one_repairs_a_transient_fault`, `a_vote_resumes_from_the_root_held_at_the_previous_cut`, `a_vote_never_resumes_from_a_held_root_with_other_entries`, `a_vote_never_resumes_from_a_root_held_off_the_grid` |
+| P3 | Restoring the state at a cut and re-stepping with the final log reproduces the roots | `a_cuts_root_takes_exactly_its_entries`, `rung_one_repairs_a_transient_fault`, `a_vote_resumes_from_the_root_held_at_the_previous_cut`, `a_vote_never_resumes_from_a_held_root_with_other_entries`, `a_vote_never_resumes_from_a_root_held_off_the_grid`, `a_long_stall_holds_logarithmically_many_snapshots` |
 | P4 | No rollback goes below the final cut | `finalize_moves_the_floor_and_nothing_below_it_changes`, `a_change_below_the_floor_outside_the_rebased_span_is_still_a_fault` |
 | P5 | No input from any member panics a replica; bad input is refused with a reason | **Not built** as a property test (3.1) |
 | P6 | The worker count changes nothing | M2 (D2) |
@@ -504,7 +519,9 @@ pe-replica puts the physics into it in two places, both written at each cut fram
     of 200 balls at 60 Hz, K = 8, an entry at frame 10 that no cut covers, a vote at every cut from 16 to 600]. With
     the resume, each vote after the first re-stepped 8 frames, in 5-11 ms (median 7.4 ms), whatever its distance; all
     74 votes re-stepped 600 frames in 0.57 s. Without it, each re-stepped from frame 0: 22,792 frames in 15.9 s, up to
-    438 ms for the vote at 600 (about 0.7 ms a frame).
+    438 ms for the vote at 600 (about 0.7 ms a frame). Over 374 votes from 16 to 3000, with the thinning of 4.1, each
+    vote after the first still re-stepped 8 frames (median 5.5 ms); the last 50 votes' median was 0.5 ms above the
+    first 50's, the walk over the cut's entries from the floor.
 - **Cost per cut:**
   - `physics_global`: one canonical serialization and one BLAKE3 pass. Serializing costs about 1.1-1.3 µs and 2.3-2.5
     kB per body [V file 02's bench], plus BLAKE3 over that, about 1-2 µs per body [I].
@@ -579,6 +596,9 @@ the floor's cut-exact snapshot at once, with the cut-exact outcomes below the fl
     replica's is refused, `RateMismatch`, a fault to report and never a rate to adopt (S2 v1.4; @coordinator-opus). Tests [V]:
     `a_joiner_takes_gravity_and_origin_from_the_world_it_imports_and_rung_one_agrees_with_the_host` and
     `an_import_of_a_world_at_another_rate_is_refused_and_changes_nothing`.
+  - **The base** is my own snapshot at the cut when I hold one, else the empty state. A voted cut whose snapshot was
+    thinned (4.1) has none: `tree` then gives pe-diverge nothing to diff against, so it fetches every leaf, and the
+    full transfer lands on the empty state [V `an_import_at_a_cut_whose_snapshot_was_thinned_takes_the_full_transfer`].
   - **Then the live state is the imported one at the cut's frame,** in a new physics world, and re-simulates to the
     present through the replay, returning my root at the cut. It moves neither `Cv` nor the floor, and never rehashes
     the rest of the state as a side effect: damage behind a stale cache shows as `RootMismatch` instead of being fixed
@@ -890,7 +910,6 @@ The error should be small for an occasional impulse, and grow with how often imp
 | O16 | Meshes and hulls (2.1), and compacting the geometry registry after a trim (4.1) | WS-state, WS-world |
 | O17 | The grab spring's overshoot after a block and after a placement (@design-reviewer's Low on the hold bound) | WS-state, at the headset test |
 | O18 | The fault bundle records the runner's identity and the modules the replica held (`runner_identity`, `module`; divergence.md 6, 8) | WS-diverge |
-| O19 | Held roots in a long finality stall: the replica holds a snapshot for each voted cut until it is final (4.1), about 1.15 MB at 200 balls and 3.8 MB at 500 [V, a diagnostic run of `measure_vote_cost_in_a_stall`, `<notes>`], so memory grows by up to 11 and 38 MB a second at 10 cuts a second. Before the cut is final, only the resume (5.3) and an import at that cut, as its patch base (6.2), read the snapshot; thinning the snapshots like the ring while keeping every root would bound it (@chunks-reviewer's note on 3aa8180d) | WS-state; whether M1 needs it, @coordinator-opus |
 
 Settled since v0.2:
 - **The cut grid** (was O2): cuts lie at multiples of K, the cut interval in frames (5.3).
@@ -898,6 +917,8 @@ Settled since v0.2:
   (2.1).
 - **A vote's re-step resumes from a held root** whose cut's entries match, on the same lineage (was O13; 5.3): the
   pe-replica half of @item:primordial-engine/finality-stall-past-the-lag-cap-with-no-lead-n-2.
+- **Held roots in a long stall are thinned** like the ring's keyframes, with every voted root kept (was O19; 4.1;
+  @coordinator-opus).
 - **The hands** follow world-model.md 8.1: the speed cap, with a hand faster than the cap moving at the cap (option
   (b), @coordinator-opus); the teleport distance; a held object never carried through a wall by a
   trailing placement; and the hold bound (3.3).

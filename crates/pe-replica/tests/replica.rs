@@ -1300,3 +1300,97 @@ fn a_vote_never_resumes_from_a_root_held_off_the_grid() {
     assert_eq!(Some(at_24), clean.live_root(Frame(24)));
     assert_eq!(cost, K, "from the root held at 16, not the one at 20");
 }
+
+/// In a long stall the replica keeps every voted root but only some snapshots (4.1, was O19): every voted cut of the
+/// newest four cut intervals, then two per doubling of age, by the ring's policy over the cut grid. Over 124 votes it
+/// never holds more than that bound, each vote still re-steps one cut interval from the previous one, and every root
+/// is the full re-step's.
+#[test]
+fn a_long_stall_holds_logarithmically_many_snapshots() {
+    let to = 1000;
+    let (clean, _) = reference(to);
+    let (mut a, mut s, _) = with_push_at_10(to);
+    let all = scene();
+    let before = a.held_count();
+    let young = 4 * K;
+    for (h, f) in (16..=to).step_by(K as usize).enumerate() {
+        let (cost, root) = vote(&mut a, &mut s, &cut(&all, h as u64 + 2, f));
+        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        if h > 0 {
+            assert_eq!(cost, K, "the vote at {f} resumes from the previous one");
+        }
+        // The newest five cuts (ages 0 to 4K), then at most two per band of age past them.
+        let age = f - 16;
+        let bands = if age < young { 0 } else { (age / young).ilog2() as usize + 1 };
+        assert!(a.held_count() <= before + 5 + 2 * bands, "{} held at {f}, {bands} bands", a.held_count());
+    }
+    assert!(a.held_count() <= before + 15, "15 snapshots at most for 124 votes: {}", a.held_count());
+}
+
+/// A voted cut whose snapshot was thinned (4.1) has no tree to diff against, so rung 2 fetches every leaf
+/// (pe-diverge's ladder), and an import at that cut takes the empty state as its base (6.2): a patch with no records
+/// fails there, and the full transfer lands; its root keeps its snapshot through the next vote's thinning. Where the
+/// snapshot stays, the same empty patch lands on it.
+#[test]
+fn an_import_at_a_cut_whose_snapshot_was_thinned_takes_the_full_transfer() {
+    let (mut good, mut gs) = reference(112);
+    let stalled = || {
+        let (mut r, mut s, _) = with_push_at_10(112);
+        let all = scene();
+        let mut roots = BTreeMap::new();
+        for (h, f) in (16..=112).step_by(K as usize).enumerate() {
+            let c = cut(&all, h as u64 + 2, f);
+            let root = r.root_at_cut(&c, &mut s).expect("a root");
+            roots.insert(f, (c, root));
+        }
+        (r, s, roots)
+    };
+    let empty = |mut i: CutImport| {
+        i.records.clear();
+        i.physics = None;
+        i
+    };
+    let (mut a, mut s, roots) = stalled();
+    let (c24, r24) = roots[&24].clone();
+    assert!(a.tree(&r24).is_none() && a.physics_image(&r24).is_none(), "the snapshot at 24 is thinned");
+    assert!(a.tree(&roots[&112].1).is_some(), "the newest stays");
+    let full = import_from(&mut good, &mut gs, &c24);
+    assert_eq!(full.target_root, r24, "my root at 24 is the donor's");
+    let got = a.import_at_cut(&GroupSel::Domain, empty(full.clone()), &mut s);
+    assert!(matches!(got, Err(ImportError::RootMismatch { .. })), "no base to patch: {got:?}");
+    assert_eq!(import_until_done(&mut a, &mut s, &full, 112).0, r24);
+    // The next vote thins the snapshots again, and my import's root keeps its own: an import clears my votes, and its
+    // root is kept as my last import's.
+    a.advance(Frame(120), &mut s);
+    vote(&mut a, &mut s, &cut(&scene(), 15, 120));
+    assert!(a.tree(&r24).is_some(), "the imported root keeps its snapshot");
+    let (mut b, mut bs, roots) = stalled();
+    let (c112, r112) = roots[&112].clone();
+    let patch = empty(import_from(&mut good, &mut gs, &c112));
+    assert_eq!(patch.target_root, r112);
+    assert_eq!(import_until_done(&mut b, &mut bs, &patch, 112).0, r112, "my own snapshot is the base");
+}
+
+/// A root split's reference member serves its root at the split's cut while the episode lasts (divergence.md 5,
+/// 11.1), so a cut a rung-1 replay was asked for keeps its snapshot as the stall thins the others (4.1). Here the
+/// replay at 40 runs from `Cv` at 8 and repairs the live history, and the votes go on to 112.
+#[test]
+fn a_root_split_s_cut_keeps_its_snapshot_while_the_stall_thins_the_rest() {
+    let (clean, _) = reference(112);
+    let (mut a, mut s, _) = with_push_at_10(112);
+    let all = scene();
+    let at_8 = clean.live_root(Frame(8)).expect("live");
+    assert_eq!(a.finalize(&FinalCut { cut: cut(&all, 1, 8), root: at_8, voters: vec![] }, &mut s), Finalized::Agreed);
+    let mut roots = BTreeMap::new();
+    for (h, f) in (16..=112).step_by(K as usize).enumerate() {
+        let c = cut(&all, h as u64 + 2, f);
+        if f == 40 {
+            assert_eq!(a.replay_to(&c, &mut s), clean.live_root(Frame(40)).ok_or(RootError::NotKept), "rung 1");
+        }
+        let (_, root) = vote(&mut a, &mut s, &c);
+        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        roots.insert(f, root);
+    }
+    assert!(a.tree(&roots[&40]).is_some() && a.physics_image(&roots[&40]).is_some(), "the split's cut is served");
+    assert!(a.tree(&roots[&56]).is_none(), "a cut off the alignment is thinned");
+}
