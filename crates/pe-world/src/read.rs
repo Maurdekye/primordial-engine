@@ -253,6 +253,12 @@ impl WorldSnapshot {
         self.store.row_version(desc.id(), id).map(|v| v.tag())
     }
 
+    /// A row's instance tag by component id, for a component whose name doesn't single it out (every script's tag is
+    /// named `pe.tag`; @api-eng mff8fbd02c283); `None` if the object has no such row.
+    pub fn row_tag_of(&self, id: ObjectId, component: ComponentId) -> Option<u128> {
+        self.store.row_version(component, id).map(|v| v.tag())
+    }
+
     /// The object's world transform, or `None` if it has no `Transform` or its composed position leaves the range.
     pub fn world_transform(&self, id: ObjectId) -> Option<WorldTransform> {
         self.store.world_transform(id)
