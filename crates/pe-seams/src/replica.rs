@@ -528,6 +528,13 @@ pub trait Tree {
     fn object_hashes(&self, ids: &[ObjectId]) -> Vec<(ObjectId, Option<Hash>)>;
     /// Rehash from the rows and tables alone, ignoring every cached hash (@diverge-eng's R-H3).
     fn verify(&self) -> Result<(), Mismatch>;
+    /// The bytes of the inline-class blobs (world-model.md 3.4: 1 to 256 bytes) that these leaves' rows reference,
+    /// as far as this machine has them, in ascending order of hash: what a [`CutImport`]'s `blobs` carries with
+    /// [`Tree::export`]'s records (S2 v1.8). None by default.
+    fn export_blobs(&self, keys: &[LeafKey]) -> Vec<Bytes> {
+        let _ = keys;
+        Vec::new()
+    }
 }
 
 /// One domain's physics at a root: its canonical transfer, checked against the root's `physics_global` before use
@@ -553,6 +560,9 @@ pub struct CutImport {
     pub absent: Vec<LeafKey>,
     /// The whole physics image, when bound bodies are in the import.
     pub physics: Option<PhysicsImage>,
+    /// The bytes of the inline-class blobs the imported rows reference (world-model.md 3.4; S2 v1.8): from
+    /// [`Tree::export_blobs`], in ascending order of hash, none twice. Each must be one an imported row references.
+    pub blobs: Vec<Bytes>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -575,6 +585,12 @@ pub enum ImportError {
     /// The re-simulation to the present did not fit in this call's budget and is under way: call again with the same
     /// import on a later tick.
     Pending,
+    /// The inline blob at this index of `blobs` is not one an imported row references, is not of the inline class, or
+    /// is out of order (S2 v1.8; world-model.md 3.4).
+    BadBlob(usize),
+    /// An imported row's inline-class simulation blob is neither in `blobs` nor on this machine: without it the
+    /// world could step differently here, so the import is refused (S2 v1.8; world-model.md 3.4).
+    MissingBlob(Hash),
 }
 
 // ---- the trait -----------------------------------------------------------------------------------------------------

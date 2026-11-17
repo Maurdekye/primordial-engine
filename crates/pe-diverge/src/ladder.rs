@@ -1347,7 +1347,7 @@ impl Diverge {
             Some(t) => t.export(&rep.leaves),
             None => Vec::new(),
         };
-        let import = CutImport {
+        let import = CutImport { blobs: vec![],
             cut: rep.cut.clone(),
             target_root: rep.target,
             records: rep.records.clone(),
