@@ -717,6 +717,24 @@ mod tests {
         let m = "[package]\nname = \"lamp-x\"\nversion = \"0\"\n[dependencies]\nname = \"no\"\n";
         assert_eq!(super::package_name(m).as_deref(), Some("lamp-x"));
     }
+
+    #[test]
+    fn a_missing_part_is_a_row_of_the_listing() {
+        use std::path::Path;
+        // Next to the test binary, in the target dir: no working files on the system drive.
+        let exe = std::env::current_exe().unwrap();
+        let root = exe.parent().unwrap().join(format!("pe-logic-listing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/tool"), b"abc").unwrap();
+        std::fs::write(root.join("bin/tool.pdb"), b"symbols").unwrap();
+        let list = super::files_listing(&root, &[Path::new("bin"), Path::new("lib/rustlib/x/bin/gcc-ld")]).unwrap();
+        let rows: Vec<&str> = list.lines().collect();
+        assert_eq!(rows.len(), 2, "{list}");
+        assert!(rows[0].starts_with("bin/tool 3 "), "{list}");
+        assert_eq!(rows[1], "lib/rustlib/x/bin/gcc-ld missing");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// Why a voter cannot attest a version: `BuildFailed`'s reason (logic.md 6.2a item 2). An enum and hashes go into
@@ -1090,4 +1108,236 @@ pub fn build_identity(tc: &Toolchain, sdk: &Path) -> Result<pe_core::Hash, Build
         lp(&pe_core::Hash::of("pe.logic.build.file", &bytes).0);
     }
     Ok(pe_core::Hash::of("pe.logic.build", &b))
+}
+
+impl Failed {
+    /// Whether this failure means 6.2b's prevention has a gap, so the machine saves a bug bundle
+    /// ([`save_bug_bundle`]): a `Mismatch` (it survived the clean rebuild), or a `Compile` or `Refused` failure on a
+    /// version another member attested, which only the caller knows (`attested_by_another`). `Local` and `Cap` are
+    /// this machine's own and are not bundled.
+    pub fn wants_bundle(&self, attested_by_another: bool) -> bool {
+        match self.reason {
+            FailReason::Mismatch => true,
+            FailReason::Compile | FailReason::Refused => attested_by_another,
+            FailReason::Local | FailReason::Cap => false,
+        }
+    }
+}
+
+/// Saves a bug bundle (logic.md 6.2b) in a new folder under `into` and returns its path, for the caller to tell the
+/// user where. It holds what is needed to find the gap, and is local only: nothing of it goes into an entry.
+/// - `source.pe-src`: the archive, as the row carries it;
+/// - `report.txt`: the reason and attempts, `author_module` and this machine's module hash, B, the build service's
+///   and pe-logic's result versions, the toolchain's release lines, the OS, architecture and CPU, then the last
+///   error in full (the compiler's whole output for `Compile` and `Refused`);
+/// - `module.wasm`: the module this machine built, before metering, for a `Mismatch`;
+/// - `deps/`: rustc's dep-info files from the last build;
+/// - `toolchain-files.txt`: the size and hash of every file of the toolchain a build runs (`bin`, the files directly
+///   in `lib`, the wasm32 std, and `lib/rustlib/<host>/bin`, where rust-lld lives), so two machines' bundles show
+///   which file differs; `sdk-files.txt`: pe-sdk's files likewise.
+///
+/// `target_dir` is the one the failed build used. A part that cannot be gathered is noted in `report.txt` instead;
+/// only a folder or file that cannot be written fails the call.
+pub fn save_bug_bundle(
+    tc: &Toolchain,
+    into: &Path,
+    archive: &[u8],
+    author_module: pe_core::Hash,
+    failed: &Failed,
+    sdk: &Path,
+    target_dir: &Path,
+) -> Result<PathBuf, BuildError> {
+    let io = |p: &Path, e: std::io::Error| BuildError::Io(format!("{}: {e}", p.display()));
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let short: String = author_module.0[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let stem = format!("bug-{short}-{secs}");
+    std::fs::create_dir_all(into).map_err(|e| io(into, e))?;
+    // `create_dir` fails on a folder that exists, so two bundles made at once (two workers, or two versions whose
+    // hashes share 8 bytes, in the same second) never share one.
+    let mut dir = into.join(&stem);
+    let mut n = 1;
+    loop {
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                n += 1;
+                dir = into.join(format!("{stem}-{n}"));
+            }
+            Err(e) => return Err(io(&dir, e)),
+        }
+    }
+    let write = |name: &str, bytes: &[u8]| std::fs::write(dir.join(name), bytes).map_err(|e| io(&dir.join(name), e));
+    write("source.pe-src", archive)?;
+
+    let mut notes: Vec<String> = Vec::new();
+    let release = gathered(&mut notes, "toolchain release", toolchain_release(tc));
+    let b = gathered(&mut notes, "build identity", build_identity(tc, sdk));
+    let out = target_dir.join("wasm32-unknown-unknown").join("release");
+    let module = out.join("script.wasm");
+    if failed.reason == FailReason::Mismatch {
+        if module.is_file() {
+            std::fs::copy(&module, dir.join("module.wasm")).map_err(|e| io(&module, e))?;
+        } else {
+            notes.push(format!("no module at {}", module.display()));
+        }
+    }
+    let deps = out.join("deps");
+    match std::fs::read_dir(&deps) {
+        Ok(entries) => {
+            let to = dir.join("deps");
+            std::fs::create_dir_all(&to).map_err(|e| io(&to, e))?;
+            for e in entries.flatten() {
+                if e.path().extension().is_some_and(|x| x == "d") {
+                    std::fs::copy(e.path(), to.join(e.file_name())).map_err(|err| io(&e.path(), err))?;
+                }
+            }
+        }
+        Err(e) => notes.push(format!("dep-info at {}: {e}", deps.display())),
+    }
+    match toolchain_listing(tc) {
+        Ok(list) => write("toolchain-files.txt", list.as_bytes())?,
+        Err(e) => notes.push(format!("toolchain files: {e}")),
+    }
+    match files_listing(sdk, &[Path::new("Cargo.toml"), Path::new("src")]) {
+        Ok(list) => write("sdk-files.txt", list.as_bytes())?,
+        Err(e) => notes.push(format!("pe-sdk files: {e}")),
+    }
+
+    let hex = |h: Option<pe_core::Hash>| h.map(|h| h.to_string()).unwrap_or_else(|| "none".into());
+    let mut r = String::new();
+    r.push_str("pe-logic bug bundle (docs/spec/logic.md 6.2b). Local only: nothing here was sent to the session.\n");
+    r.push_str(
+        "It holds this machine's absolute paths (in the error below and in deps/), which can include the user's \
+         name: read it before handing it to anyone.\n",
+    );
+    r.push_str(&format!("reason: {:?}\nattempts: {}\n", failed.reason, failed.attempts));
+    r.push_str(&format!("author_module: {author_module}\nthis machine's module: {}\n", hex(failed.module)));
+    r.push_str(&format!("build identity B: {}\n", hex(b)));
+    r.push_str(&format!("build service version: {BUILD_SERVICE_VERSION}\nresult version: {}\n", crate::RESULT_VERSION));
+    let release = release.unwrap_or_else(|| "unknown".into());
+    r.push_str(&format!("toolchain:\n  {}\n", release.replace('\n', "\n  ")));
+    r.push_str(&format!("os: {} {}\ncpu: {}\n", std::env::consts::OS, std::env::consts::ARCH, cpu_name()));
+    for n in &notes {
+        r.push_str(&format!("not gathered: {n}\n"));
+    }
+    r.push_str("---- the last error, in full ----\n");
+    r.push_str(&failed.detail);
+    r.push('\n');
+    write("report.txt", r.as_bytes())?;
+    Ok(dir)
+}
+
+/// The value, or a note in the bundle's report saying why it is missing.
+fn gathered<T>(notes: &mut Vec<String>, what: &str, r: Result<T, BuildError>) -> Option<T> {
+    r.map_err(|e| notes.push(format!("{what}: {e}"))).ok()
+}
+
+/// The CPU's name as the OS reports it, or "unknown".
+fn cpu_name() -> String {
+    if let Some(v) = std::env::var_os("PROCESSOR_IDENTIFIER") {
+        return v.to_string_lossy().into_owned();
+    }
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|t| {
+            t.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split(':').nth(1)).map(|v| v.trim().into())
+        })
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// `path size hash` for every file under each of `parts` (a file or a folder below `root`; `.pdb` files in a folder
+/// left out), and `path missing` for a part that is neither, sorted, paths relative to `root` with `/` separators.
+fn files_listing(root: &Path, parts: &[&Path]) -> Result<String, BuildError> {
+    let mut rows = Vec::new();
+    for part in parts {
+        let at = root.join(part);
+        if at.is_file() {
+            rows.push(file_row(root, &at)?);
+        } else if at.is_dir() {
+            // Debug symbols are not part of a build.
+            for (name, _) in tree_sizes(&at)?.into_iter().filter(|(n, _)| !n.ends_with(".pdb")) {
+                rows.push(file_row(root, &at.join(&name))?);
+            }
+        } else {
+            // A part this machine lacks shows up in a diff of two machines' listings.
+            rows.push(format!("{} missing", slash_path(part)));
+        }
+    }
+    rows.sort();
+    Ok(rows.join("\n") + "\n")
+}
+
+fn file_row(root: &Path, file: &Path) -> Result<String, BuildError> {
+    use std::io::Read;
+    let io = |e: std::io::Error| BuildError::Io(format!("{}: {e}", file.display()));
+    let mut f = std::fs::File::open(file).map_err(io)?;
+    let mut h = pe_core::commit::Hasher::new("pe.logic.bundle.file");
+    let mut buf = vec![0u8; 1 << 20];
+    let mut size = 0u64;
+    loop {
+        let n = f.read(&mut buf).map_err(io)?;
+        if n == 0 {
+            break;
+        }
+        size += n as u64;
+        h.write(&buf[..n]);
+    }
+    Ok(format!("{} {size} {}", slash_path(file.strip_prefix(root).unwrap_or(file)), h.finish()))
+}
+
+/// `path` with `/` between its parts, on every OS.
+fn slash_path(path: &Path) -> String {
+    let parts: Vec<String> = path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    parts.join("/")
+}
+
+/// [`files_listing`] of the toolchain files a build runs, the minimal set of `iter_bench_toolchain_min.py`
+/// (439.8 MiB on Windows, against 969 MiB for every file of the same folders): cargo, rustc and rustc's own libraries
+/// (`rustc_driver`, `std`, and on Linux everything directly in `lib`, LLVM's library among them), the host's
+/// `rust-lld` and `gcc-ld`, and the wasm32 std. Debug symbols (`.pdb`) and tools no build runs (clippy, rustdoc,
+/// llvm-tools) are left out.
+fn toolchain_listing(tc: &Toolchain) -> Result<String, BuildError> {
+    let sysroot = PathBuf::from(run_rustc(tc, &["--print", "sysroot"])?.trim());
+    let vv = run_rustc(tc, &["-vV"])?;
+    let host = vv.lines().find_map(|l| l.strip_prefix("host:")).map(str::trim).unwrap_or_default().to_owned();
+    let mut parts = vec![PathBuf::from("lib/rustlib/wasm32-unknown-unknown")];
+    let lib_like = |n: &str| [".dll", ".so", ".dylib"].iter().any(|x| n.ends_with(x) || n.contains(&format!("{x}.")));
+    let runs = |n: &str| {
+        let stem = n.strip_suffix(".exe").unwrap_or(n);
+        stem == "cargo"
+            || stem == "rustc"
+            || (lib_like(n)
+                && ["rustc_driver-", "librustc_driver-", "std-", "libstd-"].iter().any(|p| n.starts_with(p)))
+    };
+    let files_in = |dir: &Path| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.ends_with(".pdb"))
+            .collect()
+    };
+    for n in files_in(&sysroot.join("bin")) {
+        if runs(&n) {
+            parts.push(PathBuf::from("bin").join(n));
+        }
+    }
+    for n in files_in(&sysroot.join("lib")) {
+        if lib_like(&n) {
+            parts.push(PathBuf::from("lib").join(n));
+        }
+    }
+    if !host.is_empty() {
+        let hb = PathBuf::from(format!("lib/rustlib/{host}/bin"));
+        for n in files_in(&sysroot.join(&hb)) {
+            if n.strip_suffix(".exe").unwrap_or(&n) == "rust-lld" {
+                parts.push(hb.join(n));
+            }
+        }
+        parts.push(hb.join("gcc-ld"));
+    }
+    let refs: Vec<&Path> = parts.iter().map(PathBuf::as_path).collect();
+    files_listing(&sysroot, &refs)
 }
