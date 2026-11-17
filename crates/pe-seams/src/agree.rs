@@ -362,6 +362,20 @@ pub enum VoidReason {
     LastMember,
 }
 
+/// (S3 v1.8; agreement.md 3, stamp-ahead.) One member's report of how late this member's own entries reach it: the
+/// 95th percentile of their arrival lateness, in frames, over a window of this member's current chain's recent
+/// entries, negative when they arrive before their stamps (@engine-architect's Medium on 0238ca46), and `seq`, the
+/// seq of the entry whose lateness is the percentile. Raw: the reporter can't know the
+/// lead the entries were stamped with, so the driver corrects each report by the lead it stamped entry `seq` with
+/// (@engine-architect's plan; @design-reviewer's M1 on 0238ca46). Not signed (a hint from an
+/// authenticated link): a faulty reporter can inflate it, so the driver clamps the lead it derives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LatenessReport {
+    pub reporter: MemberKey,
+    pub frames: i64,
+    pub seq: u64,
+}
+
 /// What the driver reads for statistics and the harness's queries (DESIGN.md 10, S3.6).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgreeStats {
@@ -421,6 +435,14 @@ pub trait Agreement: EntrySource + Send {
     /// driver waits for it, with a visible bound, before it quits. `true` when there is nothing to wait for.
     fn leave_settled(&self) -> bool {
         true
+    }
+
+    /// (S3 v1.8; agreement.md 3, stamp-ahead.) The other members' latest reports on how late this member's current
+    /// chain reaches them, one per reporter that has a full enough window, sorted by reporter. The driver stamps its
+    /// own entries ahead from them when they pass the target the receivers' lag absorbs (app.md). Empty when nothing
+    /// is reported, and in a source that doesn't measure.
+    fn own_lateness(&self) -> Vec<LatenessReport> {
+        Vec::new()
     }
 
     fn stats(&self) -> AgreeStats;
