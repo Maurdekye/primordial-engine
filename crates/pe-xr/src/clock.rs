@@ -52,6 +52,8 @@ pub fn now() -> HostTime {
 
 /// `CLOCK_MONOTONIC` as a `timespec`, to host nanoseconds.
 #[cfg(unix)]
+// `time_t` and `c_long` are 32-bit on some unix targets, so the casts widen there and are no-ops on 64-bit Linux.
+#[allow(clippy::unnecessary_cast)]
 pub fn timespec_to_host(ts: &libc::timespec) -> HostTime {
     HostTime(ts.tv_sec as i64 * 1_000_000_000 + ts.tv_nsec as i64)
 }
