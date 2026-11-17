@@ -233,6 +233,37 @@ fn a_joiner_is_welcomed_and_every_lane_works_both_ways() {
     assert!((15_000_000..60_000_000).contains(&s.srtt_ns) && s.budget_bps > 0, "{s:?}");
 }
 
+/// More stream messages than the peer's stream limit (`N_streams_in`, 64) all arrive, each once: a message whose
+/// stream quinn can't open yet waits for the peer's credit (3.5), it is never dropped (@engine-architect's finding).
+#[test]
+fn more_stream_messages_than_the_peer_s_stream_limit_all_arrive_once() {
+    let (mut net, a, b) = joined();
+    let (ka, kb) = (net.nodes[a].key, net.nodes[b].key);
+    const N: usize = 200;
+    for i in 0..N {
+        for (lane, fill) in [(Lane::Repair, 1u8), (Lane::Bulk, 2)] {
+            // Each message is distinct by its first bytes, so a duplicate would show.
+            let mut m = vec![fill; 64];
+            m[..4].copy_from_slice(&(i as u32).to_le_bytes());
+            net.nodes[a].core.send(kb, lane, Bytes::from(m.clone()));
+            net.nodes[b].core.send(ka, lane, Bytes::from(m));
+        }
+    }
+    net.run(4_000);
+    for i in [a, b] {
+        let got: BTreeMap<(Lane, Vec<u8>), usize> = net.nodes[i].got.iter().fold(BTreeMap::new(), |mut m, r| {
+            *m.entry((r.lane, r.bytes.to_vec())).or_default() += 1;
+            m
+        });
+        for lane in [Lane::Repair, Lane::Bulk] {
+            let n = got.iter().filter(|((l, _), _)| *l == lane).count();
+            assert_eq!(n, N, "node {i}: {n} distinct {lane:?} messages of {N}");
+        }
+        assert!(got.values().all(|&c| c == 1), "node {i}: a message arrived twice");
+        assert_eq!(net.nodes[i].got.len(), 2 * N, "node {i}");
+    }
+}
+
 #[test]
 fn each_guard_refuses_with_its_reason_and_the_joiner_is_told() {
     let mut net = Net::new();
