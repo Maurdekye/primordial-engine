@@ -184,6 +184,49 @@ impl VoidKind {
     }
 }
 
+/// Why a voter's build of a pending version failed (logic.md 6.2a item 2), after its local retries (6.2b). Hashes
+/// and this code only, never compiler output: the entry goes to every member and stays in the log, and a compiler's
+/// message can carry local paths. The codes are consensus (the op's wire form and the hashed pending row), matching
+/// S5's `BuildFailure` (@engine-architect md6a0c4b3ddfe, @world-model m97880a492d78).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum BuildFailure {
+    /// The source does not compile.
+    Compile = 1,
+    /// The build read something outside its archive and pe-sdk (6.2b's dep-info check).
+    Refused = 2,
+    /// The build went past the memory cap (6.2a item 5).
+    Cap = 3,
+    /// It built, but its module hash is not the registered `author_module`, after one rebuild from a clean folder.
+    Mismatch = 4,
+    /// A fault of this machine's (an I/O error, a crashed tool), after two retries.
+    Local = 5,
+}
+
+impl BuildFailure {
+    pub const ALL: [BuildFailure; 5] =
+        [BuildFailure::Compile, BuildFailure::Refused, BuildFailure::Cap, BuildFailure::Mismatch, BuildFailure::Local];
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(b: u8) -> Option<BuildFailure> {
+        BuildFailure::ALL.into_iter().find(|f| f.code() == b)
+    }
+
+    /// A reader's words for it (pe-api's history).
+    pub fn name(self) -> &'static str {
+        match self {
+            BuildFailure::Compile => "compile error",
+            BuildFailure::Refused => "refused input",
+            BuildFailure::Cap => "memory cap",
+            BuildFailure::Mismatch => "module mismatch",
+            BuildFailure::Local => "local fault",
+        }
+    }
+}
+
 /// A script's pending commit (logic.md 6.2a; 7.9): the version a `CommitScript` wrote, which runs nowhere until a
 /// quorum of the voters at its commit frame has attested its module. Kept, once voided, as the record of why, until
 /// the asset's next commit replaces it.
@@ -207,6 +250,10 @@ pub struct PendingCommit {
     pub voters: Vec<MemberKey>,
     /// The counted attestations, one per voter, in key order, each with its stamp. The author's own is the commit's.
     pub attested: Vec<(MemberKey, Frame)>,
+    /// The counted `BuildFailed`s, one per voter, in key order, each with its stamp and reason; never a voter that has
+    /// a counted attestation (a later success supersedes a failure while the commit is pending; a failure after a
+    /// success is refused).
+    pub failed: Vec<(MemberKey, Frame, BuildFailure)>,
     /// Set when voided: the frame and why. A voided commit no longer counts attestations.
     pub void: Option<(Frame, VoidKind)>,
 }
@@ -222,14 +269,27 @@ impl PendingCommit {
         self.attested.len() >= quorum(self.voters.len())
     }
 
-    /// The shared void rule (logic.md 6.2a item 4): the quorum can no longer be reached, because the counted
-    /// attestations plus the voters at `c` who are still members (`is_member`) and have not attested fall short of
-    /// `q`. The voters stay those at `c`, so an attestation given before a leave still counts. `BuildFailed` adds
-    /// "nor failed" to the second count when it lands.
+    /// The shared void rule for a leave and a failed build (logic.md 6.2a item 4): the quorum can no longer be
+    /// reached, because the counted attestations plus the voters at `c` who are still members (`is_member`) and have
+    /// neither attested nor failed fall short of `q`. The voters stay those at `c`, so an attestation given before a
+    /// leave still counts.
     pub fn quorum_unreachable(&self, is_member: impl Fn(&MemberKey) -> bool) -> bool {
-        let attested = |k: &MemberKey| self.attested.iter().any(|(a, _)| a == k);
-        let could = self.voters.iter().filter(|k| !attested(k) && is_member(k)).count();
+        let could = self.voters.iter().filter(|k| !self.has_attested(k) && !self.has_failed(k) && is_member(k)).count();
         self.attested.len() + could < quorum(self.voters.len())
+    }
+
+    pub fn has_attested(&self, k: &MemberKey) -> bool {
+        self.attested.iter().any(|(a, _)| a == k)
+    }
+
+    pub fn has_failed(&self, k: &MemberKey) -> bool {
+        self.failed.iter().any(|(a, _, _)| a == k)
+    }
+
+    /// Who could not build it and why, in key order: the author's notice on a void (Q1 (c), user ruling
+    /// mbd847a64c831).
+    pub fn failures(&self) -> Vec<(MemberKey, BuildFailure)> {
+        self.failed.iter().map(|&(k, _, r)| (k, r)).collect()
     }
 
     fn write(&self, b: &mut Vec<u8>) {
@@ -255,6 +315,12 @@ impl PendingCommit {
         for (k, f) in &self.attested {
             b.extend_from_slice(&k.0);
             b.extend_from_slice(&f.0.to_le_bytes());
+        }
+        b.extend_from_slice(&(self.failed.len() as u32).to_le_bytes());
+        for (k, f, r) in &self.failed {
+            b.extend_from_slice(&k.0);
+            b.extend_from_slice(&f.0.to_le_bytes());
+            b.push(r.code());
         }
         match self.void {
             None => b.push(0),
@@ -312,6 +378,21 @@ impl PendingCommit {
             }
             attested.push((k, f));
         }
+        let n = u32::from_le_bytes(r.arr()?) as usize;
+        if n > r.0.len() / 41 {
+            return None;
+        }
+        let mut failed: Vec<(MemberKey, Frame, BuildFailure)> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let k = MemberKey(r.arr()?);
+            let f = Frame(u64::from_le_bytes(r.arr()?));
+            let why = BuildFailure::from_code(r.arr::<1>()?[0])?;
+            let after = failed.last().is_none_or(|(l, _, _)| l.0 < k.0);
+            if !after || !voters.contains(&k) || attested.iter().any(|(a, _)| *a == k) {
+                return None;
+            }
+            failed.push((k, f, why));
+        }
         let void = match r.arr::<1>()?[0] {
             0 => None,
             k => {
@@ -331,6 +412,7 @@ impl PendingCommit {
             deadline,
             voters,
             attested,
+            failed,
             void,
         })
     }

@@ -92,7 +92,7 @@ fn touched(tx: Option<&Transaction>, outcome: &WorldOutcome, snap: &WorldSnapsho
             }
             // A script's ops create, delete and move nothing; an activation's re-key reaches watch through S5's
             // `FrameView.activations`, not an entry (@coordinator-opus m5dcad30c0dd8).
-            Op::Register { .. } | Op::CommitScript { .. } | Op::AttestBuild { .. } => {}
+            Op::Register { .. } | Op::CommitScript { .. } | Op::AttestBuild { .. } | Op::BuildFailed { .. } => {}
         }
     }
     t
@@ -119,7 +119,7 @@ pub fn touched_ids(tx: Option<&Transaction>, outcome: &WorldOutcome) -> Vec<Obje
             | Op::SetField { id, .. }
             | Op::SetRow { id, .. }
             | Op::RemoveRow { id, .. } => at(id),
-            Op::Register { .. } | Op::CommitScript { .. } | Op::AttestBuild { .. } => None,
+            Op::Register { .. } | Op::CommitScript { .. } | Op::AttestBuild { .. } | Op::BuildFailed { .. } => None,
         });
     }
     ids
