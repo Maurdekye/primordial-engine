@@ -53,6 +53,10 @@ calendar time, not writing.
   - M3, sessions that survive real life: join, leave, splits and merges, thin links, guarded mode, eight players;
   - M4, regions under the Open World Orchestrator's loading rule;
   - M5, the platform.
+- **The MVP (draft amendment, section 10).** The user put programmable physics, character controllers, health,
+  brought code, avatars with fallbacks, and GPU particles and details in the MVP. Section 10 places
+  them in M2, M3 and M5, and proposes that the MVP end with M5, with M4 moved after it. The user confirms the
+  boundary.
 - **M0 comes before M1, and it is short.** It lays the ground every workstream needs: the archive, one small interface
   crate (the seams), the gate on hosted runners, the first model of agreed cuts, and four feasibility checks.
 - **What is kept, ported and archived.**
@@ -75,8 +79,9 @@ calendar time, not writing.
   - The agreed-cut rules are written first as a model that a checker exhausts at small sizes.
   - The review's three probes are tests from the first week.
   - Every safety rule has a control that bites: a mutation that a test must catch.
-- **Every ruling of the user's carries over.** Section 5 says where each lands. The design phase is closed. No point
-  is open with the user: file 20 answered the last one (after two branches merge, both sides' admins are admins).
+- **Every ruling of the user's carries over.** Section 5 says where each lands. The design phase is closed. File 20
+  answered the last point that was open (after two branches merge, both sides' admins are admins).
+  Since 2026-11-17 the MVP boundary is open with the user (section 10.5).
 - **All 27 live docket items are triaged:** 17 carry and 10 park.
 - **Every decision the plan asked for has been made.** The user answered U1-U4, and the coordinator ruled C1-C13 with
   conditions (section 9).
@@ -507,8 +512,9 @@ sections 6.1-6.6):
     - The agent interface (pe-api, MCP) offers no "move my user" action (locomotion, a teleport, or a bodiless
       member's view position) unless the owning user switches it on locally. It is a client setting, off by
       default, and nothing in the world depends on it.
-    - A world that wants no teleporting, or a speed limit, would get it as a locomotion setting for everyone: a
-      separate feature, not tied to agent powers and not scheduled.
+    - A world that wants no teleporting, or a speed limit, gets it by limiting avatars: a player's locomotion is
+      its avatar's controller, and a world that provides locomotion provides a set of avatars (
+      section 10). It isn't tied to agent powers.
   - **Governance acts are not bound:** removing a member, changing rights and the like, so an admin can stop a
     griefer without travelling.
   - **A claim whose object leaves its holder's range is dropped.**
@@ -1045,7 +1051,7 @@ All of the user's earlier requirements still apply. These are the ones the rewri
 | R10: full VR | pe-xr, in M1 |
 | R11 and the rulings on logic, shaders and assets as objects: copy-on-write ("b, 1 always"); linked scripts only when set up explicitly; scope U; plain Delete unlinks; an in-game editor, but not the main way | pe-world (M1) and pe-logic (M1-M2), from @item:primordial-engine/logic-shaders-and-assets-as-objects-unified-hier |
 | R14: several worlds, portals | M5 |
-| R15: replaceable physics | Hooks as systems, from M2. Whole-engine replacement is stated with its real limit: about 50-200 active bodies with rollback (file 02) |
+| R15: replaceable physics | **Superseded** by the user's per-object hooks (2026-11-17; section 10): every physics object's frames and collisions are hooked, and each hook starts as a null definition that calls the stock physics. There is no whole-engine replacement. From M2, after the hook-cost spike (10.3) |
 | R16 and R17: huge worlds; culling by size; avatar culling | M4, with the coordinate ruling |
 | R18: detect collapse and recover; keep congestion with the thin player | Covered by cuts, the link budget and the merge, in M3:<br>- a slow member keeps its vote, and nobody demotes it;<br>- cuts wait for a quorum, not for it, and its own view follows by state at cuts;<br>- a member diverged for more than 2 s merges with the main line;<br>- each link gets its own rate budget in pe-net;<br>- late actions past the tolerance are void, decided by the cut, and the engine sets the tolerance from measured links;<br>- "fewer than 0.01% dropped on acceptable connections" is measured |
 | The premise: distributed verification of a change record (answered "all current") | Cuts are the verified record, and the full record is kept. The order comes from the authors' frame stamps; the earlier change wins a conflict; each scale keeps its own record |
@@ -1080,8 +1086,8 @@ targets, answer 8) are all settled above.
 
 File 18's four questions are answered too (section 5.1).
 
-**Nothing is open with the user.** File 20 answered the last point: after two branches merge, both
-sides' admins are admins.
+**Open with the user since 2026-11-17:** section 10's MVP boundary (10.5) and its open points (10.6). Before that,
+file 20 answered the last point: after two branches merge, both sides' admins are admins.
 
 **One reading still to confirm:** the coordinator's reading of the merge against finality (a three-way merge at
 main's final frontier) has gone to the liaison so that the user can correct it. Model v2 checks it, with the
@@ -1200,6 +1206,204 @@ conditions shown:
 - cuts carry a line id;
 - the missing controls are named (section 4.4);
 - membership is re-founded per line at the one-minute mark (model v3).
+
+## 10. Amendment (draft, 2026-11-18): the MVP's programmable physics, controllers, avatars and GPU effects
+
+**Status:** a draft by @engine-architect for @fable-reviewer's review (@coordinator-opus). The coordinator takes the MVP boundary (10.5) to the user. Nothing here is authorized to build until
+the coordinator says so. M1 is untouched. Sizes are in this plan's units and are all inferred [I].
+
+### 10.1 What the user ruled
+
+The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `<notes>` and on
+@item:primordial-engine/player-programmable-physics-per-object-switches-f. In short:
+- **Physics is native, and players may change all of it** except the simulation rate, which stays fixed per world: gravity, friction, mass, forces and parameters, and new mechanics such as a spinning ball that
+  curves, objects that float, and drivable vehicles. Rules are per object. Whoever may write scripts may change an
+  object's physics.
+- **One form of hook**. Every physics object's collisions and simulation frames are
+  hooked. A hook starts as a "null definition": it gets the physics state, calls a function that is the stock physics,
+  and returns that function's result. A player edits it like a harmony patch: work before or after the stock call,
+  call it conditionally or several times, or drop it.
+- **A custom object hitting a stock one**: the stock object is pushed as if a stock object of a
+  standard mass hit it. The custom object gets the stock object's impulse back each step, and its collision hook may
+  react to it.
+- **Character controllers** use the same hooks: a modified physics for players that moves them and
+  keeps their collider upright unless replaced, for any locomotion, from first person to 6DOF flight, parkour and
+  third-person combat.
+  - The controller is a component of the player's avatar, which the player saves. It holds the locomotion methods and the player's health.
+  - Players choose their avatar, and so their controller. A world may restrict them to the default avatar or to its
+    own set, and that is all "custom locomotion" means; there is no separate locomotion-module system.
+- **Health**: built in and off by default, a template and a common interface for showing health,
+  dealing damage and receiving it, not a fixed system.
+- **Brought code runs**: "just like resonite, any player bringing in custom code can run that code".
+- **Fallback avatars**:
+  - every player has a primary avatar (anything) and a lightweight fallback: humanoid, a fixed number of skinned
+    meshes, a fixed set of materials and texture sizes, no logic, one strict format under a size limit;
+  - a world may restrict players to their fallbacks;
+  - the game offers to generate a missing fallback from the player's avatar, best effort, for about 90% of humanoid
+    avatars;
+  - each player may show others' fallbacks locally.
+- **GPU particles and instanced details**: fully programmable, like shaders, for
+  particles and for details such as grass, hair and terrain detail. They are visual only, since particle impacts in
+  game logic would need a host. GPU code needn't be Rust. @fable-reviewer reads that
+  the 100% Rust rule binds neither GPU code's language nor its compiler; the user hasn't confirmed that reading.
+- **Scope**: "place all this in the mvp".
+  - Fighting games are a lens for judging these systems, not a deliverable.
+  - Audio is not part of this ruling.
+- **Principles:** a development platform first, with social elements. Strangers day one (D21).
+
+### 10.2 The pieces, and what each needs
+
+1. **Physics as world state.** The world's gravity and each object's mass, centre of mass, friction, restitution,
+   damping and gravity scale become fields scripts may write. As with every other field, only agreed entries change
+   them, at frame boundaries. This lifts world-model.md's "No change mid-session in M1" for gravity. Box3D already
+   has the per-body setters [V, box3d-fork body/api.rs, e.g. `body_set_gravity_scale`]. Owners: WS-world, WS-state.
+2. **Step hooks.** Each simulation frame, an object's step hook gets its body's state. It may call `stock(state)`
+   (gravity, damping and integration) any number of times, and it returns what to apply. An object with no hook
+   installed takes the stock path and pays nothing. Needs:
+   - pe-logic host functions to read a body's state, apply forces and call the stock step;
+   - a call-out point in the fork's step, and S1 (10.3) to say whether it is per frame or per sub-step (4 a frame at
+     60 Hz [V, pe-physics config.rs]).
+
+   Owners: WS-logic, WS-state.
+3. **Collision hooks, and the rule for custom against stock.** Each step a contact lasts, the hook gets the contact
+   (the other object, point, normal and impulse) and may change how the contact acts on its own object. Needs:
+   - in the fork's contact solver, the user's rule for a custom object against a stock one;
+   - the fork's per-contact pre-solve callback [V, box3d-fork contact/mod.rs `pre_solve_fcn`], made deterministic
+     across worker counts (D2);
+   - S1's per-contact cost.
+4. **World queries for scripts.** Ray, sweep and overlap queries, deterministic, against the agreed state at the
+   frame. A controller's ground check and a vehicle's wheels need them. Owners: WS-state, WS-logic.
+5. **Joints and motors as components,** for vehicles: wheels, hinges and motors over the fork's joints. Owner:
+   WS-world.
+6. **Player-written shaders.** Shaders become world objects that each machine compiles, validates and runs under a
+   GPU budget. This lifts render.md 2's "User shaders are out of M1". They are visual only, so they never enter
+   agreement. Owner: WS-render.
+7. **A per-player agreed input.** Movement intent and buttons, every frame, as entries in the member's chain,
+   predicted by repetition, paced by pe-agree's backlog, and stamped ahead like hands (app.md 3.2). Owners: WS-agree,
+   WS-state, WS-xr.
+8. **The default avatar and its controller:**
+   - a capsule body with head and hands, under the member's avatar root (world-model.md 3.5);
+   - stock locomotion methods: walking, running, jumping, VR turning and 6DOF flight;
+   - the collider kept upright;
+   - health's interface, off by default.
+
+   It is built from pieces 2, 4 and 7. Owners: WS-xr, WS-logic, WS-world.
+9. **Health:** the template and the common interface (damage, healing, death and display events), off by default,
+   carried by the controller. Owner: WS-logic.
+10. **Avatars and fallbacks:**
+    - an avatar becomes a player's saved object, controller included, imported first from glTF and VRM (M5's
+      avatars track);
+    - fallbacks: the format and limits (not yet chosen); the world's avatar setting (any avatar, fallbacks only, or
+      the world's own); showing others' fallbacks locally; the automatic converter, which runs locally and outside the
+      simulation, and whose output passes the same format check.
+
+    Needs:
+    - blob transport, so meshes reach other machines
+      (@item:primordial-engine/blob-transport-the-bytes-of-names-and-meshes-ano);
+    - skinned meshes in pe-render;
+    - VR body tracking from the head and hands;
+    - identities (M5).
+
+    Owners: WS-render, WS-xr, WS-world.
+11. **Brought code:** a non-admin's modules, such as an avatar's controller, admitted through logic.md 6.2a's
+    attestation like any other code. Needs:
+    - a joiner that builds every active version first
+      (@item:primordial-engine/build-asymmetry-after-m1-a-member-that-can-t-bui);
+    - a fuel cap per player, so that one player's code can't stall the others' simulation.
+
+    Owner: WS-logic.
+12. **GPU particles and instanced details:** player-programmed compute and drawing, visual only. Needs player shaders
+    (piece 6) and S3's budgets. Owner: WS-render.
+
+**Seen through the lens**, and built only where the controller or the hooks need them anyway: input
+history visible to hooks, overlap queries (piece 4), and a per-object frame counter.
+
+### 10.3 Spikes, before any dates
+
+- **S1, the CPU cost of hooks** (WS-logic with WS-state; first in M2, before pieces 2 and 3). Measures:
+  - a WebAssembly step hook, compiled by Cranelift with M1's metering and NaN handling, on N bodies (10, 100, 500 and
+    2,000), once a frame and once a sub-step;
+  - two kinds of hook: a null definition (calls the stock step and returns its result), and a working hook (a Magnus
+    force, then buoyancy);
+  - a collision hook once a contact a step, at M contacts (100, 1,000 and 5,000);
+  - all of these under rollback at M1's measured re-simulation rate, and with eight members;
+  - what it costs to call out between the fork's parallel stages in a fixed order, which keeps results bit-identical
+    for every worker count (D2).
+
+  It runs in release on the desktop and on the laptop, the slow machine, in a quiet window. What it decides:
+  - whether step hooks run once a frame or once a sub-step. A hook's force held across sub-steps is a known trap;
+  - whether the collision hook runs inside the solver, or after the step with its reaction one step later
+    (@fable-reviewer's suggestion);
+  - how many hooked bodies and contacts a world may have within M1's bar, where the laptop is under 50 % busy.
+
+  The baseline is known [V, logic.md 5.2a]: M1's whole physics step compiled to WebAssembly cost 1.65-1.80 ms a
+  frame, against 0.31 ms native. A hook is far smaller, but it is called once per body.
+- **S2, the controller under rollback** (WS-state, early in M3): the default controller for eight players, with
+  inputs predicted by repetition, over thin links. It measures the cost per player and the visible error after a
+  mispredicted input.
+- **S3, the VR GPU budget** (WS-render with WS-xr, before pieces 6 and 12). It measures:
+  - the M1 world's GPU time per eye at the headset's rate on the desktop;
+  - the headroom left for particles and for instanced details, as counts;
+  - the desktop mode on the laptop's integrated GPU.
+
+  These set the GPU budgets that player shaders and effects run under, per world and per player.
+- **S4, the converter's libraries** (WS-render, a desk survey, before piece 10's converter): mesh reduction and
+  texture baking under the 100% Rust rule.
+
+### 10.4 Placement in M2-M5
+
+| Milestone | Adds | Size [I] |
+|---|---|---|
+| M2, authoring in depth | S1; pieces 1-5 (physics as state, step hooks, collision hooks with the custom-against-stock rule, world queries, joints and motors); S3, then piece 6 (player shaders) | 18-28 |
+| M3, sessions that survive real life | S2; piece 7 (the per-player input), pieces 8 and 9 (the default avatar and controller with health's interface); piece 12 (GPU particles and details), by WS-render in parallel; hooks with eight members, as acceptance | 12-18 |
+| M4, regions | Only a wording change: a world limits locomotion by limiting avatars | 0 |
+| M5, the platform | Pieces 10 and 11 (avatars as saved objects, fallbacks, the converter after S4, and brought code with custom controllers and health logic) | 10-15 |
+
+**Demos:**
+- **M2:** an agent writes a hook that makes a spun ball curve, and one that makes a raft float.
+- **M3:** eight players walk, jump and fly with the default controller, through rollback over thin links.
+- **M5:** a friend brings an avatar with its own controller into a world that allows it. In a world that allows only
+  fallbacks, the same friend appears as their fallback.
+
+**Acceptance**, each with a red control that must fail:
+- an object with no hook steps exactly as the stock physics does today;
+- a null-definition hook gives exactly the stock result;
+- a hooked world gives the same roots on every member and in the offline replay;
+- a custom object hitting a stock one moves the stock one as a stock object of the standard mass would. While they
+  touch, the custom object's hook sees the impulse each step;
+- particle and detail programs can't change the simulation: they have no path that writes to it;
+- a player restricted to fallbacks shows others only the fallback.
+
+### 10.5 The MVP boundary (proposed)
+
+"MVP" names no milestone in this plan.
+
+**Proposal: the MVP is the end of M5, and M4 (regions) comes after it**, so the order becomes M2, M3, M5, M4. The
+reasons:
+- **Strangers day one needs M5.** It needs M5's people (identities, invites, live vouching and bans) and its engine
+  releases. So the MVP can't end before M5.
+- **Controllers, health and brought code ride on avatars,** and avatars are M5's.
+- **D23 already sets eight players for the MVP** (section 5.2). M3 tests eight, and the plan calls regions the way
+  beyond.
+- **No part of this ruling needs regions,** which serve huge worlds and more than eight players. Moving M4 after the
+  MVP saves its 14-22 before the MVP.
+
+The alternatives:
+- **The MVP at the end of M5 with M4 in place.** This is right if the user wants huge worlds in the MVP. The order and
+  the milestones stay as they are.
+- **The MVP at the end of M3, plus this ruling.** Not proposed: it would leave out identities, invites and vouching,
+  and so strangers.
+
+### 10.6 Open points
+
+- **R15** is superseded (5.2).
+- **Fallback limits** aren't chosen: skinned meshes, materials, texture sizes and the file size.
+- **Deterministic animation** (root motion, bone hitboxes) isn't in the user's list. Third-person combat through the
+  lens needs it (@fable-reviewer's gap). To ask with the boundary.
+- **Per-player budgets** for brought code (fuel) and for GPU programs: values come after S1 and S3.
+- **The custom-against-stock rule:** @fable-reviewer's reading went to the user for correction and hasn't been
+  confirmed. In that reading the contact is solved with the custom body's real mass, and the impulse on the custom
+  body is reported to its hook rather than applied.
 
 ## Appendix A. A sketch of the seams (v0 is fixed in M0)
 
