@@ -8,7 +8,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use pe_replica::hands::hand_mode;
 use pe_replica::mock::MockClock;
-use pe_replica::world::{BodyKind, Change, Phase, ShapeRow, WorldModel};
+use pe_replica::world::{BodyKind, Change, Phase, ShapeRow, Unbuildable, WorldModel};
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
@@ -93,9 +93,9 @@ fn body_rows_follow_the_world_s_rows() {
     let pw = PeWorld::new(w, DomainId(0));
 
     assert_eq!(pw.physical(), [oid(1), oid(2), oid(4), oid(5)]);
-    let floor = pw.body(oid(1)).expect("floor");
+    let floor = pw.body(oid(1)).unwrap().expect("floor");
     assert_eq!((floor.kind, floor.pos, floor.shapes.len()), (BodyKind::Static, pos(0.0, -0.5, 0.0), 1));
-    let table = pw.body(oid(2)).expect("table");
+    let table = pw.body(oid(2)).unwrap().expect("table");
     assert_eq!(table.kind, BodyKind::Dynamic);
     assert_eq!(
         table.shapes[0].shape,
@@ -110,8 +110,8 @@ fn body_rows_follow_the_world_s_rows() {
         s => panic!("a sphere, not {s:?}"),
     }
     assert_eq!(table.shapes[1].density, 800.0);
-    assert_eq!(pw.body(oid(4)), None, "a sphere under non-uniform scale cannot be built");
-    match pw.body(oid(5)).expect("box").shapes[0].shape {
+    assert_eq!(pw.body(oid(4)), Err(Unbuildable::Shape), "a sphere under non-uniform scale cannot be built");
+    match pw.body(oid(5)).unwrap().expect("box").shapes[0].shape {
         ShapeRow::Box { half_extents, .. } => assert_eq!(half_extents, [2.0, 3.0, 4.0]),
         s => panic!("a box, not {s:?}"),
     }
@@ -136,7 +136,7 @@ fn a_compound_child_sits_at_its_frame_and_a_move_does_not_rebuild() {
     w.insert(oid(4), Transform::local([1.0, 0.0, 0.0])).expect("c");
     w.insert(oid(4), cuboid([0.1, 0.1, 0.1])).expect("c");
     let mut pw = PeWorld::new(w, DomainId(0));
-    let built = pw.body(oid(2)).expect("the body is built");
+    let built = pw.body(oid(2)).unwrap().expect("the body is built");
     let shapes: Vec<ShapeRow> = built.shapes.iter().map(|p| p.shape).collect();
     let unturned = [0.0, 0.0, 0.0, 1.0];
     assert_eq!(
@@ -150,7 +150,7 @@ fn a_compound_child_sits_at_its_frame_and_a_move_does_not_rebuild() {
     let moved = row(Transform::at(pos(4.0, 2.0, 0.0)).with_rot([0.0, 0.0, 0.0, 1.0]));
     let (_, changed) = edit(&mut pw, &mut b, vec![Op::SetRow { id: Target::Existing(oid(2)), row: moved }]);
     assert_eq!(changed, [(oid(2), Change::Teleported)], "moving and turning the body leaves its shapes as they were");
-    assert_eq!(pw.body(oid(2)).expect("moved").shapes, built.shapes);
+    assert_eq!(pw.body(oid(2)).unwrap().expect("moved").shapes, built.shapes);
 }
 
 /// Apply one edit at frame 1 and return its outcome and changes.
@@ -458,7 +458,7 @@ fn an_input_s_push_moves_its_body() {
         let mut r = replica_of(with_hand_and_ball());
         r.advance(Frame(60), &mut s);
         assert_eq!(r.faults(), 0);
-        (r.world().body(oid(BALL)).expect("the ball").pos - Pos::ORIGIN).0[0]
+        (r.world().body(oid(BALL)).unwrap().expect("the ball").pos - Pos::ORIGIN).0[0]
     };
     let (still, pushed) = (run(false), run(true));
     assert!((still - 2.0).abs() < 1e-3, "{still}");
@@ -2009,4 +2009,155 @@ fn a_late_leave_reaches_the_in_order_roots() {
     assert_eq!(roots(&late, 32), roots(&in_order, 32));
     assert_eq!(roots(&late, 32).len(), 5);
     assert!(!late.world().world().store().exists(oid(B_HAND)) && late.physics().joint_count() == 0);
+}
+
+// ---- physical objects the replica cannot build (replica.md 2.1; was O12) --------------------------------------------
+
+/// A mesh (2), an unknown body kind (3), a body with no `Transform` (4) and a body whose compound child is a capsule
+/// under non-uniform scale (7) are physical but cannot be built, and `body` says why. A `Body` with no shape anywhere
+/// (5), even of an unknown kind (6), is not physical, and neither is a compound child (8). `physical` lists exactly
+/// the objects whose `body` is not `Ok(None)`.
+#[test]
+fn a_physical_object_that_cannot_be_built_says_why() {
+    let mut w = genesis();
+    let k = MemberKey([1; 32]);
+    let placed = |w: &mut World, id: u128, parent: Option<u128>, t: Option<Transform>| {
+        w.create(oid(id), parent.map(oid), k, GENESIS).expect("create");
+        if let Some(t) = t {
+            w.insert(oid(id), t).expect("transform");
+        }
+    };
+    let at = |x: f64| Some(Transform::at(pos(x, 1.0, 0.0)));
+    placed(&mut w, 2, None, at(0.0));
+    w.insert(oid(2), dynamic()).expect("2");
+    w.insert(oid(2), Shape { kind: shape_kind::MESH, ..cuboid([0.5; 3]) }).expect("2");
+    placed(&mut w, 3, None, at(2.0));
+    w.insert(oid(3), Body { kind: 7, ..dynamic() }).expect("3");
+    w.insert(oid(3), sphere(0.5)).expect("3");
+    placed(&mut w, 4, None, None);
+    w.insert(oid(4), dynamic()).expect("4");
+    w.insert(oid(4), sphere(0.5)).expect("4");
+    placed(&mut w, 5, None, at(4.0));
+    w.insert(oid(5), dynamic()).expect("5");
+    placed(&mut w, 6, None, at(6.0));
+    w.insert(oid(6), Body { kind: 7, ..dynamic() }).expect("6");
+    placed(&mut w, 7, None, at(8.0));
+    w.insert(oid(7), dynamic()).expect("7");
+    w.insert(oid(7), cuboid([0.5; 3])).expect("7");
+    placed(&mut w, 8, Some(7), Some(Transform::local([1.0, 0.0, 0.0]).with_scale([1.0, 2.0, 1.0])));
+    w.insert(oid(8), Shape { kind: shape_kind::CAPSULE, ..sphere(0.2) }).expect("8");
+    let pw = PeWorld::new(w, DomainId(0));
+
+    assert_eq!(pw.body(oid(2)), Err(Unbuildable::Shape), "a mesh");
+    assert_eq!(pw.body(oid(3)), Err(Unbuildable::Kind));
+    assert_eq!(pw.body(oid(4)), Err(Unbuildable::Pose), "no Transform");
+    assert_eq!(pw.body(oid(5)), Ok(None), "no shape");
+    assert_eq!(pw.body(oid(6)), Ok(None), "no shape, so its kind is never read");
+    assert_eq!(pw.body(oid(7)), Err(Unbuildable::Shape), "its child's capsule under non-uniform scale");
+    assert_eq!(pw.body(oid(8)), Ok(None), "a compound child has no body of its own");
+    let listed: Vec<ObjectId> = (1..=8).map(oid).filter(|&id| pw.body(id) != Ok(None)).collect();
+    assert_eq!(listed, [oid(1), oid(2), oid(3), oid(4), oid(7)]);
+    assert_eq!(pw.physical(), listed);
+}
+
+/// Genesis with a ball (`BALL`, a 0.25 m sphere) dropped from (2, 1, 0), a mesh (2) and a body of an unknown kind (3).
+fn with_unbuildable_bodies() -> World {
+    let mut w = genesis();
+    let k = MemberKey([1; 32]);
+    for (id, x) in [(BALL, 2.0), (2, -2.0), (3, -4.0)] {
+        w.create(oid(id), None, k, GENESIS).expect("create");
+        w.insert(oid(id), Transform::at(pos(x, 1.0, 0.0))).expect("transform");
+    }
+    w.insert(oid(BALL), dynamic()).expect("ball");
+    w.insert(oid(BALL), sphere(0.25)).expect("ball");
+    w.insert(oid(2), dynamic()).expect("2");
+    w.insert(oid(2), Shape { kind: shape_kind::MESH, ..cuboid([0.5; 3]) }).expect("2");
+    w.insert(oid(3), Body { kind: 7, ..dynamic() }).expect("3");
+    w.insert(oid(3), sphere(0.5)).expect("3");
+    w
+}
+
+/// Where `id`'s body is in the physics.
+fn body_at(r: &ReplicaImpl<PeWorld>, id: u128) -> [f64; 3] {
+    r.physics().pose(oid(id)).expect("a body").position
+}
+
+/// A replica gives a physical object it cannot build no body and counts a fault for each when it starts. Stepping
+/// counts no more, and the rest of the world steps as before.
+#[test]
+fn a_replica_starts_without_the_bodies_it_cannot_build_and_counts_each() {
+    let mut r = replica_of(with_unbuildable_bodies());
+    assert_eq!(r.faults(), 2);
+    assert_eq!(r.physics().objects().collect::<Vec<_>>(), [oid(1), oid(BALL)]);
+    assert_eq!(r.world().physical(), [oid(1), oid(2), oid(3), oid(BALL)]);
+    r.advance(Frame(24), &mut Source::default());
+    assert_eq!(r.faults(), 2, "stepping counts no more");
+    assert!(body_at(&r, BALL)[1] < 0.5, "the ball fell: {:?}", body_at(&r, BALL));
+    assert!(!r.physics().has_body(oid(2)) && !r.physics().has_body(oid(3)));
+}
+
+/// One edit from the editor at `frame`.
+fn edit_at(b: &mut EntryBuilder, frame: u64, ops: Vec<Op>) -> SignedEntry {
+    b.next(Class::Edit, Frame(frame), Bytes::from(tx(ops).encode()))
+}
+
+/// Edits to the ball: at 4 a non-uniform scale makes its sphere unbuildable, at 8 it moves to x = 3 still so, and at
+/// 12 a uniform scale makes it buildable again; at 16 an edit creates a sphere under non-uniform scale.
+fn unbuildable_edits(b: &mut EntryBuilder) -> Vec<SignedEntry> {
+    let ball = |x: f64, scale: [f32; 3]| Op::SetRow {
+        id: Target::Existing(oid(BALL)),
+        row: row(Transform::at(pos(x, 1.0, 0.0)).with_scale(scale)),
+    };
+    let scaled = Transform::at(pos(5.0, 1.0, 0.0)).with_scale([2.0, 1.0, 1.0]);
+    let rows = vec![row(scaled), row(dynamic()), row(sphere(0.25))];
+    vec![
+        edit_at(b, 4, vec![ball(2.0, [1.0, 2.0, 1.0])]),
+        edit_at(b, 8, vec![ball(3.0, [1.0, 2.0, 1.0])]),
+        edit_at(b, 12, vec![ball(3.0, [1.0; 3])]),
+        edit_at(b, 16, vec![Op::Create { new: 0, parent: Target::Root, index: None, rows }]),
+    ]
+}
+
+/// An edit that makes the ball unbuildable takes its body away and counts a fault; a move while it stays so changes
+/// nothing; one that makes it buildable again gives it a body, at rest where its row is; and creating an unbuildable
+/// body counts one more fault. A replica that gets the first edit late rolls back to the same roots. It counts the
+/// fault of its first history too: there, the edit at 8 found a body to take away.
+#[test]
+fn an_edit_that_makes_a_body_unbuildable_takes_its_body_away_and_counts_a_fault() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let edits = unbuildable_edits(&mut b);
+    let mut s = Source::default();
+    edits.iter().for_each(|e| s.add(e.clone()));
+    let mut r = replica_of(with_unbuildable_bodies());
+    let start = r.faults();
+    let mut to = |r: &mut ReplicaImpl<PeWorld>, f: u64| {
+        r.advance(Frame(f), &mut s);
+        r.faults() - start
+    };
+    assert_eq!(to(&mut r, 4), 0);
+    assert!(r.physics().has_body(oid(BALL)));
+    assert_eq!(to(&mut r, 8), 1, "a sphere under non-uniform scale: no body, and a fault");
+    assert!(!r.physics().has_body(oid(BALL)) && r.world().physical().contains(&oid(BALL)));
+    assert_eq!(to(&mut r, 12), 1, "a move while it stays unbuildable");
+    assert_eq!(to(&mut r, 13), 1);
+    assert!((body_at(&r, BALL)[0] - 3.0).abs() < 1e-6, "buildable again, at its row's pose: {:?}", body_at(&r, BALL));
+    assert_eq!(to(&mut r, 40), 2, "a body created unbuildable");
+    let created = match r.outcome(&edits[3].id()) {
+        Some((_, Outcome::Applied { created, .. })) => created[0],
+        o => panic!("{o:?}"),
+    };
+    assert!(!r.physics().has_body(created) && r.world().physical().contains(&created));
+
+    let mut late = Source::default();
+    edits[1..].iter().for_each(|e| late.add(e.clone()));
+    let mut l = replica_of(with_unbuildable_bodies());
+    l.advance(Frame(10), &mut late);
+    assert_eq!(l.faults() - start, 1, "without the edit at 4, the one at 8 takes the body away");
+    late.add(edits[0].clone());
+    let adv = l.advance(Frame(40), &mut late);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 4), "{adv:?}");
+    assert_eq!(roots(&l, 40), roots(&r, 40));
+    assert_eq!(roots(&r, 40).len(), 6);
+    assert_eq!(l.faults() - start, 3, "the first history's fault, then the edits at 4 and 16");
 }
