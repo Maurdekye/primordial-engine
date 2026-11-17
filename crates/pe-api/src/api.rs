@@ -1779,7 +1779,28 @@ mod tests {
         let all = one("Lamp", Some("*")).components;
         assert_eq!(all[&format!("Spin@{ta}")]["speed"], 3.0);
         assert_eq!(all[&format!("Spin@{tb}")]["speed"], 4.0);
-        assert_eq!(one("Lamp", Some(&format!("Spin@{}", &tb[..6]))).components.len(), 1);
+        // A projection is keyed as `types` names it: by the full form where the bare name is ambiguous, bare where it
+        // isn't, whatever was asked.
+        let t = one("Table", Some(&format!("Spin@{}.speed", &ta[..8]))).components;
+        assert_eq!(t.keys().collect::<Vec<_>>(), ["Spin"]);
+        let q = Query {
+            select: Some(Selector::Name("Table".into())),
+            fields: Some(vec!["Transform.rotation_deg".into(), "Transform@engine.position".into()]),
+            ..Default::default()
+        };
+        let t = a.query(&c, &q).unwrap().objects.remove(0).components;
+        assert_eq!((t.len(), t["Transform"].len()), (1, 2), "{t:?}");
+        let keys: Vec<_> = one("Lamp", Some(&format!("Spin@{}", &tb[..6]))).components.into_keys().collect();
+        assert_eq!(keys, [format!("Spin@{tb}")]);
+        // Two requests that meet at one full form answer once, with both field lists.
+        let q = Query {
+            select: Some(Selector::Name("Lamp".into())),
+            fields: Some(vec!["Spin.speed".into(), format!("Spin@{}.nothing", &ta[..8])]),
+            ..Default::default()
+        };
+        let lamp = a.query(&c, &q).unwrap().objects.remove(0).components;
+        assert_eq!(lamp.len(), 2, "{lamp:?}");
+        assert_eq!(lamp[&format!("Spin@{ta}")]["speed"], 3.0, "{lamp:?}");
         let has = |s: &str| {
             let q = Query { select: Some(Selector::Has(s.into())), ..Default::default() };
             let mut n: Vec<String> = a.query(&c, &q).unwrap().objects.into_iter().map(|o| o.name).collect();
