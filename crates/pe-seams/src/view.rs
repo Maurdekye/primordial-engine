@@ -477,13 +477,17 @@ pub struct FrameView {
     /// The code commits activated or voided at the ends of the frames this view's steps covered, in step order, then
     /// asset order (S5 v1.8; logic.md 6.2a). Like `changes`, a record a reader takes in every view, in order: a
     /// re-simulated frame end publishes its records again, and a record with the same [`ActivationKey`] supersedes
-    /// the earlier one. Provisional above `final_frame`, as `changes` are.
+    /// the earlier one, whatever its frame. So the author's prediction of its own commit (6.2a's option (i)), recorded
+    /// at the commit's frame, is replaced by the agreed record or the void. Provisional above `final_frame`, as
+    /// `changes` are.
     pub activations: Vec<Activation>,
-    /// Keys of activation records an earlier view published that this view's steps no longer produce: a
-    /// re-simulation without them, as when a late entry removes the attestation that completed a quorum, or when the
-    /// author's prediction of its own commit (6.2a's option (i)) is replaced. The reader drops what it held for each
-    /// key; a later record with the same key may follow (S5 v1.8; @vdw-physics, as [`FrameView::retracted`]
-    /// does for effects).
+    /// Keys of activation records an earlier view published that this view's steps no longer produce, and that no
+    /// record in this view supersedes: a re-simulation without them, as when a late entry removes the attestation
+    /// that completed a quorum, or the commit itself. A rung-2 import retracts the records views carried below its
+    /// cut, even when the imported history has them: the importer never steps those frames again, and the outcome
+    /// then shows only in the world's modules row (@vdw-physics, accepted for M1). The reader drops what it held for
+    /// each key; a later record with the same key may follow (S5 v1.8; @vdw-physics, as
+    /// [`FrameView::retracted`] does for effects).
     pub activations_retracted: Vec<ActivationKey>,
 }
 
