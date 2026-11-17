@@ -8,7 +8,7 @@
 //! voter's present plus a tolerance: never a bound relative to the parent (@design-reviewer m72d5174e95f9).
 
 use pe_log::{ChainKey, ChainLog, CutError, SegmentError};
-use pe_seams::{ChainHead, Cut, CutRef, EntryRef, Frame};
+use pe_seams::{ChainHead, Cut, CutRef, EntryRef, Frame, MemberKey};
 
 /// Why a member does not vote for a proposed cut.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +29,11 @@ pub enum Reject {
     WrongPlace,
     /// Its frame is not a multiple of the world's cut interval in frames (the cut grid).
     OffGrid,
+    /// It advances a chain whose author isn't a member of this epoch (a leaver's, after its epoch ended).
+    NotMember(ChainHead),
+    /// A descendant of the epoch's reconfiguring cut E that isn't a suffix cut: E's frame and heads, nothing new
+    /// (agreement.md 8).
+    AfterReconfig,
 }
 
 /// The outcome of a check.
@@ -45,8 +50,9 @@ fn key(h: &ChainHead) -> ChainKey {
 }
 
 /// The leader's cut at `frame`, the child of `parent`: for every chain held, the parent's head extended along the
-/// chain while the next entry is held, unforked and stamped below `frame`. A chain stops at a hole or a fork.
-pub fn build(log: &ChainLog, parent: &Cut, frame: Frame) -> Cut {
+/// chain while the next entry is held, unforked and stamped below `frame`. A chain stops at a hole or a fork. Only
+/// `members`' chains advance; any other chain of the parent keeps its head.
+pub fn build(log: &ChainLog, parent: &Cut, frame: Frame, members: &[MemberKey]) -> Cut {
     let mut heads: Vec<ChainHead> = Vec::new();
     for k in log.keys() {
         let from = parent.heads.binary_search_by(|h| h.chain.cmp(&k.chain)).ok().map(|i| parent.heads[i]);
@@ -55,7 +61,7 @@ pub fn build(log: &ChainLog, parent: &Cut, frame: Frame) -> Cut {
             continue;
         }
         let mut head = from;
-        loop {
+        while members.contains(&k.author) {
             let next = log.next_of(&k, head.map(|h| h.entry));
             if next.len() != 1 || next[0].entry.stamp >= frame {
                 break;
@@ -72,8 +78,9 @@ pub fn build(log: &ChainLog, parent: &Cut, frame: Frame) -> Cut {
     Cut { at: CutRef { line: parent.at.line, height: parent.at.height + 1, frame }, heads }
 }
 
-/// Check `cut`, proposed as the child of `parent`, as a member whose present frame is `present`.
-pub fn check(log: &ChainLog, parent: &Cut, cut: &Cut, present: Frame, tolerance: u64) -> Check {
+/// Check `cut`, proposed as the child of `parent`, as a member whose present frame is `present`, in an epoch of
+/// `members`.
+pub fn check(log: &ChainLog, parent: &Cut, cut: &Cut, present: Frame, tolerance: u64, members: &[MemberKey]) -> Check {
     if cut.at.line != parent.at.line || cut.at.height != parent.at.height + 1 {
         return Check::Reject(Reject::WrongPlace);
     }
@@ -108,6 +115,9 @@ pub fn check(log: &ChainLog, parent: &Cut, cut: &Cut, present: Frame, tolerance:
         } else {
             None
         };
+        if !members.contains(&h.author) {
+            return Check::Reject(Reject::NotMember(*h));
+        }
         match log.check_cut(&key(h), from, h.entry, cut.at.frame) {
             Ok(seg) => {
                 // The head's seq is the one the cut names.
@@ -138,6 +148,11 @@ mod tests {
         b.next(Class::Input, Frame(stamp), Bytes::from_static(b"x"))
     }
 
+    /// The fixture's members: every key of `fx`.
+    fn all() -> Vec<MemberKey> {
+        TestKeys::new(3, 4).sorted_keys()
+    }
+
     fn genesis() -> Cut {
         Cut { at: CutRef { line: LineId::origin(), height: 0, frame: Frame(0) }, heads: Vec::new() }
     }
@@ -164,16 +179,16 @@ mod tests {
         for x in [&a1, &a2, &a3, &b2] {
             f.log.insert(x.clone(), &f.keys).unwrap();
         }
-        let c1 = build(&f.log, &genesis(), Frame(6));
+        let c1 = build(&f.log, &genesis(), Frame(6), &all());
         // a stops before a3 (stamp 9 >= 6); b has a hole at b1.
         assert_eq!(c1.heads.len(), 1);
         assert_eq!(c1.heads[0].entry, a2.id());
-        assert_eq!(check(&f.log, &genesis(), &c1, Frame(6), 0), Check::Ok);
+        assert_eq!(check(&f.log, &genesis(), &c1, Frame(6), 0, &all()), Check::Ok);
         f.log.insert(b1.clone(), &f.keys).unwrap();
-        let c2 = build(&f.log, &c1, Frame(12));
+        let c2 = build(&f.log, &c1, Frame(12), &all());
         assert_eq!(c2.heads.len(), 2);
         assert!(c2.includes(&f.a.chain(), 3) && c2.includes(&f.b.chain(), 2));
-        assert_eq!(check(&f.log, &c1, &c2, Frame(12), 0), Check::Ok);
+        assert_eq!(check(&f.log, &c1, &c2, Frame(12), 0, &all()), Check::Ok);
     }
 
     #[test]
@@ -182,23 +197,23 @@ mod tests {
         let (a1, a2) = (e(&mut f.a, 1), e(&mut f.a, 2));
         f.log.insert(a1.clone(), &f.keys).unwrap();
         f.log.insert(a2.clone(), &f.keys).unwrap();
-        let c = build(&f.log, &genesis(), Frame(5));
+        let c = build(&f.log, &genesis(), Frame(5), &all());
         let mut voter = ChainLog::new(LineId::origin());
         voter.insert(a2.clone(), &f.keys).unwrap();
-        assert_eq!(check(&voter, &genesis(), &c, Frame(5), 0), Check::Missing(vec![a1.id()]));
+        assert_eq!(check(&voter, &genesis(), &c, Frame(5), 0, &all()), Check::Missing(vec![a1.id()]));
         voter.insert(a1, &f.keys).unwrap();
-        assert_eq!(check(&voter, &genesis(), &c, Frame(5), 0), Check::Ok);
+        assert_eq!(check(&voter, &genesis(), &c, Frame(5), 0, &all()), Check::Ok);
     }
 
     #[test]
     fn frames_rise_and_never_pass_the_voters_present_plus_tolerance() {
         let f = fx();
-        let c = build(&f.log, &genesis(), Frame(10));
-        assert_eq!(check(&f.log, &genesis(), &c, Frame(8), 2), Check::Ok);
+        let c = build(&f.log, &genesis(), Frame(10), &all());
+        assert_eq!(check(&f.log, &genesis(), &c, Frame(8), 2, &all()), Check::Ok);
         // The future-frame proposal (spec 3; harness test): beyond present + tolerance gets no honest vote.
-        assert_eq!(check(&f.log, &genesis(), &c, Frame(7), 2), Check::Reject(Reject::FrameInFuture));
+        assert_eq!(check(&f.log, &genesis(), &c, Frame(7), 2, &all()), Check::Reject(Reject::FrameInFuture));
         let same = Cut { at: CutRef { frame: Frame(10), height: 2, ..c.at }, heads: Vec::new() };
-        assert_eq!(check(&f.log, &c, &same, Frame(20), 0), Check::Reject(Reject::FrameNotAbove));
+        assert_eq!(check(&f.log, &c, &same, Frame(20), 0, &all()), Check::Reject(Reject::FrameNotAbove));
     }
 
     #[test]
@@ -208,13 +223,13 @@ mod tests {
         for x in [&a1, &a2] {
             f.log.insert(x.clone(), &f.keys).unwrap();
         }
-        let c1 = build(&f.log, &genesis(), Frame(5));
+        let c1 = build(&f.log, &genesis(), Frame(5), &all());
         let dropped = Cut { at: CutRef { height: 2, frame: Frame(9), ..c1.at }, heads: Vec::new() };
-        assert_eq!(check(&f.log, &c1, &dropped, Frame(9), 0), Check::Reject(Reject::DroppedChain));
+        assert_eq!(check(&f.log, &c1, &dropped, Frame(9), 0, &all()), Check::Reject(Reject::DroppedChain));
         let mut back = c1.clone();
         back.at = CutRef { height: 2, frame: Frame(9), ..c1.at };
         back.heads[0] = ChainHead { seq: 1, entry: a1.id(), ..back.heads[0] };
-        assert!(matches!(check(&f.log, &c1, &back, Frame(9), 0), Check::Reject(Reject::NotLinked(_))));
+        assert!(matches!(check(&f.log, &c1, &back, Frame(9), 0, &all()), Check::Reject(Reject::NotLinked(_))));
     }
 
     #[test]
@@ -226,9 +241,9 @@ mod tests {
         let at = CutRef { line: LineId::origin(), height: 1, frame: Frame(5) };
         let head = ChainHead { chain: k.chain, author: k.author, seq: 1, entry: a1.id() };
         let c = Cut { at, heads: vec![head] };
-        assert_eq!(check(&f.log, &genesis(), &c, Frame(5), 0), Check::Reject(Reject::BeyondFrame(a1.id())));
+        assert_eq!(check(&f.log, &genesis(), &c, Frame(5), 0, &all()), Check::Reject(Reject::BeyondFrame(a1.id())));
         let c = Cut { at: CutRef { frame: Frame(6), ..at }, heads: vec![ChainHead { seq: 4, ..head }] };
-        assert!(matches!(check(&f.log, &genesis(), &c, Frame(6), 0), Check::Reject(Reject::NotLinked(_))));
+        assert!(matches!(check(&f.log, &genesis(), &c, Frame(6), 0, &all()), Check::Reject(Reject::NotLinked(_))));
     }
 
     #[test]
@@ -241,7 +256,7 @@ mod tests {
         let mut forged = f.b.next_unsigned(Class::Input, Frame(2), Bytes::from_static(b"f"));
         forged.chain = f.a.chain();
         assert!(f.log.insert(f.b.sign(forged), &f.keys).is_err());
-        let c = build(&f.log, &genesis(), Frame(5));
+        let c = build(&f.log, &genesis(), Frame(5), &all());
         assert_eq!(c.heads.len(), 1);
         assert_eq!(c.heads[0].author, f.keys.key(0));
     }

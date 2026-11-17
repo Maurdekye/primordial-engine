@@ -44,6 +44,15 @@
 //!   [`EntrySource::kept_from`] reports what is kept, truthfully, and [`EntrySource::entries_at`] answers `None`
 //!   below it. The window serves rung 1, and a merge only while it lasts ([`Agreement::final_entries`]); the world
 //!   record on disk is separate and not bounded by it.
+//! - **Membership changes at a final cut** (S3 v1.7; agreement.md 8, `Leave` first): a member leaves by submitting
+//!   a `Leave` entry (class Protocol), its last. The members change only when the reconfiguring cut E that makes it
+//!   effective is final ([`Agreement::members`] answers the new epoch's from then on), and E is the last cut of the
+//!   epoch's final log: its suffix cuts are never reported. Entries of the leaver after its `Leave` are void as
+//!   [`VoidReason::AfterLeave`]; the world side (hands, claims, permissions) is the replica's, from the same entry.
+//!   A leaver quits once [`Agreement::leave_settled`]: every remaining member has E final.
+//! - **A cut's identity is its [`CutRef`]: line, height and frame** (S3 v1.7): heights go on across a membership
+//!   change, so the old epoch's suffix cuts and the new epoch's first cuts share heights with different frames.
+//!   Never key a cut on its height alone.
 //! - **[`Agreement::receive`] never panics** on any bytes: bad bytes are `Err(Fault)` naming the sender, and an event.
 //! - **The `mutants` feature** with named mutations lives in pe-agree (and pe-diverge, pe-world for their rules), never
 //!   here: inert unless the node's configuration names one, and never in a production build.
@@ -216,6 +225,14 @@ pub enum SubmitError {
     Shape(EntryError),
     /// Stamped below the newest final cut's frame: it would be void.
     TooLate,
+    /// (S3 v1.7; agreement.md 3, outage item, @api-eng m7ad90582574f.) Stamped below this member's own chain's last
+    /// stamp: `submit` refuses it, so an honest member never signs an entry that would be void as
+    /// [`VoidReason::BackStamped`] (its frame clock stepped back). Retryable once this member's present has passed its
+    /// chain's last stamp, a frame or so after a clock step back.
+    BelowOwnStamp,
+    /// (S3 v1.7; agreement.md 8.) After this member's own `Leave`: `submit` refuses anything after it, which would be
+    /// void as [`VoidReason::AfterLeave`]. Not retryable in this epoch.
+    AfterLeave,
 }
 
 /// What agreement reports. Part of the harness's one trace vocabulary ([`crate::TraceEvent`]).
@@ -323,6 +340,13 @@ pub enum VoidReason {
     Late,
     /// Stamped below an earlier stamp in its author's chain.
     BackStamped,
+    /// (S3 v1.7; agreement.md 8.) An entry of a leaver's key that comes after its `Leave` in the final log's order, in
+    /// the epoch of that `Leave`, on any chain. Only that epoch: a member admitted again in a later epoch starts a new
+    /// chain, whose entries this never voids.
+    AfterLeave,
+    /// (S3 v1.7; agreement.md 8, @design-reviewer's L1 on e3597563.) A `Leave` that would leave its epoch with no
+    /// members: the line keeps its last member, which stays a member.
+    LastMember,
 }
 
 /// What the driver reads for statistics and the harness's queries (DESIGN.md 10, S3.6).
@@ -376,8 +400,15 @@ pub trait Agreement: EntrySource + Send {
     /// the world record, M3) is settled with the merge engine (M2); this window promises nothing more.
     fn final_entries(&self, from: &CutRef, to: &CutRef) -> Option<Vec<SignedEntry>>;
 
-    /// The members, sorted by key.
+    /// The members of the current epoch, sorted by key (S3 v1.7: they change when a reconfiguring cut is final).
     fn members(&self) -> Vec<MemberKey>;
+
+    /// (S3 v1.7; agreement.md 8, @design-reviewer's M2 on e3597563.) After this member's own `Leave`: whether every
+    /// remaining member has told it that the reconfiguring cut E is final there, so quitting now strands no one. The
+    /// driver waits for it, with a visible bound, before it quits. `true` when there is nothing to wait for.
+    fn leave_settled(&self) -> bool {
+        true
+    }
 
     fn stats(&self) -> AgreeStats;
 

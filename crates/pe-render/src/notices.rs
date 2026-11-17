@@ -296,6 +296,8 @@ impl Notices {
         let text = match reason {
             VoidReason::Late => "An action of yours arrived too late and was undone.",
             VoidReason::BackStamped => "An action of yours was undone: it arrived out of order.",
+            VoidReason::AfterLeave => "An action of yours came after you left and was dropped.",
+            VoidReason::LastMember => "You are the session's last member, so your leave wasn't applied.",
         };
         self.tell(text.to_string(), None, now);
     }
