@@ -126,6 +126,8 @@ struct Sim {
     /// cut over the burst) would have paced.
     paced_frames: Vec<usize>,
     old_rule_frames: Vec<usize>,
+    /// Per member: of the paced frames, those near the receivers' pending cap (`Node::near_pending_cap`).
+    near_cap_frames: Vec<usize>,
     /// Count range refetches each member sends for this chain (decodes protocol messages; off by default).
     count_ranges: Option<pe_seams::ChainId>,
     range_asks: Vec<usize>,
@@ -184,6 +186,7 @@ impl Sim {
             blackout_until: 0,
             paced_frames: vec![0; n as usize],
             old_rule_frames: vec![0; n as usize],
+            near_cap_frames: vec![0; n as usize],
             count_ranges: None,
             range_asks: vec![0; n as usize],
             edit_every: vec![0; n as usize],
@@ -306,6 +309,9 @@ impl Sim {
                 let over = Agreement::backlogged(&self.nodes[i]);
                 if over {
                     self.paced_frames[i] += 1;
+                    if self.nodes[i].near_pending_cap() {
+                        self.near_cap_frames[i] += 1;
+                    }
                 }
                 if self.nodes[i].unfinal_own() > self.nodes[i].burst() {
                     self.old_rule_frames[i] += 1;
@@ -2299,7 +2305,10 @@ fn a_falling_delay_shows_through_a_lead_that_is_too_large() {
         let settled = corrected(&s);
         s.slow_link = Some((1, 0, 300, 0));
         // Entries sent just before the drop still take 1.2 s, and their lateness is real: the report can follow only
-        // once they have arrived, within a window (128 of B's entries, about 0.5 s of them) after that.
+        // once they have arrived, within a window (128 of B's entries, about 0.5 s of them) after that. Entries sent
+        // after the drop overtake them but wait for them in the chain, so they read late too: about 1.2 + 0.53 s, and
+        // the 100 ms step (1.8 s measured on seed 107; within 1.7 s while pacing wrongly held B's hands on the slow
+        // link, @item:primordial-engine/pe-agree-on-a-slow-not-stalled-link-backlogged-r).
         let (mut followed, mut after) = (None, Vec::new());
         for t in (10_100..=14_000).step_by(100) {
             s.run(t);
@@ -2316,7 +2325,7 @@ fn a_falling_delay_shows_through_a_lead_that_is_too_large() {
         );
         assert!((1_150..=1_250).contains(&settled), "seed {seed}: settled at {settled} ms");
         assert!(
-            followed.is_some_and(|ms| ms <= 1_700),
+            followed.is_some_and(|ms| ms <= 1_900),
             "seed {seed}: the report didn't follow the delay down: {followed:?}"
         );
         assert!(after.iter().all(|ms| *ms <= 350), "seed {seed}: the report went back up: {after:?}");
@@ -2524,4 +2533,96 @@ fn the_last_member_leaving_is_void_and_the_line_keeps_it() {
     for i in 0..2 {
         assert_eq!(s.nodes[i].members(), vec![s.keys.key(stays)], "member {i}");
     }
+}
+
+/// n = 2, B -> A +`delay` ms, A -> B fast, two hands a frame at 60 Hz for 30 s; B stamps `lead_ms` ahead.
+fn slow_return_run(seed: u64, delay: i64, lead_ms: u64, stall: Option<(usize, i64, i64)>) -> Sim {
+    let mut s = Sim::new(2, seed);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.slow_link = Some((1, 0, delay, 0));
+    s.stamp_lead[1] = lead_ms * 60 / 1_000;
+    s.stall = stall;
+    s
+}
+
+#[test]
+fn a_slow_link_that_keeps_flowing_never_paces_its_fast_member() {
+    // @item:primordial-engine/pe-agree-on-a-slow-not-stalled-link-backlogged-r (@engine-architect's stamp-ahead
+    // measurement): B's votes name A's entries a slow round trip late, so with a fixed grace A (the fast uplink) counted
+    // them as a backlog. Before the fix, in this sim [V]: with no lead, A was paced on 748-890 of its 1,800 frames at
+    // D = 1.2 s and 383-562 at 0.9 s; with B stamping ahead by D + 0.1 s (pe-app's case), A on 640-970 and B, whose
+    // entries then arrive in time, on 660-750 at 1.2 s. Each member now allows each peer's ack delay, less how late that
+    // peer reports its entries (agreement.md 3, pacing): only the return path.
+    for seed in [301u64, 302] {
+        // No lead: A is never paced; B, whose entries arrive late against their stamps, still is at 0.9 s.
+        for delay in [300i64, 900] {
+            let mut s = slow_return_run(seed, delay, 0, None);
+            s.run(30_000);
+            eprintln!("B -> A +{delay} ms, no lead, seed {seed}: paced frames (A, B) {:?} of 1,800", s.paced_frames);
+            assert_eq!(s.paced_frames[0], 0, "+{delay} ms seed {seed}: the fast member was paced");
+        }
+        // With the lead, B's entries arrive in time: neither member is paced.
+        for delay in [900i64, 1_200] {
+            let mut s = slow_return_run(seed, delay, delay as u64 + 100, None);
+            s.run(30_000);
+            eprintln!(
+                "B -> A +{delay} ms, lead {} ms, seed {seed}: paced frames (A, B) {:?}",
+                delay + 100,
+                s.paced_frames
+            );
+            assert_eq!(s.paced_frames, vec![0, 0], "+{delay} ms with a lead, seed {seed}: a member was paced");
+        }
+    }
+}
+
+#[test]
+fn a_stalled_uplink_still_paces_on_a_slow_link() {
+    // The control for the ack delay: B -> A +1.2 s with B's lead, then A's uplink stalls from 10 to 14 s. The delay
+    // sampled before the stall stays, so A is paced within it, from about the grace (0.4 s) plus the ack delay (about
+    // 1.3 s) plus the burst (127 entries, about 1 s) into it: a stall can't be told sooner over a slow return path.
+    for seed in [301u64, 302] {
+        let mut s = slow_return_run(seed, 1_200, 1_300, Some((0, 10_000, 14_000)));
+        s.run(10_000);
+        let before = s.paced_frames[0];
+        s.run(14_000);
+        let during = s.paced_frames[0] - before;
+        eprintln!("seed {seed}: A paced on {before} frames before the stall, {during} in its 4 s (240 frames)");
+        assert_eq!(before, 0, "seed {seed}: paced before the stall");
+        assert!(during >= 60, "seed {seed}: A paced on only {during} frames of its stall");
+    }
+}
+
+#[test]
+fn a_no_lead_stand_still_never_feeds_itself_through_the_pending_cap() {
+    // @coordinator-opus. Past the lead's clamp (B -> A +1.2 s, no lead) finality stands still for seconds
+    // (agreement.md 3). With A paced only by its unacknowledged backlog, A's entries beyond the final cut reached B's
+    // per-author pending cap (1,020 at 60 Hz) about 8.5 s in; B deferred them, couldn't hold A's cuts and couldn't vote,
+    // so the stand-still fed itself: 21.5 s on 4 of these 12 seeds [V], against at most 8.4 s while the old rule
+    // happened to pace A. A now also paces near the cap: the stand-still stays within the paced bound, and A is paced
+    // there only (never by its backlog on this flowing link).
+    let mut near = 0;
+    for seed in 301..=312u64 {
+        let mut s = slow_return_run(seed, 1_200, 0, None);
+        let (mut last, mut since, mut worst) = (Frame(0), 5_000, 0);
+        for t in (100..=30_000).step_by(100) {
+            s.run(t);
+            let f = s.final_frame(0);
+            if t > 5_000 {
+                if f > last {
+                    since = t;
+                } else {
+                    worst = worst.max(t - since);
+                }
+            }
+            last = f;
+        }
+        eprintln!(
+            "seed {seed}: final stood still at most {worst} ms; A paced on {} frames, {} of them near the cap",
+            s.paced_frames[0], s.near_cap_frames[0]
+        );
+        assert!(worst <= 8_500, "seed {seed}: the final frame stood still {worst} ms");
+        assert_eq!(s.paced_frames[0], s.near_cap_frames[0], "seed {seed}: A paced by its backlog on a flowing link");
+        near += s.near_cap_frames[0];
+    }
+    assert!(near > 0, "A never came near the pending cap: the test doesn't bite");
 }

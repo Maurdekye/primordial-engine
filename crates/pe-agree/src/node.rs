@@ -303,6 +303,10 @@ pub struct Node {
     serve_budget: BTreeMap<PeerId, (u64, HostTime)>,
     /// Per other member: the highest seq of this member's own chain its verified votes name as held, for pacing.
     acked: BTreeMap<MemberKey, u64>,
+    /// Per other member: how long its votes take to name this member's entries (from the entry to the vote naming it),
+    /// in ns, its latest [`ACK_SAMPLES`] samples. Pacing allows each member the least of them, so a slow link that
+    /// keeps flowing isn't read as a backlog; a stall takes no samples, and its flush's outsized one is outvoted.
+    ack_delay: BTreeMap<MemberKey, std::collections::VecDeque<i64>>,
     /// Entries inserted into the log so far (never decreases, whatever is pruned): the root cache's version.
     inserted: u64,
     final_by_frame: BTreeMap<Frame, Vec<SignedEntry>>,
@@ -474,6 +478,13 @@ impl AbstainBook {
     }
 }
 
+/// Pacing's ack delay is the least of a member's latest this many samples (one per vote that names a new own entry,
+/// so about 3 to 10 s of votes). A count, not a time, so an outage of any length keeps the samples from before it,
+/// and the one sampled from the flush (the outage's age) is the only outsized one.
+const ACK_SAMPLES: usize = 32;
+/// How long the own chain's times are kept for sampling ack delays: longer than any delay pacing needs to allow.
+const OWN_TIMES_NS: i64 = 10_000_000_000;
+
 /// The leader's wait for a claimed backlog: its entries at the author's rate, plus this.
 const CAP_WAIT_EXTRA_NS: i64 = 1_000_000_000;
 /// At most this many own entries pushed when abstaining (the rest come by the range refetch the heads start).
@@ -562,6 +573,7 @@ impl Node {
             range_asked: BTreeMap::new(),
             serve_budget: BTreeMap::new(),
             acked: BTreeMap::new(),
+            ack_delay: BTreeMap::new(),
             final_by_frame: BTreeMap::new(),
             final_bytes: 0,
             predicted: BTreeMap::new(),
@@ -1872,28 +1884,64 @@ impl Node {
             return 0;
         }
         // Entries younger than the grace can't be named by a vote yet; counting them would pace on the vote cadence.
+        // Each member is also allowed its own ack delay: on a slow link its votes name this member's entries a round
+        // trip late, which is no backlog while they keep coming.
         let grace = self.cfg.timing.cadence_ns + self.cfg.timing.min_timeout_ns;
-        let before = self.now.0.saturating_sub(grace);
-        let seq = self.own_times.iter().rev().find(|(t, _)| *t <= before).map_or(0, |(_, s)| *s);
         let i = self.final_heads.heads.binary_search_by(|h| h.chain.cmp(&key.chain)).ok();
         let fin = i.map(|i| self.final_heads.heads[i]).filter(|h| h.author == key.author).map_or(0, |h| h.seq);
-        let mut held: Vec<u64> = self
+        let mut missing: Vec<u64> = self
             .cfg
             .members
             .iter()
             .filter(|m| **m != self.me)
-            .map(|m| self.acked.get(m).copied().unwrap_or(0).max(fin))
+            .map(|m| {
+                let before = self.now.0.saturating_sub(grace + self.ack_delay_of(m));
+                let seq = self.own_times.iter().rev().find(|(t, _)| *t <= before).map_or(0, |(_, s)| *s);
+                seq.saturating_sub(self.acked.get(m).copied().unwrap_or(0).max(fin))
+            })
             .collect();
-        held.sort_unstable_by(|a, b| b.cmp(a));
-        // The quorum counts this member; the (q - 1)th highest of the others is held by a quorum.
-        let Some(&h) = need.checked_sub(1).and_then(|k| held.get(k)) else { return 0 };
-        seq.saturating_sub(h) as usize
+        missing.sort_unstable();
+        // The quorum counts this member; the (q - 1)th least missing of the others is the quorum's backlog.
+        need.checked_sub(1).and_then(|k| missing.get(k)).map_or(0, |&m| m as usize)
+    }
+
+    /// A member's ack delay allowed by pacing (ns): the least of its latest samples, less how late it reports this
+    /// member's entries reach it against their stamps (its latest lateness report on the own chain, at least 0), or 0
+    /// before the first sample. What is left is the return path and the vote cadence: a slow link back from the
+    /// member is no backlog, but entries that reach it late are, and pacing them keeps cuts moving past the lag cap.
+    fn ack_delay_of(&self, m: &MemberKey) -> i64 {
+        let Some(ack) = self.ack_delay.get(m).and_then(|d| d.iter().min().copied()) else { return 0 };
+        let mine = self.my_head.map(|(k, _, _)| k);
+        let late = self
+            .reported
+            .get(m)
+            .filter(|r| Some(r.1) == mine)
+            .map_or(0, |r| r.2.max(0).saturating_mul(1_000_000_000) / i64::from(self.rate_hz.max(1)));
+        ack.saturating_sub(late).max(0)
+    }
+
+    /// A vote of `voter` first named this member's own entry `seq`: sample how long that took.
+    fn sample_ack_delay(&mut self, voter: MemberKey, seq: u64, now: i64) {
+        // When the own chain reached `seq` (the oldest record at or past it; none kept: no sample).
+        // (The first record kept may have reached it from an earlier seq no longer known: then the time isn't known.)
+        let Some(k) = self.own_times.iter().position(|(_, s)| *s >= seq) else { return };
+        if k == 0 && self.own_times.len() > 1 && self.own_times[0].1 > seq {
+            return;
+        }
+        let made = self.own_times[k].0;
+        let delay = now.saturating_sub(made).max(0);
+        let d = self.ack_delay.entry(voter).or_default();
+        d.push_back(delay);
+        if d.len() > ACK_SAMPLES {
+            d.pop_front();
+        }
     }
 
     /// Record when the own chain reached `seq`, keeping a little over the pacing grace of history.
     fn note_own(&mut self, seq: u64) {
         let now = self.now.0;
-        let keep = 2 * (self.cfg.timing.cadence_ns + self.cfg.timing.min_timeout_ns);
+        // Long enough to look up an ack's delay over a slow link as well as the pacing grace.
+        let keep = (2 * (self.cfg.timing.cadence_ns + self.cfg.timing.min_timeout_ns)).max(OWN_TIMES_NS);
         match self.own_times.back_mut() {
             Some((t, s)) if *t == now => *s = seq,
             _ => self.own_times.push_back((now, seq)),
@@ -1906,7 +1954,16 @@ impl Node {
     /// Whether the driver should make no new hand entries now: the unacknowledged backlog is over the burst, so more
     /// would only be refused or void as late (coordinator, point 3). Edits are never held back.
     pub fn backlogged(&self) -> bool {
-        self.backlog() > self.burst()
+        self.backlog() > self.burst() || self.near_pending_cap()
+    }
+
+    /// Whether this member's own entries beyond the final cut are within a burst of the pending cap every receiver
+    /// holds per author (agreement.md 2). Past it, receivers defer its new entries, so they can't hold the cuts that
+    /// name them and can't vote: a finality stand-still would feed itself. Only a long stand-still gets here (at the lag
+    /// cap the entries beyond the final cut stay well under it).
+    pub fn near_pending_cap(&self) -> bool {
+        let b = self.cfg.rate_budget(self.rate_hz);
+        self.unfinal_own() + b.burst as usize > b.pending
     }
 
     /// Entries held in the log, and entries waiting for their author's budget (diagnostics).
@@ -2166,7 +2223,10 @@ impl Agreement for Node {
                             let key = ChainKey { author: h.author, chain: h.chain };
                             if Some(key) == mine && voter != self.me {
                                 let a = self.acked.entry(voter).or_default();
-                                *a = (*a).max(h.seq);
+                                if h.seq > *a {
+                                    *a = h.seq;
+                                    self.sample_ack_delay(voter, h.seq, at.0);
+                                }
                             }
                             if self.cfg.members.contains(&h.author) && h.author != self.me {
                                 self.claim_from_vote(voter, key, h.seq);
