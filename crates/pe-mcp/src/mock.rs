@@ -162,6 +162,7 @@ impl WorldApi for MockWorld {
                 capture_size_max: [1920, 1080],
             },
             held: vec![],
+            scripts_not_running: vec![],
         }
     }
 
