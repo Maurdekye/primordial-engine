@@ -61,6 +61,11 @@ refuse() {  # $1: what this update does
   echo "gate (hook): REFUSED: $1; main stays where it is (to drop the gate: git config --unset core.hooksPath)" >&2
   exit 1
 }
+packed() {  # main's line in packed-refs: 0 there, 1 not there (no file included), 2 can't tell (grep failed)
+  [ -e "$1/packed-refs" ] || return 1
+  grep -q ' refs/heads/main$' "$1/packed-refs"
+  case $? in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
 input= old= new= hit=
 while read -r o n r; do
   if [ "$r" = refs/heads/main ]; then old=$o new=$n hit=1; continue; fi
@@ -71,9 +76,10 @@ done
 tip=$(git rev-parse -q --verify refs/heads/main) || tip=   # main's tip before this update: git holds it locked
 if [ -z "$tip" ]; then
   # Main is created, unless it is there (a loose file or a packed line) but can't be read: then a forced update,
-  # where git gives zeros as the old value, would be judged by the new commit's own hook.
+  # where git gives zeros as the old value, would be judged by the new commit's own hook. A packed-refs file that
+  # grep can't read counts as main being there.
   common=$(git rev-parse --path-format=absolute --git-common-dir) && [ ! -f "$common/refs/heads/main" ] &&
-    ! grep -q ' refs/heads/main$' "$common/packed-refs" 2> /dev/null || refuse "moving main while its tip can't be read"
+    { packed "$common"; [ $? = 1 ]; } || refuse "moving main while its tip can't be read"
   case "$old" in *[!0]*) refuse "moving main from $old, git's old value, while its tip can't be read" ;; esac
   case "$new" in *[!0]*) ;; *) exit 0 ;; esac         # main doesn't exist and isn't created: nothing happens
   from=$new                                           # main is created

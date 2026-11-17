@@ -424,23 +424,27 @@ else
 fi
 # The trampoline and the hook, run as git runs them but with a git that can't read main (which is there, packed):
 # a move that git gives an old value for, and a forced update (zeros), are refused rather than judged as main's
-# creation.
-mkdir -p "$tmp/shim"
+# creation; also when grep fails on packed-refs (exit 2: it can't tell whether main is there).
+mkdir -p "$tmp/shim" "$tmp/shim-grep"
 printf '#!/bin/sh\ncase "$*" in "rev-parse -q --verify refs/heads/main") exit 1 ;; esac\nexec "%s" "$@"\n' "$(type -P git)" > "$tmp/shim/git"
-chmod +x "$tmp/shim/git"
+cat "$tmp/shim/git" > "$tmp/shim-grep/git"; printf '#!/bin/sh\nexit 2\n' > "$tmp/shim-grep/grep"
+chmod +x "$tmp/shim/git" "$tmp/shim-grep/git" "$tmp/shim-grep/grep"
 nowhere=$(printf 'f%.0s' $(seq 1 ${#landed})) zeros=$(printf '0%.0s' $(seq 1 ${#landed}))
 read_bad=
-for h in "$(git -C "$R" config --get core.hooksPath)/reference-transaction" "$R/scripts/hooks/reference-transaction"; do
-  for o in "$landed" "$zeros"; do
-    (cd "$R" && printf '%s %s refs/heads/main\n' "$o" "$nowhere" | PATH="$tmp/shim:$PATH" sh "$h" prepared) > "$tmp/hook-read.log" 2>&1; rc=$?
-    if [ $rc = 0 ] || ! grep -q "can't be read" "$tmp/hook-read.log"; then
-      read_bad="$read_bad
-    $h, old $(printf '%s' "$o" | cut -c1-10): exit $rc: $(tr '\n' ' ' < "$tmp/hook-read.log" | cut -c1-200)"
-    fi
+for s in shim shim-grep; do
+  sp="$tmp/$s"; if [ $win = 1 ]; then sp=$(cygpath -u "$sp"); fi   # PATH splits at a drive letter's colon
+  for h in "$(git -C "$R" config --get core.hooksPath)/reference-transaction" "$R/scripts/hooks/reference-transaction"; do
+    for o in "$landed" "$zeros"; do
+      (cd "$R" && printf '%s %s refs/heads/main\n' "$o" "$nowhere" | PATH="$sp:$PATH" sh "$h" prepared) > "$tmp/hook-read.log" 2>&1; rc=$?
+      if [ $rc = 0 ] || ! grep -q "can't be read" "$tmp/hook-read.log"; then
+        read_bad="$read_bad
+    $s, $h, old $(printf '%s' "$o" | cut -c1-10): exit $rc: $(tr '\n' ' ' < "$tmp/hook-read.log" | cut -c1-200)"
+      fi
+    done
   done
 done
 if [ -z "$read_bad" ]; then
-  pass=$((pass + 1)); echo "test_gate: ok   hook-refuses-when-main-cannot-be-read (the trampoline and the hook; a move with an old value, and a forced update)"
+  pass=$((pass + 1)); echo "test_gate: ok   hook-refuses-when-main-cannot-be-read (the trampoline and the hook; a move with an old value, and a forced update; also when grep fails on packed-refs)"
 else
   bad=$((bad + 1)); echo "test_gate: BAD  hook-refuses-when-main-cannot-be-read:$read_bad"
 fi
