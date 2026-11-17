@@ -78,7 +78,37 @@ pub struct Refusal {
     pub detail: String,
 }
 
+/// A hello this side can't send (6.3): a field over the bound every peer's [`Hello::decode`] enforces. Sent, it
+/// would be dropped as malformed on arrival, and the connection would only time out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HelloError {
+    TooLong { field: &'static str, len: usize, max: usize },
+}
+
+impl std::fmt::Display for HelloError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HelloError::TooLong { field, len, max } => {
+                write!(f, "the hello's {field} is {len} bytes, over its bound of {max}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HelloError {}
+
 impl Hello {
+    /// The bounds [`Hello::decode`] enforces, on this side's own hello: one that passes decodes on every peer. The
+    /// addresses need no check: [`Hello::encode`] sends at most `MAX_ADDRS` of them.
+    pub fn check(&self) -> Result<(), HelloError> {
+        for (field, len, max) in [("build id", self.build.len(), MAX_BUILD), ("token", self.token.len(), MAX_TOKEN)] {
+            if len > max {
+                return Err(HelloError::TooLong { field, len, max });
+            }
+        }
+        Ok(())
+    }
+
     /// The guards of 6.3, in order, between my hello and theirs: the first field that differs refuses; `None` if
     /// they all pass.
     pub fn guard(&self, theirs: &Hello) -> Option<Refusal> {
@@ -289,6 +319,24 @@ mod tests {
             addrs: vec!["192.0.2.1:4433".parse().unwrap(), "[2001:db8::1]:4433".parse().unwrap()],
             clock_ready: true,
         }
+    }
+
+    /// `check` refuses exactly what `decode` would drop: a build id or token one byte over its bound.
+    #[test]
+    fn check_refuses_what_decode_would_drop() {
+        let mut h = hello();
+        h.build = vec![b'x'; MAX_BUILD];
+        h.token = vec![1; MAX_TOKEN];
+        assert_eq!(h.check(), Ok(()));
+        assert_eq!(Hello::decode(&h.encode()).unwrap(), h);
+        let mut long = h.clone();
+        long.build.push(b'x');
+        assert_eq!(long.check(), Err(HelloError::TooLong { field: "build id", len: MAX_BUILD + 1, max: MAX_BUILD }));
+        assert_eq!(Hello::decode(&long.encode()), Err(FrameError::TooLong));
+        let mut long = h;
+        long.token.push(1);
+        assert_eq!(long.check(), Err(HelloError::TooLong { field: "token", len: MAX_TOKEN + 1, max: MAX_TOKEN }));
+        assert_eq!(Hello::decode(&long.encode()), Err(FrameError::TooLong));
     }
 
     #[test]
