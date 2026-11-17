@@ -19,7 +19,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use pe_api::api::{Api, SessionFacts, WorldSource};
+use pe_api::api::{Api, NotRunning, SessionFacts, WorldSource};
 use pe_api::builds::Builds;
 use pe_api::changes::{CAPACITY, ChangeLog};
 use pe_api::queue::EditQueue;
@@ -325,7 +325,14 @@ impl WorldSource for ApiWorld {
             caught_up: g.caught_up,
             tick_hz: self.0.facts.rate.hz(),
             agents_move_user: false,
-            scripts_not_running: g.scripts_not_running.clone(),
+            scripts_not_running: (g.scripts_not_running.iter())
+                .map(|(script, since, why)| NotRunning {
+                    script: *script,
+                    object: None,
+                    since: *since,
+                    why: why.clone(),
+                })
+                .collect(),
         }
     }
 }
