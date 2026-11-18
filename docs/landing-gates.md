@@ -304,7 +304,9 @@ already landed, and a red run holds up the landings after it (decision C7).
     failing tests and each failed test's panic message, what a failed linker said (rustc's notes, without the
     linker's command line), and any differing digests. A step's errors come once each, however many tests hit
     them. The jobs write these as error annotations, because GitHub serves those without a login and logs need one
-    (to its admins only).
+    (to its admins only). GitHub keeps an annotation's first 4096 characters, so what the linker said comes first,
+    also when a test printed the build error with `{:?}`, its lines escaped on one; then the errors, which name
+    every failed test binary; then the failing tests and their panics, each line at most 300 characters.
   * A run's commit is the public one: the publishing step's map leads back to main's.
 
 ## Accepting an exception

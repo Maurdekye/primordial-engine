@@ -39,27 +39,49 @@ annotate() {  # step name, exit code, log: the failed step, with its failing tes
   # annotation (GitHub keeps 10 per workflow step, and this script is one step). Its lines are joined with %0A, the
   # escaped newline; a property's value may hold no comma or colon unescaped, so the title has neither.
   [ "${GITHUB_ACTIONS:-}" = true ] || return 0
-  local lines panics linker
-  # Failing tests by name, and errors with their place, each line once: an error that many tests hit (a crate that
-  # can't be built) would otherwise fill the annotation.
-  lines=$(grep -E "^test .* FAILED$|^error(\[[A-Za-z0-9_]+\])?:|^ +--> " "$3" | tr -d "$cr" | awk '!seen[$0]++' |
-    head -40)
+  local errors tests lines panics linker
+  # Errors with their place, then failing tests by name, each line once: an error that many tests hit (a crate that
+  # can't be built) would otherwise fill the annotation. The errors come first because each failed test binary has
+  # one ("error: test failed, to rerun pass ..."), so every binary that failed is named inside what GitHub keeps,
+  # however many tests did (run 44208935602: 29 names on macOS, and the last binary's error line was cut). A place
+  # ("  --> file:line") is kept only on the line right after its error: rustc gives each warning one too, and 40 of
+  # those would fill the list before any binary's line (chunks-reviewer's L1).
+  errors=$(tr -d "$cr" < "$3" | awk '
+    /^error(\[[A-Za-z0-9_]+\])?:/ { print; e = 1; next }
+    e && /^ +--> / { print }
+    { e = 0 }' | awk '!seen[$0]++' | cut -c1-300 | head -40)
+  tests=$(grep -E "^test .* FAILED$" "$3" | tr -d "$cr" | awk '!seen[$0]++' | head -40)
   # Then each failing test's panic or error, from libtest's "failures:" section: it opens with "failures:", holds
   # a "---- <test> stdout ----" block for each failed test, and closes with a second "failures:" over their names.
   # A passing test's output (--show-output) comes under "successes:" instead, so a should_panic test's panic, which
-  # is on purpose, stays out. A test's own output may come before its panic, so the panic is looked for.
+  # is on purpose, stays out. A test's own output may come before its panic, so the panic is looked for. Each line
+  # at most 300 characters: a panic can be one line of several kB (a {:?}-printed BuildError with the linker's
+  # command line), which would leave no room for the next test's (chunks-reviewer).
   panics=$(tr -d "$cr" < "$3" | awk '
     /^running [0-9]+ tests?$/ || /^test result: / { inf = 0; next }
     /^failures:$/ { inf = !inf; next }
     !inf { next }
     /^---- .* stdout ----$/ { print; k = 0; next }
     /^thread .* panicked at / || /^Error: / { print; k = 6; next }
-    k > 0 && NF { print; k-- }' | head -40)
+    k > 0 && NF { print; k-- }' | cut -c1-300 | head -40)
   # And what a linker that failed said. rustc gives it in the "= note:" lines after "error: linking with ...
-  # failed", continued on lines indented by ten spaces. Two notes are left out: the linker's whole command line
-  # (it starts with a quote, or on Linux with an environment assignment) and the one saying arguments were omitted.
-  # Each line once, at most 300 characters.
+  # failed", continued on lines indented by ten spaces. A test that prints a build error with {:?} (pe-logic's
+  # BuildError keeps those notes since 8b197117) has the same lines on one, its newlines and quotes escaped: such a
+  # line is unfolded first. Two notes are left out: the linker's whole command line (it starts with a quote, or on
+  # Linux with an environment assignment) and the one saying arguments were omitted. Each line once, at most 300
+  # characters and 10 lines. They come first: GitHub keeps an annotation's first 4096 characters, and on tier 2's
+  # macOS runs (2026-11-18) the failing tests and their panics filled those before the linker's words.
   linker=$(tr -d "$cr" < "$3" | awk '
+    /error: linking with .*\\n/ {
+      s = substr($0, index($0, "error: linking with "))
+      while ((i = index(s, "\\n")) > 0) {
+        t = substr(s, 1, i - 1); gsub(/\\"/, "\"", t); print t
+        s = substr(s, i + 2)
+      }
+      gsub(/\\"/, "\"", s); print s
+      next
+    }
+    { print }' | awk '
     /^error: linking with .* failed/ { lk = 1; skip = 0; next }
     !lk { next }
     /^  = note: / {
@@ -70,8 +92,8 @@ annotate() {  # step name, exit code, log: the failed step, with its failing tes
     }
     /^          [^ ]/ { if (!skip) print "linker: " substr($0, 11); next }
     /^ *$/ || /^  \|/ { next }
-    { lk = 0 }' | awk '!seen[$0]++' | cut -c1-300 | head -20)
-  lines=$(printf '%s\n%s\n%s\n' "$lines" "$panics" "$linker" | sed '/^$/d' | sed 's/%/%25/g' |
+    { lk = 0 }' | awk '!seen[$0]++' | cut -c1-300 | head -10)
+  lines=$(printf '%s\n%s\n%s\n%s\n' "$linker" "$errors" "$tests" "$panics" | sed '/^$/d' | sed 's/%/%25/g' |
     awk '{ printf "%s%%0A", $0 }')
   echo "::error title=tier 2 $where $1::the step failed (exit $2)%0A$lines"
 }
