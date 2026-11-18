@@ -69,7 +69,7 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    stall the tick. The rest wait in the network handle for the next tick: in pe-net's queue, or in the handle's own
    once `events()` has taken them (transport.md 7). So the cap bounds a tick's work, not memory; the peers' link
    budgets and QUIC's flow control bound that. Protocol and Action go to `Agreement::receive`; Repair goes to
-   pe-diverge; Bulk goes to the blob store (not yet wired: the Repair and Bulk lanes). A `Fault` is counted and
+   pe-diverge; Bulk goes to the blob store (not yet wired: the Bulk lane). A `Fault` is counted and
    traced, never fatal. Each transport event goes to the `NetHook` (`on_event`), which also runs once a tick
    (`on_tick`) for what reaches it other than as an event. The hook owns pe-net's control end: in the M1 interim
    (section 4) @shader-lang's `MemberHook` admits a known member's new connection, refuses anyone else's, and counts
@@ -103,9 +103,22 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    pe-diverge returns actions, each routed in this tick:
    - Repair-lane messages: to the outbox;
    - `Revote { cut, root }`: to `Agreement::vote`, with the current self-test verdict;
-   - `RunSelfTest`: to the worker's queue. When the verdict comes back, it is the `self_test` that later votes and
-     `drive` calls carry;
-   - `WriteBundle`: to the I/O thread's queue.
+   - `RunSelfTest`: run inline while it takes under a frame on M1's machines (pe-physics's self-test: 3.0 ms in
+     release on the M1 PC; @engine-architect times reneglade), otherwise on the worker, which sets the simulation's
+     floating-point mode first. The verdict is `Passed` when the digest equals the start-up one, else `Failed`
+     (divergence.md 5, step 2); it is the `self_test` that later votes and `drive` calls carry. Every digest is taken
+     on a thread in the simulation's floating-point mode, which the digest depends on. Until R-G1 is wired, the
+     start-up digest is taken at pe-diverge's first step, on this thread; once the hello carries it, it is taken
+     before the hello (the endpoint dials or admits), on such a thread, and that one value is both the hello's and
+     the start-up digest (@design-reviewer's Low 1 on d8f37aa2);
+   - `WriteBundle`: to the I/O thread's queue (`BUNDLE_QUEUE`, 8). A full queue drops the bundle and counts it
+     (`bundles_dropped`), never blocks. The `pe-io` thread writes it under its name in `<identity file>.bundles`,
+     beside the identity file, so two instances on one PC never write one name twice.
+
+   pe-diverge runs in a session (`Sim::with_diverge`); a world alone has no peer to split from. Before `drive`, pe-app
+   keeps the cuts `wants_roots` names, by `CutRef`, until a cut past them is final: a `RootSplit` names only the
+   `CutRef`, and pe-diverge replays to the whole cut. A `RootSplit` for a cut it never kept is counted
+   (`splits_unknown`) and logged.
 
    Its repairs run through S2 v1 (`replay_to`, `import_at_cut`, then `finalize` again; RULINGS.md "S2 v1"), within
    the replica's budget (below).

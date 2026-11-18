@@ -184,16 +184,36 @@ pub struct SimStats {
     pub received: u64,
     /// Messages agreement refused as a peer's fault (step 1): counted, never fatal.
     pub refused: u64,
-    /// Messages on lanes this slice does not route yet: Repair (pe-diverge), Bulk (the blob store) and Pose (the
-    /// display).
+    /// Messages on lanes this loop does not route: Bulk (the blob store, not yet wired), Pose (the display), and
+    /// Repair when no pe-diverge runs ([`Sim::with_diverge`]).
     pub unrouted: u64,
+    /// Repair-lane messages pe-diverge took, and those it refused as a peer's fault (step 1): counted, never fatal.
+    pub repair_in: u64,
+    pub repair_refused: u64,
+    /// Repair-lane messages pe-diverge made that went to the transport (step 5); with no transport they count in
+    /// `unsent`.
+    pub repair_out: u64,
+    /// pe-diverge's actions (step 5): revotes, and how agreement took them (`Voted` or `AlreadyVotedThisView`; the
+    /// rest are refused); self-tests run, and those whose digest differed from start-up's (`Failed`).
+    pub revotes: u64,
+    pub revotes_refused: u64,
+    pub self_tests: u64,
+    pub self_tests_failed: u64,
+    /// Fault bundles handed to the I/O thread, and those dropped because its queue was full or there is no writer.
+    pub bundles: u64,
+    pub bundles_dropped: u64,
+    /// `RootSplit`s for a cut this machine never had to vote on, so pe-diverge cannot replay to it: counted and logged.
+    pub splits_unknown: u64,
+    /// pe-diverge's own counters (divergence.md 7), copied in when the simulation thread ends, so its exit line
+    /// carries them ([`Sim::diverge_counters`] reads them live); default while none runs.
+    pub diverge: pe_diverge::Counters,
     /// The transport's events (links, join requests), each passed to the net-event hook if one is set.
     pub net_events: u64,
     /// Messages agreement made that went to the transport (step 3).
     pub sent: u64,
     /// Messages agreement made that had nowhere to go: no transport is wired (a world alone).
     pub unsent: u64,
-    /// S3's events, drained each tick. pe-diverge takes them once it lands.
+    /// S3's events, drained each tick (step 5).
     pub events: u64,
     /// The local player's hand inputs agreement took, and those it refused (step 2).
     pub inputs: u64,
@@ -249,6 +269,8 @@ pub struct Sim {
     budget: Budget,
     /// The verdict this tick's votes carry: `NotRun` until pe-diverge asks for a self-test.
     self_test: SelfTest,
+    /// pe-diverge (step 5, [`Sim::with_diverge`]): detection and repair. `None` runs none, so a root split stays open.
+    diverge: Option<crate::diverge::DivergeLoop>,
     published: Option<Arc<FrameView>>,
     /// The open root splits: the frames of the cuts S3 reported `RootSplit` for, above the final cut's frame. While
     /// any is open, the health this machine reports is `Repairing` from the first ([`Sim::health_of`]; divergence.md
@@ -356,6 +378,7 @@ impl Sim {
             driver: Driver::new(),
             budget,
             self_test: SelfTest::NotRun,
+            diverge: None,
             published: None,
             splits: std::collections::BTreeSet::new(),
             source_view: None,
@@ -505,6 +528,33 @@ impl Sim {
         self
     }
 
+    /// Runs pe-diverge for the local member (after [`Sim::with_local`]): step 1 routes the Repair lane to it, and
+    /// step 5 hands it S3's events with the finalize results and routes its actions (app.md 3). It takes the physics
+    /// self-test's start-up digest at its first step, on the simulation thread ([`crate::diverge`]). Fault bundles
+    /// are written under `bundles` by a `pe-io` thread; `None` writes none. Without a local member, or if the thread
+    /// cannot start, an error.
+    pub fn with_diverge(
+        mut self,
+        cfg: pe_diverge::Config,
+        bundles: Option<std::path::PathBuf>,
+    ) -> std::io::Result<Sim> {
+        let me = self.local_member().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "pe-diverge needs the local member (with_local)")
+        })?;
+        self.diverge = Some(crate::diverge::DivergeLoop::new(me, cfg, bundles)?);
+        Ok(self)
+    }
+
+    /// pe-diverge's counters (divergence.md 7), if it runs.
+    pub fn diverge_counters(&self) -> Option<&pe_diverge::Counters> {
+        self.diverge.as_ref().map(|d| d.counters())
+    }
+
+    /// The verdict the next votes carry (`NotRun` until a root split asks for a self-test).
+    pub fn self_test(&self) -> SelfTest {
+        self.self_test
+    }
+
     /// This machine's member, if there is a local player.
     pub fn local_member(&self) -> Option<MemberKey> {
         self.local.as_ref().map(|l| l.chain.me())
@@ -556,8 +606,8 @@ impl Sim {
             self.stats.before_frame_0 += 1;
             return None;
         };
-        // 1. Messages in. Protocol and Action go to agreement; a refusal is a peer's fault, counted and never fatal.
-        // TODO(pe-diverge): Repair to pe-diverge; TODO(blob store): Bulk; Pose is display-only.
+        // 1. Messages in. Protocol and Action go to agreement, Repair to pe-diverge; a refusal is a peer's fault,
+        // counted and never fatal. TODO(blob store): Bulk; Pose is display-only.
         let mut links = Vec::new();
         if let Some(net) = &mut self.net {
             for _ in 0..MAX_IN_PER_TICK {
@@ -567,6 +617,13 @@ impl Sim {
                         Ok(()) => self.stats.received += 1,
                         Err(_) => self.stats.refused += 1,
                     },
+                    Lane::Repair if self.diverge.is_some() => {
+                        let d = self.diverge.as_mut().expect("checked above");
+                        match d.receive(r.from, &r.bytes, &mut *self.replica, &mut *self.agree, now, &*self.clock) {
+                            Ok(()) => self.stats.repair_in += 1,
+                            Err(_) => self.stats.repair_refused += 1,
+                        }
+                    }
                     _ => self.stats.unrouted += 1,
                 }
             }
@@ -733,6 +790,11 @@ impl Sim {
         if let Some(b) = self.budget.at_present(p) {
             self.replica.set_budget(b);
         }
+        // pe-diverge replays to a split's whole cut, and a `RootSplit` names only its `CutRef`: the cuts the driver is
+        // about to answer are kept for it. Nothing touches agreement between here and `drive`, so this is its list.
+        if let Some(d) = &mut self.diverge {
+            d.note_cuts(&*self.agree);
+        }
         let started = Instant::now();
         let report = self.driver.drive(&mut *self.replica, &mut *self.agree, Frame(p.0 + 1), self.self_test);
         let frames = report.advance.resimulated + report.advance.stepped;
@@ -750,10 +812,34 @@ impl Sim {
             api.ports.shared.caught_up(report.advance.caught_up);
         }
         self.count_hold(report.advance.caught_up);
-        // 5. S3's events. pe-diverge will take them in one ordered list with the finalize results.
+        // 5. S3's events, and pe-diverge: one drain after `drive` gives the spec's ordered list (S3's queue keeps its
+        // order), with each finalize result placed after its cut's `CutFinal` ([`crate::diverge`]). Its actions are
+        // routed in this tick, and its Repair-lane messages go to the outbox.
         let events = self.agree.events();
         self.stats.events += events.len() as u64;
         self.track_split(&events);
+        if let Some(d) = &mut self.diverge {
+            let out = d.step(
+                &events,
+                &report.finalized,
+                &mut *self.replica,
+                &mut *self.agree,
+                now,
+                &*self.clock,
+                &mut self.self_test,
+                &mut self.stats,
+                &mut self.notices,
+            );
+            match &mut self.net {
+                Some(net) => {
+                    self.stats.repair_out += out.len() as u64;
+                    for o in out {
+                        net.send(o.to, o.lane, o.bytes);
+                    }
+                }
+                None => self.stats.unsent += out.len() as u64,
+            }
+        }
         // A proposal opens each view: the quit's bound follows the smoothed interval between them (app.md 4).
         for _ in events.iter().filter(|e| matches!(e, AgreeEvent::Proposed { .. })) {
             self.view_time.proposed(now);
@@ -826,15 +912,20 @@ impl Sim {
         }
     }
 
-    /// The health this machine reports (session_info's): the replica's, and `Repairing` from the split's frame while
-    /// a root split is open. The replica only learns of a divergence at a final cut, and in a split none is final
-    /// (divergence.md 7; @coordinator-opus's ruling on
-    /// @item:primordial-engine/pe-app-runs-pe-diverge-app-md-step-5-and-health-r).
+    /// The health this machine reports (session_info's): the replica's, and `Repairing` from the earliest frame
+    /// while a root split is open or pe-diverge has an episode open ([`pe_diverge::Diverge::open_since`]). The
+    /// replica only learns of a divergence at a final cut, and in a split none is final (divergence.md 7;
+    /// @coordinator-opus's ruling on @item:primordial-engine/pe-app-runs-pe-diverge-app-md-step-5-and-health-r).
     fn health_of(&self, view: &FrameView) -> Health {
-        match (view.health, self.splits.first()) {
+        let open = self.diverge.as_ref().and_then(|d| d.d.open_since());
+        let open = match (self.splits.first().copied(), open) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        match (view.health, open) {
             (h, None) => h,
-            (Health::Agreed, Some(&s)) => Health::Repairing { since: s },
-            (Health::Repairing { since }, Some(&s)) => Health::Repairing { since: since.min(s) },
+            (Health::Agreed, Some(s)) => Health::Repairing { since: s },
+            (Health::Repairing { since }, Some(s)) => Health::Repairing { since: since.min(s) },
         }
     }
 
@@ -1031,6 +1122,9 @@ fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool, shared: &Shared) -> Si
         if left > 0 {
             thread::park_timeout(Duration::from_nanos(left as u64));
         }
+    }
+    if let Some(c) = sim.diverge_counters() {
+        sim.stats.diverge = c.clone();
     }
     sim.stats
 }
@@ -1587,6 +1681,224 @@ pub(crate) mod tests {
             assert!(v.final_frame.is_some_and(|f| f.0 + 60 >= FRAMES), "member {i}: final frame {:?}", v.final_frame);
             assert!(st.received > 0 && st.sent > 0 && st.votes > 0 && st.finalized > 0, "member {i}: {st:?}");
             assert_eq!((st.refused, st.unrouted, st.unsent, st.inputs_refused), (0, 0, 0, 0), "member {i}: {st:?}");
+        }
+    }
+
+    /// A replica that damages the pit's balls once: after the first `advance` that reaches `at` or later, every
+    /// moving ball's velocity gains 1 cm/s along x in the live physics world (pe-replica's test-only `damage_body`), as
+    /// a machine's whose physics computed wrongly for a moment. Its saved states before that are untouched, so a
+    /// replay from the last verified cut computes the honest state (rung 1, as pe-diverge's tests/kinds.rs). `at` is
+    /// off the cut grid: a cut frame's live root is taken before the damage could reach it. Everything else is the
+    /// replica's.
+    struct Damaged {
+        inner: ReplicaImpl<pe_replica::PeWorld>,
+        at: Option<Frame>,
+        damaged: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl Replica for Damaged {
+        fn domain(&self) -> DomainId {
+            self.inner.domain()
+        }
+        fn frame(&self) -> Frame {
+            self.inner.frame()
+        }
+        fn set_budget(&mut self, simulated: Duration) {
+            self.inner.set_budget(simulated)
+        }
+        fn advance(&mut self, present: Frame, source: &mut dyn pe_seams::EntrySource) -> pe_seams::Advance {
+            let a = self.inner.advance(present, source);
+            if self.at.is_some_and(|at| self.inner.frame() >= at) {
+                self.at = None;
+                let ids: Vec<_> =
+                    self.inner.view().objects.iter().filter(|o| o.hand_of.is_none()).map(|o| o.id).collect();
+                let n = ids.into_iter().filter(|id| self.inner.damage_body(*id, [0.01, 0.0, 0.0])).count();
+                self.damaged.fetch_add(n as u64, Ordering::SeqCst);
+            }
+            a
+        }
+        fn outcome(&self, entry: &EntryRef) -> Option<(Frame, pe_seams::Outcome)> {
+            self.inner.outcome(entry)
+        }
+        fn root_at_cut(
+            &mut self,
+            cut: &Cut,
+            source: &mut dyn pe_seams::EntrySource,
+        ) -> Result<pe_seams::Hash, pe_seams::RootError> {
+            self.inner.root_at_cut(cut, source)
+        }
+        fn finalize(
+            &mut self,
+            cut: &pe_seams::FinalCut,
+            source: &mut dyn pe_seams::EntrySource,
+        ) -> pe_seams::Finalized {
+            self.inner.finalize(cut, source)
+        }
+        fn replay_to(
+            &mut self,
+            cut: &Cut,
+            source: &mut dyn pe_seams::EntrySource,
+        ) -> Result<pe_seams::Hash, pe_seams::RootError> {
+            self.inner.replay_to(cut, source)
+        }
+        fn tree(&self, root: &pe_seams::Hash) -> Option<Box<dyn pe_seams::Tree + '_>> {
+            self.inner.tree(root)
+        }
+        fn physics_image(&self, root: &pe_seams::Hash) -> Option<pe_seams::PhysicsImage> {
+            self.inner.physics_image(root)
+        }
+        fn import_at_cut(
+            &mut self,
+            group: &pe_seams::GroupSel,
+            import: pe_seams::CutImport,
+            source: &mut dyn pe_seams::EntrySource,
+        ) -> Result<pe_seams::Hash, pe_seams::ImportError> {
+            self.inner.import_at_cut(group, import, source)
+        }
+        fn view(&self) -> Arc<FrameView> {
+            self.inner.view()
+        }
+        fn world_snapshot(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+            self.inner.world_snapshot()
+        }
+        fn agreed_snapshot(&self) -> Option<(Frame, Arc<dyn std::any::Any + Send + Sync>)> {
+            self.inner.agreed_snapshot()
+        }
+        fn vote_holds(&self) -> Vec<Frame> {
+            self.inner.vote_holds()
+        }
+        fn runner_identity(&self) -> Option<pe_seams::RunnerIdentity> {
+            self.inner.runner_identity()
+        }
+        fn module(&self, hash: &pe_seams::Hash) -> Option<bytes::Bytes> {
+            self.inner.module(hash)
+        }
+    }
+
+    /// What [`split_run`] saw on one member.
+    #[derive(Debug)]
+    struct SplitSide {
+        stats: SimStats,
+        final_frame: Option<Frame>,
+        /// Ticks whose published health read `Repairing`.
+        repairing_ticks: u64,
+        health: Health,
+        /// pe-diverge's split episodes started and ended, and the frame of one still open.
+        episodes: (u64, u64),
+        open: Option<Frame>,
+        damaged: u64,
+    }
+
+    /// Two members over sim.rs's hub, each with a pe-agree node and the ball pit, as in
+    /// [`two_members_see_each_others_hands_and_finalize_over_a_network`]. Member 1's replica damages its balls at
+    /// frame 121, so the two roots differ from the next cut and S3 reports a root split (n = 2: no root reaches a
+    /// quorum). `wired` runs pe-diverge on both; member 1's start-up digest is made to differ, so its self-test's verdict is
+    /// `Failed`, as a machine's whose fault the self-test catches.
+    fn split_run(wired: bool) -> (Vec<SplitSide>, u64) {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::test_util::TestKeys;
+        const FRAMES: u64 = 720;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let hub = Hub::default();
+        let at = [[-0.5, 1.0, -0.4], [0.5, 1.1, -0.3]];
+        let mut sims = Vec::new();
+        let mut counts = Vec::new();
+        for (i, feed) in at.iter().enumerate() {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), pe_seams::Pos::ORIGIN, 8);
+            let inner =
+                crate::world::ball_pit_replica(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let damaged = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            counts.push(damaged.clone());
+            let replica = Box::new(Damaged { inner, at: (i == 1).then_some(Frame(121)), damaged });
+            let slot = Arc::new(FrameSlot::new());
+            let mut sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))
+                .with_transport(Box::new(Port::new(me, hub.clone())), None);
+            if wired {
+                sim = sim.with_diverge(pe_diverge::Config::default(), None).expect("pe-diverge");
+                if i == 1 {
+                    sim.diverge.as_mut().expect("wired").set_startup_digest(Err("a different machine".into()));
+                }
+            }
+            sims.push((sim, slot, 0u64));
+        }
+        for f in 1..=FRAMES {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            for (s, _, repairing) in &mut sims {
+                s.tick(now).expect("ticked");
+                *repairing += u64::from(matches!(s.health(), Health::Repairing { .. }));
+            }
+        }
+        let sides = sims
+            .into_iter()
+            .zip(counts)
+            .map(|((s, slot, repairing_ticks), damaged)| SplitSide {
+                final_frame: slot.newest().expect("published").final_frame,
+                health: s.health(),
+                episodes: s.diverge_counters().map_or((0, 0), |c| (c.root_splits, c.root_splits_ended)),
+                open: s.diverge.as_ref().and_then(|d| d.d.open_since()),
+                stats: s.stats().clone(),
+                repairing_ticks,
+                damaged: damaged.load(Ordering::SeqCst),
+            })
+            .collect();
+        (sides, FRAMES)
+    }
+
+    /// @item:primordial-engine/pe-app-runs-pe-diverge-app-md-step-5-and-health-r's acceptance (@coordinator-opus
+    /// m917f886e735e, m1e883f8cb0fb): an injected root split opens an episode, health reads `Repairing` meanwhile, and
+    /// pe-diverge heals it, so finality resumes and health reads `Agreed` again on both members. Here step 1 heals it:
+    /// member 1's replay from the last verified cut computes the honest state, and its vote in the cut's next view
+    /// carries that root. A revote can be refused when the split's view has moved on, which is no fault; which member's
+    /// lands varies from run to run, since the replica's budget follows measured time.
+    #[test]
+    fn a_root_split_opens_an_episode_and_pe_diverge_heals_it() {
+        let (sides, frames) = split_run(true);
+        for (i, side) in sides.iter().enumerate() {
+            println!("member {i}: {side:?}");
+        }
+        assert!(sides[1].damaged > 0, "the damage ran");
+        assert!(sides.iter().all(|s| s.stats.root_splits >= 1), "a root split opened on both");
+        assert!(sides.iter().any(|s| s.repairing_ticks > 0), "health read Repairing while it was open");
+        // Not started == ended: an episode a newer split replaces is started and never ended (@engine-architect's nit).
+        assert!(sides.iter().all(|s| s.episodes.1 >= 1 && s.open.is_none()), "pe-diverge's episodes ended");
+        assert!(sides.iter().map(|s| s.stats.revotes).sum::<u64>() >= 1, "a revote went in");
+        assert_eq!(
+            (sides[1].stats.self_tests, sides[1].stats.self_tests_failed),
+            (1, 1),
+            "member 1's self-test failed"
+        );
+        assert_eq!(
+            (sides[0].stats.self_tests, sides[0].stats.self_tests_failed),
+            (1, 0),
+            "member 0's self-test passed"
+        );
+        for (i, s) in sides.iter().enumerate() {
+            assert_eq!(s.stats.root_splits, s.stats.root_splits_ended, "member {i}: every split ended");
+            assert_eq!(s.health, Health::Agreed, "member {i}: agreed again");
+            assert!(s.final_frame.is_some_and(|f| f.0 + 60 >= frames), "member {i}: final {:?}", s.final_frame);
+            assert_eq!((s.stats.repair_refused, s.stats.splits_unknown), (0, 0), "member {i}");
+        }
+    }
+
+    /// The red half: the same split with no pe-diverge stays open for good. Finality stops, and health reads
+    /// `Repairing` from the split to the end (pe-app's split set, slice b).
+    #[test]
+    fn without_pe_diverge_a_root_split_never_heals() {
+        let (sides, frames) = split_run(false);
+        for (i, s) in sides.iter().enumerate() {
+            println!("member {i}: {s:?}");
+            assert!(s.stats.root_splits >= 1 && s.stats.root_splits_ended < s.stats.root_splits, "member {i}");
+            assert!(matches!(s.health, Health::Repairing { .. }), "member {i}: {:?}", s.health);
+            assert!(s.final_frame.is_none_or(|f| f.0 + 300 < frames), "member {i}: final {:?}", s.final_frame);
         }
     }
 

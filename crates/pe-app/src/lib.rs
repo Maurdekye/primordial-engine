@@ -19,6 +19,7 @@ pub mod builds;
 pub mod capture;
 pub mod clock;
 pub mod console;
+pub mod diverge;
 pub mod genesis;
 pub mod leave;
 pub mod local;
