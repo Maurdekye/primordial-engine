@@ -198,6 +198,14 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
 3. **Fetch** the records of the differing objects at `C`, with the hashes on their path to the root (S2
    `export`). Check each record's path against `C`'s root. Reject any record that does not check, and ask the next
    source for it.
+   - **Inline blobs** (world-model.md 3.4; S2 v1.8; inline blobs phase 3b,
+     @item:primordial-engine/inline-small-blobs-names-and-other-256-b-blobs-r): each record reply also carries the
+     1-256 B blobs its records' rows reference, as far as the source has them (`Tree::export_blobs`). pe-diverge keeps
+     each once, by hash, and hands them to the import (`CutImport.blobs`, ascending by hash). They need no proof of
+     their own: a blob is named by its hash in a row that is proved. The replica refuses a blob no imported row
+     references (`BadBlob`), and an import that lacks a small simulation blob this machine does not have
+     (`MissingBlob`). Either is the source's fault: it is left, as for a record that fails its proof, and the next
+     source is asked [R @world-model].
 4. **Patch** my state at `C` with the records (S2 `import_at_cut`). Its root must now equal `C`'s. If it does not,
    the patch is incomplete: descend again, fetching every leaf this time, at most `N_descend` times, then fail the
    rung. The replica re-simulates to the present within its budget and answers `Pending` meanwhile; pe-diverge asks
@@ -340,8 +348,8 @@ A machine that joins a running world (app.md 4, "B's state at E") starts with an
 cut `E`, a final cut whose certified root it holds (S3 `Node::join`, `Node::start_root`). It must not step until it
 holds `E`'s state. `Diverge::join(e, inviter, replica, now)` fetches that state by rung 2's whole-state path, the one
 a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named absent, imported from empty
-[R @engine-architect]. Small blobs (1-256 B) are not fetched yet: inline-blobs phase
-3b adds the donor's blobs to the import (@item:primordial-engine/inline-small-blobs-names-and-other-256-b-blobs-r).
+[R @engine-architect]. The small blobs the rows reference arrive with the records
+(4.2 step 3), so a joiner holds its world's names.
 - **Sources:** the inviter first, then `E`'s other voters. Every record is checked against `E`'s certified root,
   whoever serves it, so a wrong peer costs a retry and is never trusted (4.4 rule 2).
 - **No divergence:** nothing diverged, so a join captures no evidence, writes no bundle, opens no episode, emits no
@@ -1373,8 +1381,8 @@ What pe-diverge needs from pe-agree, beyond the sketch:
 - **S1:** a merge entry, as a protocol payload (M2). No "rebased from" link is needed: voided entries go into the
   merge as they are (9.3) [I].
 - **S4:** repair messages travel on the `Repair` lane. pe-diverge's messages: `NodeRequest { root, paths }`,
-  `NodeReply { root, nodes }`, `RecordRequest { root, ids }`, `RecordReply { root, records }`. Unsigned: every reply
-  is checked by hash.
+  `NodeReply { root, nodes }`, `RecordRequest { root, ids }`, `RecordReply { root, records, blobs }` (wire version
+  2; each blob at most 256 B). Unsigned: every reply is checked by hash.
 - **S5:** per object, a `corrected` flag or offset (D2), whether the local player holds it (D4), and effect events
   with stable keys and a retracted list (D6).
 

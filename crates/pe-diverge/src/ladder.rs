@@ -175,6 +175,8 @@ struct Repair {
     absent: BTreeSet<LeafKey>,
     physics: Option<DomainId>,
     records: Vec<Record>,
+    /// The inline blobs the sources sent with the records, by hash: once each, in the order `CutImport.blobs` takes.
+    blobs: BTreeMap<Hash, Bytes>,
     image: Option<PhysicsImage>,
     bytes: u64,
 }
@@ -773,10 +775,21 @@ impl Diverge {
                 if !self.may_serve(from, cut, root, now) {
                     return Ok(());
                 }
-                match replica.tree(&root).map(|t| t.export(&keys)) {
-                    Some(records) => {
-                        for records in split_by_bytes(records, self.cfg.reply_budget, record_size) {
-                            self.serve(from, Msg::RecordReply { cut, root, records });
+                // Each reply carries the inline blobs its own records' rows reference (S2 v1.8), so a reply split by
+                // bytes stays whole on its own.
+                let replies = replica.tree(&root).map(|t| {
+                    split_by_bytes(t.export(&keys), self.cfg.reply_budget, record_size)
+                        .into_iter()
+                        .map(|records| {
+                            let blobs = t.export_blobs(&records.iter().map(|r| r.key).collect::<Vec<_>>());
+                            (records, blobs)
+                        })
+                        .collect::<Vec<_>>()
+                });
+                match replies {
+                    Some(replies) => {
+                        for (records, blobs) in replies {
+                            self.serve(from, Msg::RecordReply { cut, root, records, blobs });
                         }
                     }
                     None => self.send(from, Msg::NotHeld { cut, root }),
@@ -813,7 +826,9 @@ impl Diverge {
                 match reply {
                     Msg::Busy { retry_after_us, .. } => self.on_busy(retry_after_us, replica, source, now, clock),
                     Msg::NodeReply { nodes, .. } => self.on_nodes(nodes, replica, source, now, clock),
-                    Msg::RecordReply { records, .. } => self.on_records(records, replica, source, now, clock),
+                    Msg::RecordReply { records, blobs, .. } => {
+                        self.on_records(records, blobs, replica, source, now, clock)
+                    }
                     Msg::PhysicsReply { image, .. } => self.on_physics(image, replica, source, now, clock),
                     _ => self.source_fault(replica, source, now, clock),
                 }
@@ -1128,6 +1143,7 @@ impl Diverge {
             absent: BTreeSet::new(),
             physics: None,
             records: Vec::new(),
+            blobs: BTreeMap::new(),
             image: None,
             bytes: 0,
         };
@@ -1184,6 +1200,7 @@ impl Diverge {
             rep.absent.clear();
             rep.physics = None;
             rep.records.clear();
+            rep.blobs.clear();
             rep.busy = 0;
             rep.retry_at = now;
             if !keep_image {
@@ -1345,6 +1362,7 @@ impl Diverge {
     fn on_records(
         &mut self,
         records: Vec<Record>,
+        blobs: Vec<Bytes>,
         replica: &mut dyn Replica,
         source: &mut dyn EntrySource,
         now: HostTime,
@@ -1357,12 +1375,25 @@ impl Diverge {
         };
         // A reply may be one of several (split by bytes): keep what was asked, wait for the rest. A source that never
         // completes the set times out.
+        let mut answered = false;
         for r in records {
             if asked.remove(&r.key) {
                 rep.bytes += r.bytes.len() as u64;
                 rep.records.push(r);
                 rep.sent_at = now;
                 rep.busy = 0;
+                answered = true;
+            }
+        }
+        // The blobs of a reply that answered something asked. Unchecked here: the replica refuses one no imported row
+        // references (`BadBlob`), and a source that sent it is left (`try_import`).
+        if answered {
+            for b in blobs {
+                let h = Hash::plain(&b);
+                if !rep.blobs.contains_key(&h) {
+                    rep.bytes += b.len() as u64;
+                    rep.blobs.insert(h, b);
+                }
             }
         }
         if !asked.is_empty() {
@@ -1411,7 +1442,7 @@ impl Diverge {
             None => Vec::new(),
         };
         let import = CutImport {
-            blobs: vec![],
+            blobs: rep.blobs.values().cloned().collect(),
             cut: rep.cut.clone(),
             target_root: rep.target,
             records: rep.records.clone(),
@@ -1456,7 +1487,12 @@ impl Diverge {
                     self.restart(now, true);
                 }
             }
-            Err(ImportError::BadProof(_)) | Err(ImportError::PhysicsCheck) => {
+            // A blob no imported row references, or a small simulation blob the source did not send and this machine
+            // lacks: the source's fault, so the next one is asked (inline blobs phase 3b; @world-model).
+            Err(ImportError::BadProof(_))
+            | Err(ImportError::PhysicsCheck)
+            | Err(ImportError::BadBlob(_))
+            | Err(ImportError::MissingBlob(_)) => {
                 self.source_fault(replica, source, now, clock);
             }
             Err(ImportError::NeedsPhysicsImage(_)) if rep.image.is_none() => {
