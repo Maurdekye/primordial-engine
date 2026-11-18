@@ -42,6 +42,10 @@ pub struct GpuContext {
 pub enum ContextError {
     /// No adapter of the kind asked for (a capture reports `capture_unavailable`).
     NoAdapter,
+    /// None of the wanted backends is built for this platform: off Windows pe-render builds Vulkan only, which macOS
+    /// lacks (no MoltenVK, no Metal). Reported as no adapter is, so a capture says `capture_unavailable` and a GPU
+    /// test skips, rather than wgpu panicking.
+    NoBackend(wgpu::Backends),
     Device(String),
 }
 
@@ -49,6 +53,7 @@ impl fmt::Display for ContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ContextError::NoAdapter => write!(f, "no GPU adapter"),
+            ContextError::NoBackend(b) => write!(f, "no GPU backend built for this platform among {b:?}"),
             ContextError::Device(e) => write!(f, "device: {e}"),
         }
     }
@@ -183,6 +188,16 @@ pub fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor
     d
 }
 
+/// A wgpu instance on `backends` ([`instance_descriptor`]), or [`ContextError::NoBackend`] when none of them is built
+/// here. When no backend at all is (Vulkan-only builds on macOS), `wgpu::Instance::new` would panic (wgpu-30
+/// instance.rs, "No wgpu backend feature").
+pub fn instance(backends: wgpu::Backends) -> Result<wgpu::Instance, ContextError> {
+    if !wgpu::Instance::enabled_backend_features().intersects(backends) {
+        return Err(ContextError::NoBackend(backends));
+    }
+    Ok(wgpu::Instance::new(instance_descriptor(backends)))
+}
+
 fn rank(a: &wgpu::Adapter) -> (u8, u8) {
     let info = a.get_info();
     let kind = match info.device_type {
@@ -229,7 +244,7 @@ impl GpuContext {
     pub fn headless_on(backends: wgpu::Backends, choice: AdapterChoice) -> Result<GpuContext, ContextError> {
         let (instance, adapter) = {
             let _one_at_a_time = creation_lock();
-            let instance = wgpu::Instance::new(instance_descriptor(backends));
+            let instance = instance(backends)?;
             let mut adapters: Vec<wgpu::Adapter> = pollster::block_on(instance.enumerate_adapters(backends));
             adapters.retain(|a| choice == AdapterChoice::Any || a.get_info().device_type == wgpu::DeviceType::Cpu);
             adapters.sort_by_key(rank);
@@ -276,6 +291,20 @@ fn describe_info(i: &wgpu::AdapterInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A backend this build doesn't carry (pe-render never builds Metal) is an error, not wgpu's panic, so a headless
+    /// context on a platform with no built backend (macOS) fails like one with no adapter and GPU tests skip.
+    #[test]
+    fn a_backend_this_build_lacks_is_an_error_not_a_panic() {
+        assert!(!wgpu::Instance::enabled_backend_features().contains(wgpu::Backends::METAL), "Metal stays off");
+        assert!(
+            matches!(instance(wgpu::Backends::METAL), Err(ContextError::NoBackend(b)) if b == wgpu::Backends::METAL)
+        );
+        assert!(matches!(
+            GpuContext::headless_on(wgpu::Backends::METAL, AdapterChoice::SoftwareOnly),
+            Err(ContextError::NoBackend(_))
+        ));
+    }
 
     /// Multiview needs its view count raised from wgpu's default of 0, but never past what the adapter offers.
     #[test]
