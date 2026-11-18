@@ -629,6 +629,68 @@ fn a_late_failed_verdict_never_makes_the_correct_member_import_the_faulty_state(
     assert!(bundles(&net, 1).iter().all(|b| b.state_at_cv.is_empty() && b.entries.is_empty()));
 }
 
+/// @item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t: the reference's replica forgets its
+/// root at the split cut when its step-1 replay ends (as pe-replica's `replay_to` forgets its votes), and its own pick,
+/// which would ask that root again, waits on a late verdict. It must still serve it: the first rung 2 toward it
+/// cures, with no failure.
+#[test]
+fn the_reference_still_serves_its_root_at_the_split_cut_after_its_replay() {
+    let mut net = Net::new(2, 40, &[]);
+    net.reemit = true;
+    net.run(20);
+    for p in &mut net.peers {
+        p.r.forget_after_replay = true;
+    }
+    net.peers[1].r.faulty = Some(5);
+    net.peers[1].self_test_fails = true;
+    // Member 1 sees member 0's verdict at once and picks it; member 0 sees member 1's late, so it has not picked (nor
+    // asked its own root at the cut) when member 1's rung 2 asks it.
+    net.peers[1].verdict_delay = 24;
+    net.run(60);
+    let failed: Vec<_> =
+        net.peers.iter().flat_map(|p| &p.events).filter(|e| matches!(e, DivergeEvent::RungFailed { .. })).collect();
+    assert!(failed.is_empty(), "{failed:?}");
+    // The fault lasts, so it splits again after each cure; each split's first rung 2 cures it.
+    let c = net.peers[1].d.counters().clone();
+    assert!(c.cured_by_rung[1] >= 1 && c.cured_by_rung[1] + 1 >= c.root_splits, "{c:?}");
+    assert_eq!((c.source_faults, c.rung_failures), (0, 0), "{c:?}");
+    assert_eq!(net.peers[0].d.counters().serve_refused, 0);
+}
+
+/// At n = 2 a split ends its view at once and the height is proposed again (agreement.md L4'), while the member
+/// still repairing votes its old root there. The repair the re-proposal overtakes is no failure: a note says so, and
+/// the work goes on at the new cut (@coordinator-opus). Once pe-agree pins a split's cut this is rarer, but a newer cut can still overtake.
+#[test]
+fn a_split_repair_overtaken_by_a_re_proposal_is_a_note_not_a_failure() {
+    let mut net = Net::new(2, 40, &[]);
+    net.repropose = true;
+    net.reemit = true;
+    net.run(20);
+    net.peers[1].r.faulty = Some(5);
+    net.peers[1].self_test_fails = true;
+    // Replay and import take 6 frames each: longer together than a view (8), so the first repair is overtaken.
+    net.peers[1].r.pending_frames = 6;
+    let mut notes = Vec::new();
+    for _ in 0..120 {
+        net.step();
+        notes.extend(net.peers[1].d.notes());
+        if net.peers[1].d.counters().split_overtook > 0 {
+            net.peers[1].r.pending_frames = 0;
+        }
+    }
+    let failed: Vec<_> =
+        net.peers.iter().flat_map(|p| &p.events).filter(|e| matches!(e, DivergeEvent::RungFailed { .. })).collect();
+    assert!(failed.is_empty(), "{failed:?}");
+    // The mock's fault steps differently on every frame, so it splits again after each cure; what matters here is
+    // that the overtaken repair failed nothing and the work went on to cure.
+    let c = net.peers[1].d.counters().clone();
+    assert!(c.split_overtook >= 1 && c.cured_by_rung[1] >= 1 && c.rung_failures == 0, "{c:?}");
+    assert!(
+        notes.iter().any(|n| n.contains("overtaken by the root split") && n.contains("proposed again")),
+        "{notes:?}"
+    );
+}
+
 #[test]
 fn members_that_see_the_split_in_different_views_name_one_reference() {
     // L4' (@coordinator-opus): a lasting fault neither self-test catches, and A sees the first RootSplit
