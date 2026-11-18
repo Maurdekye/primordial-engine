@@ -558,7 +558,7 @@ Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-revi
     epoch 0, so its signatures are unchanged, then a hash of the line and the epoch), and its core messages travel in
     an epoch envelope (`Wire::Epoch`); a message of an epoch the node isn't in is dropped without a fault.
   - The old core is kept 30 s after the switch: it times out, proposes suffix cuts and votes them with E's root, so a
-    member that missed E's finality finishes it.
+    member that missed E's finality finishes it. Past that, such a member fetches the epoch certificate (below).
   - Cuts advance only members' chains: a former member's chain keeps its head, and a cut that advances it is refused
     (`Reject::NotMember`). Its stray entries and messages are dropped without a fault.
   - `submit` refuses anything after the member's own `Leave` (`SubmitError::AfterLeave`).
@@ -573,11 +573,42 @@ Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-revi
     `leave_settled()` is true once every remaining member has. pe-app waits for it before quitting, with a visible
     bound ("leaving…"; @engine-architect). Measured: waiting for it strands no one in the same 9 runs, quitting
     355-558 ms after the `Leave`.
-  - **Not built: a member that misses E for more than 30 s is stranded** (@design-reviewer's M3; coordinator: a limit for now). "Fetches it like a committed block" above isn't built: a member still in epoch
-    e drops every message of e + 1, and once the others' old cores are gone nothing finishes E for it. At 2 -> 1 the
-    laggard is the remaining member, no worse than a crash; at 3 -> 2 it strands both remaining members (q = 2 needs
-    it). **So leaves at n >= 3 aren't supported until the epoch-certificate fetch is built** (a member that receives a
-    later epoch's message asks its sender for E, the suffix and the finalizing certificate; its own docket item).
+  - **A member that missed E fetches the epoch certificate** (@design-reviewer's M3; coordinator; @item:primordial-engine/pe-agree-a-member-that-missed-its-epoch-s-reconf). Once the others' old
+    cores are gone, nothing finishes E for a member still in epoch e. So a member in e that receives a core message
+    of a later epoch from a member of e asks that member for the certificate that ended e (`Wire::FetchEpochCert`): at
+    once, then after 1 s, doubling up to 8 s, while it is still in e. It keeps the message (the latest 64) and replays
+    it once it reaches that epoch.
+    - The answer (`Wire::EpochCert`) is the certificate a joiner starts from: E's proposal and its certified suffix,
+      oldest first, and the top's certificate. The member checks it against e's members
+      (`epoch::verify_certificate`: every certificate a quorum of e's members signing under e's domain, the blocks
+      chaining, every block above E a suffix cut, and a two-chain). It then takes the proposals into its core as
+      fetched blocks (`Core::adopt`). The two-chain rule commits E there, the ancestors of E it lacks come by block
+      fetch, and E's entries by entry fetch, as for any final cut.
+    - **Its switch is its own**, from E's changes: unlike a joiner, it trusts nothing from the sender, not even the
+      next epoch's members. A certificate that fails is a `Protocol` fault from its sender; one for another epoch is
+      dropped. A member that missed several epochs fetches one certificate per epoch, the next from a member of the
+      epoch it has reached.
+    - **What a member keeps for it.** For each of the last 8 epochs it ended, the certificate and the proposals of the
+      committed blocks its core still held at E (the latest 256). It serves the certificate at most every 0.5 s per
+      requester and epoch, and a block per block fetch, in that epoch's envelope.
+    - **Limits.** A member more than 256 blocks behind E (about 25 s of cuts at the 0.1 s cadence) or more than 8
+      epochs behind can't catch up this way and needs an import, as section 4's catch-up does. The ask goes only to
+      a member of the asker's own epoch, so a member that missed the epoch admitting a key still sees that key as a
+      non-member (below, at a joiner). A leaver that missed E's finality past the old cores' 30 s never learns it, since
+      nobody sends it a later epoch's traffic: it quits at pe-app's leave bound, harmless to the line, since its
+      `Leave` is final (@design-reviewer's nit on 5d532552).
+    - **Re-fetch.** A block fetch is sent once per block, so one lost on a link that has just come back would leave the
+      gap below E open. Each certificate taken in re-sends the fetch of the first block below E the member lacks
+      (walking down through the blocks it holds whose parent it lacks), so the gap heals at the ask's back-off
+      (@design-reviewer's Low 1 on 5d532552). Ordinary catch-up has the same once-only fetch, outside this change
+      (@item:primordial-engine/pe-agree-a-lost-block-fetch-is-never-re-sent-ord).
+    - The consensus hash is v8: no new setting, but two new messages, a wire change, so builds before and after
+      refuse each other at start.
+    - So leaves at n >= 3 are supported (they weren't before this, coordinator). Tests
+      (node_tests.rs): 3 -> 2 with a remaining member cut off from the `Leave` until 10 s after the old cores are
+      gone, which reaches epoch 1 and finalizes with the other; 4 -> 3 -> 2 with one member cut off through both
+      changes, which fetches two certificates; a forged vote, a forged proposal, a certificate with no two-chain
+      refused, and another epoch's dropped.
   - **A cut's identity is its `CutRef`** (S3 v1.7; L2): heights go on across the switch, so the old epoch's suffix
     cuts and the new epoch's first cuts share heights with different frames.
   - The consensus hash is v5: this build's final log differs from v4's from the first `Leave`.
@@ -621,13 +652,13 @@ Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-revi
     joiner's import must match.
   - **Trusted from the inviter, not proven by the certificate** (as the world import at E is in M1): the next epoch's
     members and `GovState`, and the chains' highest final stamps (head entries are checked against the heads E names).
-    Deriving them needs E's entries; that comes with the epoch-certificate fetch. Once S2 writes `Admit`s and `Leave`s
+    Deriving them needs E's entries, which a member that missed E fetches (above) but a joiner doesn't hold. Once S2 writes `Admit`s and `Leave`s
     into the world, the joiner can instead check the members and roles against the world it imports at E, whose root
     E's certificate covers (@engine-architect). The invite pins the epoch by `core::members_hash(line, epoch, members)`.
-  - **Limits.** One epoch only: an invite must pin the epoch that ended at E (a joiner of an older invite needs the
-    chain of certificates, the fetch's item). At n >= 3, a member that hasn't switched yet sees a joiner's first
-    messages and entries as a non-member's (a `NotMember` fault, dropped; the entries come back by fetch), as with the
-    stranded member above.
+  - **Limits.** One epoch only: an invite must pin the epoch that ended at E (a joiner of an older invite would need
+    the chain of certificates and each epoch's entries, not built for joiners). At n >= 3, a member that hasn't
+    switched yet sees a joiner's first messages and entries as a non-member's (a `NotMember` fault, dropped; the
+    entries come back by fetch) until it reaches the joiner's epoch, by the fetch above if it missed E for longer.
   - **An admitted joiner that never starts halts the line** (@design-reviewer's Medium on b84295a2). Once the `Admit`
     is final, epoch e + 1 counts the joiner, and at M1's 1 -> 2, q = 2 needs its vote: if it never runs e + 1 (a lost
     welcome, an import that doesn't match `start_root`, a crash, a build mismatch found only after the `Admit`), the
