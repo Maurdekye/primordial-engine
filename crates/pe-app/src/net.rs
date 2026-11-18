@@ -54,8 +54,16 @@ use crate::world::DEV_MEMBER;
 /// The engine build both sides' hellos carry and the genesis record names: connections between different builds are
 /// refused at the hello (transport.md 6.3), and a record from another build at the welcome, by name.
 ///
-/// It is pe-app's version, the script build service's identity B, and a core part: the script runner's identity with
+/// It is the source part, the script build service's identity B, and a core part: the script runner's identity with
 /// pe-agree's consensus settings.
+/// - The source part ([`source_part`]; @coordinator-opus m113878c7e7a5): the hash pe-app's build script takes of every
+///   file under `crates/`, with `Cargo.lock` and the root `Cargo.toml` (`crate::sources`). So two builds share a
+///   session only if they came from the same sources: pe-app's version doesn't change between commits, and the rules
+///   pe-world, pe-replica and pe-physics compute by were named nowhere else (@design-reviewer m5012e3329334). It names
+///   the same sources only: not a security check, and not the compiler's or the CPU's identity. It needs no git, is
+///   right for a dirty tree, ignores commits that change only documents, and is the same for debug and release
+///   builds and on every platform. A saved world must not keep it: a release-compatibility rule replaces it before
+///   worlds are saved (docketed as a dependency of world saves).
 /// - B (logic.md 6.2b, `pe_logic::build::build_identity`: the toolchain's release, its wasm32 std, pe-sdk, the build
 ///   service's and pe-logic's result versions), so two machines whose builds of one script could differ never share a
 ///   session, and a build that one member passes and another fails, which the build-asymmetry ruling makes a split
@@ -76,8 +84,10 @@ use crate::world::DEV_MEMBER;
 ///   welcome, which names the consensus hash by itself (`GenesisError::Agree`).
 ///
 /// Each appears as the first 6 bytes of its hash in hex, since a hello's build id is at most `MAX_BUILD` (64) bytes and
-/// `bind` refuses a longer one: 53 at version 0.1.0, which leaves the version 11 bytes to grow, and 48 bits still tell
-/// any two builds apart by accident (a peer can claim any build id at any length). Computed once per process.
+/// `bind` refuses a longer one: 64 with all three parts (less while B reads "unavailable"), and 48 bits still tell any
+/// two builds apart by accident (a peer can claim any build id at any length). pe-app's version isn't a part, since
+/// the source part covers its Cargo.toml; the console's start line prints it ([`source_line`]). Computed once per
+/// process.
 pub fn build_id() -> &'static [u8] {
     static ID: OnceLock<Vec<u8>> = OnceLock::new();
     ID.get_or_init(|| {
@@ -87,8 +97,27 @@ pub fn build_id() -> &'static [u8] {
             .unwrap_or_else(|_| "unavailable".into());
         let (settings, run) = runner_settings();
         let core = core_part(&settings, &run, &crate::genesis::consensus_hash());
-        format!("pe-app {}; scripts {scripts}; core {core}", env!("CARGO_PKG_VERSION")).into_bytes()
+        format!("pe-app src {}; scripts {scripts}; core {core}", source_part()).into_bytes()
     })
+}
+
+/// [`build_id`]'s source part: the first 6 bytes, in hex, of the hash pe-app's build script took of the sources.
+pub fn source_part() -> &'static str {
+    &env!("PE_SOURCE_HASH")[..12]
+}
+
+/// The console's first line (app.md 4, "The build id"): pe-app's version, the source part, and the commit the build
+/// came from with whether its sources differed from it, as git said when the build script last ran. It's for a person
+/// reading the console only: the commit isn't part of the build id.
+pub fn source_line() -> String {
+    let commit = env!("PE_SOURCE_COMMIT");
+    let changes = match env!("PE_SOURCE_DIRTY") {
+        "no" => "",
+        "yes" => ", with local changes",
+        _ => ", local changes unknown",
+    };
+    let commit = &commit[..commit.len().min(12)];
+    format!("pe-app {}, sources {} (commit {commit}{changes})", env!("CARGO_PKG_VERSION"), source_part())
 }
 
 /// The script runner's settings: main.rs starts its `LogicRunner` with these, and [`build_id`] carries their identity,
@@ -2141,13 +2170,17 @@ mod tests {
     }
 
     #[test]
-    fn the_build_id_names_pe_app_the_script_build_identity_the_runner_and_the_consensus_settings() {
+    fn the_build_id_names_the_sources_the_script_build_identity_the_runner_and_the_consensus_settings() {
         use pe_replica::logic::ScriptRunner;
         let id = String::from_utf8(build_id().to_vec()).unwrap();
-        assert!(id.starts_with(concat!("pe-app ", env!("CARGO_PKG_VERSION"), "; scripts ")), "{id}");
-        let (scripts, core) = id.split_once("; scripts ").and_then(|(_, r)| r.split_once("; core ")).expect("both");
-        // Under cargo the toolchain is known, so B is there. Each part is its hash's first 6 bytes in hex.
-        for part in [scripts, core] {
+        let rest = id.strip_prefix("pe-app src ").unwrap_or_else(|| panic!("the source part first: {id}"));
+        let (src, rest) = rest.split_once("; scripts ").expect("the scripts part");
+        let (scripts, core) = rest.split_once("; core ").expect("the core part");
+        // Under cargo the toolchain is known, so B is there. Each part is its hash's first 6 bytes in hex, and the
+        // source part is the build script's hash of this tree (crate::sources).
+        assert_eq!(src, &env!("PE_SOURCE_HASH")[..12], "{id}");
+        assert!(source_line().starts_with(&format!("pe-app {}, sources {src} (commit ", env!("CARGO_PKG_VERSION"))));
+        for part in [src, scripts, core] {
             assert!(part.len() == 12 && part.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
         }
         let tc = pe_logic::build::Toolchain::current().expect("a toolchain under cargo");
