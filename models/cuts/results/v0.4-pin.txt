@@ -1,0 +1,137 @@
+# model v0 with the pinned split cut, 2026-11-18, branch model/pin-split (16 threads)
+n2-repair-live            350           524     31       1.0  OK   all properties hold; examples found
+    2 members, member 1's root wrong until repaired, liveness: final with the right root; q = 2; entries 0=m1.1
+bound-n2-wrongroot         1513          2371     41       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    2 members, member 1's root wrong and never repaired: nothing is final (why the repair must reach a later view); q = 2; entries 0=m1.1
+    counterexample to "liveness: every end state has a final cut at every honest member" (40 steps as found, 38 after shrinking):
+      Propose(0, false)
+      Deliver(1, Propose { block: v1m0@3[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(0, Propose { block: v1m0@3[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(0, Entry { to: 0, e: 0 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v2m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v2m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(0, Cert { block: genesis, root: true })
+      Propose(0, false)
+      Deliver(1, Propose { block: v3m0@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v3m0@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v4m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v4m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(0, Cert { block: genesis, root: true })
+      Propose(0, false)
+      Deliver(1, Propose { block: v5m0@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v5m0@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v6m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v6m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      AdvanceTc(0, Cert { block: genesis, root: true })
+n3-root-repair        4315200      24437269     31       6.0  OK   all properties hold; examples found
+    3 members, author-faulty, member 2's root wrong until repaired, safety; q = 2; entries 0=m1.1 1=f.1a
+n4-root-repair       44338475     235376636     18     101.2  OK   (every behaviour of up to 18 steps) all properties hold; examples found
+    4 members, Byzantine, member 3's root wrong until repaired, safety; q = 3; entries 0=f.1a
+n2-pin-k2                 246           373     42       1.0  OK   all properties hold; examples found
+    2 members, member 1's root wrong until a repair of 2 views at its split cut, pinned: final; q = 2; entries 0=m1.1
+n2-pin-k3                 280           431     50       1.0  OK   all properties hold; examples found
+    the same, a repair of 3 views, 9 views; q = 2; entries 0=m1.1
+ctl-nopin                 524           945     63       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    the same without the pin: each re-proposal at a newer frame restarts the repair; q = 2; entries 0=m1.1
+    counterexample to "liveness: every end state has a final cut at every honest member" (62 steps as found, 62 after shrinking):
+      Deliver(0, Entry { to: 0, e: 0 })
+      Propose(0, false)
+      Deliver(1, Propose { block: v1m0@3[-,0,-,-], proot: true, tc: None, carried: 1 })
+      Repair(1)
+      Deliver(0, Propose { block: v1m0@3[-,0,-,-], proot: true, tc: None, carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Repair(1)
+      Propose(1, false)
+      Deliver(1, Propose { block: v2m1@6[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v2m1@6[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Repair(1)
+      AdvanceTc(0, Cert { block: genesis, root: true })
+      Propose(0, false)
+      Deliver(1, Propose { block: v3m0@9[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v3m0@9[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Repair(1)
+      Propose(1, false)
+      Deliver(1, Propose { block: v4m1@12[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v4m1@12[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Repair(1)
+      AdvanceTc(0, Cert { block: genesis, root: true })
+      Propose(0, false)
+      Deliver(1, Propose { block: v5m0@15[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v5m0@15[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Repair(1)
+      Propose(1, false)
+      Deliver(1, Propose { block: v6m1@18[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v6m1@18[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Repair(1)
+      AdvanceTc(0, Cert { block: genesis, root: true })
+      Propose(0, false)
+      Deliver(1, Propose { block: v7m0@21[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v7m0@21[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v8m1@24[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Repair(1)
+      Deliver(0, Propose { block: v8m1@24[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Repair(1)
+      AdvanceTc(0, Cert { block: genesis, root: true })
+all 7 check(s) met their expectation
+
+# fast profile
+n3-chain             45281984     355421881     33      57.1  OK   all properties hold; examples found
+n3-sig               76634368     617897121     33     124.4  OK   all properties hold; examples found
+n3-crash                26884         74041     29       1.0  OK   all properties hold; examples found
+n3-chain-live          233634        784805     28       1.0  OK   all properties hold; examples found
+n3-crash-live              46            73     16       1.0  OK   all properties hold; examples found
+n4-byz-live            228864        825480     27       1.0  OK   all properties hold; examples found
+n4-crash-live             130           301     24       1.0  OK   all properties hold; examples found
+n3-root               2275248      13415359     30       3.0  OK   all properties hold; examples found
+bound-n3-byz            73985        305919     26       1.0  OK   counterexample as expected: "agreement"
+ctl-d1                 494504       2449028     32       1.0  OK   counterexample as expected: "no final frame undone"
+ctl-unchecked         1420843       6747792     38       3.0  OK   counterexample as expected: "validity: chains"
+ctl-quorum             188752        613400     18       1.0  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement"
+ctl-nolock            5226411      29089993     18      15.1  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement"
+ctl-nosig              216402        978182     32       1.0  OK   counterexample as expected: "validity: chains"
+ctl-noroot              71078        238693     32       1.0  OK   counterexample as expected: "root: a diverged replica learns it at the cut"
+ctl-notimeout            1509          4119     16       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+all 16 check(s) met their expectation

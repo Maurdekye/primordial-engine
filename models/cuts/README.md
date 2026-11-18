@@ -373,6 +373,52 @@ content height, so `h + 2` excused every entry.
   from before it stay out): fails the property, 7.8 M states at depth bound 20, a 15-step counterexample after
   shrinking. ctl-ownonly still fails it (16 steps after shrinking).
 
+## v0.3: the revote case (coordinator m0901fd194db2)
+
+Results in `results/v0.3-revote.txt`. A member whose replica computed a wrong root may repair it at any time after its
+first vote (`repairable()`, action `Repair`). It still votes once per view, so the repaired root counts only from
+its next view's vote: pe-agree's `AlreadyVotedThisView`, where the verdict goes out as a signed self-test report
+instead. Lock and finality are unchanged.
+
+[V, 2026-11-13, tree 37d2a32f]:
+- **n2-repair-live** (2 members, member 1's root wrong until repaired, liveness): 350 states, all properties hold,
+  including "a repaired replica finalizes with the right root".
+- **bound-n2-wrongroot** (the same, never repaired): nothing is final, a 38-step counterexample after shrinking. At
+  q = 2 a wrong root blocks every certificate, so the repair has to reach a later view.
+- **n3-root-repair** (3 members, author-faulty, member 2's root wrong until repaired, safety): exhaustive, 4.3 M
+  states, all properties hold.
+- **n4-root-repair** (4 members, Byzantine, member 3's root wrong until repaired, safety): depth bound 18, 44.3 M
+  states, 220 s, all properties hold.
+
+Not yet: a control for "votes once per view", meaning a repaired member that votes again in the same view.
+
+### The pinned split cut (2026-11-18; coordinator mff2b493b8111, @item:primordial-engine/pe-agree-model-pin-a-root-split-s-cut-until-the-h)
+
+After a root split, pe-agree's leader re-proposes the split cut unchanged until the height is certified (agreement.md
+3, L4'). pe-diverge's repair is for that cut: it imports the reference's state at it and revotes there, and a split at
+another cut is a new episode that restarts the repair. The model control (`repair_in(k)`, only in rows that set it, so
+the other rows' state spaces are unchanged):
+- **The repair is for one cut and takes k views.** The corrupt member's root is right for its episode's cut and what
+  descends from it, and wrong for any other cut at that height. Its repair makes one step per view (`Repair`), and a
+  vote on another wrong-rooted cut starts a new episode from scratch.
+- **The pin:** an honest leader whose parent has a split child (two votes on it with different roots) proposes that
+  child's cut again, frame and heads.
+- **The control `NoPin`:** the leader re-proposes at a frame newer than any before on that parent (time moved on; the
+  voter's present moves with it, so the frame's upper bound doesn't apply).
+
+Results [V, 2026-11-18, 16 threads]:
+
+| Check | Model | States | Result |
+|---|---|---|---|
+| n2-pin-k2 | n = 2, member 1's root wrong until a 2-view repair at its split cut, pinned, 8 views, liveness | 246 | OK, final |
+| n2-pin-k3 | the same, a 3-view repair, 9 views | 280 | OK, final |
+| ctl-nopin | n2-pin-k2 with `NoPin` | 524 | counterexample as expected: nothing final (62 steps) |
+
+v0.3's rows are unchanged (n2-repair-live 350 states, bound-n2-wrongroot 1,513, n3-root-repair 4,315,200, n4-root-repair
+44,338,475 at depth 18), and the fast profile meets all 16 expectations. The model covers the pin's logic. That with a
+driver voting each cut once nobody votes in the pinned views, which needs the re-cast, is pe-agree's test, not the
+model's: the model's members vote on every proposal they accept.
+
 ## v1: membership change by epochs
 
 `cuts-model --epochs [--depth D] [--budget S] [--threads N] [filter...]` runs model v1 (`src/epochs.rs`), the rule in
