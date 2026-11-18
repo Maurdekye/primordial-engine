@@ -9,6 +9,8 @@
 //!   bundle goes to the I/O thread's bounded queue, never written on this thread;
 //! - the physics self-test: the digest of pe-physics's fixed scene, taken at start-up and again on each
 //!   `RunSelfTest`. A different digest is `Failed`; the same is `Passed`. A vote never claims a test that did not run.
+//!   Once `--inject-fault-at`'s fault has fired on this machine, the verdict is `Failed` by injection whatever the
+//!   digest ([`crate::fault`]): the notice and every bundle's `build` line say so, beside the real digest's verdict.
 //!   In M1 it runs on the simulation thread while it takes under a frame on M1's machines (app.md 1), and the
 //!   start-up digest is the value R-G1's hello will carry. Both are taken on the simulation thread (the start-up one
 //!   at the first step), so both see that thread's floating-point mode, which the digest depends on (@vdw-physics).
@@ -26,6 +28,7 @@ use pe_seams::{
     VoteResult,
 };
 
+use crate::fault::Fault as InjectedFault;
 use crate::sim::SimStats;
 
 /// Fault bundles waiting for the I/O thread: past this many, a bundle is dropped and counted, never waited for.
@@ -80,6 +83,17 @@ pub fn verdict(startup: &Result<CheckHash, String>, now: &Result<CheckHash, Stri
         (Ok(a), Ok(b)) if a == b => SelfTest::Passed { split },
         _ => SelfTest::Failed { split },
     }
+}
+
+/// The console's line for a self-test that the injected fault fails ([`crate::fault`]): it names the injection and
+/// the real digest's verdict, so nobody reads it as a physics fault.
+fn injected_notice(cut: CutRef, f: &InjectedFault, real_failed: bool) -> String {
+    let real = if real_failed { "failed too" } else { "passed" };
+    format!(
+        "divergence: the physics self-test for the split at {cut:?} reports Failed BY INJECTION ({}, a deliberate test \
+         fault, not a physics fault); the real self-test {real}",
+        f.source()
+    )
 }
 
 /// pe-physics's self-test digest, with its error as text.
@@ -157,9 +171,12 @@ impl DivergeLoop {
         now: HostTime,
         clock: &dyn FrameClock,
         self_test: &mut SelfTest,
+        injected: Option<&InjectedFault>,
         stats: &mut SimStats,
         notices: &mut Vec<String>,
     ) -> Vec<Outgoing> {
+        // `--inject-fault-at`'s fault, once it has fired here: every self-test from then on reports `Failed`.
+        let injected = injected.filter(|f| f.fired());
         self.startup();
         // `NotReady` is the driver's: it asks `finalize` again on the next tick.
         let results: Vec<(CutRef, Finalized)> =
@@ -220,11 +237,18 @@ impl DivergeLoop {
                 },
                 Action::RunSelfTest { cut } => {
                     let now = self_test_digest();
-                    *self_test = verdict(self.startup(), &now, cut);
+                    let real = verdict(self.startup(), &now, cut);
                     stats.self_tests += 1;
-                    if matches!(self_test, SelfTest::Failed { .. }) {
+                    let failed = matches!(real, SelfTest::Failed { .. });
+                    if failed {
                         stats.self_tests_failed += 1;
                         notices.push(format!("divergence: the physics self-test for the split at {cut:?} failed"));
+                    }
+                    *self_test = real;
+                    if let Some(f) = injected {
+                        stats.self_tests_injected += 1;
+                        *self_test = SelfTest::Failed { split: cut };
+                        notices.push(injected_notice(cut, f, failed));
                     }
                 }
                 Action::WriteBundle(mut b) => {
@@ -238,6 +262,13 @@ impl DivergeLoop {
                     if self.io.is_some() {
                         let build = self.build.get_or_insert_with(build_line);
                         b.build = format!("{build}; self-test at start-up {startup}, verdict {self_test:?}");
+                        if let Some(f) = injected {
+                            let ball = f.ball().map_or_else(|| "none".into(), |b| format!("{:x}", b.to_u128()));
+                            b.build.push_str(&format!(
+                                " BY INJECTION: {} changed ball {ball} on this machine, a deliberate test fault",
+                                f.source()
+                            ));
+                        }
                     }
                     match self.io.as_ref().map(|io| io.tx.try_send(b)) {
                         Some(Ok(())) => stats.bundles += 1,
