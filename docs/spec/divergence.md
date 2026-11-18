@@ -541,6 +541,7 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `evidence_skipped` | Divergences whose bundles go without replay evidence (6), once per `Cv`, and each bundle whose `C` is not the cut its evidence was extended to | pe-diverge |
 | `overtaken_in_a_row` | A gauge: repairs toward a final cut overtaken by a newer one, in a row since the last cure or agreeing cut. It tells a world too big to fetch within `W_fg` (4.2) from one unlucky repair | pe-diverge |
 | `root_splits` | Root-split episodes (distinct split cuts, not `RootSplit` events), and how each ended | pe-diverge |
+| `recasts` | Votes cast again in the pinned views of a split cut (5), at most one a view, not counting pe-diverge's revotes: with `root_splits`, roughly how many views a split episode took | pe-agree, through S3 |
 | `bundles_written` | Bundles written | pe-diverge |
 | `joins`, `join_failures` | Joins from a final cut (4.5) whose import matched its root, and joins that failed. Neither is a divergence, a cure or a rung failure | pe-diverge |
 | `corrections_per_min` | Drawn objects whose drawn pose had to blend or jump after a correction, per minute | pe-render (section 8) |

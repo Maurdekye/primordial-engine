@@ -402,6 +402,10 @@ pub struct AgreeStats {
     /// A test bounds a recovery in views rather than seconds: a loaded machine's views time out and back off, so they
     /// last longer, but their count doesn't grow with the load.
     pub view: u64,
+    /// (S3 v1.12; a diagnostic.) Votes this member cast again on a pinned re-proposal of a split cut (the pin,
+    /// divergence.md 5), at most one a view: a split episode's view churn. A vote cast afresh through
+    /// [`Agreement::vote`] (pe-diverge's revotes) isn't one. 0 from a source without the pin.
+    pub recasts: u64,
 }
 
 /// S3. pe-agree implements it; it is also the replica's [`EntrySource`].

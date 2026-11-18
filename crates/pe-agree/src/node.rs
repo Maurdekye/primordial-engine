@@ -2827,6 +2827,7 @@ impl Agreement for Node {
             unconfirmed_since: None,
             pending_entries: self.predicted.values().map(|v| v.len()).sum(),
             view: self.core.view(),
+            recasts: self.recasts,
         }
     }
 
