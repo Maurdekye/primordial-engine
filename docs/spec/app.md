@@ -571,7 +571,30 @@ then commits a version that glows blue. B's agent reads B's own Lamp through B's
 among the kept ones: it must be `F + 2`, where `F` is the activation frame A's `mine` reports, and `F + 1` warm. The
 new code runs from `F + 1` (logic.md 6.2 step 3), and a snapshot at frame f is the state before f is stepped (3.1),
 so `F + 2` is the first state the new code wrote (@vdw-physics's reading of the first run with the bind fixed).
-Touch isn't in it: headless has no hands, so a person checks touch in the demo itself.
+Touch isn't in it: headless has no hands, so a person checks touch in the demo itself. Last, A replays its session
+from frame 0 (next paragraph), and every final cut's root must be the live one.
+
+**The live run equals the replay** (the plan's M1 acceptance; replay.rs;
+@item:primordial-engine/m1-acceptance-the-live-run-equals-the-replay-a-r; @coordinator-opus). `--check-replay` makes the opener keep its session's final log. The console's `replay` then replays
+the log from frame 0, on a thread of its own, and prints one verdict line: "replay: the live run equals the replay: N
+final cuts …", or the first final cut whose root differs, or why it couldn't replay.
+- **The log** is the one the session already keeps. As the driver finalizes each final cut, the simulation first takes
+  that cut's entries from S3: `entries_for_cut` at each frame since the previous final cut, with the cut and its root
+  (phases.rs's `Timed`). It must come before the replica's finalize: that moves the replica's `Cv`, and agreement keeps
+  its final log only from `Cv`. At n = 1, a cut is voted, final and finalized within one `drive`. Nothing is written
+  to a file.
+- **The replay** starts from the genesis record's frame-0 replica (`Genesis::replay_replica`, whose root the record
+  pins). That replica has no local member. A replay computes the agreed state, and a replica whose local member wrote
+  a commit predicts it active until it's attested (logic.md 6.2a, option (i)): a replay with the opener local differed
+  at the first final cut after the demo's first commit [V]. It steps straight through the log, every entry at its
+  stamp, as pe-harness's s2replay does for P2. At each recorded final cut it compares `root_at_cut` with the live root,
+  then finalizes that cut, so it holds no more state than the live replica.
+- **Scripts:** the replay's runner, with the live runner's settings, holds every module the log commits. It loads
+  each `CommitScript`'s `author_module` from the live replica's bytes (`Replica::module`, pe-logic's
+  `Script::load_metered`).
+- **Only the opener replays,** since its history starts at frame 0. A joiner starts at its import, and at n = 2 every
+  final cut's root is both members' root, so the opener's replay covers the session. `--check-replay` needs `--open`,
+  and excludes a test fault, whose replay would compute the fault again.
 
 **The commands** (the M1 interim, until the configuration of section 4 replaces them):
 - A: `pe-app --vr --open --advertise <A's address>:4433`. It prints an invite, then reads B's reply code on standard
@@ -709,6 +732,10 @@ final on either, though both keep simulating their predictions.
   - no change without a fault;
   - a typed `fault` firing at the frame the simulation names, and refused when typed twice, without `--arm-fault`,
     or for `--inject-fault-at`'s fault.
+- **The live run equals the replay** (section 6), two members from the M1 interim's two-member genesis record over
+  sim.rs's hub, B's closed hands sweeping through the pit. [V] A's replay reaches every final cut's root: 96 final
+  cuts from frame 0 to frame 582. The control drops one of B's entries from the kept log, and the replay differs at
+  the first final cut after it. The demo test (section 6) adds B's join and both versions of the lamp.
 - **The two-process session** of section 6, on Windows and Linux.
 
 ## 8. Open points

@@ -111,6 +111,8 @@ struct Options {
     inject_fault_at: Option<Frame>,
     /// `--arm-fault`: the console's typed `fault` injects that test fault at the next frame.
     arm_fault: bool,
+    /// `--check-replay`: the opener keeps its final log, and the console's `replay` replays it (pe-app's `replay`).
+    check_replay: bool,
 }
 
 /// The joiner's wait for the opener's welcome and its clock: a person copies the reply over.
@@ -133,6 +135,7 @@ fn options() -> Options {
         drawn_time: None,
         inject_fault_at: None,
         arm_fault: false,
+        check_replay: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -154,6 +157,7 @@ fn options() -> Options {
             "--agent" => o.agent = args.by_ref().collect(),
             "--drawn-time" => o.drawn_time = Some(args.next().and_then(|a| drawn_time(&a)).unwrap_or_else(|| usage())),
             "--arm-fault" => o.arm_fault = true,
+            "--check-replay" => o.check_replay = true,
             "--inject-fault-at" => {
                 o.inject_fault_at =
                     Some(Frame(args.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or_else(|| usage())));
@@ -187,13 +191,22 @@ fn presenter(rate: SimRate, drawn_time: DrawnTime) -> Presenter {
 }
 
 /// The console (app.md 4): each line it reads is a command. `fault` fires the test fault `--arm-fault` armed, and is
-/// refused without it (pe-app's `fault`). On A, any other line is a joiner's reply code, for the session's hook, which
+/// refused without it (pe-app's `fault`). `replay` replays the opener's session from frame 0, with `--check-replay`
+/// (`replay` true; pe-app's `replay`). On A, any other line is a joiner's reply code, for the session's hook, which
 /// checks it. The thread waits on standard input for the whole run; the process's end ends it.
-fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>) {
+fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool) {
     let read = move || {
         for line in std::io::stdin().lines().map_while(Result::ok) {
             let line = line.trim();
             if line.is_empty() {
+                continue;
+            }
+            if line == "replay" {
+                if replay {
+                    pe_app::replay::request();
+                } else {
+                    eprintln!("pe-app: `replay` is refused: this machine wasn't started with --check-replay");
+                }
                 continue;
             }
             if line == "fault" {
@@ -204,7 +217,9 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>) {
                 continue;
             }
             let Some(replies) = &replies else {
-                eprintln!("pe-app: `{line}` isn't a command here; the one command is `fault`, with --arm-fault");
+                eprintln!(
+                    "pe-app: `{line}` isn't a command here: `fault` (with --arm-fault) or `replay` (--check-replay)"
+                );
                 continue;
             };
             match Reply::decode(line) {
@@ -261,13 +276,21 @@ fn shared_sim(
             println!("session: open, this machine {}", short(s.me));
             println!("invite: {}", opened.invite.encode());
             println!("to let someone join, paste their reply code here:");
-            read_console(Some(opened.replies));
-            diverge(
+            read_console(Some(opened.replies), o.check_replay);
+            let sim = diverge(
                 Sim::new(Box::new(s.node), s.replica, s.frames, slot, Budget::new(rate))
                     .with_local(s.me, chain_nonce(), hands)
                     .with_transport(net::transport(s.handle), Some(Box::new(s.hook)))
                     .with_linked(s.linked),
-            )
+            );
+            // `--check-replay` (pe-app's `replay`): the opener keeps its final log, and replays it on the console's
+            // `replay`.
+            if o.check_replay {
+                println!("replay: keeping this session's final log; type `replay` to replay it from frame 0");
+                sim.with_replay_check(pe_app::replay::ReplayLog::new(opened.genesis))
+            } else {
+                sim
+            }
         }
         Shared::Join(invite) => {
             println!("reply code for the opener: {}", ep.reply(invite).encode());
@@ -287,7 +310,7 @@ fn shared_sim(
                     at.0, cj.e.at.frame.0
                 );
             }
-            read_console(None);
+            read_console(None, false);
             let replica = cj
                 .record
                 .empty_replica(cj.me, cj.frames.clone(), runner)
@@ -324,6 +347,13 @@ fn main() {
         Err(warning) => eprintln!("{warning}"),
     }
     // A deliberate test fault on this machine only (M1 demo step 7, pe-app's `fault`), armed before any replica is made.
+    // `--check-replay` replays from the genesis record, which only the opener has, and a test fault would replay too.
+    if options.check_replay && !matches!(options.shared, Some(Shared::Open)) {
+        fail("--check-replay needs --open: only the opener's session starts at frame 0");
+    }
+    if options.check_replay && (options.arm_fault || options.inject_fault_at.is_some()) {
+        fail("--check-replay excludes a test fault: the replay would compute the fault again");
+    }
     let fault = match (options.inject_fault_at, options.arm_fault) {
         (Some(_), true) => fail("--inject-fault-at and --arm-fault exclude each other"),
         (Some(at), false) => Some(pe_app::fault::Fault::new(at)),
@@ -370,7 +400,7 @@ fn main() {
         None => {
             let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
             let pit = world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, frames.clone(), runner);
-            read_console(None);
+            read_console(None, false);
             let replica = match pit {
                 Ok(r) => r,
                 Err(e) => fail(&format!("the replica did not start: {e}")),
@@ -666,7 +696,7 @@ fn usage() -> ! {
     fail(
         "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] \
          [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms> (VR)|a:<ms>|b:<ms>] [--mcp-pipe] \
-         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--agent <command> <args>...]",
+         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--agent <command> <args>...]",
     )
 }
 

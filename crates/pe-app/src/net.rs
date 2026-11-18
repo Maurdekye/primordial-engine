@@ -369,6 +369,8 @@ pub struct Opened {
     pub invite: Invite,
     /// Where a reply code goes: the session's hook takes it on the simulation thread and dials the joiner.
     pub replies: Sender<Reply>,
+    /// The session's genesis record: `--check-replay` replays from its frame-0 world (crate::replay).
+    pub genesis: Genesis,
 }
 
 /// B, joined at the cut that admits it, up to agreement's start ([`Endpoint::join_at_cut`]). The next stage builds B's
@@ -654,7 +656,7 @@ impl Endpoint {
         let me = self.me;
         let mut session = self.into_session(members, replica, cfg, frames, genesis.agree)?;
         session.hook.inviter = Some(Inviter::new(me, line, invite.clone(), taken, t_join));
-        Ok(Opened { session, invite, replies })
+        Ok(Opened { session, invite, replies, genesis })
     }
 
     /// B: the welcome from `opener`, awaited until `deadline`, and whether the clock was ready by then. A refusal
@@ -1559,7 +1561,7 @@ mod tests {
         let a = Endpoint::bind([21; 32], loopback(), Vec::new(), true, host.clone(), None).unwrap();
         let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
         let p = OpenParams { epoch_lead: Duration::ZERO, balls, ..params() };
-        let Opened { session: s, invite, replies } =
+        let Opened { session: s, invite, replies, .. } =
             a.open_alone(&p, Duration::from_secs(600), t_join, runner()).expect("A opens alone");
         let (me_a, me_b) = (s.me, b.me());
         let line = s.node.config().line;
