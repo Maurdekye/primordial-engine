@@ -180,6 +180,10 @@ pub struct SimStats {
     /// cut at or below the final cut's frame opens none.
     pub root_splits: u64,
     pub root_splits_ended: u64,
+    /// pe-agree's re-cast votes (S3's `AgreeStats::recasts`): this member's votes cast again in the pinned views that
+    /// re-proposed a split cut, at most one a view; pe-diverge's revotes aren't counted. With `root_splits`, a run
+    /// reads roughly how many views its split episodes took.
+    pub recasts: u64,
     /// Messages from the network that agreement took (step 1).
     pub received: u64,
     /// Messages agreement refused as a peer's fault (step 1): counted, never fatal.
@@ -1069,6 +1073,7 @@ impl Sim {
         let events = self.agree.events();
         self.stats.events += events.len() as u64;
         self.track_split(&events);
+        self.stats.recasts = self.agree.stats().recasts;
         self.stats.phases.events_ns += lap(&mut mark);
         if let Some(d) = &mut self.diverge {
             let out = d.step(
@@ -2652,6 +2657,12 @@ pub(crate) mod tests {
             assert_eq!((s.stats.repair_refused, s.stats.splits_unknown), (0, 0), "member {i}");
             assert_eq!(s.stats.self_tests_failed, 0, "member {i}: the real self-test passed");
         }
+        // The split healed in a pinned view, where a member's vote is a re-cast unless pe-diverge's revote cast it
+        // afresh: the driver votes each cut once. Here rung 2 spans several pinned views, so re-casts happen, and the
+        // hub runs are deterministic (@design-reviewer). If a change ever trips this, check member 1's
+        // cured vote rather than weaken the assert.
+        let recasts = (a.stats.recasts, b.stats.recasts);
+        assert!(recasts.0 + recasts.1 >= 1, "re-cast votes in the pinned views: {recasts:?}");
         assert!(
             b.cured[1] >= 1 && a.cured[1] == 0,
             "member 1 cured by rung 2, member 0 not repaired: {:?} {:?}",

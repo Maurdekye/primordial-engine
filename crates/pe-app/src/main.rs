@@ -27,7 +27,8 @@
 //!
 //! `--mcp-pipe` and `--mcp-http` start pe-mcp's transports over pe-api, so an agent can read and edit the world for
 //! this machine's member (app.md 3.1); `--agent <command> <args>...`, the rest of the line, launches it with the
-//! transport's address and a token in its environment.
+//! transport's address and a token in its environment. `--agent-name <name>`, before it, is what the world's history
+//! calls the agent; by default the command's first word (`cmd` for `cmd /c start ... claude`).
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -105,6 +106,9 @@ struct Options {
     mcp_http: bool,
     /// The agent's command line, launched with the transport's address and a token in its environment.
     agent: Vec<String>,
+    /// `--agent-name`: what the world's history calls the agent (its producer's harness), in place of the command's
+    /// first word.
+    agent_name: Option<String>,
     /// `--drawn-time`: X8 for every presenter, in place of the defaults (VR Present, the desktop (a)).
     drawn_time: Option<DrawnTime>,
     /// `--inject-fault-at`: the frame at which this machine injects a deliberate test fault (pe-app's `fault`).
@@ -132,6 +136,7 @@ fn options() -> Options {
         mcp_pipe: false,
         mcp_http: false,
         agent: Vec::new(),
+        agent_name: None,
         drawn_time: None,
         inject_fault_at: None,
         arm_fault: false,
@@ -153,6 +158,7 @@ fn options() -> Options {
             "--identity" => o.identity = Some(args.next().unwrap_or_else(|| usage()).into()),
             "--mcp-pipe" => o.mcp_pipe = true,
             "--mcp-http" => o.mcp_http = true,
+            "--agent-name" => o.agent_name = Some(args.next().filter(|n| !n.is_empty()).unwrap_or_else(|| usage())),
             // The rest of the command line is the agent's.
             "--agent" => o.agent = args.by_ref().collect(),
             "--drawn-time" => o.drawn_time = Some(args.next().and_then(|a| drawn_time(&a)).unwrap_or_else(|| usage())),
@@ -416,6 +422,9 @@ fn main() {
     if !mcp_wanted && !options.agent.is_empty() {
         fail("--agent needs --mcp-pipe or --mcp-http");
     }
+    if options.agent_name.is_some() && options.agent.is_empty() {
+        fail("--agent-name needs --agent, after it: --agent takes the rest of the line");
+    }
     let me = sim.local_member();
     let ports = {
         let arrival = wake.arrival();
@@ -604,16 +613,25 @@ fn quit(sim: sim::SimThread, networked: bool) -> std::thread::Result<sim::SimSta
     sim.leave_and_stop(&mut |line| println!("{line}")).1
 }
 
+/// What the world's history calls the agent: `--agent-name` if given, else the command's first word as a file stem
+/// (`claude` for `C:\tools\claude.exe`, `cmd` for `cmd /c start ... claude`).
+fn harness_name(name: Option<&str>, command: &[String]) -> Option<String> {
+    if let Some(n) = name {
+        return Some(n.to_owned());
+    }
+    command.first().map(|c| {
+        let stem = std::path::Path::new(c).file_stem().map(|s| s.to_string_lossy().into_owned());
+        stem.unwrap_or_else(|| c.clone())
+    })
+}
+
 /// The world's name as pe-api reports it, until the invite or the configuration names it (api.md 5.1).
 const WORLD_NAME: &str = "M1 ball pit";
 
 /// pe-mcp's options: the transports asked for, and the agent's command line and grant. The agent acts for this
-/// machine's member, as an agent (pe-world's `Actor::Agent`), named by its command.
+/// machine's member, as an agent (pe-world's `Actor::Agent`), named by `--agent-name` or else its command.
 fn mcp_opts(o: &Options, member: MemberKey) -> HostOpts {
-    let harness = o.agent.first().map(|c| {
-        let name = std::path::Path::new(c).file_stem().map(|s| s.to_string_lossy().into_owned());
-        name.unwrap_or_else(|| c.clone())
-    });
+    let harness = harness_name(o.agent_name.as_deref(), &o.agent);
     let producer = Producer { kind: ProducerKind::Agent, harness, principal: None, requested_by: None };
     let mut opts = HostOpts::new(Grant { member: MemberId::from(member), producer, confirm: false });
     opts.pipe = o.mcp_pipe;
@@ -696,11 +714,27 @@ fn usage() -> ! {
     fail(
         "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] \
          [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms> (VR)|a:<ms>|b:<ms>] [--mcp-pipe] \
-         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--agent <command> <args>...]",
+         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--agent-name <name>] \
+         [--agent <command> <args>...]",
     )
 }
 
 fn fail(msg: &str) -> ! {
     eprintln!("pe-app: {msg}");
     std::process::exit(2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::harness_name;
+
+    #[test]
+    fn the_agent_is_named_by_agent_name_or_else_by_its_command() {
+        let line = |s: &str| s.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        let through_cmd = line("cmd /c start Claude /wait claude");
+        assert_eq!(harness_name(None, &through_cmd).as_deref(), Some("cmd"));
+        assert_eq!(harness_name(Some("claude"), &through_cmd).as_deref(), Some("claude"));
+        assert_eq!(harness_name(None, &line(r"C:\tools\claude.exe --verbose")).as_deref(), Some("claude"));
+        assert_eq!(harness_name(None, &[]), None);
+    }
 }
