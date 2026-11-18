@@ -768,6 +768,7 @@ impl Agreement for LockstepAgreement {
             unconfirmed_since: None,
             pending_entries: self.held.values().filter(|e| e.entry.stamp.0 >= ff).count(),
             view: 0,
+            recasts: 0,
         }
     }
 

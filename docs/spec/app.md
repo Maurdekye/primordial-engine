@@ -213,7 +213,9 @@ the MCP thread's handlers read them (@coordinator-opus m7af16ffc372e, m22babe2c6
 - **The MCP thread:** pe-mcp's `host::start` over `Api::new(ApiWorld, queue, log)` as an `Arc<dyn WorldApi>`, on a
   tokio runtime of 2 workers, with the pipe or loopback HTTP transport or both, and optionally the agent's command
   line (`--mcp-pipe`, `--mcp-http`, `--agent`). The token store is the one `host::start` makes; its tokens are
-  revoked when the agent exits or pe-app stops.
+  revoked when the agent exits or pe-app stops. The world's history names the agent (its producer's harness) by
+  `--agent-name`, given before `--agent`, or else by the command's first word, so an agent started through
+  `cmd /c start` needs the name.
 - **Not yet:** an edit's blobs reaching another machine's store. pe-world stores none from an applied transaction,
   and the Bulk lane isn't wired.
 
