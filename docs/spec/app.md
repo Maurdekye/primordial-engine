@@ -1,6 +1,7 @@
 # pe-app: the application (WS-app)
 
-Owner: @engine-architect. Draft 6, 2026-11-17: the graceful quit (section 4's shutdown) and the step budget's keep-up
+Owner: @engine-architect. Draft 7, 2026-11-17: joining from a cut (section 4), which replaces the M1 interim's
+two-member genesis. Draft 6, 2026-11-17: the graceful quit (section 4's shutdown) and the step budget's keep-up
 floor (3). Draft 5, 2026-11-13: pe-api's ports (3.1). Draft 4, 2026-11-13: what the code slices settled (the network
 hook, step 2 once per frame and its pacing, the M1 interim's two-machine start, the demo's commands). Draft 3,
 2026-11-11 (@design-reviewer's reviews of drafts 1 and 2, mf5074c5ab2fd and m94ee513a61ac; pe-render's desktop view,
@@ -310,10 +311,12 @@ then arrive above the cuts' frames, are never void as late, and cost the receive
 3. **GPU contexts, one at a time, on the main thread:** the XR context first in VR mode, then the window's.
    Creating contexts concurrently crashed D3D12 and WARP in 6 of 15 runs (render.md 4; @ballpit-viz); pe-render's
    creation lock covers its own calls, and pe-app never creates two from different threads.
-4. **The network thread.** Open or dial the invite; on admission the welcome carries the world's epoch and rate, and
-   the clock converges before frame 0 (transport.md 5.4).
-5. **The replica:** a new world from the origin or a preset, an opened save (M5), or for a joiner the state at the
-   newest final cut, fetched on the Bulk lane and imported (`import_at_cut`), then replayed to the present.
+4. **The network thread.** Open or dial the invite; on admission the welcome carries the session's epoch and rate,
+   and a joiner's clock converges before its replica starts (transport.md 5.4).
+5. **The replica:** a new world from the origin or a preset, an opened save (M5), or for a joiner the whole state at
+   the cut E that admitted it: fetched from the inviter as pe-diverge's rung 2 fetches it from empty, on the Repair
+   lane, imported (`import_at_cut`) into an empty replica, then simulated on to the present ("Joining from a cut",
+   below).
 6. **The simulation thread**, then the XR thread (VR) or the main thread's drawing (desktop), then the MCP transports.
    **Headless** (`--headless`, for tests and machines without a display; @coordinator-opus mfc048d3b662f) makes no
    GPU context, window or XR thread: the main thread waits in 100 ms slices until `--seconds` passes or the console
@@ -321,35 +324,155 @@ then arrive above the cuts' frames, are never void as late, and cost the receive
    Nothing draws, so there is no capture queue: view_capture answers `capture_unavailable` at once (api.md 8).
    `--vr` and `--headless` exclude each other.
 
-**The M1 interim** (@coordinator-opus md61c5a56424e; pe-app's `net`, @shader-lang's, and `genesis`): pe-agree has no
-join from a cut yet, so the second machine becomes a member at genesis, and steps 4 and 5 run as one exchange.
-- **A** (`--open`) prints an invite and waits for B's reply code. It checks that the reply answers its own invite
-  and that the invite has not expired, then dials B. On B's first join request it builds the genesis record: the
-  build, both member keys with their roles (A `ADMIN | EDIT | AGENT`, B `EDIT | AGENT`; @coordinator-opus
-  m9571fcf519b9), the world's rate, cut interval and gravity, the preset and its arguments, a fresh nonce from the
-  OS, the epoch and the frame-0 roots, the world's as built and the replica's. The epoch puts frame 0 `EPOCH_LEAD`
-  (2 s) after that request, so that B's clock can converge first: the aim, not a guarantee. The session's line is
-  derived from the record. A admits B with a welcome that carries the record.
-- **The paste.** When the user pastes B's reply code by hand, B's first join request comes from its early dial,
-  already closed, so the lead must also cover A's dial and handshake. That is why B accepts a frame 0 up to 20 s in
-  the past and replays from it. If the paste takes longer than `T_welcome` (10 s), A closes B's early dial with
-  close code 8; B waits through it, and A's own dial carries the session.
-- **B** (`--join <invite>`) prints its reply code for A and dials. The welcome names the fixed pre-genesis line that
-  every hello carries; B derives the session's line from the record itself, never from the welcome (transport.md
-  6.4). B checks that the record names exactly itself and the invite's key, and the build (pe-app's version, the
-  script build identity B and the script runner's identity: net.rs `build_id`, which every hello carries too); that
-  the welcome's epoch and rate equal the record's and the rate its own; and, once its clock has converged, the epoch
-  (at most 20 s past and 10 s ahead). It then builds the world from the record and refuses, by name, a frame-0 root
-  that differs from A's.
-- **Anyone else's join request is refused** ("not admitted"). When pe-agree's join from a cut lands, only B's path
-  changes: it imports the state at a final cut (step 5) instead of building genesis.
+**Joining from a cut** (draft 7; it replaces the M1 interim's two-member genesis once
+@item:primordial-engine/pe-agree-join-admit-by-a-pure-governance-fold-pe lands; agreement.md 8, "In pe-agree,
+`Admit`"). A opens the world alone and plays; B joins later at a reconfiguring cut E, as every later joiner will. At
+n = 2 nothing becomes final in the new epoch until B votes, so a B that never starts stops A's finality for good. A
+therefore writes the `Admit` only once B has shown it can start (@design-reviewer m2597a027165d).
+- **A** (`--open`) builds the genesis record for itself alone: the build, its key with its role
+  (`ADMIN | EDIT | AGENT`), the world's rate, cut interval and gravity, the preset and its arguments, a fresh nonce
+  from the OS, the epoch (frame 0 at A's start) and the frame-0 roots. The session's line is derived from the record.
+  pe-agree's `genesis_gov` is `GovState::genesis` over every record member with its role, one table like the world's
+  (@world-chunks 3c44d34d). The world's root covers the same bits, so it needs no field of its own and no place in
+  the consensus hash. A prints an invite: its key and addresses, the invite's id and expiry (pe-net-crypto's
+  `Invite`), and the epoch it is made in with a hash of that epoch's sorted members, which B checks E's certificate
+  against (agreement.md 8). A reads B's reply code on standard input, as before.
+- **B** (`--join <invite>`) prints its reply code for A and dials. Its hello carries the build id, which now also
+  names pe-agree's consensus hash (net.rs `build_id`; the crate's version alone doesn't change between commits). So
+  equal build ids mean equal consensus settings, and a member with other settings is closed at the hello
+  (`CloseCode::Build`), before any `Admit` exists.
+- **A welcomes B before it admits it.** On B's hello A checks the build, the self-test, the invite's id and expiry,
+  that B isn't a member, that no other join is in flight, and the world (next item). It then welcomes B at the
+  transport (transport.md 6.4): the session's epoch and rate, the current epoch's members with their addresses, and
+  in `agree` the genesis record. The welcome's line stays the fixed pre-genesis line both hellos carry: pe-net refuses
+  a welcome naming another line than the hellos' (core.rs), and B's hello can't know the session's line, which B
+  derives from the record. B isn't a member of agreement yet. Anyone else's join request is refused ("not
+  admitted"), as is a second join while one is in flight.
+- **B shows it can start, then A admits it.** B checks the welcome: the record's build and consensus hash against its
+  own, the welcome's rate against the record's and its own, and that the welcome's members, sorted, hash to the
+  invite's pin and include the invite's key. It derives the session's line from the record, never from the welcome
+  (transport.md 6.4). It then connects to the members and converges its clock on them (transport.md 5.4: the
+  welcome, the mesh, the samples, clock-ready), and tells A it is ready (`JoinReady`, a pe-app message on the
+  Protocol lane). pe-net starts converging as soon as the welcome arrives, before these checks [V, @shader-lang
+  m5c0ecb303633], so a welcome that fails them ends the join even if the clock is ready by then, and B never sends
+  `JoinReady`. Only then does A write `Admit { key: B, role }`, with the role `ADMIN | EDIT | AGENT` [pending:
+  @coordinator-opus's ruling on the joiner's role, after @world-model]. A adds B to its own clock members
+  (`set_clock_members`) only then, never at the welcome, so transport.md's rule that clock members are ready clocks
+  (its draft 1.11) still holds now that the welcome lists every member: B's clock is ready by its `JoinReady`, and
+  the members B converges on are running (@design-reviewer's Low 3). If the join fails, A sets them back. A B that
+  isn't clock-ready within `T_ready` is a `ClockFault` (transport.md 5.6): A closes its link, and no `Admit` was
+  written.
+- **A world with scripts: an M1 limit** (@coordinator-opus m403742096968, option (a) of m7c617b37f212). At B's
+  hello, and again in the tick that writes the `Admit`, A refuses the join while its world holds any script version
+  or pending commit, and says so to both players ("this world has scripts; joining it comes after M1"). A joiner's
+  import carries no script archive [V, pe-world tree.rs `export_blobs`: inline-class blobs of objects and tombstones
+  only], and a joiner that builds every active version first isn't built (logic.md 6.2b), so B would step without
+  the scripts and split from A at each cut where they act [I]. Both checks are built [V: crate::join's
+  `a_world_with_scripts_refuses_the_join_at_the_hello_and_at_the_admit`, a red for each]; the refusal's detail
+  reaches B, and A's console says "<player> couldn't join: this world has scripts; joining it comes after M1."
+  From the `Admit` until the new epoch's first final cut, A's pe-api is to answer a script commit `Unavailable` ("a
+  player is joining") [not built: a follow-up after the join lands, @coordinator-opus m2e77d3979bfd]. The risk is a
+  commit stamped between the `Admit` and E, which E's state would hold pending without its archive; one stamped
+  after E reaches B as an ordinary entry. A commit made before the `Admit` goes ahead, and the second check then
+  refuses the join. Carrying the archives and building them before stepping
+  past E come after M1 (@item:primordial-engine/build-asymmetry-after-m1-a-member-that-can-t-bui,
+  @item:primordial-engine/blob-transport-the-bytes-of-names-and-meshes-ano).
+- **The `Admit`'s world side** (S2): every replica applies an effective `Admit` at its entry's frame with
+  `World::admit`: B's member row, its role and its hands, placed by @world-model's spawn rule [pending; provisional:
+  the preset's next place in its row]. So the world at E, whose root E's certificate covers, holds B. It is
+  pe-replica's arm beside the `Leave`'s, which also refuses a malformed `Admit` and one of a member, as S3 voids them
+  (@coordinator-opus mb2c3feba8e1e; app/join ae54e76a, @vdw-physics reviews) [V: pe-replica's
+  `an_admit_admits_its_key_with_its_role_and_two_hands`, red without the arm].
+- **While B joins,** A's console says "<player> is joining…" from the `Admit` until the new epoch's first final cut.
+  That cut needs B's vote, so it waits for the whole join: E final at A and `JoinStart`, B's fetch and import of E's
+  state, its simulation from E to the present, and its first vote. A plays on its predictions meanwhile; its own
+  entries wait for B, and its hand entries pause once pe-agree's backlog holds them (section 3, step 2), as with a
+  stalled link [I]. The join fails at A (@design-reviewer's Low 1):
+  - at once when B's link closes before that cut: B gave up and quit, or crashed and its link idled out;
+  - or when the join takes no step for `T_join` (30 s, a stated setting). Its steps are the `Admit`, `JoinStart`
+    sent, `JoinImported` (a pe-app message on the Protocol lane that B sends when pe-diverge reports `Joined`) and
+    that first final cut. Each starts the time again, so the fetch and the catch-up each get a whole `T_join`.
+
+  A's console then says "<player> couldn't join. This session can't confirm changes any more: start a new one." If
+  the cut becomes final after all, it says "<player> joined after all; changes are confirmed again." [V: pe-app's
+  `a_join_held_past_t_join_fails_and_joins_after_all_once_the_cut_is_final`.] A join that fails before its `Admit`
+  (B's link closes after the welcome, a step takes `T_join`, or the checks above) costs nothing: A closes B's link,
+  sets its clock members back, says why ("<player> couldn't join: <why>."), and may take another reply. Nothing else
+  undoes a failed join in M1: removing a member that never started comes with `Remove`. The fetch's time is set by
+  the link, not by pe-diverge's serving budget [V, ladder.rs defaults; divergence.md 4.2, step 2]: a source serves
+  each peer from an 8 MiB burst refilled at 4 MiB/s, and the requester paces to half that burst at a quarter less
+  rate, so M1's 1.2 MB is never held back. Repair messages go out only while pe-net's delay guard holds
+  (transport.md 4.3; lanes.rs `poll_stream`), so the fetch takes about 1 s at 10 Mbit/s and 10 s at 1 Mbit/s [I,
+  from replica.md 6.2's size]. B's catch-up time isn't measured.
+- **When E is final at A, and A's own state is verified there** (pe-diverge's `Cv` is E), A sends B pe-agree's
+  start record. A is B's source for E's state, and pe-diverge serves only a root it verified, answering `NotHeld`
+  before then, which fails a join whose one source A is. A replica still catching up after the start (500 balls
+  built, then stepped) verifies E a little after agreement makes it final [V: the first two-process demo, E at
+  frame 18; crate::join's `the_start_waits_until_the_inviter_s_state_is_verified_at_e`]. The record
+  (`Node::epoch_start`: E's certificate, the new epoch's
+  members and governance state, E's head entries and each chain's highest final stamp) as `JoinStart`, a pe-app
+  message on the Protocol lane, whose messages are at most 1 MiB [V, pe-net lanes.rs `l_msg`]. [I: E's heads are one
+  entry per chain, and a script commit's archive rides in its entry, up to 256 KiB; the world check keeps commits
+  out of a join.] If `Node::epoch_start()` is `None` there (A no longer held E's certified chain when E became
+  final; unlikely at n = 2, @design-reviewer's Low 2), A can't start B: it closes B's link and shows the failed-join
+  line at once. B gives up when no `JoinStart` comes `T_join` after its `JoinReady`, and says it couldn't join.
+- **B starts agreement at E:** `Node::join(config, start, pinned epoch, pinned members, …)` checks E's certificate
+  against the pinned epoch's members under its signing domain, and starts B's agreement in the new epoch with E as
+  its genesis (agreement.md 8). E is final already, so B votes from the first cut after it. E's frame must be at
+  most 20 s past and 10 s ahead of B's present by its converged clock: the interim's window, now on E, since frame 0
+  may be hours old. If the start's members differ from the welcome's, B gives its clock the start's
+  (`set_clock_members`).
+- **B's state at E.** B builds its replica empty (`WorldModel::empty` at the record's rate; replica.md 6.2,
+  "Joining") and doesn't step it. pe-diverge fetches E's whole state from A on the Repair lane, keyed by E and
+  `Node::start_root`, as rung 2 does when it holds no root of its own at a final cut: every leaf, the physics image
+  and the inline blobs (pe-diverge ladder.rs, the `Damaged` path). `import_at_cut` checks every record against that
+  root before applying any, so B's world at E is the one E's certificate covers [V for a mock world: pe-replica's
+  `a_joiner_imports_the_whole_state_from_empty`]. B then refuses, by name, an imported world whose members aren't the
+  start's [V: pe-app's `an_imported_world_whose_members_are_not_agreement_s_is_refused`, of the check], simulates on
+  to the present with the new epoch's entries, and votes [V: pe-app's
+  `a_joiner_joins_at_the_cut_that_admits_it_and_both_finalize`, 8 and 500 balls, over real UDP on loopback]. M1's 500 balls are about 1.2 MB,
+  mostly the physics image [I, replica.md 6.2]. pe-diverge starts this fetch with `Diverge::join` (@diverge-eng
+  m6d3e70247328; main c0fa79c9): no divergence bookkeeping, the inviter first and then E's
+  voters as sources, and `Joined` or `JoinFailed` among its events. On `Joined` pe-app starts the driver and tells A
+  (`JoinImported`). Until then B's replica publishes no view, so S5's health is unchanged: B's console says
+  "joining…", and pe-api answers not-ready until the replica reaches the present. On `JoinFailed` B says it couldn't
+  join and quits, and A sees its link close.
+- **A keeps E's state until the join ends** (@design-reviewer's Low 2). At n = 2 nothing in the new epoch becomes
+  final without B, so E stays A's newest final cut. pe-replica keeps the floor's snapshot, from which it serves E's
+  tree and physics image by root (replica.md, "Always kept"), and pe-diverge keeps E's root servable, as it keeps
+  the newest two (`note_servable`) [I, read, not run]. At n >= 3 the others finalize past E, and a source drops a
+  root `T_keep` (1.5 s) older than its newest, so E can stop being servable while B fetches it: pe-diverge then
+  reports `JoinFailed` (overtaken). Keeping E at the sources until the join ends, or joining at a newer cut, comes
+  with joins at n >= 3, after M1.
+- **The paste.** When the user pastes B's reply code by hand, B's first hello may come from its early dial. While
+  the invite is open and no join is in flight, A holds a hello from a key that isn't a member undecided, since it
+  may be the next reply's, and welcomes it when that reply comes. If the paste takes longer than `T_welcome` (10 s),
+  A closes that dial with close code 8, B waits through it, and A's own dial carries the join. A welcomes B on
+  whichever dial completes, and writes the `Admit` only after its `JoinReady`. A reply that answers another invite,
+  names a member, or comes while a join is in flight is refused on A's console.
+- **A quit during a join** (@design-reviewer's Low 1): A never writes its `Leave` while a join it admitted is in
+  flight. A quit then waits, within the leave's bound (shutdown, step 2), for the new epoch's first final cut, and
+  then leaves as usual. If B quits or fails before it starts, A is stranded as above.
+- **Faults during a join.** At n >= 3, a member that hasn't switched yet faults B's first messages (`NotMember`,
+  agreement.md 8's limits); at n = 2 it can't happen. pe-app only counts and logs faults: nothing drops a link over
+  them.
 - **The consensus settings and the voters** (the gate's item 1, main bf521179): the record's `agree` is this build's
-  `NodeConfig::consensus_hash` (@world-chunks), the hash of the settings every member must share. B's check
-  compares it before building anything; `Genesis::start` compares the configuration it runs on both machines, and
-  net.rs again before `Node::new`, so a member with other settings is refused by name (`GenesisError::Agree`)
-  instead of refusing the other's entries, votes or cuts later. `start` also refuses a world whose governance members
-  aren't the record's, which are pe-agree's voters (`GenesisError::Governance`), since logic.md 6.2a's voter
-  snapshot relies on every member voting in M1 (@design-reviewer m1a02a35a8a8e).
+  `NodeConfig::consensus_hash` (@world-chunks), the hash of the settings every member must share. B compares it at
+  the welcome, before it says it's ready, and `Genesis::start` compares the configuration A runs, so a member with
+  other settings is refused by name (`GenesisError::Agree`) instead of refusing the other's entries, votes or cuts
+  later; the build id in every hello closes most such cases earlier still. A world's
+  governance members must be pe-agree's voters: `start` refuses a genesis world whose members aren't the record's
+  (`GenesisError::Governance`), and B an imported world whose members aren't the start's, since logic.md 6.2a's
+  voter snapshot relies on every member voting in M1 (@design-reviewer m1a02a35a8a8e).
+- **M1's limits:** one join at a time, and none into a world with scripts (above). M1 is two machines, so B joins A
+  alone; joins at n >= 3, where E can be overtaken, are untested and come after M1. The invite pins the epoch it was
+  made in, so after any other membership change a joiner needs a new invite (agreement.md 8's one-epoch limit), and
+  M1 makes none but the opener's: once B has joined, A refuses a third player's hello at once and its reply code,
+  saying the players changed since the invite was made. Joins at n >= 3 also need every member to take the joiner's
+  dial (transport.md 6.7): today a member other than the inviter admits only current members and refuses it
+  (`not_admitted`), so the joiner's clock couldn't converge (@shader-lang m53a9fdd6a10a).
+  Names and meshes another member made before the join reach B as stand-ins
+  (@item:primordial-engine/blob-transport-the-bytes-of-names-and-meshes-ano).
 
 **Shutdown**, in reverse (draft 6: the graceful quit,
 @item:primordial-engine/pe-app-m1-leave-a-graceful-quit-submits-leave-ke; rulings @coordinator-opus m5311a2afc635,
@@ -466,9 +589,9 @@ final on either, though both keep simulating their predictions.
   nothing dials again: pe-net and pe-app have no redial. It is as if a process had ended, and going on takes a new
   session with a new invite. The redial comes once pe-agree has return (model v1); the hook already welcomes a
   member that connects again.
-- **pe-agree v0 has no leave, return or restart** (agreement.md 8). Once either process ends, the other never
-  finalizes again. Restarting the ended process does not help: it would start its chain again at seq 1 under the
-  same key, which its peer sees as a second chain or an equivocation. Start a new session.
+- **pe-agree has no return or restart** (agreement.md 8; `Leave` and `Admit` are built). Once either process ends
+  without leaving, the other never finalizes again. Restarting the ended process does not help: its key is still a
+  member, so it can't be admitted again (an `Admit` of a member is void as `NoChange`). Start a new session.
 
 ## 7. Tests for M1
 
@@ -516,6 +639,12 @@ final on either, though both keep simulating their predictions.
 - **Startup without a GPU:** `--headless` makes no GPU context, so CI runs the two-process test (section 6). It
   takes no captures: view_capture there answers `capture_unavailable`.
 - **Shutdown:** the leave reaches the other member, which pauses for zero frames.
+- **Joining from a cut** (section 4), in release, two processes headless on loopback. A plays alone for 5 s, then B
+  joins. Both finalize from E with equal roots, B's imported world at E holds B's member row, role and hands, and A's
+  console shows the join begin and end. Reds, each failing that test alone: without the `Admit`'s world side, B's
+  world has no hands for it; with a script in A's world, the join is refused before any `Admit`; and with a B that
+  never starts (a test hook) and `T_join` shortened, A's console reports the failed join. Also, with B's fetch held
+  past a shortened `T_join` and then let go, A takes the failed-join line back once the cut is final.
 - **The two-process session** of section 6, on Windows and Linux.
 
 ## 8. Open points

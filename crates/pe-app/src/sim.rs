@@ -21,7 +21,7 @@ use pe_replica::{DriveReport, Driver};
 use pe_seams::world_api::TxId;
 use pe_seams::{
     AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, Hand, HandFeed, Health,
-    HostTime, Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate, Transport, VoidReason,
+    HostTime, Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate, SubmitError, Transport, VoidReason,
 };
 
 use crate::clock::HostClock;
@@ -188,6 +188,12 @@ pub struct SimStats {
     /// Messages on lanes this loop does not route: Bulk (the blob store, not yet wired), Pose (the display), and
     /// Repair when no pe-diverge runs ([`Sim::with_diverge`]).
     pub unrouted: u64,
+    /// Protocol-lane messages the network hook took as pe-app's own, the join's (step 1; [`NetHook::claim`]).
+    pub app_in: u64,
+    /// The hook's entries (the inviter's `Admit`) agreement took into this member's chain, and those it refused
+    /// (step 2; [`NetHook::take_entry`]).
+    pub hook_entries: u64,
+    pub hook_entries_refused: u64,
     /// Repair-lane messages pe-diverge took, and those it refused as a peer's fault (step 1): counted, never fatal.
     pub repair_in: u64,
     pub repair_refused: u64,
@@ -322,6 +328,13 @@ pub struct Sim {
     down: std::collections::BTreeSet<MemberKey>,
     /// What the console should say (app.md 4), drained by [`Sim::take_notices`].
     notices: Vec<String>,
+    /// A joiner's import of E's state (app.md 4, "B's state at E"): the inviter, while pe-diverge's join runs. The
+    /// replica is empty meanwhile, so nothing drives it, no edit goes in and no view goes out ([`Sim::join_at_final`]).
+    joining: Option<MemberKey>,
+    /// Why the join failed, once it has: the joiner then quits ([`Sim::join_failed`]).
+    join_failed: Option<String>,
+    /// Called once when the join fails: the binary's quit ([`Sim::with_on_join_failed`]).
+    on_join_failed: Option<Box<dyn FnOnce() + Send>>,
 }
 
 /// pe-api's ports and the loop's own state for them (app.md 3.1).
@@ -338,14 +351,64 @@ struct ApiLoop {
 
 /// What net.rs does on the simulation thread (@shader-lang m8a27b2a40aeb). Admission is decided from the agreed
 /// governance, which lives here with agreement, and carried out through pe-net's control end, which the hook owns.
+/// What the network hook may ask of the world (app.md 4: a join's M1 limit, and what this machine can serve).
+pub trait WorldFacts {
+    /// Whether the present world holds a script version, or a commit pending and not voided.
+    fn holds_scripts(&self) -> bool;
+    /// The cut this machine's state is verified at (pe-diverge's Cv), whose state it serves; `None` without one, or
+    /// without pe-diverge.
+    fn verified_cut(&self) -> Option<CutRef>;
+}
+
+/// The replica's present world, as the hook asks it: pe-world's snapshot, read only when asked.
+struct ReplicaFacts<'a>(&'a dyn Replica, Option<&'a crate::diverge::DivergeLoop>);
+
+impl WorldFacts for ReplicaFacts<'_> {
+    fn holds_scripts(&self) -> bool {
+        crate::api::snapshot_of(self.0)
+            .is_some_and(|s| !s.modules().is_empty() || s.pending().values().any(|c| c.void.is_none()))
+    }
+
+    fn verified_cut(&self) -> Option<CutRef> {
+        self.1.and_then(|d| d.d.verified_cut()).map(|(cut, _)| cut)
+    }
+}
+
 pub trait NetHook: Send {
-    /// Each of the transport's events, after step 1 counts it.
-    fn on_event(&mut self, event: &NetEvent, agree: &mut dyn Agreement);
+    /// Each of the transport's events, after step 1 counts it. `world` answers the join's M1 limit.
+    fn on_event(&mut self, event: &NetEvent, agree: &mut dyn Agreement, world: &dyn WorldFacts);
     /// Once a tick, after step 1's messages and events: for what reaches the hook other than as an event, such as
     /// the lifecycle outcomes on pe-net's control end, which would otherwise wait for an unrelated event
     /// (@design-reviewer's Low on 5ca43067).
-    fn on_tick(&mut self, now: HostTime, agree: &mut dyn Agreement) {
-        let _ = (now, agree);
+    fn on_tick(&mut self, now: HostTime, agree: &mut dyn Agreement, world: &dyn WorldFacts) {
+        let _ = (now, agree, world);
+    }
+    /// A Protocol-lane message, offered before agreement sees it: `true` if it is pe-app's own (the join's messages,
+    /// crate::join's tag) and the hook took it. Agreement never sees a message the hook took.
+    fn claim(&mut self, from: MemberKey, bytes: &[u8], now: HostTime, agree: &dyn Agreement) -> bool {
+        let _ = (from, bytes, now, agree);
+        false
+    }
+    /// A Protocol entry this member's chain is to carry, taken once: the inviter's `Admit` (app.md 4). Step 2 writes
+    /// it first in the frame, at the frame's stamp, and reports with [`NetHook::entry_written`]. Never asked once this
+    /// member's `Leave` is asked for. `world` answers the join's M1 limit, checked again in this tick.
+    fn take_entry(&mut self, world: &dyn WorldFacts, agree: &dyn Agreement, now: HostTime) -> Option<Vec<u8>> {
+        let _ = (world, agree, now);
+        None
+    }
+    /// Whether this member's `Leave` must wait: the inviter never writes it while a join it admitted is in flight
+    /// (app.md 4, "A quit during a join"). The quit's bound still holds.
+    fn holds_leave(&self) -> bool {
+        false
+    }
+    /// What became of the entry [`NetHook::take_entry`] handed over: agreement took it into this member's chain, or
+    /// refused it.
+    fn entry_written(&mut self, written: Result<(), SubmitError>, now: HostTime, agree: &dyn Agreement) {
+        let _ = (written, now, agree);
+    }
+    /// What the console should say since the last call (the join's lines, app.md 4).
+    fn take_notices(&mut self) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -412,6 +475,9 @@ impl Sim {
             leave_wait: None,
             down: std::collections::BTreeSet::new(),
             notices: Vec::new(),
+            joining: None,
+            join_failed: None,
+            on_join_failed: None,
         }
     }
 
@@ -510,8 +576,12 @@ impl Sim {
         self.agree.members().into_iter().filter(|m| Some(*m) != me).collect()
     }
 
-    /// What the console should say since the last call (app.md 4: the leave's messages).
+    /// What the console should say since the last call (app.md 4: the leave's messages, and the network hook's, the
+    /// join's).
     pub fn take_notices(&mut self) -> Vec<String> {
+        if let Some(hook) = &mut self.net_hook {
+            self.notices.extend(hook.take_notices());
+        }
         std::mem::take(&mut self.notices)
     }
 
@@ -578,6 +648,86 @@ impl Sim {
         Ok(self)
     }
 
+    /// A joiner's start (app.md 4, "B's state at E"; after [`Sim::with_diverge`]): pe-diverge fetches the state at
+    /// agreement's final cut E, the cut that admitted this machine (`Node::join` makes it final at once), from
+    /// `inviter` first, and imports it into the empty replica (divergence.md 4.5). Until the join ends nothing drives
+    /// the replica: no hand entry or edit goes in, no vote, and no view goes out. When the import has matched E's root
+    /// and finalize agreed there, the driver starts, the inviter is told (`JoinImported`), and the replica simulates on
+    /// to the present. A failed join is [`Sim::join_failed`]: the joiner says so and quits.
+    pub fn join_at_final(&mut self, inviter: MemberKey, now: HostTime) -> Result<(), String> {
+        let e = self.agree.final_cut().cloned().ok_or("agreement has no final cut to join at")?;
+        let d = self.diverge.as_mut().ok_or("a join needs pe-diverge (with_diverge)")?;
+        d.d.join(&e, inviter, &mut *self.replica, now);
+        self.joining = Some(inviter);
+        self.notices.push(crate::join::joining_here());
+        Ok(())
+    }
+
+    /// What a failed join does besides its console line, once: the binary quits.
+    pub fn with_on_join_failed(mut self, f: Box<dyn FnOnce() + Send>) -> Sim {
+        self.on_join_failed = Some(f);
+        self
+    }
+
+    /// Whether a join's import is under way ([`Sim::join_at_final`]).
+    pub fn joining(&self) -> bool {
+        self.joining.is_some()
+    }
+
+    /// Whether the replica holds no state of its own yet: a join's import is under way, or failed (the joiner quits,
+    /// and its empty replica is never driven).
+    fn importing(&self) -> bool {
+        self.joining.is_some() || self.join_failed.is_some()
+    }
+
+    /// Why the join failed, if it did: the joiner quits.
+    pub fn join_failed(&self) -> Option<&str> {
+        self.join_failed.as_deref()
+    }
+
+    /// After step 5: a join's import ended. Joined starts the driver from the next tick and tells the inviter;
+    /// failed stops here for good.
+    fn check_join(&mut self) {
+        let Some(inviter) = self.joining else { return };
+        let state = self.diverge.as_ref().and_then(|d| d.d.join_state().cloned());
+        let failed = match state {
+            Some(pe_diverge::Join::Joined { .. }) => match self.imported_members_differ() {
+                // logic.md 6.2a's voter snapshot takes the voters from the world, and in M1 every member votes, so
+                // the imported world's governance members must be agreement's (app.md 4; @design-reviewer
+                // m1a02a35a8a8e), as genesis checks its own (`GenesisError::Governance`).
+                Some(why) => why,
+                None => {
+                    self.joining = None;
+                    if let Some(net) = &mut self.net {
+                        net.send(inviter, Lane::Protocol, crate::join::AppMsg::JoinImported.encode().into());
+                    }
+                    self.notices.push(crate::join::imported_here());
+                    return;
+                }
+            },
+            Some(pe_diverge::Join::Failed { why, .. }) => why,
+            _ => return,
+        };
+        self.joining = None;
+        self.notices.push(crate::join::couldnt_join_here(&failed));
+        self.join_failed = Some(failed);
+        if let Some(f) = self.on_join_failed.take() {
+            f();
+        }
+    }
+
+    /// Why an imported world can't be joined: its governance members aren't agreement's (the start's). `None` when
+    /// they are, or when the replica isn't a pe-world one (nothing to compare).
+    fn imported_members_differ(&self) -> Option<String> {
+        let world = crate::api::snapshot_of(&*self.replica)?;
+        let governance: Vec<MemberKey> = world.members().map(|(k, _)| k).collect();
+        let agree = self.agree.members();
+        (governance != agree).then(|| {
+            let short = |ks: &[MemberKey]| ks.iter().map(|k| crate::leave::player(*k)).collect::<Vec<_>>().join(", ");
+            format!("the imported world's members ({}) aren't agreement's ({})", short(&governance), short(&agree))
+        })
+    }
+
     /// pe-diverge's counters (divergence.md 7), if it runs.
     pub fn diverge_counters(&self) -> Option<&pe_diverge::Counters> {
         self.diverge.as_ref().map(|d| d.counters())
@@ -624,6 +774,24 @@ impl Sim {
         &self.budget
     }
 
+    /// Agreement's final cut's root (S3's `final_cut`), for tests.
+    #[cfg(test)]
+    pub(crate) fn final_root(&self) -> Option<pe_seams::Hash> {
+        self.agree.final_cut().map(|fc| fc.root)
+    }
+
+    /// The replica's present world as pe-world's snapshot, for tests.
+    #[cfg(test)]
+    pub(crate) fn world(&self) -> Option<Arc<pe_world::WorldSnapshot>> {
+        crate::api::snapshot_of(&*self.replica)
+    }
+
+    /// The newest view this simulation published, for tests.
+    #[cfg(test)]
+    pub(crate) fn published(&self) -> Option<Arc<FrameView>> {
+        self.published.clone()
+    }
+
     /// The replica's root at `frame`, a frame of its cut grid it still keeps, through S2's `root_at_cut` on a cut with
     /// no entries: the keep-up floor's test compares it (the floor changes how fast, never what is computed).
     #[cfg(test)]
@@ -647,6 +815,15 @@ impl Sim {
         if let Some(net) = &mut self.net {
             for _ in 0..MAX_IN_PER_TICK {
                 let Some(r) = net.poll() else { break };
+                // pe-app's own messages (the join's) ride the Protocol lane under their own tag: the hook takes them
+                // before agreement could count them as a peer's bad bytes.
+                if r.lane == Lane::Protocol
+                    && let Some(hook) = &mut self.net_hook
+                    && hook.claim(r.from, &r.bytes, now, &*self.agree)
+                {
+                    self.stats.app_in += 1;
+                    continue;
+                }
                 match r.lane {
                     Lane::Protocol | Lane::Action => match self.agree.receive(r.from, r.lane, &r.bytes, r.at) {
                         Ok(()) => self.stats.received += 1,
@@ -668,7 +845,7 @@ impl Sim {
                     api.ports.shared.link(*peer, matches!(e, NetEvent::LinkUp { .. }));
                 }
                 if let Some(hook) = &mut self.net_hook {
-                    hook.on_event(&e, &mut *self.agree);
+                    hook.on_event(&e, &mut *self.agree, &ReplicaFacts(&*self.replica, self.diverge.as_ref()));
                 }
                 match e {
                     NetEvent::LinkUp { peer } => links.push((peer, true)),
@@ -677,7 +854,7 @@ impl Sim {
                 }
             }
             if let Some(hook) = &mut self.net_hook {
-                hook.on_tick(now, &mut *self.agree);
+                hook.on_tick(now, &mut *self.agree, &ReplicaFacts(&*self.replica, self.diverge.as_ref()));
             }
         }
         for (peer, up) in links {
@@ -731,6 +908,7 @@ impl Sim {
         // stamp (never below the chain's last, which a lead may hold above the present), and it is the chain's last
         // entry. No edit or hand entry follows it, and an edit still queued is refused as agreement would refuse it.
         if self.leaving == Leaving::Asked
+            && !self.net_hook.as_ref().is_some_and(|h| h.holds_leave())
             && let Some(l) = &mut self.local
         {
             let leave = l.chain.entry(self.replica.domain(), stamp, Class::Protocol, pe_seams::LEAVE.to_vec());
@@ -743,12 +921,27 @@ impl Sim {
             }
         }
         let leaving = self.leaving != Leaving::Staying;
+        // The network hook's entry (the inviter's `Admit`, app.md 4), first after a `Leave` would be and never with
+        // one: at the frame's stamp, a class Protocol entry of this member's chain.
+        if !leaving
+            && let (Some(hook), Some(l)) = (&mut self.net_hook, &mut self.local)
+            && let Some(payload) =
+                hook.take_entry(&ReplicaFacts(&*self.replica, self.diverge.as_ref()), &*self.agree, now)
+        {
+            let entry = l.chain.entry(self.replica.domain(), stamp, Class::Protocol, payload);
+            let written = self.agree.submit(entry).map(|signed| l.chain.took(&signed));
+            match written {
+                Ok(()) => self.stats.hook_entries += 1,
+                Err(_) => self.stats.hook_entries_refused += 1,
+            }
+            hook.entry_written(written, now, &*self.agree);
+        }
         if leaving && let Some(api) = &mut self.api {
             for (ticket, _) in api.ports.queue.drain(usize::MAX) {
                 api.ports.queue.settle(ticket, Receipt::Refused(pe_seams::agree::SubmitError::AfterLeave));
             }
         }
-        if let (false, Some(l), Some(api)) = (leaving, &mut self.local, &mut self.api)
+        if let (false, false, Some(l), Some(api)) = (leaving, self.importing(), &mut self.local, &mut self.api)
             && api.edit_frame.is_none_or(|f| p > f)
         {
             api.edit_frame = Some(p);
@@ -824,36 +1017,9 @@ impl Sim {
         self.stats.phases.agree_ns += lap(&mut mark);
         // 4. The replica, through pe-replica's driver. `present` is exclusive, so frame `p` is simulated. First the
         // budget's keep-up floor: what the last call needed to reach its present, rollback included, plus the frames
-        // `p` advanced since the previous tick, plus one, capped (`Budget`).
-        if let Some(b) = self.budget.at_present(p) {
-            self.replica.set_budget(b);
-        }
-        // pe-diverge replays to a split's whole cut, and a `RootSplit` names only its `CutRef`: the cuts the driver is
-        // about to answer are kept for it. Nothing touches agreement between here and `drive`, so this is its list.
-        if let Some(d) = &mut self.diverge {
-            d.note_cuts(&*self.agree);
-        }
-        let started = Instant::now();
-        let report = {
-            // Times the replica's calls into `phases`, and passes each through unchanged.
-            let mut timed = Timed { inner: &mut *self.replica, times: &mut self.stats.phases };
-            self.driver.drive(&mut timed, &mut *self.agree, Frame(p.0 + 1), self.self_test)
-        };
-        let frames = report.advance.resimulated + report.advance.stepped;
-        if let Some(b) = self.budget.observe(frames, started.elapsed()) {
-            self.replica.set_budget(b);
-        }
-        // The next keep-up floor: what reaching the present asked of this call, rollback included.
-        self.budget.called(frames, (p.0 + 1).saturating_sub(self.replica.frame().0));
-        self.stats.votes += report.votes.len() as u64;
-        self.stats.finalized += report.finalized.len() as u64;
-        if let Some(api) = &self.api {
-            if let Some(k) = report.advance.rolled_back_to {
-                api.ports.shared.rolled_back(k);
-            }
-            api.ports.shared.caught_up(report.advance.caught_up);
-        }
-        self.count_hold(report.advance.caught_up);
+        // `p` advanced since the previous tick, plus one, capped (`Budget`). A joiner's replica is empty until its import
+        // ends, so nothing drives it then (`join_at_final`).
+        let report = if self.importing() { DriveReport::default() } else { self.drive(p) };
         self.stats.phases.drive_ns += lap(&mut mark);
         // 5. S3's events, and pe-diverge: one drain after `drive` gives the spec's ordered list (S3's queue keeps its
         // order), with each finalize result placed after its cut's `CutFinal` ([`crate::diverge`]). Its actions are
@@ -884,6 +1050,7 @@ impl Sim {
                 None => self.stats.unsent += out.len() as u64,
             }
         }
+        self.check_join();
         self.stats.phases.diverge_ns += lap(&mut mark);
         // A proposal opens each view: the quit's bound follows the smoothed interval between them (app.md 4).
         for _ in events.iter().filter(|e| matches!(e, AgreeEvent::Proposed { .. })) {
@@ -916,7 +1083,8 @@ impl Sim {
         let view = self.replica.view();
         let health = self.health_of(&view);
         let same_view = self.source_view.as_ref().is_some_and(|v| Arc::ptr_eq(v, &view));
-        if !same_view || self.published.as_ref().is_some_and(|v| v.health != health) {
+        // A joiner's empty replica has nothing to show until its import ends (app.md 4).
+        if !self.importing() && (!same_view || self.published.as_ref().is_some_and(|v| v.health != health)) {
             let out = if same_view {
                 Arc::new(health_only(&view, health))
             } else if view.health == health {
@@ -937,6 +1105,40 @@ impl Sim {
         self.stats.phases.tick_ns += tick;
         self.stats.phases.longest_tick_ns = self.stats.phases.longest_tick_ns.max(tick);
         Some((p, report))
+    }
+
+    /// Step 4: the replica through pe-replica's driver, to `p` included.
+    fn drive(&mut self, p: Frame) -> DriveReport {
+        if let Some(b) = self.budget.at_present(p) {
+            self.replica.set_budget(b);
+        }
+        // pe-diverge replays to a split's whole cut, and a `RootSplit` names only its `CutRef`: the cuts the driver is
+        // about to answer are kept for it. Nothing touches agreement between here and `drive`, so this is its list.
+        if let Some(d) = &mut self.diverge {
+            d.note_cuts(&*self.agree);
+        }
+        let started = Instant::now();
+        let report = {
+            // Times the replica's calls into `phases`, and passes each through unchanged.
+            let mut timed = Timed { inner: &mut *self.replica, times: &mut self.stats.phases };
+            self.driver.drive(&mut timed, &mut *self.agree, Frame(p.0 + 1), self.self_test)
+        };
+        let frames = report.advance.resimulated + report.advance.stepped;
+        if let Some(b) = self.budget.observe(frames, started.elapsed()) {
+            self.replica.set_budget(b);
+        }
+        // The next keep-up floor: what reaching the present asked of this call, rollback included.
+        self.budget.called(frames, (p.0 + 1).saturating_sub(self.replica.frame().0));
+        self.stats.votes += report.votes.len() as u64;
+        self.stats.finalized += report.finalized.len() as u64;
+        if let Some(api) = &self.api {
+            if let Some(k) = report.advance.rolled_back_to {
+                api.ports.shared.rolled_back(k);
+            }
+            api.ports.shared.caught_up(report.advance.caught_up);
+        }
+        self.count_hold(report.advance.caught_up);
+        report
     }
 
     /// Opens a root split on S3's `RootSplit` for a cut above the final cut's frame, and closes every split at or
@@ -1223,6 +1425,19 @@ pub(crate) mod tests {
         let me = crate::world::DEV_MEMBER;
         let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
         with_replica(replica, clock, budget)
+    }
+
+    /// A joiner refuses an imported world whose governance members aren't agreement's (app.md 4): here the pit holds
+    /// the development member while the stand-in agreement names none, and the refusal names both lists.
+    #[test]
+    fn an_imported_world_whose_members_are_not_agreement_s_is_refused() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, _) = in_the_ball_pit(clock, Budget::new(RATE));
+        let why = s.imported_members_differ().expect("refused");
+        assert!(why.contains(&crate::leave::player(crate::world::DEV_MEMBER)), "{why}");
+        assert!(why.contains("aren't agreement's ()"), "{why}");
+        let (s, _) = on_pe_world(Arc::new(LocalClock::new(HostTime(0), RATE)), Budget::new(RATE));
+        assert_eq!(s.imported_members_differ(), None, "no members on either side");
     }
 
     /// M1's ball pit opens with this machine's member admitted: the first view draws every ball as a sphere, and the
@@ -1649,12 +1864,12 @@ pub(crate) mod tests {
     struct CountingHook(Arc<std::sync::Mutex<(u64, u64)>>);
 
     impl NetHook for CountingHook {
-        fn on_event(&mut self, event: &NetEvent, _: &mut dyn Agreement) {
+        fn on_event(&mut self, event: &NetEvent, _: &mut dyn Agreement, _: &dyn WorldFacts) {
             if matches!(event, NetEvent::LinkUp { .. }) {
                 self.0.lock().expect("the counts").0 += 1;
             }
         }
-        fn on_tick(&mut self, _: HostTime, _: &mut dyn Agreement) {
+        fn on_tick(&mut self, _: HostTime, _: &mut dyn Agreement, _: &dyn WorldFacts) {
             self.0.lock().expect("the counts").1 += 1;
         }
     }
