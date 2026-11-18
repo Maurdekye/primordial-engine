@@ -42,7 +42,7 @@ printf 'fixed %s\n' "$term" > "$tmp/terms"
 : > "$tmp/allow"
 export PE_PUBLISH_TERMS="$tmp/terms" PE_PUBLISH_ALLOW="$tmp/allow"
 # Tier 2's state is checked only where case 25 asks for it, against files standing in for GitHub.
-unset PE_GATE_TIER2 PE_CI_RUNS_URL PE_CI_REPO
+unset PE_GATE_TIER2 PE_CI_RUNS_URL PE_CI_REPO PE_GATE_GHTOKEN
 
 # Made-up secrets, built here so that no file holds one.
 fake() { "$py" -I -c "
@@ -336,7 +336,10 @@ BASE=$fbase expect feature-policy-own-deleted fail "this landing deletes scripts
 #     scripts/tier2_explained.txt names the run; with note, it is only reported; a malformed answer, and an answer
 #     that never finishes, don't block it (the hook runs this step while git holds main's locks, so the check gives
 #     up after 20 s in all); and an unknown mode is an error. The check's cache (--cache) answers for a run it has
-#     judged without reading its jobs again, judges a re-run afresh, and lives in the clone's git folder.
+#     judged without reading its jobs again, judges a re-run afresh, and lives in the clone's git folder. A token
+#     file (--token-file; the gate's pe.gate.ghtoken) is read with a byte-order mark and blanks around the token, and
+#     a malformed one is noted; the token goes only to GitHub's API over https, never across a redirect, is never
+#     printed, and is dropped when GitHub refuses it (the call is made again without it).
 export PE_CI_REPO=example/tier2-fixture
 fx="$tmp/fixture"; mkdir -p "$fx"; fxw=$fx; [ "$win" = 1 ] && fxw=$(cygpath -m "$fx")
 fxu="file:///${fxw#/}"
@@ -461,6 +464,130 @@ ci ci-cache-failure-without-jobs-judged no-jobs.json 1 \
 ci ci-cache-failure-without-jobs-not-kept no-jobs-gone.json 3 "^ci_status: GitHub can't be read" "$tmp/c7.json"
 ci ci-cache-startup-failure-judged no-start.json 1 "^ci_status: tier 2 RED: run 424293 \(startup_failure\) " "$tmp/c8.json"
 ci ci-cache-startup-failure-kept no-start-gone.json 1 "^ci_status: tier 2 RED: run 424293 \(startup_failure\) " "$tmp/c8.json"
+# The token (--token-file), first in ci_status.py's own functions: it goes to GitHub's API over https and to no other
+# address, rides in a header a redirect doesn't carry on, is read from its file with a byte-order mark and blanks
+# around it (anything else is no token, noted without its text), and is dropped when GitHub refuses it (HTTP 401 or
+# 403): the call is made again without it, as is the rest of the run's. A local server stands in for the API there.
+# The fixture token is built here, so no token-shaped text sits in this file for the secret scan to find.
+tok="fixture_$(printf 'a%.0s' $(seq 32))_token"
+tmpw=$tmp; [ "$win" = 1 ] && tmpw=$(cygpath -m "$tmp")
+"$py" -I - "$tmpw" "$tok" > "$tmp/token-unit.log" 2>&1 << 'PYEOF'
+import http.server, os, sys, threading, urllib.request
+tmp, tok = sys.argv[1], sys.argv[2]
+sys.path.insert(0, tmp)
+import ci_status as m
+
+
+def check(name, ok, detail=""):
+    print(f"ok {name}" if ok else f"BAD {name} {detail}")
+
+
+m.auth["token"] = tok
+api = "https://api.github.com/repos/o/r/actions/runs"
+others = ["http://api.github.com/x", "https://api.github.com:8443/x", "https://api.github.com:bad/x",
+          "https://api.github.com.example.invalid/x", "https://api.github.com@example.invalid/x",
+          "https://user@api.github.com/x", "https://example.invalid/x", "file:///c:/x.json", "http://127.0.0.1:1/x"]
+r = m.request(api)
+check("ci-token-goes-only-to-githubs-api",
+      m.token_for(api) == tok and r.unredirected_hdrs.get("Authorization") == "Bearer " + tok
+      and "Authorization" not in r.headers and all(m.token_for(u) is None for u in others)
+      and not any(m.request(u).has_header("Authorization") for u in others),
+      "(it went elsewhere, or not to the API)")
+new = urllib.request.HTTPRedirectHandler().redirect_request(r, None, 302, "Found", {}, "https://example.invalid/y")
+check("ci-token-not-carried-on-a-redirect", new is not None and not new.has_header("Authorization"))
+m.auth["token"] = None
+check("ci-no-token-without-a-file", m.token_for(api) is None and not m.request(api).has_header("Authorization"))
+
+
+def tf(name, data):
+    p = os.path.join(tmp, name)
+    with open(p, "wb") as f:
+        f.write(data)
+    return p
+
+
+t = tok.encode()
+good = [tf("tok1", t + b"\n"), tf("tok2", b"  " + t + b"\r\n"), tf("tok3", b"\xef\xbb\xbf" + t),
+        tf("tok4", b"\xff\xfe" + (tok + "\r\n").encode("utf-16-le"))]
+none = [os.path.join(tmp, "no-such-token-file"), tf("tok5", b""), tf("tok6", b" \r\n")]
+bad = [tf("tok7", b"Bearer " + t), tf("tok8", t + b"\n" + t), tf("tok9", b"a" * 5000),
+       tf("tok10", b"\xff\xfe\x00\xd8")]
+m.auth["notes"] = []
+got_good, got_none = [m.load_token(p) for p in good], [m.load_token(p) for p in none]
+quiet = not m.auth["notes"]
+got_bad = [m.load_token(p) for p in bad]
+check("ci-token-file-rules", got_good == [tok] * 4 and got_none == [None] * 3 and quiet and got_bad == [None] * 4
+      and m.auth["notes"] == ["the token file holds no token, so GitHub was read without one"] * 4,
+      f"(read {[g == tok for g in got_good]}, none {got_none}, quiet {quiet},"
+      f" malformed {[g is None for g in got_bad]}, {len(m.auth['notes'])} notes)")
+seen = []
+
+
+class Api(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        a = self.headers.get("Authorization")
+        seen.append(a)
+        code = (401 if self.path.startswith("/401") else 403) if a else 200
+        body = b'{"ok": 1}' if code == 200 else b'{"message": "Bad credentials"}'
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+srv = http.server.HTTPServer(("127.0.0.1", 0), Api)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+base = f"http://127.0.0.1:{srv.server_address[1]}"
+m.token_for = lambda url: m.auth["token"]  # this server stands in for GitHub's API
+results = []
+for code in ("401", "403"):
+    m.auth["token"], m.auth["notes"] = tok, []
+    del seen[:]
+    try:
+        got = [m.get(f"{base}/{code}/x"), m.get(f"{base}/{code}/y")]
+    except Exception as e:  # a refusal that isn't handled: Unreadable, or endless retries
+        got = [type(e).__name__]
+    results.append((code, got == [{"ok": 1}] * 2, seen == ["Bearer " + tok, None, None], m.auth["token"] is None,
+                    m.auth["notes"] == [f"GitHub refused the token (HTTP {code}), so GitHub was read without it"]))
+srv.shutdown()
+check("ci-token-refused-is-dropped", all(all(x[1:]) for x in results),
+      f"(answers, headers, dropped, noted: {results})")
+print("done")
+PYEOF
+while read -r w n rest; do
+  case $w in
+    ok) pass=$((pass + 1)); echo "test_gate: ok   $n" ;;
+    BAD) bad=$((bad + 1)); echo "test_gate: BAD  $n $rest" ;;
+  esac
+done < "$tmp/token-unit.log"
+if ! grep -qx "done" "$tmp/token-unit.log" || [ "$(grep -c -E '^(ok|BAD) ' "$tmp/token-unit.log")" != 5 ]; then
+  bad=$((bad + 1)); echo "test_gate: BAD  ci-token-checks-all-ran"; sed 's/^/    /' "$tmp/token-unit.log"
+fi
+# ...then end to end: with a token in its file, the check reads as before and prints no token; a file holding
+# anything else is noted on the check's last line (the line the gate shows) and in the watchdog's output.
+printf '%s\n' "$tok" > "$tmp/token.txt"
+printf 'Bearer %s\n' "$tok" > "$tmp/token-bad.txt"
+nb="the token file holds no token, so GitHub was read without one"
+PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --token-file "$tmp/token.txt" \
+  --check "$tmp/explained-none.txt" > "$tmp/token-e2e.log" 2>&1; r1=$?
+PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --token-file "$tmp/token-bad.txt" \
+  --check "$tmp/explained-none.txt" > "$tmp/token-e2e-bad.log" 2>&1; r2=$?
+PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --token-file "$tmp/token-bad.txt" \
+  --new "$tmp/t2state-token" > "$tmp/token-e2e-new.log" 2>&1; r3=$?
+if [ "$r1$r2$r3" = 110 ] \
+  && tail -1 "$tmp/token-e2e.log" | grep -Eq "^ci_status: tier 2 RED: run 424242 \(failure\) .*with no verdict\)$" \
+  && tail -1 "$tmp/token-e2e-bad.log" | grep -Eq "^ci_status: tier 2 RED: run 424242 \(failure\) .*with no verdict\); $nb$" \
+  && grep -qx "ci_status: note: $nb" "$tmp/token-e2e-new.log" \
+  && ! grep -qF -- "$tok" "$tmp/token-e2e.log" "$tmp/token-e2e-bad.log" "$tmp/token-e2e-new.log"; then
+  pass=$((pass + 1)); echo "test_gate: ok   ci-token-file-read-and-never-printed"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  ci-token-file-read-and-never-printed (exits $r1 $r2 $r3)"
+  sed 's/^/    /' "$tmp/token-e2e.log" "$tmp/token-e2e-bad.log" "$tmp/token-e2e-new.log"
+fi
 PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --new "$tmp/t2state" > "$tmp/new1.log" 2>&1; r1=$?
 PE_CI_RUNS_URL="$fxu/red.json" "$py" -I "$tmp/ci_status.py" --new "$tmp/t2state" > "$tmp/new2.log" 2>&1; r2=$?
 if [ "$r1$r2" = 00 ] && [ "$(cat "$tmp/new1.log")" = "TIER2 RED 424242 failure https://example.invalid/424242 jobs: tier 2, macos-arm64" ] \
@@ -685,6 +812,17 @@ new_case; echo "tier 2 test" >> "$R/README.md"; commit -m "a change while tier 2
 PE_GATE_TIER2=note expect tier2-note pass "^gate: NOTE: tier 2 RED: run 424242" "not blocking yet: pe\.gate\.tier2 is note" "^gate: PASS"
 PE_CI_RUNS_URL="$fxu/malformed.json" expect tier2-malformed pass "^gate: NOTE: tier 2's check failed \(exit 4" "^gate: PASS"
 PE_GATE_TIER2=maybe expect tier2-unknown-mode error "pe\.gate\.tier2 \(or PE_GATE_TIER2\) is 'maybe'; it must be on, note or off"
+# The gate reads the token file the clone names (git config pe.gate.ghtoken): a malformed one is noted on its tier-2
+# line, which shows the file was read, and no token text reaches its output.
+new_case; echo "tier 2 test" >> "$R/README.md"; commit -m "a change while tier 2 is red, read with a token file"
+git -C "$R" config pe.gate.ghtoken "$tmp/token-bad.txt"
+expect tier2-token-file-from-git-config fail "^gate: tier 2 RED: run 424242 \(failure\) .*; $nb$" "^gate: FAIL"
+git -C "$R" config --unset pe.gate.ghtoken
+if grep -qF -- "$tok" "$tmp/tier2-token-file-from-git-config.log"; then
+  bad=$((bad + 1)); echo "test_gate: BAD  tier2-token-never-in-the-gates-output"
+else
+  pass=$((pass + 1)); echo "test_gate: ok   tier2-token-never-in-the-gates-output"
+fi
 # The gate keeps the check's cache in the clone's git folder: the gates above filled it, so red-gone.json's red run
 # still fails the gate while its jobs can't be read. Without that file the same check can't read them, and passes.
 PE_CI_RUNS_URL="$fxu/red-gone.json" expect tier2-cache-in-the-clones-git-folder fail \
