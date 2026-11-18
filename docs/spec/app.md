@@ -508,8 +508,9 @@ with @fable-reviewer's refinements, and):
      bound is taken when the quit starts, so slower views during the wait don't stretch it. pe-agree's leavers
      quit 355-558 ms after their `Leave` on simulated links; a 1.2 s link's views give the 15 s cap [I].
    - A second quit request ends the wait at once: Ctrl-C on the console ends the process wherever the quit is.
-   - **The console's own quit** (`crate::console`): the first Ctrl+C or Ctrl+Break, or closing the console window
-     (SIGINT, SIGTERM or SIGHUP on unix), runs this same shutdown, once, as the end of a run does. Before there is a
+   - **The console's own quit** (`crate::console`): the first Ctrl+C or Ctrl+Break, a typed `quit`, or closing the
+     console window (SIGINT, SIGTERM or SIGHUP on unix), runs this same shutdown, once, as the end of a run does, and
+     the console says "pe-app: quitting (…)…". Before there is a
      shutdown to run (setting up, or the opener waiting for the reply code), it ends the process at once. In the
      window, the request runs it (a close event on a thread of its own), since the window can't be closed from
      outside; in VR and headless, the main thread waits in 100 ms slices and runs it. Windows ends a process about 5 s after a
@@ -522,6 +523,16 @@ with @fable-reviewer's refinements, and):
      crash. Catching them would take the window's WM_QUERYENDSESSION; that is post-M1.
    - On unix (tier 2), one thread takes the signals: a second signal waits until a desktop quit that SIGINT started
      has ended, and after SIGTERM or SIGHUP the "leave cut short" line can show although the quit goes on.
+   - **The run's log** (`--log <file>`, `crate::log`; @coordinator-opus, after M1's dry run). Every
+     line pe-app prints, standard output and standard error, pe-xr's and pe-mcp's lines and Box3D's warning
+     included, also goes to a new UTF-8 file, each line prefixed with the seconds since the log opened. It opens
+     before the session starts and never overwrites a file. Lines are written through, the file before the
+     console, under one lock, so the file ends with the console's last line whichever way the process ends: a
+     quit, a second request, a close, a panic (printed through the log in place of the standard hook) or
+     `std::process::exit`. What native code writes straight to standard error (a GPU driver's or the OpenXR
+     loader's messages) and the runtime's last words before an abort (a stack overflow) reach the console only.
+     With it the command line needs no pipe: Windows PowerShell 5.1 ends a program piped to `Tee-Object` at once
+     on Ctrl+C, before its handler runs, so the leave and the end lines are lost [V, the dry run].
    - When the wait ends, the console says "left the session.", or, if the bound passed first, "Left before
      <player> confirmed it. <player> can keep playing, but their changes won't be shared from now on."
 3. **The remaining member** keeps its link to the leaver after the epoch switch until the leaver disconnects or 30 s
@@ -615,7 +626,7 @@ injects a fault on B. Two runtime flags arm it, and they exclude each other. Nei
 shipped build meets the feature policy.
 - `--arm-fault`, which the demo uses: typing `fault` and Enter in B's console fires it at the next frame B steps,
   `F`, and the console names `F`. Without the flag, `fault` is refused on any machine. Every machine's console reads
-  commands: `fault`, and on A also a joiner's reply code.
+  commands: `quit`, `fault`, `replay`, and on A also a joiner's reply code.
 - `--inject-fault-at <F>`: it fires at session frame `F`, fixed at start. B's console prints the frame it joined at;
   the world runs at 60 Hz.
 

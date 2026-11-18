@@ -29,6 +29,11 @@
 //! this machine's member (app.md 3.1); `--agent <command> <args>...`, the rest of the line, launches it with the
 //! transport's address and a token in its environment. `--agent-name <name>`, before it, is what the world's history
 //! calls the agent; by default the command's first word (`cmd` for `cmd /c start ... claude`).
+//!
+//! `--log <file>` writes every line the console gets, standard output and standard error, to a new UTF-8 file as
+//! well, each line prefixed with the seconds since the log opened; it never overwrites a file (`pe_app::log`). With
+//! it, a run needs no pipe or redirection, so Ctrl+C reaches pe-app and the file keeps the end lines. The console
+//! takes `quit`, which is the same request as Ctrl+C, beside `fault` and `replay`.
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -81,7 +86,7 @@ struct LogEffects;
 
 impl EffectSink for LogEffects {
     fn command(&mut self, c: &EffectCommand) {
-        eprintln!("effect: {c:?}");
+        pe_app::err!("effect: {c:?}");
     }
 }
 
@@ -117,6 +122,8 @@ struct Options {
     arm_fault: bool,
     /// `--check-replay`: the opener keeps its final log, and the console's `replay` replays it (pe-app's `replay`).
     check_replay: bool,
+    /// `--log`: a file that gets every line the console does, prefixed with the time (pe-app's `log`).
+    log: Option<std::path::PathBuf>,
 }
 
 /// The joiner's wait for the opener's welcome and its clock: a person copies the reply over.
@@ -141,6 +148,7 @@ fn options() -> Options {
         inject_fault_at: None,
         arm_fault: false,
         check_replay: false,
+        log: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -164,6 +172,7 @@ fn options() -> Options {
             "--drawn-time" => o.drawn_time = Some(args.next().and_then(|a| drawn_time(&a)).unwrap_or_else(|| usage())),
             "--arm-fault" => o.arm_fault = true,
             "--check-replay" => o.check_replay = true,
+            "--log" => o.log = Some(args.next().filter(|p| !p.is_empty()).unwrap_or_else(|| usage()).into()),
             "--inject-fault-at" => {
                 o.inject_fault_at =
                     Some(Frame(args.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or_else(|| usage())));
@@ -196,35 +205,45 @@ fn presenter(rate: SimRate, drawn_time: DrawnTime) -> Presenter {
     Presenter::new(display, EffectSettings::default(), Environment::default(), rate.hz())
 }
 
-/// The console (app.md 4): each line it reads is a command. `fault` fires the test fault `--arm-fault` armed, and is
-/// refused without it (pe-app's `fault`). `replay` replays the opener's session from frame 0, with `--check-replay`
-/// (`replay` true; pe-app's `replay`). On A, any other line is a joiner's reply code, for the session's hook, which
-/// checks it. The thread waits on standard input for the whole run; the process's end ends it.
-fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool) {
+/// The console (app.md 4): each line it reads is a command. `quit` is the same request as Ctrl+C: the first one
+/// quits gracefully, a second one ends the process at once (console.rs). `fault` fires the test fault `--arm-fault`
+/// armed, and is refused without it (pe-app's `fault`). `replay` replays the opener's session from frame 0, with
+/// `--check-replay` (`replay` true; pe-app's `replay`). On A, any other line is a joiner's reply code, for the
+/// session's hook, which checks it. The thread waits on standard input for the whole run; the process's end ends it.
+/// A debug build also takes `panic`, which panics this thread: the test of `--log`'s panic path (tests/console_log.rs).
+fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, quit: Arc<Quit>) {
     let read = move || {
         for line in std::io::stdin().lines().map_while(Result::ok) {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
+            if line == "quit" {
+                quit.request_from_app("typed `quit`");
+                continue;
+            }
+            if cfg!(debug_assertions) && line == "panic" {
+                panic!("the console's test panic (`panic`, debug builds only)");
+            }
             if line == "replay" {
                 if replay {
                     pe_app::replay::request();
                 } else {
-                    eprintln!("pe-app: `replay` is refused: this machine wasn't started with --check-replay");
+                    pe_app::err!("pe-app: `replay` is refused: this machine wasn't started with --check-replay");
                 }
                 continue;
             }
             if line == "fault" {
                 match pe_app::fault::on_command(pe_app::fault::armed().as_deref()) {
-                    Ok(said) => println!("{said}"),
-                    Err(e) => eprintln!("pe-app: {e}"),
+                    Ok(said) => pe_app::out!("{said}"),
+                    Err(e) => pe_app::err!("pe-app: {e}"),
                 }
                 continue;
             }
             let Some(replies) = &replies else {
-                eprintln!(
-                    "pe-app: `{line}` isn't a command here: `fault` (with --arm-fault) or `replay` (--check-replay)"
+                pe_app::err!(
+                    "pe-app: `{line}` isn't a command here: `quit`, `fault` (with --arm-fault) or `replay` \
+                     (--check-replay)"
                 );
                 continue;
             };
@@ -234,12 +253,12 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool) {
                         return;
                     }
                 }
-                Err(e) => eprintln!("pe-app: that isn't a reply code ({e:?}): paste the code the joiner printed"),
+                Err(e) => pe_app::err!("pe-app: that isn't a reply code ({e:?}): paste the code the joiner printed"),
             }
         }
     };
     if let Err(e) = std::thread::Builder::new().name("pe-console".into()).spawn(read) {
-        eprintln!("pe-app: the console can't be read ({e}): nobody can join, and `fault` isn't heard");
+        pe_app::err!("pe-app: the console can't be read ({e}): nobody can join, and `fault` isn't heard");
     }
 }
 
@@ -279,10 +298,10 @@ fn shared_sim(
                 .open_alone(&p, INVITE_VALID, T_JOIN, runner)
                 .unwrap_or_else(|e| fail(&format!("the session did not start: {e}")));
             let s = opened.session;
-            println!("session: open, this machine {}", short(s.me));
-            println!("invite: {}", opened.invite.encode());
-            println!("to let someone join, paste their reply code here:");
-            read_console(Some(opened.replies), o.check_replay);
+            pe_app::out!("session: open, this machine {}", short(s.me));
+            pe_app::out!("invite: {}", opened.invite.encode());
+            pe_app::out!("to let someone join, paste their reply code here:");
+            read_console(Some(opened.replies), o.check_replay, console.clone());
             let sim = diverge(
                 Sim::new(Box::new(s.node), s.replica, s.frames, slot, Budget::new(rate))
                     .with_local(s.me, chain_nonce(), hands)
@@ -292,31 +311,32 @@ fn shared_sim(
             // `--check-replay` (pe-app's `replay`): the opener keeps its final log, and replays it on the console's
             // `replay`.
             if o.check_replay {
-                println!("replay: keeping this session's final log; type `replay` to replay it from frame 0");
+                pe_app::out!("replay: keeping this session's final log; type `replay` to replay it from frame 0");
                 sim.with_replay_check(pe_app::replay::ReplayLog::new(opened.genesis))
             } else {
                 sim
             }
         }
         Shared::Join(invite) => {
-            println!("reply code for the opener: {}", ep.reply(invite).encode());
+            pe_app::out!("reply code for the opener: {}", ep.reply(invite).encode());
             ep.dial(invite).unwrap_or_else(|e| fail(&e.to_string()));
             let cj = ep
                 .join_at_cut(invite, rate, JOIN_TIMEOUT, T_JOIN)
                 .unwrap_or_else(|e| fail(&format!("couldn't join the session: {e}")));
-            println!(
+            pe_app::out!(
                 "session: joined at frame {}, {} members, this machine {}",
                 cj.e.at.frame.0,
                 cj.members.len(),
                 short(cj.me)
             );
             if let Some(at) = pe_app::fault::armed().and_then(|f| f.at()).filter(|at| *at < cj.e.at.frame) {
-                println!(
+                pe_app::out!(
                     "FAULT INJECTION: frame {} is before this machine's first frame, {}, so the fault never fires",
-                    at.0, cj.e.at.frame.0
+                    at.0,
+                    cj.e.at.frame.0
                 );
             }
-            read_console(None, false);
+            read_console(None, false, console.clone());
             let replica = cj
                 .record
                 .empty_replica(cj.me, cj.frames.clone(), runner)
@@ -338,19 +358,35 @@ fn shared_sim(
 }
 
 fn main() {
-    // First, before any thread starts (console.rs): Ctrl+C or closing the console quits gracefully.
+    let options = options();
+    // The run's log (`--log`, pe-app's `log`), before anything else prints: it never overwrites a file. pe-xr's,
+    // pe-mcp's and Box3D's lines come through it too, with or without a log. Neither starts a thread.
+    if let Some(path) = &options.log {
+        if let Err(e) = pe_app::log::open(path) {
+            let why = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                "it exists, and pe-app never overwrites a log: name a new file".to_string()
+            } else {
+                e.to_string()
+            };
+            fail(&format!("the log {} can't be opened: {why}", path.display()));
+        }
+        pe_app::log::install_panic_hook();
+    }
+    pe_xr::diag::set_sink(pe_app::log::err_line);
+    pe_mcp::host::set_line_sink(pe_app::log::err_line);
+    pe_physics::set_warning_sink(pe_app::log::err_line);
+    // Before any thread starts (console.rs): Ctrl+C or closing the console quits gracefully.
     let console = Quit::install().unwrap_or_else(|e| {
-        eprintln!("pe-app: {e}; Ctrl+C ends the process without leaving");
+        pe_app::err!("pe-app: {e}; Ctrl+C ends the process without leaving");
         Quit::new()
     });
-    let options = options();
     // Others share the world (`--open` or `--join`): the quit then leaves gracefully (app.md 4).
     // Which sources this build came from, and its commit (app.md 4, "The build id").
-    println!("{}", pe_app::net::source_line());
+    pe_app::out!("{}", pe_app::net::source_line());
     // Which pe-sdk scripts build against: PE_SDK, beside the executable, or the source tree (builds::sdk).
     match pe_app::builds::sdk_line() {
-        Ok(line) => println!("{line}"),
-        Err(warning) => eprintln!("{warning}"),
+        Ok(line) => pe_app::out!("{line}"),
+        Err(warning) => pe_app::err!("{warning}"),
     }
     // A deliberate test fault on this machine only (M1 demo step 7, pe-app's `fault`), armed before any replica is made.
     // `--check-replay` replays from the genesis record, which only the opener has, and a test fault would replay too.
@@ -368,7 +404,7 @@ fn main() {
     };
     if let Some(fault) = fault {
         match pe_app::fault::arm(fault) {
-            Ok(line) => println!("{line}"),
+            Ok(line) => pe_app::out!("{line}"),
             Err(e) => fail(&e),
         }
     }
@@ -380,7 +416,7 @@ fn main() {
     let started = Instant::now();
 
     // Each GPU context's backend, adapter and driver, as it is made (render.md 4).
-    pe_render::gpu::set_context_log(|d| println!("render: {d}"));
+    pe_render::gpu::set_context_log(|d| pe_app::out!("render: {d}"));
     let rate = SimRate::DEFAULT;
     let host = clock::shared();
     let slot = Arc::new(FrameSlot::new());
@@ -406,7 +442,7 @@ fn main() {
         None => {
             let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
             let pit = world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, frames.clone(), runner);
-            read_console(None, false);
+            read_console(None, false, console.clone());
             let replica = match pit {
                 Ok(r) => r,
                 Err(e) => fail(&format!("the replica did not start: {e}")),
@@ -480,6 +516,7 @@ fn main() {
         // No window and no VR (app.md 4): the world runs until `--seconds` passes or the console asks to quit, and the
         // main thread runs the quit itself, as in VR. The desktop hand has no window to feed it, so no hands move.
         console.poll();
+        pe_app::out!("headless: running until --seconds passes, Ctrl+C or a typed `quit`");
         wait_headless(run_for.map(|d| started + d), &console);
         console.quitting();
         shutdown();
@@ -513,13 +550,13 @@ fn main() {
                 // the desktop mirror (app.md 1, render.md 10). Until pe-render has that window the main thread waits
                 // here; xr.md 3.3's retry after a lost session comes with it.
                 let waited = wait_vr(&xr, run_for.map(|d| started + d), &console);
-                println!("vr: {waited:?}; at its end {:?}", xr.stop());
+                pe_app::out!("vr: {waited:?}; at its end {:?}", xr.stop());
                 match report.lock().ok().and_then(|mut r| r.take()) {
                     Some(r) => {
-                        println!("vr display lead (ms): {:?}", r.lead_ms);
-                        println!("display (vr, {drawn_time:?}): {:?}", r.render);
+                        pe_app::out!("vr display lead (ms): {:?}", r.lead_ms);
+                        pe_app::out!("display (vr, {drawn_time:?}): {:?}", r.render);
                     }
-                    None => println!("display (vr): no report (the XR thread has not ended)"),
+                    None => pe_app::out!("display (vr): no report (the XR thread has not ended)"),
                 }
                 if waited == XrWait::Running || console.requested() {
                     console.quitting();
@@ -527,9 +564,9 @@ fn main() {
                     console.finished();
                     return;
                 }
-                eprintln!("pe-app: the VR session ended; the desktop instead");
+                pe_app::err!("pe-app: the VR session ended; the desktop instead");
             }
-            Err(why) => eprintln!("pe-app: {why}; the desktop instead"),
+            Err(why) => pe_app::err!("pe-app: {why}; the desktop instead"),
         }
         hands.use_vr(false);
     }
@@ -569,7 +606,7 @@ fn main() {
         None => {
             let done = console.wait_quit(REQUEST_QUIT_LIMIT);
             if !done {
-                eprintln!("pe-app: the console's quit did not finish; ending now");
+                pe_app::err!("pe-app: the console's quit did not finish; ending now");
             }
             std::process::exit(if done { 0 } else { EXIT_INTERRUPTED });
         }
@@ -610,7 +647,7 @@ fn quit(sim: sim::SimThread, networked: bool) -> std::thread::Result<sim::SimSta
     if !networked {
         return sim.stop();
     }
-    sim.leave_and_stop(&mut |line| println!("{line}")).1
+    sim.leave_and_stop(&mut |line| pe_app::out!("{line}")).1
 }
 
 /// What the world's history calls the agent: `--agent-name` if given, else the command's first word as a file stem
@@ -663,7 +700,7 @@ fn start_builds(
         Ok((thread, builder))
     })();
     started
-        .map_err(|e| eprintln!("pe-app: the build service did not start, so this machine builds no script: {e}"))
+        .map_err(|e| pe_app::err!("pe-app: the build service did not start, so this machine builds no script: {e}"))
         .ok()
 }
 
@@ -686,8 +723,8 @@ fn close_captures(captures: &Option<Arc<pe_render::capture_service::CaptureQueue
 fn stop_mcp(mcp: Option<api::McpThread>) {
     if let Some(m) = mcp {
         match m.stop() {
-            Ok(exited) => println!("mcp: stopped; the agent {exited:?}"),
-            Err(e) => eprintln!("mcp: {e}"),
+            Ok(exited) => pe_app::out!("mcp: stopped; the agent {exited:?}"),
+            Err(e) => pe_app::err!("mcp: {e}"),
         }
     }
 }
@@ -695,18 +732,18 @@ fn stop_mcp(mcp: Option<api::McpThread>) {
 fn report_window(window: Result<DesktopReport, ContextError>) {
     match window {
         Ok(r) => {
-            println!("window: {} frames on {}, {} skipped", r.frames, r.adapter, r.skipped);
+            pe_app::out!("window: {} frames on {}, {} skipped", r.frames, r.adapter, r.skipped);
             if let Some(d) = &r.render {
-                println!("display (desktop): {d:?}");
+                pe_app::out!("display (desktop): {d:?}");
             }
         }
-        Err(e) => eprintln!("window: {e:?}"),
+        Err(e) => pe_app::err!("window: {e:?}"),
     }
 }
 
 fn finish<S: Debug, E>(stats: Result<S, E>) {
     match stats {
-        Ok(s) => println!("simulation: {s:?}"),
+        Ok(s) => pe_app::out!("simulation: {s:?}"),
         Err(_) => fail("the simulation thread panicked"),
     }
 }
@@ -715,13 +752,13 @@ fn usage() -> ! {
     fail(
         "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] \
          [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms> (VR)|a:<ms>|b:<ms>] [--mcp-pipe] \
-         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--agent-name <name>] \
-         [--agent <command> <args>...]",
+         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--log <file>] \
+         [--agent-name <name>] [--agent <command> <args>...]",
     )
 }
 
 fn fail(msg: &str) -> ! {
-    eprintln!("pe-app: {msg}");
+    pe_app::err!("pe-app: {msg}");
     std::process::exit(2)
 }
 

@@ -3,7 +3,7 @@
 //! pe-app owns the world and the token store and calls this (api.md 6.1, O9).
 
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use pe_seams::world_api::Scope;
@@ -67,6 +67,24 @@ impl Drop for Hosted {
     }
 }
 
+/// Where the transports' address lines go instead of standard error, once an application sets it
+/// ([`set_line_sink`]).
+static LINE_SINK: OnceLock<fn(&str)> = OnceLock::new();
+
+/// Sends the transports' address lines (`pe-mcp: pipe ...`, `pe-mcp: http ...`) to `sink` instead of standard
+/// error: pe-app's `--log` writes them to its log as well as the console. Once per process; false if a sink was
+/// already set.
+pub fn set_line_sink(sink: fn(&str)) -> bool {
+    LINE_SINK.set(sink).is_ok()
+}
+
+fn line(text: &str) {
+    match LINE_SINK.get() {
+        Some(sink) => sink(text),
+        None => eprintln!("{text}"),
+    }
+}
+
 /// Start the transports and launch the harness. Requires `pipe` or `http`.
 pub async fn start(api: Api, o: &HostOpts) -> io::Result<Hosted> {
     if !o.pipe && !o.http {
@@ -80,7 +98,7 @@ pub async fn start(api: Api, o: &HostOpts) -> io::Result<Hosted> {
     });
     let pipe = if o.pipe {
         let path = crate::pipe::serve_pipe(api.clone(), store.clone())?;
-        eprintln!("pe-mcp: pipe {path}");
+        line(&format!("pe-mcp: pipe {path}"));
         if let Some(c) = cmd.as_mut() {
             c.env("PE_MCP_PIPE", &path);
         }
@@ -90,7 +108,7 @@ pub async fn start(api: Api, o: &HostOpts) -> io::Result<Hosted> {
     };
     let http = if o.http {
         let h = crate::http::serve_http(api.clone(), store.clone(), o.origins.clone()).await?;
-        eprintln!("pe-mcp: http {} (ipv6 {})", h.url, h.ipv6);
+        line(&format!("pe-mcp: http {} (ipv6 {})", h.url, h.ipv6));
         if let Some(c) = cmd.as_mut() {
             c.env("PE_MCP_URL", &h.url);
         }

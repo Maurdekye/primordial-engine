@@ -1024,10 +1024,10 @@ pub fn spawn_attester(
             let now = snap.frame();
             let pass = attester.pass(snap.pending(), snap.modules(), |r| snap.blob(r), &builder, &inbox);
             for (asset, v, why) in &pass.failed {
-                eprintln!("pe-app: this machine's build of script {} at {v:?} failed: {why}", short(asset));
+                crate::err!("pe-app: this machine's build of script {} at {v:?} failed: {why}", short(asset));
             }
             for f in &pass.failures {
-                eprintln!(
+                crate::err!(
                     "pe-app: reporting this machine's failed build of script {}: {:?}",
                     short(&f.asset),
                     f.reason
@@ -1038,7 +1038,7 @@ pub fn spawn_attester(
                 for (asset, since, why) in &now_not {
                     // A newer version that fails for the same reason is logged too (@engine-architect's nit).
                     if !not_running.iter().any(|(a, s, w)| a == asset && s == since && w == why) {
-                        eprintln!(
+                        crate::err!(
                             "pe-app: script {} doesn't run on this machine (active since frame {}): {why}",
                             short(asset),
                             since.0
@@ -1047,7 +1047,7 @@ pub fn spawn_attester(
                 }
                 for (asset, _, _) in &not_running {
                     if !now_not.iter().any(|(a, _, _)| a == asset) {
-                        eprintln!("pe-app: script {} runs on this machine now", short(asset));
+                        crate::err!("pe-app: script {} runs on this machine now", short(asset));
                     }
                 }
                 shared.scripts_not_running(now_not.clone());
@@ -1071,7 +1071,7 @@ pub fn spawn_attester(
                     false
                 }
                 Some(Receipt::Refused(e)) => {
-                    eprintln!("pe-app: a machine entry of script {} was not submitted: {e:?}", short(post.asset()));
+                    crate::err!("pe-app: a machine entry of script {} was not submitted: {e:?}", short(post.asset()));
                     if let Post::Attest(a) = post {
                         attester.posted(a.asset, a.version, now);
                     }

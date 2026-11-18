@@ -132,6 +132,46 @@ pub mod table;
 pub mod types;
 pub mod world;
 
+// Primordial Engine fork: where box3d's warnings go instead of standard error. See FORK.md.
+static WARNING_SINK: std::sync::OnceLock<fn(&str)> = std::sync::OnceLock::new();
+
+/// Primordial Engine fork: sends box3d's warnings (today only the narrow phase's complex-mesh
+/// warning) to `sink` instead of standard error, so an application's log gets them too. Once per
+/// process; false if a sink was already set.
+pub fn set_warning_sink(sink: fn(&str)) -> bool {
+    WARNING_SINK.set(sink).is_ok()
+}
+
+/// Primordial Engine fork: one warning line, to the sink if one is set ([`set_warning_sink`]),
+/// else to standard error.
+pub(crate) fn warn(text: &str) {
+    match WARNING_SINK.get() {
+        Some(sink) => sink(text),
+        None => eprintln!("{text}"),
+    }
+}
+
+// Primordial Engine fork: the warning sink's test. See FORK.md.
+#[cfg(test)]
+mod warning_sink_tests {
+    use std::sync::Mutex;
+
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    fn record(text: &str) {
+        SEEN.lock().unwrap_or_else(|e| e.into_inner()).push(text.to_string());
+    }
+
+    #[test]
+    fn a_warning_goes_to_the_sink_once_one_is_set() {
+        assert!(super::set_warning_sink(record));
+        assert!(!super::set_warning_sink(record), "once per process");
+        super::warn("WARNING: the sink's test");
+        let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(seen.iter().any(|l| l == "WARNING: the sink's test"), "{seen:?}");
+    }
+}
+
 pub use debug_draw::{
     make_debug_color, CreateDebugShapeCallback, DebugDraw, DebugMaterial, DebugShape,
     DestroyDebugShapeCallback, HexColor,

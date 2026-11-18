@@ -31,6 +31,7 @@ pub mod genesis;
 pub mod join;
 pub mod leave;
 pub mod local;
+pub mod log;
 pub mod net;
 pub mod phases;
 pub mod replay;

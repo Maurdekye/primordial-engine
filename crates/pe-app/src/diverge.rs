@@ -302,8 +302,8 @@ impl BundleWriter {
                     std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &bytes)).map_err(|e| e.to_string())
                 });
                 match written {
-                    Ok(()) => eprintln!("divergence: fault bundle written to {}", path.display()),
-                    Err(e) => eprintln!("divergence: fault bundle {} not written: {e}", path.display()),
+                    Ok(()) => crate::err!("divergence: fault bundle written to {}", path.display()),
+                    Err(e) => crate::err!("divergence: fault bundle {} not written: {e}", path.display()),
                 }
             }
         })?;
