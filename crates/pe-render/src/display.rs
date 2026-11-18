@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use glam::{DQuat, DVec3};
-use pe_seams::{EffectKind, Frame, FrameView, Hand, HostTime, ObjectId, ViewFlags, ViewObject};
+use pe_seams::{EffectKind, Frame, FrameView, Hand, HostTime, ObjectId, Pos, ViewFlags, ViewObject};
 
 use crate::camera::ViewVolume;
 use crate::drawn_time::{DrawnTime, extrapolate, resolve};
@@ -28,6 +28,8 @@ use crate::{DisplayHand, LocalPresentation};
 
 /// How many frame views the layer keeps for interpolation (X8 (b)). At 60 Hz, 8 views reach 117 ms back.
 const HISTORY: usize = 8;
+/// An object is in contact with an own hand when its centre is within the two radii plus this, m (the gap at contact).
+const CONTACT_MARGIN: f64 = 0.02;
 /// A change of prediction below this is float error, not an offset: 1 µm, 1 µrad.
 const TOL_POS: f64 = 1e-6;
 const TOL_ANG: f64 = 1e-6;
@@ -155,6 +157,16 @@ pub struct DisplayCounters {
     pub views_taken: u64,
     /// Views that followed a gap: the views before them were lost, so every object blended from its drawn pose.
     pub gaps: u64,
+    /// First contacts of an object with an own hand (its centre within the two radii plus 2 cm in a frame view), and
+    /// the gap then between the drawn object and the drawn hand's sphere: centre distance minus both radii, m. The
+    /// sphere is the simulation's hand (`HAND_RADIUS` at the view's scale), whatever the hand is drawn as. Below
+    /// zero, the hand the player saw was already inside the object when the simulation first touched it
+    /// (@coordinator-opus). Views that arrive at or within a gap don't update contacts: a contact that
+    /// starts there counts at the next ordinary arrival, and one that starts and ends there isn't counted.
+    pub own_contacts: u64,
+    pub own_contact_gap_sum: f64,
+    pub own_contact_gap_min: Option<f64>,
+    pub own_contact_gap_max: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -206,6 +218,11 @@ struct ObjState {
     own: bool,
     last_drawn: Option<WorldPose>,
     pending: Vec<Pending>,
+    /// In contact with an own hand in the newest view; and a first contact `frame` has yet to measure. An object the
+    /// next `frame` doesn't draw keeps it, and is measured when it is next drawn, at that pose: rare, and accepted
+    /// (@shader-reviewer's nit on 197fc122).
+    in_contact: bool,
+    contact_new: bool,
 }
 
 impl ObjState {
@@ -241,7 +258,22 @@ pub struct DisplayLayer {
     /// A gap's batch is arriving: the drawn poses to blend from (and whether each was own), closed by `frame`.
     gap_open: bool,
     gap_drawn: BTreeMap<ObjectId, (WorldPose, bool)>,
+    /// The last display frame's time, and the newest [`PERIOD_SAMPLES`] intervals between display frames, ns: the
+    /// measured display period that Present's cap adds (render.md 7).
+    last_display: Option<HostTime>,
+    periods: VecDeque<i64>,
+    /// Their median, clamped ([`DisplayLayer::display_period`]): computed once a display frame in `measure`, since
+    /// every resolve reads it (@shader-reviewer's Low on 197fc122).
+    period: Duration,
 }
+
+/// How many display intervals the measured period is the median of: a median of 15 shrugs off a first frame and up
+/// to 7 hitches (render.md 7, @ballpit-viz).
+const PERIOD_SAMPLES: usize = 15;
+/// The plausible display periods, ns: 240 Hz to 40 Hz, about 4-25 ms. The measured period is clamped to them, so a
+/// stall never inflates Present's cap past what a headset or monitor runs at (@coordinator-opus).
+const PERIOD_MIN_NS: i64 = 1_000_000_000 / 240;
+const PERIOD_MAX_NS: i64 = 1_000_000_000 / 40;
 
 /// What one display frame resolves against.
 pub struct FrameInput<'a> {
@@ -275,6 +307,47 @@ impl DisplayLayer {
             gap: false,
             gap_open: false,
             gap_drawn: BTreeMap::new(),
+            last_display: None,
+            periods: VecDeque::new(),
+            period: Duration::from_nanos(PERIOD_MAX_NS.unsigned_abs()),
+        }
+    }
+
+    /// The measured display period: the median of the newest intervals between display frames, clamped to 240-40 Hz.
+    /// Before the first interval, the clamp's top: the first frames' cap is generous rather than tight.
+    pub fn display_period(&self) -> Duration {
+        self.period
+    }
+
+    /// The drawn-time rule in force. Present's cap is the setting's (two simulation frames) plus the measured display
+    /// period: D2 resolves the previous view at the new display frame's drawn time, when it can be one simulation
+    /// frame, the publication delay and one display frame old. Capped at two frames alone, it would be clamped there
+    /// while the new view isn't, and steady motion would hitch wherever a display frame is longer than a simulation
+    /// frame (render.md 7; @coordinator-opus).
+    fn rule(&self) -> DrawnTime {
+        match self.settings.drawn_time {
+            DrawnTime::Present { l_max } => DrawnTime::Present { l_max: l_max + self.display_period() },
+            other => other,
+        }
+    }
+
+    /// Records a display frame's time for [`DisplayLayer::display_period`], after the frame, so every call within one
+    /// display frame (a batch's `take`s and its `frame`) uses the same cap.
+    fn measure(&mut self, now: HostTime) {
+        if let Some(last) = self.last_display
+            && now.0 > last.0
+        {
+            if self.periods.len() == PERIOD_SAMPLES {
+                self.periods.pop_front();
+            }
+            self.periods.push_back(now.0 - last.0);
+            let mut p: Vec<i64> = self.periods.iter().copied().collect();
+            p.sort_unstable();
+            let ns = p[p.len() / 2].clamp(PERIOD_MIN_NS, PERIOD_MAX_NS);
+            self.period = Duration::from_nanos(ns.unsigned_abs());
+        }
+        if self.last_display.is_none_or(|l| now.0 > l.0) {
+            self.last_display = Some(now);
         }
     }
 
@@ -298,7 +371,7 @@ impl DisplayLayer {
     fn resolve_in(&self, hist: &[&FrameView], id: ObjectId, t_draw: HostTime) -> (Option<WorldPose>, f64) {
         let subs = &self.substitutes;
         let pose_of = |v: &FrameView, o: &ViewObject| subs.get(&(o.id, v.frame)).copied().unwrap_or(WorldPose::of(o));
-        let r = resolve(&self.settings.drawn_time, hist, id, t_draw, &pose_of);
+        let r = resolve(&self.rule(), hist, id, t_draw, &pose_of);
         (r.pose, r.span)
     }
 
@@ -344,8 +417,8 @@ impl DisplayLayer {
         // The own hands' drawn poses first: held objects follow them.
         let mut hand_drawn: BTreeMap<ObjectId, WorldPose> = BTreeMap::new();
         let mut out = Vec::with_capacity(newest.objects.len());
-        let span = match self.settings.drawn_time {
-            DrawnTime::Extrapolate { l_max } => {
+        let span = match self.rule() {
+            DrawnTime::Extrapolate { l_max } | DrawnTime::Present { l_max } => {
                 let cap = l_max.as_secs_f64();
                 t_draw.secs_since(newest.sim_time).clamp(-cap, cap)
             }
@@ -393,6 +466,25 @@ impl DisplayLayer {
             }
             let st = self.objects.get_mut(&o.id).expect("state made above");
             st.last_drawn = Some(pose);
+            if std::mem::take(&mut st.contact_new) {
+                // The first contact: the drawn object against the nearest drawn own hand's sphere.
+                let gap = newest
+                    .objects
+                    .iter()
+                    .filter(|h| h.flags.contains(ViewFlags::OWN_HAND) && h.id != o.id)
+                    .map(|h| {
+                        let hp = hand_drawn.get(&h.id).copied().unwrap_or_else(|| WorldPose::of(h));
+                        offset_vec(pose.pos - hp.pos).length() - f64::from(o.radius) - f64::from(h.radius)
+                    })
+                    .reduce(f64::min);
+                if let Some(g) = gap {
+                    let c = &mut self.counters;
+                    c.own_contacts += 1;
+                    c.own_contact_gap_sum += g;
+                    c.own_contact_gap_min = Some(c.own_contact_gap_min.map_or(g, |m| m.min(g)));
+                    c.own_contact_gap_max = Some(c.own_contact_gap_max.map_or(g, |m| m.max(g)));
+                }
+            }
             let cue = st.cue.map(|c| {
                 let f = (1.0 - now.secs_since(c.start) / self.settings.t_cue.as_secs_f64()).clamp(0.0, 1.0) as f32;
                 Cue { outline: f, ghost: c.ghost, ghost_alpha: self.settings.ghost_alpha * f }
@@ -405,6 +497,7 @@ impl DisplayLayer {
             }
             objects.push(DrawnObject { id: o.id, pose, target, cue });
         }
+        self.measure(now);
         DisplayFrame { t_draw, span, view_age: now.secs_since(newest.sim_time), objects }
     }
 
@@ -440,13 +533,18 @@ impl DisplayLayer {
         let lost: Vec<ObjectId> =
             view.effects.iter().filter(|e| e.key.kind == EffectKind::GrabLost).map(|e| e.key.object).collect();
         let interpolating = matches!(self.settings.drawn_time, DrawnTime::InterpolateLate { .. });
+        let hands = own_hands(&view);
         for o in &view.objects {
             let own_now = is_own(o) && !self.settings.controls.correct_own;
             let corrected = o.flags.contains(ViewFlags::CORRECTED);
+            let touching = !is_own(o) && touches(o, &hands);
             let was = self.objects.get(&o.id).cloned();
             let st = self.objects.entry(o.id).or_default();
             let was_own = was.as_ref().is_some_and(|w| w.own);
             st.own = own_now;
+            // Kept until `frame` measures it: a batch's later view mustn't clear a first contact (@ballpit-viz).
+            st.contact_new |= touching && !st.in_contact;
+            st.in_contact = touching;
             if own_now {
                 // D4: a hold starting snaps to the hand; own objects never carry an offset.
                 st.components.clear();
@@ -481,7 +579,8 @@ impl DisplayLayer {
                     let subs = &self.substitutes;
                     let pose_of =
                         |v: &FrameView, x: &ViewObject| subs.get(&(x.id, v.frame)).copied().unwrap_or(WorldPose::of(x));
-                    let r = resolve(&self.settings.drawn_time, &old_hist, o.id, t_draw, &pose_of);
+                    let rule = self.rule();
+                    let r = resolve(&rule, &old_hist, o.id, t_draw, &pose_of);
                     (r.pose, r.span)
                 };
                 let Some(old_target) = old_target else { continue };
@@ -687,6 +786,22 @@ impl DisplayLayer {
             st.components.splice(0..2, [m]);
         }
     }
+}
+
+/// The own hands in `view`: id, simulated position and radius.
+fn own_hands(view: &FrameView) -> Vec<(ObjectId, Pos, f64)> {
+    view.objects
+        .iter()
+        .filter(|h| h.flags.contains(ViewFlags::OWN_HAND))
+        .map(|h| (h.id, h.pos, f64::from(h.radius)))
+        .collect()
+}
+
+/// Whether `o` (simulated) is within contact distance of one of `hands`.
+fn touches(o: &ViewObject, hands: &[(ObjectId, Pos, f64)]) -> bool {
+    hands
+        .iter()
+        .any(|&(id, pos, r)| id != o.id && offset_vec(o.pos - pos).length() <= f64::from(o.radius) + r + CONTACT_MARGIN)
 }
 
 fn is_own(o: &ViewObject) -> bool {

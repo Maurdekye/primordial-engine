@@ -26,8 +26,9 @@ Numbers marked [I] are starting values, tuned at the M1 headset test.
   per period [R: "work with whatever the runtime gives actually"].
 - **Camera-relative everything.** A position reaches the GPU only as `object Pos − camera Pos`, an f64 difference cast
   to f32 near the camera (world-model.md 4.2).
-- **The drawn time (X8) is a setting.** Extrapolate to the display time (default), or interpolate a little late. The
-  headset test judges them.
+- **The drawn time (X8) is a setting.** In VR, world objects are drawn at the engine's present (`Present`), never
+  extrapolated to the headset's display time [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]. The desktop extrapolates to its next present. Interpolating a little late stays as an override for
+  tests.
 
 ## 1. Scope
 
@@ -271,20 +272,53 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
   `HostTime`). The display runs at its own rate. **D8:** the same code serves any display rate against any simulation
   rate, and interpolation is never counted as a correction.
 - **The drawn time `t_draw`** for a display frame is a setting [X8, with @xr-eng]:
-  - **(a) Extrapolate (default):** `t_draw = display_time`. Each object is moved from the newest frame view by its
-    velocity (S5 carries linear and angular velocity, section 12). The extrapolation span is capped at `L_max`, the
-    measured display lead plus one simulation frame. This is design.md 18.3's rule and xr.md 7.2's proposal.
-  - **(b) Interpolate late:** `t_draw = display_time − D_render`, between the two frame views around it. Nothing is
-    drawn from a guess, but the world (not the head or the own hands) is that much late.
-- **What each costs, at the lead measured on Virtual Desktop** (38-63 ms p50-p95 [V M0]):
+  - **Present (VR's default)** [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]: `t_draw` is the host clock's `now` when the display frame is built, not the runtime's predicted
+    display time. Each object is moved from the newest frame view by its velocity over the view's age only (`now −
+    sim_time`, about 0-25 ms), capped at `L_max` = 2 simulation frames plus one display period in case a view is
+    late. It is never extrapolated by the headset's lead.
+    - **Why the display period is in the cap** [R coordinator, after @diverge-eng]: D2
+      resolves the previous view at the new display frame's `t_draw` (review M3). By then that view can be one
+      simulation period, the publish delay and one display period old: 29.2 ms at a 75 Hz simulation and a 72 Hz
+      display, past a 2-frame cap of 26.7 ms. The old prediction would be clamped and the new one not, and steady
+      motion would show a false change of prediction (0.93 mm at 75/72 [V, D8 test]; about 1.1 cm at 1.5 m/s at
+      120/72). The cap still guards a stalled view: nothing is extrapolated much past the newest one.
+    - **The display period** is measured by the layer from its own frames, so a first frame or a long hitch can't
+      inflate it: the median of its last 15 display-frame intervals, clamped to 4-25 ms (240-40 Hz) [I]. Until the
+      first interval it is the clamp's top, 25 ms. At a 60 Hz simulation on a 90 Hz headset the cap is about 44 ms.
+    - **In code** (`DrawnTime::Present { l_max }`): pe-render resolves it as (a) does. The contract is the caller's:
+      pe-app's VR sink passes the host's `now` as `LocalPresentation.display_time`, never a prediction, and the
+      blends, cues and effects run on that clock too. The eye cameras and `hands` keep OpenXR's predicted time. A
+      desktop window passes now plus one refresh, so on the desktop Present is (a). `L_max` comes from the world's
+      simulation rate (33 ms at 60 Hz) plus the measured display period.
+    - **The user's ruling, verbatim:** "i think you should just ignore all delays between the pc and headset, and
+      assume any latency there is just the responsibility of the individual vr user to manage with their particular
+      vr setup". So balls are drawn at the engine's present, the same moment as the user's hands are simulated
+      (@fable-reviewer's reading).
+    - **Head and hands are unchanged:** they still use OpenXR's predicted display time, late-latched (section 5).
+    - **Why not "(a) with `L_max` = 0":** that draws every object at the newest view's pose. D2 then compares two
+      histories whose newest poses differ by `v × dt` at every arrival, so plain motion becomes a change of
+      prediction on every tick: 8.3 cm at 5 m/s and 60 Hz, a cue at 6 m/s, and blending would leave a ball about
+      `v × T_blend / 2` behind (25 cm at 5 m/s). It also fails the D8 test below. Present extrapolates both histories
+      to the same `now` by their velocities, so steady motion gives the same pose from either, and D2 sees only real
+      misses, about a third the size of those at the 38-63 ms lead [I, by span].
+  - **(a) Extrapolate (the desktop's default):** `t_draw = display_time`. Each object is moved from the newest frame
+    view by its velocity (S5 carries linear and angular velocity, section 12). The extrapolation span is capped at
+    `L_max`, the measured display lead plus one simulation frame. This is design.md 18.3's rule and xr.md 7.2's
+    proposal; in VR, Present replaces it.
+  - **(b) Interpolate late (an override for tests):** `t_draw = display_time − D_render`, between the two frame views
+    around it. Nothing is drawn from a guess, but the world (not the head or the own hands) is that much late.
+  - **The rule and its numbers are a setting either way,** so a test or a headset comparison can pick any of the three.
+- **What each costs, at the lead measured on Virtual Desktop** (38-63 ms p50-p95 [V M0]). Present doesn't pay
+  either cost for the lead: the world is drawn as of the engine's present, and the lead is the VR user's to manage.
   - (a) draws a ball at 5 m/s up to 30 cm from where the next frame view puts it, when it hits something meanwhile.
     The display layer blends that miss exactly as a correction (D2), and **in-view misses above `E_cue` carry the
     cue and count** under the user's target [R coordinator, on review M2]: the player sees a jump the same way
     whatever caused it. `extrapolation_error` reports them apart as well.
   - (b) shows every object 40-60 ms or more after its simulated time.
   - Neither makes a pushed ball react sooner: the simulation hasn't seen the push yet.
-- **Counted either way** (for pe-xr's counters too): `t_draw − display_time`, the extrapolation span, the age of the
-  frame view drawn, and `extrapolation_error` under (a).
+- **Counted under every rule** (for pe-xr's counters too): `t_draw − display_time`, the extrapolation span, the age
+  of the frame view drawn, and `extrapolation_error` under (a) and Present. Under Present in VR the display time
+  passed in is now, so pe-app measures the lead itself: OpenXR's predicted display time minus now, per frame.
 - **Desktop:** the display time is the next present, estimated as now plus one refresh period; the same rule applies.
 - **The test of D8:** displays at 72, 90, 120 and 165 Hz against simulations at 60 Hz, 90 Hz and one odd rate in
   the range, in a fake clock. Each
@@ -679,23 +713,23 @@ On the gate, in pe-render, with a software adapter where a GPU is needed:
    - the two controls of section 8.
 2. **Effects:** a replayed key fires once; a retracted sustained effect stops; own effects play at once.
 3. **Rates (D8):** section 7's fake-clock test at 72/90/120/165 Hz displays against 60 Hz, 90 Hz and one odd
-   simulation rate in the range (e.g. 75 Hz), under both X8 rules. **Steady motion keeps a zero offset** (to float
+   simulation rate in the range (e.g. 75 Hz), under all three X8 rules. **Steady motion keeps a zero offset** (to float
    tolerance) across every frame-view arrival, at every rate pair (review M3).
 4. **Coordinates:** a scene placed at 10^15 m from the origin draws the same image as at the origin (pixels equal on
    one adapter), because only differences reach the GPU.
 5. **Capture:** an image of a known scene has the expected coverage and identical pixels twice; `visible_list` names
    the highlighted object; `capture_unavailable` without an adapter.
 6. **Against pe-harness scenarios** (with WS-harness): the counters of section 13 for every network scenario, and the
-   user's convergence target "no correction larger than a hand's width in view without a cue" over 20 seeds and 5
-   delays (plan M1 acceptance). Built as tests/ballpit.rs over pe-harness's ball-pit run (3 members, 48 balls, 6 s, a
-   push every 400 ms, one-way delays 10, 25, 50, 75 and 100 ms). Each member's views go through a `FrameSlot` and a
-   `Presenter` at 90 Hz, under X8 (a) and (b), each also with a 300 ms reader stall. The target is checked on the
-   display layer's counter and, independently, on the drawn output: no object in view moves more than `E_cue` in one
+   user's convergence target "no correction larger than a hand's width in view without a cue" over 20 seeds and 5 delays
+   (plan M1 acceptance). Built as tests/ballpit.rs over pe-harness's ball-pit run (3 members, 48 balls, 6 s, a push
+   every 400 ms, one-way delays 10, 25, 50, 75 and 100 ms). Each member's views go through a `FrameSlot` and a
+   `Presenter` at 90 Hz, under X8 (a), (b) and Present, each also with a 300 ms reader stall. The target is checked on
+   the display layer's counter and, independently, on the drawn output: no object in view moves more than `E_cue` in one
    display frame without a cue, except where its own views jump without `CORRECTED` (a push's edit, drawn as it
    happened). The quick form (1 seed) is on the gate; the full grid is `--ignored`, run in release.
 7. **By hand, on the headset** (each run with a go through @coordinator-opus): the frame time with 500 balls and one
-   remote hand at 60 ms; X8 (a) against (b); the cue's look; hand tracking enabled in Virtual Desktop first (the user
-   will).
+   remote hand at 60 ms; the cue's look; hand tracking enabled in Virtual Desktop first (the user will). X8 is now a single confirmation run under Present: swat, push slowly and catch, on the user's word
+   with SteamVR closed (coordinator).
 
 Golden images are compared within a tolerance, per adapter, because software and hardware rasterizers differ in their
 last bits [I].
@@ -706,14 +740,14 @@ For @coordinator-opus unless marked; my proposal first.
 
 | # | Point | Proposal |
 |---|---|---|
-| R1 (with @xr-eng) | X8, the drawn time | (a) extrapolate, capped at `L_max`, as the default; (b) as a setting; the headset test judges. Misses blend, cue and count either way (ruled, review M2) |
+| R1 (with @xr-eng) | X8, the drawn time | **Ruled** [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]: in VR, Present (`t_draw` = the engine's `now`, extrapolated by the view's age only, capped at 2 simulation frames plus one display period); never extrapolated to the headset's display time. The desktop keeps (a). (a) and (b) stay as overrides for tests. Misses blend, cue and count under every rule (ruled, review M2). Section 7 has why not `L_max` = 0 |
 | R2 (with @xr-eng) | Infinite far plane in VR's depth layer | Finite in VR (100 × rig scale [I]) until Virtual Desktop's runtime is shown to accept infinite |
 | R3 | Shadows in M1 | One shadow-casting key light; lamps unshadowed |
 | R4 | The graphics path and shader compiler | **Ruled** (on review M1): Vulkan first, with multiview; D3D12 with FXC, two passes, as the fallback; no shipped DXC |
 | R5 (WS-app) | The window's thread | **Decided** (app.md 3): pe-app's main thread runs winit and drives `DesktopView`; in VR the XR thread draws |
 | R6 | The correction cue's form | A 250 ms fading outline, plus a ghost at the old pose |
 | R7 | The desktop hand's controls | As section 9; revisited in the UI lab |
-| R8 (with @xr-eng) | Gravity in X8 (a)'s extrapolation | Measured [V, CPU test]: a falling ball (60 Hz simulation, 90 Hz display, 50 ms lead) misses by up to 1.14 cm a tick and is drawn up to 4.0 cm from its target, never with a cue. @shader-reviewer's suggestion: extrapolate unsupported dynamic bodies with the world's gravity, which needs the gravity vector or a flag in S5. Judged at the headset test |
+| R8 (with @xr-eng) | Gravity in X8 (a)'s extrapolation | Measured [V, CPU test]: a falling ball (60 Hz simulation, 90 Hz display, 50 ms lead) misses by up to 1.14 cm a tick and is drawn up to 4.0 cm from its target, never with a cue. @shader-reviewer's suggestion: extrapolate unsupported dynamic bodies with the world's gravity, which needs the gravity vector or a flag in S5. Under Present the span is the view's age (at most 2 frames), so the miss shrinks with it [I]. Judged at the headset test |
 | R9 | Known limits of the M1 scene | Metals read dark (no environment lighting); a mesh blob draws as its bounding stand-in; a box's outline may crack at corners (section 6) |
 | R10 | Notices (8.1): told when final, or at once | **Ruled**: when final. Never a notice for a grab won after the replay; costs the cut lag plus finality (about 0.3-0.6 s [I], measured in the test-6 run) |
 | R11 | Notices (8.1) in the headset | **Ruled**: head-locked for M1, 1 m ahead, 20° down; the lazy-follow panel is a mode switchable in the headset, for the user to compare at the headset test |

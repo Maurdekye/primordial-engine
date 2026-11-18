@@ -89,17 +89,31 @@ struct Mode {
     stall: bool,
 }
 
-fn modes() -> [Mode; 4] {
+impl Mode {
+    /// The display time the caller passes at `t` (now): Present's caller passes now itself (render.md 7); the others
+    /// the desktop's, now plus one refresh (lib.rs, LocalPresentation).
+    fn display_time(&self, t: Nanos, period: Nanos) -> HostTime {
+        match self.settings.drawn_time {
+            DrawnTime::Present { .. } => HostTime(t as i64),
+            _ => HostTime((t + period) as i64),
+        }
+    }
+}
+
+fn modes() -> [Mode; 6] {
     let a = DisplaySettings::default();
     let b = DisplaySettings {
         drawn_time: DrawnTime::InterpolateLate { d_render: Duration::from_millis(50) },
         ..Default::default()
     };
+    let present = DisplaySettings { drawn_time: DrawnTime::present(60), ..Default::default() };
     [
         Mode { name: "X8 (a), the default", settings: a, stall: false },
         Mode { name: "X8 (b)", settings: b, stall: false },
         Mode { name: "X8 (a), reader stalled 300 ms at 3 s", settings: a, stall: true },
         Mode { name: "X8 (b), reader stalled 300 ms at 3 s", settings: b, stall: true },
+        Mode { name: "X8 Present (VR's default)", settings: present, stall: false },
+        Mode { name: "X8 Present, reader stalled 300 ms at 3 s", settings: present, stall: true },
     ]
 }
 
@@ -205,8 +219,7 @@ fn display_run(
             }
             expected = batch.end();
         }
-        // The desktop's display time: now plus one refresh (lib.rs, LocalPresentation).
-        let display_time = HostTime((t + period) as i64);
+        let display_time = mode.display_time(t, period);
         let local = LocalPresentation { display_time, hands: [None, None] };
         let Some(frame) = presenter.frame_batch(&batch, &local, std::slice::from_ref(camera)) else {
             t += period;
