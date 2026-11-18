@@ -4,10 +4,10 @@ mod common;
 
 use common::{Lie, Net, key, obj, oid, spread};
 use pe_diverge::msg::Msg;
-use pe_diverge::{Action, Config, CvState, FaultBundle};
+use pe_diverge::{Action, Config, CvState, FaultBundle, Join};
 use pe_seams::{
-    CutRef, DivergeEvent, Frame, Hash, ImportError, LeafKey, LineId, MemberKey, ObjectId, Replica, Rung, SignedEntry,
-    SimRate,
+    CutRef, DivergeEvent, FinalCut, Frame, Hash, ImportError, LeafKey, LineId, MemberKey, ObjectId, Replica, Rung,
+    SignedEntry, SimRate,
 };
 use std::time::Duration;
 
@@ -935,4 +935,80 @@ fn failures_whose_key_keeps_changing_stop_after_n_stuck_any() {
         net.step();
     }
     assert_eq!(net.peers[VICTIM].d.counters().repairs_stuck, 1);
+}
+
+/// A joiner at a final cut `E` (divergence.md 4.4): the victim stands for a machine that holds nothing right (its
+/// history trimmed from frame 0), no cut is decided after `E`, and it calls only `tick` and `receive` (the Net's
+/// delivery) until the join ends.
+fn joining_net(objects: u128) -> (Net, FinalCut) {
+    let mut net = Net::new(3, objects, &[]);
+    net.run(20);
+    let e = net.peers[0].src.final_cut.clone().expect("a final cut by frame 20");
+    // No cut after E: at n = 2 nothing in the new epoch is final until the joiner votes (@engine-architect).
+    net.cut_every = u64::MAX;
+    net.peers[VICTIM].r.trim_from(0);
+    (net, e)
+}
+
+#[test]
+fn a_joiner_imports_e_whole_and_nothing_counts_as_a_divergence() {
+    let (mut net, e) = joining_net(40);
+    let now = net.now();
+    let v = &mut net.peers[VICTIM];
+    v.d.join(&e, key(0), &mut v.r, now);
+    assert_eq!(v.d.join_state(), Some(&Join::Joining { cut: e.cut.at }));
+    net.run(30);
+    let v = &mut net.peers[VICTIM];
+    assert_eq!(v.d.join_state(), Some(&Join::Joined { cut: e.cut.at }));
+    let c = v.d.counters().clone();
+    assert_eq!((c.joins, c.join_failures), (1, 0), "{c:?}");
+    assert_eq!(c.cured_by_rung, [0; 5], "a join is no cure: {c:?}");
+    assert_eq!((c.damaged, c.rung_failures, c.bundles_written, c.root_splits), (0, 0, 0, 0), "{c:?}");
+    assert!(v.events.is_empty(), "a join emits no trace event: {:?}", v.events);
+    assert!(!v.actions.iter().any(|a| matches!(a, Action::WriteBundle(_))), "no bundle");
+    let imp = v.r.imports.last().expect("an import");
+    assert!(imp.absent.is_empty(), "nothing is named absent from empty");
+    assert_eq!(imp.records.len(), 40 + 2 + 1, "every object of E's state, both tables and the config");
+    assert!(imp.physics.is_some());
+    assert_eq!(v.d.verified_cut(), Some((e.cut.at, e.root)), "Cv starts at E");
+    assert!(net.converged());
+    assert!(net.imported_only_truth(VICTIM, 0));
+}
+
+#[test]
+fn a_join_whose_sources_are_all_silent_fails_and_is_never_counted_toward_the_stop() {
+    let (mut net, e) = joining_net(10);
+    for i in 0..3 {
+        if i != VICTIM {
+            net.peers[i].silent = true;
+        }
+    }
+    let now = net.now();
+    let v = &mut net.peers[VICTIM];
+    v.d.join(&e, key(1), &mut v.r, now);
+    net.run(600);
+    let v = &net.peers[VICTIM];
+    assert!(matches!(v.d.join_state(), Some(Join::Failed { cut, .. }) if *cut == e.cut.at), "{:?}", v.d.join_state());
+    let c = v.d.counters();
+    assert_eq!((c.joins, c.join_failures, c.rung_failures, c.repairs_stuck), (0, 1, 0, 0), "{c:?}");
+    assert!(v.events.iter().all(|e| !matches!(e, DivergeEvent::RungFailed { .. })), "{:?}", v.events);
+}
+
+#[test]
+fn a_join_the_replica_refuses_fails_without_stopping_the_ladder() {
+    let (mut net, e) = joining_net(10);
+    net.peers[VICTIM].r.refuse = Some(ImportError::NotKept);
+    let now = net.now();
+    let v = &mut net.peers[VICTIM];
+    v.d.join(&e, key(0), &mut v.r, now);
+    net.run(60);
+    let v = &net.peers[VICTIM];
+    assert!(
+        matches!(v.d.join_state(), Some(Join::Failed { why, .. }) if why.contains("no longer kept")),
+        "{:?}",
+        v.d.join_state()
+    );
+    let c = v.d.counters();
+    assert_eq!((c.join_failures, c.repairs_stuck, c.rung_failures), (1, 0, 0), "{c:?}");
+    assert!(!v.d.is_repairing());
 }

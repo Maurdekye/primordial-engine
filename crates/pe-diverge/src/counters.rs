@@ -45,4 +45,7 @@ pub struct Counters {
     pub serve_refused: u64,
     /// Messages not sent because they broke a codec limit (nothing is truncated).
     pub encode_refused: u64,
+    /// Joins from a final cut whose import matched its certified root, and joins that failed ([`crate::Join`]).
+    pub joins: u64,
+    pub join_failures: u64,
 }
