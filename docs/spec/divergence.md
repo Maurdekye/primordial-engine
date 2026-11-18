@@ -384,8 +384,17 @@ a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named abs
      asks the replica for its root at the cut (S2 `root_at_cut`), which holds that root's state again: a replay
      forgets the votes that kept it, and the reference must still serve it when a rung 2 toward it asks, which can
      be before the reference's own pick has asked (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t).
+     If it answers `Pending`, it is asked again each tick. While the member cannot serve that root yet, its replay
+     still running or its root still `Pending`, it answers a request for it `Busy` for `t_peer`, not `NotHeld`: at
+     `n = 2` the reference is a rung 2's only source, and a `NotHeld` would fail the rung (@design-reviewer's L1, L2).
      A replay or repair that a root split at a newer cut overtakes is no failure: the work moves to the newer split,
      `Diverge::notes` says so for the log, and `split_overtook` counts it (a join's import still fails the join, 4.5).
+     **The split cut is pinned** (agreement.md L4'; @coordinator-opus m41fca3b846ab): agreement re-proposes the
+     split block's cut unchanged, frame and heads, until its height is certified, and in each such view casts every
+     member's newest root for that cut again, its revote included, without a new self-test report. So the episode
+     stays one, however many views a repair lasts, and the curing revote lands on the cut it was taken at. Gauges:
+     `split_overtaken_in_a_row` (0 while the cut is pinned) and `split_reports` / `split_reports_max`, the
+     `RootSplit` reports an episode took, one per view that split again plus one per newly shown verdict.
   2. Every member **runs the physics self-test** for the split, once per episode, rather than reading its last
      result. Its verdict names the split cut (S3 v1.3 `SelfTest::{Passed, Failed} { split }`) and is final for the
      split: a second, different verdict from one member for one split is equivocation, which agreement shows as

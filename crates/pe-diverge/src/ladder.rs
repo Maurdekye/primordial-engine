@@ -376,6 +376,8 @@ pub struct Diverge {
     events: Vec<DivergeEvent>,
     /// Plain information for the log that is no seam event (`notes`).
     notes: Vec<String>,
+    /// A split cut whose root `root_at_cut` answered `Pending` after the step-1 replay: asked again in `tick`.
+    reask: Option<Cut>,
     actions: Vec<Action>,
     out: Vec<Outgoing>,
     #[cfg(feature = "mutants")]
@@ -412,6 +414,7 @@ impl Diverge {
             counters: Counters::default(),
             events: Vec::new(),
             notes: Vec::new(),
+            reask: None,
             actions: Vec::new(),
             out: Vec::new(),
             #[cfg(feature = "mutants")]
@@ -580,6 +583,8 @@ impl Diverge {
                 self.pending = None;
                 if let Some(ep) = self.episode.take() {
                     self.counters.root_splits_ended += 1;
+                    self.counters.split_overtaken_in_a_row = 0;
+                    self.counters.split_reports = 0;
                     self.events.push(DivergeEvent::RootSplitEnded { cut: ep.cut.at });
                 }
                 return;
@@ -658,6 +663,7 @@ impl Diverge {
                 reported: false,
             });
             self.counters.root_splits += 1;
+            self.count_split_report(true);
             self.events.push(DivergeEvent::RootSplitStarted { cut: cut.at });
             self.actions.push(Action::RunSelfTest { cut: cut.at });
             // A replay or repair toward an older cut is overtaken: this cut is newer, and the split is what matters.
@@ -671,6 +677,7 @@ impl Diverge {
                     self.fail(rung, at, "overtaken by a root split");
                 } else {
                     self.counters.split_overtook += 1;
+                    self.counters.split_overtaken_in_a_row += 1;
                     let again = if at.height == cut.at.height { " (its height proposed again)" } else { "" };
                     self.notes.push(format!(
                         "rung {rung} at {at:?} overtaken by the root split at {:?}{again}; continuing there",
@@ -683,10 +690,18 @@ impl Diverge {
             return;
         }
         // The same split again, with newer standings: they supersede the old, and the latch only grows.
+        self.count_split_report(false);
         let ep = self.episode.as_mut().expect("checked above");
         ep.roots = roots.to_vec();
         split::latch(&cut.at, roots, &mut ep.failed);
         self.try_pick(replica, source, now);
+    }
+
+    /// One more `RootSplit` report for the episode: the first starts the gauge again.
+    fn count_split_report(&mut self, first: bool) {
+        let c = &mut self.counters;
+        c.split_reports = if first { 1 } else { c.split_reports + 1 };
+        c.split_reports_max = c.split_reports_max.max(c.split_reports);
     }
 
     /// Steps 2-4, once step 1's replay is done: choose the reference when every member can choose the same one (5,
@@ -748,6 +763,12 @@ impl Diverge {
         if self.replay.is_some() {
             self.poll_replay(replica, source, now, clock);
         }
+        if let Some(cut) = self.reask.take()
+            && self.episode.as_ref().is_some_and(|e| e.cut.at == cut.at)
+            && replica.root_at_cut(&cut, source) == Err(RootError::Pending)
+        {
+            self.reask = Some(cut);
+        }
         if matches!(self.repair.as_ref().map(|r| &r.phase), Some(Phase::Importing { .. })) {
             self.try_import(replica, source, now, clock);
         }
@@ -807,7 +828,7 @@ impl Diverge {
                             self.serve(from, Msg::NodeReply { cut, root, nodes });
                         }
                     }
-                    None => self.send(from, Msg::NotHeld { cut, root }),
+                    None => self.not_held(from, cut, root),
                 }
             }
             Msg::RecordRequest { cut, root, keys } => {
@@ -842,7 +863,7 @@ impl Diverge {
                             self.serve(from, Msg::RecordReply { cut, root, records, blobs });
                         }
                     }
-                    None => self.send(from, Msg::NotHeld { cut, root }),
+                    None => self.not_held(from, cut, root),
                 }
             }
             Msg::PhysicsRequest { cut, root } => {
@@ -857,10 +878,13 @@ impl Diverge {
                     self.send(from, Msg::NotHeld { cut, root });
                     return Ok(());
                 }
-                self.physics_served.insert((from, root), now);
                 match replica.physics_image(&root) {
-                    Some(image) => self.serve(from, Msg::PhysicsReply { cut, root, image }),
-                    None => self.send(from, Msg::NotHeld { cut, root }),
+                    Some(image) => {
+                        // Counted as served only when it is: a `Busy` while replaying is asked again soon.
+                        self.physics_served.insert((from, root), now);
+                        self.serve(from, Msg::PhysicsReply { cut, root, image });
+                    }
+                    None => self.not_held(from, cut, root),
                 }
             }
             reply => {
@@ -913,7 +937,10 @@ impl Diverge {
     /// for a root not served, `Busy` with the wait for a peer over its budget. A refusal is counted.
     fn may_serve(&mut self, peer: MemberKey, cut: CutRef, root: Hash, now: HostTime) -> bool {
         let answer = if !self.servable.contains_key(&root) {
-            Serve::NotHeld
+            match self.replaying_retry_us(&root) {
+                Some(us) => Serve::Busy(us),
+                None => Serve::NotHeld,
+            }
         } else {
             let (burst, rate) = (self.cfg.serve_burst_bytes, self.cfg.serve_rate);
             let b = self.buckets.entry(peer).or_insert_with(|| Bucket::full(burst, now));
@@ -930,6 +957,31 @@ impl Diverge {
         }
         self.counters.serve_refused += 1;
         false
+    }
+
+    /// The answer for a root this member does not hold now: `NotHeld`, or `Busy` while it is replaying toward it.
+    fn not_held(&mut self, peer: MemberKey, cut: CutRef, root: Hash) {
+        match self.replaying_retry_us(&root) {
+            Some(retry_after_us) => {
+                self.counters.serve_refused += 1;
+                self.send(peer, Msg::Busy { cut, root, retry_after_us });
+            }
+            None => self.send(peer, Msg::NotHeld { cut, root }),
+        }
+    }
+
+    /// While a root split's step-1 replay runs, my root at the split cut is not held (the replay drops the history
+    /// after `Cv` and reaches the cut again only when it ends), but a rung 2 toward me may already ask for it, the
+    /// root I voted there. Likewise after the replay, while `root_at_cut` is still `Pending` (`reask`). It is `Busy`
+    /// for `t_peer`, not `NotHeld`, which at n = 2 would fail the rung on its only source (5, step 1; @design-reviewer's
+    /// L1 and L2 on a49dd778).
+    fn replaying_retry_us(&self, root: &Hash) -> Option<u64> {
+        let ep = self.episode.as_ref()?;
+        let replaying = self.replay.as_ref().is_some_and(|r| r.final_cut.is_none() && r.cut.at == ep.cut.at)
+            && ep.roots.iter().any(|(h, v)| h == root && v.iter().any(|x| x.0 == self.me));
+        let asking =
+            self.reask.as_ref().is_some_and(|c| c.at == ep.cut.at) && self.servable.get(root) == Some(&ep.cut.at);
+        (replaying || asking).then(|| u64::try_from(self.cfg.t_peer.as_micros()).unwrap_or(u64::MAX))
     }
 
     /// Send a reply that serves a request, and take its bytes from the peer's bucket.
@@ -999,8 +1051,11 @@ impl Diverge {
                 // could not run. Nothing moves Cv here; the cut is not final.
                 // Either way my root at the cut is asked of the replica: a replay forgets its votes, and a reference
                 // must still hold the root it serves at the split's cut (4.1) when a repair toward it asks.
-                let held = replica.root_at_cut(&rp.cut, source).ok();
-                let root = result.ok().or(held);
+                let held = replica.root_at_cut(&rp.cut, source);
+                // Asked again each tick while it is `Pending` (S2 v1.1), so the hold is not lost (@design-reviewer's
+                // L1 on a49dd778).
+                self.reask = (held == Err(RootError::Pending)).then(|| rp.cut.clone());
+                let root = result.ok().or(held.ok());
                 if let Some(root) = root {
                     self.servable.insert(root, rp.cut.at);
                     self.actions.push(Action::Revote { cut: rp.cut.at, root });

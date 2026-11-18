@@ -38,6 +38,14 @@ pub struct Counters {
     /// A replay or repair under way when a root split at a newer cut arrived, a re-proposal of the same height
     /// included (agreement.md L4'). The split is what matters, so the work moves there: no failure, a note (5).
     pub split_overtook: u64,
+    /// Split replays or repairs overtaken in a row since the last split episode ended: a gauge, not a total
+    /// (@fable-reviewer). With the split cut pinned (agreement.md L4') it stays at 0 at n = 2.
+    pub split_overtaken_in_a_row: u64,
+    /// `RootSplit` reports for the open episode's cut, the first included: one per view that re-proposed the pinned
+    /// cut and split again, plus one per newly shown verdict. A gauge for the open episode; `split_reports_max` keeps
+    /// the most any episode took (@coordinator-opus m41fca3b846ab, point 2).
+    pub split_reports: u64,
+    pub split_reports_max: u64,
     pub root_splits_ended: u64,
     pub bundles_written: u64,
     /// Messages from peers that did not decode.
