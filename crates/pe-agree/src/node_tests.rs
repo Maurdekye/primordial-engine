@@ -132,6 +132,20 @@ struct Sim {
     near_cap_frames: Vec<usize>,
     /// Count range refetches each member sends for this chain (decodes protocol messages; off by default).
     count_ranges: Option<pe_seams::ChainId>,
+    /// (members, from frame, until ms): those members vote a wrong root for every cut at or past the frame until the
+    /// time (a persistent divergence, repaired then), and the right one after.
+    wrong_root: Option<(Vec<usize>, u64, i64)>,
+    /// Vote as pe-replica's driver and pe-diverge do: each cut once with the root it has; once a member sees a split of
+    /// it, once more with its self-test verdict (a report: Failed for a member in `wrong_root`, Passed otherwise); and
+    /// once more when its root for a cut it voted changes (the repair's revote). Never again per view.
+    vote_once: bool,
+    /// Per member: the root it last gave each cut, and the split cuts it sent a verdict for.
+    given: Vec<BTreeMap<CutRef, Hash>>,
+    verdict_sent: Vec<Vec<CutRef>>,
+    /// Self-test reports each member sent (every copy).
+    reports_sent: Vec<usize>,
+    /// Per member: each cut it was asked to root, by its CutRef.
+    cuts_seen: Vec<BTreeMap<CutRef, Cut>>,
     /// (member, from ms): the first block fetch that member sends from then on is lost, every copy of it.
     lose_fetch: Option<(usize, i64)>,
     /// When that fetch was sent (ns), and the id it asked for.
@@ -212,6 +226,12 @@ impl Sim {
             near_cap_frames: vec![0; n as usize],
             count_ranges: None,
             lose_fetch: None,
+            wrong_root: None,
+            vote_once: false,
+            given: vec![BTreeMap::new(); n as usize],
+            verdict_sent: vec![Vec::new(); n as usize],
+            reports_sent: vec![0; n as usize],
+            cuts_seen: vec![BTreeMap::new(); n as usize],
             lost_fetch: None,
             range_asks: vec![0; n as usize],
             edit_every: vec![0; n as usize],
@@ -243,6 +263,11 @@ impl Sim {
                 self.range_asks[i] += 1;
             }
             let j = (0..self.nodes.len()).find(|&j| self.keys.key(j) == o.to).unwrap();
+            if o.lane == Lane::Protocol
+                && matches!(crate::codec::decode(&o.bytes), Ok(crate::codec::Wire::Core(crate::core::Msg::Report(_))))
+            {
+                self.reports_sent[i] += 1;
+            }
             if let Some((k, from)) = self.lose_fetch
                 && i == k
                 && self.now >= from * MS
@@ -385,6 +410,14 @@ impl Sim {
         }
         let out = self.nodes[i].tick(now, &clock);
         self.deliver_out(i, out);
+        if self.vote_once {
+            self.vote_as_driver(i);
+            let out = self.nodes[i].tick(now, &clock);
+            self.deliver_out(i, out);
+            let ev = self.nodes[i].events();
+            self.events[i].extend(ev);
+            return;
+        }
         for cut in self.nodes[i].wants_roots() {
             let from = self.nodes[i].final_cut().map_or(Frame(0), |c| c.cut.at.frame);
             let answer = (from.0..cut.at.frame.0)
@@ -398,14 +431,92 @@ impl Sim {
             if !self.rooted[i].iter().any(|(c, _)| *c == cut) {
                 self.rooted[i].push((cut.clone(), answer));
             }
-            let first = self.nodes[i].vote(&cut.at, root(&cut), SelfTest::NotRun);
-            let again = self.nodes[i].vote(&cut.at, root(&cut), SelfTest::NotRun);
+            let mut r = root(&cut);
+            if let Some((who, from, until)) = &self.wrong_root
+                && who.contains(&i)
+                && cut.at.frame.0 >= *from
+                && self.now < until * MS
+            {
+                r.0[0] ^= 1;
+            }
+            let first = self.nodes[i].vote(&cut.at, r, SelfTest::NotRun);
+            let again = self.nodes[i].vote(&cut.at, r, SelfTest::NotRun);
             self.vote_results.push((first, again));
         }
         let out = self.nodes[i].tick(now, &clock);
         self.deliver_out(i, out);
         let ev = self.nodes[i].events();
         self.events[i].extend(ev);
+    }
+
+    /// The root member `i` computes for `cut` now (`wrong_root`).
+    fn root_now(&self, i: usize, cut: &Cut) -> Hash {
+        let mut r = root(cut);
+        if let Some((who, from, until)) = &self.wrong_root
+            && who.contains(&i)
+            && cut.at.frame.0 >= *from
+            && self.now < until * MS
+        {
+            r.0[0] ^= 1;
+        }
+        r
+    }
+
+    /// `vote_once`'s voting: see the field.
+    fn vote_as_driver(&mut self, i: usize) {
+        let wrong = self.wrong_root.as_ref().is_some_and(|(who, _, _)| who.contains(&i));
+        let verdict = |cut: CutRef, sent: &Vec<CutRef>| {
+            if !sent.contains(&cut) {
+                SelfTest::NotRun
+            } else if wrong {
+                SelfTest::Failed { split: cut }
+            } else {
+                SelfTest::Passed { split: cut }
+            }
+        };
+        for cut in self.nodes[i].wants_roots() {
+            self.cuts_seen[i].entry(cut.at).or_insert_with(|| cut.clone());
+            if self.given[i].contains_key(&cut.at) {
+                continue;
+            }
+            let r = self.root_now(i, &cut);
+            let v = verdict(cut.at, &self.verdict_sent[i]);
+            let _ = self.nodes[i].vote(&cut.at, r, v);
+            self.given[i].insert(cut.at, r);
+        }
+        // A split seen: the self-test's verdict, once (a report).
+        let splits: Vec<CutRef> = self.events[i]
+            .iter()
+            .filter_map(|e| if let AgreeEvent::RootSplit { cut, .. } = e { Some(*cut) } else { None })
+            .collect();
+        for c in splits {
+            if self.verdict_sent[i].contains(&c) {
+                continue;
+            }
+            let Some(&r) = self.given[i].get(&c) else { continue };
+            self.verdict_sent[i].push(c);
+            let v = verdict(c, &self.verdict_sent[i]);
+            let _ = self.nodes[i].vote(&c, r, v);
+        }
+        // The repair's revote: a cut whose root this member now computes differently, once.
+        let changed: Vec<(CutRef, Hash)> = self.given[i]
+            .iter()
+            .filter_map(|(c, r)| {
+                let cut = self.rooted_cut(i, c)?;
+                let now = self.root_now(i, &cut);
+                (now != *r).then_some((*c, now))
+            })
+            .collect();
+        for (c, r) in changed {
+            let v = verdict(c, &self.verdict_sent[i]);
+            let _ = self.nodes[i].vote(&c, r, v);
+            self.given[i].insert(c, r);
+        }
+    }
+
+    /// The full cut member `i` was asked to root for `at` (kept by `vote_once` through `rooted`).
+    fn rooted_cut(&self, i: usize, at: &CutRef) -> Option<Cut> {
+        self.cuts_seen[i].get(at).cloned()
     }
 
     fn run(&mut self, until_ms: i64) {
@@ -988,6 +1099,79 @@ fn a_member_cut_off_while_the_others_go_on_catches_up_on_the_final_log() {
     assert!(s.final_frame(1).0 > behind.0 + 60, "member 1 stuck at {behind:?}");
     let n = s.assert_same_final_log();
     assert!(n >= 100, "only {n} final entries");
+}
+
+#[test]
+fn a_repair_longer_than_16_views_certifies_the_pinned_cut() {
+    // Coordinator m72cbd9a9f47f (@diverge-eng's trial m218ed0cdea8b): a driver votes each cut once, and a revote after
+    // a repair is answered AlreadyVotedThisView, so with the pin alone nobody votes in the pinned views and the split
+    // never certifies. pe-agree casts each member's newest root again on every pinned re-proposal, without a report.
+    // n = 2, member 1's root wrong from frame 120 until 5 s (about 30 split views), voting as the driver does.
+    let mut s = Sim::new(2, 43);
+    s.vote_once = true;
+    s.wrong_root = Some((vec![1], 120, 5_000));
+    s.run(9_000);
+    let mut split_cuts: Vec<CutRef> = Vec::new();
+    for e in s.events.iter().flatten() {
+        if let AgreeEvent::RootSplit { cut, .. } = e
+            && !split_cuts.contains(cut)
+        {
+            split_cuts.push(*cut);
+        }
+    }
+    assert_eq!(split_cuts.len(), 1, "one split cut: {split_cuts:?}");
+    let split = split_cuts[0];
+    let recasts: Vec<u64> = s.nodes.iter().map(|x| x.recasts()).collect();
+    assert!(recasts.iter().all(|&r| r > 16), "the repair spans more than 16 pinned views: recasts {recasts:?}");
+    for i in 0..2 {
+        let finals: Vec<CutRef> = s.events[i]
+            .iter()
+            .filter_map(|e| if let AgreeEvent::CutFinal { cut, .. } = e { Some(*cut) } else { None })
+            .collect();
+        assert!(finals.contains(&split), "member {i} never finalized the split cut {split:?}");
+        assert!(s.final_frame(i).0 > split.frame.0 + 60, "member {i} stopped at {:?}", s.final_frame(i));
+    }
+    // One verdict each, relayed once by the other: never one per pinned view.
+    assert!(s.reports_sent.iter().all(|&n| n <= 2), "reports sent {:?}", s.reports_sent);
+    assert!(s.reports_sent.iter().sum::<usize>() >= 2, "no verdict reported: {:?}", s.reports_sent);
+    s.assert_same_final_log();
+}
+
+#[test]
+fn a_root_split_pins_its_cut_until_the_height_is_certified() {
+    // L4', coordinator mff2b493b8111: after a root split the leader proposes the split cut again, frame and heads, so a
+    // repair's revote for that cut lands, and the split is one episode (one cut), however many views the repair takes.
+    // n = 2 with member 1 diverged; n = 4 with members 2 and 3 diverged (two against two: no root reaches q = 3).
+    for (n, wrong, seed) in [(2u32, vec![1usize], 41u64), (4, vec![2, 3], 42)] {
+        let mut s = Sim::new(n, seed);
+        // As pe-replica's driver and pe-diverge vote: each cut once, the verdict, and the repair's revote.
+        s.vote_once = true;
+        s.wrong_root = Some((wrong, 120, 3_500));
+        s.run(6_000);
+        let mut split_cuts: Vec<CutRef> = Vec::new();
+        for e in s.events.iter().flatten() {
+            if let AgreeEvent::RootSplit { cut, .. } = e
+                && !split_cuts.contains(cut)
+            {
+                split_cuts.push(*cut);
+            }
+        }
+        assert_eq!(split_cuts.len(), 1, "n = {n}: one split cut, not a new one per view: {split_cuts:?}");
+        let split = split_cuts[0];
+        for i in 0..n as usize {
+            let finals: Vec<CutRef> = s.events[i]
+                .iter()
+                .filter_map(|e| if let AgreeEvent::CutFinal { cut, .. } = e { Some(*cut) } else { None })
+                .collect();
+            assert!(
+                finals.contains(&split),
+                "n = {n}: member {i} never finalized the split cut {split:?}; finals at its height: {:?}",
+                finals.iter().filter(|c| c.height == split.height).collect::<Vec<_>>()
+            );
+            assert!(s.final_frame(i).0 > split.frame.0 + 60, "n = {n}: member {i} stopped at {:?}", s.final_frame(i));
+        }
+        s.assert_same_final_log();
+    }
 }
 
 #[test]
