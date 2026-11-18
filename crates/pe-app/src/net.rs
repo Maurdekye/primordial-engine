@@ -287,6 +287,8 @@ pub struct OpenParams {
 pub struct Session {
     pub me: MemberKey,
     pub members: Vec<MemberKey>,
+    /// The other members, whose links are up: the setup returns only then, and took their `LinkUp` itself.
+    pub linked: Vec<MemberKey>,
     pub handle: NetHandle,
     pub hook: MemberHook,
     pub replica: Box<dyn Replica>,
@@ -594,6 +596,7 @@ impl Endpoint {
         Ok(Session {
             me: self.me,
             hook: MemberHook::new(control, members.clone(), welcome),
+            linked: members.iter().copied().filter(|m| *m != self.me).collect(),
             members,
             handle: self.handle,
             replica,

@@ -295,6 +295,8 @@ pub struct Sim {
     /// The network (S4): pe-net's handle, or a test's in-process network. `None` is a world alone.
     net: Option<Box<dyn Transport + Send>>,
     net_hook: Option<Box<dyn NetHook>>,
+    /// The members whose links were up before the simulation started ([`Sim::with_linked`]).
+    linked: Vec<MemberKey>,
     /// S3's events, kept for a test or a diagnostic (`with_event_log`); otherwise only counted.
     event_log: Option<Arc<std::sync::Mutex<Vec<AgreeEvent>>>>,
     /// pe-api's ports (app.md 3.1), with what this loop keeps for them.
@@ -391,6 +393,7 @@ impl Sim {
             motion,
             net: None,
             net_hook: None,
+            linked: Vec::new(),
             event_log: None,
             api: None,
             leaving: Leaving::Staying,
@@ -427,6 +430,7 @@ impl Sim {
     pub fn with_api(mut self, ports: crate::api::Ports) -> Sim {
         assert!(self.local.is_some(), "pe-api's edit port needs this machine's member: with_local first");
         self.api = Some(ApiLoop { ports, edit_frame: None, voided: Vec::new(), confirmed: None });
+        self.seed_here();
         self
     }
 
@@ -437,6 +441,24 @@ impl Sim {
         self.net = Some(net);
         self.net_hook = hook;
         self
+    }
+
+    /// The members whose links were already up when the simulation started: the M1 interim's setup takes their
+    /// `LinkUp` itself (net.rs), so step 1 never sees it. pe-api's `here` (session_info) starts from them, and later
+    /// `LinkUp` and `LinkDown` events keep it current.
+    pub fn with_linked(mut self, linked: Vec<MemberKey>) -> Sim {
+        self.linked = linked;
+        self.seed_here();
+        self
+    }
+
+    /// pe-api's `here` for [`Sim::with_linked`]'s members, once both it and pe-api's ports are in place. pe-net's
+    /// link statistics can't stand in: they arrive every `STATS_EVERY`, so at startup they often say nothing yet.
+    fn seed_here(&self) {
+        let Some(api) = &self.api else { return };
+        for m in &self.linked {
+            api.ports.shared.link(*m, true);
+        }
     }
 
     /// The quit's bound, set locally (app.md 4): `None` follows the link ([`crate::leave::bound`]).

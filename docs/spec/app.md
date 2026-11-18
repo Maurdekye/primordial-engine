@@ -315,6 +315,11 @@ then arrive above the cuts' frames, are never void as late, and cost the receive
 5. **The replica:** a new world from the origin or a preset, an opened save (M5), or for a joiner the state at the
    newest final cut, fetched on the Bulk lane and imported (`import_at_cut`), then replayed to the present.
 6. **The simulation thread**, then the XR thread (VR) or the main thread's drawing (desktop), then the MCP transports.
+   **Headless** (`--headless`, for tests and machines without a display; @coordinator-opus mfc048d3b662f) makes no
+   GPU context, window or XR thread: the main thread waits in 100 ms slices until `--seconds` passes or the console
+   asks to quit, then runs the quit itself, as in VR. No hands move, since the desktop hand has no window to feed it.
+   Nothing draws, so there is no capture queue: view_capture answers `capture_unavailable` at once (api.md 8).
+   `--vr` and `--headless` exclude each other.
 
 **The M1 interim** (@coordinator-opus md61c5a56424e; pe-app's `net`, @shader-lang's, and `genesis`): pe-agree has no
 join from a cut yet, so the second machine becomes a member at genesis, and steps 4 and 5 run as one exchange.
@@ -373,7 +378,7 @@ with @fable-reviewer's refinements m2226c5aab7da, and m5bb3ed6ddcd5):
      (SIGINT, SIGTERM or SIGHUP on unix), runs this same shutdown, once, as the end of a run does. Before there is a
      shutdown to run (setting up, or the opener waiting for the reply code), it ends the process at once. In the
      window, the request runs it (a close event on a thread of its own), since the window can't be closed from
-     outside; in VR, the main thread waits in 100 ms slices and runs it. Windows ends a process about 5 s after a
+     outside; in VR and headless, the main thread waits in 100 ms slices and runs it. Windows ends a process about 5 s after a
      close event, and the bound above can be longer, so in either mode a close waits 4.5 s and then logs "leave cut
      short". What that leaves is what the bound passing leaves: if the `Leave` went out, the others see "<player>
      left before the session could confirm it" or "left the session."; if it didn't, "<player>'s connection
@@ -426,6 +431,15 @@ The demo is the plan's M1 sequence (docs/refound-plan.md section 1, M1), as one 
 pit and prints an invite; B joins on the desktop; both see and touch the balls; an agent on A edits the lamp script
 through MCP; B's lamp changes at the agreed frame. The script drives pe-app through its configuration and MCP only,
 so the same script is the two-process acceptance test.
+
+**The acceptance test** is `crates/pe-app/tests/demo.rs`: both machines run headless (section 4, step 6) on loopback,
+and each agent is the test binary again, launched by `--agent`. A's agent commits pe-logic's lamp, binds it to the
+preset's Lamp with the script's `Blink` and `Glow` (a period long enough that it stays on), waits for the warm glow,
+then commits a version that glows blue. B's agent reads B's own Lamp through B's MCP and finds the first blue frame
+among the kept ones: it must be `F + 2`, where `F` is the activation frame A's `mine` reports, and `F + 1` warm. The
+new code runs from `F + 1` (logic.md 6.2 step 3), and a snapshot at frame f is the state before f is stepped (3.1),
+so `F + 2` is the first state the new code wrote (@vdw-physics's reading of the first run with the bind fixed).
+Touch isn't in it: headless has no hands, so a person checks touch in the demo itself.
 
 **The commands** (the M1 interim, until the configuration of section 4 replaces them):
 - A: `pe-app --vr --open --advertise <A's address>:4433`. It prints an invite, then reads B's reply code on standard
@@ -499,7 +513,8 @@ final on either, though both keep simulating their predictions.
   tick no longer hold the view, in the model and with two pe-world members whose B reaches A 300 ms late; with them,
   a 10 s stall still never gives a tick more than the cap; and both members finalize the same roots and show the
   same objects once B's hands are still.
-- **Startup without a GPU:** headless capture works, so CI runs the two-process test.
+- **Startup without a GPU:** `--headless` makes no GPU context, so CI runs the two-process test (section 6). It
+  takes no captures: view_capture there answers `capture_unavailable`.
 - **Shutdown:** the leave reaches the other member, which pauses for zero frames.
 - **The two-process session** of section 6, on Windows and Linux.
 
