@@ -263,8 +263,9 @@ pub struct MockTree {
 }
 
 /// The inline-class simulation blob a named object's row references (world-model.md 3.4): a name, under 256 bytes.
+/// Padded to 200 bytes, so a reply's names weigh against its budget.
 pub fn name_of(id: u128) -> Bytes {
-    Bytes::from(format!("ball {id}").into_bytes())
+    Bytes::from(format!("ball {id:<195}").into_bytes())
 }
 
 impl Tree for MockTree {
