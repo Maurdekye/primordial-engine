@@ -22,4 +22,4 @@ pub mod split;
 pub use bundle::FaultBundle;
 pub use counters::Counters;
 pub use evidence::CvState;
-pub use ladder::{Action, Config, Diverge, Mutant};
+pub use ladder::{Action, Config, Diverge, Join, Mutant};

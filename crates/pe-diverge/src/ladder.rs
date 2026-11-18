@@ -302,6 +302,17 @@ impl Evidence {
     }
 }
 
+/// A join from a final cut (divergence.md 4.4, app.md 4): where this machine's whole-state fetch of `E` stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Join {
+    /// Fetching and importing `E`'s state.
+    Joining { cut: CutRef },
+    /// The replica holds `E`'s certified state: the embedding may start the driver.
+    Joined { cut: CutRef },
+    /// No source served it, or the replica could not take it; the embedding gives up or joins again at a newer cut.
+    Failed { cut: CutRef, why: String },
+}
+
 /// The ladder stopped (4.3).
 struct Stuck {
     /// Stopped by `n_stuck_any` (keys kept changing) or by a rate mismatch: only a cure starts it again. Otherwise a
@@ -340,6 +351,8 @@ pub struct Diverge {
     fails_any: u32,
     keys_seen: Vec<FailKey>,
     stuck: Option<Stuck>,
+    /// The join from a final cut, if one was asked ([`Diverge::join`]).
+    join: Option<Join>,
     /// Roots I serve: the agreed roots of recent final cuts, and my root at a cut in a root split.
     servable: BTreeMap<Hash, CutRef>,
     buckets: BTreeMap<MemberKey, Bucket>,
@@ -375,6 +388,7 @@ impl Diverge {
             fails_any: 0,
             keys_seen: Vec::new(),
             stuck: None,
+            join: None,
             servable: BTreeMap::new(),
             buckets: BTreeMap::new(),
             ask_buckets: BTreeMap::new(),
@@ -405,6 +419,30 @@ impl Diverge {
     /// The newest final cut whose root this machine matched.
     pub fn verified_cut(&self) -> Option<(CutRef, Hash)> {
         self.cv
+    }
+
+    /// Where a join asked with [`Diverge::join`] stands; `None` if none was.
+    pub fn join_state(&self) -> Option<&Join> {
+        self.join.as_ref()
+    }
+
+    /// Whether the rung-2 fetch under way is a join's.
+    fn joining(&self) -> bool {
+        matches!(self.join, Some(Join::Joining { .. }))
+    }
+
+    /// Joining at a final cut `e` (divergence.md 4.4): fetch `e`'s whole state, as rung 2 does for a `Damaged` cut,
+    /// from `inviter` first and then `e`'s other voters, and import it into the empty replica. Everything is verified
+    /// against `e`'s certified root, whichever peer serves it. This is no divergence: no evidence is captured, no
+    /// bundle is written, no episode opens, no trace event is emitted, the ladder's stop rule (4.3) never counts it,
+    /// and only `joins` / `join_failures` count it. [`Diverge::join_state`] says when it is done.
+    /// Until then the embedding runs no driver: it calls only [`Diverge::tick`] and [`Diverge::receive`], never
+    /// `on_final`. [`Diverge::is_repairing`] is true meanwhile; the replica publishes no view, so no health shows it.
+    pub fn join(&mut self, e: &FinalCut, inviter: MemberKey, replica: &mut dyn Replica, now: HostTime) {
+        self.join = Some(Join::Joining { cut: e.cut.at });
+        let mut sources = vec![inviter];
+        sources.extend(e.voters.iter().map(|v| v.0).filter(|v| *v != inviter));
+        self.start_rung2(e.cut.clone(), Some(e.clone()), e.root, sources, None, replica, now);
     }
 
     pub fn is_repairing(&self) -> bool {
@@ -1037,7 +1075,9 @@ impl Diverge {
         replica: &mut dyn Replica,
         now: HostTime,
     ) {
-        self.events.push(DivergeEvent::RungStarted { cut: cut.at, rung: Rung(2) });
+        if !self.joining() {
+            self.events.push(DivergeEvent::RungStarted { cut: cut.at, rung: Rung(2) });
+        }
         // Diff against an honest tree: rehash mine first; a stale cache would hide damage (4.2, step 2).
         // No node cap: a node is taken only if asked for, once, and hashing to what its checked parent named, so the
         // descent never takes more nodes than the target tree has (@design-reviewer, re-review Medium).
@@ -1046,7 +1086,7 @@ impl Diverge {
             None => false,
         };
         let mut sources: Vec<MemberKey> = voters.iter().copied().filter(|v| *v != self.me).collect();
-        if final_cut.is_some() {
+        if final_cut.is_some() && !self.joining() {
             let n = sources.len().max(1);
             sources.rotate_left(self.source_offset % n);
         }
@@ -1472,7 +1512,13 @@ impl Diverge {
                 self.actions.push(Action::Revote { cut, root: rep.target });
             }
         }
-        self.count_cure(rep, mine, now);
+        if self.joining() {
+            // The replica holds E's certified state: nothing diverged, so nothing is counted as a cure.
+            self.counters.joins += 1;
+            self.join = Some(Join::Joined { cut });
+        } else {
+            self.count_cure(rep, mine, now);
+        }
         self.after_repair(replica, source, now, clock);
     }
 
@@ -1530,12 +1576,20 @@ impl Diverge {
         }
     }
 
-    fn fail(&mut self, rung: u8, cut: CutRef, why: &str) {
+    /// A rung failed. A join's rung 2 ends the join instead (`true`): counted as `join_failures`, no event, and no
+    /// source rotation.
+    fn fail(&mut self, rung: u8, cut: CutRef, why: &str) -> bool {
+        if rung == 2 && self.joining() {
+            self.counters.join_failures += 1;
+            self.join = Some(Join::Failed { cut, why: why.to_string() });
+            return true;
+        }
         self.counters.rung_failures += 1;
         if rung == 2 {
             self.source_offset = self.source_offset.wrapping_add(1);
         }
         self.events.push(DivergeEvent::RungFailed { cut, rung: Rung(rung), why: why.to_string() });
+        false
     }
 
     /// Rung 2 failed with the agreed state in hand: the replica could not take it (4.3). This is what counts toward
@@ -1545,9 +1599,9 @@ impl Diverge {
     /// `at_once`: no retry can cure it (a rate mismatch: every honest source holds the same config), so the ladder
     /// stops on this first failure (@design-reviewer).
     fn refused(&mut self, cut: CutRef, why: &str, at_once: bool) {
-        self.fail(2, cut, why);
+        let joined = self.fail(2, cut, why);
         let leaves = std::mem::take(&mut self.last_leaves);
-        if self.episode.is_none() {
+        if !joined && self.episode.is_none() {
             self.note_failure(cut, FailKey { rung: 2, why: why.to_string(), leaves }, at_once);
         }
     }

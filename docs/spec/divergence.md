@@ -334,6 +334,29 @@ pair: body and contact ids come from free-list pools [V `crates/box3d-fork/src/i
 5. **Repair serves others while it runs.** A machine that is itself repairing still serves tree nodes and records
    of roots it has verified.
 
+### 4.5 A join from a final cut (M1)
+
+A machine that joins a running world (app.md 4, "B's state at E") starts with an empty replica at the reconfiguring
+cut `E`, a final cut whose certified root it holds (S3 `Node::join`, `Node::start_root`). It must not step until it
+holds `E`'s state. `Diverge::join(e, inviter, replica, now)` fetches that state by rung 2's whole-state path, the one
+a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named absent, imported from empty
+[R @engine-architect]. Small blobs (1-256 B) are not fetched yet: inline-blobs phase
+3b adds the donor's blobs to the import (@item:primordial-engine/inline-small-blobs-names-and-other-256-b-blobs-r).
+- **Sources:** the inviter first, then `E`'s other voters. Every record is checked against `E`'s certified root,
+  whoever serves it, so a wrong peer costs a retry and is never trusted (4.4 rule 2).
+- **No divergence:** nothing diverged, so a join captures no evidence, writes no bundle, opens no episode, emits no
+  trace event and never counts toward the stop rule (4.3). It counts only `joins` and `join_failures` (7).
+- **Its state:** `Diverge::join_state()` reads `Joining { cut }`, then `Joined { cut }` once the import matched
+  `E`'s root, or `Failed { cut, why }` when every source failed or the replica refused the import. A state, not an
+  event: S3.8's `DivergeEvent` is a seam type, and a join needs no seam change [I]. `Cv` starts at `E`.
+- **Until it ends** the embedding runs no driver and calls only `tick` and `receive`, never `on_final`. The joiner
+  votes from the first cut after `E` (`E` is already final for it). At `n = 2` nothing after `E` becomes final
+  until it votes, so `E` stays servable. On `Failed`, pe-app gives up: the joiner says it couldn't join and quits
+  [R @engine-architect]. A join again at a newer cut matters only at `n >= 3` (M2).
+- **Script modules** (@item:primordial-engine/ws-diverge-script-modules-in-rung-2-repair-fault): once that item
+  lands, a join also waits until `Replica::vote_holds()` names nothing at or below `E`, with 4.2's `T_module`
+  deadline, so a joiner never steps a world whose modules it lacks.
+
 ## 5. Who is right: root splits
 
 - **With a quorum root** (at most `n - q` members differ): the quorum's root is right. The minority repairs
@@ -489,6 +512,7 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `overtaken_in_a_row` | A gauge: repairs toward a final cut overtaken by a newer one, in a row since the last cure or agreeing cut. It tells a world too big to fetch within `W_fg` (4.2) from one unlucky repair | pe-diverge |
 | `root_splits` | Root-split episodes (distinct split cuts, not `RootSplit` events), and how each ended | pe-diverge |
 | `bundles_written` | Bundles written | pe-diverge |
+| `joins`, `join_failures` | Joins from a final cut (4.5) whose import matched its root, and joins that failed. Neither is a divergence, a cure or a rung failure | pe-diverge |
 | `corrections_per_min` | Drawn objects whose drawn pose had to blend or jump after a correction, per minute | pe-render (section 8) |
 | `visible_error` | Mean and max distance between drawn and simulated pose, over objects in view, per second | pe-render |
 | `snaps_in_view` | Corrections that jumped rather than blended while in view | pe-render |
@@ -509,6 +533,10 @@ and in WorldApi's `session` (api.md 5.1), is one value: `Repairing { since }` wh
   (`Diverge::open_since`, the earlier of the split's cut and the cut it repairs toward).
 
 `since` is the earliest of their frames.
+
+A joiner (4.5) has no health before its import: its replica publishes no view. pe-app shows "joining" from
+`Diverge::join_state`, and pe-api answers not-ready until the replica reaches the present; S5's health is unchanged
+[R @engine-architect].
 
 The replica alone can't show a split: it learns of a divergence only at a final cut, and in a split none is final. At
 `n = 2` every divergence is a split (3.2), so without the second clause a stalled world read "agreed" (found by
@@ -1359,6 +1387,8 @@ impl Diverge {
     pub fn counters(&self) -> &Counters;
     pub fn take_bundles(&mut self) -> Vec<FaultBundle>;   // pe-app writes them to disk
     pub fn events(&mut self) -> Vec<DivergeEvent>;         // Repaired{rung}, RepeatedDivergence, RepairStuck, RootSplitEnded
+    pub fn join(&mut self, e: &FinalCut, inviter: MemberKey, replica: &mut dyn Replica, now: HostTime); // 4.5
+    pub fn join_state(&self) -> Option<&Join>;             // Joining, Joined or Failed, each with E's cut
 }
 pub fn merge(base: &Root, ours: &Line, theirs: &Line, rules: &Rules, replica: &mut impl Replica) -> Merged; // M2
 ```
