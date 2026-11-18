@@ -258,6 +258,13 @@ impl St {
 
 pub struct MockTree {
     st: St,
+    named: BTreeSet<u128>,
+    have: BTreeMap<Hash, Bytes>,
+}
+
+/// The inline-class simulation blob a named object's row references (world-model.md 3.4): a name, under 256 bytes.
+pub fn name_of(id: u128) -> Bytes {
+    Bytes::from(format!("ball {id}").into_bytes())
 }
 
 impl Tree for MockTree {
@@ -272,6 +279,22 @@ impl Tree for MockTree {
     }
     fn export(&self, keys: &[LeafKey]) -> Vec<Record> {
         self.st.export(keys)
+    }
+    /// As pe-world's: the blobs these objects' rows reference, as far as this machine has them, in order of hash.
+    fn export_blobs(&self, keys: &[LeafKey]) -> Vec<Bytes> {
+        let mut out = BTreeMap::new();
+        for k in keys {
+            if let LeafKey::Object(o) = k
+                && self.named.contains(&o.to_u128())
+                && self.st.objs.contains_key(&o.to_u128())
+            {
+                let h = Hash::plain(&name_of(o.to_u128()));
+                if let Some(b) = self.have.get(&h) {
+                    out.insert(h, b.clone());
+                }
+            }
+        }
+        out.into_values().collect()
     }
     fn object_hashes(&self, ids: &[ObjectId]) -> Vec<(ObjectId, Option<Hash>)> {
         ids.iter().map(|id| (*id, self.st.objs.get(&id.to_u128()).map(|c| c.cache))).collect()
@@ -358,6 +381,9 @@ pub struct Mock {
     pub refuse: Option<ImportError>,
     /// Finalize answers `NotReady` this many times more, as a replica not yet caught up to the cut would.
     pub not_ready: u32,
+    /// Objects whose rows reference an inline-class simulation blob ([`name_of`]), and the blobs this machine has.
+    pub named: BTreeSet<u128>,
+    pub blobs: BTreeMap<Hash, Bytes>,
 }
 
 impl Mock {
@@ -382,7 +408,10 @@ impl Mock {
             finalize_calls: 0,
             not_ready: 0,
             refuse: None,
+            named: (1..=objects).filter(|k| k % 4 == 1).map(spread).collect(),
+            blobs: BTreeMap::new(),
         };
+        m.blobs = m.named.iter().map(|id| (Hash::plain(&name_of(*id)), name_of(*id))).collect();
         m.put(St::new(objects, sleepers));
         m
     }
@@ -585,7 +614,7 @@ impl Replica for Mock {
     }
     fn tree(&self, root: &Hash) -> Option<Box<dyn Tree + '_>> {
         let f = self.held(root)?;
-        Some(Box::new(MockTree { st: self.states[&f].clone() }))
+        Some(Box::new(MockTree { st: self.states[&f].clone(), named: self.named.clone(), have: self.blobs.clone() }))
     }
     fn physics_image(&self, root: &Hash) -> Option<PhysicsImage> {
         let f = self.held(root)?;
@@ -638,6 +667,26 @@ impl Replica for Mock {
         {
             return Err(ImportError::PhysicsCheck);
         }
+        // As pe-world (S2 v1.8): each blob one an imported row references, in ascending order of hash; a referenced
+        // blob neither given nor here is missing.
+        let refs: BTreeSet<Hash> = import
+            .records
+            .iter()
+            .filter_map(|r| if let LeafKey::Object(o) = r.key { Some(o.to_u128()) } else { None })
+            .filter(|id| self.named.contains(id))
+            .map(|id| Hash::plain(&name_of(id)))
+            .collect();
+        let mut given = BTreeSet::new();
+        for (i, b) in import.blobs.iter().enumerate() {
+            let h = Hash::plain(b);
+            if !refs.contains(&h) || given.last().is_some_and(|l| *l >= h) {
+                return Err(ImportError::BadBlob(i));
+            }
+            given.insert(h);
+        }
+        if let Some(h) = refs.iter().find(|h| !given.contains(*h) && !self.blobs.contains_key(*h)) {
+            return Err(ImportError::MissingBlob(*h));
+        }
         for k in &import.absent {
             match k {
                 LeafKey::Object(o) => {
@@ -667,6 +716,9 @@ impl Replica for Mock {
         let got = st.root();
         if got != import.target_root {
             return Err(ImportError::RootMismatch { got });
+        }
+        for b in &import.blobs {
+            self.blobs.insert(Hash::plain(b), b.clone());
         }
         for r in &import.records {
             self.imported.push((f, r.clone()));
@@ -773,6 +825,10 @@ pub enum Lie {
     Nodes,
     /// Answers every request `Busy`, forever, naming this wait in microseconds.
     Busy(u64),
+    /// Sends no inline blobs with its records.
+    NoBlobs,
+    /// Sends a blob no row references with its records.
+    JunkBlob,
 }
 
 pub struct Peer {
@@ -1002,7 +1058,14 @@ impl Net {
 /// What a lying source sends instead.
 fn lie(how: Lie, bytes: &[u8]) -> Vec<u8> {
     match (how, Msg::decode(bytes)) {
-        (Lie::Records, Ok(Msg::RecordReply { cut, root, mut records })) => {
+        (Lie::NoBlobs, Ok(Msg::RecordReply { cut, root, records, .. })) => {
+            Msg::RecordReply { cut, root, records, blobs: vec![] }.encode().unwrap().to_vec()
+        }
+        (Lie::JunkBlob, Ok(Msg::RecordReply { cut, root, records, mut blobs })) => {
+            blobs.insert(0, Bytes::from_static(b"junk"));
+            Msg::RecordReply { cut, root, records, blobs }.encode().unwrap().to_vec()
+        }
+        (Lie::Records, Ok(Msg::RecordReply { cut, root, mut records, blobs })) => {
             for r in &mut records {
                 let mut b = r.bytes.to_vec();
                 if let Some(x) = b.first_mut() {
@@ -1010,7 +1073,7 @@ fn lie(how: Lie, bytes: &[u8]) -> Vec<u8> {
                 }
                 r.bytes = Bytes::from(b);
             }
-            Msg::RecordReply { cut, root, records }.encode().unwrap().to_vec()
+            Msg::RecordReply { cut, root, records, blobs }.encode().unwrap().to_vec()
         }
         (Lie::Nodes, Ok(Msg::NodeReply { cut, root, mut nodes })) => {
             for (_, n) in &mut nodes {

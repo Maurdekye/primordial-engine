@@ -9,13 +9,16 @@ use pe_seams::{
     CutRef, DomainId, Frame, Hash, LeafKey, LineId, Nibbles, Node, ObjectId, PhysicsImage, Record, TreePath,
 };
 
-const VERSION: u8 = 1;
+/// 2: a record reply carries the inline blobs its records' rows reference (inline blobs phase 3b).
+const VERSION: u8 = 2;
 /// Most items in one message.
 pub const MAX_ITEMS: usize = 4096;
 /// Most children of one trie node: one per nibble.
 pub const MAX_CHILDREN: usize = 16;
 /// Largest record.
 pub const MAX_RECORD: usize = 16 << 20;
+/// Largest inline blob: the inline class is 1 to 256 bytes (world-model.md 3.4).
+pub const MAX_INLINE_BLOB: usize = 256;
 /// Largest physics image (about 2.5 kB per body before compression [V file 02]: room for 25,000 bodies).
 pub const MAX_IMAGE: usize = 64 << 20;
 
@@ -40,6 +43,9 @@ pub enum Msg {
         cut: CutRef,
         root: Hash,
         records: Vec<Record>,
+        /// The inline-class blobs these records' rows reference, as far as the sender has them (S2 v1.8
+        /// `Tree::export_blobs`). Unchecked here: the importing replica checks each against the rows it imports.
+        blobs: Vec<Bytes>,
     },
     PhysicsRequest {
         cut: CutRef,
@@ -133,10 +139,17 @@ impl Msg {
                     put_key(&mut w, k);
                 }
             }
-            Msg::RecordReply { records, .. } => {
+            Msg::RecordReply { records, blobs, .. } => {
                 put_count(&mut w, records.len())?;
                 for r in records {
                     put_record(&mut w, r)?;
+                }
+                put_count(&mut w, blobs.len())?;
+                for b in blobs {
+                    if b.len() > MAX_INLINE_BLOB {
+                        return Err(EncodeError::TooLong);
+                    }
+                    put_bytes(&mut w, b);
                 }
             }
             Msg::PhysicsReply { image, .. } => {
@@ -193,7 +206,12 @@ impl Msg {
                 for _ in 0..n {
                     records.push(r.record()?);
                 }
-                Msg::RecordReply { cut, root, records }
+                let n = r.count(4)?; // a blob's length
+                let mut blobs = Vec::with_capacity(n);
+                for _ in 0..n {
+                    blobs.push(r.bytes(MAX_INLINE_BLOB)?);
+                }
+                Msg::RecordReply { cut, root, records, blobs }
             }
             4 => Msg::PhysicsRequest { cut, root },
             5 => {
@@ -573,6 +591,7 @@ mod tests {
                     bytes: Bytes::from_static(&[9, 9, 9]),
                     proof: vec![Node::Inner { prefix: nib(&[]), children: vec![(5, Hash([1; 32]))] }],
                 }],
+                blobs: vec![Bytes::from_static(b"a name"), Bytes::from(vec![7; MAX_INLINE_BLOB])],
             },
             Msg::PhysicsRequest { cut: cut(), root: Hash([5; 32]) },
             Msg::PhysicsReply {
@@ -639,6 +658,26 @@ mod tests {
         assert_eq!(wide.encode(), Err(EncodeError::TooMany));
         let many = Msg::RecordRequest { cut: cut(), root: Hash::ZERO, keys: vec![LeafKey::Table(1); MAX_ITEMS + 1] };
         assert_eq!(many.encode(), Err(EncodeError::TooMany));
+        let long = Msg::RecordReply {
+            cut: cut(),
+            root: Hash::ZERO,
+            records: vec![],
+            blobs: vec![Bytes::from(vec![0; MAX_INLINE_BLOB + 1])],
+        };
+        assert_eq!(long.encode(), Err(EncodeError::TooLong));
+    }
+
+    #[test]
+    fn a_blob_longer_than_the_inline_class_is_refused_by_the_decoder() {
+        let ok =
+            Msg::RecordReply { cut: cut(), root: Hash::ZERO, records: vec![], blobs: vec![Bytes::from_static(b"x")] };
+        let mut b = ok.encode().unwrap().to_vec();
+        // The one blob's length field is the 5 bytes before the end: make it 257 and append the bytes.
+        let at = b.len() - 5;
+        b[at..at + 4].copy_from_slice(&((MAX_INLINE_BLOB as u32) + 1).to_le_bytes());
+        b.truncate(at + 4);
+        b.extend(std::iter::repeat_n(0u8, MAX_INLINE_BLOB + 1));
+        assert_eq!(Msg::decode(&b), Err(DecodeError::TooLong));
     }
 
     #[test]

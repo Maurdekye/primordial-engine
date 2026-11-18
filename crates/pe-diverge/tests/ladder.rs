@@ -88,7 +88,9 @@ fn a_persistent_fault_is_cured_by_rung_2_fetching_only_what_differs() {
     assert_eq!(c.diverged, 1, "{c:?}");
     assert_eq!(c.cured_by_rung[1], 1, "{c:?}");
     assert_eq!(c.bundles_written, 1);
-    assert!(c.repair_bytes <= 16, "fetched {} record bytes for one object", c.repair_bytes);
+    // The one object's record, and the name its row references (an inline blob, phase 3b).
+    let name = common::name_of(spread(5)).len() as u64;
+    assert!(c.repair_bytes <= 16 + name, "fetched {} bytes for one object", c.repair_bytes);
     let b = bundles(&net, VICTIM).pop().unwrap();
     assert_eq!(b.differing, vec![obj(5)]);
     assert_eq!(b.rung, 2);
@@ -947,6 +949,8 @@ fn joining_net(objects: u128) -> (Net, FinalCut) {
     // No cut after E: at n = 2 nothing in the new epoch is final until the joiner votes (@engine-architect).
     net.cut_every = u64::MAX;
     net.peers[VICTIM].r.trim_from(0);
+    // Nor does it hold the names its world's rows reference: they arrive with the records (inline blobs phase 3b).
+    net.peers[VICTIM].r.blobs.clear();
     (net, e)
 }
 
@@ -970,6 +974,9 @@ fn a_joiner_imports_e_whole_and_nothing_counts_as_a_divergence() {
     assert!(imp.absent.is_empty(), "nothing is named absent from empty");
     assert_eq!(imp.records.len(), 40 + 2 + 1, "every object of E's state, both tables and the config");
     assert!(imp.physics.is_some());
+    assert_eq!(imp.blobs.len(), 10, "every named object's name, once each");
+    assert!(imp.blobs.windows(2).all(|w| Hash::plain(&w[0]) < Hash::plain(&w[1])), "in order of hash");
+    assert_eq!(v.r.blobs.len(), 10, "the joiner holds the names");
     assert_eq!(v.d.verified_cut(), Some((e.cut.at, e.root)), "Cv starts at E");
     assert!(net.converged());
     assert!(net.imported_only_truth(VICTIM, 0));
@@ -1038,4 +1045,36 @@ fn a_join_whose_finalize_is_not_ready_is_joined_only_once_finalize_agrees_at_e()
     assert_eq!(v.d.verified_cut(), Some((e.cut.at, e.root)), "Joined only with Cv at E");
     let c = v.d.counters();
     assert_eq!((c.joins, c.join_failures, c.cured_by_rung), (1, 0, [0; 5]), "{c:?}");
+}
+
+/// Inline blobs phase 3b (@world-model m90bbd5b28176): a source that withholds the names its records' rows reference
+/// (`MissingBlob`), or sends one no row references (`BadBlob`), is left like one whose records fail their proofs, and
+/// the next source serves the join.
+fn a_join_from_a_source_that_lies_about_blobs_is_served_by_the_next(how: Lie) {
+    let (mut net, e) = joining_net(40);
+    net.peers[0].lie = how;
+    let now = net.now();
+    let v = &mut net.peers[VICTIM];
+    v.d.join(&e, key(0), &mut v.r, now);
+    net.run(60);
+    let v = &net.peers[VICTIM];
+    assert_eq!(v.d.join_state(), Some(&Join::Joined { cut: e.cut.at }), "{how:?}");
+    assert!(v.d.counters().source_faults >= 1, "{how:?}: {:?}", v.d.counters());
+    assert!(
+        v.r.imports.iter().any(|i| i.blobs.len() != 10),
+        "{how:?}: the first import had the lie in it: {:?}",
+        v.r.imports.iter().map(|i| i.blobs.len()).collect::<Vec<_>>()
+    );
+    assert_eq!(v.r.imports.last().map(|i| i.blobs.len()), Some(10), "{how:?}");
+    assert_eq!(v.r.blobs.len(), 10, "{how:?}");
+}
+
+#[test]
+fn a_join_whose_first_source_withholds_the_blobs_is_served_by_the_next() {
+    a_join_from_a_source_that_lies_about_blobs_is_served_by_the_next(Lie::NoBlobs);
+}
+
+#[test]
+fn a_join_whose_first_source_sends_a_junk_blob_is_served_by_the_next() {
+    a_join_from_a_source_that_lies_about_blobs_is_served_by_the_next(Lie::JunkBlob);
 }
