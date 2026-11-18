@@ -1,5 +1,6 @@
 //! What a joiner starts from (agreement.md 8): the epoch certificate that proves the reconfiguring cut E final, and the
-//! state at E a new member needs that the certificate doesn't carry.
+//! state at E a new member needs that the certificate doesn't carry. A member that missed E takes the same certificate
+//! in ([`verify_certificate`], then `Core::adopt`), and derives the rest itself from E's entries.
 //!
 //! - **The certificate** is E and its certified descendants in the ending epoch, oldest first, each with a quorum
 //!   certificate of it: E's own (its root is the world's root at E, which the joiner's import must match), then each
@@ -9,14 +10,13 @@
 //! - **Not covered by the certificate, trusted from the inviter** as the world import at E is (M1): the next epoch's
 //!   members and governance state, the head entries of E's chains (each is checked against the head E names) and each
 //!   chain's highest final stamp. A joiner checks it is among the members. Deriving the members from E's own changes
-//!   would need E's entries; it comes with the epoch-certificate fetch
-//!   (@item:primordial-engine/pe-agree-a-member-that-missed-its-epoch-s-reconf).
-//! - **One epoch only:** a joiner whose invite pins an epoch before the one that ended at E can't start yet (the chain
-//!   of certificates from the pinned epoch to E is that fetch's too).
+//!   would need E's entries, which a joiner doesn't hold.
+//! - **One epoch only:** a joiner whose invite pins an epoch before the one that ended at E can't start yet (it would
+//!   need the chain of certificates from the pinned epoch to E and each epoch's entries).
 
 use pe_seams::{Cut, Frame, GovState, Hash, LineId, MemberKey, SignedEntry, Verifier, quorum};
 
-use crate::core::{Block, Qc, epoch_domain, vote_bytes};
+use crate::core::{Block, Proposal, Qc, epoch_domain, vote_bytes};
 use pe_log::ChainKey;
 
 /// Most blocks in a certificate: E and its suffix.
@@ -75,59 +75,10 @@ impl EpochStart {
         me: MemberKey,
         verifier: &dyn Verifier,
     ) -> Result<&Cut, StartError> {
-        use StartError::Certificate as C;
         if self.epoch != pinned {
             return Err(StartError::OtherEpoch { start: self.epoch, pinned });
         }
-        if self.chain.is_empty() || self.chain.len() > MAX_CERT_BLOCKS {
-            return Err(C("no blocks, or too many"));
-        }
-        let domain = epoch_domain(line, pinned);
-        let q = quorum(members.len());
-        let e = &self.chain[0].0;
-        if e.cut.at.line != line {
-            return Err(C("another line"));
-        }
-        let mut final_found = false;
-        for (i, (b, qc)) in self.chain.iter().enumerate() {
-            if qc.block != b.id() || qc.view != b.view || qc.view == 0 {
-                return Err(C("a certificate of another block"));
-            }
-            if qc.votes.len() < q {
-                return Err(C("fewer votes than the quorum"));
-            }
-            let msg = vote_bytes(domain, qc.view, qc.block, qc.root);
-            for (j, (k, s)) in qc.votes.iter().enumerate() {
-                if j > 0 && qc.votes[j - 1].0 >= *k {
-                    return Err(C("votes not sorted and distinct"));
-                }
-                if members.binary_search(k).is_err() {
-                    return Err(C("a vote by a non-member"));
-                }
-                if !verifier.verify(k, &msg, s) {
-                    return Err(C("a bad vote signature"));
-                }
-            }
-            if i > 0 {
-                let p = &self.chain[i - 1].0;
-                if b.parent != p.id() || b.view <= p.view {
-                    return Err(C("not a chain"));
-                }
-                if b.cut.at.frame != e.cut.at.frame
-                    || b.cut.heads != e.cut.heads
-                    || b.cut.at.line != line
-                    || b.cut.at.height != p.cut.at.height + 1
-                {
-                    return Err(C("a descendant of E that isn't a suffix cut"));
-                }
-                if b.view == p.view + 1 {
-                    final_found = true;
-                }
-            }
-        }
-        if !final_found {
-            return Err(C("no block is final under the two-chain rule"));
-        }
+        let e = verify_certificate(&self.chain, line, pinned, members, verifier).map_err(StartError::Certificate)?;
         if self.members.binary_search(&me).is_err() {
             return Err(StartError::NotAdmitted);
         }
@@ -136,13 +87,86 @@ impl EpochStart {
         }
         for h in &self.heads {
             let id = h.id();
-            if !e.cut.heads.iter().any(|x| x.entry == id && x.chain == h.entry.chain && x.author == h.entry.author) {
+            if !e.heads.iter().any(|x| x.entry == id && x.chain == h.entry.chain && x.author == h.entry.author) {
                 return Err(StartError::BadHead);
             }
             if !h.verify(verifier) {
                 return Err(StartError::BadHead);
             }
         }
-        Ok(&e.cut)
+        Ok(e)
     }
+}
+
+/// An epoch certificate as blocks with their certificates (module doc), from the blocks' proposals and the top's
+/// certificate: each block is certified by its child's `parent_qc`, the top by `top`.
+pub fn chain_of(proposals: &[Proposal], top: &Qc) -> Vec<(Block, Qc)> {
+    proposals
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.block.clone(), proposals.get(i + 1).map_or_else(|| top.clone(), |c| c.parent_qc.clone())))
+        .collect()
+}
+
+/// Check an epoch certificate (module doc) against epoch `epoch` with `members` (sorted, distinct) on `line`: every
+/// certificate has a quorum of the members signing under the epoch's domain, the blocks chain, every block above E is
+/// a suffix cut, and some block's child was proposed in the very next view, so under the two-chain rule E is final.
+/// Returns E, or what failed.
+pub fn verify_certificate<'a>(
+    chain: &'a [(Block, Qc)],
+    line: LineId,
+    epoch: u64,
+    members: &[MemberKey],
+    verifier: &dyn Verifier,
+) -> Result<&'a Cut, &'static str> {
+    if chain.is_empty() || chain.len() > MAX_CERT_BLOCKS {
+        return Err("no blocks, or too many");
+    }
+    let domain = epoch_domain(line, epoch);
+    let q = quorum(members.len());
+    let e = &chain[0].0;
+    if e.cut.at.line != line {
+        return Err("another line");
+    }
+    let mut final_found = false;
+    for (i, (b, qc)) in chain.iter().enumerate() {
+        if qc.block != b.id() || qc.view != b.view || qc.view == 0 {
+            return Err("a certificate of another block");
+        }
+        if qc.votes.len() < q {
+            return Err("fewer votes than the quorum");
+        }
+        let msg = vote_bytes(domain, qc.view, qc.block, qc.root);
+        for (j, (k, s)) in qc.votes.iter().enumerate() {
+            if j > 0 && qc.votes[j - 1].0 >= *k {
+                return Err("votes not sorted and distinct");
+            }
+            if members.binary_search(k).is_err() {
+                return Err("a vote by a non-member");
+            }
+            if !verifier.verify(k, &msg, s) {
+                return Err("a bad vote signature");
+            }
+        }
+        if i > 0 {
+            let p = &chain[i - 1].0;
+            if b.parent != p.id() || b.view <= p.view {
+                return Err("not a chain");
+            }
+            if b.cut.at.frame != e.cut.at.frame
+                || b.cut.heads != e.cut.heads
+                || b.cut.at.line != line
+                || b.cut.at.height != p.cut.at.height + 1
+            {
+                return Err("a descendant of E that isn't a suffix cut");
+            }
+            if b.view == p.view + 1 {
+                final_found = true;
+            }
+        }
+    }
+    if !final_found {
+        return Err("no block is final under the two-chain rule");
+    }
+    Ok(&e.cut)
 }
