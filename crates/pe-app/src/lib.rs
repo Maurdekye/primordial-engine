@@ -10,6 +10,8 @@
 //! - [`phases`]: where the simulation thread's time goes, step by step, to find what slows a machine.
 //! - [`standin`]: an agreement and a replica that stand in until pe-agree and pe-replica's replica land.
 //! - [`vr`]: VR mode's frame sink, which draws the newest view into pe-xr's swapchain images.
+//! - [`fault`]: `--inject-fault-at`, a deliberate test fault on this machine only (M1 demo step 7), and the world
+//!   every replica is over.
 //! - [`world`]: the world a machine opens, under pe-replica's replica: for now a new, empty one.
 //!
 //! The binary (`src/main.rs`) runs a world alone on the desktop. The network, VR, MCP, configuration and invites join
@@ -23,6 +25,7 @@ pub mod capture;
 pub mod clock;
 pub mod console;
 pub mod diverge;
+pub mod fault;
 pub mod genesis;
 pub mod join;
 pub mod leave;

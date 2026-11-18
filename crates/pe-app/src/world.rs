@@ -1,12 +1,15 @@
 //! The world a machine opens (app.md 4, step 5), on pe-world through pe-replica's [`PeWorld`]: a new, empty world from
 //! the origin ([`open_new`]), or M1's ball pit with the local member admitted ([`open_ball_pit`]). An opened save and a
-//! joiner's import come later.
+//! joiner's import come later. Each is under [`FaultWorld`], which injects `--inject-fault-at`'s fault when this
+//! process armed one ([`crate::fault`]).
 
 use std::sync::Arc;
 
 use pe_replica::{PeWorld, ReplicaImpl, ScriptRunner};
 use pe_seams::{DomainId, Frame, FrameClock, MemberKey, Offset, Pos, Replica, SimRate};
 use pe_world::{BlobStore, World, perm, preset};
+
+use crate::fault::{Fault, FaultWorld};
 
 /// The member key this machine plays as until pe-net-crypto's identity lands (app.md 4, step 2). A fixed key is enough
 /// for a world alone: the ball pit admits it as its admin, and the view marks its hands as the local player's.
@@ -27,7 +30,8 @@ pub fn open_new(
     let mut world = World::new(seed, BlobStore::default());
     world.set_rate(rate);
     let config = crate::genesis::replica_config(&crate::genesis::settings(), rate, clock);
-    let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).map_err(|e| format!("{e:?}"))?;
+    let replica =
+        ReplicaImpl::new(FaultWorld::armed(PeWorld::new(world, DomainId(0))), config).map_err(|e| format!("{e:?}"))?;
     Ok(Box::new(replica.with_runner(runner)))
 }
 
@@ -68,15 +72,29 @@ pub(crate) fn ball_pit(
     Ok(Box::new(ball_pit_replica(world, members, me, rate, clock, runner)?))
 }
 
-/// [`ball_pit`]'s replica, unboxed: a test reaches pe-replica's test-only damage through it.
+/// [`ball_pit`]'s replica, unboxed: a test reaches pe-replica's test-only damage through it. Over this process's armed
+/// fault, if any ([`crate::fault::armed`]).
 pub(crate) fn ball_pit_replica(
+    world: World,
+    members: &[MemberKey],
+    me: MemberKey,
+    rate: SimRate,
+    clock: Arc<dyn FrameClock>,
+    runner: Box<dyn ScriptRunner>,
+) -> Result<ReplicaImpl<FaultWorld>, String> {
+    ball_pit_replica_with(world, members, me, rate, clock, runner, crate::fault::armed())
+}
+
+/// [`ball_pit_replica`] with `fault` injected, whatever this process armed: a test gives one member a fault.
+pub(crate) fn ball_pit_replica_with(
     mut world: World,
     members: &[MemberKey],
     me: MemberKey,
     rate: SimRate,
     clock: Arc<dyn FrameClock>,
     runner: Box<dyn ScriptRunner>,
-) -> Result<ReplicaImpl<PeWorld>, String> {
+    fault: Option<Arc<Fault>>,
+) -> Result<ReplicaImpl<FaultWorld>, String> {
     if world.rate() != rate {
         return Err(format!("the ball pit runs at {:?}, the frame clock at {rate:?}", world.rate()));
     }
@@ -93,6 +111,7 @@ pub(crate) fn ball_pit_replica(
     }
     let mut config = crate::genesis::replica_config(&crate::genesis::settings(), rate, clock);
     config.local = Some(me);
-    let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).map_err(|e| format!("{e:?}"))?;
+    let replica = ReplicaImpl::new(FaultWorld::new(PeWorld::new(world, DomainId(0)), fault), config)
+        .map_err(|e| format!("{e:?}"))?;
     Ok(replica.with_runner(runner))
 }

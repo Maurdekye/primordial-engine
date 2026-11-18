@@ -58,7 +58,7 @@ use pe_render::window::{DesktopConfig, DesktopReport, EffectSink, run_desktop};
 use pe_replica::ScriptRunner;
 use pe_replica::logic::LogicRunner;
 use pe_seams::world_api::{MemberId, Producer, ProducerKind};
-use pe_seams::{FrameClock, LineId, MemberKey, RigPose, SimRate};
+use pe_seams::{Frame, FrameClock, LineId, MemberKey, RigPose, SimRate};
 use pe_xr::guard::Guard;
 use pe_xr::loader::SystemDiscovery;
 use pe_xr::ring::{DEFAULT_WINDOW_NS, HandRing};
@@ -107,6 +107,10 @@ struct Options {
     agent: Vec<String>,
     /// `--drawn-time`: X8 for every presenter, in place of the defaults (VR Present, the desktop (a)).
     drawn_time: Option<DrawnTime>,
+    /// `--inject-fault-at`: the frame at which this machine injects a deliberate test fault (pe-app's `fault`).
+    inject_fault_at: Option<Frame>,
+    /// `--arm-fault`: the console's typed `fault` injects that test fault at the next frame.
+    arm_fault: bool,
 }
 
 /// The joiner's wait for the opener's welcome and its clock: a person copies the reply over.
@@ -127,6 +131,8 @@ fn options() -> Options {
         mcp_http: false,
         agent: Vec::new(),
         drawn_time: None,
+        inject_fault_at: None,
+        arm_fault: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -147,6 +153,11 @@ fn options() -> Options {
             // The rest of the command line is the agent's.
             "--agent" => o.agent = args.by_ref().collect(),
             "--drawn-time" => o.drawn_time = Some(args.next().and_then(|a| drawn_time(&a)).unwrap_or_else(|| usage())),
+            "--arm-fault" => o.arm_fault = true,
+            "--inject-fault-at" => {
+                o.inject_fault_at =
+                    Some(Frame(args.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or_else(|| usage())));
+            }
             "--seconds" => {
                 let s = args.next().and_then(|n| n.parse::<f64>().ok()).filter(|s| *s > 0.0);
                 o.run_for = Some(s.and_then(|s| Duration::try_from_secs_f64(s).ok()).unwrap_or_else(|| usage()));
@@ -175,15 +186,27 @@ fn presenter(rate: SimRate, drawn_time: DrawnTime) -> Presenter {
     Presenter::new(display, EffectSettings::default(), Environment::default(), rate.hz())
 }
 
-/// A's console (app.md 4): each line it reads is a joiner's reply code, for the session's hook, which checks it. The
-/// thread waits on standard input for the whole run; the process's end ends it.
-fn read_replies(replies: std::sync::mpsc::Sender<Reply>) {
+/// The console (app.md 4): each line it reads is a command. `fault` fires the test fault `--arm-fault` armed, and is
+/// refused without it (pe-app's `fault`). On A, any other line is a joiner's reply code, for the session's hook, which
+/// checks it. The thread waits on standard input for the whole run; the process's end ends it.
+fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>) {
     let read = move || {
         for line in std::io::stdin().lines().map_while(Result::ok) {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
+            if line == "fault" {
+                match pe_app::fault::on_command(pe_app::fault::armed().as_deref()) {
+                    Ok(said) => println!("{said}"),
+                    Err(e) => eprintln!("pe-app: {e}"),
+                }
+                continue;
+            }
+            let Some(replies) = &replies else {
+                eprintln!("pe-app: `{line}` isn't a command here; the one command is `fault`, with --arm-fault");
+                continue;
+            };
             match Reply::decode(line) {
                 Ok(reply) => {
                     if replies.send(reply).is_err() {
@@ -194,8 +217,8 @@ fn read_replies(replies: std::sync::mpsc::Sender<Reply>) {
             }
         }
     };
-    if let Err(e) = std::thread::Builder::new().name("pe-replies".into()).spawn(read) {
-        eprintln!("pe-app: reply codes can't be read ({e}): nobody can join");
+    if let Err(e) = std::thread::Builder::new().name("pe-console".into()).spawn(read) {
+        eprintln!("pe-app: the console can't be read ({e}): nobody can join, and `fault` isn't heard");
     }
 }
 
@@ -238,7 +261,7 @@ fn shared_sim(
             println!("session: open, this machine {}", short(s.me));
             println!("invite: {}", opened.invite.encode());
             println!("to let someone join, paste their reply code here:");
-            read_replies(opened.replies);
+            read_console(Some(opened.replies));
             diverge(
                 Sim::new(Box::new(s.node), s.replica, s.frames, slot, Budget::new(rate))
                     .with_local(s.me, chain_nonce(), hands)
@@ -258,6 +281,13 @@ fn shared_sim(
                 cj.members.len(),
                 short(cj.me)
             );
+            if let Some(at) = pe_app::fault::armed().and_then(|f| f.at()).filter(|at| *at < cj.e.at.frame) {
+                println!(
+                    "FAULT INJECTION: frame {} is before this machine's first frame, {}, so the fault never fires",
+                    at.0, cj.e.at.frame.0
+                );
+            }
+            read_console(None);
             let replica = cj
                 .record
                 .empty_replica(cj.me, cj.frames.clone(), runner)
@@ -288,6 +318,19 @@ fn main() {
     // Others share the world (`--open` or `--join`): the quit then leaves gracefully (app.md 4).
     // Which sources this build came from, and its commit (app.md 4, "The build id").
     println!("{}", pe_app::net::source_line());
+    // A deliberate test fault on this machine only (M1 demo step 7, pe-app's `fault`), armed before any replica is made.
+    let fault = match (options.inject_fault_at, options.arm_fault) {
+        (Some(_), true) => fail("--inject-fault-at and --arm-fault exclude each other"),
+        (Some(at), false) => Some(pe_app::fault::Fault::new(at)),
+        (None, true) => Some(pe_app::fault::Fault::typed()),
+        (None, false) => None,
+    };
+    if let Some(fault) = fault {
+        match pe_app::fault::arm(fault) {
+            Ok(line) => println!("{line}"),
+            Err(e) => fail(&e),
+        }
+    }
     let networked = options.shared.is_some();
     let (vr, headless, run_for) = (options.vr, options.headless, options.run_for);
     if vr && headless {
@@ -322,6 +365,7 @@ fn main() {
         None => {
             let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
             let pit = world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, frames.clone(), runner);
+            read_console(None);
             let replica = match pit {
                 Ok(r) => r,
                 Err(e) => fail(&format!("the replica did not start: {e}")),
@@ -614,7 +658,9 @@ fn finish<S: Debug, E>(stats: Result<S, E>) {
 
 fn usage() -> ! {
     fail(
-        "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>]          [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms> (VR)|a:<ms>|b:<ms>] [--mcp-pipe]          [--mcp-http] [--agent <command> <args>...]",
+        "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] \
+         [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms> (VR)|a:<ms>|b:<ms>] [--mcp-pipe] \
+         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--agent <command> <args>...]",
     )
 }
 
