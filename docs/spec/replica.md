@@ -545,7 +545,7 @@ pe-replica puts the physics into it in two places, both written at each cut fram
 ### 5.4 A cut the live history matches: the live root and the kept transfer
 
 [V `crates/pe-replica/src/replica.rs`, `reuse_live_root`, `take_root`; @coordinator-opus m2a2aa5381bc7; added after
-c9e2829a]
+c9e2829a. The kept grid frames: @coordinator-opus mac3bdbe8133e]
 - **Why** [V, `_teams/1827/root-split`]. In @engine-architect's two-member sessions at 500 balls, every cut a vote or
   `finalize` asked about matched the live history. Each still re-did the live step's work at that frame: it saved the
   live physics, restored the very keyframe the live step had saved there, took the root again and put the live state
@@ -556,8 +556,8 @@ c9e2829a]
   frame, from the same state and through the same frame function. A vote and `finalize` take that root
   (`reuse_live_root`), with no restore, re-step or hash.
   - Its snapshot (4.1) is the one already held for that root (as at `finalize` after a vote). Otherwise it is the
-    ring's keyframe at the cut's frame, taken after that take_root wrote its rows, with the transfer the take_root
-    serialized.
+    keyframe the live history took at the cut's frame right after that take_root wrote its rows, kept with the
+    transfer the take_root serialized (below). It is not the ring's: the ring thins it past its young window.
   - Where the live history took no root at the cut's frame, or neither snapshot source is there, the root is
     re-stepped as in 5.3.
 - **Not under a vote hold at or below the cut** (`held_at_or_below`). The live history runs my own predicted code
@@ -565,8 +565,20 @@ c9e2829a]
   cut's root, and the re-step decides, as before. Test: `a_vote_hold_below_the_cut_keeps_the_live_root_out`.
 - **The transfer is serialized once.** `physics_global` is the check hash of the canonical transfer (5.1), so every
   take_root serializes it. take_root now keeps those bytes and their hash (`Taken`), and a computed root's snapshot
-  takes them instead of serializing and hashing the same state again. That saves about 4 ms a root at 500 balls. The
-  live history keeps its take_roots' transfers for the newest four grid frames, for the snapshots above.
+  takes them instead of serializing and hashing the same state again. That saves about 4 ms a root at 500 balls.
+- **Kept until the floor passes, for at most 16 grid frames** (`LIVE_KEPT`). Each live grid frame keeps its transfer
+  and its keyframe until the floor passes its frame, so a late vote or `finalize` still takes the live root.
+  - Why [V, 2026-11-18]: with only the newest four grid frames' transfers and the ring's keyframe, a matched vote more
+    than 16 frames late missed the live root at 3 grid frames in 4, and one more than 24 frames late at all of them.
+    Past 16 frames the ring keeps every 8th frame only, and pe-app cuts every 6. In a two-member session on one
+    machine at idle priority, 204 of 538 matched votes took the live root; the rest re-stepped 2, 4 or 6 frames, at
+    7 ms a root.
+  - Past 16 (finality stalled: an outage, a stuck member), the oldest goes, and a cut there is re-stepped as in 5.3.
+  - Memory: a kept frame holds its transfer (1.57 MB at 500 balls) and, once the ring has thinned that keyframe, its
+    image, which is never larger than the transfer that serializes it. That is at most 50 MB at 500 balls. An image is
+    shared (`Arc`), not copied, by the ring, the kept frames and the held snapshots.
+  - Tests: `a_vote_30_frames_late_takes_the_live_root`, `past_the_kept_grid_frames_a_late_vote_re_steps`;
+    `ReplicaImpl::live_kept()` counts the kept frames.
 - **The same values.** Nothing given out changes: the roots, transfers and check hashes are the same, so no build
   identity changes [I]. The live root at a matched cut is the root of the keyframe the old path restored, and the
   kept bytes are the same function of the same physics state.

@@ -141,17 +141,19 @@ impl ReplicaConfig {
     }
 }
 
-/// A keyframe: the world model's snapshot and the physics image of the same instant.
+/// A keyframe: the world model's snapshot and the physics image of the same instant. The image is shared, not copied,
+/// by the ring, a grid frame's [`Taken`] and the snapshots held for roots.
+#[derive(Clone)]
 struct Key<S> {
     world: S,
-    image: WorldImage,
+    image: Arc<WorldImage>,
 }
 
 /// A held root: the state at a cut with exactly its entries, kept apart from the ring.
 struct Held<S> {
     frame: Frame,
     world: S,
-    image: WorldImage,
+    image: Arc<WorldImage>,
     /// The canonical physics transfer, and its check hash (`physics_global`).
     transfer: Bytes,
     global: Hash,
@@ -173,20 +175,27 @@ struct Mark {
 
 /// The physics transfer a take_root serialized for the check hash, kept so that a snapshot of the same state never
 /// serializes or hashes it again (5.4): the frame and root it was taken at, the transfer's bytes and their check hash
-/// (`physics_global`).
-struct Taken {
+/// (`physics_global`). At a live grid frame it also keeps the keyframe the live history took there right after the
+/// take_root, so a matched cut's snapshot never needs the ring, which thins it.
+struct Taken<S> {
     frame: Frame,
     root: Hash,
     transfer: Bytes,
     global: Hash,
+    key: Option<Key<S>>,
 }
 
 /// Every bound body's `BodyState` row, the canonical physics transfer's bytes and their check hash (`physics_rows`).
 type PhysicsRows = (Vec<(ObjectId, BodyStateRow)>, Bytes, Hash);
 
-/// How many of the live history's newest grid frames keep the transfer their take_root serialized (5.4): a vote comes
-/// about one cut interval after the live history passes its cut, and `finalize` takes the vote's snapshot.
-const LIVE_TRANSFERS: usize = 4;
+/// The most grid frames whose transfer and keyframe the live history keeps for a matched cut there (5.4). Each is kept
+/// until the floor passes its frame; past this many (finality stalled: an outage, a stuck member), the oldest goes,
+/// and a cut there is re-stepped as in 5.3. A kept frame holds its transfer and, once the ring has thinned that
+/// keyframe, its image alone, which is never larger than the transfer that serializes it. So a kept frame costs at
+/// most twice its transfer: the transfer is 1.57 MB at 500 balls (0.43 MB at 200), so at most 3.1 MB a frame and
+/// 50 MB for 16. That covers a vote or `finalize` 16 cut intervals late: 1.6 s on pe-app's grid (a cut every 6 frames
+/// at 60 Hz).
+const LIVE_KEPT: usize = 16;
 
 /// The digest of a cut's entries from the base up to a frame: for each frame in order, the count of the entries it
 /// steps, then their ids in apply order.
@@ -243,10 +252,11 @@ pub struct ReplicaImpl<W: WorldModel> {
     ring: Ring<Key<W::Saved>>,
     /// Roots at cut-grid frames of the live history, from the floor.
     live: BTreeMap<Frame, Hash>,
-    /// The transfers the live history's take_roots serialized at its newest grid frames (5.4).
-    live_transfers: BTreeMap<Frame, Taken>,
+    /// The transfers the live history's take_roots serialized at its grid frames from the floor, each with the keyframe
+    /// taken there, for at most [`LIVE_KEPT`] frames (5.4).
+    live_transfers: BTreeMap<Frame, Taken<W::Saved>>,
     /// The transfer the last take_root serialized, until the live history or a snapshot of that state takes it.
-    taken: Option<Taken>,
+    taken: Option<Taken<W::Saved>>,
     /// The ids of the entries each live frame stepped, in apply order, from the floor.
     stepped: BTreeMap<Frame, Vec<EntryRef>>,
     outcomes: BTreeMap<EntryRef, (Frame, Outcome)>,
@@ -446,12 +456,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
             scratch_acts: BTreeMap::new(),
             script_counts: ScriptCounts::default(),
         };
-        if r.is_cut_frame(Frame(0)) {
-            let root = r.take_root();
+        let root = r.is_cut_frame(Frame(0)).then(|| r.take_root());
+        r.keyframe(Frame(0));
+        if let Some(root) = root {
             r.live.insert(Frame(0), root);
             r.keep_live_transfer();
         }
-        r.keyframe(Frame(0));
         r.ring.pin([Frame(0)]);
         r.publish();
         Ok(r)
@@ -497,6 +507,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// final yet that it keeps.
     pub fn held_count(&self) -> usize {
         self.held.len()
+    }
+
+    /// How many of the live history's grid frames keep their transfer and keyframe for a matched cut (5.4): those from
+    /// the floor up, at most 16 (`LIVE_KEPT`).
+    pub fn live_kept(&self) -> usize {
+        self.live_transfers.len()
     }
 
     /// The live root at a cut-grid frame, if it has been taken and is still kept.
@@ -624,12 +640,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.note_events(f, events, resimulated);
             self.note_acts(f, acts);
             self.stepped.insert(f, ids);
+            if self.config.policy.takes(next) || self.is_cut_frame(next) {
+                self.keyframe(next);
+            }
             if let Some(root) = root {
                 self.live.insert(next, root);
                 self.keep_live_transfer();
-            }
-            if self.config.policy.takes(next) || self.is_cut_frame(next) {
-                self.keyframe(next);
             }
             self.reached = self.reached.max(next);
         }
@@ -793,16 +809,18 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
         };
         let root = self.world.root();
-        self.taken = taken.map(|(transfer, global)| Taken { frame: self.frame, root, transfer, global });
+        self.taken = taken.map(|(transfer, global)| Taken { frame: self.frame, root, transfer, global, key: None });
         root
     }
 
-    /// The live history just took its root at a grid frame: the transfer its take_root serialized stays for a vote or
-    /// `finalize` at that frame (5.4), for the newest few grid frames.
+    /// The live history just took its root and then its keyframe at a grid frame: the transfer its take_root
+    /// serialized and that keyframe stay for a vote or `finalize` at that frame (5.4) until the floor passes it, for at
+    /// most [`LIVE_KEPT`] grid frames, the oldest going first.
     fn keep_live_transfer(&mut self) {
-        if let Some(t) = self.taken.take() {
+        if let Some(mut t) = self.taken.take() {
+            t.key = self.ring.get(t.frame).cloned();
             self.live_transfers.insert(t.frame, t);
-            while self.live_transfers.len() > LIVE_TRANSFERS {
+            while self.live_transfers.len() > LIVE_KEPT {
                 self.live_transfers.pop_first();
             }
         }
@@ -836,7 +854,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     fn keyframe(&mut self, at: Frame) {
         match self.physics.save_image() {
-            Ok(image) => self.ring.insert(at, Key { world: self.world.save(), image }),
+            Ok(image) => self.ring.insert(at, Key { world: self.world.save(), image: Arc::new(image) }),
             Err(_) => self.faults += 1,
         }
     }
@@ -1105,9 +1123,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// My root at a cut whose entries the live history stepped exactly, to the cut's frame `at` (5.4): the root the
     /// live step took there, with no restore, re-step or hash. Its snapshot is the one already held for that root, or
-    /// the ring's keyframe at `at` (taken after that take_root) with the transfer the take_root serialized. `None`,
-    /// for the caller to re-step, with `reuse_live` off, under a vote hold at or below `at`, where the live history
-    /// took no root at `at`, or where neither snapshot source is there.
+    /// the keyframe the live history took at `at` right after that take_root, kept with the transfer the take_root
+    /// serialized. `None`, for the caller to re-step, with `reuse_live` off, under a vote hold at or below `at`, where
+    /// the live history took no root at `at`, or where neither snapshot source is there (past [`LIVE_KEPT`]).
     fn reuse_live_root(&mut self, at: Frame, history: Option<Hash>) -> Option<Hash> {
         if !self.config.reuse_live || self.held_at_or_below(at) {
             return None;
@@ -1118,8 +1136,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
             // A vote's records what it was stepped from this time, as a re-step's does.
             Some(h) => h.mark = mark.or(h.mark),
             None => {
-                let key = self.ring.get(at)?;
                 let t = self.live_transfers.get(&at).filter(|t| t.root == root)?;
+                let key = t.key.as_ref()?;
                 let held = Held {
                     frame: at,
                     world: key.world.clone(),
@@ -1218,6 +1236,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.faults += 1;
             return Err(RootError::Damaged);
         };
+        let image = Arc::new(image);
         let held = Held { frame: at, world: self.world.save(), image, transfer, global, epoch: self.epoch, mark: None };
         Ok((root, held))
     }
@@ -1770,6 +1789,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.frame = c;
         self.reached = self.reached.max(c);
         self.ring = Ring::new();
+        let image = Arc::new(image);
         self.ring.insert(c, Key { world: self.world.save(), image: image.clone() });
         self.ring.pin([c]);
         self.forget_after(c);
