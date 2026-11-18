@@ -100,24 +100,44 @@ impl World {
 
     /// At a cut frame, before the root (replica.md 3.4): every bound body's `BodyState`, and the domain's
     /// `physics_global`. It replaces every `BodyState` row: an object missing from `rows` has none afterwards. A
-    /// trusted write. Rows for objects that do not exist are skipped; of repeated ids, the last row stands.
+    /// trusted write. Rows for objects that do not exist are skipped; of repeated ids, the last row stands; a row the
+    /// store refuses (a value out of its field's range) is absent afterwards.
     ///
-    /// Linear in the bodies, whatever joins or leaves (@chunks-reviewer's Medium on f3f64f69 and 4397b403, which
-    /// measured the earlier versions quadratic under churn): every old row is removed from the highest id down, so
-    /// each removal takes the last row, and the wanted rows are then inserted in ascending id order, so each insert
-    /// appends. `BodyState` is never edited, so no row version is lost by not overwriting in place.
+    /// Only the rows that changed are written (L3a, @coordinator-opus mac3bdbe8133e). When the bodies are the ones
+    /// the column holds, each row is compared with the held one and overwritten only where its bytes differ, so an
+    /// object whose body sleeps keeps its cached hash. The result is the full rewrite's: the same ids and bytes in id
+    /// order, and the same row versions, since no edit can version a `BodyState` row (apply refuses the component), so
+    /// an overwrite keeps the version a fresh row has. A refused row is removed, as the full rewrite leaves it absent.
+    ///
+    /// When a body joined or left, every row is rewritten, linear in the bodies whatever joins or leaves
+    /// (@chunks-reviewer's Medium on f3f64f69 and 4397b403, which measured the earlier versions quadratic under churn):
+    /// every old row is removed from the highest id down, so each removal takes the last row, and the wanted rows are
+    /// then inserted in ascending id order, so each insert appends.
     pub fn write_physics(&mut self, rows: &[(ObjectId, BodyState)], global: Hash) {
         let mut want: Vec<(ObjectId, BodyState)> = rows.to_vec();
         want.sort_by_key(|&(id, _)| id);
         want.reverse();
         want.dedup_by_key(|&mut (id, _)| id); // keeps the last row given for an id
         want.reverse();
-        let old: Vec<ObjectId> = self.store.iter::<BodyState>().map(|(id, _)| id).collect();
-        for id in old.into_iter().rev() {
-            let _ = self.store.remove_raw(crate::components::ids::BODY_STATE, id);
-        }
-        for (id, row) in want {
-            if self.store.exists(id) {
+        want.retain(|&(id, _)| self.store.exists(id));
+        let (held, _) = self.store.column::<BodyState>();
+        let same_bodies = held.len() == want.len() && held.iter().zip(&want).all(|(h, (id, _))| h == id);
+        if same_bodies {
+            for (id, row) in want {
+                let old = self.store.get::<BodyState>(id);
+                if old.is_some_and(|old| bytemuck::bytes_of(old) == bytemuck::bytes_of(&row)) {
+                    continue;
+                }
+                if self.store.insert(id, row).is_err() {
+                    let _ = self.store.remove_raw(crate::components::ids::BODY_STATE, id);
+                }
+            }
+        } else {
+            let old: Vec<ObjectId> = self.store.iter::<BodyState>().map(|(id, _)| id).collect();
+            for id in old.into_iter().rev() {
+                let _ = self.store.remove_raw(crate::components::ids::BODY_STATE, id);
+            }
+            for (id, row) in want {
                 let _ = self.store.insert(id, row);
             }
         }
