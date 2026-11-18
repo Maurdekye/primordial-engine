@@ -118,9 +118,10 @@ pub(crate) fn refresh_cache(
     if triangle_count == triangle_capacity {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
-            eprintln!(
+            // Primordial Engine fork: through crate::warn, so an application's log gets it. See FORK.md.
+            crate::warn(&format!(
                 "WARNING: complex mesh detected, triangle buffer capacity of {triangle_capacity} reached"
-            );
+            ));
         });
     }
 

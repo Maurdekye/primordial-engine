@@ -1424,7 +1424,7 @@ fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool, shared: &Shared) -> Si
             shared.asked.store(true, Ordering::Release);
         }
         for line in sim.take_notices() {
-            println!("{line}");
+            crate::out!("{line}");
         }
         // 7. Wait for the next frame or a wake. A tick that ran long leaves no wait, and the next one jumps ahead.
         let due = sim.next_due(ticked, now);

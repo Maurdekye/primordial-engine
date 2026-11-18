@@ -964,9 +964,9 @@ fn not_admitted(peer: MemberKey) -> Refusal {
 
 fn log_lifecycle(l: &Lifecycle) {
     match l {
-        Lifecycle::Fault { peer, what } => eprintln!("net: fault from {}: {what}", short(peer)),
+        Lifecycle::Fault { peer, what } => crate::err!("net: fault from {}: {what}", short(peer)),
         Lifecycle::Refused { peer, refusal, by_me } => {
-            eprintln!(
+            crate::err!(
                 "net: {} {}: {:?} {}",
                 if *by_me { "refused" } else { "refused by" },
                 short(peer),
@@ -974,7 +974,7 @@ fn log_lifecycle(l: &Lifecycle) {
                 refusal.detail
             )
         }
-        Lifecycle::ClockFault(f) => eprintln!("net: clock fault {f:?}"),
+        Lifecycle::ClockFault(f) => crate::err!("net: clock fault {f:?}"),
         Lifecycle::ClockReady | Lifecycle::Welcomed { .. } => {}
     }
 }
@@ -1031,7 +1031,7 @@ impl MemberHook {
 
     fn command(&mut self, c: Command) {
         if !self.control.command(c) {
-            eprintln!("net: the control queue is full");
+            crate::err!("net: the control queue is full");
         }
     }
 
@@ -1083,14 +1083,14 @@ impl NetHook for MemberHook {
                 }
             }
             NetEvent::LinkDown { peer } => {
-                eprintln!("net: link to {} down", short(peer));
+                crate::err!("net: link to {} down", short(peer));
                 let (members, now) = (agree.members(), self.now);
                 if let Some(i) = &mut self.inviter {
                     i.on_link_down(*peer, &members, now);
                 }
                 self.act(&members);
             }
-            NetEvent::LinkUp { peer } => eprintln!("net: link to {} up", short(peer)),
+            NetEvent::LinkUp { peer } => crate::err!("net: link to {} up", short(peer)),
             _ => {}
         }
     }

@@ -100,7 +100,7 @@ impl Quit {
         Arc::new(Quit::default())
     }
 
-    /// The process's quit, with the console's events hooked to it. Called first in `main`, before any thread starts:
+    /// The process's quit, with the console's events hooked to it. Called in `main` before any thread starts:
     /// on unix it blocks the signals in every thread to come, and one thread of its own takes them. Once per process.
     pub fn install() -> Result<Arc<Quit>, String> {
         let cell = static_quit();
@@ -200,7 +200,7 @@ impl Quit {
         let q = self.clone();
         let spawned = std::thread::Builder::new().name("pe-quit".into()).spawn(move || q.handle_from(false, why));
         if let Err(e) = spawned {
-            eprintln!("pe-app: {why}, and the quit's thread did not start ({e}): ending now");
+            crate::err!("pe-app: {why}, and the quit's thread did not start ({e}): ending now");
             std::process::exit(EXIT_INTERRUPTED);
         }
     }
@@ -215,11 +215,11 @@ impl Quit {
     fn handle_from(self: &Arc<Self>, closing: bool, why: &str) {
         match self.request() {
             Action::ExitNow => {
-                eprintln!("pe-app: ended at once");
+                crate::err!("pe-app: ended at once");
                 std::process::exit(EXIT_INTERRUPTED)
             }
             Action::Run(shutdown) => {
-                eprintln!("pe-app: quitting ({why})…");
+                crate::err!("pe-app: quitting ({why})…");
                 let q = self.clone();
                 let run = move || {
                     shutdown();
@@ -232,13 +232,15 @@ impl Quit {
                 } else {
                     let spawned = std::thread::Builder::new().name("pe-quit".into()).spawn(run);
                     if spawned.is_err() || !self.wait_quit(CLOSE_WAIT) {
-                        eprintln!("pe-app: leave cut short (the console closed before the others confirmed it)");
+                        crate::err!("pe-app: leave cut short (the console closed before the others confirmed it)");
                     }
                 }
             }
             Action::MainQuits => {
+                // The polling main thread runs the quit (VR, headless); say so here, as `Run` does.
+                crate::err!("pe-app: quitting ({why})…");
                 if closing && !self.wait_quit(CLOSE_WAIT) {
-                    eprintln!("pe-app: leave cut short (the console closed before the others confirmed it)");
+                    crate::err!("pe-app: leave cut short (the console closed before the others confirmed it)");
                 }
             }
         }

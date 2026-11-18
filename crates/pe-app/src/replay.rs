@@ -222,7 +222,10 @@ pub fn replay(job: &ReplayJob) -> Verdict {
     }
     if job.absent > 0 {
         // A module this machine never held can't have run here: the replay goes on, and differs if it was needed.
-        eprintln!("pe-app: replay: {} committed modules aren't held here, so the replay runs without them", job.absent);
+        crate::err!(
+            "pe-app: replay: {} committed modules aren't held here, so the replay runs without them",
+            job.absent
+        );
     }
     let (settings, run) = crate::net::runner_settings();
     let runner = match LogicRunner::new(settings, run) {
@@ -276,7 +279,7 @@ pub fn replay(job: &ReplayJob) -> Verdict {
 pub fn spawn(job: ReplayJob, stack: usize) -> std::io::Result<std::thread::JoinHandle<Verdict>> {
     std::thread::Builder::new().name("pe-replay".into()).stack_size(stack).spawn(move || {
         let verdict = replay(&job);
-        println!("{}", verdict.line());
+        crate::out!("{}", verdict.line());
         verdict
     })
 }

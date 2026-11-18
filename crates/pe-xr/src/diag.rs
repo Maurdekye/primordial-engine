@@ -23,9 +23,22 @@ pub fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var(LOG_ENV).as_deref() == Ok("1"))
 }
 
-/// Write one line to standard error, prefixed `pe-xr:`.
+/// Where [`emit`] sends its lines instead of standard error, once an application sets it ([`set_sink`]).
+static SINK: OnceLock<fn(&str)> = OnceLock::new();
+
+/// Sends this process's lines to `sink` instead of standard error: pe-app's `--log` writes them to its log as well as
+/// the console. Once per process; false if a sink was already set.
+pub fn set_sink(sink: fn(&str)) -> bool {
+    SINK.set(sink).is_ok()
+}
+
+/// Write one line to standard error (or the sink, [`set_sink`]), prefixed `pe-xr:`.
 pub fn emit(line: &str) {
-    eprintln!("pe-xr: {line}");
+    let text = format!("pe-xr: {line}");
+    match SINK.get() {
+        Some(sink) => sink(&text),
+        None => eprintln!("{text}"),
+    }
 }
 
 /// What a session has logged so far: each first is logged once. Its methods return the line to write, or `None`
