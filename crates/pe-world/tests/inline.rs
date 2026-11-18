@@ -278,11 +278,19 @@ fn a_joiner_gets_the_names_of_the_state_it_imports() {
     assert_eq!(imp.blobs, vec![Bytes::from_static(b"Cup")]);
     let got = joiner().import(pe_seams::DomainId(0), &imp).unwrap();
     assert_eq!(got.snapshot(Frame(1)).name(id).as_deref(), Some("Cup"));
-    // A display blob may be missing: without the bytes the import still lands, and the name waits.
+    // Without the bytes a joiner that lacks them refuses the import (phase 3b), so the repair asks another donor:
+    // nothing fetches an inline blob later, so the name would stay blank for good.
     let mut bare = imp.clone();
     bare.blobs.clear();
-    let got = joiner().import(pe_seams::DomainId(0), &bare).unwrap();
-    assert_eq!(got.snapshot(Frame(1)).name(id), None);
+    assert_eq!(
+        joiner().import(pe_seams::DomainId(0), &bare).err(),
+        Some(pe_seams::ImportError::MissingBlob(pe_core::Hash(BlobRef::of(b"Cup").hash)))
+    );
+    // One that holds them already needs none.
+    let held = joiner();
+    held.blobs().put(b"Cup");
+    let got = held.import(pe_seams::DomainId(0), &bare).unwrap();
+    assert_eq!(got.snapshot(Frame(1)).name(id).as_deref(), Some("Cup"));
 }
 
 #[test]

@@ -502,12 +502,12 @@ which fixes the origin's role deliberately.
   - **In an import** (6.5; S2 v1.8): `CutImport.blobs` carries the bytes of the inline-class blobs the imported rows
     reference, a tombstone's kept rows included when the tombstones table is imported, since `Undelete` restores
     them (`Tree::export_blobs` gives them). Each must be one an imported row references, in ascending order of hash
-    (`BadBlob(i)` otherwise). A missing inline-class *simulation* blob that this machine lacks too refuses it
-    (`MissingBlob`), since without it the joiner could step differently. A missing inline-class *display* blob does
-    not refuse it yet, and the name stays blank on that machine until it is rewritten, since nothing fetches inline
-    blobs. That refusal (`MissingBlob` too, so the ladder tries another donor) lands once pe-diverge's fetch carries
-    a donor's `export_blobs`; before then it would turn a repair that converges with a
-    blank name into one that fails (@design-reviewer's Low).
+    (`BadBlob(i)` otherwise). A missing inline-class blob that this machine lacks too refuses it (`MissingBlob`): a
+    *simulation* blob since without it the joiner could step differently, and a *display* blob (a name) since nothing
+    fetches an inline blob later, so the name would stay blank for good (phase 3b; @design-reviewer's Low).
+    pe-diverge's repair carries each donor's `export_blobs` with its records, and treats `MissingBlob` as the donor's
+    fault, so the ladder asks the next donor (divergence.md 4.2 step 3)
+    [V `a_joiner_gets_the_names_of_the_state_it_imports`].
   - **Kept:** the store deletes nothing today [V, `BlobStore`]. When pruning comes, an inline-class blob is kept
     while any live or tombstoned row references it, even after its entry has left the log's retention, since a joiner's
     import is then the only way it travels.
