@@ -315,7 +315,7 @@ impl World {
     /// the hands, left then right.
     ///
     /// Not yet: the avatar root that parents the hands (3.5), whose id derivation is open. A rejoin at a later frame
-    /// makes two new hands (the ids include the frame); removing a leaver's hands is the leave's, not built yet.
+    /// makes two new hands (the ids include the frame), once [`World::leave`] has removed the old ones.
     pub fn admit(
         &mut self,
         line: LineId,
