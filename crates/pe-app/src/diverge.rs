@@ -229,6 +229,7 @@ impl DivergeLoop {
         let out = self.d.tick(now, clock, replica, agree);
         // What pe-diverge did, for the log: a handful per final cut while a machine diverges, none while healthy.
         notices.extend(self.d.events().into_iter().map(|e| format!("divergence: {e:?}")));
+        notices.extend(self.d.notes().into_iter().map(|n| format!("divergence: {n}")));
         for a in self.d.actions() {
             match a {
                 Action::Revote { cut, root } => match agree.vote(&cut, root, *self_test) {

@@ -380,7 +380,12 @@ a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named abs
 - **With no quorum root** (S3 `RootSplit`): typically two players, or three that all differ. Every member applies
   the same rule [I]:
   1. Every member runs rung 1 from its own `Cv` (`replay_to` at the split cut, which moves neither `Cv` nor the
-     floor, since the cut is not final) and votes again with the root it gives. Transient faults end here.
+     floor, since the cut is not final) and votes again with the root it gives. Transient faults end here. It then
+     asks the replica for its root at the cut (S2 `root_at_cut`), which holds that root's state again: a replay
+     forgets the votes that kept it, and the reference must still serve it when a rung 2 toward it asks, which can
+     be before the reference's own pick has asked (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t).
+     A replay or repair that a root split at a newer cut overtakes is no failure: the work moves to the newer split,
+     `Diverge::notes` says so for the log, and `split_overtook` counts it (a join's import still fails the join, 4.5).
   2. Every member **runs the physics self-test** for the split, once per episode, rather than reading its last
      result. Its verdict names the split cut (S3 v1.3 `SelfTest::{Passed, Failed} { split }`) and is final for the
      split: a second, different verdict from one member for one split is equivocation, which agreement shows as

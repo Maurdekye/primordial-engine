@@ -385,6 +385,10 @@ pub struct Mock {
     /// Objects whose rows reference an inline-class simulation blob ([`name_of`]), and the blobs this machine has.
     pub named: BTreeSet<u128>,
     pub blobs: BTreeMap<Hash, Bytes>,
+    /// As pe-replica: a replay forgets the votes that kept its cut's snapshot, so the root there is not held again
+    /// until `root_at_cut` is asked (replica.md 4.1).
+    pub forget_after_replay: bool,
+    unheld: BTreeSet<u64>,
 }
 
 impl Mock {
@@ -408,6 +412,8 @@ impl Mock {
             kept_from: 0,
             finalize_calls: 0,
             not_ready: 0,
+            forget_after_replay: false,
+            unheld: BTreeSet::new(),
             refuse: None,
             named: (1..=objects).filter(|k| k % 4 == 1).map(spread).collect(),
             blobs: BTreeMap::new(),
@@ -514,7 +520,7 @@ impl Mock {
     }
 
     fn held(&self, root: &Hash) -> Option<u64> {
-        self.roots.iter().rev().find(|(_, r)| *r == root).map(|(f, _)| *f)
+        self.roots.iter().rev().find(|(f, r)| *r == root && !self.unheld.contains(f)).map(|(f, _)| *f)
     }
 
     fn damaged_at(&self, f: u64) -> bool {
@@ -559,7 +565,9 @@ impl Replica for Mock {
         if self.damaged_at(f) {
             return Err(RootError::Damaged);
         }
-        self.roots.get(&f).copied().ok_or(RootError::NotKept)
+        let root = self.roots.get(&f).copied().ok_or(RootError::NotKept)?;
+        self.unheld.remove(&f);
+        Ok(root)
     }
     fn finalize(&mut self, cut: &FinalCut, _source: &mut dyn EntrySource) -> Finalized {
         self.finalize_calls += 1;
@@ -611,6 +619,9 @@ impl Replica for Mock {
         }
         let root = self.run_replay(&cut.at)?;
         self.replayed = Some((cut.at, root));
+        if self.forget_after_replay {
+            self.unheld.insert(cut.at.frame.0);
+        }
         Ok(root)
     }
     fn tree(&self, root: &Hash) -> Option<Box<dyn Tree + '_>> {
@@ -857,9 +868,17 @@ pub struct Peer {
 pub struct Net {
     pub peers: Vec<Peer>,
     pub cut_every: u64,
+    /// As pe-agree (agreement.md L4'): a split ends its view at once, and the next view proposes the same height
+    /// again at a newer frame. Off, the split cut is decided again as it is.
+    pub repropose: bool,
+    /// As S3 v1.3: the pending split is emitted again each frame as verdicts arrive. Off, verdicts show only at the
+    /// next decision, which asks every member's root at the cut again.
+    pub reemit: bool,
     pub height: u64,
     pub line: LineId,
     pending_split: Option<Cut>,
+    /// The voters' roots at the pending split's cut, for its re-emissions.
+    pending_groups: BTreeMap<Hash, Vec<MemberKey>>,
 }
 
 pub fn key(i: usize) -> MemberKey {
@@ -889,7 +908,16 @@ impl Net {
                 skip_splits: 0,
             })
             .collect();
-        Net { peers, cut_every: 8, height: 0, line: LineId::origin(), pending_split: None }
+        Net {
+            peers,
+            cut_every: 8,
+            repropose: false,
+            reemit: false,
+            height: 0,
+            line: LineId::origin(),
+            pending_split: None,
+            pending_groups: BTreeMap::new(),
+        }
     }
 
     /// The cut of the root split under way, if any.
@@ -908,7 +936,6 @@ impl Net {
     /// The agreement stand-in: the quorum root is a root at least `quorum(n)` peers hold; with none, a root split.
     fn decide(&mut self, cut: Cut) {
         let now = self.now();
-        let frame = self.peers[0].r.now;
         let mut groups: BTreeMap<Hash, Vec<MemberKey>> = BTreeMap::new();
         for p in &mut self.peers {
             if let Ok(r) = p.r.root_at_cut(&cut, &mut p.src) {
@@ -928,35 +955,43 @@ impl Net {
                 }
             }
             None => {
-                // Each observer sees each voter's verdict for this split once it has arrived (S3 v1.3): its own at
-                // once, another's `verdict_delay` frames after it ran.
-                let shown: Vec<(MemberKey, CutRef, bool, u64, u64)> = self
-                    .peers
-                    .iter()
-                    .filter_map(|p| p.verdict.map(|(c, ok, at)| (p.key, c, ok, at, p.verdict_delay)))
-                    .collect();
-                for p in &mut self.peers {
-                    if p.skip_splits > 0 {
-                        p.skip_splits -= 1;
-                        continue;
-                    }
-                    let me = p.key;
-                    let test = |m: &MemberKey| match shown.iter().find(|v| v.0 == *m) {
-                        Some((v, c, ok, at, delay)) if *c == cut.at && (*v == me || frame >= at + delay) => {
-                            if *ok {
-                                SelfTest::Passed { split: *c }
-                            } else {
-                                SelfTest::Failed { split: *c }
-                            }
-                        }
-                        _ => SelfTest::NotRun,
-                    };
-                    let roots: Vec<(Hash, Vec<(MemberKey, SelfTest)>)> =
-                        groups.iter().map(|(h, v)| (*h, v.iter().map(|m| (*m, test(m))).collect())).collect();
-                    p.d.on_root_split(&cut, &roots, &mut p.r, &mut p.src, now, &Clock);
-                }
+                self.emit_split(&cut, &groups);
                 self.pending_split = Some(cut);
+                self.pending_groups = groups;
             }
+        }
+    }
+
+    /// `RootSplit` for `cut`, with each voter's verdict as each observer sees it now.
+    fn emit_split(&mut self, cut: &Cut, groups: &BTreeMap<Hash, Vec<MemberKey>>) {
+        let now = self.now();
+        let frame = self.peers[0].r.now;
+        // Each observer sees each voter's verdict for this split once it has arrived (S3 v1.3): its own at
+        // once, another's `verdict_delay` frames after it ran.
+        let shown: Vec<(MemberKey, CutRef, bool, u64, u64)> = self
+            .peers
+            .iter()
+            .filter_map(|p| p.verdict.map(|(c, ok, at)| (p.key, c, ok, at, p.verdict_delay)))
+            .collect();
+        for p in &mut self.peers {
+            if p.skip_splits > 0 {
+                p.skip_splits -= 1;
+                continue;
+            }
+            let me = p.key;
+            let test = |m: &MemberKey| match shown.iter().find(|v| v.0 == *m) {
+                Some((v, c, ok, at, delay)) if *c == cut.at && (*v == me || frame >= at + delay) => {
+                    if *ok {
+                        SelfTest::Passed { split: *c }
+                    } else {
+                        SelfTest::Failed { split: *c }
+                    }
+                }
+                _ => SelfTest::NotRun,
+            };
+            let roots: Vec<(Hash, Vec<(MemberKey, SelfTest)>)> =
+                groups.iter().map(|(h, v)| (*h, v.iter().map(|m| (*m, test(m))).collect())).collect();
+            p.d.on_root_split(cut, &roots, &mut p.r, &mut p.src, now, &Clock);
         }
     }
 
@@ -967,6 +1002,10 @@ impl Net {
         let f = self.peers[0].r.now;
         if f.is_multiple_of(self.cut_every) {
             match self.pending_split.take() {
+                Some(cut) if self.repropose => {
+                    let at = CutRef { frame: Frame(f - 2), ..cut.at };
+                    self.decide(Cut { at, heads: Vec::new() })
+                }
                 Some(cut) => self.decide(cut),
                 None => {
                     self.height += 1;
@@ -991,6 +1030,13 @@ impl Net {
             {
                 p.verdict = Some((c, !p.self_test_fails, frame));
             }
+        }
+        if self.reemit
+            && let Some(cut) = self.pending_split.clone()
+        {
+            let groups = self.pending_groups.clone();
+            self.emit_split(&cut, &groups);
+            self.deliver();
         }
     }
 
