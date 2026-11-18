@@ -44,7 +44,9 @@
 #      scripts/ci_status.py --check reads the latest finished hosted run on the public main, and gives up after
 #      20 s. With "on", a red run fails the gate until it is fixed, or explained in scripts/tier2_explained.txt;
 #      with "note", the gate only reports it (until the first four-platform run is green or explained,
-#      coordinator). If GitHub can't be read in time, the gate says so and passes.
+#      coordinator). If GitHub can't be read in time, the gate says so and passes. Where the clone
+#      names a file holding a read-only GitHub token (git config pe.gate.ghtoken, or PE_GATE_GHTOKEN), the check
+#      reads GitHub with it: 5,000 calls an hour instead of this address's 60 (coordinator).
 # Every git command runs with in-tree attributes off (GIT_ATTR_SOURCE is the empty tree), so a committed
 # .gitattributes can't change what a scan reads.
 #
@@ -54,7 +56,9 @@
 # PE_GATE_WRAP (a command line to run the audit under, such as the org's build-slot wrapper; read with eval,
 # so quote paths in it as in a shell), PE_PUBLISH_TERMS and PE_PUBLISH_ALLOW (the term file and the
 # allowlist; default: git config pe.gate.terms and pe.gate.allow), PE_GATE_TIER2 (on, note or off: step 5;
-# default: git config pe.gate.tier2, else off). git config pe.gate.tmpdir names a folder for its temporary files
+# default: git config pe.gate.tier2, else off), PE_GATE_GHTOKEN (a file outside any repository holding a GitHub
+# token, for step 5; default: git config pe.gate.ghtoken, else none; a missing or empty file means no token, and
+# the token is never printed). git config pe.gate.tmpdir names a folder for its temporary files
 # (it exports the whole tree there), as an absolute path, when that folder exists; else TMPDIR's is used.
 set -u
 die() { echo "gate: ERROR: $*" >&2; exit 2; }
@@ -543,8 +547,11 @@ case ${t2:-off} in
     else
       t0=$(date +%s)
       # Each finished run's verdict is kept in the clone's git folder, which its worktrees share, so a check reads
-      # only the listing for a run already judged: GitHub allows 60 calls an hour (coordinator).
-      "$py" -I "$(native "$c/scripts/ci_status.py")" --check "$(native "$x/scripts/tier2_explained.txt")" \
+      # only the listing for a run already judged: GitHub allows 60 calls an hour (coordinator). A
+      # token file raises that to the token's 5,000; ci_status.py reads the file itself and never prints the token.
+      tok=${PE_GATE_GHTOKEN:-$(git config --get pe.gate.ghtoken 2> /dev/null)}
+      "$py" -I "$(native "$c/scripts/ci_status.py")" ${tok:+--token-file "$(native "$tok")"} \
+        --check "$(native "$x/scripts/tier2_explained.txt")" \
         --cache "$(native "$gitdir/pe-tier2-verdicts.json")" > "$tmp/tier2.log" 2>&1
       r=$?
       dt=$(( $(date +%s) - t0 ))

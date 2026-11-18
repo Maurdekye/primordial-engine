@@ -294,6 +294,16 @@ already landed, and a red run holds up the landings after it (decision C7).
     to four calls, and on 2026-11-17 a busy hour spent all 60: GitHub refused with HTTP 403, and an answer of 304
     counts too without a login. A cache that can't be read or written only costs calls. If the 60 are spent
     anyway, the gate says GitHub can't be read and passes; a red run blocks again once GitHub answers.
+  * **A read-only token lifts the 60** (the user's ruling, coordinator). The 60 are this address's,
+    shared with everything else on the machine, and on 2026-11-18 they ran out twice in five hours with the cache,
+    each time leaving the gate unable to block. `git config pe.gate.ghtoken <file>` (or `PE_GATE_GHTOKEN`) names a
+    file outside any repository that holds a GitHub token: a fine-grained one with public repositories
+    (read-only) and no permissions. The check then reads with it, and its calls count against the token's 5,000
+    an hour. The token goes only to `https://api.github.com`, never across a redirect, and is never printed. A
+    missing or empty file means no token, as before; a file holding anything else is noted on the gate's tier-2
+    line. If GitHub refuses the token (revoked or expired: HTTP 401 or 403), the check makes the call again
+    without it and its line says so. To read with it by hand too:
+    `python -I scripts/ci_status.py --token-file "$(git config --get pe.gate.ghtoken)" --run <id>`.
 * **Triage** is WS-ci's.
   * A watchdog runs `scripts/ci_status.py --new <state file>` every 30 minutes. It names each red run once. When
     a platform is back in a red run after runs without a runner, the line adds the commits it left unverified:
