@@ -54,6 +54,8 @@ use pe_seams::{DomainId, Frame, FrameClock, Hash, LineId, MemberKey, Pos, Replic
 use pe_world::preset::{self, Session};
 use pe_world::{BlobStore, World, perm};
 
+use crate::fault::FaultWorld;
+
 /// The record's format: a change to its fields or their encoding bumps it.
 pub const FORMAT: u16 = 1;
 /// The one preset a record names in M1, and its version: a change to what `preset::m1_session` builds bumps it.
@@ -388,7 +390,7 @@ impl Genesis {
         world.set_rate(self.rate);
         let mut config = replica_config(&self.node_config(), self.rate, clock);
         config.local = Some(me);
-        let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config)
+        let replica = ReplicaImpl::new(FaultWorld::armed(PeWorld::new(world, DomainId(0))), config)
             .map_err(|e| GenesisError::World(format!("{e:?}")))?
             .with_runner(runner);
         Ok(Box::new(replica))
@@ -589,7 +591,7 @@ impl Genesis {
         }
         let mut config = replica_config(&node, self.rate, clock);
         config.local = Some(me);
-        let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config)
+        let replica = ReplicaImpl::new(FaultWorld::armed(PeWorld::new(world, DomainId(0))), config)
             .map_err(|e| GenesisError::World(format!("{e:?}")))?
             .with_runner(runner);
         let root = replica.live_root(Frame(0)).ok_or_else(|| GenesisError::World("no root at frame 0".into()))?;
