@@ -203,7 +203,7 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
      1-256 B blobs its records' rows reference, as far as the source has them (`Tree::export_blobs`). pe-diverge keeps
      each once, by hash, and hands them to the import (`CutImport.blobs`, ascending by hash). They need no proof of
      their own: a blob is named by its hash in a row that is proved. The replica refuses a blob no imported row
-     references (`BadBlob`), and an import that lacks a small simulation blob this machine does not have
+     references (`BadBlob`), and an import that lacks a small blob this machine does not have
      (`MissingBlob`). Either is the source's fault: it is left, as for a record that fails its proof, and the next
      source is asked [R @world-model].
 4. **Patch** my state at `C` with the records (S2 `import_at_cut`). Its root must now equal `C`'s. If it does not,
