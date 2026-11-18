@@ -15,9 +15,15 @@
 //! their sinks (`pe_xr::diag::set_sink`, `pe_mcp::host::set_line_sink`, `pe_physics::set_warning_sink`), which
 //! pe-app points at [`err_line`].
 //!
+//! **A file that can't be written stops, and says so.** If a write to the file fails (a full disk, or a drive that
+//! went away), the console says once that the log stops there, with the error, and the log closes: the lines after
+//! it reach the console only, and a reader of the file isn't left trusting one that fell behind (@design-reviewer's
+//! L1, m524453d20b1f).
+//!
 //! **What the file can't hold.** Text that native code writes straight to the process's standard error (a GPU
-//! driver's or the OpenXR loader's own messages) and the Rust runtime's last words before an abort (a stack
-//! overflow) reach the console only: none of them passes through pe-app.
+//! driver's or the OpenXR loader's own messages), wasmtime's own messages before it aborts (a fault at an address
+//! no linear memory knows, or a trap handler it can't remove) and the Rust runtime's last words before an abort (a
+//! stack overflow) reach the console only: none of them passes through pe-app.
 //!
 //! Without `--log` the macros print exactly as `println!` and `eprintln!` did, except that a console write that fails
 //! is ignored instead of panicking: a console closed during the quit must not cut the leave short.
@@ -26,8 +32,9 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Which console stream a line goes to.
@@ -41,6 +48,7 @@ pub enum Stream {
 #[derive(Debug)]
 pub struct LogFile {
     file: File,
+    path: PathBuf,
     opened: Instant,
 }
 
@@ -51,7 +59,7 @@ impl LogFile {
         let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
         writeln!(file, "# pe-app log, opened at Unix time {unix:.3}; each line starts with the seconds since then")?;
-        Ok(LogFile { file, opened: Instant::now() })
+        Ok(LogFile { file, path: path.to_path_buf(), opened: Instant::now() })
     }
 
     /// Writes `text`, each of its lines prefixed with the seconds since the log opened. Errors are returned, not
@@ -92,11 +100,14 @@ pub fn is_open() -> bool {
 
 /// Prints `text` on `stream` as `println!` or `eprintln!` would, and writes it to the log if one is open: the file
 /// first, then the console, under one lock, so both hold the same lines in the same order and the file is never
-/// behind (module docs). A failed write to either is ignored.
+/// behind (module docs). A failed console write is ignored; a failed file write closes the log, and the console says
+/// so once ([`write_log`]).
 pub fn write_str(stream: Stream, text: &str) {
+    // Nothing in this locked section may panic: `LOG` isn't re-entrant, so the panic hook's own `write_str` would wait
+    // for this lock forever, on this same thread (@design-reviewer, m524453d20b1f).
     let mut g = lock();
-    if let Some(log) = g.as_mut() {
-        let _ = log.write_text(text);
+    if let Some(stopped) = write_log(&mut g, text) {
+        let _ = writeln!(std::io::stderr().lock(), "{stopped}");
     }
     match stream {
         Stream::Out => {
@@ -108,6 +119,17 @@ pub fn write_str(stream: Stream, text: &str) {
             let _ = writeln!(std::io::stderr().lock(), "{text}");
         }
     }
+}
+
+/// Writes `text` to the log in `slot`, if one is open. If the write fails, closes the log, so it isn't tried again on
+/// every line, and returns the line that tells the console the file stops here (module docs).
+fn write_log(slot: &mut Option<LogFile>, text: &str) -> Option<String> {
+    let e = slot.as_mut()?.write_text(text).err()?;
+    let path = slot.take()?.path;
+    Some(format!(
+        "pe-app: the log {} stops here, since writing it failed ({e}); the lines from here on are on this console only",
+        path.display()
+    ))
 }
 
 /// [`write_str`] on standard error: the sink pe-app gives pe-xr and pe-mcp for their lines.
@@ -128,14 +150,29 @@ pub fn install_panic_hook() {
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "Box<dyn Any>".into());
         let at = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default();
-        let backtrace = std::backtrace::Backtrace::capture();
-        let tail = match backtrace.status() {
-            std::backtrace::BacktraceStatus::Captured => format!("stack backtrace:\n{backtrace}"),
-            _ => "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace".to_string(),
+        // Decided as the standard hook decides: by RUST_BACKTRACE alone (`full` for every frame; unset or `0` for
+        // none, with the note on the first panic only). `Backtrace::capture` would read RUST_LIB_BACKTRACE first
+        // (@design-reviewer's N2, m524453d20b1f).
+        let backtrace = |full: bool| {
+            let b = std::backtrace::Backtrace::force_capture();
+            let text = if full { format!("{b:#}") } else { format!("{b}") };
+            // Its text ends with a newline, which would leave an empty last line.
+            format!("\nstack backtrace:\n{}", text.trim_end())
         };
-        write_str(Stream::Err, &format!("thread '{name}' panicked at {at}:\n{message}\n{tail}"));
+        let tail = match std::env::var_os("RUST_BACKTRACE") {
+            Some(v) if v == "full" => backtrace(true),
+            Some(v) if v != "0" => backtrace(false),
+            _ if !NOTED.swap(true, Ordering::Relaxed) => {
+                "\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace".to_string()
+            }
+            _ => String::new(),
+        };
+        write_str(Stream::Err, &format!("thread '{name}' panicked at {at}:\n{message}{tail}"));
     }));
 }
+
+/// Whether a panic has printed the note about RUST_BACKTRACE: the standard hook prints it once per process.
+static NOTED: AtomicBool = AtomicBool::new(false);
 
 /// `println!` through the run's log ([`write_str`]).
 #[macro_export]
@@ -195,6 +232,27 @@ mod tests {
             assert!(secs.trim().parse::<f64>().is_ok_and(|s| (0.0..60.0).contains(&s)), "{line}");
             assert_eq!(rest, format!(" {want}"));
         }
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_file_that_cant_be_written_closes_the_log_and_the_console_is_told_once() {
+        let p = temp("unwritable");
+        let mut slot = Some(LogFile::create(&p).expect("create"));
+        assert_eq!(write_log(&mut slot, "written"), None, "a write that works says nothing");
+        assert!(slot.is_some(), "and the log stays open");
+        // The same file opened read-only: every write to it fails, as on a full disk or a drive that went away.
+        let file = File::open(&p).expect("open");
+        slot = Some(LogFile { file, path: p.clone(), opened: Instant::now() });
+        let said = write_log(&mut slot, "lost").expect("the console is told");
+        assert!(
+            said.starts_with(&format!("pe-app: the log {} stops here, since writing it failed (", p.display())),
+            "{said}"
+        );
+        assert!(slot.is_none(), "the log closed");
+        assert_eq!(write_log(&mut slot, "after"), None, "told once: the closed log isn't tried again");
+        let text = std::fs::read_to_string(&p).expect("UTF-8");
+        assert!(text.ends_with(" written\n"), "the file keeps what was written before:\n{text}");
         let _ = std::fs::remove_file(&p);
     }
 }

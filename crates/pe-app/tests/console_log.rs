@@ -24,6 +24,11 @@ struct Run {
 
 impl Run {
     fn start(name: &str) -> Run {
+        Run::start_with(name, &[])
+    }
+
+    /// [`Run::start`] with these environment variables set.
+    fn start_with(name: &str, env: &[(&str, &str)]) -> Run {
         let dir = std::env::temp_dir().join(format!("pe-app-console-log-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a test folder");
@@ -37,6 +42,7 @@ impl Run {
             // No script builds (they'd need the toolchain) and the panic's short form.
             .env_remove("CARGO")
             .env_remove("RUST_BACKTRACE")
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::from(console.try_clone().expect("console")))
             .stderr(Stdio::from(console));
@@ -151,6 +157,23 @@ fn a_panic_is_in_the_log_as_on_the_console() {
     run.assert_same_last_line();
     let log = run.log();
     assert!(log.contains("panicked at") && log.contains("the console's test panic"), "{log}");
+}
+
+#[test]
+fn a_panic_has_its_backtrace_when_rust_backtrace_asks_as_the_standard_hook_decides() {
+    if !cfg!(debug_assertions) {
+        eprintln!("skipped: only debug builds take the console's `panic`");
+        return;
+    }
+    // RUST_LIB_BACKTRACE is for `Backtrace::capture` in programs; the standard hook reads RUST_BACKTRACE only.
+    let mut run = Run::start_with("backtrace", &[("RUST_BACKTRACE", "1"), ("RUST_LIB_BACKTRACE", "0")]);
+    run.type_lines("panic\n");
+    run.wait_for("the console's test panic", Duration::from_secs(30));
+    let _ = run.child.kill();
+    let _ = run.child.wait();
+    run.assert_same_last_line();
+    let log = run.log();
+    assert!(log.contains("stack backtrace:") && !log.contains("note: run with"), "{log}");
 }
 
 #[test]
