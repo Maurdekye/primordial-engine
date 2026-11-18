@@ -657,6 +657,35 @@ fn the_reference_still_serves_its_root_at_the_split_cut_after_its_replay() {
     assert_eq!(net.peers[0].d.counters().serve_refused, 0);
 }
 
+/// @design-reviewer's L1 and L2 on a49dd778: the reference's own step-1 replay runs over several ticks, and after it
+/// its `root_at_cut` answers `Pending` a few times. A rung 2 that asks it meanwhile is told `Busy`, never `NotHeld`,
+/// so at n = 2 the rung on its only source does not fail, and it cures.
+#[test]
+fn the_reference_is_busy_not_absent_while_it_replays_and_holds_its_root_again() {
+    for (replay_frames, pending) in [(4, 0), (0, 3), (4, 3)] {
+        let mut net = Net::new(2, 40, &[]);
+        net.reemit = true;
+        net.run(20);
+        for p in &mut net.peers {
+            p.r.forget_after_replay = true;
+        }
+        net.peers[0].r.pending_frames = replay_frames;
+        net.peers[0].r.root_pending = pending;
+        net.peers[1].r.faulty = Some(5);
+        net.peers[1].self_test_fails = true;
+        net.peers[1].verdict_delay = 24;
+        net.run(60);
+        let case = (replay_frames, pending);
+        let failed: Vec<_> =
+            net.peers.iter().flat_map(|p| &p.events).filter(|e| matches!(e, DivergeEvent::RungFailed { .. })).collect();
+        assert!(failed.is_empty(), "{case:?}: {failed:?}");
+        let c = net.peers[1].d.counters().clone();
+        assert!(c.cured_by_rung[1] >= 1 && (c.source_faults, c.rung_failures) == (0, 0), "{case:?}: {c:?}");
+        let busy = net.peers[0].sent.iter().filter(|m| matches!(m, Msg::Busy { .. })).count();
+        assert!(busy >= 1, "{case:?}: the reference answered Busy while it could not serve");
+    }
+}
+
 /// At n = 2 a split ends its view at once and the height is proposed again (agreement.md L4'), while the member
 /// still repairing votes its old root there. The repair the re-proposal overtakes is no failure: a note says so, and
 /// the work goes on at the new cut (@coordinator-opus m28d5634c1552, mc081df471828). Once pe-agree pins a split's cut
@@ -672,9 +701,11 @@ fn a_split_repair_overtaken_by_a_re_proposal_is_a_note_not_a_failure() {
     // Replay and import take 6 frames each: longer together than a view (8), so the first repair is overtaken.
     net.peers[1].r.pending_frames = 6;
     let mut notes = Vec::new();
+    let mut in_a_row = 0;
     for _ in 0..120 {
         net.step();
         notes.extend(net.peers[1].d.notes());
+        in_a_row = in_a_row.max(net.peers[1].d.counters().split_overtaken_in_a_row);
         if net.peers[1].d.counters().split_overtook > 0 {
             net.peers[1].r.pending_frames = 0;
         }
@@ -686,6 +717,7 @@ fn a_split_repair_overtaken_by_a_re_proposal_is_a_note_not_a_failure() {
     // that the overtaken repair failed nothing and the work went on to cure.
     let c = net.peers[1].d.counters().clone();
     assert!(c.split_overtook >= 1 && c.cured_by_rung[1] >= 1 && c.rung_failures == 0, "{c:?}");
+    assert!(in_a_row >= 1, "the gauge counted the overtaken repair");
     assert!(
         notes.iter().any(|n| n.contains("overtaken by the root split") && n.contains("proposed again")),
         "{notes:?}"
@@ -743,6 +775,11 @@ fn two_members_with_no_quorum_root_agree_on_a_sticky_reference() {
         assert!(p.actions.iter().any(|a| matches!(a, Action::RunSelfTest { .. })));
     }
     assert_eq!(net.peers[0].d.split_reference(), None, "the episode ended");
+    // The gauges: reports for the open episode start again at its end; none was overtaken.
+    for p in &net.peers {
+        let c = p.d.counters();
+        assert!(c.split_reports == 0 && c.split_reports_max >= 1 && c.split_overtaken_in_a_row == 0, "{c:?}");
+    }
     // Exactly one of the two repaired toward the other, once, and neither moved Cv to the split cut while it lasted.
     let cured: u64 = net.peers.iter().map(|p| p.d.counters().cured_by_rung[1]).sum();
     assert_eq!(cured, 1);
