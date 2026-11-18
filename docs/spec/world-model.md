@@ -507,7 +507,10 @@ which fixes the origin's role deliberately.
     fetches an inline blob later, so the name would stay blank for good (phase 3b; @design-reviewer's Low).
     pe-diverge's repair carries each donor's `export_blobs` with its records, and treats `MissingBlob` as the donor's
     fault, so the ladder asks the next donor (divergence.md 4.2 step 3)
-    [V `a_joiner_gets_the_names_of_the_state_it_imports`].
+    [V `a_joiner_gets_the_names_of_the_state_it_imports`]. If no donor holds a display blob, the repair can't
+    complete, where before it converged with a blank name. That can't happen within builds from phase 3a on, since
+    every machine that applied a reference received its bytes; it can with state from an earlier build
+    (@design-reviewer, mffe347f13f92).
   - **Kept:** the store deletes nothing today [V, `BlobStore`]. When pruning comes, an inline-class blob is kept
     while any live or tombstoned row references it, even after its entry has left the log's retention, since a joiner's
     import is then the only way it travels.
