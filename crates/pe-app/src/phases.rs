@@ -35,6 +35,9 @@ pub struct PhaseTimes {
     pub finalize_ns: u64,
     /// Step 5: S3's events and the confirmed-cut log.
     pub events_ns: u64,
+    /// Step 5's pe-diverge (`Diverge::step`: its events, repairs, self-test and the Repair lane's sends). Step 1's
+    /// Repair-lane messages to pe-diverge stay in `ingest_ns`.
+    pub diverge_ns: u64,
     /// Step 6: the view, pe-api's feed and the publish.
     pub publish_ns: u64,
     /// The ticks from frame 0 on, end to end, and the longest one.
