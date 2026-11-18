@@ -532,6 +532,88 @@ fn hands_follow_their_inputs() {
     assert_eq!((h.target, h.stamp, h.span, h.previous), (pos(2.0, 0.1, 0.0), Frame(5), 1, Some((Frame(3), 4))));
 }
 
+/// An `Admit` admits its key at its frame (agreement.md 8; app.md 4, "Joining from a cut"): the joiner gets the role
+/// the payload names, and two hands it owns, with ids from that frame, at the lowest slot of the genesis row no hand
+/// takes (`World::join_spawn`). The fixture's editor has no hands, so the first joiner takes slot 0 and a second one
+/// slot 1; counting members would have put the second at slot 2. A second `Admit` of the joiner and a malformed one
+/// are refused, as S3 voids them, and change nothing.
+#[test]
+fn an_admit_admits_its_key_with_its_role_and_two_hands() {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut pw = PeWorld::new(genesis(), DomainId(0));
+    let joiner = keys.key(1);
+    let role = perm::ADMIN | perm::EDIT | perm::AGENT;
+    let first = b.next(Class::Protocol, Frame(4), pe_seams::Admit::new(joiner, role).encode());
+    assert!(matches!(pw.apply(Frame(4), &first).0, Outcome::Applied { .. }));
+    assert_eq!(pw.world().snapshot(Frame(4)).perms(joiner), Some(role));
+    let line = first.entry.line;
+    let hands = |pw: &PeWorld| {
+        pw.hands().into_iter().filter(|h| h.owner == joiner).map(|h| (h.hand, h.target)).collect::<Vec<_>>()
+    };
+    let hands_of = |pw: &PeWorld, who: MemberKey| {
+        let mut v: Vec<_> = pw.hands().into_iter().filter(|h| h.owner == who).map(|h| (h.hand, h.target)).collect();
+        v.sort_by_key(|(id, _)| id.to_u128());
+        v
+    };
+    let slot = |who: MemberKey, frame: Frame, x: f64| {
+        let mut v = vec![
+            (ObjectId::hand(line, who, 0, frame), pos(x - 0.25, 1.2, 1.8)),
+            (ObjectId::hand(line, who, 1, frame), pos(x + 0.25, 1.2, 1.8)),
+        ];
+        v.sort_by_key(|(id, _)| id.to_u128());
+        v
+    };
+    assert_eq!(hands_of(&pw, joiner), slot(joiner, Frame(4), 0.0), "two hands, owned by the joiner, from frame 4");
+    let second = MemberKey([9; 32]);
+    let next = b.next(Class::Protocol, Frame(5), pe_seams::Admit::new(second, role).encode());
+    assert!(matches!(pw.apply(Frame(5), &next).0, Outcome::Applied { .. }));
+    assert_eq!(hands_of(&pw, second), slot(second, Frame(5), 0.6), "the next free slot, not the members' count");
+
+    let again = b.next(Class::Protocol, Frame(6), pe_seams::Admit::new(joiner, perm::EDIT).encode());
+    let malformed = b.next(Class::Protocol, Frame(6), Bytes::from([pe_seams::ADMIT, &[1]].concat()));
+    for e in [&again, &malformed] {
+        assert!(matches!(pw.apply(Frame(6), e).0, Outcome::Refused { .. }));
+    }
+    assert_eq!(pw.world().snapshot(Frame(6)).perms(joiner), Some(role), "the first role stands");
+    assert_eq!(hands(&pw).len(), 2, "no more hands");
+}
+
+/// A replay that drops a voided `Admit` (S3 voids one it finds `NotAuthorized`, say) leaves the world as if the entry
+/// had never been written: the same roots, and no hands for the key (@vdw-physics's Low 1 on ae54e76a). The replay
+/// restores the world and the physics from before the entry's frame, so the member row, the hands and their bodies go
+/// together.
+#[test]
+fn a_replay_that_drops_a_voided_admit_leaves_no_trace_of_it() {
+    let keys = keys();
+    let joiner = MemberKey([9; 32]);
+    let admit = EntryBuilder::new(&keys, 1).next(
+        Class::Protocol,
+        Frame(10),
+        pe_seams::Admit::new(joiner, perm::ADMIN | perm::EDIT | perm::AGENT).encode(),
+    );
+    let hands_of =
+        |r: &ReplicaImpl<PeWorld>| r.view().objects.iter().filter(|o| o.hand_of.is_some_and(|h| h.0 == joiner)).count();
+    let mut s0 = Source::default();
+    scene().into_iter().for_each(|e| s0.add(e));
+    let mut clean = replica();
+    clean.advance(Frame(48), &mut s0);
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    s.add(admit.clone());
+    let mut a = replica();
+    a.advance(Frame(32), &mut s);
+    assert_eq!(hands_of(&a), 2, "the Admit applied: the joiner's two hands");
+    assert_ne!(a.live_root(Frame(16)), clean.live_root(Frame(16)), "and the world holds the joiner");
+    // S3 voids it: gone from the log, with a change reported from its frame.
+    s.entries.get_mut(&Frame(10)).expect("its frame").retain(|e| e.id() != admit.id());
+    s.changed = Some(Frame(10));
+    a.advance(Frame(48), &mut s);
+    assert_eq!(roots(&a, 48), roots(&clean, 48), "the same roots as a run without it");
+    assert_eq!(hands_of(&a), 0, "and no hands for the key");
+    assert_eq!(a.faults(), 0);
+}
+
 // ---- import through pe-world's tree (slice C, world-model.md 6.5 and 6.6) -------------------------------------------
 
 /// The scene's two drops, then a third ball dropped at frame 40, all from the editor, in one chain.
