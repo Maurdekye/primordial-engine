@@ -1,6 +1,6 @@
 # pe-net: the transport
 
-Status: draft 1.11, 2026-11-17, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.12, 2026-11-18, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
 budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.6 records
@@ -11,7 +11,9 @@ rendezvous records come only from members and are bounded (6.7), and a replaced 
 are lost with it (3.2). Draft 1.8 records how pe-net is fuzzed (9, the coordinator's ruling) and
 the one finding so far: varints must be minimal (3.6). Draft 1.9 refuses a hello over its bounds where it is built
 (6.3, @iter-bench's finding). Draft 1.10 holds a stream message at the peer's stream limit until it has credit,
-where it was dropped (3.5, @engine-architect's finding). Draft 1.11 fixes what the first two-machine run found: only
+where it was dropped (3.5, @engine-architect's finding). Draft 1.12 follows pe-app's join from a cut (app.md
+draft 7): the joiner's clock converges on the welcome's member list, which the invite pins, not on the start
+cut's (5.4, 6.4). Draft 1.11 fixes what the first two-machine run found: only
 a ready clock answers a sample (5.2), a clock counts its own offset only once it runs (5.3), and a stopping
 endpoint closes its connections (6.5). Draft 1.2 records the user's ruling on the firewall default (2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
@@ -79,6 +81,9 @@ design judgement.
     the handshake [V M0].
   - The production form adds a version, an expiry and a compact encoding. Whether it adds a one-time token is
     still open [I].
+  - **For a join from a cut** (app.md draft 7, 4) it also pins the epoch it was made in and a hash of that
+    epoch's sorted members, which the joiner checks the welcome's list against (6.4) [1.12; pe-net-crypto's
+    `Invite` gains them on @engine-architect's join branch].
 - **One key, two protocols:** the TLS raw key is the member's signing key, so the two uses must not overlap.
   - TLS 1.3 signs its CertificateVerify under its own context string.
   - Entry signatures (seam S1, WS-agree) need their own prefix, for example `"pe.entry"`, so that neither
@@ -474,21 +479,39 @@ seconds (the user's ruling: the tick rate is configurable per world).
   allowed here, since nothing has run.
 - **Clock members are ready clocks** [rule, 1.11]: a welcome and a start cut name as clock members only members
   whose clocks are ready. Since only a ready clock answers (5.2), two unready joiners that each counted the other
-  would both wait out `T_ready`. Today's pe-app welcome names only the welcomer, so this holds [V by reading,
-  @design-reviewer].
+  would both wait out `T_ready`. The M1 interim's welcome names only the welcomer [V by reading,
+  @design-reviewer]. With the join from a cut, the welcome names the members of the epoch the invite pins, all
+  of them running, and pe-app runs one join at a time (app.md draft 7, 4, "one join at a time"), so it still
+  holds.
 - **The target comes from the members, not from the inviter alone** [@design-reviewer's Medium 3].
   - Before the welcome, the joiner's only peer is the inviter, so one peer's word would set its clock.
   - So the joiner first connects to the members (6.7), and its target is the midpoint over the members it has
     samples from.
-  - It needs samples from at least a quorum (two thirds, rounded up) of the members on the list it starts from
+  - It needs samples from at least a quorum (two thirds, rounded up) of the members on the welcome's list
     (6.4), and from every one of them it can reach within `T_ready`.
 - **It is clock-ready** when that target has moved less than `E_ready` for three rounds running. It then tells
   pe-agree, and pe-agree's join waits for that.
-- **The order:** the welcome, then the mesh, then the samples, then clock-ready, then pe-agree's join.
-- **The quorum counts the start cut's list,** not the welcome's hint (6.4). If the cut's list differs from the
-  hint, the joiner connects to the members it was missing and re-checks its quorum against the cut's list
-  before it acts. So a hint that leaves members out can't make it ready on too few [@design-reviewer's Low on
-  draft 1.1].
+- **The order** (app.md draft 7, 4): the welcome, then the mesh, then the samples, then clock-ready, then the
+  joiner's `JoinReady` to the welcomer, then pe-agree's start record (`JoinStart`) once the epoch is final.
+- **The quorum counts the welcome's list, which the invite pins** (6.4) [1.12, @engine-architect;
+  replaces 1.1-1.11's "the start cut's list, not the welcome's hint"]. The start record arrives only after
+  clock-ready, so it can't be the list the joiner converges on. pe-app checks the welcome's list against the
+  invite's pin, so a welcome altered on the way, or sent by anyone but the inviter, can't make the joiner ready
+  on too few. The inviter itself is trusted for the list in M1, as for the world import (agreement.md 8; 6.4).
+  - **pe-net starts converging when the welcome arrives,** before pe-app has checked anything. So pe-app acts
+    on clock-ready (`JoinReady`) only after the welcome passed its checks. A welcome that fails them ends the
+    join even if the clock is already ready, and pe-app closes the connections pe-net opened to the members on
+    it (code 0, `Left`), so a rejected joiner doesn't stay connected to them.
+  - **A ready joiner pulls nobody** [@design-reviewer's review of 1.12]: members count only the members on their
+    own list (5.3), and a member puts the joiner on its list only when it admits it, after `JoinReady`, which a
+    rejected welcome never sends. So the joiner's answers reach no member's midpoint before then.
+  - **The start record's members** (E's, plus the joiner, less any leavers at E) go to `set_clock_members`,
+    always, and the joiner connects to any it was missing (6.7). pe-app passes the list without its own key, as
+    it does today (`others`, `pe-app/src/net.rs`): the list names peers, and an own key would raise the quorum
+    (5.4) without ever being heard. The clock started at clock-ready, so the new list doesn't make it unready
+    again. It steers (5.5) toward the midpoint
+    over the members on the new list, since a clock counts only the members on its list, before frame 0 and
+    after [V by reading `clock.rs` `set_members` and `tick`, `core.rs` `clock_round`].
 - **If it isn't ready within `T_ready`,** that is a `ClockFault` (5.6), and the join fails with its reason.
 - **A world's first member** has offset 0, and is ready at once.
 - **A clock with no role yet** (a joiner's before its welcome) has no list to need a quorum of, and is never
@@ -615,9 +638,15 @@ its frame this way (seam S3).
   which the joiner derives from the record itself, never from the welcome. The joiner also checks the record's
   members, build, pe-agree settings, rate and epoch, and its frame-0 roots, before it builds anything (pe-app's
   `net` and `genesis`).
-- **The member list is only a hint** [@design-reviewer's Low 1]. The list that counts comes from the cut the
-  joiner starts from, checked against that cut's root, so an inviter can neither hide a member nor add one. The
-  joiner uses the welcome's list only to start connecting, and re-checks it against the cut.
+- **The member list is pinned by the invite** [1.12; replaces "only a hint", @design-reviewer's Low 1 on
+  draft 1]. The invite names the epoch it was made in and a hash of that epoch's sorted members (2.2; app.md
+  draft 7, 4). pe-app checks the welcome's members against it before it trusts the clock or sends `JoinReady`,
+  so a welcome altered on the way, or sent by anyone but the inviter, is caught. The inviter itself makes the
+  pin, so it is trusted for the list in M1, as for the world import (agreement.md 8) [@design-reviewer's Low on
+  1.12: pe-agree's `Node::join` checks E's certificate against the pinned members, so an inviter that pins
+  itself alone would pass]. pe-net takes the list as given: it starts connecting
+  (6.7) and converging (5.4) when the welcome arrives. In the M1 interim, the genesis record's check (above)
+  plays this part.
 - **Until the welcome arrives,** the joiner sends only its hello and clock records (2.3).
 - **The exchange** [found building the Core; V `pe-net/tests/core.rs`]: lane traffic is closed both ways until
   it completes. Each side opens so that nothing is sent before the other side takes it in, because QUIC doesn't
@@ -836,7 +865,7 @@ Gated, unless marked:
    - when both sides dial at once, both keep the same connection (6.2);
    - the joiner refuses an inviter whose hello differs (6.3);
    - a joiner is not clock-ready on the inviter's word alone at four members (5.4);
-   - a welcome whose member list differs from the start cut's is caught (6.4);
+   - a welcome whose member list doesn't match the invite's pin is caught, and ends the join (6.4);
    - an address change survives, and a forged source address doesn't redirect a link.
 5. **The security code:** 2.5's list.
 6. **No panic** on any bytes from a peer: structured fuzzing, `crates/pe-net/tests/fuzz.rs` (the coordinator's
