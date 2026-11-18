@@ -8,6 +8,7 @@
 //! - [`join`]: joining from a cut: pe-app's join messages and the inviter's side of a join.
 //! - [`sim`]: the simulation thread: one tick (app.md 3), its wait, the replica's budget, start and stop.
 //! - [`phases`]: where the simulation thread's time goes, step by step, to find what slows a machine.
+//! - [`replay`]: `--check-replay`, the opener's replay of its session from frame 0 against every final cut's root.
 //! - [`standin`]: an agreement and a replica that stand in until pe-agree and pe-replica's replica land.
 //! - [`vr`]: VR mode's frame sink, which draws the newest view into pe-xr's swapchain images.
 //! - [`fault`]: `--inject-fault-at`, a deliberate test fault on this machine only (M1 demo step 7), and the world
@@ -32,6 +33,7 @@ pub mod leave;
 pub mod local;
 pub mod net;
 pub mod phases;
+pub mod replay;
 pub mod sim;
 #[cfg(test)]
 mod sources;

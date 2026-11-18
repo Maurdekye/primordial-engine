@@ -269,7 +269,7 @@ impl Genesis {
         genesis.bounds()?;
         let world = genesis.world()?;
         genesis.root = world.root_hash(DomainId(0));
-        let (replica, node, replica_root) = genesis.start(world, params.opener, clock, runner)?;
+        let (replica, node, replica_root) = genesis.start(world, Some(params.opener), clock, runner)?;
         genesis.replica_root = replica_root;
         Ok((genesis, replica, node))
     }
@@ -367,11 +367,32 @@ impl Genesis {
         if built != self.root {
             return Err(GenesisError::Root { built, record: self.root });
         }
-        let (replica, node, built) = self.start(world, me, clock, runner)?;
+        let (replica, node, built) = self.start(world, Some(me), clock, runner)?;
         if built != self.replica_root {
             return Err(GenesisError::ReplicaRoot { built, record: self.replica_root });
         }
         Ok((replica, node))
+    }
+
+    /// `--check-replay`'s replica (crate::replay): the record's frame-0 world, refused unless its root and then the
+    /// replica's are the record's, as [`Genesis::build`] does, but with no local member. A replay computes the agreed
+    /// state, never the author's own prediction of its commit (logic.md 6.2a option (i)), which a replica whose local
+    /// member made the commit runs until the commit is attested.
+    pub fn replay_replica(
+        &self,
+        clock: Arc<dyn FrameClock>,
+        runner: Box<dyn ScriptRunner>,
+    ) -> Result<Box<dyn Replica>, GenesisError> {
+        let world = self.world()?;
+        let built = world.root_hash(DomainId(0));
+        if built != self.root {
+            return Err(GenesisError::Root { built, record: self.root });
+        }
+        let (replica, _, built) = self.start(world, None, clock, runner)?;
+        if built != self.replica_root {
+            return Err(GenesisError::ReplicaRoot { built, record: self.replica_root });
+        }
+        Ok(replica)
     }
 
     /// A joiner's replica (app.md 4, "B's state at E"): empty, a bare world at the record's rate on this build's cut
@@ -554,14 +575,14 @@ impl Genesis {
         preset::m1_session(&session, BlobStore::default()).map_err(|e| GenesisError::World(format!("{e:?}")))
     }
 
-    /// The replica over `world` with `me` local and `runner` running its scripts, its root at frame 0, and pe-agree's
-    /// configuration ([`node_config`]). Refuses a clock at another rate than the record's, and a configuration whose
-    /// consensus hash isn't the record's `agree`: on A that can't happen, since A's record takes `agree` from the same
-    /// function; on B it holds even if [`Genesis::check`] was skipped.
+    /// The replica over `world` with `me` local (none for a replay) and `runner` running its scripts, its root at frame
+    /// 0, and pe-agree's configuration ([`node_config`]). Refuses a clock at another rate than the record's, and a
+    /// configuration whose consensus hash isn't the record's `agree`: on A that can't happen, since A's record takes
+    /// `agree` from the same function; on B it holds even if [`Genesis::check`] was skipped.
     fn start(
         &self,
         world: World,
-        me: MemberKey,
+        me: Option<MemberKey>,
         clock: Arc<dyn FrameClock>,
         runner: Box<dyn ScriptRunner>,
     ) -> Result<(Box<dyn Replica>, NodeConfig, Hash), GenesisError> {
@@ -590,7 +611,7 @@ impl Genesis {
             )));
         }
         let mut config = replica_config(&node, self.rate, clock);
-        config.local = Some(me);
+        config.local = me;
         let replica = ReplicaImpl::new(FaultWorld::armed(PeWorld::new(world, DomainId(0))), config)
             .map_err(|e| GenesisError::World(format!("{e:?}")))?
             .with_runner(runner);
@@ -843,7 +864,7 @@ mod tests {
         let mut other = g.clone();
         other.cut_interval_ms += 1;
         let world = other.world().expect("the record's world");
-        match other.start(world, A, clock(), runner()) {
+        match other.start(world, Some(A), clock(), runner()) {
             Err(GenesisError::World(m)) => assert!(m.contains("cut interval"), "{m}"),
             r => panic!("expected the cut interval refused, got {:?}", r.map(|_| ())),
         }
@@ -913,7 +934,7 @@ mod tests {
         let mut other = g.clone();
         other.agree = Hash([8; 32]);
         let world = other.world().expect("its world");
-        let refused = other.start(world, B, clock(), runner()).map(|_| ()).expect_err("other settings");
+        let refused = other.start(world, Some(B), clock(), runner()).map(|_| ()).expect_err("other settings");
         assert_eq!(refused, GenesisError::Agree { record: Hash([8; 32]), mine: consensus_hash() });
     }
 
@@ -926,7 +947,7 @@ mod tests {
         let c = MemberKey([0xcc; 32]);
         let mut other = g.clone();
         other.members = vec![(B, Role::Joiner), (c, Role::Opener)];
-        let refused = other.start(world, B, clock(), runner()).map(|_| ()).expect_err("other members");
+        let refused = other.start(world, Some(B), clock(), runner()).map(|_| ()).expect_err("other members");
         assert_eq!(refused, GenesisError::Governance { world: vec![B, A], agree: vec![B, c] });
     }
 

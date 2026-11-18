@@ -334,6 +334,8 @@ pub struct Sim {
     /// `--inject-fault-at`'s fault ([`crate::fault`]): this process's armed one, which its replica injects. The loop
     /// prints its announcement and fails the self-test once it has fired.
     fault: Option<Arc<crate::fault::Fault>>,
+    /// `--check-replay`'s final log ([`crate::replay`]): kept each tick, replayed on the console's `replay`.
+    replay: Option<crate::replay::ReplayLog>,
     /// A joiner's import of E's state (app.md 4, "B's state at E"): the inviter, while pe-diverge's join runs. The
     /// replica is empty meanwhile, so nothing drives it, no edit goes in and no view goes out ([`Sim::join_at_final`]).
     joining: Option<MemberKey>,
@@ -482,6 +484,7 @@ impl Sim {
             down: std::collections::BTreeSet::new(),
             notices: Vec::new(),
             fault: crate::fault::armed(),
+            replay: None,
             joining: None,
             join_failed: None,
             on_join_failed: None,
@@ -636,6 +639,23 @@ impl Sim {
     pub fn with_event_log(mut self, log: Arc<std::sync::Mutex<Vec<AgreeEvent>>>) -> Sim {
         self.event_log = Some(log);
         self
+    }
+
+    /// Keeps this session's final log for `--check-replay` ([`crate::replay`]): the opener's, whose history starts at
+    /// frame 0. The console's `replay` then replays it from frame 0 on a thread of its own.
+    pub fn with_replay_check(mut self, log: crate::replay::ReplayLog) -> Sim {
+        self.replay = Some(log);
+        self
+    }
+
+    /// A replay of the final log kept so far ([`Sim::with_replay_check`]), on its own thread, as the console's `replay`
+    /// starts one; `None` without `--check-replay`.
+    pub fn start_replay(&mut self) -> Option<std::io::Result<std::thread::JoinHandle<crate::replay::Verdict>>> {
+        let log = self.replay.as_ref()?;
+        let job = log.job(&*self.replica);
+        let stack = crate::replay::MIN_STACK.max(crate::net::runner_settings().0.thread_stack());
+        self.notices.push(format!("replay: replaying {} final cuts from frame 0 on a thread of its own", log.cuts()));
+        Some(crate::replay::spawn(job, stack))
     }
 
     /// `fault` in place of this process's armed one ([`crate::fault::armed`]): a test gives one member a fault, which
@@ -1076,6 +1096,13 @@ impl Sim {
             }
         }
         self.check_join();
+        // `--check-replay` (crate::replay): a replay the console asked for.
+        if self.replay.is_some()
+            && crate::replay::take_request()
+            && let Some(Err(e)) = self.start_replay()
+        {
+            self.notices.push(format!("replay: couldn't start the replay's thread: {e}"));
+        }
         self.stats.phases.diverge_ns += lap(&mut mark);
         // A proposal opens each view: the quit's bound follows the smoothed interval between them (app.md 4).
         for _ in events.iter().filter(|e| matches!(e, AgreeEvent::Proposed { .. })) {
@@ -1145,7 +1172,8 @@ impl Sim {
         let started = Instant::now();
         let report = {
             // Times the replica's calls into `phases`, and passes each through unchanged.
-            let mut timed = Timed { inner: &mut *self.replica, times: &mut self.stats.phases };
+            let log = self.replay.as_mut();
+            let mut timed = Timed { inner: &mut *self.replica, times: &mut self.stats.phases, log };
             self.driver.drive(&mut timed, &mut *self.agree, Frame(p.0 + 1), self.self_test)
         };
         let frames = report.advance.resimulated + report.advance.stepped;
@@ -2338,6 +2366,87 @@ pub(crate) mod tests {
         assert!(sides[1].notices.contains(&told), "{told}: {:?}", sides[1].notices);
         assert!(crate::fault::on_command(Some(&fault)).is_err(), "refused once its frame is set");
         a_fault_was_found_and_rung_2_restored_the_ball(&sides, &fault, frames);
+    }
+
+    /// Two members from the M1 interim's two-member genesis record over sim.rs's hub, B's closed hands sweeping through
+    /// the pit's balls, and A keeping its final log for `--check-replay` ([`crate::replay`]). After 600 frames, A's
+    /// replay of its session from frame 0. `break_log` first drops one of B's entries from the kept log.
+    fn replay_run(break_log: bool) -> (crate::replay::Verdict, usize) {
+        use pe_agree::Node;
+        use pe_seams::test_util::TestKeys;
+        const FRAMES: u64 = 600;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let keys = TestKeys::new(17, 2);
+        let (a, b) = (keys.key(0), keys.key(1));
+        let params = crate::genesis::Params {
+            nonce: [7; 32],
+            build: b"pe test build".to_vec(),
+            opener: a,
+            joiner: Some(b),
+            rate: RATE,
+            gravity: pe_world::GRAVITY,
+            seed: 5,
+            balls: 8,
+            origin: pe_seams::Pos::ORIGIN,
+            epoch_ns: 0,
+        };
+        let (genesis, replica_a, config_a) =
+            crate::genesis::Genesis::ball_pit(&params, clock.clone(), runner()).expect("A's record");
+        let (replica_b, config_b) = genesis.build(b, clock.clone(), runner()).expect("B's replica");
+        let hub = Hub::default();
+        let sweep = clock.host_time_of(Frame(FRAMES - 120));
+        let mut sims = Vec::new();
+        for (i, (me, replica, config)) in [(a, replica_a, config_a), (b, replica_b, config_b)].into_iter().enumerate() {
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let hands: Arc<dyn pe_seams::HandFeed> =
+                if i == 1 { Arc::new(SweepHands::until(sweep)) } else { Arc::new(StillHands([-0.5, 1.0, -0.4])) };
+            let mut sim =
+                Sim::new(Box::new(node), replica, clock.clone(), Arc::new(FrameSlot::new()), Budget::new(RATE))
+                    .with_local(me, keys.nonce(i, 0), hands)
+                    .with_transport(Box::new(Port::new(me, hub.clone())), None);
+            if i == 0 {
+                sim = sim.with_replay_check(crate::replay::ReplayLog::new(genesis.clone()));
+            }
+            sims.push(sim);
+        }
+        for f in 1..=FRAMES {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            for s in &mut sims {
+                s.tick(now).expect("ticked");
+            }
+        }
+        let a_sim = &mut sims[0];
+        let log = a_sim.replay.as_mut().expect("A keeps its log");
+        if break_log {
+            assert!(log.drop_entry(|e| e.entry.author != b), "one of B's entries to drop");
+        }
+        let cuts = log.cuts();
+        let replay = a_sim.start_replay().expect("armed").expect("the replay's thread");
+        (replay.join().expect("the replay ends"), cuts)
+    }
+
+    /// @item:primordial-engine/m1-acceptance-the-live-run-equals-the-replay-a-r: A's replay of its session from frame 0
+    /// reaches every final cut's root, B's hand entries and the pit's contacts included.
+    #[test]
+    fn the_openers_replay_from_frame_0_reaches_every_final_cuts_root() {
+        let (verdict, cuts) = replay_run(false);
+        println!("{}", verdict.line());
+        // About 96 on an idle machine; a slow one finalizes fewer, and any number above a handful shows the replay ran.
+        assert!(cuts >= 30, "A kept {cuts} final cuts");
+        assert!(
+            matches!(verdict, crate::replay::Verdict::Equal { cuts: n, last, modules: 0 } if n == cuts && last.0 >= 300),
+            "{verdict:?}"
+        );
+    }
+
+    /// The control: a log missing one of B's entries replays to another root, and the replay names the first final cut
+    /// whose root differs.
+    #[test]
+    fn a_replay_of_a_log_missing_an_entry_differs() {
+        let (verdict, _) = replay_run(true);
+        println!("{}", verdict.line());
+        assert!(matches!(verdict, crate::replay::Verdict::Differs { .. }), "{verdict:?}");
     }
 
     /// What both fault tests assert of a run.
