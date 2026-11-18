@@ -465,7 +465,7 @@ File 16 maps it onto this engine:
   m18a3cfca8565). Each simulated group runs its physics around an agreed local origin, with Box3D in double
   precision: the fork's default feature, whose positions are `f64` [V, box3d-fork Cargo.toml; math_functions/types.rs
   46]. M1 has one origin per world.
-  - The engine's position guard, 10^6 m per axis [V, pe-physics desc.rs:14; pe-replica replica.rs:760], holds
+  - The engine's position guard, 10^6 m per axis [V, pe-physics desc.rs:15; pe-replica replica.rs:760], holds
     relative to the group's own origin, so with a suitable origin a group may span up to 2 x 10^6 m along an axis. A
     group's origin is re-centred as the group moves, which D58 makes physics-neutral.
   - When two groups with different origins touch, a fixed rule picks the origin, the same under rollback.
@@ -1235,12 +1235,13 @@ conditions shown:
 - the missing controls are named (section 4.4);
 - membership is re-founded per line at the one-minute mark (model v3).
 
-## 10. Amendment (draft 6, 2026-11-18): the MVP's programmable physics, controllers, avatars, animation and GPU effects
+## 10. Amendment (draft 7, 2026-11-18): the MVP's programmable physics, controllers, avatars, animation and GPU effects
 
 **Status:** a draft by @engine-architect, revised after @fable-reviewer's reviews (m90bf0c2bf236, m159ee32cb85e,
 mb5ce5880a3dd, m45921977fbc5) and @astra-deliberator's (m975e233f631b). It applies the user's answers of 2026-11-18
 (m89775f87a1cb, m61686bb068f9) and @coordinator-opus's rulings, which both deliberated: on draft 4's six points and
-six more (m5546130edb7b, m257d92aea7eb, ma4840d569270), and on draft 5 (me218458e8b83). Two points are with the user
+six more (m5546130edb7b, m257d92aea7eb, ma4840d569270), on draft 5 (me218458e8b83) and on draft 6's final reads
+(m8dfd867a1ade). Two points are with the user
 (10.7, points 8 and 10). This text assumes option (a) for each, marked "pending the user". Nothing here authorizes
 building beyond what the plan's milestones already authorize. M1 is untouched. Sizes are in this plan's units and are
 all inferred [I].
@@ -1340,8 +1341,10 @@ From @fable-reviewer's analysis of draft 1 (m90bf0c2bf236) [I, not yet measured]
   - its stock result: the body's solved velocity and position after all its contacts, what the collision gives it
     "under normal circumstances" (m89775f87a1cb);
   - its own contact-free state;
-  - each contact's other object, point, normal and impulse, in a fixed order (by the other object's id, then the
-    fork's point order), so a body touching three things sees all three, the same way on every machine.
+  - each contact's other object, point, normal and impulse, so a body touching three things sees all three. They
+    come in a fixed order that never rests on the fork's storage order: by the other object's id, then stable shape
+    ordinals on both bodies (the shape pair and child index), then a stable manifold and point key. A body may have
+    64 shapes [V, pe-physics desc.rs:36], so one pair of objects can touch through several contacts.
 
   A per-contact share of the position change would be approximate: the solve moves the body through all its contacts
   at once, across the sub-steps. So a hook gets each contact's impulse, never a per-contact position.
@@ -1374,8 +1377,10 @@ From @fable-reviewer's analysis of draft 1 (m90bf0c2bf236) [I, not yet measured]
     change the rule after M2: a member that hasn't loaded one region can't know what a player's bodies there used.
     Until M4 the whole world is one group.
   - **What they bound, honestly:** a group cap bounds nothing on a whole machine, since a player's separate objects
-    are separate groups. A machine's hook cost is at most the per-call cap times the hook calls of the hooked bodies
-    it has loaded, summed over owners and groups, and M4's cost budget per machine counts hooks like any other load.
+    are separate groups. A machine's metered fuel in a frame is at most the sum, over the owner-and-group pairs it has
+    loaded, of the smaller of that pair's cap and its hook calls times the per-call cap. M4's cost budget per machine
+    counts hooks like any other load. Some CPU falls outside the meter: enumerating contacts, buffering the two
+    trajectories' effects, and the native stock fallback.
   - **It is charged in one fixed order:**
     1. sub-step by sub-step, the step hooks;
     2. then the step hooks' calls on candidate A's own trajectories;
@@ -1389,18 +1394,22 @@ From @fable-reviewer's analysis of draft 1 (m90bf0c2bf236) [I, not yet measured]
   - **A call that runs out:** the engine applies one stock call on unchanged inputs, whatever the hook did before,
     and that call's changes and queued writes are dropped whole. The results and effects of the hook's earlier
     successful sub-steps stand. Once an owner's fuel for the frame is spent, the rest of their hooks in that group
-    and frame give the stock result the same way, and the owner gets one notice per group and frame.
+    and frame give the stock result the same way. The owner gets one notice when exhaustion starts in a group, with
+    a count of the frames it lasts, not one every frame.
   - **Effects follow the trajectory actually taken** (R2). Under candidate A a step hook runs on two trajectories,
     and both sets of queued writes and changes to the body's own components are buffered. If the collision hook
     returns the stock result unchanged, the solved trajectory's apply; otherwise the contact-free trajectory's do.
     The hook's result decides, so it is deterministic, and a body that rejects a collision keeps no effects from a
-    path it never followed.
+    path it never followed. "Unchanged" is decided on canonical simulation values, with one encoding for a
+    quaternion's sign and for zero, and the interface hands the state over and back without a lossy conversion,
+    double-precision positions included. Gate 0 covers it through the real interface.
 - **How the two hooks compose on one body** (S1 tests the pair, not each hook alone): with candidate A, the step hook
   runs in each sub-step, so from the second sub-step on it sees velocities the contacts changed. The collision hook
   runs once, at write-back.
-- **Sleep** (proposed): a hooked body sleeps as stock does, and its hooks don't run while it sleeps. A script wakes
-  it through an ordinary queued write, as a timed thruster or rising water needs. A null hook leaves sleep exactly as
-  stock does.
+- **Sleep** (proposed): a hooked body sleeps as stock does, and its hooks don't run while it sleeps. Sleep is judged
+  on the velocity the collision hook returned, not the solved one, so a body its hook is still moving isn't put to
+  sleep. A script wakes it through an ordinary queued write, as a timed thruster or rising water needs. A null hook
+  leaves sleep exactly as stock does.
 - **Joints and grabs:** stock in a step hook is force integration only, and joints are solved after it. So a joint's
   effect, a hand's grab included, arrives in the solved change that the collision hook receives. A body with no
   collision hook takes it as stock does, and a held custom object follows the hand unless its collision hook
@@ -1445,8 +1454,11 @@ From @fable-reviewer's analysis of draft 1 (m90bf0c2bf236) [I, not yet measured]
      pe-physics already has this for hands (`set_target` [V, pe-physics world.rs:589], over Box3D's
      `body_set_target_transform` [V, box3d-fork body/forces.rs:323]);
    - write-back stores the body's actual pose, never a snap to the target. The target persists until it is reached
-     or replaced;
-   - rotation goes by the shortest arc, in the engine's math;
+     or replaced. Within a stated tolerance of the target, the target clears and the body's velocity is zeroed, so
+     the collider comes to rest;
+   - rotation goes by the current shortest arc each step, in the engine's math. A target that advances past a half
+     turn relative to the body's actual orientation can make it reverse direction; the test with a target more than
+     45 degrees away covers it;
    - the verb's speed limit and push cap are parameters its author sets, and "no cap" means only that no author cap
      is imposed by default, the hand's included. An author's cap or the fork's own limits make the collider trail its
      target: the fork's maximum linear and angular speeds [V, box3d-fork solver/integrate.rs 158-170], and at most 45
@@ -1467,7 +1479,13 @@ From @fable-reviewer's analysis of draft 1 (m90bf0c2bf236) [I, not yet measured]
      repeated by prediction. One-shot actions (a snap turn, a jump, a dash) apply exactly once through prediction and
      rollback: a jump or a dash is a one-shot value that prediction never repeats, and a snap turn travels as the
      cumulative heading the player has asked for, which repeating can't apply twice. The stock controller turns the
-     root by that heading's change since its last frame, so a turning platform still carries the avatar round;
+     root by that heading's change since its last frame, so a turning platform still carries the avatar round.
+     - The heading is a wrapping integer angle, so the change between two values is exact however far it grows.
+     - A controller that starts up (at a join, a handover, or a swap of controllers) takes the input's current
+       heading as its baseline, rather than turning by all of it at once.
+     - The previous requested heading is controller state, so a rollback restores it with the controller.
+     - Two consecutive one-shot events (two jumps, two dashes) are each stamped, even when their payloads match:
+       "an unchanged input sends nothing" applies to held values only;
    - with roomscale walking the head moves the collider, so the head pose becomes a simulation input;
    - once a controller moves the avatar root, hand poses must be relative to the root, or a correction of the root
      leaves the hands behind. world-model.md's `Input::Hand` carries `poses: Vec<HandPose>`; their frame is unchecked;
@@ -1589,9 +1607,12 @@ per-sub-step form fails either gate, the user hears it before any other form is 
     and waking, and each queued effect is applied once, candidate A's contact-free trajectory included;
   - a body whose two trajectories take different branches and queue different effects: only the effects of the
     trajectory its collision hook chose apply;
-  - a collision hook that does unrelated work and returns its stock result lands exactly where the null hook does;
+  - a collision hook that does unrelated work and returns its stock result, through the real hook interface, lands
+    exactly where the null hook does;
   - a ball touching two surfaces whose collision hook accepts stock twice: the collision isn't applied twice, and
-    its neighbours' response doesn't change.
+    its neighbours' response doesn't change;
+  - a compound body touching the same opposing body twice: its hook sees the contacts in the same order at every
+    worker count and after a restore.
 
   A form that fails gate 0 is out.
 - **Gate 1, cost, once gate 0 passes.** In release, in a quiet window, with the hooks compiled by Cranelift with
@@ -1645,12 +1666,12 @@ differs.
 |---|---|---|
 | M2, authoring in depth | S1 and S5; pieces 1-5 (physics as state, step hooks, collision hooks with the custom-against-stock rule, world queries, joints, motors and colliders moved by logic); S3, then piece 6 (player shaders) | 20-31 |
 | M3, sessions that survive real life | S2; piece 7 (the per-player input with the head, root-relative hands, and held and one-shot values), pieces 8, 9 and 13 (the default avatar, its controller with a root-motion input and a pose output, its view and comfort, health for players and objects); piece 12 (GPU particles and details), by WS-render in parallel; hooks with eight members, as acceptance | 13-21 |
-| M4, regions | D58's local physics origins, which M4's section now names: origins per group in agreed state and through rollback, write-back and queries per group, re-centring, the rule for which origin wins and the refusal when none fits (4-6; file 11's estimate for regions doesn't name origins [V]); a write aimed at a frozen place (1-2 under option (a), pending the user, point 10); what M2 and M3 add, as region cases, fuel per group and the catch-up's rules included (1-2). A wording change: a world limits locomotion by limiting avatars (meac1c4a2af5f) | 6-10 |
+| M4, regions | D58's local physics origins, which M4's section now names: origins per group in agreed state and through rollback, write-back and queries per group, re-centring, the rule for which origin wins and the refusal when none fits (4-6; file 11's estimate for regions doesn't itemise origins [V]); a write aimed at a frozen place (1-2 under option (a), pending the user, point 10); what M2 and M3 add, as region cases, fuel per group and the catch-up's rules included (1-2). A wording change: a world limits locomotion by limiting avatars (meac1c4a2af5f) | 6-10 |
 | M5, the platform | Pieces 10 and 11 (avatars as saved objects, fallbacks and the world's avatar level, the converter after S4, brought code with its build cap and cache, and custom controllers with health logic); piece 14, deterministic animation; region cases for its own pieces | 18-28 |
 
 Against draft 4: S5 moves from M3 to M2 (1-2), piece 5 gains the target verb (about 1), M4 gains D58's origins and
-the frozen-place write, and M5 gains its region cases (about 1). Against draft 5, D58's origins grow from 2-3 to 4-6:
-nothing in M4's estimate counted them. If the user picks (d) for point 8, M5 grows by about
+the frozen-place write, and M5 gains its region cases (about 1). Against draft 5, D58's origins grow from 2-3 to 4-6,
+since file 11's estimate for regions doesn't itemise origins. If the user picks (d) for point 8, M5 grows by about
 2-3.
 
 **Demos:**
@@ -1666,7 +1687,8 @@ nothing in M4's estimate counted them. If the user picks (d) for point 8, M5 gro
 - a hooked world gives the same roots on every member and in the offline replay;
 - binding refuses a hook that writes directly to another object; writes to other objects are queued, and allowed;
 - a hook call out of fuel gives one stock call's result on unchanged inputs, its earlier sub-steps' results and
-  effects stand, the same bodies run out at every worker count, and the owner gets one notice per group and frame;
+  effects stand, the same bodies run out at every worker count, and the owner gets one notice when exhaustion
+  starts in a group, with a count;
 - a body whose two trajectories queue different effects applies only those of the trajectory its collision hook
   chose, and a collision hook that returns its stock result after other work lands where the null hook does;
 - a ball touching two surfaces whose collision hook accepts stock twice gets the collision once, and its neighbours
@@ -1756,12 +1778,15 @@ single origin, not the MVP.
    - Retargeting inside the deterministic sampler stays out.
 10. **A write aimed at a frozen place,** from a hook or any script. M4's spectrum records an influence where machines
     hold both ends, and nobody holds a frozen place.
-    - (a) The write is kept and applied in the place's catch-up, through a bounded queue. Writes keep their stamps
-      and order over the ticks actually simulated; two writes coalesce only when no read, side effect or permission
-      check between them could tell them apart. Additive effects are capped, and past the cap the write is refused
-      with an event; what happens to the writes past the cap's gap is stated separately. Pending writes are hashed
-      and saved, and permissions are checked when a write is applied. Code an agent installs can then write to far
-      frozen places, which fits "Game world only".
+    - (a) The write is kept and applied in the place's catch-up, through a bounded queue. Two separate limits apply:
+      - **the missed-time limit:** a write stamped within it applies at its frame during the catch-up, keeping stamps
+        and order; two writes coalesce only when no read, side effect or permission check between them could tell
+        them apart. A write stamped in the gap past that limit applies at the catch-up's end, in stamp order;
+      - **the queue cap:** past it, further writes are refused with an event the script sees. Additive effects are
+        capped too.
+
+      Pending writes are hashed and saved, and permissions are checked when a write is applied. Code an agent
+      installs can then write to far frozen places, which fits "Game world only".
     - (b) The write is refused, with an event the script sees, decided on the holders' agreed state, never on a
       local cache miss.
     - Member range checks stay either way.
@@ -1773,7 +1798,7 @@ single origin, not the MVP.
 - Per-player budgets for brought code (fuel), world-authored hooks' budget and GPU programs' budgets: values after S1
   and S3.
 - A group too wide for its own origin (point 11): under D58 a body still can't be more than 10^6 m from its group's
-  origin on any axis [V, pe-physics desc.rs:14; pe-replica replica.rs:760], so with a suitable origin a group may
+  origin on any axis [V, pe-physics desc.rs:15; pe-replica replica.rs:760], so with a suitable origin a group may
   span up to 2 x 10^6 m along an axis. A group's origin is re-centred as the group moves, which D58 makes
   physics-neutral, so the guard binds only a group that is itself that wide. Two cases stay distinct: a body that
   passes its group's guard stops and resets (world-model.md 4.3), and a merge with no common representable frame is
