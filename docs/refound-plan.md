@@ -1478,7 +1478,7 @@ reasons:
 **What that costs, in the user's terms:** M4 carries R16 and R17, huge worlds and culling by size, avatar culling
 included (section 5.2). The user's first five minutes name "huge open worlds that you can explore freely"
 (user-design-decisions.md, the tour). Under this proposal, every machine simulates a whole MVP world, so its size is
-what one machine can simulate at once (10.7, question 4).
+what one machine can simulate at once, and its physics stops 1,000 km from its origin (10.7, question 4).
 
 The alternatives:
 - **The MVP at the end of M5 with M4 in place,** if the user wants huge worlds in the MVP. The order and the
@@ -1502,8 +1502,9 @@ The alternatives:
 3. **Brought code's authority** (piece 11). Today a module writes with the engine's authority. Should a brought module
    act with its bringer's permissions (@fable-reviewer's reading, unconfirmed), or with another rule?
 4. **Moving M4 after the MVP** (10.6). Until M4, every machine loads and simulates a whole world, so an MVP world
-   is only as large as one machine can simulate at once: no chunk loading, freezing or culling by size. The plan has
-   no limit in metres; the limit is the machines'. Huge open worlds would come after the MVP.
+   is only as large as one machine can simulate at once: no chunk loading, freezing or culling by size. Its physics
+   also stops 10^6 m (1,000 km) from the world's physics origin (world-model.md 4.3), though positions reach much
+   further. Huge open worlds would come after the MVP.
 5. **Deterministic animation** (root motion, bone hitboxes) isn't in the user's list, but third-person combat through
    the lens needs it (@fable-reviewer's gap). Is it in the MVP?
 
