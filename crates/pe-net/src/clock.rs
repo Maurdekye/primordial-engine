@@ -226,7 +226,8 @@ impl Clock {
         }
     }
 
-    /// The start cut's member list replaces the welcome's hint (5.4, 6.4).
+    /// The app's member list replaces the welcome's (5.4, 6.4): before the clock starts, readiness is re-checked
+    /// against it; once it runs, the list doesn't make it unready.
     pub fn set_members(&mut self, members: Vec<PeerId>) {
         self.members = members;
         if !self.running {
@@ -313,7 +314,7 @@ impl Clock {
     /// One round (call at each sample interval): recompute the target and steer, converge or report (5.3-5.6).
     pub fn tick(&mut self, now: HostTime) {
         let own = self.offset_at(now);
-        // Before frame 0 only the start cut's members count (5.4); after, every connected member does.
+        // Only the members on my list count, before frame 0 and after (5.3, 5.4).
         let mut values: Vec<i64> = self
             .peers
             .iter()
