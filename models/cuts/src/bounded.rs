@@ -233,3 +233,159 @@ where
         unfinished,
     }
 }
+
+/// What a run of seeded random walks covered.
+pub struct Walked<A> {
+    pub states: usize,
+    pub depth: usize,
+    /// Walks run (0..walks, all of them unless the time budget cut the run).
+    pub walks: u64,
+    /// The index of the lowest walk that hit a `stop_on` property: the run stops there.
+    pub bit_at: Option<u64>,
+    /// Each property with a discovery, from the lowest-index walk that found it.
+    pub found: HashMap<&'static str, Vec<A>>,
+    pub unfinished: bool,
+}
+
+type Found<A> = HashMap<&'static str, (u64, Vec<A>)>;
+
+/// splitmix64: a small fixed generator, so a walk's choices never change with a dependency's version.
+fn mix(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
+/// Seeded random walks whose outcome doesn't depend on the thread count or on timing. Walk k is seeded from
+/// (seed, k) alone, so walks 0..n are the same walks at any thread count. Workers take walk indices in order; when
+/// walk k hits a `stop_on` property, no walk above k starts, the walks below k finish, and only walks 0..=k count. So
+/// the reported walk, and whether a control bites within n walks, are the same on every run (unless the time budget
+/// cuts the run, which is reported as unfinished).
+///
+/// A walk is stateright's simulation walk: from the initial state, check every property at each state, choose
+/// uniformly among the enabled actions, and end with no action left or on a state the walk has already visited.
+pub fn walks<M>(
+    m: &M,
+    walks: u64,
+    threads: usize,
+    seed: u64,
+    stop_on: &[&'static str],
+    budget: Option<std::time::Duration>,
+    progress: &(dyn Fn(u64, usize) + Sync),
+) -> Walked<M::Action>
+where
+    M: Model + Sync,
+    M::State: Hash + Send + Sync,
+    M::Action: Clone + Send + Sync,
+{
+    use std::sync::atomic::{AtomicU32, AtomicU64};
+    let t0 = std::time::Instant::now();
+    let props = m.properties();
+    let next = AtomicU64::new(0);
+    // Walks with an index at or above `limit` don't start; a bite at k lowers it to k + 1.
+    let limit = AtomicU64::new(walks);
+    let out_of_time = AtomicBool::new(false);
+    // Per walk: states visited and steps taken, so the totals count exactly the walks that count.
+    let per: Vec<(AtomicU32, AtomicU32)> = (0..walks).map(|_| (AtomicU32::new(0), AtomicU32::new(0))).collect();
+    let states = AtomicUsize::new(0);
+    let done = AtomicU64::new(0);
+    // Per property: the lowest walk that found it, and its trace.
+    let found: Mutex<Found<M::Action>> = Mutex::new(HashMap::new());
+    let running = AtomicUsize::new(threads);
+    let walk = |k: u64| {
+        let mut rng = mix(seed ^ mix(k));
+        let mut s = m.init_states().remove(0);
+        let mut path: Vec<M::Action> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut n = 0u32;
+        loop {
+            if !seen.insert(fp(&s)) {
+                break;
+            }
+            states.fetch_add(1, Ordering::Relaxed);
+            n += 1;
+            for p in &props {
+                let holds = (p.condition)(m, &s);
+                let hit = match p.expectation {
+                    Expectation::Always => !holds,
+                    Expectation::Sometimes => holds,
+                    Expectation::Eventually => false,
+                };
+                if hit {
+                    let mut f = found.lock().unwrap();
+                    if f.get(p.name).is_none_or(|(j, _)| k < *j) {
+                        f.insert(p.name, (k, path.clone()));
+                    }
+                    if stop_on.contains(&p.name) {
+                        limit.fetch_min(k + 1, Ordering::Relaxed);
+                    }
+                }
+            }
+            let mut acts = Vec::new();
+            m.actions(&s, &mut acts);
+            let mut moved = false;
+            while !acts.is_empty() {
+                rng = mix(rng);
+                let a = acts.swap_remove((rng % acts.len() as u64) as usize);
+                if let Some(n) = m.next_state(&s, a.clone()) {
+                    path.push(a);
+                    s = n;
+                    moved = true;
+                    break;
+                }
+            }
+            if !moved || out_of_time.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+        per[k as usize].0.store(n, Ordering::Relaxed);
+        per[k as usize].1.store(path.len() as u32, Ordering::Relaxed);
+    };
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| {
+                loop {
+                    if out_of_time.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let k = next.fetch_add(1, Ordering::Relaxed);
+                    if k >= limit.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    walk(k);
+                    done.fetch_add(1, Ordering::Relaxed);
+                }
+                running.fetch_sub(1, Ordering::Relaxed);
+            });
+        }
+        sc.spawn(|| {
+            let mut tick = 0;
+            while running.load(Ordering::Relaxed) > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                tick += 1;
+                if tick % 100 == 0 {
+                    progress(done.load(Ordering::Relaxed), states.load(Ordering::Relaxed));
+                }
+                if budget.is_some_and(|b| t0.elapsed() >= b) {
+                    out_of_time.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+    });
+    let lim = limit.load(Ordering::Relaxed);
+    let unfinished = out_of_time.load(Ordering::Relaxed);
+    let found = found.into_inner().unwrap();
+    let bit_at = found.iter().filter(|(p, _)| stop_on.contains(p)).map(|(_, (j, _))| *j).min();
+    // Only walks 0..lim count: one that started before a bite lowered the limit is dropped.
+    let found = found.into_iter().filter(|(_, (j, _))| *j < lim).map(|(p, (_, t))| (p, t)).collect();
+    let counted = &per[..lim as usize];
+    Walked {
+        states: counted.iter().map(|w| w.0.load(Ordering::Relaxed) as usize).sum(),
+        depth: counted.iter().map(|w| w.1.load(Ordering::Relaxed) as usize).max().unwrap_or(0),
+        walks: if unfinished { done.load(Ordering::Relaxed).min(lim) } else { lim },
+        bit_at,
+        found,
+        unfinished,
+    }
+}

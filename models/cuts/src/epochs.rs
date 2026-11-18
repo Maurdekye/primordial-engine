@@ -98,6 +98,10 @@ pub struct Epochs {
     pub zombie: bool,
     /// List only actions that change the state (for random walks).
     pub productive_only: bool,
+    /// Track members that reach an epoch without having voted in the previous epoch's suffix (they finish E from its
+    /// certificate alone, as pe-agree's epoch-certificate fetch does), and require an example of one that did so this
+    /// many times (0: not tracked, which keeps other rows' state space as it was).
+    pub catch_up: u8,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -207,6 +211,10 @@ pub struct Mem {
     /// A final cut arrived that does not extend its final log.
     pub undone: bool,
     pub restarted: bool,
+    /// It voted a suffix block of its current epoch (tracked only with `catch_up`).
+    pub suffix_voted: bool,
+    /// How many epochs it entered without having voted in the previous one's suffix (tracked only with `catch_up`).
+    pub caught_up: u8,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -582,6 +590,9 @@ impl Epochs {
             && (eb as usize) < EM
             && self.chain(s, &p).e_at[eb as usize] != NONE;
         let target = if next && !self.is(EMut::EndAtFinalizer) { eb + 1 } else { eb };
+        // A member that missed an epoch change moves one epoch per certificate, as pe-agree's fetch does (each is
+        // checked against the members of the epoch it ends); a joiner adopts every epoch b proves.
+        let target = if mm.ep != NONE { target.min(mm.ep.saturating_add(1)) } else { target };
         if target >= 1 && (target as usize) < EM + 1 && (mm.ep == NONE || target > mm.ep) {
             // A joiner, or a member that missed an epoch change: it adopts the epochs b proves, if they make it a
             // member and extend its final log (it fetches the epoch certificates).
@@ -596,6 +607,7 @@ impl Epochs {
                 ends[e] = b.ancestor(cc.e_at[e] + 1);
             }
             if ok && ends[target as usize - 1].extends(&mm.fin) {
+                self.note_entry(&mut mm);
                 mm.ends = ends;
                 mm.ep = target;
                 mm.fin = ends[target as usize - 1];
@@ -646,12 +658,23 @@ impl Epochs {
     }
 
     fn enter_next(&self, mm: &mut Mem, e_blk: Blk) {
+        self.note_entry(mm);
         let ep = mm.ep as usize;
         mm.ends[ep] = e_blk;
         mm.fin = e_blk;
         mm.ep += 1;
         mm.view = 1;
         mm.high = e_blk;
+    }
+
+    /// A member enters its next epoch: count it if it never voted in the ending epoch's suffix (`catch_up`).
+    fn note_entry(&self, mm: &mut Mem) {
+        if self.catch_up > 0 && mm.ep != NONE {
+            if !mm.suffix_voted {
+                mm.caught_up = mm.caught_up.saturating_add(1).min(self.catch_up);
+            }
+            mm.suffix_voted = false;
+        }
     }
 
     fn certs(&self, s: &EState) -> Vec<Blk> {
@@ -687,6 +710,8 @@ impl Model for Epochs {
             held: 0,
             undone: false,
             restarted: false,
+            suffix_voted: false,
+            caught_up: 0,
         }; K];
         for k in 0..K as u8 {
             if joiner(k) {
@@ -817,6 +842,9 @@ impl Model for Epochs {
                 s.m[k as usize].voted = b.ev();
                 let p = b.parent();
                 let ep = s.m[k as usize].ep;
+                if self.catch_up > 0 && p.epoch() == ep && self.in_suffix(&s, &p) {
+                    s.m[k as usize].suffix_voted = true;
+                }
                 if self.pev(&p, ep) > self.pev(&s.m[k as usize].high, ep) {
                     s.m[k as usize].high = p;
                 }
@@ -1019,6 +1047,13 @@ impl Model for Epochs {
                 })
             }),
         ]
+        .into_iter()
+        .chain((self.catch_up > 0).then(|| {
+            Property::sometimes("a member finished an epoch from its certificate alone", |c: &Epochs, s: &EState| {
+                (0..K as u8).any(|k| c.honest(k) && s.m[k as usize].caught_up >= c.catch_up)
+            })
+        }))
+        .collect()
     }
 }
 
@@ -1064,7 +1099,16 @@ pub struct Row {
     pub what: &'static str,
     /// Random walks instead of the bounded search: for controls whose counterexample is deeper than the bound.
     pub random: bool,
+    /// Random rows: how many walks (default `DEFAULT_WALKS`). Walk k is seeded by its index (bounded::walks), so a row
+    /// covers the same walks at any thread count, and a control bites within its count on every run or on none. A
+    /// count replaces a time budget here: where a control's search found its counterexample within a time budget
+    /// depended on the thread count (measured 2026-11-18: ctl-f2-highqc bit in 8 s at 3 threads and not within 100 s
+    /// at 16; ctl-e-finalizer's walks bit in 33-42 s at 16 threads and not within 100 s at 3).
+    pub walks: Option<u64>,
 }
+
+/// Walks per random row unless it names its own count.
+pub const DEFAULT_WALKS: u64 = 1_000_000;
 
 const ALL: u8 = 0b1111;
 
@@ -1083,6 +1127,7 @@ pub fn base(name: &'static str, m0: u8, entries: Vec<EDef>) -> Epochs {
         byz_proposes: true,
         zombie: false,
         productive_only: false,
+        catch_up: 0,
     }
 }
 
@@ -1141,6 +1186,27 @@ pub fn join_3to4() -> Epochs {
             ent("j0", 0, 0, NONE, NONE, Kind::Ord, false),
         ],
     )
+}
+
+/// The epoch-certificate fetch (agreement.md 8): leave-3to2, tracking members that finish epoch 0 without having voted
+/// in its suffix (from its certificate alone, as pe-agree's fetch does when the others' old cores are gone).
+pub fn fetch_3to2() -> Epochs {
+    let mut m = leave_3to2();
+    m.name = "fetch-3to2";
+    m.catch_up = 1;
+    m
+}
+
+/// Two leaves, 4 -> 3 -> 2: 3 leaves at the start, 2 may leave at any time (stamped when it signs). A member that
+/// voted in neither suffix finishes both epochs from their certificates, one epoch per certificate.
+pub fn fetch_4to2() -> Epochs {
+    let mut m = base(
+        "fetch-4to2",
+        ALL,
+        vec![ent("leave(3)", 3, 0, NONE, 0, Kind::Leave, true), ent("leave(2)", 2, 0, NONE, NONE, Kind::Leave, false)],
+    );
+    m.catch_up = 2;
+    m
 }
 
 /// Remove 4 -> 3: member 0 is Byzantine and not authorized; 1 removes it.
@@ -1226,9 +1292,17 @@ pub fn ctl_b() -> Epochs {
 
 /// (e): leave-3to2 with five views: a member that misses the certificate finalizing E's first suffix cut finalizes a
 /// later one, and takes that as the epoch's end.
+/// The leave alone (no ordinary entry): the break needs only the leave, and the walks reach it about three times
+/// sooner (measured 2026-11-18, seed 20261118: walk 1,751,502, against 5,550,187 with the entry o1).
 pub fn ctl_e() -> Epochs {
-    let mut m = leave_3to2().mutate(EMut::EndAtFinalizer);
+    e_twin().mutate(EMut::EndAtFinalizer)
+}
+
+/// ctl-e's model unmutated: leave-3to2 with five views and the leave as its only entry.
+pub fn e_twin() -> Epochs {
+    let mut m = leave_3to2();
     m.views = 5;
+    m.entries.truncate(1);
     m
 }
 
@@ -1252,23 +1326,47 @@ pub fn suite() -> Vec<Row> {
             expect_fail: &[],
             depth: d,
             random: false,
+            walks: None,
             what: "join 1 -> 2 (q 1 -> 2; M1's join)",
         },
-        Row { model: join_2to3(), expect_fail: &[], depth: d, random: false, what: "join 2 -> 3 (q 2 -> 2)" },
-        Row { model: leave_3to2(), expect_fail: &[], depth: d, random: false, what: "leave 3 -> 2 (q 2 -> 2)" },
+        Row {
+            model: join_2to3(),
+            expect_fail: &[],
+            depth: d,
+            random: false,
+            walks: None,
+            what: "join 2 -> 3 (q 2 -> 2)",
+        },
+        Row {
+            model: leave_3to2(),
+            expect_fail: &[],
+            depth: d,
+            random: false,
+            walks: None,
+            what: "leave 3 -> 2 (q 2 -> 2)",
+        },
         Row {
             model: leave_2to1(),
             expect_fail: &[],
             depth: d,
             random: false,
+            walks: None,
             what: "leave 2 -> 1 (q 2 -> 1; M1 step 8)",
         },
-        Row { model: join_3to4(), expect_fail: &[], depth: d, random: false, what: "join 3 -> 4 (q 2 -> 3)" },
+        Row {
+            model: join_3to4(),
+            expect_fail: &[],
+            depth: d,
+            random: false,
+            walks: None,
+            what: "join 3 -> 4 (q 2 -> 3)",
+        },
         Row {
             model: remove_4to3(),
             expect_fail: &[],
             depth: d,
             random: false,
+            walks: None,
             what: "remove the Byzantine member 4 -> 3 (q 3 -> 2)",
         },
         Row {
@@ -1276,21 +1374,79 @@ pub fn suite() -> Vec<Row> {
             expect_fail: &[],
             depth: d,
             random: false,
+            walks: None,
             what: "restart in place at n = 3 (Rechain)",
         },
-        Row { model: burst_2to4(), expect_fail: &[], depth: d, random: false, what: "two joins at once 2 -> 4" },
+        Row {
+            model: burst_2to4(),
+            expect_fail: &[],
+            depth: d,
+            random: false,
+            walks: None,
+            what: "two joins at once 2 -> 4",
+        },
+        Row {
+            model: fetch_3to2(),
+            expect_fail: &[],
+            depth: d,
+            random: false,
+            walks: None,
+            what: "leave 3 -> 2, a member finishing epoch 0 from its certificate alone (the fetch)",
+        },
+        Row {
+            model: fetch_4to2(),
+            expect_fail: &[],
+            depth: d,
+            random: true,
+            walks: None,
+            what: "leaves 4 -> 3 -> 2, a member finishing both epochs from their certificates (random walks)",
+        },
+        Row {
+            model: named(leave_3to2(), "walk-leave-3to2"),
+            expect_fail: &[],
+            depth: d,
+            random: true,
+            walks: None,
+            what: "twin of leave-3to2, random walks",
+        },
+        Row {
+            model: named(join_3to4(), "walk-join-3to4"),
+            expect_fail: &[],
+            depth: d,
+            random: true,
+            walks: None,
+            what: "twin of join-3to4, random walks",
+        },
+        Row {
+            model: named(remove_4to3(), "walk-remove-4to3"),
+            expect_fail: &[],
+            depth: d,
+            random: true,
+            walks: None,
+            what: "twin of remove-4to3, random walks",
+        },
+        Row {
+            model: named(restart_3(), "walk-restart-3"),
+            expect_fail: &[],
+            depth: d,
+            random: true,
+            walks: None,
+            what: "twin of restart-3, random walks",
+        },
         Row {
             model: remove_authorized_byz(),
             expect_fail: &["agreement", "same members per epoch"],
             depth: d,
             random: true,
+            walks: None,
             what: "BOUNDARY: an authorized Byzantine member removes an honest one (n = 3, t = 0 after)",
         },
         Row {
             model: named(join_2to3().mutate(EMut::AtInclusion), "ctl-a-inclusion"),
             expect_fail: &["agreement", "same members per epoch"],
-            depth: d,
+            depth: 18,
             random: false,
+            walks: None,
             what: "(a) a change takes effect at inclusion",
         },
         Row {
@@ -1298,6 +1454,7 @@ pub fn suite() -> Vec<Row> {
             expect_fail: &["final log ends at E"],
             depth: d,
             random: true,
+            walks: Some(20_000),
             what: "(b) a non-empty suffix proposed and accepted",
         },
         Row {
@@ -1305,6 +1462,7 @@ pub fn suite() -> Vec<Row> {
             expect_fail: &["agreement", "same members per epoch"],
             depth: 34,
             random: true,
+            walks: Some(1_000_000),
             what: "(c) a vote counted in another epoch",
         },
         Row {
@@ -1312,27 +1470,39 @@ pub fn suite() -> Vec<Row> {
             expect_fail: &["one live chain per key"],
             depth: d,
             random: true,
+            walks: Some(50_000),
             what: "(d) the old chain stays open after E",
+        },
+        Row {
+            model: named(e_twin(), "walk-e-twin"),
+            expect_fail: &[],
+            depth: d,
+            random: true,
+            walks: Some(500_000),
+            what: "twin of ctl-e-finalizer, unmutated: leave-3to2, five views, the leave alone",
         },
         Row {
             model: named(ctl_e(), "ctl-e-finalizer"),
             expect_fail: &["same members per epoch", "agreement"],
             depth: d,
             random: true,
+            walks: Some(2_000_000),
             what: "(e) the final log ends at the finalizing cut",
         },
         Row {
             model: named(quiet_byz(restart_4byz()).mutate(EMut::ForgetViews), "ctl-f1-views"),
             expect_fail: &["no honest double vote", "agreement"],
-            depth: d,
+            depth: 5,
             random: false,
+            walks: None,
             what: "(f1) a restart forgets its views",
         },
         Row {
             model: named(quiet_byz(restart_4byz()).mutate(EMut::ForgetHighQc), "ctl-f2-highqc"),
             expect_fail: &["timeouts keep the lock", "agreement"],
-            depth: d,
+            depth: 13,
             random: false,
+            walks: None,
             what: "(f2) a restart forgets its high_qc",
         },
     ]
