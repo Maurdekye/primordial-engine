@@ -669,9 +669,9 @@ the floor's cut-exact snapshot at once, with the cut-exact outcomes below the fl
     full transfer lands on the empty state [V `an_import_at_a_cut_whose_snapshot_was_thinned_takes_the_full_transfer`].
   - **Inline blobs** (S2 v1.8; world-model.md 3.4, @coordinator-opus): `CutImport.blobs` carries the
     bytes of the small blobs (1 to 256 bytes) the imported rows reference, from the donor's `Tree::export_blobs`.
-    A blob no imported row references, or one out of hash order, is `BadBlob(i)`; a missing small simulation blob
-    this machine lacks too is `MissingBlob`. pe-world checks both inside `World::import`, so a failure changes
-    nothing.
+    A blob no imported row references, or one out of hash order, is `BadBlob(i)`; a missing small blob, simulation
+    or display (a name), this machine lacks too is `MissingBlob` (inline blobs phase 3b). pe-world checks both
+    inside `World::import`, so a failure changes nothing.
   - **Then the live state is the imported one at the cut's frame,** in a new physics world, and re-simulates to the
     present through the replay, returning my root at the cut. It moves neither `Cv` nor the floor, and never rehashes
     the rest of the state as a side effect: damage behind a stale cache shows as `RootMismatch` instead of being fixed

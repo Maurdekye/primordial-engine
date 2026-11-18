@@ -460,8 +460,10 @@ impl World {
                 .map_err(|_| mismatch())?;
             w.script_ids = Arc::new(keep.into_iter().filter(|(_, a)| *a != [0; 32]).collect());
         }
-        // The inline blobs (3.4; S2 v1.8): each one an imported row references, in its one order; an inline-class
-        // simulation blob the rows need must arrive or be here already, or this machine could step differently.
+        // The inline blobs (3.4; S2 v1.8): each one an imported row references, in its one order; every inline-class
+        // blob the rows need must arrive or be here already. A simulation blob, or this machine could step
+        // differently; a display blob (a name), since nothing fetches inline blobs later (phase 3b, now that
+        // pe-diverge's fetch carries the donor's `export_blobs`).
         let ids: Vec<ObjectId> = objects.iter().map(|(_, o)| o.id).collect();
         let tombstones = tables_imported.contains(&table::TOMBSTONES);
         let refs = crate::inline::state_refs(&w, &ids, tombstones);
@@ -473,8 +475,7 @@ impl World {
             }
             given.insert(r);
         }
-        if let Some((r, _)) = refs.iter().find(|(r, sim)| **sim && !given.contains(*r) && self.blobs().get(r).is_none())
-        {
+        if let Some(r) = refs.keys().find(|r| !given.contains(*r) && self.blobs().get(r).is_none()) {
             return Err(ImportError::MissingBlob(Hash(r.hash)));
         }
         for b in &import.blobs {
