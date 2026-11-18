@@ -318,6 +318,11 @@ fn main() {
     // Others share the world (`--open` or `--join`): the quit then leaves gracefully (app.md 4).
     // Which sources this build came from, and its commit (app.md 4, "The build id").
     println!("{}", pe_app::net::source_line());
+    // Which pe-sdk scripts build against: PE_SDK, beside the executable, or the source tree (builds::sdk).
+    match pe_app::builds::sdk_line() {
+        Ok(line) => println!("{line}"),
+        Err(warning) => eprintln!("{warning}"),
+    }
     // A deliberate test fault on this machine only (M1 demo step 7, pe-app's `fault`), armed before any replica is made.
     let fault = match (options.inject_fault_at, options.arm_fault) {
         (Some(_), true) => fail("--inject-fault-at and --arm-fault exclude each other"),
@@ -601,7 +606,8 @@ fn start_builds(
         let toolchain = pe_logic::build::Toolchain::current().map_err(|e| e.to_string())?;
         let identity =
             identity.map_or_else(net::default_identity_path, |p| Ok(p.to_path_buf())).map_err(|e| e.to_string())?;
-        let config = builds::BuildConfig::new(toolchain, pe_logic::build::engine_sdk(), builds::build_dir(&identity));
+        let sdk = builds::sdk().clone()?.0;
+        let config = builds::BuildConfig::new(toolchain, sdk, builds::build_dir(&identity));
         let builder = Arc::new(builds::Builder::new(config, inbox.clone()).map_err(|e| e.to_string())?);
         let thread = builds::spawn_attester(builder.clone(), inbox, ports.shared.clone(), ports.queue.clone(), me)
             .map_err(|e| e.to_string())?;
