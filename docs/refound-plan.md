@@ -81,8 +81,8 @@ calendar time, not writing.
   - Every safety rule has a control that bites: a mutation that a test must catch.
 - **Every ruling of the user's carries over.** Section 5 says where each lands. The design phase is closed. File 20
   answered the last point that was open (after two branches merge, both sides' admins are admins, m20c57d575b3f).
-  The MVP boundary, open with the user since 2026-11-17, was answered on 2026-11-18 (section 10.6). Two of
-  section 10's points are with the user (10.7, points 8 and 10).
+  The MVP boundary, open with the user since 2026-11-17, was answered on 2026-11-18 (section 10.6), and so were
+  section 10's last two points (10.7, points 8 and 10; m4ad225db8c60).
 - **All 27 live docket items are triaged:** 17 carry and 10 park.
 - **Every decision the plan asked for has been made.** The user answered U1-U4, and the coordinator ruled C1-C13 with
   conditions (section 9).
@@ -457,7 +457,8 @@ File 16 maps it onto this engine:
   setting, and one of its values is "no limit". The first machine to return computes it, and the result is agreed
   like any state. The catch-up's interval is fixed at the return and published at an agreed cut, and its result
   doesn't depend on how its work is sliced across workers. Until it is agreed, an arriving player sees the place as
-  it froze (section 10.5).
+  it froze (section 10.5). A write aimed at a frozen place is kept and applied in its catch-up, under two separate
+  limits (the user's answer, section 10.7, point 10).
 - **Notice of arrivals.** An arrival comes as an entry in the log of a chunk already loaded, never from a scan.
 - **The unit of agreement.** Agreement and simulation run per group of things in contact, across layers, not per
   cell (file 16, C4). The domain id that every entry carries from M1 names that group.
@@ -1110,12 +1111,10 @@ targets, answer 8) are all settled above.
 
 File 18's four questions are answered too (mb3da953109cb, m2c5ed59eb9ab; section 5.1).
 
-**Answered on 2026-11-18** (m89775f87a1cb, m61686bb068f9): section 10's MVP boundary (10.6), its questions, where
-brought code's authority ends, and a new world's avatar setting (10.1). Before that, file 20 answered the last point
-(m20c57d575b3f): after two branches merge, both sides' admins are admins.
-
-**With the user** (section 10.7, points 8 and 10): whether stock animation clips reach other avatars, and what
-happens to a write aimed at a frozen place.
+**Answered on 2026-11-18** (m89775f87a1cb, m61686bb068f9, m4ad225db8c60): section 10's MVP boundary (10.6), its
+questions, where brought code's authority ends, a new world's avatar setting (10.1), and 10.7's last two points: stock
+animation clips don't reach other avatars for now, and a write aimed at a frozen place is kept and applied later.
+Before that, file 20 answered the last point (m20c57d575b3f): after two branches merge, both sides' admins are admins.
 
 **One reading still to confirm:** the coordinator's reading of the merge against finality (a three-way merge at
 main's final frontier) has gone to the liaison so that the user can correct it. Model v2 checks it, with the
@@ -1235,16 +1234,15 @@ conditions shown:
 - the missing controls are named (section 4.4);
 - membership is re-founded per line at the one-minute mark (model v3).
 
-## 10. Amendment (draft 7, 2026-11-18): the MVP's programmable physics, controllers, avatars, animation and GPU effects
+## 10. Amendment (draft 8, 2026-11-18): the MVP's programmable physics, controllers, avatars, animation and GPU effects
 
 **Status:** a draft by @engine-architect, revised after @fable-reviewer's reviews (m90bf0c2bf236, m159ee32cb85e,
 mb5ce5880a3dd, m45921977fbc5) and @astra-deliberator's (m975e233f631b). It applies the user's answers of 2026-11-18
 (m89775f87a1cb, m61686bb068f9) and @coordinator-opus's rulings, which both deliberated: on draft 4's six points and
 six more (m5546130edb7b, m257d92aea7eb, ma4840d569270), on draft 5 (me218458e8b83) and on draft 6's final reads
-(m8dfd867a1ade). Two points are with the user
-(10.7, points 8 and 10). This text assumes option (a) for each, marked "pending the user". Nothing here authorizes
-building beyond what the plan's milestones already authorize. M1 is untouched. Sizes are in this plan's units and are
-all inferred [I].
+(m8dfd867a1ade). Draft 8 applies the user's answers on the last two points (m4ad225db8c60, 10.7 points 8 and 10),
+option (a) for each; nothing else changed from draft 7. Nothing here authorizes building beyond what the plan's
+milestones already authorize. M1 is untouched. Sizes are in this plan's units and are all inferred [I].
 
 ### 10.1 What the user ruled
 
@@ -1310,6 +1308,12 @@ The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `_share
     included with the stock ones. but it wouldnt be a universal setting. when coding your own custom character
     controller with custom locomotion, you would have to implement a comfort mode yourself in order to have it."
     (piece 13).
+- **The answers of 2026-11-18, 16:35Z** (m4ad225db8c60, to 10.7's points 8 and 10; verbatim in
+  `_shared/user-design-decisions.md`):
+  - stock clips on imported avatars: "we'll forgo animation import for now", option (a). A clip plays on the skeleton
+    it was made for; adapting stock clips to an avatar at import is deferred, not ruled out (piece 14);
+  - a write aimed at a frozen place: "Keep and apply later", option (a) with its two separate limits (10.7 point 10;
+    M4).
 - **A post-MVP idea, not authorized** (m3f64ae1fa7e5): three avatar levels. Full is Resonite-like. Fallback is
   VRChat-like: limited state-machine logic, particles, shaders, animations, a humanoid skeleton and no custom logic.
   Light is this plan's fallback. The MVP doesn't close that door: a world's avatar restriction is a level, not an
@@ -1570,9 +1574,10 @@ From @fable-reviewer's analysis of draft 1 (m90bf0c2bf236) [I, not yet measured]
       controller may author hitboxes in VR. Nothing promises that a tracked physical foot hits things; that would
       need a user ruling;
     - **clips** come from glTF animations; VRM carries none. A clip plays on the skeleton it was made for: an
-      avatar's or item's own clips on its own skeleton, and the stock clips on the stock skeleton. Whether stock clips
-      also reach other avatars is with the user (pending the user, 10.7 point 8). This draft assumes (a), no
-      retargeting; (d), stock clips baked onto an avatar's humanoid rig at import, would add about 2-3 to M5.
+      avatar's or item's own clips on its own skeleton, and the stock clips on the stock skeleton. Stock clips don't
+      reach other avatars in the MVP: the user forwent animation import for now (10.7 point 8, option (a)). An
+      imported avatar with no clips of its own shows display IK only. Baking stock clips onto an avatar's humanoid rig
+      at import, option (d), is deferred, not ruled out; it would add about 2-3 [I].
 
     Needs:
     - the sampler built from the start on pe-core's deterministic math (`sin_cos`, `asin`, `acos` and `atan2` [V,
@@ -1666,13 +1671,13 @@ differs.
 |---|---|---|
 | M2, authoring in depth | S1 and S5; pieces 1-5 (physics as state, step hooks, collision hooks with the custom-against-stock rule, world queries, joints, motors and colliders moved by logic); S3, then piece 6 (player shaders) | 20-31 |
 | M3, sessions that survive real life | S2; piece 7 (the per-player input with the head, root-relative hands, and held and one-shot values), pieces 8, 9 and 13 (the default avatar, its controller with a root-motion input and a pose output, its view and comfort, health for players and objects); piece 12 (GPU particles and details), by WS-render in parallel; hooks with eight members, as acceptance | 13-21 |
-| M4, regions | D58's local physics origins, which M4's section now names: origins per group in agreed state and through rollback, write-back and queries per group, re-centring, the rule for which origin wins and the refusal when none fits (4-6; file 11's estimate for regions doesn't itemise origins [V]); a write aimed at a frozen place (1-2 under option (a), pending the user, point 10); what M2 and M3 add, as region cases, fuel per group and the catch-up's rules included (1-2). A wording change: a world limits locomotion by limiting avatars (meac1c4a2af5f) | 6-10 |
+| M4, regions | D58's local physics origins, which M4's section now names: origins per group in agreed state and through rollback, write-back and queries per group, re-centring, the rule for which origin wins and the refusal when none fits (4-6; file 11's estimate for regions doesn't itemise origins [V]); a write aimed at a frozen place, kept and applied in its catch-up under two limits (1-2; the user's answer, 10.7 point 10); what M2 and M3 add, as region cases, fuel per group and the catch-up's rules included (1-2). A wording change: a world limits locomotion by limiting avatars (meac1c4a2af5f) | 6-10 |
 | M5, the platform | Pieces 10 and 11 (avatars as saved objects, fallbacks and the world's avatar level, the converter after S4, brought code with its build cap and cache, and custom controllers with health logic); piece 14, deterministic animation; region cases for its own pieces | 18-28 |
 
 Against draft 4: S5 moves from M3 to M2 (1-2), piece 5 gains the target verb (about 1), M4 gains D58's origins and
 the frozen-place write, and M5 gains its region cases (about 1). Against draft 5, D58's origins grow from 2-3 to 4-6,
-since file 11's estimate for regions doesn't itemise origins. If the user picks (d) for point 8, M5 grows by about
-2-3.
+since file 11's estimate for regions doesn't itemise origins. M5 carries no retargeting: the user deferred point 8's
+option (d), which would add about 2-3 if it's taken up later.
 
 **Demos:**
 - **M2:** an agent writes a hook that makes a spun ball curve, and one that makes a raft float.
@@ -1719,8 +1724,10 @@ since file 11's estimate for regions doesn't itemise origins. If the user picks 
   the setting says so;
 - a player's fuel in one group doesn't depend on whether another group, with more of their hooked bodies, is loaded,
   and the rotation and the fuel order are the same across a handover;
-- a write aimed at a frozen place, from a hook or any script, has one outcome on every machine: under option (a) it
-  is applied in that place's catch-up (pending the user, 10.7 point 10). Member range checks apply either way;
+- a write aimed at a frozen place, from a hook or any script, has one outcome on every machine (10.7 point 10, the
+  user's answer): stamped within the missed-time limit, it applies at its frame during the catch-up; stamped in the
+  gap past that limit, at the catch-up's end, in stamp order; past the queue cap, it is refused with an event the
+  script sees. Member range checks apply too;
 - a player handed over across a region boundary with non-default health, and with an input that a replay needs,
   keeps both, and the input is applied exactly once;
 - **D58** (M4, "Physics origins"): two groups more than 10^6 m from the world's first physics origin collide, are
@@ -1747,49 +1754,48 @@ single origin, not the MVP.
 
 ### 10.7 Open points
 
-**Answered by the user** (m89775f87a1cb, m61686bb068f9). 10.1 lists the answers.
+**Answered by the user** (m89775f87a1cb, m61686bb068f9, m4ad225db8c60). 10.1 lists the answers. Points 6, 8 and 10
+are the user's; the rest are the coordinator's rulings.
 
 **Ruled by the coordinator, after both deliberators** (m5546130edb7b, m257d92aea7eb, ma4840d569270, me218458e8b83).
 10.2-10.6 apply the rulings:
-1. stock may be called more than once, each call paid in fuel; the collision hook runs once per body, at write-back,
-   and returns the final pose and velocity; no pre-solve edits, so piece 1 gains a collision filter;
-2. the stock controller turns by snap or smoothly, as agreed input, with a local vignette; a snap applies exactly once,
-   as a cumulative heading; no teleport for now;
-3. animation goes in M5, with S5 before any dates, beside S1;
-4. what's agreed is the animation state, the root track and the hitbox bones; hitboxes are query-only by default;
-5. M4's acceptance carries the hooks and controllers, within the missed-time limit, and M5's carries its own pieces;
-6. a new world allows any avatar (the user's answer);
-7. the step hook runs in an ordered serial pass at the barrier after the velocity stage; fuel is capped per call and
-   per owner and group, charged in a fixed order with a rotating start, and effects follow the trajectory the
-   collision hook chose;
-9. a thaw's meter only paces its catch-up, which charges fuel per simulated frame;
-11. D58's origins per group, with the guard per group (below);
-12. colliders move by an explicit target verb with the author's caps, and write-back keeps their actual pose.
+- **1.** stock may be called more than once, each call paid in fuel; the collision hook runs once per body, at
+  write-back, and returns the final pose and velocity; no pre-solve edits, so piece 1 gains a collision filter;
+- **2.** the stock controller turns by snap or smoothly, as agreed input, with a local vignette; a snap applies exactly
+  once, as a cumulative heading; no teleport for now;
+- **3.** animation goes in M5, with S5 before any dates, beside S1;
+- **4.** what's agreed is the animation state, the root track and the hitbox bones; hitboxes are query-only by default;
+- **5.** M4's acceptance carries the hooks and controllers, within the missed-time limit, and M5's carries its own
+  pieces;
+- **6.** a new world allows any avatar (the user's answer);
+- **7.** the step hook runs in an ordered serial pass at the barrier after the velocity stage; fuel is capped per call
+  and per owner and group, charged in a fixed order with a rotating start, and effects follow the trajectory the
+  collision hook chose;
+- **9.** a thaw's meter only paces its catch-up, which charges fuel per simulated frame;
+- **11.** D58's origins per group, with the guard per group (below);
+- **12.** colliders move by an explicit target verb with the author's caps, and write-back keeps their actual pose.
 
-**With the user** (via @coordinator-opus). This draft assumes option (a) for each, marked "pending the user":
+**Answered by the user on 2026-11-18, 16:35Z** (m4ad225db8c60), option (a) for each:
+- **8. Stock clips don't reach other avatars in the MVP:** "we'll forgo animation import for now". A clip plays on the
+  skeleton it was made for. In practice, an imported avatar with no clips of its own shows display IK only, and can't
+  use the stock walk, run or attack clips.
+  - Deferred, not ruled out: option (d), stock clips baked onto the avatar's mapped humanoid rig once, at import,
+    outside the simulation, and shipped as the avatar's own clips, the same bytes for the simulation and the display.
+    About +2-3 to M5 [I]; every avatar would then carry its own copy of each stock clip. Both deliberators prefer
+    this form if retargeting comes later.
+  - Retargeting inside the deterministic sampler stays out.
+- **10. A write aimed at a frozen place is kept and applied later:** "Keep and apply later". It comes from a hook or
+  any script. M4's spectrum records an influence where machines hold both ends, and nobody holds a frozen place, so
+  the write waits for the place's catch-up, through a bounded queue. Two separate limits apply:
+  - **the missed-time limit:** a write stamped within it applies at its frame during the catch-up, keeping stamps and
+    order; two writes coalesce only when no read, side effect or permission check between them could tell them
+    apart. A write stamped in the gap past that limit applies at the catch-up's end, in stamp order;
+  - **the queue cap:** past it, further writes are refused with an event the script sees. Additive effects are capped
+    too.
 
-8. **Do stock clips reach other avatars?**
-   - (a) No retargeting in the MVP: a clip plays on the skeleton it was made for. In practice, an imported avatar with
-     no clips of its own shows display IK only, and can't use the stock walk, run or attack clips.
-   - (d) Stock clips are baked onto the avatar's mapped humanoid rig once, at import, outside the simulation, and
-     shipped as the avatar's own clips: the same bytes for the simulation and the display. About +2-3 to M5 [I]; every
-     avatar then carries its own copy of each stock clip. Both deliberators prefer this form if the user wants
-     retargeting.
-   - Retargeting inside the deterministic sampler stays out.
-10. **A write aimed at a frozen place,** from a hook or any script. M4's spectrum records an influence where machines
-    hold both ends, and nobody holds a frozen place.
-    - (a) The write is kept and applied in the place's catch-up, through a bounded queue. Two separate limits apply:
-      - **the missed-time limit:** a write stamped within it applies at its frame during the catch-up, keeping stamps
-        and order; two writes coalesce only when no read, side effect or permission check between them could tell
-        them apart. A write stamped in the gap past that limit applies at the catch-up's end, in stamp order;
-      - **the queue cap:** past it, further writes are refused with an event the script sees. Additive effects are
-        capped too.
-
-      Pending writes are hashed and saved, and permissions are checked when a write is applied. Code an agent
-      installs can then write to far frozen places, which fits "Game world only".
-    - (b) The write is refused, with an event the script sees, decided on the holders' agreed state, never on a
-      local cache miss.
-    - Member range checks stay either way.
+  Pending writes are hashed and saved, and permissions are checked when a write is applied. Code an agent installs
+  can then write to far frozen places, which fits "Game world only". Member range checks stay. The other option,
+  (b), refusing the write, was not chosen.
 
 **For the plan, settled by the spikes or later:**
 - R15 is superseded (5.2).
