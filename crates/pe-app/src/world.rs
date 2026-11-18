@@ -88,7 +88,7 @@ pub(crate) fn ball_pit_replica(
     }
     for (i, m) in sorted.iter().enumerate() {
         world
-            .admit(preset::m1_line(), *m, perm::ADMIN | perm::EDIT, Frame(0), hand_spawn(i))
+            .admit(preset::m1_line(), *m, perm::ADMIN | perm::EDIT | perm::AGENT, Frame(0), hand_spawn(i))
             .map_err(|e| format!("admitting member {i}: {e:?}"))?;
     }
     let mut config = crate::genesis::replica_config(&crate::genesis::settings(), rate, clock);

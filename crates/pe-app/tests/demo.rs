@@ -1,5 +1,6 @@
-//! M1's demo as the two-process acceptance test (app.md 6). A opens the ball pit headless and prints an invite; B
-//! joins. An agent on A commits a lamp script through MCP, binds it to the preset's Lamp with the script's `Blink`
+//! M1's demo as the two-process acceptance test (app.md 6). A opens the ball pit headless and alone, and prints an
+//! invite; B joins at the cut that admits it (app.md 4, "Joining from a cut"). Once A's console says B joined, an agent
+//! on A commits a lamp script through MCP, binds it to the preset's Lamp with the script's `Blink`
 //! and `Glow`, then commits a second version that glows blue instead of warm white. B's own agent watches the Lamp
 //! through B's MCP and finds the first kept frame it glows blue: `F + 2`, where `F` is the activation frame A's `mine`
 //! reports, which every machine takes from final frames. The new code runs from `F + 1` (S6's
@@ -53,6 +54,11 @@ fn an_agent_on_a_edits_the_lamp_and_b_sees_it_at_the_agreed_frame() {
     let (mut b, _b_in, b_out) = start(&dir, "b", "observer", &["--join", &invite]);
     let reply = line_after(&b_out, "reply code for the opener: ", until, &dir);
     writeln!(a_in, "{reply}").and_then(|()| a_in.flush()).expect("A reads B's reply code");
+    // A's agent commits a script only once the join has ended (app.md 4, "A world with scripts: an M1 limit"): a
+    // commit before the `Admit` fails the join, and one stamped between it and E leaves E's state holding a version
+    // whose archive B's import doesn't carry. A's console says B joined at the new epoch's first final cut, after E.
+    line_with(&a_out, " joined the session.", until, &dir);
+    publish(&dir, "joined", "");
 
     let author = result(&dir, "author", &mut [&mut a, &mut b], until);
     let observer = result(&dir, "observer", &mut [&mut a, &mut b], until);
@@ -79,7 +85,7 @@ fn demo_agent() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
         rt.block_on(async {
             match role.as_str() {
-                "author" => author().await,
+                "author" => author(&dir).await,
                 "observer" => observer().await,
                 r => panic!("no role {r}"),
             }
@@ -102,12 +108,12 @@ fn publish(dir: &Path, name: &str, text: &str) {
     std::fs::rename(&tmp, dir.join(name)).expect("the agent's report, in place");
 }
 
-/// A: commits the lamp, binds it to the Lamp, waits for the warm glow, commits the blue lamp and reports the second
-/// version's activation frame, then checks A's final state glows blue after it.
-async fn author() -> Value {
+/// A, once B joined: commits the lamp, binds it to the Lamp, waits for the warm glow, commits the blue lamp and
+/// reports the second version's activation frame, then checks A's final state glows blue after it.
+async fn author(dir: &Path) -> Value {
     let c = connect().await;
     let lamp = lamp_id(&c).await;
-    both_here(&c).await;
+    joined(dir).await;
     let cursor = now(&c).await;
     let o =
         apply(&c, json!({"label": "demo: the lamp script", "ops": [{"op": "code", "id": "$lamp", "source": LAMP}]}))
@@ -221,11 +227,29 @@ async fn call(c: &Client, name: &str, args: Value) -> Result<Value, Value> {
     if r.is_error == Some(true) { Err(v) } else { Ok(v) }
 }
 
-/// This machine's `session_info` lists both members as here (pe-net's links; the genesis peer's came up in setup).
+/// Waits until this machine's `session_info` lists both members as here (pe-net's links): A opens alone, and B joins
+/// at a cut once the test pastes its reply code (app.md 4, "Joining from a cut").
 async fn both_here(c: &Client) {
-    let s = call(c, "session_info", json!({})).await.expect("session_info");
-    let here = s["members"].as_array().map_or(0, |m| m.iter().filter(|m| m["here"] == true).count());
-    assert_eq!(here, 2, "both members here: {s}");
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        let s = call(c, "session_info", json!({})).await.expect("session_info");
+        let here = s["members"].as_array().map_or(0, |m| m.iter().filter(|m| m["here"] == true).count());
+        if here == 2 {
+            return;
+        }
+        assert!(Instant::now() < until, "both members here: {s}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Waits for the harness's word (`joined` in the demo's folder) that A's console said B joined: only then may A's agent
+/// commit a script (the test's body).
+async fn joined(dir: &Path) {
+    let until = Instant::now() + LIMIT;
+    while !dir.join("joined").exists() {
+        assert!(Instant::now() < until, "A's console never said B joined");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// The preset's Lamp (pe-world's preset, `names::LAMP`), named on every machine.
@@ -406,6 +430,19 @@ fn line_after(rx: &mpsc::Receiver<String>, prefix: &str, until: Instant, dir: &P
                 }
             }
             Err(e) => panic!("no {prefix:?} line ({e})\n{}", logs(dir)),
+        }
+    }
+}
+
+/// Waits for an output line holding `text` anywhere: the agent pe-app starts shares its output, so a console line
+/// may follow the agent's own "test demo_agent ... " on one line. A join that failed ends the wait at once.
+fn line_with(rx: &mpsc::Receiver<String>, text: &str, until: Instant, dir: &Path) {
+    loop {
+        match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(l) if l.contains(text) => return,
+            Ok(l) if l.contains("couldn't join") => panic!("the join failed: {l}\n{}", logs(dir)),
+            Ok(_) => {}
+            Err(e) => panic!("no line with {text:?} ({e})\n{}", logs(dir)),
         }
     }
 }

@@ -51,7 +51,7 @@ fn a_joiner_connects_over_loopback_and_messages_flow() {
     let mut a = NetHandle::spawn(ca, sa, clock.clone(), 4096).unwrap();
     let mut b = NetHandle::spawn(cb, sb, clock, 4096).unwrap();
 
-    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a] };
+    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a], pin: None };
     assert!(b.command(Command::Dial(invite)));
     let mut a_events = Vec::new();
     assert!(until(|| {
@@ -105,7 +105,7 @@ fn events_never_drop_a_received_message_and_poll_serves_them_in_order() {
     let cb = Core::new(Config::new(hello(), false), ib, [2; 32]).unwrap();
     let mut a = NetHandle::spawn(ca, sa, clock.clone(), 4096).unwrap();
     let mut b = NetHandle::spawn(cb, sb, clock, 4096).unwrap();
-    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a] };
+    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a], pin: None };
     assert!(b.command(Command::Dial(invite)));
     let mut a_events = Vec::new();
     assert!(until(|| {
@@ -164,7 +164,7 @@ fn the_control_end_dials_and_admits_while_the_handles_stay_transports() {
     is_send(&ctl_b);
 
     // The joiner's control end dials and waits for the welcome on another thread.
-    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a] };
+    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a], pin: None };
     let joiner = std::thread::spawn(move || {
         assert!(ctl_b.command(Command::Dial(invite)));
         let mut welcomed = false;
@@ -224,7 +224,7 @@ fn unpolled_lifecycle_outcomes_are_capped_and_a_welcome_survives() {
     let mut b = NetHandle::spawn(cb, sb, clock, 4).unwrap();
     let mut ctl_a = a.control().unwrap().unwrap();
     let mut ctl_b = b.control().unwrap().unwrap();
-    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a] };
+    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a], pin: None };
     for round in 0..=N {
         assert!(ctl_b.command(Command::Dial(invite.clone())), "round {round}");
         assert!(
@@ -301,7 +301,7 @@ fn the_arrival_callback_fires_when_messages_reach_the_handle() {
     });
     let mut a = NetHandle::spawn_with(ca, sa, clock.clone(), 4096, Some(arrival)).unwrap();
     let mut b = NetHandle::spawn(cb, sb, clock, 4096).unwrap();
-    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a] };
+    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a], pin: None };
     assert!(b.command(Command::Dial(invite)));
     // The join request is an event on a's handle: it wakes.
     assert!(until(|| woken.load(Ordering::Relaxed) > 0));
@@ -335,7 +335,7 @@ fn linked() -> (NetHandle, NetHandle, MemberKey, Vec<NetEvent>) {
     let cb = Core::new(Config::new(hello(), false), ib, [2; 32]).unwrap();
     let mut a = NetHandle::spawn(ca, sa, clock.clone(), 4096).unwrap();
     let mut b = NetHandle::spawn(cb, sb, clock, 4096).unwrap();
-    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a] };
+    let invite = Invite { id: [5; 8], key: ka.0, expiry_unix_s: u64::MAX, addrs: vec![addr_a], pin: None };
     assert!(b.command(Command::Dial(invite)));
     let mut a_events = Vec::new();
     assert!(until(|| {

@@ -627,10 +627,10 @@ Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-revi
     membership rules beside `Leave`'s, in the final log's order, on final and certified ancestry alike, so every member
     makes the same `Admit`s effective. An `Admit` takes effect if its author is a member and the fold admits it; else it
     is void as `NotAuthorized` (a malformed `Admit` too). One whose key is a member, or admitted earlier in the epoch,
-    is void as `NoChange`. S2 is to apply an effective `Admit`'s world side (`World::admit` with the role its verdict
-    names, at the entry's frame). **Not built yet** (@engine-architect's Medium on b84295a2): pe-replica gives a world
-    side to `Leave` only, so today an effective `Admit` changes the members, and the joiner's world at E has no member
-    row, role or hands for it. Its owner is being chosen by the coordinator.
+    is void as `NoChange`. S2 applies an effective `Admit`'s world side: pe-replica calls `World::admit` with the role
+    the payload names, at the entry's frame, so the world at E holds the joiner's member row, role and hands (its
+    `Admit` arm beside the `Leave` arm; @coordinator-opus). Where the hands stand is provisional until
+    @world-model's spawn rule (app.md 4, "Joining from a cut").
   - **M1's rule is one row** (an interim; the user's join-rule matrix replaces the fold's rule and data, not the
     protocol): vouched by an admin, admit, with the signer's own signature as the vouch. An admin chooses the role,
     ADMIN included (the user: any admin can add another admin).

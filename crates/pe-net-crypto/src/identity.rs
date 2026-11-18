@@ -127,6 +127,7 @@ pub enum TextError {
     TooManyAddrs,
     BadExpiry,
     BadCheck,
+    BadPin,
 }
 
 impl fmt::Display for TextError {
@@ -143,6 +144,18 @@ pub struct Invite {
     pub key: PeerId,
     pub expiry_unix_s: u64,
     pub addrs: Vec<SocketAddr>,
+    /// The epoch the invite was made in, with a hash of that epoch's members, which a joiner checks the welcome's
+    /// members and its start's certificate against (agreement.md 8; app.md 4, "Joining from a cut"). `None` for an
+    /// invite that names no session, as pe-net's own tests make.
+    pub pin: Option<Pin>,
+}
+
+/// An invite's pin: an epoch, and pe-agree's `members_hash` of its members (the line, the epoch and the members,
+/// sorted and distinct).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pin {
+    pub epoch: u64,
+    pub members: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,9 +166,11 @@ pub struct Reply {
 }
 
 impl Invite {
+    /// `pe1:<id>/<key>/<expiry>/<addrs>[/<epoch>.<members>]/<check>`: the pin, when there is one, is a fifth field.
     pub fn encode(&self) -> String {
+        let pin = self.pin.map(|p| format!("/{}.{}", p.epoch, hex(&p.members))).unwrap_or_default();
         with_check(format!(
-            "pe1:{}/{}/{}/{}",
+            "pe1:{}/{}/{}/{}{pin}",
             hex(&self.id),
             hex(&self.key),
             self.expiry_unix_s,
@@ -166,12 +181,17 @@ impl Invite {
     pub fn decode(s: &str) -> Result<Self, TextError> {
         let body = checked_body(s, "pe1:")?;
         let f: Vec<&str> = body.split('/').collect();
-        let [id, key, expiry, addrs] = f[..] else { return Err(TextError::BadFields) };
+        let (id, key, expiry, addrs, pin) = match f[..] {
+            [id, key, expiry, addrs] => (id, key, expiry, addrs, None),
+            [id, key, expiry, addrs, pin] => (id, key, expiry, addrs, Some(parse_pin(pin)?)),
+            _ => return Err(TextError::BadFields),
+        };
         Ok(Self {
             id: unhex_n(id)?,
             key: parse_key(key)?,
             expiry_unix_s: parse_u64(expiry).ok_or(TextError::BadExpiry)?,
             addrs: parse_addrs(addrs)?,
+            pin,
         })
     }
 
@@ -244,6 +264,11 @@ fn parse_key(s: &str) -> Result<PeerId, TextError> {
     let k: PeerId = unhex_n(s)?;
     ed25519_dalek::VerifyingKey::from_bytes(&k).map_err(|_| TextError::BadKey)?;
     Ok(k)
+}
+
+fn parse_pin(s: &str) -> Result<Pin, TextError> {
+    let (epoch, members) = s.split_once('.').ok_or(TextError::BadPin)?;
+    Ok(Pin { epoch: parse_u64(epoch).ok_or(TextError::BadPin)?, members: unhex_n(members)? })
 }
 
 fn parse_u64(s: &str) -> Option<u64> {
@@ -414,7 +439,24 @@ mod tests {
             key: Identity::from_seed(&[9; 32]).public(),
             expiry_unix_s: 1_800_000_000,
             addrs: vec!["192.168.0.10:47000".parse().unwrap(), "[fd00::1]:47000".parse().unwrap()],
+            pin: None,
         }
+    }
+
+    #[test]
+    fn a_pinned_invite_round_trips_and_a_bad_pin_is_refused() {
+        let i = Invite { pin: Some(Pin { epoch: 3, members: [0xab; 32] }), ..invite() };
+        let s = i.encode();
+        assert!(s.contains(&format!("/3.{}/", "ab".repeat(32))), "{s}");
+        assert_eq!(Invite::decode(&s).unwrap(), i);
+        assert_eq!(Invite::decode(&invite().encode()).unwrap().pin, None, "an invite without a pin keeps none");
+        let bad = |pin: &str| {
+            let body = format!("pe1:0102030405060708/{}/1800000000/10.0.0.1:1/{pin}", hex(&i.key));
+            Invite::decode(&with_check(body))
+        };
+        assert_eq!(bad("3"), Err(TextError::BadPin));
+        assert_eq!(bad("x.00"), Err(TextError::BadPin));
+        assert_eq!(bad(&format!("3.{}", "ab".repeat(31))), Err(TextError::BadHex));
     }
 
     #[test]

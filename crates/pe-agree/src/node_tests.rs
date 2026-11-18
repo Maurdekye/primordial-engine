@@ -2744,6 +2744,15 @@ fn a_lone_member_admits_a_joiner_and_the_two_finalize() {
         let ad = admit(&mut s, 0, 1, 3);
         s.run_to_epoch(0, 1, 3_000);
         assert_eq!(s.nodes[0].members(), s.sorted(&[0, 1]), "seed {seed}: A's epoch 1");
+        // pe-app's inviter reads both through S3 v1.11; the trait's defaults (0, None) would leave every join unstarted.
+        let a: &dyn Agreement = &s.nodes[0];
+        assert_eq!(a.epoch(), 1, "seed {seed}: Agreement::epoch doesn't reach Node::epoch");
+        assert_eq!(
+            a.epoch_start(),
+            s.nodes[0].epoch_start().map(<[u8]>::to_vec),
+            "seed {seed}: Agreement::epoch_start doesn't reach Node::epoch_start"
+        );
+        assert!(a.epoch_start().is_some(), "seed {seed}: no start record at A");
         let e_cut = s.nodes[0].core().genesis().cut.clone();
         let e_frame = e_cut.at.frame;
         let next = s.now / MS + 200;

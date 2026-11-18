@@ -1,9 +1,14 @@
-//! The genesis record of a two-member M1 session: the interim until pe-agree's join from a cut (@coordinator-opus). The first machine (A) builds the world when the second's (B's) reply to the invite arrives, and
-//! sends this record in the welcome (pe-net's `agree` bytes, @shader-lang's net.rs). B checks that it names exactly
-//! itself and the invite's key, rebuilds the world from it, and starts only if its root is the record's.
+//! The genesis record of an M1 session, in one of two forms:
+//! - **Alone** (app.md 4, "Joining from a cut"): the opener (A) builds the world for itself alone when it opens, and
+//!   the record names A only. A later joiner takes the record from A's welcome for the line and the settings, checks
+//!   it ([`Genesis::check_joining`]) and imports the world's state at the cut that admits it; it never rebuilds it.
+//! - **The M1 interim's two members** (@coordinator-opus), until B can import a cut: A builds the world
+//!   when B's reply to the invite arrives, and sends this record in the welcome (pe-net's `agree` bytes,
+//!   @shader-lang's net.rs). B checks that it names exactly itself and the invite's key ([`Genesis::check`]),
+//!   rebuilds the world from it, and starts only if its root is the record's.
 //!
-//! - **What it carries:** the format and the engine build id (the bytes of pe-net's `Hello::build`); the two member
-//!   keys, sorted, with their roles; pe-agree's consensus settings as `NodeConfig::consensus_hash` (@world-chunks);
+//! - **What it carries:** the format and the engine build id (the bytes of pe-net's `Hello::build`); the member keys
+//!   (A alone, or the interim's two), sorted, with their roles; pe-agree's consensus settings as `NodeConfig::consensus_hash` (@world-chunks);
 //!   the world's rate, cut interval and gravity; the preset, its version and its arguments, seed and origin included;
 //!   the epoch (frame 0's session time, as pe-net's `StartFirstMember` takes it); and the frame-0 world root.
 //! - **The line** is pe-world's `preset::genesis_line` of the record's bytes without the root ([`Genesis::line`];
@@ -16,10 +21,15 @@
 //! - **What the root does not cover** (the cut interval, the epoch) the line still does: net.rs compares the welcome's
 //!   line and epoch with the record's.
 //! - **Admission** goes through `World::admit`, the function a join entry calls (pe-world's `preset::m1_session`).
-//! - **Roles decide permissions** ([`Role::perms`]; @coordinator-opus, world-model.md
-//!   5.4 and the user's home-world ruling): the opener is admitted `ADMIN | EDIT | AGENT`, the joiner
-//!   `EDIT | AGENT`, a Guest with agent powers, since M1's slice edits through an agent on either machine. The bits
-//!   are in the root, not in the record: every build that passes the build check maps roles the same way.
+//! - **Roles decide permissions** ([`Role::perms`]): every member is admitted `ADMIN | EDIT | AGENT`, the opener and
+//!   the joiner alike. By the user's default every player in a session is an admin, and a session must be configured
+//!   specially for joiners to get less (@coordinator-opus, replacing the 2026-11-13
+//!   `EDIT | AGENT` joiner). `AGENT` because M1's slice edits through an agent on either machine. The bits are in
+//!   the root, not in the record: every build that passes the build check maps roles the same way.
+//! - **pe-agree's governance table is the world's** (app.md 4): `genesis_gov` is `GovState::genesis` over every
+//!   record member with its role's bits ([`Genesis::node_config`]), so the table that decides who may admit holds
+//!   the bits the world's member table holds (@world-chunks 3c44d34d). The root covers them, so they need no field
+//!   of their own and no place in the consensus hash.
 //! - **Two roots.** The world's as built (pe-world's frame-0 root, pinned on Windows and Linux by pe-world's golden
 //!   test), and the replica's at frame 0, after it writes its physics into the world: what the first cut's votes
 //!   build on. B compares both, so if constructing the replica differed between the machines, B refuses at the
@@ -65,12 +75,11 @@ pub enum Role {
 }
 
 impl Role {
-    /// The permission bits a member with this role is admitted with (module doc): the opener is the world's creator
-    /// and its admin, the joiner a Guest who may edit and act through an agent.
+    /// The permission bits a member with this role is admitted with (module doc): both roles are admins who may edit
+    /// and act through an agent, the user's default for a session.
     pub fn perms(self) -> u32 {
         match self {
-            Role::Opener => perm::ADMIN | perm::EDIT | perm::AGENT,
-            Role::Joiner => perm::EDIT | perm::AGENT,
+            Role::Opener | Role::Joiner => perm::ADMIN | perm::EDIT | perm::AGENT,
         }
     }
 }
@@ -94,7 +103,7 @@ pub struct Genesis {
     pub nonce: [u8; 32],
     /// The engine build id: the same bytes as pe-net's `Hello::build`.
     pub build: Vec<u8>,
-    /// Exactly two, sorted by key: one opener and one joiner.
+    /// Sorted by key: the opener alone, or in the interim one opener and one joiner.
     pub members: Vec<(MemberKey, Role)>,
     /// pe-agree's `NodeConfig::consensus_hash` of the configuration the members run: [`consensus_hash`].
     pub agree: Hash,
@@ -121,7 +130,8 @@ pub struct Params {
     pub nonce: [u8; 32],
     pub build: Vec<u8>,
     pub opener: MemberKey,
-    pub joiner: MemberKey,
+    /// The interim's second member, named at genesis; `None` opens the world alone (app.md 4, "Joining from a cut").
+    pub joiner: Option<MemberKey>,
     pub rate: SimRate,
     pub gravity: [f32; 3],
     pub seed: u64,
@@ -143,7 +153,8 @@ pub enum GenesisError {
         record: Vec<u8>,
         mine: Vec<u8>,
     },
-    /// The members are not exactly this machine (the joiner) and the invite's key (the opener): what was wrong.
+    /// The members are not what the record must name (the interim's: exactly this machine, the joiner, and the
+    /// invite's key, the opener; any record's: at least one, sorted and distinct): what was wrong.
     Members(&'static str),
     /// The world's governance members are not the record's, the members pe-agree's configuration names: 6.2a's
     /// voter snapshot takes the voters from the world, so in M1, where every member votes, the two must be one set.
@@ -216,20 +227,22 @@ impl fmt::Display for GenesisError {
 
 impl Genesis {
     /// A's side: builds the frame-0 world from `params`, takes its root and the replica's, and returns the record, A's
-    /// replica (with `params.opener` as the local member) and pe-agree's node configuration. Refuses a value past the
-    /// record's bounds ([`GenesisError::TooLong`]) and a clock at another rate. net.rs may change the configuration's
-    /// local settings (the cut lag, fetch retry, retention, relay), never one every member must share
-    /// (`frame_tolerance_s`, the rate budget, `Timing`): `agree` describes those.
+    /// replica (with `params.opener` as the local member) and pe-agree's node configuration. The record names A alone
+    /// unless `params.joiner` names the interim's second member. Refuses a value past the record's bounds
+    /// ([`GenesisError::TooLong`]) and a clock at another rate. net.rs may change the configuration's local settings
+    /// (the cut lag, fetch retry, retention, relay), never one every member must share (`frame_tolerance_s`, the rate
+    /// budget, `Timing`): `agree` describes those.
     pub fn ball_pit(
         params: &Params,
         clock: Arc<dyn FrameClock>,
         runner: Box<dyn ScriptRunner>,
     ) -> Result<(Genesis, Box<dyn Replica>, NodeConfig), GenesisError> {
-        if params.opener == params.joiner {
+        if params.joiner == Some(params.opener) {
             return Err(GenesisError::Members("the two keys are the same"));
         }
         let cut_interval_ms = interval_ms(&settings())?;
-        let mut members = vec![(params.opener, Role::Opener), (params.joiner, Role::Joiner)];
+        let mut members = vec![(params.opener, Role::Opener)];
+        members.extend(params.joiner.map(|j| (j, Role::Joiner)));
         members.sort_by_key(|m| m.0);
         let mut genesis = Genesis {
             format: FORMAT,
@@ -259,19 +272,10 @@ impl Genesis {
         Ok((genesis, replica, node))
     }
 
-    /// B's side, before it builds anything: a record of this format, from this engine build (`build`), with the
-    /// pe-agree settings this machine runs ([`consensus_hash`]), naming exactly this machine (`me`) as the joiner and
-    /// the invite's key (`opener`) as the opener.
+    /// The interim's B, before it builds anything: [`Genesis::check_joining`]'s checks, and a record naming exactly
+    /// this machine (`me`) as the joiner and the invite's key (`opener`) as the opener.
     pub fn check(&self, me: MemberKey, opener: MemberKey, build: &[u8]) -> Result<(), GenesisError> {
-        if self.format != FORMAT {
-            return Err(GenesisError::Format { record: self.format, mine: FORMAT });
-        }
-        if self.build != build {
-            return Err(GenesisError::Build { record: self.build.clone(), mine: build.to_vec() });
-        }
-        if self.preset.name != PRESET || self.preset.version != PRESET_VERSION {
-            return Err(GenesisError::Preset { name: self.preset.name.clone(), version: self.preset.version });
-        }
+        self.check_record(build)?;
         match self.members.as_slice() {
             [a, b] if a.0 < b.0 => {
                 let role_of = |k: MemberKey| [a, b].into_iter().find(|m| m.0 == k).map(|m| m.1);
@@ -285,11 +289,63 @@ impl Genesis {
             [_, _] => return Err(GenesisError::Members("not sorted by key, or one key twice")),
             _ => return Err(GenesisError::Members("not exactly two")),
         }
+        self.check_agree()
+    }
+
+    /// A joiner's checks on the record its welcome carries, before it says it is ready (app.md 4, "Joining from a
+    /// cut"): a record of this format, from this engine build (`build`), for a preset this build makes, with genesis
+    /// members sorted and distinct, and with the pe-agree settings this machine runs ([`consensus_hash`]). Who the
+    /// members are now isn't the record's to say: the welcome's list, which the invite pins, is (net.rs).
+    pub fn check_joining(&self, build: &[u8]) -> Result<(), GenesisError> {
+        self.check_record(build)?;
+        if self.members.is_empty() {
+            return Err(GenesisError::Members("none"));
+        }
+        if !self.members.windows(2).all(|w| w[0].0 < w[1].0) {
+            return Err(GenesisError::Members("not sorted by key, or one key twice"));
+        }
+        self.check_agree()
+    }
+
+    /// The format, the build and the preset: what every reader of a record checks first.
+    fn check_record(&self, build: &[u8]) -> Result<(), GenesisError> {
+        if self.format != FORMAT {
+            return Err(GenesisError::Format { record: self.format, mine: FORMAT });
+        }
+        if self.build != build {
+            return Err(GenesisError::Build { record: self.build.clone(), mine: build.to_vec() });
+        }
+        if self.preset.name != PRESET || self.preset.version != PRESET_VERSION {
+            return Err(GenesisError::Preset { name: self.preset.name.clone(), version: self.preset.version });
+        }
+        Ok(())
+    }
+
+    /// The record's pe-agree settings are this machine's.
+    fn check_agree(&self) -> Result<(), GenesisError> {
         let mine = consensus_hash();
         if self.agree != mine {
             return Err(GenesisError::Agree { record: self.agree, mine });
         }
         Ok(())
+    }
+
+    /// The members' keys, in key order: pe-agree's genesis members.
+    pub fn keys(&self) -> Vec<MemberKey> {
+        self.members.iter().map(|m| m.0).collect()
+    }
+
+    /// pe-agree's configuration of the session the record starts: its line, its members, its genesis cut, and as
+    /// `genesis_gov` every member with its role's bits (module doc), with this build's settings. A joiner hands it to
+    /// `Node::join`, which keeps the line and the settings and takes the rest from its start record.
+    ///
+    /// # Panics
+    ///
+    /// As [`Genesis::line`].
+    pub fn node_config(&self) -> NodeConfig {
+        let mut node = node_config(self.line(), self.keys(), self.genesis_cut());
+        node.genesis_gov = pe_seams::GovState::genesis(self.members.iter().map(|&(k, role)| (k, role.perms())));
+        node
     }
 
     /// B's side: rebuilds the frame-0 world from the record, refuses it unless its root and then the replica's are the
@@ -314,6 +370,28 @@ impl Genesis {
             return Err(GenesisError::ReplicaRoot { built, record: self.replica_root });
         }
         Ok((replica, node))
+    }
+
+    /// A joiner's replica (app.md 4, "B's state at E"): empty, a bare world at the record's rate on this build's cut
+    /// grid, with `me` local and `runner` running its scripts. pe-diverge's join imports E's whole state into it, and
+    /// nothing steps it before (replica.md 6.2, "Joining"). Refuses a clock at another rate than the record's.
+    pub fn empty_replica(
+        &self,
+        me: MemberKey,
+        clock: Arc<dyn FrameClock>,
+        runner: Box<dyn ScriptRunner>,
+    ) -> Result<Box<dyn Replica>, GenesisError> {
+        if clock.rate_hz() != self.rate.hz() {
+            return Err(GenesisError::ClockRate { clock: clock.rate_hz(), record: self.rate.hz() });
+        }
+        let mut world = World::new(0, BlobStore::default());
+        world.set_rate(self.rate);
+        let mut config = replica_config(&self.node_config(), self.rate, clock);
+        config.local = Some(me);
+        let replica = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config)
+            .map_err(|e| GenesisError::World(format!("{e:?}")))?
+            .with_runner(runner);
+        Ok(Box::new(replica))
     }
 
     /// The session's line: pe-world's `genesis_line` of the record's bytes without the roots (module doc).
@@ -488,7 +566,7 @@ impl Genesis {
         if clock.rate_hz() != self.rate.hz() {
             return Err(GenesisError::ClockRate { clock: clock.rate_hz(), record: self.rate.hz() });
         }
-        let keys: Vec<MemberKey> = self.members.iter().map(|m| m.0).collect();
+        let keys = self.keys();
         // The world's governance members are agreement's, the voters: 6.2a's voter snapshot takes them from the world,
         // and in M1 every member votes, so it is checked, never assumed (@design-reviewer,
         // @coordinator-opus). Both lists are in key order.
@@ -497,7 +575,7 @@ impl Genesis {
         if governance != keys {
             return Err(GenesisError::Governance { world: governance, agree: keys });
         }
-        let node = node_config(self.line(), keys, self.genesis_cut());
+        let node = self.node_config();
         let mine = node.consensus_hash();
         if mine != self.agree {
             return Err(GenesisError::Agree { record: self.agree, mine });
@@ -631,7 +709,7 @@ mod tests {
             nonce: [5; 32],
             build: BUILD.to_vec(),
             opener: A,
-            joiner: B,
+            joiner: Some(B),
             rate: SimRate::DEFAULT,
             gravity: pe_world::GRAVITY,
             seed: 11,
@@ -663,14 +741,60 @@ mod tests {
         let snap = world.snapshot(world.frame());
         assert_eq!(
             (snap.perms(A), snap.perms(B)),
-            (Some(perm::ADMIN | perm::EDIT | perm::AGENT), Some(perm::EDIT | perm::AGENT)),
-            "the opener is the admin, the joiner a Guest with agent powers"
+            (Some(perm::ADMIN | perm::EDIT | perm::AGENT), Some(perm::ADMIN | perm::EDIT | perm::AGENT)),
+            "both members are admins with agent powers, the user's default for a session"
         );
         assert_eq!((node_b.line, node_b.members.clone()), (node_a.line, node_a.members.clone()));
         assert_eq!((node_a.line, node_a.members.clone()), (g.line(), vec![B, A]));
         assert_eq!(node_a.genesis.at, CutRef { line: g.line(), height: 0, frame: Frame(0) });
         let mine = |r: &dyn Replica, k| r.view().objects.iter().filter(|o| o.hand_of.is_some_and(|h| h.0 == k)).count();
         assert_eq!((mine(&*a, A), mine(&*b, B)), (2, 2), "both members' hands are in both worlds");
+    }
+
+    /// A opens alone (app.md 4, "Joining from a cut"): the record names A only, with its role, and A's world, replica
+    /// and pe-agree configuration hold A alone. pe-agree's governance table is the world's member table: the same
+    /// bits. A joiner's check takes the record; the interim's, which wants two members, refuses it.
+    #[test]
+    fn a_world_opened_alone_names_the_opener_only() {
+        let alone = Params { joiner: None, ..params() };
+        let (g, a, node) = Genesis::ball_pit(&alone, clock(), runner()).expect("A's genesis alone");
+        assert_eq!(g.members, vec![(A, Role::Opener)]);
+        let all = perm::ADMIN | perm::EDIT | perm::AGENT;
+        let world = g.world().expect("the record's world");
+        let snap = world.snapshot(world.frame());
+        assert_eq!(snap.members().collect::<Vec<_>>(), vec![(A, all)], "the world's member table");
+        assert_eq!(node.genesis_gov.roles().collect::<Vec<_>>(), vec![(A, all)], "agreement's, the same bits");
+        assert_eq!((node.line, node.members.clone()), (g.line(), vec![A]));
+        let hands = a.view().objects.iter().filter(|o| o.hand_of.is_some_and(|h| h.0 == A)).count();
+        assert_eq!(hands, 2, "A's two hands");
+        let got = Genesis::decode(&g.encode()).expect("a record");
+        assert_eq!(got, g);
+        got.check_joining(BUILD).expect("a joiner's check");
+        assert_eq!(got.check(B, A, BUILD), Err(GenesisError::Members("not exactly two")), "the interim's");
+        let (two, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("the interim's genesis");
+        assert_ne!(two.line(), g.line(), "the members are in the line");
+    }
+
+    /// A joiner's check of the record refuses one field altered, naming it, before anything is built.
+    #[test]
+    fn a_joiner_s_check_refuses_a_record_naming_what_differs() {
+        let (g, _, _) = Genesis::ball_pit(&Params { joiner: None, ..params() }, clock(), runner()).expect("alone");
+        let refused = |change: &dyn Fn(&mut Genesis)| {
+            let mut altered = g.clone();
+            change(&mut altered);
+            Genesis::decode(&altered.encode()).expect("still a record").check_joining(BUILD)
+        };
+        assert!(matches!(refused(&|r| r.build = b"another build".to_vec()), Err(GenesisError::Build { .. })));
+        assert!(matches!(refused(&|r| r.preset.version += 1), Err(GenesisError::Preset { .. })));
+        assert!(matches!(refused(&|r| r.agree = Hash([8; 32])), Err(GenesisError::Agree { .. })));
+        assert_eq!(refused(&|r| r.members.clear()), Err(GenesisError::Members("none")));
+        assert_eq!(
+            refused(&|r| r.members.push((A, Role::Joiner))),
+            Err(GenesisError::Members("not sorted by key, or one key twice"))
+        );
+        let mut format = g.encode();
+        format[0] ^= 1;
+        assert!(matches!(Genesis::decode(&format), Err(GenesisError::Format { .. })));
     }
 
     /// The line is the record without its roots: they don't move it, every parameter does.
