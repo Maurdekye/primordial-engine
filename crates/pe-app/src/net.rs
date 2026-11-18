@@ -92,9 +92,11 @@ pub fn build_id() -> &'static [u8] {
     static ID: OnceLock<Vec<u8>> = OnceLock::new();
     ID.get_or_init(|| {
         let scripts = pe_logic::build::Toolchain::current()
-            .and_then(|tc| pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()))
+            .ok()
+            .zip(crate::builds::sdk().as_ref().ok())
+            .and_then(|(tc, (sdk, _))| pe_logic::build::build_identity(&tc, sdk).ok())
             .map(|b| hex6(&b))
-            .unwrap_or_else(|_| "unavailable".into());
+            .unwrap_or_else(|| "unavailable".into());
         let (settings, run) = runner_settings();
         let core = core_part(&settings, &run, &crate::genesis::consensus_hash());
         format!("pe-app src {}; scripts {scripts}; core {core}", source_part()).into_bytes()
@@ -2184,7 +2186,10 @@ mod tests {
             assert!(part.len() == 12 && part.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
         }
         let tc = pe_logic::build::Toolchain::current().expect("a toolchain under cargo");
-        assert_eq!(scripts, hex6(&pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()).unwrap()));
+        assert_eq!(
+            scripts,
+            hex6(&pe_logic::build::build_identity(&tc, &crate::builds::sdk().as_ref().unwrap().0).unwrap())
+        );
         // The core part is the identity main.rs's runner reports, from the same settings (Q1; S2 v1.7), with this
         // build's pe-agree consensus hash, the one its records name.
         let (settings, run) = runner_settings();

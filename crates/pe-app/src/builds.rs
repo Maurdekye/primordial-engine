@@ -36,10 +36,11 @@
 //! its manifest, which runs it.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -60,7 +61,7 @@ use pe_world::{BlobRef, ModuleRow, PendingCommit};
 pub struct BuildConfig {
     /// The pinned toolchain, by absolute path (pe-logic's `Toolchain`).
     pub toolchain: Toolchain,
-    /// pe-sdk's source folder: `pe_logic::build::engine_sdk()` for the dev engine.
+    /// pe-sdk's source folder: [`sdk`] in pe-app.
     pub sdk: PathBuf,
     /// The service's own folder ([`build_dir`]). `work` under it is the work folder, so keep this folder's path short:
     /// logic.md 4.1a's paths are at most 128 bytes below it. `target` is the cargo target folder, kept between builds.
@@ -96,6 +97,68 @@ pub fn build_dir(identity: &Path) -> PathBuf {
     let mut name = identity.file_name().map_or_else(|| "identity".into(), |n| n.to_os_string());
     name.push(".b");
     identity.with_file_name(name)
+}
+
+/// Where this process found pe-sdk's source folder ([`sdk`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SdkFrom {
+    /// The `PE_SDK` variable.
+    Env,
+    /// A `pe-sdk` folder beside the executable: a pe-app copied to a machine without the engine's sources, such as the
+    /// M1 demo's second PC (@coordinator-opus ma7bcf2c640dc).
+    BesideExe,
+    /// The source tree pe-app was compiled from, `pe_logic::build::engine_sdk()`: the dev engine's.
+    SourceTree,
+}
+
+impl SdkFrom {
+    fn why(self) -> &'static str {
+        match self {
+            SdkFrom::Env => "from PE_SDK",
+            SdkFrom::BesideExe => "beside the executable",
+            SdkFrom::SourceTree => "the source tree this build was compiled from",
+        }
+    }
+}
+
+/// pe-sdk's folder from the first of: `env` (the `PE_SDK` variable; empty counts as unset, a relative path is taken
+/// from the working folder), a `pe-sdk` folder beside `exe`, and the source tree pe-app was compiled from. The first
+/// one present is the answer, and it must hold pe-sdk's `Cargo.toml`: one that doesn't is refused by name, never passed
+/// over for the next, so a botched copy can't quietly build against another pe-sdk (@engine-architect m9ee8f9f92261).
+/// The folder's place reaches neither a module (builds remap it to `/pe-sdk`) nor B (which hashes its files' contents).
+pub fn locate_sdk(env: Option<OsString>, exe: Option<&Path>) -> Result<(PathBuf, SdkFrom), String> {
+    let beside = exe.and_then(Path::parent).map(|d| d.join("pe-sdk")).filter(|d| d.exists());
+    let (dir, from) = if let Some(v) = env.filter(|v| !v.is_empty()) {
+        let p = PathBuf::from(v);
+        (std::path::absolute(&p).unwrap_or(p), SdkFrom::Env)
+    } else if let Some(dir) = beside {
+        (dir, SdkFrom::BesideExe)
+    } else {
+        (pe_logic::build::engine_sdk(), SdkFrom::SourceTree)
+    };
+    if dir.join("Cargo.toml").is_file() {
+        Ok((dir, from))
+    } else {
+        Err(format!("pe-sdk at {} ({}) holds no Cargo.toml", dir.display(), from.why()))
+    }
+}
+
+/// This process's pe-sdk ([`locate_sdk`] with `PE_SDK` and the running executable), found once, so the build id and
+/// the build service can't use two different folders. An error leaves this machine without a build service, as a
+/// missing toolchain does.
+pub fn sdk() -> &'static Result<(PathBuf, SdkFrom), String> {
+    static SDK: OnceLock<Result<(PathBuf, SdkFrom), String>> = OnceLock::new();
+    SDK.get_or_init(|| locate_sdk(std::env::var_os("PE_SDK"), std::env::current_exe().ok().as_deref()))
+}
+
+/// The console's start line for [`sdk`]: which pe-sdk this process builds scripts against, and why that one, an info
+/// line for stdout like `session: ...`; or, as `Err`, the warning that it has none, for stderr, where pe-app's
+/// `pe-app: ...` warnings go (@engine-architect's nit, me6683c91af7a).
+pub fn sdk_line() -> Result<String, String> {
+    match sdk() {
+        Ok((dir, from)) => Ok(format!("scripts: pe-sdk at {} ({})", dir.display(), from.why())),
+        Err(e) => Err(format!("pe-app: scripts: no pe-sdk, so this machine builds no script: {e}")),
+    }
 }
 
 /// A version this machine built (the machine's side of api.md 7.1's `Built`).
@@ -1035,6 +1098,45 @@ mod tests {
     use std::thread;
 
     use super::*;
+
+    /// PE_SDK first, then a pe-sdk folder beside the executable, then the source tree; the first present must hold a
+    /// Cargo.toml, and one that doesn't is refused by name rather than passed over.
+    #[test]
+    fn pe_sdk_comes_from_the_variable_then_beside_the_exe_then_the_source_tree() {
+        // Next to the test binary, in the target folder: no working files on the system drive.
+        let root =
+            std::env::current_exe().unwrap().parent().unwrap().join(format!("pe-app-sdk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let exe = root.join("pe-app.exe");
+        let beside = root.join("pe-sdk");
+        let tree = (pe_logic::build::engine_sdk(), SdkFrom::SourceTree);
+        assert!(tree.0.join("Cargo.toml").is_file());
+
+        // Nothing beside the executable: the source tree.
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(locate_sdk(None, Some(&exe)), Ok(tree.clone()));
+        assert_eq!(locate_sdk(None, None), Ok(tree.clone()));
+        // A pe-sdk folder beside it without its Cargo.toml is refused, by name, not passed over.
+        std::fs::create_dir_all(&beside).unwrap();
+        let e = locate_sdk(None, Some(&exe)).unwrap_err();
+        assert!(e.contains(&beside.display().to_string()) && e.contains("beside the executable"), "{e}");
+        std::fs::write(beside.join("Cargo.toml"), b"[package]\n").unwrap();
+        assert_eq!(locate_sdk(None, Some(&exe)), Ok((beside.clone(), SdkFrom::BesideExe)));
+        // An empty variable counts as unset; a set one wins over the folder beside the executable.
+        assert_eq!(locate_sdk(Some("".into()), Some(&exe)), Ok((beside.clone(), SdkFrom::BesideExe)));
+        // (taken through std::path::absolute, which on Windows also resolves the `..` in engine_sdk()'s path)
+        let given = std::path::absolute(&tree.0).unwrap();
+        assert_eq!(locate_sdk(Some(tree.0.clone().into()), Some(&exe)), Ok((given, SdkFrom::Env)));
+        // A variable naming a folder without a Cargo.toml is refused, not passed over for the one beside the exe.
+        let wrong = root.join("no-such-sdk");
+        let e = locate_sdk(Some(wrong.clone().into()), Some(&exe)).unwrap_err();
+        assert!(e.contains(&wrong.display().to_string()) && e.contains("from PE_SDK"), "{e}");
+        // A relative one is taken from the working folder.
+        let e = locate_sdk(Some("some-relative-sdk".into()), Some(&exe)).unwrap_err();
+        let abs = std::path::absolute("some-relative-sdk").unwrap();
+        assert!(e.contains(&abs.display().to_string()), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// An API build waits for the build in progress, and leaves unbuilt once its deadline passes.
     #[test]
