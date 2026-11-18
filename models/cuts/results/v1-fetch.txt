@@ -1,0 +1,83 @@
+# model v1, 2026-11-18, branch model/fetch-rows-sq (16 threads): cargo run --release --locked -- --epochs --budget 100
+join-1to2               4016510      19757011     22      12.2  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+    join 1 -> 2 (q 1 -> 2; M1's join)
+join-2to3               1592095       6761974     22       4.0  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+    join 2 -> 3 (q 2 -> 2)
+leave-3to2             41448675     210635200     22     101.8  OK   (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    leave 3 -> 2 (q 2 -> 2)
+leave-2to1              1131076       4273617     22       3.0  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+    leave 2 -> 1 (q 2 -> 1; M1 step 8)
+join-3to4              39514576     204791452     22     101.9  OK   (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    join 3 -> 4 (q 2 -> 3)
+remove-4to3            42350443     223282895     22     102.2  OK   (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    remove the Byzantine member 4 -> 3 (q 3 -> 2)
+restart-3              47978859     224991463     22     102.1  OK   (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    restart in place at n = 3 (Rechain)
+burst-2to4              1504241       6291092     22       4.2  OK   (every behaviour of up to 22 steps) all properties hold; examples found
+    two joins at once 2 -> 4
+fetch-3to2             39256389     198699415     22     102.1  OK   (UNFINISHED at its 100 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    leave 3 -> 2, a member finishing epoch 0 from its certificate alone (the fetch)
+fetch-4to2             33901693      33901693     92      40.0  OK   (seeded random walks: all 1000000) all properties hold; examples found
+    leaves 4 -> 3 -> 2, a member finishing both epochs from their certificates (random walks)
+walk-leave-3to2        26619243      26619243     64      24.2  OK   (seeded random walks: all 1000000) all properties hold; examples found
+    twin of leave-3to2, random walks
+walk-join-3to4         26609371      26609371     75      29.2  OK   (seeded random walks: all 1000000) all properties hold; examples found
+    twin of join-3to4, random walks
+walk-remove-4to3       30201051      30201051     78      37.7  OK   (seeded random walks: all 1000000) all properties hold; examples found
+    twin of remove-4to3, random walks
+walk-restart-3         31322362      31322362     70      37.2  OK   (seeded random walks: all 1000000) all properties hold; examples found
+    twin of restart-3, random walks
+remove-auth-byz          363256        363256     79       0.7  OK   (seeded random walks: bit at walk 11390 of 1000000) counterexample as expected: "agreement"
+    counterexample to "agreement" (63 steps as found, 35 after shrinking):
+    example "a cut final" (42 steps):
+    example "epoch changed" (42 steps):
+    example "changed and went on" (61 steps):
+ctl-a-inclusion           61360        230816     18       1.0  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement", "same members per epoch"
+    (a) a change takes effect at inclusion
+    counterexample to "agreement" (18 steps as found, 18 after shrinking):
+    counterexample to "same members per epoch" (18 steps as found, 18 after shrinking):
+    example "a cut final" (6 steps):
+    example "epoch changed" (6 steps):
+ctl-b-suffix             176504        176504     69       0.3  OK   (seeded random walks: bit at walk 5299 of 20000) counterexample as expected: "final log ends at E"
+    (b) a non-empty suffix proposed and accepted
+    counterexample to "final log ends at E" (39 steps as found, 21 after shrinking):
+    example "a cut final" (29 steps):
+    example "epoch changed" (29 steps):
+    example "changed and went on" (61 steps):
+ctl-c-epochvote        14771689      14771689     86      17.8  OK   (seeded random walks: bit at walk 421666 of 1000000) counterexample as expected: "agreement"
+    (c) a vote counted in another epoch
+    counterexample to "agreement" (64 steps as found, 37 after shrinking):
+    example "a cut final" (29 steps):
+    example "epoch changed" (29 steps):
+    example "changed and went on" (44 steps):
+ctl-d-oldchain           416122        416122     66       0.5  OK   (seeded random walks: bit at walk 13287 of 50000) counterexample as expected: "one live chain per key"
+    (d) the old chain stays open after E
+    counterexample to "one live chain per key" (57 steps as found, 38 after shrinking):
+    example "a cut final" (31 steps):
+    example "epoch changed" (20 steps):
+    example "changed and went on" (51 steps):
+walk-e-twin            18601538      18601538     90      18.9  OK   (seeded random walks: all 500000) all properties hold; examples found
+    twin of ctl-e-finalizer, unmutated: leave-3to2, five views, the leave alone
+ctl-e-finalizer        65163752      65163752     90      76.8  OK   (seeded random walks: bit at walk 1751502 of 2000000) counterexample as expected: "same members per epoch"
+    (e) the final log ends at the finalizing cut
+    counterexample to "same members per epoch" (38 steps as found, 28 after shrinking):
+    counterexample to "final log ends at E" (35 steps as found, 26 after shrinking):
+    example "a cut final" (30 steps):
+    example "epoch changed" (39 steps):
+    example "changed and went on" (57 steps):
+ctl-f1-views               3303          9905      5       0.0  OK   (every behaviour of up to 5 steps) counterexample as expected: "no honest double vote"
+    (f1) a restart forgets its views
+    counterexample to "no honest double vote" (5 steps as found, 5 after shrinking):
+ctl-f2-highqc            958831       4846842     13       2.0  OK   (every behaviour of up to 13 steps) counterexample as expected: "timeouts keep the lock"
+    (f2) a restart forgets its high_qc
+    example "a cut final" (13 steps):
+    example "epoch changed" (13 steps):
+    counterexample to "timeouts keep the lock" (13 steps as found, 13 after shrinking):
+all 23 epoch check(s) met their expectation; 5 of them UNFINISHED at a time budget
+exit 0
+
+# fetch-3to2 at --budget 600 (before the reproducible controls; the row itself is unchanged)
+fetch-3to2            203596921    1160174784     22     601.6  OK   (UNFINISHED at its 600 s budget: behaviours of up to 22 steps, partly) all properties hold; examples found
+    leave 3 -> 2, a member finishing epoch 0 from its certificate alone (the fetch)
+all 1 epoch check(s) met their expectation; 1 of them UNFINISHED at a time budget
+exit 0

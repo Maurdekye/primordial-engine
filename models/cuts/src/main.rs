@@ -185,10 +185,53 @@ fn suite() -> Vec<Check> {
 }
 
 /// Model v1's suite (agreement.md 8): `cuts-model --epochs [--depth D] [--budget S] [--threads N] [filter...]`.
+/// Shorten an epochs counterexample the same way: drop steps while the trace still replays exactly and still ends in
+/// a state that breaks the property.
+fn shrink_epochs(m: &cuts_model::epochs::Epochs, prop: &str, mut acts: Vec<cuts_model::epochs::EAction>) -> Vec<cuts_model::epochs::EAction> {
+    let cond = m.properties().into_iter().find(|p| p.name == prop).expect("property").condition;
+    let breaks = |t: &[cuts_model::epochs::EAction]| {
+        let mut s = m.init_states().remove(0);
+        for a in t {
+            let mut en = Vec::new();
+            m.actions(&s, &mut en);
+            if !en.contains(a) {
+                return false;
+            }
+            match m.next_state(&s, a.clone()) {
+                Some(n) => s = n,
+                None => return false,
+            }
+        }
+        !cond(m, &s)
+    };
+    if !breaks(&acts) {
+        return acts;
+    }
+    loop {
+        let mut changed = false;
+        let mut i = 0;
+        while i < acts.len() {
+            let mut t = acts.clone();
+            t.remove(i);
+            if breaks(&t) {
+                acts = t;
+                changed = true;
+            } else {
+                i += 1;
+            }
+        }
+        if !changed {
+            return acts;
+        }
+    }
+}
+
 fn run_epochs(args: &[String], threads: usize) {
     use cuts_model::epochs;
     let mut depth: Option<usize> = None;
     let mut budget = 600u64;
+    let mut walks: Option<u64> = None;
+    let mut no_stop = false;
     let mut filters = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -203,6 +246,14 @@ fn run_epochs(args: &[String], threads: usize) {
                 i += 2;
             }
             "--threads" => i += 2,
+            "--no-stop" => {
+                no_stop = true;
+                i += 1;
+            }
+            "--walks" => {
+                walks = Some(args[i + 1].parse().expect("--walks N"));
+                i += 2;
+            }
             a => {
                 filters.push(a.to_string());
                 i += 1;
@@ -220,20 +271,24 @@ fn run_epochs(args: &[String], threads: usize) {
         let t0 = Instant::now();
         eprintln!("== {}", m.name);
         let tick = |u: usize, v: usize| eprintln!("Checking (bounded). unique={u}, visits={v}");
+        let mut walked: Option<(u64, Option<u64>)> = None;
         let r = if row.random {
             let mut walk = m.clone();
             walk.productive_only = true;
-            let mut b = walk.checker().threads(threads).timeout(Duration::from_secs(budget));
-            if !row.expect_fail.is_empty() {
-                b = b.finish_when(HasDiscoveries::AnyOf(row.expect_fail.iter().copied().collect()));
-            }
-            let mut err = std::io::stderr();
-            let mut rep = WriteReporter::new(&mut err);
-            let ch = b.spawn_simulation(20261113, UniformChooser).report(&mut rep);
-            let found = ch.discoveries().into_iter().map(|(k, p)| (k, p.into_actions())).collect();
-            bounded::Bounded { unique: ch.unique_state_count(), visits: ch.state_count(), depth: ch.max_depth(), found, unfinished: false }
+            let n = walks.or(row.walks).unwrap_or(epochs::DEFAULT_WALKS);
+            let wtick = |w: u64, s: usize| eprintln!("Walking. walks={w}, states={s}");
+            // No time budget: the walk count bounds the row, so its outcome is the same on every run.
+            let w = bounded::walks(&walk, n, threads, 20261118, row.expect_fail, None, &wtick);
+            walked = Some((w.walks, w.bit_at));
+            bounded::Bounded { unique: w.states, visits: w.states, depth: w.depth, found: w.found, unfinished: w.unfinished }
         } else {
-            let mut r = bounded::check(m, d, threads, row.expect_fail, Some(Duration::from_secs(budget)), &tick);
+            // --no-stop: search a control's whole bounded space (to measure what its depth costs at worst).
+            let stop: &[&'static str] = if no_stop { &[] } else { row.expect_fail };
+            // A control runs without a time budget: its depth is its shrunk counterexample's length, so the exhaustive
+            // search to that depth finds a counterexample whatever the thread count or timing (where a search with a
+            // budget stops depended on both: ctl-f2-highqc bit in 8 s at 3 threads, not within 100 s at 16).
+            let cap = if row.expect_fail.is_empty() { Some(Duration::from_secs(budget)) } else { None };
+            let mut r = bounded::check(m, d, threads, stop, cap, &tick);
             // A base row cut off by its budget may not have reached its examples yet: look for those by random walks
             // (an example needs one path, not the whole space).
             let missing: Vec<&'static str> = m
@@ -245,12 +300,11 @@ fn run_epochs(args: &[String], threads: usize) {
             if row.expect_fail.is_empty() && r.unfinished && !missing.is_empty() {
                 let mut walk = m.clone();
                 walk.productive_only = true;
-                let b = walk.checker().threads(threads).timeout(Duration::from_secs(120)).finish_when(HasDiscoveries::AllOf(missing.iter().copied().collect()));
-                let ch = b.spawn_simulation(20261113, UniformChooser).join();
-                for (k, p) in ch.discoveries() {
+                let w = bounded::walks(&walk, 20_000, threads, 20261118, &[], Some(Duration::from_secs(120)), &|_, _| {});
+                for (k, p) in w.found {
                     if missing.contains(&k) {
-                        r.found.insert(k, p.into_actions());
                         eprintln!("example \"{k}\" found by random walks");
+                        r.found.insert(k, p);
                     }
                 }
             }
@@ -286,8 +340,14 @@ fn run_epochs(args: &[String], threads: usize) {
                 true
             }
         };
-        let scope = if row.random {
-            format!(" (random walks, {budget} s at most)")
+        let scope = if let Some((w, bit)) = walked {
+            let n = walks.or(row.walks).unwrap_or(epochs::DEFAULT_WALKS);
+            match (bit, r.unfinished) {
+                (Some(k), false) => format!(" (seeded random walks: bit at walk {k} of {n})"),
+                (Some(k), true) => format!(" (seeded random walks: bit at walk {k}; UNFINISHED at its {budget} s budget after {w} of {n} walks, so a lower walk may bite too)"),
+                (None, false) => format!(" (seeded random walks: all {n})"),
+                (None, true) => format!(" (seeded random walks: UNFINISHED at its {budget} s budget after {w} of {n} walks)"),
+            }
         } else if r.unfinished { format!(" (UNFINISHED at its {budget} s budget: behaviours of up to {d} steps, partly)") } else { format!(" (every behaviour of up to {d} steps)") };
         println!("{:<18} {:>12} {:>13} {:>6} {:>9.1}  {}{} {}", m.name, r.unique, r.visits, r.depth, secs, if ok { "OK  " } else { "FAIL" }, scope, verdict.join("; "));
         println!("    {}", row.what);
@@ -297,9 +357,17 @@ fn run_epochs(args: &[String], threads: usize) {
                 if sometimes && row.expect_fail.is_empty() {
                     continue;
                 }
-                println!("    {} \"{}\" ({} steps):", if sometimes { "example" } else { "counterexample to" }, p.name, path.len());
-                for a in path {
-                    println!("      {a:?}");
+                if sometimes {
+                    println!("    example \"{}\" ({} steps):", p.name, path.len());
+                    for a in path {
+                        println!("      {a:?}");
+                    }
+                } else {
+                    let short = shrink_epochs(m, p.name, path.clone());
+                    println!("    counterexample to \"{}\" ({} steps as found, {} after shrinking):", p.name, path.len(), short.len());
+                    for a in &short {
+                        println!("      {a:?}");
+                    }
                 }
             }
         }
