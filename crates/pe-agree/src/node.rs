@@ -341,6 +341,12 @@ pub struct Node {
     /// S2's `void_reason`.
     void_reasons: BTreeMap<EntryRef, (Frame, pe_seams::agree::VoidReason)>,
     holds: BTreeMap<Frame, u32>,
+    /// This member's newest root and verdict for each cut it was asked to vote on (by a vote or a revote answered
+    /// `AlreadyVotedThisView`), above the final height: cast again on a pinned re-proposal of the cut (L4'), whose
+    /// driver votes each cut once (agreement.md 3).
+    pinned_roots: BTreeMap<CutRef, (Hash, SelfTest)>,
+    /// Votes cast again on a pinned re-proposal.
+    recasts: u64,
     /// Per author: the rate budget's tokens (thousandths of an entry) and when they were last topped up, and how many
     /// of its entries are held beyond the final cut.
     budget: BTreeMap<MemberKey, (u64, HostTime)>,
@@ -704,6 +710,8 @@ impl Node {
             arrived: BTreeMap::new(),
             void_reasons: BTreeMap::new(),
             holds: BTreeMap::new(),
+            pinned_roots: BTreeMap::new(),
+            recasts: 0,
             budget: BTreeMap::new(),
             pending_by_author: BTreeMap::new(),
             lateness: std::collections::VecDeque::new(),
@@ -731,6 +739,31 @@ impl Node {
             present: None,
             rate_hz: 60,
             cfg,
+        }
+    }
+
+    /// How many votes this member cast again on a pinned re-proposal of a split cut.
+    pub fn recasts(&self) -> u64 {
+        self.recasts
+    }
+
+    /// Cast this member's newest root again when the current view re-proposes a split cut it was asked to vote on (the
+    /// pin, L4'): a driver votes each cut once, and a revote after a repair counts only from the next view, so without
+    /// this nobody would vote in the pinned views. Never sends a self-test report (the report went out with the
+    /// verdict's own vote), so a long repair doesn't walk into the per-member report bound.
+    fn recast_pinned(&mut self) {
+        let committed = self.core.committed().1;
+        self.pinned_roots.retain(|c, _| c.height > committed);
+        let Some((p, Check::Ok)) = self.candidate() else { return };
+        let (id, parent, cut) = (p.block.id(), p.block.parent, p.block.cut.clone());
+        if self.held(cut.at.frame) || self.core.split_cut_on(&parent).as_ref() != Some(&cut) {
+            return;
+        }
+        let Some(&(root, self_test)) = self.pinned_roots.get(&cut.at) else { return };
+        let heads = self.heads_beyond(&cut.at);
+        if self.core.vote(id, root, self_test, heads, self.now, self.signer.as_ref()).is_some() {
+            self.recasts += 1;
+            self.events.push(AgreeEvent::Voted { cut: cut.at, root, self_test });
         }
     }
 
@@ -2647,6 +2680,7 @@ impl Agreement for Node {
             }
         };
         self.note_abstention();
+        self.recast_pinned();
         self.pump();
         r
     }
@@ -2679,6 +2713,12 @@ impl Agreement for Node {
                 };
                 self.core.propose(cut, now, self.signer.as_ref(), self.verifier.as_ref());
             }
+        } else if let Some(cut) = lead.as_ref().and_then(|l| self.core.split_cut_on(&l.parent.id())) {
+            // A root split at this height: the same cut again, until the height is certified (L4', coordinator
+            // mff2b493b8111). The repair's revote is for that cut, and the episode stays one.
+            if lead.as_ref().is_some_and(|l| now >= l.not_before) {
+                self.core.propose(cut, now, self.signer.as_ref(), self.verifier.as_ref());
+            }
         } else if let (Some(lead), Some(present)) = (lead, self.present) {
             // On the grid: the latest grid frame at or below the present less the lag, and at or below the backlog
             // cap (the outage rule). A cap at or below the parent's frame proposes nothing yet.
@@ -2697,6 +2737,7 @@ impl Agreement for Node {
                 self.core.spare_view();
             }
         }
+        self.recast_pinned();
         let missing = match self.candidate() {
             Some((_, Check::Missing(ids))) => ids,
             _ => Vec::new(),
@@ -2720,6 +2761,11 @@ impl Agreement for Node {
             self.core.report(self_test, self.signer.as_ref());
         }
         let result = self.cast(cut, root, self_test);
+        if matches!(result, VoteResult::Voted | VoteResult::AlreadyVotedThisView)
+            && cut.height > self.core.committed().1
+        {
+            self.pinned_roots.insert(*cut, (root, self_test));
+        }
         self.pump();
         result
     }
