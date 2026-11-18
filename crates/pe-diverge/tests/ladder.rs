@@ -3,7 +3,7 @@
 mod common;
 
 use common::{Lie, Net, key, obj, oid, spread};
-use pe_diverge::msg::Msg;
+use pe_diverge::msg::{self, Msg};
 use pe_diverge::{Action, Config, CvState, FaultBundle, Join};
 use pe_seams::{
     CutRef, DivergeEvent, FinalCut, Frame, Hash, ImportError, LeafKey, LineId, MemberKey, ObjectId, Replica, Rung,
@@ -526,6 +526,37 @@ fn a_large_answer_is_split_into_several_replies() {
     assert!(net.converged());
 }
 
+/// A reply's inline blobs count toward its bytes (and toward MAX_ITEMS): a part of an answer whose records fit the
+/// budget but whose names take it past is halved again, so every reply of more than one record fits.
+#[test]
+fn a_join_s_replies_fit_the_budget_with_their_blobs() {
+    // Two records fill about 1,700 bytes; one name (200) takes them past.
+    let budget = 1800;
+    let (mut net, e) = joining_net_with(40, Config { reply_budget: budget, ..Config::default() });
+    let now = net.now();
+    let v = &mut net.peers[VICTIM];
+    v.d.join(&e, key(0), &mut v.r, now);
+    net.run(30);
+    let v = &net.peers[VICTIM];
+    assert_eq!(v.d.join_state(), Some(&Join::Joined { cut: e.cut.at }));
+    assert_eq!(v.r.blobs.len(), 10, "the joiner holds the names");
+    let mut with_blobs = 0;
+    for m in net.peers.iter().flat_map(|p| p.sent.iter()) {
+        if let Msg::RecordReply { records, blobs, .. } = m {
+            let bytes = records.iter().map(msg::record_size).sum::<usize>()
+                + blobs.iter().map(|b| msg::blob_size(b)).sum::<usize>();
+            assert!(
+                records.len() <= 1 || bytes <= budget,
+                "{} records and {} blobs in {bytes} bytes",
+                records.len(),
+                blobs.len()
+            );
+            with_blobs += usize::from(!blobs.is_empty());
+        }
+    }
+    assert!(with_blobs >= 2, "the names came in {with_blobs} replies");
+}
+
 #[test]
 fn a_flood_of_requests_is_refused_past_the_budget() {
     let cfg = Config { serve_burst_bytes: 1_000, serve_rate: 1_000, ..Config::default() };
@@ -943,7 +974,11 @@ fn failures_whose_key_keeps_changing_stop_after_n_stuck_any() {
 /// history trimmed from frame 0), no cut is decided after `E`, and it calls only `tick` and `receive` (the Net's
 /// delivery) until the join ends.
 fn joining_net(objects: u128) -> (Net, FinalCut) {
-    let mut net = Net::new(3, objects, &[]);
+    joining_net_with(objects, Config::default())
+}
+
+fn joining_net_with(objects: u128, cfg: Config) -> (Net, FinalCut) {
+    let mut net = Net::with_config(3, objects, &[], cfg);
     net.run(20);
     let e = net.peers[0].src.final_cut.clone().expect("a final cut by frame 20");
     // No cut after E: at n = 2 nothing in the new epoch is final until the joiner votes (@engine-architect).

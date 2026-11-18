@@ -25,7 +25,7 @@ use pe_seams::{
 use crate::bundle::FaultBundle;
 use crate::counters::Counters;
 use crate::evidence::{CvState, all_keys};
-use crate::msg::{Msg, node_size, path_size, record_size};
+use crate::msg::{MAX_ITEMS, Msg, blob_size, node_size, path_size, record_size};
 use crate::split;
 
 /// The ladder's parameters (divergence.md 14). Every limit is a duration or a count, never a frame count.
@@ -794,15 +794,26 @@ impl Diverge {
                     return Ok(());
                 }
                 // Each reply carries the inline blobs its own records' rows reference (S2 v1.8), so a reply split by
-                // bytes stays whole on its own.
+                // bytes stays whole on its own. The blobs count toward the reply's bytes and toward MAX_ITEMS: a part
+                // whose blobs take it past either is halved again (a single record is sent as it is).
+                let budget = self.cfg.reply_budget;
                 let replies = replica.tree(&root).map(|t| {
-                    split_by_bytes(t.export(&keys), self.cfg.reply_budget, record_size)
-                        .into_iter()
-                        .map(|records| {
-                            let blobs = t.export_blobs(&records.iter().map(|r| r.key).collect::<Vec<_>>());
-                            (records, blobs)
-                        })
-                        .collect::<Vec<_>>()
+                    let mut out = Vec::new();
+                    let mut todo: Vec<Vec<Record>> = split_by_bytes(t.export(&keys), budget, record_size);
+                    todo.reverse();
+                    while let Some(mut records) = todo.pop() {
+                        let blobs = t.export_blobs(&records.iter().map(|r| r.key).collect::<Vec<_>>());
+                        let bytes = records.iter().map(record_size).sum::<usize>()
+                            + blobs.iter().map(|b| blob_size(b)).sum::<usize>();
+                        if records.len() > 1 && (blobs.len() > MAX_ITEMS || bytes > budget) {
+                            let back = records.split_off(records.len() / 2);
+                            todo.push(back);
+                            todo.push(records);
+                        } else {
+                            out.push((records, blobs));
+                        }
+                    }
+                    out
                 });
                 match replies {
                     Some(replies) => {

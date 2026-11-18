@@ -384,6 +384,11 @@ pub fn record_size(r: &Record) -> usize {
     17 + 4 + r.bytes.len() + 2 + r.proof.iter().map(node_size).sum::<usize>()
 }
 
+/// An inline blob's encoded size in a record reply: its length prefix and its bytes.
+pub fn blob_size(b: &[u8]) -> usize {
+    4 + b.len()
+}
+
 // ---- reading: every read checks what is left first -----------------------------------------------------------------
 
 pub(crate) struct Reader<'a> {
