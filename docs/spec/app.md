@@ -530,8 +530,9 @@ with @fable-reviewer's refinements, and):
      console, under one lock, so the file ends with the console's last line whichever way the process ends: a
      quit, a second request, a close, a panic (printed through the log in place of the standard hook) or
      `std::process::exit`. What native code writes straight to standard error (a GPU driver's or the OpenXR
-     loader's messages) and the runtime's last words before an abort (a stack overflow) reach the console only.
-     With it the command line needs no pipe: Windows PowerShell 5.1 ends a program piped to `Tee-Object` at once
+     loader's messages), wasmtime's own messages before it aborts and the runtime's last words before an abort (a
+     stack overflow) reach the console only. If a write to the file fails (a full disk, a drive gone), the console
+     says once that the log stops there, and the log closes. With it the command line needs no pipe: Windows PowerShell 5.1 ends a program piped to `Tee-Object` at once
      on Ctrl+C, before its handler runs, so the leave and the end lines are lost [V, the dry run].
    - When the wait ends, the console says "left the session.", or, if the bound passed first, "Left before
      <player> confirmed it. <player> can keep playing, but their changes won't be shared from now on."
@@ -626,7 +627,8 @@ injects a fault on B. Two runtime flags arm it, and they exclude each other. Nei
 shipped build meets the feature policy.
 - `--arm-fault`, which the demo uses: typing `fault` and Enter in B's console fires it at the next frame B steps,
   `F`, and the console names `F`. Without the flag, `fault` is refused on any machine. Every machine's console reads
-  commands: `quit`, `fault`, `replay`, and on A also a joiner's reply code.
+  commands: `quit`, `fault`, `replay`, and on A also a joiner's reply code (debug builds also take `panic`, the
+  panic path's test).
 - `--inject-fault-at <F>`: it fires at session frame `F`, fixed at start. B's console prints the frame it joined at;
   the world runs at 60 Hz.
 
