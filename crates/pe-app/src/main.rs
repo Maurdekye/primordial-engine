@@ -286,6 +286,8 @@ fn main() {
     });
     let options = options();
     // Others share the world (`--open` or `--join`): the quit then leaves gracefully (app.md 4).
+    // Which sources this build came from, and its commit (app.md 4, "The build id").
+    println!("{}", pe_app::net::source_line());
     let networked = options.shared.is_some();
     let (vr, headless, run_for) = (options.vr, options.headless, options.run_for);
     if vr && headless {
