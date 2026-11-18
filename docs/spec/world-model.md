@@ -305,13 +305,20 @@ which fixes the origin's role deliberately.
      `EDIT` before its `F` would let it activate, since `EDIT` is checked at `F`.
 
   Everything else the member made or set stays: a leave is not a delete. Its objects keep their rows, and the
-  protections it set stay. Until agent powers (8.1) lets an admin clear a lock, nobody can lift those protections,
-  and with no admin left they stay frozen for good. The root after an admit and its leave equals the root before
-  the admit, apart from what the member made and changed.
+  protections it set stay. Until agent powers (8.1) lets an admin clear a lock, nobody can lift those protections.
+  By the user's rule a session always has an admin: the last admin can't give up the role without passing it on,
+  and the session closes when the last admin leaves [U]. **Not built:** pe-agree makes the last
+  admin's `Leave` effective whenever another member remains (only the last *member* is kept, `LastMember`), and
+  nothing then closes the session. M1 can't reach it, since every player is an admin; it is WS-gov's, needing
+  pe-agree to void such a `Leave` or the app to close the session, once a session can admit non-admins
+  (@design-reviewer's Low). The root after an admit and its leave equals the root before the admit, apart from what
+  the member made and changed.
 - **An interim session's world** (@engine-architect's `pe_app::genesis`; @coordinator-opus) is `preset::m1_session(&Session, blobs)`: the pit of `ball_pit_on` on the session's line, at the
   session's rate, with its gravity and pe-agree's settings record (config item 4; in M1 that is pe-agree's 32-byte
   `NodeConfig::consensus_hash`), and every member admitted at frame 0 through `World::admit` in key order, each with
-  the permission bits its role in the genesis record gives (opener `ADMIN | EDIT | AGENT`, joiner `EDIT | AGENT`),
+  the permission bits its role in the genesis record gives (opener and joiner both `ADMIN | EDIT | AGENT`, by the
+  user's session default [U]; @coordinator-opus, built in @engine-architect's join branch;
+  until it lands, this interim genesis gives the joiner `EDIT | AGENT`),
   standing 0.6 m apart just outside the pit's near wall. A key listed twice is refused (`WorldError::Duplicate`). So
   the root covers each member's bits, and the record and the world cannot disagree on anything the root covers; the
   rest (the cut interval, the epoch, the nonce) is bound through the line (2.4, @design-reviewer's nit). The second
@@ -476,19 +483,26 @@ which fixes the origin's role deliberately.
   - **Undo:** an outcome's inverse carries the bytes of the blobs it restores, from the store. A delete's inverse is
     `Undelete`, which names objects, not blobs, and carries none: the tombstone keeps the rows, the tombstones are
     imported state (6.6), and the tombstone's expiry is the undo window.
-  - **Not yet enforced:** that every inline-class reference an op introduces comes with its bytes. It lands once
-    pe-api hands the bytes over (the ruling's sequencing); until then a reference without them applies as before.
-    Once it does, an undo whose machine lacks a restored blob's bytes (it never received them) carries the
-    reference without them and is refused as `Invalid`, like any edit missing its bytes; pe-api reports it
-    (@design-reviewer's Low).
+  - **Every reference with its bytes** (phase 3, after @api-eng's hand-over, main aa9cfc9c; @api-eng
+    found every pe-api and pe-app write path carrying them): an inline-class reference an op introduces without its
+    bytes is `Invalid`, at apply and at the dry run alike, and changes nothing. A `Copy` introduces none (above). An
+    undo on a machine that lacks a restored blob's bytes (it never received them) carries the reference without
+    them and is refused the same way; pe-api reports it (@design-reviewer's Low). World logic's own drafts (genesis,
+    author `MemberKey::LOGIC`) are exempt: every machine builds them from its own code and store, so their encoding,
+    entry ids and pinned roots stay as they were [V `a_reference_without_its_bytes_is_refused_and_the_dry_run_agrees`].
+    Two guards keep the exemption from reaching a received entry (@design-reviewer): genesis is the
+    only author of LOGIC drafts, and pe-agree takes entries only from session members; and genesis sets LOGIC's
+    permission bits to 0 once it is built [V `preset.rs` `ball_pit_on`], so a received entry claiming the all-zero
+    author is refused `NoPermission` first. The second guard matters because the all-zero key is a small-order
+    point, which a non-strict signature check doesn't reject.
   - **In an import** (6.5; S2 v1.8): `CutImport.blobs` carries the bytes of the inline-class blobs the imported rows
     reference, a tombstone's kept rows included when the tombstones table is imported, since `Undelete` restores
     them (`Tree::export_blobs` gives them). Each must be one an imported row references, in ascending order of hash
     (`BadBlob(i)` otherwise). A missing inline-class *simulation* blob that this machine lacks too refuses it
     (`MissingBlob`), since without it the joiner could step differently. A missing inline-class *display* blob does
     not refuse it yet, and the name stays blank on that machine until it is rewritten, since nothing fetches inline
-    blobs. That refusal (`MissingBlob` too, so the ladder tries another donor) lands with the enforcement above, once
-    pe-diverge's fetch carries a donor's `export_blobs`; before then it would turn a repair that converges with a
+    blobs. That refusal (`MissingBlob` too, so the ladder tries another donor) lands once pe-diverge's fetch carries
+    a donor's `export_blobs`; before then it would turn a repair that converges with a
     blank name into one that fails (@design-reviewer's Low).
   - **Kept:** the store deletes nothing today [V, `BlobStore`]. When pruning comes, an inline-class blob is kept
     while any live or tombstoned row references it, even after its entry has left the log's retention, since a joiner's
@@ -771,6 +785,11 @@ World
 - **Governance:** the tables only. M1 stores the member list (keys and roles), the role table (permission bits) and
   the ban list, all hashed. The one permission M1 checks is `EDIT` (section 7.6). Roles follow the user's rulings,
   with no M1 simplification (@coordinator-opus):
+  - **a session** admits every player as an admin by default, and only a session configured for it admits joiners
+    as less [U; @coordinator-opus]. One admin always exists, the last can't give the
+    role up without passing it on, and the session closes when the last admin leaves (the user's rule; not built,
+    2.4). M1's joiner is an admin;
+  - the templates below are WS-gov's, for a session configured to admit joiners as less:
   - a private world's template gives the admin role to its creator only;
   - others join under the home-world ruling [U]: friends as Guest, a role that has `EDIT` for the
     slice's editing; the confidants of the world's admins as admins;
@@ -781,7 +800,7 @@ World
   created or imported that object.) How admins reconvene after a split is WS-gov's and WS-diverge's.
 
   How M1 decides who is a friend or a confidant (the relationship data of) is WS-gov's and WS-app's;
-  the M1 demo needs only the creator and one Guest.
+  the M1 demo needs neither, since its joiner is an admin.
 - **Claims and cooldowns:** ported from pe-session's tables (plan 2.2: `session/store.rs` → pe-world)
   [V `crates/pe-session/src/session/store.rs:28-55`], keyed by `ObjectId` and `MemberKey` instead of indices.
 - **Tombstones:** section 7.5.
@@ -1882,8 +1901,10 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     it; guests don't unless an admin grants it. A person acting as their own agent is the same member, so the right
     is checked on the member, never on a claimed actor (an `Input` names none).
     - A role bit `perm::AGENT` (5.4; `1 << 1`, stored but not checked until agent powers are built) gives the
-      default: the admin role has it, Guest doesn't. **M1's interim joiner has it, by ruling** (@coordinator-opus): the genesis record admits the opener `ADMIN | EDIT | AGENT` and the joiner `EDIT | AGENT`
-      (2.4), since M1's slice needs either machine to edit through an agent.
+      default: the admin role has it, Guest doesn't. **M1's joiner has it** (@coordinator-opus): the
+      genesis record admits both the opener and the joiner `ADMIN | EDIT | AGENT` (2.4;; until
+      @engine-architect's join branch lands, the interim genesis gives the joiner `EDIT | AGENT`), since M1's slice
+      needs either machine to edit through an agent.
     - A per-member override row in governance, written only by admins, grants or revokes it for one member. Like
       every governance change it applies from its point in the agreed order, so every member applies it from the
       same frame. The member list shows who holds agent powers.

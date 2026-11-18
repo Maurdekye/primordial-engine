@@ -127,6 +127,40 @@ fn a_blob_no_op_introduces_is_refused_and_nothing_is_stored() {
 }
 
 #[test]
+fn a_reference_without_its_bytes_is_refused_and_the_dry_run_agrees() {
+    // Phase 3 (3.4): every inline-class reference an op introduces comes with its bytes, so every machine that
+    // applies the entry has them; one that comes without is `Invalid`, on every machine, and changes nothing.
+    let mut f = fx();
+    let before = f.there.root_hash(pe_seams::DomainId(0));
+    let bare = tx(vec![named(b"Cup")], vec![]);
+    let e = entry(&mut f, &bare);
+    let d = pe_world::Draft { author: e.entry.author, line: e.entry.line, chain: e.entry.chain, seq: e.entry.seq };
+    assert_eq!(refused(&f.here.dry_run_draft(Frame(1), &d, &bare)), Reason::Invalid { field: None });
+    let (a, _) = f.here.apply_edit(Frame(1), &e);
+    let (b, _) = f.there.apply_edit(Frame(1), &e);
+    assert_eq!(a, b);
+    assert_eq!(refused(&a), Reason::Invalid { field: None });
+    assert_eq!(f.there.root_hash(pe_seams::DomainId(0)), before);
+    // Two names and only one's bytes: still refused.
+    let mug = match named(b"Mug") {
+        Op::Create { rows, parent, index, .. } => Op::Create { new: 1, parent, index, rows },
+        _ => unreachable!(),
+    };
+    let half = tx(vec![named(b"Cup"), mug], vec![b"Cup".to_vec()]);
+    assert_eq!(refused(&both(&mut f, &half)), Reason::Invalid { field: None });
+    // A reference outside the inline class needs no bytes: the empty blob, or one over 256 bytes.
+    let big = BlobRef { hash: [7; 32], len: MAX_INLINE_BLOB as u64 + 1 };
+    let ops = vec![Op::Create {
+        new: 0,
+        parent: Target::Root,
+        index: None,
+        rows: vec![row(Transform::at(Pos::ORIGIN)), row(Name { text: big })],
+    }];
+    assert!(matches!(both(&mut f, &tx(ops, vec![])), Outcome::Applied { .. }));
+    assert!(matches!(both(&mut f, &tx(vec![named(b"")], vec![])), Outcome::Applied { .. }));
+}
+
+#[test]
 fn over_two_kibibytes_is_too_large() {
     // pe-world's hard cap is 2 KiB, so an undo that grew past pe-api's 1 KiB still fits (@coordinator-opus, point 3); exactly 2,048 bytes apply and 2,049 do not (@engine-architect).
     let names = |extra: bool| -> Vec<Vec<u8>> {
