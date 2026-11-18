@@ -1211,9 +1211,9 @@ conditions shown:
 - the missing controls are named (section 4.4);
 - membership is re-founded per line at the one-minute mark (model v3).
 
-## 10. Amendment (draft 2, 2026-11-18): the MVP's programmable physics, controllers, avatars and GPU effects
+## 10. Amendment (draft 3, 2026-11-18): the MVP's programmable physics, controllers, avatars and GPU effects
 
-**Status:** a draft by @engine-architect, revised after @fable-reviewer's review of draft 1 (m90bf0c2bf236). The
+**Status:** a draft by @engine-architect, revised after @fable-reviewer's reviews (m90bf0c2bf236, m159ee32cb85e). The
 coordinator takes the MVP boundary (10.6) and the questions in 10.7 to the user. Nothing here is authorized to build
 until the coordinator says so. M1 is untouched. Sizes are in this plan's units and are all inferred [I].
 
@@ -1272,6 +1272,15 @@ The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `_share
   outcome. A hook that accepts gives the stock result bit for bit. It needs no call-out between the fork's parallel
   stages, so D2 is untouched, and it runs once a step, not once a solver pass. This is S1's candidate A, ahead of a
   hook inside the solver (candidate B).
+- **A custom body has two trajectories under candidate A.** The solved state carries the contacts' effects in
+  position as well as velocity, across the sub-steps, so subtracting impulses at write-back doesn't recover where the
+  body would have been. So:
+  - the solved trajectory is the one the stock bodies react to;
+  - the body's own trajectory is integrated alone and contact-free through the same sub-steps, with its step hook;
+  - a null collision hook takes the solved state, which is exact. Any other hook starts from the body's own state
+    and adds what it returns.
+
+  That is one extra single-body integration per custom body per step, which S1 measures.
 - **"Before" and "after" a collision's stock call:**
   - "before" changes the contact's inputs, through the fork's pre-solve callback [V, box3d-fork contact/update.rs
     335-339, called during contact update], which must therefore be pure;
@@ -1286,7 +1295,21 @@ The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `_share
     run the pure hook a second time, deterministically, with the stock result. WebAssembly has no suspension in the
     feature set we allow.
 
-  S1 measures both.
+  S1 measures both. The choice also decides how far "call it several times" works for motion. Per sub-step, stock
+  is the force integration alone, a pure function the hook may call as often as it likes. Under the wrap form, a
+  second call's inputs depend on the first call's result, so they can't be captured before the engine's step runs:
+  a repeat can only be an isolated, contact-free integration, half a time step twice for example. That is part of
+  the user's question 1 (10.7).
+- **How the two hooks compose on one body** (proposed; S1 tests each pair, not each hook alone):
+  - per sub-step with candidate A: the step hook runs in each sub-step, so from the second sub-step on it sees
+    velocities the contacts changed. The collision hook runs once, at write-back;
+  - wrapping with candidate A: the step hook's first run, then the engine's step, then the collision hook on the
+    solved change, then the step hook's second run, which sees the outcome its collision hook accepted.
+- **Sleep** (proposed): a hooked body sleeps as stock does, and its hooks don't run while it sleeps. A script wakes
+  it through an ordinary queued write, as a timed thruster or rising water needs. A null hook leaves sleep exactly as
+  stock does.
+- **Joints and grabs** (proposed): a joint's effect, a hand's grab included, comes through the step hook's stock
+  result, so a held custom object follows the hand unless its hook discards the stock result.
 - **Hooks are pure.** A hook reads only its own body, its components and the contact, and returns values. Writes to
   other objects, spawns and events are queued until after the step. Binding refuses a hook that asks for more.
 - **A hook out of fuel returns the stock result** for that step, the same way on every machine (proposed).
@@ -1377,9 +1400,12 @@ history visible to hooks, overlap queries (piece 4), and a per-object frame coun
 
 **S1, hooks on the CPU** (WS-logic with WS-state; first in M2, before pieces 2 and 3). Two gates, in this order:
 - **Gate 0, exactness, before any cost.** A null definition must give the stock result bit for bit: the same roots
-  over 10,000 frames of the 500-ball pit with every ball hooked, on both machines. It is checked for:
-  - the collision hook, as candidate A, and as candidate B if A fails;
-  - the step hook, per sub-step and wrapping the whole step.
+  over 10,000 frames of the 500-ball pit with every ball hooked, on both machines and across worker counts. The pit
+  comes to rest, so this checks sleep too. It is checked for:
+  - the pairs: candidate A with the step hook per sub-step, and candidate A with the wrap; candidate B only if A
+    fails;
+  - a body carrying both hooks, and two custom bodies in contact;
+  - a working hook, not only a null one: the same roots on both machines and across worker counts.
 
   A form that fails gate 0 is out.
 - **Gate 1, cost, for the forms that pass.** In release, in a quiet window, with the hooks compiled by Cranelift with
@@ -1389,6 +1415,7 @@ history visible to hooks, overlap queries (piece 4), and a per-object frame coun
   - the pass line is M1's bar on reneglade: in a two-member session, B under 50 % busy with no hold over 2 ticks, at
     the re-simulation depth M1's session runs measured (phase timers). It must hold with 100 step-hooked bodies and
     every contact of theirs hooked, and S2 adds eight controllers to that;
+  - awake and resting bodies are reported apart, and so is candidate A's extra integration per custom body;
   - the result is the largest N and M that pass. If 100 bodies fail, the plan records the largest count that passes,
     and the user hears it before M2 has dates: a cap per world on hooked bodies.
 - **The baseline is known** [V, logic.md 5.2a]: M1's whole physics step compiled to WebAssembly cost 1.65-1.80 ms a
@@ -1450,7 +1477,8 @@ reasons:
 
 **What that costs, in the user's terms:** M4 carries R16 and R17, huge worlds and culling by size, avatar culling
 included (section 5.2). The user's first five minutes name "huge open worlds that you can explore freely"
-(user-design-decisions.md, the tour). Under this proposal, the MVP's worlds stay within one region's reach.
+(user-design-decisions.md, the tour). Under this proposal, every machine simulates a whole MVP world, so its size is
+what one machine can simulate at once (10.7, question 4).
 
 The alternatives:
 - **The MVP at the end of M5 with M4 in place,** if the user wants huge worlds in the MVP. The order and the
@@ -1461,16 +1489,21 @@ The alternatives:
 ### 10.7 Open points
 
 **For the user** (@coordinator-opus asks them, with 10.6):
-1. **Repeated collision calls** (10.2). A contact's stock response is the coupled solve of every contact, so calling
-   it several times means nothing for one contact unless a repeat is an isolated two-body response. Is that limit
-   acceptable, or should a repeat be that two-body response?
+1. **Calling the stock physics several times** (10.2, m4c1aa3b49aa6). It is limited for both hooks:
+   - for a collision, a contact's stock response is the coupled solve of every contact, so a repeat means nothing
+     for one contact unless it is an isolated two-body response;
+   - for a step hook that wraps the whole step, a repeat can only be an isolated, contact-free integration. Per
+     sub-step, repeats are free, but cost more.
+
+   Is that limit acceptable, and should a repeat be the isolated response?
 2. **The mass in the custom-against-stock rule** (m9df8a8b0947b): "a standard amount of mass as though it were also
    stock". @fable-reviewer read it as the custom body's own ordinary mass and told the user so, without being
    corrected; that is the reading 10.2 uses. Or is it a fixed standard mass?
 3. **Brought code's authority** (piece 11). Today a module writes with the engine's authority. Should a brought module
    act with its bringer's permissions (@fable-reviewer's reading, unconfirmed), or with another rule?
-4. **Moving M4 after the MVP** (10.6): the MVP's worlds would stay within one region's reach, and huge open worlds
-   would come after it.
+4. **Moving M4 after the MVP** (10.6). Until M4, every machine loads and simulates a whole world, so an MVP world
+   is only as large as one machine can simulate at once: no chunk loading, freezing or culling by size. The plan has
+   no limit in metres; the limit is the machines'. Huge open worlds would come after the MVP.
 5. **Deterministic animation** (root motion, bone hitboxes) isn't in the user's list, but third-person combat through
    the lens needs it (@fable-reviewer's gap). Is it in the MVP?
 
