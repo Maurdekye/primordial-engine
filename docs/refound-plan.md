@@ -1647,8 +1647,9 @@ the frozen-place write, and M5 gains its region cases (about 1). If the user pic
   meter only paces the work, so a thaw that needs more than its metered thread allows finishes later, never
   differently. The catch-up's interval is fixed at the return and published at an agreed cut, and tiny and large
   worker slices give the same result, running out of fuel included. Until the catch-up is agreed, an arriving player
-  sees the place as it froze. A catch-up's hook work is bounded by the missed-time limit times the per-frame caps of
-  the owners with hooks there; under "no limit" it is unbounded, and the setting says so;
+  sees the place as it froze. A catch-up's hook work is bounded by the missed-time limit times the sum of the
+  per-frame caps of the owners with hooks there, the world's own budget included; under "no limit" it is
+  unbounded, and the setting says so;
 - a player's fuel in one group doesn't depend on whether another group, with more of their hooked bodies, is loaded;
 - a write aimed at a frozen place, from a hook or any script, has one outcome on every machine: under option (a) it
   is applied in that place's catch-up (pending the user, 10.7 point 10). Member range checks apply either way;
