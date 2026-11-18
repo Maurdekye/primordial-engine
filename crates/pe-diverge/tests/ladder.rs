@@ -993,7 +993,10 @@ fn a_join_whose_sources_are_all_silent_fails_and_is_never_counted_toward_the_sto
     let now = net.now();
     let v = &mut net.peers[VICTIM];
     v.d.join(&e, key(1), &mut v.r, now);
-    net.run(600);
+    // Until its deadline (`t_join`, 25 s) the join asks its sources again in turn; one slow reply never ends it.
+    net.run(24 * 60);
+    assert!(matches!(net.peers[VICTIM].d.join_state(), Some(Join::Joining { .. })), "still joining at 24 s");
+    net.run(2 * 60);
     let v = &net.peers[VICTIM];
     assert!(matches!(v.d.join_state(), Some(Join::Failed { cut, .. }) if *cut == e.cut.at), "{:?}", v.d.join_state());
     let c = v.d.counters();
@@ -1077,4 +1080,30 @@ fn a_join_whose_first_source_withholds_the_blobs_is_served_by_the_next() {
 #[test]
 fn a_join_whose_first_source_sends_a_junk_blob_is_served_by_the_next() {
     a_join_from_a_source_that_lies_about_blobs_is_served_by_the_next(Lie::JunkBlob);
+}
+
+/// @engine-architect: at n = 2 the inviter is a join's only source, and one reply slower than `t_peer`
+/// (a megabyte-sized physics image, or a late tick on the other process) ended the join. Now a join waits
+/// `t_join_peer` for its source, and asks its sources again in turn until `t_join`.
+#[test]
+fn a_join_whose_sources_are_silent_for_two_seconds_still_joins() {
+    let (mut net, e) = joining_net(40);
+    for i in 0..3 {
+        if i != VICTIM {
+            net.peers[i].silent = true;
+        }
+    }
+    let now = net.now();
+    let v = &mut net.peers[VICTIM];
+    v.d.join(&e, key(0), &mut v.r, now);
+    net.run(2 * 60);
+    assert!(matches!(net.peers[VICTIM].d.join_state(), Some(Join::Joining { .. })));
+    for i in 0..3 {
+        net.peers[i].silent = false;
+    }
+    net.run(12 * 60);
+    let v = &net.peers[VICTIM];
+    assert_eq!(v.d.join_state(), Some(&Join::Joined { cut: e.cut.at }), "{:?}", v.d.counters());
+    assert_eq!(v.d.counters().join_failures, 0);
+    assert!(net.converged());
 }
