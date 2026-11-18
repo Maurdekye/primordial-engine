@@ -1,0 +1,201 @@
+# model v1, 2026-11-18, reproducible controls (branch model/fetch-rows-sq): epochs controls and v0 controls at 16 and at 3 threads
+
+# epochs: cargo run --release --locked -- --epochs --threads 16 --budget 100 ctl- remove-auth walk-e
+remove-auth-byz          363256        363256     79       0.3  OK   (seeded random walks: bit at walk 11390 of 100000) counterexample as expected: "agreement"
+    counterexample to "agreement" (63 steps as found, 35 after shrinking):
+    example "a cut final" (42 steps):
+    example "epoch changed" (42 steps):
+    example "changed and went on" (61 steps):
+ctl-a-inclusion           48150        181054     18       1.0  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement", "same members per epoch"
+    (a) a change takes effect at inclusion
+    counterexample to "agreement" (18 steps as found, 18 after shrinking):
+    counterexample to "same members per epoch" (18 steps as found, 18 after shrinking):
+    example "a cut final" (6 steps):
+    example "epoch changed" (6 steps):
+ctl-b-suffix             176504        176504     69       0.2  OK   (seeded random walks: bit at walk 5299 of 20000) counterexample as expected: "final log ends at E"
+    (b) a non-empty suffix proposed and accepted
+    counterexample to "final log ends at E" (39 steps as found, 21 after shrinking):
+    example "a cut final" (29 steps):
+    example "epoch changed" (29 steps):
+    example "changed and went on" (61 steps):
+ctl-c-epochvote        14771689      14771689     86      12.8  OK   (seeded random walks: bit at walk 421666 of 1000000) counterexample as expected: "agreement"
+    (c) a vote counted in another epoch
+    counterexample to "agreement" (64 steps as found, 37 after shrinking):
+    example "a cut final" (29 steps):
+    example "epoch changed" (29 steps):
+    example "changed and went on" (44 steps):
+ctl-d-oldchain           416122        416122     66       0.4  OK   (seeded random walks: bit at walk 13287 of 50000) counterexample as expected: "one live chain per key"
+    (d) the old chain stays open after E
+    counterexample to "one live chain per key" (57 steps as found, 38 after shrinking):
+    example "a cut final" (31 steps):
+    example "epoch changed" (20 steps):
+    example "changed and went on" (51 steps):
+walk-e-twin            18601538      18601538     90      14.4  OK   (seeded random walks: all 500000) all properties hold; examples found
+    twin of ctl-e-finalizer, unmutated: leave-3to2, five views, the leave alone
+ctl-e-finalizer        65163752      65163752     90      57.2  OK   (seeded random walks: bit at walk 1751502 of 2000000) counterexample as expected: "same members per epoch"
+    (e) the final log ends at the finalizing cut
+    counterexample to "same members per epoch" (38 steps as found, 28 after shrinking):
+    counterexample to "final log ends at E" (35 steps as found, 26 after shrinking):
+    example "a cut final" (30 steps):
+    example "epoch changed" (39 steps):
+    example "changed and went on" (57 steps):
+ctl-f1-views               3303          9905      5       0.0  OK   (every behaviour of up to 5 steps) counterexample as expected: "no honest double vote"
+    (f1) a restart forgets its views
+    counterexample to "no honest double vote" (5 steps as found, 5 after shrinking):
+ctl-f2-highqc            955730       4825464     13       2.0  OK   (every behaviour of up to 13 steps) counterexample as expected: "timeouts keep the lock"
+    (f2) a restart forgets its high_qc
+    example "a cut final" (13 steps):
+    example "epoch changed" (13 steps):
+    counterexample to "timeouts keep the lock" (13 steps as found, 13 after shrinking):
+all 9 epoch check(s) met their expectation
+
+# epochs: cargo run --release --locked -- --epochs --threads 3 --budget 100 ctl- remove-auth walk-e
+remove-auth-byz          363256        363256     79       1.0  OK   (seeded random walks: bit at walk 11390 of 100000) counterexample as expected: "agreement"
+    counterexample to "agreement" (63 steps as found, 35 after shrinking):
+    example "a cut final" (42 steps):
+    example "epoch changed" (42 steps):
+    example "changed and went on" (61 steps):
+ctl-a-inclusion           72120        268064     18       1.0  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement", "same members per epoch"
+    (a) a change takes effect at inclusion
+    counterexample to "agreement" (18 steps as found, 18 after shrinking):
+    counterexample to "same members per epoch" (18 steps as found, 18 after shrinking):
+    example "a cut final" (16 steps):
+    example "epoch changed" (16 steps):
+ctl-b-suffix             176504        176504     69       0.4  OK   (seeded random walks: bit at walk 5299 of 20000) counterexample as expected: "final log ends at E"
+    (b) a non-empty suffix proposed and accepted
+    counterexample to "final log ends at E" (39 steps as found, 21 after shrinking):
+    example "a cut final" (29 steps):
+    example "epoch changed" (29 steps):
+    example "changed and went on" (61 steps):
+ctl-c-epochvote        14771689      14771689     86      45.0  OK   (seeded random walks: bit at walk 421666 of 1000000) counterexample as expected: "agreement"
+    (c) a vote counted in another epoch
+    counterexample to "agreement" (64 steps as found, 37 after shrinking):
+    example "a cut final" (29 steps):
+    example "epoch changed" (29 steps):
+    example "changed and went on" (44 steps):
+ctl-d-oldchain           416122        416122     66       1.2  OK   (seeded random walks: bit at walk 13287 of 50000) counterexample as expected: "one live chain per key"
+    (d) the old chain stays open after E
+    counterexample to "one live chain per key" (57 steps as found, 38 after shrinking):
+    example "a cut final" (31 steps):
+    example "epoch changed" (20 steps):
+    example "changed and went on" (51 steps):
+walk-e-twin            18601538      18601538     90      53.2  OK   (seeded random walks: all 500000) all properties hold; examples found
+    twin of ctl-e-finalizer, unmutated: leave-3to2, five views, the leave alone
+ctl-e-finalizer        65163752      65163752     90     170.8  OK   (seeded random walks: bit at walk 1751502 of 2000000) counterexample as expected: "same members per epoch"
+    (e) the final log ends at the finalizing cut
+    counterexample to "same members per epoch" (38 steps as found, 28 after shrinking):
+    counterexample to "final log ends at E" (35 steps as found, 26 after shrinking):
+    example "a cut final" (30 steps):
+    example "epoch changed" (39 steps):
+    example "changed and went on" (57 steps):
+ctl-f1-views               2713          7638      5       1.0  OK   (every behaviour of up to 5 steps) counterexample as expected: "no honest double vote"
+    (f1) a restart forgets its views
+    counterexample to "no honest double vote" (5 steps as found, 5 after shrinking):
+ctl-f2-highqc           1084997       6201059     13       5.0  OK   (every behaviour of up to 13 steps) counterexample as expected: "timeouts keep the lock"
+    (f2) a restart forgets its high_qc
+    example "a cut final" (13 steps):
+    example "epoch changed" (13 steps):
+    counterexample to "timeouts keep the lock" (13 steps as found, 13 after shrinking):
+all 9 epoch check(s) met their expectation
+
+# v0: cargo run --release --locked -- --threads 16 <the 17 ctl-/bound- checks>
+bound-n2-early         184343        307810     41       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    counterexample to "liveness: every end state has a final cut at every honest member" (35 steps as found, 32 after shrinking):
+ctl-skipempty             301           467     24       1.0  OK   counterexample as expected: "liveness: every content cut ends final"
+    a proposer with nothing new proposes nothing; q = 2; entries 0=m1.1 1=m1.2
+    counterexample to "liveness: every content cut ends final" (22 steps as found, 22 after shrinking):
+ctl-ownonly             87793        258576     29       1.0  OK   counterexample as expected: "progress: an entry all hold at h is covered by h + 2"
+    a proposer covers only its own entries; q = 2; entries 0=m1.1 1=m1.2
+    counterexample to "progress: an entry all hold at h is covered by h + 2" (19 steps as found, 16 after shrinking):
+ctl-skipafterfaulty      5580134      58928180     20      28.1  OK   (every behaviour of up to 20 steps) counterexample as expected: "progress: an entry all hold at h is covered by h + 2"
+    after a faulty proposer's cut, a proposer adds nothing; q = 3; entries 0=m1.1 1=m1.2 2=m1.3 3=f.1a
+    counterexample to "progress: an entry all hold at h is covered by h + 2" (20 steps as found, 15 after shrinking):
+ctl-skipall              3026          4982     40       1.0  OK   counterexample as expected: "liveness: every content cut ends final"
+    reputation without its window: skip every member that ever timed out; q = 2; entries 0=m1.1 1=m1.2
+    counterexample to "liveness: every content cut ends final" (39 steps as found, 38 after shrinking):
+ctl-early                1547          2908     30       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    counterexample to "liveness: every end state has a final cut at every honest member" (29 steps as found, 25 after shrinking):
+bound-n2-backoff         1516          3005     22       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    the same, 3 views: live in 4 (bound): each member's one early timeout can spoil only a view it does not lead; q = 2; entries 0=m1.1
+    counterexample to "liveness: every end state has a final cut at every honest member" (18 steps as found, 14 after shrinking):
+ctl-backoff-reset         1553          2712     42       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    backoff K = 1 reset on every certified view (the old rule), 8 views: finality never comes; q = 2; entries 0=m1.1
+    counterexample to "liveness: every end state has a final cut at every honest member" (36 steps as found, 34 after shrinking):
+bound-n3-byz            68809        284738     26       1.0  OK   counterexample as expected: "agreement"
+    counterexample to "agreement" (20 steps as found, 13 after shrinking):
+ctl-d1                 452595       2270224     32       1.0  OK   counterexample as expected: "no final frame undone"
+    d1: vote without validating each chain in order; q = 2; entries 0=m1.1 1=f.1a 2=f.1b 3=f.2<
+    counterexample to "no final frame undone" (21 steps as found, 9 after shrinking):
+ctl-unchecked          274180       1042548     36       1.0  OK   counterexample as expected: "validity: chains"
+    accept the proposer's cut unchecked; q = 3; entries 0=f.1a 1=forge(m1.1) 2=f.1@line1
+    counterexample to "validity: chains" (31 steps as found, 7 after shrinking):
+ctl-quorum             182227        588985     18       1.0  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement"
+    quorum one too small: split-brain; q = 2; entries 0=f.1a
+    counterexample to "agreement" (18 steps as found, 16 after shrinking):
+ctl-nolock            5256325      29231739     18      14.1  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement"
+    vote ignoring the timeout certificate's highest certificate; q = 3; entries 0=f.1a
+    counterexample to "agreement" (18 steps as found, 17 after shrinking):
+ctl-noframe            339444       1286464     10       1.0  OK   (every behaviour of up to 10 steps) counterexample as expected: "no entry takes effect below an earlier final frame"
+    voters accept a frame not above the parent's (v0.1); q = 3; entries 0=f.1a
+    counterexample to "no entry takes effect below an earlier final frame" (10 steps as found, 7 after shrinking):
+ctl-nosig              259364       1214860     32       1.0  OK   counterexample as expected: "validity: chains"
+    no own-hands / world-id signature check; q = 2; entries 0=m1.1 1=f.1a 2=forge(m1.1) 3=f.1@line1
+    counterexample to "validity: chains" (22 steps as found, 8 after shrinking):
+ctl-noroot              94612        332987     32       1.0  OK   counterexample as expected: "root: a diverged replica learns it at the cut"
+    votes carry no root: a diverged replica confirms without learning it; q = 3; entries 0=f.1a
+    counterexample to "root: a diverged replica learns it at the cut" (23 steps as found, 7 after shrinking):
+ctl-notimeout            1509          4119     16       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    no timeouts: a faulty proposer stalls the line; q = 3; entries 0=f.1a
+    counterexample to "liveness: every end state has a final cut at every honest member" (3 steps as found, 0 after shrinking):
+all 17 check(s) met their expectation
+
+# v0: cargo run --release --locked -- --threads 3 <the 17 ctl-/bound- checks>
+bound-n2-early         176209        294495     41       2.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    counterexample to "liveness: every end state has a final cut at every honest member" (36 steps as found, 33 after shrinking):
+ctl-skipempty             301           467     24       1.0  OK   counterexample as expected: "liveness: every content cut ends final"
+    a proposer with nothing new proposes nothing; q = 2; entries 0=m1.1 1=m1.2
+    counterexample to "liveness: every content cut ends final" (22 steps as found, 22 after shrinking):
+ctl-ownonly            113926        344113     30       1.0  OK   counterexample as expected: "progress: an entry all hold at h is covered by h + 2"
+    a proposer covers only its own entries; q = 2; entries 0=m1.1 1=m1.2
+    counterexample to "progress: an entry all hold at h is covered by h + 2" (21 steps as found, 16 after shrinking):
+ctl-skipafterfaulty      7754482     108881541     20     131.1  OK   (every behaviour of up to 20 steps) counterexample as expected: "progress: an entry all hold at h is covered by h + 2"
+    after a faulty proposer's cut, a proposer adds nothing; q = 3; entries 0=m1.1 1=m1.2 2=m1.3 3=f.1a
+    counterexample to "progress: an entry all hold at h is covered by h + 2" (20 steps as found, 15 after shrinking):
+ctl-skipall              5213          8196     40       1.0  OK   counterexample as expected: "liveness: every content cut ends final"
+    reputation without its window: skip every member that ever timed out; q = 2; entries 0=m1.1 1=m1.2
+    counterexample to "liveness: every content cut ends final" (39 steps as found, 38 after shrinking):
+ctl-early                1547          2908     30       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    counterexample to "liveness: every end state has a final cut at every honest member" (29 steps as found, 25 after shrinking):
+bound-n2-backoff         1516          3005     22       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    the same, 3 views: live in 4 (bound): each member's one early timeout can spoil only a view it does not lead; q = 2; entries 0=m1.1
+    counterexample to "liveness: every end state has a final cut at every honest member" (18 steps as found, 14 after shrinking):
+ctl-backoff-reset         1553          2712     42       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    backoff K = 1 reset on every certified view (the old rule), 8 views: finality never comes; q = 2; entries 0=m1.1
+    counterexample to "liveness: every end state has a final cut at every honest member" (36 steps as found, 34 after shrinking):
+bound-n3-byz           396486       2265448     28       4.0  OK   counterexample as expected: "agreement"
+    counterexample to "agreement" (20 steps as found, 13 after shrinking):
+ctl-d1                 300690       1511959     32       1.0  OK   counterexample as expected: "no final frame undone"
+    d1: vote without validating each chain in order; q = 2; entries 0=m1.1 1=f.1a 2=f.1b 3=f.2<
+    counterexample to "no final frame undone" (22 steps as found, 10 after shrinking):
+ctl-unchecked          346798       1587834     37       3.0  OK   counterexample as expected: "validity: chains"
+    accept the proposer's cut unchecked; q = 3; entries 0=f.1a 1=forge(m1.1) 2=f.1@line1
+    counterexample to "validity: chains" (28 steps as found, 7 after shrinking):
+ctl-quorum              59691        204986     18       1.0  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement"
+    quorum one too small: split-brain; q = 2; entries 0=f.1a
+    counterexample to "agreement" (18 steps as found, 15 after shrinking):
+ctl-nolock           11245179      68630116     18      77.0  OK   (every behaviour of up to 18 steps) counterexample as expected: "agreement"
+    vote ignoring the timeout certificate's highest certificate; q = 3; entries 0=f.1a
+    counterexample to "agreement" (18 steps as found, 17 after shrinking):
+ctl-noframe            233899       1083051     10       1.0  OK   (every behaviour of up to 10 steps) counterexample as expected: "no entry takes effect below an earlier final frame"
+    voters accept a frame not above the parent's (v0.1); q = 3; entries 0=f.1a
+    counterexample to "no entry takes effect below an earlier final frame" (10 steps as found, 7 after shrinking):
+ctl-nosig               86423        369586     32       1.0  OK   counterexample as expected: "validity: chains"
+    no own-hands / world-id signature check; q = 2; entries 0=m1.1 1=f.1a 2=forge(m1.1) 3=f.1@line1
+    counterexample to "validity: chains" (22 steps as found, 8 after shrinking):
+ctl-noroot             157440        682477     34       1.0  OK   counterexample as expected: "root: a diverged replica learns it at the cut"
+    votes carry no root: a diverged replica confirms without learning it; q = 3; entries 0=f.1a
+    counterexample to "root: a diverged replica learns it at the cut" (26 steps as found, 12 after shrinking):
+ctl-notimeout            1509          4119     16       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    no timeouts: a faulty proposer stalls the line; q = 3; entries 0=f.1a
+    counterexample to "liveness: every end state has a final cut at every honest member" (3 steps as found, 0 after shrinking):
+all 17 check(s) met their expectation

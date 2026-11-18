@@ -383,7 +383,8 @@ the next view, and a voter takes the proposal's parent certificate as its `high_
 the membership changes (Admit, Leave, Remove, Rechain) and a few ordinary ones, each with a stamp. A cut names its
 parent's frame + 2 and the entries it covers. Messages name their epoch, and a certificate counts only its block's
 epoch's members. A joiner, or a member that missed a change, adopts an epoch from the certificate that finalized
-its E (that is the epoch certificate). The vote state (views and `high_qc`) survives a restart unless a control
+its E (that is the epoch certificate). A member moves one epoch per certificate, as pe-agree's fetch does; a joiner
+adopts every epoch the certificate proves. The vote state (views and `high_qc`) survives a restart unless a control
 forgets it.
 
 **Properties:** agreement across epochs (and no final cut undone); the same members per epoch (E agreed); the final
@@ -448,9 +449,73 @@ Its break needs a member to see F certified and leave while two others time out 
 F and finalize it two views later: epoch e then ends at F for one member and at F' for the others. That needs five
 views and specific skipped observations, and random walks didn't find it in 88 M states; a fixed schedule like the
 ones above would show it, but the argument above is why the modelled rule doesn't depend on it.
+Since 2026-11-18 (e) is also checked: seeded walks bite it on every run (Reproducible controls, below).
+
+### The epoch-certificate fetch (2026-11-18; @item:primordial-engine/pe-agree-a-member-that-missed-its-epoch-s-reconf)
+
+pe-agree's member that missed its epoch's reconfiguring cut E (main c403d0da) finishes E from its certificate alone,
+once the others' old cores are gone. In the model, old-epoch votes stay in the network, so a certificate is always
+observable. That is the fetch, and the rows below show the path is taken. So the model covers the fetch's logic, not
+its bounds: the 8 epochs, the 256 blocks and the 30 s old core stay "needs an import" by argument (agreement.md 8).
+- **`catch_up` tracking** (only in the rows that set it, so other rows' state spaces are unchanged): a member that
+  enters an epoch without having voted in the previous epoch's suffix finished E from the certificate alone.
+  Property: sometimes "a member finished an epoch from its certificate alone", that many times (1, or 2 for two
+  epochs).
+- **One epoch per certificate** for a member, as built: each certificate is checked against the members of the
+  epoch it ends. The exhaustive rows are unchanged by it (join-1to2 4,016,510, join-2to3 1,592,095, leave-2to1
+  1,131,076, burst-2to4 1,504,241 unique states, as before).
+- **fetch-3to2:** leave-3to2 with the tracking. **fetch-4to2:** two leaves, 4 -> 3 -> 2: 3 leaves at the start and 2
+  may leave at any time, so a member that voted in neither suffix finishes both epochs from their certificates.
+- **Random-walk twins** of the n = 3 and n = 4 base rows (walk-leave-3to2, walk-join-3to4, walk-remove-4to3,
+  walk-restart-3), for behaviours past the bounded search's 22 steps.
+
+Results [V, results/v1-fetch.txt, 16 threads, 2026-11-18, with the reproducible controls below]:
+
+| Row | Search | Result |
+|---|---|---|
+| fetch-3to2 | bounded to 22 steps, UNFINISHED at 100 s (38 M states) and at 600 s (204 M states) | OK, example found |
+| fetch-4to2 | seeded walks, 1,000,000 (34 M states, depth 92, 40 s) | OK, examples found (both epochs from certificates) |
+| walk-leave-3to2, walk-join-3to4, walk-remove-4to3, walk-restart-3 | seeded walks, 1,000,000 each (27-31 M states, depth 64-78, 24-38 s) | OK, examples found |
+| the whole v1 suite (23 rows) | as listed: 100 s budgets for the bounded base rows, walk counts for the random rows | all meet their expectation |
+
+### Reproducible controls (2026-11-18, @design-reviewer m3dc8496ee601)
+
+A control has to bite on every run, or it says nothing about the checker. v1's controls didn't: each stopped at its
+first counterexample under a time budget, and where a search finds one depends on the thread count and on timing
+(measured: ctl-f2-highqc bit in 8 s at 3 threads and not within 100 s at 16; ctl-e-finalizer's stateright walks bit
+at 16 threads in 33-42 s and not within 100 s at 3). Now:
+- **Bounded controls** (ctl-a, ctl-f1, ctl-f2) search exhaustively to their shrunk counterexample's length, with no
+  time budget: ctl-a-inclusion 18 steps, ctl-f1-views 5, ctl-f2-highqc 13. A counterexample exists at that depth, and
+  an exhaustive search to it finds one in any order. The whole space at that depth costs little even searched to the
+  end (`--no-stop`: ctl-f1 26 k states at depth 7, ctl-a 159 k at 18, ctl-f2 7.6 M at 16 in 16 s). The epochs output
+  now prints each counterexample shrunk, as v0's does.
+- **Random rows** use seeded walks by walk index (`bounded::walks`), not stateright's per-thread seeds. Walk k is
+  seeded from (seed, k) alone, so walks 0..n are the same walks at any thread count. When walk k bites, no walk above
+  k starts, the walks below k finish, and only walks 0..=k count. So the walk that bites, and the state totals, are the
+  same on every run. A random row is bounded by its walk count (default 1,000,000; controls name their own), with no
+  time budget.
+- **ctl-e-finalizer** runs on the leave alone (leave-3to2, five views, no ordinary entry), where the walks reach the
+  break about three times sooner (walk 1,751,502, against 5,550,187 with the entry o1). Its unmutated twin
+  walk-e-twin (500,000 walks) holds.
+
+The walk that bites each random control (seed 20261118), the same at 3 and 16 threads [V, results/v1-controls-repro.txt]:
+
+| Control | Bites at walk | Walk count | Seconds at 16 / 3 threads |
+|---|---|---|---|
+| ctl-b-suffix | 5,299 | 20,000 | 0.2 / 0.4 |
+| ctl-c-epochvote | 421,666 | 1,000,000 | 13 / 45 |
+| ctl-d-oldchain | 13,287 | 50,000 | 0.4 / 1.2 |
+| ctl-e-finalizer | 1,751,502 | 2,000,000 | 57 / 171 |
+| remove-auth-byz (boundary) | 11,390 | 1,000,000 | 0.3 / 1.0 |
+
+At 3 and 16 threads the random rows print identical lines (states, depth, the walk that bites), and the bounded
+controls give the same verdicts; their state counts differ, since each stops at its first counterexample. v0's 17
+controls (bounded or exhaustive, none with a time budget) give the same verdicts at 3 and 16 threads too.
+
+So **(e) bites**: the rule's argument above is now also checked, on every run.
 
 **Open:**
-- The n = 3 and n = 4 base rows need longer budgets (the integration queue's guard), and a random-walk twin each.
+- The n = 3 and n = 4 base rows remain UNFINISHED at their budgets (bounded searches, not proofs).
 - Not modelled yet: Admit by a non-member's request, the invite's pinned epoch, more than two epochs in one run.
 
 ## Not in v0
