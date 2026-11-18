@@ -860,6 +860,7 @@ impl Sim {
         let events = self.agree.events();
         self.stats.events += events.len() as u64;
         self.track_split(&events);
+        self.stats.phases.events_ns += lap(&mut mark);
         if let Some(d) = &mut self.diverge {
             let out = d.step(
                 &events,
@@ -882,6 +883,7 @@ impl Sim {
                 None => self.stats.unsent += out.len() as u64,
             }
         }
+        self.stats.phases.diverge_ns += lap(&mut mark);
         // A proposal opens each view: the quit's bound follows the smoothed interval between them (app.md 4).
         for _ in events.iter().filter(|e| matches!(e, AgreeEvent::Proposed { .. })) {
             self.view_time.proposed(now);
@@ -2531,7 +2533,7 @@ pub(crate) mod tests {
         let t = &s.stats().phases;
         assert_eq!((t.stepped, t.resimulated, t.rollbacks), (31, 0, 0), "frames 0 to 30, alone: {t:?}");
         assert!(t.advance_ns > 0 && t.longest_tick_ns > 0, "{t:?}");
-        let steps = t.ingest_ns + t.inputs_ns + t.agree_ns + t.drive_ns + t.events_ns + t.publish_ns;
+        let steps = t.ingest_ns + t.inputs_ns + t.agree_ns + t.drive_ns + t.events_ns + t.diverge_ns + t.publish_ns;
         assert!(steps <= t.tick_ns && t.longest_tick_ns <= t.tick_ns, "{t:?}");
         assert!(t.advance_ns + t.roots_ns + t.finalize_ns <= t.drive_ns, "{t:?}");
     }
