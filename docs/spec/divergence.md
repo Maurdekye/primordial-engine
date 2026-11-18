@@ -352,6 +352,12 @@ a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named abs
 (4.2 step 3), so a joiner holds its world's names.
 - **Sources:** the inviter first, then `E`'s other voters. Every record is checked against `E`'s certified root,
   whoever serves it, so a wrong peer costs a retry and is never trusted (4.4 rule 2).
+- **Waiting:** a join waits `T_join_peer` for its source, not `T_peer`. Its replies are the whole state, the physics
+  image among them (about 1.2 MB for M1's pit, about 1 s at 10 Mbit/s [I]), and a reply arrives only whole. When
+  every source has failed, the join asks them again in turn, after `T_peer`, until `T_join` from its start, and only
+  then reads `Failed`. At `n = 2` the inviter is its only source, so one slow reply ended a join that waited `T_peer`
+  [V @engine-architect md2fa377743a4: the two-process demo's join failed after 250 ms, and passed with 5 s]. A
+  donor serves one peer a root's physics image again only after `T_join_peer`.
 - **No divergence:** nothing diverged, so a join captures no evidence, writes no bundle, opens no episode, emits no
   trace event and never counts toward the stop rule (4.3). It counts only `joins` and `join_failures` (7).
 - **Its state:** `Diverge::join_state()` reads `Joining { cut }`, then `Joined { cut }` once the import matched
@@ -1485,6 +1491,8 @@ mid-session never moves a bound that is already running [design-reviewer].
 | `W_fg` | Deepest replay run in the foreground | 2 s: the old speculation window, `2 * hz` frames at any rate [V `spikes/session-sim/src/r18.rs:108`] |
 | `T_module` | How long a rung-2 repair waits for a module it lacks before it restarts and counts `ModuleMissing` (4.2) | Over the `n` modules a repair lacks: `W_fg + ΣS / R_thin + n T_build`, with `R_thin` = 1 KB/s and `T_build` = 20 s; 211 s for the 6.4k-line benchmark guest alone, 23 s for the lamp. Until R-L1, a deadline recomputed as the source trees' nodes name lengths, with `W_fg` per tree level (4.2) [C m571b81cfbaa6; sizes V, times I] |
 | `T_peer` | Wait for a repair source before trying the next | 4 round-trip times, at least 100 ms |
+| `T_join_peer` | A join's wait for its source (4.5), and the least time before a donor serves one peer the same physics image again | 5 s [V: the two-process demo joined with it, @engine-architect md2fa377743a4] |
+| `T_join` | A join's deadline from its start: until then its sources are asked again in turn (4.5) | 25 s, inside pe-app's 30 s `T_join` step (app.md 4) |
 | `N_descend` | Descents per rung-2 attempt | 3 |
 | `B_serve`, `R_serve` | Serving budget per peer: burst and refill | 8 MiB; 4 MiB/s |
 | `N_busy`, `T_busy` | `Busy` answers in a row before a source is rotated; longest wait one can ask for | 4; 1 s |
