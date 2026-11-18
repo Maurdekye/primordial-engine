@@ -356,6 +356,8 @@ pub struct Mock {
     pub finalize_calls: u64,
     /// Every import is refused with this, after it is recorded (a replica that cannot take the agreed state, 4.3).
     pub refuse: Option<ImportError>,
+    /// Finalize answers `NotReady` this many times more, as a replica not yet caught up to the cut would.
+    pub not_ready: u32,
 }
 
 impl Mock {
@@ -378,6 +380,7 @@ impl Mock {
             damaged_from: None,
             kept_from: 0,
             finalize_calls: 0,
+            not_ready: 0,
             refuse: None,
         };
         m.put(St::new(objects, sleepers));
@@ -530,6 +533,10 @@ impl Replica for Mock {
     }
     fn finalize(&mut self, cut: &FinalCut, _source: &mut dyn EntrySource) -> Finalized {
         self.finalize_calls += 1;
+        if self.not_ready > 0 {
+            self.not_ready -= 1;
+            return Finalized::NotReady;
+        }
         let f = cut.cut.at.frame.0;
         if f < self.floor {
             // As pe-replica: a cut below the floor is a protocol fault, answered NotReady.

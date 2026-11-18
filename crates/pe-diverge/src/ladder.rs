@@ -302,12 +302,13 @@ impl Evidence {
     }
 }
 
-/// A join from a final cut (divergence.md 4.4, app.md 4): where this machine's whole-state fetch of `E` stands.
+/// A join from a final cut (divergence.md 4.5, app.md 4): where this machine's whole-state fetch of `E` stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Join {
     /// Fetching and importing `E`'s state.
     Joining { cut: CutRef },
-    /// The replica holds `E`'s certified state: the embedding may start the driver.
+    /// The replica holds `E`'s certified state and finalize agreed there (Cv is `E`): the embedding may start the
+    /// driver.
     Joined { cut: CutRef },
     /// No source served it, or the replica could not take it; the embedding gives up or joins again at a newer cut.
     Failed { cut: CutRef, why: String },
@@ -431,7 +432,7 @@ impl Diverge {
         matches!(self.join, Some(Join::Joining { .. }))
     }
 
-    /// Joining at a final cut `e` (divergence.md 4.4): fetch `e`'s whole state, as rung 2 does for a `Damaged` cut,
+    /// Joining at a final cut `e` (divergence.md 4.5): fetch `e`'s whole state, as rung 2 does for a `Damaged` cut,
     /// from `inviter` first and then `e`'s other voters, and import it into the empty replica. Everything is verified
     /// against `e`'s certified root, whichever peer serves it. This is no divergence: no evidence is captured, no
     /// bundle is written, no episode opens, no trace event is emitted, the ladder's stop rule (4.3) never counts it,
@@ -440,6 +441,9 @@ impl Diverge {
     /// `on_final`. [`Diverge::is_repairing`] is true meanwhile; the replica publishes no view, so no health shows it.
     pub fn join(&mut self, e: &FinalCut, inviter: MemberKey, replica: &mut dyn Replica, now: HostTime) {
         self.join = Some(Join::Joining { cut: e.cut.at });
+        // The joiner holds nothing verified: Cv starts at E, once finalize agrees there.
+        self.cv = None;
+        self.pending = None;
         let mut sources = vec![inviter];
         sources.extend(e.voters.iter().map(|v| v.0).filter(|v| *v != inviter));
         self.start_rung2(e.cut.clone(), Some(e.clone()), e.root, sources, None, replica, now);
@@ -535,7 +539,13 @@ impl Diverge {
                     self.counters.repair_latency_nanos.push(0);
                     self.events.push(DivergeEvent::Repaired { cut: rp.cut.at, rung: Rung(1) });
                 }
-                if let Some(mut rep) = self.repair.take()
+                if self.joining() {
+                    // A join's finalize at E, asked again after `NotReady`: no cure, the join is done.
+                    self.repair = None;
+                    if matches!(self.join, Some(Join::Joining { cut }) if cut == fc.cut.at) {
+                        self.joined(fc.cut.at);
+                    }
+                } else if let Some(mut rep) = self.repair.take()
                     && let Phase::Importing { mine, .. } = std::mem::replace(&mut rep.phase, Phase::Physics)
                 {
                     self.count_cure(rep, mine, now);
@@ -1513,13 +1523,22 @@ impl Diverge {
             }
         }
         if self.joining() {
-            // The replica holds E's certified state: nothing diverged, so nothing is counted as a cure.
-            self.counters.joins += 1;
-            self.join = Some(Join::Joined { cut });
+            // The replica holds E's certified state: nothing diverged, so nothing is counted as a cure. Joined once
+            // finalize agreed at E (Cv is E); a finalize answered `NotReady` is asked again from `tick`, and `on_final`
+            // reports it (@engine-architect, Low).
+            if self.cv.is_some_and(|(c, _)| c == cut) {
+                self.joined(cut);
+            }
         } else {
             self.count_cure(rep, mine, now);
         }
         self.after_repair(replica, source, now, clock);
+    }
+
+    /// A join's import matched E's root and finalize agreed there.
+    fn joined(&mut self, cut: CutRef) {
+        self.counters.joins += 1;
+        self.join = Some(Join::Joined { cut });
     }
 
     /// A rung-2 repair's import matched its target: count it, write its bundle, and note recurrence.

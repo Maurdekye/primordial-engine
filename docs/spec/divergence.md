@@ -347,8 +347,10 @@ a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named abs
 - **No divergence:** nothing diverged, so a join captures no evidence, writes no bundle, opens no episode, emits no
   trace event and never counts toward the stop rule (4.3). It counts only `joins` and `join_failures` (7).
 - **Its state:** `Diverge::join_state()` reads `Joining { cut }`, then `Joined { cut }` once the import matched
-  `E`'s root, or `Failed { cut, why }` when every source failed or the replica refused the import. A state, not an
-  event: S3.8's `DivergeEvent` is a seam type, and a join needs no seam change [I]. `Cv` starts at `E`.
+  `E`'s root and the replica's finalize agreed at `E`, so `Cv` is `E` (a finalize answered `NotReady` is asked again
+  on a later tick; @engine-architect). It reads `Failed { cut, why }` when every source failed or the replica
+  refused the import. A state, not an event: S3.8's `DivergeEvent` is a seam type, and a join needs no seam change
+  [I].
 - **Until it ends** the embedding runs no driver and calls only `tick` and `receive`, never `on_final`. The joiner
   votes from the first cut after `E` (`E` is already final for it). At `n = 2` nothing after `E` becomes final
   until it votes, so `E` stays servable. On `Failed`, pe-app gives up: the joiner says it couldn't join and quits
