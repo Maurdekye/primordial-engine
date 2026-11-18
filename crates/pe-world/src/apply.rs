@@ -373,8 +373,9 @@ impl World {
             let i = i as u32;
             work.op(&mut cx, i, op).map_err(|r| (Some(i), r))?;
         }
-        // The inline blobs against what the ops introduced, with the registry after them (3.4).
-        crate::inline::check(work.store.registry(), tx, &tx.inline).map_err(|r| (None, r))?;
+        // The inline blobs against what the ops introduced, with the registry after them (3.4): each one introduced,
+        // and each introduced one given, except in world logic's own drafts (genesis), which no machine receives.
+        crate::inline::check(work.store.registry(), tx, &tx.inline, !src.author.is_logic()).map_err(|r| (None, r))?;
         *self = work;
         // An applied edit's inline blobs go into the machine's store, on every machine that applies it (3.4). A
         // refused one stores nothing.
