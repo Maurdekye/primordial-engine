@@ -438,7 +438,8 @@ impl Diverge {
     /// bundle is written, no episode opens, no trace event is emitted, the ladder's stop rule (4.3) never counts it,
     /// and only `joins` / `join_failures` count it. [`Diverge::join_state`] says when it is done.
     /// Until then the embedding runs no driver: it calls only [`Diverge::tick`] and [`Diverge::receive`], never
-    /// `on_final`. [`Diverge::is_repairing`] is true meanwhile; the replica publishes no view, so no health shows it.
+    /// `on_final`. [`Diverge::is_repairing`] is true until the import ends (not while a `NotReady` finalize waits), so
+    /// read [`Diverge::join_state`]; the replica publishes no view, so no health shows the join.
     pub fn join(&mut self, e: &FinalCut, inviter: MemberKey, replica: &mut dyn Replica, now: HostTime) {
         self.join = Some(Join::Joining { cut: e.cut.at });
         // The joiner holds nothing verified: Cv starts at E, once finalize agrees there.
