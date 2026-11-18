@@ -139,10 +139,12 @@ async fn author() -> Value {
         apply(&c, json!({"label": "demo: a blue lamp", "ops": [{"op": "code", "id": script, "source": blue}]})).await;
     let f2 = activated(&c, cursor, &change(&o)).await;
     let until = Instant::now() + Duration::from_secs(60);
+    // The first state the new code wrote is F + 2, as the observer checks (module doc): a final frame at F + 1, which
+    // a cut lands on once in every interval, still shows warm white.
     let fin = loop {
         match glow(&c, &lamp, json!("final")).await {
-            Some((f, g)) if f > f2 => break (f, g),
-            _ if Instant::now() > until => panic!("no final frame after {f2}"),
+            Some((f, g)) if f > f2 + 1 => break (f, g),
+            _ if Instant::now() > until => panic!("no final frame past F + 1 = {}", f2 + 1),
             _ => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     };
