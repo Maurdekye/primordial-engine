@@ -664,23 +664,97 @@ impl Core {
     /// highest certified block doesn't descend from `to` within [`crate::epoch::MAX_CERT_BLOCKS`] blocks this member
     /// still holds. An epoch certificate (crate::epoch).
     pub fn certified_chain(&self, to: BlockId) -> Option<Vec<(Block, Qc)>> {
+        let (proposals, top) = self.certified_proposals(to)?;
+        Some(crate::epoch::chain_of(&proposals, &top))
+    }
+
+    /// The same chain as [`Core::certified_chain`], as the blocks' proposals (each carries its parent's certificate)
+    /// and the top's certificate: what a member that missed the epoch's reconfiguring cut takes in
+    /// ([`Core::adopt`]).
+    pub fn certified_proposals(&self, to: BlockId) -> Option<(Vec<Proposal>, Qc)> {
         let mut out = Vec::new();
-        let mut qc = self.high_qc.clone();
+        let top = self.high_qc.clone();
+        let mut id = top.block;
         loop {
-            let id = qc.block;
             let p = self.blocks.get(&id).map(|s| &s.proposal).or_else(|| self.history_bodies.get(&id))?;
-            let next = p.parent_qc.clone();
-            out.push((p.block.clone(), qc));
+            out.push(p.clone());
             if id == to {
                 break;
             }
             if out.len() >= crate::epoch::MAX_CERT_BLOCKS {
                 return None;
             }
-            qc = next;
+            id = p.block.parent;
         }
         out.reverse();
-        Some(out)
+        Some((out, top))
+    }
+
+    /// The proposals of the recently committed blocks (at most [`HEADER_HISTORY`]), which this member serves to
+    /// fetches: kept past the epoch's end to serve a member that missed its reconfiguring cut (agreement.md 8).
+    pub fn committed_proposals(&self) -> Vec<Proposal> {
+        self.history_order.iter().filter_map(|id| self.history_bodies.get(id).cloned()).collect()
+    }
+
+    /// Take in an epoch certificate (agreement.md 8: a member that missed its epoch's reconfiguring cut E): each
+    /// proposal as a block this member fetched, then the top's certificate. The certificates count as any carried
+    /// certificate does, so the two-chain rule commits E here, and the ancestors this member lacks are fetched as
+    /// usual (`Msg::Fetch`). Every proposal and certificate is checked as on arrival; the first that fails is
+    /// returned, and what came before it stays taken in (each is certified, so harmless).
+    pub fn adopt(
+        &mut self,
+        proposals: Vec<Proposal>,
+        top: &Qc,
+        now: HostTime,
+        verifier: &dyn Verifier,
+    ) -> Result<(), CoreFault> {
+        if proposals.last().is_none_or(|p| p.block.id() != top.block) {
+            return Err(CoreFault::BadCertificate);
+        }
+        self.check_qc(top, verifier)?;
+        let lowest = proposals.first().map(|p| p.block.parent);
+        for p in proposals {
+            let id = p.block.id();
+            let marked = !self.blocks.contains_key(&id) && self.requested.insert(id);
+            if let Err(f) = self.on_proposal(p, now, verifier) {
+                // A forged copy of a real block mustn't stop this member from fetching the real one.
+                if marked {
+                    self.requested.remove(&id);
+                }
+                return Err(f);
+            }
+        }
+        self.note_qc(top, now);
+        if self.commit_target.is_some() {
+            self.advance_commit();
+        }
+        // Ask again for the gap below E: a fetch is sent once per block, and one lost on a link that has just come back
+        // (or before it did) would leave it open for good. Only the gap this certificate needs (@design-reviewer's Low 1
+        // on 5d532552: `requested` also holds ids nobody will serve, which must not crowd it out): walk down from E's
+        // parent through the orphans held to the first block neither held nor committed. Each certificate taken in
+        // follows a fresh answer, so this repeats at the ask's back-off (1 s doubling to 8 s), not more often.
+        if let Some(gap) = lowest.and_then(|id| self.gap_below(id)) {
+            self.out.push((To::All, Msg::Fetch(gap)));
+        }
+        Ok(())
+    }
+
+    /// The first block below `id` this member lacks: `id` itself if it is neither held, held as an orphan, nor the
+    /// committed block or the genesis; else the same walk from the orphan's parent. `None` once the walk reaches a held
+    /// block (its ancestry is complete) or the committed one.
+    fn gap_below(&self, mut id: BlockId) -> Option<BlockId> {
+        let parents: BTreeMap<BlockId, BlockId> =
+            self.orphans.values().map(|o| (o.block.id(), o.block.parent)).collect();
+        for _ in 0..=parents.len() {
+            if id == self.committed || id == self.genesis_id || self.blocks.contains_key(&id) {
+                return None;
+            }
+            match parents.get(&id) {
+                Some(p) => id = *p,
+                None => return Some(id),
+            }
+        }
+        None
     }
 
     pub fn block(&self, id: &BlockId) -> Option<&Block> {

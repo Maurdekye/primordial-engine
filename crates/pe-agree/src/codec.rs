@@ -32,6 +32,12 @@ pub enum Wire {
     /// Ask for an author's chain from `from_seq`, at most `count` entries (at most [`MAX_FETCH`]): the range refetch
     /// that heals holes after a stall or a loss (coordinator m120f73db271d).
     FetchRange { author: MemberKey, chain: ChainId, from_seq: u64, count: u32 },
+    /// Ask for the certificate that ended `epoch` (agreement.md 8): sent by a member still in `epoch` to a member whose
+    /// messages are of a later one.
+    FetchEpochCert { epoch: u64 },
+    /// The answer: the proposals of the reconfiguring cut E that ended `epoch` and its certified suffix, oldest first,
+    /// and the top's certificate ([`crate::epoch::chain_of`]). Checked against `epoch`'s members before it counts.
+    EpochCert { epoch: u64, proposals: Vec<Proposal>, top: Qc },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +53,8 @@ const T_REPORT: u8 = 7;
 const T_FETCH_RANGE: u8 = 8;
 const T_EPOCH: u8 = 9;
 const T_EPOCH_FINAL: u8 = 10;
+const T_FETCH_EPOCH_CERT: u8 = 11;
+const T_EPOCH_CERT: u8 = 12;
 
 struct W(Vec<u8>);
 
@@ -100,6 +108,21 @@ impl W {
             self.b32(&k.0);
             self.sig(s);
         }
+    }
+    fn proposal(&mut self, p: &Proposal) {
+        self.u64(p.block.view);
+        self.b32(&p.block.parent.0.0);
+        self.b32(&p.block.proposer.0);
+        self.cut(&p.block.cut);
+        self.qc(&p.parent_qc);
+        match &p.tc {
+            Some(t) => {
+                self.u8(1);
+                self.tc(t);
+            }
+            None => self.u8(0),
+        }
+        self.sig(&p.sig);
     }
     fn tc(&mut self, t: &Tc) {
         self.u64(t.view);
@@ -199,6 +222,20 @@ impl<'a> R<'a> {
             2 => Ok(SelfTest::Failed { split }),
             _ => Err(DecodeError),
         }
+    }
+    fn proposal(&mut self) -> Result<Proposal, DecodeError> {
+        let view = self.u64()?;
+        let parent = BlockId(self.hash()?);
+        let proposer = MemberKey(self.b32()?);
+        let cut = self.cut()?;
+        let parent_qc = self.qc()?;
+        let tc = match self.u8()? {
+            0 => None,
+            1 => Some(self.tc()?),
+            _ => return Err(DecodeError),
+        };
+        let sig = self.sig()?;
+        Ok(Proposal { block: Block { view, parent, proposer, cut }, parent_qc, tc, sig })
     }
     fn tc(&mut self) -> Result<Tc, DecodeError> {
         let view = self.u64()?;
@@ -327,19 +364,7 @@ pub fn encode(m: &Wire) -> Vec<u8> {
     match m {
         Wire::Core(Msg::Propose(p)) => {
             w.u8(T_PROPOSE);
-            w.u64(p.block.view);
-            w.b32(&p.block.parent.0.0);
-            w.b32(&p.block.proposer.0);
-            w.cut(&p.block.cut);
-            w.qc(&p.parent_qc);
-            match &p.tc {
-                Some(t) => {
-                    w.u8(1);
-                    w.tc(t);
-                }
-                None => w.u8(0),
-            }
-            w.sig(&p.sig);
+            w.proposal(p);
         }
         Wire::Core(Msg::Vote(v)) => {
             w.u8(T_VOTE);
@@ -390,6 +415,19 @@ pub fn encode(m: &Wire) -> Vec<u8> {
             w.u8(T_EPOCH_FINAL);
             w.u64(*epoch);
         }
+        Wire::FetchEpochCert { epoch } => {
+            w.u8(T_FETCH_EPOCH_CERT);
+            w.u64(*epoch);
+        }
+        Wire::EpochCert { epoch, proposals, top } => {
+            w.u8(T_EPOCH_CERT);
+            w.u64(*epoch);
+            w.u32(proposals.len() as u32);
+            for p in proposals {
+                w.proposal(p);
+            }
+            w.qc(top);
+        }
         Wire::FetchRange { author, chain, from_seq, count } => {
             w.u8(T_FETCH_RANGE);
             w.b32(&author.0);
@@ -422,20 +460,7 @@ pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
     }
     let mut r = R(bytes);
     let m = match r.u8()? {
-        T_PROPOSE => {
-            let view = r.u64()?;
-            let parent = BlockId(r.hash()?);
-            let proposer = MemberKey(r.b32()?);
-            let cut = r.cut()?;
-            let parent_qc = r.qc()?;
-            let tc = match r.u8()? {
-                0 => None,
-                1 => Some(r.tc()?),
-                _ => return Err(DecodeError),
-            };
-            let sig = r.sig()?;
-            Wire::Core(Msg::Propose(Proposal { block: Block { view, parent, proposer, cut }, parent_qc, tc, sig }))
-        }
+        T_PROPOSE => Wire::Core(Msg::Propose(r.proposal()?)),
         T_VOTE => {
             let view = r.u64()?;
             let block = BlockId(r.hash()?);
@@ -473,6 +498,20 @@ pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
         }
         T_FETCH_BLOCK => Wire::Core(Msg::Fetch(BlockId(r.hash()?))),
         T_EPOCH_FINAL => Wire::EpochFinal { epoch: r.u64()? },
+        T_FETCH_EPOCH_CERT => Wire::FetchEpochCert { epoch: r.u64()? },
+        T_EPOCH_CERT => {
+            let epoch = r.u64()?;
+            let n = r.count(crate::epoch::MAX_CERT_BLOCKS)?;
+            if n == 0 {
+                return Err(DecodeError);
+            }
+            let mut proposals = Vec::with_capacity(n);
+            for _ in 0..n {
+                proposals.push(r.proposal()?);
+            }
+            let top = r.qc()?;
+            Wire::EpochCert { epoch, proposals, top }
+        }
         T_FETCH_ENTRIES => {
             let n = r.count(MAX_FETCH)?;
             let mut ids = Vec::with_capacity(n);
@@ -537,10 +576,29 @@ mod tests {
             Wire::Core(Msg::Propose(Proposal {
                 block: block.clone(),
                 parent_qc: qc.clone(),
-                tc: Some(tc),
+                tc: Some(tc.clone()),
                 sig: Signature([9; 64]),
             })),
-            Wire::Core(Msg::Propose(Proposal { block, parent_qc: qc.clone(), tc: None, sig: Signature([9; 64]) })),
+            Wire::Core(Msg::Propose(Proposal {
+                block: block.clone(),
+                parent_qc: qc.clone(),
+                tc: None,
+                sig: Signature([9; 64]),
+            })),
+            Wire::FetchEpochCert { epoch: 2 },
+            Wire::EpochCert {
+                epoch: 2,
+                proposals: vec![
+                    Proposal {
+                        block: block.clone(),
+                        parent_qc: qc.clone(),
+                        tc: Some(tc.clone()),
+                        sig: Signature([9; 64]),
+                    },
+                    Proposal { block, parent_qc: qc.clone(), tc: None, sig: Signature([4; 64]) },
+                ],
+                top: qc.clone(),
+            },
             Wire::Core(Msg::Vote(Vote {
                 view: 7,
                 block: BlockId(h(b"x")),

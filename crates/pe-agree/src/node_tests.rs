@@ -2911,3 +2911,141 @@ fn a_leaver_admitting_its_successor_in_the_same_cut_waits_until_it_has_started()
     assert!(b_final > 500, "B's entries didn't become final");
     assert_eq!(s.faults(1), 0, "faults at B: {:?}", s.events[1]);
 }
+
+// The epoch-certificate fetch (agreement.md 8; @item:primordial-engine/pe-agree-a-member-that-missed-its-epoch-s-reconf).
+
+/// Run until member `i`'s final frame passes `frame`, at most `within_ms` more; false if it didn't.
+fn run_until_final(s: &mut Sim, i: usize, frame: Frame, within_ms: i64) -> bool {
+    let end = s.now / MS + within_ms;
+    while s.final_frame(i) <= frame && s.now / MS < end {
+        let next = s.now / MS + 10;
+        s.run(next);
+    }
+    s.final_frame(i) > frame
+}
+
+#[test]
+fn a_member_that_missed_its_epochs_end_past_the_old_cores_fetches_the_certificate() {
+    // @design-reviewer's M3 on e3597563: 3 -> 2. Member 2 leaves at 3 s; member 1 is cut off from then until 40 s,
+    // past the 30 s the others keep the old core. Members 0 and 2 finalize E (q = 2 of 3); 0 switches to epoch 1
+    // {0, 1} (q = 2), where nothing is final without 1, and 2 quits. Back at 40 s, 1 sees 0's epoch-1 messages, asks
+    // 0 for the certificate that ended epoch 0, commits E, fetches what it lacks, switches, and the two finalize again.
+    for seed in [501, 502] {
+        let mut s = Sim::new(3, seed);
+        s.clock = Clock(120);
+        s.per_frame = vec![Some((2, 0)); 3];
+        s.run(3_000);
+        s.partition = Some((1, 3_000, 40_000));
+        leave(&mut s, 2);
+        s.run_to_epoch(0, 1, 5_000);
+        let switched = s.now / MS;
+        s.run(switched + 1_000);
+        s.absent[2] = true;
+        s.run(40_000);
+        assert_eq!(s.nodes[1].epoch(), 0, "seed {seed}: member 1 switched while cut off");
+        let stood = s.final_frame(0);
+        s.run_to_epoch(1, 1, 10_000);
+        let reached = s.now / MS - 40_000;
+        assert_eq!(s.nodes[1].members(), s.sorted(&[0, 1]), "seed {seed}: member 1's epoch 1");
+        let again = run_until_final(&mut s, 0, stood, 10_000);
+        let resumed = s.now / MS - 40_000;
+        s.run(55_000);
+        let n = s.assert_same_final_log_among(&[0, 1], Frame(0));
+        let fin = s.final_frame(0).0 as f64 / 120.0;
+        eprintln!(
+            "seed {seed}: 0 switched at {switched} ms; final stood at {:.2} s; 1 in epoch 1 {reached} ms after the \
+             partition, 0 final again after {resumed} ms; final at {fin:.2} s of 55; {n} entries agreed",
+            stood.0 as f64 / 120.0
+        );
+        assert!(again, "seed {seed}: nothing became final again");
+        assert!(fin >= 54.0, "seed {seed}: the two didn't go on: final at {fin:.2} s");
+        for i in 0..2 {
+            assert_eq!(s.faults(i), 0, "seed {seed}: faults at {i}");
+        }
+    }
+}
+
+#[test]
+fn a_member_that_missed_two_epochs_fetches_one_certificate_for_each() {
+    // 4 -> 3 -> 2 with member 1 cut off throughout: 3 leaves (epoch 1 is {0, 1, 2}, q = 2), then 2 leaves (epoch 2 is
+    // {0, 1}). Back after both old cores are gone, 1 fetches epoch 0's certificate from 0, switches to epoch 1, then
+    // fetches epoch 1's, and switches to epoch 2.
+    for seed in [511, 512] {
+        let mut s = Sim::new(4, seed);
+        s.clock = Clock(120);
+        s.per_frame = vec![Some((2, 0)); 4];
+        s.run(3_000);
+        s.partition = Some((1, 3_000, 45_000));
+        leave(&mut s, 3);
+        s.run_to_epoch(0, 1, 5_000);
+        let t = s.now / MS;
+        s.run(t + 1_000);
+        s.absent[3] = true;
+        leave(&mut s, 2);
+        s.run_to_epoch(0, 2, 5_000);
+        let t = s.now / MS;
+        s.run(t + 1_000);
+        s.absent[2] = true;
+        s.run(45_000);
+        assert_eq!(s.nodes[1].epoch(), 0, "seed {seed}: member 1 switched while cut off");
+        let stood = s.final_frame(0);
+        s.run_to_epoch(1, 2, 20_000);
+        let reached = s.now / MS - 45_000;
+        assert_eq!(s.nodes[1].members(), s.sorted(&[0, 1]), "seed {seed}: member 1's epoch 2");
+        let again = run_until_final(&mut s, 0, stood, 10_000);
+        s.run(60_000);
+        let n = s.assert_same_final_log_among(&[0, 1], Frame(0));
+        let fin = s.final_frame(0).0 as f64 / 120.0;
+        eprintln!("seed {seed}: 1 in epoch 2 {reached} ms after the partition; final at {fin:.2} s of 60; {n} entries");
+        assert!(again, "seed {seed}: nothing became final again");
+        assert!(fin >= 59.0, "seed {seed}: the two didn't go on: final at {fin:.2} s");
+        for i in 0..2 {
+            assert_eq!(s.faults(i), 0, "seed {seed}: faults at {i}");
+        }
+    }
+}
+
+#[test]
+fn a_forged_epoch_certificate_is_refused_and_the_genuine_one_taken() {
+    // As above (3 -> 2, member 1 cut off past the old cores), but 1 is handed certificates directly: a forged vote, a
+    // forged proposal, one with no two-chain, and one for another epoch, then the genuine one.
+    use crate::codec::{Wire, encode};
+    let mut s = Sim::new(3, 521);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)); 3];
+    s.run(3_000);
+    s.partition = Some((1, 3_000, 40_000));
+    leave(&mut s, 2);
+    s.run_to_epoch(0, 1, 5_000);
+    let t = s.now / MS;
+    s.run(t + 1_000);
+    s.absent[2] = true;
+    s.run(36_000);
+    let (proposals, top) = s.nodes[0].retired_cert(0).expect("epoch 0's certificate kept");
+    let a = s.keys.key(0);
+    let now = HostTime(s.now);
+    let give = |s: &mut Sim, w: Wire| s.nodes[1].receive(a, Lane::Protocol, &encode(&w), now).map_err(|f| f.detail);
+    let cert =
+        |proposals: Vec<crate::core::Proposal>, top: crate::core::Qc| Wire::EpochCert { epoch: 0, proposals, top };
+
+    let mut forged = top.clone();
+    forged.votes[0].1.0[0] ^= 1;
+    let r = give(&mut s, cert(proposals.clone(), forged));
+    assert_eq!(r, Err("an epoch certificate refused: a bad vote signature".into()));
+
+    let mut ps = proposals.clone();
+    ps[0].sig.0[0] ^= 1;
+    let r = give(&mut s, cert(ps, top.clone()));
+    assert!(r.as_ref().is_err_and(|d| d.contains("BadSignature")), "a forged proposal: {r:?}");
+
+    let r = give(&mut s, cert(proposals[..1].to_vec(), proposals[1].parent_qc.clone()));
+    assert!(r.as_ref().is_err_and(|d| d.contains("two-chain")), "only E: {r:?}");
+
+    let r = give(&mut s, Wire::EpochCert { epoch: 7, proposals: proposals.clone(), top: top.clone() });
+    assert_eq!(r, Ok(()), "another epoch's is dropped without a fault");
+    assert_eq!(s.nodes[1].epoch(), 0);
+
+    assert_eq!(give(&mut s, cert(proposals, top)), Ok(()));
+    s.run_to_epoch(1, 1, 10_000);
+    assert_eq!(s.nodes[1].members(), s.sorted(&[0, 1]));
+}

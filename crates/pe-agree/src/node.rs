@@ -207,7 +207,9 @@ impl NodeConfig {
         // v5: membership by epochs (Leave): AfterLeave and LastMember voids, members-only cuts, Wire::Epoch.
         // v6: no new setting, but votes and timeouts carry lateness reports (stamp-ahead), a wire change.
         // v7: membership by epochs (Admit): the governance fold's NotAuthorized and NoChange voids, epochs that admit.
-        let mut h = Hasher::new("pe.agree.consensus.v7");
+        // v8: no new setting, but a member that missed its epoch's end fetches the epoch certificate (Wire::FetchEpochCert,
+        // Wire::EpochCert), a wire change.
+        let mut h = Hasher::new("pe.agree.consensus.v8");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
@@ -389,6 +391,16 @@ pub struct Node {
     left: bool,
     /// Per epoch: the members that told this one the reconfiguring cut starting it is final there.
     settled: BTreeMap<u64, std::collections::BTreeSet<MemberKey>>,
+    /// The epochs this member ended, newest last, at most [`RETIRED_EPOCHS`]: each one's certificate and committed
+    /// blocks, served to a member that missed its reconfiguring cut (agreement.md 8).
+    retired: std::collections::VecDeque<Retired>,
+    /// Per member whose messages are of a later epoch: this member's ask for the certificate ending its own epoch
+    /// (the epoch asked for, when it may ask again, the back-off), ns.
+    epoch_asks: BTreeMap<MemberKey, (u64, i64, i64)>,
+    /// Per (requester, epoch): when this member last sent it that epoch's certificate, ns.
+    epoch_served: BTreeMap<(PeerId, u64), i64>,
+    /// Core messages of later epochs, the latest [`LATER_KEPT`]: replayed once this member reaches their epoch.
+    later: std::collections::VecDeque<(PeerId, u64, core::Msg, HostTime)>,
     now: HostTime,
     present: Option<Frame>,
     rate_hz: u32,
@@ -466,6 +478,27 @@ struct OldEpoch {
     leavers: Vec<MemberKey>,
     told: i64,
 }
+
+/// An epoch this member ended (agreement.md 8): the certificate that proves its reconfiguring cut E final, and the
+/// proposals of the committed blocks the core still held (E and its ancestors, at most the core's 256), served to a
+/// member that missed E: it takes the certificate in, and fetches E's ancestors it lacks block by block.
+struct Retired {
+    epoch: u64,
+    /// E and its certified suffix, oldest first, and the top's certificate ([`crate::epoch::chain_of`]).
+    proposals: Vec<core::Proposal>,
+    top: Qc,
+    bodies: BTreeMap<BlockId, core::Proposal>,
+}
+
+/// How many ended epochs a member keeps to serve members that missed them (each at most 256 committed blocks).
+const RETIRED_EPOCHS: usize = 8;
+/// A member still in an ended epoch asks again for its certificate after this, doubling up to [`EPOCH_ASK_MAX_NS`].
+const EPOCH_ASK_FIRST_NS: i64 = 1_000_000_000;
+const EPOCH_ASK_MAX_NS: i64 = 8_000_000_000;
+/// A member sends one requester one epoch's certificate at most this often.
+const EPOCH_SERVE_EVERY_NS: i64 = 500_000_000;
+/// How many core messages of later epochs a member keeps to replay once it reaches their epoch.
+const LATER_KEPT: usize = 64;
 
 /// A member abstains for one own entry in at most this many views, then votes (the outage rule's bound).
 const ABSTAIN_VIEWS: usize = 2;
@@ -690,6 +723,10 @@ impl Node {
             former: Vec::new(),
             left: false,
             settled: BTreeMap::new(),
+            retired: std::collections::VecDeque::new(),
+            epoch_asks: BTreeMap::new(),
+            epoch_served: BTreeMap::new(),
+            later: std::collections::VecDeque::new(),
             now,
             present: None,
             rate_hz: 60,
@@ -1523,6 +1560,18 @@ impl Node {
                 final_high,
             })
         });
+        // Kept to serve a member that misses E once the old core is gone (agreement.md 8).
+        if let Some((proposals, top)) = self.core.certified_proposals(e.id()) {
+            let mut bodies: BTreeMap<BlockId, core::Proposal> =
+                self.core.committed_proposals().into_iter().map(|p| (p.block.id(), p)).collect();
+            bodies.extend(proposals.iter().map(|p| (p.block.id(), p.clone())));
+            self.retired.push_back(Retired { epoch: self.core.epoch(), proposals, top, bodies });
+            while self.retired.len() > RETIRED_EPOCHS {
+                self.retired.pop_front();
+            }
+            let kept: Vec<u64> = self.retired.iter().map(|r| r.epoch).collect();
+            self.epoch_served.retain(|(_, e), _| kept.contains(e));
+        }
         #[allow(unused_mut)]
         let mut core = Core::new(
             CoreConfig {
@@ -1588,6 +1637,98 @@ impl Node {
         let bytes = Bytes::from(codec::encode(&Wire::EpochFinal { epoch }));
         for m in to.clone() {
             self.out.push(Outgoing { to: m, lane: Lane::Protocol, bytes: bytes.clone() });
+        }
+    }
+
+    /// A core message of a later epoch `e` from `from`, a member of this one (see `later`): keep it, and ask `from`
+    /// for the certificate that ended this member's epoch.
+    fn note_later(&mut self, from: PeerId, e: u64, m: core::Msg, at: HostTime) {
+        if self.later.len() >= LATER_KEPT {
+            self.later.pop_front();
+        }
+        self.later.push_back((from, e, m, at));
+        let cur = self.core.epoch();
+        let ask = self.epoch_asks.entry(from).or_insert((cur, at.0, 0));
+        if ask.0 != cur {
+            *ask = (cur, at.0, 0);
+        }
+        self.ask_epoch_certs(at.0);
+    }
+
+    /// Ask, of each member seen in a later epoch, for the certificate that ended this member's epoch: at once, then
+    /// again after [`EPOCH_ASK_FIRST_NS`], doubling up to [`EPOCH_ASK_MAX_NS`], until this member is past it.
+    fn ask_epoch_certs(&mut self, now: i64) {
+        let cur = self.core.epoch();
+        self.epoch_asks.retain(|_, (e, _, _)| *e == cur);
+        let bytes = Bytes::from(codec::encode(&Wire::FetchEpochCert { epoch: cur }));
+        for (m, (_, next, gap)) in self.epoch_asks.iter_mut() {
+            if now >= *next {
+                *gap = (*gap * 2).clamp(EPOCH_ASK_FIRST_NS, EPOCH_ASK_MAX_NS);
+                *next = now.saturating_add(*gap);
+                self.out.push(Outgoing { to: *m, lane: Lane::Protocol, bytes: bytes.clone() });
+            }
+        }
+    }
+
+    /// Replay the kept core messages of the epoch this member has now reached; drop those of earlier ones.
+    fn replay_later(&mut self) {
+        let cur = self.core.epoch();
+        if !self.later.iter().any(|(_, e, _, _)| *e <= cur) {
+            return;
+        }
+        let (due, keep): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.later).into_iter().partition(|(_, e, _, _)| *e <= cur);
+        self.later = keep.into();
+        for (from, e, m, at) in due {
+            if e == cur && self.cfg.members.contains(&from) {
+                let _ = self.core.receive(from, m, at, self.verifier.as_ref());
+            }
+        }
+        // Members still ahead (several epochs missed): ask them for the certificate ending this epoch too.
+        let now = self.now.0;
+        let ahead: Vec<PeerId> =
+            self.later.iter().map(|(f, _, _, _)| *f).filter(|f| self.cfg.members.contains(f)).collect();
+        for f in ahead {
+            let ask = self.epoch_asks.entry(f).or_insert((cur, now, 0));
+            if ask.0 != cur {
+                *ask = (cur, now, 0);
+            }
+        }
+    }
+
+    /// The certificate that ended `epoch`, as this member serves it (tests).
+    #[cfg(test)]
+    pub(crate) fn retired_cert(&self, epoch: u64) -> Option<(Vec<core::Proposal>, Qc)> {
+        self.retired.iter().find(|r| r.epoch == epoch).map(|r| (r.proposals.clone(), r.top.clone()))
+    }
+
+    /// An epoch certificate for this member's own epoch (agreement.md 8: it missed the reconfiguring cut E): check it
+    /// against the epoch's members, then take it into the core, which commits E by the two-chain rule and fetches the
+    /// ancestors this member lacks. E's entries come by fetch as any final cut's, and the switch to the next epoch is
+    /// this member's own, from E's changes. A certificate for another epoch is stale or early: dropped.
+    fn take_epoch_cert(
+        &mut self,
+        from: PeerId,
+        epoch: u64,
+        proposals: Vec<core::Proposal>,
+        top: Qc,
+        at: HostTime,
+    ) -> Result<(), Fault> {
+        if epoch != self.core.epoch() {
+            return Ok(());
+        }
+        let mut members = self.cfg.members.clone();
+        members.sort();
+        members.dedup();
+        let chain = crate::epoch::chain_of(&proposals, &top);
+        if let Err(why) =
+            crate::epoch::verify_certificate(&chain, self.cfg.line, epoch, &members, self.verifier.as_ref())
+        {
+            return Err(self.fault(from, None, FaultKind::Protocol, format!("an epoch certificate refused: {why}")));
+        }
+        match self.core.adopt(proposals, &top, at, self.verifier.as_ref()) {
+            Ok(()) => Ok(()),
+            Err(f) => Err(self.fault(from, None, fault_kind(&f), format!("an epoch certificate refused: {f:?}"))),
         }
     }
 
@@ -2375,6 +2516,17 @@ impl Agreement for Node {
             if let Some(old) = self.old_epoch.as_mut().filter(|o| o.core.epoch() == e) {
                 let _ = old.core.receive(from, m.clone(), at, self.verifier.as_ref());
                 self.tick_old_epoch();
+            } else if e > self.core.epoch() && self.cfg.members.contains(&from) {
+                // A member of this epoch is in a later one: this member missed the reconfiguring cut that ended its
+                // own. It asks that member for the certificate (agreement.md 8), and keeps the message to replay.
+                self.note_later(from, e, m.clone(), at);
+            } else if let core::Msg::Fetch(id) = m
+                && let Some(p) = self.retired.iter().find(|r| r.epoch == e).and_then(|r| r.bodies.get(id))
+            {
+                // A block of an epoch this member ended, for a member that is catching up to its end.
+                let m = core::Msg::Propose(p.clone());
+                let w = if e == 0 { Wire::Core(m) } else { Wire::Epoch(e, m) };
+                self.out.push(Outgoing { to: from, lane: Lane::Protocol, bytes: Bytes::from(codec::encode(&w)) });
             }
             return Ok(());
         }
@@ -2427,6 +2579,19 @@ impl Agreement for Node {
                 }
                 Ok(())
             }
+            Wire::FetchEpochCert { epoch } => {
+                let due = self
+                    .epoch_served
+                    .get(&(from, epoch))
+                    .is_none_or(|t| at.0.saturating_sub(*t) >= EPOCH_SERVE_EVERY_NS);
+                if due && let Some(r) = self.retired.iter().find(|r| r.epoch == epoch) {
+                    let w = Wire::EpochCert { epoch, proposals: r.proposals.clone(), top: r.top.clone() };
+                    self.epoch_served.insert((from, epoch), at.0);
+                    self.out.push(Outgoing { to: from, lane: Lane::Protocol, bytes: Bytes::from(codec::encode(&w)) });
+                }
+                Ok(())
+            }
+            Wire::EpochCert { epoch, proposals, top } => self.take_epoch_cert(from, epoch, proposals, top, at),
             Wire::FetchEntries(ids) => {
                 let es: Vec<SignedEntry> = ids
                     .iter()
@@ -2492,6 +2657,8 @@ impl Agreement for Node {
         let cap = self.backlog_cap();
         self.tick_old_epoch();
         self.greet_former();
+        self.replay_later();
+        self.ask_epoch_certs(now.0);
         let lead = self.core.lead();
         let reconfig = lead.as_ref().and_then(|l| self.reconfig_of(&l.parent.cut).ok().flatten());
         if let (Some(lead), Some(e)) = (&lead, reconfig) {
