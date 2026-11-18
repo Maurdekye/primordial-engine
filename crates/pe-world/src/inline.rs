@@ -110,12 +110,17 @@ pub fn introduced(reg: &Registry, tx: &Transaction) -> BTreeSet<BlobRef> {
 /// Checks a transaction's inline bytes against what its ops introduce (3.4), after the ops ran: over
 /// [`MAX_INLINE_BYTES`] in total is `TooLarge`, and a blob no op introduces is `Invalid`. The same verdict on every
 /// machine, since it reads only the entry and the registry.
-pub fn check(reg: &Registry, tx: &Transaction, inline: &[Vec<u8>]) -> Result<(), Reason> {
+///
+/// With `complete`, every inline-class reference an op introduces must come with its bytes too (3.4, phase 3), or
+/// it is `Invalid`: a member's edit, received or dry-run. World logic's own drafts (genesis) are built on every
+/// machine from its own store and never received, so they pass `complete = false`.
+pub fn check(reg: &Registry, tx: &Transaction, inline: &[Vec<u8>], complete: bool) -> Result<(), Reason> {
     if inline.iter().map(Vec::len).sum::<usize>() > MAX_INLINE_BYTES {
         return Err(Reason::TooLarge { limit: MAX_INLINE_BYTES as u32 });
     }
     let wanted = introduced(reg, tx);
-    if inline.iter().any(|b| !wanted.contains(&BlobRef::of(b))) {
+    let given: BTreeSet<BlobRef> = inline.iter().map(|b| BlobRef::of(b)).collect();
+    if !given.is_subset(&wanted) || (complete && !wanted.is_subset(&given)) {
         return Err(Reason::Invalid { field: None });
     }
     Ok(())
