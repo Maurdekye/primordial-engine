@@ -1,0 +1,54 @@
+# v0.3 revote case, runs on 2026-11-13, release, 4 threads, heavy.sh, idle priority; tree 37d2a32f (v0.3 WIP rebased on b5f9e1aa)
+## target/v3a.txt
+check                  states     generated  depth   seconds  result
+n2-repair-live            350           524     31       1.0  OK   all properties hold; examples found
+    2 members, member 1's root wrong until repaired, liveness: final with the right root; q = 2; entries 0=m1.1
+bound-n2-wrongroot         1513          2371     41       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+    2 members, member 1's root wrong and never repaired: nothing is final (why the repair must reach a later view); q = 2; entries 0=m1.1
+    counterexample to "liveness: every end state has a final cut at every honest member" (40 steps as found, 38 after shrinking):
+      Propose(0, false)
+      Deliver(1, Propose { block: v1m0@3[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(0, Propose { block: v1m0@3[-,-,-,-], proot: true, tc: None, carried: 0 })
+      Deliver(0, Entry { to: 0, e: 0 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v2m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v2m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(0, Cert { block: genesis, root: true })
+      Propose(0, false)
+      Deliver(1, Propose { block: v3m0@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v3m0@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v4m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v4m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(0, Cert { block: genesis, root: true })
+      Propose(0, false)
+      Deliver(1, Propose { block: v5m0@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v5m0@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      Propose(1, false)
+      Deliver(1, Propose { block: v6m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Deliver(0, Propose { block: v6m1@3[-,0,-,-], proot: true, tc: Some(Cert { block: genesis, root: true }), carried: 1 })
+      Timeout(1)
+      Timeout(0)
+      AdvanceTc(1, Cert { block: genesis, root: true })
+      AdvanceTc(0, Cert { block: genesis, root: true })
+n3-root-repair        4315200      24437269     31      14.0  OK   all properties hold; examples found
+    3 members, author-faulty, member 2's root wrong until repaired, safety; q = 2; entries 0=m1.1 1=f.1a
+all 3 check(s) met their expectation
+## target/v3b.txt
+check                  states     generated  depth   seconds  result
+n4-root-repair       44338475     224817185     18     220.1  OK   (every behaviour of up to 18 steps) all properties hold; examples found
+    4 members, Byzantine, member 3's root wrong until repaired, safety; q = 3; entries 0=f.1a
+all 1 check(s) met their expectation
