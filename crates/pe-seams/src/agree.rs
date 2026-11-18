@@ -54,7 +54,8 @@
 //!   [`crate::gov::Admit`]), decided by the pure governance fold [`crate::gov::GovState::step`] at its place in the
 //!   final log, the same at every member: void as [`VoidReason::NotAuthorized`] or [`VoidReason::NoChange`], or
 //!   effective, and then the key is a member from the next epoch on. The joiner starts from the inviter's start record
-//!   (pe-agree's epoch certificate), which the inviter's app sends it (app.md 4).
+//!   (pe-agree's epoch certificate), which the inviter's app sends it (app.md 4): S3 v1.11's
+//!   [`Agreement::epoch_start`], beside [`Agreement::epoch`], which an invite pins.
 //! - **A cut's identity is its [`CutRef`]: line, height and frame** (S3 v1.7): heights go on across a membership
 //!   change, so the old epoch's suffix cuts and the new epoch's first cuts share heights with different frames.
 //!   Never key a cut on its height alone.
@@ -445,6 +446,21 @@ pub trait Agreement: EntrySource + Send {
 
     /// The members of the current epoch, sorted by key (S3 v1.7: they change when a reconfiguring cut is final).
     fn members(&self) -> Vec<MemberKey>;
+
+    /// (S3 v1.11; agreement.md 8, app.md 4 "Joining from a cut".) The epoch this member is in: 0 from genesis, one
+    /// more at each reconfiguring cut. An invite pins it, so the inviter's app can tell whether the session is still in
+    /// the epoch its invite names. 0 in a source without epochs.
+    fn epoch(&self) -> u64 {
+        0
+    }
+
+    /// (S3 v1.11; agreement.md 8.) The start record of the current epoch: what a member admitted at its reconfiguring
+    /// cut E starts its agreement from (pe-agree's `Node::join`). The inviter's app sends it to the joiner once E is
+    /// final here (`JoinStart`, app.md 4). `None` in epoch 0, if this member no longer held E's certified chain when E
+    /// became final here, and in a source without epochs.
+    fn epoch_start(&self) -> Option<Vec<u8>> {
+        None
+    }
 
     /// (S3 v1.7; agreement.md 8, @design-reviewer's M2 on e3597563.) After this member's own `Leave`: whether every
     /// remaining member has told it that the reconfiguring cut E is final there, so quitting now strands no one. The

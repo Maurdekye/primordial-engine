@@ -194,17 +194,32 @@ impl Quit {
         Action::Run(shutdown)
     }
 
+    /// The app's own request, as the console's would be, from a thread of its own so the caller never waits for the
+    /// shutdown it starts: a joiner whose import failed quits (app.md 4, "B's state at E").
+    pub fn request_from_app(self: &Arc<Self>, why: &'static str) {
+        let q = self.clone();
+        let spawned = std::thread::Builder::new().name("pe-quit".into()).spawn(move || q.handle_from(false, why));
+        if let Err(e) = spawned {
+            eprintln!("pe-app: {why}, and the quit's thread did not start ({e}): ending now");
+            std::process::exit(EXIT_INTERRUPTED);
+        }
+    }
+
     /// A request from the operating system's handler: does what [`Self::request`] decides. `closing` is a close
     /// event, after which Windows ends the process anyway: the quit then runs on a thread of its own, and the handler
     /// waits for it at most [`CLOSE_WAIT`], in either mode (unix: SIGTERM or SIGHUP, module docs).
     fn handle(self: &Arc<Self>, closing: bool) {
+        self.handle_from(closing, "asked from the console");
+    }
+
+    fn handle_from(self: &Arc<Self>, closing: bool, why: &str) {
         match self.request() {
             Action::ExitNow => {
                 eprintln!("pe-app: ended at once");
                 std::process::exit(EXIT_INTERRUPTED)
             }
             Action::Run(shutdown) => {
-                eprintln!("pe-app: quitting (asked from the console)…");
+                eprintln!("pe-app: quitting ({why})…");
                 let q = self.clone();
                 let run = move || {
                     shutdown();

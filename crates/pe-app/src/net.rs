@@ -10,49 +10,73 @@
 //!   epoch and the rate before it rebuilds genesis itself ([`Endpoint::join_session`]). Any other join request is
 //!   refused, "not admitted". When pe-agree's join from a cut lands, only B's path changes (a state import instead of
 //!   rebuilding genesis).
+//! - **Joining from a cut** (app.md 4; [`crate::join`]): A opens the world alone ([`Endpoint::open_alone`]), and its
+//!   session starts at once. Its invite pins epoch 0 and A alone. A reply pasted on A's console reaches the session's
+//!   hook ([`MemberHook`]), which runs the join on the simulation thread ([`crate::join::Inviter`]). B checks the
+//!   welcome against the invite's pin ([`check_join_welcome`]), says it is ready, and starts agreement at the cut that
+//!   admits it ([`Endpoint::join_at_cut`]). Importing that cut's state is pe-diverge's `Diverge::join`, the next stage;
+//!   until it is wired, main.rs runs the interim.
 //! - **Both hellos and the welcome carry one fixed line** ([`pre_genesis_line`]): the connection guards compare lines
 //!   (transport.md 6.3) and pe-net refuses a welcome naming another, and B cannot know the session's line before its
 //!   welcome. The session's own line is the genesis record's (`Genesis::line`), which B derives from the record
-//!   itself; every pe-agree signature commits to it.
+//!   itself; every pe-agree signature commits to it. A join from a cut keeps this: the welcome's line is the fixed one,
+//!   and its record names the session's.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use pe_agree::Node;
+use pe_agree::core::members_hash;
 use pe_net::core::CoreError;
 use pe_net::core::{Config, Core, Lifecycle};
 use pe_net::lifecycle::{CloseCode, Hello, HelloError, Refusal, Welcome};
 use pe_net::thread::{Arrival, Command, HostClock, NetControl, NetHandle};
-use pe_net_crypto::identity::{Identity, Invite, Reply, StrictVerifier};
-use pe_seams::{Agreement, FrameClock, HostTime, MemberKey, NetEvent, Replica, SimRate, Transport};
+use pe_net_crypto::identity::{Identity, Invite, Pin, Reply, StrictVerifier};
+use pe_seams::agree::Cut;
+use pe_seams::{
+    Agreement, FrameClock, HostTime, Lane, LinkStats, MemberKey, NetEvent, PeerId, Received, Replica, SimRate,
+    SubmitError, Transport,
+};
 
 use pe_replica::ScriptRunner;
 
 use crate::genesis::{Genesis, GenesisError, Params, fresh_nonce};
-use crate::sim::{NetHook, Waker};
+use crate::join::{Act, AppMsg, Inviter};
+use crate::sim::{NetHook, Waker, WorldFacts};
 use crate::world::DEV_MEMBER;
 
 /// The engine build both sides' hellos carry and the genesis record names: connections between different builds are
 /// refused at the hello (transport.md 6.3), and a record from another build at the welcome, by name.
 ///
-/// It is pe-app's version, the script build service's identity B and the script runner's identity:
+/// It is pe-app's version, the script build service's identity B, and a core part: the script runner's identity with
+/// pe-agree's consensus settings.
 /// - B (logic.md 6.2b, `pe_logic::build::build_identity`: the toolchain's release, its wasm32 std, pe-sdk, the build
 ///   service's and pe-logic's result versions), so two machines whose builds of one script could differ never share a
 ///   session, and a build that one member passes and another fails, which the build-asymmetry ruling makes a split
 ///   (m327e1d2d1222), cannot come from a different engine or toolchain. Without a toolchain the service can run (no
 ///   `CARGO` until D75 installs the pinned one) it reads "scripts unavailable", with no detail, so the text is the same
 ///   on every such machine [I: two such machines can still share a session, and neither can build a script].
-/// - The runner's identity ([`runner_settings`]' `pe_logic::identity`, the bytes the runner reports as S2's
-///   `runner_identity`: pe-logic's result version, the wasmtime release, the metering pass's and the ABI's versions,
-///   the limits and the fuel), so two machines whose runners could compute one script's frame differently never
-///   share a session either (Q1, @coordinator-opus m339785d800ca; S2 v1.7: "the hello compares it").
+/// - The core part ([`core_part`]):
+///   - the runner's identity ([`runner_settings`]' `pe_logic::identity`, the bytes the runner reports as S2's
+///     `runner_identity`: pe-logic's result version, the wasmtime release, the metering pass's and the ABI's
+///     versions, the limits and the fuel), so two machines whose runners could compute one script's frame
+///     differently never share a session either (Q1, @coordinator-opus m339785d800ca; S2 v1.7: "the hello compares
+///     it");
+///   - pe-agree's consensus hash ([`crate::genesis::consensus_hash`]), since the crate's version doesn't change
+///     between commits: so equal build ids mean equal must-match pe-agree settings, and a member with other settings
+///     is closed at the hello (`CloseCode::Build`), before any `Admit` exists (app.md 4, "Joining from a cut").
+///
+///   They share one hash because a fourth part wouldn't fit `MAX_BUILD`. A mismatch's cause then shows at the
+///   welcome, which names the consensus hash by itself (`GenesisError::Agree`).
 ///
 /// Each appears as the first 6 bytes of its hash in hex, since a hello's build id is at most `MAX_BUILD` (64) bytes and
-/// `bind` refuses a longer one: 55 at version 0.1.0, which leaves the version 9 bytes to grow, and 48 bits still tell
+/// `bind` refuses a longer one: 53 at version 0.1.0, which leaves the version 11 bytes to grow, and 48 bits still tell
 /// any two builds apart by accident (a peer can claim any build id at any length). Computed once per process.
 pub fn build_id() -> &'static [u8] {
     static ID: OnceLock<Vec<u8>> = OnceLock::new();
@@ -62,8 +86,8 @@ pub fn build_id() -> &'static [u8] {
             .map(|b| hex6(&b))
             .unwrap_or_else(|_| "unavailable".into());
         let (settings, run) = runner_settings();
-        let runner = runner_part(&settings, &run);
-        format!("pe-app {}; scripts {scripts}; runner {runner}", env!("CARGO_PKG_VERSION")).into_bytes()
+        let core = core_part(&settings, &run, &crate::genesis::consensus_hash());
+        format!("pe-app {}; scripts {scripts}; core {core}", env!("CARGO_PKG_VERSION")).into_bytes()
     })
 }
 
@@ -73,9 +97,12 @@ pub fn runner_settings() -> (pe_logic::Settings, pe_logic::run::RunSettings) {
     (pe_logic::Settings::default(), pe_logic::run::RunSettings::default())
 }
 
-/// [`build_id`]'s runner part: the hash of the identity a runner with these settings reports (`pe_logic::identity`).
-fn runner_part(settings: &pe_logic::Settings, run: &pe_logic::run::RunSettings) -> String {
-    hex6(&pe_seams::Hash::of("pe.app.runner", &pe_logic::identity(settings, run)))
+/// [`build_id`]'s core part: one hash of the identity a runner with these settings reports (`pe_logic::identity`) and
+/// of pe-agree's consensus hash `agree`.
+fn core_part(settings: &pe_logic::Settings, run: &pe_logic::run::RunSettings, agree: &pe_seams::Hash) -> String {
+    let mut bytes = pe_logic::identity(settings, run).to_vec();
+    bytes.extend_from_slice(&agree.0);
+    hex6(&pe_seams::Hash::of("pe.app.core", &bytes))
 }
 
 /// A hash's first 6 bytes in hex.
@@ -105,19 +132,25 @@ pub const EPOCH_AHEAD_MAX: Duration = Duration::from_secs(10);
 /// B's bound on the welcome's epoch, once its clock has converged and can say when frame 0 is on this machine
 /// (host clocks differ per machine, so not before).
 pub fn check_epoch(frame_0_at: HostTime, now: HostTime) -> Result<(), NetError> {
+    check_start("frame 0", frame_0_at, now)
+}
+
+/// The same bound on the frame `what` starts at (frame 0 in the interim; E, the cut that admits B, in a join from a
+/// cut, since frame 0 may be hours old there).
+fn check_start(what: &str, at: HostTime, now: HostTime) -> Result<(), NetError> {
     // In i128: the epoch is A's to choose, and an extreme one must be refused, not overflow.
-    let ahead = i128::from(frame_0_at.0) - i128::from(now.0);
+    let ahead = i128::from(at.0) - i128::from(now.0);
     let as_ns = |d: Duration| i128::try_from(d.as_nanos()).unwrap_or(i128::MAX);
     if ahead > as_ns(EPOCH_AHEAD_MAX) {
         return Err(NetError::Welcome(format!(
-            "frame 0 is {:.1} s ahead (at most {} s)",
+            "{what} is {:.1} s ahead (at most {} s)",
             ahead as f64 * 1e-9,
             EPOCH_AHEAD_MAX.as_secs()
         )));
     }
     if -ahead > as_ns(EPOCH_PAST_MAX) {
         return Err(NetError::Welcome(format!(
-            "frame 0 was {:.1} s ago (at most {} s)",
+            "{what} was {:.1} s ago (at most {} s)",
             -ahead as f64 * 1e-9,
             EPOCH_PAST_MAX.as_secs()
         )));
@@ -144,6 +177,8 @@ pub enum NetError {
     Genesis(GenesisError),
     /// This machine's hello breaks a bound its peers enforce (transport.md 6.3): a build id over `MAX_BUILD`.
     Hello(HelloError),
+    /// pe-agree refused the inviter's start record (`Node::join`), or it named no cut: why.
+    Join(String),
 }
 
 impl fmt::Display for NetError {
@@ -156,6 +191,7 @@ impl fmt::Display for NetError {
             NetError::Welcome(why) => write!(f, "the welcome doesn't match: {why}"),
             NetError::Genesis(e) => write!(f, "the genesis record is refused: {e}"),
             NetError::Hello(e) => write!(f, "this build can't connect: {e}"),
+            NetError::Join(why) => write!(f, "agreement can't start from the inviter's record: {why}"),
         }
     }
 }
@@ -214,7 +250,7 @@ pub fn identity_seed(path: &Path) -> io::Result<[u8; 32]> {
     }
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
@@ -296,6 +332,46 @@ pub struct Session {
     pub frames: Arc<dyn FrameClock>,
 }
 
+/// A session A opened alone ([`Endpoint::open_alone`]).
+pub struct Opened {
+    pub session: Session,
+    /// The invite to print: A's key and addresses, its id and expiry, and its pin (epoch 0, A alone).
+    pub invite: Invite,
+    /// Where a reply code goes: the session's hook takes it on the simulation thread and dials the joiner.
+    pub replies: Sender<Reply>,
+}
+
+/// B, joined at the cut that admits it, up to agreement's start ([`Endpoint::join_at_cut`]). The next stage builds B's
+/// replica empty and imports E's state (pe-diverge's `Diverge::join`).
+pub struct CutJoin {
+    pub me: MemberKey,
+    /// The new epoch's members, B among them.
+    pub members: Vec<MemberKey>,
+    pub handle: NetHandle,
+    /// What arrived before agreement existed, in order: the simulation takes it before the network's own
+    /// ([`transport_with`]). A reliable lane delivers each message once, so none may be dropped.
+    pub pending: Vec<Received>,
+    pub hook: MemberHook,
+    pub node: Node,
+    pub frames: Arc<dyn FrameClock>,
+    /// The session's genesis record: its line, rate and settings.
+    pub record: Genesis,
+    /// E, the cut that admitted B.
+    pub e: Cut,
+}
+
+/// Waits up to 2 s for the clock pe-net was told to start to run at `rate`: genesis refuses a clock at another.
+fn await_rate(frames: &Arc<dyn FrameClock>, rate: SimRate) -> Result<(), NetError> {
+    let started = Instant::now() + Duration::from_secs(2);
+    while frames.rate_hz() != rate.hz() {
+        if Instant::now() >= started {
+            return Err(NetError::Timeout("the clock to start"));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
 impl Endpoint {
     /// Bind `listen` and start pe-net's thread with this machine's identity. `advertise` are the addresses the invite
     /// or reply names; empty means the socket's own address (which must then be a specific one, not 0.0.0.0).
@@ -364,8 +440,10 @@ impl Endpoint {
         self.local
     }
 
-    /// A's invite: its key and addresses (transport.md 2.4), valid for `valid_for`.
-    pub fn invite(&self, valid_for: Duration) -> Result<Invite, NetError> {
+    /// A's invite: its key and addresses (transport.md 2.4), valid for `valid_for`, and the session's `pin`: the
+    /// epoch it is made in and that epoch's members' hash (app.md 4, "Joining from a cut"). The interim's
+    /// two-member genesis has no session yet when it invites, so it passes `None`.
+    pub fn invite(&self, valid_for: Duration, pin: Option<Pin>) -> Result<Invite, NetError> {
         let mut id = [0u8; 8];
         pe_net_crypto::random::os().fill(&mut id).map_err(|_| NetError::Core("no randomness".into()))?;
         Ok(Invite {
@@ -373,6 +451,7 @@ impl Endpoint {
             key: self.me.0,
             expiry_unix_s: unix_now().saturating_add(valid_for.as_secs()),
             addrs: self.addrs.clone(),
+            pin,
         })
     }
 
@@ -473,7 +552,7 @@ impl Endpoint {
             nonce: fresh_nonce().map_err(NetError::Genesis)?,
             build: build_id().to_vec(),
             opener: self.me,
-            joiner: them,
+            joiner: Some(them),
             rate: p.rate,
             gravity: pe_world::GRAVITY,
             seed: p.seed,
@@ -483,15 +562,9 @@ impl Endpoint {
         };
         // The clock first: genesis refuses a frame clock that doesn't run at the record's rate.
         self.command(Command::StartFirstMember { epoch_ns, rate: p.rate })?;
-        let started = Instant::now() + Duration::from_secs(2);
-        while frames.rate_hz() != p.rate.hz() {
-            if Instant::now() >= started {
-                return Err(NetError::Timeout("the clock to start"));
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        await_rate(&frames, p.rate)?;
         let (genesis, replica, cfg) = Genesis::ball_pit(&params, frames.clone(), runner).map_err(NetError::Genesis)?;
-        let members: Vec<MemberKey> = genesis.members.iter().map(|m| m.0).collect();
+        let members = genesis.keys();
         self.command(Command::SetClockMembers(others(&members, self.me)))?;
         let welcome = Welcome {
             // pe-net's welcome must name the hellos' line (transport.md 6.4); the session's own line is the record's,
@@ -505,6 +578,186 @@ impl Endpoint {
         Ok(Built { welcome, members, replica, cfg, frames, agree: genesis.agree })
     }
 
+    /// A opens the world alone (app.md 4, "Joining from a cut"): frame 0 is `p.epoch_lead` from now, the genesis record
+    /// names A only, and the session starts at once, with A finalizing by itself. The invite, valid for `valid_for`,
+    /// pins epoch 0 and its one member, A. A reply sent on [`Opened::replies`] reaches the session's hook, which runs
+    /// the join ([`crate::join::Inviter`]), each step within `t_join`.
+    pub fn open_alone(
+        mut self,
+        p: &OpenParams,
+        valid_for: Duration,
+        t_join: Duration,
+        runner: Box<dyn ScriptRunner>,
+    ) -> Result<Opened, NetError> {
+        let frames: Arc<dyn FrameClock> = self.handle.frame_clock.clone();
+        // The first member's session time is its host time (transport.md 5.4).
+        let epoch_ns = (self.host)().plus(p.epoch_lead).0;
+        self.command(Command::StartFirstMember { epoch_ns, rate: p.rate })?;
+        await_rate(&frames, p.rate)?;
+        let params = Params {
+            nonce: fresh_nonce().map_err(NetError::Genesis)?,
+            build: build_id().to_vec(),
+            opener: self.me,
+            joiner: None,
+            rate: p.rate,
+            gravity: pe_world::GRAVITY,
+            seed: p.seed,
+            balls: p.balls,
+            origin: pe_seams::Pos::ORIGIN,
+            epoch_ns,
+        };
+        let (genesis, replica, cfg) = Genesis::ball_pit(&params, frames.clone(), runner).map_err(NetError::Genesis)?;
+        let members = genesis.keys();
+        let line = genesis.line();
+        let pin = Pin { epoch: 0, members: members_hash(line, 0, &members).0 };
+        let invite = self.invite(valid_for, Some(pin))?;
+        // pe-net's welcome names the hellos' line (module doc); its members are the current epoch's when it goes out
+        // (`MemberHook::welcome_for`).
+        self.welcome = Some(Welcome {
+            line: pre_genesis_line(),
+            epoch_ns,
+            rate_hz: p.rate.hz(),
+            members: vec![(self.me, self.addrs.clone())],
+            agree: genesis.encode(),
+        });
+        let (replies, taken) = mpsc::channel();
+        let me = self.me;
+        let mut session = self.into_session(members, replica, cfg, frames, genesis.agree)?;
+        session.hook.inviter = Some(Inviter::new(me, line, invite.clone(), taken, t_join));
+        Ok(Opened { session, invite, replies })
+    }
+
+    /// B: the welcome from `opener`, awaited until `deadline`, and whether the clock was ready by then. A refusal
+    /// names its reason; a close for want of a decision (`T_welcome`, code 8) is not final, since A dials again when
+    /// it takes the reply.
+    fn await_welcome(&mut self, opener: MemberKey, deadline: Instant) -> Result<(Welcome, bool), NetError> {
+        let mut clock_ready = false;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(NetError::Timeout("the welcome"));
+            }
+            let _ = self.handle.events();
+            let mut got = None;
+            while let Some(l) = self.handle.poll_lifecycle() {
+                match l {
+                    Lifecycle::Welcomed { peer, welcome } if peer == opener => got = Some(welcome),
+                    // Convergence on the welcome's members only: the clock begins joining at the welcome.
+                    Lifecycle::ClockReady if got.is_some() => clock_ready = true,
+                    Lifecycle::Refused { refusal, by_me, .. } if !by_me && refusal.code != CloseCode::Overloaded => {
+                        return Err(NetError::Refused(format!("{:?}: {}", refusal.code, refusal.detail)));
+                    }
+                    other => log_lifecycle(&other),
+                }
+            }
+            if let Some(w) = got {
+                return Ok((w, clock_ready));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// B, after dialling `invite` (a pinned one), joining a running session (app.md 4, "Joining from a cut"):
+    /// - wait up to `timeout` for the welcome, check it ([`check_join_welcome`]), and wait for the clock to converge on
+    ///   the welcome's members;
+    /// - tell the inviter it is ready (`JoinReady`), and wait up to `t_join` for pe-agree's start record (`JoinStart`);
+    /// - start agreement at E (`Node::join`), whose frame must be within B's bound on its converged clock.
+    ///
+    /// pe-net starts converging when the welcome arrives, before these checks, so a welcome that fails them ends the
+    /// join here: the thread stops, which closes every connection pe-net opened, and no `JoinReady` was sent.
+    pub fn join_at_cut(
+        mut self,
+        invite: &Invite,
+        rate_pin: SimRate,
+        timeout: Duration,
+        t_join: Duration,
+    ) -> Result<CutJoin, NetError> {
+        let opener = MemberKey(invite.key);
+        let deadline = Instant::now() + timeout;
+        let (welcome, mut ready) = self.await_welcome(opener, deadline)?;
+        let (record, members) = match check_join_welcome(&welcome, self.me, invite, rate_pin) {
+            Ok(r) => r,
+            Err(e) => return self.fail(e),
+        };
+        while !ready {
+            if Instant::now() >= deadline {
+                return self.fail(NetError::Timeout("the clock to converge"));
+            }
+            let _ = self.handle.events();
+            while let Some(l) = self.handle.poll_lifecycle() {
+                match l {
+                    Lifecycle::ClockReady => ready = true,
+                    Lifecycle::Refused { peer, refusal, by_me: false } if peer == opener => {
+                        return self.fail(NetError::Refused(format!("{:?}: {}", refusal.code, refusal.detail)));
+                    }
+                    other => log_lifecycle(&other),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.command(Command::Send { to: opener, lane: Lane::Protocol, bytes: AppMsg::JoinReady.encode().into() })?;
+        let start_by = Instant::now() + t_join;
+        let mut pending = Vec::new();
+        let start = 'wait: loop {
+            if Instant::now() >= start_by {
+                return self.fail(NetError::Timeout("the inviter's start record"));
+            }
+            if self.handle.events().iter().any(|e| matches!(e, NetEvent::LinkDown { peer } if *peer == opener)) {
+                return self.fail(NetError::Refused("the inviter's link closed".into()));
+            }
+            while let Some(l) = self.handle.poll_lifecycle() {
+                match l {
+                    Lifecycle::Refused { peer, refusal, by_me: false } if peer == opener => {
+                        return self.fail(NetError::Refused(format!("{:?}: {}", refusal.code, refusal.detail)));
+                    }
+                    other => log_lifecycle(&other),
+                }
+            }
+            while let Some(r) = self.handle.poll() {
+                match AppMsg::decode(&r.bytes) {
+                    Some(Some(AppMsg::JoinStart(start))) if r.lane == Lane::Protocol && r.from == opener => {
+                        break 'wait start;
+                    }
+                    // pe-app's own, and nothing a joiner waits for.
+                    Some(_) if r.lane == Lane::Protocol => {}
+                    // Agreement's, the new epoch's: kept for the node, in order.
+                    _ => pending.push(r),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let pin = invite.pin.ok_or_else(|| NetError::Welcome("the invite names no session".into()))?;
+        let signer = Box::new(Identity::from_seed(&self.seed));
+        let node = match Node::join(
+            record.node_config(),
+            &start,
+            pin.epoch,
+            &members,
+            signer,
+            Box::new(StrictVerifier),
+            (self.host)(),
+        ) {
+            Ok(node) => node,
+            Err(e) => return self.fail(NetError::Join(format!("{e:?}"))),
+        };
+        let Some(e) = pe_agree::codec::decode_start(&start).ok().and_then(|s| s.e().cloned()) else {
+            return self.fail(NetError::Join("the start record names no cut".into()));
+        };
+        let frames: Arc<dyn FrameClock> = self.handle.frame_clock.clone();
+        // Frame 0 may be hours old: the interim's window holds on E instead.
+        if let Err(err) =
+            check_start("the cut that admits this machine", frames.host_time_of(e.at.frame), (self.host)())
+        {
+            return self.fail(err);
+        }
+        let members = node.config().members.clone();
+        self.command(Command::SetMember(true))?;
+        // The start's members, in place of the welcome's (transport.md 5.4): the joiner's clock counts them from now.
+        self.command(Command::SetClockMembers(others(&members, self.me)))?;
+        let control = self.handle.control()?.ok_or_else(|| NetError::Core("the control end was taken".into()))?;
+        let hook = MemberHook::new(control, self.me, self.addrs.clone(), welcome);
+        Ok(CutJoin { me: self.me, members, handle: self.handle, pending, hook, node, frames, record, e })
+    }
+
     /// B, after dialling `invite`: wait up to `timeout` for the welcome, check it against the invite, this build and
     /// `rate_pin` (the coordinator's welcome-rate rule), and rebuild genesis.
     pub fn join_session(
@@ -516,31 +769,7 @@ impl Endpoint {
     ) -> Result<Session, NetError> {
         let opener = MemberKey(invite.key);
         let deadline = Instant::now() + timeout;
-        let mut clock_ready = false;
-        let welcome = loop {
-            if Instant::now() >= deadline {
-                return Err(NetError::Timeout("the welcome"));
-            }
-            let _ = self.handle.events();
-            let mut got = None;
-            while let Some(l) = self.handle.poll_lifecycle() {
-                match l {
-                    Lifecycle::Welcomed { peer, welcome } if peer == opener => got = Some(welcome),
-                    // Convergence on the welcome's members only: the clock begins joining at the welcome.
-                    Lifecycle::ClockReady if got.is_some() => clock_ready = true,
-                    // A refusal names its reason. A close for want of a decision (`T_welcome`, code 8) is not
-                    // final: A dials again when it takes the reply.
-                    Lifecycle::Refused { refusal, by_me, .. } if !by_me && refusal.code != CloseCode::Overloaded => {
-                        return Err(NetError::Refused(format!("{:?}: {}", refusal.code, refusal.detail)));
-                    }
-                    other => log_lifecycle(&other),
-                }
-            }
-            if let Some(w) = got {
-                break w;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        };
+        let (welcome, mut clock_ready) = self.await_welcome(opener, deadline)?;
         let genesis = match check_welcome(&welcome, self.me, opener, rate_pin) {
             Ok(g) => g,
             Err(e) => return self.fail(e),
@@ -569,7 +798,7 @@ impl Endpoint {
             Ok(r) => r,
             Err(e) => return self.fail(NetError::Genesis(e)),
         };
-        let members: Vec<MemberKey> = genesis.members.iter().map(|m| m.0).collect();
+        let members = genesis.keys();
         self.command(Command::SetMember(true))?;
         self.command(Command::SetClockMembers(others(&members, self.me)))?;
         self.into_session(members, replica, cfg, frames, genesis.agree)
@@ -595,7 +824,7 @@ impl Endpoint {
         let welcome = self.welcome.take().ok_or_else(|| NetError::Core("no welcome".into()))?;
         Ok(Session {
             me: self.me,
-            hook: MemberHook::new(control, members.clone(), welcome),
+            hook: MemberHook::new(control, self.me, self.addrs.clone(), welcome),
             linked: members.iter().copied().filter(|m| *m != self.me).collect(),
             members,
             handle: self.handle,
@@ -611,7 +840,7 @@ impl Endpoint {
     }
 
     /// A session that didn't start: close the connection and stop the thread, keeping the reason.
-    fn fail(self, e: NetError) -> Result<Session, NetError> {
+    fn fail<T>(self, e: NetError) -> Result<T, NetError> {
         let _ = self.handle.stop();
         Err(e)
     }
@@ -640,13 +869,63 @@ pub fn check_welcome(w: &Welcome, me: MemberKey, opener: MemberKey, rate_pin: Si
     Ok(genesis)
 }
 
+/// B's checks on a welcome into a running session (app.md 4, "Joining from a cut"), in order, each naming what
+/// differs: the fixed pre-genesis line; the record (`Genesis::check_joining`: its format, build, preset, members and
+/// pe-agree settings); the welcome's epoch and rate against the record's, and the rate against this machine's; and the
+/// welcome's members, sorted, against the invite's pin, with the invite's key among them and this machine not. Returns
+/// the record and the members, sorted: those of the epoch the invite pins.
+pub fn check_join_welcome(
+    w: &Welcome,
+    me: MemberKey,
+    invite: &Invite,
+    rate_pin: SimRate,
+) -> Result<(Genesis, Vec<MemberKey>), NetError> {
+    if w.line != pre_genesis_line() {
+        return Err(NetError::Welcome("its line is not the fixed pre-genesis line".into()));
+    }
+    let pin = invite.pin.ok_or_else(|| NetError::Welcome("the invite names no session to join".into()))?;
+    // The session's line is the record's own, derived here, never taken from the welcome (transport.md 6.4).
+    let genesis = Genesis::decode(&w.agree).map_err(NetError::Genesis)?;
+    genesis.check_joining(build_id()).map_err(NetError::Genesis)?;
+    if w.epoch_ns != genesis.epoch_ns {
+        return Err(NetError::Welcome(format!("epoch {} against the record's {}", w.epoch_ns, genesis.epoch_ns)));
+    }
+    if w.rate_hz != genesis.rate.hz() || w.rate_hz != rate_pin.hz() {
+        return Err(NetError::Welcome(format!(
+            "rate {} Hz (record {} Hz) against this machine's {} Hz",
+            w.rate_hz,
+            genesis.rate.hz(),
+            rate_pin.hz()
+        )));
+    }
+    let mut members: Vec<MemberKey> = w.members.iter().map(|m| m.0).collect();
+    members.sort();
+    if members.windows(2).any(|p| p[0] == p[1]) {
+        return Err(NetError::Welcome("it names a member twice".into()));
+    }
+    if members_hash(genesis.line(), pin.epoch, &members).0 != pin.members {
+        return Err(NetError::Welcome(format!("its members are not the ones the invite pins (epoch {})", pin.epoch)));
+    }
+    if !members.contains(&MemberKey(invite.key)) {
+        return Err(NetError::Welcome("the inviter is not among its members".into()));
+    }
+    if members.contains(&me) {
+        return Err(NetError::Welcome("this machine is a member already".into()));
+    }
+    Ok((genesis, members))
+}
+
 /// The members a clock samples and whose rendezvous it takes: every member but this machine (transport.md 5.3, 6.7).
 fn others(members: &[MemberKey], me: MemberKey) -> Vec<MemberKey> {
     members.iter().copied().filter(|m| *m != me).collect()
 }
 
 fn not_admitted(peer: MemberKey) -> Refusal {
-    let why = if peer == DEV_MEMBER { "the development key" } else { "this session's membership is fixed (M1)" };
+    let why = if peer == DEV_MEMBER {
+        "the development key"
+    } else {
+        "this session takes no join from this key now (M1: one join at a time, from the invite's reply)"
+    };
     Refusal { code: CloseCode::NotAdmitted, detail: format!("not admitted: {why}") }
 }
 
@@ -671,59 +950,205 @@ fn short(k: &MemberKey) -> String {
     k.0[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The simulation's `NetHook` (app.md 3): it owns pe-net's control end. With M1's fixed membership it refuses every
-/// join request, "not admitted", and drains the lifecycle's outcomes once a tick, logging faults and refusals.
+/// The simulation's `NetHook` (app.md 3): it owns pe-net's control end.
+/// - A join request from a member of the current epoch is a reconnect, welcomed again.
+/// - On a machine that opened alone ([`Endpoint::open_alone`]), the inviter takes the joiner's ([`Inviter`]), and its
+///   decisions become pe-net commands here.
+/// - Anyone else is refused, "not admitted".
+/// - Once a tick it drains the lifecycle's outcomes, logging faults and refusals.
 pub struct MemberHook {
     control: NetControl,
-    members: Vec<MemberKey>,
+    /// The session's welcome as this machine sends it: the genesis record, the epoch and the rate. Its members are the
+    /// current epoch's when it goes out ([`MemberHook::welcome_for`]).
     welcome: Welcome,
+    /// The members' last addresses, for a welcome's list (transport.md 6.7): this machine's own, those its welcome
+    /// named, and a joiner's from its reply.
+    book: BTreeMap<MemberKey, Vec<SocketAddr>>,
+    /// The inviter's side of joins, on a machine that opened alone.
+    inviter: Option<Inviter>,
+    /// The latest tick's host time: events carry none.
+    now: HostTime,
     /// Join requests refused, and faults seen.
     pub refused: u64,
     pub faults: u64,
+    /// pe-app's own messages taken from the Protocol lane (the join's).
+    pub app_messages: u64,
 }
 
 impl MemberHook {
-    pub fn new(control: NetControl, members: Vec<MemberKey>, welcome: Welcome) -> MemberHook {
-        MemberHook { control, members, welcome, refused: 0, faults: 0 }
+    /// The hook of a member at `addrs` that sends `welcome`, whose members' addresses seed the book.
+    pub fn new(control: NetControl, me: MemberKey, addrs: Vec<SocketAddr>, welcome: Welcome) -> MemberHook {
+        let mut book: BTreeMap<MemberKey, Vec<SocketAddr>> = welcome.members.iter().cloned().collect();
+        book.insert(me, addrs);
+        MemberHook { control, welcome, book, inviter: None, now: HostTime(0), refused: 0, faults: 0, app_messages: 0 }
+    }
+
+    /// The inviter's side of joins, when this machine opened alone.
+    pub fn inviter(&self) -> Option<&Inviter> {
+        self.inviter.as_ref()
+    }
+
+    /// The session's welcome naming `members`, the current epoch's, each with its last addresses.
+    fn welcome_for(&self, members: &[MemberKey]) -> Welcome {
+        Welcome {
+            members: members.iter().map(|m| (*m, self.book.get(m).cloned().unwrap_or_default())).collect(),
+            ..self.welcome.clone()
+        }
+    }
+
+    fn command(&mut self, c: Command) {
+        if !self.control.command(c) {
+            eprintln!("net: the control queue is full");
+        }
+    }
+
+    /// The inviter's decisions since the last call, as pe-net commands.
+    fn act(&mut self, members: &[MemberKey]) {
+        let acts = match &mut self.inviter {
+            Some(i) => i.take_acts(),
+            None => return,
+        };
+        for a in acts {
+            match a {
+                Act::TakeReply(reply) => {
+                    self.book.insert(MemberKey(reply.key), reply.addrs.clone());
+                    self.command(Command::TakeReply(reply));
+                }
+                Act::Welcome(peer) => {
+                    let welcome = self.welcome_for(members);
+                    self.command(Command::Admit { peer, welcome });
+                }
+                Act::Refuse(peer, refusal) => self.command(Command::Refuse { peer, refusal }),
+                Act::Send(to, msg) => {
+                    self.command(Command::Send { to, lane: Lane::Protocol, bytes: msg.encode().into() })
+                }
+                Act::ClockMembers(list) => self.command(Command::SetClockMembers(list)),
+            }
+        }
     }
 }
 
 impl NetHook for MemberHook {
-    fn on_event(&mut self, event: &NetEvent, _agree: &mut dyn Agreement) {
+    fn on_event(&mut self, event: &NetEvent, agree: &mut dyn Agreement, world: &dyn WorldFacts) {
         match event {
             NetEvent::JoinRequest { peer, .. } => {
-                // A member reconnecting after a drop isn't a join: pe-net admits a known member's new connection the
-                // same way, so a member gets a welcome; anyone else is refused.
-                let key = *peer;
-                let ok = if self.members.contains(&key) && key != DEV_MEMBER {
-                    self.control.command(Command::Admit { peer: *peer, welcome: self.welcome.clone() })
+                let (peer, members, now) = (*peer, agree.members(), self.now);
+                if members.contains(&peer) && peer != DEV_MEMBER {
+                    // A member reconnecting after a drop isn't a join: pe-net admits a known member's new connection
+                    // the same way, so a member gets the session's welcome again.
+                    let welcome = self.welcome_for(&members);
+                    self.command(Command::Admit { peer, welcome });
+                } else if self
+                    .inviter
+                    .as_mut()
+                    .is_some_and(|i| i.on_join_request(peer, &members, agree.epoch(), world.holds_scripts(), now))
+                {
+                    self.act(&members);
                 } else {
                     self.refused += 1;
-                    self.control.command(Command::Refuse { peer: *peer, refusal: not_admitted(key) })
-                };
-                if !ok {
-                    eprintln!("net: the control queue is full");
+                    self.command(Command::Refuse { peer, refusal: not_admitted(peer) });
                 }
             }
-            NetEvent::LinkDown { peer } => eprintln!("net: link to {} down", short(peer)),
+            NetEvent::LinkDown { peer } => {
+                eprintln!("net: link to {} down", short(peer));
+                let (members, now) = (agree.members(), self.now);
+                if let Some(i) = &mut self.inviter {
+                    i.on_link_down(*peer, &members, now);
+                }
+                self.act(&members);
+            }
             NetEvent::LinkUp { peer } => eprintln!("net: link to {} up", short(peer)),
             _ => {}
         }
     }
 
-    fn on_tick(&mut self, _now: HostTime, _agree: &mut dyn Agreement) {
+    fn on_tick(&mut self, now: HostTime, agree: &mut dyn Agreement, world: &dyn WorldFacts) {
+        self.now = now;
         while let Some(l) = self.control.poll_lifecycle() {
             if matches!(l, Lifecycle::Fault { .. }) {
                 self.faults += 1;
             }
             log_lifecycle(&l);
         }
+        if let Some(i) = &mut self.inviter {
+            i.on_tick(&*agree, world.verified_cut(), now);
+            let members = agree.members();
+            self.act(&members);
+        }
+    }
+
+    fn claim(&mut self, from: MemberKey, bytes: &[u8], now: HostTime, agree: &dyn Agreement) -> bool {
+        let Some(msg) = AppMsg::decode(bytes) else { return false };
+        self.app_messages += 1;
+        if let (Some(msg), Some(i)) = (msg, &mut self.inviter) {
+            let members = agree.members();
+            i.on_message(from, msg, &members, now);
+            self.act(&members);
+        }
+        true
+    }
+
+    fn take_entry(&mut self, world: &dyn WorldFacts, agree: &dyn Agreement, now: HostTime) -> Option<Vec<u8>> {
+        let inviter = self.inviter.as_mut()?;
+        // Only an `Admit` waiting is worth the world's snapshot.
+        if inviter.join().is_none_or(|(_, step, _)| step != crate::join::Step::Ready) {
+            return None;
+        }
+        let members = agree.members();
+        let entry = inviter.take_entry(world.holds_scripts(), &members, now);
+        self.act(&members);
+        entry
+    }
+
+    fn holds_leave(&self) -> bool {
+        self.inviter.as_ref().is_some_and(Inviter::holds_leave)
+    }
+
+    fn entry_written(&mut self, written: Result<(), SubmitError>, now: HostTime, agree: &dyn Agreement) {
+        let members = agree.members();
+        if let Some(i) = &mut self.inviter {
+            i.entry_written(written, &members, now);
+        }
+        self.act(&members);
+    }
+
+    fn take_notices(&mut self) -> Vec<String> {
+        self.inviter.as_mut().map(Inviter::take_notices).unwrap_or_default()
     }
 }
 
 /// The handle, as the simulation's transport.
 pub fn transport(handle: NetHandle) -> Box<dyn Transport + Send> {
     Box::new(handle)
+}
+
+/// The handle, as a joiner's transport: what arrived before its agreement existed ([`CutJoin::pending`]) comes first.
+pub fn transport_with(handle: NetHandle, pending: Vec<Received>) -> Box<dyn Transport + Send> {
+    Box::new(Replayed { first: pending.into(), inner: handle })
+}
+
+/// [`transport_with`]'s transport.
+struct Replayed {
+    first: VecDeque<Received>,
+    inner: NetHandle,
+}
+
+impl Transport for Replayed {
+    fn send(&mut self, to: PeerId, lane: Lane, bytes: bytes::Bytes) {
+        self.inner.send(to, lane, bytes);
+    }
+
+    fn poll(&mut self) -> Option<Received> {
+        self.first.pop_front().or_else(|| self.inner.poll())
+    }
+
+    fn link(&self, peer: PeerId) -> LinkStats {
+        self.inner.link(peer)
+    }
+
+    fn events(&mut self) -> Vec<NetEvent> {
+        self.inner.events()
+    }
 }
 
 #[cfg(test)]
@@ -795,7 +1220,7 @@ mod tests {
     fn joined_pair(host: &crate::clock::HostClock) -> (Vec<Machine>, [[f32; 3]; 2]) {
         let a = Endpoint::bind([21; 32], loopback(), Vec::new(), true, host.clone(), None).unwrap();
         let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
-        let invite = a.invite(Duration::from_secs(600)).unwrap();
+        let invite = a.invite(Duration::from_secs(600), None).unwrap();
         let reply = b.reply(&invite);
         b.dial(&invite).unwrap();
         let theirs = invite.clone();
@@ -930,7 +1355,7 @@ mod tests {
             nonce: [7; 32],
             build: build_id().to_vec(),
             opener,
-            joiner: me,
+            joiner: Some(me),
             rate: RATE,
             gravity: pe_world::GRAVITY,
             seed: 3,
@@ -987,12 +1412,290 @@ mod tests {
         assert!(check_epoch(HostTime(i64::MIN), HostTime(i64::MAX)).unwrap_err().to_string().contains("ago"));
     }
 
+    /// A's welcome into its running session as B gets it: the record of A alone, and the invite's pin of epoch 0.
+    fn a_running_welcome() -> (Welcome, Invite, MemberKey, Genesis) {
+        let (me, a) = (MemberKey([2; 32]), MemberKey([1; 32]));
+        let host = crate::clock::shared();
+        let frames: Arc<dyn FrameClock> = Arc::new(crate::clock::LocalClock::new(host(), RATE));
+        let p = Params {
+            nonce: [7; 32],
+            build: build_id().to_vec(),
+            opener: a,
+            joiner: None,
+            rate: RATE,
+            gravity: pe_world::GRAVITY,
+            seed: 3,
+            balls: 8,
+            origin: pe_seams::Pos::ORIGIN,
+            epoch_ns: 123,
+        };
+        let (g, _, _) = Genesis::ball_pit(&p, frames, runner()).unwrap();
+        let pin = Pin { epoch: 0, members: members_hash(g.line(), 0, &[a]).0 };
+        let invite =
+            Invite { id: [4; 8], key: a.0, expiry_unix_s: unix_now() + 600, addrs: vec![loopback()], pin: Some(pin) };
+        let w = Welcome {
+            line: pre_genesis_line(),
+            epoch_ns: 123,
+            rate_hz: RATE.hz(),
+            members: vec![(a, Vec::new())],
+            agree: g.encode(),
+        };
+        (w, invite, me, g)
+    }
+
+    /// B's checks on a welcome into a running session (app.md 4): each altered part is refused, naming it, before B
+    /// says it is ready.
+    #[test]
+    fn a_welcome_into_a_running_session_is_checked_against_the_invite_s_pin() {
+        let (w, invite, me, g) = a_running_welcome();
+        let a = MemberKey(invite.key);
+        let (record, members) = check_join_welcome(&w, me, &invite, RATE).expect("A's welcome passes");
+        assert_eq!((record, members), (g.clone(), vec![a]));
+        let refused = |w: &Welcome, invite: &Invite, rate: SimRate| match check_join_welcome(w, me, invite, rate) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("accepted"),
+        };
+        let pinned = |members: &[MemberKey]| Invite {
+            pin: Some(Pin { epoch: 0, members: members_hash(g.line(), 0, members).0 }),
+            ..invite.clone()
+        };
+        let naming = |members: &[MemberKey]| Welcome {
+            members: members.iter().map(|m| (*m, Vec::new())).collect(),
+            ..w.clone()
+        };
+        let c = MemberKey([3; 32]);
+        assert!(refused(&w, &Invite { pin: None, ..invite.clone() }, RATE).contains("names no session"));
+        let other_epoch = Invite { pin: invite.pin.map(|p| Pin { epoch: 1, ..p }), ..invite.clone() };
+        assert!(refused(&w, &other_epoch, RATE).contains("the invite pins (epoch 1)"));
+        assert!(refused(&naming(&[a, c]), &invite, RATE).contains("the invite pins"), "a member added on the way");
+        assert!(refused(&naming(&[c]), &pinned(&[c]), RATE).contains("inviter is not among"));
+        assert!(refused(&naming(&[a, me]), &pinned(&[a, me]), RATE).contains("a member already"));
+        assert!(refused(&naming(&[a, a]), &invite, RATE).contains("twice"));
+        let mut x = w.clone();
+        x.rate_hz = 90;
+        assert!(refused(&x, &invite, RATE).contains("rate"));
+        assert!(refused(&w, &invite, SimRate::new(90).unwrap()).contains("rate"), "the joiner's own rate");
+        let mut x = w.clone();
+        x.epoch_ns += 1;
+        assert!(refused(&x, &invite, RATE).contains("epoch"));
+        let mut x = w.clone();
+        x.line[0] ^= 1;
+        assert!(refused(&x, &invite, RATE).contains("line"));
+        let mut other = g.clone();
+        other.build = b"another build".to_vec();
+        assert!(
+            refused(&Welcome { agree: other.encode(), ..w.clone() }, &invite, RATE).contains("another engine build")
+        );
+    }
+
+    /// Ticks `sim` until `until` holds, or for at most `max`, gathering its console lines: whether it held.
+    fn run_until(
+        sim: &mut Sim,
+        host: &crate::clock::HostClock,
+        notices: &mut Vec<String>,
+        max: Duration,
+        until: impl Fn(&Sim) -> bool,
+    ) -> bool {
+        let end = Instant::now() + max;
+        while Instant::now() < end {
+            let _ = sim.tick(host());
+            notices.extend(sim.take_notices());
+            if until(sim) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    /// A and B over real UDP on loopback, up to B's agreement ([`cut_pair`]): A's simulation with its console so far,
+    /// and B's join from the cut that admitted it.
+    struct CutPair {
+        host: crate::clock::HostClock,
+        sim: Sim,
+        notices: Vec<String>,
+        cj: CutJoin,
+        me_a: MemberKey,
+        me_b: MemberKey,
+    }
+
+    /// Joining from a cut up to B's agreement (app.md 4). A opens alone, with `t_join` per step, and finalizes by
+    /// itself. B replies and dials, and the reply reaches A's session. A welcomes B, B checks the welcome against the
+    /// pin and says it is ready, A writes the `Admit`, E becomes final at A, and B starts agreement at E from A's start
+    /// record, with E's certified root A's.
+    fn cut_pair(t_join: Duration, balls: u32) -> CutPair {
+        use crate::join::{T_JOIN, joining};
+        let host = crate::clock::shared();
+        let a = Endpoint::bind([21; 32], loopback(), Vec::new(), true, host.clone(), None).unwrap();
+        let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
+        let p = OpenParams { epoch_lead: Duration::ZERO, balls, ..params() };
+        let Opened { session: s, invite, replies } =
+            a.open_alone(&p, Duration::from_secs(600), t_join, runner()).expect("A opens alone");
+        let (me_a, me_b) = (s.me, b.me());
+        let line = s.node.config().line;
+        assert_eq!(invite.pin, Some(Pin { epoch: 0, members: members_hash(line, 0, &[me_a]).0 }), "epoch 0, A alone");
+        assert_eq!((s.members.clone(), s.linked.clone()), (vec![me_a], Vec::new()));
+        let slot = Arc::new(FrameSlot::new());
+        let mut sim = Sim::new(Box::new(s.node), s.replica, s.frames, slot.clone(), Budget::new(RATE))
+            .with_local(me_a, crate::local::chain_nonce(), Arc::new(StillHands([-0.5, 1.0, -0.4])))
+            .with_transport(transport(s.handle), Some(Box::new(s.hook)))
+            .with_diverge(pe_diverge::Config::default(), None)
+            .expect("A's pe-diverge, which serves E's state");
+        let mut notices = Vec::new();
+        let alone = run_until(&mut sim, &host, &mut notices, Duration::from_secs(10), |s| s.stats().finalized > 0);
+        assert!(alone, "A alone finalizes by itself: {:?}", sim.stats());
+        let reply = b.reply(&invite);
+        b.dial(&invite).unwrap();
+        let theirs = invite.clone();
+        let joiner = std::thread::spawn(move || b.join_at_cut(&theirs, RATE, Duration::from_secs(20), T_JOIN));
+        // The person pastes B's reply code on A's console.
+        replies.send(reply).unwrap();
+        let ended = run_until(&mut sim, &host, &mut notices, Duration::from_secs(30), |_| joiner.is_finished());
+        assert!(ended, "B's join didn't end: A {:?}, A's console {notices:?}", sim.stats());
+        let cj = joiner.join().unwrap().expect("B starts agreement at E");
+        // A little more of A, so its view shows the frames since the `Admit`.
+        run_until(&mut sim, &host, &mut notices, Duration::from_millis(300), |_| false);
+        let mut both = vec![me_a, me_b];
+        both.sort();
+        assert_eq!((cj.me, cj.members.clone(), cj.node.epoch()), (me_b, both, 1), "B is in the new epoch");
+        assert_eq!(sim.other_members(), vec![me_b], "A's epoch has B");
+        assert_eq!(Some(cj.e.clone()), sim.final_cut(), "B starts at A's final cut, E");
+        assert_eq!(cj.node.start_root(), sim.final_root(), "E's certified root is A's at E");
+        assert!(notices.contains(&joining(me_b)), "A's console says B is joining: {notices:?}");
+        let v = slot.newest().expect("a view");
+        let hands = v.objects.iter().filter(|o| o.hand_of.is_some_and(|h| h.0 == me_b)).count();
+        assert_eq!(hands, 2, "A's world holds B's hands: the Admit's world side");
+        assert_eq!((sim.stats().hook_entries, sim.stats().hook_entries_refused), (1, 0), "one Admit, written");
+        CutPair { host, sim, notices, cj, me_a, me_b }
+    }
+
+    /// B's simulation over its empty replica, its import of E from A under way (pe-diverge's join).
+    fn joining_sim(cj: CutJoin, inviter: MemberKey, host: &crate::clock::HostClock) -> (Sim, Arc<FrameSlot>) {
+        let me = cj.me;
+        let replica = cj.record.empty_replica(me, cj.frames.clone(), runner()).expect("B's empty replica");
+        let slot = Arc::new(FrameSlot::new());
+        let mut sim = Sim::new(Box::new(cj.node), replica, cj.frames, slot.clone(), Budget::new(RATE))
+            .with_local(me, crate::local::chain_nonce(), Arc::new(StillHands([0.5, 1.1, -0.3])))
+            .with_transport(transport_with(cj.handle, cj.pending), Some(Box::new(cj.hook)))
+            .with_diverge(pe_diverge::Config::default(), None)
+            .expect("B's pe-diverge");
+        sim.join_at_final(inviter, host()).expect("B's join starts");
+        (sim, slot)
+    }
+
+    /// Ticks both until `done`, or for at most `max`, gathering each one's console lines: whether `done` held.
+    fn run_both(
+        host: &crate::clock::HostClock,
+        pair: [(&mut Sim, &mut Vec<String>); 2],
+        max: Duration,
+        done: impl Fn(&Sim, &Sim, &[String]) -> bool,
+    ) -> bool {
+        let [(a, la), (b, lb)] = pair;
+        let end = Instant::now() + max;
+        while Instant::now() < end {
+            for (machine, lines) in [(&mut *a, &mut *la), (&mut *b, &mut *lb)] {
+                let _ = machine.tick(host());
+                lines.extend(machine.take_notices());
+            }
+            if done(a, b, la) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    /// Both have the same final cut, past `e`.
+    fn both_past(a: &Sim, b: &Sim, e: pe_seams::agree::CutRef) -> bool {
+        let past = |s: &Sim| s.final_cut().is_some_and(|c| c.at.frame > e.frame);
+        past(a) && past(b) && a.final_cut() == b.final_cut()
+    }
+
+    /// Joining from a cut over real UDP on loopback (app.md 4, 7): [`cut_pair`], then B imports E's state from A
+    /// (pe-diverge's join) into its empty replica, simulates on to the present and votes. The new epoch's first cut is
+    /// final, A's console says B joined, both finalize on with equal roots, and B's world holds both member rows with
+    /// their roles and B's hands.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "release only, as a two-machine run (@coordinator-opus mce61106b6b96): run with --release"
+    )]
+    fn a_joiner_joins_at_the_cut_that_admits_it_and_both_finalize() {
+        use crate::join::{T_JOIN, joined};
+        let balls = std::env::var("PE_JOIN_BALLS").ok().and_then(|b| b.parse().ok()).unwrap_or(params().balls);
+        let CutPair { host, mut sim, mut notices, cj, me_a, me_b } = cut_pair(T_JOIN, balls);
+        let e = cj.e.at;
+        let (mut sim_b, slot_b) = joining_sim(cj, me_a, &host);
+        let mut notices_b = Vec::new();
+        run_both(
+            &host,
+            [(&mut sim, &mut notices), (&mut sim_b, &mut notices_b)],
+            Duration::from_secs(40),
+            |a, b, la| la.contains(&joined(me_b)) && both_past(a, b, e),
+        );
+        println!("A: {:?}; A's console {notices:?}", sim.stats());
+        println!("B: {:?}; B's console {notices_b:?}; B's pe-diverge {:?}", sim_b.stats(), sim_b.diverge_counters());
+        assert_eq!(sim_b.join_failed(), None, "B's import failed");
+        assert!(!sim_b.joining(), "B's import didn't end: {notices_b:?}");
+        assert!(notices.contains(&joined(me_b)), "A's console says B joined: {notices:?}");
+        let finals = (sim.final_cut(), sim_b.final_cut());
+        assert!(both_past(&sim, &sim_b, e), "both finalize the same cut past E: {finals:?}");
+        assert_eq!(sim.final_root(), sim_b.final_root(), "with equal roots");
+        assert_eq!(sim_b.diverge_counters().map(|c| (c.joins, c.join_failures)), Some((1, 0)));
+        let world = sim_b.world().expect("B's world");
+        let all = pe_world::perm::ADMIN | pe_world::perm::EDIT | pe_world::perm::AGENT;
+        let rows = (world.perms(me_a), world.perms(me_b));
+        assert_eq!(rows, (Some(all), Some(all)), "both member rows, with their roles");
+        let v = slot_b.newest().expect("B's view");
+        let hands = v.objects.iter().filter(|o| o.hand_of.is_some_and(|h| h.0 == me_b)).count();
+        assert_eq!(hands, 2, "B's world holds B's hands");
+        // The preset's names reach B only through the import: B never builds the preset, and its store started empty
+        // (inline blobs phase 3b, pe-diverge's fetch).
+        let names = |s: &Sim| {
+            let (w, v) = (s.world().expect("a world"), s.published().expect("a view"));
+            v.objects.iter().filter_map(|o| w.name(o.id)).collect::<std::collections::BTreeSet<_>>()
+        };
+        let (on_a, on_b) = (names(&sim), names(&sim_b));
+        assert!(on_b.contains(pe_world::preset::names::LAMP), "B's world names the Lamp: {} names", on_b.len());
+        assert_eq!(on_a, on_b, "every name A's world shows, B's shows");
+    }
+
+    /// A join that takes no step for `T_join` fails at A, and takes the line back once the cut is final after all
+    /// (app.md 4 and 7's reds). With `T_join` shortened, B starts agreement at E but holds off its import past it: A's
+    /// console says the join failed and the session can't confirm changes. Then B imports, catches up and votes, and
+    /// A's console says B joined after all.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "release only, as a two-machine run (@coordinator-opus mce61106b6b96): run with --release"
+    )]
+    fn a_join_held_past_t_join_fails_and_joins_after_all_once_the_cut_is_final() {
+        use crate::join::{join_failed, joined_after_all};
+        const SHORT: Duration = Duration::from_millis(1500);
+        let CutPair { host, mut sim, mut notices, cj, me_a, me_b } = cut_pair(SHORT, params().balls);
+        let e = cj.e.at;
+        // B holds off: its node exists, but nothing imports E or votes.
+        let failed = run_until(&mut sim, &host, &mut notices, SHORT * 3, |_| false);
+        assert!(!failed, "nothing to wait for");
+        assert!(notices.contains(&join_failed(me_b)), "A's console says the join failed: {notices:?}");
+        let (mut sim_b, _) = joining_sim(cj, me_a, &host);
+        let mut notices_b = Vec::new();
+        let after_all = run_both(
+            &host,
+            [(&mut sim, &mut notices), (&mut sim_b, &mut notices_b)],
+            Duration::from_secs(40),
+            |a, b, la| la.contains(&joined_after_all(me_b)) && both_past(a, b, e),
+        );
+        println!("A's console {notices:?}; B's console {notices_b:?}");
+        assert!(after_all, "A's console takes the failed join back once the cut is final: {notices:?}");
+    }
+
     #[test]
     fn a_reply_to_another_invite_is_refused_before_any_dial() {
         let host = crate::clock::shared();
         let a = Endpoint::bind([21; 32], loopback(), Vec::new(), true, host.clone(), None).unwrap();
         let b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host, None).unwrap();
-        let invite = a.invite(Duration::from_secs(600)).unwrap();
+        let invite = a.invite(Duration::from_secs(600), None).unwrap();
         let mut old = invite.clone();
         old.id[0] ^= 1;
         let stale = b.reply(&old);
@@ -1014,7 +1717,7 @@ mod tests {
         })
         .unwrap();
         let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
-        let invite = a.invite(Duration::from_secs(600)).unwrap();
+        let invite = a.invite(Duration::from_secs(600), None).unwrap();
         let reply = b.reply(&invite);
         b.dial(&invite).unwrap();
         let theirs = invite.clone();
@@ -1321,7 +2024,7 @@ mod tests {
         let mut b = Endpoint::bind([22; 32], loopback(), vec![rb_addr], false, host.clone(), None).unwrap();
         let ra = Relay::start_on(ra_addr, a.local_addr(), dark.clone());
         let rb = Relay::start_on(rb_addr, b.local_addr(), dark.clone());
-        let invite = a.invite(Duration::from_secs(600)).unwrap();
+        let invite = a.invite(Duration::from_secs(600), None).unwrap();
         let reply = b.reply(&invite);
         b.dial(&invite).unwrap();
         let theirs = invite.clone();
@@ -1438,25 +2141,31 @@ mod tests {
     }
 
     #[test]
-    fn the_build_id_names_pe_app_the_script_build_identity_and_the_runner() {
+    fn the_build_id_names_pe_app_the_script_build_identity_the_runner_and_the_consensus_settings() {
         use pe_replica::logic::ScriptRunner;
         let id = String::from_utf8(build_id().to_vec()).unwrap();
         assert!(id.starts_with(concat!("pe-app ", env!("CARGO_PKG_VERSION"), "; scripts ")), "{id}");
-        let (scripts, runner) = id.split_once("; scripts ").and_then(|(_, r)| r.split_once("; runner ")).expect("both");
+        let (scripts, core) = id.split_once("; scripts ").and_then(|(_, r)| r.split_once("; core ")).expect("both");
         // Under cargo the toolchain is known, so B is there. Each part is its hash's first 6 bytes in hex.
-        for part in [scripts, runner] {
+        for part in [scripts, core] {
             assert!(part.len() == 12 && part.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
         }
         let tc = pe_logic::build::Toolchain::current().expect("a toolchain under cargo");
         assert_eq!(scripts, hex6(&pe_logic::build::build_identity(&tc, &pe_logic::build::engine_sdk()).unwrap()));
-        // The runner part is the identity main.rs's runner reports, from the same settings (Q1; S2 v1.7).
+        // The core part is the identity main.rs's runner reports, from the same settings (Q1; S2 v1.7), with this
+        // build's pe-agree consensus hash, the one its records name.
         let (settings, run) = runner_settings();
         let reported = pe_replica::logic::LogicRunner::new(settings, run).expect("a runner").identity();
-        assert_eq!(runner, hex6(&pe_seams::Hash::of("pe.app.runner", &reported)));
-        // Other fuel can change what a script computes, so the part differs; the same settings give the same part.
+        let agree = crate::genesis::consensus_hash();
+        let mut bytes = reported.to_vec();
+        bytes.extend_from_slice(&agree.0);
+        assert_eq!(core, hex6(&pe_seams::Hash::of("pe.app.core", &bytes)));
+        // Other fuel can change what a script computes, and other consensus settings what the members agree, so the
+        // part differs for either; the same settings give the same part.
         let more_fuel = pe_logic::run::RunSettings { fuel_per_call: run.fuel_per_call + 1, ..run };
-        assert_ne!(runner_part(&settings, &more_fuel), runner);
-        assert_eq!(runner_part(&settings, &run), runner);
+        assert_ne!(core_part(&settings, &more_fuel, &agree), core);
+        assert_ne!(core_part(&settings, &run, &pe_seams::Hash([1; 32])), core);
+        assert_eq!(core_part(&settings, &run, &agree), core);
         // The hello's limit is the tighter: `bind` refuses an id over it (NetError::Hello).
         assert!(build_id().len() <= pe_net::lifecycle::MAX_BUILD, "over the hello's bound: {}", build_id().len());
         assert_eq!(build_id(), build_id());

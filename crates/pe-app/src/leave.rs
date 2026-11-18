@@ -114,7 +114,7 @@ pub fn player(m: MemberKey) -> String {
     format!("player {hex}")
 }
 
-fn capitalized(s: String) -> String {
+pub(crate) fn capitalized(s: String) -> String {
     let mut c = s.chars();
     c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
 }

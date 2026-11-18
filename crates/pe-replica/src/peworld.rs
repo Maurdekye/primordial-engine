@@ -17,8 +17,9 @@
 //!   hold by claims, not parenting, and the M1 ball pit puts no body under a hand. An input's pushes become [`PushFx`],
 //!   one for one.
 //! - **Entry classes:** edits and inputs as above. A `Leave` (a Protocol entry, `pe_seams::LEAVE`) goes through
-//!   `World::leave` at its stamp ([`PeWorld`]'s `leave`). Other Governance and Protocol entries are `Applied` with no
-//!   effects, as pe-world applies none yet.
+//!   `World::leave` at its stamp ([`PeWorld`]'s `leave`), and an `Admit` (a Protocol entry, `pe_seams::Admit`)
+//!   through `World::admit` at its stamp ([`PeWorld`]'s `admit`). Other Governance and Protocol entries are
+//!   `Applied` with no effects, as pe-world applies none yet.
 //! - **The order within a frame:** [`WorldModel::phase`] is pe-world's `input_phase`, so a frame's hand inputs apply
 //!   before its other entries, and a grab's reach is measured after the frame's hand movement (world-model.md 8.1).
 //! - **`end_frame(f)`:** `World::end_frame(f)`, which expires claims and push windows and writes each pending hand
@@ -171,7 +172,35 @@ impl PeWorld {
                 (outcome, effects)
             }
             Class::Protocol if pe_seams::is_leave(entry) => self.leave(entry),
-            Class::Governance | Class::Protocol => (applied(), Effects::default()),
+            Class::Protocol => match pe_seams::Admit::of(entry) {
+                Some(admit) => self.admit(frame, entry, admit),
+                None => (applied(), Effects::default()),
+            },
+            Class::Governance => (applied(), Effects::default()),
+        }
+    }
+
+    /// A member's join (agreement.md 8; app.md 4, "Joining from a cut"): an `Admit` that S3 makes effective at its
+    /// place in the final log. pe-world records the key with the role the entry names and creates its two hands, owned
+    /// by it, at the entry's frame (`World::admit`), so every replica holds the joiner from the same frame, and the
+    /// world at the reconfiguring cut E, which E's certificate covers, holds it for the joiner's import. Who may admit
+    /// is S3's governance fold: an `Admit` S3 voids (`NotAuthorized`, `NoChange`) and this replica stepped before its
+    /// void was known is dropped like any voided entry. Refused here, as S3 voids them: a malformed payload, and a key
+    /// that is a member already, which `World::admit` alone wouldn't catch, since a hand's id includes its frame.
+    /// The hands need no effects: the frame's hand sync builds their bodies from the world's hands, as for a `Leave`.
+    fn admit(&mut self, frame: Frame, entry: &SignedEntry, admit: Option<pe_seams::Admit>) -> (Outcome, Effects) {
+        let refused = |reason| (Outcome::Refused { op: None, reason }, Effects::default());
+        let Some(admit) = admit else { return refused(Reason::Malformed) };
+        let snapshot = self.world.snapshot(frame);
+        if snapshot.perms(admit.key).is_some() {
+            return refused(Reason::Invalid { field: None });
+        }
+        // Where it stands: the lowest slot of the genesis row no hand takes, read from the world as it stands when this
+        // `Admit` applies (pe-world's `World::join_spawn`, world-model.md 2.4).
+        let spawn = self.world.join_spawn();
+        match self.world.admit(entry.entry.line, admit.key, admit.role, frame, spawn) {
+            Ok(_) => (applied(), Effects::default()),
+            Err(_) => refused(Reason::Invalid { field: None }),
         }
     }
 

@@ -2449,6 +2449,15 @@ impl Agreement for Node {
         Node::backlogged(self)
     }
 
+    /// S3 v1.11: pe-app's inviter reads these, so the defaults (0, `None`) would leave every join unstarted.
+    fn epoch(&self) -> u64 {
+        Node::epoch(self)
+    }
+
+    fn epoch_start(&self) -> Option<Vec<u8>> {
+        Node::epoch_start(self).map(<[u8]>::to_vec)
+    }
+
     fn submit(&mut self, entry: pe_seams::Entry) -> Result<SignedEntry, SubmitError> {
         if entry.author != self.me || entry.line != self.cfg.line {
             return Err(SubmitError::NotNext);

@@ -8,10 +8,9 @@
 //!   coordinator mbd24467040cd).
 //! - **The decision is a pure function of the entry and the epoch's [`GovState`]** ([`GovState::step`]): no world state,
 //!   no callback into the app. S3 runs it in the final log's order beside the `Leave` rules, on final and on certified
-//!   ancestry alike, so every member makes the same `Admit`s effective. S2 is to apply an effective `Admit`'s world
-//!   side (`World::admit`, with the role its verdict names, at the entry's frame). **Not built yet** (@engine-architect's
-//!   Medium on b84295a2): pe-replica gives a world side to `Leave` only, so today an effective `Admit` changes the
-//!   members but nothing in the world.
+//!   ancestry alike, so every member makes the same `Admit`s effective. S2 applies an effective `Admit`'s world side:
+//!   pe-replica calls `World::admit` with the role the payload names at the entry's frame, so the world at the
+//!   reconfiguring cut holds the joiner's member row, role and hands (@coordinator-opus mb2c3feba8e1e).
 //! - **M1's rule is one row:** vouched by an admin, admit, with the signer's own signature as its vouch. An admin
 //!   chooses the role, ADMIN included (the user: any admin can add another admin).
 //! - **[`GovState`] is per epoch:** every member's role bits, one table like the world's member table. It starts from

@@ -101,7 +101,13 @@ impl Net {
     }
 
     fn invite(&self, i: usize) -> Invite {
-        Invite { id: [5; 8], key: self.nodes[i].key.0, expiry_unix_s: u64::MAX, addrs: vec![self.nodes[i].addr] }
+        Invite {
+            id: [5; 8],
+            key: self.nodes[i].key.0,
+            expiry_unix_s: u64::MAX,
+            addrs: vec![self.nodes[i].addr],
+            pin: None,
+        }
     }
 
     /// Step `ms` milliseconds, 1 ms at a time; packets arrive `delay_ms` after they leave.

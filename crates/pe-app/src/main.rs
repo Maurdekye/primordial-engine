@@ -10,9 +10,10 @@
 //! no display). `--seconds` ends the run after `n` seconds, in any mode; without it the window runs until it is
 //! closed.
 //!
-//! Without `--open` or `--join` the world runs alone (the headset tests need that). With them, two machines share one
-//! (the M1 interim, `pe_app::net`): `--open` prints an invite and waits for the joiner's reply code on standard input;
-//! `--join <invite>` prints this machine's reply code for the opener and joins. `--listen` is the UDP address to bind
+//! Without `--open` or `--join` the world runs alone (the headset tests need that). With them, machines share one
+//! (app.md 4, "Joining from a cut"; `pe_app::net`): `--open` opens the world alone at once and prints an invite, and
+//! each line on standard input is a joiner's reply code; `--join <invite>` prints this machine's reply code for the
+//! opener, joins at the cut that admits it and imports the world's state there. `--listen` is the UDP address to bind
 //! (default 0.0.0.0:4433), `--advertise` an address the invite or reply names (default: the bound one, which must
 //! then be specific), and `--identity` this machine's identity file (default: `identity.seed` in the per-user data
 //! folder, `%LOCALAPPDATA%\Primordial Engine` on Windows; made on first use).
@@ -36,6 +37,7 @@ use pe_app::api;
 use pe_app::builds;
 use pe_app::clock::{self, LocalClock};
 use pe_app::console::{EXIT_INTERRUPTED, Quit, REQUEST_QUIT_LIMIT, Shutdown};
+use pe_app::join::T_JOIN;
 use pe_app::local::{SwitchedHands, chain_nonce};
 use pe_app::net::{self, Endpoint, OpenParams, WakeLater};
 use pe_app::sim::{self, Budget, Sim};
@@ -82,7 +84,7 @@ impl EffectSink for LogEffects {
     }
 }
 
-/// A world shared with a second machine (the M1 interim): open it, or join from an invite.
+/// A world shared with other machines (app.md 4): open it alone, or join from an invite.
 enum Shared {
     Open,
     Join(Invite),
@@ -107,10 +109,8 @@ struct Options {
     drawn_time: Option<DrawnTime>,
 }
 
-/// The joiner's wait for the opener to take its reply, admit it and start frame 0: a person copies the reply over.
+/// The joiner's wait for the opener's welcome and its clock: a person copies the reply over.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(300);
-/// The opener's wait, once it has the reply, for the joiner's link.
-const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long an invite stays valid.
 const INVITE_VALID: Duration = Duration::from_secs(3600);
 
@@ -175,7 +175,34 @@ fn presenter(rate: SimRate, drawn_time: DrawnTime) -> Presenter {
     Presenter::new(display, EffectSettings::default(), Environment::default(), rate.hz())
 }
 
-/// The M1 interim's session (app.md 4 step 4): open or join, then the simulation over pe-agree and pe-net.
+/// A's console (app.md 4): each line it reads is a joiner's reply code, for the session's hook, which checks it. The
+/// thread waits on standard input for the whole run; the process's end ends it.
+fn read_replies(replies: std::sync::mpsc::Sender<Reply>) {
+    let read = move || {
+        for line in std::io::stdin().lines().map_while(Result::ok) {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match Reply::decode(line) {
+                Ok(reply) => {
+                    if replies.send(reply).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => eprintln!("pe-app: that isn't a reply code ({e:?}): paste the code the joiner printed"),
+            }
+        }
+    };
+    if let Err(e) = std::thread::Builder::new().name("pe-replies".into()).spawn(read) {
+        eprintln!("pe-app: reply codes can't be read ({e}): nobody can join");
+    }
+}
+
+/// The shared session (app.md 4 steps 4 and 5): open alone or join at a cut, then the simulation over pe-agree and
+/// pe-net. A joiner's simulation starts with its import of the cut's state under way; if that fails, `console`
+/// quits.
+#[allow(clippy::too_many_arguments)]
 fn shared_sim(
     o: &Options,
     shared: &Shared,
@@ -184,6 +211,7 @@ fn shared_sim(
     slot: Arc<FrameSlot>,
     hands: Arc<SwitchedHands>,
     runner: Box<dyn ScriptRunner>,
+    console: &Arc<Quit>,
 ) -> Sim {
     let rate = SimRate::DEFAULT;
     let path = o.identity.clone().map_or_else(net::default_identity_path, Ok).unwrap_or_else(|e| fail(&e.to_string()));
@@ -193,37 +221,61 @@ fn shared_sim(
     let opener = matches!(shared, Shared::Open);
     let mut ep = Endpoint::bind(seed, o.listen, o.advertise.clone(), opener, host.clone(), Some(wake.arrival()))
         .unwrap_or_else(|e| fail(&e.to_string()));
-    let session = match shared {
+    let short = |k: MemberKey| k.0[..4].iter().map(|b| format!("{b:02x}")).collect::<String>();
+    // pe-diverge (app.md 3, step 5): detection and repair, with fault bundles beside the identity file. It also serves
+    // the opener's state to a joiner, and fetches it for the joiner.
+    let diverge = |sim: Sim| {
+        sim.with_diverge(pe_diverge::Config::default(), Some(pe_app::diverge::bundle_dir(&path)))
+            .unwrap_or_else(|e| fail(&format!("pe-diverge did not start: {e}")))
+    };
+    match shared {
         Shared::Open => {
-            let invite = ep.invite(INVITE_VALID).unwrap_or_else(|e| fail(&e.to_string()));
-            println!("invite: {}", invite.encode());
-            println!("waiting for the second player's reply code (paste it here):");
-            let mut line = String::new();
-            let _ = std::io::stdin().read_line(&mut line);
-            let reply = Reply::decode(line.trim()).unwrap_or_else(|e| fail(&format!("the reply code: {e:?}")));
-            let p = OpenParams { seed: WORLD_SEED, balls: 500, rate, epoch_lead: net::EPOCH_LEAD };
-            ep.open_session(&invite, &reply, &p, OPEN_TIMEOUT, runner)
+            let p = OpenParams { seed: WORLD_SEED, balls: 500, rate, epoch_lead: Duration::ZERO };
+            let opened = ep
+                .open_alone(&p, INVITE_VALID, T_JOIN, runner)
+                .unwrap_or_else(|e| fail(&format!("the session did not start: {e}")));
+            let s = opened.session;
+            println!("session: open, this machine {}", short(s.me));
+            println!("invite: {}", opened.invite.encode());
+            println!("to let someone join, paste their reply code here:");
+            read_replies(opened.replies);
+            diverge(
+                Sim::new(Box::new(s.node), s.replica, s.frames, slot, Budget::new(rate))
+                    .with_local(s.me, chain_nonce(), hands)
+                    .with_transport(net::transport(s.handle), Some(Box::new(s.hook)))
+                    .with_linked(s.linked),
+            )
         }
         Shared::Join(invite) => {
             println!("reply code for the opener: {}", ep.reply(invite).encode());
             ep.dial(invite).unwrap_or_else(|e| fail(&e.to_string()));
-            ep.join_session(invite, rate, JOIN_TIMEOUT, runner)
+            let cj = ep
+                .join_at_cut(invite, rate, JOIN_TIMEOUT, T_JOIN)
+                .unwrap_or_else(|e| fail(&format!("couldn't join the session: {e}")));
+            println!(
+                "session: joined at frame {}, {} members, this machine {}",
+                cj.e.at.frame.0,
+                cj.members.len(),
+                short(cj.me)
+            );
+            let replica = cj
+                .record
+                .empty_replica(cj.me, cj.frames.clone(), runner)
+                .unwrap_or_else(|e| fail(&format!("the replica did not start: {e}")));
+            let linked = cj.members.iter().copied().filter(|m| *m != cj.me).collect();
+            let quit = console.clone();
+            let mut sim = diverge(
+                Sim::new(Box::new(cj.node), replica, cj.frames, slot, Budget::new(rate))
+                    .with_local(cj.me, chain_nonce(), hands)
+                    .with_transport(net::transport_with(cj.handle, cj.pending), Some(Box::new(cj.hook)))
+                    .with_linked(linked),
+            )
+            .with_on_join_failed(Box::new(move || quit.request_from_app("the join failed")));
+            sim.join_at_final(MemberKey(invite.key), host())
+                .unwrap_or_else(|e| fail(&format!("couldn't join the session: {e}")));
+            sim
         }
     }
-    .unwrap_or_else(|e| fail(&format!("the session did not start: {e}")));
-    println!(
-        "session: {} members, this machine {}",
-        session.members.len(),
-        session.me.0[..4].iter().map(|b| format!("{b:02x}")).collect::<String>()
-    );
-    // With two members, both are needed for finality: if one leaves, the other's finality stops until both restart.
-    // pe-diverge (app.md 3, step 5): detection and repair, with fault bundles beside the identity file.
-    Sim::new(Box::new(session.node), session.replica, session.frames, slot, Budget::new(rate))
-        .with_local(session.me, chain_nonce(), hands)
-        .with_transport(net::transport(session.handle), Some(Box::new(session.hook)))
-        .with_linked(session.linked)
-        .with_diverge(pe_diverge::Config::default(), Some(pe_app::diverge::bundle_dir(&path)))
-        .unwrap_or_else(|e| fail(&format!("pe-diverge did not start: {e}")))
 }
 
 fn main() {
@@ -264,7 +316,7 @@ fn main() {
     let hands = Arc::new(SwitchedHands::new(ring.clone(), desktop_hand.clone()));
     let wake = WakeLater::default();
     let sim = match &options.shared {
-        Some(shared) => shared_sim(&options, shared, &host, &wake, slot.clone(), hands.clone(), runner),
+        Some(shared) => shared_sim(&options, shared, &host, &wake, slot.clone(), hands.clone(), runner, &console),
         None => {
             let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
             let pit = world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, frames.clone(), runner);
