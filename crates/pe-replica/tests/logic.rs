@@ -1287,6 +1287,22 @@ mod lamp {
         })
     }
 
+    /// pe-logic's tally script, built once per test process, as the lamp is. Two tests use it. When each built it
+    /// itself, they raced on macOS (tier 2 run 44380490660: "no module at .../tally.wasm"). Cargo re-links a crate's
+    /// output to its uplifted path on every run, a fresh one included. On macOS it copies the file there rather than
+    /// hard-linking it, and removes the old copy first. So one test's cargo could take `tally.wasm` away while the
+    /// other test read it. Elsewhere the hard link makes both paths one file, and cargo skips the step [V cargo 1.99.0
+    /// 5f94df478, compiler/mod.rs `link_targets`, cargo-util paths.rs `_link_or_copy`].
+    fn tally() -> &'static [u8] {
+        static W: OnceLock<Vec<u8>> = OnceLock::new();
+        W.get_or_init(|| {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/tally");
+            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
+            pe_logic::build::build(&toolchain(), &dir, &pe_logic::build::engine_sdk(), &target, true)
+                .unwrap_or_else(|e| panic!("{e}"))
+        })
+    }
+
     /// The lamp's version hash V, which its ids derive from: any fixed hash will do here.
     /// The source archive the lamp's and the tally's commits carry (logic.md 4.1a): the fixtures' one version.
     fn source() -> Bytes {
@@ -1406,12 +1422,9 @@ mod lamp {
     #[test]
     fn the_logic_runner_conforms_where_its_copy_in_skip_fires() {
         big_stack(|| {
-            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/tally");
-            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
-            let wasm = pe_logic::build::build(&toolchain(), &dir, &pe_logic::build::engine_sdk(), &target, true)
-                .unwrap_or_else(|e| panic!("{e}"));
+            let wasm = tally();
             let s = Settings::default();
-            let script = Script::load(&runtime::engine(&s).unwrap(), s, &wasm).unwrap();
+            let script = Script::load(&runtime::engine(&s).unwrap(), s, wasm).unwrap();
             let module = script.module_hash();
             let m = run::read_manifest(&script).unwrap();
             let desc = |c: &pe_logic::manifest::Component| {
@@ -1450,7 +1463,7 @@ mod lamp {
             fx.frames = 12;
             let make = move || {
                 let mut r = runner(false);
-                r.insert(&wasm).expect("the tally loads");
+                r.insert(wasm).expect("the tally loads");
                 Box::new(r) as Box<dyn ScriptRunner>
             };
             conformance(&make, &fx).expect("pe-logic's runner conforms with its copy-in skip");
@@ -1521,14 +1534,11 @@ mod lamp {
         big_stack(|| {
             const SPAWNER: u128 = 80;
             const TROUBLE: u128 = 81;
-            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/tally");
-            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
-            let wasm = pe_logic::build::build(&toolchain(), &dir, &pe_logic::build::engine_sdk(), &target, true)
-                .unwrap_or_else(|e| panic!("{e}"));
+            let wasm = tally();
             let mut runner = runner(false);
-            let module = runner.insert(&wasm).expect("the tally loads");
+            let module = runner.insert(wasm).expect("the tally loads");
             let s = Settings::default();
-            let m = run::read_manifest(&Script::load(&runtime::engine(&s).unwrap(), s, &wasm).unwrap()).unwrap();
+            let m = run::read_manifest(&Script::load(&runtime::engine(&s).unwrap(), s, wasm).unwrap()).unwrap();
             let own = m.components.iter().filter(|c| !c.name.starts_with("pe."));
             let desc = |c: &pe_logic::manifest::Component| {
                 let fields = run::component_desc(c, ComponentId(0)).unwrap().fields().to_vec();
