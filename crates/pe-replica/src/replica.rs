@@ -191,10 +191,12 @@ type PhysicsRows = (Vec<(ObjectId, BodyStateRow)>, Bytes, Hash);
 /// The most grid frames whose transfer and keyframe the live history keeps for a matched cut there (5.4). Each is kept
 /// until the floor passes its frame; past this many (finality stalled: an outage, a stuck member), the oldest goes,
 /// and a cut there is re-stepped as in 5.3. A kept frame holds its transfer and, once the ring has thinned that
-/// keyframe, its image alone, which is never larger than the transfer that serializes it. So a kept frame costs at
-/// most twice its transfer: the transfer is 1.57 MB at 500 balls (0.43 MB at 200), so at most 3.1 MB a frame and
-/// 50 MB for 16. That covers a vote or `finalize` 16 cut intervals late: 1.6 s on pe-app's grid (a cut every 6 frames
-/// at 60 Hz).
+/// keyframe, its image alone, which is never larger than the transfer that serializes it: at most twice the transfer,
+/// which is 1.57 MB at 500 balls (0.43 MB at 200), so 3.1 MB a frame and 50 MB for 16. Its world snapshot adds its own
+/// copies of the columns the live state wrote since (a shared column is copied whole on its first write): at 500 balls
+/// the `BodyState` and `Transform` columns are 32 kB and 40 kB, so with the hash cache's map about 0.1 MB a frame
+/// more. That covers a vote or `finalize` 16 cut intervals late: 1.6 s on pe-app's grid (a cut every 6 frames at
+/// 60 Hz).
 const LIVE_KEPT: usize = 16;
 
 /// The digest of a cut's entries from the base up to a frame: for each frame in order, the count of the entries it

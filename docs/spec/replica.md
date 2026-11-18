@@ -575,7 +575,10 @@ c9e2829a. The kept grid frames: @coordinator-opus]
   - Past 16 (finality stalled: an outage, a stuck member), the oldest goes, and a cut there is re-stepped as in 5.3.
   - Memory: a kept frame holds its transfer (1.57 MB at 500 balls) and, once the ring has thinned that keyframe, its
     image, which is never larger than the transfer that serializes it. That is at most 50 MB at 500 balls. An image is
-    shared (`Arc`), not copied, by the ring, the kept frames and the held snapshots.
+    shared (`Arc`), not copied, by the ring, the kept frames and the held snapshots. The kept world snapshots add
+    their own copies of the columns the live state wrote since each was taken, since a shared column is copied whole
+    on its first write: at 500 balls the `BodyState` and `Transform` columns are 32 kB and 40 kB, about 0.1 MB a frame
+    with the hash cache's map [I, from the row sizes] (@chunks-reviewer's nit on 02ee50d6).
   - Tests: `a_vote_30_frames_late_takes_the_live_root`, `past_the_kept_grid_frames_a_late_vote_re_steps`;
     `ReplicaImpl::live_kept()` counts the kept frames.
 - **The same values.** Nothing given out changes: the roots, transfers and check hashes are the same, so no build
