@@ -62,10 +62,13 @@ pub fn nanos(d: Duration) -> u64 {
 }
 
 /// A replica that times `advance`, `root_at_cut` and `finalize` into `times` and passes every call through unchanged,
-/// the provided methods included, so the driver sees the replica it wraps.
+/// the provided methods included, so the driver sees the replica it wraps. With `log`, each cut the driver finalizes
+/// is first recorded in `--check-replay`'s final log (crate::replay), while agreement still keeps the entries: the
+/// finalize moves the replica's `Cv`, below which agreement trims.
 pub struct Timed<'a> {
     pub inner: &'a mut dyn Replica,
     pub times: &'a mut PhaseTimes,
+    pub log: Option<&'a mut crate::replay::ReplayLog>,
 }
 
 impl Replica for Timed<'_> {
@@ -104,6 +107,9 @@ impl Replica for Timed<'_> {
     }
 
     fn finalize(&mut self, cut: &FinalCut, source: &mut dyn EntrySource) -> Finalized {
+        if let Some(log) = &mut self.log {
+            log.record(cut, &*source);
+        }
         let start = Instant::now();
         let f = self.inner.finalize(cut, source);
         self.times.finalize_ns += since(start);

@@ -5,8 +5,10 @@
 //! through B's MCP and finds the first kept frame it glows blue: `F + 2`, where `F` is the activation frame A's `mine`
 //! reports, which every machine takes from final frames. The new code runs from `F + 1` (S6's
 //! `ActivationNote::Activated`; logic.md 6.2 step 3), and a snapshot at frame f is the state before f is stepped
-//! (app.md 3.1), so `F + 1` still shows warm white and `F + 2` is the first state the new code wrote. The test drives
-//! pe-app through its command line and MCP only.
+//! (app.md 3.1), so `F + 1` still shows warm white and `F + 2` is the first state the new code wrote. Last, A replays
+//! its session from frame 0 (`--check-replay`, the console's `replay`; the plan's "the live run equals the replay"),
+//! and every final cut's root must be the live one. The test drives pe-app through its command line, its console and
+//! MCP only.
 //!
 //! Each agent is this test binary again: pe-app's `--agent` runs it with `demo_agent` as the one test, and with
 //! `PE_DEMO_ROLE` (`author` on A, `observer` on B) and `PE_DEMO_DIR` passed through pe-app's environment. It writes
@@ -49,7 +51,7 @@ fn an_agent_on_a_edits_the_lamp_and_b_sees_it_at_the_agreed_frame() {
     std::fs::create_dir_all(&dir).expect("the demo's folder");
     let until = Instant::now() + LIMIT;
 
-    let (mut a, mut a_in, a_out) = start(&dir, "a", "author", &["--open"]);
+    let (mut a, mut a_in, a_out) = start(&dir, "a", "author", &["--open", "--check-replay"]);
     let invite = line_after(&a_out, "invite: ", until, &dir);
     let (mut b, _b_in, b_out) = start(&dir, "b", "observer", &["--join", &invite]);
     let reply = line_after(&b_out, "reply code for the opener: ", until, &dir);
@@ -73,6 +75,24 @@ fn an_agent_on_a_edits_the_lamp_and_b_sees_it_at_the_agreed_frame() {
     );
     let before = rgba(&observer["before"][1]).unwrap_or_else(|| panic!("B's Lamp at F + 1: {observer}"));
     assert!(is(before, WARM_RGBA), "and warm white before F + 1 is stepped: {observer}");
+    // The plan's "the live run equals the replay" (pe-app's `replay`): A replays its session from frame 0, B's join and
+    // both versions of the lamp included, and every final cut's root is the one agreement made final.
+    writeln!(a_in, "replay").and_then(|()| a_in.flush()).expect("A reads `replay`");
+    println!("{}", replay_verdict(&a_out, until, &dir));
+}
+
+/// Waits for A's replay verdict (pe-app's `replay`), failing at once on a replay that differs or couldn't run.
+fn replay_verdict(rx: &mpsc::Receiver<String>, until: Instant, dir: &Path) -> String {
+    loop {
+        match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(l) if l.contains("replay: the live run equals the replay") => return l,
+            Ok(l) if l.contains("replay: DIFFERS") || l.contains("replay: couldn't") => {
+                panic!("A's replay: {l}\n{}", logs(dir))
+            }
+            Ok(_) => {}
+            Err(e) => panic!("no replay verdict from A ({e})\n{}", logs(dir)),
+        }
+    }
 }
 
 /// The agents (module docs). Run on its own, without `PE_DEMO_ROLE`, it does nothing.
