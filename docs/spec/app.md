@@ -587,8 +587,10 @@ final cuts …", or the first final cut whose root differs, or why it couldn't r
 - **The log** is the one the session already keeps. As the driver finalizes each final cut, the simulation first takes
   that cut's entries from S3: `entries_for_cut` at each frame since the previous final cut, with the cut and its root
   (phases.rs's `Timed`). It must come before the replica's finalize: that moves the replica's `Cv`, and agreement keeps
-  its final log only from `Cv`. At n = 1, a cut is voted, final and finalized within one `drive`. Nothing is written
-  to a file.
+  its final log only from `Cv`. At n = 1, a cut is voted, final and finalized within one `drive`. Void entries aren't
+  in it, since a final cut's `entries_for_cut` is its effective entries (S3 v1.4). Nothing is written to a file, and
+  nothing is dropped: the log grows in memory for the whole session, so the check suits a demo-length run, not a long
+  one (@design-reviewer's nit on cbd81a02).
 - **The replay** starts from the genesis record's frame-0 replica (`Genesis::replay_replica`, whose root the record
   pins). That replica has no local member. A replay computes the agreed state, and a replica whose local member wrote
   a commit predicts it active until it's attested (logic.md 6.2a, option (i)): a replay with the opener local differed
@@ -742,6 +744,11 @@ final on either, though both keep simulating their predictions.
   sim.rs's hub, B's closed hands sweeping through the pit. [V] A's replay reaches every final cut's root: 96 final
   cuts from frame 0 to frame 582. The control drops one of B's entries from the kept log, and the replay differs at
   the first final cut after it. The demo test (section 6) adds B's join and both versions of the lamp.
+  - With a void entry (@design-reviewer's L1 on cbd81a02): both members receive two edits on a second chain of B's,
+    signed by B, the second back-stamped, both inside one cut interval. [V] The first final cut past them voids the
+    second, which A's replica had stepped, and makes the first effective; the replay still reaches every final cut's
+    root. The control puts the void entry back into the kept log, and the replay differs at exactly that cut. A late
+    entry can't test this: it is stamped below its deciding cut's parent, whose frames the log took before it came.
 - **The two-process session** of section 6, on Windows and Linux.
 
 ## 8. Open points
