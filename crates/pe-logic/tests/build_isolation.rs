@@ -3,7 +3,7 @@
 //! only on its archive and the build identity. Each test is a probe of `scripts/iter_bench_build_asym.py` or
 //! `iter_bench_toolchain_min.py` made permanent (@fable-reviewer).
 
-use pe_logic::build::{BuildError, Toolchain, build, build_archive, check_dep_info, engine_sdk, pack};
+use pe_logic::build::{BuildError, Toolchain, build, build_archive, check_dep_info, engine_sdk, pack, toolchain_env};
 use std::path::{Path, PathBuf};
 
 fn tc() -> Toolchain {
@@ -205,4 +205,29 @@ fn the_dep_info_check_parses_strictly_and_refuses_what_does_not_resolve() {
     assert!(
         matches!(ok("# env-dep:HOME=/home/x\n"), Err(BuildError::Refused(e)) if e.contains("HOME") && !e.contains("/home/x"))
     );
+}
+
+#[test]
+fn only_macos_gets_the_toolchain_s_library_folder_and_it_holds_llvm() {
+    // rust-lld loads @rpath/libLLVM.dylib, which its rpath doesn't reach once the environment is cleared
+    // (tier 2 run 44201283393, macos-arm64). Every wasm-building test on macOS is the end-to-end check.
+    let tc = tc();
+    let env = toolchain_env(&tc);
+    if cfg!(target_os = "macos") {
+        let (name, value) = env.expect("macOS sets the loader's fallback path");
+        assert_eq!(name, "DYLD_FALLBACK_LIBRARY_PATH");
+        let value = value.to_string_lossy().into_owned();
+        // The toolchain's lib first, then dyld's defaults (without $HOME/lib: HOME is cleared).
+        let (first, rest) = value.split_once(':').expect("a list");
+        assert_eq!(rest, "/usr/local/lib:/lib:/usr/lib");
+        let lib = PathBuf::from(first);
+        assert_eq!(lib, tc.rustc.parent().unwrap().parent().unwrap().join("lib"));
+        let llvm = std::fs::read_dir(&lib)
+            .unwrap_or_else(|e| panic!("{}: {e}", lib.display()))
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("libLLVM"));
+        assert!(llvm, "no libLLVM in {}", lib.display());
+    } else {
+        assert_eq!(env, None);
+    }
 }
