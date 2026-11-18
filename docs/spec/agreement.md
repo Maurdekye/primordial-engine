@@ -286,6 +286,28 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
 - **A root split ends the view at once** (L4', coordinator). A member that sees `RootSplit` on its
   current view's block times out at once instead of waiting for the timer (a timeout is always safe). That timeout is
   no fault and doesn't grow the adaptive timeout, so each step of the repair ladder costs about a link delay.
+- **The split cut is re-proposed unchanged** (L4', coordinator, @fable-reviewer). While the block on
+  a parent that split is uncertified, every leader proposing on that parent proposes the split block's cut again: the
+  same frame and heads (`Core::split_cut_on`), the latest view's if several split. A repair's revote is for the split
+  cut (pe-diverge revotes the reference's root at it), so a re-proposal at a newer frame would leave it nothing to land
+  on, and each newer cut would be a new split episode that restarts the ladder (measured: 15 split cuts at one height
+  over 3.5 s at n = 2 before; one with the pin). No voter rule changes: a cut's frame is bounded only from above (at
+  most the voter's present plus the tolerance), so an older frame is still acceptable. Once the height is certified,
+  the next height's cut is built on the grid as usual.
+  - **The newest root is cast again in each pinned view** (coordinator, @diverge-eng's trial). A driver votes each cut once (pe-replica's `Driver::drive`), and a revote after a repair, in a view
+    this member already voted in, is answered `AlreadyVotedThisView` and counts only from the next view. So pe-agree
+    keeps this member's newest root and verdict for each cut it was asked to vote on (from every `vote` call, a revote
+    answered `AlreadyVotedThisView` included), above the final height. When the current view's proposal re-proposes
+    a split cut it holds a root for, it casts that root at once (`Node::recasts` counts them). Without this, with the
+    pin alone, nobody votes in the pinned views and the split is never certified [V: pe-app's split tests]. A re-cast
+    never sends a self-test report: the verdict's report went out with its own `vote` call, so a long repair doesn't
+    walk into the 16-report bound per member.
+  - Tests (pe-agree): n = 2 with one member's root wrong for 3.5 s, and n = 4 with two (no root reaches q = 3): every
+    split at the height names one cut, that cut becomes final at every member, and the line goes on. At n = 2 with
+    the root wrong for about 30 views, voting as the driver does (each cut once, the verdict, the repair's revote):
+    more than 16 re-casts per member, one split cut, final, and at most 2 reports sent per member (its own and one
+    relay). pe-app: the two fault tests and `a_fault_over_a_slow_link_heals_in_one_episode` (every message 50 ms late)
+    each end in one episode with finality.
 - **Timeouts.** A member gives up on a view after a timeout and sends a timeout carrying its highest certificate; q
   timeouts are a timeout certificate and move everyone to the next view. The timeout adapts: derived from the
   measured round trip, and growing after consecutive timeouts. A timed-out view is never recorded as a fault. At

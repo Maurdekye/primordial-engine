@@ -707,12 +707,15 @@ final on either, though both keep simulating their predictions.
   world has no hands for it; with a script in A's world, the join is refused before any `Admit`; and with a B that
   never starts (a test hook) and `T_join` shortened, A's console reports the failed join. Also, with B's fetch held
   past a shortened `T_join` and then let go, A takes the failed-join line back once the cut is final.
-- **An injected fault** (section 6, step 7's fault), in release only: two pe-world members with pe-diverge over sim.rs's
-  hub, member 1 with the fault at frame 121.
-  - Why release only [V]: in a loaded debug run the split never healed. Agreement re-proposed the split cut every
-    6 frames, and each new episode overtook member 1's rung 2
-    (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t). The test returns to the default set
-    once that item is fixed.
+- **An injected fault** (section 6, step 7's fault): two pe-world members with pe-diverge over sim.rs's hub, member 1
+  with the fault at frame 121.
+  - It was release only while a loaded debug run never healed the split: agreement re-proposed the split cut at a newer
+    frame every 6 frames, and each new episode overtook member 1's rung 2
+    (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t). Since the split cut is pinned
+    (agreement.md 3, L4': the split cut is proposed again unchanged, and each member's newest root for it is cast
+    again in every pinned view), the split is one episode and the tests are back in the default set, with
+    `a_fault_over_a_slow_link_heals_in_one_episode` (every message 50 ms late each way: one episode on each member,
+    member 1 cured by rung 2, finality within 60 frames of the end).
   - [V] Member 1 draws the ball at 0.12 m and then at 0.06 m again, while member 0 never draws it changed. Both see
     a root split, which ends. Member 1 is cured by rung 2, and member 0 isn't repaired. Member 1's self-test fails by
     injection, while its real self-test passes. Both write bundles, and only member 1's say "BY INJECTION". Finality
