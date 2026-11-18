@@ -30,6 +30,8 @@ pub mod local;
 pub mod net;
 pub mod phases;
 pub mod sim;
+#[cfg(test)]
+mod sources;
 pub mod stamp;
 pub mod standin;
 pub mod vr;

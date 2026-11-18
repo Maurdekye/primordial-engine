@@ -341,6 +341,20 @@ therefore writes the `Admit` only once B has shown it can start (@design-reviewe
   names pe-agree's consensus hash (net.rs `build_id`; the crate's version alone doesn't change between commits). So
   equal build ids mean equal consensus settings, and a member with other settings is closed at the hello
   (`CloseCode::Build`), before any `Admit` exists.
+- **The build id names the sources** (@coordinator-opus m113878c7e7a5, after @fable-reviewer's view; @design-reviewer
+  m5012e3329334 found that nothing named the rules pe-world, pe-replica and pe-physics compute by):
+  - pe-app's build script (build.rs, `crate::sources`) hashes every file under `crates/`, with `Cargo.lock` and the
+    root `Cargo.toml`. The hash's first 6 bytes are the id's first part: `pe-app src <hex>; scripts <hex>; core <hex>`.
+  - It needs no git, is right for a dirty tree, ignores commits that change only documents, and is the same for
+    debug and release builds and on every platform (`.gitattributes` checks every text file out with LF).
+  - It says "same sources" only: it is not a security check, and not the compiler's or the CPU's identity.
+  - pe-app's version is no longer a part, since the hashed Cargo.toml covers it, and three named parts then fit the
+    hello's 64 bytes (transport.md 6.3). The console's first line prints the version, the source part, and the commit
+    with whether the sources differed from it, as git told the build script (ignored files under `crates/` count,
+    since the hash reads them): `pe-app 0.1.0, sources <hex> (commit <hex>, with local changes)`. A refusal at the
+    hello prints both ids, so the differing part shows by its name.
+  - A record that outlives the session must not keep this exact-source id: a release-compatibility rule replaces it
+    before worlds are saved (M3; @item:primordial-engine/release-compatibility-replaces-the-exact-source-b).
 - **A welcomes B before it admits it.** On B's hello A checks the build, the self-test, the invite's id and expiry,
   that B isn't a member, that no other join is in flight, and the world (next item). It then welcomes B at the
   transport (transport.md 6.4): the session's epoch and rate, the current epoch's members with their addresses, and
