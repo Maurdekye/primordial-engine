@@ -608,6 +608,73 @@ if [ "$(n_of ann-link.txt 'linker: rust-lld: error: out of memory')" = 1 ] \
 else
   bad=$((bad + 1)); echo "test_gate: BAD  tier2-annotation-has-what-the-linker-said"; sed 's/^/    /' "$tmp/ann-link.txt"
 fi
+# A test that prints pe-logic's BuildError with {:?} has the linker's notes on one line, escaped. And the linker's
+# words come first, inside the 4096 characters GitHub keeps, however many tests failed (tier 2's macOS, 2026-11-18).
+cat > "$tmp/t2-link-debug.log" << 'EOF'
+running 1 test
+test a_voter_builds_checks_loads_and_attests_once ... FAILED
+
+failures:
+
+---- a_voter_builds_checks_loads_and_attests_once stdout ----
+
+thread '<unnamed>' (7) panicked at crates/pe-app/tests/builds.rs:129:46:
+the lamp builds: Build(Rustc { text: "error: linking with `rust-lld` failed: signal: 6 (SIGABRT)\n  = note: \"rust-lld\" \"-flavor\" \"wasm\"\n  = note: rust-lld: error: out of memory\n          libc++abi: terminating\n     Locking 1 package to highest Rust 1.99.0 compatible version\nerror: could not compile `script` (lib) due to 1 previous error\n" })
+
+failures:
+    a_voter_builds_checks_loads_and_attests_once
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+EOF
+for i in $(seq 10 59); do
+  echo "test a_test_whose_name_is_as_long_as_those_of_tier_2s_macos_runs_that_fail_on_a_crashed_linker_$i ... FAILED"
+done > "$tmp/t2-many.log"
+cat "$tmp/t2-link.log" >> "$tmp/t2-many.log"
+printf 'error: useless conversion to the same type: `i64`\n  --> crates/pe-app/src/clock.rs:65:18\n' \
+  >> "$tmp/t2-many.log"
+for i in $(seq 10 59); do printf 'warning: unused variable: `x%s`\n  --> src/lib.rs:%s:9\n' "$i" "$i"; done \
+  >> "$tmp/t2-many.log"
+echo 'error: test failed, to rerun pass `-p pe-render --test gpu`' >> "$tmp/t2-many.log"
+ann "$tmp/t2-link-debug.log" > "$tmp/ann-debug.txt"; ann "$tmp/t2-many.log" > "$tmp/ann-many.txt"
+if [ "$(n_of ann-debug.txt 'linker: rust-lld: error: out of memory')" = 1 ] \
+  && [ "$(n_of ann-debug.txt 'linker: libc++abi: terminating')" = 1 ] \
+  && ! grep -qE "^linker: .*(flavor|Locking|could not compile)" "$tmp/ann-debug.txt"; then
+  pass=$((pass + 1)); echo "test_gate: ok   tier2-annotation-unfolds-a-debug-printed-build-error"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  tier2-annotation-unfolds-a-debug-printed-build-error"
+  sed 's/^/    /' "$tmp/ann-debug.txt"
+fi
+if [ "$(head -c 4000 "$tmp/ann-many.txt" | grep -c -F -x 'linker: rust-lld: error: out of memory')" = 1 ]; then
+  pass=$((pass + 1)); echo "test_gate: ok   tier2-annotation-has-the-linker-in-what-github-keeps"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  tier2-annotation-has-the-linker-in-what-github-keeps"
+  head -c 600 "$tmp/ann-many.txt" | sed 's/^/    /'; echo
+fi
+# Every failed binary's error line is inside them too, however many tests failed and however many warnings, each
+# with its place, the build printed before it (chunks-reviewer's L1, m5d2ff383e4d1).
+last_bin='error: test failed, to rerun pass `-p pe-render --test gpu`'
+if [ "$(head -c 4000 "$tmp/ann-many.txt" | grep -c -F -x -- "$last_bin")" = 1 ] \
+  && [ "$(head -c 4000 "$tmp/ann-many.txt" | grep -c -F -x -- '  --> crates/pe-app/src/clock.rs:65:18')" = 1 ] \
+  && ! grep -q -F -- '--> src/lib.rs:' "$tmp/ann-many.txt"; then
+  pass=$((pass + 1)); echo "test_gate: ok   tier2-annotation-names-every-failed-binary"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  tier2-annotation-names-every-failed-binary"
+  head -c 600 "$tmp/ann-many.txt" | sed 's/^/    /'; echo
+fi
+# A panic can be one line of several kB: cut to 300 characters, it leaves room for the next test's panic.
+{ printf 'running 2 tests\ntest a_long_panic ... FAILED\ntest b_short_panic ... FAILED\n\nfailures:\n\n'
+  printf -- "---- a_long_panic stdout ----\n\nthread 'a_long_panic' (1) panicked at src/lib.rs:1:1:\n"
+  head -c 5000 /dev/zero | tr '\0' x; printf '\n\n'
+  printf -- "---- b_short_panic stdout ----\n\nthread 'b_short_panic' (2) panicked at src/lib.rs:2:1:\n"
+  printf "the second test's own panic message\n\nfailures:\n    a_long_panic\n    b_short_panic\n\n"
+  printf 'test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'
+} > "$tmp/t2-long-panic.log"
+ann "$tmp/t2-long-panic.log" > "$tmp/ann-long.txt"
+if [ "$(head -c 4000 "$tmp/ann-long.txt" | grep -c -F -x "the second test's own panic message")" = 1 ]; then
+  pass=$((pass + 1)); echo "test_gate: ok   tier2-annotation-cuts-a-long-panic-line"
+else
+  bad=$((bad + 1)); echo "test_gate: BAD  tier2-annotation-cuts-a-long-panic-line"; cut -c1-200 "$tmp/ann-long.txt"
+fi
 export PE_GATE_TIER2=on PE_CI_RUNS_URL="$fxu/red.json"
 new_case; echo "tier 2 test" >> "$R/README.md"; commit -m "a change while tier 2 is red"
 expect tier2-red fail "^gate: tier 2 RED: run 424242 \(failure\)" "add '<run id> -- <reason>' to scripts/tier2_explained\.txt" "^gate: FAIL"
