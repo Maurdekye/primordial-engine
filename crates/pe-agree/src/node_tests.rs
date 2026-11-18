@@ -132,6 +132,10 @@ struct Sim {
     near_cap_frames: Vec<usize>,
     /// Count range refetches each member sends for this chain (decodes protocol messages; off by default).
     count_ranges: Option<pe_seams::ChainId>,
+    /// (member, from ms): the first block fetch that member sends from then on is lost, every copy of it.
+    lose_fetch: Option<(usize, i64)>,
+    /// When that fetch was sent (ns), and the id it asked for.
+    lost_fetch: Option<(i64, crate::core::BlockId)>,
     range_asks: Vec<usize>,
     /// Per member: also submit one edit every this many frames, on the per-frame chain (0: never).
     edit_every: Vec<u64>,
@@ -207,6 +211,8 @@ impl Sim {
             old_rule_frames: vec![0; n as usize],
             near_cap_frames: vec![0; n as usize],
             count_ranges: None,
+            lose_fetch: None,
+            lost_fetch: None,
             range_asks: vec![0; n as usize],
             edit_every: vec![0; n as usize],
             edits: vec![Vec::new(); n as usize],
@@ -237,6 +243,17 @@ impl Sim {
                 self.range_asks[i] += 1;
             }
             let j = (0..self.nodes.len()).find(|&j| self.keys.key(j) == o.to).unwrap();
+            if let Some((k, from)) = self.lose_fetch
+                && i == k
+                && self.now >= from * MS
+                && o.lane == Lane::Protocol
+                && let Ok(crate::codec::Wire::Core(crate::core::Msg::Fetch(id))) = crate::codec::decode(&o.bytes)
+            {
+                let (at, lost) = *self.lost_fetch.get_or_insert((self.now, id));
+                if at == self.now && lost == id {
+                    continue;
+                }
+            }
             if self.withhold == Some(i)
                 && o.lane == Lane::Protocol
                 && let Ok(crate::codec::Wire::Core(crate::core::Msg::Propose(p))) = crate::codec::decode(&o.bytes)
@@ -971,6 +988,61 @@ fn a_member_cut_off_while_the_others_go_on_catches_up_on_the_final_log() {
     assert!(s.final_frame(1).0 > behind.0 + 60, "member 1 stuck at {behind:?}");
     let n = s.assert_same_final_log();
     assert!(n >= 100, "only {n} final entries");
+}
+
+#[test]
+fn a_lost_block_fetch_is_asked_again() {
+    // @design-reviewer's Low 2 on 5d532552: n = 3, member 2 cut off while 0 and 1 go on (q = 2), so it comes back
+    // with a gap; the first fetch it sends for the gap is lost. Every later proposal's parent is an orphan it holds,
+    // so nothing else asks for the gap: only the re-send fills it.
+    let mut s = Sim::new(3, 15);
+    s.partition = Some((2, 1_000, 3_000));
+    s.lose_fetch = Some((2, 3_000));
+    s.run(3_000);
+    let behind = s.final_frame(2);
+    s.run(9_000);
+    assert!(s.lost_fetch.is_some(), "member 2 sent no fetch after the outage");
+    assert!(s.nodes[2].core().refetches() >= 1, "the gap filled without a re-send");
+    assert!(s.final_frame(2).0 > behind.0 + 60, "member 2 stuck at {behind:?} (others at {:?})", s.final_frame(0));
+    let n = s.assert_same_final_log();
+    assert!(n >= 100, "only {n} final entries");
+}
+
+#[test]
+fn honest_runs_ask_for_no_block_twice() {
+    // The re-send costs nothing where no fetch is lost: n = 2, 3 and 4 with no faults, and n = 4 with a jittery link
+    // reordering proposals (blocks reach members before their parents: the gaps fill within a round trip).
+    let mut orphans = 0;
+    for (n, seed, jitter) in
+        [(2u32, 31, false), (3, 32, false), (4, 33, false), (4, 34, true), (4, 35, true), (3, 36, true)]
+    {
+        let mut s = Sim::new(n, seed);
+        if jitter {
+            s.delay[1] = (2, 180);
+        }
+        s.run(6_000);
+        let re: Vec<u64> = s.nodes.iter().map(|x| x.core().refetches()).collect();
+        assert!(re.iter().all(|&r| r == 0), "n = {n}, seed {seed}: fetches sent again {re:?}");
+        orphans += s.nodes.iter().map(|x| x.core().orphans_adopted()).sum::<u64>();
+        s.assert_same_final_log();
+    }
+    // The orphan case's runs (rooted_cuts_match_through_pipelines_abandoned_cuts_and_orphans): a jittery link, a
+    // lagging author, and one member cut off for 0.5 s. Its losses are of messages sent while it is cut off.
+    let mut sent_again = 0;
+    for seed in 1..=16u64 {
+        let mut s = Sim::new(4, 400 + seed);
+        s.delay[1] = (2, 180);
+        s.stamp_lag[3] = 4;
+        let start = 900 + 37 * seed as i64;
+        s.partition = Some(((seed % 4) as usize, start, start + 500));
+        s.run(3_000);
+        s.assert_same_final_log();
+        orphans += s.nodes.iter().map(|x| x.core().orphans_adopted()).sum::<u64>();
+        sent_again += s.nodes.iter().map(|x| x.core().refetches()).sum::<u64>();
+    }
+    eprintln!("orphans adopted {orphans}, fetches sent again {sent_again}");
+    assert_eq!(sent_again, 0, "fetches sent again in the orphan runs");
+    assert!(orphans >= 1, "no block reached a member before its parent");
 }
 
 // The rate budget follows the world's frame rate (@design-reviewer's Low 1 on pe-app step 2; design agreed with
