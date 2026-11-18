@@ -37,6 +37,12 @@ pub struct Config {
     pub w_fg: Duration,
     /// Wait for a repair source before trying the next.
     pub t_peer: Duration,
+    /// A join's wait for its source (divergence.md 4.5): a whole-state reply, the physics image among them, can be
+    /// megabytes, and arrives only whole. Also the least time before a donor serves one peer the same image again.
+    pub t_join_peer: Duration,
+    /// A join's deadline from its start: until then, a join whose sources all failed asks them again in turn, after
+    /// `t_peer`. pe-app's own wait for a join step is 30 s (`T_join`, app.md 4).
+    pub t_join: Duration,
     /// Descents per rung-2 attempt.
     pub n_descend: u32,
     /// Time within which repeated cures of one leaf count, and how many raise the event (4.3).
@@ -72,6 +78,8 @@ impl Default for Config {
             t_keep: Duration::from_millis(1500),
             w_fg: Duration::from_secs(2),
             t_peer: Duration::from_millis(250),
+            t_join_peer: Duration::from_secs(5),
+            t_join: Duration::from_secs(25),
             n_descend: 3,
             t_recur: Duration::from_millis(1500),
             n_recur_max: 3,
@@ -354,14 +362,16 @@ pub struct Diverge {
     fails_any: u32,
     keys_seen: Vec<FailKey>,
     stuck: Option<Stuck>,
-    /// The join from a final cut, if one was asked ([`Diverge::join`]).
+    /// The join from a final cut, if one was asked ([`Diverge::join`]), and when it gives up (`t_join`).
     join: Option<Join>,
+    join_deadline: Option<HostTime>,
     /// Roots I serve: the agreed roots of recent final cuts, and my root at a cut in a root split.
     servable: BTreeMap<Hash, CutRef>,
     buckets: BTreeMap<MemberKey, Bucket>,
     /// My copy of each source's bucket for me: requests are paced so that an honest repair is never refused.
     ask_buckets: BTreeMap<MemberKey, Bucket>,
-    physics_served: BTreeSet<(MemberKey, Hash)>,
+    /// When each peer was last served each root's physics image.
+    physics_served: BTreeMap<(MemberKey, Hash), HostTime>,
     counters: Counters,
     events: Vec<DivergeEvent>,
     actions: Vec<Action>,
@@ -392,10 +402,11 @@ impl Diverge {
             keys_seen: Vec::new(),
             stuck: None,
             join: None,
+            join_deadline: None,
             servable: BTreeMap::new(),
             buckets: BTreeMap::new(),
             ask_buckets: BTreeMap::new(),
-            physics_served: BTreeSet::new(),
+            physics_served: BTreeMap::new(),
             counters: Counters::default(),
             events: Vec::new(),
             actions: Vec::new(),
@@ -444,6 +455,7 @@ impl Diverge {
     /// read [`Diverge::join_state`]; the replica publishes no view, so no health shows the join.
     pub fn join(&mut self, e: &FinalCut, inviter: MemberKey, replica: &mut dyn Replica, now: HostTime) {
         self.join = Some(Join::Joining { cut: e.cut.at });
+        self.join_deadline = Some(now.plus(self.cfg.t_join));
         // The joiner holds nothing verified: Cv starts at E, once finalize agrees there.
         self.cv = None;
         self.pending = None;
@@ -724,7 +736,13 @@ impl Diverge {
         if self.episode.as_ref().is_some_and(|e| !e.picked) {
             self.try_pick(replica, source, now);
         }
-        let wait = self.cfg.t_peer;
+        // A join past its deadline ends (4.5); one waits longer for its source than a repair does.
+        if self.joining() && self.join_deadline.is_some_and(|d| now > d) && self.repair.is_some() {
+            let cut = self.repair.as_ref().map(Repair::at).expect("checked");
+            self.repair = None;
+            self.fail(2, cut, "no source served the join before its deadline");
+        }
+        let wait = if self.joining() { self.cfg.t_join_peer } else { self.cfg.t_peer };
         let waiting_on_peer =
             |r: &Repair| !r.due && !matches!(r.phase, Phase::Importing { .. }) && now > r.sent_at.plus(wait);
         if self.repair.as_ref().is_some_and(waiting_on_peer) {
@@ -799,12 +817,15 @@ impl Diverge {
                 if !self.may_serve(from, cut, root, now) {
                     return Ok(());
                 }
-                // One image per peer and root: a requester that asks again is flooding, and is never served it again.
-                if !self.physics_served.insert((from, root)) {
+                // One image per peer and root, and again only after `t_join_peer`: a requester that asks sooner is
+                // flooding. A join that timed out a slow image and asked again past that is served (4.5).
+                let again = self.cfg.t_join_peer;
+                if self.physics_served.get(&(from, root)).is_some_and(|t| now < t.plus(again)) {
                     self.counters.serve_refused += 1;
                     self.send(from, Msg::NotHeld { cut, root });
                     return Ok(());
                 }
+                self.physics_served.insert((from, root), now);
                 match replica.physics_image(&root) {
                     Some(image) => self.serve(from, Msg::PhysicsReply { cut, root, image }),
                     None => self.send(from, Msg::NotHeld { cut, root }),
@@ -852,7 +873,7 @@ impl Diverge {
             self.servable.remove(&oldest);
         }
         let servable = &self.servable;
-        self.physics_served.retain(|(_, r)| servable.contains_key(r));
+        self.physics_served.retain(|(_, r), _| servable.contains_key(r));
     }
 
     /// Whether to answer `peer` a request for `root`: only servable roots, and only while the peer's byte bucket is
@@ -1194,6 +1215,11 @@ impl Diverge {
     /// is kept for a re-descent at the same source: it is the target's, and a source serves one image per peer and
     /// root (@shader-reviewer, re-review L3).
     fn restart(&mut self, now: HostTime, keep_image: bool) {
+        self.restart_at(now, now, keep_image);
+    }
+
+    /// [`Self::restart`], with the first request held back until `at`.
+    fn restart_at(&mut self, now: HostTime, at: HostTime, keep_image: bool) {
         if let Some(rep) = &mut self.repair {
             rep.phase = rep.first_phase();
             rep.leaves.clear();
@@ -1202,7 +1228,7 @@ impl Diverge {
             rep.records.clear();
             rep.blobs.clear();
             rep.busy = 0;
-            rep.retry_at = now;
+            rep.retry_at = at;
             if !keep_image {
                 rep.image = None;
             }
@@ -1235,6 +1261,14 @@ impl Diverge {
         let Some(rep) = &mut self.repair else { return };
         if !stick {
             rep.src += 1;
+        }
+        // A join asks its sources again, in turn, until its deadline: at n = 2 the inviter is its only source, and one
+        // slow reply must not end it (@engine-architect md2fa377743a4). A pause of `t_peer` comes first.
+        let deadline = self.join_deadline.filter(|_| matches!(self.join, Some(Join::Joining { .. })));
+        if rep.src >= rep.sources.len() && deadline.is_some_and(|d| now < d) {
+            rep.src = 0;
+            self.restart_at(now, now.plus(self.cfg.t_peer), false);
+            return;
         }
         if rep.src >= rep.sources.len() {
             let cut = rep.at();
