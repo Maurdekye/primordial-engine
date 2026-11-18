@@ -25,7 +25,7 @@ use winit::window::{Window, WindowId};
 use crate::camera::{Camera, DepthRange, Fov};
 use crate::desktop_hand::{DesktopHand, DesktopHandFeed, DesktopHandSettings, PointerInput, Target};
 use crate::effects::EffectCommand;
-use crate::gpu::{BackendOverride, ContextError, GpuContext, desktop_order, instance_descriptor};
+use crate::gpu::{BackendOverride, ContextError, GpuContext, desktop_order};
 use crate::notices::{StripCache, window_overlay, window_text_px};
 use crate::pacing::{DESKTOP_LADDER, Pacer, PacerSettings, PeriodSource};
 use crate::pose::quat;
@@ -233,9 +233,19 @@ pub fn surface_and_context(window: Arc<Window>) -> Result<(wgpu::Surface<'static
 }
 
 /// Every failed attempt's reason in one error, so a machine that fails everywhere still reports why hardware D3D12
-/// failed (@shader-reviewer, on review of the backend order). `NoAdapter` when no attempt found an adapter at all.
+/// failed (@shader-reviewer, on review of the backend order). `NoBackend` when no attempt had a backend built here,
+/// `NoAdapter` when none found an adapter (some may have had no backend).
 fn attempts_failed(failed: Vec<(wgpu::Backends, bool, ContextError)>) -> ContextError {
-    if failed.iter().all(|(_, _, e)| *e == ContextError::NoAdapter) {
+    // No backend built here for any attempt (macOS): NoBackend; no adapter on any (some maybe no backend): NoAdapter.
+    if !failed.is_empty()
+        && let Some(all) = failed.iter().try_fold(wgpu::Backends::empty(), |all, (_, _, e)| match e {
+            ContextError::NoBackend(b) => Some(all | *b),
+            _ => None,
+        })
+    {
+        return ContextError::NoBackend(all);
+    }
+    if failed.iter().all(|(_, _, e)| matches!(e, ContextError::NoAdapter | ContextError::NoBackend(_))) {
         return ContextError::NoAdapter;
     }
     let each: Vec<String> = failed
@@ -259,7 +269,7 @@ fn surface_and_context_on(
 ) -> Result<(wgpu::Surface<'static>, GpuContext), ContextError> {
     let (instance, surface) = {
         let _one_at_a_time = crate::gpu::creation_lock();
-        let instance = wgpu::Instance::new(instance_descriptor(backends));
+        let instance = crate::gpu::instance(backends)?;
         let surface = instance.create_surface(window).map_err(|e| ContextError::Device(e.to_string()))?;
         (instance, surface)
     };
@@ -694,5 +704,13 @@ mod tests {
             hw(wgpu::Backends::VULKAN, ContextError::NoAdapter),
         ];
         assert_eq!(attempts_failed(none), ContextError::NoAdapter);
+        // No backend built for any attempt (macOS) keeps its kind; mixed with no adapter, it is no adapter.
+        let unbuilt = vec![hw(wgpu::Backends::VULKAN, ContextError::NoBackend(wgpu::Backends::VULKAN))];
+        assert_eq!(attempts_failed(unbuilt), ContextError::NoBackend(wgpu::Backends::VULKAN));
+        let mixed = vec![
+            hw(wgpu::Backends::DX12, ContextError::NoAdapter),
+            hw(wgpu::Backends::VULKAN, ContextError::NoBackend(wgpu::Backends::VULKAN)),
+        ];
+        assert_eq!(attempts_failed(mixed), ContextError::NoAdapter);
     }
 }
