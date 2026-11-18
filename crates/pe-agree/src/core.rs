@@ -354,6 +354,37 @@ const VIEW_WINDOW: u64 = 16;
 
 /// Self-test reports are kept for split cuts from the committed height up to this many heights above it.
 const REPORT_WINDOW: u64 = 64;
+
+/// A block still missing is asked for again after this long, doubling to `REFETCH_MAX_NS` while the same gap stays
+/// open (a fetch is sent once per block, and one lost would otherwise leave the gap open for good).
+const REFETCH_FIRST_NS: i64 = 1_000_000_000;
+const REFETCH_MAX_NS: i64 = 8_000_000_000;
+/// At most this many gaps asked for again per re-send.
+const REFETCH_GAPS: usize = 4;
+
+/// The re-send timer, given its state (the lowest gap it is timing, when it is next due, its back-off), the lowest gap
+/// now open and the time: the next state, and whether to send now. The first re-send comes 1 s after a gap is seen,
+/// then the back-off doubles to 8 s while the same gap stays lowest. When the lowest gap changes, the back-off starts
+/// at 1 s again but the earlier due time is kept, so gaps that keep changing (orphans from a faulty proposer whose
+/// parents nobody serves) can't put a re-send off for good (@design-reviewer's L1 on aec278df).
+fn refetch_step(
+    state: Option<(BlockId, HostTime, i64)>,
+    first: BlockId,
+    now: HostTime,
+) -> ((BlockId, HostTime, i64), bool) {
+    let (due, backoff) = match state {
+        Some((g, due, backoff)) if g == first => (due, backoff),
+        Some((_, due, _)) => (due.min(now.plus_nanos(REFETCH_FIRST_NS)), REFETCH_FIRST_NS),
+        None => (now.plus_nanos(REFETCH_FIRST_NS), REFETCH_FIRST_NS),
+    };
+    if now >= due {
+        let backoff =
+            if state.is_some_and(|(g, _, _)| g == first) { (backoff * 2).min(REFETCH_MAX_NS) } else { backoff };
+        ((first, now.plus_nanos(backoff), backoff), true)
+    } else {
+        ((first, due, backoff), false)
+    }
+}
 /// At most this many split cuts with a verdict per member (a bound on what a faulty member can make others store).
 const REPORTS_PER_MEMBER: usize = 16;
 
@@ -399,6 +430,10 @@ pub struct Core {
     /// Votes for a block not yet held: at most one per voter, the highest view, counted when the block arrives.
     pending_votes: BTreeMap<MemberKey, Vote>,
     requested: BTreeSet<BlockId>,
+    /// The re-send of missing blocks' fetches: the lowest gap it is timing, when it is next due, and its back-off.
+    refetch: Option<(BlockId, HostTime, i64)>,
+    /// Fetches sent again because a gap stayed open (`refetch`).
+    refetches: u64,
     /// The block a member proposed in a view, per (view, proposer).
     proposed_in: BTreeMap<(u64, MemberKey), BlockId>,
     // Votes: per view, per voter, the vote; per block, by root.
@@ -534,6 +569,8 @@ impl Core {
             shared_cuts: std::cell::Cell::new(0),
             pending_votes: BTreeMap::new(),
             requested: BTreeSet::new(),
+            refetch: None,
+            refetches: 0,
             proposed_in: BTreeMap::new(),
             votes_by_voter: BTreeMap::new(),
             votes: BTreeMap::new(),
@@ -634,6 +671,11 @@ impl Core {
     /// How many blocks arrived before their parent and were taken in once it came.
     pub fn orphans_adopted(&self) -> u64 {
         self.orphans_adopted
+    }
+
+    /// How many fetches were sent again because a missing block stayed missing past the back-off.
+    pub fn refetches(&self) -> u64 {
+        self.refetches
     }
 
     pub fn block_with_cut(&self, cut: &Cut) -> Option<&Block> {
@@ -755,6 +797,65 @@ impl Core {
             }
         }
         None
+    }
+
+    /// The blocks this member still needs and lacks, lowest first: the first missing block below the commit target,
+    /// then the first missing block below each orphan held. At most `REFETCH_GAPS`.
+    fn gaps(&self) -> Vec<BlockId> {
+        let mut out: Vec<BlockId> = self.target_gap().into_iter().collect();
+        // Oldest first (orphans are keyed by view): the gaps nearest the commit, and a first gap that a newer orphan
+        // can't displace.
+        for o in self.orphans.values() {
+            if out.len() >= REFETCH_GAPS {
+                break;
+            }
+            if let Some(g) = self.gap_below(o.block.parent)
+                && !out.contains(&g)
+            {
+                out.push(g);
+            }
+        }
+        out.truncate(REFETCH_GAPS);
+        out
+    }
+
+    /// The first block below the commit target (or the target itself) that this member lacks: the walk down held blocks
+    /// to the committed one, then on through held orphans (`gap_below`).
+    fn target_gap(&self) -> Option<BlockId> {
+        let mut x = self.commit_target?;
+        for _ in 0..=self.blocks.len() {
+            if x == self.committed || x == self.genesis_id {
+                return None;
+            }
+            match self.blocks.get(&x) {
+                Some(s) => x = s.proposal.block.parent,
+                None => return self.gap_below(x),
+            }
+        }
+        None
+    }
+
+    /// Ask again for the blocks still missing once a gap has stayed open past its back-off (1 s doubling to 8 s; see
+    /// `refetch_step`). An honest run fills a gap within a round trip, so it sends nothing extra (`refetches`).
+    fn refetch_due(&mut self, now: HostTime) {
+        if self.commit_target.is_none() && self.orphans.is_empty() {
+            self.refetch = None;
+            return;
+        }
+        let gaps = self.gaps();
+        let Some(first) = gaps.first().copied() else {
+            self.refetch = None;
+            return;
+        };
+        let (next, send) = refetch_step(self.refetch, first, now);
+        self.refetch = Some(next);
+        if send {
+            for id in gaps {
+                self.requested.insert(id);
+                self.out.push((To::All, Msg::Fetch(id)));
+                self.refetches += 1;
+            }
+        }
     }
 
     pub fn block(&self, id: &BlockId) -> Option<&Block> {
@@ -1053,6 +1154,14 @@ impl Core {
         self.quick_views.retain(|sv| *sv + 1 >= v);
         self.spared_views.retain(|sv| *sv + 1 >= v);
         self.orphans.retain(|(pv, _), _| *pv >= cv);
+        // Fetches only while still needed: a gap below the commit target or an orphan, or an orphan itself (a block
+        // fetched whose parent is still missing). The rest (blocks committed meanwhile, ids nobody serves) would only
+        // grow the set.
+        let mut needed: BTreeSet<BlockId> = self.orphans.values().map(|o| o.block.id()).collect();
+        let parents: Vec<BlockId> = self.orphans.values().map(|o| o.block.parent).collect();
+        needed.extend(parents.into_iter().filter_map(|p| self.gap_below(p)));
+        needed.extend(self.target_gap());
+        self.requested.retain(|id| needed.contains(id));
         self.pending_votes.retain(|_, pv| pv.view >= cv);
         self.verdicts.retain(|c, _| c.height >= h);
     }
@@ -1408,6 +1517,7 @@ impl Core {
 
     /// Advance on time: time out the view when its deadline passes.
     pub fn tick(&mut self, now: HostTime, signer: &dyn Signer) {
+        self.refetch_due(now);
         let due = now >= self.deadline() || self.quick_views.contains(&self.view) || self.join_view == self.view;
         if self.timed_out < self.view && due && !self.mutated(Mutation::NoTimeouts) {
             self.timed_out = self.view;
@@ -1564,5 +1674,47 @@ impl Core {
     /// The cut reference of a stored block.
     pub fn cut_ref(&self, id: &BlockId) -> Option<CutRef> {
         self.block(id).map(|b| b.cut.at)
+    }
+}
+
+#[cfg(test)]
+mod refetch_tests {
+    use super::*;
+
+    const S: i64 = 1_000_000_000;
+
+    fn id(b: u8) -> BlockId {
+        BlockId(Hash([b; 32]))
+    }
+
+    #[test]
+    fn the_re_send_backs_off_on_one_gap() {
+        let t = |s: i64| HostTime(s * S);
+        let (st, send) = refetch_step(None, id(1), t(0));
+        assert!(!send);
+        let (st, send) = refetch_step(Some(st), id(1), t(1));
+        assert!(send, "1 s after the gap is seen");
+        let (st, send) = refetch_step(Some(st), id(1), t(2));
+        assert!(!send, "then 2 s apart");
+        let (st, send) = refetch_step(Some(st), id(1), t(3));
+        assert!(send);
+        let (st, _) = refetch_step(Some(st), id(1), t(7));
+        assert_eq!(st.2, 8 * S, "doubling to 8 s");
+        let (st, _) = refetch_step(Some(st), id(1), t(15));
+        assert_eq!(st.2, 8 * S, "and no further");
+    }
+
+    #[test]
+    fn a_changing_lowest_gap_does_not_put_the_re_send_off() {
+        // @design-reviewer's L1 on aec278df: a new lowest gap every 100 ms (orphans whose parents nobody serves) must
+        // not keep restarting the wait.
+        let mut st = None;
+        let mut sent = 0;
+        for k in 0..30i64 {
+            let (next, send) = refetch_step(st, id(k as u8), HostTime(k * S / 10));
+            st = Some(next);
+            sent += send as u32;
+        }
+        assert_eq!(sent, 2, "a re-send each second for 3 s of changing gaps");
     }
 }

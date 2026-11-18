@@ -437,6 +437,20 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   - t + 1 timeouts for a later view show an honest member is there. A member joins that view and times out in it,
     which only gives up voting in it.
   - A fetched block whose parent is missing too is kept, so a gap fills in one round trip per block.
+  - **A lost block fetch is asked again** (@item:primordial-engine/pe-agree-a-lost-block-fetch-is-never-re-sent-ord;
+    @design-reviewer's Low 2 on 5d532552). A block fetch goes out once per block, and a fetch lost on a link that has
+    just come back would otherwise leave the gap open for good: every later proposal's parent is a block the member
+    already holds without its parent, so nothing asks for the gap again. Each tick, while a gap stays open, the member
+    re-sends the fetch of the lowest block it lacks below the block it is committing, and below each held block whose
+    parent it lacks (at most 4 gaps). The first re-send comes 1 s after the gap is seen, then 2, 4 and 8 s apart while
+    the same gap stays lowest; a new lowest gap starts the back-off at 1 s again but keeps the earlier due time, so
+    gaps that keep changing (orphans from a faulty proposer whose parents nobody serves) can't put a re-send off for
+    good (@design-reviewer's L1 on aec278df). Orphans count oldest first. A gap filled within a round trip sends nothing
+    extra. The set of blocks asked for is pruned at each commit to what is still needed (the blocks held without their
+    parent and the gaps), so ids nobody serves don't accumulate.
+    - Tests (pe-agree): n = 3, one member cut off for 2 s, the first fetch it sends afterwards lost. It catches up,
+      and the final logs match (without the re-send it stays at its last final frame for good). Runs with nothing lost
+      (n = 2, 3 and 4, and 16 runs with blocks reaching members before their parents) re-send nothing.
   - Members serve the proposals of their last 256 committed blocks to fetches. A member further behind than that
     needs an import (join, section 8).
   - Tests (pe-agree): a 2 s partition at n = 4, once with one member crashed and once all honest, at core and node
@@ -600,8 +614,8 @@ Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-revi
     - **Re-fetch.** A block fetch is sent once per block, so one lost on a link that has just come back would leave the
       gap below E open. Each certificate taken in re-sends the fetch of the first block below E the member lacks
       (walking down through the blocks it holds whose parent it lacks), so the gap heals at the ask's back-off
-      (@design-reviewer's Low 1 on 5d532552). Ordinary catch-up has the same once-only fetch, outside this change
-      (@item:primordial-engine/pe-agree-a-lost-block-fetch-is-never-re-sent-ord).
+      (@design-reviewer's Low 1 on 5d532552). Ordinary catch-up re-sends a lost block fetch too (section 4, "A lost block
+      fetch is asked again").
     - The consensus hash is v8: no new setting, but two new messages, a wire change, so builds before and after
       refuse each other at start.
     - So leaves at n >= 3 are supported (they weren't before this, coordinator). Tests
