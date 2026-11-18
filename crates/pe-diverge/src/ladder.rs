@@ -374,6 +374,8 @@ pub struct Diverge {
     physics_served: BTreeMap<(MemberKey, Hash), HostTime>,
     counters: Counters,
     events: Vec<DivergeEvent>,
+    /// Plain information for the log that is no seam event (`notes`).
+    notes: Vec<String>,
     actions: Vec<Action>,
     out: Vec<Outgoing>,
     #[cfg(feature = "mutants")]
@@ -409,6 +411,7 @@ impl Diverge {
             physics_served: BTreeMap::new(),
             counters: Counters::default(),
             events: Vec::new(),
+            notes: Vec::new(),
             actions: Vec::new(),
             out: Vec::new(),
             #[cfg(feature = "mutants")]
@@ -496,6 +499,12 @@ impl Diverge {
     /// Trace events, for the harness and pe-app's log.
     pub fn events(&mut self) -> Vec<DivergeEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// Plain information for the log, beside [`Self::events`]: what happened but is neither a seam event nor a
+    /// failure, such as a repair a root split overtook (5).
+    pub fn notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
     }
 
     /// What the driver must do.
@@ -652,10 +661,22 @@ impl Diverge {
             self.events.push(DivergeEvent::RootSplitStarted { cut: cut.at });
             self.actions.push(Action::RunSelfTest { cut: cut.at });
             // A replay or repair toward an older cut is overtaken: this cut is newer, and the split is what matters.
+            // At n = 2 that is the usual course: a split ends its view at once (agreement.md L4'), the height is
+            // proposed again, and the member still repairing votes its old root there. Not a failure: the work goes
+            // on at this cut, and a note keeps the story in the log. A join's import still fails the join (4.5).
             if let Some((at, _, rung)) = self.busy() {
                 self.replay = None;
                 self.repair = None;
-                self.fail(rung, at, "overtaken by a root split");
+                if self.joining() {
+                    self.fail(rung, at, "overtaken by a root split");
+                } else {
+                    self.counters.split_overtook += 1;
+                    let again = if at.height == cut.at.height { " (its height proposed again)" } else { "" };
+                    self.notes.push(format!(
+                        "rung {rung} at {at:?} overtaken by the root split at {:?}{again}; continuing there",
+                        cut.at
+                    ));
+                }
             }
             self.replay = Some(Replay { cut: cut.clone(), final_cut: None, mine: None });
             self.poll_replay(replica, source, now, clock);
@@ -976,7 +997,10 @@ impl Diverge {
             None => {
                 // A root split's step 1: vote again with the replayed root, or with my root at the cut if the replay
                 // could not run. Nothing moves Cv here; the cut is not final.
-                let root = result.ok().or_else(|| replica.root_at_cut(&rp.cut, source).ok());
+                // Either way my root at the cut is asked of the replica: a replay forgets its votes, and a reference
+                // must still hold the root it serves at the split's cut (4.1) when a repair toward it asks.
+                let held = replica.root_at_cut(&rp.cut, source).ok();
+                let root = result.ok().or(held);
                 if let Some(root) = root {
                     self.servable.insert(root, rp.cut.at);
                     self.actions.push(Action::Revote { cut: rp.cut.at, root });

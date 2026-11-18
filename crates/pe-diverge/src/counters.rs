@@ -35,6 +35,9 @@ pub struct Counters {
     /// from it no longer kept, or the state over `evidence_max_bytes`. The capture is not tried again for that `Cv`.
     pub evidence_skipped: u64,
     pub root_splits: u64,
+    /// A replay or repair under way when a root split at a newer cut arrived, a re-proposal of the same height
+    /// included (agreement.md L4'). The split is what matters, so the work moves there: no failure, a note (5).
+    pub split_overtook: u64,
     pub root_splits_ended: u64,
     pub bundles_written: u64,
     /// Messages from peers that did not decode.
