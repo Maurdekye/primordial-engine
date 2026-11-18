@@ -388,6 +388,8 @@ pub struct Mock {
     /// As pe-replica: a replay forgets the votes that kept its cut's snapshot, so the root there is not held again
     /// until `root_at_cut` is asked (replica.md 4.1).
     pub forget_after_replay: bool,
+    /// With `forget_after_replay`: `root_at_cut` at a forgotten cut answers `Pending` this many times first (S2 v1.1).
+    pub root_pending: u32,
     unheld: BTreeSet<u64>,
 }
 
@@ -413,6 +415,7 @@ impl Mock {
             finalize_calls: 0,
             not_ready: 0,
             forget_after_replay: false,
+            root_pending: 0,
             unheld: BTreeSet::new(),
             refuse: None,
             named: (1..=objects).filter(|k| k % 4 == 1).map(spread).collect(),
@@ -564,6 +567,10 @@ impl Replica for Mock {
         }
         if self.damaged_at(f) {
             return Err(RootError::Damaged);
+        }
+        if self.unheld.contains(&f) && self.root_pending > 0 {
+            self.root_pending -= 1;
+            return Err(RootError::Pending);
         }
         let root = self.roots.get(&f).copied().ok_or(RootError::NotKept)?;
         self.unheld.remove(&f);
