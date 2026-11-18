@@ -614,7 +614,8 @@ fn quit(sim: sim::SimThread, networked: bool) -> std::thread::Result<sim::SimSta
 }
 
 /// What the world's history calls the agent: `--agent-name` if given, else the command's first word as a file stem
-/// (`claude` for `C:\tools\claude.exe`, `cmd` for `cmd /c start ... claude`).
+/// (`claude` for `tools/claude.exe`, and for `C:\tools\claude.exe` on Windows only, where a backslash
+/// separates path components; `cmd` for `cmd /c start ... claude`).
 fn harness_name(name: Option<&str>, command: &[String]) -> Option<String> {
     if let Some(n) = name {
         return Some(n.to_owned());
@@ -734,7 +735,11 @@ mod tests {
         let through_cmd = line("cmd /c start Claude /wait claude");
         assert_eq!(harness_name(None, &through_cmd).as_deref(), Some("cmd"));
         assert_eq!(harness_name(Some("claude"), &through_cmd).as_deref(), Some("claude"));
-        assert_eq!(harness_name(None, &line(r"C:\tools\claude.exe --verbose")).as_deref(), Some("claude"));
+        assert_eq!(harness_name(None, &line("tools/claude.exe --verbose")).as_deref(), Some("claude"));
+        // A backslash separates path components only on Windows (tier 2 run 44331596600 failed elsewhere).
+        if cfg!(windows) {
+            assert_eq!(harness_name(None, &line(r"C:\tools\claude.exe --verbose")).as_deref(), Some("claude"));
+        }
         assert_eq!(harness_name(None, &[]), None);
     }
 }

@@ -4,3 +4,4 @@
 # here. The landing that fixes it, or explains it, adds one line, which its reviewer approves:
 #   <run id> -- <what failed, why, and what fixes it or why it may wait>
 # This is an allow file: the gate reads it from the landing. WS-ci triages red runs.
+44331596600 -- pe-app's bin test the_agent_is_named_by_agent_name_or_else_by_its_command (added by 490d659e) asserted that the command C:\tools\claude.exe names the agent claude; off Windows a backslash is not a path separator, so file_stem kept the whole string and the test failed on linux-x64, linux-arm64 and macos-arm64 (windows-x64 passed). Fixed in the landing that adds this line: that case runs only on Windows, and a tools/claude.exe case runs everywhere.
