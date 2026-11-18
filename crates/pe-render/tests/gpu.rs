@@ -204,11 +204,11 @@ fn a_highlighted_object_is_outlined_and_named() {
 
 #[test]
 fn no_adapter_is_capture_unavailable() {
-    assert_eq!(
-        GpuContext::headless_on(pe_render::wgpu::Backends::empty(), AdapterChoice::Any).err(),
-        Some(ContextError::NoAdapter)
-    );
+    // An empty request can never find a backend: refused before wgpu's instance, as on a platform with none built.
+    let none = pe_render::wgpu::Backends::empty();
+    assert_eq!(GpuContext::headless_on(none, AdapterChoice::Any).err(), Some(ContextError::NoBackend(none)));
     assert_eq!(CaptureError::from(ContextError::NoAdapter), CaptureError::Unavailable);
+    assert_eq!(CaptureError::from(ContextError::NoBackend(none)), CaptureError::Unavailable);
     let Some(mut r) = renderer() else { return };
     let (s, cam) = scene_at(Pos::ORIGIN);
     assert_eq!(r.capture(&s, cam, [4000, 10]).err(), Some(CaptureError::BadSize));

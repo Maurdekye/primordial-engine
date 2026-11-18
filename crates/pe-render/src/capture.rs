@@ -38,7 +38,7 @@ pub enum CaptureError {
 impl From<crate::gpu::ContextError> for CaptureError {
     fn from(e: crate::gpu::ContextError) -> Self {
         match e {
-            crate::gpu::ContextError::NoAdapter => CaptureError::Unavailable,
+            crate::gpu::ContextError::NoAdapter | crate::gpu::ContextError::NoBackend(_) => CaptureError::Unavailable,
             crate::gpu::ContextError::Device(d) => CaptureError::Readback(d),
         }
     }
