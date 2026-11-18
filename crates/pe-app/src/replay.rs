@@ -128,6 +128,14 @@ impl ReplayLog {
             None => false,
         }
     }
+
+    /// Puts `e` into the log after the entries stamped at or before its frame: a test's way to keep an entry the final
+    /// log left out. The log is in frame order, as `record` takes it frame by frame.
+    #[cfg(test)]
+    pub(crate) fn add_entry(&mut self, e: SignedEntry) {
+        let i = self.entries.partition_point(|x| x.entry.stamp <= e.entry.stamp);
+        self.entries.insert(i, e);
+    }
 }
 
 /// The modules the log commits: each `CommitScript`'s `author_module`, the hash of the metered bytes that ran.
