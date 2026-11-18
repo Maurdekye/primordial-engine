@@ -2230,6 +2230,8 @@ pub(crate) mod tests {
         health: Health,
         /// pe-diverge's cures by rung, rung 1 first.
         cured: [u64; 5],
+        /// pe-diverge's split episodes started.
+        episodes: u64,
         /// The radius this member's views drew the fault's ball at: the largest seen, and the last.
         radius_max: f32,
         radius_last: Option<f32>,
@@ -2253,6 +2255,11 @@ pub(crate) mod tests {
     /// `typed`, the console's `fault` is typed for it before the tick of that host frame. Each member writes its
     /// bundles to a folder of its own, which the run reads back and removes.
     fn fault_run(fault: &Arc<crate::fault::Fault>, typed: Option<u64>) -> (Vec<FaultSide>, u64) {
+        fault_run_over(fault, typed, 0)
+    }
+
+    /// [`fault_run`] with each message between the two members `delay_ns` late, both ways.
+    fn fault_run_over(fault: &Arc<crate::fault::Fault>, typed: Option<u64>, delay_ns: i64) -> (Vec<FaultSide>, u64) {
         use pe_agree::{Node, NodeConfig};
         use pe_seams::test_util::TestKeys;
         const FRAMES: u64 = 720;
@@ -2261,6 +2268,11 @@ pub(crate) mod tests {
         let members = keys.sorted_keys();
         let line = pe_world::preset::m1_line();
         let hub = Hub::default();
+        if delay_ns > 0 {
+            let mut d = hub.delay.lock().expect("the delays");
+            d.insert((members[0], members[1]), delay_ns);
+            d.insert((members[1], members[0]), delay_ns);
+        }
         let at = [[-0.5, 1.0, -0.4], [0.5, 1.1, -0.3]];
         // A folder of this run's own: the fault tests run in parallel in one process.
         static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2307,6 +2319,7 @@ pub(crate) mod tests {
                 let view = slot.newest().expect("published");
                 let (stats, health) = (s.stats().clone(), s.health());
                 let cured = s.diverge_counters().map_or([0; 5], |c| c.cured_by_rung);
+                let episodes = s.diverge_counters().map_or(0, |c| c.root_splits);
                 // Dropping the simulation closes its I/O thread, which first writes every queued bundle.
                 drop(s);
                 let dir = base.join(format!("member{i}"));
@@ -2321,6 +2334,7 @@ pub(crate) mod tests {
                     final_frame: view.final_frame,
                     health,
                     cured,
+                    episodes,
                     radius_max,
                     radius_last: fault.ball().and_then(|b| ball_radius(&view, b)),
                     notices,
@@ -2341,7 +2355,6 @@ pub(crate) mod tests {
     /// the reference, and member 1's rung 2 fetches the ball's record and restores it. Both write bundles, member 1's
     /// saying the failure was injected, and finality resumes on equal roots.
     #[test]
-    #[ignore = "timing: under load the split's re-proposals overtake rung 2 every 6 frames and it never heals (docketed for diverge-eng): run with --release --include-ignored"]
     fn an_injected_fault_is_found_and_rung_2_restores_the_ball() {
         let fault = crate::fault::Fault::new(Frame(121));
         let (sides, frames) = fault_run(&fault, None);
@@ -2351,7 +2364,6 @@ pub(crate) mod tests {
     /// The same with `--arm-fault` (@coordinator-opus): the console's `fault`, typed before the tick of
     /// host frame 121, fires at the next frame the replica steps, which the console names, and the repair is the same.
     #[test]
-    #[ignore = "timing: under load the split's re-proposals overtake rung 2 every 6 frames and it never heals (docketed for diverge-eng): run with --release --include-ignored"]
     fn a_typed_fault_fires_at_the_next_frame_and_rung_2_restores_the_ball() {
         let fault = crate::fault::Fault::typed();
         assert!(crate::fault::on_command(None).is_err(), "refused without --arm-fault");
@@ -2608,6 +2620,20 @@ pub(crate) mod tests {
             matches!(verdict, crate::replay::Verdict::Equal { cuts: n, last, .. } if n == cuts && last.0 >= settled + 60),
             "{verdict:?}"
         );
+    }
+
+    /// @item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t's acceptance (@coordinator-opus): over a link 50 ms late each way, member 1's rung 2 outlasts several cut intervals, so agreement
+    /// proposes the split's height again many times while it runs. It still ends in a final cut with equal roots, in
+    /// one episode on each member. Before the split cut was pinned (agreement.md 3, L4') it failed: each re-proposal was
+    /// a new episode, which overtook the repair.
+    #[test]
+    fn a_fault_over_a_slow_link_heals_in_one_episode() {
+        let fault = crate::fault::Fault::new(Frame(121));
+        let (sides, frames) = fault_run_over(&fault, None, 50_000_000);
+        for (i, s) in sides.iter().enumerate() {
+            assert_eq!(s.episodes, 1, "member {i}: one split episode: {s:?}");
+        }
+        a_fault_was_found_and_rung_2_restored_the_ball(&sides, &fault, frames);
     }
 
     /// What both fault tests assert of a run.

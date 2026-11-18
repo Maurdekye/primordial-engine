@@ -1595,6 +1595,20 @@ impl Core {
         Some(Lead { view: v, parent, parent_qc: self.high_qc.clone(), tc, not_before })
     }
 
+    /// The cut of a block on `parent` whose votes split (`RootSplit`), the latest view's if several: the leader
+    /// proposes it again unchanged, frame and heads, until the height is certified (L4', the pinned split cut). A
+    /// repair's revote is for that cut (pe-diverge revotes the reference's root at the split cut), so a re-proposal at a
+    /// newer frame would leave the revote nothing to land on, and every re-proposal would be a new split episode.
+    pub fn split_cut_on(&self, parent: &BlockId) -> Option<Cut> {
+        self.split_reported
+            .iter()
+            .filter_map(|id| self.blocks.get(id))
+            .map(|s| &s.proposal.block)
+            .filter(|b| b.parent == *parent)
+            .max_by_key(|b| b.view)
+            .map(|b| b.cut.clone())
+    }
+
     /// Propose `cut` as the leader of the current view. The cut's height is the parent's + 1.
     pub fn propose(
         &mut self,
