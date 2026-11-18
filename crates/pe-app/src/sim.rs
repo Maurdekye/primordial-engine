@@ -27,6 +27,7 @@ use pe_seams::{
 use crate::clock::HostClock;
 use crate::leave::{LeaveStatus, Leaving, ViewTime};
 use crate::local::{self, Chain};
+use crate::phases::{self, PhaseTimes, Timed};
 
 /// The replica's per-call budget (app.md 3; S2 v1.1), in simulated time. It is a local setting: it changes how fast the
 /// replica catches up, never what it computes. It is the largest of:
@@ -237,6 +238,16 @@ pub struct SimStats {
     pub poses_thinned: u64,
     /// Frames stamp-ahead's speed test found a hand moving, so the lead shed at most one frame in 11 (app.md 3.2).
     pub moving_frames: u64,
+    /// Where the thread's time went, step by step ([`crate::phases`]): wall time on this machine.
+    pub phases: PhaseTimes,
+}
+
+/// The time since `mark`, which moves to now: one step's share of a tick.
+fn lap(mark: &mut Instant) -> u64 {
+    let now = Instant::now();
+    let d = phases::nanos(now - *mark);
+    *mark = now;
+    d
 }
 
 /// `view` published again with only its health changed: a publication with nothing new since the last (S5): no
@@ -628,6 +639,8 @@ impl Sim {
             self.stats.before_frame_0 += 1;
             return None;
         };
+        let tick_start = Instant::now();
+        let mut mark = tick_start;
         // 1. Messages in. Protocol and Action go to agreement, Repair to pe-diverge; a refusal is a peer's fault,
         // counted and never fatal. TODO(blob store): Bulk; Pose is display-only.
         let mut links = Vec::new();
@@ -674,6 +687,7 @@ impl Sim {
                 self.link_down(peer, p);
             }
         }
+        self.stats.phases.ingest_ns += lap(&mut mark);
         // 2. Local input: both hands at frame `p`'s host time, through the newest view's rig, one input entry each.
         // Before the first view the hands' objects are not known yet, so nothing goes in. Once per frame: a wake (step
         // 7) ticks again within a frame, and that tick takes in messages and re-simulates but adds no second set of
@@ -794,6 +808,7 @@ impl Sim {
             let (chain, last) = l.chain.head();
             api.ports.shared.draft(chain, last + 1);
         }
+        self.stats.phases.inputs_ns += lap(&mut mark);
         // 3. Agreement's time. Its messages go to the network's outbox; a full queue is pe-net's local fault, never
         // a stall (transport.md 7). A world alone has nowhere to send them.
         let out = self.agree.tick(now, &*self.clock);
@@ -806,6 +821,7 @@ impl Sim {
             }
             None => self.stats.unsent += out.len() as u64,
         }
+        self.stats.phases.agree_ns += lap(&mut mark);
         // 4. The replica, through pe-replica's driver. `present` is exclusive, so frame `p` is simulated. First the
         // budget's keep-up floor: what the last call needed to reach its present, rollback included, plus the frames
         // `p` advanced since the previous tick, plus one, capped (`Budget`).
@@ -818,7 +834,11 @@ impl Sim {
             d.note_cuts(&*self.agree);
         }
         let started = Instant::now();
-        let report = self.driver.drive(&mut *self.replica, &mut *self.agree, Frame(p.0 + 1), self.self_test);
+        let report = {
+            // Times the replica's calls into `phases`, and passes each through unchanged.
+            let mut timed = Timed { inner: &mut *self.replica, times: &mut self.stats.phases };
+            self.driver.drive(&mut timed, &mut *self.agree, Frame(p.0 + 1), self.self_test)
+        };
         let frames = report.advance.resimulated + report.advance.stepped;
         if let Some(b) = self.budget.observe(frames, started.elapsed()) {
             self.replica.set_budget(b);
@@ -834,6 +854,7 @@ impl Sim {
             api.ports.shared.caught_up(report.advance.caught_up);
         }
         self.count_hold(report.advance.caught_up);
+        self.stats.phases.drive_ns += lap(&mut mark);
         // 5. S3's events, and pe-diverge: one drain after `drive` gives the spec's ordered list (S3's queue keeps its
         // order), with each finalize result placed after its cut's `CutFinal` ([`crate::diverge`]). Its actions are
         // routed in this tick, and its Repair-lane messages go to the outbox.
@@ -884,6 +905,7 @@ impl Sim {
         if let Some(log) = &self.event_log {
             log.lock().expect("the event log").extend(events);
         }
+        self.stats.phases.events_ns += lap(&mut mark);
         // 6. The replica's newest view. While it catches up the view holds, so nothing new goes out. It carries the
         // composed health, so pe-render's "resyncing" line and session_info read one value (@design-reviewer's Low):
         // while a root split is open, a copy of the view with it. When only the health changed (a split opened or
@@ -908,6 +930,10 @@ impl Sim {
             self.source_view = Some(view);
             self.stats.published += 1;
         }
+        self.stats.phases.publish_ns += lap(&mut mark);
+        let tick = phases::since(tick_start);
+        self.stats.phases.tick_ns += tick;
+        self.stats.phases.longest_tick_ns = self.stats.phases.longest_tick_ns.max(tick);
         Some((p, report))
     }
 
@@ -1142,7 +1168,9 @@ fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool, shared: &Shared) -> Si
         let due = sim.next_due(ticked, now);
         let left = due.0.saturating_sub(host().0);
         if left > 0 {
+            let start = Instant::now();
             thread::park_timeout(Duration::from_nanos(left as u64));
+            sim.stats.phases.idle_ns += phases::since(start);
         }
     }
     if let Some(c) = sim.diverge_counters() {
@@ -2491,6 +2519,23 @@ pub(crate) mod tests {
         s.tick(clock.host_time_of(Frame(1)).plus_nanos(1));
         assert_eq!(s.stats().published, 1);
         assert_eq!(s.next_due(Some(p), clock.host_time_of(Frame(1))), clock.host_time_of(Frame(2)));
+    }
+
+    /// The phase timers ([`crate::phases`]): the steps' shares add up to no more than the ticks, the replica's calls
+    /// to no more than the driver's, and `advance`'s frames are counted.
+    #[test]
+    fn the_phase_timers_split_the_ticks() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (mut s, _slot) = on_pe_world(clock.clone(), Budget::new(RATE));
+        for f in 1..=30 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        let t = &s.stats().phases;
+        assert_eq!((t.stepped, t.resimulated, t.rollbacks), (31, 0, 0), "frames 0 to 30, alone: {t:?}");
+        assert!(t.advance_ns > 0 && t.longest_tick_ns > 0, "{t:?}");
+        let steps = t.ingest_ns + t.inputs_ns + t.agree_ns + t.drive_ns + t.events_ns + t.publish_ns;
+        assert!(steps <= t.tick_ns && t.longest_tick_ns <= t.tick_ns, "{t:?}");
+        assert!(t.advance_ns + t.roots_ns + t.finalize_ns <= t.drive_ns, "{t:?}");
     }
 
     /// app.md 7, no stall: a backlog of `W_fg` (2 s) at the floor budget. Every tick still ticks agreement and the
