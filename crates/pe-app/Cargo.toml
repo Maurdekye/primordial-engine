@@ -28,6 +28,8 @@ pe-physics = { path = "../pe-physics" }
 getrandom = "0.4"
 # The MCP thread's runtime (app.md 1): pe-mcp's transports run on tokio, the version pe-mcp uses.
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync"] }
+# The Replica trait's `module` returns Bytes, which the phase timer's wrapper passes through (src/phases.rs).
+bytes.workspace = true
 
 # The two-member test: pe-seams's test keys, and Bytes for its in-process Transport.
 [dev-dependencies]
