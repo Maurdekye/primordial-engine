@@ -1001,7 +1001,16 @@ measurements: the build-asymmetry draft, section 3 (@iter-bench and @engine-arch
   folder holds no `rustup` is only a heuristic (a proxy or a package manager's shim copied elsewhere passes it); the
   actual guard is D75's pinned toolchain hash, checked before the toolchain is used (@shader-reviewer, on v7-r1). The minimal set is
   439.8 MiB on disk, 100.5 MiB as an xz download (Windows x86-64; the full rustup install is 1,333 MiB) [V].
-- **The child's environment:** cleared, then a fixed list (the temp folder, `SYSTEMROOT` on Windows) [I]. Its
+- **pe-sdk's folder:** pe-app takes it from `PE_SDK`, else a `pe-sdk` folder (with its `Cargo.toml`) beside its
+  executable, else the source tree it was compiled from, and prints which at start (`builds::sdk`). The first one
+  present must hold pe-sdk's `Cargo.toml`, or it is refused by name and the machine builds no script; it is never
+  passed over for the next (@engine-architect). So a pe-app
+  copied to a machine without the engine's sources, as on the M1 demo's second PC, finds the pe-sdk copied with it
+  (@coordinator-opus). Where the folder sits reaches neither a module (builds remap it to `/pe-sdk`)
+  nor B (which hashes its files' contents).
+- **The child's environment:** cleared, then a fixed list (the temp folder, `SYSTEMROOT` on Windows) [I]; on macOS
+  also `DYLD_FALLBACK_LIBRARY_PATH`, the toolchain's `lib` then dyld's defaults, so rust-lld can load `libLLVM.dylib`
+  (rustup's proxy sets it, and no proxy runs) [V tier 2, run 44237561959 green on macos-arm64]. Its
   working directory is the unpacked crate, `CARGO_HOME` a folder the service owns, and `build_archive` refuses a
   work folder with a cargo configuration (`.cargo/config.toml`) in any folder above it. A `rust-toolchain` file
   there can no longer matter, since no proxy runs. Measured: an environment
