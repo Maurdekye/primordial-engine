@@ -236,6 +236,44 @@ impl Toolchain {
 /// one inherited variable changed the module's hash].
 pub const KEEP_ENV: &[&str] = &["SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "TEMP", "TMP", "TMPDIR"];
 
+/// The one variable the service sets for the toolchain itself rather than keeping it: on macOS, the dynamic loader's
+/// fallback search path: the toolchain's own `lib` folder, then dyld's default list. rust-lld (in
+/// `lib/rustlib/<host>/bin`) links `@rpath/libLLVM.dylib`, and its own rpath reaches only `lib/rustlib/<host>/lib`;
+/// rustup's proxy sets this variable for the programs it starts, and the service, which runs the toolchain directly
+/// with a cleared environment, has to set it itself. Without it dyld aborts rust-lld before it links anything [V tier 2
+/// run 44201283393, macos-arm64: `dyld: Library not loaded: @rpath/libLLVM.dylib`, `signal: 6 (SIGABRT)`;
+/// @provenance-eng]. Setting the variable replaces dyld's default fallback list, so the defaults follow
+/// the toolchain's folder, as rustup does [I, from rustup's source as remembered], except `$HOME/lib`, since `HOME` is
+/// cleared (@engine-architect's Low).
+///
+/// It is not part of the build identity B ([`build_identity`]): it holds this machine's path, and it only decides
+/// where the linker's own library loads from, not what the linker writes. A script can't read it either: an
+/// `option_env!` is an `# env-dep:` line, which [`check_dep_info`] refuses. On every other OS it returns `None`.
+pub fn toolchain_env(tc: &Toolchain) -> Option<(&'static str, std::ffi::OsString)> {
+    if cfg!(target_os = "macos") {
+        let mut v = tc.rustc.parent()?.parent()?.join("lib").into_os_string();
+        v.push(":/usr/local/lib:/lib:/usr/lib");
+        Some(("DYLD_FALLBACK_LIBRARY_PATH", v))
+    } else {
+        None
+    }
+}
+
+/// `cmd` with the environment cleared to [`KEEP_ENV`] and [`toolchain_env`]: every program of the toolchain the
+/// service starts gets exactly this.
+fn cleared_env<'a>(cmd: &'a mut Command, tc: &Toolchain) -> &'a mut Command {
+    cmd.env_clear();
+    for k in KEEP_ENV {
+        if let Some(v) = std::env::var_os(k) {
+            cmd.env(k, v);
+        }
+    }
+    if let Some((k, v)) = toolchain_env(tc) {
+        cmd.env(k, v);
+    }
+    cmd
+}
+
 /// The build's job count, the same on every machine (logic.md 6.2b) [I: 4 builds about as fast as 16 here].
 pub const BUILD_JOBS: u32 = 4;
 
@@ -680,13 +718,8 @@ pub fn build_reporting(
     let encoded = rustflags.join("\u{1f}");
     let mut cmd = Command::new(&tc.cargo);
     // The crate is the working folder, so cargo looks for configuration only above it (6.2b); and the environment
-    // is cleared to KEEP_ENV, so nothing of the engine's process reaches cargo, rustc or the script.
-    cmd.current_dir(crate_dir).env_clear();
-    for k in KEEP_ENV {
-        if let Some(v) = std::env::var_os(k) {
-            cmd.env(k, v);
-        }
-    }
+    // is cleared to KEEP_ENV (and toolchain_env), so nothing of the engine's process reaches cargo, rustc or the script.
+    cleared_env(cmd.current_dir(crate_dir), tc);
     cmd.env("RUSTC", &tc.rustc).env("CARGO_HOME", &cargo_home);
     cmd.arg("rustc")
         // The job count is pinned: the module's bytes do not depend on it, but its peak memory does, which a memory
@@ -1051,12 +1084,7 @@ pub fn check_sdk_manifest(text: &str) -> Result<(), BuildError> {
 
 fn run_rustc(tc: &Toolchain, args: &[&str]) -> Result<String, BuildError> {
     let mut cmd = Command::new(&tc.rustc);
-    cmd.args(args).env_clear();
-    for k in KEEP_ENV {
-        if let Some(v) = std::env::var_os(k) {
-            cmd.env(k, v);
-        }
-    }
+    cleared_env(cmd.args(args), tc);
     let out = cmd.output().map_err(|e| BuildError::Toolchain(format!("{}: {e}", tc.rustc.display())))?;
     if !out.status.success() {
         return Err(BuildError::Toolchain(format!("{} {args:?} failed", tc.rustc.display())));
