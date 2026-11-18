@@ -10,7 +10,8 @@ use crate::error::PhysicsError;
 /// inside it. These bounds are the engine's choice, far outside any planned scene.
 pub mod limits {
     /// Largest coordinate of a body position or a world point, in metres. Physics worlds are
-    /// placed near the bodies they hold (design 5); Box3D positions are `f32` in our build.
+    /// placed near the bodies they hold (design 5). Box3D positions are `f64` in our build (D58's
+    /// `double-precision`, the fork's default); its bounding boxes stay `f32`.
     pub const MAX_POSITION: f64 = 1.0e6;
     /// Smallest and largest radius, half extent, shape offset or hull coordinate, in metres.
     pub const MIN_SIZE: f32 = 1.0e-4;
