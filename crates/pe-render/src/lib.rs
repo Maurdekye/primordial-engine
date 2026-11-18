@@ -78,7 +78,8 @@ pub struct HandJoint {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LocalPresentation {
     /// When this frame is shown: the runtime's predicted display time in VR, now plus one refresh period on the
-    /// desktop.
+    /// desktop. Under X8's Present (VR's default) the VR caller passes the host's now instead (render.md 7): the
+    /// world is drawn at the engine's present, while the eye cameras and `hands` keep the predicted time.
     pub display_time: HostTime,
     /// Indexed by `Hand::index()`.
     pub hands: [Option<DisplayHand>; 2],
