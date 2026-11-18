@@ -2364,10 +2364,55 @@ pub(crate) mod tests {
         a_fault_was_found_and_rung_2_restored_the_ball(&sides, &fault, frames);
     }
 
+    /// What `replay_run` adds to the two members' plain run.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Case {
+        Plain,
+        /// The control: one of B's entries dropped from A's kept log.
+        Dropped,
+        /// The forged pair (`replay_run`).
+        Void,
+        /// Its control: the pair, with seq 2 put back into A's kept log.
+        VoidKept,
+        /// M1's demo step 8: B leaves at frame 300, and once its `Leave` has settled, B stops and A goes on alone.
+        Leave,
+    }
+
+    /// What `replay_run` saw.
+    struct Ran {
+        verdict: crate::replay::Verdict,
+        /// The final cuts A kept.
+        cuts: usize,
+        /// The forged pair's fate on A, in the void cases.
+        forged: Forged,
+        /// The frame B's `Leave` had settled by, in [`Case::Leave`].
+        settled: Option<u64>,
+    }
+
+    /// What became of `replay_run`'s forged pair on A.
+    #[derive(Debug, Default)]
+    struct Forged {
+        /// The pair's void events on A: the entry's index in the pair (0 for seq 1), the reason and the deciding cut.
+        voided: Vec<(usize, pe_seams::agree::VoidReason, pe_seams::agree::CutRef)>,
+        /// Seq 1's last outcome on A: the frame, and whether it applied (so the final state has its object).
+        applied: Option<(Frame, bool)>,
+        /// Whether A's replica ever stepped seq 2 before the cut voided it, which its predicted log decides.
+        stepped: bool,
+    }
+
     /// Two members from the M1 interim's two-member genesis record over sim.rs's hub, B's closed hands sweeping through
-    /// the pit's balls, and A keeping its final log for `--check-replay` ([`crate::replay`]). After 600 frames, A's
-    /// replay of its session from frame 0. `break_log` first drops one of B's entries from the kept log.
-    fn replay_run(break_log: bool) -> (crate::replay::Verdict, usize) {
+    /// the pit's balls, and A keeping its final log for `--check-replay` ([`crate::replay`]). After 600 frames, A
+    /// replays its session from frame 0 ([`Case`] says what else happens).
+    ///
+    /// The void cases: at frame 300 both members receive two edits, each creating an object, on a second chain of B's
+    /// that B's sim never made, signed by B, as a faulty B's entries would come. Seq 1 is stamped 2 frames after a grid
+    /// frame `g` 6 cuts past A's final frame, and seq 2 one frame after `g`: below seq 1's, so back-stamped. B's own
+    /// agreement refuses to submit an entry like seq 2 (`BelowOwnStamp`). No grid frame lies between `g` and either
+    /// stamp, so the first final cut past the pair includes both, on a parent at or below `g`: seq 1 is effective, and
+    /// seq 2 void as back-stamped (S3 v1.1). A's log records the deciding cut's own frames, `g` and up, when that cut is
+    /// final, so a final log that kept seq 2 would make the replay differ. A late entry can't show that: it is stamped
+    /// below its deciding cut's parent, and A recorded those frames before the entry came.
+    fn replay_run(case: Case) -> Ran {
         use pe_agree::Node;
         use pe_seams::test_util::TestKeys;
         const FRAMES: u64 = 600;
@@ -2388,9 +2433,12 @@ pub(crate) mod tests {
         };
         let (genesis, replica_a, config_a) =
             crate::genesis::Genesis::ball_pit(&params, clock.clone(), runner()).expect("A's record");
+        let every = config_a.cut_every(RATE.hz());
+        assert!(every >= 3, "the pair's two stamps fit between grid frames");
         let (replica_b, config_b) = genesis.build(b, clock.clone(), runner()).expect("B's replica");
         let hub = Hub::default();
         let sweep = clock.host_time_of(Frame(FRAMES - 120));
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut sims = Vec::new();
         for (i, (me, replica, config)) in [(a, replica_a, config_a), (b, replica_b, config_b)].into_iter().enumerate() {
             let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
@@ -2401,32 +2449,105 @@ pub(crate) mod tests {
                     .with_local(me, keys.nonce(i, 0), hands)
                     .with_transport(Box::new(Port::new(me, hub.clone())), None);
             if i == 0 {
-                sim = sim.with_replay_check(crate::replay::ReplayLog::new(genesis.clone()));
+                sim = sim
+                    .with_replay_check(crate::replay::ReplayLog::new(genesis.clone()))
+                    .with_event_log(events.clone());
             }
             sims.push(sim);
         }
+        let mut pair: Vec<pe_seams::EntryRef> = Vec::new();
+        let mut void_entry = None;
+        let mut forged = Forged::default();
+        let mut settled = None;
         for f in 1..=FRAMES {
             let now = clock.host_time_of(Frame(f));
             hub.now.store(now.0, Ordering::SeqCst);
-            for s in &mut sims {
+            // Once its leave has settled, B has quit.
+            let running = if settled.is_some() { 1 } else { 2 };
+            for s in &mut sims[..running] {
                 s.tick(now).expect("ticked");
             }
+            if case == Case::Leave && f == 300 {
+                assert_eq!(sims[1].leave_status(), LeaveStatus::Pending);
+                sims[1].leave();
+            } else if case == Case::Leave && f > 300 && settled.is_none() {
+                settled = (sims[1].leave_status() == LeaveStatus::Settled).then_some(f);
+            }
+            if matches!(case, Case::Void | Case::VoidKept) && f == 300 {
+                use pe_world::edit::{Actor, Op, Target, Transaction};
+                let create = || {
+                    let op = Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] };
+                    let tx = Transaction {
+                        inline: vec![],
+                        actor: Actor::Person,
+                        label: None,
+                        preconditions: vec![],
+                        ops: vec![op],
+                        blobs: vec![],
+                    };
+                    tx.encode()
+                };
+                let g = sims[0].agree.final_cut().expect("A has a final cut").cut.at.frame.0 + 6 * every;
+                let mut chain = crate::local::Chain::new(sims[0].agree.line(), b, keys.nonce(1, 1));
+                let mut signed = Vec::new();
+                for stamp in [g + 2, g + 1] {
+                    let e = chain
+                        .entry(sims[0].replica.domain(), Frame(stamp), pe_seams::Class::Edit, create())
+                        .sign(&keys.signer(1));
+                    chain.took(&e);
+                    signed.push(e);
+                }
+                pair = signed.iter().map(|e| e.id()).collect();
+                void_entry = Some(signed[1].clone());
+                let bytes = bytes::Bytes::from(pe_agree::codec::encode(&pe_agree::codec::Wire::Entries(signed)));
+                let mut boxes = hub.boxes.lock().expect("the hub");
+                // A has them from B, and B's node from A, as if relayed: B's sim never made this chain.
+                for (to, from) in [(a, b), (b, a)] {
+                    let q = boxes.entry(to).or_default();
+                    let i = q.partition_point(|m| m.at <= now);
+                    q.insert(i, Received { from, lane: pe_seams::Lane::Action, bytes: bytes.clone(), at: now });
+                }
+            }
+            if let [seq1, seq2] = pair[..] {
+                // The replica keeps outcomes only for a while: the last one seen is the final cut's.
+                if let Some((at, outcome)) = sims[0].replica.outcome(&seq1) {
+                    forged.applied = Some((at, matches!(outcome, pe_seams::Outcome::Applied { .. })));
+                }
+                forged.stepped |= sims[0].replica.outcome(&seq2).is_some();
+            }
+        }
+        if case == Case::Leave {
+            assert!(settled.is_some(), "B's leave settled");
+            assert_eq!(sims[0].other_members(), Vec::<MemberKey>::new(), "A's epoch is A alone");
         }
         let a_sim = &mut sims[0];
+        forged.voided = events
+            .lock()
+            .expect("the events")
+            .iter()
+            .filter_map(|e| match e {
+                AgreeEvent::Voided { entry, reason, cut, .. } => {
+                    pair.iter().position(|x| x == entry).map(|i| (i, *reason, *cut))
+                }
+                _ => None,
+            })
+            .collect();
         let log = a_sim.replay.as_mut().expect("A keeps its log");
-        if break_log {
-            assert!(log.drop_entry(|e| e.entry.author != b), "one of B's entries to drop");
+        match case {
+            Case::Dropped => assert!(log.drop_entry(|e| e.entry.author != b), "one of B's entries to drop"),
+            Case::VoidKept => log.add_entry(void_entry.expect("the pair")),
+            Case::Plain | Case::Void | Case::Leave => {}
         }
         let cuts = log.cuts();
         let replay = a_sim.start_replay().expect("armed").expect("the replay's thread");
-        (replay.join().expect("the replay ends"), cuts)
+        Ran { verdict: replay.join().expect("the replay ends"), cuts, forged, settled }
     }
 
     /// @item:primordial-engine/m1-acceptance-the-live-run-equals-the-replay-a-r: A's replay of its session from frame 0
     /// reaches every final cut's root, B's hand entries and the pit's contacts included.
     #[test]
     fn the_openers_replay_from_frame_0_reaches_every_final_cuts_root() {
-        let (verdict, cuts) = replay_run(false);
+        let Ran { verdict, cuts, .. } = replay_run(Case::Plain);
         println!("{}", verdict.line());
         // About 96 on an idle machine; a slow one finalizes fewer, and any number above a handful shows the replay ran.
         assert!(cuts >= 30, "A kept {cuts} final cuts");
@@ -2440,9 +2561,53 @@ pub(crate) mod tests {
     /// whose root differs.
     #[test]
     fn a_replay_of_a_log_missing_an_entry_differs() {
-        let (verdict, _) = replay_run(true);
+        let verdict = replay_run(Case::Dropped).verdict;
         println!("{}", verdict.line());
         assert!(matches!(verdict, crate::replay::Verdict::Differs { .. }), "{verdict:?}");
+    }
+
+    /// @design-reviewer's L1 on cbd81a02: a void entry inside its deciding cut's frames. The cut
+    /// voids seq 2 of `replay_run`'s forged pair as back-stamped and makes seq 1 effective, and S3's final log, which A
+    /// kept, has seq 1 and not seq 2. The replay steps exactly that log, and reaches every final cut's root: the agreed
+    /// roots were taken with the cut's effective entries only (`Replica::root_at_cut`).
+    #[test]
+    fn the_replay_equals_the_live_run_with_a_void_entry() {
+        use pe_seams::agree::VoidReason;
+        let Ran { verdict, cuts, forged, .. } = replay_run(Case::Void);
+        println!("{} ({forged:?})", verdict.line());
+        assert!(matches!(forged.voided[..], [(1, VoidReason::BackStamped, _)]), "only seq 2 void, as back-stamped");
+        assert!(matches!(forged.applied, Some((_, true))), "seq 1 applied on A, so the replay has to step it");
+        assert!(
+            matches!(verdict, crate::replay::Verdict::Equal { cuts: n, .. } if n == cuts && cuts >= 30),
+            "{verdict:?}"
+        );
+    }
+
+    /// The void case's control: A's kept log with seq 2 put back, as a final log that kept the void entry would be,
+    /// replays to another root at exactly the cut that voided it.
+    #[test]
+    fn a_replay_of_a_log_that_kept_a_void_entry_differs() {
+        use pe_seams::agree::VoidReason;
+        let Ran { verdict, forged, .. } = replay_run(Case::VoidKept);
+        println!("{} ({forged:?})", verdict.line());
+        let [(1, VoidReason::BackStamped, decided)] = forged.voided[..] else {
+            panic!("only seq 2 void, as back-stamped: {forged:?}");
+        };
+        assert!(matches!(verdict, crate::replay::Verdict::Differs { cut, .. } if cut == decided), "{verdict:?}");
+    }
+
+    /// M1's demo step 9 after step 8 (@coordinator-opus): B leaves at frame 300, and once its `Leave` has
+    /// settled B quits, and A goes on alone, in an epoch of A alone. A's replay then reaches every final cut's root, from
+    /// frame 0 through the epoch change to A's cuts alone.
+    #[test]
+    fn the_replay_equals_the_live_run_after_a_member_leaves() {
+        let Ran { verdict, cuts, settled, .. } = replay_run(Case::Leave);
+        let settled = settled.expect("B's leave settled");
+        println!("{} (B's leave settled by frame {settled})", verdict.line());
+        assert!(
+            matches!(verdict, crate::replay::Verdict::Equal { cuts: n, last, .. } if n == cuts && last.0 >= settled + 60),
+            "{verdict:?}"
+        );
     }
 
     /// What both fault tests assert of a run.
