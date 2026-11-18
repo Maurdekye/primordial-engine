@@ -583,6 +583,34 @@ the invite or the reply names. With the default listen address it is required, s
 between the user's machines over Tailscale it is the machine's Tailscale address. `--seconds <n>` ends a run after
 `n` seconds. Without `--open` or `--join` the world runs alone.
 
+**Step 7's fault** (fault.rs; @coordinator-opus). The plan's step 7
+injects a fault on B. Two runtime flags arm it, and they exclude each other. Neither is a cargo feature, so the
+shipped build meets the feature policy.
+- `--arm-fault`, which the demo uses: typing `fault` and Enter in B's console fires it at the next frame B steps,
+  `F`, and the console names `F`. Without the flag, `fault` is refused on any machine. Every machine's console reads
+  commands: `fault`, and on A also a joiner's reply code.
+- `--inject-fault-at <F>`: it fires at session frame `F`, fixed at start. B's console prints the frame it joined at;
+  the world runs at 60 Hz.
+
+B's console says what it will do when a flag arms it, and says it again when the fault fires. Once `F` is set:
+- At the end of frame `F`, B doubles one ball's radius in its own world (its `Shape` row): the highest dynamic sphere
+  then. B draws that ball larger, and its leaf in B's hash tree differs. Nothing is sent, and A and the log don't
+  change. A frame below B's first one never fires, and B's console says so when it joins.
+- The fault repeats each time B steps `F` (live, in a re-simulation, in rung 1's replay), as on a machine that
+  computes `F` wrongly. At n = 2 every divergence is a root split, and a split's first step is rung 1 on both members
+  (divergence.md 5). A fault that happened only once would be cured there, and rung 2 would never run.
+- From the first firing, B reports its physics self-test as `Failed`, by injection. At n = 2 with both self-tests
+  passing, which member repairs is an arbitrary pick; this makes A the reference. B's self-test notice and every
+  bundle B writes say that the failure is injected, and the notice gives the real self-test's result.
+- So at the next cut the roots split, and B's rung 1 fails because its replay repeats the fault. A is the reference.
+  B's rung 2 walks the tree to the ball, fetches A's record of it with the physics image, and imports both. B then
+  draws the ball at its own size again. Both machines write the split's bundle; B also writes its rung-2 bundle.
+- B's first rung 2 fails (section 7): A answers that it doesn't hold its root at the split cut. The cure comes from
+  the second attempt, at the cut agreement proposes again a few frames later. So B's console shows a `RungFailed`
+  before the cure (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t).
+- At n = 2 none of these bundles can be replayed: a split's repair captures no replay evidence (divergence.md 6;
+  @item:primordial-engine/replay-evidence-for-a-root-split-s-rung-2-repair). The demo shows them instead.
+
 **Finality at n = 2.** The quorum of two members is both (q = 2): a cut is final only when both have voted for it.
 So finality follows the slower machine, and while either machine stalls or its link is down, nothing new becomes
 final on either, though both keep simulating their predictions.
@@ -654,6 +682,33 @@ final on either, though both keep simulating their predictions.
   world has no hands for it; with a script in A's world, the join is refused before any `Admit`; and with a B that
   never starts (a test hook) and `T_join` shortened, A's console reports the failed join. Also, with B's fetch held
   past a shortened `T_join` and then let go, A takes the failed-join line back once the cut is final.
+- **An injected fault** (section 6, step 7's fault), in release only: two pe-world members with pe-diverge over sim.rs's
+  hub, member 1 with the fault at frame 121.
+  - Why release only [V]: in a loaded debug run the split never healed. Agreement re-proposed the split cut every
+    6 frames, and each new episode overtook member 1's rung 2
+    (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t). The test returns to the default set
+    once that item is fixed.
+  - [V] Member 1 draws the ball at 0.12 m and then at 0.06 m again, while member 0 never draws it changed. Both see
+    a root split, which ends. Member 1 is cured by rung 2, and member 0 isn't repaired. Member 1's self-test fails by
+    injection, while its real self-test passes. Both write bundles, and only member 1's say "BY INJECTION". Finality
+    resumes on both. The fault's frame was stepped 3 times.
+  - In every run (6 of 6), member 1's first rung 2, at the split cut, fails with one source fault (`source_faults`
+    1, `busy_rotations` 0; member 0's `serve_refused` 0). A probe showed it was member 0's `NotHeld` for its root at
+    that cut. The split's next episode, at the cut proposed again 6 frames later, cures it
+    (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t, @design-reviewer's Low).
+  - Reds, each failing that test:
+    - with the flag ignored, nothing fires;
+    - with a fault that fires only once, the split's rung 1 cures it, and no rung 2 runs.
+
+  The same test with `--arm-fault` [V]: `fault`, typed before host frame 121's tick, fires at frame 121, the next
+  frame member 1's replica steps, and the console names it. The repair is the same.
+
+  fault.rs's unit tests cover:
+  - one ball doubled at its frame only;
+  - the same fault on a re-step;
+  - no change without a fault;
+  - a typed `fault` firing at the frame the simulation names, and refused when typed twice, without `--arm-fault`,
+    or for `--inject-fault-at`'s fault.
 - **The two-process session** of section 6, on Windows and Linux.
 
 ## 8. Open points
