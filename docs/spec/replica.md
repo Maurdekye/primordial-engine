@@ -529,15 +529,22 @@ pe-replica puts the physics into it in two places, both written at each cut fram
   - A take_root costs 9.5-10 ms:
     - the per-body digests and `physics_global`, 3.7-4.2 ms. Most of that is serializing the canonical transfer
       (1.59 MB at 500 balls) and hashing it;
-    - pe-world's `write_physics`, 4.9-5.9 ms. It rewrites every `BodyState` row, so every object's leaf is rehashed,
-      sleeping balls' included;
+    - pe-world's `write_physics`, 4.9-5.9 ms. It rewrote every `BodyState` row then, so every object's leaf was
+      rehashed, sleeping balls' included;
     - the root, 0.3-0.4 ms.
   - At 200 balls, alone on the laptop, a take_root costs 3.1 ms.
   - With a cut every 8 frames at 60 Hz that is about 1.2 ms a frame of the live history. The cost per second follows
     the cut interval, not the tick rate.
-  - **Not built:** writing only the rows that changed (pe-world's `write_physics`). It waits on a measurement of how
-    many balls are awake in a session. M2's incremental images cache the hashes of unchanged chunks, and sleeping
-    bodies' digests.
+  - **Writing only the rows that changed** (L3a, @coordinator-opus). When the bodies are the ones the
+    column holds, pe-world's `write_physics` overwrites only the rows whose bytes changed, so only those objects'
+    leaves are rehashed; when a body joined or left, it rewrites the column as before. The result is the same either
+    way, row versions included.
+    - How many rows change [V, 2026-11-18, two headless pe-apps on one machine, diag/root-split-3]: in an untouched
+      500-ball session, 3,547 of the 298,960 rows that 592 take_roots wrote changed, all in the first 0.7 s, before the
+      pit fell asleep. One push into the settled pit wakes 2 to 4 balls: the preset sets its 0.12 m balls 0.15 m
+      apart in two layers, so each ball or two-ball stack is its own island. A played-in pit, with balls heaped
+      against the walls, is unmeasured; larger islands wake whole.
+    - M2's incremental images cache the hashes of unchanged chunks, and sleeping bodies' digests.
 - **pe-physics's per-frame XXH64 state hash** (`state_hash`) stays internal, as a cheap "did anything change" check.
   Nobody votes with it.
 
