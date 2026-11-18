@@ -171,6 +171,18 @@ fn suite() -> Vec<Check> {
         Check { name: "walk-n4-v4-lock", model: Cuts::new(4, Byzantine, 4, 1, 0, quiet, 2).fixed_frames(), expect_fail: &[], random: true, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "twin of ctl-nolock, unmutated, random walks for 120 s" },
         // The size bound, not a control: at n = 3, t = 0, so one equivocating voter splits the two honest members.
         Check { name: "bound-n3-byz", model: Cuts::new(3, Byzantine, 4, 1, 0, quiet, 0), expect_fail: &["agreement"], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "3 members, one Byzantine: t = 0, agreement must fail (why n >= 4)" },
+        // v0.3, the revote case (coordinator): a wrong root, a repair at any time after the member's first
+        // vote, and its correct vote in a later view (a member votes once per view). Lock and finality are unchanged.
+        Check { name: "n2-repair-live", model: Cuts::new(2, None, 6, 1, 1, none, 0).corrupt(1).repairable().live(), expect_fail: &[], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "2 members, member 1's root wrong until repaired, liveness: final with the right root" },
+        Check { name: "bound-n2-wrongroot", model: Cuts::new(2, None, 6, 1, 1, none, 0).corrupt(1).live(), expect_fail: &["liveness: every end state has a final cut at every honest member"], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "2 members, member 1's root wrong and never repaired: nothing is final (why the repair must reach a later view)" },
+        Check { name: "n3-root-repair", model: n3(none).corrupt(2).repairable(), expect_fail: &[], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "3 members, author-faulty, member 2's root wrong until repaired, safety" },
+        Check { name: "n4-root-repair", model: n4(quiet).corrupt(3).repairable(), expect_fail: &[], random: false, depth: Some(18), budget_s: NO_BUDGET, what: "4 members, Byzantine, member 3's root wrong until repaired, safety" },
+        // The pinned split cut (L4', coordinator): a repair that takes k views, for its episode's cut. With
+        // the pin, the split cut is proposed again until it is certified, so the repair finishes and the cut ends final;
+        // without it (NoPin, a newer frame each view), every view is a new episode and nothing is ever final.
+        Check { name: "n2-pin-k2", model: Cuts::new(2, None, 8, 1, 1, none, 0).fixed_frames().corrupt(1).repair_in(2).live(), expect_fail: &[], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "2 members, member 1's root wrong until a repair of 2 views at its split cut, pinned: final" },
+        Check { name: "n2-pin-k3", model: Cuts::new(2, None, 9, 1, 1, none, 0).fixed_frames().corrupt(1).repair_in(3).live(), expect_fail: &[], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "the same, a repair of 3 views, 9 views" },
+        Check { name: "ctl-nopin", model: Cuts::new(2, None, 8, 1, 1, none, 0).fixed_frames().corrupt(1).repair_in(2).live().mutate(NoPin), expect_fail: &["liveness: every end state has a final cut at every honest member"], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "the same without the pin: each re-proposal at a newer frame restarts the repair" },
         // Controls.
         Check { name: "ctl-d1", model: n3(chain).mutate(VoteWithoutChainValidation), expect_fail: &["no final frame undone"], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "d1: vote without validating each chain in order" },
         Check { name: "ctl-unchecked", model: n4(sig).mutate(AcceptProposalUnchecked), expect_fail: &["validity: chains"], random: false, depth: UNBOUNDED, budget_s: NO_BUDGET, what: "accept the proposer's cut unchecked" },
