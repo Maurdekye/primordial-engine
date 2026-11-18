@@ -446,7 +446,9 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     the same gap stays lowest; a new lowest gap starts the back-off at 1 s again but keeps the earlier due time, so
     gaps that keep changing (orphans from a faulty proposer whose parents nobody serves) can't put a re-send off for
     good (@design-reviewer's L1 on aec278df). Orphans count oldest first. A gap filled within a round trip sends nothing
-    extra. The set of blocks asked for is pruned at each commit to what is still needed (the blocks held without their
+    extra. A longer honest catch-up (a chain of missing blocks, one round trip each, past 1 s) re-sends about once a
+    second for a gap the ordinary fetch has just asked for: the price of keeping the due time, and harmless
+    (@design-reviewer's nit on e2c351fc). The set of blocks asked for is pruned at each commit to what is still needed (the blocks held without their
     parent and the gaps), so ids nobody serves don't accumulate.
     - Tests (pe-agree): n = 3, one member cut off for 2 s, the first fetch it sends afterwards lost. It catches up,
       and the final logs match (without the re-send it stays at its last final frame for good). Runs with nothing lost
