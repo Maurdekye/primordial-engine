@@ -70,6 +70,10 @@ pub enum Mutation {
     NoFrameCheck,
     /// A proposer with nothing new proposes nothing (v0.1, condition 5): the last content cut never gets its child.
     SkipEmptyCut,
+    /// L4' without the pinned split cut (coordinator mff2b493b8111): after a root split the leader re-proposes at a newer
+    /// frame (time moved on; the voter's present moves with it, so the frame's upper bound doesn't apply), so the repair's
+    /// cut is never proposed again and each newer cut restarts the repair.
+    NoPin,
 }
 
 /// How a member's adaptive timeout comes back down (the backoff profile; coordinator mdf35a62dc095, @fable-reviewer
@@ -142,6 +146,16 @@ pub struct Cuts {
     /// A fault-injected honest member whose replica computes a wrong root (WS-diverge 3.2): it runs the protocol
     /// honestly, but its votes carry the wrong root.
     pub corrupt: Option<u8>,
+    /// v0.3, the revote case (coordinator m0901fd194db2): the corrupt member may repair its replica at any time after
+    /// its first vote; from then on it computes the right root. A member still votes once per view, so the repaired
+    /// root counts only from its next view's vote (pe-agree's `AlreadyVotedThisView`).
+    pub repair: bool,
+    /// The pinned-cut case (coordinator mff2b493b8111): when non-zero, the corrupt member's repair takes this many views
+    /// and is for one cut, the split cut its episode started at (pe-diverge imports the reference's state there): its
+    /// root is right for that cut and what descends from it, wrong for any other cut at that height. A vote on another
+    /// wrong-rooted cut starts a new episode, with the repair from scratch (pe-diverge's ladder restarts at a new cut).
+    /// A leader whose parent has a split child proposes that child's cut again (the pin). 0: v0.3's repair, for any cut.
+    pub repair_views: u8,
     pub entries: Vec<EntryDef>,
     /// Proposers choose the cut's frame (v0.1). Off, every cut names its parent's frame + K: for the lock checks, whose
     /// attack is on certificates, not frames, and whose bounded space grows fourfold with the Byzantine frame choice.
@@ -193,7 +207,7 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, entries, frame_choice: true, early: 0, backoff: None, progress: false, reputation: false }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, repair: false, repair_views: 0, entries, frame_choice: true, early: 0, backoff: None, progress: false, reputation: false }
     }
 
     pub fn progress(mut self) -> Self {
@@ -227,6 +241,47 @@ impl Cuts {
     pub fn fixed_frames(mut self) -> Self {
         self.frame_choice = false;
         self
+    }
+
+    pub fn repairable(mut self) -> Self {
+        self.repair = true;
+        self
+    }
+
+    /// The pinned-cut case: a repair that takes `k` views, for its episode's cut ([`Cuts::repair_views`]).
+    pub fn repair_in(mut self, k: u8) -> Self {
+        self.repair = true;
+        self.repair_views = k;
+        self
+    }
+
+    /// The root member m computes for block `b`, given its state (v0.3's repair, or the pinned-cut case's).
+    fn root_for(&self, m: u8, mm: &Member, b: &Block) -> bool {
+        if self.own_root(m) {
+            return true;
+        }
+        if self.repair_views == 0 {
+            return mm.repaired;
+        }
+        let ep = mm.episode;
+        mm.repaired && ep.h >= 1 && b.h >= ep.h && same_cut(&b.ancestor(ep.h), &ep)
+    }
+
+    /// The latest-view block on `parent` whose votes split (two voters, different roots), if any: what the pin
+    /// re-proposes.
+    fn split_child(&self, s: &State, parent: &Block) -> Option<Block> {
+        let mut best: Option<Block> = None;
+        for m in &s.net {
+            let Msg::Vote { block, root, .. } = m else { continue };
+            if block.h != parent.h + 1 || block.parent() != *parent {
+                continue;
+            }
+            let split = s.net.iter().any(|o| matches!(o, Msg::Vote { block: b2, root: r2, .. } if b2 == block && r2 != root));
+            if split && best.is_none_or(|b| block.view() > b.view()) {
+                best = Some(*block);
+            }
+        }
+        best
     }
 
     pub fn corrupt(mut self, m: u8) -> Self {
@@ -411,7 +466,8 @@ impl Cuts {
             return true;
         }
         let hi = block.frame();
-        if self.mutation != Some(Mutation::NoFrameCheck) && !(parent.frame() < hi && hi <= parent.frame() + FRAME_STEP_MAX) {
+        let no_cap = self.mutation == Some(Mutation::NoPin);
+        if self.mutation != Some(Mutation::NoFrameCheck) && !(parent.frame() < hi && (no_cap || hi <= parent.frame() + FRAME_STEP_MAX)) {
             return false;
         }
         if h > self.heights {
@@ -592,7 +648,7 @@ impl Cuts {
     fn note_cert(&self, mm: &mut Member, me: u8, c: Cert) {
         let x = c.block;
         // RootSplit: a quorum's root for this block is not the one this member computed.
-        if x.h > 0 && self.roots() && c.root != self.own_root(me) {
+        if x.h > 0 && self.roots() && c.root != self.root_for(me, mm, &x) {
             mm.split = true;
         }
         if x.view() > mm.high.block.view() {
@@ -643,7 +699,14 @@ impl Cuts {
         let leader_ok = self.leader_in(v, &self.committed_in(&p)) == Some(block.proposer());
         if leader_ok && v == mm.view && v > mm.voted && v > mm.timed_out && v <= self.views && lock_ok && self.cut_ok(&block, mm.held) {
             mm.voted = v;
-            s.net.insert(Msg::Vote { voter: m, block, root: self.own_root(m) });
+            let root = self.root_for(m, &mm, &block);
+            if self.repair_views > 0 && !root && !same_cut(&block, &mm.episode) {
+                // A wrong root at another cut: a new episode, the repair from scratch.
+                mm.episode = block;
+                mm.progress = 0;
+                mm.repaired = false;
+            }
+            s.net.insert(Msg::Vote { voter: m, block, root });
         }
         s.m[m as usize] = mm;
     }
@@ -699,6 +762,14 @@ impl Cuts {
             }
             if with_timeouts {
                 acts.push(Action::Timeout(m));
+            }
+            if self.repair
+                && self.corrupt == Some(m)
+                && !mm.repaired
+                && mm.voted > 0
+                && (self.repair_views == 0 || (mm.episode.h > 0 && mm.repair_view < mm.view))
+            {
+                acts.push(Action::Repair(m));
             }
         }
     }
@@ -801,6 +872,11 @@ pub struct Block {
     /// proposers[k]: who proposed the cut at height k + 1 (v0.2, @design-reviewer m.. bounded progress, and the
     /// voter's leader check).
     pub proposers: [u8; HMAX],
+}
+
+/// Two blocks carry the same cut: the same parent, frame and heads (their views and proposers may differ).
+fn same_cut(a: &Block, b: &Block) -> bool {
+    a.h == b.h && a.h >= 1 && a.parent() == b.parent() && a.frame() == b.frame() && a.cut() == b.cut()
 }
 
 impl Block {
@@ -914,11 +990,19 @@ pub struct Member {
     pub split: bool,
     /// Its backoff count (the backoff profile): timeouts fired, lowered by the profile's rule, capped at K.
     pub backoff: u8,
+    /// Its replica was repaired (v0.3): it computes the right root from now on (for its episode's cut, in the
+    /// pinned-cut case).
+    pub repaired: bool,
+    /// The pinned-cut case: the split block its repair is for (h 0: none), the views of repair done, and the last view
+    /// it made a step in.
+    pub episode: Block,
+    pub progress: u8,
+    pub repair_view: u8,
 }
 
 impl Member {
     fn new(held: u16) -> Member {
-        Member { view: 1, voted: 0, timed_out: 0, proposed: 0, high: Cert::GENESIS, held, committed: Block::GENESIS, undone: false, split: false, backoff: 0 }
+        Member { view: 1, voted: 0, timed_out: 0, proposed: 0, high: Cert::GENESIS, held, committed: Block::GENESIS, undone: false, split: false, backoff: 0, repaired: false, episode: Block::GENESIS, progress: 0, repair_view: 0 }
     }
 }
 
@@ -940,6 +1024,8 @@ pub enum Action {
     /// A member collects a quorum of votes for a block.
     Observe(u8, Cert),
     Timeout(u8),
+    /// The corrupt member's replica is repaired (v0.3).
+    Repair(u8),
     /// A member forms a timeout certificate for its view, adopting the given certificate from it.
     AdvanceTc(u8, Cert),
     /// A leader proposes; true names the frame 2K above the parent's (catching up), false K above.
@@ -1015,6 +1101,23 @@ impl Model for Cuts {
                     s.early += 1; // fired before the network settled
                 }
             }
+            Action::Repair(m) => {
+                let mm = &mut s.m[m as usize];
+                if mm.repaired || self.corrupt != Some(m) || mm.voted == 0 {
+                    return None;
+                }
+                if self.repair_views == 0 {
+                    mm.repaired = true;
+                } else {
+                    // One step of the repair per view (the ladder's steps take time; a split view ends at once).
+                    if mm.episode.h == 0 || mm.repair_view >= mm.view {
+                        return None;
+                    }
+                    mm.repair_view = mm.view;
+                    mm.progress += 1;
+                    mm.repaired = mm.progress >= self.repair_views;
+                }
+            }
             Action::AdvanceTc(m, o) => {
                 let mut mm = s.m[m as usize];
                 let v = mm.view;
@@ -1048,12 +1151,38 @@ impl Model for Cuts {
                 if wide && parent.h >= self.heights {
                     return None; // beyond the content heights the frame bears on no verdict: K only
                 }
-                let frame = parent.frame() + if wide { FRAME_STEP_MAX } else { FRAMES };
-                let (cut, carried) = self.build_cut(m, &parent, mm.held, frame);
-                if self.mutation == Some(Mutation::SkipEmptyCut) && cut == parent.cut() {
-                    return None;
-                }
-                let block = parent.child(v, frame, cut, m);
+                let pinned = if self.repair_views > 0 { self.split_child(&s, &parent) } else { None };
+                let (block, carried) = match pinned {
+                    // The pin (L4'): the split cut again, frame and heads, until the height is certified.
+                    Some(b) if self.mutation != Some(Mutation::NoPin) => {
+                        if wide {
+                            return None;
+                        }
+                        (parent.child(v, b.frame(), b.cut(), m), 0)
+                    }
+                    _ => {
+                        let mut frame = parent.frame() + if wide { FRAME_STEP_MAX } else { FRAMES };
+                        if self.mutation == Some(Mutation::NoPin) {
+                            // Time moved on: a re-proposal on this parent names a newer frame than any before it.
+                            let newest = s
+                                .net
+                                .iter()
+                                .filter_map(|x| match x {
+                                    Msg::Propose { block, .. } if block.h == parent.h + 1 && block.parent() == parent => Some(block.frame()),
+                                    _ => None,
+                                })
+                                .max();
+                            if let Some(f) = newest {
+                                frame = frame.max(f + FRAMES);
+                            }
+                        }
+                        let (cut, carried) = self.build_cut(m, &parent, mm.held, frame);
+                        if self.mutation == Some(Mutation::SkipEmptyCut) && cut == parent.cut() {
+                            return None;
+                        }
+                        (parent.child(v, frame, cut, m), carried)
+                    }
+                };
                 mm.proposed = v;
                 s.m[m as usize] = mm;
                 s.net.insert(Msg::Propose { block, proot, tc, carried });
@@ -1138,7 +1267,7 @@ impl Model for Cuts {
             Property::always("root: a diverged replica learns it at the cut", |c: &Cuts, s: &State| {
                 (0..c.n).filter(|&m| c.honest(m)).all(|m| {
                     let mm = &s.m[m as usize];
-                    mm.committed.h == 0 || c.own_root(m) || mm.split
+                    mm.committed.h == 0 || c.own_root(m) || mm.repaired || mm.split
                 })
             }),
             Property::sometimes("a cut is final", |c: &Cuts, s: &State| (0..c.n).any(|m| c.honest(m) && s.m[m as usize].committed.h >= 1)),
@@ -1181,7 +1310,12 @@ impl Model for Cuts {
                 })
             }));
         }
-        if self.corrupt.is_some() {
+        if self.corrupt.is_some() && self.repair {
+            p.push(Property::sometimes("a repaired replica finalizes with the right root", |c: &Cuts, s: &State| {
+                c.corrupt.is_some_and(|m| s.m[m as usize].repaired && s.m[m as usize].committed.h >= 1)
+            }));
+        }
+        if self.corrupt.is_some() && !self.repair {
             p.push(Property::sometimes("a diverged replica sees RootSplit", |c: &Cuts, s: &State| {
                 (0..c.n).any(|m| c.honest(m) && s.m[m as usize].split && s.m[m as usize].committed.h >= 1)
             }));
