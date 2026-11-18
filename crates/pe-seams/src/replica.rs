@@ -589,8 +589,9 @@ pub enum ImportError {
     /// is out of order (S2 v1.8; world-model.md 3.4).
     BadBlob(usize),
     /// An imported row's inline-class blob is neither in `blobs` nor on this machine, so the import is refused (S2
-    /// v1.8; world-model.md 3.4): a simulation blob, without which the world could step differently here, or a
-    /// display blob such as a name, which nothing would fetch later. The repair asks another donor.
+    /// v1.8, widened to display blobs in inline blobs phase 3b; world-model.md 3.4): a simulation blob, without which
+    /// the world could step differently here, or a display blob such as a name, which nothing would fetch later. The
+    /// repair asks another donor.
     MissingBlob(Hash),
 }
 
