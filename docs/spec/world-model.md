@@ -1836,10 +1836,12 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
 - **Release** ends the author's claim at once, with no cooldown (pe-session put the cooldown on expiry only).
 - **A throw** (`Throw`; the weak-throw fix, @coordinator-opus m0559d0ae1114, with @fable-reviewer's amendments
   mf1a498edbee5) [I, for review] is a release that carries the velocity the holder's hand gave the object as it let
-  go. The client measures it at the real opening, from its ring of hand samples (the "now" sample): `linear` is the
-  hand's linear velocity plus its angular velocity × the offset from the hand to the object's centre of mass, and
-  `angular` the hand's angular velocity, both in the world frame. Without it a thrown object left with whatever the
-  hold's spring had given it, which lagged the hand.
+  go: `linear` is the hand's linear velocity plus its angular velocity × the offset from the hand to the object's
+  centre of mass, and `angular` the hand's angular velocity, both in the world frame. The entry doesn't say how the
+  client measured it; in M1 pe-app takes the ring's "now" sample at the real opening and logs it with the peak over
+  the last ~50 ms of each throw, so a window can be tuned later with no format change. Without it a thrown object
+  left with whatever the hold's spring had given it, which lagged the hand. A residual stays [I]: the opening is
+  detected late, so the object leaves about 10 cm late along the swing (½·a·t² at 25 m/s² over 90 ms).
   - **In pe-world:** only the holder's throw counts. Anyone else's changes nothing and notes `NoEffect`, like a
     `Release`; a non-finite value refuses it (`Invalid`), and the claim stays. The holder's ends the claim exactly as
     `Release` does, and reaches the physics as a `Thrown` in the entry's footprint [V `tests/input.rs`,
@@ -1847,14 +1849,19 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
   - **In the physics** (pe-replica, as the entry applies, the way a push goes): if the object is with the hand,
     judged against the hold's joint (the hand body's anchor to the object), neither blocked nor stretched past the
     tight hold's break-away distance (render.md D4), its velocity becomes the throw's, capped; the joint is gone
-    before the frame's physics step (@engine-architect me1fb55584ba2). The linear speed is capped at `max_push_speed`, the
-    vector scaled down with its direction kept. The angular speed is capped so that the spin moves the object's rim
-    at most at `max_push_speed`: `|ω| ≤ max_push_speed / R`, `R` the object's bounding radius about its centre of
-    mass. A small ball may spin fast, a long object only slowly, and no point of a thrown object leaves faster than
-    twice the cap, inside the speeds continuous collision is measured to hold (8.1's pushes). Box3D's own limit of
-    45 degrees a tick (replica.md 3.5) applies beyond it. Otherwise (blocked, or stretched past break-away) the
-    object keeps its solver velocity, as a `Release` leaves it.
-  - A `Release` sets no velocity; an agent with no hand releases, or pushes.
+    before the frame's physics step (@engine-architect me1fb55584ba2). The linear speed is capped at `max_push_speed`,
+    the vector scaled down with its direction kept. The angular speed is capped so that the spin moves the object's rim
+    at most at `max_push_speed`: `|ω| ≤ max_push_speed / R`, `R` the object's bounding radius about its centre of mass.
+    A small ball may spin fast, a long object only slowly, and no point of a thrown object leaves faster than twice the
+    cap, inside the speeds continuous collision is measured to hold (8.1's pushes). Box3D's own limit of 45 degrees a
+    tick (replica.md 3.5) applies beyond it. Otherwise (blocked, or stretched past break-away) the object keeps its
+    solver velocity, as a `Release` leaves it.
+  - **Order:** a `Release` and a `Throw` are entries like any other, applied in agreed order. The first of them by
+    the holder ends the claim; a later one finds no claim and notes `NoEffect`, so a release after a throw takes
+    nothing back, and a throw after a release sets no velocity.
+  - A `Release` sets no velocity; an agent with no hand releases, or pushes. A throw whose velocity doesn't match the
+    hand's visible motion is a trust question (the trust survey's entry); a check against the recorded hand motion
+    can come after M1.
 - **A hand's mode** (D18b; @coordinator-opus ma93ce7600de1, after @vdw-physics m7a559f785a77). Whether a hand has
   a physics body changes the simulation, so every peer reads it from the world, never from a local toggle; and the
   user switches it within a session, so it is not a frozen config item (6.6). It is a **personal comfort choice,
