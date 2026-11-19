@@ -376,7 +376,82 @@ which fixes the origin's role deliberately.
     done through density (@chunks-reviewer's r5 Low, a note for @api-eng's schema mapping);
   - a body's shapes are its own `Shape` plus those of its descendants that have no `Body` of their own, in id order,
     up to 64 (a compound body: a table is one body with five boxes);
-  - a mesh shape is for static bodies only; a dynamic body uses primitives or a hull (`SimBlobRef`).
+  - **a mesh shape may be on any body, moving ones included** (the user answer 1; [I, draft for
+    @fable-reviewer, built in the bullet work's part 2 after M1, with hulls, which can't be built today either
+    (replica.md 2.1)]; @coordinator-opus's decisions, after @fable-reviewer):
+    - **it never collides with another mesh.** It collides with spheres, capsules, boxes and hulls: Box3D has no
+      mesh-against-mesh contact [V `box3d-fork/src/contact/lifecycle.rs`, `can_collide`]. So two moving meshes pass
+      through each other, and a moving object made only of meshes falls through mesh scenery, a mesh floor included;
+      it needs a primitive or a hull among its shapes. A bullet (below) doesn't change this, since a bullet's own
+      shapes are primitives. Lifting the limit would take a new narrow phase in the fork (about 2-4 engineer-weeks
+      [I, @fable-reviewer]); the usual answer for a concave object that rests on meshes is splitting it into hulls
+      at import;
+    - **its mass** is its density times the volume it encloses, with that solid's centre of mass and inertia, found
+      by the divergence theorem: one signed tetrahedron per triangle, in the blob's triangle order, from the centre of
+      the mesh's bounding box, summed in `f64` and rounded to `f32` once (a sum from the shape's origin in `f32` loses
+      precision for a mesh far from it), with the body's world scale applied first, computed by pe-physics in one
+      fixed order like every mass. Only a **closed** mesh encloses a volume:
+      - closed means every edge is in exactly two triangles, once each way, edges compared by their vertices'
+        **positions**, bit for bit with −0 read as +0, not by index: exporters split vertices at seams and hard
+        edges, and a closed mesh would otherwise read as open. A triangle with two equal vertex positions encloses
+        nothing and is left out of both the test and the sum. Two closed solids that share an edge or a face read
+        as open, since that edge is in four triangles (@fable-reviewer), and the inspector names that
+        reason;
+      - a scale with an odd number of negative axes mirrors the mesh and so reverses its winding; the sum reads it
+        reversed back, so a mirrored closed mesh keeps its positive volume;
+      - the volume must be at least 10⁻⁹ m³ (a 1 mm cube) [I, a floor to tune]. Below it, or negative (wound
+        inward), or open, the mesh has no mass, and still collides.
+
+      A dynamic body whose shapes together have no mass can't be built (`Unbuildable::Mass`, a fault like replica.md
+      2.1's other unbuildable bodies): Box3D would give it an inverse mass of 0, so it would answer no force [V
+      `box3d-fork/src/body/mass.rs`], and a refusal shows the missing mass instead. The inspector and the import path
+      say why and what to do: close the mesh, or add a primitive or a hull with a density. A static or kinematic body
+      takes no mass, so any mesh suits it, open or closed. The mass is computed when the body is built or rebuilt,
+      once per mesh, linear in its triangles. Considered and set aside: the convex hull's mass (any mesh has one, but
+      a concave one weighs as if filled, a bowl as a solid dome) and the bounding box's (cruder still). This rule can
+      be loosened later without changing any built world (an open mesh would go from unbuildable to buildable), where
+      starting from the hull's mass and switching later would change masses in existing worlds (@fable-reviewer);
+  - a hull is a convex `SimBlobRef`, on any body, its mass Box3D's.
+- **The bullet flag, `Body.bullet`** (the user's rulings answers 2 and
+  4; the method @fable-reviewer's with @astra-deliberator; [I, draft for
+  @fable-reviewer, built after M1 as @item:primordial-engine/pe-physics-and-box3d-fork-continuous-collision-a's parts
+  1-3]):
+  - **What it means.** If either body of a pair is a bullet, and the pair collides at all, it is swept: within each
+    solver sub-step, before the sub-step's motion is accepted, the pair's earliest time of impact along both bodies'
+    paths (turns included) is found, so its contact is never skipped, however fast either moves. At that time the
+    two respond as any contact does, with the pair's ordinary restitution and friction, by an impulse at the contact
+    point's velocity (spin included), and the rest of the sub-step is swept again. That holds whatever the partner:
+    static, kinematic or dynamic, awake or asleep, a primitive, a hull, a mesh (still or moving; a moving mesh is
+    swept in its own frame) or another bullet. A pair that doesn't collide today isn't swept either: one a filter or
+    a sensor excludes, two bodies whose joint disables their collision, a kinematic or static body against a static
+    or kinematic one, and a mesh against a mesh. A pair with no bullet is as today: Box3D's continuous collision
+    against static shapes (8.1). replica.md will hold the solver's side.
+  - **Which bodies.** It takes effect on a dynamic or kinematic body whose shapes are all spheres, capsules and boxes
+    (a compound of them is swept shape by shape, with the body's motion). On any other body (one with a hull or a
+    mesh, or a static body) the flag is kept, hashed and shown, has no effect, and the inspector says why. It isn't
+    refused: whether it takes effect depends on the body's shapes, other rows a later edit may change, and an edit's
+    validity never depends on rows it doesn't write. Triangle bullets are out for now (answer 2).
+  - **Off unless someone turns it on.** The flag is 0 on every body until an edit sets it: no shape, preset,
+    template, script default, avatar format or world logic turns it on. A bullet is expected to cost
+    far more than an ordinary body and to be used on a few objects at a time, or on short-lived ones such as fired
+    projectiles. Every member's machine pays for each bullet, and avatar hands are player-authored, so a per-member
+    or per-world limit beside `max_claims` (8.1) is an open point for avatars (refound plan, piece 10).
+  - **Its cost falls on bullets' pairs only.** A body in no pair with a bullet does no extra work, and a world with
+    no bullet steps bit-identically to one built without the feature. A non-bullet partner's motion can change (it
+    is bounced or held), and a sleeping bullet may still cost a search each step [I]. A bullet's cost is its pairs'
+    sweeps, counted per step in the physics counters. Making or removing a bullet costs what any body's does: nothing
+    is prepared for it beyond its shapes, so many short-lived bullets stay cheap.
+  - **The budget is a count, the same everywhere.** A sub-step's sweeps are bounded by a fixed number of
+    time-of-impact iterations, a world physics setting every member has the same, never a time; its value is part
+    1's to measure. When it runs out, every body that could still cross something that sub-step is held at its last
+    time proven safe: bullets and their partners, kinematic ones included. A held kinematic body lags its target for
+    that sub-step and catches up after, as a capped hand does (8). Each hold is counted, and a bullet is never let
+    through.
+  - **Deterministic.** The flag is a `Body` field, in the object's leaf; the sweeps run inside the deterministic
+    step in one fixed order, so rollback and replay give the same roots on every machine.
+  - **Until part 1 lands,** pe-physics passes the flag to Box3D's own `is_bullet` [V `pe-physics/src/world.rs`],
+    whose meaning is narrower (continuous collision against non-bullet dynamic bodies too, primitives only, no moving
+    meshes). From part 1 on the meaning is this one, and pe-physics no longer sets Box3D's.
 - **`BodyState` is derived and hash-only** (@design-reviewer's r5 Low 2). The step never reads it and no edit writes
   it; pe-replica writes it at cut frames and on export, so between cuts it is stale, and a keyframe whose
   `BodyState` is a few frames old restores correctly. No reader treats it as physics truth: WorldApi's `query`, the
@@ -396,7 +471,7 @@ which fixes the origin's role deliberately.
   | `Node` | the hierarchy | the hierarchy API only |
   | `Transform` | position (section 4.4), rotation, scale | edits; physics writes back the simulated pose of a body |
   | `Name` | `BlobRef` to UTF-8 | edits |
-  | `Shape` | a primitive (box, sphere, capsule) with its sizes and density, or a mesh `SimBlobRef` (static bodies only); a plane is a large thin box | edits |
+  | `Shape` | a primitive (box, sphere, capsule) with its sizes and density, or a mesh or hull `SimBlobRef` (a mesh on any body; 3.2's mass rule); a plane is a large thin box | edits |
   | `Body` | static, dynamic or kinematic; friction, restitution, linear and angular damping, rolling resistance, gravity scale, bullet, may sleep; grabbable | edits |
   | `BodyState` | derived: the simulated state of a bound body (linear and angular velocity, awake flag and sleep timer) and the physics digest of section 6.3 | pe-replica, at cut frames and on export |
   | `Appearance` | base colour, emissive colour, roughness, metalness, an optional material `BlobRef` | edits |
@@ -1758,6 +1833,11 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     a hand body's contact speed is bounded by `max_push_speed`; flipping to mode 1 with the hand inside a pile must
     not push the overlapped objects apart violently. How is the hand-body spec's (@vdw-physics); this is the bound
     it starts from.
+  - **Hands are not bullets by default** (the user answer 3; [I, draft for @fable-reviewer]): world
+    logic builds a member's hand bodies without the bullet sweep (3.2), and nothing in M1 turns it on. Once avatars
+    exist (refound plan, piece 10), a player may mark their hand colliders as bullets in a **full** custom avatar,
+    at their own cost like any bullet's. A **fallback** avatar's strict format has no such field, so a fallback's
+    hands are never bullets, and a world that restricts players to fallbacks has no bullet hands.
   - **A hand moving faster than the cap moves at the cap** (@coordinator-opus, option (b)): its body
     trails the target and catches up, so it still pushes and throws at up to `max_push_speed`; there is no cliff
     where hard throws begin. Hard throws top out at the cap, 10 m/s by default and adjustable (8.1's pushes). The
