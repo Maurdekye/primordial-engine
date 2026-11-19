@@ -324,7 +324,7 @@ Every display frame, while input is focused, pe-xr samples both hands and publis
 
 - `hand`: left or right.
 - `source`: a tracked hand, a controller, or (from pe-render) the desktop hand.
-- `sampled_at`: the host time the pose is for.
+- `sampled_at`: the host time the pose is for: the predicted display time of the frame that read it (section 6.2).
 - `tracked`: whether the pose is valid now. When false, the pose is the last valid one.
 - `pose`: the grip pose in the rig frame: position in metres and a unit quaternion in OpenXR's order (x, y, z, w),
   `f32`. For a controller it is the grip action space's pose. For a tracked hand it is the grip action space's pose
@@ -463,11 +463,23 @@ where to draw them.
 - pe-xr keeps a short ring of hand samples, about the last 100 ms, each stamped with its host time.
 - **The simulation thread asks for frame k's hand at frame k's host time.** pe-xr interpolates between the two
   samples around that time. If the time is past the newest sample, it extrapolates from the newest sample's velocity
-  for at most one display period, and otherwise returns the newest sample as it is. For a time older than the ring
-  (after a stall, while the simulation catches up), it returns the oldest sample it holds, and counts it.
-- **Sampling time.** Each display frame pe-xr locates the hands twice: at the predicted display time, for drawing
-  (section 5.6), and at the current time, for the ring. The ring's samples are what entries are made from, so an
-  entry never carries a pose predicted into the future.
+  for at most one display period plus the application's lookahead (`HandRing::set_lookahead_ns`, zero until set),
+  and otherwise returns the newest sample as it is. For a time older than the ring (after a stall, while the
+  simulation catches up), it returns the oldest sample it holds, and counts it.
+- **Sampling time: the simulation runs at the moment shown** (option B, the user's go m02b2aa79f06b and ruling
+  medf756abf194, @item:primordial-engine/vr-run-the-local-simulation-at-the-moment-the-he). pe-app steps the local
+  simulation ahead of the clock by the display lead, so its present is the time the headset shows, and asks for
+  hands up to about two simulation periods past the newest sample; it sets that as the lookahead. So each focused
+  display frame pe-xr reads each hand twice for the ring:
+  - **at the predicted display time,** for the sample's pose, its velocities and its `sampled_at`: the same
+    prediction the frame draws. Entries therefore carry poses predicted to the frame's display time.
+  - **now,** for everything else: tracking, the source, `grip`, `closed` and its edges, and the lost hand's grace
+    (section 5.5). A grip edge is never predicted [R deliberators, via @engine-architect md8143e0292a6]: a squeeze
+    read now closes the hand in the sample stamped at this frame's display time.
+  If the predicted reading has no pose, or comes from another source than the reading now, the sample takes the
+  pose now. Samples stay in time order: a display time at or before the newest sample's (a lead that shrank) is
+  moved to 1 ns after it, so its grasp state is still published. The frame then locates the hands a third time, at
+  the same display time after the image wait, for drawing (section 5.6).
 - **Measured:** the age of the sample each frame used, and the size of each extrapolation (section 9).
 - **The thread.** The ring is written by the XR thread and read by the simulation thread with no lock either side
   waits on. As built, it is an `arc-swap` of immutable snapshots: each push builds a new snapshot of both hands'
@@ -477,7 +489,8 @@ where to draw them.
   thread, and the last reference to an old one may be freed on the simulation thread [I: small, at about 240
   allocations a second]. A fixed-size ring with a sequence counter would remove it. [R coordinator me761033e3c05,
   after @fable-reviewer:] the ring stays behind its own small type (`HandRing`, `ring.rs`), so a swap touches one
-  file. **The switch-over threshold** is any sample older than one display period. It is judged by the tail: the ring
+  file. **The switch-over threshold** is any sample older than one display period (plus the lookahead, once pe-app
+  sets one, since its reads run that far past the newest sample by design). It is judged by the tail: the ring
   records every read's sample age (how far the asked time is past the newest sample) in a lock-free histogram with
   its exact maximum, and a run of several minutes with a build running alongside reports the max and p99.9 age with
   the frame time. That run belongs to the headset test (section 10.4).
@@ -490,8 +503,8 @@ On the XR thread, which is also the VR render thread:
 0. Drain `xrPollEvent`, and act on what it returns (section 3.1).
 1. `xrWaitFrame`: the runtime paces the thread and returns the predicted display time and period.
 2. `xrBeginFrame`.
-3. While FOCUSED, `xrSyncActions`; then locate the hands at the current time, and push the samples to the ring
-   (section 6.2).
+3. While FOCUSED, `xrSyncActions`; then locate each hand now and at the predicted display time, and push the
+   samples to the ring (section 6.2).
 4. Take the newest published frame view (section 8): one atomic pointer swap, never a lock the simulation holds.
 5. Acquire and wait for a swapchain image.
 6. Locate the views (`xrLocateViews`) and the hands at the predicted display time. This is as late as possible, so
@@ -523,7 +536,10 @@ When `shouldRender` is false, steps 4 to 7 are skipped, and `xrEndFrame` submits
   and interpolating between frame views cannot reach it. **Ruled 2026-11-17:** in VR, world objects are drawn at the
   engine's present (`Present`), never extrapolated to the display time; the head and the own hands stay late-latched
   [R user, render.md X8 (coordinator m5fd06b784814, mf069edef3ae4)]. That replaces my proposal (a) below, which is
-  kept for the record. The time the world is drawn at was WS-render's choice, one of:
+  kept for the record. **Superseded 2026-11-19 by option B** [R user m02b2aa79f06b, medf756abf194]: the local
+  simulation runs at the moment shown (section 6.2), so frame views reach the display time and VR interpolates the
+  world at it. The drawing side is render.md's and pe-app's (@engine-architect); pe-xr's part is the ring.
+  The time the world is drawn at was WS-render's choice, one of:
   - **(a) extrapolate** from the newest frame view to the display time, up to the measured lead, with the display
     layer's smoothing. This is design.md 18.3's rule, and my proposal [I];
   - **(b) interpolate** between the two newest frame views at the display time minus a render delay. Nothing is
@@ -685,7 +701,8 @@ pe-xr's logic is written against a small backend trait, so almost all of it runs
   unchanged by the display rate.
 - **Hands:** on scripted and later recorded joint traces, `closed` never chatters; a lost hand that holds is released
   after the grace period; a recentre bumps `discontinuity`; `hand_at` interpolates between samples, never
-  extrapolates more than one display period, and returns the oldest sample for a time older than the ring; a released
+  extrapolates more than one display period plus the lookahead, and returns the oldest sample for a time older than
+  the ring; the ring's poses and times are the display time's while the grasp follows the reading now; a released
   object leaves the hand from its last drawn pose and velocity, never from its simulated pose.
 - **Fallback and the loader,** on injected discovery and fixture manifests only: no runtime registered, a registered
   manifest that does not exist, a library that does not exist, a relative library path, a renamed entry point, and a

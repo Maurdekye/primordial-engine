@@ -6,7 +6,7 @@ use crate::backend::{Layers, SessionState, XrError, XrEvent};
 use crate::fake::{Call, FakeRuntime, Op, PERIOD_72, PERIOD_90, PERIOD_120};
 use crate::hands::{GraspConfig, Reading};
 use crate::ring::{DEFAULT_WINDOW_NS, HandRing};
-use crate::seam::{Hand, HandFeed, HandSource, RigPose};
+use crate::seam::{Hand, HandFeed, HandSource, HostTime, RigPose};
 use crate::session::{EndReason, FrameRequest, FrameSink, Step, XrSession};
 
 #[derive(Default)]
@@ -34,6 +34,11 @@ fn session(rt: FakeRuntime) -> (XrSession<FakeRuntime>, Arc<HandRing>) {
 
 fn run(s: &mut XrSession<FakeRuntime>, sink: &mut Sink, n: usize) -> Vec<Step> {
     (0..n).map(|_| s.step(sink)).collect()
+}
+
+/// The last frame's display time: the newest sample's time in the ring (spec 6.2).
+fn shown_time(s: &XrSession<FakeRuntime>) -> HostTime {
+    s.backend().now_for_test().plus_nanos(s.backend().lead_ns)
 }
 
 fn no_violations(s: &XrSession<FakeRuntime>) {
@@ -117,7 +122,8 @@ fn every_frame_waits_begins_and_ends_in_order_with_one_layer() {
     run(&mut s, &mut k, 6);
     let frame_calls: Vec<&Call> =
         s.backend().calls.iter().filter(|c| !matches!(c, Call::PollEvent | Call::BeginSession)).collect();
-    // One frame: wait, begin, sync, both hands now, acquire, locate, both hands at the display time, release, end.
+    // One frame: wait, begin, sync, each hand now and at the display time for the ring, acquire, locate, both hands
+    // at the display time for drawing, release, end.
     let one = |c: &[&Call]| {
         matches!(
             c,
@@ -126,6 +132,8 @@ fn every_frame_waits_begins_and_ends_in_order_with_one_layer() {
                 Call::BeginFrame,
                 Call::SyncActions,
                 Call::ReadHand(Hand::Left),
+                Call::ReadHand(Hand::Left),
+                Call::ReadHand(Hand::Right),
                 Call::ReadHand(Hand::Right),
                 Call::AcquireImage,
                 Call::LocateViews(_),
@@ -136,11 +144,11 @@ fn every_frame_waits_begins_and_ends_in_order_with_one_layer() {
             ]
         )
     };
-    assert_eq!(frame_calls.len(), 6 * 11);
-    assert!(frame_calls.chunks(11).all(one), "{frame_calls:#?}");
+    assert_eq!(frame_calls.len(), 6 * 13);
+    assert!(frame_calls.chunks(13).all(one), "{frame_calls:#?}");
     // Views are located at the display time the frame was given.
-    for (c, (t, _)) in frame_calls.chunks(11).zip(&k.frames) {
-        assert_eq!(*c[6], Call::LocateViews(crate::seam::HostTime(*t)));
+    for (c, (t, _)) in frame_calls.chunks(13).zip(&k.frames) {
+        assert_eq!(*c[8], Call::LocateViews(crate::seam::HostTime(*t)));
     }
     no_violations(&s);
 }
@@ -155,8 +163,8 @@ fn should_render_false_submits_no_layer_but_still_samples_the_hands() {
     assert_eq!(s.backend().count(&Call::EndFrame(Layers::None)), 2);
     assert_eq!(s.backend().count(&Call::AcquireImage), 2);
     assert_eq!(s.backend().count(&Call::SyncActions), 4);
-    // Four frames read the hands now; the two drawn frames read them again at the display time.
-    assert_eq!(s.backend().count(&Call::ReadHand(Hand::Left)), 6);
+    // Four frames read the hands now and at the display time; the two drawn frames read them again for drawing.
+    assert_eq!(s.backend().count(&Call::ReadHand(Hand::Left)), 10);
     assert_eq!(s.counters.frames_not_rendered, 2);
     no_violations(&s);
 }
@@ -199,10 +207,10 @@ fn a_recentre_bumps_the_discontinuity_of_both_hands() {
     let (mut s, ring) = session(FakeRuntime::new().started());
     let mut k = sink();
     run(&mut s, &mut k, 2);
-    let before = ring.hand_at(Hand::Left, s.backend().now_for_test()).unwrap().discontinuity;
+    let before = ring.hand_at(Hand::Left, shown_time(&s)).unwrap().discontinuity;
     s.backend_mut().push(XrEvent::ReferenceSpaceChangePending);
     run(&mut s, &mut k, 1);
-    let now = s.backend().now_for_test();
+    let now = shown_time(&s);
     assert_eq!(ring.hand_at(Hand::Left, now).unwrap().discontinuity, before + 1);
     assert_eq!(ring.hand_at(Hand::Right, now).unwrap().discontinuity, before + 1);
     assert_eq!(s.counters.recentres, 1);
@@ -231,7 +239,7 @@ fn pacing_follows_whatever_period_the_runtime_gives_including_a_change_mid_run()
     let now = s.backend().now_for_test();
     let mut moving = ring.hand_at(Hand::Right, now).unwrap();
     moving.linear_velocity = Some([1.0, 0.0, 0.0]);
-    moving.sampled_at = now.plus_nanos(1);
+    moving.sampled_at = now.plus_nanos(s.backend().lead_ns + 1); // past the newest sample, at the display time
     ring.push(moving);
     let far = ring.hand_at(Hand::Right, now.plus_nanos(1_000_000_000)).unwrap();
     let moved = far.pose.position[0] - 0.2;
@@ -272,7 +280,7 @@ fn a_held_controller_releases_after_the_grace_period_when_tracking_is_lost() {
     for _ in 0..80 {
         s.step(&mut k);
         let now = s.backend().now_for_test();
-        let h = ring.hand_at(Hand::Right, now).unwrap();
+        let h = ring.hand_at(Hand::Right, shown_time(&s)).unwrap();
         closed_at.push(((now.0 - 1_000_000_000) / 1_000_000, h.closed, h.tracked));
     }
     // Held before the loss, still held within 250 ms of it, released after, and closed again on return.
@@ -647,5 +655,98 @@ fn after_frame_follows_each_ended_frame_and_never_a_failed_one() {
     // Frames 3 and 5 failed and get no call; frame 2 ended with no layer.
     assert_eq!(k.after, vec![(1, true), (1, false), (3, true), (5, true), (6, true)], "{:?}", k.after);
     assert_eq!(s.counters.frame_errors, 2);
+    no_violations(&s);
+}
+
+/// The fake's frame n (from 1) has `now` at 1 s + n periods, and its display time 40 ms later.
+fn frame_now(n: i64) -> HostTime {
+    HostTime(1_000_000_000 + n * PERIOD_120)
+}
+
+#[test]
+fn the_ring_holds_the_poses_at_the_display_time_interpolated_between_frames() {
+    // A hand whose x is not linear in time (x = t^2, t in seconds past 1 s), so poses sampled now and at the display
+    // time interpolate to different values.
+    let x = |at: HostTime| {
+        let t = (at.0 - 1_000_000_000) as f32 * 1e-9;
+        t * t
+    };
+    let rt = FakeRuntime::new().started().hands(move |_, at| Reading {
+        source: HandSource::Controller,
+        at,
+        pose: Some(RigPose { position: [x(at), 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] }),
+        linear_velocity: Some([0.0; 3]),
+        angular_velocity: None,
+        grip: Some(0.0),
+        curl: None,
+    });
+    let (mut s, ring) = session(rt);
+    let mut k = sink();
+    run(&mut s, &mut k, 6);
+    let (d4, d5) = (HostTime(k.frames[3].0), HostTime(k.frames[4].0));
+    assert_eq!(d4, frame_now(4).plus_nanos(40_000_000), "the fake's display time");
+    for at in [d4, d5] {
+        let h = ring.hand_at(Hand::Right, at).unwrap();
+        assert_eq!((h.sampled_at, h.pose.position[0]), (at, x(at)), "the pose at the display time");
+    }
+    let mid = HostTime((d4.0 + d5.0) / 2);
+    let h = ring.hand_at(Hand::Right, mid).unwrap();
+    let want = (x(d4) + x(d5)) / 2.0;
+    assert!((h.pose.position[0] - want).abs() < 1e-7, "interpolated between the shown poses: {h:?}, want {want}");
+    assert_eq!(ring.counters.extrapolated.load(std::sync::atomic::Ordering::Relaxed), 0, "inside the ring");
+    no_violations(&s);
+}
+
+#[test]
+fn a_grip_edge_follows_the_reading_now_not_the_display_time() {
+    // The squeeze rises at 1 s + 10.5 periods. Read at the display time (40 ms, 4.8 periods ahead), it would close
+    // from frame 6; read now, it closes at frame 11.
+    let rise = HostTime(1_000_000_000 + PERIOD_120 * 21 / 2);
+    let rt = FakeRuntime::new().started().hands(move |hand, at| Reading {
+        source: HandSource::Controller,
+        at,
+        pose: Some(RigPose { position: [0.2, 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] }),
+        linear_velocity: Some([0.0; 3]),
+        angular_velocity: None,
+        grip: Some(if hand == Hand::Right && at >= rise { 1.0 } else { 0.0 }),
+        curl: None,
+    });
+    let (mut s, ring) = session(rt);
+    let mut k = sink();
+    run(&mut s, &mut k, 14);
+    for (i, (d, _)) in k.frames.iter().enumerate().skip(5) {
+        let n = i as i64 + 1;
+        let h = ring.hand_at(Hand::Right, HostTime(*d)).unwrap();
+        assert_eq!(h.closed, n >= 11, "frame {n}: {h:?}");
+        assert_eq!(h.grip, if n >= 11 { 1.0 } else { 0.0 }, "frame {n}: the grip now");
+    }
+    no_violations(&s);
+}
+
+#[test]
+fn a_display_time_that_steps_back_keeps_the_samples_in_order_and_loses_no_edge() {
+    // The lead drops from 40 ms to none after frame 3: the next display times fall before the newest sample's. The
+    // squeeze closes in frame 4, and those samples are still published, just after the newest.
+    let rise = frame_now(4);
+    let rt = FakeRuntime::new().started().hands(move |_, at| Reading {
+        source: HandSource::Controller,
+        at,
+        pose: Some(RigPose { position: [0.2, 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] }),
+        linear_velocity: Some([0.0; 3]),
+        angular_velocity: None,
+        grip: Some(if at >= rise { 1.0 } else { 0.0 }),
+        curl: None,
+    });
+    let (mut s, ring) = session(rt);
+    let mut k = sink();
+    run(&mut s, &mut k, 3);
+    let d3 = HostTime(k.frames[2].0);
+    s.backend_mut().lead_ns = 0;
+    run(&mut s, &mut k, 2);
+    assert!(HostTime(k.frames[4].0) < d3, "the display time stepped back");
+    let at_d3 = ring.hand_at(Hand::Right, d3).unwrap();
+    assert!(!at_d3.closed, "frame 3's own sample is still open");
+    let newest = ring.hand_at(Hand::Right, d3.plus_nanos(2)).unwrap();
+    assert!(newest.closed, "frames 4 and 5 were published after frame 3's sample, with the close: {newest:?}");
     no_violations(&s);
 }
