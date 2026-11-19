@@ -394,7 +394,9 @@ which fixes the origin's role deliberately.
       - closed means every edge is in exactly two triangles, once each way, edges compared by their vertices'
         **positions**, bit for bit with −0 read as +0, not by index: exporters split vertices at seams and hard
         edges, and a closed mesh would otherwise read as open. A triangle with two equal vertex positions encloses
-        nothing and is left out of both the test and the sum;
+        nothing and is left out of both the test and the sum. Two closed solids that share an edge or a face read
+        as open, since that edge is in four triangles (@fable-reviewer), and the inspector names that
+        reason;
       - a scale with an odd number of negative axes mirrors the mesh and so reverses its winding; the sum reads it
         reversed back, so a mirrored closed mesh keeps its positive volume;
       - the volume must be at least 10⁻⁹ m³ (a 1 mm cube) [I, a floor to tune]. Below it, or negative (wound
