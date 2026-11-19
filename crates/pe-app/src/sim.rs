@@ -528,7 +528,7 @@ impl Local {
     /// The objects this member's own `Release`s have let go of, for `view`'s publication, sorted: each `Release` an
     /// applied record in `view`'s or an earlier publication's changes names, until a final frame passes its stamp or
     /// [`RELEASED_KEPT`] has, whichever is first (a world alone never finalizes). One the view shows held by this
-    /// member again is left out, so a later hold end isn't read as this release. A record that says otherwise (a
+    /// member again is forgotten, so a later hold end isn't read as this release. A record that says otherwise (a
     /// re-simulation that dropped it) clears it.
     fn let_go(&mut self, view: &FrameView, rate_hz: u32) -> Vec<ObjectId> {
         for r in &view.changes {
@@ -541,9 +541,12 @@ impl Local {
         }
         let kept = (RELEASED_KEPT.as_nanos() * u128::from(rate_hz) / 1_000_000_000) as u64;
         self.released.retain(|_, &mut (_, at, _)| at.0.saturating_add(kept) > view.frame.0);
+        // Held by this member again: that release is over, and its mark must not come back at the next hold end,
+        // whatever ends it (@design-reviewer's L1 on dc6a7a9b).
         let held_again = |o: ObjectId| view.object(o).is_some_and(|x| x.flags.contains(ViewFlags::HELD_LOCAL));
+        self.released.retain(|_, &mut (o, _, _)| !held_again(o));
         let mut out: Vec<ObjectId> =
-            self.released.values().filter(|&&(o, _, applied)| applied && !held_again(o)).map(|&(o, _, _)| o).collect();
+            self.released.values().filter(|&&(_, _, applied)| applied).map(|&(o, _, _)| o).collect();
         out.sort();
         out.dedup();
         out
@@ -2218,6 +2221,50 @@ pub(crate) mod tests {
         // The stand-in agreement here never finalizes: the mark ends 2 s after the release's stamp.
         run_frames(&mut s, &clock, &mut f, 120);
         assert!(marked(&slot.newest().expect("published")).is_empty(), "no mark 2 s on");
+    }
+
+    /// A re-grab ends a release's mark (@design-reviewer's L1 on dc6a7a9b): the ball let go, grabbed again, then lost
+    /// with no `Release` (the hand vanishes and the claim lapses), all within the mark's 2 s. The publication in which
+    /// that hold ends marks nothing, so the display treats it as the correction it is, not as a hand-off.
+    #[test]
+    fn a_hold_that_lapses_after_a_re_grab_is_not_marked_as_a_release() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let puppet = Puppet::default();
+        puppet.set([0.0, 3.0, 0.0], false);
+        let mut s = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(puppet.clone()));
+        let mut f = 0;
+        run_frames(&mut s, &clock, &mut f, 120);
+        let ball = top_ball(&slot.newest().expect("published"));
+        let at = rig_at(&slot.newest().expect("published"), ball);
+        let held = |v: &FrameView| v.object(ball).is_some_and(|o| o.held_by.is_some());
+        let marked = |v: &FrameView| v.object(ball).is_some_and(|o| o.flags.contains(ViewFlags::RELEASED_LOCAL));
+        puppet.set(at, false);
+        run_frames(&mut s, &clock, &mut f, 3);
+        puppet.set(at, true);
+        run_frames(&mut s, &clock, &mut f, 20);
+        assert!(held(&slot.newest().expect("published")), "held");
+        // Let go: the mark, as before.
+        puppet.set(at, false);
+        run_frames(&mut s, &clock, &mut f, 5);
+        let v = slot.newest().expect("published");
+        assert!(!held(&v) && marked(&v), "let go and marked");
+        // Grabbed again where it lies.
+        let again = rig_at(&v, ball);
+        puppet.set(again, true);
+        run_frames(&mut s, &clock, &mut f, 20);
+        assert!(held(&slot.newest().expect("published")), "held again");
+        // The hand vanishes: no input, no `Release`; the claim lapses after `claim_ms` (0.5 s).
+        puppet.0.lock().expect("the puppet")[1] = None;
+        let _ = slot.take();
+        let mut views = Vec::new();
+        for _ in 0..60 {
+            run_frames(&mut s, &clock, &mut f, 1);
+            views.extend(slot.take().views);
+        }
+        let lapsed = views.iter().find(|v| !held(v)).expect("the claim lapsed");
+        assert!(!marked(lapsed), "a lapse after a re-grab is not marked as the first release");
+        assert_eq!(s.stats().hands[1].releases, 1, "only the first open sent a Release");
     }
 
     /// B's shown present (app.md 3, [`crate::shown`]): while the XR thread records a display lead, the replica runs the

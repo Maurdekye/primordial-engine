@@ -448,10 +448,12 @@ fn main() {
     let runner: Box<dyn ScriptRunner> = Box::new(runner);
     // The local player's hands (app.md 3, step 2): VR's ring while an XR session runs, the desktop hand otherwise.
     let ring = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, VR_PERIOD_NS));
-    // B (app.md 3): the simulation asks for hands up to two simulation periods past the newest sample, the display
-    // time's pose (xr.md 6.2). Reads that far past it are by design: judge xr.md 6.2's switch-over threshold, and the
-    // sample-age histogram of a worn run, against one display period plus this lookahead, not one period.
-    ring.set_lookahead_ns(2 * 1_000_000_000 / i64::from(rate.hz()));
+    // B (app.md 3): the simulation asks for hands up to two simulation periods and the publication's margin past the
+    // newest sample, the display time's pose (xr.md 6.2; the margin is what `shown::ahead_ns` adds, so the worst read
+    // stays inside the clamp, @xr-eng's nit on dc6a7a9b). Reads that far past it are by design: judge xr.md 6.2's
+    // switch-over threshold, and the sample-age histogram of a worn run, against one display period plus this
+    // lookahead, not one period.
+    ring.set_lookahead_ns(2 * 1_000_000_000 / i64::from(rate.hz()) + pe_app::shown::PUBLISH_MARGIN_NS);
     let desktop_hand = Arc::new(DesktopHandFeed::default());
     let hands = Arc::new(SwitchedHands::new(ring.clone(), desktop_hand.clone()));
     // B (app.md 3): the display lead the VR sink measures under Shown, for the simulation's shown present.
