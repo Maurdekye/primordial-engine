@@ -116,6 +116,9 @@ struct Options {
     agent_name: Option<String>,
     /// `--drawn-time`: X8 for every presenter, in place of the defaults (VR Present, the desktop (a)).
     drawn_time: Option<DrawnTime>,
+    /// B's delay setting (the user's m4d6a9fecd38d, app.md 3): how much of the display lead the shown present does
+    /// not cover, so the world is drawn that long before the moment shown. 0 by default.
+    display_delay: Duration,
     /// `--inject-fault-at`: the frame at which this machine injects a deliberate test fault (pe-app's `fault`).
     inject_fault_at: Option<Frame>,
     /// `--arm-fault`: the console's typed `fault` injects that test fault at the next frame.
@@ -145,6 +148,7 @@ fn options() -> Options {
         agent: Vec::new(),
         agent_name: None,
         drawn_time: None,
+        display_delay: Duration::ZERO,
         inject_fault_at: None,
         arm_fault: false,
         check_replay: false,
@@ -170,6 +174,11 @@ fn options() -> Options {
             // The rest of the command line is the agent's.
             "--agent" => o.agent = args.by_ref().collect(),
             "--drawn-time" => o.drawn_time = Some(args.next().and_then(|a| drawn_time(&a)).unwrap_or_else(|| usage())),
+            "--display-delay" => {
+                let ms = args.next().and_then(|n| n.parse::<f64>().ok()).filter(|ms| *ms >= 0.0);
+                o.display_delay =
+                    ms.and_then(|ms| Duration::try_from_secs_f64(ms / 1e3).ok()).unwrap_or_else(|| usage());
+            }
             "--arm-fault" => o.arm_fault = true,
             "--check-replay" => o.check_replay = true,
             "--log" => o.log = Some(args.next().filter(|p| !p.is_empty()).unwrap_or_else(|| usage()).into()),
@@ -293,7 +302,9 @@ fn shared_sim(
     };
     match shared {
         Shared::Open => {
-            let p = OpenParams { seed: WORLD_SEED, balls: 500, rate, epoch_lead: Duration::ZERO };
+            // B's delay is the session's: the opener's option, in the genesis record (app.md 3).
+            let display_delay_ms = u32::try_from(o.display_delay.as_millis()).unwrap_or(u32::MAX);
+            let p = OpenParams { seed: WORLD_SEED, balls: 500, rate, epoch_lead: Duration::ZERO, display_delay_ms };
             let opened = ep
                 .open_alone(&p, INVITE_VALID, T_JOIN, runner)
                 .unwrap_or_else(|e| fail(&format!("the session did not start: {e}")));
@@ -306,7 +317,8 @@ fn shared_sim(
                 Sim::new(Box::new(s.node), s.replica, s.frames, slot, Budget::new(rate))
                     .with_local(s.me, chain_nonce(), hands)
                     .with_transport(net::transport(s.handle), Some(Box::new(s.hook)))
-                    .with_linked(s.linked),
+                    .with_linked(s.linked)
+                    .with_display_delay(Duration::from_millis(u64::from(display_delay_ms))),
             );
             // `--check-replay` (pe-app's `replay`): the opener keeps its final log, and replays it on the console's
             // `replay`.
@@ -347,7 +359,9 @@ fn shared_sim(
                 Sim::new(Box::new(cj.node), replica, cj.frames, slot, Budget::new(rate))
                     .with_local(cj.me, chain_nonce(), hands)
                     .with_transport(net::transport_with(cj.handle, cj.pending), Some(Box::new(cj.hook)))
-                    .with_linked(linked),
+                    .with_linked(linked)
+                    // B's delay is the session's, from the opener's record, whatever this machine's option.
+                    .with_display_delay(Duration::from_millis(u64::from(cj.record.display_delay_ms))),
             )
             .with_on_join_failed(Box::new(move || quit.request_from_app("the join failed")));
             sim.join_at_final(MemberKey(invite.key), host())
@@ -434,8 +448,14 @@ fn main() {
     let runner: Box<dyn ScriptRunner> = Box::new(runner);
     // The local player's hands (app.md 3, step 2): VR's ring while an XR session runs, the desktop hand otherwise.
     let ring = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, VR_PERIOD_NS));
+    // B (app.md 3): the simulation asks for hands up to two simulation periods past the newest sample, the display
+    // time's pose (xr.md 6.2). Reads that far past it are by design: judge xr.md 6.2's switch-over threshold, and the
+    // sample-age histogram of a worn run, against one display period plus this lookahead, not one period.
+    ring.set_lookahead_ns(2 * 1_000_000_000 / i64::from(rate.hz()));
     let desktop_hand = Arc::new(DesktopHandFeed::default());
     let hands = Arc::new(SwitchedHands::new(ring.clone(), desktop_hand.clone()));
+    // B (app.md 3): the display lead the VR sink measures under Shown, for the simulation's shown present.
+    let display_lead = Arc::new(pe_app::shown::DisplayLead::default());
     let wake = WakeLater::default();
     let sim = match &options.shared {
         Some(shared) => shared_sim(&options, shared, &host, &wake, slot.clone(), hands.clone(), runner, &console),
@@ -451,6 +471,10 @@ fn main() {
                 .with_local(world::DEV_MEMBER, chain_nonce(), hands.clone())
         }
     };
+    // B (app.md 3): a session's delay is in its record (a joiner's came from it); a world alone takes the option.
+    let sim = if options.shared.is_none() { sim.with_display_delay(options.display_delay) } else { sim };
+    let sim = sim.with_shown(display_lead.clone());
+    let display_delay = sim.display_delay();
     // pe-api's ports (app.md 3.1) whenever the replica is pe-world's and this machine has a member: the build thread
     // submits its attestations through their edit queue (@engine-architect m668e8458cf86). The MCP thread only when a
     // transport is asked for.
@@ -530,7 +554,8 @@ fn main() {
         let guard = Guard::from_env(true);
         let effects = Box::new(LogEffects);
         let report = vr::ReportSlot::default();
-        let drawn_time = options.drawn_time.unwrap_or_else(|| DrawnTime::present(rate.hz()));
+        // B (render.md 7, app.md 3): the world at the moment shown, less the user's delay setting (0 by default).
+        let drawn_time = options.drawn_time.unwrap_or_else(|| DrawnTime::shown(display_delay, rate.hz()));
         match vr::start(
             &SystemDiscovery,
             &guard,
@@ -542,6 +567,7 @@ fn main() {
                 effects,
                 captures: captures.clone(),
                 report: report.clone(),
+                shown: Some(display_lead.clone()),
             },
         ) {
             Ok(xr) => {
@@ -751,7 +777,7 @@ fn finish<S: Debug, E>(stats: Result<S, E>) {
 fn usage() -> ! {
     fail(
         "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] \
-         [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms> (VR)|a:<ms>|b:<ms>] [--mcp-pipe] \
+         [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms>|a:<ms>|b:<ms>] [--display-delay <ms>] [--mcp-pipe] \
          [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--log <file>] \
          [--agent-name <name>] [--agent <command> <args>...]",
     )

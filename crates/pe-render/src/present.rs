@@ -254,15 +254,16 @@ impl Presenter {
         let display = self.display.frame(FrameInput { view: newest, display_time: now, volumes: &volumes, local });
         let taken = self.display.take_counters();
         self.counters.display_frame(now, &taken, &display, now);
-        // `take` also releases what is due; between arrivals, only the waits run.
+        // `take` also releases what is due; between arrivals, only the waits run. The gate runs on the drawn time, so
+        // under Shown an effect waits for the frame that shows it.
         for v in new {
             if let Some(n) = &mut self.notices {
                 n.observe(v, now);
             }
-            effects.extend(self.effects.take(v, self.sim_rate_hz, now));
+            effects.extend(self.effects.take(v, self.sim_rate_hz, display.t_draw));
         }
         if new.is_empty() {
-            effects.extend(self.effects.due(now));
+            effects.extend(self.effects.due(display.t_draw));
         }
         self.last = Some(newest.clone());
         let notices = self.notices.as_mut().map(|n| n.lines(now)).unwrap_or_default();

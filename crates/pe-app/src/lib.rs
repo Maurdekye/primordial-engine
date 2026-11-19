@@ -35,6 +35,7 @@ pub mod log;
 pub mod net;
 pub mod phases;
 pub mod replay;
+pub mod shown;
 pub mod sim;
 #[cfg(test)]
 mod sources;

@@ -7,6 +7,9 @@
 //!   plays nothing.
 //! - A played effect whose key lands in S5's retracted list is stopped (its sink fades it over `T_blend`).
 //! - Own effects play at once; others wait `D_effect` (default 0 s).
+//! - None plays before the drawn time reaches its frame: under Shown the simulation runs ahead of the moment drawn
+//!   (app.md 3), so a sound or a haptic pulse waits for the frame that shows it (@coordinator-opus m737810a0c015). The
+//!   presenter passes the drawn time; under every other rule a frame view is never ahead of it, and nothing waits.
 //!
 //! pe-render plays particles itself; sounds and haptics go to their sinks (pe-app, pe-xr) already de-duplicated.
 
@@ -82,7 +85,8 @@ impl EffectGate {
         HostTime(view.sim_time.0.saturating_sub(i64::try_from(ns).unwrap_or(i64::MAX)))
     }
 
-    /// A newly taken frame view's effects and retractions, at `now`. `sim_rate_hz` is the world's simulation rate.
+    /// A newly taken frame view's effects and retractions, at `now`, the display frame's drawn time. `sim_rate_hz` is
+    /// the world's simulation rate.
     pub fn take(&mut self, view: &FrameView, sim_rate_hz: u32, now: HostTime) -> Vec<EffectCommand> {
         let mut out = Vec::new();
         self.last_final = view.final_frame.max(self.last_final);
@@ -107,12 +111,15 @@ impl EffectGate {
                     continue;
                 }
             }
-            if e.own || self.settings.d_effect.is_zero() {
+            // Own effects at once and others after `D_effect`, but never before the drawn time reaches the frame.
+            let due =
+                if e.own || self.settings.d_effect.is_zero() { at } else { now.plus(self.settings.d_effect).max(at) };
+            if due <= now {
                 self.played.insert(e.key, at);
                 self.counters.played += 1;
                 out.push(EffectCommand::Play(e.clone()));
             } else {
-                self.waiting.push((now.plus(self.settings.d_effect), at, e.clone()));
+                self.waiting.push((due, at, e.clone()));
             }
         }
         out.extend(self.due(now));
@@ -142,7 +149,7 @@ impl EffectGate {
         out
     }
 
-    /// Others' effects whose `D_effect` wait is over.
+    /// Waiting effects that are due: others' after `D_effect`, and any whose frame the drawn time has reached.
     pub fn due(&mut self, now: HostTime) -> Vec<EffectCommand> {
         let mut out = Vec::new();
         let mut i = 0;
