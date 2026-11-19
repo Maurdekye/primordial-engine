@@ -1403,6 +1403,13 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 && holder.hand != ObjectId::NONE
             {
                 o.flags = o.flags.with(ViewFlags::HELD_LOCAL);
+                // D4's break-away (S5 v1.9): kept from its place in the hand by more than `BREAK_AWAY`, it is drawn
+                // where it is.
+                if crate::hands::hold_gap(&self.physics, o.id, holder.hand)
+                    .is_some_and(|gap| gap > pe_seams::BREAK_AWAY)
+                {
+                    o.flags = o.flags.with(ViewFlags::HELD_AWAY);
+                }
             }
             // The local member's hands and what they hold are drawn from tracking, never corrected (S5).
             let local = o.flags.contains(ViewFlags::OWN_HAND) || o.flags.contains(ViewFlags::HELD_LOCAL);

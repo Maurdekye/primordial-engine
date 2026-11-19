@@ -1840,6 +1840,32 @@ fn a_placement_at_a_wall_s_end_does_not_carry_the_ball_through_the_corner() {
     assert_eq!(r.faults(), 0);
 }
 
+/// D4's break-away (render.md 8, S5 v1.9): in the local member's view a held ball that the wall keeps more than
+/// `BREAK_AWAY` from its place in the hand is `HELD_AWAY` as well as `HELD_LOCAL`, so the display draws it where it is.
+/// Held in its place it is only `HELD_LOCAL`, and once the wall is deleted and it comes back, it is no longer away.
+#[test]
+fn a_held_ball_kept_from_its_place_by_a_wall_is_marked_away_in_the_view() {
+    let (entries, world, clear) = pinned(1.0, false);
+    let mut s = Source::default();
+    entries.into_iter().for_each(|e| s.add(e));
+    let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
+    config.cut_every = K;
+    config.local = Some(keys().key(0));
+    let mut r = ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica");
+    let flags = |r: &ReplicaImpl<PeWorld>| r.view().objects.iter().find(|o| o.id == oid(BALL)).expect("drawn").flags;
+    let gap = |r: &ReplicaImpl<PeWorld>| pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND)).expect("held");
+    let (local, away) = (pe_seams::ViewFlags::HELD_LOCAL, pe_seams::ViewFlags::HELD_AWAY);
+    r.advance(Frame(9), &mut s);
+    assert!(gap(&r) < pe_seams::BREAK_AWAY, "in its place: {}", gap(&r));
+    assert!(flags(&r).contains(local) && !flags(&r).contains(away), "held in its place: {:?}", flags(&r));
+    r.advance(Frame(clear), &mut s);
+    assert!(gap(&r) > pe_seams::BREAK_AWAY, "kept from its place: {}", gap(&r));
+    assert!(flags(&r).contains(local) && flags(&r).contains(away), "kept away by the wall: {:?}", flags(&r));
+    r.advance(Frame(120), &mut s);
+    assert!(flags(&r).contains(local) && !flags(&r).contains(away), "back in its place: {:?}", flags(&r));
+    assert_eq!(r.faults(), 0);
+}
+
 /// Two hands, two holds, each bounded by its own hand's speed (@design-reviewer): the left holds a ball
 /// pinned against the wall with the hand still 1 m past it, while the right carries another along in the open at
 /// 15 m/s, above the cap. The pinned ball stays on its side; the right's ball catches up no faster than the cap

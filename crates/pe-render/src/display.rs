@@ -480,11 +480,13 @@ impl DisplayLayer {
             }
             out.push((o, pose, target));
         }
-        // Held objects at the hand's drawn pose times the grip offset (D4).
+        // Held objects at the hand's drawn pose times the grip offset (D4), unless the simulation keeps one away from
+        // its place in the hand (D4's break-away): that one is drawn where simulated, the `own` target above.
         let mut objects = Vec::with_capacity(out.len());
         for (o, mut pose, target) in out {
             let mut gripped = None;
             if o.flags.contains(ViewFlags::HELD_LOCAL)
+                && !o.flags.contains(ViewFlags::HELD_AWAY)
                 && !self.settings.controls.correct_own
                 && self.settings.own_hands == OwnHands::LateLatched
                 && let Some(h) = o.held_by

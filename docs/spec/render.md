@@ -390,6 +390,14 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
     that pose times the S5 grip offset (xr.md 5.6, X1). The offset is the held object's simulated pose relative to
     its hand's, both resolved to `t_draw` (under Shown the newest view runs ahead of it, and an offset read there
     would carry the hold spring's give from a later moment of a swing). "Draw where simulated" is the other setting.
+  - **The break-away** (the user's ruling of 2026-11-19: a blocked held object stays held and visibly
+    separates from the hand; @coordinator-opus; S5 v1.9): a held object the simulation keeps more than
+    `BREAK_AWAY` (5 cm, provisional) from its place in the hand, blocked by a wall the hand went through, say, or too
+    heavy to follow (world-model.md 8.1, the tight hold), is drawn where it is simulated instead, at its time-resolved
+    pose with no offset and no cue, so it is never drawn through what blocks it. pe-replica marks it `HELD_AWAY` at
+    publication, since only it knows each grab's place; it stays `HELD_LOCAL`, never corrected, and is no hold end.
+    Back within 5 cm it is drawn at the hand again: a jump of the hand's lead, which the user's ruling on
+    responsiveness accepts.
   - On the desktop the own hand is drawn at its current input pose (the mouse ray now, section 9): the desktop's
     late-latch, never extrapolated or corrected. A held object follows it at the grip offset.
   - **Markers** (`hands::markers`): when the frame view has no own-hand object to move (no simulation, as in pe-xr's
