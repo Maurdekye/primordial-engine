@@ -1503,6 +1503,7 @@ fn a_throw_leaves_at_the_hand_s_speed_up_to_the_cap() {
         assert_eq!(r.physics().joint_count(), 0, "released");
         let left = f64::from(r.physics().velocity(oid(BALL)).expect("the ball's body").0[1]);
         let expected = v.min(cap);
+        println!("RESULT a {v} m/s throw leaves at {left:.2} m/s");
         assert!((left - expected).abs() < 0.1 * expected, "a {v} m/s throw leaves at {left} m/s");
         assert_eq!(r.faults(), 0);
     }
@@ -1704,8 +1705,10 @@ fn pinned(by: f64, lift: bool) -> (Vec<SignedEntry>, World, u64) {
 
 /// A held ball pinned by a wall (world-model.md 8.1's test, @coordinator-opus m91657a263b74): with the hand 1 m or
 /// 3 m past the wall it stays on its side, pressed less than a centimetre in, and when the wall is deleted it comes
-/// back to its place no faster than the cap, because its spring sees at most the cap's reach of the error (measured:
-/// 8.2 and 8.4 m/s; unbounded it came back at 10.1 and 30.7 m/s).
+/// back to its place no faster than the cap, because its spring sees at most the cap's reach of the error. With the
+/// tight hold's stiff spring it closes that reach within a frame, so it comes back at about its reach a frame,
+/// below the cap (measured: 4.65 m/s by the distance it moves a frame, 3.40 m/s at a frame's end; 8.2 and 8.4 m/s with
+/// M1's 5 Hz spring; unbounded it came back at 10.1 and 30.7 m/s).
 #[test]
 fn a_ball_pinned_by_a_wall_stays_on_its_side_and_comes_back_no_faster_than_the_cap() {
     for by in [1.0, 3.0] {
@@ -1719,14 +1722,23 @@ fn a_ball_pinned_by_a_wall_stays_on_its_side_and_comes_back_no_faster_than_the_c
             r.advance(Frame(next), &mut s);
             deepest = deepest.max(at(&r, BALL)[0]);
         }
-        let mut top = 0.0_f64;
+        let (mut top, mut moved, mut last) = (0.0_f64, 0.0_f64, at(&r, BALL));
         while r.frame().0 < 120 {
             let next = r.frame().0 + 1;
             r.advance(Frame(next), &mut s);
             top = top.max(ball_speed(&r, BALL));
+            moved = moved.max(distance(at(&r, BALL), last) * 60.0);
+            last = at(&r, BALL);
         }
+        println!(
+            "RESULT pinned {by} m past: x {deepest:.4} m at deepest, back at {moved:.2} m/s ({top:.2} at a frame's end)"
+        );
+        let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
         assert!(deepest < 2.23, "{by} m past: on its side, less than 1 cm in: {deepest}");
-        assert!(top > 5.0 && top < pe_replica::hands::MAX_HAND_PUSH_SPEED, "{by} m past: comes back at {top} m/s");
+        assert!(
+            moved > 4.0 && moved < cap && top < cap,
+            "{by} m past: comes back at {moved} m/s ({top} at a frame's end)"
+        );
         assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.01, "{by} m past: back in its place");
         assert_eq!(r.faults(), 0);
     }
@@ -1900,9 +1912,14 @@ fn a_rollback_across_frames_where_a_hold_is_bounded_replays_the_same_roots() {
 }
 
 /// A held ball with the hand at 1.5 times the cap for 2 s (world-model.md 8.1's test), sideways at 1 m up, straight up
-/// and straight down: it trails its place and catches up once the hand stops, moving at most the support's excess
-/// over the cap (measured: 9.95, 10.20 and 10.12 m/s), and, the support part of its hold keeping it up, it never sags
-/// more than a centimetre or so below its place sideways or downwards (measured: 1.0 cm, its static sag).
+/// and straight down: it trails its place and catches up once the hand stops, moving at most about the cap, and, the
+/// support part of its hold keeping it up, it never sags more than a centimetre or so below its place sideways or
+/// downwards. Measured with the tight hold: 10.47, 10.02 and 10.61 m/s, the last with gravity's fall (it falls freely
+/// while the hand goes down at the cap, until it is below its place); trails of 1.54, 1.81 and 1.10 m; 4.1 mm below
+/// its place sideways. The trail grows with the overrun: each placement of the hand carries the ball at its offset with
+/// no velocity, and the hold's force cap ([`pe_replica::hands::HOLD_ACCELERATION`]) takes about three frames to bring
+/// it back to the cap. With M1's 5 Hz spring and a cap of 1,000 N it was 9.95, 10.20 and 10.12 m/s, under 1 m of trail
+/// and 1.0 cm below.
 #[test]
 fn a_held_ball_kept_above_the_cap_for_two_seconds_trails_and_stays_up() {
     for dir in 0..3u8 {
@@ -1944,8 +1961,11 @@ fn a_held_ball_kept_above_the_cap_for_two_seconds_trails_and_stays_up() {
             }
         }
         let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
-        assert!(top > 9.0 && top < cap + 0.5, "direction {dir}: {top} m/s");
-        assert!(trail > 0.2 && trail < 1.0, "direction {dir}: it trails, at most {trail} m");
+        println!("RESULT overrun direction {dir}: top {top:.2} m/s, trail {trail:.3} m, below {below:.4} m");
+        // Straight down, gravity's fall adds to the cap.
+        let over = if dir == 2 { 0.7 } else { 0.5 };
+        assert!(top > 9.0 && top < cap + over, "direction {dir}: {top} m/s");
+        assert!(trail > 0.2 && trail < 2.0, "direction {dir}: it trails, at most {trail} m");
         if dir != 1 {
             assert!(below < 0.02, "direction {dir}: it stays up, at most {below} m below its place");
         }
@@ -1995,11 +2015,12 @@ fn diagonal(below: bool) -> f64 {
     r.advance(Frame(60), &mut s);
     let pinned = at(&r, BALL);
     assert!(pinned[0] < 2.23, "pinned against the wall: {pinned:?}");
-    let mut top = 0.0_f64;
+    let (mut top, mut last) = (0.0_f64, pinned);
     while r.frame().0 < 150 {
         let next = r.frame().0 + 1;
         r.advance(Frame(next), &mut s);
-        top = top.max(ball_speed(&r, BALL));
+        top = top.max(ball_speed(&r, BALL)).max(distance(at(&r, BALL), last) * 60.0);
+        last = at(&r, BALL);
     }
     assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.01, "back in its place: {:?}", at(&r, BALL));
     assert_eq!(r.faults(), 0);
@@ -2007,17 +2028,259 @@ fn diagonal(below: bool) -> f64 {
 }
 
 /// The 45 degree pins (world-model.md 8.1): a ball pinned below and beside its place, or above and beside it, comes
-/// back with the hand still at no more than the cap plus the support's excess (k s_min, 0.44 m/s at 60 Hz; above,
-/// gravity also pulls it down, by about g times its return); measured 8.39 and 8.57 m/s. Cut part by part, as on
-/// 9d3a0270, the spring would see sqrt(2) times the reach: about 12 m/s by the linear model [I].
+/// back with the hand still at no more than the cap plus the support's excess (k s_min, 0.16 m/s at 60 Hz; above,
+/// gravity also pulls it down, by about g times its return), its speed the larger of its velocity at a frame's end and
+/// the distance it moves a frame. Measured with the tight hold, which closes its reach within a frame: 4.65 and 4.85
+/// m/s (8.39 and 8.57 m/s with M1's 5 Hz spring). Cut part by part, as on 9d3a0270, the spring would see sqrt(2) times
+/// the reach: about 12 m/s by the linear model at 5 Hz [I].
 #[test]
 fn a_ball_pinned_at_45_degrees_from_its_place_comes_back_under_the_cap() {
     let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
     let below = diagonal(true);
     let above = diagonal(false);
     println!("RESULT 45 degree pins: below and beside {below:.2} m/s, above and beside {above:.2} m/s");
-    assert!(below > 5.0 && below < cap + 0.5, "below and beside: {below} m/s");
-    assert!(above > 5.0 && above < cap + 0.5, "above and beside: {above} m/s");
+    assert!(below > 4.0 && below < cap + 0.5, "below and beside: {below} m/s");
+    assert!(above > 4.0 && above < cap + 0.5, "above and beside: {above} m/s");
+}
+
+// ---- the tight hold (world-model.md 8.1; @item:primordial-engine/tight-hold-for-light-objects-capped-by-a-per-pla) --
+
+/// A held pit ball, lifted to 1 m, then the hand speeding up along x at `a` m/s^2 to 8 m/s, which it keeps for 0.1 s,
+/// at `hz`: the most the ball trails its place while the hand speeds up, m, and the ball's and the hand's speeds at
+/// the end.
+fn flick(hz: u32, a: f64) -> (f64, f64, f64) {
+    let rate = f64::from(hz);
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    let start = [-0.03 - hr, 0.03, 0.0];
+    let (t0, ramp) = (1.0, 8.0 / a);
+    let p = move |t: f64| {
+        let up = lerp(start, [start[0], 1.0, 0.0], (t - 0.2) / 0.5);
+        let s = (t - t0).max(0.0);
+        let x = if s < ramp { 0.5 * a * s * s } else { 0.5 * a * ramp * ramp + 8.0 * (s - ramp) };
+        [up[0] + x, up[1], 0.0]
+    };
+    let mut b = EntryBuilder::new(&keys(), 0);
+    let end = ((t0 + ramp + 0.1) * rate) as u64;
+    let mut s = Source::default();
+    path_inputs(&mut b, HAND, hz, 2, end, &p).into_iter().for_each(|e| s.add(e));
+    s.add(input(&mut b, u64::from(hz / 10), &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    let mut r = replica_at(with_hands_and_balls(&[(HAND, start)], &[(BALL, [0.0, 0.03, 0.0], pit_ball())]), hz);
+    let mut trail = 0.0_f64;
+    while r.frame().0 < end {
+        let next = r.frame().0 + 1;
+        r.advance(Frame(next), &mut s);
+        if next as f64 >= t0 * rate {
+            trail = trail.max(distance(at(&r, BALL), place_in(&r, HAND, BALL)));
+        }
+    }
+    assert_eq!(r.faults(), 0);
+    (trail, ball_speed(&r, BALL), ball_speed(&r, HAND))
+}
+
+/// A light held object follows the hand within millimetres (the user's ruling m8104e63c11a9; [`pe_replica::hands::
+/// HOLD_HZ`]): a pit ball (18 g) on a hand speeding up at 100 m/s^2 to 8 m/s trails its place by a few millimetres at
+/// most, at 30, 60 and 120 Hz, and moves at the hand's speed (measured: 2.6, 1.0 and 0.6 mm, where M1's 5 Hz spring
+/// trailed by about 9 cm).
+#[test]
+fn a_light_held_ball_follows_the_hand_within_millimetres() {
+    for hz in [30, 60, 120] {
+        let (trail, ball, hand) = flick(hz, 100.0);
+        println!("RESULT {hz} Hz: a 100 m/s^2 flick trails {:.1} mm; ball {ball:.3}, hand {hand:.3} m/s", trail * 1e3);
+        assert!(trail < 0.004, "{hz} Hz: trails {trail} m");
+        assert!((ball - hand).abs() < 0.02, "{hz} Hz: the ball at {ball} m/s, the hand at {hand}");
+    }
+}
+
+/// Lifts an object of `mass` kg (a sphere 6 cm across, held beside the hand) from the floor to 1 m over 0.5 s with a
+/// hand of `strength` N, then holds it there 1 s: how far below its place it ends.
+fn lift_with(strength: f32, mass: f32) -> f64 {
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    let radius = 0.06_f32;
+    let shape = Shape {
+        kind: shape_kind::SPHERE,
+        density: mass / (4.0 / 3.0 * std::f32::consts::PI * radius.powi(3)),
+        size: [radius, 0.0, 0.0],
+        ..Shape::default()
+    };
+    let start = [-f64::from(radius) - hr, f64::from(radius), 0.0];
+    let mut b = EntryBuilder::new(&keys(), 0);
+    let mut s = Source::default();
+    path_inputs(&mut b, HAND, 60, 2, 120, &move |t| lerp(start, [start[0], 1.0, 0.0], (t - 0.2) / 0.5))
+        .into_iter()
+        .for_each(|e| s.add(e));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    let mut world = with_hands_and_balls(&[(HAND, start)], &[(BALL, [0.0, f64::from(radius), 0.0], shape)]);
+    let row = *world.store().get::<Hand>(oid(HAND)).expect("the hand's row");
+    world.insert(oid(HAND), Hand { strength, ..row }).expect("its strength");
+    let mut r = replica_of(world);
+    r.advance(Frame(120), &mut s);
+    assert_eq!(held_by(&r, BALL), Some(oid(HAND)), "still held");
+    assert_eq!(r.faults(), 0);
+    place_in(&r, HAND, BALL)[1] - at(&r, BALL)[1]
+}
+
+/// A hand's strength caps the force its hold applies (the user's ruling m1ba0eb5b7fa4; world-model.md 8.1): at the
+/// default 110 N it lifts 8 kg (78 N of weight) and holds it within millimetres, where a hand of 60 N can't lift it, and
+/// it stays on the floor, still held. Its strength is its `Hand` row's.
+#[test]
+fn a_hands_strength_decides_what_it_can_lift() {
+    assert_eq!(Hand::default().strength, pe_world::components::DEFAULT_STRENGTH);
+    let strong = lift_with(pe_world::components::DEFAULT_STRENGTH, 8.0);
+    let weak = lift_with(60.0, 8.0);
+    println!("RESULT 8 kg: {:.1} mm below its place at 110 N, {:.3} m at 60 N", strong * 1e3, weak);
+    assert!(strong < 0.005, "lifted by 110 N: {strong} m below its place");
+    assert!(weak > 0.9, "not lifted by 60 N: {weak} m below its place");
+}
+
+/// A ball held into the floor stays on it (world-model.md 8.1; @coordinator-opus m4cce79bdc39d): the hand comes down
+/// at 1 m/s until the ball's place is 20 cm under the floor's top, stays 0.5 s, and lifts it out. The hold's force cap
+/// keeps it from sinking in (measured: 1.55 mm deep at 30, 60 and 120 Hz; a stiff spring capped at 110 N alone sank
+/// it 43-47 mm), it doesn't creep sideways, and it comes out with the hand.
+#[test]
+fn a_ball_held_into_the_floor_stays_on_it_and_comes_out_with_the_hand() {
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    for hz in [30_u32, 60, 120] {
+        let rate = f64::from(hz);
+        let over = [0.0, 0.5 + 0.03 + hr, 0.0];
+        let low = 0.03 - 0.2 + 0.03 + hr;
+        let down = 0.3 + over[1] - low;
+        let p = move |t: f64| {
+            let y = if t < down + 0.5 { (over[1] - (t - 0.3).max(0.0)).max(low) } else { low + (t - down - 0.5) };
+            [0.0, y.min(over[1]), 0.0]
+        };
+        let mut b = EntryBuilder::new(&keys(), 0);
+        let end = ((down + 1.5) * rate) as u64;
+        let mut s = Source::default();
+        path_inputs(&mut b, HAND, hz, 2, end, &p).into_iter().for_each(|e| s.add(e));
+        s.add(input(&mut b, u64::from(hz / 10), &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+        let mut r = replica_at(with_hands_and_balls(&[(HAND, over)], &[(BALL, [0.0, 0.5, 0.0], pit_ball())]), hz);
+        let (mut deepest, mut aside) = (0.0_f64, 0.0_f64);
+        while r.frame().0 < end {
+            let next = r.frame().0 + 1;
+            r.advance(Frame(next), &mut s);
+            let ball = at(&r, BALL);
+            deepest = deepest.max(0.03 - ball[1]);
+            aside = aside.max(ball[0].abs()).max(ball[2].abs());
+        }
+        println!("RESULT {hz} Hz: {:.2} mm into the floor, {:.3} mm aside", deepest * 1e3, aside * 1e3);
+        assert!(deepest < 0.003, "{hz} Hz: {deepest} m into the floor");
+        assert!(aside < 0.001, "{hz} Hz: crept {aside} m aside");
+        assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.01, "{hz} Hz: out with the hand");
+        assert_eq!(r.faults(), 0);
+    }
+}
+
+const PEDESTAL: u128 = 73;
+
+/// A pile of pit balls in a box with a hand holding a pit ball over it: 25 balls on the floor in a 5 x 5 square, 16 in
+/// its hollows above, walls round it (inside 0.30 m square), and a pedestal at x 0.6 the held ball starts on, the hand
+/// above it. The hand picks the ball up from above at frame 6, carries it over the pile, comes down at 1 m/s until
+/// the ball's place is 5 cm below where it would first touch the pile's top, stays 0.5 s and lifts it out. The world,
+/// its entries, the pile's ids, and the frames the press starts and ends.
+fn press_into_pile() -> (World, Vec<SignedEntry>, Vec<u128>, u64, u64) {
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    let mut world =
+        with_hands_and_balls(&[(HAND, [0.6, 0.53 + 0.03 + hr, 0.0])], &[(BALL, [0.6, 0.53, 0.0], pit_ball())]);
+    add_static(&mut world, PEDESTAL, [0.6, 0.25, 0.0], [0.05, 0.25, 0.05]);
+    for (n, (c, h)) in [
+        ([0.20, 0.25, 0.0], [0.05, 0.25, 0.25]),
+        ([-0.20, 0.25, 0.0], [0.05, 0.25, 0.25]),
+        ([0.0, 0.25, 0.20], [0.25, 0.25, 0.05]),
+        ([0.0, 0.25, -0.20], [0.25, 0.25, 0.05]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        add_static(&mut world, 80 + n as u128, c, h);
+    }
+    let k = keys().key(0);
+    let mut pile = Vec::new();
+    let layer = |n: i32, y: f64| {
+        (0..n).flat_map(move |i| (0..n).map(move |j| (i, j))).map(move |(i, j)| {
+            let off = -0.03 * f64::from(n - 1);
+            [off + 0.06 * f64::from(i), y, off + 0.06 * f64::from(j)]
+        })
+    };
+    for (n, p) in layer(5, 0.03).chain(layer(4, 0.03 + 0.06 * std::f64::consts::FRAC_1_SQRT_2)).enumerate() {
+        let id = 100 + n as u128;
+        world.create(oid(id), None, k, GENESIS).expect("pile ball");
+        world.insert(oid(id), Transform::at(pos(p[0], p[1], p[2]))).expect("its transform");
+        world.insert(oid(id), dynamic()).expect("its body");
+        world.insert(oid(id), pit_ball()).expect("its shape");
+        pile.push(id);
+    }
+    // The held ball first touches the pile's top in the middle hollow of the upper layer, at y 0.115.
+    let touch = 0.03 + 0.06 * std::f64::consts::FRAC_1_SQRT_2 + 0.06 * std::f64::consts::FRAC_1_SQRT_2;
+    let (high, low) = (0.9, touch - 0.05 + 0.03 + hr);
+    let lift_from = [0.6, 0.53 + 0.03 + hr, 0.0];
+    let (t_down, t_low) = (1.2, 1.2 + (high - low));
+    let p = move |t: f64| {
+        if t < 0.6 {
+            lerp(lift_from, [0.6, high, 0.0], (t - 0.2) / 0.4)
+        } else if t < t_down {
+            lerp([0.6, high, 0.0], [0.0, high, 0.0], (t - 0.6) / 0.6)
+        } else if t < t_low + 0.5 {
+            [0.0, (high - (t - t_down)).max(low), 0.0]
+        } else {
+            [0.0, (low + (t - t_low - 0.5)).min(high), 0.0]
+        }
+    };
+    let mut b = EntryBuilder::new(&keys(), 0);
+    let end = ((t_low + 1.5) * 60.0) as u64;
+    let mut entries = path_inputs(&mut b, HAND, 60, 2, end, &p);
+    entries.push(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    (world, entries, pile, (t_down * 60.0) as u64, ((t_low + 0.5) * 60.0) as u64)
+}
+
+/// A ball held into a stack (world-model.md 8.1; @coordinator-opus m4cce79bdc39d): pressed 5 cm into a pile of pit
+/// balls in a box, the hold's force cap pushes the pile gently (measured: no pile ball faster than 0.5 m/s), the pile
+/// stays in its box and on the floor, the held ball goes no lower than the pile's lower layer, and it comes out with
+/// the hand. A replica that gets one of the press's hand inputs late rolls back and reaches the same roots.
+#[test]
+fn a_ball_held_into_a_stack_pushes_it_gently_and_a_late_input_replays_the_same_roots() {
+    let (world, entries, pile, press, pressed) = press_into_pile();
+    let end = entries.iter().map(|e| e.entry.stamp.0).max().expect("entries") + 30;
+    let mut s = Source::default();
+    entries.iter().cloned().for_each(|e| s.add(e));
+    let mut r = replica_of(world.clone());
+    let (mut fastest, mut lowest, mut out_of_box) = (0.0_f64, f64::MAX, 0.0_f64);
+    while r.frame().0 < end {
+        let next = r.frame().0 + 1;
+        r.advance(Frame(next), &mut s);
+        if next >= press {
+            for &id in &pile {
+                fastest = fastest.max(ball_speed(&r, id));
+                let p = at(&r, id);
+                out_of_box = out_of_box.max(p[0].abs()).max(p[2].abs()).max(0.03 - p[1]);
+            }
+        }
+        if (press..pressed).contains(&next) {
+            lowest = lowest.min(at(&r, BALL)[1]);
+        }
+    }
+    println!(
+        "RESULT the pile's fastest {fastest:.3} m/s, its farthest out {out_of_box:.4} m; the held ball down to y \
+         {lowest:.4} m"
+    );
+    assert!(fastest < 1.0, "the pile pushed gently: {fastest} m/s");
+    assert!(out_of_box < 0.15, "the pile stays in its box and on the floor: {out_of_box} m");
+    assert!(lowest > 0.06, "the held ball goes no lower than the pile's lower layer: {lowest} m");
+    assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.01, "out with the hand");
+    assert_eq!(r.faults(), 0);
+    // The same with a hand input of the press arriving late.
+    let late = entries
+        .iter()
+        .position(|e| e.entry.class == Class::Input && (press + 10..pressed).contains(&e.entry.stamp.0))
+        .expect("an input of the press");
+    let mut l = replica_of(world);
+    let mut early = Source::default();
+    entries.iter().enumerate().filter(|&(i, _)| i != late).for_each(|(_, e)| early.add(e.clone()));
+    l.advance(Frame(pressed), &mut early);
+    early.add(entries[late].clone());
+    let adv = l.advance(Frame(end), &mut early);
+    assert!(adv.rolled_back_to.is_some_and(|f| f <= entries[late].entry.stamp), "rolled back: {adv:?}");
+    assert_eq!(roots(&l, end), roots(&r, end), "the same roots");
+    assert_eq!(l.faults(), 0);
 }
 
 /// A trailing placement still carries a held box sliding along the floor (@design-reviewer mf010317f5855): the box's
@@ -2386,4 +2649,162 @@ fn an_edit_that_makes_a_body_unbuildable_takes_its_body_away_and_counts_a_fault(
     assert_eq!(roots(&l, 40), roots(&r, 40));
     assert_eq!(roots(&r, 40).len(), 6);
     assert_eq!(l.faults() - start, 3, "the first history's fault, then the edits at 4 and 16");
+}
+
+/// The tight hold's figures at the world rates 30, 60 and 120 Hz (world-model.md 8.1; @item:primordial-engine/
+/// tight-hold-for-light-objects-capped-by-a-per-pla), with a held pit ball: the spring's rate `k` and reach at rest;
+/// the sag held still; the most trail while the hand speeds up at 100 and 200 m/s^2 to 8 m/s, and the ball's speed
+/// against the hand's at the end; the deepest it goes pressed 20 cm into the floor; pinned by a 10 cm wall with the
+/// hand 1 m past it, how deep it goes and how fast it comes back once the wall is deleted (by the distance it moves a
+/// frame, and at a frame's end); and the hand at 1.5 times the cap for 2 s sideways, up and down: its top speed, its
+/// most trail, and how far below its place it sags. A measurement: it prints, it asserts only that nothing faulted.
+#[test]
+#[ignore = "a measurement: prints the tight hold's figures at 30, 60 and 120 Hz"]
+fn measure_the_tight_hold_at_30_60_and_120_hz() {
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    for hz in [30_u32, 60, 120] {
+        let rate = f64::from(hz);
+        let grab_at = u64::from(hz / 10);
+        let run = |world: World, entries: Vec<SignedEntry>, to: u64, each: &mut dyn FnMut(&ReplicaImpl<PeWorld>)| {
+            let mut s = Source::default();
+            entries.into_iter().for_each(|e| s.add(e));
+            let mut r = replica_at(world, hz);
+            while r.frame().0 < to {
+                let next = r.frame().0 + 1;
+                r.advance(Frame(next), &mut s);
+                each(&r);
+            }
+            assert_eq!(r.faults(), 0, "{hz} Hz");
+        };
+        let ball_world =
+            |hand: [f64; 3], ball: [f64; 3]| with_hands_and_balls(&[(HAND, hand)], &[(BALL, ball, pit_ball())]);
+        // The rate and the reach at rest.
+        let k = {
+            let r = replica_at(ball_world([0.0, 1.0, 0.0], [0.12, 1.0, 0.0]), hz);
+            r.physics().grab_spring_rate(pe_replica::hands::grab_spring(0.0, 0.0, 0.0), 1.0 / hz as f32)
+        };
+        // Held still: grabbed on the floor, lifted to 1 m over 0.5 s, then held 1 s.
+        let start = [-0.03 - hr, 0.03, 0.0];
+        let lifted = move |t: f64| lerp(start, [start[0], 1.0, 0.0], (t - 0.2) / 0.5);
+        let mut b = EntryBuilder::new(&keys(), 0);
+        let end = (1.8 * rate) as u64;
+        let mut entries = path_inputs(&mut b, HAND, hz, 2, end, &lifted);
+        entries.push(input(&mut b, grab_at, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+        let mut sag = 0.0;
+        run(ball_world(start, [0.0, 0.03, 0.0]), entries, end, &mut |r| {
+            if r.frame().0 > grab_at {
+                sag = place_in(r, HAND, BALL)[1] - at(r, BALL)[1];
+            }
+        });
+        // Flicks: lifted as above, then speeding up along x at `a` to 8 m/s, which it keeps for 0.1 s.
+        let mut flicks = Vec::new();
+        for a in [100.0, 200.0] {
+            let t0 = 1.0;
+            let ramp = 8.0 / a;
+            let p = move |t: f64| {
+                let up = lifted(t);
+                let s = (t - t0).max(0.0);
+                let x = if s < ramp { 0.5 * a * s * s } else { 0.5 * a * ramp * ramp + 8.0 * (s - ramp) };
+                [up[0] + x, up[1], 0.0]
+            };
+            let mut b = EntryBuilder::new(&keys(), 0);
+            let end = ((t0 + ramp + 0.1) * rate) as u64;
+            let mut entries = path_inputs(&mut b, HAND, hz, 2, end, &p);
+            entries.push(input(&mut b, grab_at, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+            let (mut trail, mut ball_v, mut hand_v) = (0.0_f64, 0.0, 0.0);
+            run(ball_world(start, [0.0, 0.03, 0.0]), entries, end, &mut |r| {
+                if r.frame().0 as f64 >= t0 * rate {
+                    trail = trail.max(distance(at(r, BALL), place_in(r, HAND, BALL)));
+                    ball_v = ball_speed(r, BALL);
+                    hand_v = ball_speed(r, HAND);
+                }
+            });
+            flicks
+                .push(format!("{a:.0} m/s^2: trail {:.1} mm, end {ball_v:.2} vs hand {hand_v:.2} m/s", trail * 1000.0));
+        }
+        // Pressed into the floor: held from above at 0.5 m, the hand comes down at 1 m/s until the ball's place is
+        // 20 cm under the floor's top, and stays 0.5 s.
+        let over = [0.0, 0.5 + 0.03 + hr, 0.0];
+        let low = 0.03 - 0.2 + 0.03 + hr;
+        let p = move |t: f64| [0.0, (over[1] - (t - 0.3).max(0.0)).max(low), 0.0];
+        let mut b = EntryBuilder::new(&keys(), 0);
+        let end = ((0.3 + over[1] - low + 0.5) * rate) as u64;
+        let mut entries = path_inputs(&mut b, HAND, hz, 2, end, &p);
+        entries.push(input(&mut b, grab_at, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+        let mut floor_in = 0.0_f64;
+        run(ball_world(over, [0.0, 0.5, 0.0]), entries, end, &mut |r| floor_in = floor_in.max(0.03 - at(r, BALL)[1]));
+        // Pinned by the wall (2.25 to 2.35): carried 1 m past it from 0.17 s to 0.67 s, the wall deleted at 1 s.
+        let (from, past) = ([2.08, 0.03, 0.0], [3.08, 0.03, 0.0]);
+        let mut b = EntryBuilder::new(&keys(), 0);
+        let end = (2.0 * rate) as u64;
+        let mut entries = path_inputs(&mut b, HAND, hz, 2, end, &move |t| lerp(from, past, (t - 0.17) / 0.5));
+        entries.push(input(&mut b, grab_at, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+        let delete = tx(vec![Op::Delete { id: Target::Existing(oid(WALL)) }]);
+        entries.push(b.next(Class::Edit, Frame(u64::from(hz)), Bytes::from(delete.encode())));
+        let mut world = ball_world(from, [2.2, 0.03, 0.0]);
+        add_wall(&mut world);
+        let (mut deepest, mut moved, mut top, mut last) = (f64::MIN, 0.0_f64, 0.0_f64, [2.2, 0.03, 0.0]);
+        run(world, entries, end, &mut |r| {
+            let p = at(r, BALL);
+            if r.frame().0 <= u64::from(hz) {
+                deepest = deepest.max(p[0] + 0.03 - 2.25);
+            } else {
+                moved = moved.max(distance(p, last) * rate);
+                top = top.max(ball_speed(r, BALL));
+            }
+            last = p;
+        });
+        // The overrun at 1.5 times the cap for 2 s, as in
+        // a_held_ball_kept_above_the_cap_for_two_seconds_trails_and_stays_up.
+        let mut overruns = Vec::new();
+        for dir in 0..3u8 {
+            let x0 = -9.0 - 0.03 - hr;
+            let floor = [x0, 0.03, 0.0];
+            let (t_run, path): (f64, Box<dyn Fn(f64) -> [f64; 3]>) = match dir {
+                0 => (
+                    1.0,
+                    Box::new(move |t: f64| {
+                        let up = lerp(floor, [x0, 1.0, 0.0], (t - 0.2) / 0.5);
+                        [up[0] + 15.0 * (t - 1.0).clamp(0.0, 2.0), up[1], 0.0]
+                    }),
+                ),
+                1 => (1.0, Box::new(move |t: f64| [x0, 0.03 + 15.0 * (t - 1.0).clamp(0.0, 2.0), 0.0])),
+                _ => (
+                    4.0,
+                    Box::new(move |t: f64| {
+                        let lifted = [x0, 0.03 + 10.0 * (t - 0.2).clamp(0.0, 3.1), 0.0];
+                        [x0, lifted[1] - 15.0 * (t - 4.0).clamp(0.0, 2.0), 0.0]
+                    }),
+                ),
+            };
+            let end = ((t_run + 2.5) * rate) as u64;
+            let mut b = EntryBuilder::new(&keys(), 0);
+            let mut entries = path_inputs(&mut b, HAND, hz, 2, end, &*path);
+            entries.push(input(&mut b, grab_at, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+            let (mut top, mut trail, mut below) = (0.0_f64, 0.0_f64, 0.0_f64);
+            run(ball_world(floor, [-9.0, 0.03, 0.0]), entries, end, &mut |r| {
+                if r.frame().0 as f64 >= t_run * rate {
+                    let (ball, place) = (at(r, BALL), place_in(r, HAND, BALL));
+                    top = top.max(ball_speed(r, BALL));
+                    below = below.max(place[1] - ball[1]);
+                    trail = trail.max(distance(ball, place));
+                }
+            });
+            overruns.push(format!(
+                "{}: {top:.2} m/s, trail {trail:.3} m, below {:.1} mm",
+                ["side", "up", "down"][dir as usize],
+                below * 1000.0
+            ));
+        }
+        println!(
+            "RESULT {hz} Hz: k {k:.1}/s, reach at rest {:.1} mm; sag {:.3} mm; flick {}; floor 20 cm press {:.2} mm \
+             deep; pinned {:.2} mm into the wall, back at {moved:.2} m/s ({top:.2} at a frame's end); overrun {}",
+            10.0 / f64::from(k) * 1000.0,
+            sag * 1000.0,
+            flicks.join(", "),
+            floor_in * 1000.0,
+            deepest * 1000.0,
+            overruns.join("; ")
+        );
+    }
 }

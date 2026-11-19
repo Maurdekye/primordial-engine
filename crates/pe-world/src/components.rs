@@ -280,8 +280,8 @@ impl Component for Light {
 
 /// A member's hand (section 8): created by world logic at admission, then moved only by its owner's inputs. The
 /// hand's target pose is its object's `Transform`; this row holds the rest of the newest input and the stream state
-/// pe-replica's rule needs (replica.md 3.3).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+/// pe-replica's rule needs (replica.md 3.3), and its player's strength.
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 #[repr(C)]
 pub struct Hand {
     pub owner: MemberKey,
@@ -294,12 +294,28 @@ pub struct Hand {
     /// 0 left, 1 right.
     pub side: u32,
     pub grip: f32,
+    /// The most force, in newtons, the hand's hold applies to what it holds (8.1): its player's strength. Set by world
+    /// logic at admission ([`DEFAULT_STRENGTH`]); not an input. Its later home is the character controller.
+    pub strength: f32,
     pub engaged: u8,
     pub has_prev: u8,
     /// How the hand takes part in physics ([`hand_mode`]), its owner's choice (8.1): set only by the owner's
     /// `HandMode` input.
     pub mode: u8,
-    pub _pad: [u8; 5],
+    pub _pad: [u8; 1],
+}
+
+/// A player's strength until the character controller holds it, N (8.1): provisional, the user's soft value of
+/// 2026-11-19 ("~.5-1kg probably", mfc1e116023f6: a default player moves about 0.5-1 kg with no lag). 110 N holds 1 kg
+/// tight up to a 100 m/s^2 flick against gravity; the user is still choosing between 110 and 60 N (mbd912c694422).
+pub const DEFAULT_STRENGTH: f32 = 110.0;
+
+impl Default for Hand {
+    /// A hand of [`DEFAULT_STRENGTH`], every other field zero. `Zeroable::zeroed` gives a strength of 0 instead, a hand
+    /// that can hold nothing up: nothing calls it for `Hand`.
+    fn default() -> Hand {
+        Hand { strength: DEFAULT_STRENGTH, ..Zeroable::zeroed() }
+    }
 }
 
 /// A hand's mode (8.1, D18b; @coordinator-opus ma93ce7600de1): a personal comfort choice, per member, on the hand.
@@ -324,10 +340,11 @@ impl Component for Hand {
             "prev_span": prev_span, U32, 1;
             "side": side, U32, 1;
             "grip": grip, F32, 1;
+            "strength": strength, F32, 1, "N";
             "engaged": engaged, Bool, 1;
             "has_prev": has_prev, Bool, 1;
             "mode": mode, U8, 1;
-            "_pad": _pad, U8, 5;
+            "_pad": _pad, U8, 1;
         ]
     }
 }
