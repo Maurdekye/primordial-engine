@@ -468,3 +468,24 @@ fn normalized(q: [f32; 4]) -> [f32; 4] {
     let n = q.iter().map(|c| c * c).sum::<f32>().sqrt();
     q.map(|c| c / n)
 }
+
+/// How far `object` is from its place in `hand`, m: from the object's anchor to where its grab joint holds it on the
+/// hand's body (the joint's anchor on the hand). `None` without such a joint. The view's [`pe_seams::ViewFlags::
+/// HELD_AWAY`] reads it (render.md 8, D4's break-away).
+pub fn hold_gap(physics: &PhysicsWorld, object: ObjectId, hand: ObjectId) -> Option<f64> {
+    let key = grab_key(object);
+    if physics.joint_kind(key) != Some(JointKind::Grab) || physics.joint_objects(key)?.0 != Some(hand) {
+        return None;
+    }
+    let (h, o, anchor) = (physics.pose(hand).ok()?, physics.pose(object).ok()?, physics.grab_anchor(key).ok()?);
+    let r = rotate(h.rotation, anchor);
+    Some(distance(o.position, [0usize, 1, 2].map(|i| h.position[i] + f64::from(r[i]))))
+}
+
+/// Whether a held object `gap` from its place in the hand is drawn where it is simulated (render.md 8, D4's
+/// break-away): over [`pe_seams::BREAK_AWAY`], or, when it already was (`was_away`), still over
+/// [`pe_seams::BREAK_BACK`], so a gap hovering near the threshold doesn't flicker. No gap, no break-away.
+pub fn held_away(was_away: bool, gap: Option<f64>) -> bool {
+    let bound = if was_away { pe_seams::BREAK_BACK } else { pe_seams::BREAK_AWAY };
+    gap.is_some_and(|gap| gap > bound)
+}
