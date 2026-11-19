@@ -270,9 +270,11 @@ pub struct HandStats {
     /// `engaged` edges sent: false to true (a close), true to false (an open).
     pub closes: u64,
     pub opens: u64,
-    /// `Grab`s agreement took at a close, and `Release`s at an open.
+    /// `Grab`s agreement took at a close, and `Release`s at an open; of those, the `Throw`s, which carried the velocity
+    /// the hand gave the object at the real opening (world-model.md 8.1).
     pub grabs: u64,
     pub releases: u64,
+    pub throws: u64,
     /// The grabs applied, and those that weren't, by reason: a refusal's `Reason` (`Held`, `OutOfReach`, `Cooldown`,
     /// ...), or `Dropped` or `Unknown` for a voided entry or an unknown verdict. A grab no view has stepped yet is in
     /// neither.
@@ -1192,6 +1194,7 @@ impl Sim {
                     &WorldGrasps(&*self.replica),
                     view,
                     at,
+                    now,
                     stamp,
                     domain,
                     &mut *self.agree,
@@ -1204,6 +1207,21 @@ impl Sim {
                     h.closes += u64::from(sent.closes[i]);
                     h.opens += u64::from(sent.opens[i]);
                     h.releases += u64::from(sent.releases[i]);
+                    h.throws += u64::from(sent.throws[i]);
+                }
+                // Each throw, with the velocity it carries and the fastest the object moved with the hand over the
+                // 50 ms up to the opening (the weak-throw fix): a window can be tuned from these with no format change.
+                for t in &sent.thrown {
+                    let speed = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    crate::out!(
+                        "throw: {} hand, object {:?}, {:.2} m/s (peak {:.2} m/s over 50 ms), spin {:.1} rad/s, stamp {}",
+                        ["left", "right"][t.hand],
+                        t.object,
+                        speed(t.linear),
+                        t.peak,
+                        speed(t.angular),
+                        stamp.0
+                    );
                 }
                 for (i, id) in sent.grabs {
                     self.stats.hands[i].grabs += 1;
@@ -2317,6 +2335,7 @@ pub(crate) mod tests {
         #[derive(Clone)]
         struct Scripted {
             path: Arc<Path>,
+            velocity: Arc<Path>,
             closed: Arc<dyn Fn(f64) -> bool + Send + Sync>,
             now: Arc<AtomicI64>,
         }
@@ -2335,8 +2354,8 @@ pub(crate) mod tests {
                         position: (self.path)(at.0 as f64 / 1e9),
                         orientation: [0.0, 0.0, 0.0, 1.0],
                     },
-                    linear_velocity: None,
-                    angular_velocity: None,
+                    linear_velocity: Some((self.velocity)(at.0 as f64 / 1e9)),
+                    angular_velocity: Some([0.0; 3]),
                     grip: if closed { 1.0 } else { 0.0 },
                     closed,
                     discontinuity: 0,
@@ -2373,9 +2392,17 @@ pub(crate) mod tests {
             let lift = 0.4 * ((t - t_lift) / 0.4).clamp(0.0, 1.0) as f32;
             [at[0] + dir * along(t) as f32, at[1] + lift, at[2]]
         });
+        let velocity: Arc<Path> = Arc::new(move |t: f64| {
+            let lifting = if (t_lift..t_lift + 0.4).contains(&t) { 1.0 } else { 0.0 };
+            [dir * hand_speed(t) as f32, lifting, 0.0]
+        });
         let now = Arc::new(AtomicI64::new(0));
-        let hand =
-            Scripted { path: path.clone(), closed: Arc::new(move |t| t >= t_grab && t < t_open), now: now.clone() };
+        let hand = Scripted {
+            path: path.clone(),
+            velocity,
+            closed: Arc::new(move |t| t >= t_grab && t < t_open),
+            now: now.clone(),
+        };
         let lead = Arc::new(crate::shown::DisplayLead::default());
         let mut sim = sim.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(hand)).with_shown(lead.clone());
         let mut layer = pe_render::display::DisplayLayer::new(pe_render::display::DisplaySettings {
@@ -2450,9 +2477,16 @@ pub(crate) mod tests {
         assert_eq!(c.hand_offs, 1, "{c:?}");
         assert!(c.hand_off_gap_max < 0.02, "the ball leaves the drawn hand where it is: {} m", c.hand_off_gap_max);
         // The grasp is read now, never forecast, so the simulation lets go the shown lead after the real opening, on a
-        // hand already slowing: the ball leaves between the hand's speed then and its peak, carrying the spring's give.
-        assert!(launched <= 1.1 * hand_speed(t_open), "never faster than the peak: {launched}");
-        assert!(launched >= 0.9 * hand_speed(released), "never slower than the hand when let go: {launched}");
+        // hand already slowing. The throw carries the velocity the hand had at the opening, read at the first tick
+        // after it (the weak-throw fix, world-model.md 8.1), so the ball leaves at that speed, within a few percent
+        // (one frame's gravity on top), not at the slowed hand's.
+        let opened = (t_open * 60.0).ceil() / 60.0;
+        assert!(
+            (launched - hand_speed(opened)).abs() < 0.03 * hand_speed(t_open),
+            "left at the opening's {:.2} m/s: {launched}",
+            hand_speed(opened)
+        );
+        assert_eq!(sim.stats().hands[1].throws, 1, "the opening went as a throw");
     }
 
     /// A ball passed from the left hand to the right stays in the right when the left opens at once (@design-reviewer's
@@ -2677,6 +2711,87 @@ pub(crate) mod tests {
                 sims[0].0.stats().largest_shown_ahead,
                 sims[1].0.stats().largest_shown_ahead
             );
+        }
+    }
+
+    /// A puppet hand that also reports a velocity, the same at every moment: a hand moving steadily, for a throw.
+    #[derive(Clone)]
+    struct Moving(Puppet, [f32; 3]);
+
+    impl pe_seams::HandFeed for Moving {
+        fn hand_at(&self, hand: pe_seams::Hand, at: HostTime) -> Option<pe_seams::HandInput> {
+            let h = self.0.hand_at(hand, at)?;
+            Some(pe_seams::HandInput { linear_velocity: Some(self.1), angular_velocity: Some([0.0; 3]), ..h })
+        }
+    }
+
+    /// The weak-throw fix between two members (world-model.md 8.1;
+    /// @item:primordial-engine/throws-leave-at-the-hand-s-speed-letting-go-carr): one picks up the top ball and opens a
+    /// hand moving at 2 m/s, so its opening goes as a `Throw`. Both machines agree on the world (agreement compares
+    /// their roots at every cut: finalized, no split), and on both the ball has flown off along the throw.
+    #[test]
+    fn a_throw_by_one_member_lands_the_same_on_both() {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let hub = Hub::default();
+        {
+            let mut d = hub.delay.lock().expect("the delays");
+            d.insert((keys.key(0), keys.key(1)), 20_000_000);
+            d.insert((keys.key(1), keys.key(0)), 20_000_000);
+        }
+        let thrower = Puppet::default();
+        thrower.set([0.0, 3.0, 0.0], false);
+        let idle = Puppet::default();
+        idle.set([0.0, 3.0, 0.4], false);
+        let feeds: [Arc<dyn pe_seams::HandFeed>; 2] =
+            [Arc::new(Moving(thrower.clone(), [2.0, 0.0, 0.0])), Arc::new(idle)];
+        let mut sims = Vec::new();
+        for (i, feed) in feeds.into_iter().enumerate() {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+            let replica =
+                crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let slot = Arc::new(FrameSlot::new());
+            let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), feed)
+                .with_transport(Box::new(Port::new(me, hub.clone())), None);
+            sims.push((sim, slot));
+        }
+        let mut f = 0;
+        let mut run = |sims: &mut Vec<(Sim, Arc<FrameSlot>)>, n: u64| {
+            for _ in 0..n {
+                f += 1;
+                let now = clock.host_time_of(Frame(f));
+                hub.now.store(now.0, Ordering::SeqCst);
+                for (s, _) in sims.iter_mut() {
+                    s.tick(now).expect("ticked");
+                }
+            }
+        };
+        run(&mut sims, 120);
+        let v = sims[0].1.newest().expect("published");
+        let ball = top_ball(&v);
+        let at = rig_at(&v, ball);
+        thrower.set(at, false);
+        run(&mut sims, 3);
+        thrower.set(at, true);
+        run(&mut sims, 30);
+        thrower.set(at, false);
+        run(&mut sims, 120);
+        assert_eq!(sims[0].0.stats().hands[1].throws, 1, "the opening went as a throw");
+        for (s, slot) in &sims {
+            let st = s.stats();
+            assert!(st.finalized > 0 && st.root_splits == 0, "finalized {}, splits {}", st.finalized, st.root_splits);
+            let now = rig_at(&slot.newest().expect("published"), ball);
+            assert!(now[0] - at[0] > 0.2, "the ball flew off along the throw: from {at:?} to {now:?}");
         }
     }
 

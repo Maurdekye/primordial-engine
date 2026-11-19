@@ -1508,6 +1508,148 @@ fn a_throw_leaves_at_the_hand_s_speed_up_to_the_cap() {
     }
 }
 
+/// The weak-throw fix's scene (world-model.md 8.1; @item:primordial-engine/throws-leave-at-the-hand-s-speed-letting-go-
+/// carr): a ball of `shape` and radius `r` on the floor at x = 2, the hand touching it, closed from frame 2. It is
+/// grabbed at frame 6 (unless `grab` is false), lifted 0.48 m from frame 10 and held still, and at frame 40 the hand
+/// opens with `throw` (a `Throw` or a `Release` of `object`). Its world and entries, the throw last.
+fn held_then(shape: Shape, r: f64, grab: bool, throw: Input) -> (World, Vec<SignedEntry>) {
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let rest = [2.0 - r - f64::from(pe_replica::world::HAND_RADIUS), r, 0.0];
+    let lift: Vec<[f64; 3]> = (0..16).map(|k| [rest[0], r + 0.03 * f64::from(k + 1), 0.0]).collect();
+    let top = lift[15];
+    let mut entries = vec![input(&mut b, 2, &hand_at(&[rest; 8], true))];
+    if grab {
+        entries.push(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    }
+    entries.push(input(&mut b, 10, &hand_at(&lift, true)));
+    entries.push(input(&mut b, 26, &hand_at(&[top; 14], true)));
+    entries.push(input(&mut b, 40, &hand_at(&[top; 4], false)));
+    entries.push(input(&mut b, 40, &throw));
+    let world = with_hands_and_balls(&[(HAND, rest)], &[(BALL, [2.0, r, 0.0], shape)]);
+    (world, entries)
+}
+
+/// The ball's velocity after `entries`, run to frame `to`: linear then angular, as plain numbers.
+fn velocity_after(world: World, entries: Vec<SignedEntry>, to: u64) -> ([f64; 3], [f64; 3], ReplicaImpl<PeWorld>) {
+    let mut s = Source::default();
+    entries.into_iter().for_each(|e| s.add(e));
+    let mut r = replica_of(world);
+    r.advance(Frame(to), &mut s);
+    let (v, w) = r.physics().velocity(oid(BALL)).expect("the ball's body");
+    (v.map(f64::from), w.map(f64::from), r)
+}
+
+/// A holder's throw (world-model.md 8.1): it ends the hold, and the ball leaves with the velocity it carries, set as
+/// the entry applies (one frame's gravity after), not with whatever the hold's spring had given it. A `Release`
+/// instead leaves the ball at rest in the air. A throw of a ball nobody holds does nothing.
+#[test]
+fn a_holder_s_throw_gives_the_ball_its_velocity_as_the_entry_applies() {
+    let g = 9.81 / 60.0;
+    let throw = Input::Throw { object: oid(BALL), linear: [3.0, 1.0, 0.0], angular: [0.0, 20.0, 0.0] };
+    let (world, entries) = held_then(pit_ball(), 0.03, true, throw.clone());
+    let (v, w, r) = velocity_after(world, entries, 41);
+    assert_eq!(r.physics().joint_count(), 0, "let go");
+    assert!((v[0] - 3.0).abs() < 0.03 && (v[1] - (1.0 - g)).abs() < 0.03 && v[2].abs() < 0.01, "left at {v:?}");
+    assert!((w[1] - 20.0).abs() < 0.2 && w[0].abs() < 0.01 && w[2].abs() < 0.01, "spinning at {w:?}");
+    let (world, entries) = held_then(pit_ball(), 0.03, true, Input::Release { object: oid(BALL) });
+    let (v, _, _) = velocity_after(world, entries, 41);
+    assert!(v[0].abs() < 0.05 && v[1] < 0.0 && v[1] > -0.3, "a release only lets it fall: {v:?}");
+    // Not held (no grab): the throw changes nothing, and the ball rests on the floor.
+    let (world, entries) = held_then(pit_ball(), 0.03, false, throw);
+    let (v, w, r) = velocity_after(world, entries, 41);
+    assert!(v.iter().chain(&w).all(|c| c.abs() < 0.05), "a non-holder's throw does nothing: {v:?} {w:?}");
+    assert_eq!(r.faults(), 0);
+}
+
+/// A throw's caps (world-model.md 8.1): the linear speed is scaled down to `max_push_speed`, its direction kept, and
+/// the spin so its rim moves at most at the cap (`max_push_speed` / the bounding radius: 27.8 rad/s for a 36 cm ball).
+#[test]
+fn a_throw_is_capped_at_the_push_speed_and_its_spin_at_the_rim_s() {
+    let g = 9.81 / 60.0;
+    let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
+    let big = Shape { kind: shape_kind::SPHERE, density: 1.0, size: [0.36, 0.0, 0.0], ..Shape::default() };
+    let throw = Input::Throw { object: oid(BALL), linear: [12.0, 0.0, 9.0], angular: [0.0, 100.0, 0.0] };
+    let (world, entries) = held_then(big, 0.36, true, throw);
+    let (v, w, r) = velocity_after(world, entries, 41);
+    assert!((v[0] - 0.8 * cap).abs() < 0.05 && (v[2] - 0.6 * cap).abs() < 0.05, "15 m/s scaled to 10: {v:?}");
+    assert!((v[1] + g).abs() < 0.05, "and only gravity's frame down: {v:?}");
+    assert!((w[1] - cap / 0.36).abs() < 0.3, "100 rad/s capped at the rim's 10 m/s: {w:?}");
+    assert_eq!(r.faults(), 0);
+}
+
+/// The far end of a dumbbell: a compound child of `BALL`.
+const FAR_END: u128 = 74;
+
+/// A throw's spin is capped at the rim's speed about the object's centre of mass (world-model.md 8.1), not about its
+/// origin: a dumbbell of two 3 cm pit balls 50 cm apart, held by one, has its centre 25 cm along, so it spins at up to
+/// 10 m/s over 28 cm (35.7 rad/s), where the radius about its origin (53 cm) would allow only 18.9. Both are under
+/// Box3D's own limit of 45 degrees a tick (47.1 rad/s at 60 Hz, replica.md 3.5).
+#[test]
+fn a_throw_s_spin_cap_takes_the_radius_about_the_centre_of_mass() {
+    let throw = Input::Throw { object: oid(BALL), linear: [0.0; 3], angular: [0.0, 100.0, 0.0] };
+    let (mut world, entries) = held_then(pit_ball(), 0.03, true, throw);
+    let k = keys().key(0);
+    world.create(oid(FAR_END), Some(oid(BALL)), k, GENESIS).expect("the far end");
+    world.insert(oid(FAR_END), Transform::local([0.0, 0.0, 0.5])).expect("its place");
+    world.insert(oid(FAR_END), pit_ball()).expect("its shape");
+    let (_, w, r) = velocity_after(world, entries, 41);
+    let centre = r.physics().local_center(oid(BALL)).expect("the dumbbell's body");
+    assert!(centre[0].abs() < 1e-4 && centre[1].abs() < 1e-4 && (centre[2] - 0.25).abs() < 1e-4, "{centre:?}");
+    let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
+    assert!((w[1] - cap / 0.28).abs() < 0.5 && w[0].abs() < 0.5 && w[2].abs() < 0.5, "capped at 10 m/s / 28 cm: {w:?}");
+    assert_eq!(r.faults(), 0);
+}
+
+/// A throw of a ball the wall keeps more than the break-away distance from its place in the hand (world-model.md 8.1):
+/// it isn't with the hand, so it keeps the solver's velocity, pressed against the wall, and the hold ends.
+#[test]
+fn a_throw_of_a_ball_held_away_by_a_wall_keeps_the_solver_s_velocity() {
+    // `pinned`'s scene (the hand carried 1 m past the wall the ball is held against), with the throw on its chain.
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let (start, past) = ([2.08, 0.03, 0.0], [3.08, 0.03, 0.0]);
+    let mut entries = path_inputs(&mut b, HAND, 60, 2, 150, &move |t: f64| lerp(start, past, (t - 0.17) / 0.5));
+    entries.push(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    entries.push(input(&mut b, 45, &Input::Throw { object: oid(BALL), linear: [-5.0, 0.0, 0.0], angular: [0.0; 3] }));
+    let mut world = with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.2, 0.03, 0.0], pit_ball())]);
+    add_wall(&mut world);
+    let mut s = Source::default();
+    entries.into_iter().for_each(|e| s.add(e));
+    let mut r = replica_of(world);
+    r.advance(Frame(45), &mut s);
+    let gap = pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND)).expect("held");
+    assert!(gap > pe_seams::BREAK_AWAY, "held away by the wall: {gap}");
+    r.advance(Frame(46), &mut s);
+    assert_eq!(held_by(&r, BALL), None, "the throw ended the hold");
+    let v = r.physics().velocity(oid(BALL)).expect("the ball").0;
+    assert!(v[0] > -1.0, "not thrown back at 5 m/s: {v:?}");
+    assert_eq!(r.faults(), 0);
+}
+
+/// A throw that arrives late rolls back to the same roots as a run that had it on time (world-model.md 8.1: the velocity
+/// is set inside the step, from the entry, so a replay sets it again exactly).
+#[test]
+fn a_throw_that_arrives_late_rolls_back_to_the_same_roots() {
+    let throw = Input::Throw { object: oid(BALL), linear: [3.0, 2.0, -1.0], angular: [1.0, 2.0, 3.0] };
+    let (world, entries) = held_then(pit_ball(), 0.03, true, throw);
+    let mut all = Source::default();
+    entries.iter().cloned().for_each(|e| all.add(e));
+    let mut a = replica_of(world.clone());
+    a.advance(Frame(70), &mut all);
+    let (head, last) = entries.split_at(entries.len() - 1);
+    let mut late = Source::default();
+    head.iter().cloned().for_each(|e| late.add(e));
+    let mut c = replica_of(world);
+    c.advance(Frame(50), &mut late);
+    late.add(last[0].clone());
+    let adv = c.advance(Frame(70), &mut late);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 40), "the late throw rolls back: {adv:?}");
+    assert_eq!(roots(&c, 70), roots(&a, 70));
+    assert!(at(&a, BALL)[0] > 2.5, "the throw moved the ball: {:?}", at(&a, BALL));
+    assert_eq!((a.faults(), c.faults()), (0, 0));
+}
+
 /// Step 0 of the release fix (@item:primordial-engine/letting-go-in-vr-the-ball-flies-at-once-with-no-g;
 /// @coordinator-opus): a pit ball (18 g) is grabbed on the floor, lifted to 1 m and held still, then
 /// swung along x. The hand speeds up evenly over 0.15 s to `v` (`v / 0.15` m/s²), keeps that speed for 0.1 s, and

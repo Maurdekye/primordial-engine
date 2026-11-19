@@ -55,6 +55,16 @@ pub struct CarriedFx {
     pub digest: [u8; 32],
 }
 
+/// A throw an entry applied (world-model.md 8.1): the velocity the holder's hand gave `object` as it let go, in the
+/// world frame, `linear` at its centre of mass in m/s and `angular` in rad/s. The replica gives it to the object as
+/// the entry applies, capped, if the object is with the hand that held it ([`crate::hands::throw`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThrowFx {
+    pub object: ObjectId,
+    pub linear: [f32; 3],
+    pub angular: [f32; 3],
+}
+
 /// The physics effects of one applied entry, or of one logic stage's change set, and what its record carries
 /// besides the outcome. Empty for a refused entry.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -63,6 +73,8 @@ pub struct Effects {
     /// and whose world pose an entry both changed: a rebuild keeps a moving body's physics pose.
     pub changed: Vec<(ObjectId, Change)>,
     pub pushes: Vec<PushFx>,
+    /// The holder's throws, in op order (world-model.md 8.1).
+    pub throws: Vec<ThrowFx>,
     pub carried: Option<CarriedFx>,
 }
 
@@ -83,7 +95,7 @@ pub struct LogicFx {
 impl Effects {
     /// No physics effects.
     pub fn is_empty(&self) -> bool {
-        self.changed.is_empty() && self.pushes.is_empty() && self.carried.is_none()
+        self.changed.is_empty() && self.pushes.is_empty() && self.throws.is_empty() && self.carried.is_none()
     }
 }
 

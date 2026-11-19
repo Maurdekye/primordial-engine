@@ -69,7 +69,7 @@ use pe_world::{Footprint, FrameEnd, RekeyReport, VoidKind, World, input_phase};
 use crate::logic::{ScriptRow, ScriptRunner, StageWorld};
 use crate::world::{
     BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, LogicFx, Phase, PhysicsSettings,
-    PushFx, ShapePart, ShapeRow, Unbuildable, WorldModel,
+    PushFx, ShapePart, ShapeRow, ThrowFx, Unbuildable, WorldModel,
 };
 
 const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -799,7 +799,9 @@ fn effects(before: &World, after: &World, footprint: &Footprint) -> Effects {
         }
     }
     let pushes = footprint.pushes.iter().map(|p| PushFx { object: p.object, impulse: p.impulse, at: p.at }).collect();
-    Effects { changed, pushes, ..Effects::default() }
+    let throws =
+        footprint.throws.iter().map(|t| ThrowFx { object: t.object, linear: t.linear, angular: t.angular }).collect();
+    Effects { changed, pushes, throws, ..Effects::default() }
 }
 
 /// `id`'s body: itself if it has a `Body`, else its nearest ancestor with one.

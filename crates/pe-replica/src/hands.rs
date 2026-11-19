@@ -67,7 +67,7 @@ use pe_physics::{
 use pe_seams::Hasher;
 use pe_seams::{Frame, ObjectId, Pos, SimRate, frames_ceil};
 
-use crate::world::{ClaimRow, HAND_RADIUS, HandRow, WorldModel};
+use crate::world::{ClaimRow, HAND_RADIUS, HandRow, ThrowFx, WorldModel};
 
 /// D18b's two modes, as pe-world's `Hand.mode` holds them (world-model.md 8.1).
 pub mod hand_mode {
@@ -540,4 +540,36 @@ pub fn hold_gap(physics: &PhysicsWorld, object: ObjectId, hand: ObjectId) -> Opt
 pub fn held_away(was_away: bool, gap: Option<f64>) -> bool {
     let bound = if was_away { pe_seams::BREAK_BACK } else { pe_seams::BREAK_AWAY };
     gap.is_some_and(|gap| gap > bound)
+}
+
+/// A throw (world-model.md 8.1; @item:primordial-engine/throws-leave-at-the-hand-s-speed-letting-go-carr): if `t.object`
+/// is with the hand that held it, its grab joint still there and the object within [`pe_seams::BREAK_AWAY`] of its
+/// place in the hand ([`hold_gap`]), its velocity becomes the throw's, capped:
+/// - linear: scaled down to [`MAX_HAND_PUSH_SPEED`], its direction kept;
+/// - angular: scaled down to `MAX_HAND_PUSH_SPEED / radius`, so the spin moves the object's rim at most at the cap
+///   (`radius` the body's bounding radius about its centre of mass, [`PhysicsWorld::local_center`]; none or zero sets
+///   no spin).
+///
+/// Otherwise (no joint from a hand, blocked or stretched past the break-away) the object keeps its solver velocity, as
+/// a `Release` leaves it. Whether the velocity was set. The test is the physics' alone, the same on every replica: the
+/// view's hysteresis ([`held_away`]'s `was_away`) is the publishing machine's, so it can't decide a simulated outcome.
+pub fn throw(physics: &mut PhysicsWorld, t: &ThrowFx, radius: Option<f32>) -> Result<bool, PhysicsError> {
+    let Some((Some(hand), _)) = physics.joint_objects(grab_key(t.object)) else { return Ok(false) };
+    if hold_gap(physics, t.object, hand).is_none_or(|gap| gap > pe_seams::BREAK_AWAY) {
+        return Ok(false);
+    }
+    let cap = MAX_HAND_PUSH_SPEED as f32;
+    let linear = capped(t.linear, cap);
+    let angular = match radius.filter(|r| *r > 0.0) {
+        Some(r) => capped(t.angular, cap / r),
+        None => [0.0; 3],
+    };
+    physics.set_velocity(t.object, linear, angular)?;
+    Ok(true)
+}
+
+/// `v` scaled down to length `max`, its direction kept.
+fn capped(v: [f32; 3], max: f32) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len > max && len > 0.0 { v.map(|c| c * (max / len)) } else { v }
 }

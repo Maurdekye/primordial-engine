@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use box3d_rust::body::{
     body_apply_angular_impulse, body_apply_force, body_apply_force_to_center, body_apply_linear_impulse,
     body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity, body_get_linear_velocity,
-    body_get_mass, body_get_shape_count, body_get_shapes, body_get_transform, body_get_type, body_is_awake,
-    body_is_valid, body_reset_history, body_set_angular_velocity, body_set_awake, body_set_linear_velocity,
-    body_set_target_transform, body_set_transform, create_body, destroy_body,
+    body_get_local_center, body_get_mass, body_get_shape_count, body_get_shapes, body_get_transform, body_get_type,
+    body_is_awake, body_is_valid, body_reset_history, body_set_angular_velocity, body_set_awake,
+    body_set_linear_velocity, body_set_target_transform, body_set_transform, create_body, destroy_body,
 };
 use box3d_rust::core::get_length_units_per_meter;
 use box3d_rust::geometry::{Capsule, ShapeType, Sphere};
@@ -451,6 +451,13 @@ impl PhysicsWorld {
         let v = body_get_linear_velocity(&self.world, body);
         let w = body_get_angular_velocity(&self.world, body);
         Ok(([v.x, v.y, v.z], [w.x, w.y, w.z]))
+    }
+
+    /// The body's centre of mass in its own frame, m, from its shapes' densities (Box3D's local centre): the point
+    /// whose velocity is the body's linear velocity. A body's origin for one with no mass.
+    pub fn local_center(&self, id: ObjectId) -> Result<[f32; 3], PhysicsError> {
+        let c = body_get_local_center(&self.world, self.live_body(id)?);
+        Ok([c.x, c.y, c.z])
     }
 
     /// The body's mass, kg, from its shapes' densities: 0 for a static or kinematic body.

@@ -299,7 +299,13 @@ The rules are world-model.md 8.1's (the speed cap, the teleport distance and the
   gets a grab joint from the hand to the object, keyed from the object's id. It holds the object where it was in the
   hand when the joint was made: a spring pulls it to that place (`grab_spring`: `HOLD_HZ`, 60 Hz, critically damped),
   and an angular drive (`GRAB_TORQUE`, 100 N m) keeps its rotation relative to the hand. A joint whose claim has gone
-  is removed. One whose claim a renewing grab moved to another of its author's hands is made again from that hand. An
+  is removed. A holder's `Throw` (world-model.md 8.1) is applied as its entry applies, while the hold's joint is
+  still there to say where the object's place is: if the object is within `BREAK_AWAY` of it (`hands::hold_gap`, the
+  physics alone, so every replica decides alike; the view's hysteresis is the publishing machine's), its velocity
+  becomes the throw's, the linear part scaled down to `MAX_HAND_PUSH_SPEED` and the spin to that speed at its
+  bounding radius about its centre of mass (`PhysicsWorld::local_center`). Otherwise it keeps its solver velocity. `hands::sync`
+  removes the joint before the frame's physics step either way. One whose claim a renewing grab moved to another of
+  its author's hands is made again from that hand. An
   agent's grab has no hand, so it gets no joint. The joints are in the physics image, so a rollback restores them.
 - **A hold is tight, and its force is capped** (world-model.md 8.1, the tight hold; @coordinator-opus):
   the spring's force is at most `min(strength, m (A + g))`, with the strength the holding hand's `HandRow::strength`
