@@ -32,11 +32,15 @@
 //!     last frame, so it is catching up, not jumping) carries a held object only where no static geometry lies in its
 //!     way ([`PhysicsWorld::static_in_way`]), so a held object never passes through a wall: one left behind stays
 //!     where it is, held by its spring (@coordinator-opus). A real teleport carries it through.
+//! - **A hold is tight, and its force is capped** ([`grab_spring`], world-model.md 8.1): a stiff spring ([`HOLD_HZ`])
+//!   keeps a light held object within millimetres of its place in the hand, and its force is at most the holder's
+//!   strength (its `Hand` row's) and at most what speeds the object up at [`HOLD_ACCELERATION`] against gravity, so a
+//!   heavy object lags and a blocked light one is never pushed through what blocks it (@coordinator-opus).
 //! - **A hold's spring is bounded** ([`reaches`], world-model.md 8.1): for each step it sees at most the error the
 //!   room under the cap leaves, `(max_push_speed - v_hold) / k`, so a held object kept from its place comes back no
 //!   faster than the cap, and one that lags a hand at the cap catches up when the hand slows; the part of the error
-//!   that holds the object up keeps up to [`HOLD_SUPPORT_MARGIN`] times the spring's sag. The bound moves the
-//!   joint's anchor on the hand for the step only ([`PhysicsWorld::step_holding`]), so it is never in an image.
+//!   that holds the object up keeps up to the hold's [`support`]. The bound moves the joint's anchor on the hand for
+//!   the step only ([`PhysicsWorld::step_holding`]), so it is never in an image.
 //! - **After the span, with no newer input:** if the input came as part of a stream (within its predecessor's span
 //!   plus [`COAST`]), the body coasts at its last velocity, at most [`COAST_SPEED`], until [`COAST`] after the span;
 //!   then it goes back to the hand's target by the same rule as within a span, and stays there, so it never parks
@@ -44,9 +48,9 @@
 //!   (3.3, D52).
 //! - **Grabs mirror the claims** (3.3; world-model.md 7.2), after the hands are driven: a claim by a hand with a body
 //!   on an object with one gets a grab joint from the hand to the object, keyed from the object's id, which holds
-//!   the object where it was in the hand when the joint was made: a spring pulls it to that place ([`GRAB`]), and an
-//!   angular drive keeps its rotation relative to the hand ([`GRAB_TORQUE`]). A grab joint whose claim has gone is
-//!   removed, and one whose claim a renewing grab moved to another of its author's hands is made again from that
+//!   the object where it was in the hand when the joint was made: a spring pulls it to that place ([`grab_spring`]),
+//!   and an angular drive keeps its rotation relative to the hand ([`GRAB_TORQUE`]). A grab joint whose claim has gone
+//!   is removed, and one whose claim a renewing grab moved to another of its author's hands is made again from that
 //!   hand, holding the object where it is (@design-reviewer's Medium on cc037c10). An agent's grab has no hand, so
 //!   it gets no joint. The joints are in the physics image, so a rollback restores them with the bodies.
 
@@ -86,26 +90,60 @@ pub fn teleport_distance(rate: SimRate) -> f64 {
     TELEPORT_DISTANCE.max(2.0 * MAX_HAND_PUSH_SPEED / f64::from(rate.hz()))
 }
 
-/// A grab's spring: it pulls the held object to its place in the hand at 5 Hz, critically damped, with at most
-/// 1,000 N. It has no angular part (`max_torque` 0): pe-physics's grab joint has no frame rotation, so an angular
-/// spring would turn the object to the hand's own rotation instead of keeping the one it was grabbed at. The joint's
-/// linear velocity drive is off: it is solved after the spring and is stiff, so it cancelled every velocity the
-/// spring gave, and a held object only copied the hand's velocity, left wherever a jump or a knock put it (measured
-/// on cc037c10). M1's defaults until the user's verdict on hand feel at the headset test (inferred).
-pub const GRAB: GrabSpring = GrabSpring { hertz: 5.0, damping_ratio: 1.0, max_force: 1000.0, max_torque: 0.0 };
+/// A hold's spring stiffness, Hz: as stiff as stability allows (the user's rulings of 2026-11-19: "an
+/// object that's light enough should keep it tightly constrained to your hand's position"; @coordinator-opus). It is Box3D's own stiffness for rigid joints at the engine's 1/240 s sub-step
+/// (box3d-fork joint/solve.rs clamps a joint's hertz to a quarter of the sub-step rate, "to reduce jitter"). Measured
+/// (pe-physics examples/hold_sweep.rs, an 18 g ball at world rates 30, 60 and 120 Hz): no jitter, overshoot or energy
+/// gain at any stiffness up to 960 Hz; it sags `g / OMEGA^2` (0.07 mm), and trails a hand speeding up at 100 m/s^2 by
+/// 3.6, 1.7 and 0.9 mm, where M1's 5 Hz trailed by 94 mm.
+pub const HOLD_HZ: f32 = 60.0;
+
+/// The most a hold speeds up what it holds beyond holding it up against gravity, m/s^2 (A; provisional,
+/// @coordinator-opus): a hold's force is at most `mass (A + g)` as well as the holder's strength
+/// ([`grab_spring`]), what makes the object follow a hand speeding up at A. Without it a stiff spring pushes a light
+/// object at up to strength / mass (6,000 m/s^2 for an 18 g ball at 110 N), which Box3D's 30 Hz soft contacts can't
+/// hold: measured, the ball sank 43-47 mm into the floor and went through a 2 cm wall. With A at 200 it sinks 1.5 mm
+/// and never goes through. Flicks past A trail: at 60 Hz, 3.7 mm at 150 m/s^2 and 19 mm at 200; at a 30 Hz world
+/// rate, whose hand changes speed every 33 ms, already 19 mm at 150 m/s^2.
+pub const HOLD_ACCELERATION: f32 = 200.0;
+
+/// The largest strength a hand's row gives, N: a strength outside `0..=MAX_STRENGTH` is clamped into it before the
+/// physics sees it.
+pub const MAX_STRENGTH: f32 = 10_000.0;
+
+/// The grab spring of a hold by a hand of `strength` N on an object of `mass` kg, under gravity of magnitude `g`
+/// (world-model.md 8.1): it pulls the held object to its place in the hand at [`HOLD_HZ`], critically damped, with at
+/// most `min(strength, mass (A + g))` ([`HOLD_ACCELERATION`]). So a light object follows the hand within millimetres,
+/// and a heavier one lags once the hand asks for more than the strength: at 110 N, 0.5 kg follows tightly up to
+/// 200 m/s^2 and 1 kg up to 100 m/s^2, and a hand can't lift 11.2 kg or more (measured: a 100 m/s^2 flick trails
+/// 1.0 mm up to 0.5 kg, 18 mm at 1 kg, 92 mm at 2 kg). It has no angular part (`max_torque` 0): pe-physics's grab joint
+/// has no frame rotation, so an angular spring would turn the object to the hand's own rotation instead of keeping the
+/// one it was grabbed at. The joint's linear velocity drive stays off: it is solved after the spring and is stiff, so
+/// it cancelled every velocity the spring gave, and a held object only copied the hand's velocity, left wherever a jump
+/// or a knock put it (measured on cc037c10). [`hold`] takes the force when it makes the joint.
+pub fn grab_spring(strength: f32, mass: f32, g: f32) -> GrabSpring {
+    let strength = if strength.is_nan() { 0.0 } else { strength.clamp(0.0, MAX_STRENGTH) };
+    let follow = mass.max(0.0) * (HOLD_ACCELERATION + g.max(0.0));
+    GrabSpring { hertz: HOLD_HZ, damping_ratio: 1.0, max_force: strength.min(follow), max_torque: 0.0 }
+}
+
 /// A grab's angular drive, N m: it matches the held object's turning to the hand's, so the object keeps the rotation
 /// it was grabbed at relative to the hand.
 pub const GRAB_TORQUE: f32 = 100.0;
 
-/// The grab spring's angular frequency, 1/s: `2 pi` times [`GRAB`]'s hertz. Its static sag under gravity `g` is
-/// `g / OMEGA^2` (measured: 9.9 mm at 9.81 m/s^2, at 30, 60 and 120 Hz).
-pub const OMEGA: f64 = 2.0 * std::f64::consts::PI * GRAB.hertz as f64;
-/// How many times its static sag a hold's spring may see of the error that holds its object up, whatever the hand's
-/// speed (world-model.md 8.1's `s_min`): 3, so the spring can lift twice the object's weight beyond holding it
-/// (@design-reviewer). The sag is measured: 9.9 mm for a held pit ball at 9.81 m/s^2, at 30, 60 and
-/// 120 Hz, which is `g / OMEGA^2`. Measured with the margin: a held ball stays 1.0 cm below its place while the hand
-/// overruns the cap sideways for 2 s, and moves at most 0.24 m/s over the cap with the hand overrunning upwards.
-pub const HOLD_SUPPORT_MARGIN: f64 = 3.0;
+/// The grab spring's angular frequency, 1/s: `2 pi` times [`HOLD_HZ`]. Its static sag under gravity `g` is
+/// `g / OMEGA^2` (0.069 mm at 9.81 m/s^2; measured 0.07 mm at 30, 60 and 120 Hz).
+pub const OMEGA: f64 = 2.0 * std::f64::consts::PI * HOLD_HZ as f64;
+/// The support of a hold under gravity of magnitude `g`, m (world-model.md 8.1's `s_min`): the most of the error that
+/// holds its object up the spring keeps seeing, whatever the hand's speed, `(A + g) / OMEGA^2`, the error at which the
+/// spring's pull on its object reaches the hold's force cap `mass (A + g)` ([`grab_spring`]; 1.48 mm at 9.81 m/s^2).
+/// So the support may use the hold's whole force to keep its object up when catching up takes the rest. It was 3
+/// times the static sag, `3 g / OMEGA^2`, when the hold's force had no cap but 1,000 N (@design-reviewer); with the cap that floor starved the support while a hold sped its object back up after each
+/// placement of a hand overrunning the cap, and the ball sank 4.3 cm below its place in 2 s, against 0.4 cm with this
+/// one. Its excess over the cap is at most `s_min k`, 0.16 m/s at 60 Hz. In a world without gravity there is none.
+pub fn support(g: f64) -> f64 {
+    if g > 0.0 { (f64::from(HOLD_ACCELERATION) + g) / (OMEGA * OMEGA) } else { 0.0 }
+}
 
 /// Whether `hand`'s body is physical this frame.
 pub fn is_physical(hand: &HandRow, holding: bool) -> bool {
@@ -150,8 +188,10 @@ pub fn sync<W: WorldModel + ?Sized>(
             claims.iter().filter(|c| c.hand == hand.hand && physics.has_body(c.object)).map(|c| c.object).collect();
         faults += u64::from(drive(physics, hand, &held, origin, rate, frame).is_err());
     }
-    faults += grabs(physics, &claims, &bodies);
-    (faults, reaches(physics, &claims, 1.0 / rate.hz() as f32, world.settings().gravity))
+    let gravity = world.settings().gravity;
+    let g = (gravity[0] * gravity[0] + gravity[1] * gravity[1] + gravity[2] * gravity[2]).sqrt();
+    faults += grabs(physics, &claims, &bodies, hands, g);
+    (faults, reaches(physics, &claims, 1.0 / rate.hz() as f32, gravity))
 }
 
 /// How far from its place each held object's spring sees it in this frame's step, m, for
@@ -159,25 +199,47 @@ pub fn sync<W: WorldModel + ?Sized>(
 /// sees, relative to the hand, so the error is bounded by the room the hand's own speed at the hold (`v_hold`, its
 /// turn included) leaves under [`MAX_HAND_PUSH_SPEED`]: `(max_push_speed - v_hold) / k`. A held object kept from its
 /// place (pinned by a wall) comes back no faster than the cap however far it was kept, and one that lags a hand moving
-/// at the cap catches up only once the hand slows. The upward part of the error, which holds the object up against
-/// gravity, keeps up to [`HOLD_SUPPORT_MARGIN`] times the spring's static sag `g / OMEGA^2` (its support), so a held
-/// object never sags out of the hand; in a world without gravity it has none. Every grab joint of `claims`, keyed
-/// once.
+/// at the cap catches up only once the hand slows. And it is bounded by the speed the hold can brake from (the tight
+/// hold): its spring's force is capped ([`grab_spring`]), so it asks for no more than `sqrt(2 a e)` towards its place,
+/// with `e` the object's distance from its place and `a` the deceleration its force cap gives the object along the way
+/// it comes, gravity's part included (`F / m + g (up . e^)`, at least 0). Without it a spring capped near its object's
+/// weight would ask for a speed it can't stop from: an 8 kg ball lifted by a hand of 110 N came up at 2.6 m/s, went
+/// 12 cm past its place and fell 54 cm below it before rising again. The upward part of the error, which holds the
+/// object up against gravity, keeps up to the hold's [`support`], so a held object never sags out of the hand; in a
+/// world without gravity it has none. With a stiff spring (`k dt` over 1) the spring closes the error it sees within
+/// a frame, so a held object kept far from its place comes back at about its reach a frame, below the cap (measured at
+/// 60 Hz: 4.65 m/s for a pinned pit ball). Every grab joint of `claims`, keyed once.
 pub fn reaches(physics: &PhysicsWorld, claims: &[ClaimRow], dt: f32, gravity: [f32; 3]) -> Vec<(JointKey, HoldReach)> {
-    let per_metre = f64::from(physics.grab_spring_rate(GRAB, dt));
+    // The rate depends on the spring's stiffness and damping alone, not its force.
+    let per_metre = f64::from(physics.grab_spring_rate(grab_spring(0.0, 0.0, 0.0), dt));
     let g = f64::from((gravity[0] * gravity[0] + gravity[1] * gravity[1] + gravity[2] * gravity[2]).sqrt());
-    let support = HOLD_SUPPORT_MARGIN * g / (OMEGA * OMEGA);
+    let up = if g > 0.0 { gravity.map(|c| -f64::from(c) / g) } else { [0.0; 3] };
+    let support = support(g);
     let mut out: Vec<(JointKey, HoldReach)> = Vec::with_capacity(claims.len());
     for c in claims {
         let key = grab_key(c.object);
         if physics.joint_kind(key) != Some(JointKind::Grab) || out.iter().any(|&(k, _)| k == key) {
             continue;
         }
-        let speed = match (physics.velocity(c.hand), physics.pose(c.hand), physics.grab_anchor(key)) {
-            (Ok((v, w)), Ok(hand), Ok(anchor)) => point_speed(v, w, rotate(hand.rotation, anchor)),
-            _ => 0.0,
+        let poses = (physics.velocity(c.hand), physics.pose(c.hand), physics.grab_anchor(key), physics.pose(c.object));
+        let (speed, error) = match poses {
+            (Ok((v, w)), Ok(hand), Ok(anchor), Ok(object)) => {
+                let r = rotate(hand.rotation, anchor);
+                let error = [0usize, 1, 2].map(|i| hand.position[i] + f64::from(r[i]) - object.position[i]);
+                (point_speed(v, w, r), error)
+            }
+            _ => (0.0, [0.0; 3]),
         };
-        let reach = (MAX_HAND_PUSH_SPEED - speed).max(0.0) / per_metre;
+        let e = error.iter().map(|c| c * c).sum::<f64>().sqrt();
+        let brake = match (physics.grab_force(key), physics.mass(c.object)) {
+            (Ok(force), Ok(mass)) if e > 0.0 && mass > 0.0 => {
+                let along = (0..3).map(|i| up[i] * error[i]).sum::<f64>() / e;
+                let a = (f64::from(force) / f64::from(mass) + g * along).max(0.0);
+                (2.0 * a * e).sqrt()
+            }
+            _ => f64::INFINITY,
+        };
+        let reach = (MAX_HAND_PUSH_SPEED - speed).max(0.0).min(brake) / per_metre;
         out.push((key, HoldReach { reach: reach as f32, support: support as f32 }));
     }
     out
@@ -302,23 +364,26 @@ pub fn grab_key(object: ObjectId) -> JointKey {
 
 /// The grab joints for `claims`, after the hands are driven: one for each claim by a hand with a body on an object
 /// with one, and none other. `bodies` are the world model's physical objects, in id order: every object a grab
-/// joint can hold, so probing their keys finds every grab joint (a removed body takes its joints with it).
-fn grabs(physics: &mut PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId]) -> u64 {
+/// joint can hold, so probing their keys finds every grab joint (a removed body takes its joints with it). `hands`
+/// are the world model's, in id order, for each holder's strength; `g` is gravity's magnitude.
+fn grabs(physics: &mut PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId], hands: &[HandRow], g: f32) -> u64 {
     let mut faults = 0;
     let held = |id: ObjectId| claims.iter().find(|c| c.object == id && c.hand != ObjectId::NONE).map(|c| c.hand);
+    // A hand with a body is one of `hands` (`sync` removes any other), so a missing one never holds.
+    let strength = |hand: ObjectId| hands.binary_search_by_key(&hand, |h| h.hand).map_or(0.0, |i| hands[i].strength);
     for &object in bodies {
         let key = grab_key(object);
         let joint = physics.joint_kind(key);
         let hand = held(object).filter(|&hand| physics.has_body(hand) && physics.has_body(object));
         match (joint, hand) {
             (Some(JointKind::Grab), None) => faults += u64::from(physics.remove_joint(key).is_err()),
-            (None, Some(hand)) => faults += u64::from(hold(physics, key, hand, object).is_err()),
+            (None, Some(hand)) => faults += u64::from(hold(physics, key, hand, object, strength(hand), g).is_err()),
             // A renewing grab that names another of its author's hands moves the claim to it (world-model.md 7.2), so
             // the joint is made again from that hand, holding the object where it is (@design-reviewer's Medium on
             // cc037c10).
             (Some(JointKind::Grab), Some(hand)) if physics.joint_objects(key).map(|(a, _)| a) != Some(Some(hand)) => {
                 faults += u64::from(physics.remove_joint(key).is_err());
-                faults += u64::from(hold(physics, key, hand, object).is_err());
+                faults += u64::from(hold(physics, key, hand, object, strength(hand), g).is_err());
             }
             _ => {}
         }
@@ -326,10 +391,19 @@ fn grabs(physics: &mut PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId]) -
     faults
 }
 
-/// A grab joint from `hand` to `object`, holding the object where it is now in the hand.
-fn hold(physics: &mut PhysicsWorld, key: JointKey, hand: ObjectId, object: ObjectId) -> Result<(), PhysicsError> {
+/// A grab joint from `hand` to `object`, holding the object where it is now in the hand, with the spring
+/// [`grab_spring`] gives for the hand's `strength` and the object's mass under gravity `g`.
+fn hold(
+    physics: &mut PhysicsWorld,
+    key: JointKey,
+    hand: ObjectId,
+    object: ObjectId,
+    strength: f32,
+    g: f32,
+) -> Result<(), PhysicsError> {
     let h = physics.pose(hand)?;
     let o = physics.pose(object)?;
+    let spring = grab_spring(strength, physics.mass(object)?, g);
     let offset = [o.position[0] - h.position[0], o.position[1] - h.position[1], o.position[2] - h.position[2]];
     let anchor_a = inverse_rotate(h.rotation, offset.map(|c| c as f32));
     let desc = JointDesc::Grab {
@@ -339,7 +413,7 @@ fn hold(physics: &mut PhysicsWorld, key: JointKey, hand: ObjectId, object: Objec
         anchor_b: [0.0; 3],
         max_force: 0.0,
         max_torque: GRAB_TORQUE,
-        spring: Some(GRAB),
+        spring: Some(spring),
     };
     physics.add_joint(key, &desc)
 }

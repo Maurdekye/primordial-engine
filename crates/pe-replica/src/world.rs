@@ -168,6 +168,9 @@ pub struct HandRow {
     pub previous: Option<(Frame, u32)>,
     /// When its body is physical (D18b, per member): [`crate::hands::hand_mode`].
     pub mode: u8,
+    /// Its player's strength, N: the most force its hold applies to what it holds ([`crate::hands::grab_spring`];
+    /// world-model.md 8.1).
+    pub strength: f32,
 }
 
 /// A claim (world-model.md 7.2): `hand` holds `object` since frame `since`.
@@ -233,6 +236,9 @@ pub fn apply_order<'a>(
 
 /// pe-world, as the replica drives it (replica.md 3 and 8.1). Every call is deterministic in the state and its
 /// arguments.
+///
+/// pe-app's `FaultWorld` (pe-app src/fault.rs) forwards every method to [`crate::PeWorld`], defaulted ones included:
+/// add any new method there too, or every replica pe-app builds silently takes the default.
 pub trait WorldModel: Send {
     /// A saved state, for keyframes and held roots: copy-on-write (world-model.md 5.2), so cheap to take every few
     /// frames and to keep.

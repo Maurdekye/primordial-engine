@@ -295,14 +295,23 @@ The rules are world-model.md 8.1's (the speed cap, the teleport distance and the
   naming the holder. Its reach is checked against the hand's position after the frame's hand movement.
 - **Grab joints mirror the claims,** after the hands are driven. A claim by a hand with a body, on an object with one,
   gets a grab joint from the hand to the object, keyed from the object's id. It holds the object where it was in the
-  hand when the joint was made: a spring pulls it to that place (`GRAB`: 5 Hz, critically damped, at most 1,000 N),
+  hand when the joint was made: a spring pulls it to that place (`grab_spring`: `HOLD_HZ`, 60 Hz, critically damped),
   and an angular drive (`GRAB_TORQUE`, 100 N m) keeps its rotation relative to the hand. A joint whose claim has gone
   is removed. One whose claim a renewing grab moved to another of its author's hands is made again from that hand. An
   agent's grab has no hand, so it gets no joint. The joints are in the physics image, so a rollback restores them.
+- **A hold is tight, and its force is capped** (world-model.md 8.1, the tight hold; @coordinator-opus):
+  the spring's force is at most `min(strength, m (A + g))`, with the strength the holding hand's `HandRow::strength`
+  (pe-world's `Hand.strength`, 110 N by default), `m` the held object's mass when the joint is made and A
+  `HOLD_ACCELERATION` (200 m/s^2, provisional). So a light object follows the hand within millimetres, a heavy one lags
+  once the hand asks more than the strength, and a blocked light one is never pushed through what blocks it. The
+  strength is clamped to 0 to 10,000 N (`MAX_STRENGTH`) before the physics sees it.
 - **A hold's spring is bounded** (world-model.md 8.1): for each step it sees at most the error that the room under the
-  cap leaves, `(max_push_speed - v_hold) / k`, so a held object kept from its place comes back no faster than the cap.
-  The part of the error that holds the object up keeps up to `HOLD_SUPPORT_MARGIN` (3) times the spring's sag. The
-  bound moves the joint's anchor on the hand for the step only (`step_holding`), so it is never in an image.
+  cap leaves, `(max_push_speed - v_hold) / k`, and at most the error whose speed, `k` times it, the hold can brake
+  from, `sqrt(2 a e)`, with `e` the object's distance from its place and `a` the deceleration its force cap gives it
+  along the way it comes, gravity's part included. So a held object kept from its place comes back no faster than
+  the cap, and one whose weight nears the strength settles at its place instead of overshooting. The part of the
+  error that holds the object up keeps up to `support(g)`, `(A + g) / omega^2`. The bound moves the joint's anchor on
+  the hand for the step only (`step_holding`), so it is never in an image.
 - **A lost race:** the loser's predicted hold disappears in its next corrected frame. The view's `held_by` names the
   winner, and the entry's outcome (in the view's `changes`, 7) names the refusal.
 - **Pushes:** a physical hand pushes by contact, with no entry. A push input (world-model.md 8) is an impulse pe-world

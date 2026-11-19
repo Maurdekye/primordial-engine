@@ -6,7 +6,7 @@ use pe_core::{Frame, MemberKey, ObjectId, Offset, Pos};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{Class, Note, Outcome, Reason, SignedEntry};
 use pe_sim::Transform;
-use pe_world::components::{Body, Hand, Shape, hand_mode, shape_kind};
+use pe_world::components::{Body, DEFAULT_STRENGTH, Hand, Shape, hand_mode, shape_kind};
 use pe_world::input::{MAX_POSES, frames};
 use pe_world::{BlobStore, Footprint, HandPose, Input, InputSettings, World, input_phase, perm};
 
@@ -447,6 +447,31 @@ fn only_a_hands_owner_sets_its_mode_and_it_is_hashed() {
     assert_eq!(g.w.root(), after);
     ok(&input(&mut f.w, 1, &mut f.a, hand(HAND_A, vec![pose(0.5, true)], 0)));
     assert_eq!(f.w.hand_mode(oid(HAND_A)), Some(hand_mode::WITHIN_REACH));
+}
+
+/// A hand's strength (8.1): world logic writes [`DEFAULT_STRENGTH`] into both hands when it admits a member, the
+/// owner's hand inputs and mode changes keep it, and it is in the hand's leaf.
+#[test]
+fn an_admitted_hand_has_the_default_strength_and_its_inputs_keep_it() {
+    let keys = TestKeys::new(1, 3);
+    let mut a = EntryBuilder::new(&keys, 0);
+    let mut w = World::new(1, BlobStore::default());
+    let hands = w.admit(pe_world::preset::m1_line(), keys.key(0), perm::EDIT, Frame(0), Pos::ORIGIN).unwrap();
+    let strength = |w: &World, h: ObjectId| w.store().get::<Hand>(h).map(|r| r.strength);
+    for h in hands {
+        assert_eq!(strength(&w, h), Some(DEFAULT_STRENGTH), "admitted at the default");
+    }
+    assert_eq!(Hand::default().strength, DEFAULT_STRENGTH, "and so is a default row");
+    let near = w.store().world_transform(hands[0]).unwrap().pos;
+    let pack = HandPose { pos: near, rot: ID, grip: 0.9, engaged: true };
+    ok(&input(&mut w, 1, &mut a, Input::Hand { hand: hands[0], poses: vec![pack], hold: 0 }));
+    ok(&input(&mut w, 1, &mut a, Input::HandMode { hand: hands[0], mode: hand_mode::WITHIN_REACH }));
+    assert_eq!(w.store().get::<Hand>(hands[0]).map(|r| (r.grip, r.mode)), Some((0.9, hand_mode::WITHIN_REACH)));
+    assert_eq!(strength(&w, hands[0]), Some(DEFAULT_STRENGTH), "kept by a hand input and a mode change");
+    let before = w.root();
+    let row = Hand { strength: 60.0, ..*w.store().get::<Hand>(hands[1]).unwrap() };
+    w.insert(hands[1], row).unwrap();
+    assert_ne!(w.root(), before, "the strength is in the hand's leaf");
 }
 
 /// pe-app's pick (app.md 3.1 step 2; @coordinator-opus's ruling on the defaults, after @fable-reviewer): grabbable
