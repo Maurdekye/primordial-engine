@@ -147,6 +147,10 @@ pub struct DisplayCounters {
     /// at a different time from the hands (VR's Present), one display frame's motion or less on one clock.
     pub hand_off_gap_max: f64,
     pub hand_off_gap_sum: f64,
+    /// Under Shown: display frames drawn past the newest frame view (the frame's lead exceeded the simulation's), each
+    /// object moved from that view by its velocity; and the most a drawn time was past it, in seconds.
+    pub drawn_past_newest: u64,
+    pub drawn_past_newest_max: f64,
     /// Corrections shown in view with no blend at all (must stay 0 while blending is on).
     pub snaps_in_view: u64,
     /// Out-of-view corrections above `E_snap`, which jump by design.
@@ -423,13 +427,17 @@ impl DisplayLayer {
             self.close_gap(&hist, &newest, t_draw, now, input.volumes);
         }
 
-        // Under (b), corrections wait until the drawn time reaches the corrected view.
-        if matches!(self.settings.drawn_time, DrawnTime::InterpolateLate { .. }) {
+        // Under (b) and Shown, corrections wait until the drawn time reaches the corrected view.
+        if self.settings.drawn_time.interpolates() {
             self.activate_pending(&hist, &newest, t_draw, now, input.volumes);
         }
 
         // The own hands' drawn poses first: held objects follow them.
         let mut hand_drawn: BTreeMap<ObjectId, WorldPose> = BTreeMap::new();
+        // And where the simulation has each own hand at the drawn time: a held object's grip offset is measured
+        // against it, both resolved to the same moment. Under Shown the newest view runs ahead of the drawn time, and
+        // a grip read there would carry the spring's slip from a later moment of the swing.
+        let mut hand_target: BTreeMap<ObjectId, WorldPose> = BTreeMap::new();
         let mut out = Vec::with_capacity(newest.objects.len());
         let span = match self.rule() {
             DrawnTime::Extrapolate { l_max } | DrawnTime::Present { l_max } => {
@@ -437,7 +445,14 @@ impl DisplayLayer {
                 t_draw.secs_since(newest.sim_time).clamp(-cap, cap)
             }
             DrawnTime::InterpolateLate { .. } => 0.0,
+            DrawnTime::Shown { l_max, .. } => t_draw.secs_since(newest.sim_time).clamp(0.0, l_max.as_secs_f64()),
         };
+        if matches!(self.settings.drawn_time, DrawnTime::Shown { .. }) && t_draw > newest.sim_time {
+            // A frame whose lead exceeds the simulation's: drawn from the newest view by velocity, not interpolated.
+            let past = t_draw.secs_since(newest.sim_time);
+            self.counters.drawn_past_newest += 1;
+            self.counters.drawn_past_newest_max = self.counters.drawn_past_newest_max.max(past);
+        }
         for o in &newest.objects {
             let (target, _) = self.resolve_in(&hist, o.id, t_draw);
             let Some(target) = target else { continue };
@@ -450,6 +465,7 @@ impl DisplayLayer {
             let pose = if is_own(o) && o.hand_of.is_some() {
                 let p = own_hand_pose(&self.settings, o, &newest, input.local).unwrap_or(target);
                 hand_drawn.insert(o.id, p);
+                hand_target.insert(o.id, target);
                 if own { p } else { apply(p, st.offset(now)) }
             } else if own {
                 target
@@ -472,11 +488,10 @@ impl DisplayLayer {
                 && !self.settings.controls.correct_own
                 && self.settings.own_hands == OwnHands::LateLatched
                 && let Some(h) = o.held_by
-                && let (Some(hd), Some(hs)) = (hand_drawn.get(&h.hand), newest.object(h.hand))
+                && let (Some(hd), Some(&hs)) = (hand_drawn.get(&h.hand), hand_target.get(&h.hand))
             {
-                let hs = WorldPose::of(hs);
-                let grip_pos = hs.rot.inverse() * offset_vec(o.pos - hs.pos);
-                let grip_rot = hs.rot.inverse() * WorldPose::of(o).rot;
+                let grip_pos = hs.rot.inverse() * offset_vec(target.pos - hs.pos);
+                let grip_rot = hs.rot.inverse() * target.rot;
                 pose = hd.moved(hd.rot * grip_pos).with_rot((hd.rot * grip_rot).normalize());
                 gripped = Some((h.hand, grip_pos));
             }
@@ -538,7 +553,7 @@ impl DisplayLayer {
         }
         // Under (a) the gap's blend aims at the newest prediction, so the batch's other views are history only. Under
         // (b) the drawn time reaches them later: a `CORRECTED` one among them waits as usual (`activate_pending`).
-        if self.gap_open && !matches!(self.settings.drawn_time, DrawnTime::InterpolateLate { .. }) {
+        if self.gap_open && !self.settings.drawn_time.interpolates() {
             self.arrive_in_gap(view);
             return;
         }
@@ -561,7 +576,7 @@ impl DisplayLayer {
         let new_hist: Vec<&FrameView> = new_owned.iter().map(|v| &**v).collect();
         let lost: Vec<ObjectId> =
             view.effects.iter().filter(|e| e.key.kind == EffectKind::GrabLost).map(|e| e.key.object).collect();
-        let interpolating = matches!(self.settings.drawn_time, DrawnTime::InterpolateLate { .. });
+        let interpolating = self.settings.drawn_time.interpolates();
         let hands = own_hands(&view);
         for o in &view.objects {
             let own_now = is_own(o) && !self.settings.controls.correct_own;

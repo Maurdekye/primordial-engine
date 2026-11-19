@@ -57,7 +57,9 @@ use pe_world::{BlobStore, World, perm};
 use crate::fault::FaultWorld;
 
 /// The record's format: a change to its fields or their encoding bumps it.
-pub const FORMAT: u16 = 1;
+pub const FORMAT: u16 = 2;
+/// The largest delay a record may carry, ms: a second, far past any headset's lead [I].
+pub const MAX_DISPLAY_DELAY_MS: u32 = 1_000;
 /// The one preset a record names in M1, and its version: a change to what `preset::m1_session` builds bumps it.
 pub const PRESET: &str = "m1-ball-pit";
 pub const PRESET_VERSION: u32 = 1;
@@ -114,6 +116,10 @@ pub struct Genesis {
     /// it; the replica's cut grid comes from the settings themselves ([`replica_config`]), and `start` checks the two
     /// agree.
     pub cut_interval_ms: u32,
+    /// B's delay (app.md 3; the user's: "one per session"): how much of each member's
+    /// display lead the shown present doesn't cover, in whole milliseconds, at most [`MAX_DISPLAY_DELAY_MS`]. The
+    /// opener chooses it (`--display-delay`, 0 by default) and every member runs it. Format 2.
+    pub display_delay_ms: u32,
     pub gravity: [f32; 3],
     pub preset: Preset,
     /// Frame 0's session time, in nanoseconds (pe-net's `StartFirstMember`).
@@ -135,6 +141,8 @@ pub struct Params {
     /// The interim's second member, named at genesis; `None` opens the world alone (app.md 4, "Joining from a cut").
     pub joiner: Option<MemberKey>,
     pub rate: SimRate,
+    /// B's delay for the whole session, in whole milliseconds ([`Genesis::display_delay_ms`]).
+    pub display_delay_ms: u32,
     pub gravity: [f32; 3],
     pub seed: u64,
     pub balls: u32,
@@ -254,6 +262,7 @@ impl Genesis {
             agree: consensus_hash(),
             rate: params.rate,
             cut_interval_ms,
+            display_delay_ms: params.display_delay_ms,
             gravity: params.gravity,
             preset: Preset {
                 name: PRESET.into(),
@@ -474,6 +483,10 @@ impl Genesis {
         if cut_interval_ms == 0 {
             return Err(GenesisError::Decode("cut interval of zero"));
         }
+        let display_delay_ms = r.u32()?;
+        if display_delay_ms > MAX_DISPLAY_DELAY_MS {
+            return Err(GenesisError::Decode("display delay out of range"));
+        }
         let gravity = [f32::from_bits(r.u32()?), f32::from_bits(r.u32()?), f32::from_bits(r.u32()?)];
         if !gravity.iter().all(|g| g.is_finite()) {
             return Err(GenesisError::Decode("gravity not finite"));
@@ -502,6 +515,7 @@ impl Genesis {
             agree,
             rate,
             cut_interval_ms,
+            display_delay_ms,
             gravity,
             preset,
             epoch_ns,
@@ -520,6 +534,13 @@ impl Genesis {
             if len > max {
                 return Err(GenesisError::TooLong { field, len, max });
             }
+        }
+        if self.display_delay_ms > MAX_DISPLAY_DELAY_MS {
+            return Err(GenesisError::TooLong {
+                field: "display delay (ms)",
+                len: self.display_delay_ms as usize,
+                max: MAX_DISPLAY_DELAY_MS as usize,
+            });
         }
         Ok(())
     }
@@ -544,6 +565,7 @@ impl Genesis {
         b.extend_from_slice(&self.agree.0);
         b.extend_from_slice(&self.rate.hz().to_le_bytes());
         b.extend_from_slice(&self.cut_interval_ms.to_le_bytes());
+        b.extend_from_slice(&self.display_delay_ms.to_le_bytes());
         for g in self.gravity {
             b.extend_from_slice(&g.to_bits().to_le_bytes());
         }
@@ -734,6 +756,7 @@ mod tests {
             opener: A,
             joiner: Some(B),
             rate: SimRate::DEFAULT,
+            display_delay_ms: 0,
             gravity: pe_world::GRAVITY,
             seed: 11,
             balls: 24,
@@ -838,6 +861,9 @@ mod tests {
         other.epoch_ns += 1;
         assert_ne!(other.line(), g.line(), "so is the epoch");
         let mut other = g.clone();
+        other.display_delay_ms += 1;
+        assert_ne!(other.line(), g.line(), "and B's delay, which the root doesn't cover either");
+        let mut other = g.clone();
         other.nonce[0] ^= 1;
         assert_ne!(other.line(), g.line(), "and the nonce, so two sessions never share a line");
     }
@@ -853,6 +879,28 @@ mod tests {
         assert_eq!(replica_config(&node, rate, clock()).cut_every, node.cut_every(72));
         let rounded_up = ReplicaConfig::new(rate, Duration::from_secs_f64(node.cut_interval_s), clock()).cut_every;
         assert_eq!(rounded_up, 8, "the rule replica_config replaces");
+    }
+
+    /// B's delay is the session's (app.md 3; the user's "one per session"): the opener's choice, carried by
+    /// the record to every member, decoded as it was encoded, and refused past [`MAX_DISPLAY_DELAY_MS`] both ways.
+    #[test]
+    fn the_record_carries_the_session_s_display_delay_within_its_bound() {
+        let (g, _, _) =
+            Genesis::ball_pit(&Params { display_delay_ms: 20, ..params() }, clock(), runner()).expect("A's");
+        assert_eq!(g.display_delay_ms, 20);
+        assert_eq!(Genesis::decode(&g.encode()).expect("decoded").display_delay_ms, 20);
+        let (zero, _, _) = Genesis::ball_pit(&params(), clock(), runner()).expect("the default");
+        assert_eq!(zero.display_delay_ms, 0, "0 unless the opener chooses one");
+        let too_long = Params { display_delay_ms: MAX_DISPLAY_DELAY_MS + 1, ..params() };
+        assert!(matches!(
+            Genesis::ball_pit(&too_long, clock(), runner()).map(|_| ()),
+            Err(GenesisError::TooLong { field: "display delay (ms)", .. })
+        ));
+        // Decode refuses one past the bound: patch the field in the bytes (after the cut interval).
+        let mut bytes = g.encode();
+        let at = bytes.windows(4).position(|w| w == 20u32.to_le_bytes()).expect("the delay's bytes");
+        bytes[at..at + 4].copy_from_slice(&(MAX_DISPLAY_DELAY_MS + 1).to_le_bytes());
+        assert!(matches!(Genesis::decode(&bytes), Err(GenesisError::Decode("display delay out of range"))));
     }
 
     /// A record's cut interval is this build's consensus setting, and `start` refuses a record whose interval isn't

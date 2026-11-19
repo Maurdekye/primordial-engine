@@ -347,6 +347,8 @@ pub struct OpenParams {
     pub balls: u32,
     pub rate: SimRate,
     pub epoch_lead: Duration,
+    /// B's delay for the whole session, in whole milliseconds (genesis.rs `display_delay_ms`; app.md 3).
+    pub display_delay_ms: u32,
 }
 
 /// A session, started: the pieces the simulation thread takes.
@@ -586,6 +588,7 @@ impl Endpoint {
             opener: self.me,
             joiner: Some(them),
             rate: p.rate,
+            display_delay_ms: p.display_delay_ms,
             gravity: pe_world::GRAVITY,
             seed: p.seed,
             balls: p.balls,
@@ -632,6 +635,7 @@ impl Endpoint {
             opener: self.me,
             joiner: None,
             rate: p.rate,
+            display_delay_ms: p.display_delay_ms,
             gravity: pe_world::GRAVITY,
             seed: p.seed,
             balls: p.balls,
@@ -1240,7 +1244,7 @@ mod tests {
     }
 
     fn params() -> OpenParams {
-        OpenParams { seed: 3, balls: 8, rate: RATE, epoch_lead: Duration::from_millis(1500) }
+        OpenParams { seed: 3, balls: 8, rate: RATE, epoch_lead: Duration::from_millis(1500), display_delay_ms: 0 }
     }
 
     /// One machine of [`joined_pair`]: its simulation, frame slot, member and clock.
@@ -1389,6 +1393,7 @@ mod tests {
             opener,
             joiner: Some(me),
             rate: RATE,
+            display_delay_ms: 0,
             gravity: pe_world::GRAVITY,
             seed: 3,
             balls: 8,
@@ -1455,6 +1460,7 @@ mod tests {
             opener: a,
             joiner: None,
             rate: RATE,
+            display_delay_ms: 0,
             gravity: pe_world::GRAVITY,
             seed: 3,
             balls: 8,

@@ -9,6 +9,10 @@
 //!   view by its velocity, over a span capped at `l_max`;
 //! - **(b) interpolate late:** `t_draw = display_time − d_render`, between the two frame views around it. Past the
 //!   newest view, the newest pose is held: nothing is drawn from a guess.
+//! - **Shown** (VR's default since 2026-11-19; render.md 7, app.md 3): `t_draw = display_time − delay`, the caller
+//!   passing the runtime's predicted display time. The local simulation runs ahead of that moment, so the drawn time
+//!   lies between two frame views and each object is interpolated, as under (b). Past the newest view (a frame whose
+//!   lead exceeds the simulation's), each object is moved from it by its velocity for at most `l_max`.
 //!
 //! Interpolation is never counted as a correction (D8); only a change of prediction is (the display layer, D2).
 
@@ -33,6 +37,13 @@ pub enum DrawnTime {
     /// only, with `l_max` (2 simulation frames, [`DrawnTime::present`]) for a late view. VR's default: head and hands
     /// keep OpenXR's predicted time, late-latched.
     Present { l_max: Duration },
+    /// Shown (render.md 7; the user 2026-11-19, @item:primordial-engine/vr-run-the-local-simulation-at-the-moment-the-he):
+    /// draw `delay` before the display time, which the caller passes as the runtime's predicted display time. pe-app
+    /// runs the local simulation that far ahead of the present (app.md 3), so the drawn time falls between two frame
+    /// views and each object is interpolated, never guessed. Past the newest view, each object is moved from it by its
+    /// velocity for at most `l_max`, and the display layer counts the frame (`drawn_past_newest`). `delay` is the
+    /// user's per-session setting, 0 by default: the world at the moment shown, with the hands.
+    Shown { delay: Duration, l_max: Duration },
 }
 
 impl Default for DrawnTime {
@@ -49,14 +60,25 @@ impl DrawnTime {
         DrawnTime::Present { l_max: Duration::from_nanos(2_000_000_000 / u64::from(sim_hz.max(1))) }
     }
 
+    /// Shown, `delay` before the predicted display time, with `l_max` two simulation frames at `sim_hz`.
+    pub fn shown(delay: Duration, sim_hz: u32) -> DrawnTime {
+        DrawnTime::Shown { delay, l_max: Duration::from_nanos(2_000_000_000 / u64::from(sim_hz.max(1))) }
+    }
+
     /// The drawn time for a display frame shown at `display_time` (under Present, the host's now).
     pub fn t_draw(&self, display_time: HostTime) -> HostTime {
         match *self {
             DrawnTime::Extrapolate { .. } | DrawnTime::Present { .. } => display_time,
-            DrawnTime::InterpolateLate { d_render } => {
-                HostTime(display_time.0.saturating_sub(i64::try_from(d_render.as_nanos()).unwrap_or(i64::MAX)))
+            DrawnTime::InterpolateLate { d_render: d } | DrawnTime::Shown { delay: d, .. } => {
+                HostTime(display_time.0.saturating_sub(i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)))
             }
         }
+    }
+
+    /// Whether the rule draws between frame views (D2 then sees changes of prediction only when the drawn time
+    /// reaches a corrected view): (b) and Shown.
+    pub fn interpolates(&self) -> bool {
+        matches!(self, DrawnTime::InterpolateLate { .. } | DrawnTime::Shown { .. })
     }
 }
 
@@ -89,13 +111,28 @@ pub fn resolve(
             let span = t_draw.secs_since(newest.sim_time).clamp(-cap, cap);
             Resolved { pose: Some(extrapolate(n, span)), span }
         }
-        DrawnTime::InterpolateLate { .. } => {
-            // The newest view at or before t_draw; past the newest, hold it.
+        DrawnTime::InterpolateLate { .. } | DrawnTime::Shown { .. } => {
+            // The newest view at or before t_draw. Past the newest, (b) holds it; Shown moves it by its velocity, for
+            // at most `l_max`.
             let Some(k) = history.iter().rposition(|v| v.sim_time <= t_draw) else {
                 let first = history.iter().find_map(|v| v.object(id).map(|o| pose_of(v, o)));
                 return Resolved { pose: first, span: 0.0 };
             };
             if k + 1 == history.len() {
+                if let DrawnTime::Shown { l_max, .. } = *rule {
+                    let span = t_draw.secs_since(newest.sim_time).clamp(0.0, l_max.as_secs_f64());
+                    if span > 0.0 {
+                        // The view's own motion over the span, applied to its pose as drawn (a corrected view's
+                        // substitute under D2 included).
+                        let (base, raw, moved) = (pose_of(newest, n), WorldPose::of(n), extrapolate(n, span));
+                        let turn = moved.rot * raw.rot.inverse();
+                        let rot = (turn * base.rot).normalize();
+                        return Resolved {
+                            pose: Some(base.moved(offset_vec(moved.pos - raw.pos)).with_rot(rot)),
+                            span,
+                        };
+                    }
+                }
                 return Resolved { pose: Some(pose_of(newest, n)), span: 0.0 };
             }
             let (va, vb) = (history[k], history[k + 1]);

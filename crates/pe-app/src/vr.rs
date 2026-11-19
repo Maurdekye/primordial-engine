@@ -51,6 +51,9 @@ pub struct VrSink {
     present: bool,
     /// The display lead, ms: the runtime's predicted display time minus now, at each frame drawn.
     lead_ms: Histogram,
+    /// B (app.md 3, [`crate::shown`]): under Shown, each frame's lead also goes to the simulation thread, which runs
+    /// its shown present that far ahead. Under any other rule the simulation stays at the present.
+    shown: Option<Arc<crate::shown::DisplayLead>>,
     /// Where the run's counters go when the sink drops (`VrReport`).
     report: ReportSlot,
 }
@@ -87,8 +90,18 @@ impl VrSink {
             captures: None,
             present,
             lead_ms: Histogram::default(),
+            shown: None,
             report,
         }
+    }
+
+    /// This sink sending each frame's display lead to `lead` (B, app.md 3.3), under Shown only: under any other rule
+    /// the simulation stays at the present.
+    pub fn with_shown(mut self, lead: Arc<crate::shown::DisplayLead>) -> VrSink {
+        if matches!(self.presenter.display().settings().drawn_time, DrawnTime::Shown { .. }) {
+            self.shown = Some(lead);
+        }
+        self
     }
 
     /// This sink serving `view_capture`'s orders once a drawn frame has ended ([`FrameSink::after_frame`]).
@@ -175,6 +188,9 @@ impl FrameSink for VrSink {
         let cameras = binding::eye_cameras(&view.local_rig, frame.eyes);
         let now = crate::clock::now();
         self.lead_ms.record(frame.timing.predicted_display_time.secs_since(now) * 1e3);
+        if let Some(lead) = &self.shown {
+            lead.record(now, frame.timing.predicted_display_time.0.saturating_sub(now.0));
+        }
         let local = local_presentation(frame, self.present.then_some(now));
         let Some(presented) = self.presenter.frame_batch(&batch, &local, &cameras) else {
             return false;
@@ -416,6 +432,8 @@ pub struct Drawing {
     pub captures: Option<Arc<pe_render::capture_service::CaptureQueue>>,
     /// Receives the presenter's counters and the display lead when the sink drops (the end-of-run line).
     pub report: ReportSlot,
+    /// B (app.md 3, [`crate::shown`]): where the sink sends each frame's display lead under Shown.
+    pub shown: Option<Arc<crate::shown::DisplayLead>>,
 }
 
 pub fn start(
@@ -425,7 +443,7 @@ pub fn start(
     slot: Arc<FrameSlot>,
     drawing: Drawing,
 ) -> Result<XrThread, NotStarted> {
-    let Drawing { presenter, render, effects, captures, report } = drawing;
+    let Drawing { presenter, render, effects, captures, report, shown } = drawing;
     let parts =
         open::open_vulkan(discovery, guard, GraspConfig::default(), ring).map_err(NotStarted::NotOpened)?.into_parts();
     // Moved out one by one, so on any unwind from here they drop in reverse, in OpenXR's order: the session, then the
@@ -437,6 +455,9 @@ pub fn start(
     let renderer = Renderer::new(shared(&gpu), render);
     // The whole image until the render scale comes (@xr-eng's L2, with the 90 Hz pacing work).
     let mut sink = VrSink::new(slot, presenter, renderer, targets, effects, None, report);
+    if let Some(lead) = shown {
+        sink = sink.with_shown(lead);
+    }
     if let Some(q) = captures {
         sink = sink.with_captures(q);
     }
@@ -696,6 +717,7 @@ mod tests {
             effects: Box::new(Quiet),
             captures: None,
             report: ReportSlot::default(),
+            shown: None,
         };
         match start(&NoRuntime, &Guard::CLOSED, ring(), slot, drawing) {
             Err(NotStarted::NotOpened(NotOpened::Runtime(_))) => {}

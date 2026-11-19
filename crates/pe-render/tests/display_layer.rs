@@ -88,11 +88,13 @@ fn extrapolating() -> DisplaySettings {
 }
 
 /// Drive a display at `display_hz` against a simulation at `sim_hz`: views are published 2 ms after their frame's
-/// time; each display frame is rendered at its start and shown `lead` later. `world(f, t)` builds frame `f`'s objects.
+/// time, less `ahead` when the simulation runs that far ahead of the clock (B, app.md 3); each display frame is
+/// rendered at its start and shown `lead` later. `world(f, t)` builds frame `f`'s objects.
 struct Run {
     sim_hz: u32,
     display_hz: u32,
     lead: Duration,
+    ahead: Duration,
 }
 
 impl Run {
@@ -111,7 +113,7 @@ impl Run {
             let render_at = HostTime((k as i128 * NS as i128 / self.display_hz as i128) as i64);
             // The newest frame whose view is published by now.
             let mut f = published.as_ref().map(|(f, _)| *f).unwrap_or(0);
-            while frame_time(f + 1, self.sim_hz).0 + publish <= render_at.0 {
+            while frame_time(f + 1, self.sim_hz).0 + publish <= render_at.plus(self.ahead).0 {
                 f += 1;
             }
             if published.as_ref().is_none_or(|(pf, _)| *pf != f) {
@@ -148,17 +150,24 @@ fn steady_motion_never_hitches_at_any_rate_pair() {
         DrawnTime::Extrapolate { l_max: Duration::from_millis(80) },
         DrawnTime::InterpolateLate { d_render: Duration::from_millis(70) },
         DrawnTime::present(60),
+        DrawnTime::shown(Duration::ZERO, 60),
     ] {
         // The supported simulation range is 30-120 Hz (SimRate, @engine-architect): both ends, the default, and
         // two rates between.
         for sim_hz in [30, 60, 75, 90, 120] {
-            // Present: two frames at this rate, and the caller passes its now as the display time (no lead).
-            let (rule, lead) = match rule {
-                DrawnTime::Present { .. } => (DrawnTime::present(sim_hz), Duration::ZERO),
-                _ => (rule, Duration::from_millis(30)),
+            // Present: two frames at this rate, and the caller passes its now as the display time (no lead). Shown: the
+            // predicted display time, 46 ms on, with the simulation that lead plus two periods ahead (B, app.md 3).
+            let period = Duration::from_nanos(1_000_000_000 / u64::from(sim_hz));
+            let (rule, lead, ahead) = match rule {
+                DrawnTime::Present { .. } => (DrawnTime::present(sim_hz), Duration::ZERO, Duration::ZERO),
+                DrawnTime::Shown { .. } => {
+                    let lead = Duration::from_millis(46);
+                    (DrawnTime::shown(Duration::ZERO, sim_hz), lead, lead + 2 * period)
+                }
+                _ => (rule, Duration::from_millis(30), Duration::ZERO),
             };
             for display_hz in [72, 90, 120, 165] {
-                let run = Run { sim_hz, display_hz, lead };
+                let run = Run { sim_hz, display_hz, lead, ahead };
                 let mut layer = DisplayLayer::new(DisplaySettings { drawn_time: rule, ..Default::default() });
                 let mut last: Option<Pos> = None;
                 let mut worst_step = 0.0f64;
@@ -180,6 +189,8 @@ fn steady_motion_never_hitches_at_any_rate_pair() {
                     (0, 0, 0),
                     "{rule:?} {sim_hz}/{display_hz}"
                 );
+                // Shown with the simulation far enough ahead: every frame between two views, never guessed past them.
+                assert_eq!(c.drawn_past_newest, 0, "{rule:?} {sim_hz}/{display_hz}");
                 let bound = speed / display_hz as f64 + 1e-6;
                 assert!(worst_step <= bound, "{rule:?} {sim_hz}/{display_hz}: step {worst_step} > {bound}");
                 assert!(c.views_taken > 0);
@@ -234,7 +245,7 @@ fn a_falling_ball_misses_by_less_than_a_hands_width() {
         o.radius = 0.05;
         vec![o]
     };
-    let run = Run { sim_hz: 60, display_hz: 90, lead: Duration::from_millis(50) };
+    let run = Run { sim_hz: 60, display_hz: 90, lead: Duration::from_millis(50), ahead: Duration::ZERO };
     let mut layer = DisplayLayer::new(extrapolating());
     let mut worst = 0.0f64;
     run.drive(&mut layer, 1.0, &world, |_, out| {
@@ -868,6 +879,54 @@ fn own_effects_play_at_once_and_others_wait_d_effect() {
     assert_eq!(plays(&g.take(&with_effects(10, vec![own, other], vec![]), 60, now)), 1);
     assert_eq!(plays(&g.due(now.plus(Duration::from_millis(49)))), 0);
     assert_eq!(plays(&g.due(now.plus(Duration::from_millis(50)))), 1);
+}
+
+/// Under Shown the simulation runs ahead of the moment drawn (B, app.md 3): a sound or a haptic pulse, own or another
+/// member's, waits until the drawn time reaches its frame, then plays once (@coordinator-opus). The
+/// presenter passes the drawn time to the gate.
+#[test]
+fn an_effect_waits_for_the_drawn_time_to_reach_its_frame() {
+    let mut g = EffectGate::new(EffectSettings::default());
+    let mine = EffectKey { ordinal: 1, ..effect(10, true, false, None).key };
+    let mut own = effect(10, true, false, None);
+    own.key = mine;
+    let other = effect(10, false, false, None);
+    // The view of frame 10 arrives while the drawn time is still 4.5 frames before it.
+    let frame = frame_time(10, 60);
+    let early = HostTime(frame.0 - 75_000_000);
+    assert_eq!(plays(&g.take(&with_effects(10, vec![own, other], vec![]), 60, early)), 0);
+    assert_eq!(plays(&g.due(HostTime(frame.0 - 1))), 0, "not before the frame is drawn");
+    assert_eq!(plays(&g.due(frame)), 2, "both at the frame that shows them");
+    assert_eq!(plays(&g.due(frame.plus(Duration::from_millis(5)))), 0, "once");
+}
+
+/// Shown with the simulation not far enough ahead (a frame whose lead exceeds the simulation's): each object is moved
+/// from the newest view by its velocity for at most `l_max`, never held, and the display layer counts the frame.
+#[test]
+fn under_shown_a_frame_past_the_newest_view_is_moved_on_and_counted() {
+    let v = [1.5f32, 0.0, 0.0];
+    let world = move |_f: u64, t: HostTime| vec![ball(1, at(-2.0 + 1.5 * (t.0 as f64 / NS as f64), 0.0, -5.0), v)];
+    let rule = DrawnTime::shown(Duration::ZERO, 60);
+    let mut layer = DisplayLayer::new(DisplaySettings { drawn_time: rule, ..Default::default() });
+    // Shown 20 ms after render, the simulation only 10 ms ahead: every frame's drawn time is past the newest view.
+    let run = Run { sim_hz: 60, display_hz: 90, lead: Duration::from_millis(20), ahead: Duration::from_millis(10) };
+    let mut moved_on = 0;
+    run.drive(&mut layer, 1.0, &world, |_, out| {
+        let o = &out.objects[0];
+        assert!(dist(o.pose.pos, o.target.pos) < 1e-9);
+        if out.span > 0.0 {
+            moved_on += 1;
+            assert!(out.span <= 2.0 / 60.0 + 1e-9, "at most l_max: {}", out.span);
+        }
+    });
+    let c = layer.counters();
+    assert!(
+        c.drawn_past_newest > 0 && c.drawn_past_newest == moved_on,
+        "{} counted, {moved_on} moved on",
+        c.drawn_past_newest
+    );
+    assert!(c.drawn_past_newest_max > 0.0 && c.drawn_past_newest_max < 0.05, "{}", c.drawn_past_newest_max);
+    assert_eq!((c.corrections, c.cues), (0, 0));
 }
 
 /// After a gap (render.md 3): a ball that moved 2 m in the lost views blends from where it was drawn, never jumps,

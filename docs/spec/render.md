@@ -272,7 +272,16 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
   `HostTime`). The display runs at its own rate. **D8:** the same code serves any display rate against any simulation
   rate, and interpolation is never counted as a correction.
 - **The drawn time `t_draw`** for a display frame is a setting [X8, with @xr-eng]:
-  - **Present (VR's default)** [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]: `t_draw` is the host clock's `now` when the display frame is built, not the runtime's predicted
+  - **Shown (VR's default since 2026-11-19)** [R user "B";
+    @item:primordial-engine/vr-run-the-local-simulation-at-the-moment-the-he; app.md 3.3]: `t_draw` is the runtime's
+    predicted display time less the session's delay (0 by default), the moment the head and hands are drawn at. pe-app
+    runs the local simulation that far ahead, plus a period and the publication's margin, so `t_draw` lies between two
+    frame views and every object is interpolated as under (b): nothing is guessed, and a ball let go leaves the drawn
+    hand where it is. Past the newest view (a display frame whose lead exceeds the simulation's 95th percentile),
+    each object is moved from it by its velocity for at most `l_max` (2 simulation frames), never held, and
+    `drawn_past_newest` counts the frame. It replaces Present for VR; Present stays a setting (`--drawn-time
+    present:<ms>`), and the VR sink then records no lead, so the simulation stays at the present.
+  - **Present (VR's default until 2026-11-19)** [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]: `t_draw` is the host clock's `now` when the display frame is built, not the runtime's predicted
     display time. Each object is moved from the newest frame view by its velocity over the view's age only (`now −
     sim_time`, about 0-25 ms), capped at `L_max` = 2 simulation frames plus one display period in case a view is
     late. It is never extrapolated by the headset's lead.
@@ -378,7 +387,9 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
 - **D4. Never correct what the player holds.** The local player's own hands, and objects `held_by` the local member,
   get no offset, ever.
   - In VR the own hands are drawn at pe-xr's late-latched pose (`LocalPresentation.hands`), and a held object at
-    that pose times the S5 grip offset (xr.md 5.6, X1). "Draw where simulated" is the other setting.
+    that pose times the S5 grip offset (xr.md 5.6, X1). The offset is the held object's simulated pose relative to
+    its hand's, both resolved to `t_draw` (under Shown the newest view runs ahead of it, and an offset read there
+    would carry the hold spring's give from a later moment of a swing). "Draw where simulated" is the other setting.
   - On the desktop the own hand is drawn at its current input pose (the mouse ray now, section 9): the desktop's
     late-latch, never extrapolated or corrected. A held object follows it at the grip offset.
   - **Markers** (`hands::markers`): when the frame view has no own-hand object to move (no simulation, as in pe-xr's
@@ -413,7 +424,10 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
     measure "drawn equals simulated", which late-latching breaks on purpose (xr.md 5.6, as agreed with
     @engine-architect).
 - **D5. Remote hands blend** like any object.
-- **D6. One-shot effects fire once.**
+- **D6. One-shot effects fire once.** None plays before the drawn time reaches its frame: under Shown the simulation
+  runs ahead of the moment drawn (7; app.md 3.3), so a sound or a haptic pulse waits for the frame that shows it
+  (@coordinator-opus). The presenter passes the gate the drawn time; under the other rules a frame view
+  is never ahead of it, and nothing waits.
   - pe-render keeps the set of effect keys already played (frame, causing entry or "physics", object, kind,
     ordinal), covering `W_fg` (2 s) (divergence.md 069e147d);
   - a key seen again is not replayed;
@@ -694,6 +708,8 @@ pe-render reports, per second and as distributions over a run, to pe-diverge's t
   it, kept apart from corrections;
 - `hold_ends`, and of them `hand_offs` with `hand_off_gap_max` and `hand_off_gap_sum` (D4's hand-off), kept apart
   from corrections so a release never reads as one;
+- under Shown, `drawn_past_newest` and `drawn_past_newest_max`: display frames drawn past the newest frame view, and
+  the most a drawn time was past it (7);
 - per display frame: CPU recording time, GPU time, render scale and MSAA, `t_draw − display_time`, the age of the
   frame view drawn;
 - captures: queued, drawn, deferred, timed out.
@@ -752,7 +768,7 @@ For @coordinator-opus unless marked; my proposal first.
 
 | # | Point | Proposal |
 |---|---|---|
-| R1 (with @xr-eng) | X8, the drawn time | **Ruled** [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]: in VR, Present (`t_draw` = the engine's `now`, extrapolated by the view's age only, capped at 2 simulation frames plus one display period); never extrapolated to the headset's display time. The desktop keeps (a). (a) and (b) stay as overrides for tests. Misses blend, cue and count under every rule (ruled, review M2). Section 7 has why not `L_max` = 0 |
+| R1 (with @xr-eng) | X8, the drawn time | **Superseded 2026-11-19 by Shown (7; app.md 3.3), the user's "B".** Before: **Ruled** [R user 2026-11-17 13:50Z, to @fable-reviewer; coordinator]: in VR, Present (`t_draw` = the engine's `now`, extrapolated by the view's age only, capped at 2 simulation frames plus one display period); never extrapolated to the headset's display time. The desktop keeps (a). (a) and (b) stay as overrides for tests. Misses blend, cue and count under every rule (ruled, review M2). Section 7 has why not `L_max` = 0 |
 | R2 (with @xr-eng) | Infinite far plane in VR's depth layer | Finite in VR (100 × rig scale [I]) until Virtual Desktop's runtime is shown to accept infinite |
 | R3 | Shadows in M1 | One shadow-casting key light; lamps unshadowed |
 | R4 | The graphics path and shader compiler | **Ruled** (on review M1): Vulkan first, with multiview; D3D12 with FXC, two passes, as the fallback; no shipped DXC |

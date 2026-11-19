@@ -22,8 +22,8 @@ use pe_replica::{DriveReport, Driver};
 use pe_seams::world_api::TxId;
 use pe_seams::{
     AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, Hand, HandFeed, Health,
-    HostTime, Lane, MemberKey, NetEvent, ObjectId, Outcome, Pos, Replica, SelfTest, SimRate, StepRecord, SubmitError,
-    Transport, ViewFlags, VoidReason,
+    HostTime, Lane, MemberKey, NetEvent, ObjectId, Outcome, Pos, Replica, SelfTest, SimRate, SubmitError, Transport,
+    ViewFlags, VoidReason,
 };
 
 use crate::clock::HostClock;
@@ -252,6 +252,11 @@ pub struct SimStats {
     pub poses_thinned: u64,
     /// Frames stamp-ahead's speed test found a hand moving, so the lead shed at most one frame in 11 (app.md 3.2).
     pub moving_frames: u64,
+    /// B's shown present (app.md 3, [`crate::shown`]): how far ahead of the present it ran at the latest tick, and the
+    /// most, in frames; and the ticks it ran ahead at all (an XR session drawing).
+    pub shown_ahead: u64,
+    pub largest_shown_ahead: u64,
+    pub ticks_shown_ahead: u64,
     /// Where the thread's time went, step by step ([`crate::phases`]): wall time on this machine.
     pub phases: PhaseTimes,
     /// The local player's grasps, left hand then right (app.md 3.1 step 2).
@@ -373,6 +378,12 @@ pub struct Sim {
     lead: Option<crate::stamp::StampLead>,
     /// Stamp-ahead's speed test (app.md 3.2): whether a hand moves, which slows the lead's shedding.
     motion: crate::stamp::Motion,
+    /// B (app.md 3, [`crate::shown`]): the display lead the XR thread measures. The shown present runs it, less the
+    /// session's delay, plus a period and the publication's margin ahead of the present. `None` (the default) and an
+    /// empty lead keep it at the present.
+    shown: Option<Arc<crate::shown::DisplayLead>>,
+    /// The session's delay (the genesis record's `display_delay_ms`; the user's "one per session"), 0 by default.
+    display_delay: Duration,
     /// The network (S4): pe-net's handle, or a test's in-process network. `None` is a world alone.
     net: Option<Box<dyn Transport + Send>>,
     net_hook: Option<Box<dyn NetHook>>,
@@ -503,25 +514,38 @@ struct Local {
     /// This member's `Grab`s: the hand each came from, and how the newest view that stepped it says it fared (`None`
     /// before any has, `Some(None)` applied, `Some(Some(reason))` not), for [`HandStats`].
     grabs: BTreeMap<EntryRef, (usize, Option<Option<String>>)>,
-    /// This member's `Release`s not yet behind a final frame: the object each names and its stamp, so a view whose
-    /// records apply one marks that object `RELEASED_LOCAL` (render.md 8, D4's hand-off).
-    released: BTreeMap<EntryRef, (ObjectId, Frame)>,
+    /// This member's `Release`s not yet behind a final frame: the object each names, its stamp, and whether a view's
+    /// records have applied it. Each publication marks the objects of applied ones `RELEASED_LOCAL` (render.md 8, D4's
+    /// hand-off), so a view the display loses in a gap doesn't lose the mark (@design-reviewer's L1 on bb23fc58).
+    released: BTreeMap<EntryRef, (ObjectId, Frame, bool)>,
 }
 
+/// How long past its stamp a `Release`'s mark lasts at most ([`Local::let_go`]): far longer than a gap in the views
+/// (over 250 ms lost, render.md 3), so the view after one still carries it.
+const RELEASED_KEPT: Duration = Duration::from_secs(2);
+
 impl Local {
-    /// The objects this member's own `Release`s let go of in `changes` (an applied record of one), sorted; and the
-    /// releases a final frame has passed are forgotten, since no later view steps them again.
-    fn let_go(&mut self, changes: &[StepRecord], final_frame: Option<Frame>) -> Vec<ObjectId> {
-        let mut out: Vec<ObjectId> = changes
-            .iter()
-            .filter(|r| matches!(r.outcome, Outcome::Applied { .. }))
-            .filter_map(|r| self.released.get(&r.entry).map(|&(object, _)| object))
-            .collect();
+    /// The objects this member's own `Release`s have let go of, for `view`'s publication, sorted: each `Release` an
+    /// applied record in `view`'s or an earlier publication's changes names, until a final frame passes its stamp or
+    /// [`RELEASED_KEPT`] has, whichever is first (a world alone never finalizes). One the view shows held by this
+    /// member again is left out, so a later hold end isn't read as this release. A record that says otherwise (a
+    /// re-simulation that dropped it) clears it.
+    fn let_go(&mut self, view: &FrameView, rate_hz: u32) -> Vec<ObjectId> {
+        for r in &view.changes {
+            if let Some((_, _, applied)) = self.released.get_mut(&r.entry) {
+                *applied = matches!(r.outcome, Outcome::Applied { .. });
+            }
+        }
+        if let Some(f) = view.final_frame {
+            self.released.retain(|_, &mut (_, at, _)| at > f);
+        }
+        let kept = (RELEASED_KEPT.as_nanos() * u128::from(rate_hz) / 1_000_000_000) as u64;
+        self.released.retain(|_, &mut (_, at, _)| at.0.saturating_add(kept) > view.frame.0);
+        let held_again = |o: ObjectId| view.object(o).is_some_and(|x| x.flags.contains(ViewFlags::HELD_LOCAL));
+        let mut out: Vec<ObjectId> =
+            self.released.values().filter(|&&(o, _, applied)| applied && !held_again(o)).map(|&(o, _, _)| o).collect();
         out.sort();
         out.dedup();
-        if let Some(f) = final_frame {
-            self.released.retain(|_, &mut (_, at)| at > f);
-        }
         out
     }
 
@@ -583,6 +607,8 @@ impl Sim {
             input_stamp: None,
             lead,
             motion,
+            shown: None,
+            display_delay: Duration::ZERO,
             net: None,
             net_hook: None,
             linked: Vec::new(),
@@ -638,6 +664,25 @@ impl Sim {
         self.net = Some(net);
         self.net_hook = hook;
         self
+    }
+
+    /// B (app.md 3, [`crate::shown`]): run the shown present ahead by `lead`'s percentile, less the session's delay,
+    /// plus a period and the publication's margin, whenever the XR thread records one.
+    pub fn with_shown(mut self, lead: Arc<crate::shown::DisplayLead>) -> Sim {
+        self.shown = Some(lead);
+        self
+    }
+
+    /// The session's delay (the genesis record's `display_delay_ms`, or the option alone): how much of the display
+    /// lead the shown present leaves uncovered. The VR presenter draws the world that long before the moment shown.
+    pub fn with_display_delay(mut self, delay: Duration) -> Sim {
+        self.display_delay = delay;
+        self
+    }
+
+    /// The session's delay ([`Sim::with_display_delay`]).
+    pub fn display_delay(&self) -> Duration {
+        self.display_delay
     }
 
     /// The members whose links were already up when the simulation started: the M1 interim's setup takes their
@@ -957,6 +1002,10 @@ impl Sim {
             self.stats.before_frame_0 += 1;
             return None;
         };
+        // B (app.md 3, [`crate::shown`]): the shown present, the moment the headset shows plus two periods while an XR
+        // session draws, else the present. The hands, stamps and the replica's target go there; agreement, the links
+        // and pe-diverge stay on the present, the group's clock.
+        let ps = self.shown_present(p, now);
         let tick_start = Instant::now();
         let mut mark = tick_start;
         // 1. Messages in. Protocol and Action go to agreement, Repair to pe-diverge; a refusal is a peer's fault,
@@ -1030,16 +1079,18 @@ impl Sim {
         // once a frame: while either moves, the lead sheds at most one frame in 11. The pose clock then says which
         // moment the frame's poses carry, so a shed is spread over the stamps up to the next. A member that is leaving
         // sends no more hands, so it reads none.
-        let fresh = self.leaving == Leaving::Staying && self.input_frame.is_none_or(|f| p > f);
+        let fresh = self.leaving == Leaving::Staying && self.input_frame.is_none_or(|f| ps > f);
         if let (true, Some(_), Some(l), Some(view)) = (fresh, &self.lead, &self.local, &self.published) {
-            let at = self.clock.host_time_of(p);
+            // A frame's view is the state at its end (the replica's frame after the step), so the hands go in at the
+            // end of the frame they are stamped for: the simulated hand is then where the real one is at that moment.
+            let at = self.clock.host_time_of(Frame(ps.0 + 1));
             for (i, side) in [Hand::Left, Hand::Right].into_iter().enumerate() {
                 let pose = l
                     .hands
                     .hand_at(side, at)
                     .filter(|h| h.tracked)
                     .and_then(|h| local::world_pose(&view.local_rig, &h).map(|w| (w.pos, w.rot, h.discontinuity)));
-                self.motion.observe(p, i, pose);
+                self.motion.observe(ps, i, pose);
             }
             self.stats.moving_frames += u64::from(self.motion.moving());
         }
@@ -1047,12 +1098,12 @@ impl Sim {
         let (stamp, pose_time) = match (&mut self.lead, &self.local) {
             (Some(lead), Some(l)) => {
                 let reports: Vec<(i64, u64)> = self.agree.own_lateness().iter().map(|r| (r.frames, r.seq)).collect();
-                self.stats.lead = lead.update(p, &reports, l.chain.head().1 + 1, moving);
+                self.stats.lead = lead.update(ps, &reports, l.chain.head().1 + 1, moving);
                 (self.stats.largest_lead, self.stats.longest_drain) = (lead.largest(), lead.longest_drain());
-                let stamp = lead.stamp(p, l.chain.last_stamp());
-                (stamp, fresh.then(|| lead.pose_time(p, stamp, moving)))
+                let stamp = lead.stamp(ps, l.chain.last_stamp());
+                (stamp, fresh.then(|| lead.pose_time(ps, stamp, moving)))
             }
-            _ => (p, None),
+            _ => (ps, None),
         };
         // The graceful quit (app.md 4): once asked, this member's `Leave` goes out first in the frame, at the frame's
         // stamp (never below the chain's last, which a lead may hold above the present), and it is the chain's last
@@ -1125,7 +1176,9 @@ impl Sim {
             if self.agree.backlogged() {
                 self.stats.hands_paced += 1;
             } else {
-                let at = pose_time.map_or_else(|| self.clock.host_time_of(p), |t| host_time_at(&*self.clock, t));
+                // At the end of the stamped frame, as the speed test above reads them.
+                let at = pose_time
+                    .map_or_else(|| self.clock.host_time_of(Frame(ps.0 + 1)), |t| host_time_at(&*self.clock, t + 1.0));
                 let domain = self.replica.domain();
                 // While the lead sheds, a frame's stamp can stand still: its poses would only replace the last frame's.
                 let thin = self.input_stamp == Some(stamp);
@@ -1154,10 +1207,10 @@ impl Sim {
                     l.grabs.insert(id, (i, None));
                 }
                 for (id, object) in sent.released {
-                    l.released.insert(id, (object, stamp));
+                    l.released.insert(id, (object, stamp, false));
                 }
             }
-            self.input_frame = Some(p);
+            self.input_frame = Some(ps);
             self.input_stamp = Some(stamp);
         }
         if let (Some(l), Some(api)) = (&self.local, &self.api) {
@@ -1188,7 +1241,7 @@ impl Sim {
         {
             self.notices.push(format!("FAULT: the test fault fires at the end of frame {} (--arm-fault)", at.0));
         }
-        let report = if self.importing() { DriveReport::default() } else { self.drive(p) };
+        let report = if self.importing() { DriveReport::default() } else { self.drive(ps) };
         self.stats.phases.drive_ns += lap(&mut mark);
         if let Some(line) = self.fault.as_ref().and_then(|f| f.take_announcement()) {
             self.notices.push(line);
@@ -1280,7 +1333,7 @@ impl Sim {
                 l.grab_fates(&out.changes, &mut self.stats.hands);
                 // What this member's own `Release`s let go of in these steps: the display hands it off rather than
                 // correcting it (render.md 8, D4).
-                let let_go = l.let_go(&out.changes, out.final_frame);
+                let let_go = l.let_go(&out, self.clock.rate_hz());
                 if !let_go.is_empty() {
                     out = Arc::new(released_local(&out, &let_go));
                 }
@@ -1295,6 +1348,19 @@ impl Sim {
         self.stats.phases.tick_ns += tick;
         self.stats.phases.longest_tick_ns = self.stats.phases.longest_tick_ns.max(tick);
         Some((p, report))
+    }
+
+    /// B's shown present for the present `p` at `now` (app.md 3, [`crate::shown`]): `p` itself without a display lead.
+    fn shown_present(&mut self, p: Frame, now: HostTime) -> Frame {
+        let Some(lead) = &self.shown else { return p };
+        let period = i64::try_from(1_000_000_000 / u64::from(self.clock.rate_hz().max(1))).unwrap_or(i64::MAX);
+        let ahead = crate::shown::ahead_ns(lead.p95(now), self.display_delay, period);
+        let ps =
+            if ahead > 0 { self.clock.frame_at(HostTime(now.0.saturating_add(ahead))).unwrap_or(p).max(p) } else { p };
+        self.stats.shown_ahead = ps.0 - p.0;
+        self.stats.largest_shown_ahead = self.stats.largest_shown_ahead.max(self.stats.shown_ahead);
+        self.stats.ticks_shown_ahead += u64::from(ps > p);
+        ps
     }
 
     /// Step 4: the replica through pe-replica's driver, to `p` included.
@@ -1967,7 +2033,8 @@ pub(crate) mod tests {
         use pe_world::input::Input;
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let (s, _slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
-        let mut s = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(LostAfter(clock.clone(), 2)));
+        // Tracked for the entries stamped through frame 2: each samples its hands at its frame's end (app.md 3).
+        let mut s = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(LostAfter(clock.clone(), 3)));
         for f in 1..=5 {
             s.tick(clock.host_time_of(Frame(f))).expect("ticked");
         }
@@ -2104,7 +2171,8 @@ pub(crate) mod tests {
 
     /// D4's hand-off (render.md 8; @item:primordial-engine/letting-go-in-vr-the-ball-flies-at-once-with-no-g): the
     /// publication whose steps apply this member's own `Release` marks the ball `RELEASED_LOCAL`, and it is the one in
-    /// which the ball stops being held. Nothing else is marked, and no publication marks it while it is held.
+    /// which the ball stops being held. No earlier publication marks anything; later ones mark only the ball, until
+    /// the release is behind a final frame or 2 s old.
     #[test]
     fn the_view_that_steps_my_release_marks_the_ball_released_local() {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
@@ -2142,8 +2210,202 @@ pub(crate) mod tests {
             .map(|k| opened + k)
             .expect("let go");
         assert_eq!(marked(&views[free]), vec![ball], "the publication that ends the hold marks the ball");
-        let others: Vec<usize> = (0..views.len()).filter(|&k| k != free && !marked(&views[k]).is_empty()).collect();
-        assert!(others.is_empty(), "no other publication marks anything: {others:?} (free at {free})");
+        let before: Vec<usize> = (0..free).filter(|&k| !marked(&views[k]).is_empty()).collect();
+        assert!(before.is_empty(), "no publication before it marks anything: {before:?} (free at {free})");
+        // It stays marked until the release is behind a final frame, or 2 s (a view lost in a gap mustn't lose the
+        // mark, @design-reviewer's L1 on bb23fc58), and nothing else is.
+        assert!(views[free..].iter().all(|v| marked(v).iter().all(|&o| o == ball)), "only the ball");
+        // The stand-in agreement here never finalizes: the mark ends 2 s after the release's stamp.
+        run_frames(&mut s, &clock, &mut f, 120);
+        assert!(marked(&slot.newest().expect("published")).is_empty(), "no mark 2 s on");
+    }
+
+    /// B's shown present (app.md 3, [`crate::shown`]): while the XR thread records a display lead, the replica runs the
+    /// lead plus two periods ahead of the present, and this member's hand entries are stamped there. With no lead for
+    /// two seconds it falls back to the present, and no stamp ever steps down.
+    #[test]
+    fn a_display_lead_runs_the_shown_present_ahead_and_stamps_there() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let puppet = Puppet::default();
+        puppet.set([0.0, 3.0, 0.0], false);
+        let lead = Arc::new(crate::shown::DisplayLead::default());
+        let mut s = s.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(puppet)).with_shown(lead.clone());
+        let mut f = 0;
+        run_frames(&mut s, &clock, &mut f, 60);
+        let behind = f as i64 - slot.newest().expect("published").frame.0 as i64;
+        assert_eq!(s.stats().shown_ahead, 0, "no headset: the present");
+        let mut stamps = Vec::new();
+        for _ in 0..60 {
+            lead.record(clock.host_time_of(Frame(f)), 46_000_000);
+            run_frames(&mut s, &clock, &mut f, 1);
+            stamps.push(s.local.as_ref().expect("local").chain.last_stamp());
+        }
+        // 46 ms plus a 60 Hz period and the publication's 5 ms is 67.7 ms: 4 whole frames past each frame's start.
+        assert_eq!((s.stats().shown_ahead, s.stats().largest_shown_ahead), (4, 4));
+        let v = slot.newest().expect("published");
+        assert_eq!(f as i64 - v.frame.0 as i64, behind - 4, "the replica runs 4 frames further ahead");
+        assert_eq!(stamps.last().copied().flatten(), Some(Frame(f + 4)), "and the hands are stamped there");
+        // The headset off: no lead after two seconds, the present again, and the stamps never step down.
+        for _ in 0..150 {
+            run_frames(&mut s, &clock, &mut f, 1);
+            stamps.push(s.local.as_ref().expect("local").chain.last_stamp());
+        }
+        assert_eq!(s.stats().shown_ahead, 0);
+        assert!(stamps.windows(2).all(|w| w[0] <= w[1]), "stamps never step down: {stamps:?}");
+        assert_eq!(stamps.last().copied().flatten(), Some(Frame(f)), "back at the present");
+    }
+
+    /// B's acceptance test (@item:primordial-engine/vr-run-the-local-simulation-at-the-moment-the-he; the user's: "ideally ... zero jumps in a singleplayer session"): one member in the ball pit, its hand forecast
+    /// perfectly (the pose at any time from the script) and its grasp read at the real present only, never ahead; the
+    /// display drawn at a 46 ms display lead under Shown, at 144 Hz. The hand picks up the top ball, lifts it, swings it
+    /// at 4 m/s (25 m/s² up and down) and opens at the peak. Every display frame lies between two simulated frames, so
+    /// nothing is guessed: no correction, no extrapolation miss, no cue and no frame past the newest view, and the ball
+    /// leaves the drawn hand with no gap. Printed: the launch speed against the hand's peak and against its speed when
+    /// the simulation let go, which is the shown lead after the real opening (a grasp is never predicted).
+    #[test]
+    fn solo_play_on_the_shown_present_draws_every_frame_between_simulated_ones() {
+        use std::sync::atomic::AtomicI64;
+        type Path = dyn Fn(f64) -> [f32; 3] + Send + Sync;
+        #[derive(Clone)]
+        struct Scripted {
+            path: Arc<Path>,
+            closed: Arc<dyn Fn(f64) -> bool + Send + Sync>,
+            now: Arc<AtomicI64>,
+        }
+        impl pe_seams::HandFeed for Scripted {
+            fn hand_at(&self, hand: pe_seams::Hand, at: HostTime) -> Option<pe_seams::HandInput> {
+                if hand != pe_seams::Hand::Right {
+                    return None;
+                }
+                let closed = (self.closed)(self.now.load(Ordering::Relaxed) as f64 / 1e9);
+                Some(pe_seams::HandInput {
+                    hand,
+                    source: pe_seams::HandSource::Tracked,
+                    sampled_at: at,
+                    tracked: true,
+                    pose: pe_seams::RigPose {
+                        position: (self.path)(at.0 as f64 / 1e9),
+                        orientation: [0.0, 0.0, 0.0, 1.0],
+                    },
+                    linear_velocity: None,
+                    angular_velocity: None,
+                    grip: if closed { 1.0 } else { 0.0 },
+                    closed,
+                    discontinuity: 0,
+                })
+            }
+        }
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        // Settle the pit with no hand, then script the throw from the top ball.
+        let mut sim = s;
+        let mut f = 0;
+        run_frames(&mut sim, &clock, &mut f, 120);
+        let v = slot.newest().expect("published");
+        let ball = top_ball(&v);
+        let at = rig_at(&v, ball);
+        let t0 = clock.host_time_of(Frame(f)).0 as f64 / 1e9;
+        let (t_grab, t_lift, t_swing) = (t0 + 0.3, t0 + 0.6, t0 + 1.0);
+        let (a, ramp) = (25.0_f64, 0.16_f64);
+        let dir: f32 = if at[0] > 0.0 { -1.0 } else { 1.0 };
+        let t_open = t_swing + ramp;
+        let along = move |t: f64| -> f64 {
+            let u = (t - t_swing).clamp(0.0, 2.0 * ramp);
+            if u < ramp {
+                0.5 * a * u * u
+            } else {
+                0.5 * a * ramp * ramp + a * ramp * (u - ramp) - 0.5 * a * (u - ramp).powi(2)
+            }
+        };
+        let hand_speed = move |t: f64| -> f64 {
+            let u = (t - t_swing).clamp(0.0, 2.0 * ramp);
+            if u < ramp { a * u } else { a * (2.0 * ramp - u) }
+        };
+        let path: Arc<Path> = Arc::new(move |t: f64| {
+            let lift = 0.4 * ((t - t_lift) / 0.4).clamp(0.0, 1.0) as f32;
+            [at[0] + dir * along(t) as f32, at[1] + lift, at[2]]
+        });
+        let now = Arc::new(AtomicI64::new(0));
+        let hand =
+            Scripted { path: path.clone(), closed: Arc::new(move |t| t >= t_grab && t < t_open), now: now.clone() };
+        let lead = Arc::new(crate::shown::DisplayLead::default());
+        let mut sim = sim.with_local(crate::world::DEV_MEMBER, [7; 32], Arc::new(hand)).with_shown(lead.clone());
+        let mut layer = pe_render::display::DisplayLayer::new(pe_render::display::DisplaySettings {
+            drawn_time: pe_render::drawn_time::DrawnTime::shown(Duration::ZERO, RATE.hz()),
+            ..Default::default()
+        });
+        let display_lead = 46_000_000_i64;
+        let (mut released, mut launched) = (None::<f64>, None::<f64>);
+        let mut next_tick = clock.host_time_of(Frame(f + 1));
+        let start = clock.host_time_of(Frame(f));
+        for k in 0..(2.4 * 144.0) as i64 {
+            let t = HostTime(start.0 + k * 1_000_000_000 / 144);
+            while next_tick <= t {
+                now.store(next_tick.0, Ordering::Relaxed);
+                f += 1;
+                sim.tick(next_tick).expect("ticked");
+                next_tick = clock.host_time_of(Frame(f + 1));
+            }
+            lead.record(t, display_lead);
+            let batch = slot.take();
+            let Some(newest) = batch.views.last().cloned().or_else(|| slot.newest()) else { continue };
+            for v in batch.views.iter().take(batch.views.len().saturating_sub(1)) {
+                layer.take(v, HostTime(t.0 + display_lead), &[]);
+            }
+            for v in &batch.views {
+                if let Some(o) = v.object(ball)
+                    && released.is_none()
+                    && v.frame.0 > 0
+                    && o.held_by.is_none()
+                    && o.flags.contains(ViewFlags::RELEASED_LOCAL)
+                {
+                    released = Some(clock.host_time_of(v.frame).0 as f64 / 1e9);
+                    let [x, y, z] = o.linear_velocity;
+                    launched = Some(f64::from((x * x + y * y + z * z).sqrt()));
+                }
+            }
+            let shown = HostTime(t.0 + display_lead);
+            let drawn_hand = pe_render::DisplayHand {
+                pose: pe_seams::RigPose { position: path(shown.0 as f64 / 1e9), orientation: [0.0, 0.0, 0.0, 1.0] },
+                joints: None,
+            };
+            let local = pe_render::LocalPresentation { display_time: shown, hands: [None, Some(drawn_hand)] };
+            layer.frame(pe_render::display::FrameInput {
+                view: &newest,
+                display_time: shown,
+                volumes: &[],
+                local: &local,
+            });
+            if k == 36 {
+                // The first quarter second: the headset's first frames, drawn before the simulation has their lead and
+                // runs ahead (the start of any XR session). From here on every frame counts.
+                let _ = layer.take_counters();
+            }
+        }
+        let c = layer.counters();
+        let (released, launched) = (released.expect("let go"), launched.expect("a launch speed"));
+        println!(
+            "B solo: corrections {}, extrapolation misses {}, cues {}, past the newest {}, hand-offs {}, gap {:.4} m; \
+             launch {launched:.2} m/s against a {:.2} m/s peak and {:.2} m/s where the simulation let go, {:.0} ms \
+             after the real opening",
+            c.corrections,
+            c.extrapolation_misses,
+            c.cues,
+            c.drawn_past_newest,
+            c.hand_offs,
+            c.hand_off_gap_max,
+            hand_speed(t_open),
+            hand_speed(released),
+            (released - t_open) * 1e3
+        );
+        assert_eq!((c.corrections, c.extrapolation_misses, c.cues, c.drawn_past_newest), (0, 0, 0, 0), "{c:?}");
+        assert_eq!(c.hand_offs, 1, "{c:?}");
+        assert!(c.hand_off_gap_max < 0.02, "the ball leaves the drawn hand where it is: {} m", c.hand_off_gap_max);
+        // The grasp is read now, never forecast, so the simulation lets go the shown lead after the real opening, on a
+        // hand already slowing: the ball leaves between the hand's speed then and its peak, carrying the spring's give.
+        assert!(launched <= 1.1 * hand_speed(t_open), "never faster than the peak: {launched}");
+        assert!(launched >= 0.9 * hand_speed(released), "never slower than the hand when let go: {launched}");
     }
 
     /// A ball passed from the left hand to the right stays in the right when the left opens at once (@design-reviewer's
@@ -2265,6 +2527,109 @@ pub(crate) mod tests {
                 assert_eq!(h.grabs_applied, 0, "the loser's: {h:?}");
                 assert_eq!(h.grabs_refused.get("Held"), Some(&1), "the loser's, refused Held: {h:?}");
             }
+        }
+    }
+
+    /// B with mixed leads (@item:primordial-engine/vr-run-the-local-simulation-at-the-moment-the-he; the user accepts
+    /// the asymmetry, to be measured): two members on a 20 ms one-way link close on one ball at the same
+    /// real moment, with neither, one (VR beside a desktop) or both running the shown present 46 ms ahead. Each time
+    /// both machines agree who holds it and on the world. Printed per mix: the winner, and each member's deepest
+    /// rollback and frames re-simulated, which show who pays for the lead.
+    #[test]
+    fn mixed_display_leads_agree_on_the_race_and_the_world() {
+        type Member = (Sim, Arc<FrameSlot>, MemberKey, Puppet, Arc<crate::shown::DisplayLead>);
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        for leads in [[false, false], [true, false], [true, true]] {
+            let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+            let keys = TestKeys::new(11, 2);
+            let members = keys.sorted_keys();
+            let line = pe_world::preset::m1_line();
+            let hub = Hub::default();
+            {
+                let mut d = hub.delay.lock().expect("the delays");
+                d.insert((keys.key(0), keys.key(1)), 20_000_000);
+                d.insert((keys.key(1), keys.key(0)), 20_000_000);
+            }
+            let mut sims = Vec::new();
+            for i in 0..2 {
+                let me = keys.key(i);
+                let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+                let config = NodeConfig::new(line, members.clone(), genesis);
+                let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+                let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+                let replica =
+                    crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+                let slot = Arc::new(FrameSlot::new());
+                let puppet = Puppet::default();
+                puppet.set([0.0, 3.0, 0.4 * i as f32], false);
+                let lead = Arc::new(crate::shown::DisplayLead::default());
+                let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                    .with_local(me, keys.nonce(i, 0), Arc::new(puppet.clone()))
+                    .with_transport(Box::new(Port::new(me, hub.clone())), None)
+                    .with_shown(lead.clone());
+                sims.push((sim, slot, me, puppet, lead));
+            }
+            let mut f = 0;
+            let mut run = |sims: &mut Vec<Member>, n: u64| {
+                for _ in 0..n {
+                    f += 1;
+                    let now = clock.host_time_of(Frame(f));
+                    hub.now.store(now.0, Ordering::SeqCst);
+                    for (k, (s, .., lead)) in sims.iter_mut().enumerate() {
+                        if leads[k] {
+                            lead.record(now, 46_000_000);
+                        }
+                        s.tick(now).expect("ticked");
+                    }
+                }
+            };
+            run(&mut sims, 120);
+            let v = sims[0].1.newest().expect("published");
+            let ball = top_ball(&v);
+            let at = rig_at(&v, ball);
+            for (.., puppet, _) in &sims {
+                puppet.set(at, false);
+            }
+            run(&mut sims, 3);
+            for (.., puppet, _) in &sims {
+                puppet.set(at, true);
+            }
+            run(&mut sims, 120);
+            let claims: Vec<_> = sims
+                .iter()
+                .map(|(s, ..)| crate::api::snapshot_of(&*s.replica).expect("a world").claim(ball).map(|c| c.member))
+                .collect();
+            let winner = claims[0].expect("held");
+            assert_eq!(claims[1], Some(winner), "{leads:?}: both machines agree who holds it");
+            let roots: Vec<_> = sims.iter().map(|(_, slot, ..)| slot.newest().expect("published")).collect();
+            // One world: agreement compares both machines' roots at every cut, and both finalized with no split.
+            for (s, ..) in &sims {
+                let st = s.stats();
+                assert!(
+                    st.finalized > 0 && st.root_splits == 0,
+                    "{leads:?}: finalized {}, splits {}",
+                    st.finalized,
+                    st.root_splits
+                );
+            }
+            let counters: Vec<_> =
+                roots.iter().map(|v| (v.counters.deepest_rollback, v.counters.frames_resimulated)).collect();
+            println!(
+                "leads {leads:?} (true = 46 ms ahead): winner member {} (the {}); deepest rollback / frames re-simulated: \
+                 member 0 {:?}, member 1 {:?}; shown ahead {} and {} frames",
+                usize::from(winner == sims[1].2),
+                if leads[0] != leads[1] {
+                    if (winner == sims[0].2) == leads[0] { "member ahead" } else { "member at the present" }
+                } else {
+                    "tie broken by agreement's order"
+                },
+                counters[0],
+                counters[1],
+                sims[0].0.stats().largest_shown_ahead,
+                sims[1].0.stats().largest_shown_ahead
+            );
         }
     }
 
@@ -2860,6 +3225,7 @@ pub(crate) mod tests {
             opener: a,
             joiner: Some(b),
             rate: RATE,
+            display_delay_ms: 0,
             gravity: pe_world::GRAVITY,
             seed: 5,
             balls: 8,

@@ -75,9 +75,11 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    (`on_tick`) for what reaches it other than as an event. The hook owns pe-net's control end: in the M1 interim
    (section 4) @shader-lang's `MemberHook` admits a known member's new connection, refuses anyone else's, and counts
    and logs pe-net's lifecycle outcomes (@design-reviewer's Low on 5ca43067).
-2. **Local input, once per frame.** On the first tick at frame `p`, read both hands with
-   `hand_at(hand, clock.host_time_of(p))`, take at most one edit from pe-api's edit queue (3.1), and build the
-   frame's entries, stamped at `p` plus stamp-ahead's lead (3.2), never below the chain's last stamp
+2. **Local input, once per frame.** On the first tick at frame `p` (the shown present `p_s` while an XR session
+   draws, 3.3), read both hands with `hand_at(hand, clock.host_time_of(p + 1))`: a frame's view is the state at its
+   end, after the step (pe-replica's frame after `advance`), so its hands go in at that moment and the simulated
+   hand is where the real one is when the view says. Take at most one edit from pe-api's edit queue (3.1), and build
+   the frame's entries, stamped at `p` plus stamp-ahead's lead (3.2), never below the chain's last stamp
    (pe-world's input and edit codecs), all on the member's one chain. Each goes through `Agreement::submit`, which
    signs it. A second tick in the same frame (a wake by the inbox or the edit queue) submits nothing. So a member
    makes at most two hand entries and one edit a frame, which pe-agree's rate budget passes at any world rate
@@ -148,11 +150,12 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    Its repairs run through S2 v1 (`replay_to`, `import_at_cut`, then `finalize` again; RULINGS.md "S2 v1"), within
    the replica's budget (below).
 6. **Publish.** `FrameSlot::publish(replica.view())`, the snapshot port and the change record (3.1), and the
-   effects queue. Before the slot, an object one of this member's own `Release`s let go of in the view's steps (an
-   applied record of a `Release` step 2 sent, kept until a final frame passes its stamp) is marked
-   `ViewFlags::RELEASED_LOCAL` in a copy of the view, so the display hands it off instead of correcting it
-   (render.md 8, D4). Only pe-app knows which entries are its `Release`s, and the view's records don't name the
-   object.
+   effects queue. Before the slot, an object one of this member's own `Release`s let go of (an applied record of a
+   `Release` step 2 sent, in this or an earlier publication) is marked `ViewFlags::RELEASED_LOCAL` in a copy of the
+   view, so the display hands it off instead of correcting it (render.md 8, D4). The mark stays until a final frame
+   passes the release's stamp, or 2 s, so a view the display loses in a gap doesn't lose it (@design-reviewer's L1 on
+   bb23fc58); an object held by this member again goes unmarked. Only pe-app knows which entries are its `Release`s,
+   and the view's records don't name the object.
 7. **Wait** until `clock.host_time_of(p + 1)`, or until the inbox or the edit queue wakes the thread, whichever is
    first. Before frame 0 the wait is at least one frame period, since `host_time_of` means nothing while the clock
    converges; the network thread wakes the simulation thread when it converges.
@@ -323,6 +326,44 @@ then arrive above the cuts' frames, are never void as late, and cost the receive
   6.2a), far beyond `max_lead`.
 - **Receivers re-step up to the target's worth every tick,** so they rely on the keep-up floor's last-call need
   (section 3) to keep their views at the present.
+
+### 3.3 The shown present (B): the simulation at the moment the headset shows
+
+The user's rulings (2026-11-19: "B" "no, just do B. thats how every other game manages
+it, that asymmetry is fine" for the delay, one per session;
+@item:primordial-engine/vr-run-the-local-simulation-at-the-moment-the-he). They supersede render.md 7's 2026-11-17
+ruling for drawing the world.
+- **Why.** Under Present the world was drawn at the engine's present and the head, hands and held objects at photon
+  time, 46 ms ahead. A ball let go jumped back by that lead × its speed (render.md 8, D4).
+- **The display lead** (`crate::shown::DisplayLead`): the VR sink records each drawn frame's lead under Shown (the
+  runtime's predicted display time minus now). The simulation thread takes its 95th percentile over 2 s, so a few
+  late frames don't move the present. With no frame for 2 s (no XR session, the headset off) it has none.
+- **The shown present** `p_s = clock.frame_at(now + ahead)`, with `ahead` = the lead less the session's delay (never
+  below 0) + one simulation period + 5 ms, the publication's margin (`shown::ahead_ns`); `p` itself with no lead. A
+  view's time is its frame's end, so until the next tick's view is out, every display frame's moment lies before the
+  newest view's, and VR interpolates instead of guessing (render.md 7, Shown).
+- **What moves to `p_s`:** step 2 (the hands at the end of `p_s`, stamps from `p_s` through stamp-ahead, which
+  still stacks a slow link's lead on top and never steps a stamp down), and step 4 (`drive` to `p_s`). The grasp is
+  never forecast: pe-xr's ring gives the pose at the predicted display time and the grip read now (xr.md 6.2), so a
+  grab or a release goes in at `p_s`, the shown lead after the real closing or opening.
+- **What stays on the present `p`:** agreement (`tick(now)` sets pe-agree's present, so votes, cuts, deadlines and
+  lateness reports, `late = present − stamp`, are the group's [V, pe-agree node.rs:1213, 2688-2691]: a member
+  running ahead inflates nobody's stamp-ahead), the links, pe-diverge, the join and the edit queue's once-a-frame.
+- **The delay** is the session's, one value, in the genesis record (`display_delay_ms`, format 2, at most 1 s). The
+  opener chooses it with `--display-delay <ms>`, 0 by default; a joiner runs the record's. A world alone takes the
+  option. The VR presenter draws the world that long before the moment shown (`DrawnTime::Shown`).
+- **Sounds and haptics** wait until the drawn time reaches their frame (render.md 8, D6).
+- **The end line:** `SimStats::shown_ahead`, `largest_shown_ahead` (frames) and `ticks_shown_ahead`.
+- **Measured** [V, fake clock, pe-app's tests]:
+  - Solo, a perfect forecast and a 46 ms lead at 144 Hz (`solo_play_on_the_shown_present_draws_every_frame_between_
+    simulated_ones`): no correction, no extrapolation miss, no cue, no frame past the newest view, and the ball
+    leaves the drawn hand 2.6 mm from it.
+  - The cost of never forecasting a grasp: the release goes in about 90 ms after the real opening, so a hand already
+    slowing carries the ball on. In that test (4 m/s, opened at the peak, slowing at 25 m/s²) it left at 2.61 m/s.
+  - Mixed leads on a 20 ms one-way link (`mixed_display_leads_agree_on_the_race_and_the_world`): with one member
+    ahead and one at the present, the one at the present wins a grab both close on at the same moment, and the one
+    ahead rolls back 9 frames (re-simulating 1,720) while the other rolls back none; with both ahead, or neither,
+    each rolls back 5 (760). Both machines agree every time.
 
 ## 4. Startup and shutdown
 
