@@ -111,6 +111,16 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
      grabbed: pe-world's `Release` ends the member's claim whichever hand holds it, so a ball passed between hands
      stays in the hand that took it, even before the present world shows the pass (@design-reviewer's Medium on
      82644261).
+   - **A throw** (the weak-throw fix; @item:primordial-engine/throws-leave-at-the-hand-s-speed-letting-go-carr;
+     world-model.md 8.1): where the feed gives the hand's velocities at the tick's real present (the moment the open
+     was read, since the grasp is never forecast, 3.3), the open sends a `Throw` in place of each `Release`, carrying
+     the object's velocity with the hand at that moment, in the world frame: the hand's linear velocity plus its spin ×
+     the offset from the hand to the object, and the spin. The offset is to the object's origin, as the view gives it:
+     its centre of mass for M1's balls; an object whose centre of mass is off its origin (a compound) is measured at
+     its origin until pe-app reads the centre (world-model.md 8.1 asks for it; a follow-up). A throw whose values aren't all
+     finite goes as a plain `Release` (a refused throw would leave the claim to lapse). Each throw is logged (`throw:`)
+     with its speed and the fastest the object moved with the hand over the 50 ms before (`THROW_PEAK_WINDOW`), so a
+     window can be tuned with no format change; `SimStats::hands` counts them (`throws`).
    - The desktop hand and VR's take this one path. An agent's hand-less grab is not part of it.
    - The end line counts each hand's grasps (`SimStats::hands`): its edges (`closes`, `opens`), the grabs and releases
      sent, and the grabs applied and refused by reason (`Held`, `OutOfReach`, `Cooldown`, ...), as the newest view

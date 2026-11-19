@@ -622,6 +622,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 for p in &fx.pushes {
                     self.faults += u64::from(bodies::push(&mut self.physics, self.origin, p).is_err());
                 }
+                // Throws, as the entry applies (world-model.md 8.1): the hold's joint is still there to say whether
+                // the object is with the hand, and `hands::sync` removes it before the frame's physics step.
+                for t in &fx.throws {
+                    let centre = self.physics.local_center(t.object).unwrap_or([0.0; 3]);
+                    let radius =
+                        self.world.body(t.object).ok().flatten().map(|row| bounding_radius_about(&row.shapes, centre));
+                    self.faults += u64::from(hands::throw(&mut self.physics, t, radius).is_err());
+                }
             }
         }
         let mut events = Vec::new();
@@ -1493,13 +1501,20 @@ impl<W: WorldModel> ReplicaImpl<W> {
 }
 
 pub(crate) fn bounding_radius(shapes: &[ShapePart]) -> f32 {
+    bounding_radius_about(shapes, [0.0; 3])
+}
+
+/// The radius of a sphere about `about` (in the body's frame) that holds every one of `shapes`: about the body's centre
+/// of mass, the cap on a throw's spin (world-model.md 8.1).
+pub(crate) fn bounding_radius_about(shapes: &[ShapePart], about: [f32; 3]) -> f32 {
     let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let from = |c: [f32; 3]| len([c[0] - about[0], c[1] - about[1], c[2] - about[2]]);
     shapes
         .iter()
         .map(|p| match p.shape {
-            ShapeRow::Sphere { center, radius } => len(center) + radius,
-            ShapeRow::Capsule { center1, center2, radius } => len(center1).max(len(center2)) + radius,
-            ShapeRow::Box { center, half_extents, .. } => len(center) + len(half_extents),
+            ShapeRow::Sphere { center, radius } => from(center) + radius,
+            ShapeRow::Capsule { center1, center2, radius } => from(center1).max(from(center2)) + radius,
+            ShapeRow::Box { center, half_extents, .. } => from(center) + len(half_extents),
         })
         .fold(0.0, f32::max)
 }

@@ -35,7 +35,7 @@ pub struct Grasp {
 }
 
 /// What step 2 sent for the hands at one tick.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct HandsSent {
     /// Hand inputs agreement took, and entries it refused (hand inputs, grabs and releases).
     pub took: u32,
@@ -50,10 +50,32 @@ pub struct HandsSent {
     /// The `Grab`s agreement took, each with its hand (0 left, 1 right), so the views' records can tell their
     /// outcomes.
     pub grabs: Vec<(usize, EntryRef)>,
-    /// The `Release`s agreement took, each with the object it names, so the views' records can tell which applied
-    /// (`ViewFlags::RELEASED_LOCAL`, render.md 8's hand-off).
+    /// The `Release`s and `Throw`s agreement took, each with the object it names, so the views' records can tell
+    /// which applied (`ViewFlags::RELEASED_LOCAL`, render.md 8's hand-off).
     pub released: Vec<(EntryRef, ObjectId)>,
+    /// Per hand: of those, the `Throw`s (world-model.md 8.1), each a release carrying the velocity the hand gave the
+    /// object at the real opening.
+    pub throws: [u32; 2],
+    /// Each throw sent, for the log: its hand, object and velocities, and the fastest the object moved with the hand
+    /// over [`THROW_PEAK_WINDOW`] before the opening, m/s, so a window can be tuned later with no format change.
+    pub thrown: Vec<ThrowSent>,
 }
+
+/// One `Throw` step 2 sent (app.md 3, step 2; world-model.md 8.1), for the log.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThrowSent {
+    /// 0 left, 1 right.
+    pub hand: usize,
+    pub object: ObjectId,
+    /// What the throw carries, in the world frame: the object's centre's velocity, m/s, and the hand's spin, rad/s.
+    pub linear: [f32; 3],
+    pub angular: [f32; 3],
+    /// The fastest the object's centre moved with the hand over [`THROW_PEAK_WINDOW`] up to the opening, m/s.
+    pub peak: f32,
+}
+
+/// How far back the log's peak looks (the weak-throw fix, @fable-reviewer via @coordinator-opus m8d3c87be6da2).
+pub const THROW_PEAK_WINDOW: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// This member's chain (S1): every entry it authors, inputs and edits alike, in order. The first entry carries the
 /// nonce its chain id derives from; each later one names the one before.
@@ -183,6 +205,7 @@ pub fn submit_hands(
     world: &dyn Grasps,
     view: &FrameView,
     at: HostTime,
+    now: HostTime,
     p: Frame,
     domain: DomainId,
     agree: &mut dyn Agreement,
@@ -239,10 +262,22 @@ pub fn submit_hands(
                 held.sort();
                 held.dedup();
                 for object in held {
-                    match send_input(chain, agree, domain, p, &Input::Release { object }) {
+                    // A throw where the hand's velocity at the real opening is known and finite (world-model.md 8.1):
+                    // the grasp goes in at the stamp, after the opening, on a hand that may already be slowing, so
+                    // the object takes the velocity it had with the hand when the player opened it. Else a release.
+                    let throw = throw_at(feed, side, view, hand, object, now);
+                    let input = match throw {
+                        Some((linear, angular, _)) => Input::Throw { object, linear, angular },
+                        None => Input::Release { object },
+                    };
+                    match send_input(chain, agree, domain, p, &input) {
                         Some(id) => {
                             out.releases[i] += 1;
                             out.released.push((id, object));
+                            if let Some((linear, angular, peak)) = throw {
+                                out.throws[i] += 1;
+                                out.thrown.push(ThrowSent { hand: i, object, linear, angular, peak });
+                            }
                         }
                         None => out.refused += 1,
                     }
@@ -265,6 +300,51 @@ fn send_input(
     let signed = agree.submit(chain.entry(domain, p, Class::Input, input.encode())).ok()?;
     chain.took(&signed);
     Some(signed.id())
+}
+
+/// What a `Throw` of `object` from `hand` carries, measured at the real present `now` (world-model.md 8.1): the
+/// object's velocity with the hand, the hand's linear velocity plus its spin × the offset from the hand to the object,
+/// and the hand's spin, in the world frame; and the fastest the object moved over
+/// [`THROW_PEAK_WINDOW`] up to `now`, for the log. `None` without the hand's velocities, without both poses in the
+/// view, or with a value not finite: then a plain `Release` goes (a refused throw would leave the claim to lapse).
+fn throw_at(
+    feed: &dyn HandFeed,
+    side: Hand,
+    view: &FrameView,
+    hand: ObjectId,
+    object: ObjectId,
+    now: HostTime,
+) -> Option<([f32; 3], [f32; 3], f32)> {
+    // To the object's origin, as the view gives it: its centre of mass for M1's balls. A compound whose centre of mass
+    // is off its origin is measured there until pe-app reads the centre (app.md 3, step 2).
+    let r = offset_vec(view.object(object)?.pos - view.object(hand)?.pos);
+    let rig = &view.local_rig;
+    let at = |t: HostTime| -> Option<([f32; 3], [f32; 3])> {
+        let h = feed.hand_at(side, t)?;
+        let (v, w) = (h.linear_velocity?, h.angular_velocity.unwrap_or([0.0; 3]));
+        let v = rotate(rig.rotation, v.map(|c| c * rig.scale));
+        let w = rotate(rig.rotation, w);
+        let [rx, ry, rz] = r;
+        let spin = [w[1] * rz - w[2] * ry, w[2] * rx - w[0] * rz, w[0] * ry - w[1] * rx];
+        Some(([v[0] + spin[0], v[1] + spin[1], v[2] + spin[2]], w))
+    };
+    let (linear, angular) = at(now)?;
+    if !linear.iter().chain(&angular).all(|c| c.is_finite()) {
+        return None;
+    }
+    let speed = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let window = i64::try_from(THROW_PEAK_WINDOW.as_nanos()).unwrap_or(i64::MAX);
+    let peak = (0..=5)
+        .filter_map(|k| at(HostTime(now.0 - window * k / 5)))
+        .map(|(v, _)| speed(v))
+        .filter(|s| s.is_finite())
+        .fold(0.0, f32::max);
+    Some((linear, angular, peak))
+}
+
+/// `d` as single-precision metres (offsets inside a held object's reach are small).
+fn offset_vec(d: pe_seams::Offset) -> [f32; 3] {
+    d.0.map(|c| c as f32)
 }
 
 /// The Hamilton product `a b` of two quaternions in OpenXR's order, (x, y, z, w).
