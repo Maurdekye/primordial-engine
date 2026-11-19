@@ -66,7 +66,11 @@ macOS (flat screen only, later); a VR user interface (the UI lab follows M1, WS-
      (maximum 1.0x3ff.0xfff, as Khronos' loader offers): Virtual Desktop's runtime refuses a maximum of openxr-sys's
      own 1.1.58, because it is built against 1.1.62 [V: M0 report, section 2]. A runtime whose negotiated versions
      are out of that range is refused, with the reason. The instance then asks for the negotiated API version,
-     capped at 1.1, because a 1.0-only runtime (an older SteamVR or Monado) refuses an instance that asks for 1.1;
+     capped at 1.1, because a 1.0-only runtime (an older SteamVR or Monado) refuses an instance that asks for 1.1.
+     A negotiated version is only an upper bound: SteamVR negotiates 1.1 or later and still refuses a 1.1 instance as
+     unsupported (`XR_ERROR_API_VERSION_UNSUPPORTED`; M1's solo check on SteamVR, 2026-11-19). So an instance
+     refused that way at 1.1 is asked for once more at 1.0. Nothing pe-xr uses is core only in 1.1: the reference
+     space is chosen from those the runtime lists (section 3.2), and `XR_EXT_local_floor` is enabled when offered;
   4. build the `openxr::Entry` from the returned `xrGetInstanceProcAddr` (`Entry::from_get_instance_proc_addr`).
      The loader's `Runtime` owns the opened `Library`, and is kept alive by every instance and every GPU context made
      through it, so the library is never unloaded while the runtime's code may still be called (section 4.1).
@@ -688,7 +692,8 @@ The user may be in VR on this PC. So:
 ### 10.4 On the headset, by hand (with the coordinator's go; recorded)
 
 What a headset run records, beyond the user's sighting: with `PE_XR_LOG=1`, pe-xr writes to standard error, whichever
-application drives the session, the reference space chosen and those offered, each session state change, the first
+application drives the session, the runtime's name and version with the API versions negotiated and used (and a
+1.1 refused, section 2), the reference space chosen and those offered, each session state change, the first
 drawn frame's eyes and display period, the first tracked pose of each hand (or that none was tracked while drawn),
 and the end reason with the counters at teardown (`crate::diag`). It is off by default and changes nothing the
 session does.

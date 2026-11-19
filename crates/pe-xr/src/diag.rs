@@ -1,6 +1,6 @@
 //! The opt-in diagnostic log (spec 10.3): with `PE_XR_LOG=1` in the environment, pe-xr writes a few lines to
-//! standard error about a real-runtime run, whichever application drives the session: the reference space at
-//! creation, each session state change, the first drawn frame's eyes and display period, the first tracked pose of
+//! standard error about a real-runtime run, whichever application drives the session: the runtime's name and
+//! version with the API versions negotiated and used, the reference space at creation, each session state change, the first drawn frame's eyes and display period, the first tracked pose of
 //! each hand, and the end reason with the counters at teardown. It is for headset checks, where only the user sees
 //! the frame: the lines say where the runtime put the floor, the head and the hands. Off by default; it never changes
 //! what the session does.

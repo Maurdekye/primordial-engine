@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use openxr::{ExtensionSet, sys};
 
-use crate::loader::{Runtime, RuntimeLibrary};
+use crate::loader::{Runtime, RuntimeLibrary, fallback_api_version};
 use crate::seam::HostTime;
 
 /// The graphics API the session draws with (spec 4): Vulkan on Windows and Linux, D3D12 as Windows'
@@ -114,15 +114,37 @@ impl XrInstance {
     pub fn create(runtime: &Runtime, path: GraphicsPath) -> Result<XrInstance, InstanceError> {
         let available = runtime.entry.enumerate_extensions().map_err(|e| InstanceError::Xr(e.to_string()))?;
         let enabled = choose_extensions(&available, path).map_err(InstanceError::Missing)?;
-        let app = openxr::ApplicationInfo {
-            application_name: "Primordial Engine",
-            application_version: 0,
-            engine_name: "Primordial Engine",
-            engine_version: 0,
-            api_version: runtime.instance_api_version(),
+        let create = |api_version| {
+            let app = openxr::ApplicationInfo {
+                application_name: "Primordial Engine",
+                application_version: 0,
+                engine_name: "Primordial Engine",
+                engine_version: 0,
+                api_version,
+            };
+            runtime.entry.create_instance(&app, &enabled, &[], &())
         };
-        let instance =
-            runtime.entry.create_instance(&app, &enabled, &[], &()).map_err(|e| InstanceError::Xr(e.to_string()))?;
+        // A runtime may negotiate 1.1 and still refuse a 1.1 instance, as SteamVR does: ask once more at 1.0 (spec 2).
+        let asked = runtime.instance_api_version();
+        let (instance, used) = match (create(asked), fallback_api_version(asked)) {
+            (Ok(instance), _) => (instance, asked),
+            (Err(sys::Result::ERROR_API_VERSION_UNSUPPORTED), Some(lower)) => {
+                (create(lower).map_err(|e| InstanceError::Xr(e.to_string()))?, lower)
+            }
+            (Err(e), _) => return Err(InstanceError::Xr(e.to_string())),
+        };
+        if crate::diag::enabled() {
+            let (name, version) = match instance.properties() {
+                Ok(p) => (p.runtime_name, p.runtime_version.to_string()),
+                Err(e) => (format!("(unnamed: {e})"), "?".into()),
+            };
+            let refused = if used == asked { String::new() } else { format!(" ({asked} refused as unsupported)") };
+            crate::diag::emit(&format!(
+                "runtime {name} {version} ({}): API {} negotiated, instance at {used}{refused}",
+                runtime.manifest.path.display(),
+                runtime.api_version,
+            ));
+        }
         Ok(XrInstance { instance, path, enabled, library: runtime.library.clone() })
     }
 
