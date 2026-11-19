@@ -313,6 +313,9 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// Drawn objects whose pose at the last published frame a re-simulation rewrote (a replay, a repair or a merge):
     /// the next publication marks them `CORRECTED` (S5), then forgets them.
     corrected: BTreeSet<ObjectId>,
+    /// The held objects the last publication marked `HELD_AWAY` (D4's break-away): one stays away until it is back
+    /// within `BREAK_BACK`. The view's state, not the simulation's: a rollback doesn't restore it.
+    away: BTreeSet<ObjectId>,
     /// The change records made since the last publication, in the order they were made: the next view's `changes`
     /// (S5).
     pending: Vec<StepRecord>,
@@ -439,6 +442,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             scratch_records: BTreeMap::new(),
             excused: Vec::new(),
             corrected: BTreeSet::new(),
+            away: BTreeSet::new(),
             pending: Vec::new(),
             recorded: BTreeMap::new(),
             unknown_to: Frame(0),
@@ -1386,6 +1390,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
     fn publish(&mut self) {
         // What the model draws, with what only the replica knows: the velocities and the local member's hands.
         let mut objects = self.world.view_objects();
+        let mut away = BTreeSet::new();
         for o in &mut objects {
             if let Ok((linear, angular)) = self.physics.velocity(o.id) {
                 o.linear_velocity = linear;
@@ -1404,11 +1409,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
             {
                 o.flags = o.flags.with(ViewFlags::HELD_LOCAL);
                 // D4's break-away (S5 v1.9): kept from its place in the hand by more than `BREAK_AWAY`, it is drawn
-                // where it is.
-                if crate::hands::hold_gap(&self.physics, o.id, holder.hand)
-                    .is_some_and(|gap| gap > pe_seams::BREAK_AWAY)
-                {
+                // where it is, until it is back within `BREAK_BACK`.
+                let gap = crate::hands::hold_gap(&self.physics, o.id, holder.hand);
+                if crate::hands::held_away(self.away.contains(&o.id), gap) {
                     o.flags = o.flags.with(ViewFlags::HELD_AWAY);
+                    away.insert(o.id);
                 }
             }
             // The local member's hands and what they hold are drawn from tracking, never corrected (S5).
@@ -1418,6 +1423,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
         }
         self.corrected.clear();
+        self.away = away;
         let sim_time = self.config.clock.host_time_of(self.frame);
         let mut view = empty_view(self.domain);
         view.frame = self.frame;
