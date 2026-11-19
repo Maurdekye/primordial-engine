@@ -4,8 +4,9 @@
 //! hand at frame k's host time, and gets:
 //! - between two samples: the interpolation of the two, unless a discontinuity lies between them, in
 //!   which case the earlier sample (never a blend across a jump);
-//! - past the newest sample: the newest, extrapolated from its velocity for at most one display period,
-//!   or as it is when it has no velocity or is not tracked;
+//! - past the newest sample: the newest, extrapolated from its velocity for at most one display period plus
+//!   the application's lookahead ([`HandRing::set_lookahead_ns`]), or as it is when it has no velocity or is not
+//!   tracked;
 //! - older than the ring (after a stall, while the simulation catches up): the oldest sample held,
 //!   counted.
 //!
@@ -33,7 +34,7 @@ struct Snapshot {
 #[derive(Debug, Default)]
 pub struct RingCounters {
     pub extrapolated: AtomicU64,
-    /// Extrapolations cut short at the one-period limit.
+    /// Extrapolations cut short at the limit (one display period plus the lookahead).
     pub extrapolation_clamped: AtomicU64,
     pub older_than_ring: AtomicU64,
     /// The age of the newest sample at each read: how far the asked time is past it (0 when the read falls inside
@@ -100,9 +101,10 @@ impl AgeHistogram {
 pub struct HandRing {
     snapshot: ArcSwap<Snapshot>,
     window_ns: i64,
-    /// The longest extrapolation allowed: one display period, set by the frame loop as the runtime reports
-    /// it.
-    max_extrapolation_ns: AtomicI64,
+    /// One display period, set by the frame loop as the runtime reports it.
+    display_period_ns: AtomicI64,
+    /// How far past the newest sample the application reads, beyond one display period (spec 6.2).
+    lookahead_ns: AtomicI64,
     pub counters: RingCounters,
 }
 
@@ -111,14 +113,27 @@ impl HandRing {
         HandRing {
             snapshot: ArcSwap::from_pointee(Snapshot::default()),
             window_ns,
-            max_extrapolation_ns: AtomicI64::new(display_period_ns),
+            display_period_ns: AtomicI64::new(display_period_ns.max(0)),
+            lookahead_ns: AtomicI64::new(0),
             counters: RingCounters::default(),
         }
     }
 
     /// The display period changed (the runtime's rate is whatever it gives, spec 7.2).
     pub fn set_display_period(&self, ns: i64) {
-        self.max_extrapolation_ns.store(ns.max(0), Ordering::Relaxed);
+        self.display_period_ns.store(ns.max(0), Ordering::Relaxed);
+    }
+
+    /// How far past the newest sample the application asks, beyond one display period (spec 6.2): with the
+    /// simulation run at the shown time, about two simulation periods. The longest extrapolation is one display
+    /// period plus this. Zero until set.
+    pub fn set_lookahead_ns(&self, ns: i64) {
+        self.lookahead_ns.store(ns.max(0), Ordering::Relaxed);
+    }
+
+    /// The longest extrapolation past the newest sample: one display period plus the lookahead.
+    pub fn max_extrapolation_ns(&self) -> i64 {
+        self.display_period_ns.load(Ordering::Relaxed).saturating_add(self.lookahead_ns.load(Ordering::Relaxed))
     }
 
     /// Publish a sample. Only the XR thread writes; samples for one hand arrive in time order.
@@ -192,7 +207,7 @@ impl HandFeed for HandRing {
             let Some(v) = last.linear_velocity else {
                 return Some(HandInput { sampled_at: at, ..*last });
             };
-            let max = self.max_extrapolation_ns.load(Ordering::Relaxed);
+            let max = self.max_extrapolation_ns();
             let used_ns = dt_ns.min(max);
             if used_ns < dt_ns {
                 self.counters.extrapolation_clamped.fetch_add(1, Ordering::Relaxed);
@@ -292,6 +307,27 @@ mod tests {
         r.set_display_period(PERIOD / 2);
         let far = r.hand_at(Hand::Right, t(50.0)).unwrap();
         assert!((far.pose.position[0] - limit / 2.0).abs() < 1e-5, "a new period takes effect");
+    }
+
+    #[test]
+    fn the_lookahead_lengthens_the_extrapolation_limit() {
+        let r = HandRing::new(DEFAULT_WINDOW_NS, PERIOD);
+        r.push(sample(0.0, 0.0, Some(2.0))); // 2 m/s
+        assert_eq!(r.max_extrapolation_ns(), PERIOD);
+        let two_sim_periods = 33_333_333; // 60 Hz
+        r.set_lookahead_ns(two_sim_periods);
+        assert_eq!(r.max_extrapolation_ns(), PERIOD + two_sim_periods);
+        let h = r.hand_at(Hand::Right, t(30.0)).unwrap();
+        assert!((h.pose.position[0] - 0.06).abs() < 1e-5, "30 ms at 2 m/s, inside the new limit: {h:?}");
+        assert_eq!(r.counters.extrapolation_clamped.load(Ordering::Relaxed), 0);
+        let far = r.hand_at(Hand::Right, t(100.0)).unwrap();
+        let limit = 2.0 * (PERIOD + two_sim_periods) as f32 * 1e-9;
+        assert!((far.pose.position[0] - limit).abs() < 1e-5, "clamped at a period plus the lookahead: {far:?}");
+        assert_eq!(r.counters.extrapolation_clamped.load(Ordering::Relaxed), 1);
+        r.set_display_period(PERIOD / 2);
+        assert_eq!(r.max_extrapolation_ns(), PERIOD / 2 + two_sim_periods, "a new period keeps the lookahead");
+        r.set_lookahead_ns(-5);
+        assert_eq!(r.max_extrapolation_ns(), PERIOD / 2, "a negative lookahead is zero");
     }
 
     #[test]

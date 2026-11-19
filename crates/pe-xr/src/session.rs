@@ -443,8 +443,12 @@ impl<B: Backend> XrSession<B> {
                 self.log_profiles("first focused frame");
             }
             let now = self.backend.now();
+            let shown_at = timing.predicted_display_time;
             for h in Hand::BOTH {
                 let reading = self.backend.read_hand(h, now);
+                // The same hand where it will be when this frame is shown: the simulation runs at that time, so the
+                // ring's samples carry those poses; the grip and grasp still come from now (spec 6.2).
+                let shown = self.backend.read_hand(h, shown_at);
                 let source = diag::PoseSource::of(&reading);
                 let frames = &mut self.counters.hand_frames[h.index()];
                 match source {
@@ -455,7 +459,7 @@ impl<B: Backend> XrSession<B> {
                 if let Some(line) = self.diag.hand_source(h, source, now.0) {
                     diag::emit(&line);
                 }
-                if let Some(sample) = self.hands[h.index()].update(reading) {
+                if let Some(sample) = self.hands[h.index()].update_shown(reading, Some(shown)) {
                     self.ring.push(sample);
                 }
                 if let Some(e) = self.hands[h.index()].take_edge()

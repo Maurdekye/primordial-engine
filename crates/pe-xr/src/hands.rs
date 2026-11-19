@@ -216,6 +216,8 @@ pub struct HandState {
     /// When tracking was lost, while it is lost.
     lost_since: Option<HostTime>,
     discontinuity: u32,
+    /// The time of the last sample returned, so samples stay in time order (spec 6.2).
+    last_at: Option<HostTime>,
     /// Releases forced by the grace period, for the counters (spec 9).
     pub forced_releases: u64,
 }
@@ -235,6 +237,7 @@ impl HandState {
             tracked: false,
             lost_since: None,
             discontinuity: 0,
+            last_at: None,
             forced_releases: 0,
         }
     }
@@ -265,11 +268,22 @@ impl HandState {
     /// Take one frame's reading and return the sample to publish, or `None` while the hand has never been
     /// seen (it is absent).
     pub fn update(&mut self, r: Reading) -> Option<HandInput> {
+        self.update_shown(r, None)
+    }
+
+    /// Take one frame's reading now, `r`, and the same hand located at the time the frame will be shown, `shown`,
+    /// and return the sample to publish (spec 6.2). The simulation runs at the shown time, so the sample carries
+    /// the shown reading's pose, velocities and time. Everything else comes from `r`, the reading now: tracking,
+    /// the source, the grip, the grasp and its edges, and the lost hand's grace. A grip edge is never predicted.
+    /// When the shown reading has no pose, or comes from another source than `r`, the pose is `r`'s.
+    /// Samples stay in time order: a time at or before the last sample's is moved to just after it.
+    pub fn update_shown(&mut self, r: Reading, shown: Option<Reading>) -> Option<HandInput> {
         if self.last_source.is_some_and(|s| s != r.source) {
             self.discontinuity = self.discontinuity.wrapping_add(1);
         }
         self.last_source = Some(r.source);
 
+        let (mut linear_velocity, mut angular_velocity) = (None, None);
         match r.pose {
             Some(pose) => {
                 if !self.tracked && self.last_pose.is_some() {
@@ -278,6 +292,17 @@ impl HandState {
                 }
                 self.tracked = true;
                 self.lost_since = None;
+                let at_shown = shown.filter(|s| s.source == r.source).and_then(|s| s.pose.map(|p| (p, s)));
+                let pose = match at_shown {
+                    Some((p, s)) => {
+                        (linear_velocity, angular_velocity) = (s.linear_velocity, s.angular_velocity);
+                        p
+                    }
+                    None => {
+                        (linear_velocity, angular_velocity) = (r.linear_velocity, r.angular_velocity);
+                        pose
+                    }
+                };
                 self.last_pose = Some(pose);
                 let squeeze = r.grip.map(|g| g.clamp(0.0, 1.0));
                 let curl = r.curl.map(|g| g.clamp(0.0, 1.0));
@@ -305,14 +330,21 @@ impl HandState {
         }
 
         let pose = self.last_pose?;
+        let mut sampled_at = shown.map_or(r.at, |s| s.at.max(r.at));
+        if let Some(last) = self.last_at
+            && sampled_at <= last
+        {
+            sampled_at = last.plus_nanos(1);
+        }
+        self.last_at = Some(sampled_at);
         Some(HandInput {
             hand: self.hand,
             source: r.source,
-            sampled_at: r.at,
+            sampled_at,
             tracked: self.tracked,
             pose,
-            linear_velocity: if self.tracked { r.linear_velocity } else { None },
-            angular_velocity: if self.tracked { r.angular_velocity } else { None },
+            linear_velocity,
+            angular_velocity,
             grip: self.grip,
             closed: self.grasp.closed(),
             discontinuity: self.discontinuity,
@@ -579,5 +611,48 @@ mod tests {
     fn a_hand_never_seen_is_absent() {
         let mut h = HandState::new(Hand::Left, GraspConfig::default());
         assert_eq!(h.update(reading(0, None, false)), None);
+    }
+
+    #[test]
+    fn the_shown_reading_gives_the_pose_and_time_and_the_reading_now_the_grasp() {
+        let mut h = HandState::new(Hand::Right, GraspConfig::default());
+        let ahead = RigPose { position: [0.5, 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] };
+        let mut shown = reading(40, Some(0.0), true);
+        shown.pose = Some(ahead);
+        shown.linear_velocity = Some([1.0, 0.0, 0.0]);
+        let s = h.update_shown(reading(0, Some(0.9), true), Some(shown)).unwrap();
+        assert_eq!(s.sampled_at, HostTime::from_millis(40));
+        assert_eq!(s.pose, ahead);
+        assert_eq!(s.linear_velocity, Some([1.0, 0.0, 0.0]));
+        assert!(s.closed, "the squeeze now closed it, though the shown reading's squeeze is 0");
+        assert_eq!(s.grip, 0.9);
+
+        // A shown time that does not advance past the last sample's moves to just after it.
+        let mut early = reading(30, Some(0.0), true);
+        early.pose = Some(ahead);
+        let s = h.update_shown(reading(8, Some(0.1), true), Some(early)).unwrap();
+        assert_eq!(s.sampled_at, HostTime::from_millis(40).plus_nanos(1));
+        assert!(!s.closed, "the squeeze now opened it, at the clamped time");
+
+        // No pose at the shown time, or another source there: the pose now, at the shown time.
+        let now_pose = reading(0, None, true).pose.unwrap();
+        let s = h.update_shown(reading(16, Some(0.1), true), Some(reading(56, None, false))).unwrap();
+        assert_eq!((s.pose, s.sampled_at, s.tracked), (now_pose, HostTime::from_millis(56), true));
+        let mut other = reading(64, Some(0.0), true);
+        other.source = HandSource::Tracked;
+        other.pose = Some(ahead);
+        let s = h.update_shown(reading(24, Some(0.1), true), Some(other)).unwrap();
+        assert_eq!((s.pose, s.source), (now_pose, HandSource::Controller));
+
+        // Lost now: not tracked, the last pose held, whatever the shown reading says.
+        let s = h.update_shown(reading(32, None, false), Some(shown_at(72, ahead))).unwrap();
+        assert!(!s.tracked);
+        assert_eq!((s.pose, s.linear_velocity), (now_pose, None));
+    }
+
+    fn shown_at(ms: i64, pose: RigPose) -> Reading {
+        let mut r = reading(ms, Some(0.0), true);
+        r.pose = Some(pose);
+        r
     }
 }
