@@ -283,7 +283,9 @@ The rules are world-model.md 8.1's (the speed cap, the teleport distance and the
     only that far this frame. It trails its target and catches up when the hand slows, and a throw leaves at up to
     the cap;
   - **beyond the teleport distance** (0.5 m, or two frames at the cap below 40 Hz), the body is placed at its target
-    with no velocity, and each object its claims hold goes with it, keeping its place relative to the hand. A
+    with no velocity, and each object its claims hold goes with it, keeping its rotation relative to the hand: a
+    light hold (`hands::follows_tightly`, its force cap the object's mass's) to its place in the hand, a heavy one at
+    its offset, so a placement lifts nothing the strength can't (`hands::placed`; world-model.md 8.1). A
     trailing placement carries a held object only where no static geometry lies in its way
     (`PhysicsWorld::static_in_way`), so a held object never passes through a wall (@coordinator-opus);
     a real teleport carries it through.
