@@ -1915,10 +1915,11 @@ fn a_rollback_across_frames_where_a_hold_is_bounded_replays_the_same_roots() {
 /// and straight down: it trails its place and catches up once the hand stops, moving at most about the cap, and, the
 /// support part of its hold keeping it up, it never sags more than a centimetre or so below its place sideways or
 /// downwards. Measured with the tight hold: 10.47, 10.02 and 10.61 m/s, the last with gravity's fall (it falls freely
-/// while the hand goes down at the cap, until it is below its place); trails of 1.54, 1.81 and 1.10 m; 4.1 mm below
-/// its place sideways. The trail grows with the overrun: each placement of the hand carries the ball at its offset with
-/// no velocity, and the hold's force cap ([`pe_replica::hands::HOLD_ACCELERATION`]) takes about three frames to bring
-/// it back to the cap. With M1's 5 Hz spring and a cap of 1,000 N it was 9.95, 10.20 and 10.12 m/s, under 1 m of trail
+/// while the hand goes down at the cap, until it is below its place); trails of 0.22, 0.23 and 0.20 m; 4.0 mm below
+/// its place sideways. Each placement of the hand carries the light ball to its place in the hand with no velocity
+/// ([`pe_replica::hands::follows_tightly`]), and the hold's force cap takes about three frames to bring it back to the
+/// cap, so it lags by about that much and no more; carried at its offset instead it lagged more at every placement
+/// (1.5 m after 2 s). With M1's 5 Hz spring and a cap of 1,000 N it was 9.95, 10.20 and 10.12 m/s, under 1 m of trail
 /// and 1.0 cm below.
 #[test]
 fn a_held_ball_kept_above_the_cap_for_two_seconds_trails_and_stays_up() {
@@ -1965,13 +1966,49 @@ fn a_held_ball_kept_above_the_cap_for_two_seconds_trails_and_stays_up() {
         // Straight down, gravity's fall adds to the cap.
         let over = if dir == 2 { 0.7 } else { 0.5 };
         assert!(top > 9.0 && top < cap + over, "direction {dir}: {top} m/s");
-        assert!(trail > 0.2 && trail < 2.0, "direction {dir}: it trails, at most {trail} m");
+        assert!(trail > 0.1 && trail < 0.3, "direction {dir}: it trails, at most {trail} m");
         if dir != 1 {
             assert!(below < 0.02, "direction {dir}: it stays up, at most {below} m below its place");
         }
         assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.02, "direction {dir}: back in its place");
         assert_eq!(r.faults(), 0);
     }
+}
+
+/// A placement carries a heavy hold at its offset (@design-reviewer's L1 on 980e6ba7, @coordinator-opus m572729ddd32f):
+/// a 12 kg ball, which a hand of 110 N can't lift, stays on the floor while the hand rises 0.5 m above its place, and
+/// when the hand's target jumps 1 m sideways (a teleport) the ball goes 1 m sideways along the floor with it, not up to
+/// its place in the hand, where only a light hold is carried ([`pe_replica::hands::placed`]'s rule).
+#[test]
+fn a_placement_carries_a_heavy_hold_at_its_offset_never_up_to_the_hand() {
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    let radius = 0.06_f32;
+    let heavy = Shape {
+        kind: shape_kind::SPHERE,
+        density: 12.0 / (4.0 / 3.0 * std::f32::consts::PI * radius.powi(3)),
+        size: [radius, 0.0, 0.0],
+        ..Shape::default()
+    };
+    let start = [-f64::from(radius) - hr, f64::from(radius), 0.0];
+    let up = [start[0], start[1] + 0.5, 0.0];
+    let p = move |t: f64| {
+        let at = lerp(start, up, (t - 0.2) / 0.5);
+        if t < 1.0 { at } else { [at[0] + 1.0, at[1], 0.0] }
+    };
+    let mut b = EntryBuilder::new(&keys(), 0);
+    let mut s = Source::default();
+    path_inputs(&mut b, HAND, 60, 2, 80, &p).into_iter().for_each(|e| s.add(e));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [0.0, f64::from(radius), 0.0], heavy)]));
+    r.advance(Frame(59), &mut s);
+    let before = at(&r, BALL);
+    assert!(before[1] < 0.1, "too heavy to lift: on the floor at {before:?}");
+    r.advance(Frame(62), &mut s);
+    let after = at(&r, BALL);
+    assert_eq!(held_by(&r, BALL), Some(oid(HAND)), "still held");
+    assert!((after[0] - before[0] - 1.0).abs() < 0.05, "carried 1 m with the hand: {before:?} -> {after:?}");
+    assert!(after[1] < 0.1, "at its offset, still on the floor, not lifted to the hand: {after:?}");
+    assert_eq!(r.faults(), 0);
 }
 
 const SHELF: u128 = 71;
@@ -2120,8 +2157,8 @@ fn lift_with(strength: f32, mass: f32) -> f64 {
 }
 
 /// A hand's strength caps the force its hold applies (the user's ruling m1ba0eb5b7fa4; world-model.md 8.1): at the
-/// default 110 N it lifts 8 kg (78 N of weight) and holds it within millimetres, where a hand of 60 N can't lift it, and
-/// it stays on the floor, still held. Its strength is its `Hand` row's.
+/// default 110 N it lifts 8 kg (78 N of weight) and holds it within millimetres, where a hand of 60 N can't lift it,
+/// and it stays on the floor, still held. Its strength is its `Hand` row's.
 #[test]
 fn a_hands_strength_decides_what_it_can_lift() {
     assert_eq!(Hand::default().strength, pe_world::components::DEFAULT_STRENGTH);

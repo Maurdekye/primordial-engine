@@ -1867,7 +1867,11 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     **or the body trails its target by more than it** (@design-reviewer's Medium on 0913f962). The second bounds the
     lag: a hand kept faster than the cap never trails by more than the teleport distance, so the body never sweeps
     through the scene far from the hand everyone sees. For a held object the separation is **the move the hand would
-    carry it this frame**, from where it is, keeping its offset in the hand. **A held object never passes through a
+    carry it this frame**, from where it is, keeping its offset in the hand. **Where a placement puts it**
+    (@design-reviewer's L1 on 980e6ba7, @coordinator-opus m572729ddd32f): a light hold, one whose force cap comes from
+    the object's mass (`m (A + g)` at most the strength, the tight hold below), at its place in the hand, since the hand
+    could lift it there anyway, so a light object never keeps a lag through a placement; a heavy one at its offset,
+    so a placement never lifts what the strength can't. **A held object never passes through a
     wall** (@coordinator-opus mc017468679d8): pinned against one, its carried move stays the hand's own small move, so
     it is never placed; the bare kinematic hand may pass through, the held object stays pinned by the hold's spring,
     and springs back when the way clears. **A trailing placement carries a held object only if no static geometry lies
@@ -2006,18 +2010,19 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     that case does not reach the check; a ball pinned 3 cm from the wall's end with the hand going diagonally at 25
     m/s at 60 Hz: the shape cast leaves it where it is and it slides round the corner, crossing the face's plane at z
     1.085, where a centre ray would let the placement carry it through the corner region, crossing at 1.020); a held
-    ball with the hand at 1.5× the cap for 2 s: **sideways**, it sags no more than a centimetre or so below its
-    place's height and never falls below the hand; **straight up**, it rises the whole time at no more than about the
-    cap and never falls; **straight down**, the spring adds no downward pull beyond the speed-aware reach (with the
-    reach at 0, the ball falls freely until it is below its place, then is held up), with gravity's fall reported
-    apart. In every run its speed exceeds the cap by at most about half a metre a second, gravity's fall aside
-    (measured with the tight hold at 60 Hz [V @vdw-physics]: 10.47, 10.02 and 10.61 m/s, the last with gravity's fall;
-    about 4 mm below its place sideways). **Its trail grows with the overrun:** each placement carries it at its offset
-    with no velocity, and the force cap takes about three frames to bring it back up to the cap, so after 2 s it
-    trails 1.5, 1.8 and 1.1 m at 60 Hz and 2.0-3.3 m at 30 and 120 Hz, where at 30 Hz it also sags 38 mm sideways
-    [V]. A hand can't keep above the cap that long without locomotion, which M1 doesn't have; carrying a held object to
-    its place at each placement would bound the trail (about 0.2 m at every rate [V, tried and set aside]) but would
-    let a placement lift an object the strength can't. A ball pinned at 45° below and beside its place, and at 45°
+    ball with the hand at 1.5× the cap for 2 s: **sideways**, it sags no more than about 5 mm below its place's
+    height and never falls below the hand (4.6, 4.0 and 3.7 mm at 30, 60 and 120 Hz [V @vdw-physics]); **straight
+    up**, it rises the whole time at no more than about the cap and never falls; **straight down**, the spring adds no
+    downward pull beyond the speed-aware reach (with the reach at 0, the ball falls freely until it is below its place,
+    then is held up), with gravity's fall reported apart. In every run its speed exceeds the cap by at most about half
+    a metre a second, gravity's fall aside (measured with the tight hold at 60 Hz [V]: 10.47, 10.02 and 10.61 m/s, the
+    last with gravity's fall). **It trails by about one placement cycle's lag:** each placement carries the light ball
+    to its place in the hand with no velocity, and the force cap takes about three frames to bring it back up to the
+    cap, so it trails 0.20-0.23 m at 30, 60 and 120 Hz and no more [V]. Carried at its offset, as before the light-hold
+    rule above, it kept its lag through every placement: after 2 s it trailed 1.1-3.3 m, and at 30 Hz it sagged 38 mm
+    [V]. **A heavy hold keeps its offset:** a 12 kg ball a hand of 110 N can't lift stays on the floor under the
+    raised hand, and a 1 m teleport of the hand carries it 1 m along the floor, not up to its place [V]. A ball pinned
+    at 45° below and beside its place, and at 45°
     above and beside it, released with the hand still: its top speed, the larger of its speed at a frame's end and
     the distance it moves in a frame, is at most the cap plus about `s_min · k` (measured with the tight hold: 4.65
     m/s from a corner below, 4.85 m/s from a shelf above; 8.39 and 8.57 m/s with M1's 5 Hz spring [V @vdw-physics,

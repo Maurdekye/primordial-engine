@@ -24,14 +24,18 @@
 //!     target and catches up when the hand slows, and a throw leaves at up to the cap;
 //!   - **beyond the teleport distance** ([`teleport_distance`]: [`TELEPORT_DISTANCE`], or two frames at the cap at
 //!     low rates), a tracking glitch, a real teleport, or a body trailing that far: the body is put at the target
-//!     with no velocity, moved but not swept, and each object the hand's claims hold goes with it, keeping its place
-//!     and rotation relative to the hand, with no velocity too (@design-reviewer's Low on cc037c10). So a body never
-//!     trails its target by more than the teleport distance, and a hand kept faster than the cap trails, is placed
-//!     and trails again: its contacts come in bursts. Only the claimed object moves: other bodies resting on it
-//!     (cups on a held tray) stay where they were. A **trailing** placement (the body was slowed by the cap in the
-//!     last frame, so it is catching up, not jumping) carries a held object only where no static geometry lies in its
-//!     way ([`PhysicsWorld::static_in_way`]), so a held object never passes through a wall: one left behind stays
-//!     where it is, held by its spring (@coordinator-opus m51d8feaf4aa5). A real teleport carries it through.
+//!     with no velocity, moved but not swept, and each object the hand's claims hold goes with it, keeping its
+//!     rotation relative to the hand, with no velocity too (@design-reviewer's Low on cc037c10): a light hold, whose
+//!     force the object's mass caps ([`follows_tightly`]), to its place in the hand, and a heavy one keeping its
+//!     offset, so a placement never lifts what the hand's strength can't ([`placed`]; @design-reviewer's L1 on
+//!     980e6ba7, @coordinator-opus m572729ddd32f). So a body never trails its target by more than the teleport
+//!     distance, and a hand kept faster than the cap trails, is placed and trails again: its contacts come in bursts,
+//!     and a light held object never trails it by more than a cycle's lag. Only the claimed object moves: other bodies
+//!     resting on it (cups on a held tray) stay where they were. A **trailing** placement (the body was slowed by the
+//!     cap in the last frame, so it is catching up, not jumping) carries a held object only where no static geometry
+//!     lies in its way ([`PhysicsWorld::static_in_way`]), so a held object never passes through a wall: one left
+//!     behind stays where it is, held by its spring (@coordinator-opus m51d8feaf4aa5). A real teleport carries it
+//!     through.
 //! - **A hold is tight, and its force is capped** ([`grab_spring`], world-model.md 8.1): a stiff spring ([`HOLD_HZ`])
 //!   keeps a light held object within millimetres of its place in the hand, and its force is at most the holder's
 //!   strength (its `Hand` row's) and at most what speeds the object up at [`HOLD_ACCELERATION`] against gravity, so a
@@ -125,9 +129,29 @@ pub const MAX_STRENGTH: f32 = 10_000.0;
 /// it cancelled every velocity the spring gave, and a held object only copied the hand's velocity, left wherever a jump
 /// or a knock put it (measured on cc037c10). [`hold`] takes the force when it makes the joint.
 pub fn grab_spring(strength: f32, mass: f32, g: f32) -> GrabSpring {
-    let strength = if strength.is_nan() { 0.0 } else { strength.clamp(0.0, MAX_STRENGTH) };
-    let follow = mass.max(0.0) * (HOLD_ACCELERATION + g.max(0.0));
-    GrabSpring { hertz: HOLD_HZ, damping_ratio: 1.0, max_force: strength.min(follow), max_torque: 0.0 }
+    GrabSpring {
+        hertz: HOLD_HZ,
+        damping_ratio: 1.0,
+        max_force: strength_of(strength).min(follow(mass, g)),
+        max_torque: 0.0,
+    }
+}
+
+/// Whether a hand of `strength` N holds an object of `mass` kg tightly, under gravity of magnitude `g`: when its hold's
+/// force cap comes from the object's mass, `mass (A + g)` at most the strength ([`grab_spring`]), so it follows a hand
+/// speeding up at up to [`HOLD_ACCELERATION`]. A placement carries such a hold to its place in the hand ([`placed`]).
+pub fn follows_tightly(strength: f32, mass: f32, g: f32) -> bool {
+    follow(mass, g) <= strength_of(strength)
+}
+
+/// A hand row's strength as the physics takes it: clamped to `0..=MAX_STRENGTH`, NaN as 0.
+fn strength_of(strength: f32) -> f32 {
+    if strength.is_nan() { 0.0 } else { strength.clamp(0.0, MAX_STRENGTH) }
+}
+
+/// The force that makes an object of `mass` follow a hand speeding up at [`HOLD_ACCELERATION`] against gravity `g`.
+fn follow(mass: f32, g: f32) -> f32 {
+    mass.max(0.0) * (HOLD_ACCELERATION + g.max(0.0))
 }
 
 /// A grab's angular drive, N m: it matches the held object's turning to the hand's, so the object keeps the rotation
@@ -187,13 +211,13 @@ pub fn sync<W: WorldModel + ?Sized>(
     for id in stale {
         faults += u64::from(physics.remove_body(id).is_err());
     }
+    let gravity = world.settings().gravity;
+    let g = (gravity[0] * gravity[0] + gravity[1] * gravity[1] + gravity[2] * gravity[2]).sqrt();
     for hand in physical_hands {
         let held: Vec<ObjectId> =
             claims.iter().filter(|c| c.hand == hand.hand && physics.has_body(c.object)).map(|c| c.object).collect();
-        faults += u64::from(drive(physics, hand, &held, origin, rate, frame).is_err());
+        faults += u64::from(drive(physics, hand, &held, origin, rate, frame, g).is_err());
     }
-    let gravity = world.settings().gravity;
-    let g = (gravity[0] * gravity[0] + gravity[1] * gravity[1] + gravity[2] * gravity[2]).sqrt();
     faults += grabs(physics, &claims, &bodies, hands, g);
     (faults, reaches(physics, &claims, 1.0 / rate.hz() as f32, gravity))
 }
@@ -251,7 +275,7 @@ pub fn reaches(physics: &PhysicsWorld, claims: &[ClaimRow], dt: f32, gravity: [f
 }
 
 /// One physical hand's body for `frame`: made at its target if it has none, else driven, coasting or holding.
-/// `held` are the objects its claims hold, in id order, which a jump carries with it.
+/// `held` are the objects its claims hold, in id order, which a jump carries with it; `g` is gravity's magnitude.
 fn drive(
     physics: &mut PhysicsWorld,
     hand: &HandRow,
@@ -259,6 +283,7 @@ fn drive(
     origin: Pos,
     rate: SimRate,
     frame: Frame,
+    g: f32,
 ) -> Result<(), PhysicsError> {
     let target = Pose { position: (hand.target - origin).0, rotation: hand.rotation };
     if !physics.has_body(hand.hand) {
@@ -301,7 +326,8 @@ fn drive(
         // Placed, not swept, with no velocity: a body placed into others while moving would hit them at its speed
         // plus the push-out (measured: 14.8 m/s at a 10 m/s cap when velocities were kept).
         physics.set_state(hand.hand, target, [0.0; 3], [0.0; 3])?;
-        for (object, _, to) in carried {
+        for (object, _, carried) in carried {
+            let to = placed(physics, hand, &target, object, carried, g)?;
             if trailing && physics.static_in_way(object, &to)? {
                 continue;
             }
@@ -312,6 +338,32 @@ fn drive(
     let cap = MAX_HAND_PUSH_SPEED * f64::from(dt);
     let to = if farthest > cap { towards(&now, &target, cap / farthest) } else { target };
     physics.set_target(hand.hand, to, dt, true)
+}
+
+/// Where a placement of `hand`'s body at `target` puts `object`, which `carried` would put at its offset in the hand
+/// (@design-reviewer's L1 on 980e6ba7, @coordinator-opus m572729ddd32f): a light hold ([`follows_tightly`]) at its
+/// place in the hand, the grab joint's anchor at `target`, since the hand could lift it there anyway and a light object
+/// that lagged would otherwise keep its lag through every placement (a hand kept at 1.5 times the cap for 2 s left a
+/// pit ball 1.1-3.3 m behind; now about 0.2 m); a heavy one, or one with no grab joint from this hand yet, at
+/// `carried`, so a placement never lifts what the strength can't. Its rotation relative to the hand is `carried`'s
+/// either way.
+fn placed(
+    physics: &PhysicsWorld,
+    hand: &HandRow,
+    target: &Pose,
+    object: ObjectId,
+    carried: Pose,
+    g: f32,
+) -> Result<Pose, PhysicsError> {
+    let key = grab_key(object);
+    if physics.joint_kind(key) != Some(JointKind::Grab)
+        || physics.joint_objects(key).map(|(a, _)| a) != Some(Some(hand.hand))
+        || !follows_tightly(hand.strength, physics.mass(object)?, g)
+    {
+        return Ok(carried);
+    }
+    let r = rotate(target.rotation, physics.grab_anchor(key)?);
+    Ok(Pose { position: [0usize, 1, 2].map(|i| target.position[i] + f64::from(r[i])), rotation: carried.rotation })
 }
 
 /// Whether the hand's body moved at the cap in the last frame, at itself or at a held object (`carried`: each held
