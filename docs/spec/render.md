@@ -395,9 +395,19 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
     only while the own hands are late-latched) or the block and pointer (`markers`). It is display only: the
     simulation's hand body stays the 9 cm sphere, the capture still draws that sphere, and a controller or the
     desktop hand (`joints: None`) draws as before. A skinned or meshed hand is out of scope.
-  - **When a hold ends** (released, thrown, or undone because a race was lost), the object enters the display layer
-    with its last drawn pose and velocity. Its offset is set from there and blends; a lost grab also plays its short
-    cue (D7).
+  - **When the player lets go** (a hand-off; @item:primordial-engine/letting-go-in-vr-the-ball-flies-at-once-with-no-g,
+    @coordinator-opus): a hold that ends in a view marking the object `RELEASED_LOCAL`
+    (pe-app marks it from its own applied `Release`, app.md 3 step 6) and not `CORRECTED` is not a correction. The
+    object goes straight to its simulated pose, with no blend and no cue, so it leaves at its own speed at once (the
+    user's ruling: "jumps and fast reativity than smoothness"). It counts in `hand_offs`, with
+    `hand_off_gap_max` and `hand_off_gap_sum`: how far its first free pose was from where the hand would have drawn it
+    then. Under Present in VR that gap is the display lead × the hand's speed (16 cm at 3.5 m/s with a 46 ms lead
+    [V, tests/display_layer.rs]), the jump @item:primordial-engine/vr-run-the-local-simulation-at-the-moment-the-he
+    removes; on one clock it is none.
+  - **When a hold ends any other way** (undone because a race was lost, a lapsed claim, or a release a replay moved
+    as it happened, `CORRECTED`), the object enters the display layer with its last drawn pose. Its offset is set
+    from there and blends as a correction; a lost grab also plays its short cue (D7). Nothing emits `GrabLost` in
+    the app yet [V, @astra-deliberator], so a lost race is cued by size alone.
   - **When a hold starts,** the object snaps to the hand (xr.md 5.6).
   - `own_error` measures the offset applied to own hands and held objects, which must be exactly zero. It doesn't
     measure "drawn equals simulated", which late-latching breaks on purpose (xr.md 5.6, as agreed with
@@ -682,6 +692,8 @@ pe-render reports, per second and as distributions over a run, to pe-diverge's t
   `cueless_large_corrections` (must be 0), `own_error` (must be 0);
 - `extrapolation_error`: under X8 (a), the gap between where an object was drawn and where the next frame view put
   it, kept apart from corrections;
+- `hold_ends`, and of them `hand_offs` with `hand_off_gap_max` and `hand_off_gap_sum` (D4's hand-off), kept apart
+  from corrections so a release never reads as one;
 - per display frame: CPU recording time, GPU time, render scale and MSAA, `t_draw − display_time`, the age of the
   frame view drawn;
 - captures: queued, drawn, deferred, timed out.

@@ -50,6 +50,9 @@ pub struct HandsSent {
     /// The `Grab`s agreement took, each with its hand (0 left, 1 right), so the views' records can tell their
     /// outcomes.
     pub grabs: Vec<(usize, EntryRef)>,
+    /// The `Release`s agreement took, each with the object it names, so the views' records can tell which applied
+    /// (`ViewFlags::RELEASED_LOCAL`, render.md 8's hand-off).
+    pub released: Vec<(EntryRef, ObjectId)>,
 }
 
 /// This member's chain (S1): every entry it authors, inputs and edits alike, in order. The first entry carries the
@@ -237,7 +240,10 @@ pub fn submit_hands(
                 held.dedup();
                 for object in held {
                     match send_input(chain, agree, domain, p, &Input::Release { object }) {
-                        Some(_) => out.releases[i] += 1,
+                        Some(id) => {
+                            out.releases[i] += 1;
+                            out.released.push((id, object));
+                        }
                         None => out.refused += 1,
                     }
                 }

@@ -136,8 +136,17 @@ pub struct DisplayCounters {
     /// The largest and the summed extrapolation miss, in metres (`extrapolation_error`).
     pub extrapolation_error_max: f64,
     pub extrapolation_error_sum: f64,
-    /// Holds that ended (released, thrown, or lost), each blended out of the hand.
+    /// Holds that ended (released, thrown, or lost). Those the player's own `Release` ended are hand-offs, below; the
+    /// rest leave the hand as corrections (D7).
     pub hold_ends: u64,
+    /// D4's hand-offs: holds the local player's own `Release` ended (`RELEASED_LOCAL`, not `CORRECTED`). Never counted
+    /// as corrections, never cued, never blended: the object goes straight to its simulated pose.
+    pub hand_offs: u64,
+    /// The largest and the summed hand-off gap, in metres: how far the object's first free drawn pose was from where
+    /// the hand would have drawn it at that moment. About the display lead × the hand's speed while the world is drawn
+    /// at a different time from the hands (VR's Present), one display frame's motion or less on one clock.
+    pub hand_off_gap_max: f64,
+    pub hand_off_gap_sum: f64,
     /// Corrections shown in view with no blend at all (must stay 0 while blending is on).
     pub snaps_in_view: u64,
     /// Out-of-view corrections above `E_snap`, which jump by design.
@@ -223,6 +232,11 @@ struct ObjState {
     /// (@shader-reviewer's nit on 197fc122).
     in_contact: bool,
     contact_new: bool,
+    /// While held by an own hand and drawn there (D4): that hand and the object's grip offset in it, as last drawn.
+    grip: Option<(ObjectId, DVec3)>,
+    /// The local player's own `Release` ended the hold in the newest view (D4's hand-off): `frame` measures the gap,
+    /// against where the hand would have drawn it now.
+    hand_off: bool,
 }
 
 impl ObjState {
@@ -453,6 +467,7 @@ impl DisplayLayer {
         // Held objects at the hand's drawn pose times the grip offset (D4).
         let mut objects = Vec::with_capacity(out.len());
         for (o, mut pose, target) in out {
+            let mut gripped = None;
             if o.flags.contains(ViewFlags::HELD_LOCAL)
                 && !self.settings.controls.correct_own
                 && self.settings.own_hands == OwnHands::LateLatched
@@ -463,8 +478,22 @@ impl DisplayLayer {
                 let grip_pos = hs.rot.inverse() * offset_vec(o.pos - hs.pos);
                 let grip_rot = hs.rot.inverse() * WorldPose::of(o).rot;
                 pose = hd.moved(hd.rot * grip_pos).with_rot((hd.rot * grip_rot).normalize());
+                gripped = Some((h.hand, grip_pos));
             }
             let st = self.objects.get_mut(&o.id).expect("state made above");
+            if std::mem::take(&mut st.hand_off) {
+                // Where the hand would have drawn it now, from the grip it was last drawn at; else where it was drawn.
+                let would = st
+                    .grip
+                    .and_then(|(hand, g)| hand_drawn.get(&hand).map(|hd| hd.moved(hd.rot * g).pos))
+                    .or(st.last_drawn.map(|p| p.pos));
+                if let Some(w) = would {
+                    let gap = offset_vec(pose.pos - w).length();
+                    self.counters.hand_off_gap_max = self.counters.hand_off_gap_max.max(gap);
+                    self.counters.hand_off_gap_sum += gap;
+                }
+            }
+            st.grip = gripped;
             st.last_drawn = Some(pose);
             if std::mem::take(&mut st.contact_new) {
                 // The first contact: the drawn object against the nearest drawn own hand's sphere.
@@ -557,8 +586,26 @@ impl DisplayLayer {
             }
             let (target_now, _) = self.resolve_in(&new_hist, o.id, t_draw);
             let Some(target_now) = target_now else { continue };
+            if was_own
+                && o.flags.contains(ViewFlags::RELEASED_LOCAL)
+                && !corrected
+                && !lost.contains(&o.id)
+                && !self.settings.controls.correct_own
+            {
+                // D4's hand-off: the player let go. The object goes straight to its simulated pose, with no blend
+                // and no cue, and is never counted as a correction; `frame` measures the gap.
+                self.counters.hold_ends += 1;
+                self.counters.hand_offs += 1;
+                let st = self.objects.get_mut(&o.id).expect("made above");
+                st.components.clear();
+                st.cue = None;
+                st.pending.clear();
+                st.hand_off = true;
+                continue;
+            }
             let (drawn_before, old_target) = if was_own {
-                // D4: a hold ended; the object leaves the hand from its last drawn pose.
+                // D4: a hold ended some other way (a lost race, a lapsed claim, a correction): the object leaves
+                // the hand from its last drawn pose, as a correction (D7).
                 self.counters.hold_ends += 1;
                 let last = was.and_then(|w| w.last_drawn).unwrap_or(target_now);
                 (last, last)

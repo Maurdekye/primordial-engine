@@ -507,9 +507,250 @@ fn own_hands_and_held_objects_are_never_corrected() {
         } else {
             assert_eq!(c.own_error, 0.0, "{c:?}");
             assert_eq!(c.hold_ends, 1);
+            assert_eq!(c.hand_offs, 0, "a lost grab is no hand-off: {c:?}");
             assert!(cues_on_ball > 0, "a lost grab carries its cue (D7)");
         }
     }
+}
+
+/// Step 0 of the release fix (@item:primordial-engine/letting-go-in-vr-the-ball-flies-at-once-with-no-g;
+/// @coordinator-opus): a release in VR as the display layer shows it. The world is drawn under Present
+/// (VR's default, the engine's present), and the own hand `lead` later, as pe-xr late-latches it. A hand at (0, 0.1)
+/// swings away from the camera along −z, speeding up evenly over 0.15 s to `v` from 0.5 s, then steady. It holds a
+/// ball 10 cm ahead of it, tightly, as a perfectly stiff hold would. The simulation (60 Hz, each view published 2 ms
+/// after its frame's time) lets go 0.25 s into the swing, and the ball flies on at the hand's speed. The display runs
+/// at 144 Hz. Prints, per lead and speed: the gap at the hold end, whether it was cued, the drawn ball's steps after
+/// the release in units of the hand's step, how far it is drawn behind the hand's path, and the counters.
+#[test]
+#[ignore = "a measurement (step 0 of the release fix): prints, asserts nothing"]
+fn measure_the_hand_off_at_a_release() {
+    let me = MemberKey([7; 32]);
+    let hand_id = ObjectId::from_u128(10);
+    let (t0, speeding, t_open) = (0.5, 0.15, 0.75);
+    for lead_ms in [0.0, 46.0] {
+        for v in [3.5, 8.0, 12.0] {
+            let a = v / speeding;
+            // How far the hand has gone along −z at `t` seconds, and its speed.
+            let travel = |t: f64| {
+                let u = (t - t0).max(0.0);
+                if u < speeding { 0.5 * a * u * u } else { 0.5 * a * speeding * speeding + v * (u - speeding) }
+            };
+            let speed = |t: f64| ((t - t0).max(0.0) * a).min(v);
+            let hand_z = |t: f64| -0.5 - travel(t);
+            let secs = |h: HostTime| h.0 as f64 / NS as f64;
+            let world = |f: u64| {
+                let t = secs(frame_time(f, 60));
+                let mut hand = ball(10, at(0.0, 0.1, hand_z(t)), [0.0, 0.0, -speed(t) as f32]);
+                hand.hand_of = Some((me, Hand::Right));
+                hand.flags = ViewFlags::OWN_HAND;
+                let held = t < t_open;
+                let z = if held { hand_z(t) - 0.1 } else { hand_z(t_open) - 0.1 - v * (t - t_open) };
+                let mut b = ball(1, at(0.0, 0.1, z), [0.0, 0.0, -(if held { speed(t) } else { v }) as f32]);
+                if held {
+                    b.held_by = Some(Holder { member: me, hand: hand_id });
+                    b.flags = ViewFlags::HELD_LOCAL;
+                }
+                view(f, frame_time(f, 60), vec![hand, b])
+            };
+            let mut layer =
+                DisplayLayer::new(DisplaySettings { drawn_time: DrawnTime::present(60), ..Default::default() });
+            let vols = volumes();
+            let mut published: Option<(u64, Arc<FrameView>)> = None;
+            let mut last: Option<(f64, bool)> = None; // (drawn z, held) at the last display frame
+            let (mut gap, mut cued, mut first_free) = (None, false, None::<f64>);
+            let mut steps = Vec::new();
+            let mut behind = Vec::new();
+            for k in 0..(1.4 * 144.0) as u64 {
+                let now = HostTime((k as i128 * NS as i128 / 144) as i64);
+                let mut f = published.as_ref().map(|(f, _)| *f).unwrap_or(0);
+                while frame_time(f + 1, 60).0 + 2_000_000 <= now.0 {
+                    f += 1;
+                }
+                if published.as_ref().is_none_or(|(pf, _)| *pf != f) {
+                    published = Some((f, world(f)));
+                }
+                let v_now = published.as_ref().unwrap().1.clone();
+                let held = v_now.object(ObjectId::from_u128(1)).is_some_and(|o| o.held_by.is_some());
+                let hz = hand_z(secs(now) + lead_ms / 1000.0) as f32;
+                let local = LocalPresentation {
+                    display_time: now,
+                    hands: [
+                        None,
+                        Some(DisplayHand {
+                            pose: RigPose { position: [0.0, 0.1, hz], orientation: [0.0, 0.0, 0.0, 1.0] },
+                            joints: None,
+                        }),
+                    ],
+                };
+                let out = layer.frame(FrameInput { view: &v_now, display_time: now, volumes: &vols, local: &local });
+                let bo = out.objects.iter().find(|o| o.id == ObjectId::from_u128(1)).expect("the ball is drawn");
+                let z = (bo.pose.pos - Pos::ORIGIN).0[2];
+                if let Some((lz, was_held)) = last {
+                    if was_held && !held && gap.is_none() {
+                        gap = Some(((bo.target.pos - Pos::ORIGIN).0[2] - lz).abs());
+                        first_free = Some(secs(now));
+                    }
+                    if !held {
+                        // The step along the swing (−z), in units of the hand's step at `v`.
+                        steps.push((lz - z) / (v / 144.0));
+                        let since = secs(now) - first_free.unwrap_or(secs(now));
+                        // Where a ball that left the drawn hand at `v` would be: 10 cm ahead of the hand's path.
+                        let path = hand_z(secs(now) + lead_ms / 1000.0) - 0.1;
+                        behind.push((since, z - path));
+                    }
+                }
+                cued |= !held && bo.cue.is_some();
+                last = Some((z, held));
+            }
+            let shown: Vec<String> = steps.iter().take(48).step_by(3).map(|s| format!("{s:.2}")).collect();
+            let at_ms = |ms: f64| {
+                behind
+                    .iter()
+                    .find(|(t, _)| *t >= ms / 1000.0)
+                    .map(|(_, d)| format!("{:.1}", d * 100.0))
+                    .unwrap_or_default()
+            };
+            let c = layer.counters();
+            println!(
+                "lead {lead_ms} ms, v {v} m/s: hold-end gap {:.3} m, cued {cued}; steps after release (x hand step, \
+                 every 3rd) [{}]; slowest {:.2}; behind the hand's path at +0/+50/+100/+200/+300 ms: {}/{}/{}/{}/{} cm; \
+                 counters: hold_ends {}, corrections {}, cues {}, visible_error_max {:.3}",
+                gap.unwrap_or(f64::NAN),
+                shown.join(" "),
+                steps.iter().cloned().fold(f64::INFINITY, f64::min),
+                at_ms(0.0),
+                at_ms(50.0),
+                at_ms(100.0),
+                at_ms(200.0),
+                at_ms(300.0),
+                c.hold_ends,
+                c.corrections,
+                c.cues,
+                c.visible_error_max
+            );
+        }
+    }
+}
+
+/// What one release in [`release_run`] did: the display's counters, whether the first free frame drew the ball at its
+/// target (no blend), the slowest step after the release in units of the hand's step, and whether a cue showed.
+struct Released {
+    counters: pe_render::display::DisplayCounters,
+    snapped: bool,
+    slowest: f64,
+    cued: bool,
+}
+
+/// [`measure_the_hand_off_at_a_release`]'s swing at `v`, with the hands drawn `lead_ms` after the world (Present). The
+/// view that lets go marks the ball `RELEASED_LOCAL` if `released_local` (pe-app does, for its own `Release`), and
+/// `CORRECTED` if `corrected`.
+fn release_run(lead_ms: f64, v: f64, released_local: bool, corrected: bool) -> Released {
+    let me = MemberKey([7; 32]);
+    let (t0, speeding, t_open): (f64, f64, f64) = (0.5, 0.15, 0.75);
+    let a = v / speeding;
+    let travel = |t: f64| {
+        let u = (t - t0).max(0.0);
+        if u < speeding { 0.5 * a * u * u } else { 0.5 * a * speeding * speeding + v * (u - speeding) }
+    };
+    let speed = |t: f64| ((t - t0).max(0.0) * a).min(v);
+    let hand_z = |t: f64| -0.5 - travel(t);
+    let secs = |h: HostTime| h.0 as f64 / NS as f64;
+    let open_frame = (t_open * 60.0).ceil() as u64;
+    let world = |f: u64| {
+        let t = secs(frame_time(f, 60));
+        let mut hand = ball(10, at(0.0, 0.1, hand_z(t)), [0.0, 0.0, -speed(t) as f32]);
+        hand.hand_of = Some((me, Hand::Right));
+        hand.flags = ViewFlags::OWN_HAND;
+        let held = t < t_open;
+        let z = if held { hand_z(t) - 0.1 } else { hand_z(t_open) - 0.1 - v * (t - t_open) };
+        let mut b = ball(1, at(0.0, 0.1, z), [0.0, 0.0, -(if held { speed(t) } else { v }) as f32]);
+        if held {
+            b.held_by = Some(Holder { member: me, hand: ObjectId::from_u128(10) });
+            b.flags = ViewFlags::HELD_LOCAL;
+        } else if f == open_frame {
+            if released_local {
+                b.flags = b.flags.with(ViewFlags::RELEASED_LOCAL);
+            }
+            if corrected {
+                b.flags = b.flags.with(ViewFlags::CORRECTED);
+            }
+        }
+        view(f, frame_time(f, 60), vec![hand, b])
+    };
+    let mut layer = DisplayLayer::new(DisplaySettings { drawn_time: DrawnTime::present(60), ..Default::default() });
+    let vols = volumes();
+    let mut published: Option<(u64, Arc<FrameView>)> = None;
+    let (mut last, mut snapped, mut slowest, mut cued) = (None::<(f64, bool)>, None, f64::INFINITY, false);
+    for k in 0..(1.4 * 144.0) as u64 {
+        let now = HostTime((k as i128 * NS as i128 / 144) as i64);
+        let mut f = published.as_ref().map(|(f, _)| *f).unwrap_or(0);
+        while frame_time(f + 1, 60).0 + 2_000_000 <= now.0 {
+            f += 1;
+        }
+        if published.as_ref().is_none_or(|(pf, _)| *pf != f) {
+            published = Some((f, world(f)));
+        }
+        let v_now = published.as_ref().unwrap().1.clone();
+        let held = v_now.object(ObjectId::from_u128(1)).is_some_and(|o| o.held_by.is_some());
+        let hz = hand_z(secs(now) + lead_ms / 1000.0) as f32;
+        let hand =
+            DisplayHand { pose: RigPose { position: [0.0, 0.1, hz], orientation: [0.0, 0.0, 0.0, 1.0] }, joints: None };
+        let local = LocalPresentation { display_time: now, hands: [None, Some(hand)] };
+        let out = layer.frame(FrameInput { view: &v_now, display_time: now, volumes: &vols, local: &local });
+        let bo = out.objects.iter().find(|o| o.id == ObjectId::from_u128(1)).expect("the ball is drawn");
+        let z = (bo.pose.pos - Pos::ORIGIN).0[2];
+        if let Some((lz, was_held)) = last
+            && !held
+        {
+            if was_held && snapped.is_none() {
+                snapped = Some(dist(bo.pose.pos, bo.target.pos) < 1e-9);
+            } else {
+                slowest = slowest.min((lz - z) / (v / 144.0));
+            }
+        }
+        cued |= !held && bo.cue.is_some();
+        last = Some((z, held));
+    }
+    Released { counters: layer.counters(), snapped: snapped.expect("released"), slowest, cued }
+}
+
+/// D4's hand-off (render.md 8; @item:primordial-engine/letting-go-in-vr-the-ball-flies-at-once-with-no-g): a hold the
+/// player's own `Release` ended (`RELEASED_LOCAL`, not `CORRECTED`) is never a correction. The ball goes straight to
+/// its simulated pose, with no blend and no cue, and leaves at full speed: no later step is slower than the hand's.
+/// The gap is counted on its own: one clock (the hands drawn at the world's time) leaves none; VR's Present, with the
+/// hands drawn 46 ms ahead, leaves the lead × the speed, the jump B removes. A release marked `CORRECTED` too (a replay
+/// moved the ball as it let go) is a correction as before, cued above `E_cue`.
+#[test]
+fn an_own_release_is_a_hand_off_with_no_blend_and_no_cue() {
+    for (lead_ms, v) in [(0.0, 3.5), (0.0, 8.0), (46.0, 3.5), (46.0, 8.0)] {
+        let r = release_run(lead_ms, v, true, false);
+        let c = &r.counters;
+        assert_eq!(
+            (c.hold_ends, c.hand_offs, c.corrections, c.cues),
+            (1, 1, 0, 0),
+            "lead {lead_ms} ms, {v} m/s: {c:?}"
+        );
+        assert!(r.snapped && !r.cued, "drawn at its target at once, with no cue: lead {lead_ms} ms, {v} m/s");
+        assert!(
+            r.slowest > 0.98,
+            "never slower than the hand after the release: {} (lead {lead_ms} ms, {v} m/s)",
+            r.slowest
+        );
+        let expected = v * lead_ms / 1000.0;
+        assert!(
+            (c.hand_off_gap_max - expected).abs() < 0.01,
+            "the gap is the lead × the speed: {} m, expected {expected} m (lead {lead_ms} ms, {v} m/s)",
+            c.hand_off_gap_max
+        );
+    }
+    // Corrected as it let go: a correction, from where it was drawn, cued above E_cue (D3, D7).
+    let r = release_run(46.0, 8.0, true, true);
+    let c = &r.counters;
+    assert_eq!((c.hold_ends, c.hand_offs, c.corrections, c.cues), (1, 0, 1, 1), "{c:?}");
+    assert!(!r.snapped && r.cued);
+    // Not the player's release (a lost race or a lapsed claim): as before.
+    let r = release_run(46.0, 8.0, false, false);
+    assert_eq!((r.counters.hand_offs, r.counters.corrections, r.counters.cues), (0, 1, 1), "{:?}", r.counters);
 }
 
 /// X8 (b): a correction blends too, from when the drawn time reaches the corrected view, instead of showing as one

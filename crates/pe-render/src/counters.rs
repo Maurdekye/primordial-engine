@@ -176,6 +176,9 @@ fn fold(acc: &mut DisplayCounters, c: &DisplayCounters) {
     acc.extrapolation_error_max = acc.extrapolation_error_max.max(c.extrapolation_error_max);
     acc.extrapolation_error_sum += c.extrapolation_error_sum;
     acc.hold_ends += c.hold_ends;
+    acc.hand_offs += c.hand_offs;
+    acc.hand_off_gap_max = acc.hand_off_gap_max.max(c.hand_off_gap_max);
+    acc.hand_off_gap_sum += c.hand_off_gap_sum;
     acc.snaps_in_view += c.snaps_in_view;
     acc.jumps_out_of_view += c.jumps_out_of_view;
     acc.cues += c.cues;
