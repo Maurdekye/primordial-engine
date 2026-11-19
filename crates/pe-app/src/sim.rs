@@ -10,6 +10,7 @@
 //! [`spawn`] runs the loop on a thread of its own and does step 7: between ticks it waits until the next frame starts,
 //! or until a [`Waker`] wakes it (the network inbox and the edit queue will hold one).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -21,7 +22,8 @@ use pe_replica::{DriveReport, Driver};
 use pe_seams::world_api::TxId;
 use pe_seams::{
     AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, Hand, HandFeed, Health,
-    HostTime, Lane, MemberKey, NetEvent, Replica, SelfTest, SimRate, SubmitError, Transport, VoidReason,
+    HostTime, Lane, MemberKey, NetEvent, ObjectId, Outcome, Pos, Replica, SelfTest, SimRate, SubmitError, Transport,
+    VoidReason,
 };
 
 use crate::clock::HostClock;
@@ -252,6 +254,51 @@ pub struct SimStats {
     pub moving_frames: u64,
     /// Where the thread's time went, step by step ([`crate::phases`]): wall time on this machine.
     pub phases: PhaseTimes,
+    /// The local player's grasps, left hand then right (app.md 3.1 step 2).
+    pub hands: [HandStats; 2],
+}
+
+/// One hand's grasps (app.md 3.1 step 2; @coordinator-opus's ruling on the pick): its `engaged` edges as sent, the
+/// grabs and releases they sent, and the grabs' outcomes as the newest view tells them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HandStats {
+    /// `engaged` edges sent: false to true (a close), true to false (an open).
+    pub closes: u64,
+    pub opens: u64,
+    /// `Grab`s agreement took at a close, and `Release`s at an open.
+    pub grabs: u64,
+    pub releases: u64,
+    /// The grabs applied, and those that weren't, by reason: a refusal's `Reason` (`Held`, `OutOfReach`, `Cooldown`,
+    /// ...), or `Dropped` or `Unknown` for a voided entry or an unknown verdict. A grab no view has stepped yet is in
+    /// neither.
+    pub grabs_applied: u64,
+    pub grabs_refused: BTreeMap<String, u64>,
+}
+
+/// Step 2's grasp questions (app.md 3.1), answered from the replica's present world: pe-world's pick and claims.
+struct WorldGrasps<'a>(&'a dyn Replica);
+
+impl local::Grasps for WorldGrasps<'_> {
+    fn pick(&self, author: MemberKey, hand: ObjectId, target: Pos, now: Frame) -> Option<ObjectId> {
+        crate::api::snapshot_of(self.0)?.pick_grab(now, author, hand, target)
+    }
+
+    fn held(&self, hand: ObjectId, now: Frame) -> Vec<ObjectId> {
+        crate::api::snapshot_of(self.0).map_or_else(Vec::new, |s| s.held_by_hand(hand, now))
+    }
+}
+
+/// How a `Grab` fared in a view's record: `None` if applied, else the reason's name.
+fn grab_fate(outcome: &Outcome) -> Option<String> {
+    match outcome {
+        Outcome::Applied { .. } => None,
+        Outcome::Refused { reason, .. } => {
+            let name = format!("{reason:?}");
+            Some(name.split([' ', '{', '(']).next().unwrap_or_default().to_string())
+        }
+        Outcome::Dropped { .. } => Some("Dropped".into()),
+        Outcome::Unknown { .. } => Some("Unknown".into()),
+    }
 }
 
 /// The time since `mark`, which moves to now: one step's share of a tick.
@@ -440,8 +487,38 @@ fn host_time_at(clock: &dyn FrameClock, t: f64) -> HostTime {
 struct Local {
     chain: Chain,
     hands: Arc<dyn HandFeed>,
-    /// The `engaged` last sent for each hand, left then right (`local::submit_hands`).
-    sent: [bool; 2],
+    /// Each hand's grasp as last sent, left then right (`local::submit_hands`).
+    grasp: local::Grasp,
+    /// This member's `Grab`s: the hand each came from, and how the newest view that stepped it says it fared (`None`
+    /// before any has, `Some(None)` applied, `Some(Some(reason))` not), for [`HandStats`].
+    grabs: BTreeMap<EntryRef, (usize, Option<Option<String>>)>,
+}
+
+impl Local {
+    /// Takes the fates of this member's grabs from `changes`, and recounts each hand's tally if one changed.
+    fn grab_fates(&mut self, changes: &[pe_seams::StepRecord], hands: &mut [HandStats; 2]) {
+        let mut changed = false;
+        for r in changes {
+            if let Some((_, fate)) = self.grabs.get_mut(&r.entry) {
+                let now = Some(grab_fate(&r.outcome));
+                changed |= *fate != now;
+                *fate = now;
+            }
+        }
+        if changed {
+            for h in hands.iter_mut() {
+                h.grabs_applied = 0;
+                h.grabs_refused.clear();
+            }
+            for (i, fate) in self.grabs.values() {
+                match fate {
+                    Some(None) => hands[*i].grabs_applied += 1,
+                    Some(Some(reason)) => *hands[*i].grabs_refused.entry(reason.clone()).or_default() += 1,
+                    None => {}
+                }
+            }
+        }
+    }
 }
 
 impl Sim {
@@ -794,7 +871,12 @@ impl Sim {
     /// whose inputs step 2 submits each tick. A restart makes a new chain under the same key, which pe-agree v0 does
     /// not take yet (agreement.md 8): the first restart test against pe-agree meets it (@design-reviewer's nit).
     pub fn with_local(mut self, me: MemberKey, nonce: [u8; 32], hands: Arc<dyn HandFeed>) -> Sim {
-        self.local = Some(Local { chain: Chain::new(self.agree.line(), me, nonce), hands, sent: [false; 2] });
+        self.local = Some(Local {
+            chain: Chain::new(self.agree.line(), me, nonce),
+            hands,
+            grasp: local::Grasp::default(),
+            grabs: BTreeMap::new(),
+        });
         self
     }
 
@@ -1016,10 +1098,11 @@ impl Sim {
                 let domain = self.replica.domain();
                 // While the lead sheds, a frame's stamp can stand still: its poses would only replace the last frame's.
                 let thin = self.input_stamp == Some(stamp);
-                let (took, refused, thinned) = local::submit_hands(
+                let sent = local::submit_hands(
                     &mut l.chain,
-                    &mut l.sent,
+                    &mut l.grasp,
                     &*l.hands,
+                    &WorldGrasps(&*self.replica),
                     view,
                     at,
                     stamp,
@@ -1027,9 +1110,18 @@ impl Sim {
                     &mut *self.agree,
                     thin,
                 );
-                self.stats.inputs += u64::from(took);
-                self.stats.inputs_refused += u64::from(refused);
-                self.stats.poses_thinned += u64::from(thinned);
+                self.stats.inputs += u64::from(sent.took);
+                self.stats.inputs_refused += u64::from(sent.refused);
+                self.stats.poses_thinned += u64::from(sent.thinned);
+                for (i, h) in self.stats.hands.iter_mut().enumerate() {
+                    h.closes += u64::from(sent.closes[i]);
+                    h.opens += u64::from(sent.opens[i]);
+                    h.releases += u64::from(sent.releases[i]);
+                }
+                for (i, id) in sent.grabs {
+                    self.stats.hands[i].grabs += 1;
+                    l.grabs.insert(id, (i, None));
+                }
             }
             self.input_frame = Some(p);
             self.input_stamp = Some(stamp);
@@ -1149,6 +1241,9 @@ impl Sim {
             };
             if let Some(api) = &self.api {
                 self.feed_api(api, &out);
+            }
+            if let Some(l) = &mut self.local {
+                l.grab_fates(&out.changes, &mut self.stats.hands);
             }
             self.slot.publish(out.clone());
             self.published = Some(out);
@@ -1848,6 +1943,245 @@ pub(crate) mod tests {
         assert_eq!(engaged(3), vec![false, false], "lost: one release each");
         assert_eq!((engaged(4), engaged(5)), (vec![], vec![]), "lost and open: nothing more");
         assert_eq!(s.stats().inputs, 4);
+    }
+
+    /// Hands the test moves, left then right: each tracked at a rig position, closed or open, as the test last set it.
+    /// A hand never set gives no input.
+    #[derive(Clone, Default)]
+    struct Puppet(Arc<std::sync::Mutex<[Option<PuppetHand>; 2]>>);
+
+    /// A puppet hand's rig position, and whether it is closed.
+    type PuppetHand = ([f32; 3], bool);
+
+    impl Puppet {
+        /// The right hand.
+        fn set(&self, at: [f32; 3], closed: bool) {
+            self.set_hand(1, at, closed);
+        }
+
+        /// Hand `i`: 0 left, 1 right.
+        fn set_hand(&self, i: usize, at: [f32; 3], closed: bool) {
+            self.0.lock().expect("the puppet")[i] = Some((at, closed));
+        }
+    }
+
+    impl pe_seams::HandFeed for Puppet {
+        fn hand_at(&self, hand: pe_seams::Hand, at: HostTime) -> Option<pe_seams::HandInput> {
+            let (position, closed) = self.0.lock().expect("the puppet")[usize::from(hand == pe_seams::Hand::Right)]?;
+            Some(pe_seams::HandInput {
+                hand,
+                source: pe_seams::HandSource::Tracked,
+                sampled_at: at,
+                tracked: true,
+                pose: pe_seams::RigPose { position, orientation: [0.0, 0.0, 0.0, 1.0] },
+                linear_velocity: None,
+                angular_velocity: None,
+                grip: if closed { 1.0 } else { 0.0 },
+                closed,
+                discontinuity: 0,
+            })
+        }
+    }
+
+    /// Ticks `s` through the next `n` frames after `*f`.
+    fn run_frames(s: &mut Sim, clock: &Arc<dyn FrameClock>, f: &mut u64, n: u64) {
+        for _ in 0..n {
+            *f += 1;
+            s.tick(clock.host_time_of(Frame(*f))).expect("ticked");
+        }
+    }
+
+    /// `o`'s place as a rig position, the rig being the identity at the origin, as the development member's is.
+    fn rig_at(v: &FrameView, o: ObjectId) -> [f32; 3] {
+        assert_eq!(
+            (v.local_rig.pos, v.local_rig.rotation, v.local_rig.scale),
+            (Pos::ORIGIN, [0.0, 0.0, 0.0, 1.0], 1.0)
+        );
+        let p = v.objects.iter().find(|x| x.id == o).expect("the object").pos;
+        (p - Pos::ORIGIN).0.map(|c| c as f32)
+    }
+
+    /// The highest ball in the view: one with nothing on top of it.
+    fn top_ball(v: &FrameView) -> ObjectId {
+        let balls =
+            v.objects.iter().filter(|o| o.hand_of.is_none() && matches!(o.shape, Some(pe_seams::Shape::Sphere { .. })));
+        balls.max_by(|a, b| (a.pos - Pos::ORIGIN).0[1].total_cmp(&(b.pos - Pos::ORIGIN).0[1])).expect("a ball").id
+    }
+
+    /// The grab, end to end on one machine (app.md 3.1 step 2; @coordinator-opus): a hand that closes on
+    /// a ball sends a `Grab` with its hand input, the world's claim names that hand, the ball rises with the hand, and
+    /// opening sends the `Release` that ends the claim; the end line's counts say so.
+    #[test]
+    fn a_closing_hand_picks_up_the_ball_in_reach_carries_it_and_lets_it_go() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let puppet = Puppet::default();
+        puppet.set([0.0, 3.0, 0.0], false);
+        let me = crate::world::DEV_MEMBER;
+        let mut s = s.with_local(me, [7; 32], Arc::new(puppet.clone()));
+        let mut f = 0;
+        run_frames(&mut s, &clock, &mut f, 120);
+        let v = slot.newest().expect("published");
+        let ball = top_ball(&v);
+        let hand = v.objects.iter().find(|o| o.hand_of == Some((me, pe_seams::Hand::Right))).expect("my hand").id;
+        let at = rig_at(&v, ball);
+        puppet.set(at, false);
+        run_frames(&mut s, &clock, &mut f, 3);
+        assert_eq!(s.stats().hands[1], HandStats::default(), "open: no edge yet");
+        puppet.set(at, true);
+        run_frames(&mut s, &clock, &mut f, 1);
+        assert_eq!((s.stats().hands[1].closes, s.stats().hands[1].grabs), (1, 1), "the close sent one grab");
+        run_frames(&mut s, &clock, &mut f, 10);
+        let claim = crate::api::snapshot_of(&*s.replica).expect("a world").claim(ball).expect("claimed");
+        assert_eq!((claim.member, claim.hand), (me, hand));
+        let v = slot.newest().expect("published");
+        let held = v.objects.iter().find(|o| o.id == ball).expect("the ball").held_by;
+        assert_eq!(held, Some(pe_seams::Holder { member: me, hand }));
+        assert_eq!(s.stats().hands[1].grabs_applied, 1);
+        // Carried 0.3 m up at 0.6 m/s, then held still.
+        for k in 1..=30 {
+            puppet.set([at[0], at[1] + 0.01 * k as f32, at[2]], true);
+            run_frames(&mut s, &clock, &mut f, 1);
+        }
+        run_frames(&mut s, &clock, &mut f, 20);
+        let lifted = rig_at(&slot.newest().expect("published"), ball);
+        let off: Vec<f32> = (0..3).map(|i| lifted[i] - [at[0], at[1] + 0.3, at[2]][i]).collect();
+        assert!(off.iter().all(|d| d.abs() < 0.08), "the ball follows the hand: {off:?} off its place");
+        // Opened: the release ends the claim, and the ball falls.
+        puppet.set([at[0], at[1] + 0.3, at[2]], false);
+        run_frames(&mut s, &clock, &mut f, 1);
+        assert_eq!((s.stats().hands[1].opens, s.stats().hands[1].releases), (1, 1), "the open sent one release");
+        run_frames(&mut s, &clock, &mut f, 30);
+        assert_eq!(crate::api::snapshot_of(&*s.replica).expect("a world").claim(ball), None, "released");
+        let v = slot.newest().expect("published");
+        assert_eq!(v.objects.iter().find(|o| o.id == ball).expect("the ball").held_by, None);
+        assert!(rig_at(&v, ball)[1] < lifted[1] - 0.1, "and it falls");
+        let h = &s.stats().hands[1];
+        assert_eq!((h.closes, h.opens, h.grabs, h.grabs_applied, h.releases), (1, 1, 1, 1, 1), "{h:?}");
+        assert!(h.grabs_refused.is_empty(), "{h:?}");
+        assert_eq!(s.stats().hands[0], HandStats::default(), "the left hand did nothing");
+    }
+
+    /// A ball passed from the left hand to the right stays in the right when the left opens at once (@design-reviewer's
+    /// Medium on 82644261). pe-world's `Release` ends the member's claim whichever hand holds it, so the left's open
+    /// must not release what the right just took, though the present world may not show the pass yet.
+    #[test]
+    fn a_ball_passed_from_hand_to_hand_stays_held_when_the_first_hand_opens() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let puppet = Puppet::default();
+        puppet.set_hand(0, [0.0, 3.0, 0.0], false);
+        puppet.set_hand(1, [0.3, 3.0, 0.0], false);
+        let me = crate::world::DEV_MEMBER;
+        let mut s = s.with_local(me, [7; 32], Arc::new(puppet.clone()));
+        let mut f = 0;
+        run_frames(&mut s, &clock, &mut f, 120);
+        let v = slot.newest().expect("published");
+        let ball = top_ball(&v);
+        let hand_of = |side| v.objects.iter().find(|o| o.hand_of == Some((me, side))).expect("my hand").id;
+        let (left, right) = (hand_of(pe_seams::Hand::Left), hand_of(pe_seams::Hand::Right));
+        let at = rig_at(&v, ball);
+        puppet.set_hand(0, at, false);
+        run_frames(&mut s, &clock, &mut f, 3);
+        puppet.set_hand(0, at, true);
+        run_frames(&mut s, &clock, &mut f, 10);
+        let claim = |s: &Sim| crate::api::snapshot_of(&*s.replica).expect("a world").claim(ball);
+        assert_eq!(claim(&s).map(|c| c.hand), Some(left), "the left hand holds it");
+        for k in 1..=30 {
+            puppet.set_hand(0, [at[0], at[1] + 0.01 * k as f32, at[2]], true);
+            run_frames(&mut s, &clock, &mut f, 1);
+        }
+        run_frames(&mut s, &clock, &mut f, 10);
+        let up = [at[0], at[1] + 0.3, at[2]];
+        // The right hand comes to the ball and closes on it, and the left opens on the next frame.
+        puppet.set_hand(1, up, false);
+        run_frames(&mut s, &clock, &mut f, 2);
+        puppet.set_hand(1, up, true);
+        run_frames(&mut s, &clock, &mut f, 1);
+        puppet.set_hand(0, up, false);
+        run_frames(&mut s, &clock, &mut f, 30);
+        assert_eq!(claim(&s).map(|c| c.hand), Some(right), "the right hand holds it");
+        let now = rig_at(&slot.newest().expect("published"), ball);
+        let off: Vec<f32> = (0..3).map(|i| now[i] - up[i]).collect();
+        assert!(off.iter().all(|d| d.abs() < 0.08), "still in the hand, not dropped: {off:?} off");
+        let (l, r) = (&s.stats().hands[0], &s.stats().hands[1]);
+        assert_eq!((l.closes, l.opens, l.grabs, l.releases), (1, 1, 1, 0), "the left's open released nothing: {l:?}");
+        assert_eq!((r.closes, r.grabs, r.grabs_applied), (1, 1, 1), "{r:?}");
+    }
+
+    /// Two members close on one ball in the same frame, over the in-process network (world-model.md 7.2: the first in
+    /// the agreed order wins): neither machine's pick can see the other's grab yet, so both send one. One is applied
+    /// and the other refused `Held` by the winner, both machines agree who holds the ball, and the loser's end line
+    /// counts the refusal by its reason.
+    #[test]
+    fn two_members_closing_on_one_ball_in_one_frame_one_holds_it_and_the_other_is_refused_held() {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let hub = Hub::default();
+        let mut sims = Vec::new();
+        for i in 0..2 {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+            let replica =
+                crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let slot = Arc::new(FrameSlot::new());
+            let puppet = Puppet::default();
+            puppet.set([0.0, 3.0, 0.4 * i as f32], false);
+            let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), Arc::new(puppet.clone()))
+                .with_transport(Box::new(Port::new(me, hub.clone())), None);
+            sims.push((sim, slot, me, puppet));
+        }
+        let mut f = 0;
+        let mut run = |sims: &mut Vec<(Sim, Arc<FrameSlot>, MemberKey, Puppet)>, n: u64| {
+            for _ in 0..n {
+                f += 1;
+                let now = clock.host_time_of(Frame(f));
+                hub.now.store(now.0, Ordering::SeqCst);
+                for (s, ..) in sims.iter_mut() {
+                    s.tick(now).expect("ticked");
+                }
+            }
+        };
+        run(&mut sims, 120);
+        let v = sims[0].1.newest().expect("published");
+        let ball = top_ball(&v);
+        let at = rig_at(&v, ball);
+        assert_eq!(top_ball(&sims[1].1.newest().expect("published")), ball, "one world");
+        for (.., puppet) in &sims {
+            puppet.set(at, false);
+        }
+        run(&mut sims, 3);
+        for (.., puppet) in &sims {
+            puppet.set(at, true);
+        }
+        run(&mut sims, 120);
+        let claims: Vec<_> = sims
+            .iter()
+            .map(|(s, ..)| crate::api::snapshot_of(&*s.replica).expect("a world").claim(ball).map(|c| c.member))
+            .collect();
+        let winner = claims[0].expect("held");
+        assert_eq!(claims[1], Some(winner), "both machines agree who holds it");
+        for (s, slot, me, _) in &sims {
+            let h = &s.stats().hands[1];
+            assert_eq!((h.closes, h.grabs), (1, 1), "{me:?}: one close, one grab sent: {h:?}");
+            let held = slot.newest().expect("published").objects.iter().find(|o| o.id == ball).expect("ball").held_by;
+            assert_eq!(held.map(|h| h.member), Some(winner), "{me:?} sees the winner holding it");
+            if *me == winner {
+                assert_eq!((h.grabs_applied, h.grabs_refused.len()), (1, 0), "the winner's: {h:?}");
+            } else {
+                assert_eq!(h.grabs_applied, 0, "the loser's: {h:?}");
+                assert_eq!(h.grabs_refused.get("Held"), Some(&1), "the loser's, refused Held: {h:?}");
+            }
+        }
     }
 
     /// A test hub's setting per one-way link, by (from, to).

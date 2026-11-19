@@ -226,6 +226,17 @@ impl WorldSnapshot {
         self.claims.get(&id).copied()
     }
 
+    /// The objects `hand` holds at `now`: those whose unexpired claim names it (7.2), in id order.
+    pub fn held_by_hand(&self, hand: ObjectId, now: Frame) -> Vec<ObjectId> {
+        self.claims.iter().filter(|(_, c)| c.hand == hand && c.until > now).map(|(&o, _)| o).collect()
+    }
+
+    /// [`World::pick_grab`] in this snapshot: the object a close of `author`'s `hand` would grab, with the hand's
+    /// target at `target` in a `Grab` stamped `now`.
+    pub fn pick_grab(&self, now: Frame, author: MemberKey, hand: ObjectId, target: Pos) -> Option<ObjectId> {
+        self.world.pick_grab(now, author, hand, target)
+    }
+
     /// The owner of the nearest `Protection` at or above `id`. Iterative and bounded (3.3).
     pub fn protected_by(&self, id: ObjectId) -> Option<MemberKey> {
         let mut at = id;

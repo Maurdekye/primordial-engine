@@ -2059,7 +2059,12 @@ New seam reason: `Reason::Cooldown { until: Frame }` (@engine-architect, docked 
   object, a `Body`, `Held`, `at`, the budget. A hand input: the poses' values, then the hand. A `Pos` that does not
   decode canonically is `Malformed`: a decoded `Pos` is in range by construction.
 - A renewing `Grab` that names another of the author's hands moves the claim to it: a new hold for that hand, so
-  its reach is checked (`OutOfReach`), though not `Held` (@design-reviewer's Low 1). `until` only ever grows. A
+  its reach is checked (`OutOfReach`), though not `Held` (@design-reviewer's Low 1).
+- **The client's pick** (@coordinator-opus and its ruling, after @fable-reviewer): `grab()` applies
+  through `grab_check`, its checks in the order above, read-only, and `World::pick_grab` asks the same function which
+  object a closing hand should name (app.md 3, step 2). It takes bodies marked `grabbable`, hands excepted, within
+  `reach_mm` alone of the target the client is about to send, the nearest surface first. `grab()` itself checks
+  neither `grabbable` nor, for `hand: None`, reach: a gap docketed for after M1. `until` only ever grows. A
   hand-less claim has `hand = ObjectId::NONE`. A pack whose hand is gone is dropped at the next `end_frame`, and so
   is a pack whose next pose cannot be placed (the hand's frame moved so the pose is out of range): nothing of that
   pose is written, and the hand keeps the last pose and `Hand` row actually written, as past coverage

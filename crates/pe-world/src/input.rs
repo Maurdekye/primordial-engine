@@ -228,6 +228,25 @@ impl InputSettings {
     }
 }
 
+/// Where a grab's reach is measured from, and how far past an object's bounding spheres it extends (7.2, 8.1).
+#[derive(Clone, Copy, Debug)]
+enum ReachFrom {
+    /// The hand's target in the world, with reach plus slack: a `Grab` as it applies.
+    Hand,
+    /// The target a client is about to send for the hand, with reach alone: pe-app's pick, which leaves the slack for
+    /// prediction error ([`World::pick_grab`]).
+    Target(Pos),
+}
+
+/// What a `Grab` that passes its checks does (8.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grabbed {
+    /// Renews the author's own unexpired claim, moving it to the grab's hand if that differs.
+    Renews,
+    /// Takes a new claim.
+    Takes,
+}
+
 /// `ms` as frames at `hz`: `ceil(ms × hz / 1000)`, in integer arithmetic (8.1).
 pub fn frames(ms: u32, hz: u32) -> u64 {
     (u64::from(ms) * u64::from(hz)).div_ceil(1000)
@@ -423,6 +442,36 @@ impl World {
     }
 
     fn grab(&mut self, now: Frame, author: MemberKey, object: ObjectId, hand: Option<ObjectId>) -> Result<(), Reason> {
+        let until = self.claim_until(now);
+        match self.grab_check(now, author, object, hand, ReachFrom::Hand)? {
+            Grabbed::Renews => {
+                let c = Arc::make_mut(&mut self.claims).get_mut(&object).expect("grab_check found the author's claim");
+                c.until = c.until.max(until);
+                if let Some(h) = hand {
+                    c.hand = h;
+                }
+            }
+            Grabbed::Takes => {
+                let claim = Claim { hand: hand.unwrap_or(ObjectId::NONE), member: author, since: now, until };
+                Arc::make_mut(&mut self.claims).insert(object, claim);
+            }
+        }
+        Ok(())
+    }
+
+    /// A `Grab`'s checks (8.1's "Order of checks"), changing nothing: what a `Grab` by `author` with `hand` on
+    /// `object` at `now` would do, or why it would be refused. `grab` applies through it, with the reach measured from
+    /// the hand's target; [`World::pick_grab`] asks through it with the target a client is about to send, so a
+    /// client's choice and the world's rule are one code path (@coordinator-opus, after
+    /// @fable-reviewer).
+    fn grab_check(
+        &self,
+        now: Frame,
+        author: MemberKey,
+        object: ObjectId,
+        hand: Option<ObjectId>,
+        from: ReachFrom,
+    ) -> Result<Grabbed, Reason> {
         if !self.store.exists(object) {
             return Err(self.absent(object));
         }
@@ -437,7 +486,6 @@ impl World {
         {
             return Err(Reason::Cooldown { until });
         }
-        let until = self.claim_until(now);
         // Renewing the author's own unexpired claim checks only the hand and the cooldown (8.1); a renewal that moves
         // the claim to another hand is a new hold for that hand, so its reach is checked, but not `Held`
         // (@design-reviewer's Low 1).
@@ -448,14 +496,9 @@ impl World {
             if let Some(h) = hand
                 && h != c.hand
             {
-                self.in_reach(h, object)?;
+                self.in_reach(h, object, from)?;
             }
-            let c = Arc::make_mut(&mut self.claims).get_mut(&object).expect("checked above");
-            c.until = c.until.max(until);
-            if let Some(h) = hand {
-                c.hand = h;
-            }
-            return Ok(());
+            return Ok(Grabbed::Renews);
         }
         // Another member's claim on the object or anything in its subtree; the first in id order names the holder.
         for (&held, c) in self.claims.iter() {
@@ -464,11 +507,35 @@ impl World {
             }
         }
         if let Some(h) = hand {
-            self.in_reach(h, object)?;
+            self.in_reach(h, object, from)?;
         }
-        let claim = Claim { hand: hand.unwrap_or(ObjectId::NONE), member: author, since: now, until };
-        Arc::make_mut(&mut self.claims).insert(object, claim);
-        Ok(())
+        Ok(Grabbed::Takes)
+    }
+
+    /// The object a close of `author`'s `hand` would grab, with the hand's target at `target` in a `Grab` stamped
+    /// `now` (pe-app's pick, app.md 3.1 step 2; @coordinator-opus and its ruling on the defaults, after
+    /// @fable-reviewer): of the objects whose `Body` is marked grabbable, hands excepted, those a `Grab` would claim
+    /// ([`World::grab_check`]: not held by another member, nothing in their subtree held by one, not under the
+    /// author's cooldown) within `reach_mm` alone, since the slack is for prediction error; the nearest by the
+    /// distance from `target` to the surface of its nearest bounding sphere, ties to the lowest id. `None` when none
+    /// is in reach. Changes nothing.
+    pub fn pick_grab(&self, now: Frame, author: MemberKey, hand: ObjectId, target: Pos) -> Option<ObjectId> {
+        let reach = f64::from(self.input_settings.reach_mm) / 1000.0;
+        let mut best: Option<(f64, ObjectId)> = None;
+        for (id, body) in self.store.iter::<Body>() {
+            if body.grabbable == 0 || self.store.has::<Hand>(id) {
+                continue;
+            }
+            let surface = self.bounds(id).iter().map(|&(c, r)| c.dist2(&target).sqrt() - r).reduce(f64::min);
+            let Some(d) = surface.filter(|&d| d <= reach) else { continue };
+            if best.is_some_and(|(b, bid)| (b, bid) <= (d, id)) {
+                continue;
+            }
+            if self.grab_check(now, author, id, Some(hand), ReachFrom::Target(target)).is_ok() {
+                best = Some((d, id));
+            }
+        }
+        best.map(|(_, id)| id)
     }
 
     fn release(&mut self, author: MemberKey, object: ObjectId, notes: &mut Vec<Note>) {
@@ -527,11 +594,15 @@ impl World {
         Ok(())
     }
 
-    /// `OutOfReach` unless `hand`'s target is within reach plus slack of one of `object`'s bounding spheres (7.2).
-    fn in_reach(&self, hand: ObjectId, object: ObjectId) -> Result<(), Reason> {
-        let target = self.store.world_transform(hand).ok_or_else(invalid)?.pos;
+    /// `OutOfReach` unless the reach `from` measures is within one of `object`'s bounding spheres (7.2): `hand`'s target
+    /// with reach plus slack, as a `Grab` applies, or a client's target with reach alone ([`ReachFrom`]).
+    fn in_reach(&self, hand: ObjectId, object: ObjectId, from: ReachFrom) -> Result<(), Reason> {
         let s = self.input_settings;
-        let reach = f64::from(s.reach_mm + s.slack_mm) / 1000.0;
+        let (target, reach_mm) = match from {
+            ReachFrom::Hand => (self.store.world_transform(hand).ok_or_else(invalid)?.pos, s.reach_mm + s.slack_mm),
+            ReachFrom::Target(t) => (t, s.reach_mm),
+        };
+        let reach = f64::from(reach_mm) / 1000.0;
         let within = self.bounds(object).iter().any(|&(c, r)| c.dist2(&target) <= (reach + r) * (reach + r));
         if within { Ok(()) } else { Err(Reason::OutOfReach) }
     }
