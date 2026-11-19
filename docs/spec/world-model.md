@@ -1011,6 +1011,11 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
   stores the stale ones. Marks are per object, not per block. The trie's inner nodes are rebuilt for each root, not
   cached: measured on a 507-object pit, a root takes 4.7 ms from scratch and 0.34 ms with every leaf cached, most
   of it the trie [V `root_cost`, release, rough]. Caching inner nodes is left until a measurement asks for it.
+  pe-world's `write_physics` overwrites only the `BodyState` rows whose bytes changed when the bodies are the
+  column's, and rewrites the column when a body joined or left. The result, row versions included, is the full
+  rewrite's, so only the changed rows' objects lose their cached hash: a calm 500-ball pit writes about 6 rows per
+  root instead of 505 (L3a, @vdw-physics, main d6e25ec5; replica.md 5.3)
+  [V `write_physics_writes_only_changed_rows_with_the_full_rewrites_result`].
 - **Caches roll back with the state.** The cached leaf hashes and trie node hashes live inside the snapshotted
   copy-on-write blocks, so `restore` brings back the caches of the restored frame, never hashes from the future. As
   built, the cache is part of the store, so a `World` clone (pe-replica's saved state) carries its own cache, and a
