@@ -476,7 +476,7 @@ which fixes the origin's role deliberately.
   | `BodyState` | derived: the simulated state of a bound body (linear and angular velocity, awake flag and sleep timer) and the physics digest of section 6.3 | pe-replica, at cut frames and on export |
   | `Appearance` | base colour, emissive colour, roughness, metalness, an optional material `BlobRef` | edits |
   | `Light` | kind, colour, intensity, range, a spot light's inner and outer cone angles (radians from the local -z axis, 0 ≤ inner ≤ outer ≤ π/2; exactly 0 for other kinds, so unused angles never hash two ways; an edit outside these is refused `Invalid` naming the angle; a `SetRow` changes the kind and the angles together, while field by field a spot becomes a point light by zeroing inner, then outer, then setting the kind) | edits |
-  | `Hand` | the owning `MemberKey`, side, grip, engaged, mode (8.1) | created by world logic at admission; then inputs of its owner only (section 8) |
+  | `Hand` | the owning `MemberKey`, side, grip, engaged, mode, strength (8.1) | created by world logic at admission, with its strength; then inputs of its owner only (section 8), which never write the strength |
   | `SimSize` | the simulation size of 3.5 | set at creation; edits |
   | `Protection` | the owning `MemberKey` (7.8) | edits by its owner |
   | a script's **tag** (slice D) | nothing: zero size, one per script version, its id derived like the script's other components (7.9) | edits with the object's edit right (attach = add, detach = remove); a script's create gives the new object its tag; a commit re-keys it |
@@ -1780,8 +1780,8 @@ the author is the `Hand` row's owner. Applied at its stamp frame, pose 0 goes to
 (the target; a hand is a root with no `Body`, so physics never writes it, 8) and `grip`, `engaged`, `stamp`,
 `span` and the previous input's `stamp`/`span` to its `Hand` row. The row's `span` is the whole coverage,
 `poses.len() - 1 + hold`, and `prev_span` the previous input's coverage, as replica.md 3.3's stream rule reads
-them. The whole pack is kept in a world table, `hand_packs` (hand -> stamp, poses, hold; in the root, so a
-rollback re-applies the same poses).
+them. It never writes the row's `strength` (a hand's strength, below). The whole pack is kept in a world table,
+`hand_packs` (hand -> stamp, poses, hold; in the root, so a rollback re-applies the same poses).
 
 **Overlap and coverage** (@design-reviewer's M2.1, M2.2). A later input for the same hand replaces the pack
 from its own stamp on: chain order decides "later", and stamps are non-decreasing in a chain by the horizon rule.
@@ -1888,35 +1888,75 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     5 m/s and reaches 0.5 m in about 0.1 s), so its contacts come in bursts, and each placement carries what it holds
     without collision and gives it no velocity from the jump. That keeps "nothing moves faster than the cap" (plus the
     solver's push-out, below); tests expect bursts, not a continuous push (@design-reviewer, approving r2).
+  - **The hold is tight, and its force is capped by the holder's strength** (the user's rulings of 2026-11-19:
+    "grabbing an object that's light enough should keep it tightly constrained to your hand's position"; "players should have a strength property per char controller that governs how much force they can
+    apply to held objects to move them"; a blocked held object stays held and shows apart from the
+    hand; @coordinator-opus, after @vdw-physics's sweep). The spring that pulls a held
+    object to its place in the hand is stiff, 60 Hz (Box3D's own stiffness for rigid joints at the engine's 1/240 s
+    sub-step), critically damped, and its force is at most `min(strength, m (A + g))`, `m` the held mass:
+    - **`Hand.strength`**, in newtons, is the player's strength: M1's stand-in for the character controller's, where
+      it moves later. World logic writes it at admission, 110 N for now (provisional: the user's soft value, a
+      default player moves about 0.5-1 kg with no lag; 110 N holds 1 kg tight up to a 100 m/s² flick; the user is
+      choosing between 110 and 60 N). No input writes it, and no edit (a `Hand` row is not editable,
+      7.6); it is in the hand's leaf, and an import carries it. Both hands of a member have the same. A row from a
+      build before it reads its former padding as 0 N, a hand that holds nothing up; builds of different layouts
+      never share a session.
+    - **`A` = 200 m/s²** (provisional; pe-replica's `HOLD_ACCELERATION`) is the most the hold speeds up what it holds
+      beyond holding it up: what a light object needs to follow a hand speeding up at `A`. Without it a stiff spring
+      pushed an 18 g ball at up to strength / m, 6,000 m/s², which Box3D's 30 Hz soft contacts can't hold: it sank
+      43-47 mm into the floor and was pushed through a 2 cm wall at every world rate. With it the ball sinks 1.5 mm
+      and is never pushed through [V @vdw-physics, pe-physics `examples/hold_sweep.rs`].
+    - **So a light object follows the hand within millimetres,** leaves at its speed and sags 0.07 mm held still: an
+      18 g ball trails a hand speeding up at 100 m/s² by 2.6, 1.0 and 0.6 mm at 30, 60 and 120 Hz (about 9 cm with
+      M1's 5 Hz spring), and at 200 m/s² by 13.5, 22.8 and 7.3 mm [V]. At the 30 Hz world rate, whose hand changes
+      speed every 33 ms, flicks past about 100 m/s² trail more (19 mm at 150 m/s² in the sweep). **A heavier object
+      lags** once the hand asks for more than the strength: at 110 N and 60 Hz a 100 m/s² flick trails 1.0 mm up to
+      0.5 kg, 18 mm at 1 kg and 92 mm at 2 kg; 8 kg is lifted and held, and a hand can't lift 11.2 kg or more, which
+      stays on the floor, still held [V]. A hand of 60 N doesn't lift 8 kg [V].
+    - A blocked held object stays held; the display draws it where it is once it is more than 5 cm from its place
+      (render.md D4's break-away).
+    - On an awake stack the tight hold costs what M1's did: 400 balls stirred by a held ball step in 1.58, 1.13 and
+      0.88 ms at 30, 60 and 120 Hz, against 1.63, 1.11 and 0.89 ms with M1's hold and 1.64, 1.13 and 0.87 ms with the
+      hand alone [V, interleaved in one process, idle priority, not a clean timing run].
   - **The hold's spring is bounded, speed-aware** (@coordinator-opus, decision 2; its floor): the separation the spring that pulls a held object to its place in the hand sees is clamped as a
     whole, and then only its part supporting the object against the world's gravity (6.6, a fixed direction, so the
-    clamp does not depend on order) is raised to a floor. Write `e` for the object's error, from the object to its
-    place (the way the spring pulls), `ĝ` for gravity's unit direction, and `up(x) = max(0, −x·ĝ)` for the upward,
-    supporting part of a vector `x`. With `reach = max(0, (max_push_speed − v_hold) / k)`, where `v_hold` is the
-    hand's own speed at the hold (its turn included, ω·r) and `k` Box3D's spring rate at the world's rate (14.7 per
-    second at 60 Hz, 15.2 at 120 Hz): first `e1 = clamp(e, reach)`, `e`'s length clamped to `reach`; then, if `up(e1)`
+    clamp does not depend on order) is raised to a floor. Write `e` for the object's error, from the object to its place
+    (the way the spring pulls), `ĝ` for gravity's unit direction, and `up(x) = max(0, −x·ĝ)` for the upward, supporting
+    part of a vector `x`. With `reach = max(0, min(max_push_speed − v_hold, √(2 a |e|)) / k)`, where `v_hold` is the
+    hand's own speed at the hold (its turn included, ω·r), `k` Box3D's spring rate (105.6 per second for the 60 Hz
+    spring at 30, 60 and 120 Hz alike, whose sub-step is 1/240 s; 14.7 for M1's 5 Hz spring), and `a` the deceleration
+    the hold's force cap `F` gives its object along the way it comes, gravity's part included, `a = max(0, F / m − g (ĝ
+    · ê))` with `ê` the error's direction (the tight hold, @vdw-physics: the spring asks for a speed of about `k` times
+    the error it sees, and a hold capped near its object's weight would otherwise ask for one it can't stop from; an 8
+    kg ball lifted by 110 N came up at 2.6 m/s, went 12 cm past its place and fell 54 cm below it before rising again,
+    and now settles at its place [V]): first `e1 = clamp(e, reach)`, `e`'s length clamped to `reach`; then, if `up(e1)`
     is below `min(up(e), s_min)`, the difference is added along `−ĝ`, so the spring sees `e' = e1 − max(0, min(up(e),
     s_min) − up(e1)) · ĝ`, recomputed every frame from the current state. It sees at most `reach` plus a support of at
     most `s_min`, in every direction: clamping the parts along and across gravity each on its own would let a diagonal
     error come back at up to √2 times the cap (14 m/s for a ball pinned below and beside its place, then released)
     (@design-reviewer's Medium on ws/hold-reach 9d3a0270, adopted by @coordinator-opus). Without gravity
-    `e' = clamp(e, reach)`. **The floor `s_min`** is a margin times `g / ω²`, the separation at which the spring's
-    pull just equals the object's weight, with ω = 2π · 5 Hz the spring's own stiffness, not its bias rate `k`: a ball
-    held still in the air sits 9.9 mm below its place at 30, 60 and 120 Hz [V @vdw-physics]. The margin lets the
-    spring lift a sagging or knocked object back up rather than leave it hanging at the balance point; it is set from
-    @vdw-physics's straight-up and straight-down measurements (the margin is 3, so `s_min` = 3 · g/ω² ≈ 0.030 m at
-    9.81 m/s² [V @vdw-physics, ws/hold-reach 9d3a0270; @coordinator-opus]) (@design-reviewer, adopted by @coordinator-opus). In a world without gravity `s_min` = 0 and the clamp
-    is the plain speed-aware one. Without the floor the bound reaches zero whenever the hold moves at the cap, the
-    spring stops holding the object up and it falls out of the hand; a floor in every direction instead would let the
-    spring pull it down on top of gravity, and a clamp on the error's whole length would shrink its upward part with a
-    long trail and let it sag (2.9-5.5 cm measured, @vdw-physics). The floor's only excess over the cap is the support
-    it needs, at most about `s_min · k` (0.44 m/s at 0.03 m; measured, at most 0.24 m/s, and only upward, where a
-    floor in every direction reached 10.27-10.50 m/s [V @vdw-physics]), inside "the cap plus push-out"
-    (@design-reviewer's Medium and its shape, adopted by @coordinator-opus). Free fall under gravity is not a push. So a held object never exceeds the cap to catch up: it
-    trails a hand kept above the cap and catches up once the hand slows, and a pinned object springs back at most at
-    the cap (8.2-9.0 m/s measured, against 10-50 m/s unbounded, held back 1-6 m). How is the hand-body spec's
-    (@vdw-physics: the hand-side anchor's position, never its frame's rotation, moved towards the object for the step
-    only, so images, digests and rollbacks see the original anchor).
+    `e' = clamp(e, reach)`. **The floor `s_min`** is `(A + g) / ω²`, with ω = 2π · 60 Hz the spring's own stiffness, not
+    its bias rate `k`: the separation at which the spring's pull on a light object reaches the hold's force cap (1.48 mm
+    at 9.81 m/s²), so the support may use the whole cap to keep its object up while catching up takes the rest (the
+    tight hold, @vdw-physics). A ball held still in the air sits `g / ω²` = 0.07 mm below its place at 30, 60 and 120 Hz
+    [V]. With M1's 5 Hz spring and 1,000 N the floor was 3 · g/ω² ≈ 0.030 m, a margin set from @vdw-physics's
+    straight-up and straight-down measurements so the spring could lift a sagging or knocked object back up rather than
+    leave it hanging at the balance point (@design-reviewer, adopted by @coordinator-opus); under the force cap that floor starved the support, and a ball sank 4.3 cm below its place in a 2 s
+    overrun, against 0.4 cm with this one [V]. In a world without gravity `s_min` = 0 and the clamp is the plain one.
+    Without the floor the bound reaches zero whenever the hold moves at the cap, the spring stops holding the object up
+    and it falls out of the hand; a floor in every direction instead would let the spring pull it down on top of
+    gravity, and a clamp on the error's whole length would shrink its upward part with a long trail and let it sag
+    (2.9-5.5 cm measured, @vdw-physics). The floor's only excess over the cap is the support it needs, at most about
+    `s_min · k` (0.16 m/s at 1.48 mm; 0.44 m/s at 0.03 m with M1's spring, measured then at most 0.24 m/s, and only
+    upward, where a floor in every direction reached 10.27-10.50 m/s [V @vdw-physics]), inside "the cap plus push-out"
+    (@design-reviewer's Medium and its shape, adopted by @coordinator-opus).
+    Free fall under gravity is not a push. So a held object never exceeds the cap to catch up: it trails a hand kept
+    above the cap and catches up once the hand slows, and a pinned object springs back at most at the cap. The tight
+    hold's stiff spring closes the error it may see within a frame (`k · dt` over 1), so a pinned pit ball comes back at
+    about its reach a frame: 2.8, 4.7 and 6.4 m/s at 30, 60 and 120 Hz [V] (8.2-9.0 m/s with M1's 5 Hz spring, against
+    10-50 m/s unbounded, held back 1-6 m). How is the hand-body spec's (@vdw-physics: the hand-side anchor's position,
+    never its frame's rotation, moved towards the object for the step only, so images, digests and rollbacks see the
+    original anchor).
   - **The teleport distance** is `max(0.5 m, 2 · max_push_speed / rate)` [I, 0.5 m a starting value to tune]: at
     least twice the cap's distance per frame at the world's rate, so a band of trailing remains at any rate (at
     20 Hz and 10 m/s the cap alone is 0.5 m a frame).
@@ -1925,9 +1965,13 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     - **Swept objects** reach up to 10.48 m/s: a body driven at exactly the cap that penetrates is pushed out at
       Box3D's contact speed (3 m/s). The bound tests assert is `max_push_speed` plus the contact speed.
     - **A held object in a sustained overrun** peaked at 11.8 m/s with the hold's spring unbounded (its overshoot
-      after each placement); the speed-aware bound below brings it to 9.9 m/s (9.97 at 120 Hz) [V @vdw-physics,
-      ws/hold-reach]. Throws from an 11 or 14 m/s hand then leave at about 9.3 or 9.5 m/s.
-    - **Throws** leave at the hand's speed up to the cap (4, 8, 11, 14 m/s give 4.00, 8.23, 10.43, 10.67 m/s). **The
+      after each placement); the speed-aware bound below brought it to 9.9 m/s (9.97 at 120 Hz) with M1's 5 Hz spring
+      [V @vdw-physics, ws/hold-reach], and with the tight hold it peaks at 8.5, 10.47 and 10.06 m/s at 30, 60 and
+      120 Hz [V].
+    - **Throws** leave at the hand's speed up to the cap: with the tight hold a pit ball thrown at 4, 8, 11 and 14 m/s
+      reads 3.84, 7.91, 9.86 and 9.86 m/s one frame after its release, gravity having taken 0.16 m/s of it [V] (M1's
+      5 Hz spring, before the hold bound, gave 4.00, 8.23, 10.43 and 10.67 m/s, and 9.3 or 9.5 m/s from an 11 or
+      14 m/s hand with the bound). **The
       0.5 m edge:** a throw at hand speed `v` over the cap trails by about `(1 − cap/v) · travel`, and once that
       passes the teleport distance it is placed in its release frame, leaving nearly at rest: 20 m/s over 1.33 m (0.56
       m behind as measured, the hand speeding up; leaves at 0.66 m/s), and by the same estimate 15 m/s over 1.6 m or
@@ -1947,14 +1991,27 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     that case does not reach the check; a ball pinned 3 cm from the wall's end with the hand going diagonally at 25
     m/s at 60 Hz: the shape cast leaves it where it is and it slides round the corner, crossing the face's plane at z
     1.085, where a centre ray would let the placement carry it through the corner region, crossing at 1.020); a held
-    ball with the hand at 1.5× the cap for 2 s: **sideways**, its height stays within `s_min` of its place's height
-    (the static sag is g/ω² = 9.9 mm) and it never falls below the hand; **straight up**, it rises the whole time at
-    no more than the cap plus about `s_min · k` and never falls; **straight down**, the spring adds no downward pull
-    beyond the speed-aware reach (with the reach at 0, the ball falls freely until it is below its place, then is held
-    up), with gravity's fall reported apart. In every run its speed exceeds the cap by at most about `s_min · k`,
-    gravity's fall aside; a ball pinned at 45° below and beside its place, and at 45° above and beside it, released
-    with the hand still: its top speed is at most the cap plus about `s_min · k` (measured [V @vdw-physics, f710c9ac]:
-    8.39 m/s from a corner below, 8.57 m/s from a shelf above) (@vdw-physics's follow-up; @coordinator-opus; @design-reviewer).
+    ball with the hand at 1.5× the cap for 2 s: **sideways**, it sags no more than a centimetre or so below its
+    place's height and never falls below the hand; **straight up**, it rises the whole time at no more than about the
+    cap and never falls; **straight down**, the spring adds no downward pull beyond the speed-aware reach (with the
+    reach at 0, the ball falls freely until it is below its place, then is held up), with gravity's fall reported
+    apart. In every run its speed exceeds the cap by at most about half a metre a second, gravity's fall aside
+    (measured with the tight hold at 60 Hz [V @vdw-physics]: 10.47, 10.02 and 10.61 m/s, the last with gravity's fall;
+    about 4 mm below its place sideways). **Its trail grows with the overrun:** each placement carries it at its offset
+    with no velocity, and the force cap takes about three frames to bring it back up to the cap, so after 2 s it
+    trails 1.5, 1.8 and 1.1 m at 60 Hz and 2.0-3.3 m at 30 and 120 Hz, where at 30 Hz it also sags 38 mm sideways
+    [V]. A hand can't keep above the cap that long without locomotion, which M1 doesn't have; carrying a held object to
+    its place at each placement would bound the trail (about 0.2 m at every rate [V, tried and set aside]) but would
+    let a placement lift an object the strength can't. A ball pinned at 45° below and beside its place, and at 45°
+    above and beside it, released with the hand still: its top speed, the larger of its speed at a frame's end and
+    the distance it moves in a frame, is at most the cap plus about `s_min · k` (measured with the tight hold: 4.65
+    m/s from a corner below, 4.85 m/s from a shelf above; 8.39 and 8.57 m/s with M1's 5 Hz spring [V @vdw-physics,
+    f710c9ac]) (@vdw-physics's follow-up; @coordinator-opus; @design-reviewer). **The tight
+    hold's tests** (@coordinator-opus): a pit ball follows a hand speeding up at 100 m/s² within 4 mm
+    and at its speed, at 30, 60 and 120 Hz; a ball held 20 cm into the floor sinks less than 3 mm, doesn't creep aside
+    and comes out with the hand, at each rate; a ball held into a walled pile pushes it gently (no pile ball over
+    1 m/s; measured 0.65 m/s), the pile stays in its box and the ball above its lower layer, and a hand input of the
+    press arriving late replays to the same roots; a hand of 110 N lifts 8 kg to its place, one of 60 N doesn't.
 - **Expiry at `end_frame(f)`.** Every claim whose `until <= f + 1` ends, and its holder gets a cooldown on that
   object until `f + 1 + cooldown frames`; cooldowns past their `until` end. A disconnected holder's claim simply
   expires, freeing the subtree. Claims and cooldowns are world tables, in the root (6, 12.11).

@@ -447,6 +447,7 @@ impl WorldModel for PeWorld {
                     span: h.span,
                     previous: (h.has_prev != 0).then_some((Frame(h.prev_stamp), h.prev_span)),
                     mode: h.mode,
+                    strength: h.strength,
                 })
             })
             .collect();

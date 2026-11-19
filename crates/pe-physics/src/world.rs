@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use box3d_rust::body::{
     body_apply_angular_impulse, body_apply_force, body_apply_force_to_center, body_apply_linear_impulse,
     body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity, body_get_linear_velocity,
-    body_get_shape_count, body_get_shapes, body_get_transform, body_get_type, body_is_awake, body_is_valid,
-    body_reset_history, body_set_angular_velocity, body_set_awake, body_set_linear_velocity, body_set_target_transform,
-    body_set_transform, create_body, destroy_body,
+    body_get_mass, body_get_shape_count, body_get_shapes, body_get_transform, body_get_type, body_is_awake,
+    body_is_valid, body_reset_history, body_set_angular_velocity, body_set_awake, body_set_linear_velocity,
+    body_set_target_transform, body_set_transform, create_body, destroy_body,
 };
 use box3d_rust::core::get_length_units_per_meter;
 use box3d_rust::geometry::{Capsule, ShapeType, Sphere};
@@ -16,7 +16,8 @@ use box3d_rust::id::{BodyId, JointId, ShapeId};
 use box3d_rust::joint::{
     JointType, create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
     joint_get_body_a, joint_get_body_b, joint_get_local_frame_a, joint_get_local_frame_b, joint_is_valid,
-    joint_set_local_frame_a, joint_wake_bodies, motor_joint_set_angular_velocity, motor_joint_set_linear_velocity,
+    joint_set_local_frame_a, joint_wake_bodies, motor_joint_get_max_spring_force, motor_joint_set_angular_velocity,
+    motor_joint_set_linear_velocity,
 };
 use box3d_rust::math_functions::{
     Pos, Quat, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform, inv_rotate_vector,
@@ -452,6 +453,11 @@ impl PhysicsWorld {
         Ok(([v.x, v.y, v.z], [w.x, w.y, w.z]))
     }
 
+    /// The body's mass, kg, from its shapes' densities: 0 for a static or kinematic body.
+    pub fn mass(&self, id: ObjectId) -> Result<f32, PhysicsError> {
+        Ok(body_get_mass(&self.world, self.live_body(id)?))
+    }
+
     pub fn is_awake(&self, id: ObjectId) -> Result<bool, PhysicsError> {
         Ok(body_is_awake(&self.world, self.live_body(id)?))
     }
@@ -882,6 +888,18 @@ impl PhysicsWorld {
             }
         }
         Ok(false)
+    }
+
+    /// The most force the spring of the grab under `key` applies, N: the [`GrabSpring::max_force`] it was made with.
+    pub fn grab_force(&self, key: JointKey) -> Result<f32, PhysicsError> {
+        if self.poisoned {
+            return Err(PhysicsError::Poisoned);
+        }
+        let joint = *self.joints.get(&key).ok_or(PhysicsError::UnknownJoint(key.0))?;
+        if joint.kind != JointKind::Grab {
+            return Err(PhysicsError::NotAGrab(key.0));
+        }
+        Ok(motor_joint_get_max_spring_force(&self.world, joint.id))
     }
 
     /// The anchor of the grab under `key` on its `a` end, in `a`'s frame: where it holds its object (the object's
