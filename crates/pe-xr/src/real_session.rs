@@ -268,6 +268,21 @@ impl<G: xr::Graphics> RealBackend<G> {
                 },
                 if trackers.is_some() { "made" } else { "not made (asked again every 2 s)" },
             ));
+            let e = &xr.enabled;
+            let optional = [
+                ("XR_EXT_hand_tracking", e.ext_hand_tracking),
+                ("XR_EXT_hand_interaction", e.ext_hand_interaction),
+                ("XR_FB_display_refresh_rate", e.fb_display_refresh_rate),
+                ("XR_EXT_local_floor", e.ext_local_floor),
+                ("XR_KHR_composition_layer_depth", e.khr_composition_layer_depth),
+            ];
+            let on: Vec<&str> = optional.iter().filter(|(_, on)| *on).map(|(n, _)| *n).collect();
+            let off = if crate::real::hand_interaction_off() {
+                format!(" (XR_EXT_hand_interaction left off by {}=1)", crate::real::NO_HAND_INTERACTION_ENV)
+            } else {
+                String::new()
+            };
+            crate::diag::emit(&format!("optional extensions enabled: {}{off}", on.join(", ")));
         }
 
         let views = instance.enumerate_view_configuration_views(system, VIEW).map_err(ce("view configuration"))?;
@@ -470,14 +485,20 @@ impl<G: xr::Graphics> RealBackend<G> {
             Some(Some(g)) => g,
             _ => (rig_pose(&palm.pose), None, None),
         };
-        // The runtime's grasp value when it offers one (XR_EXT_hand_interaction), else the joints' curl (spec 5.3).
-        let grip = if live.hand_interaction {
-            self.squeeze_value(hand).or_else(|| grip_from_joints(&joints, &self.grasp))
-        } else {
-            grip_from_joints(&joints, &self.grasp)
-        };
+        // Both grip signals (spec 5.3): the squeeze action while it is active, on whichever profile is current (a
+        // held controller's squeeze, or the runtime's grasp value through XR_EXT_hand_interaction), and the curl.
+        let grip = self.squeeze_value(hand);
+        let curl = grip_from_joints(&joints, &self.grasp);
         Some((
-            Reading { source: HandSource::Tracked, at, pose: Some(pose), linear_velocity, angular_velocity, grip },
+            Reading {
+                source: HandSource::Tracked,
+                at,
+                pose: Some(pose),
+                linear_velocity,
+                angular_velocity,
+                grip,
+                curl,
+            },
             drawn,
         ))
     }
@@ -584,6 +605,7 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             linear_velocity: None,
             angular_velocity: None,
             grip: None,
+            curl: None,
         };
         self.joints[hand.index()] = None;
         if hand == Hand::Left {
@@ -617,7 +639,17 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             linear_velocity: lin,
             angular_velocity: ang,
             grip: self.squeeze_value(hand),
+            curl: None,
         }
+    }
+
+    fn interaction_profiles(&self) -> Option<[String; 2]> {
+        let live = self.live.as_ref()?;
+        Some(live.hand_paths.map(|top| match live.session.current_interaction_profile(top) {
+            Ok(p) if p == xr::Path::NULL => "none".to_string(),
+            Ok(p) => self.xr.instance.path_to_string(p).unwrap_or_else(|e| format!("(unnamed: {e})")),
+            Err(e) => format!("(unread: {e})"),
+        }))
     }
 
     fn hand_joints(&self, hand: Hand, at: HostTime) -> Option<HandJoints> {

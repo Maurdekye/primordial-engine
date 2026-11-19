@@ -362,12 +362,26 @@ review SH-1; D52's coast must never run past a held hand). Dropping unchanged sa
 
 ### 5.3 Grip and grasp
 
-- **With `XR_EXT_hand_interaction`,** `grip` is the runtime's grasp value for a tracked hand.
-- **Without it,** pe-xr computes `grip` from the joints: the mean curl of the middle, ring and little fingers, from
-  the angle at each finger's proximal and intermediate joints, scaled to 0 (open) to 1 (fist) [I].
-- **With a controller,** `grip` is the squeeze value.
-- **`closed` uses hysteresis:** it closes when `grip` rises past 0.7 and opens when it falls below 0.4. The
-  thresholds are settings, tuned at the headset test [I].
+- **Two grip signals.** The *squeeze* is the squeeze action's value while that action is active, on whichever
+  interaction profile the runtime has made current: a controller's squeeze, or, with `XR_EXT_hand_interaction`, the
+  runtime's grasp value for a tracked hand. The *curl*, for a tracked hand, is computed from the joints: the mean curl
+  of the middle, ring and little fingers, from the angle at each finger's proximal and intermediate joints, scaled to
+  0 (open) to 1 (fist) [I]. A tracked hand reads both; a controller without joints reads only the squeeze.
+- **`closed` uses hysteresis over both** (@coordinator-opus, after @fable-reviewer and
+  @astra-deliberator): it closes when either signal rises through 0.7 (from below, or from not being read), and opens
+  when the signal that closed it falls below 0.4. The squeeze always acts (@coordinator-opus, on
+  @design-reviewer's Medium): rising through 0.7 it takes over a grasp the curl closed, and falling from 0.4 or more
+  to below it opens the hand whichever signal closed it, so a curl already high round a held controller can't keep the
+  hand closed. While the closing signal isn't read, the other one decides; with neither, the grasp holds.
+  So a resting curl above 0.4 can't hold a released squeeze closed, and a curl that stays above 0.7
+  around a held controller doesn't close the hand again until it falls and rises again. A release forced by focus
+  loss or the lost-hand grace (section 5.5) forgets the signals, so a squeeze still held closes the hand again when it
+  is read. The thresholds are settings, tuned at the headset test [I].
+- **`grip`** in the sample is the larger signal read this frame (the last one while neither is read).
+- **Why both:** SteamVR reports a tracked hand's joints while a controller is held, estimated from the controller,
+  and the curl around a held controller stayed below 0.7: on the Steam Frame no grasp closed in 8,593 tracked frames
+  [V: @engine-architect's solo run on SteamVR 2.18.4, 2026-11-19, 1355-solo.log]. Which binding the squeeze read
+  there is not known; the log now says (section 10.4).
 - **Pinch** (thumb tip to index tip) is sampled and kept for later tools, but it is not in M1's entries.
 
 ### 5.4 Controllers
@@ -376,8 +390,14 @@ Controllers go through the action system. The action set is attached once, at se
 (`xrAttachSessionActionSets`), and synced every frame while FOCUSED (`xrSyncActions`, section 7.1); without the sync no
 action state or action-space pose is valid, for controllers or for `XR_EXT_hand_interaction`'s grasp. One action set: a grip pose, an aim pose, a squeeze value, a trigger
 value and haptic output, with suggested bindings for `khr/simple_controller`, `oculus/touch_controller` and
-`valve/index_controller`. Where a runtime offers both a tracked hand and a controller for one hand, the tracked hand
-is used while it is tracked [I]. M1 needs controllers because tracking-only runtimes are not the only ones, and a
+`valve/index_controller`. Where a runtime offers both a tracked hand and a controller for one hand, the pose and
+the drawn joints come from the tracked hand while it is tracked, and the grasp reads both the squeeze and the curl
+(section 5.3). Some runtimes report joints for a hand that holds a controller (SteamVR estimates them from the
+controller), so "tracked" does not mean "bare". `PE_XR_NO_HAND_INTERACTION=1` leaves `XR_EXT_hand_interaction` off
+even when offered, so a runtime may keep the controller's profile current and the squeeze reads the controller; off by
+default. **Known limit:** an active squeeze action means a controller is on, not that it is held: a controller put
+down but still on keeps its action active at 0, so the squeeze can't close the hand then, and the curl must.
+M1 needs controllers because tracking-only runtimes are not the only ones, and a
 controller gives a recording of the same demo with less noise.
 
 **On the user's setup, controllers are the only hands for now** [V: M0 headset run, b35c448]. Virtual Desktop's
@@ -695,7 +715,10 @@ What a headset run records, beyond the user's sighting: with `PE_XR_LOG=1`, pe-x
 application drives the session, the runtime's name and version with the API versions negotiated and used (and a
 1.1 refused, section 2), the reference space chosen and those offered, each session state change, the first
 drawn frame's eyes and display period, the first tracked pose of each hand (or that none was tracked while drawn),
-and the end reason with the counters at teardown (`crate::diag`). It is off by default and changes nothing the
+the optional extensions enabled, each hand's current interaction profile at the first focused frame and on each
+change, each close and open of a grasp with both signals, the one that decided it and whether the squeeze action was
+active, each hand's largest squeeze and curl, and the end reason with the counters at teardown (`crate::diag`).
+It is off by default and changes nothing the
 session does.
 
 From plan M1:

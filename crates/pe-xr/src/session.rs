@@ -153,6 +153,8 @@ pub struct XrSession<B: Backend> {
     pub counters: Counters,
     /// The opt-in diagnostic log (`PE_XR_LOG=1`, [`crate::diag`]).
     diag: Diag,
+    /// Whether the interaction profiles were logged at the first focused frame.
+    profiles_logged: bool,
 }
 
 /// How far a frame got, so an error can close it cleanly.
@@ -180,6 +182,7 @@ impl<B: Backend> XrSession<B> {
             last_error: None,
             counters: Counters::default(),
             diag: Diag::from_env(),
+            profiles_logged: false,
         }
     }
 
@@ -256,6 +259,10 @@ impl<B: Backend> XrSession<B> {
             if let Some(line) = self.diag.ended(self.ended, &self.counters) {
                 diag::emit(&line);
             }
+            let maxima = self.hands.each_ref().map(|h| (h.max_squeeze, h.max_curl));
+            if let Some(line) = self.diag.grip_maxima(&maxima) {
+                diag::emit(&line);
+            }
             sink.release_swapchain();
             self.backend.destroy_session();
             self.destroyed = true;
@@ -273,6 +280,16 @@ impl<B: Backend> XrSession<B> {
         self.last_error = Some(e);
         self.end(why);
         Step::Ended(why)
+    }
+
+    /// Each hand's current interaction profile, under `PE_XR_LOG` only.
+    fn log_profiles(&self, why: &str) {
+        if diag::enabled()
+            && let Some(p) = self.backend.interaction_profiles()
+            && let Some(line) = self.diag.profiles(why, &p)
+        {
+            diag::emit(&line);
+        }
     }
 
     fn on_state(&mut self, s: SessionState) -> Result<(), XrError> {
@@ -337,7 +354,10 @@ impl<B: Backend> XrSession<B> {
                     }
                     Ok(())
                 }
-                XrEvent::InteractionProfileChanged => Ok(()),
+                XrEvent::InteractionProfileChanged => {
+                    self.log_profiles("changed");
+                    Ok(())
+                }
                 XrEvent::EventsLost(n) => {
                     self.counters.events_lost += u64::from(n);
                     Ok(())
@@ -418,6 +438,10 @@ impl<B: Backend> XrSession<B> {
         let focused = self.state == SessionState::Focused;
         if focused {
             self.backend.sync_actions()?;
+            if !self.profiles_logged {
+                self.profiles_logged = true;
+                self.log_profiles("first focused frame");
+            }
             let now = self.backend.now();
             for h in Hand::BOTH {
                 let reading = self.backend.read_hand(h, now);
@@ -433,6 +457,11 @@ impl<B: Backend> XrSession<B> {
                 }
                 if let Some(sample) = self.hands[h.index()].update(reading) {
                     self.ring.push(sample);
+                }
+                if let Some(e) = self.hands[h.index()].take_edge()
+                    && let Some(line) = self.diag.grasp_edge(h, &e, now.0)
+                {
+                    diag::emit(&line);
                 }
             }
         }
