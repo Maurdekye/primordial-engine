@@ -1858,8 +1858,10 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     carry it this frame**, from where it is, keeping its offset in the hand. **Where a placement puts it**
     (@design-reviewer's L1 on 980e6ba7, @coordinator-opus): a light hold, one whose force cap comes from
     the object's mass (`m (A + g)` at most the strength, the tight hold below), at its place in the hand, since the hand
-    could lift it there anyway, so a light object never keeps a lag through a placement; a heavy one at its offset,
-    so a placement never lifts what the strength can't. **A held object never passes through a
+    could lift it there anyway, so a light object never keeps a lag through a placement; a heavy one, a hold whose
+    cap is the strength, at its offset, so a placement never lifts what the strength can't. At 110 N a hold is heavy
+    from about 0.52 kg, so an object the hand can lift (up to 11.2 kg) but not speed up at `A` keeps its lag through
+    a placement too, as ruled (@world-model's note on 5659a804). **A held object never passes through a
     wall** (@coordinator-opus): pinned against one, its carried move stays the hand's own small move, so
     it is never placed; the bare kinematic hand may pass through, the held object stays pinned by the hold's spring,
     and springs back when the way clears. **A trailing placement carries a held object only if no static geometry lies
