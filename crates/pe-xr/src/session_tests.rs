@@ -263,6 +263,7 @@ fn a_held_controller_releases_after_the_grace_period_when_tracking_is_lost() {
             linear_velocity: None,
             angular_velocity: None,
             grip: Some(if hand == Hand::Right { 0.9 } else { 0.0 }),
+            curl: None,
         }
     });
     let (mut s, ring) = session(rt);
@@ -383,6 +384,7 @@ fn the_renderer_gets_the_hands_at_the_display_time() {
         linear_velocity: None,
         angular_velocity: None,
         grip: Some(0.0),
+        curl: None,
     });
     let (mut s, _) = session(rt);
     let mut k = HandSink(Vec::new());
@@ -596,6 +598,7 @@ fn a_tracked_hands_joints_reach_the_renderer_and_a_controller_has_none() {
             linear_velocity: None,
             angular_velocity: None,
             grip: Some(0.0),
+            curl: None,
         })
         .joints(move |hand, at| (hand == Hand::Left).then(|| joints_at(at)));
     let (mut s, _) = session(rt);

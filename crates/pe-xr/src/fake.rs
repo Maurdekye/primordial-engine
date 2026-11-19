@@ -128,6 +128,7 @@ impl FakeRuntime {
                 linear_velocity: Some([0.0; 3]),
                 angular_velocity: Some([0.0; 3]),
                 grip: Some(0.0),
+                curl: None,
             }),
             joint_script: Box::new(|_, _| None),
             skip_next_ns: 0,

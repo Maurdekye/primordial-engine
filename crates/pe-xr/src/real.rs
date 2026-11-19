@@ -29,6 +29,15 @@ impl std::fmt::Display for MissingExtension {
     }
 }
 
+/// `PE_XR_NO_HAND_INTERACTION=1` leaves `XR_EXT_hand_interaction` off even when the runtime offers it (spec 5.4): a
+/// runtime that tracks the hands around held controllers may then keep the controller's profile current, so the
+/// squeeze reads the controller. Off by default.
+pub const NO_HAND_INTERACTION_ENV: &str = "PE_XR_NO_HAND_INTERACTION";
+
+pub fn hand_interaction_off() -> bool {
+    std::env::var(NO_HAND_INTERACTION_ENV).as_deref() == Ok("1")
+}
+
 /// The extensions to enable, from those the runtime offers (spec 2's table). The graphics extension for
 /// `path` and this platform's time conversion are required; the rest are used when offered.
 pub fn choose_extensions(available: &ExtensionSet, path: GraphicsPath) -> Result<ExtensionSet, MissingExtension> {
@@ -113,7 +122,10 @@ pub struct XrInstance {
 impl XrInstance {
     pub fn create(runtime: &Runtime, path: GraphicsPath) -> Result<XrInstance, InstanceError> {
         let available = runtime.entry.enumerate_extensions().map_err(|e| InstanceError::Xr(e.to_string()))?;
-        let enabled = choose_extensions(&available, path).map_err(InstanceError::Missing)?;
+        let mut enabled = choose_extensions(&available, path).map_err(InstanceError::Missing)?;
+        if hand_interaction_off() {
+            enabled.ext_hand_interaction = false;
+        }
         let create = |api_version| {
             let app = openxr::ApplicationInfo {
                 application_name: "Primordial Engine",

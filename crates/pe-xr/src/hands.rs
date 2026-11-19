@@ -2,8 +2,10 @@
 //!
 //! The backend reads each hand once per display frame: a tracked hand's 26 joints, or a controller's grip
 //! pose and squeeze. [`HandState`] turns those readings into [`HandInput`] samples:
-//! - `grip` from the joints (or the runtime's grasp value, or the squeeze);
-//! - `closed`, the grasp, with hysteresis, so it never chatters;
+//! - two grip signals: the squeeze action's value while that action is active (a controller's squeeze, or the
+//!   runtime's grasp value through `XR_EXT_hand_interaction`), and the joints' curl for a tracked hand;
+//! - `closed`, the grasp, with hysteresis, so it never chatters ([`Grasp`]: either signal closes the hand, and the
+//!   one that closed it opens it);
 //! - tracking loss: the last valid pose is kept, a hand that holds something releases after a grace
 //!   period, and reacquiring bumps `discontinuity`;
 //! - focus loss releases at once, and the hand becomes absent.
@@ -92,8 +94,108 @@ pub struct Reading {
     pub pose: Option<RigPose>,
     pub linear_velocity: Option<Vec3>,
     pub angular_velocity: Option<Vec3>,
-    /// The grip value this frame, if one could be judged.
+    /// The squeeze action's value this frame, while that action is active: a controller's squeeze, or the
+    /// runtime's grasp value through `XR_EXT_hand_interaction`, whichever interaction profile is current.
     pub grip: Option<f32>,
+    /// A tracked hand's grip from its joints' curl ([`grip_from_joints`]), if one could be judged.
+    pub curl: Option<f32>,
+}
+
+/// The grip signal that closed a hand ([`Grasp`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GripSignal {
+    Squeeze,
+    Curl,
+}
+
+/// A close or an open of the grasp, with what decided it (for the diagnostic log).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GraspEdge {
+    pub closed: bool,
+    /// The signal that closed the hand (on a close), or that closed it before (on an open).
+    pub by: GripSignal,
+    pub squeeze: Option<f32>,
+    pub curl: Option<f32>,
+}
+
+/// The grasp from two grip signals (spec 5.3). Some runtimes report a tracked hand's joints while a controller is
+/// held (SteamVR): the curl around a held controller need not reach `close_at`, so the squeeze must close the hand
+/// too, and a bare hand has only the curl.
+/// - **Close:** when either signal rises through `close_at` (it was below, or not read, the frame before).
+/// - **The squeeze always acts:** rising through `close_at` it takes over a grasp the curl closed (a close edge by
+///   the squeeze), and falling from at least `open_at` to below it opens the hand whichever signal closed it.
+/// - **Open:** otherwise when the signal that closed the hand falls below `open_at`, or, while that signal is not
+///   read, the other one does. With neither read, the grasp holds.
+///   So a resting curl above `open_at` can't hold a released
+///   squeeze closed, and a curl that stays above `close_at` around a held controller doesn't close the hand again
+///   once the squeeze opened it: it has to rise through `close_at` again.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Grasp {
+    closed_by: Option<GripSignal>,
+    last_squeeze: Option<f32>,
+    last_curl: Option<f32>,
+}
+
+impl Grasp {
+    pub fn closed(&self) -> bool {
+        self.closed_by.is_some()
+    }
+
+    /// Opens without an edge (focus loss, the lost-hand grace). The signals read before are forgotten, so a squeeze
+    /// still held when the hand is read again closes it again, as a fresh reading would.
+    pub fn release(&mut self) {
+        *self = Grasp::default();
+    }
+
+    /// One frame's signals; the edge, if the grasp changed.
+    pub fn step(&mut self, squeeze: Option<f32>, curl: Option<f32>, c: &GraspConfig) -> Option<GraspEdge> {
+        let rose = |now: Option<f32>, before: Option<f32>| {
+            now.is_some_and(|v| v >= c.close_at) && before.is_none_or(|b| b < c.close_at)
+        };
+        // Only from a read value at or above `open_at`: a controller left on at rest doesn't open a bare hand's grasp.
+        let fell = |now: Option<f32>, before: Option<f32>| {
+            now.is_some_and(|v| v < c.open_at) && before.is_some_and(|b| b >= c.open_at)
+        };
+        let edge = match self.closed_by {
+            None => {
+                let by = if rose(squeeze, self.last_squeeze) {
+                    Some(GripSignal::Squeeze)
+                } else if rose(curl, self.last_curl) {
+                    Some(GripSignal::Curl)
+                } else {
+                    None
+                };
+                by.map(|by| {
+                    self.closed_by = Some(by);
+                    GraspEdge { closed: true, by, squeeze, curl }
+                })
+            }
+            // The squeeze always acts (@coordinator-opus m9afb0b751e6d, on @design-reviewer's Medium): rising through
+            // `close_at` it takes over a grasp the curl closed, and falling through `open_at` it opens the hand
+            // whichever signal closed it. A curl already high round a held controller can't keep it closed.
+            Some(GripSignal::Curl) if rose(squeeze, self.last_squeeze) => {
+                self.closed_by = Some(GripSignal::Squeeze);
+                Some(GraspEdge { closed: true, by: GripSignal::Squeeze, squeeze, curl })
+            }
+            Some(by) if fell(squeeze, self.last_squeeze) => {
+                self.closed_by = None;
+                Some(GraspEdge { closed: false, by, squeeze, curl })
+            }
+            Some(by) => {
+                let (own, other) = match by {
+                    GripSignal::Squeeze => (squeeze, curl),
+                    GripSignal::Curl => (curl, squeeze),
+                };
+                own.or(other).filter(|&v| v < c.open_at).map(|_| {
+                    self.closed_by = None;
+                    GraspEdge { closed: false, by, squeeze, curl }
+                })
+            }
+        };
+        self.last_squeeze = squeeze;
+        self.last_curl = curl;
+        edge
+    }
 }
 
 /// One hand's state across frames.
@@ -104,7 +206,12 @@ pub struct HandState {
     last_pose: Option<RigPose>,
     last_source: Option<HandSource>,
     grip: f32,
-    closed: bool,
+    grasp: Grasp,
+    /// The last close or open, until [`Self::take_edge`] reads it.
+    edge: Option<GraspEdge>,
+    /// The largest squeeze and curl read, for the diagnostic log.
+    pub max_squeeze: Option<f32>,
+    pub max_curl: Option<f32>,
     tracked: bool,
     /// When tracking was lost, while it is lost.
     lost_since: Option<HostTime>,
@@ -121,7 +228,10 @@ impl HandState {
             last_pose: None,
             last_source: None,
             grip: 0.0,
-            closed: false,
+            grasp: Grasp::default(),
+            edge: None,
+            max_squeeze: None,
+            max_curl: None,
             tracked: false,
             lost_since: None,
             discontinuity: 0,
@@ -133,6 +243,11 @@ impl HandState {
         self.discontinuity
     }
 
+    /// The last close or open since the previous call, for the diagnostic log.
+    pub fn take_edge(&mut self) -> Option<GraspEdge> {
+        self.edge.take()
+    }
+
     /// A recentre moved the tracking space under the player (spec 3.2): the next pose jumps.
     pub fn recentre(&mut self) {
         self.discontinuity = self.discontinuity.wrapping_add(1);
@@ -141,7 +256,7 @@ impl HandState {
     /// Input focus was lost (the headset taken off, a system menu): release at once, and the hand is
     /// absent until a reading comes again (spec 5.5).
     pub fn focus_lost(&mut self) {
-        self.closed = false;
+        self.grasp.release();
         self.tracked = false;
         self.lost_since = None;
         self.last_source = None;
@@ -164,22 +279,26 @@ impl HandState {
                 self.tracked = true;
                 self.lost_since = None;
                 self.last_pose = Some(pose);
-                if let Some(g) = r.grip {
-                    self.grip = g.clamp(0.0, 1.0);
+                let squeeze = r.grip.map(|g| g.clamp(0.0, 1.0));
+                let curl = r.curl.map(|g| g.clamp(0.0, 1.0));
+                let max = |m: Option<f32>, v: Option<f32>| match (m, v) {
+                    (Some(m), Some(v)) => Some(m.max(v)),
+                    (m, v) => m.or(v),
+                };
+                self.max_squeeze = max(self.max_squeeze, squeeze);
+                self.max_curl = max(self.max_curl, curl);
+                if let Some(g) = max(squeeze, curl) {
+                    self.grip = g;
                 }
-                if self.closed {
-                    if self.grip < self.config.open_at {
-                        self.closed = false;
-                    }
-                } else if self.grip >= self.config.close_at {
-                    self.closed = true;
+                if let Some(e) = self.grasp.step(squeeze, curl, &self.config) {
+                    self.edge = Some(e);
                 }
             }
             None => {
                 self.tracked = false;
                 let since = *self.lost_since.get_or_insert(r.at);
-                if self.closed && r.at.secs_since(since) >= self.config.lost_grace_s {
-                    self.closed = false;
+                if self.grasp.closed() && r.at.secs_since(since) >= self.config.lost_grace_s {
+                    self.grasp.release();
                     self.forced_releases += 1;
                 }
             }
@@ -195,7 +314,7 @@ impl HandState {
             linear_velocity: if self.tracked { r.linear_velocity } else { None },
             angular_velocity: if self.tracked { r.angular_velocity } else { None },
             grip: self.grip,
-            closed: self.closed,
+            closed: self.grasp.closed(),
             discontinuity: self.discontinuity,
         })
     }
@@ -213,6 +332,7 @@ mod tests {
             linear_velocity: tracked.then_some([0.0; 3]),
             angular_velocity: None,
             grip,
+            curl: None,
         }
     }
 
@@ -326,6 +446,133 @@ mod tests {
         // the hysteresis state was reset with the release.
         let s = h.update(reading(500, Some(0.5), true)).unwrap();
         assert!(!s.closed, "0.5 is below close_at, so the hand stays open after focus returns");
+    }
+
+    #[test]
+    fn either_signal_closes_and_the_one_that_closed_opens() {
+        let c = GraspConfig::default();
+        // A held controller on a runtime that reports joints: the curl stays at 0.5, the squeeze closes and opens.
+        let mut g = Grasp::default();
+        assert_eq!(g.step(Some(0.0), Some(0.5), &c), None);
+        let e = g.step(Some(0.9), Some(0.5), &c).expect("the squeeze closes");
+        assert!(e.closed && e.by == GripSignal::Squeeze);
+        assert_eq!(g.step(Some(0.5), Some(0.5), &c), None, "between the thresholds: still closed");
+        let e = g.step(Some(0.1), Some(0.5), &c).expect("the squeeze opens");
+        assert!(!e.closed && e.by == GripSignal::Squeeze);
+        // A bare hand: no squeeze, the curl closes and opens.
+        let mut g = Grasp::default();
+        assert!(g.step(None, Some(0.8), &c).is_some_and(|e| e.closed && e.by == GripSignal::Curl));
+        assert!(g.step(None, Some(0.3), &c).is_some_and(|e| !e.closed));
+    }
+
+    #[test]
+    fn a_resting_curl_does_not_hold_a_released_squeeze_closed() {
+        let c = GraspConfig::default();
+        let mut g = Grasp::default();
+        g.step(Some(0.0), Some(0.45), &c);
+        assert!(g.step(Some(0.9), Some(0.45), &c).is_some());
+        // The squeeze is let go; the curl rests at 0.45, above open_at: the hand opens all the same.
+        assert!(g.step(Some(0.1), Some(0.45), &c).is_some_and(|e| !e.closed));
+        assert!(!g.closed());
+    }
+
+    #[test]
+    fn a_curl_that_stays_high_does_not_close_again_until_it_rises_again() {
+        let c = GraspConfig::default();
+        let mut g = Grasp::default();
+        // Fingers wrapped round a held controller at a curl of 0.8, the squeeze released: open.
+        g.step(Some(0.0), Some(0.6), &c);
+        assert_eq!(g.step(Some(0.0), Some(0.6), &c), None);
+        assert!(g.step(Some(0.9), Some(0.8), &c).is_some_and(|e| e.closed && e.by == GripSignal::Squeeze));
+        assert!(g.step(Some(0.1), Some(0.8), &c).is_some_and(|e| !e.closed && e.by == GripSignal::Squeeze));
+        // The curl stays at 0.8: it does not close the hand again until it falls below close_at and rises again.
+        assert_eq!(g.step(Some(0.0), Some(0.8), &c), None);
+        assert_eq!(g.step(Some(0.0), Some(0.6), &c), None);
+        assert!(g.step(Some(0.0), Some(0.75), &c).is_some_and(|e| e.closed && e.by == GripSignal::Curl));
+    }
+
+    /// @design-reviewer's Medium: a curl already at 0.8 round a held controller closes the hand; the squeeze must
+    /// still close (take over) and open it, on each path the curl can close by.
+    #[test]
+    fn a_curl_already_high_never_keeps_the_squeeze_from_opening() {
+        let c = GraspConfig::default();
+        let press_and_release = |g: &mut Grasp, curl: Option<f32>| {
+            let e = g.step(Some(0.9), curl, &c).expect("the squeeze takes the grasp over");
+            assert!(e.closed && e.by == GripSignal::Squeeze);
+            let e = g.step(Some(0.1), curl, &c).expect("and opens it");
+            assert!(!e.closed);
+            assert_eq!(g.step(Some(0.0), curl, &c), None, "the curl, still high, doesn't close it again");
+            assert!(!g.closed());
+        };
+        // The first frame, curl already at 0.8.
+        let mut g = Grasp::default();
+        assert!(g.step(Some(0.0), Some(0.8), &c).is_some_and(|e| e.closed && e.by == GripSignal::Curl));
+        press_and_release(&mut g, Some(0.8));
+        // After a release (focus loss, the lost-hand grace): the same.
+        g.release();
+        assert!(g.step(Some(0.0), Some(0.8), &c).is_some_and(|e| e.closed && e.by == GripSignal::Curl));
+        press_and_release(&mut g, Some(0.8));
+        // The curl flickers through None and comes back at 0.8.
+        g.step(Some(0.0), None, &c);
+        assert!(g.step(Some(0.0), Some(0.8), &c).is_some_and(|e| e.closed && e.by == GripSignal::Curl));
+        press_and_release(&mut g, Some(0.8));
+        // Picking the controller up: the curl rises from an open hand's 0.2 to 0.8.
+        let mut g = Grasp::default();
+        g.step(Some(0.0), Some(0.2), &c);
+        assert!(g.step(Some(0.0), Some(0.8), &c).is_some_and(|e| e.closed && e.by == GripSignal::Curl));
+        press_and_release(&mut g, Some(0.8));
+    }
+
+    #[test]
+    fn a_falling_squeeze_opens_a_curl_grasp_but_a_resting_one_does_not() {
+        let c = GraspConfig::default();
+        // A bare-hand fist while a controller lies on at 0: the resting squeeze doesn't open it.
+        let mut g = Grasp::default();
+        g.step(Some(0.0), Some(0.2), &c);
+        assert!(g.step(Some(0.0), Some(0.8), &c).is_some_and(|e| e.by == GripSignal::Curl));
+        assert_eq!(g.step(Some(0.0), Some(0.8), &c), None);
+        assert!(g.closed());
+        // A squeeze half pressed, then let go, opens it even though the curl closed it.
+        assert_eq!(g.step(Some(0.5), Some(0.8), &c), None);
+        assert!(g.step(Some(0.1), Some(0.8), &c).is_some_and(|e| !e.closed && e.by == GripSignal::Curl));
+    }
+
+    #[test]
+    fn a_release_forgets_the_signals_so_a_held_squeeze_closes_again() {
+        let c = GraspConfig::default();
+        let mut g = Grasp::default();
+        assert!(g.step(Some(0.9), None, &c).is_some());
+        g.release();
+        assert!(!g.closed());
+        assert!(g.step(Some(0.9), None, &c).is_some_and(|e| e.closed), "read again after the release");
+    }
+
+    #[test]
+    fn with_the_closing_signal_unread_the_other_decides_and_with_none_the_grasp_holds() {
+        let c = GraspConfig::default();
+        let mut g = Grasp::default();
+        assert!(g.step(Some(0.9), Some(0.5), &c).is_some());
+        // The controller is put down: the squeeze is no longer read, the curl decides.
+        assert_eq!(g.step(None, Some(0.5), &c), None);
+        assert_eq!(g.step(None, None, &c), None, "nothing read: holds");
+        assert!(g.closed());
+        assert!(g.step(None, Some(0.3), &c).is_some_and(|e| !e.closed && e.by == GripSignal::Squeeze));
+    }
+
+    #[test]
+    fn the_hand_state_records_its_edges_and_maxima() {
+        let mut h = HandState::new(Hand::Right, GraspConfig::default());
+        let mut r = reading(0, Some(0.2), true);
+        r.curl = Some(0.4);
+        h.update(r);
+        assert_eq!(h.take_edge(), None);
+        let mut r = reading(8, Some(0.95), true);
+        r.curl = Some(0.5);
+        assert!(h.update(r).unwrap().closed);
+        let e = h.take_edge().expect("a close");
+        assert_eq!((e.closed, e.by, e.squeeze, e.curl), (true, GripSignal::Squeeze, Some(0.95), Some(0.5)));
+        assert_eq!(h.take_edge(), None, "read once");
+        assert_eq!((h.max_squeeze, h.max_curl), (Some(0.95), Some(0.5)));
     }
 
     #[test]

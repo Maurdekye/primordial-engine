@@ -121,6 +121,11 @@ pub trait Backend {
     fn begin_frame(&mut self) -> Result<(), XrError>;
     /// Locate one hand at a host time: a tracked hand's joints or a controller's grip, as a reading.
     fn read_hand(&mut self, hand: Hand, at: HostTime) -> Reading;
+    /// Each hand's current interaction profile (left, right), for the diagnostic log: "none" while the runtime
+    /// has none. `None` where the backend can't tell.
+    fn interaction_profiles(&self) -> Option<[String; 2]> {
+        None
+    }
     /// The joints of the hand that [`Self::read_hand`] last read at exactly `at`, when that reading came from hand
     /// tracking: for drawing the hand only (spec 6). `None` for a controller, or when the runtime gives none.
     fn hand_joints(&self, _hand: Hand, _at: HostTime) -> Option<HandJoints> {

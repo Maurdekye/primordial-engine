@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use pe_seams::{Hand, RigPose};
 
 use crate::backend::{EyePose, SessionState};
-use crate::hands::Reading;
+use crate::hands::{GraspEdge, Reading};
 use crate::seam::HandSource;
 use crate::session::{Counters, EndReason};
 
@@ -131,6 +131,39 @@ impl Diag {
             .then(|| format!("{hand:?} hand pose from {source:?} (was {last:?}) at {at_ns} ns"))
     }
 
+    /// A close or an open of a hand's grasp, with both signals and which one decided it.
+    pub fn grasp_edge(&self, hand: Hand, e: &GraspEdge, at_ns: i64) -> Option<String> {
+        self.on.then(|| {
+            format!(
+                "{hand:?} hand {} by the {:?} at {at_ns} ns: squeeze {} ({}), curl {}",
+                if e.closed { "closed" } else { "opened" },
+                e.by,
+                e.squeeze.map_or("-".into(), |v| format!("{v:.2}")),
+                if e.squeeze.is_some() { "action active" } else { "action inactive" },
+                e.curl.map_or("-".into(), |v| format!("{v:.2}")),
+            )
+        })
+    }
+
+    /// Each hand's current interaction profile, `why` saying when it was read.
+    pub fn profiles(&self, why: &str, profiles: &[String; 2]) -> Option<String> {
+        self.on.then(|| format!("interaction profiles ({why}): Left {}, Right {}", profiles[0], profiles[1]))
+    }
+
+    /// Each hand's largest squeeze and curl over the session, at teardown.
+    pub fn grip_maxima(&self, maxima: &[(Option<f32>, Option<f32>); 2]) -> Option<String> {
+        let f = |v: Option<f32>| v.map_or("never read".to_string(), |v| format!("{v:.2}"));
+        self.on.then(|| {
+            format!(
+                "grip maxima: Left squeeze {}, curl {}; Right squeeze {}, curl {}",
+                f(maxima[0].0),
+                f(maxima[0].1),
+                f(maxima[1].0),
+                f(maxima[1].1)
+            )
+        })
+    }
+
     pub fn ended(&self, why: Option<EndReason>, counters: &Counters) -> Option<String> {
         self.on.then(|| {
             let never = if self.hand_logged == [false, false] { "; no hand was ever tracked while drawn" } else { "" };
@@ -159,6 +192,36 @@ mod tests {
         let p = RigPose { position: [0.2, 1.2, -0.4], orientation: [0.0, 0.0, 0.0, 1.0] };
         assert!(d.first_hands(&[Some(p), Some(p)]).is_empty());
         assert!(d.ended(Some(EndReason::Exited), &Counters::default()).is_none());
+    }
+
+    #[test]
+    fn grasp_edges_profiles_and_maxima_are_logged_only_when_on() {
+        use crate::hands::{GraspEdge, GripSignal};
+        let e = GraspEdge { closed: true, by: GripSignal::Squeeze, squeeze: Some(0.9), curl: Some(0.45) };
+        let profiles = ["/interaction_profiles/oculus/touch_controller".to_string(), "none".to_string()];
+        let maxima = [(Some(0.9), Some(0.5)), (None, Some(0.3))];
+        let off = Diag::new(false);
+        assert!(off.grasp_edge(Hand::Left, &e, 5).is_none());
+        assert!(off.profiles("changed", &profiles).is_none());
+        assert!(off.grip_maxima(&maxima).is_none());
+        let on = Diag::new(true);
+        assert_eq!(
+            on.grasp_edge(Hand::Left, &e, 5).unwrap(),
+            "Left hand closed by the Squeeze at 5 ns: squeeze 0.90 (action active), curl 0.45"
+        );
+        let open = GraspEdge { closed: false, by: GripSignal::Curl, squeeze: None, curl: Some(0.2) };
+        assert_eq!(
+            on.grasp_edge(Hand::Right, &open, 6).unwrap(),
+            "Right hand opened by the Curl at 6 ns: squeeze - (action inactive), curl 0.20"
+        );
+        assert_eq!(
+            on.profiles("changed", &profiles).unwrap(),
+            "interaction profiles (changed): Left /interaction_profiles/oculus/touch_controller, Right none"
+        );
+        assert_eq!(
+            on.grip_maxima(&maxima).unwrap(),
+            "grip maxima: Left squeeze 0.90, curl 0.50; Right squeeze never read, curl 0.30"
+        );
     }
 
     #[test]
