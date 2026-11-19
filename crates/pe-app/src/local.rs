@@ -10,9 +10,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use pe_seams::{
     Agreement, ChainId, Class, DomainId, Entry, EntryRef, Frame, FrameView, Hand, HandFeed, HandInput, HostTime,
-    LineId, MemberKey, Offset, RigTransform, SignedEntry,
+    LineId, MemberKey, ObjectId, Offset, Pos, RigTransform, SignedEntry,
 };
 use pe_world::input::{HandPose, Input};
+
+/// What step 2 asks the world when a hand's grasp changes (app.md 3.1, step 2): the object a close grabs, and what an
+/// opening hand holds. pe-app answers from the replica's present world (pe-world's `pick_grab` and claims).
+pub trait Grasps {
+    /// The object a close of `author`'s `hand` grabs, with the hand's target at `target` in a `Grab` stamped `now`, if
+    /// one is in reach.
+    fn pick(&self, author: MemberKey, hand: ObjectId, target: Pos, now: Frame) -> Option<ObjectId>;
+    /// The objects `hand` holds at `now`.
+    fn held(&self, hand: ObjectId, now: Frame) -> Vec<ObjectId>;
+}
+
+/// Each hand's grasp as step 2 last sent it, left then right.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Grasp {
+    /// The `engaged` last sent. A grasp's edges are changes of what was sent, never of the raw sample.
+    pub sent: [bool; 2],
+    /// The object the hand's last close named in a `Grab`, until it opens: released at the open even when no view
+    /// shows the claim yet.
+    pub grabbed: [Option<ObjectId>; 2],
+}
+
+/// What step 2 sent for the hands at one tick.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HandsSent {
+    /// Hand inputs agreement took, and entries it refused (hand inputs, grabs and releases).
+    pub took: u32,
+    pub refused: u32,
+    /// Poses not sent while the stamp stood still.
+    pub thinned: u32,
+    /// Per hand, left then right: `engaged` edges sent, false to true (a close) and true to false (an open).
+    pub closes: [u32; 2],
+    pub opens: [u32; 2],
+    /// Per hand: the `Release`s agreement took.
+    pub releases: [u32; 2],
+    /// The `Grab`s agreement took, each with its hand (0 left, 1 right), so the views' records can tell their
+    /// outcomes.
+    pub grabs: Vec<(usize, EntryRef)>,
+}
 
 /// This member's chain (S1): every entry it authors, inputs and edits alike, in order. The first entry carries the
 /// nonce its chain id derives from; each later one names the one before.
@@ -127,25 +165,31 @@ pub fn world_pose(rig: &RigTransform, h: &HandInput) -> Option<HandPose> {
 ///
 /// `thin`: the frame's stamp stands still (stamp-ahead is shedding its lead, app.md 3.2), so a pose would only replace
 /// the previous frame's at the same stamp. Such poses aren't sent; a grasp that changed (a grab or a release) still
-/// goes out, at the stamp (@coordinator-opus m744fc393cdf9). Returns the entries agreement took, those it refused, and
-/// the poses thinned.
+/// goes out, at the stamp (@coordinator-opus m744fc393cdf9).
+///
+/// A hand input that changes the `engaged` last sent is a grasp's edge (app.md 3.1 step 2; @coordinator-opus's ruling
+/// on the pick, after @fable-reviewer). A close also sends a `Grab`, in the same frame, for the object `world` picks
+/// within reach of the target just sent; it is never tried again while the hand stays closed, refused or not. An
+/// open sends a `Release` for each object that hand holds, and for its last close's grab, except what the other hand
+/// last grabbed: a ball passed between hands stays in the hand that took it.
 #[allow(clippy::too_many_arguments)]
 pub fn submit_hands(
     chain: &mut Chain,
-    sent: &mut [bool; 2],
+    grasp: &mut Grasp,
     feed: &dyn HandFeed,
+    world: &dyn Grasps,
     view: &FrameView,
     at: HostTime,
     p: Frame,
     domain: DomainId,
     agree: &mut dyn Agreement,
     thin: bool,
-) -> (u32, u32, u32) {
-    let (mut took, mut refused, mut thinned) = (0, 0, 0);
+) -> HandsSent {
+    let mut out = HandsSent::default();
     for (i, side) in [Hand::Left, Hand::Right].into_iter().enumerate() {
-        let Some(h) = feed.hand_at(side, at).filter(|h| h.tracked || h.closed != sent[i]) else { continue };
-        if thin && h.closed == sent[i] {
-            thinned += 1;
+        let Some(h) = feed.hand_at(side, at).filter(|h| h.tracked || h.closed != grasp.sent[i]) else { continue };
+        if thin && h.closed == grasp.sent[i] {
+            out.thinned += 1;
             continue;
         }
         let Some(hand) = view.objects.iter().find(|o| o.hand_of == Some((chain.me(), side))).map(|o| o.id) else {
@@ -156,13 +200,65 @@ pub fn submit_hands(
         match agree.submit(chain.entry(domain, p, Class::Input, payload)) {
             Ok(signed) => {
                 chain.took(&signed);
-                sent[i] = pose.engaged;
-                took += 1;
+                out.took += 1;
             }
-            Err(_) => refused += 1,
+            Err(_) => {
+                out.refused += 1;
+                continue;
+            }
+        }
+        let was = std::mem::replace(&mut grasp.sent[i], pose.engaged);
+        match (was, pose.engaged) {
+            (false, true) => {
+                out.closes[i] += 1;
+                if let Some(object) = world.pick(chain.me(), hand, pose.pos, p) {
+                    match send_input(chain, agree, domain, p, &Input::Grab { object, hand: Some(hand) }) {
+                        Some(id) => {
+                            grasp.grabbed[i] = Some(object);
+                            // Taken from the other hand: that hand's open no longer releases it.
+                            if grasp.grabbed[1 - i] == Some(object) {
+                                grasp.grabbed[1 - i] = None;
+                            }
+                            out.grabs.push((i, id));
+                        }
+                        None => out.refused += 1,
+                    }
+                }
+            }
+            (true, false) => {
+                out.opens[i] += 1;
+                let mut held = world.held(hand, p);
+                held.extend(grasp.grabbed[i].take());
+                // What the other hand last grabbed stays with it: pe-world's `Release` ends the member's claim whichever
+                // hand holds it, and the present world may not show the pass between hands yet (@design-reviewer's
+                // Medium on 82644261).
+                held.retain(|o| grasp.grabbed[1 - i] != Some(*o));
+                held.sort();
+                held.dedup();
+                for object in held {
+                    match send_input(chain, agree, domain, p, &Input::Release { object }) {
+                        Some(_) => out.releases[i] += 1,
+                        None => out.refused += 1,
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    (took, refused, thinned)
+    out
+}
+
+/// Submits `input` at stamp `p` on this member's chain: its entry's id if agreement took it.
+fn send_input(
+    chain: &mut Chain,
+    agree: &mut dyn Agreement,
+    domain: DomainId,
+    p: Frame,
+    input: &Input,
+) -> Option<EntryRef> {
+    let signed = agree.submit(chain.entry(domain, p, Class::Input, input.encode())).ok()?;
+    chain.took(&signed);
+    Some(signed.id())
 }
 
 /// The Hamilton product `a b` of two quaternions in OpenXR's order, (x, y, z, w).

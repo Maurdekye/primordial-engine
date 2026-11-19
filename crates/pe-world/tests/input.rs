@@ -448,3 +448,107 @@ fn only_a_hands_owner_sets_its_mode_and_it_is_hashed() {
     ok(&input(&mut f.w, 1, &mut f.a, hand(HAND_A, vec![pose(0.5, true)], 0)));
     assert_eq!(f.w.hand_mode(oid(HAND_A)), Some(hand_mode::WITHIN_REACH));
 }
+
+/// pe-app's pick (app.md 3.1 step 2; @coordinator-opus's ruling on the defaults, after @fable-reviewer): grabbable
+/// balls around the origin, by id, with the distance from the origin to each surface.
+const NEAR: u128 = 20; // 0.07
+const BIG: u128 = 21; // 0.08
+const SLACK: u128 = 22; // 0.12 from the origin: past reach (0.1 m), within reach plus slack (0.15 m)
+const SHUN: u128 = 23; // 0.01, but its body isn't grabbable
+const HAND_C: u128 = 3; // the second member's other hand, a body itself, inside reach
+const HAND_A2: u128 = 4; // the first member's other hand
+
+fn pose_at(x: f64, y: f64, engaged: bool) -> HandPose {
+    HandPose { pos: at(x, y), rot: ID, grip: 0.5, engaged }
+}
+
+fn ball(w: &mut World, owner: MemberKey, id: u128, (x, y): (f64, f64), r: f32, grabbable: u8) {
+    w.create(oid(id), None, owner, pe_world::GENESIS).unwrap();
+    w.insert(oid(id), Transform::at(at(x, y))).unwrap();
+    w.insert(oid(id), Body { grabbable, ..Body::default() }).unwrap();
+    w.insert(oid(id), sphere(r)).unwrap();
+}
+
+/// [`fx`] plus the pick's balls, and a hand that is a grabbable body inside reach.
+fn pick_fx() -> Fx {
+    let mut f = fx();
+    let (ka, kb) = (f.ka, f.kb);
+    ball(&mut f.w, ka, NEAR, (0.12, 0.0), 0.05, 1);
+    ball(&mut f.w, ka, BIG, (-0.20, 0.0), 0.12, 1);
+    ball(&mut f.w, ka, SLACK, (0.0, 0.17), 0.05, 1);
+    ball(&mut f.w, ka, SHUN, (0.0, -0.06), 0.05, 0);
+    ball(&mut f.w, kb, HAND_C, (0.03, 0.0), 0.05, 1);
+    f.w.insert(oid(HAND_C), Hand { owner: kb, ..Hand::default() }).unwrap();
+    f
+}
+
+fn pick(f: &Fx, now: u64, hand: u128, (x, y): (f64, f64)) -> Option<ObjectId> {
+    f.w.pick_grab(Frame(now), f.ka, oid(hand), at(x, y))
+}
+
+#[test]
+fn the_pick_is_the_nearest_grabbable_surface_within_reach_alone() {
+    let mut f = pick_fx();
+    // SHUN's surface and the other member's hand are nearer, but SHUN isn't grabbable and a hand is never picked.
+    assert_eq!(pick(&f, 1, HAND_A, (0.0, 0.0)), Some(oid(NEAR)));
+    // From (0, 0.34) only SLACK's surface is near, 0.12 m away: a `Grab` would apply there (reach plus slack), but
+    // the pick takes reach alone, leaving the slack for prediction error.
+    assert_eq!(pick(&f, 1, HAND_A, (0.0, 0.34)), None);
+    ok(&input(&mut f.w, 1, &mut f.a, hand(HAND_A, vec![pose_at(0.0, 0.34, true)], 0)));
+    ok(&input(&mut f.w, 1, &mut f.a, grab(SLACK, HAND_A)));
+    // Picking changes nothing.
+    let before = f.w.root();
+    let _ = pick(&f, 1, HAND_A, (0.0, 0.0));
+    assert_eq!(f.w.root(), before);
+}
+
+#[test]
+fn the_pick_ties_to_the_lowest_id() {
+    let mut f = fx();
+    let ka = f.ka;
+    ball(&mut f.w, ka, 31, (0.0, -0.1), 0.05, 1);
+    ball(&mut f.w, ka, 30, (0.0, 0.1), 0.05, 1);
+    assert_eq!(pick(&f, 1, HAND_A, (0.0, 0.0)), Some(oid(30)));
+}
+
+#[test]
+fn the_pick_skips_what_a_grab_would_refuse_and_takes_what_my_other_hand_holds() {
+    // Another member's claim: the next nearest is picked.
+    let mut f = pick_fx();
+    ok(&input(&mut f.w, 1, &mut f.b, hand(HAND_B, vec![pose_at(0.12, 0.0, true)], 0)));
+    ok(&input(&mut f.w, 1, &mut f.b, grab(NEAR, HAND_B)));
+    assert_eq!(pick(&f, 1, HAND_A, (0.0, 0.0)), Some(oid(BIG)));
+
+    // Another member holding something in its subtree: a cup on NEAR, held by the other member.
+    let mut f = pick_fx();
+    let kb = f.kb;
+    f.w.create(oid(40), Some(oid(NEAR)), kb, pe_world::GENESIS).unwrap();
+    f.w.insert(oid(40), Transform::local([0.0, 0.3, 0.0])).unwrap();
+    f.w.insert(oid(40), Body { grabbable: 1, ..Body::default() }).unwrap();
+    f.w.insert(oid(40), sphere(0.05)).unwrap();
+    ok(&input(&mut f.w, 1, &mut f.b, hand(HAND_B, vec![pose_at(0.12, 0.3, true)], 0)));
+    ok(&input(&mut f.w, 1, &mut f.b, grab(40, HAND_B)));
+    assert_eq!(pick(&f, 1, HAND_A, (0.0, 0.0)), Some(oid(BIG)));
+
+    // My own cooldown, after my claim on NEAR lapsed unrenewed.
+    let mut f = pick_fx();
+    ok(&input(&mut f.w, 1, &mut f.a, hand(HAND_A, vec![pose_at(0.12, 0.0, false)], 0)));
+    ok(&input(&mut f.w, 1, &mut f.a, grab(NEAR, HAND_A)));
+    run(&mut f.w, 1, 40);
+    let until = f.w.cooldown(f.ka, oid(NEAR)).expect("the lapse set a cooldown");
+    assert!(until > Frame(40), "{until:?}");
+    assert_eq!(pick(&f, 40, HAND_A, (0.0, 0.0)), Some(oid(BIG)));
+    assert_eq!(pick(&f, until.0, HAND_A, (0.0, 0.0)), Some(oid(NEAR)), "and NEAR again once it ends");
+
+    // My other hand's claim: the pick takes it, and the grab moves the claim to the closing hand.
+    let mut f = pick_fx();
+    let ka = f.ka;
+    f.w.create(oid(HAND_A2), None, ka, pe_world::GENESIS).unwrap();
+    f.w.insert(oid(HAND_A2), Transform::at(at(0.12, 0.0))).unwrap();
+    f.w.insert(oid(HAND_A2), Hand { owner: ka, ..Hand::default() }).unwrap();
+    ok(&input(&mut f.w, 1, &mut f.a, grab(NEAR, HAND_A2)));
+    assert_eq!(pick(&f, 1, HAND_A, (0.0, 0.0)), Some(oid(NEAR)));
+    ok(&input(&mut f.w, 1, &mut f.a, hand(HAND_A, vec![pose_at(0.0, 0.0, true)], 0)));
+    ok(&input(&mut f.w, 1, &mut f.a, grab(NEAR, HAND_A)));
+    assert_eq!(f.w.claims().find(|(o, _)| *o == oid(NEAR)).unwrap().1.hand, oid(HAND_A));
+}

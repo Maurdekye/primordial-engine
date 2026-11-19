@@ -81,7 +81,8 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    (pe-world's input and edit codecs), all on the member's one chain. Each goes through `Agreement::submit`, which
    signs it. A second tick in the same frame (a wake by the inbox or the edit queue) submits nothing. So a member
    makes at most two hand entries and one edit a frame, which pe-agree's rate budget passes at any world rate
-   (agreement.md 2); a longer edit queue waits a frame per edit. Before encoding an edit, step 2 sets each
+   (agreement.md 2); a longer edit queue waits a frame per edit. A grasp's edge (below) adds its hand's grab or
+   releases to that frame, which the budget's half-second burst absorbs. Before encoding an edit, step 2 sets each
    `CommitScript`'s `activate_at` to the frame it stamps the entry at (`Transaction::set_activation`): pe-api leaves
    it at 0, since only this machine knows the stamp, and pe-world refuses a commit whose `activate_at` is not its
    stamp (api.md 7.1, world-model.md 7.9). While `Agreement::backlogged()` is true (after a
@@ -89,6 +90,30 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    makes no hand entries, which would be refused or void as late; edits are never held back, and
    `SimStats::hands_paced` counts the frames. Peers see none of its hand entries meanwhile, so a backlog that
    outlasts a claim's lapse may release what the member holds.
+
+   **A hand's grasp** (world-model.md 7.2, 8.1; @coordinator-opus m563137337624 and its ruling on the defaults,
+   after @fable-reviewer). A hand entry whose `engaged` differs from the one last sent for that hand is the grasp's
+   edge; the raw sample's changes are not.
+   - **A close** (false to true) also sends a `Grab` for that hand, in the same frame, so pe-world measures its reach
+     after the hand entry moved the hand. It names the object pe-world's `pick_grab` picks on the replica's present
+     world: of the bodies marked `grabbable`, hands excepted, those a `Grab` would claim, the nearest by the distance
+     from the target just sent to its nearest bounding sphere's surface, ties to the lowest id.
+     - "Would claim" is `grab()`'s own checks (`grab_check`), so the pick can't drift from the world's rule. Not held
+       by another member, nothing in its subtree held by one, not under the member's own cooldown; an object the
+       member's other hand holds may be picked, and the grab moves the claim.
+     - Within `reach_mm` alone: the slack is left for prediction error.
+     - With nothing in reach, nothing is sent. A grab another member's claim beats in the agreed order is refused
+       `Held`, and is not tried again while the hand stays closed.
+   - **An open** (true to false), a lost hand's release included, sends a `Release` for each object that hand holds,
+     and for its last close's grab, whose claim a view may not show yet. It leaves out what the other hand last
+     grabbed: pe-world's `Release` ends the member's claim whichever hand holds it, so a ball passed between hands
+     stays in the hand that took it, even before the present world shows the pass (@design-reviewer's Medium on
+     82644261).
+   - The desktop hand and VR's take this one path. An agent's hand-less grab is not part of it.
+   - The end line counts each hand's grasps (`SimStats::hands`): its edges (`closes`, `opens`), the grabs and releases
+     sent, and the grabs applied and refused by reason (`Held`, `OutOfReach`, `Cooldown`, ...), as the newest view
+     tells them. The tally keeps every grab of the session, as `--check-replay` keeps every cut: small at M1's scale.
+     A reason's name is its `Debug` name.
 3. **Agreement's time.** `Agreement::tick(now, clock)`; its outgoing messages go to the network outbox.
 4. **The replica.** pe-replica's `Driver::drive(replica, agree, p + 1, self_test)` (WS-state, @vdw-physics,
    m7e812664fbd8; @harness-eng's DESIGN.md 3.2). `present` is exclusive, so frame `p`, whose local entries step 2 just
