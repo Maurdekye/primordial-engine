@@ -223,6 +223,14 @@ pub fn instance_api_version(negotiated: sys::Version) -> sys::Version {
     if negotiated.minor() >= 1 { sys::Version::new(1, 1, 0) } else { sys::Version::new(1, 0, 0) }
 }
 
+/// The API version to ask `xrCreateInstance` for once more when the runtime refuses `asked` as unsupported
+/// (`XR_ERROR_API_VERSION_UNSUPPORTED`): 1.0 after 1.1, and nothing after 1.0. A negotiated version is only an
+/// upper bound: SteamVR negotiates 1.1 or later, then refuses an instance that asks for 1.1 (M1's solo check on
+/// SteamVR, 2026-11-19; spec 2). Nothing pe-xr uses is core only in 1.1.
+pub fn fallback_api_version(asked: sys::Version) -> Option<sys::Version> {
+    (asked.major() == 1 && asked.minor() >= 1).then(|| sys::Version::new(1, 0, 0))
+}
+
 /// The runtime's library, kept loaded for as long as anything made through it lives: the entry, every
 /// instance, and every GPU context made through the runtime, since the runtime may have hooked the Vulkan
 /// dispatch (spec 4.1). Clone the `Arc` into whatever must outlive the instance.
@@ -433,6 +441,16 @@ mod tests {
         assert_eq!(instance_api_version(sys::Version::new(1, 1, 62)), sys::Version::new(1, 1, 0));
         assert_eq!(instance_api_version(sys::Version::new(1, 2, 0)), sys::Version::new(1, 1, 0));
         assert_eq!(instance_api_version(sys::Version::new(1, 0, 34)), sys::Version::new(1, 0, 0));
+    }
+
+    /// SteamVR's case (M1's solo check, 2026-11-19): it negotiates 1.1 or later, so the instance first asks for 1.1,
+    /// which it refuses as unsupported; the one retry asks for 1.0. A refused 1.0 has nothing lower to try.
+    #[test]
+    fn a_refused_1_1_is_asked_again_at_1_0_once() {
+        let first = instance_api_version(sys::Version::new(1, 1, 49));
+        assert_eq!(first, sys::Version::new(1, 1, 0));
+        assert_eq!(fallback_api_version(first), Some(sys::Version::new(1, 0, 0)));
+        assert_eq!(fallback_api_version(sys::Version::new(1, 0, 0)), None);
     }
 
     #[test]
