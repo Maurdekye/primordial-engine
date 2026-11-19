@@ -481,3 +481,11 @@ pub fn hold_gap(physics: &PhysicsWorld, object: ObjectId, hand: ObjectId) -> Opt
     let r = rotate(h.rotation, anchor);
     Some(distance(o.position, [0usize, 1, 2].map(|i| h.position[i] + f64::from(r[i]))))
 }
+
+/// Whether a held object `gap` from its place in the hand is drawn where it is simulated (render.md 8, D4's
+/// break-away): over [`pe_seams::BREAK_AWAY`], or, when it already was (`was_away`), still over
+/// [`pe_seams::BREAK_BACK`], so a gap hovering near the threshold doesn't flicker. No gap, no break-away.
+pub fn held_away(was_away: bool, gap: Option<f64>) -> bool {
+    let bound = if was_away { pe_seams::BREAK_BACK } else { pe_seams::BREAK_AWAY };
+    gap.is_some_and(|gap| gap > bound)
+}

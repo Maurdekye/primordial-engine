@@ -396,7 +396,8 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
     heavy to follow (world-model.md 8.1, the tight hold), is drawn where it is simulated instead, at its time-resolved
     pose with no offset and no cue, so it is never drawn through what blocks it. pe-replica marks it `HELD_AWAY` at
     publication, since only it knows each grab's place; it stays `HELD_LOCAL`, never corrected, and is no hold end.
-    Back within 5 cm it is drawn at the hand again: a jump of the hand's lead, which the user's ruling on
+    It is drawn at the hand again once back within `BREAK_BACK` (3 cm, provisional), so a gap hovering near 5 cm
+    doesn't flicker between the two (@design-reviewer's L1): a jump of the hand's lead, which the user's ruling on
     responsiveness accepts.
   - On the desktop the own hand is drawn at its current input pose (the mouse ray now, section 9): the desktop's
     late-latch, never extrapolated or corrected. A held object follows it at the grip offset.

@@ -183,6 +183,10 @@ impl ViewFlags {
 /// D4's break-away distance, m (render.md 8; provisional, @coordinator-opus): a held object kept farther
 /// than this from its place in the hand is [`ViewFlags::HELD_AWAY`], drawn where it is simulated.
 pub const BREAK_AWAY: f64 = 0.05;
+/// The distance a [`ViewFlags::HELD_AWAY`] object must come back within before it is drawn at the hand again, m
+/// (provisional): below [`BREAK_AWAY`], so a gap hovering near it doesn't flicker between the two (@design-reviewer's
+/// L1 on the break-away).
+pub const BREAK_BACK: f64 = 0.03;
 
 /// Which hand holds an object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

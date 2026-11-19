@@ -1866,6 +1866,22 @@ fn a_held_ball_kept_from_its_place_by_a_wall_is_marked_away_in_the_view() {
     assert_eq!(r.faults(), 0);
 }
 
+/// The break-away's hysteresis (@design-reviewer's L1 on ca1d3ac4): a held object goes away above `BREAK_AWAY` and
+/// comes back only below `BREAK_BACK`, so a gap between the two keeps whichever it was and never flickers; with no grab
+/// joint from its hand there is no gap, and no break-away.
+#[test]
+fn a_held_object_goes_away_above_five_cm_and_comes_back_below_three() {
+    use pe_replica::hands::held_away;
+    let (away, back) = (pe_seams::BREAK_AWAY, pe_seams::BREAK_BACK);
+    assert!(back < away);
+    let between = (away + back) / 2.0;
+    assert!(!held_away(false, Some(between)), "in its place, a gap under 5 cm keeps it at the hand");
+    assert!(held_away(false, Some(away + 0.001)), "over 5 cm it goes away");
+    assert!(held_away(true, Some(between)), "away, a gap over 3 cm keeps it away");
+    assert!(!held_away(true, Some(back - 0.001)), "under 3 cm it comes back");
+    assert!(!held_away(true, None) && !held_away(false, None), "no hold, no break-away");
+}
+
 /// Two hands, two holds, each bounded by its own hand's speed (@design-reviewer): the left holds a ball
 /// pinned against the wall with the hand still 1 m past it, while the right carries another along in the open at
 /// 15 m/s, above the cap. The pinned ball stays on its side; the right's ball catches up no faster than the cap
