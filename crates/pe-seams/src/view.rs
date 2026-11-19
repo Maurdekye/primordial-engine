@@ -161,6 +161,10 @@ impl ViewFlags {
     pub const HELD_LOCAL: ViewFlags = ViewFlags(2);
     /// Its simulated pose was rewritten by a replay, a repair or a merge since the last publication.
     pub const CORRECTED: ViewFlags = ViewFlags(4);
+    /// A `Release` of it by the local player applied in the steps this view covers (render.md 8, D4's hand-off): a hold
+    /// that ends in this view ended because the player let go, not by a lost race or a lapsed claim. Set by pe-app,
+    /// which knows its own `Release` entries, from the view's step records (app.md 3, step 6).
+    pub const RELEASED_LOCAL: ViewFlags = ViewFlags(8);
 
     pub fn contains(self, f: ViewFlags) -> bool {
         self.0 & f.0 == f.0
@@ -520,5 +524,8 @@ mod tests {
         assert!(f.contains(ViewFlags::OWN_HAND));
         assert!(f.contains(ViewFlags::CORRECTED));
         assert!(!f.contains(ViewFlags::HELD_LOCAL));
+        assert!(!f.contains(ViewFlags::RELEASED_LOCAL));
+        let all = [ViewFlags::OWN_HAND, ViewFlags::HELD_LOCAL, ViewFlags::CORRECTED, ViewFlags::RELEASED_LOCAL];
+        assert_eq!(all.iter().fold(0, |bits, f| bits | f.0), 0b1111, "each flag its own bit");
     }
 }

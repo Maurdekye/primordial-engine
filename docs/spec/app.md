@@ -149,7 +149,11 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    Its repairs run through S2 v1 (`replay_to`, `import_at_cut`, then `finalize` again; RULINGS.md "S2 v1"), within
    the replica's budget (below).
 6. **Publish.** `FrameSlot::publish(replica.view())`, the snapshot port and the change record (3.1), and the
-   effects queue.
+   effects queue. Before the slot, an object one of this member's own `Release`s let go of in the view's steps (an
+   applied record of a `Release` step 2 sent, kept until a final frame passes its stamp) is marked
+   `ViewFlags::RELEASED_LOCAL` in a copy of the view, so the display hands it off instead of correcting it
+   (render.md 8, D4). Only pe-app knows which entries are its `Release`s, and the view's records don't name the
+   object.
 7. **Wait** until `clock.host_time_of(p + 1)`, or until the inbox or the edit queue wakes the thread, whichever is
    first. Before frame 0 the wait is at least one frame period, since `host_time_of` means nothing while the clock
    converges; the network thread wakes the simulation thread when it converges.

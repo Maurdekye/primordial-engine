@@ -1508,6 +1508,96 @@ fn a_throw_leaves_at_the_hand_s_speed_up_to_the_cap() {
     }
 }
 
+/// Step 0 of the release fix (@item:primordial-engine/letting-go-in-vr-the-ball-flies-at-once-with-no-g;
+/// @coordinator-opus m989e553ce516): a pit ball (18 g) is grabbed on the floor, lifted to 1 m and held still, then
+/// swung along x. The hand speeds up evenly over 0.15 s to `v` (`v / 0.15` m/s²), keeps that speed for 0.1 s, and
+/// opens at speed. Prints, per speed: the ball's sag below its place in the hand; its trail behind that place along
+/// the swing, the most while the hand speeds up and at the end of the steady part; and its launch speed against
+/// the hand body's. A measurement: it asserts nothing.
+#[test]
+#[ignore = "a measurement (step 0 of the release fix): prints, asserts nothing"]
+fn measure_the_hold_s_trail_and_launch_in_a_swing() {
+    use pe_world::input::MAX_POSES;
+    for v in [3.5, 8.0, 12.0] {
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut s = Source::default();
+        let hr = f64::from(pe_replica::world::HAND_RADIUS);
+        let start = [2.0 - 0.03 - hr, 0.03, 0.0];
+        let mut path: Vec<[f64; 3]> = (1..=30).map(|k| [start[0], 0.03 + 0.97 * f64::from(k) / 30.0, 0.0]).collect();
+        path.extend(std::iter::repeat_n([start[0], 1.0, 0.0], 30));
+        let swing = path.len();
+        let (speeding, steady) = (9_usize, 6_usize);
+        let mut x = start[0];
+        for k in 1..=speeding + steady {
+            x += v * (k.min(speeding) as f64 / speeding as f64) / 60.0;
+            path.push([x, 1.0, 0.0]);
+        }
+        let open = path.len();
+        for _ in 0..12 {
+            x += v / 60.0;
+            path.push([x, 1.0, 0.0]);
+        }
+        s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
+        s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+        for (i, pack) in path[..open].chunks(MAX_POSES).enumerate() {
+            s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_at(pack, true)));
+        }
+        let release = 10 + open as u64;
+        s.add(input(&mut b, release, &hand_at(&path[open..], false)));
+        s.add(input(&mut b, release, &Input::Release { object: oid(BALL) }));
+        let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, 0.03, 0.0], pit_ball())]));
+        let body = |r: &ReplicaImpl<PeWorld>| r.physics().pose(oid(HAND)).map(|p| p.position).unwrap_or(at(r, HAND));
+        let offset = |r: &ReplicaImpl<PeWorld>| {
+            let (h, o) = (body(r), at(r, BALL));
+            [o[0] - h[0], o[1] - h[1], o[2] - h[2]]
+        };
+        r.advance(Frame(10), &mut s);
+        assert_eq!(held_by(&r, BALL), Some(oid(HAND)), "held from the grab");
+        let grabbed = offset(&r);
+        r.advance(Frame(10 + swing as u64), &mut s);
+        let still = offset(&r);
+        let mut rows = Vec::new();
+        let (mut most, mut most_at) = (0.0_f64, 0_u64);
+        for f in 10 + swing as u64..release + 4 {
+            r.advance(Frame(f + 1), &mut s);
+            let o = offset(&r);
+            let trail = still[0] - o[0];
+            let hv = f64::from(r.physics().velocity(oid(HAND)).map(|(l, _)| l[0]).unwrap_or(f32::NAN));
+            let bv = f64::from(r.physics().velocity(oid(BALL)).expect("the ball's body").0[0]);
+            let k = f - (10 + swing as u64);
+            if (k as usize) < speeding && trail > most {
+                (most, most_at) = (trail, k);
+            }
+            rows.push(format!(
+                "  frame +{k:2}: target x {:.3}, body x {:.3} ({hv:6.2} m/s), ball trail {:+.1} mm, ball {bv:6.2} m/s{}",
+                at(&r, HAND)[0],
+                body(&r)[0],
+                trail * 1000.0,
+                if f + 1 == release { "  <- the frame before the open" } else { "" }
+            ));
+        }
+        let steady_trail = {
+            let line = &rows[speeding + steady - 1];
+            line.clone()
+        };
+        println!(
+            "v {v} m/s (a {:.0} m/s^2): sag {:.1} mm (offset at the grab {:?}, held still {:?}); most trail while \
+             speeding up {:.1} mm at +{most_at}; end of steady: {}",
+            v / 0.15,
+            (grabbed[1] - still[1]) * 1000.0,
+            grabbed.map(|c| (c * 1000.0).round() / 1000.0),
+            still.map(|c| (c * 1000.0).round() / 1000.0),
+            most * 1000.0,
+            steady_trail.trim()
+        );
+        for row in rows {
+            println!("{row}");
+        }
+        assert_eq!(r.faults(), 0);
+    }
+}
+
 /// The teleport distance (world-model.md 8.1): half a metre, or two frames at the cap where that is longer, so a band
 /// of moves faster than the cap but short of a teleport exists at every rate (30 Hz: 0.67 m).
 #[test]

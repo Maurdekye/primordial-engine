@@ -22,8 +22,8 @@ use pe_replica::{DriveReport, Driver};
 use pe_seams::world_api::TxId;
 use pe_seams::{
     AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, Hand, HandFeed, Health,
-    HostTime, Lane, MemberKey, NetEvent, ObjectId, Outcome, Pos, Replica, SelfTest, SimRate, SubmitError, Transport,
-    VoidReason,
+    HostTime, Lane, MemberKey, NetEvent, ObjectId, Outcome, Pos, Replica, SelfTest, SimRate, StepRecord, SubmitError,
+    Transport, ViewFlags, VoidReason,
 };
 
 use crate::clock::HostClock;
@@ -302,6 +302,17 @@ fn grab_fate(outcome: &Outcome) -> Option<String> {
     }
 }
 
+/// `view` with each of `objects` (sorted) marked `RELEASED_LOCAL`.
+fn released_local(view: &FrameView, objects: &[ObjectId]) -> FrameView {
+    let mut v = view.clone();
+    for o in &mut v.objects {
+        if objects.binary_search(&o.id).is_ok() {
+            o.flags = o.flags.with(ViewFlags::RELEASED_LOCAL);
+        }
+    }
+    v
+}
+
 /// The time since `mark`, which moves to now: one step's share of a tick.
 fn lap(mark: &mut Instant) -> u64 {
     let now = Instant::now();
@@ -493,9 +504,28 @@ struct Local {
     /// This member's `Grab`s: the hand each came from, and how the newest view that stepped it says it fared (`None`
     /// before any has, `Some(None)` applied, `Some(Some(reason))` not), for [`HandStats`].
     grabs: BTreeMap<EntryRef, (usize, Option<Option<String>>)>,
+    /// This member's `Release`s not yet behind a final frame: the object each names and its stamp, so a view whose
+    /// records apply one marks that object `RELEASED_LOCAL` (render.md 8, D4's hand-off).
+    released: BTreeMap<EntryRef, (ObjectId, Frame)>,
 }
 
 impl Local {
+    /// The objects this member's own `Release`s let go of in `changes` (an applied record of one), sorted; and the
+    /// releases a final frame has passed are forgotten, since no later view steps them again.
+    fn let_go(&mut self, changes: &[StepRecord], final_frame: Option<Frame>) -> Vec<ObjectId> {
+        let mut out: Vec<ObjectId> = changes
+            .iter()
+            .filter(|r| matches!(r.outcome, Outcome::Applied { .. }))
+            .filter_map(|r| self.released.get(&r.entry).map(|&(object, _)| object))
+            .collect();
+        out.sort();
+        out.dedup();
+        if let Some(f) = final_frame {
+            self.released.retain(|_, &mut (_, at)| at > f);
+        }
+        out
+    }
+
     /// Takes the fates of this member's grabs from `changes`, and recounts each hand's tally if one changed.
     fn grab_fates(&mut self, changes: &[pe_seams::StepRecord], hands: &mut [HandStats; 2]) {
         let mut changed = false;
@@ -878,6 +908,7 @@ impl Sim {
             hands,
             grasp: local::Grasp::default(),
             grabs: BTreeMap::new(),
+            released: BTreeMap::new(),
         });
         self
     }
@@ -1124,6 +1155,9 @@ impl Sim {
                     self.stats.hands[i].grabs += 1;
                     l.grabs.insert(id, (i, None));
                 }
+                for (id, object) in sent.released {
+                    l.released.insert(id, (object, stamp));
+                }
             }
             self.input_frame = Some(p);
             self.input_stamp = Some(stamp);
@@ -1234,7 +1268,7 @@ impl Sim {
         let same_view = self.source_view.as_ref().is_some_and(|v| Arc::ptr_eq(v, &view));
         // A joiner's empty replica has nothing to show until its import ends (app.md 4).
         if !self.importing() && (!same_view || self.published.as_ref().is_some_and(|v| v.health != health)) {
-            let out = if same_view {
+            let mut out = if same_view {
                 Arc::new(health_only(&view, health))
             } else if view.health == health {
                 view.clone()
@@ -1246,6 +1280,12 @@ impl Sim {
             }
             if let Some(l) = &mut self.local {
                 l.grab_fates(&out.changes, &mut self.stats.hands);
+                // What this member's own `Release`s let go of in these steps: the display hands it off rather than
+                // correcting it (render.md 8, D4).
+                let let_go = l.let_go(&out.changes, out.final_frame);
+                if !let_go.is_empty() {
+                    out = Arc::new(released_local(&out, &let_go));
+                }
             }
             self.slot.publish(out.clone());
             self.published = Some(out);
@@ -2062,6 +2102,50 @@ pub(crate) mod tests {
         assert_eq!((h.closes, h.opens, h.grabs, h.grabs_applied, h.releases), (1, 1, 1, 1, 1), "{h:?}");
         assert!(h.grabs_refused.is_empty(), "{h:?}");
         assert_eq!(s.stats().hands[0], HandStats::default(), "the left hand did nothing");
+    }
+
+    /// D4's hand-off (render.md 8; @item:primordial-engine/letting-go-in-vr-the-ball-flies-at-once-with-no-g): the
+    /// publication whose steps apply this member's own `Release` marks the ball `RELEASED_LOCAL`, and it is the one in
+    /// which the ball stops being held. Nothing else is marked, and no publication marks it while it is held.
+    #[test]
+    fn the_view_that_steps_my_release_marks_the_ball_released_local() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let puppet = Puppet::default();
+        puppet.set([0.0, 3.0, 0.0], false);
+        let me = crate::world::DEV_MEMBER;
+        let mut s = s.with_local(me, [7; 32], Arc::new(puppet.clone()));
+        let mut f = 0;
+        run_frames(&mut s, &clock, &mut f, 120);
+        let ball = top_ball(&slot.newest().expect("published"));
+        let at = rig_at(&slot.newest().expect("published"), ball);
+        puppet.set(at, false);
+        run_frames(&mut s, &clock, &mut f, 3);
+        let marked = |v: &FrameView| {
+            v.objects.iter().filter(|o| o.flags.contains(ViewFlags::RELEASED_LOCAL)).map(|o| o.id).collect::<Vec<_>>()
+        };
+        let mut views = Vec::new();
+        puppet.set(at, true);
+        for _ in 0..20 {
+            run_frames(&mut s, &clock, &mut f, 1);
+            views.extend(slot.take().views);
+        }
+        assert!(slot.newest().and_then(|v| v.object(ball).and_then(|o| o.held_by)).is_some(), "held");
+        puppet.set(at, false);
+        let opened = views.len();
+        for _ in 0..10 {
+            run_frames(&mut s, &clock, &mut f, 1);
+            views.extend(slot.take().views);
+        }
+        assert_eq!(s.stats().hands[1].releases, 1);
+        let free = views[opened..]
+            .iter()
+            .position(|v| v.object(ball).is_some_and(|o| o.held_by.is_none()))
+            .map(|k| opened + k)
+            .expect("let go");
+        assert_eq!(marked(&views[free]), vec![ball], "the publication that ends the hold marks the ball");
+        let others: Vec<usize> = (0..views.len()).filter(|&k| k != free && !marked(&views[k]).is_empty()).collect();
+        assert!(others.is_empty(), "no other publication marks anything: {others:?} (free at {free})");
     }
 
     /// A ball passed from the left hand to the right stays in the right when the left opens at once (@design-reviewer's
