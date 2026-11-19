@@ -39,9 +39,23 @@ pub struct Footprint {
     pub pushes: Vec<Push>,
     /// Hands whose target and `Hand` row an input wrote (8.1).
     pub hands: Vec<ObjectId>,
+    /// Throws an input applied (8.1's throw), with their author: each ended its author's claim, in op order.
+    pub throws: Vec<Thrown>,
     /// What a script commit's re-key did (7.9): the objects, the row count and the fields zeroed or dropped. Always
     /// `None` for an entry since logic.md 6.2a: the re-key happens at activation, and [`World::end_frame`] reports it.
     pub rekey: Option<RekeyReport>,
+}
+
+/// An applied throw (8.1): the velocity its author's hand gave the object as it let go, in the world frame, `linear`
+/// at its centre of mass in m/s and `angular` in rad/s. pe-world checks only that the author held the object and that
+/// the values are finite; pe-replica caps both and applies them once the hold's joint is gone, if the object was with
+/// the hand (8.1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Thrown {
+    pub object: ObjectId,
+    pub linear: [f32; 3],
+    pub angular: [f32; 3],
+    pub author: MemberKey,
 }
 
 /// An applied push (8.1): an impulse in newton seconds, in the world frame, at `at` or the centre of mass.

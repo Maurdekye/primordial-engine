@@ -28,7 +28,7 @@ pub mod test_util;
 pub mod tree;
 mod world;
 
-pub use apply::{ActivationResult, Blocked, Draft, Footprint, FrameEnd, Push, Voided};
+pub use apply::{ActivationResult, Blocked, Draft, Footprint, FrameEnd, Push, Thrown, Voided};
 pub use components::BlobRef;
 pub use input::{HandPose, Input, InputSettings, input_phase};
 pub use leave::LeaveReport;
