@@ -1102,7 +1102,8 @@ a miss in brackets):
 - **So 30 Hz is the lowest rate at which hands and gentle throws work.** It suits large, slow worlds: it costs half
   of 60 Hz per simulated second (13.3), and a quarter under rollback.
 - **Bullets remove this at any rate** (the control row), at the price of sweeping each fast body against dynamic
-  bodies too. Marking a released object as a bullet while it is fast is a WS-state option, not part of the bound.
+  bodies too. Bullets are manual opt-in only, never set by the engine (world-model.md 3.2, m615ed1ac6e20), so marking a
+  released object as a bullet while it is fast is not an option.
 
 ### 13.3 The high bound: 120 Hz
 
