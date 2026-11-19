@@ -741,6 +741,11 @@ that reaches the present with no replay under way, never during a re-simulation,
   - **velocities,** from the physics, for objects with a body;
   - **`OWN_HAND`** on the local member's hands, and **`HELD_LOCAL`** on what one of them holds: the display draws
     those from tracking and never corrects them;
+  - **`HELD_AWAY`** as well on a `HELD_LOCAL` object more than `BREAK_AWAY` (5 cm) from its place in the hand
+    (`hands::hold_gap`: from the object's anchor to the grab joint's anchor on the hand's body), which the display
+    then draws where it is simulated (render.md 8, D4's break-away; S5 v1.9). One marked away stays so until it is
+    back within `BREAK_BACK` (3 cm): the replica keeps the last publication's set, view state that a rollback leaves
+    as it is;
   - **`CORRECTED`** on any other object whose pose at the last published frame a replay, a repair or a merge changed.
     The replica compares the poses it published with the re-simulated ones when it comes back to that frame; the
     re-simulation is deterministic, so an unchanged object compares equal bit for bit. So interpolation can tell a

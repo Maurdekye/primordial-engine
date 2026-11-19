@@ -165,6 +165,11 @@ impl ViewFlags {
     /// that ends in this view ended because the player let go, not by a lost race or a lapsed claim. Set by pe-app,
     /// which knows its own `Release` entries, from the view's step records (app.md 3, step 6).
     pub const RELEASED_LOCAL: ViewFlags = ViewFlags(8);
+    /// Held by a hand of the local player ([`ViewFlags::HELD_LOCAL`] too), but kept more than [`BREAK_AWAY`] from its
+    /// place in the hand in the simulation: blocked by a wall, say, or too heavy to follow (render.md 8, D4's
+    /// break-away; S5 v1.9). It is drawn where it is simulated, still never corrected. Set by pe-replica, which knows
+    /// each grab's place, at publication.
+    pub const HELD_AWAY: ViewFlags = ViewFlags(16);
 
     pub fn contains(self, f: ViewFlags) -> bool {
         self.0 & f.0 == f.0
@@ -174,6 +179,14 @@ impl ViewFlags {
         ViewFlags(self.0 | f.0)
     }
 }
+
+/// D4's break-away distance, m (render.md 8; provisional, @coordinator-opus medc665571803): a held object kept farther
+/// than this from its place in the hand is [`ViewFlags::HELD_AWAY`], drawn where it is simulated.
+pub const BREAK_AWAY: f64 = 0.05;
+/// The distance a [`ViewFlags::HELD_AWAY`] object must come back within before it is drawn at the hand again, m
+/// (provisional): below [`BREAK_AWAY`], so a gap hovering near it doesn't flicker between the two (@design-reviewer's
+/// L1 on the break-away).
+pub const BREAK_BACK: f64 = 0.03;
 
 /// Which hand holds an object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -525,7 +538,14 @@ mod tests {
         assert!(f.contains(ViewFlags::CORRECTED));
         assert!(!f.contains(ViewFlags::HELD_LOCAL));
         assert!(!f.contains(ViewFlags::RELEASED_LOCAL));
-        let all = [ViewFlags::OWN_HAND, ViewFlags::HELD_LOCAL, ViewFlags::CORRECTED, ViewFlags::RELEASED_LOCAL];
-        assert_eq!(all.iter().fold(0, |bits, f| bits | f.0), 0b1111, "each flag its own bit");
+        assert!(!f.contains(ViewFlags::HELD_AWAY));
+        let all = [
+            ViewFlags::OWN_HAND,
+            ViewFlags::HELD_LOCAL,
+            ViewFlags::CORRECTED,
+            ViewFlags::RELEASED_LOCAL,
+            ViewFlags::HELD_AWAY,
+        ];
+        assert_eq!(all.iter().fold(0, |bits, f| bits | f.0), 0b11111, "each flag its own bit");
     }
 }
