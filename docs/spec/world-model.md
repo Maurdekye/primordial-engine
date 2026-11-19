@@ -1755,6 +1755,9 @@ pub enum Input {
     Grab { object: ObjectId, hand: Option<ObjectId> },
     /// Ends the author's claim on `object`; without one it changes nothing and notes `NoEffect`.
     Release { object: ObjectId },
+    /// A release that throws (below): ends the claim as `Release` does and gives the object the velocity the hand
+    /// gave it, in the world frame, `linear` at its centre of mass in m/s and `angular` in rad/s.
+    Throw { object: ObjectId, linear: [f32; 3], angular: [f32; 3] },
     /// Sets the author's own hand's mode (below); the mode it already has notes `NoEffect`.
     HandMode { hand: ObjectId, mode: u8 },                    // 0 or 1; anything else does not decode
 }
@@ -1819,6 +1822,25 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
   input at least every third of `claim_ms`, even when it is still, so a held grip is never left to lapse. There
   is no automatic re-grab after a drop.
 - **Release** ends the author's claim at once, with no cooldown (pe-session put the cooldown on expiry only).
+- **A throw** (`Throw`; the weak-throw fix, @coordinator-opus, with @fable-reviewer's amendments) [I, for review] is a release that carries the velocity the holder's hand gave the object as it let
+  go. The client measures it at the real opening, from its ring of hand samples (the "now" sample): `linear` is the
+  hand's linear velocity plus its angular velocity × the offset from the hand to the object's centre of mass, and
+  `angular` the hand's angular velocity, both in the world frame. Without it a thrown object left with whatever the
+  hold's spring had given it, which lagged the hand.
+  - **In pe-world:** only the holder's throw counts. Anyone else's changes nothing and notes `NoEffect`, like a
+    `Release`; a non-finite value refuses it (`Invalid`), and the claim stays. The holder's ends the claim exactly as
+    `Release` does, and reaches the physics as a `Thrown` in the entry's footprint [V `tests/input.rs`,
+    `only_the_holders_throw_ends_the_claim_and_reaches_the_physics`].
+  - **In the physics** (pe-replica, as the entry applies, after the hold's joint is removed, the way a push goes):
+    if the object is with the hand, neither blocked nor stretched past the tight hold's break-away distance
+    (render.md D4), its velocity becomes the throw's, capped. The linear speed is capped at `max_push_speed`, the
+    vector scaled down with its direction kept. The angular speed is capped so that the spin moves the object's rim
+    at most at `max_push_speed`: `|ω| ≤ max_push_speed / R`, `R` the object's bounding radius about its centre of
+    mass. A small ball may spin fast, a long object only slowly, and no point of a thrown object leaves faster than
+    twice the cap, inside the speeds continuous collision is measured to hold (8.1's pushes). Box3D's own limit of
+    45 degrees a tick (replica.md 3.5) applies beyond it. Otherwise (blocked, or stretched past break-away) the
+    object keeps its solver velocity, as a `Release` leaves it.
+  - A `Release` sets no velocity; an agent with no hand releases, or pushes.
 - **A hand's mode** (D18b; @coordinator-opus, after @vdw-physics). Whether a hand has
   a physics body changes the simulation, so every peer reads it from the world, never from a local toggle; and the
   user switches it within a session, so it is not a frozen config item (6.6). It is a **personal comfort choice,
