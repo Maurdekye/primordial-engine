@@ -12,7 +12,7 @@ use std::sync::Arc;
 use pe_core::{Frame, MemberKey, ObjectId, Pos};
 use pe_seams::{Class, Note, Outcome, Reason, SignedEntry};
 
-use crate::apply::{Footprint, Push};
+use crate::apply::{Footprint, Push, Thrown};
 use crate::components::{Body, Hand, Shape, shape_kind};
 use crate::edit::{R, W};
 use crate::world::{Claim, World};
@@ -42,6 +42,10 @@ pub enum Input {
     Grab { object: ObjectId, hand: Option<ObjectId> },
     /// Ends the author's claim on `object`; without one it changes nothing and notes `NoEffect`.
     Release { object: ObjectId },
+    /// A release that throws (8.1): ends the author's claim on `object` as `Release` does, and gives it the velocity
+    /// the author's hand gave it as it let go, in the world frame: `linear` at its centre of mass, m/s, and `angular`,
+    /// rad/s. Without the claim it changes nothing and notes `NoEffect`; a non-finite value refuses it (`Invalid`).
+    Throw { object: ObjectId, linear: [f32; 3], angular: [f32; 3] },
     /// Sets the author's own `hand`'s mode ([`hand_mode`](crate::components::hand_mode)); the mode it already has
     /// changes nothing and notes `NoEffect`.
     HandMode { hand: ObjectId, mode: u8 },
@@ -52,6 +56,7 @@ const TAG_PUSH: u8 = 1;
 const TAG_GRAB: u8 = 2;
 const TAG_RELEASE: u8 = 3;
 const TAG_HAND_MODE: u8 = 4;
+const TAG_THROW: u8 = 5;
 
 /// The fewest bytes one encoded pose takes: a `Pos` (three one-byte varints and three `f64`), a rotation, a grip and
 /// a flag.
@@ -105,6 +110,12 @@ impl R<'_> {
                 Input::Grab { object, hand }
             }
             TAG_RELEASE => Input::Release { object: self.id()? },
+            TAG_THROW => {
+                let object = self.id()?;
+                let linear = [self.f32()?, self.f32()?, self.f32()?];
+                let angular = [self.f32()?, self.f32()?, self.f32()?];
+                Input::Throw { object, linear, angular }
+            }
             TAG_HAND_MODE => {
                 let hand = self.id()?;
                 let mode = self.u8()?;
@@ -165,6 +176,13 @@ impl Input {
             Input::Release { object } => {
                 w.u8(TAG_RELEASE);
                 w.id(*object);
+            }
+            Input::Throw { object, linear, angular } => {
+                w.u8(TAG_THROW);
+                w.id(*object);
+                for v in linear.iter().chain(angular) {
+                    w.f32(*v);
+                }
             }
             Input::HandMode { hand, mode } => {
                 w.u8(TAG_HAND_MODE);
@@ -337,6 +355,9 @@ impl World {
             Input::Release { object } => {
                 self.release(e.author, object, &mut notes);
                 Ok(())
+            }
+            Input::Throw { object, linear, angular } => {
+                self.throw(e.author, object, linear, angular, &mut notes, &mut fp)
             }
             Input::Push { object, impulse, at } => self.push(frame, e.author, object, impulse, at, &mut fp),
             Input::HandMode { hand, mode } => self.set_hand_mode(e.author, hand, mode, &mut notes),
@@ -544,6 +565,28 @@ impl World {
         } else {
             notes.push(Note::NoEffect { op: 0 });
         }
+    }
+
+    /// A release that throws (8.1): only the holder's ends the claim and reaches the physics, as [`Thrown`].
+    fn throw(
+        &mut self,
+        author: MemberKey,
+        object: ObjectId,
+        linear: [f32; 3],
+        angular: [f32; 3],
+        notes: &mut Vec<Note>,
+        fp: &mut Footprint,
+    ) -> Result<(), Reason> {
+        if !finite(&linear) || !finite(&angular) {
+            return Err(invalid());
+        }
+        if self.claims.get(&object).is_some_and(|c| c.member == author) {
+            Arc::make_mut(&mut self.claims).remove(&object);
+            fp.throws.push(Thrown { object, linear, angular, author });
+        } else {
+            notes.push(Note::NoEffect { op: 0 });
+        }
+        Ok(())
     }
 
     fn push(

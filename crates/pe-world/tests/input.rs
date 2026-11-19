@@ -116,6 +116,7 @@ fn the_codec_is_strict_and_round_trips() {
         grab(TRAY, HAND_A),
         Input::Grab { object: oid(TRAY), hand: None },
         Input::Release { object: oid(CUP) },
+        Input::Throw { object: oid(CUP), linear: [3.0, -0.5, 7.25], angular: [0.0, 12.0, -1.5] },
         Input::HandMode { hand: oid(HAND_A), mode: hand_mode::WITHIN_REACH },
         Input::HandMode { hand: oid(HAND_A), mode: hand_mode::CLOSED_HAND },
     ];
@@ -127,7 +128,7 @@ fn the_codec_is_strict_and_round_trips() {
         assert_eq!(Input::decode(&longer), None, "trailing bytes");
         assert_eq!(Input::decode(&b[..b.len() - 1]), None, "truncated");
     }
-    assert_eq!(Input::decode(&[5]), None, "unknown tag");
+    assert_eq!(Input::decode(&[6]), None, "unknown tag");
     let mut mode = Input::HandMode { hand: oid(HAND_A), mode: hand_mode::WITHIN_REACH }.encode();
     *mode.last_mut().unwrap() = hand_mode::MAX + 1;
     assert_eq!(Input::decode(&mode), None, "a mode past the last");
@@ -335,6 +336,34 @@ fn a_release_without_a_claim_notes_no_effect() {
     let r = input(&mut f.w, 1, &mut f.b, Input::Release { object: oid(TRAY) });
     assert!(matches!(&r.0, Outcome::Applied { notes, .. } if notes == &[Note::NoEffect { op: 0 }]));
     assert_eq!(f.w.claims().count(), 1, "B cannot release A's claim");
+}
+
+/// A throw (8.1): the holder's ends the claim as a release does and hands its velocity to the physics; anyone else's
+/// changes nothing and notes `NoEffect`; a non-finite value refuses it and the claim stays.
+#[test]
+fn only_the_holders_throw_ends_the_claim_and_reaches_the_physics() {
+    let mut f = fx();
+    ok(&input(&mut f.w, 1, &mut f.a, grab(TRAY, HAND_A)));
+    let throw = |linear, angular| Input::Throw { object: oid(TRAY), linear, angular };
+    let r = input(&mut f.w, 2, &mut f.b, throw([4.0, 0.0, 0.0], [0.0; 3]));
+    assert!(matches!(&r.0, Outcome::Applied { notes, .. } if notes == &[Note::NoEffect { op: 0 }]));
+    assert!(r.1.throws.is_empty(), "a non-holder's throw has no effect");
+    for bad in [[f32::NAN, 0.0, 0.0], [0.0, f32::INFINITY, 0.0]] {
+        assert_eq!(refused(&input(&mut f.w, 2, &mut f.a, throw(bad, [0.0; 3]))), Reason::Invalid { field: None });
+        assert_eq!(refused(&input(&mut f.w, 2, &mut f.a, throw([0.0; 3], bad))), Reason::Invalid { field: None });
+    }
+    assert_eq!(f.w.claims().count(), 1, "still held");
+    let before = f.w.root();
+    let r = input(&mut f.w, 2, &mut f.a, throw([4.0, 1.0, -2.0], [0.0, 9.0, 0.0]));
+    ok(&r);
+    assert_eq!(
+        r.1.throws,
+        vec![pe_world::Thrown { object: oid(TRAY), linear: [4.0, 1.0, -2.0], angular: [0.0, 9.0, 0.0], author: f.ka }]
+    );
+    assert_eq!(f.w.claims().count(), 0, "released");
+    assert_ne!(f.w.root(), before, "the claim's end is in the root");
+    let r = input(&mut f.w, 3, &mut f.a, throw([4.0, 0.0, 0.0], [0.0; 3]));
+    assert!(r.1.throws.is_empty(), "a second throw finds no claim");
 }
 
 #[test]
