@@ -1844,9 +1844,10 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     `Release`; a non-finite value refuses it (`Invalid`), and the claim stays. The holder's ends the claim exactly as
     `Release` does, and reaches the physics as a `Thrown` in the entry's footprint [V `tests/input.rs`,
     `only_the_holders_throw_ends_the_claim_and_reaches_the_physics`].
-  - **In the physics** (pe-replica, as the entry applies, after the hold's joint is removed, the way a push goes):
-    if the object is with the hand, neither blocked nor stretched past the tight hold's break-away distance
-    (render.md D4), its velocity becomes the throw's, capped. The linear speed is capped at `max_push_speed`, the
+  - **In the physics** (pe-replica, as the entry applies, the way a push goes): if the object is with the hand,
+    judged against the hold's joint (the hand body's anchor to the object), neither blocked nor stretched past the
+    tight hold's break-away distance (render.md D4), its velocity becomes the throw's, capped; the joint is gone
+    before the frame's physics step (@engine-architect me1fb55584ba2). The linear speed is capped at `max_push_speed`, the
     vector scaled down with its direction kept. The angular speed is capped so that the spin moves the object's rim
     at most at `max_push_speed`: `|ω| ≤ max_push_speed / R`, `R` the object's bounding radius about its centre of
     mass. A small ball may spin fast, a long object only slowly, and no point of a thrown object leaves faster than
