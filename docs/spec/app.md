@@ -91,7 +91,9 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    stall, more of this member's own entries unacknowledged by its peers than a burst's worth; S3 v1.5), the frame
    makes no hand entries, which would be refused or void as late; edits are never held back, and
    `SimStats::hands_paced` counts the frames. Peers see none of its hand entries meanwhile, so a backlog that
-   outlasts a claim's lapse may release what the member holds.
+   outlasts a claim's lapse may release what the member holds. A member whose every other member left unconfirmed
+   (its link dropped with its signed `Leave` in hand, E not final here; section 4) isn't paced: nobody is left to
+   acknowledge its entries, and it was told it can keep playing (M1 redo F2). A link that comes back ends that.
 
    **A hand's grasp** (world-model.md 7.2, 8.1; @coordinator-opus m563137337624 and its ruling on the defaults,
    after @fable-reviewer). A hand entry whose `engaged` differs from the one last sent for that hand is the grasp's
@@ -642,7 +644,8 @@ with @fable-reviewer's refinements m2226c5aab7da, and m5bb3ed6ddcd5):
    happened, with no wait for the idle close:
    - the member had already left (E final here): "<player> left the session.";
    - this machine holds the member's signed `Leave`, but E isn't final here: "<player> left before the session could
-     confirm it. You can keep playing, but changes from now on won't be shared, and this world ends when you quit.";
+     confirm it. You can keep playing, but changes from now on won't be shared, and this world ends when you quit."
+     Once every other member has left this way, its hands are no longer paced (section 3, step 2);
    - no `Leave` from it is in hand: "<player>'s connection dropped. They may come back; until then, changes wait to
      be confirmed."
 
