@@ -135,6 +135,21 @@ pub fn map_refusal(snap: &WorldSnapshot, e: &WorldEdit, op: Option<u32>, reason:
             f.details = Some(json!({ "limit": limit }));
             f
         }
+        // pe-world's shape limit (world-model.md 7.1): the slowest machine's measured bound, for the whole world.
+        Reason::TooManyShapes { limit, count } => {
+            let mut f = refusal(
+                RefusalCode::TooLarge,
+                None,
+                format!(
+                    "The world can hold at most {limit} shapes (things that collide), and this change would leave                      {count}. Nothing was changed."
+                ),
+            );
+            f.details = Some(json!({ "limit": limit, "count": count }));
+            let over = count.saturating_sub(*limit);
+            let shapes = if over == 1 { "shape" } else { "shapes" };
+            f.next = Some(format!("Delete at least {over} {shapes} first, or add that many fewer."));
+            f
+        }
         Reason::Held { by } => {
             let mut f = refusal(RefusalCode::Held, api_op, "Someone is holding it.");
             f.details = Some(json!({ "by": MemberId::from(*by).to_string() }));
@@ -351,6 +366,11 @@ mod tests {
     /// A Table (root, protected by Alice) with a Lamp under it, a Floor root, and a "box" template; Alice and Bob may
     /// edit.
     fn world() -> (Arc<WorldSnapshot>, WorldView) {
+        world_with(|_| {})
+    }
+
+    /// [`world`], with `more` done to it before its snapshot.
+    fn world_with(more: impl FnOnce(&mut World)) -> (Arc<WorldSnapshot>, WorldView) {
         let mut w = World::new(1, BlobStore::default());
         w.set_member(ALICE, perm::EDIT);
         w.set_member(BOB, perm::EDIT);
@@ -371,6 +391,7 @@ mod tests {
             w.insert(id(n), Name { text }).unwrap();
         }
         w.insert(id(10), Protection { owner: ALICE }).unwrap();
+        more(&mut w);
         w.set_frame(Frame(5));
         let s = w.snapshot(Frame(5));
         (s.clone(), WorldView::new(s, None))
@@ -497,6 +518,46 @@ mod tests {
         let limit = pe_world::inline::MAX_INLINE_BYTES as u32;
         let f = map_refusal(&snap, &revert(9), None, &Reason::TooLarge { limit });
         assert!(f.message.contains("undo this in parts"), "{}", f.message);
+    }
+
+    /// pe-world's shape limit reaches the agent as `too_large`, with both counts and what to do (world-model.md 7.1;
+    /// the M1 recording's laptop, @coordinator-opus): `world()` with `n` more shaped objects under the
+    /// Floor and a shape on the box template, so a `duplicate` of the box adds one.
+    #[test]
+    fn a_change_past_the_world_s_shape_limit_is_too_large_with_the_counts() {
+        use pe_world::components::{Shape, shape_kind};
+        use pe_world::edit::MAX_SHAPES;
+        let max = MAX_SHAPES as u128;
+        let with = |n: u128| {
+            world_with(|w| {
+                let ball =
+                    Shape { kind: shape_kind::SPHERE, density: 20.0, size: [0.06, 0.0, 0.0], ..Shape::default() };
+                w.insert(id(50), ball).unwrap();
+                for k in 0..n {
+                    w.create(id(1000 + k), Some(id(30)), ALICE, ver(1, 0)).unwrap();
+                    w.insert(id(1000 + k), Transform::local([0.0, 1.0, 0.0])).unwrap();
+                    w.insert(id(1000 + k), ball).unwrap();
+                }
+            })
+        };
+        let copy = json!([{"op": "duplicate", "id": "/Templates/box", "parent": "/Floor"}]);
+        let dry = |n: u128| {
+            let (s, v) = with(n);
+            let tx: ApiTx = serde_json::from_value(json!({ "label": "t", "ops": copy })).unwrap();
+            let r = resolve_tx(&v, &tx, &|_| None).map_err(|e| e.message).unwrap();
+            let e = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
+            dry_run(&s, &r, &e, &draft(ALICE))
+        };
+        // The box and `max - 1` others: its copy makes `max + 1`.
+        let o = dry(max - 1);
+        assert_eq!(o.status, Status::Refused);
+        let f = o.refusal.unwrap();
+        assert_eq!(f.code, RefusalCode::TooLarge, "{}", f.message);
+        assert_eq!(f.details, Some(json!({ "limit": max as u64, "count": max as u64 + 1 })));
+        assert!(f.message.contains(&format!("at most {max} shapes")) && f.message.contains("Nothing was changed"));
+        assert_eq!(f.next.as_deref(), Some("Delete at least 1 shape first, or add that many fewer."));
+        // One fewer, and the copy reaches the limit exactly.
+        assert_eq!(dry(max - 2).status, Status::Accepted);
     }
 
     #[test]

@@ -462,7 +462,7 @@ One envelope for every refusal, in `apply`'s outcome, in `watch`, and in a dry r
 | `not_permitted` | The world's permissions | `permission`, `role` |
 | `protected` | V1: a protected object, for anyone but its owner (10.4) | `owner`, `action` |
 | `held` | A held object (or an object under it) may not be deleted, nor its `Transform`, `Body`, `Shape` or parent edited, while a player holds it; other edits, such as a colour, pass (world-model.md 7.2) | `held_by` |
-| `too_large` | Past the size limits (9.3) | `limit` |
+| `too_large` | Past the size limits (9.3), or past the world's shape limit | `limit`; for the shape limit also `count`, the shapes the change would leave |
 | `rate_limited` | Past the principal's rate (9.3) | `retry_after_ms` |
 | `not_ready` | This machine is still catching up; or its frame clock is catching up with its own last stamp (agreement's `BelowOwnStamp`: retry in a moment) | — |
 | `compile` | A `code` op whose source does not compile on the author's machine. Only at submission: no entry is made (section 7) | `diagnostics` |
@@ -876,6 +876,11 @@ transaction pe-world's limits, 4,096 ops (as written and after selector expansio
 and templates count their whole subtree; pe-world owns the bound) and 1 MiB of payload apart from blobs
 (world-model.md 7.1); at most 1,000,000 objects examined by one change's `where` selectors, each distinct selector
 once [I]; 4 queries and 2 long polls in flight per principal. pe-agree's per-member entry rule (plan 4.3) bounds the member as a whole, whatever its principals do.
+
+**The world's shape limit** (world-model.md 7.1). The world holds at most 520 collision shapes (pe-world's
+`MAX_SHAPES`), the bound the slowest M1 machine was measured to keep up with. A change that would leave more, and more
+than the world has, is refused `too_large` at its dry run, before anything is signed. The refusal gives `limit` and
+`count`, and its `next` says how many shapes to delete first. A change that adds no shape always passes.
 
 **Names travel inside the entry** (world-model.md 3.4; rulings). A name is at most 255
 bytes of UTF-8, so it is always of pe-world's inline class (at most 256 B), and its bytes go into the signed entry

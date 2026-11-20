@@ -23,6 +23,13 @@ pub const MAX_OPS: usize = 4096;
 /// @coordinator-opus). The one authoritative bound: pe-api uses it. Raise it only with a measured
 /// reason. Over it, the transaction is refused with `TooLarge`.
 pub const MAX_NEW_OBJECTS: usize = 65_536;
+/// The most collision shapes (`Shape` rows, whatever object carries them) an edit may leave in the world (7.1). An edit
+/// that would leave more, and more than the world had, is refused whole with `TooManyShapes`; one that adds none
+/// always passes. Measured on the slowest M1 machine, the user's laptop (i7-8650U), with every ball of the pit awake:
+/// stepping 520 shapes takes about half a frame period there (the M1 recording's stalls, 2026-11-20;
+/// @coordinator-opus). A constant of this build, so the build id's source hash covers it: members of one
+/// session all run the same sources (app.md 4). It moves only with a new measurement.
+pub const MAX_SHAPES: usize = 520;
 /// The `precondition` index a `Stale` refusal carries when an op's own check failed rather than a listed
 /// precondition: a `Copy` whose source subtree no longer has the `size` its author saw (7.1).
 pub const OWN_CHECK: u32 = u32::MAX;

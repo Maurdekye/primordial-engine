@@ -428,6 +428,47 @@ fn measure_vote_cost_in_a_stall() {
     println!("total: {frames} frames re-stepped, {ms:.1} ms");
 }
 
+/// pe-world's shape limit is a rule of the history (world-model.md 7.1, 7.6 step 5; @coordinator-opus):
+/// two replicas, one stepping frame by frame and one in a single call, refuse the same edit with the same reason and
+/// agree on every root. Genesis (its floor's shape) and `MAX_SHAPES - 2` shaped objects; an edit adding two is
+/// refused at `MAX_SHAPES + 1`, and a later one adding one applies.
+#[test]
+fn an_edit_past_the_shape_limit_is_refused_by_every_replica() {
+    use pe_world::edit::MAX_SHAPES;
+    let max = MAX_SHAPES;
+    let mut world = genesis();
+    for n in 0..(max - 2) as u128 {
+        world.create(oid(10_000 + n), None, MemberKey([1; 32]), GENESIS).expect("an object");
+        world.insert(oid(10_000 + n), Transform::at(pos(0.0, 5.0, 0.0))).expect("its transform");
+        world.insert(oid(10_000 + n), sphere(0.06)).expect("its shape");
+    }
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let shapes = |n: u32, x: f64| {
+        let rows = || vec![row(Transform::at(pos(x, 5.0, 0.0))), row(sphere(0.06))];
+        tx((0..n).map(|k| Op::Create { new: k, parent: Target::Root, index: None, rows: rows() }).collect())
+    };
+    let over = b.next(Class::Edit, Frame(2), Bytes::from(shapes(2, 1.0).encode()));
+    let fits = b.next(Class::Edit, Frame(4), Bytes::from(shapes(1, 2.0).encode()));
+    let mut s = Source::default();
+    s.add(over.clone());
+    s.add(fits.clone());
+    let (mut one, mut each) = (replica_of(world.clone()), replica_of(world));
+    one.advance(Frame(17), &mut s);
+    for f in 1..=17 {
+        each.advance(Frame(f), &mut s);
+    }
+    let refusal =
+        Outcome::Refused { op: None, reason: Reason::TooManyShapes { limit: max as u32, count: max as u32 + 1 } };
+    for r in [&one, &each] {
+        assert_eq!(r.outcome(&over.id()), Some((Frame(2), refusal.clone())));
+        assert!(matches!(r.outcome(&fits.id()), Some((Frame(4), Outcome::Applied { .. }))));
+        assert_eq!(r.world().world().store().count(pe_world::components::ids::SHAPE), max);
+    }
+    assert_eq!(roots(&one, 16), roots(&each, 16));
+    assert_eq!(roots(&one, 16).len(), 3, "roots at 0, 8 and 16");
+}
+
 // ---- inputs (pe-world's slice B) ------------------------------------------------------------------------------------
 
 const HAND: u128 = 50;
