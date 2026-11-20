@@ -291,6 +291,10 @@ pub struct ViewCounters {
     pub frames_resimulated: u64,
     /// Floating-point environment resets by the guard.
     pub fp_resets: u32,
+    /// The local member's own interactions (grab begins, pushes and throws) whose body the final history left other
+    /// than the author first simulated it: a correction that hit a body this member had just acted on (replica.md
+    /// 3.4). Counted as each frame goes final.
+    pub interactions_corrected: u32,
 }
 
 /// An entry stepped, with its outcome: the change record beside S5 (api.md 9.1), for WorldApi's `apply`, `watch` and

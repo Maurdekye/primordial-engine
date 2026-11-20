@@ -42,6 +42,9 @@ pub struct Footprint {
     pub hands: Vec<ObjectId>,
     /// Throws an input applied (8.1's throw), with their author: each ended its author's claim, in op order.
     pub throws: Vec<Thrown>,
+    /// Objects an input's `Grab` began holding: a new claim, not a renewal of the author's own (8.1). With pushes and
+    /// throws, what the author's own check after an interaction watches (replica.md 3.4).
+    pub grabs: Vec<ObjectId>,
     /// What a script commit's re-key did (7.9): the objects, the row count and the fields zeroed or dropped. Always
     /// `None` for an entry since logic.md 6.2a: the re-key happens at activation, and [`World::end_frame`] reports it.
     pub rekey: Option<RekeyReport>,
