@@ -1870,22 +1870,24 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     carry it this frame**, from where it is, keeping its offset in the hand. **Where a placement puts it**
     (@design-reviewer's L1 on 980e6ba7, @coordinator-opus m572729ddd32f): a light hold, one whose force cap comes from
     the object's mass (`m (A + g)` at most the strength, the tight hold below), at its place in the hand, since the hand
-    could lift it there anyway, so a light object never keeps a lag through a placement; a heavy one at its offset,
-    so a placement never lifts what the strength can't. **A held object never passes through a
-    wall** (@coordinator-opus mc017468679d8): pinned against one, its carried move stays the hand's own small move, so
-    it is never placed; the bare kinematic hand may pass through, the held object stays pinned by the hold's spring,
-    and springs back when the way clears. **A trailing placement carries a held object only if no static geometry lies
-    between** where the object is and where the placement would put it (@coordinator-opus m62b0ae1c56d3, option (b),
-    after @vdw-physics measured a pinned ball carried through a 10 cm wall by an overrunning hand's placement): a cast
-    of the held object's shape against static shapes only, along its carried move, whose yes/no answer does not depend
-    on query order; if it hits, the object stays where it is, held by the spring, and the hand goes on. As built
-    (@vdw-physics, ws/hold-reach 9d3a0270), it is Box3D's mover cast: spheres and capsules are swept as themselves, a
-    hull as the capsule that encloses it, an over-approximation that errs towards not carrying through, the side the
-    wall ruling chose: a hull whose own shape would pass close by a wall's edge may be held back (@design-reviewer's
-    Low 1, @coordinator-opus m53c7e29eca9b; the capsule inside it would have let its corners clip the edge; the
-    enclosing capsule runs along the longest side of the hull's bounding box, its radius the farthest any hull point
-    lies from that axis), and a shape the object already touches is passed unless the move goes into it, so a ball
-    resting on the floor can still be carried along it, and so can a box whose enclosing capsule overlaps the floor
+    could lift it there anyway, so a light object never keeps a lag through a placement; a heavy one, a hold whose cap
+    is the strength, at its offset, so a placement never lifts what the strength can't. At 110 N a hold is heavy from
+    about 0.52 kg, so an object the hand can lift (up to 11.2 kg) but not speed up at `A` keeps its lag through a
+    placement too, as ruled (@coordinator-opus m572729ddd32f; @world-model's note on 5659a804). **A held object never
+    passes through a wall** (@coordinator-opus mc017468679d8): pinned against one, its carried move stays the hand's own
+    small move, so it is never placed; the bare kinematic hand may pass through, the held object stays pinned by the
+    hold's spring, and springs back when the way clears. **A trailing placement carries a held object only if no static
+    geometry lies between** where the object is and where the placement would put it (@coordinator-opus m62b0ae1c56d3,
+    option (b), after @vdw-physics measured a pinned ball carried through a 10 cm wall by an overrunning hand's
+    placement): a cast of the held object's shape against static shapes only, along its carried move, whose yes/no
+    answer does not depend on query order; if it hits, the object stays where it is, held by the spring, and the hand
+    goes on. As built (@vdw-physics, ws/hold-reach 9d3a0270), it is Box3D's mover cast: spheres and capsules are swept
+    as themselves, a hull as the capsule that encloses it, an over-approximation that errs towards not carrying through,
+    the side the wall ruling chose: a hull whose own shape would pass close by a wall's edge may be held back
+    (@design-reviewer's Low 1, @coordinator-opus m53c7e29eca9b; the capsule inside it would have let its corners clip
+    the edge; the enclosing capsule runs along the longest side of the hull's bounding box, its radius the farthest any
+    hull point lies from that axis), and a shape the object already touches is passed unless the move goes into it, so a
+    ball resting on the floor can still be carried along it, and so can a box whose enclosing capsule overlaps the floor
     (measured [V @vdw-physics, ws/hold-reach f710c9ac]: a 10×10×30 cm box held on the floor, the hand at 15 m/s along
     it, moves with the hand's body at every trailing placement). If the physics fork has no shape cast, five rays
     stand in, any hit counting: one from the object's centre and four from the points at ±r along two axes
