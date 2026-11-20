@@ -462,7 +462,7 @@ fn refers(ops: &[Op], blob: &[u8]) -> bool {
 
 /// Moves each object precondition whose object's newest version (`current`) was written by one of `mine` (this
 /// machine's later accepted API changes) to that version (api.md 9.4; @design-reviewer's M1′). Row preconditions
-/// stay: pe-world's snapshot shows no row version [I].
+/// (a plain `add`'s guard, api.md 5.3) stay as read: moving one would let a re-sent add overwrite a row added since.
 pub fn move_preconditions(
     tx: &mut Transaction,
     current: impl Fn(ObjectId) -> Option<Version>,
