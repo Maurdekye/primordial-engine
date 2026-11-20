@@ -293,7 +293,7 @@ pub struct ViewCounters {
     pub fp_resets: u32,
     /// The local member's own interactions (grab begins, pushes and throws) whose body the final history left other
     /// than the author first simulated it: a correction that hit a body this member had just acted on (replica.md
-    /// 3.4). Counted as each frame goes final.
+    /// 3.4; S5 v1.10). Counted as each frame goes final.
     pub interactions_corrected: u32,
 }
 
