@@ -1464,11 +1464,12 @@ its reason and the index of the op [I]:
    holds are checked here rather than in step 2 because an op may name an object an earlier op created, or lift a
    protection a later op relies on; a transaction that does the latter passes only if its author may lift that
    protection (@coordinator-opus).
-5. **The world's shape limit** (7.1), on the state after every op: a transaction that would leave more than
-   `MAX_SHAPES` shapes, and more than the world had before it, is refused whole as `TooManyShapes { limit, count }`,
-   with no op index.
+5. **The world's shape limit** (7.1), on the state after every op and after the inline-blob check (3.4): a
+   transaction that would leave more than `MAX_SHAPES` shapes, and more than the world had before it, is refused
+   whole as `TooManyShapes { limit, count }`, with no op index.
 6. **All or nothing.** The ops apply to a copy-on-write working state; any failure discards it. Nothing outside the
-   transaction sees a partial result, and the reported reason is the first failing op's, in order.
+   transaction sees a partial result, and the reported reason is the first failing step's, with the op's index when
+   an op failed (@world-model's nits on 796a5a31).
 
 - **One pure function** (@api-eng's O4). `World::apply(state, frame, entry) -> (state', Outcome)` is the only edit
   path. The ordered step, the author's local prediction and a dry run all call it, so they cannot disagree.
