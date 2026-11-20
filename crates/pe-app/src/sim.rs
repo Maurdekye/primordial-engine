@@ -403,6 +403,10 @@ pub struct Sim {
     leave_wait: Option<Duration>,
     /// The members whose link is down (S4's `LinkDown`, until a `LinkUp`).
     down: std::collections::BTreeSet<MemberKey>,
+    /// The members of this epoch whose link dropped with their signed `Leave` in hand, before it was final: they left
+    /// unconfirmed (the console said so), until their link comes back. A member whose every other member is here is
+    /// left alone, and step 2 doesn't pace its hands (M1 redo F2).
+    stranded: std::collections::BTreeSet<MemberKey>,
     /// What the console should say (app.md 4), drained by [`Sim::take_notices`].
     notices: Vec<String>,
     /// `--inject-fault-at`'s fault ([`crate::fault`]): this process's armed one, which its replica injects. The loop
@@ -632,6 +636,7 @@ impl Sim {
             view_time: ViewTime::default(),
             leave_wait: None,
             down: std::collections::BTreeSet::new(),
+            stranded: std::collections::BTreeSet::new(),
             notices: Vec::new(),
             fault: crate::fault::armed(),
             replay: None,
@@ -792,11 +797,21 @@ impl Sim {
         let notice = if !self.agree.members().contains(&peer) {
             crate::leave::left(peer)
         } else if self.holds_leave_of(peer, present) {
+            self.stranded.insert(peer);
             crate::leave::stranded(peer)
         } else {
             crate::leave::dropped(peer)
         };
         self.notices.push(notice);
+    }
+
+    /// Whether every other member of this member's epoch left unconfirmed ([`Sim::stranded`]): nobody is left to
+    /// acknowledge its entries, so agreement's backlog would hold its hands for the rest of the session, though the
+    /// console said it can keep playing. Its entries won't be shared anyway (M1 redo F2).
+    fn left_alone(&self) -> bool {
+        let me = self.local_member();
+        let mut others = self.agree.members().into_iter().filter(|m| Some(*m) != me).peekable();
+        others.peek().is_some() && others.all(|m| self.stranded.contains(&m) && self.down.contains(&m))
     }
 
     /// Stamp-ahead's lead (app.md 3.2), M1's settings by default: `None` stamps this member's entries at the present,
@@ -1101,6 +1116,7 @@ impl Sim {
         for (peer, up) in links {
             if up {
                 self.down.remove(&peer);
+                self.stranded.remove(&peer);
             } else {
                 self.link_down(peer, p);
             }
@@ -1111,7 +1127,8 @@ impl Sim {
         // 7) ticks again within a frame, and that tick takes in messages and re-simulates but adds no second set of
         // inputs for the frame, which would count against the rate budget.
         // While agreement reports this member backlogged after a stall (S3 v1.5), the frame's hand inputs are held
-        // back: they would only be void as late, and they would lengthen the flush. Edits never come through here, so
+        // back: they would only be void as late, and they would lengthen the flush. A member left alone by unconfirmed
+        // leaves isn't held back ([`Sim::left_alone`]). Edits never come through here, so
         // nothing holds them back.
         // The frame's edit goes first, before its hand entries, so that a dry run made while pe-api's queue was empty
         // names the seq the edit gets (app.md 3.1). One a frame, never paced: an edit is never void as late for
@@ -1214,8 +1231,10 @@ impl Sim {
                 api.ports.queue.settle(ticket, receipt);
             }
         }
+        // Not once every other member left unconfirmed (M1 redo F2): nobody would ever acknowledge them.
+        let paced = fresh && self.agree.backlogged() && !self.left_alone();
         if let (true, Some(l), Some(view)) = (fresh, &mut self.local, &self.published) {
-            if self.agree.backlogged() {
+            if paced {
                 self.stats.hands_paced += 1;
             } else {
                 // At the end of the stamped frame, as the speed test above reads them.
@@ -4504,6 +4523,50 @@ pub(crate) mod tests {
             tick_at(&mut pair, &clock, &hub, &[0], f);
             let want = if leaves { crate::leave::stranded(b) } else { crate::leave::dropped(b) };
             assert_eq!(pair[0].0.take_notices(), vec![want], "with a Leave in hand: {leaves}");
+        }
+    }
+
+    /// M1 redo F2 (@item:primordial-engine/m1-redo-f2-an-unconfirmed-leave-kept-a-s-hands-h): B signs its `Leave`
+    /// and its link drops before A confirms E. B stays in A's epoch, so A finalizes nothing more, and pe-agree's backlog
+    /// pacing counts B as a member that never acknowledges A's entries. A was told it can keep playing, so its hands
+    /// keep going in: a member whose every other member left unconfirmed isn't paced. A member whose peer only dropped
+    /// (no `Leave` in hand) is still paced, since the peer may come back. A link that comes back ends it either way.
+    #[test]
+    fn a_member_left_alone_by_an_unconfirmed_leave_keeps_its_hands() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        for leaves in [true, false] {
+            let hub = Hub::default();
+            let mut pair = agreeing_pair(&clock, &hub);
+            let mut f = 0;
+            for _ in 0..120 {
+                f += 1;
+                tick_at(&mut pair, &clock, &hub, &[0, 1], f);
+            }
+            if leaves {
+                pair[1].0.leave();
+            }
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0, 1], f);
+            let b = pair[1].2;
+            pair[0].3.lock().expect("the events").push(NetEvent::LinkDown { peer: b });
+            let (inputs, paced) = (pair[0].0.stats().inputs, pair[0].0.stats().hands_paced);
+            for _ in 0..600 {
+                f += 1;
+                tick_at(&mut pair, &clock, &hub, &[0], f);
+            }
+            assert_eq!(pair[0].0.other_members(), vec![b], "E isn't final at A: B is still in its epoch");
+            let (inputs, paced) = (pair[0].0.stats().inputs - inputs, pair[0].0.stats().hands_paced - paced);
+            let refused = pair[0].0.stats().inputs_refused;
+            println!(
+                "with a Leave in hand {leaves}: {inputs} hand inputs ({refused} refused), {paced} frames paced in 600"
+            );
+            if leaves {
+                assert_eq!(paced, 0, "A isn't paced once B left unconfirmed");
+                assert!(inputs >= 2 * 590, "A's hands keep going in: {inputs}");
+                assert_eq!(refused, 0, "and agreement takes them");
+            } else {
+                assert!(paced > 0, "a dropped peer may come back: A is still paced");
+            }
         }
     }
 
