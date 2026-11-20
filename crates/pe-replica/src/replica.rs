@@ -278,6 +278,9 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// The cut of my last import (rung 2 or joining) and my root there, until the floor reaches it. The replica
     /// keeps no history below it: its physics world is new, and older keyframes cannot be restored into it.
     imported: Option<(CutRef, Hash)>,
+    /// The roots pe-diverge is serving to a resync or a join (`Replica::set_served`, S2 v1.9): each one's snapshot
+    /// stays held, whatever `release` would thin, until a later call leaves it out.
+    served: Vec<Hash>,
     /// The physics world's generation: each import builds a new one, and an image from an older one never restores
     /// into it. Held roots from before an import keep its number, so none of their images is ever restored
     /// (@chunks-reviewer's L2 on 05903341).
@@ -428,6 +431,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             replayed: None,
             split_cuts: BTreeSet::new(),
             imported: None,
+            served: Vec::new(),
             epoch: 0,
             lineage: 0,
             lost: None,
@@ -509,10 +513,15 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.scratch
     }
 
-    /// How many snapshots the replica holds (4.1): the floor's, `Cv`'s, the finals', and those of my roots at cuts not
-    /// final yet that it keeps.
+    /// How many snapshots the replica holds (4.1): the floor's, `Cv`'s, the finals', the served roots', and those of my
+    /// roots at cuts not final yet that it keeps.
     pub fn held_count(&self) -> usize {
         self.held.len()
+    }
+
+    /// The roots the last [`Replica::set_served`] named (S2 v1.9), as named.
+    pub fn served(&self) -> &[Hash] {
+        &self.served
     }
 
     /// How many of the live history's grid frames keep their transfer and keyframe for a matched cut (5.4): those from
@@ -1256,7 +1265,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
     }
 
     /// Release held roots nobody needs: kept are the floor's, `Cv`'s, the finals within `T_keep` (at least two), the
-    /// diverged root, my last import's, and, of my roots at cuts not final yet, those something may read (4.1).
+    /// diverged root, my last import's, the roots being served (S2 v1.9), and, of my roots at cuts not final yet,
+    /// those something may read (4.1).
     fn release(&mut self) {
         let keep_frames = self.rate.frames(self.config.keep_finals);
         while self.finals.len() > 2 {
@@ -1271,6 +1281,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
         keep.extend(self.cv.as_ref().map(|c| c.1));
         keep.extend(self.diverged.map(|d| d.1));
         keep.extend(self.imported.map(|i| i.1));
+        // A served root stays for as long as a fetch may read it, which can be longer than `T_keep` (F3, design v2 S4).
+        keep.extend(self.served.iter().copied());
         // My roots at cuts not final yet all stay, as votes; their snapshots only where something reads them before
         // the cut is final (4.1, was O19; @coordinator-opus mc19bd7c38ea8). The resume needs the newest (5.3), which
         // the ring's policy over the cut grid keeps. A root split's reference serves its root at the split's cut, so
@@ -1731,6 +1743,13 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             global: h.global,
             bytes: h.transfer.clone(),
         })
+    }
+
+    /// The roots being served (S2 v1.9). Only recorded: the release after the next vote or finalize keeps them, and
+    /// drops a root a later call left out, so a call never changes what is held by itself, nor any root or vote.
+    fn set_served(&mut self, roots: &[Hash]) {
+        self.served.clear();
+        self.served.extend_from_slice(roots);
     }
 
     /// Rung 2 and joining (S2 v1.2 round 3; replica.md 6.2). Every group is the domain in M1. Everything is checked

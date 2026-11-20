@@ -398,7 +398,15 @@ ceil(240 / rate) sub-steps: the user chose the proposal of 13 ("30–120 Hz (rec
     - a root split's reference member serves its root at the split's cut (divergence.md 5, 11.1), so each cut a rung-1
       replay was asked for keeps its snapshot until a finalize at or above it, whether the replay ran or not;
     - an import at a cut whose snapshot is gone takes the empty state as its base (6.2);
-    - a snapshot kept for anything else (the floor's, `Cv`'s, the finals', the diverged root, my last import's) stays.
+    - a snapshot kept for anything else (the floor's, `Cv`'s, the finals', the diverged root, my last import's, a
+      served root's) stays.
+  - **Served roots** (S2 v1.9; F3, @diverge-eng's slow-member design v2 S4) [V `replica.rs`, `set_served`]. A
+    whole-state fetch for a resync or a join can outlast `T_keep`, past which a final cut's snapshot is released. So a
+    donor names the roots it is serving with `set_served`, level-triggered, once a tick, and each keeps its snapshot,
+    tree and transfer until a later call leaves it out. The call only records the list: the release after the next
+    vote or finalize applies it, so no root, vote or live state depends on it. A root no longer held is ignored, never
+    held again. Tests [V]: `a_served_final_root_stays_held_past_t_keep_until_it_is_left_out` and
+    `a_served_root_at_a_cut_not_final_keeps_its_snapshot_through_a_stall`.
   - **Measured** [V, `measure_vote_cost_in_a_stall` in release, 200 balls at 60 Hz, K = 8, votes from 16 to 3000]: at
     most 17 snapshots over 374 votes, against one per vote without the thinning, and every vote after the first still
     re-stepped 8 frames (median 5.5 ms). A 10-minute stall at 60 Hz with the 0.1 s cut interval stays within about 27
@@ -790,7 +798,7 @@ A player's own hands are drawn from tracking (WS-render, WS-xr). The view still 
 
 ## 8. The S2 seam, as pe-seams fixed it
 
-pe-seams's `Replica` trait (`crates/pe-seams/src/replica.rs`) is S2, through v1.7. `ReplicaImpl` implements it over
+pe-seams's `Replica` trait (`crates/pe-seams/src/replica.rs`) is S2, through v1.9. `ReplicaImpl` implements it over
 a `WorldModel` (8.1) and pe-physics [V `crates/pe-replica/src/replica.rs`], and pe-replica owns the driver (pe-seams
 ruling 3). The calls, and what the replica does behind each:
 - **`Driver::drive(replica, agree, present, self_test) -> DriveReport`** is the S2/S3 glue of each simulation tick,
@@ -821,8 +829,12 @@ ruling 3). The calls, and what the replica does behind each:
 - **`tree(&root)`** gives pe-world's tree calls on a held root: `node`, `export`, `object_hashes` and `verify`
   (ruling 1), over S2's paths by nibble prefix, with `Node::hash` the one hash definition. The roots held are the
   floor, `Cv`, the final cuts within `T_keep` (1.5 s by default, and at least the last 2; ruling 7), my root at a cut I
-  diverged at until a later `finalize` agrees, and my root at each cut I voted on that is not final yet.
+  diverged at until a later `finalize` agrees, my root at each cut I voted on that is not final yet, and each root a
+  donor is serving (`set_served`).
 - **`physics_image(&root)`** is one blob with its check hash (ruling 5; 6.2).
+- **`set_served(&roots)`** (S2 v1.9) names the roots this member is serving as a donor, to a resync or a join: each
+  stays held until a later call leaves it out (4.1). pe-app's `phases::Timed` forwards it, and a test checks that it
+  does.
 - **`import_at_cut(group, import, source)`** is rung 2's and a joiner's import (6.2).
 - **`view()`** is the last published frame view (7).
 - **`world_snapshot()` and `agreed_snapshot()`** (S2 v1.7) are the world model's read-only snapshots of the live state
