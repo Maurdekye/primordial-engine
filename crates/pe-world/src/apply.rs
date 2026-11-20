@@ -15,7 +15,8 @@ use pe_sim::{ComponentId, Node, RowVersion, Transform};
 
 use crate::components::{Hand, Light, Protection, SimSize, ids};
 use crate::edit::{
-    Actor, AssetTarget, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
+    Actor, AssetTarget, MAX_NEW_OBJECTS, MAX_SHAPES, OWN_CHECK, Op, Precondition, Row, Target, Transaction,
+    content_hash, row_tag,
 };
 use crate::script::{
     AssetId, BuildFailure, MAX_REKEY_ROWS, MAX_SOURCE_BYTES, ModuleRow, PendingCommit, RekeyReport, VoidKind,
@@ -390,6 +391,13 @@ impl World {
         // The inline blobs against what the ops introduced, with the registry after them (3.4): each one introduced,
         // and each introduced one given, except in world logic's own drafts (genesis), which no machine receives.
         crate::inline::check(work.store.registry(), tx, &tx.inline, !src.author.is_logic()).map_err(|r| (None, r))?;
+        // The world's shape limit (7.1; 7.6 step 5), on the state after every op: never past `MAX_SHAPES` by an edit
+        // that adds shapes. An edit that adds none (a delete, a colour, a move) passes even past it.
+        let (had, count) = (self.store.count(ids::SHAPE), work.store.count(ids::SHAPE));
+        if count > MAX_SHAPES && count > had {
+            let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+            return Err((None, Reason::TooManyShapes { limit: n(MAX_SHAPES), count: n(count) }));
+        }
         *self = work;
         // An applied edit's inline blobs go into the machine's store, on every machine that applies it (3.4). A
         // refused one stores nothing.

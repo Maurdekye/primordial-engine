@@ -486,6 +486,7 @@ fn plain_reason(r: &Reason) -> Option<&'static str> {
         Reason::Cycle => "it would put something inside itself",
         Reason::TooDeep { .. } => "it would nest things too deep",
         Reason::TooLarge { .. } => "too many new things at once",
+        Reason::TooManyShapes { .. } => "the world can't hold more things",
         Reason::NotYourHand => "that isn't your hand",
         _ => return None,
     })

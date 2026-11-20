@@ -142,6 +142,9 @@ pub enum Reason {
     TooDeep { object: ObjectId, limit: u32 },
     /// The transaction would create more objects than one edit may (world-model.md 7.1).
     TooLarge { limit: u32 },
+    /// The transaction would leave the world more collision shapes (`Shape` rows) than it may hold, `limit`, and more
+    /// than it had: `count` is how many it would leave (world-model.md 7.1, 7.6 step 5). The whole edit is refused.
+    TooManyShapes { limit: u32, count: u32 },
     /// The object is claimed by another hand; the first grab in the order wins (R5).
     Held { by: MemberKey },
     /// A grab that would take its member past `limit`, the number of objects it may hold at once (`max_claims`;
