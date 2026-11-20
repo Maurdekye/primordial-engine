@@ -71,6 +71,8 @@ pub enum ROp {
         target: Obj,
         component: String,
         fields: BTreeMap<String, Json>,
+        /// Replace the component if the object already has it (api.md 5.3).
+        replace: bool,
     },
     Remove {
         target: Obj,
@@ -609,10 +611,11 @@ pub fn resolve_tx(
                     c.push(i, ROp::Set { target: o, fields: fs.clone() })?;
                 }
             }
-            Op::Add { target, component, fields } => {
+            Op::Add { target, component, fields, replace } => {
                 for o in c.targets(i, target, true)? {
                     c.count += 1;
-                    c.push(i, ROp::Add { target: o, component: component.clone(), fields: fields.clone() })?;
+                    let (component, fields) = (component.clone(), fields.clone());
+                    c.push(i, ROp::Add { target: o, component, fields, replace: *replace })?;
                 }
             }
             Op::Remove { target, component } => {

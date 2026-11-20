@@ -584,6 +584,10 @@ pub enum Op {
         component: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         fields: BTreeMap<String, Json>,
+        // S6 v1.10 (api.md 5.3): without it, `add` on a component the object has is refused as `invalid`.
+        /// Replace a component the object already has (fields not given become zero); without it, that is refused.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replace: bool,
     },
     Remove {
         #[serde(flatten)]
