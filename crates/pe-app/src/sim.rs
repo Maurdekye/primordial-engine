@@ -422,6 +422,8 @@ pub struct Sim {
     status: Option<Arc<pe_render::notices::StatusLine>>,
     /// The status line shows the join's catch-up.
     catching_up: bool,
+    /// The tick trace, when `PE_TICK_TRACE` names a file ([`Sim::with_tick_trace`], [`crate::trace`]).
+    trace: Option<crate::trace::TickTrace>,
 }
 
 /// pe-api's ports and the loop's own state for them (app.md 3.1).
@@ -638,6 +640,7 @@ impl Sim {
             on_join_failed: None,
             status: None,
             catching_up: false,
+            trace: None,
         }
     }
 
@@ -882,6 +885,12 @@ impl Sim {
         }
     }
 
+    /// Records every tick in `trace` ([`crate::trace`]): off unless the binary was given `PE_TICK_TRACE`.
+    pub fn with_tick_trace(mut self, trace: crate::trace::TickTrace) -> Sim {
+        self.trace = Some(trace);
+        self
+    }
+
     /// What a failed join does besides its console line, once: the binary quits.
     pub fn with_on_join_failed(mut self, f: Box<dyn FnOnce() + Send>) -> Sim {
         self.on_join_failed = Some(f);
@@ -1039,6 +1048,8 @@ impl Sim {
         let ps = self.shown_present(p, now);
         let tick_start = Instant::now();
         let mut mark = tick_start;
+        // The tick trace's counters at the start (crate::trace); nothing at all without one.
+        let traced = self.trace.as_ref().map(|_| crate::trace::Before::take(&self.stats.phases, self.stats.received));
         // 1. Messages in. Protocol and Action go to agreement, Repair to pe-diverge; a refusal is a peer's fault,
         // counted and never fatal. TODO(blob store): Bulk; Pose is display-only.
         let mut links = Vec::new();
@@ -1394,6 +1405,23 @@ impl Sim {
         let tick = phases::since(tick_start);
         self.stats.phases.tick_ns += tick;
         self.stats.phases.longest_tick_ns = self.stats.phases.longest_tick_ns.max(tick);
+        if let (Some(t), Some(before)) = (self.trace.as_mut(), traced) {
+            let at_end = crate::trace::Tick {
+                p,
+                ps,
+                now,
+                tick_ns: tick,
+                rolled_back_to: report.advance.rolled_back_to,
+                caught_up: report.advance.caught_up,
+                frame: self.replica.frame(),
+                final_frame: self.agree.final_cut().map(|fc| fc.cut.at.frame),
+                budget: self.budget.frames(),
+                cost_ns: self.budget.cost().map(|c| u64::try_from(c.as_nanos()).unwrap_or(u64::MAX)),
+                backlogged: self.agree.backlogged(),
+                holds: self.stats.holds,
+            };
+            t.record(&before, &self.stats.phases, self.stats.received, at_end);
+        }
         Some((p, report))
     }
 
@@ -1666,6 +1694,8 @@ fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool, shared: &Shared) -> Si
         }
         let now = host();
         let ticked = sim.tick(now).map(|(p, _)| p);
+        // The tick trace times the loop's own work after the tick (crate::trace); no clock read without one.
+        let tick_end = sim.trace.is_some().then(|| host());
         // The graceful quit's standing for the owner's wait, and the console's lines (app.md 4).
         shared.status.store(sim.leave_status().code(), Ordering::Release);
         shared.bound_ms.store(u64::try_from(sim.leave_bound().as_millis()).unwrap_or(u64::MAX), Ordering::Release);
@@ -1678,7 +1708,11 @@ fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool, shared: &Shared) -> Si
         }
         // 7. Wait for the next frame or a wake. A tick that ran long leaves no wait, and the next one jumps ahead.
         let due = sim.next_due(ticked, now);
-        let left = due.0.saturating_sub(host().0);
+        let wait_from = host();
+        if let (Some(t), Some(end)) = (&mut sim.trace, tick_end) {
+            t.wait(end, wait_from, due);
+        }
+        let left = due.0.saturating_sub(wait_from.0);
         if left > 0 {
             let start = Instant::now();
             thread::park_timeout(Duration::from_nanos(left as u64));
@@ -4178,6 +4212,29 @@ pub(crate) mod tests {
         let (r_steady, r_stalled) = (steady.root_at(Frame(66)), stalled.root_at(Frame(66)));
         assert!(r_steady.is_ok(), "{r_steady:?}");
         assert_eq!(r_stalled, r_steady);
+    }
+
+    /// The tick trace (crate::trace) records the simulation's own ticks: a `sec` line for each second of the frame
+    /// clock and, with a threshold of 0, a `long` line for every tick, each with the replica's frame after it.
+    #[test]
+    fn a_tick_trace_records_the_simulation_s_ticks() {
+        let exe = std::env::current_exe().expect("the test executable");
+        let path = exe.parent().expect("its folder").join(format!("pe-sim-tick-trace-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (sim, _slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let trace = crate::trace::TickTrace::create(&path, 0, RATE.hz()).expect("a trace");
+        let mut sim = sim.with_tick_trace(trace);
+        for f in 0..=70 {
+            sim.tick(clock.host_time_of(Frame(f)));
+        }
+        drop(sim);
+        let text = std::fs::read_to_string(&path).expect("the trace");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(text.lines().filter(|l| l.starts_with("sec ")).count(), 2, "frames 0-59 and 60-70: {text}");
+        assert_eq!(text.lines().filter(|l| l.starts_with("long ")).count(), 71, "{text}");
+        let last = text.lines().rfind(|l| l.starts_with("long ")).expect("a long line");
+        assert!(last.contains(" p=70 ") && last.contains(" frame=71 "), "{last}");
     }
 
     #[test]

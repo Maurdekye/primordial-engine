@@ -41,5 +41,6 @@ pub mod sim;
 mod sources;
 pub mod stamp;
 pub mod standin;
+pub mod trace;
 pub mod vr;
 pub mod world;

@@ -616,6 +616,18 @@ with @fable-reviewer's refinements, and):
      stack overflow) reach the console only. If a write to the file fails (a full disk, a drive gone), the console
      says once that the log stops there, and the log closes. With it the command line needs no pipe: Windows PowerShell 5.1 ends a program piped to `Tee-Object` at once
      on Ctrl+C, before its handler runs, so the leave and the end lines are lost [V, the dry run].
+   - **The tick trace** (`PE_TICK_TRACE=<file>`, `crate::trace`; @coordinator-opus, after the M1
+     recording's 2.13 s tick, which the run's totals couldn't place). Off unless the variable names a file, and then
+     the simulation thread writes a new one: a `sec` line for each second of the frame clock (its ticks' phases,
+     frames stepped and re-stepped, the worst tick, how far the replica and the final cut trail the present, the
+     budget and the frame cost at its end), and a `long` line for each tick over `PE_TICK_TRACE_MS` milliseconds
+     (default 50), with every phase of it. Each line also gives the thread's CPU time beside its wall time, to tell a
+     tick that worked from one that waited (descheduled, or blocked on a lock or the disk). Between ticks, `loop_ms`
+     is the loop's own work after a tick (the console's lines, the quit's shared state), where a blocked console
+     write (a selection in a QuickEdit console) shows, and `late_ms` how long past the end of its wait the next tick
+     started, where a thread woken late shows (@design-reviewer's L1 on 108458b9); either one over the threshold
+     also writes a `long` line. Off, a tick pays one branch. Windows counts thread time in clock ticks (about
+     15.6 ms), so CPU time is coarse for short ticks.
    - When the wait ends, the console says "left the session.", or, if the bound passed first, "Left before
      <player> confirmed it. <player> can keep playing, but their changes won't be shared from now on."
 3. **The remaining member** keeps its link to the leaver after the epoch switch until the leaver disconnects or 30 s

@@ -482,6 +482,18 @@ fn main() {
     // The window's status line (render.md 8.1): a joiner's "Joining: catching up…".
     let status = Arc::new(StatusLine::default());
     let sim = sim.with_status(status.clone());
+    // `PE_TICK_TRACE=<file>`: a line a second and one per long tick, for a stall's phase (crate::trace). Off by default.
+    let sim = match pe_app::trace::TickTrace::from_env(rate.hz()) {
+        Some(Ok((trace, path))) => {
+            pe_app::out!("tick trace: writing {path} (PE_TICK_TRACE)");
+            sim.with_tick_trace(trace)
+        }
+        Some(Err(e)) => {
+            pe_app::err!("tick trace: couldn't open PE_TICK_TRACE's file ({e}); running without it");
+            sim
+        }
+        None => sim,
+    };
     let display_delay = sim.display_delay();
     // pe-api's ports (app.md 3.1) whenever the replica is pe-world's and this machine has a member: the build thread
     // submits its attestations through their edit queue (@engine-architect). The MCP thread only when a
