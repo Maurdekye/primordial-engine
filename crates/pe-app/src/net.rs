@@ -1608,18 +1608,25 @@ mod tests {
         CutPair { host, sim, notices, cj, me_a, me_b }
     }
 
-    /// B's simulation over its empty replica, its import of E from A under way (pe-diverge's join).
-    fn joining_sim(cj: CutJoin, inviter: MemberKey, host: &crate::clock::HostClock) -> (Sim, Arc<FrameSlot>) {
+    /// B's simulation over its empty replica, its import of E from A under way (pe-diverge's join), and its window's
+    /// status line.
+    fn joining_sim(
+        cj: CutJoin,
+        inviter: MemberKey,
+        host: &crate::clock::HostClock,
+    ) -> (Sim, Arc<FrameSlot>, Arc<pe_render::notices::StatusLine>) {
         let me = cj.me;
         let replica = cj.record.empty_replica(me, cj.frames.clone(), runner()).expect("B's empty replica");
         let slot = Arc::new(FrameSlot::new());
-        let mut sim = Sim::new(Box::new(cj.node), replica, cj.frames, slot.clone(), Budget::new(RATE))
+        let sim = Sim::new(Box::new(cj.node), replica, cj.frames, slot.clone(), Budget::new(RATE))
             .with_local(me, crate::local::chain_nonce(), Arc::new(StillHands([0.5, 1.1, -0.3])))
             .with_transport(transport_with(cj.handle, cj.pending), Some(Box::new(cj.hook)))
             .with_diverge(pe_diverge::Config::default(), None)
             .expect("B's pe-diverge");
+        let status = Arc::new(pe_render::notices::StatusLine::default());
+        let mut sim = sim.with_status(status.clone());
         sim.join_at_final(inviter, host()).expect("B's join starts");
-        (sim, slot)
+        (sim, slot, status)
     }
 
     /// Ticks both until `done`, or for at most `max`, gathering each one's console lines: whether `done` held.
@@ -1664,7 +1671,8 @@ mod tests {
         let balls = std::env::var("PE_JOIN_BALLS").ok().and_then(|b| b.parse().ok()).unwrap_or(params().balls);
         let CutPair { host, mut sim, mut notices, cj, me_a, me_b } = cut_pair(T_JOIN, balls);
         let e = cj.e.at;
-        let (mut sim_b, slot_b) = joining_sim(cj, me_a, &host);
+        let (mut sim_b, slot_b, status_b) = joining_sim(cj, me_a, &host);
+        assert_eq!(status_b.get(), Some(crate::join::catching_up_status()), "B's window says it is catching up");
         let mut notices_b = Vec::new();
         run_both(
             &host,
@@ -1676,6 +1684,7 @@ mod tests {
         println!("B: {:?}; B's console {notices_b:?}; B's pe-diverge {:?}", sim_b.stats(), sim_b.diverge_counters());
         assert_eq!(sim_b.join_failed(), None, "B's import failed");
         assert!(!sim_b.joining(), "B's import didn't end: {notices_b:?}");
+        assert_eq!(status_b.get(), None, "B reached the present, and its window's status line is down");
         assert!(notices.contains(&joined(me_b)), "A's console says B joined: {notices:?}");
         let finals = (sim.final_cut(), sim_b.final_cut());
         assert!(both_past(&sim, &sim_b, e), "both finalize the same cut past E: {finals:?}");
@@ -1717,7 +1726,7 @@ mod tests {
         let failed = run_until(&mut sim, &host, &mut notices, SHORT * 3, |_| false);
         assert!(!failed, "nothing to wait for");
         assert!(notices.contains(&join_failed(me_b)), "A's console says the join failed: {notices:?}");
-        let (mut sim_b, _) = joining_sim(cj, me_a, &host);
+        let (mut sim_b, _, _) = joining_sim(cj, me_a, &host);
         let mut notices_b = Vec::new();
         let after_all = run_both(
             &host,

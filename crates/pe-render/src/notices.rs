@@ -21,7 +21,7 @@
 //!   "Resyncing…" shows above the others.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ab_glyph::{Font, PxScale, ScaleFont, point};
 use glam::{DQuat, DVec3};
@@ -34,6 +34,22 @@ use crate::camera::Camera;
 use crate::labels::{font, text_width};
 use crate::pose::{WorldPose, offset_vec};
 use crate::scene::{Overlay, OverlayImage};
+
+/// A line pe-app keeps up while a state lasts, such as "Joining: catching up…" while a joiner simulates on to the
+/// present: set from the simulation thread, read by the render thread each frame ([`crate::present::Presenter::set_status`]).
+#[derive(Debug, Default)]
+pub struct StatusLine(Mutex<Option<String>>);
+
+impl StatusLine {
+    /// Put `text` up, or take the line down with `None`.
+    pub fn set(&self, text: Option<String>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = text;
+    }
+
+    pub fn get(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
 
 /// When a refusal is told (render.md R10).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

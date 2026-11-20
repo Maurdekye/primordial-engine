@@ -58,6 +58,7 @@ use pe_render::display::DisplaySettings;
 use pe_render::drawn_time::DrawnTime;
 use pe_render::effects::{EffectCommand, EffectSettings};
 use pe_render::gpu::ContextError;
+use pe_render::notices::StatusLine;
 use pe_render::present::{FrameSlot, Presenter};
 use pe_render::scene::{Environment, RenderSettings};
 use pe_render::window::{DesktopConfig, DesktopReport, EffectSink, run_desktop};
@@ -208,10 +209,12 @@ fn drawn_time(arg: &str) -> Option<DrawnTime> {
     }
 }
 
-/// A presenter drawing by `drawn_time`.
-fn presenter(rate: SimRate, drawn_time: DrawnTime) -> Presenter {
+/// A presenter drawing by `drawn_time`, showing the simulation's status line (a join's catch-up).
+fn presenter(rate: SimRate, drawn_time: DrawnTime, status: &Arc<StatusLine>) -> Presenter {
     let display = DisplaySettings { drawn_time, ..DisplaySettings::default() };
-    Presenter::new(display, EffectSettings::default(), Environment::default(), rate.hz())
+    let mut p = Presenter::new(display, EffectSettings::default(), Environment::default(), rate.hz());
+    p.set_status(status.clone());
+    p
 }
 
 /// The console (app.md 4): each line it reads is a command. `quit` is the same request as Ctrl+C: the first one
@@ -476,6 +479,9 @@ fn main() {
     // B (app.md 3): a session's delay is in its record (a joiner's came from it); a world alone takes the option.
     let sim = if options.shared.is_none() { sim.with_display_delay(options.display_delay) } else { sim };
     let sim = sim.with_shown(display_lead.clone());
+    // The window's status line (render.md 8.1): a joiner's "Joining: catching up…".
+    let status = Arc::new(StatusLine::default());
+    let sim = sim.with_status(status.clone());
     let display_delay = sim.display_delay();
     // pe-api's ports (app.md 3.1) whenever the replica is pe-world's and this machine has a member: the build thread
     // submits its attestations through their edit queue (@engine-architect m668e8458cf86). The MCP thread only when a
@@ -564,7 +570,7 @@ fn main() {
             ring,
             slot.clone(),
             vr::Drawing {
-                presenter: presenter(rate, drawn_time),
+                presenter: presenter(rate, drawn_time, &status),
                 render: RenderSettings::default(),
                 effects,
                 captures: captures.clone(),
@@ -611,7 +617,7 @@ fn main() {
         present_mode: pe_render::wgpu::PresentMode::Fifo,
         vertical_fov: 1.0,
         clock: host,
-        presenter: presenter(rate, options.drawn_time.unwrap_or_default()),
+        presenter: presenter(rate, options.drawn_time.unwrap_or_default(), &status),
         render: RenderSettings::default(),
         hand: DesktopHandSettings::default(),
         eye: RigPose { position: [0.0, 1.4, 0.0], orientation: [0.0, 0.0, 0.0, 1.0] },

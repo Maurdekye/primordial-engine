@@ -534,6 +534,12 @@ pub fn imported_here() -> String {
     "Joined: catching up to the present.".into()
 }
 
+/// The joiner's status line in the window, from the join's start until its replica first reaches the present (the
+/// import, then the catch-up; render.md 8.1's status line).
+pub fn catching_up_status() -> String {
+    "Joining: catching up…".into()
+}
+
 /// The joiner's console when its import failed: it quits.
 pub fn couldnt_join_here(why: &str) -> String {
     format!("Couldn't join the session: {why}.")

@@ -2347,6 +2347,7 @@ dependencies = [
  "glam",
  "pe-harness",
  "pe-seams",
+ "pe-world",
  "png",
  "pollster",
  "wgpu",

@@ -15,6 +15,9 @@
 //! - **The notices** (render.md 8.1): with [`Presenter::set_notices`], each new view's `changes` feed them, pe-app
 //!   hands in agreement events ([`Presenter::agreement`]), and each [`PresentedFrame`] carries the lines to show.
 //!   The caller turns them into `Scene::overlay` (`notices::StripCache`, then `window_overlay` or `Panel::place`).
+//! - **The status line** ([`Presenter::set_status`]): a line pe-app keeps up while a state lasts ("Joining: catching
+//!   up…" while a joiner simulates on to the present), carried as [`PresentedFrame::status`] for the caller to show
+//!   above the notices.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -28,7 +31,7 @@ use crate::camera::Camera;
 use crate::counters::{CaptureEvent, RenderCounters};
 use crate::display::{DisplayFrame, DisplayLayer, DisplaySettings, FrameInput, OwnHands};
 use crate::effects::{EffectCommand, EffectGate, EffectSettings};
-use crate::notices::{Line, Notices};
+use crate::notices::{Line, Notices, StatusLine};
 use crate::pacing::Quality;
 use crate::scene::{Environment, FrameStats, Scene};
 
@@ -111,6 +114,8 @@ pub struct PresentedFrame {
     pub effects: Vec<EffectCommand>,
     /// The notices to show this frame, oldest first (empty without [`Presenter::set_notices`]).
     pub notices: Vec<Line>,
+    /// The status line's text this frame, if one is up ([`Presenter::set_status`]).
+    pub status: Option<String>,
 }
 
 /// The display layer and the effect gate, on the render thread. Survives a lost GPU context.
@@ -125,6 +130,7 @@ pub struct Presenter {
     gaps: u64,
     counters: RenderCounters,
     notices: Option<Notices>,
+    status: Option<Arc<StatusLine>>,
 }
 
 impl Presenter {
@@ -145,6 +151,7 @@ impl Presenter {
             gaps: 0,
             counters: RenderCounters::new(),
             notices: None,
+            status: None,
         }
     }
 
@@ -174,6 +181,11 @@ impl Presenter {
     /// Tell the local player's notices from here on (render.md 8.1).
     pub fn set_notices(&mut self, notices: Notices) {
         self.notices = Some(notices);
+    }
+
+    /// Show `status`'s line, while it holds one, in every frame from here on.
+    pub fn set_status(&mut self, status: Arc<StatusLine>) {
+        self.status = Some(status);
     }
 
     pub fn notices_mut(&mut self) -> Option<&mut Notices> {
@@ -272,7 +284,8 @@ impl Presenter {
             crate::hands::draw_tracked_joints(&mut scene, newest, local);
         }
         scene.environment = self.environment;
-        PresentedFrame { scene, display, effects, notices }
+        let status = self.status.as_ref().and_then(|s| s.get());
+        PresentedFrame { scene, display, effects, notices, status }
     }
 }
 
@@ -320,6 +333,21 @@ mod tests {
         assert_eq!(run.display.views_taken, 1);
         assert_eq!(run.display.display_frames, 3);
         assert_eq!(run.view_age_ms.count, 3);
+    }
+
+    /// The status line: shown while its holder has one up.
+    #[test]
+    fn presented_frames_carry_the_status_line_while_it_is_up() {
+        let mut p = Presenter::new(DisplaySettings::default(), EffectSettings::default(), Environment::default(), 60);
+        let local = LocalPresentation { display_time: HostTime(0), hands: [None, None] };
+        assert_eq!(p.frame(&view(1), &local, &[]).status, None, "no status line set");
+        let status = Arc::new(StatusLine::default());
+        p.set_status(status.clone());
+        assert_eq!(p.frame(&view(2), &local, &[]).status, None, "set, but nothing up");
+        status.set(Some("Joining: catching up…".into()));
+        assert_eq!(p.frame(&view(3), &local, &[]).status.as_deref(), Some("Joining: catching up…"));
+        status.set(None);
+        assert_eq!(p.frame(&view(4), &local, &[]).status, None, "taken down");
     }
 
     /// Notices: each new view's `changes` feed them once, and every presented frame carries the lines.
