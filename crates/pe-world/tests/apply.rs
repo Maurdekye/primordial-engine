@@ -765,6 +765,103 @@ fn one_transaction_creates_at_most_max_new_objects() {
     );
 }
 
+fn sphere(r: f32) -> pe_world::components::Shape {
+    use pe_world::components::{Shape, shape_kind};
+    Shape { kind: shape_kind::SPHERE, density: 20.0, size: [r, 0.0, 0.0], ..Shape::default() }
+}
+
+/// `n` root objects with a `Shape` each at x, by member A in one edit: their ids.
+fn shaped(f: &mut Fx, n: usize, x: f64) -> Vec<ObjectId> {
+    let rows = || vec![row(Transform::at(at(x))), row(sphere(0.06))];
+    let ops = (0..n).map(|i| Op::Create { new: i as u32, parent: Target::Root, index: None, rows: rows() }).collect();
+    let e = entry(&mut f.a, &tx(ops));
+    created(&apply(&mut f.w, &e).0)
+}
+
+fn shapes_in(w: &World) -> usize {
+    w.store().count(ids::SHAPE)
+}
+
+fn too_many(count: usize) -> (Option<u32>, Reason) {
+    use pe_world::edit::MAX_SHAPES;
+    (None, Reason::TooManyShapes { limit: MAX_SHAPES as u32, count: count as u32 })
+}
+
+/// The world's shape limit (world-model.md 7.1, 7.6 step 5; @coordinator-opus m5dfee0077d80): an edit that would
+/// leave more than `MAX_SHAPES` shapes is refused whole, live and in a dry run alike, with the count it would leave.
+/// One that reaches the limit exactly applies, and at the limit every way of adding a shape is refused while a
+/// change to a shape in place, or a swap of one for another, applies.
+#[test]
+fn an_edit_past_the_shape_limit_is_refused_whole() {
+    use pe_world::edit::MAX_SHAPES;
+    let max = MAX_SHAPES;
+    let mut f = fx();
+    let (_, ball, _) = table_and_ball(&mut f);
+    let first = shaped(&mut f, max - 2, 1.0);
+    assert_eq!(shapes_in(&f.w), max - 2);
+    // A colour, then three new shapes: the whole edit is refused at max + 1, and nothing changes.
+    let red = Appearance { base: [1.0, 0.0, 0.0, 1.0], ..Default::default() };
+    let mut ops = vec![Op::SetRow { id: Target::Existing(first[0]), row: row(red) }];
+    let rows = || vec![row(Transform::at(at(2.0))), row(sphere(0.06))];
+    ops.extend((0..3).map(|i| Op::Create { new: i, parent: Target::Root, index: None, rows: rows() }));
+    let e = entry(&mut f.a, &tx(ops));
+    let before = state(&f.w);
+    let (op, reason) = too_many(max + 1);
+    assert_eq!(f.w.dry_run(Frame(1), &e), Outcome::Refused { op, reason });
+    assert_eq!(refused(&apply(&mut f.w, &e).0), too_many(max + 1));
+    assert_eq!(state(&f.w), before, "a refused edit changes nothing, the colour included");
+    // Two reach the limit exactly.
+    let two = shaped(&mut f, 2, 3.0);
+    assert_eq!(shapes_in(&f.w), max);
+    // At the limit, a shape added to a shapeless object, a copy of a shaped one and an undelete of one are refused.
+    let add = tx(vec![Op::SetRow { id: Target::Existing(ball), row: row(sphere(0.1)) }]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &add)).0), too_many(max + 1));
+    let copy =
+        tx(vec![Op::Copy { source: Target::Existing(two[0]), new: 0, parent: Target::Root, index: None, size: 1 }]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &copy)).0), too_many(max + 1));
+    let gone = entry(&mut f.a, &tx(vec![Op::Delete { id: Target::Existing(two[1]) }]));
+    assert!(matches!(apply(&mut f.w, &gone).0, Outcome::Applied { .. }), "a delete always applies");
+    assert_eq!(shapes_in(&f.w), max - 1);
+    let refill = shaped(&mut f, 1, 4.0);
+    let back = entry(&mut f.a, &tx(vec![Op::Undelete { id: two[1] }]));
+    assert_eq!(refused(&apply(&mut f.w, &back).0), too_many(max + 1));
+    // A shape changed in place, or one deleted and another created in the same edit, leaves the count: it applies.
+    let bigger = tx(vec![Op::SetRow { id: Target::Existing(two[0]), row: row(sphere(0.08)) }]);
+    assert!(matches!(apply(&mut f.w, &entry(&mut f.a, &bigger)).0, Outcome::Applied { .. }));
+    let swap = tx(vec![
+        Op::Delete { id: Target::Existing(refill[0]) },
+        Op::Create { new: 0, parent: Target::Root, index: None, rows: rows() },
+    ]);
+    assert!(matches!(apply(&mut f.w, &entry(&mut f.a, &swap)).0, Outcome::Applied { .. }));
+    assert_eq!(shapes_in(&f.w), max);
+}
+
+/// Past the limit (a world built so, not by edits: M1's has 505), an edit that adds no shape applies, a delete
+/// always does, and only an edit that leaves more shapes than the world had is refused.
+#[test]
+fn past_the_shape_limit_only_an_edit_that_adds_shapes_is_refused() {
+    use pe_world::edit::MAX_SHAPES;
+    let max = MAX_SHAPES;
+    let mut f = fx();
+    for n in 0..(max + 5) as u128 {
+        let id = ObjectId::from_u128(10_000 + n);
+        f.w.create(id, None, f.keys.key(0), pe_world::GENESIS).expect("an object");
+        f.w.insert(id, Transform::at(at(1.0))).expect("its transform");
+        f.w.insert(id, sphere(0.06)).expect("its shape");
+    }
+    assert_eq!(shapes_in(&f.w), max + 5);
+    let some = ObjectId::from_u128(10_000);
+    let red = Appearance { base: [1.0, 0.0, 0.0, 1.0], ..Default::default() };
+    let colour = tx(vec![Op::SetRow { id: Target::Existing(some), row: row(red) }]);
+    assert!(matches!(apply(&mut f.w, &entry(&mut f.a, &colour)).0, Outcome::Applied { .. }));
+    let delete = tx(vec![Op::Delete { id: Target::Existing(some) }]);
+    assert!(matches!(apply(&mut f.w, &entry(&mut f.a, &delete)).0, Outcome::Applied { .. }));
+    assert_eq!(shapes_in(&f.w), max + 4, "still past the limit");
+    let rows = vec![row(Transform::at(at(2.0))), row(sphere(0.06))];
+    let one = tx(vec![Op::Create { new: 0, parent: Target::Root, index: None, rows }]);
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &one)).0), too_many(max + 5));
+}
+
 #[test]
 fn a_copy_of_size_zero_is_invalid() {
     // @chunks-reviewer's note on f1a720b2: a subtree always has its root.
