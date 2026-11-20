@@ -1286,6 +1286,20 @@ pub enum Precondition {
   restores objects that were in the world before, so it does not count. Over a limit is a
   refusal, not a truncation; the object cap's is `TooLarge { limit }`. pe-world's constants are the one
   authority, which pe-api uses, and they are raised only with a measured reason (@coordinator-opus).
+- **The world's shape limit** (@coordinator-opus, after @fable-reviewer; the M1
+  recording, 2026-11-20). The world holds at most 520 collision shapes (`MAX_SHAPES`): every `Shape` row, whatever
+  object carries it, with a body or not. An edit that would leave more, and more than the world had, is refused
+  whole as `TooManyShapes { limit, count }`, where `count` is what it would leave (7.6 step 5). An edit that adds
+  none, such as a delete, a move, a colour or a swap of one shape for another, passes even past the limit. Every edit
+  path is counted, since the check compares the world before and after the whole transaction: `Create`, `SetRow`,
+  `Copy` and `Undelete`. Nothing else makes a `Shape` row today. A hand carries none (8), and a script can't make
+  one, because a script's create carries only one of its own components and `pe.Shape` isn't script-writable (7.9).
+  Why 520 [V, engine-architect's harness, 2026-11-20]: with every ball awake, the user's laptop (i7-8650U, the
+  slowest M1 machine) steps 520 shapes in about half a frame period. It took 7.2 ms a frame at 500 balls, 8.5 ms at
+  550, 10.0 ms at 650 and 13.9 ms at 850 (headless, 60 Hz, cuts every 6 frames), and the recording fell behind real
+  time from about 650. The number is a constant of the build, so the build id's source hash covers it (app.md 4) and
+  every member of a session runs the same rule. A world stored past one build will need it in a rules version (the
+  release-compatibility item).
 - **A copy's size** (@design-reviewer's Low 2 on pe-api, @coordinator-opus). `Copy` carries `size`,
   the number of objects in the source subtree as the author read it. If the subtree has another size at the op,
   its depth-first indices would name other objects than the author meant, so the op is refused as
@@ -1450,8 +1464,12 @@ its reason and the index of the op [I]:
    holds are checked here rather than in step 2 because an op may name an object an earlier op created, or lift a
    protection a later op relies on; a transaction that does the latter passes only if its author may lift that
    protection (@coordinator-opus).
-5. **All or nothing.** The ops apply to a copy-on-write working state; any failure discards it. Nothing outside the
-   transaction sees a partial result, and the reported reason is the first failing op's, in order.
+5. **The world's shape limit** (7.1), on the state after every op and after the inline-blob check (3.4): a
+   transaction that would leave more than `MAX_SHAPES` shapes, and more than the world had before it, is refused
+   whole as `TooManyShapes { limit, count }`, with no op index.
+6. **All or nothing.** The ops apply to a copy-on-write working state; any failure discards it. Nothing outside the
+   transaction sees a partial result, and the reported reason is the first failing step's, with the op's index when
+   an op failed (@world-model's nits on 796a5a31).
 
 - **One pure function** (@api-eng's O4). `World::apply(state, frame, entry) -> (state', Outcome)` is the only edit
   path. The ordered step, the author's local prediction and a dry run all call it, so they cannot disagree.
