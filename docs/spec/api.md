@@ -334,7 +334,8 @@ Reads one snapshot. `Query`:
   - `{"all": [ ... ]}`, the conjunction.
   Omitted: the root's children.
 - `fields`: component names, or `Component.field`. Omitted: id, name, parent, version and the list of component
-  types only. `"*"` returns everything.
+  types only. Named: those, with the list of types still given, so a reader always sees every component an object
+  has (F6 of the M1 redo). `"*"` returns everything, its components' names as keys.
 - `frame`: the frame positions are given in (4.4), default `"parent"`.
 - `children`: how many levels of children to inline (default 0).
 - `limit` (default 50, at most 256) and `cursor`. A result cut by the limit carries `more`, a cursor for the next page.
@@ -375,7 +376,7 @@ same frame together.
 |---|---|---|
 | `create` | A new object under `parent`, optionally from a `template` (5.3.1), with `components` | Gets an id at once (4.3) |
 | `set` | One field (`field`, `value`) or several (`fields: {...}`) | `value: null` resets to the default |
-| `add` / `remove` | Adds or removes a component (`component`, with initial `fields` for `add`) | |
+| `add` / `remove` | Adds or removes a component (`component`, with initial `fields` for `add`) | `add` on a component the object already has is refused unless `replace: true` (below) |
 | `reparent` | A new `parent`, and an `index` among its children | `keep`: `"world_pose"` (default) or `"local_pose"`; refused as `invalid` if it would make a cycle |
 | `duplicate` | A copy-on-write copy of a subtree, new ids over the same records ("b, 1 always", R11 rulings; file 11, 3.2) | `protected` for a non-owner (V1) |
 | `delete` | An object and its subtree | Plain Delete unlinks a linked script (R11 rulings) |
@@ -383,11 +384,28 @@ same frame together.
 
 How they map onto pe-world's ops (world-model.md 7.1): `create` is `Create`, or with a `template` a `Copy` of the
 template object (templates are objects under a `Templates` root) followed by its `set`s; `set` is `SetField` per
-field; `add` is `SetRow`; `remove` is `RemoveRow`; `reparent` is `Reparent` with `keep_world` from `keep`;
+field; `add` is `SetRow` (with a row `Version` precondition unless `replace`); `remove` is `RemoveRow`; `reparent` is `Reparent` with `keep_world` from `keep`;
 `duplicate` is `Copy`; `delete` is `Delete`; `code` is the `Register` and `CommitScript` pe-logic builds (section
 7). Default and explicit `if_version`s become `ObjectVersion` preconditions in the payload's precondition list;
 `$ref`s become `New(k)` targets.
 
+- **`add` never replaces by surprise** (S6 v1.10; F6 of the M1 redo, coordinator mbee91b131a48 after
+  @astra-deliberator and @fable-reviewer). `add` writes a whole row: the fields given, every other field zero.
+  - On a component the object already has, it is refused as `invalid`, before anything is built. "Already has"
+    means the row as the op would find it: a preset's or template's, one a copy brought, or one an earlier op of
+    the same change added or removed.
+  - The refusal names the component (`field`) and every object of the op that has it (`details.objects`, each with
+    its `current` values), and its `next` says to use `set`, or to repeat the `add` with `replace: true`. With a
+    `where`, one such object refuses the whole change.
+  - A plain `add` on an existing object carries a row precondition: the row's version as this change read it, the
+    zero version if the row was absent (world-model.md 7.6). It holds whatever `if_version` says and survives a
+    re-send (9.4), so of two plain adds racing, the second is refused (`stale_version`, "Someone added a … component
+    to this object since you read it") rather than overwriting the first. After a `remove` in the same change, the
+    guard is the removed row's version, so a stale remove can't turn the `add` into an overwrite.
+  - `replace: true` replaces the component if it is there (adds it if not): the fields not given become zero. The
+    outcome's `diff.set` lists each field it changes, `before` and `after` (other edits' field diffs: not yet),
+    and an undo restores the old row.
+  - `attach` is unchanged.
 - **Targets**: `id` takes an id, a path or a `$ref`. Instead of `id`, `set`, `add`, `remove` and `delete` take a
   `where` selector with a required `max`. The selector is resolved against the base snapshot on this machine into
   explicit ids; the entry carries the ids, never the selector, so every machine applies the same change. More
@@ -1148,6 +1166,8 @@ advice m82fcb9fcc6d0):
     why }>`, left out when empty (5.1).
     **Beside S3**, in pe-api's own ports: `ChangeLog::confirm_cut` takes each void with its `VoidReason`, which
     pe-app copies from agreement's `Voided` events.
+  - **S6 v1.10** (@engine-architect, coordinator mbee91b131a48): `Op::Add.replace: bool`, default false and left out
+    when false (5.3). Without it, `add` on a component the object has is refused as `invalid`.
 
 ## 12. Open points, and whose they are
 

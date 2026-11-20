@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use pe_core::{Offset, Pos};
 use pe_seams::world_api::{
-    ApiError, ErrorCode, Json, MemberId, ObjRef, ObjectBrief, ObjectId, Refusal, RefusalCode, Version,
+    ApiError, ErrorCode, FieldDiff, Json, MemberId, ObjRef, ObjectBrief, ObjectId, Refusal, RefusalCode, Version,
 };
 use pe_sim::FieldKind;
 use pe_world::edit::{Actor, AssetTarget, Op, Precondition, Row, Target, Transaction};
@@ -224,6 +224,8 @@ struct Dirty {
 }
 
 /// Attaches and detaches by target ([`tkey`]), in op order.
+/// Rows a change has added (`true`) or removed so far, by target key and component (api.md 5.3's `add` check).
+type RowsNow = std::collections::HashMap<((bool, u128), pe_sim::ComponentId), bool>;
 type Tagged = std::collections::HashMap<(bool, u128), Vec<([u8; 32], bool)>>;
 
 fn tkey(t: Target) -> Option<(bool, u128)> {
@@ -423,6 +425,49 @@ fn set_position(
     Ok(ops)
 }
 
+/// The refusal of an `add` on a component objects already have (api.md 5.3): each object that has it, with its
+/// current values when the object exists, so the caller sees what replacing it would lose.
+fn already_has(view: &WorldView, op: u32, hit: &[Obj], component: &str, c: pe_sim::ComponentId) -> Box<Refusal> {
+    use crate::ports::Snapshot as _;
+    let which = if hit.len() == 1 {
+        "The object already has".to_string()
+    } else {
+        format!("{} objects already have", hit.len())
+    };
+    let mut f = refusal(
+        RefusalCode::Invalid,
+        format!(
+            "{which} a {component:?} component; `add` would replace it, resetting every field not given. Nothing was changed."
+        ),
+    );
+    f.op = Some(op);
+    f.field = Some(component.to_string());
+    f.next = Some(format!(
+        "Use `set` to change some of its fields, or repeat the `add` with `replace: true` to replace the whole {component:?} component."
+    ));
+    let objects: Vec<Json> = hit
+        .iter()
+        .map(|t| match t {
+            Obj::Existing(o) => {
+                let mut j = serde_json::json!({ "id": o.to_string() });
+                if let Some(x) = view.info(*o) {
+                    j["name"] = Json::String(x.name);
+                }
+                if let Some(current) = view.fields_by_id(*o, c, &ObjRef("parent".into())) {
+                    j["current"] = serde_json::json!(current);
+                }
+                j
+            }
+            Obj::New(k) => serde_json::json!({ "new": k }),
+        })
+        .collect();
+    if let Some(Obj::Existing(o)) = hit.first() {
+        f.object = view.info(*o).map(|x| ObjectBrief { id: *o, name: x.name });
+    }
+    f.details = Some(serde_json::json!({ "component": component, "objects": objects }));
+    f
+}
+
 /// A whole row of `component` for `t`: zeros, then each given field encoded at its offset.
 fn whole_row(
     snap: &WorldSnapshot,
@@ -490,6 +535,8 @@ pub struct WorldEdit {
     /// A recorded inverse (revert): its inline bytes may reach pe-world's cap, not [`INLINE_MAX`], and its own undo
     /// isn't predicted (ruling m269866b08b7d).
     pub undo: bool,
+    /// The fields an `add` with `replace: true` changes on a component the object had, old -> new (api.md 5.3).
+    pub replaced: Vec<FieldDiff>,
 }
 
 /// Why a resolved change has no pe-world payload: the change is refused, or the call can't serve it yet.
@@ -619,6 +666,24 @@ pub fn to_world_built(
     let mut last: Option<&ROp> = None;
     // Earlier attaches and detaches of this change, by target, in order: they count for a later op's names.
     let mut tagged: Tagged = Default::default();
+    // Which rows this change has added or removed so far, by target and component, and what each new object was
+    // copied from: whether a later `add` would replace a row (api.md 5.3).
+    let mut rows_now: RowsNow = Default::default();
+    let mut replaced: Vec<FieldDiff> = vec![];
+    let mut copied: std::collections::HashMap<u32, pe_core::ObjectId> = Default::default();
+    let has_row = |rows_now: &RowsNow, copied: &std::collections::HashMap<u32, pe_core::ObjectId>, t, c| {
+        if let Some(k) = tkey(t)
+            && let Some(b) = rows_now.get(&(k, c))
+        {
+            return *b;
+        }
+        let from = match t {
+            Target::Existing(o) => Some(o),
+            Target::New(k) => copied.get(&k).copied(),
+            Target::Root => None,
+        };
+        from.is_some_and(|o| snap.components_on(o).contains(&c))
+    };
     let names = view.names();
     let on_for = |t: Target, tagged: &Tagged| {
         let mut attached = match t {
@@ -654,6 +719,9 @@ pub fn to_world_built(
             ROp::Copy { source, new, parent, size } => {
                 if let Some(p) = place_under(target(*parent)) {
                     new_place.insert(*new, p);
+                }
+                if let Obj::Existing(o) = source {
+                    copied.insert(*new, (*o).into());
                 }
                 Op::Copy { source: target(*source), new: *new, parent: target(*parent), index: None, size: *size }
             }
@@ -710,12 +778,16 @@ pub fn to_world_built(
                                 rows.push(whole_row(snap, &on, i, me, c, fields)?);
                             }
                         }
+                        for r in &rows {
+                            rows_now.insert(((true, u128::from(*new)), r.component), true);
+                        }
                         ops.push(Op::Create { new: *new, parent: target(*parent), index: None, rows });
                         writes
                     }
                     Some(tpl) => {
                         // The copy brings the template's rows; the name replaces its Name row, and the components
                         // given are field writes on the copy.
+                        copied.insert(*new, (*tpl).into());
                         let source = Target::Existing((*tpl).into());
                         ops.push(Op::Copy { source, new: *new, parent: target(*parent), index: None, size: *size });
                         ops.push(Op::SetRow { id: me, row: name_row });
@@ -737,9 +809,86 @@ pub fn to_world_built(
                 }
                 continue;
             }
-            ROp::Add { target: t, component, fields } => {
+            ROp::Add { target: t, component, fields, replace } => {
                 let on = on_for(target(*t), &tagged);
-                Op::SetRow { id: target(*t), row: whole_row(snap, &on, i, target(*t), component, fields)? }
+                let c = on
+                    .desc(snap, component)
+                    .map_err(|m| {
+                        let mut f = refusal(RefusalCode::Invalid, m);
+                        f.op = Some(i as u32);
+                        Unmapped::Refused(f)
+                    })?
+                    .id();
+                // `add` writes a whole row, so on a component the object has (its preset's, its template's, a copied
+                // one, or one this change added) it would reset every field not given: refused unless asked, before
+                // the row is built, naming every object of the op that has it (api.md 5.3; F6 of the M1 redo).
+                let has = has_row(&rows_now, &copied, target(*t), c);
+                if has && !replace {
+                    let mut hit = vec![*t];
+                    for (j, later) in r.ops.iter().enumerate().skip(i + 1) {
+                        if r.op_of.get(j).copied().unwrap_or(j as u32) != prev {
+                            break;
+                        }
+                        if let ROp::Add { target: u, component: uc, .. } = later
+                            && uc == component
+                            && has_row(&rows_now, &copied, target(*u), c)
+                        {
+                            hit.push(*u);
+                        }
+                    }
+                    return Err(Unmapped::Refused(already_has(&view, prev, &hit, component, c)));
+                }
+                let row = whole_row(snap, &on, i, target(*t), component, fields)?;
+                if let Obj::Existing(o) = t
+                    && !replace
+                {
+                    // The row must still be as this change read it when the entry applies: absent (the zero version),
+                    // or, after a remove in this change, the row that remove names. Kept whatever `if_version` says
+                    // and through a re-send, so two plain adds racing can't overwrite each other (api.md 5.3).
+                    let is = snap.row_version_of((*o).into(), c);
+                    let p = Precondition::Version { id: (*o).into(), component: c, instance: 0, is };
+                    if !preconditions.contains(&p) {
+                        preconditions.push(p);
+                    }
+                }
+                if has {
+                    // A replace: what it changes, old -> new, for the outcome's `diff.set` (api.md 5.3).
+                    let from = match t {
+                        Obj::Existing(o) => Some(*o),
+                        Obj::New(k) => copied.get(k).map(|o| ObjectId::from(*o)),
+                    };
+                    let untouched = tkey(target(*t)).is_none_or(|k| !rows_now.contains_key(&(k, c)));
+                    if let Some(from) = from.filter(|_| untouched)
+                        && let Some(before) = view.fields_by_id(from, c, &ObjRef("parent".into()))
+                        && let Some(after) = view.row_json(from, c, &row.bytes)
+                    {
+                        let shown = names.shown_on(&on.attached, c).unwrap_or_else(|| component.clone());
+                        let id = match t {
+                            Obj::Existing(o) => ObjRef(o.to_string()),
+                            Obj::New(k) => ObjRef(
+                                r.refs
+                                    .iter()
+                                    .find(|(_, v)| **v == *k)
+                                    .map_or_else(|| format!("${k}"), |(n, _)| n.clone()),
+                            ),
+                        };
+                        for (k, b) in &before {
+                            let a = after.get(k).cloned().unwrap_or(Json::Null);
+                            if a != *b {
+                                replaced.push(FieldDiff {
+                                    id: id.clone(),
+                                    field: format!("{shown}.{k}"),
+                                    before: b.clone(),
+                                    after: a,
+                                });
+                            }
+                        }
+                    }
+                }
+                if let Some(k) = tkey(target(*t)) {
+                    rows_now.insert((k, c), true);
+                }
+                Op::SetRow { id: target(*t), row }
             }
             ROp::Remove { target: t, component } => {
                 let Obj::Existing(o) = t else { return Err(not_yet(i, "removing a row this change adds")) };
@@ -749,6 +898,9 @@ pub fn to_world_built(
                     f.op = Some(i as u32);
                     Unmapped::Refused(f)
                 })?;
+                if let Some(k) = tkey(target(*t)) {
+                    rows_now.insert((k, desc.id()), false);
+                }
                 match snap.row_tag_of((*o).into(), desc.id()) {
                     Some(tag) => Op::RemoveRow { id: target(*t), component: desc.id(), instance: 0, tag },
                     None => {
@@ -820,7 +972,7 @@ pub fn to_world_built(
     op_of.resize(ops.len(), prev);
     let inline = inline_of(&blobs);
     let tx = Transaction { inline, actor, label: Some(r.label.clone()), preconditions, ops, blobs: blob_refs };
-    Ok(WorldEdit { tx, blobs, op_of, undo: false })
+    Ok(WorldEdit { tx, blobs, op_of, undo: false, replaced })
 }
 
 #[cfg(test)]
@@ -831,7 +983,7 @@ mod tests {
     use pe_core::{EntryRef, Frame, Hash, MemberKey, Offset, Pos};
     use pe_seams::world_api::Transaction as ApiTx;
     use pe_sim::Transform;
-    use pe_world::components::{Body, Name, body_kind};
+    use pe_world::components::{Body, Light, Name, body_kind, light_kind};
     use pe_world::{BlobStore, World};
     use serde_json::json;
     use std::sync::Arc;
@@ -1217,6 +1369,189 @@ mod tests {
         );
     }
 
+    /// [`world`] with the M1 preset's lamp light on the Lamp (intensity 40, range 8) and a Body on it too.
+    fn lit() -> (Arc<WorldSnapshot>, WorldView) {
+        world_with(|w| {
+            let light = Light {
+                kind: light_kind::POINT,
+                intensity: 40.0,
+                range: 8.0,
+                color: [1.0, 0.95, 0.85],
+                ..Default::default()
+            };
+            w.insert(id(20), light).unwrap();
+            w.insert(id(20), Body { kind: body_kind::STATIC, friction: 0.25, ..Default::default() }).unwrap();
+        })
+    }
+
+    fn refused_by(s: &Arc<WorldSnapshot>, v: &WorldView, ops: Json) -> Box<Refusal> {
+        match to_world(&resolved(v, ops), Actor::Person, s, None) {
+            Err(Unmapped::Refused(f)) => f,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn row_pre(e: &WorldEdit) -> Vec<(pe_core::ObjectId, pe_sim::ComponentId, pe_seams::Version)> {
+        e.tx.preconditions
+            .iter()
+            .filter_map(|p| match p {
+                Precondition::Version { id, component, is, .. } => Some((*id, *component, *is)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// F6 of the M1 redo: `add Light` on the preset lamp replaced its light without a word. Now it is refused, with
+    /// the current values, unless `replace: true`, which says old -> new (api.md 5.3).
+    #[test]
+    fn add_on_a_component_the_object_has_is_refused_unless_replace() {
+        let (s, v) = lit();
+        let light = s.component("Light").unwrap().id();
+        let add_light = json!({"op": "add", "id": "/Table/Lamp", "component": "Light",
+            "fields": {"kind": 0, "intensity": 1.0, "range": 3.0, "color": {"linear": [1.0, 0.8, 0.6]}}});
+        let f = refused_by(&s, &v, json!([add_light]));
+        assert_eq!((f.code, f.op, f.field.as_deref()), (RefusalCode::Invalid, Some(0), Some("Light")), "{}", f.message);
+        assert!(f.message.contains("already has a \"Light\" component"), "{}", f.message);
+        assert!(f.next.as_deref().unwrap().contains("replace: true"));
+        assert_eq!(f.object.as_ref().map(|o| o.name.as_str()), Some("Lamp"));
+        let d = f.details.unwrap();
+        assert_eq!(d["objects"][0]["current"]["intensity"], json!(40.0), "{d}");
+        assert_eq!(d["objects"][0]["current"]["range"], json!(8.0), "{d}");
+        // `replace: true` replaces it: no row guard, and the outcome's diff says old -> new.
+        let mut replace = add_light.clone();
+        replace["replace"] = json!(true);
+        let e =
+            to_world(&resolved(&v, json!([replace])), Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
+        assert!(matches!(&e.tx.ops[0], Op::SetRow { row, .. } if row.component == light));
+        assert!(row_pre(&e).is_empty());
+        let diff = |f: &str| e.replaced.iter().find(|d| d.field == f).map(|d| (d.before.clone(), d.after.clone()));
+        assert_eq!(diff("Light.intensity"), Some((json!(40.0), json!(1.0))), "{:?}", e.replaced);
+        assert_eq!(diff("Light.range"), Some((json!(8.0), json!(3.0))));
+        assert_eq!(diff("Light.kind"), None, "unchanged fields aren't listed");
+        // Every object has a Transform: a clean `invalid`, never the unsupported whole-Transform row.
+        let f = refused_by(&s, &v, json!([{"op": "add", "id": "/Table/Ball", "component": "Transform"}]));
+        assert_eq!((f.code, f.field.as_deref()), (RefusalCode::Invalid, Some("Transform")));
+        // A selector: one object that has it refuses the whole change, and every such object is named.
+        let f = refused_by(
+            &s,
+            &v,
+            json!([{"op": "add", "where": {"child_of": "/Table"}, "max": 10, "component": "Body", "fields": {"friction": 0.9}}]),
+        );
+        assert!(f.message.starts_with("2 objects already have"), "{}", f.message);
+        let names: Vec<_> =
+            f.details.unwrap()["objects"].as_array().unwrap().iter().map(|o| o["name"].clone()).collect();
+        assert_eq!(names, [json!("Lamp"), json!("Ball")]);
+        // On an object without it: added, guarded by the zero version (absent), whatever if_version says.
+        let body = s.component("Body").unwrap().id();
+        let e = to_world(
+            &resolved(&v, json!([{"op": "add", "id": "/Table", "component": "Body", "if_version": "any"}])),
+            Actor::Person,
+            &s,
+            None,
+        )
+        .unwrap();
+        assert_eq!(row_pre(&e), [(id(10), body, pe_world::GENESIS)]);
+        assert!(e.replaced.is_empty());
+    }
+
+    /// "Already has" is the row as the op finds it: earlier ops of the change, a create's rows, a template's and a
+    /// copy's count (coordinator mbee91b131a48, item 1).
+    #[test]
+    fn already_has_follows_the_change_and_its_copies() {
+        let (s, v) = world_with(|w| {
+            for (n, name, parent) in [(1u128, "Templates", None), (2, "box", Some(1))] {
+                let text = w.blobs().put(name.as_bytes());
+                w.create(id(n), parent.map(id), ALICE, ver(n as u8, 0)).unwrap();
+                w.insert(id(n), Name { text }).unwrap();
+            }
+            w.insert(id(2), Body { kind: body_kind::DYNAMIC, friction: 0.5, ..Default::default() }).unwrap();
+        });
+        let body = s.component("Body").unwrap().id();
+        let add = |id: &str| json!({"op": "add", "id": id, "component": "Body", "fields": {"friction": 0.1}});
+        // Two adds in one change: the second finds the first's row.
+        let f = refused_by(&s, &v, json!([add("/Table/Lamp"), add("/Table/Lamp")]));
+        assert_eq!((f.code, f.op), (RefusalCode::Invalid, Some(1)));
+        // A create's components, a template's rows and a duplicate's rows.
+        let create = json!({"op": "create", "parent": "/Table", "name": "c", "as": "$c", "components": {"Body": {}}});
+        assert_eq!(refused_by(&s, &v, json!([create, add("$c")])).op, Some(1));
+        let from_tpl = json!({"op": "create", "parent": "/Table", "name": "t", "as": "$t", "template": "box"});
+        assert_eq!(refused_by(&s, &v, json!([from_tpl, add("$t")])).op, Some(1));
+        let dup = json!({"op": "duplicate", "id": "/Table/Ball", "as": "$d", "parent": "/Table"});
+        assert_eq!(refused_by(&s, &v, json!([dup, add("$d")])).op, Some(1));
+        // Removed earlier in the change: added again, guarded by the removed row's version, so a stale remove can't
+        // turn the add into an overwrite.
+        let r = resolved(&v, json!([{"op": "remove", "id": "/Table/Ball", "component": "Body"}, add("/Table/Ball")]));
+        let e = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
+        let pre = row_pre(&e);
+        assert_eq!(pre.len(), 1);
+        assert_eq!((pre[0].0, pre[0].1), (id(30), body));
+        // The fixture's rows were inserted, never edited, so their version is the zero one too; an edited row's is its
+        // edit's (pe-world's Version precondition compares either).
+        assert_eq!(pre[0].2, s.row_version_of(id(30), body));
+    }
+
+    /// Two plain adds racing from one read: the first applies, the second is refused `stale_version` and the first's
+    /// values stay; a replace's undo restores the old row (coordinator mbee91b131a48, items 2 and 3).
+    #[test]
+    fn racing_plain_adds_keep_the_winner_and_a_replace_undoes() {
+        let (s, v) = world_with(|w| w.set_member(ALICE, pe_world::perm::EDIT));
+        let draft = pe_world::Draft {
+            author: ALICE,
+            line: pe_core::LineId(Hash([7; 32])),
+            chain: pe_core::ChainId(Hash([9; 32])),
+            seq: 1,
+        };
+        let add = |friction: f64| {
+            let r = resolved(
+                &v,
+                json!([{"op": "add", "id": "/Table/Lamp", "component": "Body", "fields": {"friction": friction}, "if_version": "any"}]),
+            );
+            (to_world(&r, Actor::Person, &s, None).unwrap(), r)
+        };
+        // `if_version: "any"`, so no object version guards them: only the row guard can tell them apart.
+        let ((first, _), (second, r2)) = (add(0.25), add(0.75));
+        assert!(second.tx.preconditions.iter().all(|p| matches!(p, Precondition::Version { .. })));
+        let (o, after) = s.dry_run_state(Frame(10), &draft, &first.tx);
+        assert!(matches!(o, pe_seams::Outcome::Applied { .. }), "{o:?}");
+        let friction = |snap: &WorldSnapshot| {
+            snap.fields(id(20), "Body").unwrap().into_iter().find(|(k, _)| k == "friction").map(|(_, v)| v)
+        };
+        assert_eq!(friction(&after), Some(pe_world::Value::F(0.25)));
+        let o = crate::outcome::dry_run(&after, &r2, &second, &pe_world::Draft { seq: 2, ..draft });
+        let f = o.refusal.expect("the second add is refused");
+        assert_eq!(f.code, RefusalCode::StaleVersion);
+        assert!(f.message.contains("Someone added a \"Body\" component"), "{}", f.message);
+        assert_eq!(friction(&after), Some(pe_world::Value::F(0.25)));
+        // A replace, then its undo: the old row is back.
+        let (s, v) = world_with(|w| {
+            w.set_member(ALICE, pe_world::perm::EDIT);
+            let light = Light { kind: light_kind::POINT, intensity: 40.0, range: 8.0, ..Default::default() };
+            w.insert(id(20), light).unwrap();
+        });
+        let r = resolved(
+            &v,
+            json!([{"op": "add", "id": "/Table/Lamp", "component": "Light", "replace": true, "fields": {"intensity": 1.0}}]),
+        );
+        let e = to_world(&r, Actor::Person, &s, None).unwrap();
+        let (o, after) = s.dry_run_state(Frame(10), &draft, &e.tx);
+        let pe_seams::Outcome::Applied { inverse: Some(inverse), .. } = o else { panic!("{o:?}") };
+        let intensity = |snap: &WorldSnapshot| {
+            snap.fields(id(20), "Light").unwrap().into_iter().find(|(k, _)| k == "intensity").map(|(_, v)| v)
+        };
+        assert_eq!(intensity(&after), Some(pe_world::Value::F(1.0)));
+        let undo = Transaction::decode(&inverse).unwrap();
+        let (o, back) = after.dry_run_state(Frame(11), &pe_world::Draft { seq: 3, ..draft }, &undo);
+        assert!(matches!(o, pe_seams::Outcome::Applied { .. }), "{o:?}");
+        assert_eq!(intensity(&back), Some(pe_world::Value::F(40.0)));
+        // And the outcome reports the replace.
+        let o = crate::outcome::dry_run(&s, &r, &e, &draft);
+        let set = o.diff.expect("a diff").set;
+        assert!(
+            set.iter().any(|d| d.field == "Light.range" && d.before == json!(8.0) && d.after == json!(0.0)),
+            "{set:?}"
+        );
+    }
+
     #[test]
     fn object_refs_and_keys_encode_as_pe_world_reads_them() {
         let o = id(0x1234_5678_9abc_def0_1122_3344_5566_7788);
@@ -1261,7 +1596,14 @@ mod tests {
                 matches!(to_world(&r, Actor::Person, &s, None), Err(Unmapped::Failed(e)) if e.code == ErrorCode::Internal)
             );
         };
-        failed(json!([{"op": "add", "id": "/Table/Ball", "component": "Transform", "fields": {"scale": [1, 1, 1]}}]));
+        // A whole Transform row isn't written yet; on an object with a Transform (every one) `add` is refused first.
+        refused(
+            json!([{"op": "add", "id": "/Table/Ball", "component": "Transform", "fields": {"scale": [1, 1, 1]}}]),
+            "Transform",
+        );
+        failed(
+            json!([{"op": "add", "id": "/Table/Ball", "component": "Transform", "replace": true, "fields": {"scale": [1, 1, 1]}}]),
+        );
         // A create without a template takes a Transform: a default row, then its fields as writes.
         let r = resolved(
             &v,

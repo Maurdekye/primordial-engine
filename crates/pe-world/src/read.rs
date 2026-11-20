@@ -297,6 +297,26 @@ impl WorldSnapshot {
         self.store.row_version(component, id).map(|v| v.tag())
     }
 
+    /// A row's edit version, the one a `Version` precondition compares (world-model.md 7.6): [`crate::GENESIS`] (all
+    /// zero) when the object has no such row, and also for a row only ever stored by a trusted write
+    /// (`World::insert`), never edited; any edit gives it its own.
+    pub fn row_version_of(&self, id: ObjectId, component: ComponentId) -> Version {
+        self.store
+            .row_version(component, id)
+            .map_or(crate::GENESIS, |v| Version { entry: EntryRef(Hash(v.entry)), op: v.op })
+    }
+
+    /// `bytes` read as a row of `component`, field by field as [`Self::fields_of`] gives a stored row: what an edit's
+    /// whole row would read as (@api-eng, F6). `None` for `Node`, `Transform` (stored apart), an unregistered id or
+    /// bytes of another size.
+    pub fn decode_row_of(&self, component: ComponentId, bytes: &[u8]) -> Option<Vec<(String, Value)>> {
+        let desc = self.component_desc(component)?;
+        if desc.id() == ComponentId::NODE || desc.id() == ComponentId::TRANSFORM || bytes.len() != desc.size() {
+            return None;
+        }
+        Some(decode_row(desc, bytes))
+    }
+
     /// The object's world transform, or `None` if it has no `Transform` or its composed position leaves the range.
     pub fn world_transform(&self, id: ObjectId) -> Option<WorldTransform> {
         self.store.world_transform(id)
