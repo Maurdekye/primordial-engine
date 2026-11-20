@@ -411,6 +411,10 @@ impl Builder<'_> {
                 }
             }
             Projection::Some(m) => {
+                // The object's types too, so a reader naming some fields still sees every component the object has
+                // (F6 of the M1 redo: an agent that asked for Name, Shape and Appearance never saw the Lamp's Light,
+                // and its `add Light` replaced it). `*` names them all as keys already.
+                types = info.types.clone();
                 for (c, want) in m {
                     // The snapshot resolves `c` on this object (a script's component by its attached scripts); an
                     // ambiguous bare name reads every match, keyed by full form (api.md 4.3).
@@ -748,7 +752,8 @@ mod tests {
         assert_eq!(r1.objects.len(), 2);
         assert_eq!(seen.len(), 2);
         assert_eq!(r1.objects[0].components["Ball"].keys().collect::<Vec<_>>(), ["a"]);
-        assert!(r1.objects[0].types.is_empty());
+        // Named fields still list the object's types.
+        assert_eq!(r1.objects[0].types, ["Transform", "Ball"]);
         let c = r1.more.clone().unwrap();
         let (snap, off) = pick(&src, At::default(), Some(&c)).unwrap();
         let (r2, _) = run(&*snap, &q, off).unwrap();

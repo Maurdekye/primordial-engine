@@ -88,9 +88,25 @@ pub fn map_refusal(snap: &WorldSnapshot, e: &WorldEdit, op: Option<u32>, reason:
         ),
         Reason::Stale { precondition, current, winner } => {
             let mut f = refusal(RefusalCode::StaleVersion, api_op, "Someone changed this since you read it.");
-            if let Some(Precondition::ObjectVersion { id, is }) = e.tx.preconditions.get(*precondition as usize) {
-                f.object = brief(snap, *id);
-                f.read = Some(version_text(is));
+            match e.tx.preconditions.get(*precondition as usize) {
+                Some(Precondition::ObjectVersion { id, is }) => {
+                    f.object = brief(snap, *id);
+                    f.read = Some(version_text(is));
+                }
+                // A plain `add`'s guard (api.md 5.3): the row it would write was added or changed since it was read.
+                Some(Precondition::Version { id, component, is, .. }) => {
+                    let name =
+                        snap.component_desc(*component).map_or_else(|| "that".to_string(), |d| d.name().to_string());
+                    f.message = if *is == pe_world::GENESIS {
+                        format!("Someone added a {name:?} component to this object since you read it.")
+                    } else {
+                        format!("Someone changed this object's {name:?} component since you read it.")
+                    };
+                    f.object = brief(snap, *id);
+                    f.field = Some(name);
+                    f.read = Some(version_text(is));
+                }
+                _ => {}
             }
             f.now = Some(version_text(current));
             f.details = Some(json!({ "winner_change": TxId::from(*winner).to_string() }));
@@ -325,7 +341,13 @@ pub fn dry_run(snap: &WorldSnapshot, r: &Resolved, e: &WorldEdit, draft: &Draft)
                     }
                 }
             }
-            Outcome { created, scripts, ..base }
+            // A replacing `add`'s old -> new values (api.md 5.3); other edits' field diffs aren't reported yet.
+            let diff = (!e.replaced.is_empty()).then(|| pe_seams::world_api::Diff {
+                created: vec![],
+                deleted: vec![],
+                set: e.replaced.clone(),
+            });
+            Outcome { created, scripts, diff, ..base }
         }
         pe_seams::Outcome::Refused { op, reason } => {
             let f = map_refusal(snap, e, op, &reason);
@@ -420,7 +442,7 @@ mod tests {
             ops: vec![],
             blobs: vec![],
         };
-        let e = WorldEdit { tx, blobs: vec![], op_of: vec![], undo: false };
+        let e = WorldEdit { tx, blobs: vec![], op_of: vec![], undo: false, replaced: vec![] };
         let f = map_refusal(&snap, &e, None, &Reason::Cooldown { until: pe_core::Frame(42) });
         assert_eq!(f.code, RefusalCode::NotReady);
         assert_eq!(f.details.unwrap()["until_frame"], 42);
@@ -504,13 +526,13 @@ mod tests {
             ops: vec![],
             blobs: vec![],
         };
-        let forward = WorldEdit { tx: tx(vec![]), blobs: vec![], op_of: vec![], undo: false };
+        let forward = WorldEdit { tx: tx(vec![]), blobs: vec![], op_of: vec![], undo: false, replaced: vec![] };
         let big = tx(blobs(5)).encode();
         let f = undo_refusal(&forward, Some(&big)).expect("refused");
         assert!(f.message.contains("Undoing this change") && f.message.contains("split this change"), "{}", f.message);
         assert!(undo_refusal(&forward, Some(&tx(blobs(4)).encode())).is_none());
         // A revert: 1,275 bytes is fine; 2,295 is refused in parts, as is pe-world's own TooLarge at its cap.
-        let revert = |n| WorldEdit { tx: tx(blobs(n)), blobs: vec![], op_of: vec![], undo: true };
+        let revert = |n| WorldEdit { tx: tx(blobs(n)), blobs: vec![], op_of: vec![], undo: true, replaced: vec![] };
         assert!(inline_refusal(&revert(5)).is_none());
         assert!(undo_refusal(&revert(5), Some(&big)).is_none());
         assert!(inline_refusal(&revert(9)).expect("refused").message.contains("undo this in parts"));

@@ -289,7 +289,12 @@ pub fn mine(
                 let op_of = owner.map_or_else(Vec::new, |o| o.op_of.to_vec());
                 // Copied only here, for a refusal's envelope.
                 let tx = Transaction::clone(&tx);
-                o.refusal = Some(map_refusal(snap, &WorldEdit { tx, blobs: vec![], op_of, undo: false }, *op, reason));
+                o.refusal = Some(map_refusal(
+                    snap,
+                    &WorldEdit { tx, blobs: vec![], op_of, undo: false, replaced: vec![] },
+                    *op,
+                    reason,
+                ));
             }
         }
         _ => {}

@@ -141,6 +141,77 @@ impl WorldView {
         WorldView { snap, me, names }
     }
 
+    /// Object `id`'s component `c` (by id), as a query shows it; `None` if it has no such row.
+    pub(crate) fn fields_by_id(
+        &self,
+        id: ObjectId,
+        c: pe_sim::ComponentId,
+        frame: &ObjRef,
+    ) -> Option<BTreeMap<String, Json>> {
+        let rows = self.snap.fields_of(id.into(), c)?;
+        self.fields_json(id, c, rows, frame)
+    }
+
+    /// A whole row of `c` (not `Transform`) as a query would show it on object `id`: what an `add` writes.
+    pub(crate) fn row_json(
+        &self,
+        id: ObjectId,
+        c: pe_sim::ComponentId,
+        bytes: &[u8],
+    ) -> Option<BTreeMap<String, Json>> {
+        let rows = self.snap.decode_row_of(c, bytes)?;
+        self.fields_json(id, c, rows, &ObjRef("parent".into()))
+    }
+
+    /// The fields `rows` hold, of component `c` on object `id`, as a query shows them (api.md 4.4): a place in
+    /// `frame`, a colour as hex or linear, a rotation in degrees and as a quaternion.
+    fn fields_json(
+        &self,
+        id: ObjectId,
+        c: pe_sim::ComponentId,
+        rows: Vec<(String, Value)>,
+        frame: &ObjRef,
+    ) -> Option<BTreeMap<String, Json>> {
+        let transform = c == pe_sim::ComponentId::TRANSFORM;
+        let desc = self.snap.component_desc(c)?;
+        let is_f32 = |name: &str| desc.fields().iter().any(|f| f.name == name && f.kind == pe_sim::FieldKind::F32);
+        let is_colour = |name: &str| desc.fields().iter().any(|f| f.name == name && f.color.is_some());
+        let mut out = BTreeMap::new();
+        for (name, v) in rows {
+            let place = transform && name == "pos";
+            let j = match (&v, place) {
+                // The place in the frame asked for; "parent" (the default) keeps the stored form.
+                (Value::Pos(_) | Value::Offset(_), true) if frame.0 != "parent" => {
+                    match self.frame_of(frame).and_then(|f| self.snap.offset_in(id.into(), f)) {
+                        Some(o) => offset_json(&frame.0, &o),
+                        None => Json::Null,
+                    }
+                }
+                // A colour reads as hex when exact, else linear (api.md 4.4; ruling, item 4).
+                (Value::List(vs), _) if is_colour(&name) => {
+                    let c: Vec<f32> =
+                        vs.iter().filter_map(|x| if let Value::F(f) = x { Some(*f as f32) } else { None }).collect();
+                    crate::colour::decode(&c)
+                }
+                _ => value_json(&v, is_f32(&name)),
+            };
+            if transform
+                && name == "rot"
+                && let Value::List(vs) = &v
+            {
+                let q: Vec<f32> =
+                    vs.iter().filter_map(|x| if let Value::F(f) = x { Some(*f as f32) } else { None }).collect();
+                if let Ok(q) = <[f32; 4]>::try_from(q) {
+                    out.insert("rotation_deg".to_string(), json!(euler_deg(q)));
+                    out.insert("rotation_quat".to_string(), json!(q));
+                    continue;
+                }
+            }
+            out.insert(if place { "position".to_string() } else { name }, j);
+        }
+        Some(out)
+    }
+
     /// The snapshot this view reads.
     pub fn snapshot(&self) -> &WorldSnapshot {
         &self.snap
@@ -205,45 +276,7 @@ impl Snapshot for WorldView {
     }
     fn fields(&self, id: ObjectId, component: &str, frame: &ObjRef) -> Option<BTreeMap<String, Json>> {
         let c = self.component_on(id.into(), component)?;
-        let rows = self.snap.fields_of(id.into(), c)?;
-        let transform = c == pe_sim::ComponentId::TRANSFORM;
-        let desc = self.snap.component_desc(c)?;
-        let is_f32 = |name: &str| desc.fields().iter().any(|f| f.name == name && f.kind == pe_sim::FieldKind::F32);
-        let is_colour = |name: &str| desc.fields().iter().any(|f| f.name == name && f.color.is_some());
-        let mut out = BTreeMap::new();
-        for (name, v) in rows {
-            let place = transform && name == "pos";
-            let j = match (&v, place) {
-                // The place in the frame asked for; "parent" (the default) keeps the stored form.
-                (Value::Pos(_) | Value::Offset(_), true) if frame.0 != "parent" => {
-                    match self.frame_of(frame).and_then(|f| self.snap.offset_in(id.into(), f)) {
-                        Some(o) => offset_json(&frame.0, &o),
-                        None => Json::Null,
-                    }
-                }
-                // A colour reads as hex when exact, else linear (api.md 4.4; ruling, item 4).
-                (Value::List(vs), _) if is_colour(&name) => {
-                    let c: Vec<f32> =
-                        vs.iter().filter_map(|x| if let Value::F(f) = x { Some(*f as f32) } else { None }).collect();
-                    crate::colour::decode(&c)
-                }
-                _ => value_json(&v, is_f32(&name)),
-            };
-            if transform
-                && name == "rot"
-                && let Value::List(vs) = &v
-            {
-                let q: Vec<f32> =
-                    vs.iter().filter_map(|x| if let Value::F(f) = x { Some(*f as f32) } else { None }).collect();
-                if let Ok(q) = <[f32; 4]>::try_from(q) {
-                    out.insert("rotation_deg".to_string(), json!(euler_deg(q)));
-                    out.insert("rotation_quat".to_string(), json!(q));
-                    continue;
-                }
-            }
-            out.insert(if place { "position".to_string() } else { name }, j);
-        }
-        Some(out)
+        self.fields_by_id(id, c, frame)
     }
     fn projected(&self, id: ObjectId, name: &str, frame: &ObjRef) -> Vec<(String, BTreeMap<String, Json>)> {
         // Keyed as the object's `types` name it, however it was asked (api.md 4.3, "Responses"), so two requests for
