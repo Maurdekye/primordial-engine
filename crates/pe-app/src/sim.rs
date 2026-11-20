@@ -3119,6 +3119,9 @@ pub(crate) mod tests {
         fn physics_image(&self, root: &pe_seams::Hash) -> Option<pe_seams::PhysicsImage> {
             self.inner.physics_image(root)
         }
+        fn set_served(&mut self, roots: &[pe_seams::Hash]) {
+            self.inner.set_served(roots)
+        }
         fn import_at_cut(
             &mut self,
             group: &pe_seams::GroupSel,

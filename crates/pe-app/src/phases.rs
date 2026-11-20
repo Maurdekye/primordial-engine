@@ -128,6 +128,10 @@ impl Replica for Timed<'_> {
         self.inner.physics_image(root)
     }
 
+    fn set_served(&mut self, roots: &[Hash]) {
+        self.inner.set_served(roots)
+    }
+
     fn import_at_cut(
         &mut self,
         group: &GroupSel,
@@ -159,5 +163,27 @@ impl Replica for Timed<'_> {
 
     fn module(&self, hash: &Hash) -> Option<Bytes> {
         self.inner.module(hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pe_replica::mock::{MockClock, MockWorld};
+    use pe_replica::{ReplicaConfig, ReplicaImpl};
+    use pe_seams::SimRate;
+
+    /// `Timed` passes the provided methods through as well (S2's wrapper rule): here `set_served`, a donor's served
+    /// roots (S2 v1.9), whose default would let a resync's snapshot be released while the slow member fetches it.
+    #[test]
+    fn timed_passes_set_served_through() {
+        let rate = SimRate::DEFAULT;
+        let config = ReplicaConfig::new(rate, Duration::from_millis(100), Arc::new(MockClock::new(rate)));
+        let mut inner = ReplicaImpl::new(MockWorld::new(DomainId(0), rate), config).expect("a replica");
+        let mut times = PhaseTimes::default();
+        let served = [Hash::of("pe-app.test", b"served")];
+        Timed { inner: &mut inner, times: &mut times, log: None }.set_served(&served);
+        assert_eq!(inner.served(), served);
+        assert_eq!(times, PhaseTimes::default(), "nothing to time");
     }
 }
