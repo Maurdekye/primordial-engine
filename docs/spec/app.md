@@ -117,10 +117,12 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
      the object's velocity with the hand at that moment, in the world frame: the hand's linear velocity plus its spin ×
      the offset from the hand to the object, and the spin. The offset is to the object's origin, as the view gives it:
      its centre of mass for M1's balls; an object whose centre of mass is off its origin (a compound) is measured at
-     its origin until pe-app reads the centre (world-model.md 8.1 asks for it; a follow-up). A throw whose values aren't all
-     finite goes as a plain `Release` (a refused throw would leave the claim to lapse). Each throw is logged (`throw:`)
-     with its speed and the fastest the object moved with the hand over the 50 ms before (`THROW_PEAK_WINDOW`), so a
-     window can be tuned with no format change; `SimStats::hands` counts them (`throws`).
+     its origin until pe-app reads the centre (world-model.md 8.1 asks for it; a follow-up). The velocity is the
+     hand's relative to the rig: M1's rig doesn't move, and smooth locomotion would add the rig's own velocity
+     (@design-reviewer on d59b0fc3). A throw whose values aren't all finite goes as a plain `Release` (a refused throw
+     would leave the claim to lapse). Each throw is logged (`throw:`) with its speed and the fastest the object moved
+     with the hand over the 50 ms before (`THROW_PEAK_WINDOW`), so a window can be tuned with no format change;
+     `SimStats::hands` counts them (`throws`).
    - The desktop hand and VR's take this one path. An agent's hand-less grab is not part of it.
    - The end line counts each hand's grasps (`SimStats::hands`): its edges (`closes`, `opens`), the grabs and releases
      sent, and the grabs applied and refused by reason (`Held`, `OutOfReach`, `Cooldown`, ...), as the newest view

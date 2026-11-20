@@ -544,10 +544,12 @@ impl Local {
         }
         let kept = (RELEASED_KEPT.as_nanos() * u128::from(rate_hz) / 1_000_000_000) as u64;
         self.released.retain(|_, &mut (_, at, _)| at.0.saturating_add(kept) > view.frame.0);
-        // Held by this member again: that release is over, and its mark must not come back at the next hold end,
-        // whatever ends it (@design-reviewer's L1 on dc6a7a9b).
+        // Held by this member again after the release applied: that release is over, and its mark must not come back
+        // at the next hold end, whatever ends it (@design-reviewer's L1 on dc6a7a9b). Before it applies the object
+        // is still held in every view up to its stamp (a lead stamps it ahead of the present), so a release that
+        // hasn't applied is kept (@design-reviewer's M1 on 5277241c).
         let held_again = |o: ObjectId| view.object(o).is_some_and(|x| x.flags.contains(ViewFlags::HELD_LOCAL));
-        self.released.retain(|_, &mut (o, _, _)| !held_again(o));
+        self.released.retain(|_, &mut (o, _, applied)| !(applied && held_again(o)));
         let mut out: Vec<ObjectId> =
             self.released.values().filter(|&&(_, _, applied)| applied).map(|&(o, _, _)| o).collect();
         out.sort();
@@ -2198,12 +2200,30 @@ pub(crate) mod tests {
     /// the release is behind a final frame or 2 s old.
     #[test]
     fn the_view_that_steps_my_release_marks_the_ball_released_local() {
+        the_view_that_steps_my_release_marks_it(None);
+    }
+
+    /// The same with this member's entries stamped 4 frames ahead of the present (stamp-ahead's lead, app.md 3.2): the
+    /// views before the release's frame still show the ball held, and its mark outlasts them (@design-reviewer's M1
+    /// on 5277241c: a mark forgotten at the first view that showed the ball held left nothing to mark when the release
+    /// applied, so the display blended the hand-off as a correction, the ghost).
+    #[test]
+    fn a_release_stamped_ahead_is_marked_in_the_view_that_steps_it() {
+        the_view_that_steps_my_release_marks_it(Some(4));
+    }
+
+    /// The release-mark test, with a fixed stamp-ahead lead of `lead` frames if given, else stamping at the present.
+    fn the_view_that_steps_my_release_marks_it(lead: Option<u64>) {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
         let puppet = Puppet::default();
         puppet.set([0.0, 3.0, 0.0], false);
         let me = crate::world::DEV_MEMBER;
         let mut s = s.with_local(me, [7; 32], Arc::new(puppet.clone()));
+        if let Some(lead) = lead {
+            let fixed = crate::stamp::StampLead::fixed(crate::stamp::LeadConfig::m1(RATE), lead);
+            s = s.with_stamp_lead(Some(fixed));
+        }
         let mut f = 0;
         run_frames(&mut s, &clock, &mut f, 120);
         let ball = top_ball(&slot.newest().expect("published"));
@@ -2227,6 +2247,9 @@ pub(crate) mod tests {
             views.extend(slot.take().views);
         }
         assert_eq!(s.stats().hands[1].releases, 1);
+        if let Some(lead) = lead {
+            assert_eq!(s.stats().lead, lead, "the lead held");
+        }
         let free = views[opened..]
             .iter()
             .position(|v| v.object(ball).is_some_and(|o| o.held_by.is_none()))
