@@ -72,7 +72,7 @@
 //! **Logic stages** (3, steps 3 and 8; crate::logic): `LogicPrePhysics` after the entries and `LogicPostPhysics` after
 //! the write-back, through the runner the replica is given. Without one it refuses to step a world with scripts.
 //!
-//! **Not yet here** (replica.md 11): carried checks (3.4), vote holds for a version whose module this machine lacks
+//! **Not yet here** (replica.md 11): vote holds for a version whose module this machine lacks
 //! (8.2), and the view's effects beyond the scripts' (7).
 
 use core::time::Duration;
@@ -81,7 +81,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use pe_physics::{CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Transfer, WorldImage};
+use pe_physics::{BodyDigest, CheckHash, PhysicsConfig, PhysicsError, PhysicsWorld, Pose, Transfer, WorldImage};
 use pe_seams::{
     Activation, ActivationKey, Advance, ChainId, Class, Cut, CutImport, CutRef, DomainId, Effect, EffectCause,
     EffectKey, EffectKind, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameClock, FrameView, GroupSel, Hash,
@@ -316,6 +316,15 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// The held objects the last publication marked `HELD_AWAY` (D4's break-away): one stays away until it is back
     /// within `BREAK_BACK`. The view's state, not the simulation's: a rollback doesn't restore it.
     away: BTreeSet<ObjectId>,
+    /// The author's check after its own interactions (3.4): per frame, each body the local member's grab begin, push
+    /// or throw touched there, with its digest after the first live step of that frame and after the latest. Local,
+    /// never hashed; judged once the frame is below an agreed final cut.
+    checks: BTreeMap<Frame, BTreeMap<ObjectId, Check>>,
+    /// The digests of checked bodies after a re-step off the live history, per frame: a re-base on the floor takes
+    /// them for `[g, floor)`, as it takes [`Self::scratch_records`].
+    scratch_checks: BTreeMap<Frame, BTreeMap<ObjectId, Option<BodyDigest>>>,
+    /// What the checks found so far ([`InteractionChecks`]).
+    interactions: InteractionChecks,
     /// The change records made since the last publication, in the order they were made: the next view's `changes`
     /// (S5).
     pending: Vec<StepRecord>,
@@ -372,6 +381,41 @@ impl Seen {
     fn of(e: &SignedEntry) -> Seen {
         Seen { author: e.entry.author, class: e.entry.class, chain: e.entry.chain, seq: e.entry.seq }
     }
+}
+
+/// One body the local member's own interaction touched at a frame (3.4): its digest after the frame's first live
+/// step, what the author saw as it acted, and after the latest. `None` where the body had none (it is gone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Check {
+    first: Option<BodyDigest>,
+    latest: Option<BodyDigest>,
+}
+
+/// A body the final history left other than the author's first step did, after the author's own interaction with it
+/// at `frame` (3.4): a correction that hit a body the author had just acted on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CorrectedInteraction {
+    pub frame: Frame,
+    pub object: ObjectId,
+}
+
+/// What the author's checks after its own interactions found (replica.md 3.4; @coordinator-opus m6054091107a8,
+/// option (B), after @fable-reviewer m3527e3dedbb8). Local counts, never world state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InteractionChecks {
+    /// Checks judged: each body the local member's grab begin, push or throw touched in a frame now final.
+    pub judged: u64,
+    /// Of them, those the final history left other than the author first simulated them.
+    pub corrected: u64,
+    /// Checks dropped unjudged: below a rung-2 import's cut, where no history of this replica's is left.
+    pub unjudged: u64,
+    /// The newest corrected ones, at most [`InteractionChecks::RECENT`], oldest first, for pe-diverge's fault bundle.
+    pub recent: VecDeque<CorrectedInteraction>,
+}
+
+impl InteractionChecks {
+    /// How many corrected interactions [`InteractionChecks::recent`] keeps.
+    pub const RECENT: usize = 64;
 }
 
 /// What re-steps off the live history (`root_at_cut`'s scratch) counted.
@@ -443,6 +487,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             excused: Vec::new(),
             corrected: BTreeSet::new(),
             away: BTreeSet::new(),
+            checks: BTreeMap::new(),
+            scratch_checks: BTreeMap::new(),
+            interactions: InteractionChecks::default(),
             pending: Vec::new(),
             recorded: BTreeMap::new(),
             unknown_to: Frame(0),
@@ -507,6 +554,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// What re-steps off the live history counted: never part of [`Self::faults`] or [`Self::stopped`].
     pub fn scratch(&self) -> Scratch {
         self.scratch
+    }
+
+    /// What the author's checks after its own interactions found (3.4).
+    pub fn interaction_checks(&self) -> &InteractionChecks {
+        &self.interactions
     }
 
     /// How many snapshots the replica holds (4.1): the floor's, `Cv`'s, the finals', and those of my roots at cuts not
@@ -606,8 +658,15 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.counters.fp_resets += 1;
         }
         let mut ids = Vec::with_capacity(entries.len());
+        // The bodies the local member's own entries interacted with in this frame (3.4).
+        let mut mine: Vec<ObjectId> = Vec::new();
         for e in apply_order(entries.iter().copied(), W::phase) {
             let (outcome, fx) = self.world.apply(f, e);
+            if self.config.local == Some(e.entry.author) {
+                mine.extend(fx.pushes.iter().map(|p| p.object));
+                mine.extend(fx.throws.iter().map(|t| t.object));
+                mine.extend(&fx.grabs);
+            }
             let id = e.id();
             let record = StepRecord { entry: id, author: e.entry.author, class: e.entry.class, frame: f, outcome };
             if live {
@@ -643,6 +702,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.write_back(awake_before, &hands);
         self.logic(f, Stage::LogicPostPhysics, live, &mut events);
         self.faults += u64::from(self.world.maintain_transforms());
+        self.note_checks(f, mine, live);
         let acts = self.world.end_frame(f);
         let next = Frame(f.0 + 1);
         self.frame = next;
@@ -1179,6 +1239,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let live = (self.world.save(), self.physics.save_image().map_err(|_| RootError::Damaged)?, self.frame);
         let tally = (self.faults, self.stopped, self.counters.fp_resets);
         self.scratch_records.clear();
+        self.scratch_checks.clear();
         self.scratch_events.clear();
         self.scratch_acts.clear();
         // Off the live history, the model keeps its machine state as it is: no prediction starts or runs in a re-step,
@@ -1319,6 +1380,15 @@ impl<W: WorldModel> ReplicaImpl<W> {
         for (id, (r, seen)) in scratch.into_iter().filter(|(_, (r, _))| (g..at).contains(&r.frame)) {
             self.outcomes.insert(id, (r.frame, r.outcome.clone()));
             self.note(r, seen);
+        }
+        // And the checked bodies' digests there (3.4): the re-step's are the cut-exact history's.
+        let digests = std::mem::take(&mut self.scratch_checks);
+        for (f, bodies) in digests.range(g..at) {
+            for (o, d) in bodies {
+                if let Some(c) = self.checks.get_mut(f).and_then(|c| c.get_mut(o)) {
+                    c.latest = *d;
+                }
+            }
         }
         // Their effects too: the next view compares them with what it carried there, as a replay's (Low 3).
         let mut events = std::mem::take(&mut self.scratch_events);
@@ -1483,6 +1553,55 @@ fn restored(config: PhysicsConfig, bytes: &[u8], global: Hash) -> Option<Physics
 }
 
 impl<W: WorldModel> ReplicaImpl<W> {
+    /// The author's check after its own interactions (3.4), after frame `f`'s step: a body the local member's entry
+    /// touched here gets a check, its first digest this step's; every check at `f` takes this step's as its latest,
+    /// so a rollback that re-steps `f` updates it. A re-step off the live history keeps its digests apart, for a
+    /// re-base on the floor. Computes nothing in a frame with no check.
+    fn note_checks(&mut self, f: Frame, mine: Vec<ObjectId>, live: bool) {
+        let mut watched: BTreeSet<ObjectId> =
+            self.checks.get(&f).map(|c| c.keys().copied().collect()).unwrap_or_default();
+        if live {
+            watched.extend(mine);
+        }
+        if watched.is_empty() {
+            return;
+        }
+        let Ok(all) = self.physics.body_digests() else {
+            self.faults += 1;
+            return;
+        };
+        let digest = |o: &ObjectId| all.binary_search_by_key(o, |(id, _)| *id).ok().map(|i| all[i].1);
+        if live {
+            let checks = self.checks.entry(f).or_default();
+            for o in &watched {
+                let d = digest(o);
+                checks.entry(*o).and_modify(|c| c.latest = d).or_insert(Check { first: d, latest: d });
+            }
+        } else {
+            self.scratch_checks.insert(f, watched.iter().map(|o| (*o, digest(o))).collect());
+        }
+    }
+
+    /// Judges the checks below `final_frame` (3.4): a body the final history left other than the author's first step
+    /// of that frame left it was corrected after the author acted on it. Counted, and kept for the display layer and
+    /// pe-diverge's fault bundle.
+    fn judge_checks(&mut self, final_frame: Frame) {
+        let kept = self.checks.split_off(&final_frame);
+        for (f, bodies) in std::mem::replace(&mut self.checks, kept) {
+            for (object, c) in bodies {
+                self.interactions.judged += 1;
+                if c.first != c.latest {
+                    self.interactions.corrected += 1;
+                    self.counters.interactions_corrected += 1;
+                    if self.interactions.recent.len() == InteractionChecks::RECENT {
+                        self.interactions.recent.pop_front();
+                    }
+                    self.interactions.recent.push_back(CorrectedInteraction { frame: f, object });
+                }
+            }
+        }
+    }
+
     /// A re-simulation has come back to the last published frame: every drawn object whose pose there differs from
     /// the published one was rewritten by a replay, a repair or a merge, and the next publication marks it
     /// `CORRECTED` (S5). The re-simulation is deterministic, so an unchanged object compares equal bit for bit. An
@@ -1657,6 +1776,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         source.keep_final_from(cv, at.frame);
         if let Some(g) = differs {
             self.rebase_on_floor(g, mine);
+        }
+        // Below an agreed cut, the live history is final: judge the checks there (3.4). Below a diverged one the
+        // repair decides the history, so they wait for an agreed cut above it.
+        if matches!(verdict, Finalized::Agreed) {
+            self.judge_checks(at.frame);
         }
         self.release();
         verdict
@@ -1851,6 +1975,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.acts_retract.extend(replaced.into_values().flatten());
         self.acts = self.acts.split_off(&c);
         self.acts_stepped = self.acts_stepped.split_off(&c);
+        // Below the cut no history of mine is left to judge my checks by (3.4).
+        let kept = self.checks.split_off(&c);
+        let gone = std::mem::replace(&mut self.checks, kept);
+        self.interactions.unjudged += gone.values().map(|c| c.len() as u64).sum::<u64>();
         self.imported = Some((cut.at, root));
         if self.frame >= self.reached {
             self.replayed = Some((cut.at, root));

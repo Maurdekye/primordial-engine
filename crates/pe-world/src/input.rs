@@ -351,7 +351,7 @@ impl World {
         let mut notes = Vec::new();
         let r = match input {
             Input::Hand { hand, poses, hold } => self.hand_input(frame, e.author, hand, poses, hold, &mut fp),
-            Input::Grab { object, hand } => self.grab(frame, e.author, object, hand),
+            Input::Grab { object, hand } => self.grab(frame, e.author, object, hand, &mut fp),
             Input::Release { object } => {
                 self.release(e.author, object, &mut notes);
                 Ok(())
@@ -462,7 +462,14 @@ impl World {
         Ok(())
     }
 
-    fn grab(&mut self, now: Frame, author: MemberKey, object: ObjectId, hand: Option<ObjectId>) -> Result<(), Reason> {
+    fn grab(
+        &mut self,
+        now: Frame,
+        author: MemberKey,
+        object: ObjectId,
+        hand: Option<ObjectId>,
+        fp: &mut Footprint,
+    ) -> Result<(), Reason> {
         let until = self.claim_until(now);
         match self.grab_check(now, author, object, hand, ReachFrom::Hand)? {
             Grabbed::Renews => {
@@ -475,6 +482,7 @@ impl World {
             Grabbed::Takes => {
                 let claim = Claim { hand: hand.unwrap_or(ObjectId::NONE), member: author, since: now, until };
                 Arc::make_mut(&mut self.claims).insert(object, claim);
+                fp.grabs.push(object);
             }
         }
         Ok(())

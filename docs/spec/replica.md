@@ -193,7 +193,8 @@ the live history and once for a re-step off it); it never steps such a world as 
 5. **The physics step:** `PhysicsWorld::step_holding(dt, reaches)`, with dt one over the world's tick rate and
    ceil(240 / rate) sub-steps (3.5). The holds' bounds move their joints' anchors for this step only (3.3). One
    worker in M1; the shared pool comes in M2 (D2).
-6. **Carried checks** (3.4): **not built.**
+6. **The author's checks** (3.4): after the step, each body the local member's own interaction touched in this frame
+   takes its digest, the first live step's kept as the baseline.
 7. **Write-back:** the pose of every body that moved (awake before or after the step), in id order, into its
    `Transform`, in one batch (`World::write_poses`), so pe-world converts each pose against the frame's final parents.
    Hands' bodies are the replica's own and are not written.
@@ -327,20 +328,37 @@ The rules are world-model.md 8.1's (the speed cap, the teleport distance and the
 
 The constants are M1's defaults until the user's verdict on hand feel at the headset test [I].
 
-### 3.4 Carried state is a check, not an overwrite
+### 3.4 Interaction state is a check at the author, never an overwrite
 
-**Not built.** `Effects` has the slot for it (`carried`, a `CarriedFx`: the object and the author's 32-byte digest)
-[V `crates/pe-replica/src/world.rs`], but no world model fills it and the replica compares nothing. The design, as
-the user ruled it (Q15, mfedf5a6c3c5b: "we go with your recommendation"; file 11, B4), replaces the old overwrite:
-- **What is carried:** an interaction carries the touched body's digest (5.1), as the author's replica computed it
-  after stepping frame f. The interactions are grab begins and push inputs. A continuing hold carries nothing
-  (@coordinator-opus on O1, m216e30d03fc0).
-- **No replica writes it.** The simulation never reads it.
-- **The check:** each replica keeps its own digest of that body after f, recomputed on each re-simulation of f. When
-  the cut covering f is final, it compares the two. A difference is an event, the author's prediction was wrong,
-  counted for the display layer and offered to pe-diverge's fault bundle; it changes no state. It is expected when a
-  late, earlier-stamped action reached the body first. A real fault shows in the cut's root anyway, and the ladder
-  repairs it.
+The user ruled that the state an interaction leaves is a check, not an overwrite (Q15, mfedf5a6c3c5b: "we go with
+your recommendation"; file 11, B4), replacing the old design in which the interaction carried the new state. The check
+is the author's own and nothing travels (@coordinator-opus m6054091107a8, option (B), after @fable-reviewer
+m3527e3dedbb8; G2) [V `crates/pe-replica/src/replica.rs`, `note_checks`, `judge_checks`]:
+- **Why nothing travels.** An entry is signed and in the log before its frame is stepped (app.md 3, step 2), and
+  with stamp-ahead its frame is in its author's future, so no state after the interaction exists to put in it. And
+  the check only tells the author that its prediction was wrong: other machines would learn nothing from it, since a
+  real fault shows in the cut's root.
+- **The interactions:** the local member's own grab begins (a new claim, not a renewal: `Effects::grabs`), push
+  inputs and throws. A continuing hold is checked nowhere (@coordinator-opus on O1, m216e30d03fc0). A throw is one
+  since 8.1's throw (world-model.md 8.1) sets the object's velocity as a push does.
+- **The baseline:** the touched body's digest (pe-physics's per-body digest, 5.1) after the author's **first** live
+  step of the interaction's frame f, which is what the author saw as it acted. It is kept across rollbacks: taking it
+  again at each re-simulation would always compare equal.
+- **The latest:** the body's digest after the newest step of f, live or the cut-exact re-step a finalize re-bases on
+  (`rebase_on_floor`).
+- **The judgement:** when a final cut above f agrees with this replica's root, the history below it is final and the
+  two are compared. A difference is a correction that hit a body the author had just acted on, expected when a late,
+  earlier-stamped action reached the body first. It is counted (`ViewCounters::interactions_corrected`, for the
+  display layer beside its `CORRECTED` marking, 7) and kept among the newest 64 (`InteractionChecks::recent`, for
+  pe-diverge's fault bundle). Below a diverged cut the checks wait for an agreed cut above the repair; below a rung-2
+  import's cut no history of this replica's is left, and they are dropped, counted as unjudged.
+- **It changes no state.** No replica writes the simulated state from it, and the simulation never reads it; a real
+  fault is repaired by the root and the ladder. A frame with no check computes nothing; one with a check computes the
+  per-body digests once per step of it [I: about 0.2 ms at 500 bodies, @vdw-physics's figure in world-model.md 6.3].
+- **What the change gains** (file 02, B1): no reset of the body's contacts at every touch; no erasing of another
+  player's earlier effect; no way to place a body anywhere by carrying a state. M1's acceptance case: two players
+  pushing one ball within one network delay both take effect, and every replica's roots are equal [V
+  `two_members_pushing_one_ball_within_a_network_delay_both_take_effect`].
 - **What the change gains** (file 02, B1): no reset of the body's contacts at every touch; no erasing of another
   player's earlier effect; no way to place a body anywhere by carrying a state.
 - **What it costs, as the user accepted:** the author's own body can be corrected when a late, earlier action reaches
@@ -854,8 +872,8 @@ harness, without scripts [V `crates/pe-replica/src/mock.rs`].
   - `phase(&entry)` gives the entry's place in apply order (3, step 2): pe-world's `input_phase`;
   - `apply(frame, &entry) -> (Outcome, Effects)` runs once per entry. `Effects` is empty for a refused entry.
     Otherwise it holds the objects whose physics-relevant rows changed, in id order, each with its `Change` (3.2); the
-    pushes (`PushFx`: an object, an impulse in newton seconds, and a point or the centre of mass); and the carried
-    check's slot, which nothing fills yet (3.4);
+    pushes (`PushFx`: an object, an impulse in newton seconds, and a point or the centre of mass); the throws
+    (`ThrowFx`, world-model.md 8.1); and the objects a grab began holding (`grabs`), for the author's check (3.4);
   - `logic_stage(frame, stage, runner) -> LogicFx` runs one logic stage (8.2): the physics effects of what the scripts
     changed, their events, and local counts (host faults, floating-point resets, missing modules);
   - `end_frame(frame) -> Vec<Activation>` ends the frame (3, step 9), with its code commits' records (7).
@@ -998,7 +1016,7 @@ The error should be small for an occasional impulse, and grow with how often imp
 | O4 | The angular coast cap for hands: a coasting hand's turn is not capped (3.3) | WS-state, measured with WS-xr |
 | O5 | Grip thresholds: when an input is engaged. The reach check is pe-world's now (world-model.md 8.1) | WS-xr |
 | O6 | The physics frame's origin per domain, beyond 10^6 m | M4 (WS-regions) |
-| O8 | Carried checks (3.4): designed and ruled, not built. Whether M1 needs them | @coordinator-opus |
+| O8 | Carried checks (3.4): built as the author's local check (@coordinator-opus m6054091107a8, G2). Closed | - |
 | O9 | A run-time check of R1 (2) | WS-state |
 | O10 | P5's property test: arbitrary entries never panic a replica (3.1, 4.3) | WS-state |
 | O11 | A body under a hand does not follow a pack's later poses: `end_frame` returning effects (a seam change, @engine-architect's call), or refusing a `Body` under a `Hand`, with a multi-pose test (@design-reviewer's Medium on e6d3ee9c; 3.2) | WS-state, WS-world |
@@ -1028,8 +1046,9 @@ Settled since v0.2:
   m9e5f73a37fca). That was O7. See 3.5 and 13.
 - **The frame view** gives what `docs/spec/render.md` 12 asks of S5 (7).
 - **The floating-point guard** also runs at every entry into a logic guest (@iter-bench's N11; 3, step 1).
-- **Carried state is a check, not an overwrite** (the user, Q15, mfedf5a6c3c5b). A continuing hold carries nothing
-  (@coordinator-opus, m216e30d03fc0). See 3.4; not built (O8).
+- **Interaction state is a check, not an overwrite** (the user, Q15, mfedf5a6c3c5b), the author's own and never on
+  the wire (@coordinator-opus m6054091107a8). A continuing hold is not checked (@coordinator-opus, m216e30d03fc0).
+  See 3.4.
 - **The stage order** of 3 is confirmed by @iter-bench (WS-logic): logic reconciles once per stage.
 - **Untouched groups after a merge** need to be deterministic, not bit-exact (@coordinator-opus, mf7a04f952767). The
   drift is to measure (6.3).

@@ -48,13 +48,6 @@ pub struct PushFx {
     pub at: Option<Pos>,
 }
 
-/// The digest an interaction carried (replica.md 3.4): a check compared once its frame is final, never written.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CarriedFx {
-    pub object: ObjectId,
-    pub digest: [u8; 32],
-}
-
 /// A throw an entry applied (world-model.md 8.1): the velocity the holder's hand gave `object` as it let go, in the
 /// world frame, `linear` at its centre of mass in m/s and `angular` in rad/s. The replica gives it to the object as
 /// the entry applies, capped, if the object is with the hand that held it ([`crate::hands::throw`]).
@@ -75,7 +68,9 @@ pub struct Effects {
     pub pushes: Vec<PushFx>,
     /// The holder's throws, in op order (world-model.md 8.1).
     pub throws: Vec<ThrowFx>,
-    pub carried: Option<CarriedFx>,
+    /// The objects a `Grab` began holding, in op order (world-model.md 8.1). The physics acts on a hold through the
+    /// hands (3.3), so this is only for the author's check after an interaction (3.4).
+    pub grabs: Vec<ObjectId>,
 }
 
 /// What one logic stage did, for the replica ([`WorldModel::logic_stage`]; logic.md 9.2a).
@@ -95,7 +90,7 @@ pub struct LogicFx {
 impl Effects {
     /// No physics effects.
     pub fn is_empty(&self) -> bool {
-        self.changed.is_empty() && self.pushes.is_empty() && self.throws.is_empty() && self.carried.is_none()
+        self.changed.is_empty() && self.pushes.is_empty() && self.throws.is_empty() && self.grabs.is_empty()
     }
 }
 

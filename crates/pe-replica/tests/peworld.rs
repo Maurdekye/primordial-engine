@@ -9,7 +9,7 @@ use bytes::Bytes;
 use pe_replica::hands::hand_mode;
 use pe_replica::mock::MockClock;
 use pe_replica::world::{BodyKind, Change, Phase, ShapeRow, Unbuildable, WorldModel};
-use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
+use pe_replica::{CorrectedInteraction, PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
     ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntrySource, FinalCut, Finalized, Frame, FrameClock, GroupSel,
@@ -551,6 +551,161 @@ fn an_input_s_push_moves_its_body() {
     let (still, pushed) = (run(false), run(true));
     assert!((still - 2.0).abs() < 1e-3, "{still}");
     assert!(pushed > still + 0.1, "{pushed} against {still}");
+}
+
+/// M1's acceptance (refound plan 3.1; replica.md 3.4; @item:primordial-engine/g2-carried-state-is-a-check-not-an-overwrite-the):
+/// two members push one ball within one network delay, each before it has the other's push, and both pushes take
+/// effect. A steps past B's push before B's arrives, and B past A's before A's arrives; each rolls back when the
+/// other's arrives. Their roots then equal those of a replica that had both pushes from the start, and the ball
+/// moves along both pushes' directions, where each push alone moves it along its own only. No push carries a state
+/// that would overwrite the other's (3.4: carried state is a check, never written).
+#[test]
+fn two_members_pushing_one_ball_within_a_network_delay_both_take_effect() {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let along_x = input(&mut a, 10, &Input::Push { object: oid(BALL), impulse: [1.5, 0.0, 0.0], at: None });
+    let along_z = input(&mut b, 12, &Input::Push { object: oid(BALL), impulse: [0.0, 0.0, 1.5], at: None });
+    let world = || {
+        let mut w = with_hand_and_ball();
+        w.set_member(keys.key(1), perm::EDIT);
+        w
+    };
+    const END: u64 = 64;
+    // A replica that has `first` from the start, steps to `early`, then receives `late`.
+    let run = |first: &[&SignedEntry], early: u64, late: &[&SignedEntry]| {
+        let mut s = Source::default();
+        first.iter().for_each(|e| s.add((*e).clone()));
+        let mut r = replica_of(world());
+        r.advance(Frame(early), &mut s);
+        late.iter().for_each(|e| s.add((*e).clone()));
+        let adv = r.advance(Frame(END), &mut s);
+        assert_eq!(r.faults(), 0);
+        let ball = (r.world().body(oid(BALL)).unwrap().expect("the ball").pos - Pos::ORIGIN).0;
+        (r, adv.rolled_back_to, ball)
+    };
+    let (reference, _, both) = run(&[&along_x, &along_z], 0, &[]);
+    // A sends its push at 10 and steps to 15 before B's, stamped 12, arrives (a delay of 3 frames, 50 ms).
+    let (at_a, a_back, a_ball) = run(&[&along_x], 15, &[&along_z]);
+    // B sends its push at 12 and steps to 14 before A's, stamped 10, arrives.
+    let (at_b, b_back, b_ball) = run(&[&along_z], 14, &[&along_x]);
+    assert!(a_back.is_some_and(|f| f.0 <= 12), "A rolled back for B's push: {a_back:?}");
+    assert!(b_back.is_some_and(|f| f.0 <= 10), "B rolled back for A's push: {b_back:?}");
+    for (r, who) in [(&reference, "the reference"), (&at_a, "A"), (&at_b, "B")] {
+        for e in [&along_x, &along_z] {
+            let o = r.outcome(&e.id()).map(|o| o.1);
+            assert!(matches!(o, Some(Outcome::Applied { .. })), "{who}: {o:?}");
+        }
+    }
+    let want = roots(&reference, END);
+    assert_eq!(want.len(), 9);
+    assert_eq!(roots(&at_a, END), want, "A's roots");
+    assert_eq!(roots(&at_b, END), want, "B's roots");
+    assert_eq!((a_ball, b_ball), (both, both));
+    // Each push alone moves the ball along its own direction only; together, along both.
+    let (_, _, only_x) = run(&[&along_x], 0, &[]);
+    let (_, _, only_z) = run(&[&along_z], 0, &[]);
+    let start = [2.0, 0.1, 0.0];
+    assert!(only_x[0] > start[0] + 0.1 && (only_x[2] - start[2]).abs() < 1e-3, "{only_x:?}");
+    assert!(only_z[2] > start[2] + 0.1 && (only_z[0] - start[0]).abs() < 1e-3, "{only_z:?}");
+    assert!(both[0] > start[0] + 0.1 && both[2] > start[2] + 0.1, "both take effect: {both:?}");
+}
+
+/// A replica of `world` for the member of key `local` (its own interactions are checked, 3.4).
+fn replica_for(world: World, local: usize) -> ReplicaImpl<PeWorld> {
+    let mut config = config();
+    config.local = Some(keys().key(local));
+    ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica")
+}
+
+/// Finalizes the cut at `frame` over `entries` with this replica's own root there, which must agree.
+fn finalize_at(r: &mut ReplicaImpl<PeWorld>, s: &mut Source, entries: &[SignedEntry], frame: u64) {
+    let cut = cut_at(entries, frame / K, frame);
+    let root = r.root_at_cut(&cut, s).expect("my root at the cut");
+    assert_eq!(r.finalize(&FinalCut { cut, root, voters: vec![] }, s), Finalized::Agreed);
+}
+
+/// The author's check after its own interactions (replica.md 3.4; @coordinator-opus m6054091107a8, option (B), after
+/// @fable-reviewer m3527e3dedbb8). A pushes the ball at 12. B's push, stamped 10, reaches A in time in one run and
+/// after A stepped 12 in the other. Once the cut at 16 is final, A's check of its push agrees in the first run, and in
+/// the second finds the ball left other than A's first step of 12 left it: a correction that hit a body A had just
+/// acted on, counted in the view. B's push is not A's interaction, so A checks only its own; nothing is judged before
+/// the cut is final, and the check changes no state (the roots are the reference's).
+#[test]
+fn an_author_s_check_counts_a_late_earlier_push_as_a_correction() {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mine = input(&mut a, 12, &Input::Push { object: oid(BALL), impulse: [1.5, 0.0, 0.0], at: None });
+    let theirs = input(&mut b, 10, &Input::Push { object: oid(BALL), impulse: [0.0, 0.0, 1.5], at: None });
+    let entries = [mine.clone(), theirs.clone()];
+    let world = || {
+        let mut w = with_hand_and_ball();
+        w.set_member(keys.key(1), perm::EDIT);
+        w
+    };
+    let (reference, _) = reference_of(world(), &entries, 32);
+    let run = |late: bool| {
+        let mut r = replica_for(world(), 0);
+        let mut s = Source::default();
+        s.add(mine.clone());
+        if !late {
+            s.add(theirs.clone());
+        }
+        r.advance(Frame(14), &mut s);
+        if late {
+            s.add(theirs.clone());
+        }
+        r.advance(Frame(24), &mut s);
+        assert_eq!(r.interaction_checks().judged, 0, "nothing is judged before its frame is final");
+        finalize_at(&mut r, &mut s, &entries, 16);
+        r.advance(Frame(32), &mut s);
+        let above = |r: &ReplicaImpl<PeWorld>| roots(r, 32).into_iter().filter(|(f, _)| *f >= 16).collect::<Vec<_>>();
+        assert_eq!(above(&r), above(&reference), "the check changes no state");
+        assert_eq!(r.faults(), 0);
+        (r.interaction_checks().clone(), r.view().counters.interactions_corrected)
+    };
+    let (on_time, shown) = run(false);
+    assert_eq!((on_time.judged, on_time.corrected, on_time.unjudged, shown), (1, 0, 0, 0), "{on_time:?}");
+    let (late, shown) = run(true);
+    assert_eq!((late.judged, late.corrected, late.unjudged, shown), (1, 1, 0, 1), "{late:?}");
+    let want = CorrectedInteraction { frame: Frame(12), object: oid(BALL) };
+    assert_eq!(late.recent.iter().copied().collect::<Vec<_>>(), [want]);
+}
+
+/// What the author checks (3.4): a grab begin and a throw, each once, and a push; neither a renewal of its own hold
+/// nor a hand input, and nothing on another member's replica, where these are not the local member's.
+#[test]
+fn an_author_checks_its_grab_begins_pushes_and_throws_only() {
+    let keys = keys();
+    let mut a = EntryBuilder::new(&keys, 0);
+    let grab = Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) };
+    let entries = vec![
+        input(&mut a, 3, &hand_to(&[2.0], 0)),
+        input(&mut a, 3, &grab),
+        input(&mut a, 4, &grab),
+        input(&mut a, 6, &Input::Throw { object: oid(BALL), linear: [0.5, 0.5, 0.0], angular: [0.0; 3] }),
+        input(&mut a, 12, &Input::Push { object: oid(BALL), impulse: [0.0, 0.5, 0.0], at: None }),
+    ];
+    let world = || {
+        let mut w = with_hand_and_ball();
+        w.set_member(keys.key(1), perm::EDIT);
+        w
+    };
+    let judged = |local: usize| {
+        let mut r = replica_for(world(), local);
+        let mut s = Source::default();
+        entries.iter().cloned().for_each(|e| s.add(e));
+        r.advance(Frame(24), &mut s);
+        for e in &entries[1..] {
+            let o = r.outcome(&e.id()).map(|o| o.1);
+            assert!(matches!(o, Some(Outcome::Applied { .. })), "{o:?}");
+        }
+        finalize_at(&mut r, &mut s, &entries, 16);
+        assert_eq!(r.faults(), 0);
+        r.interaction_checks().clone()
+    };
+    let mine = judged(0);
+    assert_eq!((mine.judged, mine.corrected), (3, 0), "the grab at 3, the throw at 6 and the push at 12: {mine:?}");
+    assert_eq!(judged(1).judged, 0, "another member's replica checks none of them");
 }
 
 /// `hands()` gives each hand at its target, the hand object's world transform, with its row's stamp, span (in

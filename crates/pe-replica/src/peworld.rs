@@ -801,7 +801,7 @@ fn effects(before: &World, after: &World, footprint: &Footprint) -> Effects {
     let pushes = footprint.pushes.iter().map(|p| PushFx { object: p.object, impulse: p.impulse, at: p.at }).collect();
     let throws =
         footprint.throws.iter().map(|t| ThrowFx { object: t.object, linear: t.linear, angular: t.angular }).collect();
-    Effects { changed, pushes, throws, ..Effects::default() }
+    Effects { changed, pushes, throws, grabs: footprint.grabs.clone() }
 }
 
 /// `id`'s body: itself if it has a `Body`, else its nearest ancestor with one.
