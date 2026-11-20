@@ -1480,7 +1480,10 @@ its reason and the index of the op [I]:
   - the codec is `edit.rs`'s: little-endian, one-byte tags, flags 0 or 1, `u16`-prefixed text, `u32`-prefixed bytes
     and lists, ids as `u128`. It is strict, so every accepted payload has exactly one encoding;
   - a `Version` precondition on a row that does not exist compares against the all-zero version, so it holds only
-    if the author read "no row". Its `Stale` then reports `current` and `winner` as zero, which means "absent": once
+    if the author read "no row", or a row only ever stored by a trusted write (`World::insert`) and never edited,
+    which reads zero too. No edit-writable row on a running world's non-hand objects is stored that way (the preset
+    is an edit; admission and physics write only rows edits can't), so pe-api's guard on a plain `add` reads absence
+    (@api-eng, F6) [I]. Its `Stale` then reports `current` and `winner` as zero, which means "absent": once
     a row is gone, the world keeps no record of who removed it (the remove's outcome listed it in `overwrote`). A
     `Content` precondition cannot express absence and always fails on a missing row; `Version` with the zero
     version does that (@design-reviewer's Lows 1 and 2). A failed `Exists` gives `Deleted` or `Unknown`, and a
@@ -1949,9 +1952,8 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     object to its place in the hand is stiff, 60 Hz (Box3D's own stiffness for rigid joints at the engine's 1/240 s
     sub-step), critically damped, and its force is at most `min(strength, m (A + g))`, `m` the held mass:
     - **`Hand.strength`**, in newtons, is the player's strength: M1's stand-in for the character controller's, where
-      it moves later. World logic writes it at admission, 110 N for now (provisional: the user's soft value, a
-      default player moves about 0.5-1 kg with no lag; 110 N holds 1 kg tight up to a 100 m/s² flick; the user is
-      choosing between 110 and 60 N). No input writes it, and no edit (a `Hand` row is not editable,
+      it moves later. World logic writes it at admission, 110 N, the user's value (confirmed): a default player moves about 0.5-1 kg with no lag, and 110 N holds 1 kg tight up to a
+      100 m/s² flick. No input writes it, and no edit (a `Hand` row is not editable,
       7.6); it is in the hand's leaf, and an import carries it. Both hands of a member have the same. A row from a
       build before it reads its former padding as 0 N, a hand that holds nothing up; builds of different layouts
       never share a session.
