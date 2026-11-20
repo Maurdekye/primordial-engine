@@ -417,6 +417,11 @@ pub struct Sim {
     join_failed: Option<String>,
     /// Called once when the join fails: the binary's quit ([`Sim::with_on_join_failed`]).
     on_join_failed: Option<Box<dyn FnOnce() + Send>>,
+    /// The window's status line ([`Sim::with_status`]): "Joining: catching up…" from a join's start until the
+    /// replica first reaches the present.
+    status: Option<Arc<pe_render::notices::StatusLine>>,
+    /// The status line shows the join's catch-up.
+    catching_up: bool,
 }
 
 /// pe-api's ports and the loop's own state for them (app.md 3.1).
@@ -631,6 +636,8 @@ impl Sim {
             joining: None,
             join_failed: None,
             on_join_failed: None,
+            status: None,
+            catching_up: false,
         }
     }
 
@@ -857,7 +864,22 @@ impl Sim {
         d.d.join(&e, inviter, &mut *self.replica, now);
         self.joining = Some(inviter);
         self.notices.push(crate::join::joining_here());
+        self.catching_up = true;
+        self.set_status(Some(crate::join::catching_up_status()));
         Ok(())
+    }
+
+    /// The status line the window shows (pe-render's [`pe_render::present::Presenter::set_status`]): a join puts up
+    /// [`crate::join::catching_up_status`] from its start until the replica first reaches the present.
+    pub fn with_status(mut self, status: Arc<pe_render::notices::StatusLine>) -> Sim {
+        self.status = Some(status);
+        self
+    }
+
+    fn set_status(&self, text: Option<String>) {
+        if let Some(s) = &self.status {
+            s.set(text);
+        }
     }
 
     /// What a failed join does besides its console line, once: the binary quits.
@@ -907,6 +929,8 @@ impl Sim {
         self.joining = None;
         self.notices.push(crate::join::couldnt_join_here(&failed));
         self.join_failed = Some(failed);
+        self.catching_up = false;
+        self.set_status(None);
         if let Some(f) = self.on_join_failed.take() {
             f();
         }
@@ -1418,6 +1442,10 @@ impl Sim {
             api.ports.shared.caught_up(report.advance.caught_up);
         }
         self.count_hold(report.advance.caught_up);
+        if self.catching_up && self.joining.is_none() && report.advance.caught_up {
+            self.catching_up = false;
+            self.set_status(None);
+        }
         report
     }
 

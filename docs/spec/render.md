@@ -500,6 +500,9 @@ advice). Only the local member's own **Input-class** entries: grabs, pushes and 
     happened." A refusal of such an entry still pending is never told.
   - **Resyncing:** while the views' `health` is `Repairing` for longer than `resync_after_s` (1.5 s), a status line
     "Resyncing…" shows above the other lines, until a view says `Agreed`.
+  - **pe-app's status line** (`notices::StatusLine`, `Presenter::set_status`): a line pe-app keeps up while a state
+    lasts, carried as `PresentedFrame::status`. The window shows it above the controls and the notices (section 9).
+    M1's one use is a joiner's "Joining: catching up…". pe-app's VR sink places no text panel yet.
 - **Dropped** (S2 v1.5, @coordinator-opus's ruling): an entry the replica stepped and a final cut left
   out arrives as `Outcome::Dropped { reason }` before `final_frame` passes its frame. It is told as a void, at once,
   in the void's words, and only once whether it comes as a record or as S3's `Voided`. A refusal of it already told
@@ -590,8 +593,17 @@ B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the
 - **Output:** `HandInput { source: Desktop, ... }` in the rig frame, pushed to a ring that implements `HandFeed`
   (xr.md 8.1), so the simulation reads desktop and tracked hands the same way. `discontinuity` is bumped when the hit
   depth jumps by more than 20 cm (ray moved onto a far object), so a jump is never read as a throw [I].
-- **Hit testing** uses the drawn scene's bounding shapes (CPU, against the last drawn poses), not physics queries,
-  so the render thread never asks the simulation [I].
+- **Hit testing** uses each drawn object's own shape, scaled (a sphere, a box, a capsule; a mesh by its bounding
+  sphere until pe-render reads blobs), on the CPU, against the last drawn poses, not physics queries, so the render
+  thread never asks the simulation [I]. A ray hits a solid only where it enters it from outside: a solid the camera
+  is inside (the pit's floor box, a wall, a ball the eye flew into) is never a hit at distance 0. [V, the M1 session
+  of 2026-11-20: with bounding spheres and hits at 0, the floor's 2.87 m sphere held the eye at every spawn slot and
+  pinned the hand 0.2 m in front of the camera; pe-render's tests/desktop_hit.rs checks it in M1's pit.]
+- **On screen** (the same session: the user couldn't tell what the controls were): two lines at the bottom of the
+  window list the controls for the first 30 s of the world drawn with no status line up, then fade; holding H shows
+  them again. Their text shrinks to fit a narrow window. Above them, pe-app's status line (`Presenter::set_status`):
+  "Joining: catching up…" from a join's start until the joiner's replica first reaches the present. The notices stay
+  below (section 8.1).
 
 ## 10. The window and pacing
 

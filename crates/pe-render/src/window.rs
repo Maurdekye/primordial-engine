@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use glam::{DQuat, DVec3};
-use pe_seams::{FrameView, HostTime, RigPose, ViewFlags};
+use pe_seams::{FrameView, HostTime, RigPose};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -27,7 +27,8 @@ use crate::counters::RunReport;
 use crate::desktop_hand::{DesktopHand, DesktopHandFeed, DesktopHandSettings, PointerInput, Target};
 use crate::effects::EffectCommand;
 use crate::gpu::{BackendOverride, ContextError, GpuContext, desktop_order};
-use crate::notices::{StripCache, window_overlay, window_text_px};
+use crate::labels::text_width;
+use crate::notices::{Line, StripCache, window_overlay, window_text_px};
 use crate::pacing::{DESKTOP_LADDER, Pacer, PacerSettings, PeriodSource};
 use crate::pose::quat;
 use crate::present::{FrameSlot, Presenter};
@@ -173,6 +174,39 @@ struct Pointer {
     wheel: f64,
     last_drag: Option<[f64; 2]>,
     keys: [bool; 8], // W A S D Space C Q E
+    /// H, held: the controls show.
+    help: bool,
+}
+
+/// The desktop controls (render.md 9), two lines at the bottom of the window: shown for [`HELP_S`] seconds of the
+/// world drawn with no status line up (a joiner's catch-up doesn't use them up), and whenever H is held.
+pub const HELP_LINES: [&str; 2] = [
+    "Point: mouse  ·  Grab: hold the left button, let go to throw  ·  While holding, nearer / farther: wheel  ·  Push: Shift",
+    "Look: right-drag  ·  Move: W A S D, Space up, C down  ·  Roll: Q / E  ·  Hold H to show these again",
+];
+pub const HELP_S: f64 = 30.0;
+/// The controls' fade at the end of [`HELP_S`], seconds.
+const HELP_FADE_S: f64 = 1.0;
+
+/// The lines the window shows over the scene, top first: the status line, the controls, then the notices.
+pub fn window_lines(status: Option<&str>, help_alpha: f32, notices: &[Line]) -> Vec<Line> {
+    let status = status.map(|t| Line { text: t.to_string(), alpha: 1.0 });
+    let help = (help_alpha > 0.0).then(|| HELP_LINES.map(|t| Line { text: t.to_string(), alpha: help_alpha }));
+    status.into_iter().chain(help.into_iter().flatten()).chain(notices.iter().cloned()).collect()
+}
+
+/// The controls' alpha after `shown_s` seconds of them shown, H held or not.
+pub fn help_alpha(shown_s: f64, held: bool) -> f32 {
+    if held { 1.0 } else { ((HELP_S - shown_s) / HELP_FADE_S).clamp(0.0, 1.0) as f32 }
+}
+
+/// The text size for `lines` in a window `width` pixels wide: [`window_text_px`]'s, smaller if the widest line would
+/// not fit in 94 % of the width.
+pub fn fitted_text_px(lines: &[Line], window: [u32; 2]) -> f32 {
+    let px = window_text_px(window[1]);
+    let widest = lines.iter().map(|l| text_width(&l.text, px)).fold(0.0, f32::max);
+    let room = 0.94 * window[0] as f32 - 0.8 * px;
+    if widest > room && widest > 0.0 { (px * room / widest).max(8.0) } else { px }
 }
 
 struct Gfx {
@@ -213,6 +247,8 @@ pub struct DesktopView {
     targets: Vec<Target>,
     /// The notices strip's image (render.md 8.1).
     strip: StripCache,
+    /// Seconds of the controls shown with no status line up ([`HELP_S`]).
+    help_shown_s: f64,
     report: DesktopReport,
 }
 
@@ -352,6 +388,7 @@ impl DesktopView {
             captures,
             targets: Vec::new(),
             strip: StripCache::default(),
+            help_shown_s: 0.0,
             report,
         })
     }
@@ -497,22 +534,19 @@ impl DesktopView {
             LocalPresentation { display_time, hands: [None, Some(DisplayHand { pose: hand.pose, joints: None })] };
 
         let Some(mut frame) = self.cfg.presenter.frame_batch(&batch, &local, &[camera]) else { return };
+        if frame.status.is_none() {
+            self.help_shown_s += dt;
+        }
+        let lines =
+            window_lines(frame.status.as_deref(), help_alpha(self.help_shown_s, self.pointer.help), &frame.notices);
         frame.scene.overlay =
-            self.strip.get(&frame.notices, window_text_px(size[1])).map(|img| window_overlay(&camera, size, img));
+            self.strip.get(&lines, fitted_text_px(&lines, size)).map(|img| window_overlay(&camera, size, img));
         for c in &frame.effects {
             self.sink.command(c);
         }
         // The hand hits what is drawn, never its own hand or what it holds.
-        self.targets = frame
-            .display
-            .objects
-            .iter()
-            .filter_map(|d| {
-                let o = view.object(d.id)?;
-                let own = o.flags.contains(ViewFlags::OWN_HAND) || o.flags.contains(ViewFlags::HELD_LOCAL);
-                (o.shape.is_some() && !own).then_some(Target { center: d.pose.pos, radius: o.radius as f64 })
-            })
-            .collect();
+        self.targets =
+            frame.display.objects.iter().filter_map(|d| Target::of_object(view.object(d.id)?, d.pose)).collect();
 
         let g = self.gfx.as_mut().expect("checked above");
         let color =
@@ -596,6 +630,10 @@ impl DesktopView {
             WindowEvent::ModifiersChanged(ref m) => self.pointer.shift = m.state().shift_key(),
             WindowEvent::KeyboardInput { ref event, .. } => {
                 let down = event.state == ElementState::Pressed;
+                if event.physical_key == PhysicalKey::Code(KeyCode::KeyH) {
+                    self.pointer.help = down;
+                    return false;
+                }
                 let i = match event.physical_key {
                     PhysicalKey::Code(KeyCode::KeyW) => 0,
                     PhysicalKey::Code(KeyCode::KeyA) => 1,
@@ -690,6 +728,40 @@ pub fn run_desktop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_shows_the_status_then_the_controls_then_the_notices() {
+        let notice = [Line { text: "Out of reach.".into(), alpha: 0.5 }];
+        let texts = |l: Vec<Line>| l.into_iter().map(|l| l.text).collect::<Vec<_>>();
+        let all = window_lines(Some("Joining: catching up…"), 1.0, &notice);
+        assert_eq!(texts(all), ["Joining: catching up…", HELP_LINES[0], HELP_LINES[1], "Out of reach."]);
+        assert_eq!(texts(window_lines(None, 0.0, &notice)), ["Out of reach."], "the controls gone");
+        assert!(window_lines(None, 0.0, &[]).is_empty());
+    }
+
+    #[test]
+    fn the_controls_show_for_their_time_then_fade_and_come_back_with_h() {
+        assert_eq!(help_alpha(0.0, false), 1.0);
+        assert_eq!(help_alpha(HELP_S - HELP_FADE_S, false), 1.0);
+        assert!((help_alpha(HELP_S - HELP_FADE_S / 2.0, false) - 0.5).abs() < 1e-6, "fading");
+        assert_eq!(help_alpha(HELP_S, false), 0.0);
+        assert_eq!(help_alpha(1e6, true), 1.0, "H held");
+    }
+
+    #[test]
+    fn the_controls_fit_a_narrow_window() {
+        let lines = window_lines(None, 1.0, &[]);
+        let wide = [3840, 1080];
+        assert_eq!(fitted_text_px(&lines, wide), window_text_px(1080), "room to spare: the usual size");
+        assert_eq!(fitted_text_px(&lines, [1280, 720]), window_text_px(720), "pe-app's window: the usual size");
+        assert!(fitted_text_px(&lines, [640, 720]) < window_text_px(720), "half as wide: smaller text");
+        for w in [640, 1280] {
+            let px = fitted_text_px(&lines, [w, 720]);
+            let widest = lines.iter().map(|l| text_width(&l.text, px)).fold(0.0, f32::max);
+            assert!(widest + 0.8 * px <= 0.94 * w as f32 + 0.5, "{w} px wide: {widest} fits");
+        }
+        assert!(ab_glyph::Font::glyph_id(crate::labels::font(), '·').0 != 0, "the font has the separator");
+    }
 
     #[test]
     fn a_failure_everywhere_keeps_every_attempts_reason() {
