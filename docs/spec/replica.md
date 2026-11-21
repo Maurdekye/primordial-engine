@@ -358,8 +358,6 @@ is the author's own and nothing travels (@coordinator-opus, option (B), after @f
   player's earlier effect; no way to place a body anywhere by carrying a state. M1's acceptance case: two players
   pushing one ball within one network delay both take effect, and every replica's roots are equal [V
   `two_members_pushing_one_ball_within_a_network_delay_both_take_effect`].
-- **What the change gains** (file 02, B1): no reset of the body's contacts at every touch; no erasing of another
-  player's earlier effect; no way to place a body anywhere by carrying a state.
 - **What it costs, as the user accepted:** the author's own body can be corrected when a late, earlier action reaches
   it. The display layer still never corrects what a player holds on their screen (7).
 
@@ -754,7 +752,7 @@ the floor's cut-exact snapshot at once, with the cut-exact outcomes below the fl
 
 ## 7. The frame view: what the replica puts in S5
 
-pe-seams fixes the view's shape (`crates/pe-seams/src/view.rs`, S5 through v1.8). The replica fills it after an advance
+pe-seams fixes the view's shape (`crates/pe-seams/src/view.rs`, S5 through v1.10). The replica fills it after an advance
 that reaches the present with no replay under way, never during a re-simulation, and publishes it as an
 `Arc<FrameView>` that nothing changes afterwards [V `crates/pe-replica/src/replica.rs`, `publish`]:
 - **Objects** come from the world model (`WorldModel::view_objects`): for pe-world, every object with a `Shape`, a
