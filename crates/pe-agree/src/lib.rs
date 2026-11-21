@@ -25,8 +25,8 @@ pub use node::{LEAVE, Node, NodeConfig, RateBudget, is_leave};
 #[cfg(test)]
 mod core_tests;
 #[cfg(test)]
-mod node_tests;
-#[cfg(test)]
 mod journal_tests;
+#[cfg(test)]
+mod node_tests;
 #[cfg(test)]
 mod store_tests;

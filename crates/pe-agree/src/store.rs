@@ -94,7 +94,11 @@ pub enum StoreError {
     /// The disk is full. If the log isn't poisoned, the records stay buffered and a later sync retries.
     Full,
     /// Damage to data that was synced (see the module documentation). Don't start on it.
-    Corrupt { segment: u64, offset: u64, why: &'static str },
+    Corrupt {
+        segment: u64,
+        offset: u64,
+        why: &'static str,
+    },
     /// A record over [`Options::max_record`], a kind at or above [`RESERVED_KINDS`], or a job out of order.
     Refused(&'static str),
     /// An earlier write or fsync failed: reopen the log.
@@ -242,7 +246,9 @@ impl Fs for StdFs {
         for (i, half) in out.chunks_mut(8).enumerate() {
             let mut h = std::collections::hash_map::RandomState::new().build_hasher();
             h.write_usize(i);
-            h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+            h.write_u128(
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()),
+            );
             half.copy_from_slice(&h.finish().to_le_bytes());
         }
         out
@@ -933,12 +939,8 @@ impl Fs for SimFs {
 
     fn sync_dir(&mut self, dir: &Path) -> io::Result<()> {
         self.step()?;
-        let removed: Vec<PathBuf> = self
-            .files
-            .iter()
-            .filter(|(p, f)| f.removed && p.parent() == Some(dir))
-            .map(|(p, _)| p.clone())
-            .collect();
+        let removed: Vec<PathBuf> =
+            self.files.iter().filter(|(p, f)| f.removed && p.parent() == Some(dir)).map(|(p, _)| p.clone()).collect();
         for p in removed {
             self.files.remove(&p);
             self.durable_names.remove(&p);
@@ -959,14 +961,27 @@ impl Fs for SimFs {
 /// One numbered request from a node, in the order it was emitted. Numbers count up from 0 without gaps, per log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Job {
-    Append { n: u64, kind: u16, bytes: Vec<u8> },
+    Append {
+        n: u64,
+        kind: u16,
+        bytes: Vec<u8>,
+    },
     /// Replace the log with this live set (see [`Log::checkpoint`]).
-    Checkpoint { n: u64, live: Vec<(u16, Vec<u8>)> },
+    Checkpoint {
+        n: u64,
+        live: Vec<(u16, Vec<u8>)>,
+    },
     /// Replace the log with these of its records (see [`Log::compact`]).
-    Compact { n: u64, keep: Vec<Keep> },
+    Compact {
+        n: u64,
+        keep: Vec<Keep>,
+    },
     /// Read these records back ([`Report::Loaded`]). An Lsn that isn't a written record of the current segment is
     /// left out of the answer.
-    Load { n: u64, lsns: Vec<Lsn> },
+    Load {
+        n: u64,
+        lsns: Vec<Lsn>,
+    },
 }
 
 /// A record to keep in a [`Job::Compact`]: by its Lsn, or by the number of the append job that wrote it (when the

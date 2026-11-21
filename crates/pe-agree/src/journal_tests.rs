@@ -119,7 +119,8 @@ fn the_hot_cap_spills_to_disk_and_loads_back_in_order() {
     let keys = TestKeys::new(10, 2);
     let es = entries(&keys, 1, 200, 100);
     let size = es[0].encode().len();
-    let cfg = JournalConfig { hot_per_author: size * 20, hot_total: size * 30, load_batch: 50, ..JournalConfig::default() };
+    let cfg =
+        JournalConfig { hot_per_author: size * 20, hot_total: size * 30, load_batch: 50, ..JournalConfig::default() };
     let mut r = Rig::new(cfg);
     for e in &es {
         assert_eq!(r.j.offer(e), Offer::Taken);
