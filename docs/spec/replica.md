@@ -353,6 +353,10 @@ is the author's own and nothing travels (@coordinator-opus, option (B), after @f
   display layer beside its `CORRECTED` marking, 7) and kept among the newest 64 (`InteractionChecks::recent`, for
   pe-diverge's fault bundle). Below a diverged cut the checks wait for an agreed cut above the repair; below a rung-2
   import's cut no history of this replica's is left, and they are dropped, counted as unjudged.
+- **The two counts measure different things and need not match** (@fable-reviewer, via
+  @coordinator-opus). `CORRECTED` (7) is a pose change at the present after a replay;
+  `interactions_corrected` is a digest change at f, judged at finality. A check can count a correction that nothing
+  on screen showed, and a correction at f can wash out before the present.
 - **It changes no state.** No replica writes the simulated state from it, and the simulation never reads it; a real
   fault is repaired by the root and the ladder. A frame with no check computes nothing; one with a check computes the
   per-body digests once per step of it [I: about 0.2 ms at 500 bodies, @vdw-physics's figure in world-model.md 6.3].
