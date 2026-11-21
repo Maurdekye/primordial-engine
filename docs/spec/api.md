@@ -336,6 +336,15 @@ Reads one snapshot. `Query`:
 - `limit` (default 50, at most 256) and `cursor`. A result cut by the limit carries `more`, a cursor for the next page.
   Over `child_of`, pages follow the children's order, which serves the inspector's paged hierarchy (inspector.md 7,
   ask 1).
+- **A page's size cap** (S6 v1.11; agent tooling of the M1 recordings, where `fields: ["*"]` on the pit gave 312
+  and 619 KB, over Claude Code's limit for one tool result, so the harness saved it to a file the agent never read or
+  had to parse): a page holds at most 48 KB of objects (`PAGE_BYTES`). One cut by size ends early, carries `more`,
+  and says so in `cut`: how many objects it holds, how many more match, and to page on, ask for fewer `fields`, or
+  use `summary`. A single object over the cap as asked is `invalid_argument` on `fields`.
+- **`summary: true`** (S6 v1.11): the cheap first look at many objects. Instead of `objects`, `summary` gives every
+  match's `count`, `types` (how many matches carry each type), `bounds` (the box around their positions, in `frame`,
+  default `"world_origin"`) and a page of `objects` as `{id, name}` (`limit` default and most 1000, under the same
+  byte cap, with `more`).
 - `count_only: true` returns the count and no objects.
 
 The result: `frame`, `final_frame`, `objects` (each with `id`, `name`, `parent`, `version`, `creator`, `held_by` if
@@ -373,7 +382,7 @@ same frame together.
 | `set` | One field (`field`, `value`) or several (`fields: {...}`) | `value: null` resets to the default |
 | `add` / `remove` | Adds or removes a component (`component`, with initial `fields` for `add`) | `add` on a component the object already has is refused unless `replace: true` (below) |
 | `reparent` | A new `parent`, and an `index` among its children | `keep`: `"world_pose"` (default) or `"local_pose"`; refused as `invalid` if it would make a cycle |
-| `duplicate` | A copy-on-write copy of a subtree, new ids over the same records ("b, 1 always", R11 rulings; file 11, 3.2) | `protected` for a non-owner (V1) |
+| `duplicate` | A copy-on-write copy of a subtree, new ids over the same records ("b, 1 always", R11 rulings; file 11, 3.2). Bulk (S6 v1.11): `where` (with `max`) names many sources, `count` makes that many copies of each (default 1, at most 1000), and `step` (metres, in the source's parent's frame) places copy k at the source plus k steps | `protected` for a non-owner (V1). `as` names a single copy only. Without `step`, a copy sits where its source does. Past the world's limits (its shapes, 520 in M1) the whole change is refused as `too_large` |
 | `delete` | An object and its subtree | Plain Delete unlinks a linked script (R11 rulings) |
 | `code` | The logic edit of U1 (section 7) | |
 
@@ -401,9 +410,16 @@ field; `add` is `SetRow` (with a row `Version` precondition unless `replace`); `
     outcome's `diff.set` lists each field it changes, `before` and `after` (other edits' field diffs: not yet),
     and an undo restores the old row.
   - `attach` is unchanged.
-- **Targets**: `id` takes an id, a path or a `$ref`. Instead of `id`, `set`, `add`, `remove` and `delete` take a
-  `where` selector with a required `max`. The selector is resolved against the base snapshot on this machine into
-  explicit ids; the entry carries the ids, never the selector, so every machine applies the same change. More
+- **Blob fields and names** (S6 v1.11; the M1 recordings' `create`s copied a query's output, `"material": null` and
+  `"Name": {"text": …}` included, and were refused as "not wired"):
+  - a blob field (a mesh, a material) takes `null`, for none, its default, so a query's output can be given back as
+    it is. Any other value is refused as `invalid`: the API can't set an asset's content yet;
+  - `Name.text` takes the name as a string: `set` renames (its bytes carried inline, at most 255 bytes of UTF-8,
+    5.3), and gives a Name to an object without one; a `create`'s `components` may carry `Name` only with the same
+    text as its `name`. A name, given either way, is never empty and has no `/`, since paths are made of names (5.1).
+- **Targets**: `id` takes an id, a path or a `$ref`. Instead of `id`, `set`, `add`, `remove`, `duplicate` and
+  `delete` take a `where` selector with a required `max`. The selector is resolved against the base snapshot on this
+  machine into explicit ids; the entry carries the ids, never the selector, so every machine applies the same change. More
   matches than `max` is refused as `too_many`. "Make the balls blue" is one op that becomes 500 writes in one entry;
   the expanded transaction must stay within pe-world's 4,096 ops (9.3).
 - **All or nothing.** Ops apply in order; if any is refused, none applies, and the outcome names the first refused
@@ -1162,6 +1178,9 @@ advice):
     pe-app copies from agreement's `Voided` events.
   - **S6 v1.10** (@engine-architect, coordinator): `Op::Add.replace: bool`, default false and left out
     when false (5.3). Without it, `add` on a component the object has is refused as `invalid`.
+  - **S6 v1.11** (agent tooling, user ruling): `Query.summary: bool`, `QueryResult.cut: Option<String>`
+    and `QueryResult.summary: Option<QuerySummary { count, types, bounds: Option<Bounds { relative_to, min, max }>,
+    objects: Vec<ObjectBrief> }>` (5.2); `Op::Duplicate.count: Option<u32>` and `step: Option<[f64; 3]>` (5.3).
 
 ## 12. Open points, and whose they are
 

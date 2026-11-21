@@ -41,6 +41,8 @@ pub const OPS_MAX: usize = pe_world::edit::MAX_OPS;
 pub const NEW_MAX: u32 = pe_world::edit::MAX_NEW_OBJECTS as u32;
 /// pe-world's label limit, in bytes.
 pub const LABEL_MAX: usize = 200;
+/// A `duplicate`'s most copies of each source (api.md 5.3); the change's own limits (new objects, edits) still apply.
+pub const DUPLICATE_COUNT_MAX: u32 = 1000;
 
 /// An object an op acts on: one that exists, or the transaction's k-th new object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -641,26 +643,88 @@ pub fn resolve_tx(
                 c.count += 1;
                 c.push(i, ROp::Reparent { target: t, parent: p, index: *index, keep_world: *keep == Keep::WorldPose })?;
             }
-            Op::Duplicate { target, as_ref, parent } => {
-                let src = c.targets(i, target, false)?[0];
-                let parent = match parent {
-                    Some(p) => c.obj(i, p)?,
-                    None => match src {
-                        Obj::Existing(id) => match snap.info(id).and_then(|x| x.parent) {
-                            Some(p) => Obj::Existing(p),
-                            None => {
-                                return Err(refusal(RefusalCode::Invalid, i, "A root's duplicate needs a `parent`."));
-                            }
+            Op::Duplicate { target, as_ref, parent: to, count, step } => {
+                // Many sources by `where`, and `count` copies of each, laid out by `step` (api.md 5.3: one op and one
+                // change for "double the balls").
+                let srcs = c.targets(i, target, true)?;
+                let count = count.unwrap_or(1);
+                if count == 0 || count > DUPLICATE_COUNT_MAX {
+                    return Err(refusal(
+                        RefusalCode::Invalid,
+                        i,
+                        format!("`count` is between 1 and {DUPLICATE_COUNT_MAX}."),
+                    ));
+                }
+                if as_ref.is_some() && (srcs.len() > 1 || count > 1) {
+                    return Err(refusal(
+                        RefusalCode::Invalid,
+                        i,
+                        "`as` names one copy: leave it out when the op makes several.",
+                    ));
+                }
+                for src in srcs {
+                    let parent = match to {
+                        Some(p) => c.obj(i, p)?,
+                        None => match src {
+                            Obj::Existing(id) => match snap.info(id).and_then(|x| x.parent) {
+                                Some(p) => Obj::Existing(p),
+                                None => {
+                                    return Err(refusal(
+                                        RefusalCode::Invalid,
+                                        i,
+                                        "A root's duplicate needs a `parent`.",
+                                    ));
+                                }
+                            },
+                            Obj::New(k) => c.new_parent[k as usize],
                         },
-                        Obj::New(k) => c.new_parent[k as usize],
-                    },
-                };
-                c.check_copy_source(i, src)?;
-                let size = c.subtree_size(i, src)?;
-                let new = c.new_ref(i, as_ref.as_ref(), parent, size)?;
-                c.grown.insert(parent);
-                c.count += size as u64;
-                c.push(i, ROp::Copy { source: src, new, parent, size })?;
+                    };
+                    // Where copy k goes: the source's place in its parent's frame, plus k steps.
+                    let place = match (step, src) {
+                        (None, _) => None,
+                        (Some(s), Obj::Existing(id)) => {
+                            let frame = match snap.info(id).and_then(|x| x.parent) {
+                                Some(p) => ObjRef(p.to_string()),
+                                None => ObjRef("world_origin".into()),
+                            };
+                            let at = snap
+                                .fields(id, "Transform", &frame)
+                                .and_then(|t| t.get("position")?.get("offset")?.as_array().cloned())
+                                .and_then(|a| a.iter().map(Json::as_f64).collect::<Option<Vec<f64>>>())
+                                .and_then(|v| <[f64; 3]>::try_from(v).ok());
+                            let Some(at) = at else {
+                                return Err(refusal(
+                                    RefusalCode::Invalid,
+                                    i,
+                                    "A `step` needs a source with a position (a Transform).",
+                                ));
+                            };
+                            Some((frame, at, *s))
+                        }
+                        (Some(_), Obj::New(_)) => {
+                            return Err(refusal(
+                                RefusalCode::Invalid,
+                                i,
+                                "A `step` needs a source that exists before this change; place the copy with `set`.",
+                            ));
+                        }
+                    };
+                    c.check_copy_source(i, src)?;
+                    let size = c.subtree_size(i, src)?;
+                    for k in 1..=count {
+                        let new = c.new_ref(i, as_ref.as_ref(), parent, size)?;
+                        c.grown.insert(parent);
+                        c.count += size as u64;
+                        c.push(i, ROp::Copy { source: src, new, parent, size })?;
+                        if let Some((frame, at, s)) = &place {
+                            let f = f64::from(k);
+                            let offset = [at[0] + f * s[0], at[1] + f * s[1], at[2] + f * s[2]];
+                            let v = serde_json::json!({ "relative_to": frame.0, "offset": offset });
+                            let fields = BTreeMap::from([("Transform.position".to_string(), v)]);
+                            c.push(i, ROp::Set { target: Obj::New(new), fields })?;
+                        }
+                    }
+                }
             }
             Op::Delete { target } => {
                 for o in c.targets(i, target, true)? {

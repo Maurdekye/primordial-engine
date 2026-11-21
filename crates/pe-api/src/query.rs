@@ -6,13 +6,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use pe_seams::world_api::{
-    ApiError, At, AtName, Cursor, ErrorCode, ObjRef, ObjectId, ObjectView, Query, QueryResult, Selector, Version,
+    ApiError, At, AtName, Bounds, Cursor, ErrorCode, Json, ObjRef, ObjectBrief, ObjectId, ObjectView, Query,
+    QueryResult, QuerySummary, Selector, Version,
 };
 
 use crate::ports::{ObjInfo, Snapshot, SnapshotSource};
 
 pub const LIMIT_DEFAULT: u32 = 50;
 pub const LIMIT_MAX: u32 = 256;
+/// A summary's page of ids and names: at most this many (api.md 5.2).
+pub const SUMMARY_LIMIT_MAX: u32 = 1000;
+/// A page's size cap, in bytes of JSON (api.md 5.2): under Claude Code's default limit for one tool result (25,000
+/// tokens), so an agent never gets a result its harness saves to a file instead (F6 and the agent-tooling item of
+/// the M1 recordings: 312 KB and 619 KB pages).
+pub const PAGE_BYTES: usize = 48_000;
 /// The most objects one result may inline as children, all levels together.
 pub const INLINE_MAX: usize = 2_000;
 
@@ -462,9 +469,10 @@ impl Builder<'_> {
 /// Runs a query over a snapshot already picked (`pick`), from `offset`. Returns the result and every
 /// (object, version) it reported, for the connection's table of versions seen (api.md 4.2).
 pub fn run(snap: &dyn Snapshot, q: &Query, offset: usize) -> Result<(QueryResult, Vec<(ObjectId, Version)>), ApiError> {
-    let limit = q.limit.unwrap_or(LIMIT_DEFAULT);
-    if limit == 0 || limit > LIMIT_MAX {
-        return Err(ApiError::arg("limit", format!("between 1 and {LIMIT_MAX}")));
+    let max = if q.summary { SUMMARY_LIMIT_MAX } else { LIMIT_MAX };
+    let limit = q.limit.unwrap_or(if q.summary { SUMMARY_LIMIT_MAX } else { LIMIT_DEFAULT });
+    if limit == 0 || limit > max {
+        return Err(ApiError::arg("limit", format!("between 1 and {max}")));
     }
     let budget = Budget::default();
     let ids = match q.select.as_ref() {
@@ -485,9 +493,14 @@ pub fn run(snap: &dyn Snapshot, q: &Query, offset: usize) -> Result<(QueryResult
                 count: Some(ids.len() as u64),
                 objects: vec![],
                 more: None,
+                cut: None,
+                summary: None,
             },
             vec![],
         ));
+    }
+    if q.summary {
+        return Ok((summary(snap, q, &ids, offset, limit as usize), vec![]));
     }
     let mut b = Builder {
         snap,
@@ -496,15 +509,104 @@ pub fn run(snap: &dyn Snapshot, q: &Query, offset: usize) -> Result<(QueryResult
         inlined: 0,
         seen: vec![],
     };
-    let end = (offset + limit as usize).min(ids.len());
+    // Up to `limit` objects, and no more than PAGE_BYTES of them: a page cut by size ends early with `cut` saying so.
     let mut objects = vec![];
+    let (mut end, mut bytes, mut cut) = (offset, 0usize, None);
     for id in ids.iter().skip(offset).take(limit as usize) {
         if let Some(v) = b.view(*id, q.children)? {
+            let n = serde_json::to_string(&v).map_or(0, |s| s.len());
+            if bytes + n > PAGE_BYTES {
+                if objects.is_empty() {
+                    return Err(ApiError::arg(
+                        "fields",
+                        format!(
+                            "one object here is {} KB as asked, over a page's {} KB; ask for fewer fields or children",
+                            n.div_ceil(1000),
+                            PAGE_BYTES / 1000
+                        ),
+                    ));
+                }
+                cut = Some(format!(
+                    "This page stopped at {} KB after {} objects; {} more match. Page on with `cursor`, ask for fewer \
+                     `fields`, or use `summary: true` for counts, bounds, ids and names.",
+                    PAGE_BYTES / 1000,
+                    objects.len(),
+                    ids.len() - end
+                ));
+                break;
+            }
+            bytes += n;
             objects.push(v);
         }
+        end += 1;
     }
     let more = (end < ids.len()).then(|| page_cursor(snap.frame(), end));
-    Ok((QueryResult { frame: snap.frame(), final_frame: snap.final_frame(), count: None, objects, more }, b.seen))
+    let r = QueryResult {
+        frame: snap.frame(),
+        final_frame: snap.final_frame(),
+        count: None,
+        objects,
+        more,
+        cut,
+        summary: None,
+    };
+    Ok((r, b.seen))
+}
+
+/// A summary query's answer (api.md 5.2): every match's count, types and bounds, and a page of ids and names.
+fn summary(snap: &dyn Snapshot, q: &Query, ids: &[ObjectId], offset: usize, limit: usize) -> QueryResult {
+    let frame = q.frame.clone().unwrap_or_else(|| ObjRef("world_origin".into()));
+    let mut types: BTreeMap<String, u64> = BTreeMap::new();
+    let (mut min, mut max) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for id in ids {
+        let Some(info) = snap.info(*id) else { continue };
+        for t in &info.types {
+            *types.entry(t.clone()).or_default() += 1;
+        }
+        let at = snap.fields(*id, "Transform", &frame).and_then(|t| offset_of(t.get("position")?));
+        if let Some(p) = at {
+            for k in 0..3 {
+                min[k] = min[k].min(p[k]);
+                max[k] = max[k].max(p[k]);
+            }
+        }
+    }
+    let bounds = min[0].is_finite().then_some(Bounds { relative_to: frame, min, max });
+    let mut objects = vec![];
+    let (mut end, mut bytes, mut cut) = (offset, 0usize, None);
+    for id in ids.iter().skip(offset).take(limit) {
+        let name = snap.info(*id).map(|i| i.name).unwrap_or_default();
+        let b = ObjectBrief { id: *id, name };
+        let n = serde_json::to_string(&b).map_or(0, |s| s.len());
+        if bytes + n > PAGE_BYTES {
+            cut = Some(format!(
+                "This page of ids stopped at {} KB after {} objects; page on with `cursor`.",
+                PAGE_BYTES / 1000,
+                objects.len()
+            ));
+            break;
+        }
+        bytes += n;
+        objects.push(b);
+        end += 1;
+    }
+    let more = (end < ids.len()).then(|| page_cursor(snap.frame(), end));
+    QueryResult {
+        frame: snap.frame(),
+        final_frame: snap.final_frame(),
+        count: Some(ids.len() as u64),
+        objects: vec![],
+        more,
+        cut,
+        summary: Some(QuerySummary { count: ids.len() as u64, types, bounds, objects }),
+    }
+}
+
+/// `[x, y, z]` from a position as a query shows it (`{"relative_to", "offset"}`); `None` for an exact `pos`.
+fn offset_of(p: &Json) -> Option<[f64; 3]> {
+    let a = p.get("offset")?.as_array()?;
+    let v: Vec<f64> = a.iter().map(Json::as_f64).collect::<Option<_>>()?;
+    v.try_into().ok()
 }
 
 #[cfg(test)]
@@ -735,6 +837,75 @@ mod tests {
         assert_eq!(sel(Selector::Near(Near { of: r("/Table"), within_m: 1.2 })), ["Table", "Lamp", "Lamp"]);
         assert_eq!(sel(Selector::Near(Near { of: r("me"), within_m: 1.0 })), ["Lamp", "Lamp", "Shade"]);
         assert_eq!(names(&m, &select(&m, None)), ["Table", "Ball 0", "Ball 1", "Ball 2"]);
+    }
+
+    /// The agent-tooling item: a summary is counts, types, bounds and a page of ids and names; never objects.
+    #[test]
+    fn a_summary_gives_counts_types_bounds_and_names() {
+        let mut m = Mem::pit(5);
+        // Positions as WorldView gives them, for the bounds.
+        for o in &mut m.objs {
+            let at = o.2;
+            if let Some(t) = o.1.get_mut("Transform") {
+                t.insert("position".into(), serde_json::json!({"relative_to": "world_origin", "offset": at}));
+            }
+        }
+        let src = Src(vec![Arc::new(m)]);
+        let q =
+            Query { select: Some(Selector::Has("Ball".into())), summary: true, limit: Some(3), ..Default::default() };
+        let (snap, off) = pick(&src, At::default(), None).unwrap();
+        let (r, _) = run(&*snap, &q, off).unwrap();
+        assert!(r.objects.is_empty());
+        let s = r.summary.expect("a summary");
+        assert_eq!((s.count, r.count), (5, Some(5)));
+        assert_eq!(s.types, BTreeMap::from([("Ball".to_string(), 5), ("Transform".to_string(), 5)]));
+        let b = s.bounds.expect("bounds");
+        assert_eq!((b.relative_to.0.as_str(), b.min, b.max), ("world_origin", [0.0, 0.0, 3.0], [4.0, 0.0, 3.0]));
+        let names: Vec<_> = s.objects.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["Ball 0", "Ball 1", "Ball 2"]);
+        assert!(r.more.is_some(), "the page of names continues");
+        // A summary page may be 1000 long; an object page still at most 256.
+        assert!(run(&*snap, &Query { summary: true, limit: Some(1000), ..Default::default() }, 0).is_ok());
+        assert!(run(&*snap, &Query { limit: Some(1000), ..Default::default() }, 0).is_err());
+    }
+
+    /// The M1 recordings' `fields: ["*"]` pages (312 and 619 KB) went over Claude Code's limit for one tool result:
+    /// a page now stops at PAGE_BYTES, says so in `cut` and continues with `more`.
+    #[test]
+    fn a_page_stops_at_the_size_cap_and_says_how_to_narrow() {
+        let mut m = Mem::pit(200);
+        let big = "x".repeat(400);
+        for o in &mut m.objs {
+            for f in o.1.values_mut() {
+                f.insert("big".into(), serde_json::json!(big));
+            }
+        }
+        let src = Src(vec![Arc::new(m)]);
+        let q = Query { fields: Some(vec!["*".into()]), limit: Some(256), ..Default::default() };
+        let (snap, off) = pick(&src, At::default(), None).unwrap();
+        let (r, _) = run(&*snap, &q, off).unwrap();
+        let n = r.objects.len();
+        assert!(n > 0 && n < 201, "{n}");
+        let bytes: usize = r.objects.iter().map(|o| serde_json::to_string(o).unwrap().len()).sum();
+        assert!(bytes <= PAGE_BYTES, "{bytes}");
+        let cut = r.cut.expect("cut by size");
+        assert!(cut.contains("summary: true") && cut.contains("more match"), "{cut}");
+        // Paging on reaches every object, each page under the cap.
+        let (mut seen, mut cursor) = (n, r.more.clone());
+        while let Some(c) = cursor {
+            let (snap, off) = pick(&src, At::default(), Some(&c)).unwrap();
+            let (r, _) = run(&*snap, &q, off).unwrap();
+            seen += r.objects.len();
+            cursor = r.more;
+        }
+        assert_eq!(seen, 201, "the 200 balls and the table, roots only");
+        // One object over the cap by itself: narrow the fields.
+        let mut m = Mem::pit(0);
+        m.objs[0].1.get_mut("Shape").unwrap().insert("huge".into(), serde_json::json!("y".repeat(PAGE_BYTES)));
+        let src = Src(vec![Arc::new(m)]);
+        let (snap, off) = pick(&src, At::default(), None).unwrap();
+        let e = run(&*snap, &q, off).unwrap_err();
+        assert_eq!(e.field.as_deref(), Some("fields"), "{e:?}");
     }
 
     #[test]

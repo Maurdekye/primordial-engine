@@ -135,6 +135,17 @@ impl On<'_> {
         snap.component_desc(c).ok_or_else(|| format!("There is no component {name:?}."))
     }
 
+    /// Whether `key` is the engine's `Name.text`, which takes the name as a string (api.md 5.3).
+    fn is_name_text(&self, snap: &WorldSnapshot, key: &str) -> bool {
+        key.split_once('.').is_some_and(|(comp, field)| field == "text" && self.is_name(snap, comp))
+    }
+
+    /// Whether component `comp` resolves to the engine's `Name`.
+    fn is_name(&self, snap: &WorldSnapshot, comp: &str) -> bool {
+        let name = snap.component("Name").map(|d| d.id());
+        self.desc(snap, comp).is_ok_and(|d| Some(d.id()) == name)
+    }
+
     /// `key` (`Component.field`) with the engine's Transform named `Transform`, if its component resolves to it.
     fn is_transform(&self, snap: &WorldSnapshot, key: &str) -> Option<String> {
         let (comp, field) = key.split_once('.')?;
@@ -190,6 +201,17 @@ fn set_field(snap: &WorldSnapshot, on: &On, i: usize, id: Target, key: &str, v: 
         .enumerate()
         .find(|(_, f)| f.name == field && !f.name.starts_with('_'))
         .ok_or_else(|| bad(format!("{comp} has no field {field:?}.")))?;
+    // A blob field (an asset's content: a mesh, a material) takes only `null`, for none, its default: what a query
+    // shows for an unset one, so its output can be given back as it is (api.md 5.3; the M1 recordings' `create`s).
+    if matches!(f.kind, FieldKind::BlobRef | FieldKind::SimBlobRef) {
+        if v.is_null() {
+            let value = vec![0u8; f.kind.size() as usize * f.count as usize];
+            return Ok(Op::SetField { id, component: desc.id(), instance: 0, field: index as u16, value });
+        }
+        return Err(bad(format!(
+            "{key} is a blob (an asset's content), which the API can't set yet; leave it out, or give null for none."
+        )));
+    }
     // A colour field takes a colour, never a bare list (api.md 4.4; ruling).
     if f.color.is_some() {
         let c = crate::colour::encode(v, f.count as usize).map_err(|why| bad(format!("{key}: {why}")))?;
@@ -511,6 +533,39 @@ pub fn inline_of(blobs: &[Vec<u8>]) -> Vec<Vec<u8>> {
     out
 }
 
+/// The `Name` row for `text`, checked against [`NAME_MAX`], with its bytes added once to the change's blobs.
+fn named(
+    snap: &WorldSnapshot,
+    i: usize,
+    op: u32,
+    text: &str,
+    blob_refs: &mut Vec<BlobRef>,
+    blobs: &mut Vec<Vec<u8>>,
+) -> Result<Row, Unmapped> {
+    if text.len() > NAME_MAX {
+        return Err(refused_at(
+            op,
+            RefusalCode::Invalid,
+            format!("A name is at most {NAME_MAX} bytes of UTF-8; this one is {}.", text.len()),
+        ));
+    }
+    // An empty text would be a zero-length blob, not pe-world's none, so a reader finds no text; and a `/` would make
+    // the object unreachable by path, which addresses by names (api.md 5.1; world-model's review).
+    if text.is_empty() || text.contains('/') {
+        return Err(refused_at(
+            op,
+            RefusalCode::Invalid,
+            "A name is not empty and has no `/` (paths are made of names).".into(),
+        ));
+    }
+    let (row, r) = name_row(snap, i, text)?;
+    if !blob_refs.contains(&r) {
+        blob_refs.push(r);
+        blobs.push(text.as_bytes().to_vec());
+    }
+    Ok(row)
+}
+
 /// The `Name` row for `text`, and the blob it refers to.
 fn name_row(snap: &WorldSnapshot, i: usize, text: &str) -> Result<(Row, BlobRef), Unmapped> {
     let desc = snap.component("Name").ok_or_else(|| not_yet(i, "naming (the world has no Name component)"))?;
@@ -729,6 +784,19 @@ pub fn to_world_built(
                 // converted to the object's frame first.
                 let on = on_for(target(*t), &tagged);
                 for (k, v) in fields {
+                    if on.is_name_text(snap, k) {
+                        // A rename: the Name row for the new text, its bytes carried inline (api.md 5.3).
+                        let Some(text) = v.as_str() else {
+                            return Err(refused_at(
+                                prev,
+                                RefusalCode::Invalid,
+                                format!("{k} takes the name as a string."),
+                            ));
+                        };
+                        let row = named(snap, i, prev, text, &mut blob_refs, &mut blobs)?;
+                        ops.push(Op::SetRow { id: target(*t), row });
+                        continue;
+                    }
                     if on.is_transform(snap, k).as_deref() == Some("Transform.position") {
                         let Some(place) = place_for(target(*t), &new_place) else {
                             return Err(not_yet(
@@ -747,20 +815,24 @@ pub fn to_world_built(
                 if let Some(p) = place_under(target(*parent)) {
                     new_place.insert(*new, p);
                 }
-                if name.len() > NAME_MAX {
-                    return Err(refused_at(
-                        prev,
-                        RefusalCode::Invalid,
-                        format!("A name is at most {NAME_MAX} bytes of UTF-8; this one is {}.", name.len()),
-                    ));
-                }
-                let (name_row, r) = name_row(snap, i, name)?;
-                if !blob_refs.contains(&r) {
-                    blob_refs.push(r);
-                    blobs.push(name.as_bytes().to_vec());
-                }
+                let name_row = named(snap, i, prev, name, &mut blob_refs, &mut blobs)?;
                 let me = Target::New(*new);
                 let on = on_for(me, &tagged);
+                // A `Name` among the components (as a query shows one) may only repeat `name`: the name is given once.
+                let mut components = components.clone();
+                if let Some(c) = components.keys().find(|c| on.is_name(snap, c)).cloned() {
+                    let given = components.remove(&c).unwrap_or_default();
+                    if given.iter().any(|(k, v)| k != "text" || v.as_str() != Some(name.as_str())) {
+                        return Err(refused_at(
+                            prev,
+                            RefusalCode::Invalid,
+                            format!(
+                                "A create's name is its `name`; leave {c} out of `components`, or give the same text."
+                            ),
+                        ));
+                    }
+                }
+                let components = &components;
                 // The components given as field writes after the object exists: a template's, or a Transform.
                 let writes: Vec<_> = match template {
                     None => {
@@ -1549,6 +1621,95 @@ mod tests {
             set.iter().any(|d| d.field == "Light.range" && d.before == json!(8.0) && d.after == json!(0.0)),
             "{set:?}"
         );
+    }
+
+    /// The M1 recordings' `create`s gave a query's output back (`"material": null`, `"Name": {"text": …}`) and were
+    /// refused as "not wired": a blob field takes null for none, and Name.text names (api.md 5.3).
+    #[test]
+    fn blob_fields_take_null_and_name_text_names() {
+        let (s, v) = world();
+        // A rename: the Name row with the new text, its bytes carried inline.
+        let r = resolved(&v, json!([{"op": "set", "id": "/Table/Ball", "field": "Name.text", "value": "Red ball"}]));
+        let e = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
+        let name_id = s.component("Name").unwrap().id();
+        assert!(
+            matches!(&e.tx.ops[0], Op::SetRow { id: Target::Existing(o), row } if *o == id(30) && row.component == name_id)
+        );
+        assert_eq!(e.tx.inline, [b"Red ball".to_vec()]);
+        // A non-string name, and a name past NAME_MAX, are invalid.
+        let f = |ops: Json| match to_world(&resolved(&v, ops), Actor::Person, &s, None) {
+            Err(Unmapped::Refused(f)) => f.code,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            f(json!([{"op": "set", "id": "/Table/Ball", "field": "Name.text", "value": 3}])),
+            RefusalCode::Invalid
+        );
+        for bad in ["", "a/b"] {
+            assert_eq!(
+                f(json!([{"op": "set", "id": "/Table/Ball", "field": "Name.text", "value": bad}])),
+                RefusalCode::Invalid,
+                "{bad:?}"
+            );
+        }
+        let long = "n".repeat(NAME_MAX + 1);
+        assert_eq!(
+            f(json!([{"op": "set", "id": "/Table/Ball", "field": "Name.text", "value": long}])),
+            RefusalCode::Invalid
+        );
+        // A create carrying a query's Name (same text) and a null blob: accepted; another text is refused.
+        let create = |text: &str| {
+            json!([{"op": "create", "parent": "/Table", "name": "Cube", "components": {
+                "Name": {"text": text}, "Shape": {"kind": 1, "size": [0.1, 0.1, 0.1], "mesh": null}}}])
+        };
+        let e = to_world(&resolved(&v, create("Cube")), Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
+        let Op::Create { rows, .. } = &e.tx.ops[0] else { panic!("{:?}", e.tx.ops) };
+        assert_eq!(rows.iter().filter(|r| r.component == name_id).count(), 1, "one Name row");
+        assert_eq!(f(create("Other")), RefusalCode::Invalid);
+        // Any other blob value: invalid, never an internal error.
+        let r = resolved(&v, json!([{"op": "set", "id": "/Table/Ball", "field": "Shape.mesh", "value": "b:00"}]));
+        match to_world(&r, Actor::Person, &s, None) {
+            Err(Unmapped::Refused(f)) => assert!(f.message.contains("null for none"), "{}", f.message),
+            Err(Unmapped::Failed(e)) if e.code == ErrorCode::Internal => panic!("still not wired: {}", e.message),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The agent-tooling item: "double the balls" is one op, each source copied `count` times, `step` apart.
+    #[test]
+    fn a_bulk_duplicate_copies_each_source_count_times_step_apart() {
+        let (s, v) = world_with(|w| {
+            w.insert(id(20), Body { kind: body_kind::DYNAMIC, friction: 0.5, ..Default::default() }).unwrap();
+        });
+        // The Lamp and the Ball (both under the Table, at its local [0, 1, 0]), two copies each, 0.5 m apart in x.
+        let r = resolved(
+            &v,
+            json!([{"op": "duplicate", "where": {"child_of": "/Table"}, "max": 10, "count": 2, "step": [0.5, 0.0, 0.0]}]),
+        );
+        assert_eq!(r.new_count, 4);
+        let e = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
+        let copies: Vec<_> = e.tx.ops.iter().filter(|o| matches!(o, Op::Copy { .. })).collect();
+        assert_eq!(copies.len(), 4);
+        assert!(
+            matches!(copies[0], Op::Copy { source: Target::Existing(o), parent: Target::Existing(p), .. } if *o == id(20) && *p == id(10))
+        );
+        // Each copy's position, in the Table's frame: the source's [0, 1, 0] plus k steps.
+        let xs: Vec<[f64; 3]> = e.tx.ops.iter().filter(|o| matches!(o, Op::SetField { .. })).map(f3).collect();
+        assert_eq!(xs.len(), 4, "{:?}", e.tx.ops);
+        for (x, want) in xs.iter().zip([[0.5, 1.0, 0.0], [1.0, 1.0, 0.0], [0.5, 1.0, 0.0], [1.0, 1.0, 0.0]]) {
+            assert!(near(*x, want), "{x:?} != {want:?}");
+        }
+        // `as` names one copy only; count is 1..=1000.
+        let refused = |ops: Json| resolve_tx(&v, &tx(ops), &|_| None).map(|_| ()).unwrap_err().code;
+        assert_eq!(
+            refused(json!([{"op": "duplicate", "id": "/Table/Ball", "as": "$b", "count": 2}])),
+            RefusalCode::Invalid
+        );
+        assert_eq!(refused(json!([{"op": "duplicate", "id": "/Table/Ball", "count": 0}])), RefusalCode::Invalid);
+        // Without step: one copy where its source is, as before.
+        let r = resolved(&v, json!([{"op": "duplicate", "id": "/Table/Ball", "as": "$b"}]));
+        let e = to_world(&r, Actor::Person, &s, None).unwrap();
+        assert_eq!(e.tx.ops.len(), 1);
     }
 
     #[test]
