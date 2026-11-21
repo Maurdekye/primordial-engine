@@ -101,8 +101,10 @@ fn admission_gives_a_member_two_hands_it_alone_moves() {
     assert_eq!(snap.perms(admin), Some(perm::ADMIN | perm::EDIT));
     assert_eq!(snap.perms(other), None);
     assert_eq!(snap.members().collect::<Vec<_>>(), vec![(admin, perm::ADMIN | perm::EDIT)]);
-    assert_eq!(w.admit(line, admin, perm::EDIT, Frame(0), origin()), Err(WorldError::Duplicate(hands[0])));
+    // Admitted again (a returning member, F3 L3): the same hands, the same permissions, nothing changed.
     let before = w.root();
+    assert_eq!(w.admit(line, admin, perm::EDIT, Frame(0), origin()), Ok(hands));
+    assert_eq!((w.root(), w.snapshot(Frame(0)).perms(admin)), (before, Some(perm::ADMIN | perm::EDIT)));
     let mut w2 = pit(1);
     w2.admit(line, admin, perm::ADMIN | perm::EDIT, Frame(0), origin()).unwrap();
     assert_eq!(w2.root(), before, "admission is deterministic");
@@ -242,4 +244,44 @@ fn a_joiner_stands_at_the_lowest_slot_no_hand_takes() {
     assert_eq!(w.join_spawn(), slot(0));
     w.admit(line, d, perm::EDIT, Frame(5), w.join_spawn()).unwrap();
     assert_eq!(w.join_spawn(), slot(4));
+}
+
+/// F3's n = 2 branch (@diverge-eng's design v5, L3; world-model.md 2.3 and 8). A continues the world on a new line:
+/// `switch_line` moves only the config record's line id, so the root changes and every object keeps its id and its
+/// leaf. B, a member from the old line, is admitted on the new one at a later frame: it keeps its hands, what they
+/// hold and its permissions, and nothing is spawned, so the root is unchanged. A key that is a member without hands
+/// gets two, with this admission's ids, and keeps its permissions.
+#[test]
+fn a_branch_keeps_every_object_and_a_returning_member_keeps_its_hands() {
+    let keys = TestKeys::new(1, 3);
+    let (a, b, agent) = (keys.key(0), keys.key(1), keys.key(2));
+    let line = m1_line();
+    let mut w = pit(1);
+    w.admit(line, a, perm::ADMIN | perm::EDIT, Frame(0), origin()).unwrap();
+    let b_hands = w.admit(line, b, perm::EDIT, Frame(0), origin()).unwrap();
+    w.set_member(agent, perm::AGENT);
+    let objects = |w: &World| w.store().objects().to_vec();
+    let tree_root = |w: &World| w.root_hash(pe_seams::DomainId(0));
+    let (before, old_objects) = (tree_root(&w), objects(&w));
+
+    let fresh = pe_core::LineId(pe_core::Hash([7; 32]));
+    w.switch_line(fresh);
+    assert_eq!(w.line(), fresh);
+    assert_ne!(tree_root(&w), before, "the root hashes the line");
+    assert_eq!(objects(&w), old_objects, "every object keeps its id");
+    let branched = tree_root(&w);
+    let mut back = w.clone();
+    back.switch_line(line);
+    assert_eq!(tree_root(&back), before, "only the line moved");
+
+    // B comes back on the new line at frame 600: its hands from the old line, its permissions, nothing new.
+    assert_eq!(w.admit(fresh, b, perm::ADMIN | perm::EDIT, Frame(600), origin()), Ok(b_hands));
+    assert_eq!(tree_root(&w), branched, "a returning member's admission changes nothing");
+    assert_eq!(w.snapshot(Frame(600)).perms(b), Some(perm::EDIT), "and grants nothing");
+    assert_eq!(w.store().iter::<Hand>().filter(|(_, h)| h.owner == b).count(), 2);
+
+    // A member without hands gets them, with this admission's ids, and keeps its permissions.
+    let made = w.admit(fresh, agent, perm::EDIT, Frame(600), origin()).unwrap();
+    assert_eq!(made, [0, 1].map(|s| pe_core::ObjectId::hand(fresh, agent, s, Frame(600))));
+    assert_eq!(w.snapshot(Frame(600)).perms(agent), Some(perm::AGENT));
 }

@@ -269,6 +269,65 @@ which fixes the origin's role deliberately.
   instead is open until 9.2 gives the join an id (@design-reviewer's Low). A rejoin at a later frame gets two new hands (the ids
   include the admission frame, as 8 intends), once a leave has removed the old ones. The avatar root that should
   parent the hands (3.5) is not built yet; its id derivation is open.
+- **A returning member** (F3's n = 2 branch; @diverge-eng's design v5, L3;
+  @item:primordial-engine/f3-l3-pe-world-rules-for-the-n-2-branch-re-issue)
+  [V `a_branch_keeps_every_object_and_a_returning_member_keeps_its_hands`]: an admission of a key that is already a
+  member keeps its permissions (the admission's are ignored), its hands and what they hold, and creates only a hand
+  side it lacks. A member with both hands is admitted with no change at all, and its existing hands are returned. A
+  branch removes no member, hand, claim or permission, so B admitted on the new line finds its rows from the old one.
+  Within one line S3 voids an `Admit` of a key already in the epoch (`NoChange`), so a replica that steps one before
+  the void is known changes nothing. Whether a member votes is pe-agree's epoch, never a world rule. `m1_session`
+  refuses a key listed twice itself (`WorldError::Duplicate`).
+- **The line switch** (`World::switch_line`, trusted; F3 L3): at a branch's frame the replica continues the world on
+  the new line. Only the config record's line id changes, so the root moves through it (6.6, config item 2) and every
+  object keeps the id it was made with on the old line.
+- **The branch record** (`World::begin_branch(parent, tails, sealed)`, trusted; F3 L3, @diverge-eng m38e5fddd7c94)
+  [V tests/branch.rs]: right after the line switch, before any entry of the new line, the replica records what the
+  agreed `Branch` binds: the parent line, each chain's (member, head seq) at the branch's frame, and the sealed
+  originals above those heads, each as (chain, seq, entry id, `payload_hash`). `payload_hash` is
+  `BLAKE3("pe.branch.payload" ‖ payload bytes)` over the original's payload exactly as signed. The record is the
+  `lines` table (6.6), so the root moves with it; a later branch replaces it. Refused, with the world unchanged, for a
+  record no `Branch` can bind: the parent is the world's own line (the switch comes first), a chain listed twice, a
+  sealed original not above its chain's head, or one listed twice. The founder gains no right from it: it changes
+  no member, permission, hand or claim, and saved copies of either line stay out of world state
+  (@coordinator-opus m5b97a4bd5a83).
+- **Re-issued edits keep their original's ids** [V tests/branch.rs, with a control: deriving from the entry's own
+  coordinates fails the three id tests]. A member re-issues its suffix on its new chain. The payload is
+  `0xF0 ‖ parent line ‖ chain ‖ seq u64 LE ‖ entry id ‖ the original payload bytes, unchanged` (105 bytes before
+  the original). No transaction starts with 0xF0, since its first byte is the actor's tag, so the two never read
+  alike. pe-world applies it only if the reference names the record's parent line, a chain whose member is the
+  entry's author, a seq above that chain's head, and a sealed original with that entry id whose `payload_hash` is
+  that of the bytes after the reference; otherwise it is refused as `Invalid`, with nothing changed. The
+  transaction then applies as any edit, except that its new object ids, row tags (7.6) and new asset ids (7.9)
+  derive from the original's line, chain and seq (the author is the same), so they are the ids the original made,
+  and a later re-issued edit that names them by id finds them. Its versions (7.6, and a tombstone's `by`) name the
+  original entry too (@diverge-eng's M1), so a later re-issued edit's `Version` and `ObjectVersion` preconditions,
+  read on the parent line, hold on the new one
+  [V `a_re_issued_edit_s_preconditions_read_on_the_parent_line_hold`; control: naming the applying entry gives
+  `Stale`]. A version on the new line may therefore name an entry of the
+  parent line's history, which a reader looking an entry up by version finds there. An applied re-issue takes its
+  original out of the record, so each is re-issued once; a refused one changes nothing and its original stays
+  sealed.
+  - **A second branch** nests: a re-issued edit that is itself re-issued keeps its inner reference in the bytes
+    the new record seals, and its ids derive from the innermost original. The inner references are bound by the
+    sealed hash and were checked when they first applied; they are not checked again (at most
+    `MAX_REISSUE_DEPTH` = 8 deep, else `Malformed`). The record is single-generation (@diverge-eng's L2): a later
+    branch replaces it, so an original of the first branch still sealed then can never be re-issued. Under design v5
+    that can't happen, since B's re-issues apply before its promotion, and only then can a second branch occur; the
+    caller (L5) founds a second branch only after the first's re-issues are done.
+  - **Room for the prefixes** (@diverge-eng's L1): an edit's encoded bytes are at most `edit::MAX_EDIT_BYTES` =
+    `MAX_PAYLOAD - 8 · 105` (longer is `Malformed`), so any edit can be re-issued across 8 branches within the
+    entry's cap [V `an_edit_leaves_room_to_be_re_issued_across_every_branch`]. The cap is checked where an edit
+    decodes, which pe-api's dry run does before it signs, so an author through pe-api hears of it before submitting
+    (@diverge-eng's nit). No recorded edit is that large, so no line replays differently under it.
+  - **Other readers** decode an edit with `branch::decode_edit(signed entry)`, which gives the transaction and its
+    `Origin`: the coordinates its ids derive from and the entry its versions name, for a plain edit and a re-issued
+    one alike. pe-app reconciles a re-issue with its original by `Origin.entry` (S5, @diverge-eng). pe-replica's
+    prediction uses it; pe-api's and pe-app's own decoders read a re-issued payload as malformed and skip it, which is
+    harmless until they need to show one (an item for @api-eng and @engine-architect when the branch is built end to
+    end).
+  - Only edits are re-issued with a reference. Input and protocol entries create no ids, so re-sending them needs no
+    pe-world rule.
 - **Where a joiner stands** (`World::join_spawn`; @engine-architect m5193e4c7a3d8): a member admitted by an `Admit`
   entry at frame F stands at the feet of the lowest slot along genesis's row (slot i at `origin + (0.6 i, 0, 1.5)`,
   as `m1_session` admits) that no current member's hand takes. A hand takes a slot when it is horizontally (x, z)
@@ -1077,7 +1136,7 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
   since each can change a later shared outcome (@design-reviewer's Medium on ecd11ef0), in this order:
   1. the seed (`u64`): it breaks ties in pe-log's order and seeds logic's random streams;
   2. the world's line id (32 bytes): it feeds every id derivation. In M1 it is the M1 marker's line (2.4), and all
-     zero for a world that has none yet (the `lines` table comes with branch entries);
+     zero for a world that has none yet (the `lines` table holds the branch record, 2.4);
   3. the M1 marker (2.4): a byte 0, or 1 and the 32-byte line id;
   4. pe-agree's settings record, `lp(bytes)`: the quorum setting and the cut cadence, which decide which frames are
      cuts and what agreement is. pe-agree owns the format and pe-world never parses it; the bytes live in the world
@@ -1129,7 +1188,8 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     steps both sides and compares roots.
 - **The tables**, in this order (the `LeafKey::Table` index is the position): 0 registry, 1 lines, 2 modules,
   3 governance, 4 claims, 5 cooldowns, 6 tombstones, 7 hand packs, 8 push windows. 6.2's list gains the last two,
-  which 8.1 already puts in the root. M1 has no lines yet, so that table is an empty map.
+  which 8.1 already puts in the root. The lines table is empty unless the world branched (2.4), as in all of M1's
+  sessions.
 - **A table's hash** (the "sorted-map hash") = `H("pe.table" ‖ index u8 ‖ count u64 ‖ for each entry in key order:
   lp(key bytes) ‖ lp(value bytes))`. An empty table hashes the same way with count 0; it is never omitted, because
   the tables root names each table by position. A table's export record is its whole entry list (`count ‖ entries`,
@@ -1165,7 +1225,11 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     low five bits and the field's colour space (3.6) in its high three: 0 none, 1 `LinearSrgb`. The kind
     numbering is frozen: U8 0, U16 1, U32 2, U64 3, I8 4, I16 5, I32 6, I64 7, F32 8, F64 9, Bool 10, ObjectRef 11,
     BlobRef 12, SimBlobRef 13, Pos 14, MemberKey 15, EntryRef 16, Hash 17; a new kind takes the next number, up to 31;
-  - lines: no entries in M1;
+  - lines (the branch record, 2.4; empty for a world that never branched): key `[1]` holds parent line (32) ‖
+    `u32` count ‖ per chain in chain order, chain (32) ‖ member (32) ‖ head seq `u64`; key `[2] ‖ chain ‖ seq` (seq
+    big-endian, so rows sort by chain then seq) holds the sealed original's entry id (32) ‖ payload hash (32). Key
+    `[0]` is kept for the line list `Node.born_on` indexes (2.3). It imports like any table; a record whose sealed
+    rows lie outside the suffix, or that has sealed rows without key `[1]`, does not decode;
   - modules (slice D; pending commits since logic.md 6.2a): key the script asset id (32); value `flags u8` (bit 0: a
     current row, bit 1: a pending commit; at least one), then `u32 len ‖ current row` if present, then the pending
     commit if present. The current row is `version entry (32) ‖ version op u32 ‖ source (hash 32 ‖ len u64) ‖

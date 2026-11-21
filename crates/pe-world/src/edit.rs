@@ -35,6 +35,11 @@ pub const MAX_SHAPES: usize = 520;
 pub const OWN_CHECK: u32 = u32::MAX;
 /// The most bytes of row data a transaction may carry, apart from blobs (7.1).
 pub const MAX_ROW_BYTES: usize = 1 << 20;
+/// The longest encoded transaction: the entry's `MAX_PAYLOAD`, less room for [`crate::branch::MAX_REISSUE_DEPTH`]
+/// re-issue prefixes, so any edit can be re-issued across that many branches (@diverge-eng's L1 on F3 L3). Longer
+/// bytes do not decode (`Malformed`).
+pub const MAX_EDIT_BYTES: usize =
+    pe_seams::MAX_PAYLOAD - crate::branch::MAX_REISSUE_DEPTH * crate::branch::REISSUE_PREFIX;
 /// The longest `label`, in bytes (7.1).
 pub const MAX_LABEL: usize = 200;
 /// The longest agent `harness` name, in bytes (7.1).
@@ -497,6 +502,9 @@ impl Transaction {
 
     /// Decodes canonical bytes. `None` for anything else (7.6 step 1: `Malformed`).
     pub fn decode(bytes: &[u8]) -> Option<Transaction> {
+        if bytes.len() > MAX_EDIT_BYTES {
+            return None;
+        }
         let mut r = R { b: bytes, row_bytes: 0 };
         let tx = r.transaction()?;
         r.b.is_empty().then_some(tx)

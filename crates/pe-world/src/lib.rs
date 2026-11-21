@@ -12,6 +12,7 @@
 //! * [`input`]: the input payload (8.1); [`World::apply_input`] applies one, and [`World::end_frame`] expires claims.
 
 mod apply;
+pub mod branch;
 pub mod components;
 pub mod edit;
 mod import;

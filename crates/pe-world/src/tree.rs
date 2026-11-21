@@ -287,6 +287,14 @@ impl World {
         self.line
     }
 
+    /// Continues this world on `line` (F3's n = 2 branch, world-model.md 2.3; @diverge-eng's design v5, L3): the
+    /// state stays as it is, and only the config record's line id, so the root, changes. Objects keep the ids they
+    /// were made with on the old line. Trusted: called by the replica at the branch's frame, on every machine that
+    /// continues the world on the new line, never by an edit.
+    pub fn switch_line(&mut self, line: LineId) {
+        self.line = line;
+    }
+
     /// Sets pe-agree's settings record (6.6, config item 4): opaque bytes pe-world never parses. Set by the creator at
     /// genesis; later only by an agreed entry at a frame.
     pub fn set_agree_settings(&mut self, bytes: &[u8]) {
@@ -395,7 +403,8 @@ impl World {
                     e.push((m.0.to_vec(), v));
                 }
             }
-            // Lines: no rows in M1 yet.
+            // The branch record (F3's n = 2 branch); empty for a world that never branched, as in all of M1's sessions.
+            table::LINES => e = self.branch.entries(),
             _ => {}
         }
         e.sort();
