@@ -338,3 +338,24 @@ fn entries_finalized_during_a_compaction_stay_dead() {
     r.flush();
     assert_eq!(r.j.stats().dead_bytes, d2 - d1);
 }
+
+#[test]
+fn compacting_away_every_entry_clears_the_dead_bytes() {
+    // @chunks-reviewer L1: with every live entry final, the keep set is empty; `dead` must still fall, or an empty
+    // checkpoint follows every `compact_every_ns` for ever.
+    let keys = TestKeys::new(18, 2);
+    let es = entries(&keys, 0, 20, 100);
+    let size = es[0].encode().len() as u64;
+    let cfg = JournalConfig { compact_min_bytes: size * 2, compact_every_ns: 0, ..JournalConfig::default() };
+    let mut r = Rig::new(cfg);
+    for e in &es {
+        r.j.offer(e);
+    }
+    r.flush();
+    r.j.finalize([(ck(&es[0]), 20)], 1);
+    assert!(r.j.stats().in_flight >= 1, "the compaction is queued");
+    r.flush();
+    assert_eq!(r.j.stats().dead_bytes, 0);
+    r.j.finalize(std::iter::empty::<(ChainKey, u64)>(), 2);
+    assert!(r.j.take_jobs().is_empty(), "no further compaction");
+}

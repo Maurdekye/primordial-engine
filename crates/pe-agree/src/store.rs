@@ -18,6 +18,11 @@
 //!   by a valid marker is corruption, and damage with no marker after it lies in the last, unacknowledged batch.
 //!   The one gap: damage to the last synced batch before any later write reads as a torn write. Opening the log
 //!   writes a marker at once, so that window closes at the next open.
+//! - Two more gaps in reading segments (@chunks-reviewer, review of a1a8f3e6), both accepted. Damage only to a
+//!   finished segment's salt can't be proved; if the segment it replaced is still there (a delete Windows refused),
+//!   open falls back to it and loses what was appended after the checkpoint. And an unsynced new segment whose
+//!   header survives a power cut scrambled but with its magic intact gives a scrambled base, which can refuse a good
+//!   predecessor (a false Corrupt, the safe side). Closing the first would take a second copy of the header.
 //! - [`Log::checkpoint`] replaces the whole log with a live set, atomically: after a crash the log holds either the
 //!   old records or exactly the live set. No step relies on rename being atomic or on a directory fsync, which
 //!   Windows lacks. A checkpoint writes a new, higher segment, which counts only once the marker after its end is
