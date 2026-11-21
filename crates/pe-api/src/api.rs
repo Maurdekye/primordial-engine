@@ -211,6 +211,9 @@ fn moves_user(
 /// parent a create or copy adds to, and a moved, deleted or undeleted object's old and new parents. Objects the entry
 /// created are left out: `created` names them, and no connection can have read them before. The caller keeps only the
 /// candidates whose version is the entry's, so a candidate the entry didn't change in the end is dropped there.
+/// How long an accepted change's answer waits for pe-app to publish its frame (`Api::published`): a tick or two.
+const PUBLISH_WAIT: Duration = Duration::from_millis(250);
+
 fn changed_candidates(
     ops: &[pe_world::edit::Op],
     created: &[pe_core::ObjectId],
@@ -348,6 +351,17 @@ impl<S: WorldSource + 'static> Api<S> {
     /// Forgets a closed connection's table.
     pub fn close(&self, c: ConnectionId) {
         self.versions.lock().unwrap_or_else(|e| e.into_inner()).remove(&c);
+    }
+
+    /// The latest snapshot, once it reaches `frame` or `until` passes, whichever is first.
+    fn published(&self, frame: Option<Frame>, until: Instant) -> Arc<WorldSnapshot> {
+        loop {
+            let s = self.src.latest();
+            if frame.is_none_or(|f| s.frame().0 >= f) || Instant::now() >= until {
+                return s;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn base(&self, at: At) -> Result<Arc<WorldSnapshot>, ApiError> {
@@ -564,7 +578,9 @@ impl<S: WorldSource + 'static> Api<S> {
                                 ),
                             ));
                         }
-                        let now = self.src.latest();
+                        // What it created and changed is read from its frame. The change log can hear of the step a
+                        // moment before pe-app publishes that frame, so wait for it briefly, never past the deadline.
+                        let now = self.published(fate.frame, deadline.min(Instant::now() + PUBLISH_WAIT));
                         let then = fate.frame.and_then(|f| self.src.at(f));
                         for (name, k) in &r.refs {
                             if let Some(id) = created.get(*k as usize)
@@ -2558,12 +2574,15 @@ mod tests {
                 let deadline = Instant::now() + Duration::from_secs(5);
                 while Instant::now() < deadline {
                     if let Some((t, _)) = a.queue.drain(4).into_iter().next() {
+                        let chain = pe_core::ChainId(Hash([1; 32]));
+                        a.queue.settle(t, Receipt::Submitted { change: entry.into(), frame: 5, chain, seq: 1 });
+                        // The change log hears of the step before pe-app publishes its frame, as it can in pe-app
+                        // (T2's second run): the answer waits for the frame rather than miss what it changed.
+                        a.log.record(&[stepped(entry, ALICE, 5, applied(vec![]))], Some(4));
+                        std::thread::sleep(Duration::from_millis(50));
                         let mut w = table_and_lamp(Some(left));
                         w.set_frame(CoreFrame(5));
                         a.src.publish(w.snapshot(CoreFrame(5)));
-                        let chain = pe_core::ChainId(Hash([1; 32]));
-                        a.queue.settle(t, Receipt::Submitted { change: entry.into(), frame: 5, chain, seq: 1 });
-                        a.log.record(&[stepped(entry, ALICE, 5, applied(vec![]))], Some(4));
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(5));
