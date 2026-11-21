@@ -224,7 +224,8 @@ impl PeWorld {
         let Some((tx, o)) = pe_world::branch::decode_edit(&entry.entry) else { return };
         for (i, op) in tx.ops.iter().enumerate() {
             let Op::CommitScript { script, .. } = op else { continue };
-            // The asset it commits to: an existing one, or a new one's id derived from the entry (world-model.md 7.9).
+            // The asset it commits to: an existing one, or a new one's id derived from the entry's origin, its
+            // original's coordinates when re-issued (world-model.md 7.9, 2.4).
             let asset = match *script {
                 AssetTarget::Existing(a) => a,
                 AssetTarget::New(k) => pe_world::script::asset_created(o.line, entry.entry.author, o.chain, o.seq, k),
