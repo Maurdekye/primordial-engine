@@ -190,8 +190,7 @@ impl Version {
 }
 
 // Resolved by pe-api against a snapshot. (Plain comment: the doc below repeats in five tools, api.md 6.2's budget.)
-/// An object named by id (`"o:…"`), path (`"/Table/Lamp (left)"`), a `$ref` created in the same transaction, or
-/// `"me"` (the player the caller acts for; positions and `near` only).
+/// An object: an id (`"o:…"`), a path (`"/Table/Lamp"`), a `$ref` made in the same change, or `"me"` (your player).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct ObjRef(pub String);
@@ -492,6 +491,11 @@ pub struct Query {
     pub cursor: Option<Cursor>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub count_only: bool,
+    // S6 v1.11 (api.md 5.2): instead of objects, `summary`: the count, how many carry each type, the bounds of their
+    // positions, and a page of ids and names (`limit` up to 1000).
+    /// Counts, types, bounds, ids and names instead of objects.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub summary: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -526,6 +530,30 @@ pub struct QueryResult {
     pub objects: Vec<ObjectView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub more: Option<Cursor>,
+    // S6 v1.11 (api.md 5.2): set when a page stopped early at the size cap, saying how to narrow the query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<QuerySummary>,
+}
+
+// S6 v1.11 (api.md 5.2): a summary query's answer. `count`: every match; `types`: how many matches carry each type;
+// `bounds`: the box around their positions, in the query's `frame` (default the world origin); `objects`: this page.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct QuerySummary {
+    pub count: u64,
+    pub types: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<Bounds>,
+    pub objects: Vec<ObjectBrief>,
+}
+
+// S6 v1.11: an axis-aligned box in `relative_to`'s frame, metres.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Bounds {
+    pub relative_to: ObjRef,
+    pub min: [f64; 3],
+    pub max: [f64; 3],
 }
 
 // ---- transactions (spec 5.3) ---------------------------------------------------------------------------------------
@@ -585,7 +613,7 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         fields: BTreeMap<String, Json>,
         // S6 v1.10 (api.md 5.3): without it, `add` on a component the object has is refused as `invalid`.
-        /// Replace a component the object already has (fields not given become zero); without it, that is refused.
+        /// Replace a component the object has; unset fields become zero.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         replace: bool,
     },
@@ -610,6 +638,13 @@ pub enum Op {
         as_ref: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<ObjRef>,
+        // S6 v1.11 (api.md 5.3): `count` copies of each source (default 1), copy k at the source's place plus k
+        // times `step` (metres, in the source's parent's frame). `where` names many sources.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<u32>,
+        /// Metres between copies, in the parent's frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<[f64; 3]>,
     },
     Delete {
         #[serde(flatten)]
