@@ -233,7 +233,7 @@ class Agent:
         # Active: an attach's dry run is accepted (before, it is refused `not_ready`).
         t0 = time.time()
         while True:
-            ok, r = self.tool("attach, dry run", "world_apply", {"ops": attach, "mode": "dry_run"})
+            ok, r = self.tool("attach, dry run", "world_apply", {"label": "Attach lamp blink script", "ops": attach, "mode": "dry_run"})
             if ok or r.get("code") != "not_ready" or time.time() - t0 > 120:
                 break
             time.sleep(1)
@@ -326,9 +326,19 @@ def main():
     if not url or not token:
         print("step agent: PE_MCP_URL and PE_MCP_TOKEN are needed (run it as pe-app's --agent)", flush=True)
         return 2
+    print("step agent: started, MCP at", url, flush=True)
     m = Mcp(url, token)
-    m.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                          "clientInfo": {"name": "pe-step-agent", "version": "0.1"}})
+    t0 = time.time()
+    while True:
+        try:
+            m.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                  "clientInfo": {"name": "pe-step-agent", "version": "0.1"}}, timeout=10)
+            break
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            print(f"step agent: initialize failed after {time.time() - t0:.0f} s: {e!r}", flush=True)
+            if time.time() - t0 > 120:
+                return 2
+            time.sleep(2)
     ag = Agent(m, out_dir(a.out))
     ag.say("writing to", ag.out)
     if not ag.wait_for(a.members, a.join_timeout_s):
