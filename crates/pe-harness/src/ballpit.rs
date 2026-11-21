@@ -3,8 +3,9 @@
 //! member's frame views over time. A run is a pure function of its [`BallPit`]: the same seed and delay give the same
 //! views on any machine. @ballpit-viz's adapter feeds each member's views to its own `DisplayLayer`.
 //!
-//! - **Members** are [`SeamNode`]s over the lockstep mock (S3) and `ReplicaImpl<PeWorld>` (S2), all admitted at frame
-//!   0 with edit permission, each with its hands at its own spawn point.
+//! - **Members** are [`SeamNode`]s over `ReplicaImpl<PeWorld>` (S2), all admitted at frame 0 with edit permission,
+//!   each with its hands at its own spawn point. Their agreement (S3) is the lockstep mock ([`run`], [`run_with`]) or
+//!   pe-agree ([`run_agree`]), with a cut every [`CADENCE_NS`] either way.
 //! - **Two kinds of push:** a lift is an edit that puts one ball above the pile, from which it drops and scatters
 //!   others. A hand push is two inputs (PeWorld's, @vdw-physics): the member moves its first hand above the ball's
 //!   place in the genesis world and holds it there, then pushes the ball with an impulse at its centre. The two are
@@ -24,7 +25,7 @@ use std::time::Duration;
 use pe_replica::logic::LogicRunner;
 use pe_replica::{PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::TestKeys;
-use pe_seams::{Class, DomainId, Frame, FrameView, HostTime, MemberKey, ObjectId, Pos, SimRate};
+use pe_seams::{Agreement, Class, DomainId, Frame, FrameView, HostTime, MemberKey, ObjectId, Pos, SimRate};
 use pe_sim::{Component, Transform};
 use pe_world::components::Hand;
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
@@ -35,13 +36,14 @@ use crate::net::{LinkCfg, NodeId};
 use crate::props::{self, Violation};
 use crate::rng::{self, Purpose};
 use crate::s2replay;
-use crate::seamnode::{FinalLog, FinalSink, SeamNode, ViewSink};
+use crate::seamnode::{FinalLog, FinalSink, SeamNode, ViewSink, agree_config};
 use crate::sim::{Run, Scenario, run as run_scenario};
 use crate::trace::Ev;
 
 /// The run's simulation rate.
 pub const HZ: u32 = 60;
-/// The lockstep mock's cut cadence, and so the replicas' cut interval (6 frames at 60 Hz).
+/// The agreement's cut cadence (the lockstep mock's, or pe-agree's), and so the replicas' cut interval (6 frames at
+/// 60 Hz).
 pub const CADENCE_NS: i64 = 100_000_000;
 /// The draw stream of the seeded pushes.
 const PUSH_STREAM: u64 = 0xBA11_9175;
@@ -323,7 +325,35 @@ pub fn run(cfg: &BallPit) -> Option<BallPitRun> {
 /// Runs `cfg` with `script`'s inputs added to each member's.
 pub fn run_with(cfg: &BallPit, script: Script<'_>) -> Option<BallPitRun> {
     let keys = keys(cfg.members);
-    let world = genesis(cfg.seed, cfg.balls, &keys)?;
+    let make = |id, replica, rate| SeamNode::lockstep_over(&keys, id, replica, rate, CADENCE_NS);
+    run_on(cfg, &keys, &make, script)
+}
+
+/// A ball-pit member's node over pe-agree.
+pub type AgreeMember = SeamNode<pe_agree::Node, ReplicaImpl<PeWorld>>;
+
+/// Runs `cfg` with every member over pe-agree ([`agree_config`]: a cut every [`CADENCE_NS`], view timeouts from
+/// 300 ms to 5 s) in place of the lockstep mock (G7, the pull-ahead plan).
+pub fn run_agree(cfg: &BallPit) -> Option<BallPitRun> {
+    let keys = keys(cfg.members);
+    let make = |id, replica, rate| SeamNode::agree_over(&keys, id, agree_config(&keys, CADENCE_NS), replica, rate);
+    run_on(cfg, &keys, &make, &|_, _, _, node| node)
+}
+
+/// A member's node of agreement `A`: node `id` over its replica at the run's rate.
+type MakeNode<'a, A> = &'a dyn Fn(NodeId, ReplicaImpl<PeWorld>, SimRate) -> SeamNode<A, ReplicaImpl<PeWorld>>;
+
+/// `script` for agreement `A`.
+type ScriptOn<'a, A> =
+    &'a dyn Fn(NodeId, &World, &[ObjectId], SeamNode<A, ReplicaImpl<PeWorld>>) -> SeamNode<A, ReplicaImpl<PeWorld>>;
+
+fn run_on<A: Agreement>(
+    cfg: &BallPit,
+    keys: &TestKeys,
+    make: MakeNode<'_, A>,
+    script: ScriptOn<'_, A>,
+) -> Option<BallPitRun> {
+    let world = genesis(cfg.seed, cfg.balls, keys)?;
     let balls: Vec<ObjectId> = (0..cfg.balls)
         .map(|i| preset::find(&world, &format!("{}{i}", preset::names::BALL_PREFIX)))
         .collect::<Option<_>>()?;
@@ -335,8 +365,7 @@ pub fn run_with(cfg: &BallPit, script: Script<'_>) -> Option<BallPitRun> {
     for id in 1..=cfg.members {
         let sink: ViewSink = Arc::new(Mutex::new(Vec::new()));
         let key = *sorted.get(id as usize - 1)?;
-        let mut node = SeamNode::lockstep_over(&keys, id, replica(world.clone(), key)?, rate, CADENCE_NS)
-            .record_views(sink.clone());
+        let mut node = make(id, replica(world.clone(), key)?, rate).record_views(sink.clone());
         let fs = FinalSink::default();
         node = node.record_final(fs.clone());
         final_sinks.insert(id, fs);
