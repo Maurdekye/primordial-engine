@@ -403,7 +403,8 @@ impl World {
                     e.push((m.0.to_vec(), v));
                 }
             }
-            // Lines: no rows in M1 yet.
+            // The branch record (F3's n = 2 branch); empty for a world that never branched, as in all of M1's sessions.
+            table::LINES => e = self.branch.entries(),
             _ => {}
         }
         e.sort();

@@ -150,6 +150,8 @@ pub struct World {
     pub(crate) m1_marker: Option<pe_core::LineId>,
     /// The world's line id (6.6, config item 2): all zero until the world has one.
     pub(crate) line: pe_core::LineId,
+    /// The branch record (F3's n = 2 branch, [`crate::branch`]): the `lines` table, empty until a branch.
+    pub(crate) branch: Arc<crate::branch::BranchTable>,
     /// pe-agree's settings record (6.6, config item 4): opaque bytes whose format pe-agree owns, set before the first
     /// cut and carried in the config, so a joiner takes them with the world.
     pub(crate) agree_settings: Arc<[u8]>,
@@ -182,6 +184,7 @@ impl World {
             input_settings: InputSettings::default(),
             m1_marker: None,
             line: pe_core::LineId(Hash::ZERO),
+            branch: Arc::default(),
             agree_settings: Arc::from(&[][..]),
             modules: Arc::new(BTreeMap::new()),
             pending: Arc::new(BTreeMap::new()),
