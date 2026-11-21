@@ -530,7 +530,7 @@ impl<F: Fs> Log<F> {
         if payload.len() > self.opts.max_record as usize {
             return Err(StoreError::Refused("the record is over max_record"));
         }
-        if false && self.owe_commit {
+        if self.pending.is_empty() && self.owe_commit {
             commit_frame(&mut self.pending, self.seg, self.next_lsn);
             self.next_lsn += 1;
             self.owe_commit = false;
@@ -930,7 +930,7 @@ pub fn persist<F: Fs>(log: &mut Log<F>, next: &mut u64, jobs: &[Job]) -> Result<
 pub enum Report {
     /// Every job through this number is durable.
     Durable(u64),
-    /// The disk is full. Jobs from `from` on wait; the writer retries as more arrive and every `retry`.
+    /// The disk is full. Jobs from `from` on aren't durable yet; the writer retries as more arrive and every `retry`.
     Full { from: u64 },
     /// The log failed and the writer stopped: reopen it (recovery), then start a new writer.
     Failed(StoreError),
@@ -957,6 +957,8 @@ impl Writer {
             .name("pe-agree-store".into())
             .spawn(move || {
                 let mut waiting: Vec<Job> = Vec::new();
+                // The first job not yet reported durable.
+                let mut undone = next;
                 loop {
                     let first = if waiting.is_empty() {
                         jobs.recv().map_err(|_| ())
@@ -976,12 +978,16 @@ impl Writer {
                     match persist(&mut log, &mut next, &waiting) {
                         Ok(Some(n)) => {
                             waiting.clear();
-                            let _ = reports.send(Report::Durable(n));
+                            if n >= undone {
+                                undone = n + 1;
+                                let _ = reports.send(Report::Durable(n));
+                            }
                         }
                         Ok(None) => waiting.clear(),
                         Err(StoreError::Full) if !log.poisoned() => {
+                            // Jobs taken (appends only buffer) stay buffered in the log; the rest wait here.
                             waiting.drain(..(next - from) as usize);
-                            let _ = reports.send(Report::Full { from: next });
+                            let _ = reports.send(Report::Full { from: undone });
                         }
                         Err(e) => {
                             let _ = reports.send(Report::Failed(e));
@@ -1026,4 +1032,3 @@ impl Drop for Writer {
         }
     }
 }
-                  
