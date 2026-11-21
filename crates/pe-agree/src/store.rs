@@ -380,8 +380,9 @@ enum Scanned {
     /// Too short for a header: a torn first write. Safe to remove.
     Torn,
     /// A header that fails its check, with no sign that the segment ever finished. Never removed: it may be a
-    /// finished segment whose salt was damaged, which nothing can prove.
-    Unreadable,
+    /// finished segment whose salt was damaged, which nothing can prove. With its magic intact, the base it gives: a
+    /// segment below that ends before it is stale, never fallen back to.
+    Unreadable { base: Option<u64> },
 }
 
 /// Read a segment, named `n`.
@@ -398,7 +399,9 @@ fn scan(bytes: &[u8], n: u64, max: u32) -> Result<Scanned, StoreError> {
         if marker_after(bytes, HEADER - 1, seg, 0) {
             return Err(StoreError::Corrupt { segment: n, offset: 0, why: "a damaged header on a finished segment" });
         }
-        return Ok(Scanned::Unreadable);
+        // A garbled unsynced header (a power cut) rarely keeps the magic; salt damage does.
+        let base = (&h[..8] == MAGIC).then_some(base);
+        return Ok(Scanned::Unreadable { base });
     }
     let corrupt = |at: usize, why| StoreError::Corrupt { segment: n, offset: at as u64, why };
     let mut at = HEADER;
@@ -506,7 +509,10 @@ impl<F: Fs> Log<F> {
                     obsolete.push(s);
                 }
                 Scanned::Torn => obsolete.push(s),
-                Scanned::Unreadable => longest = longest.max(bytes.len()),
+                Scanned::Unreadable { base } => {
+                    above.extend(base);
+                    longest = longest.max(bytes.len());
+                }
             }
         }
         if found.is_none() && longest > EMPTY_SEGMENT {

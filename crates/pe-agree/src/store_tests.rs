@@ -860,3 +860,44 @@ fn a_compaction_that_does_not_fit_is_skipped() {
     assert_eq!(ran.done[0].lsns, vec![lsn], "skipped: the record stays where it was");
     assert_eq!(log.fs().names().len(), 1);
 }
+
+#[test]
+fn damage_to_a_salt_never_falls_back_to_a_stale_segment() {
+    // As above, but the damage hits the newest segment's salt, which nothing can prove damaged. Its base still
+    // shows that the oldest segment is stale.
+    let (mut log, _) = open(SimFs::new());
+    log.append(1, b"oldest").unwrap();
+    log.sync().unwrap();
+    log.fs_mut().refuse_remove = true;
+    log.checkpoint(&[(2, b"middle")]).unwrap();
+    log.append(3, b"after middle").unwrap();
+    log.sync().unwrap();
+    log.checkpoint(&[(4, b"newest")]).unwrap();
+    let mut fs = log.into_fs();
+    fs.refuse_remove = false;
+    let names = fs.names();
+    fs.remove(&names[1]).unwrap();
+    fs.sync_dir(&dir()).unwrap();
+    let newest = fs.names()[1].clone();
+    fs.bytes_mut(&newest).unwrap()[30] ^= 1;
+    assert!(matches!(Log::open(fs.clone(), &dir(), Options::default()), Err(StoreError::Corrupt { .. })));
+    assert_eq!(fs.names().len(), 2, "the evidence stays");
+}
+
+#[test]
+fn damage_to_a_finished_header_is_corrupt_even_over_its_predecessor() {
+    // The predecessor's delete was refused, so falling back to it would look sound by its Lsns; the commit marker
+    // under the damaged header proves the newer segment had finished, with records after it.
+    let (mut log, _) = open(SimFs::new());
+    log.append(1, b"old").unwrap();
+    log.sync().unwrap();
+    log.fs_mut().refuse_remove = true;
+    log.checkpoint(&[(2, b"live")]).unwrap();
+    log.append(3, b"after the checkpoint").unwrap();
+    log.sync().unwrap();
+    let mut fs = log.into_fs();
+    fs.refuse_remove = false;
+    let newest = fs.names()[1].clone();
+    fs.bytes_mut(&newest).unwrap()[10] ^= 1;
+    assert!(matches!(Log::open(fs, &dir(), Options::default()), Err(StoreError::Corrupt { .. })));
+}
