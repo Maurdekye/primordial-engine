@@ -157,7 +157,7 @@ pub fn map_refusal(snap: &WorldSnapshot, e: &WorldEdit, op: Option<u32>, reason:
                 RefusalCode::TooLarge,
                 None,
                 format!(
-                    "The world can hold at most {limit} shapes (things that collide), and this change would leave                      {count}. Nothing was changed."
+                    "The world can hold at most {limit} shapes (things that collide), and this change would leave {count}. Nothing was changed."
                 ),
             );
             f.details = Some(json!({ "limit": limit, "count": count }));
@@ -172,6 +172,44 @@ pub fn map_refusal(snap: &WorldSnapshot, e: &WorldEdit, op: Option<u32>, reason:
             f
         }
         Reason::OutOfReach | Reason::NotYourHand => refusal(RefusalCode::NotPermitted, api_op, "Not yours to move."),
+        // world-model.md 8.1, "Agent powers": the most objects one member may hold at once.
+        Reason::TooManyClaims { limit } => {
+            let mut f = refusal(
+                RefusalCode::NotPermitted,
+                api_op,
+                format!("You already hold as many objects as you may at once ({limit}); let one go first."),
+            );
+            f.details = Some(json!({ "limit": limit }));
+            f
+        }
+        // world-model.md 8.1, "Speed-change caps on pushes": `limit` in mm/s.
+        Reason::TooFast { limit } => {
+            let mut f = refusal(
+                RefusalCode::Invalid,
+                api_op,
+                format!(
+                    "That push is faster than the world allows ({:.2} m/s); push more gently.",
+                    *limit as f64 / 1000.0
+                ),
+            );
+            f.details = Some(json!({ "limit_mm_per_s": limit }));
+            f
+        }
+        // world-model.md 7.9: a script commit whose re-key would lose data on objects its committer may not edit.
+        Reason::RekeyBlocked { objects, more } => {
+            let mut f = refusal(
+                RefusalCode::Protected,
+                api_op,
+                concat!(
+                    "This script change would lose data on objects you may not edit (held by someone else, or ",
+                    "protected by their owner). Nothing was changed."
+                ),
+            );
+            let ids: Vec<String> = objects.iter().map(|o| ObjectId::from(*o).to_string()).collect();
+            f.details = Some(json!({ "objects": ids, "more": more }));
+            f.next = Some("Wait until they are let go, or ask their owner, then commit again.".into());
+            f
+        }
         // world-model.md 8.1: the author's own cooldown on the object; retryable from `until`.
         Reason::Cooldown { until } => {
             let mut f = refusal(RefusalCode::NotReady, api_op, "You let go of it a moment ago; wait a little.");
@@ -429,6 +467,61 @@ mod tests {
         let r = resolve_tx(&v, &tx, seen).map_err(|e| e.message).unwrap();
         let e = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
         dry_run(&s, &r, &e, &draft(author))
+    }
+
+    /// G8 (world edits' acceptance): every pe-world refusal reason has its own arm, with its own code and a message
+    /// that reads as one sentence; none reaches the wildcard `Reason`'s `#[non_exhaustive]` forces on this crate. A
+    /// reason pe-seams adds later can't fail this (the enum is non-exhaustive): give it an arm and a line here.
+    #[test]
+    fn every_world_refusal_reason_has_its_own_mapping() {
+        use RefusalCode as C;
+        let (snap, _) = world();
+        let tx = pe_world::edit::Transaction {
+            inline: vec![],
+            actor: pe_world::edit::Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops: vec![],
+            blobs: vec![],
+        };
+        let e = WorldEdit { tx, blobs: vec![], op_of: vec![], undo: false, replaced: vec![] };
+        let entry = EntryRef(Hash([9; 32]));
+        let all = [
+            (Reason::Malformed, C::Invalid),
+            (Reason::NoPermission, C::NotPermitted),
+            (Reason::Protected { owner: ALICE }, C::Protected),
+            (Reason::Stale { precondition: 0, current: ver(3, 0), winner: entry }, C::StaleVersion),
+            (Reason::Deleted { object: id(20), by: entry }, C::NotFound),
+            (Reason::Unknown(id(99)), C::NotFound),
+            (Reason::Exists(id(20)), C::Invalid),
+            (Reason::Invalid { field: None }, C::Invalid),
+            (Reason::OutOfRange, C::Invalid),
+            (Reason::Cycle, C::Invalid),
+            (Reason::TooDeep { object: id(20), limit: 64 }, C::Invalid),
+            (Reason::TooLarge { limit: 1000 }, C::TooLarge),
+            (Reason::TooManyShapes { limit: 520, count: 521 }, C::TooLarge),
+            (Reason::Held { by: BOB }, C::Held),
+            (Reason::TooManyClaims { limit: 2 }, C::NotPermitted),
+            (Reason::TooFast { limit: 5000 }, C::Invalid),
+            (Reason::OutOfReach, C::NotPermitted),
+            (Reason::Cooldown { until: Frame(42) }, C::NotReady),
+            (Reason::NotYourHand, C::NotPermitted),
+            (Reason::NewIndexOverlap, C::StaleVersion),
+            (Reason::RekeyBlocked { objects: vec![id(20)], more: 0 }, C::Protected),
+        ];
+        // Each variant once, by name: a new one isn't silently left out of the list above.
+        let names: std::collections::BTreeSet<String> = all
+            .iter()
+            .map(|(r, _)| format!("{r:?}").split([' ', '(', '{']).next().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(names.len(), all.len(), "{names:?}");
+        for (reason, code) in &all {
+            let f = map_refusal(&snap, &e, None, reason);
+            assert_eq!(f.code, *code, "{reason:?}: {}", f.message);
+            assert!(!f.message.starts_with("The world refused this change ("), "{reason:?} reached the wildcard");
+            assert!(!f.message.contains("  "), "{reason:?}: a run of spaces in {:?}", f.message);
+            assert!(f.message.ends_with('.'), "{reason:?}: {:?}", f.message);
+        }
     }
 
     #[test]

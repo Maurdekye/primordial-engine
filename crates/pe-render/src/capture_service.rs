@@ -18,6 +18,7 @@ use pe_seams::{FrameView, ObjectId, Offset, Pos};
 
 use crate::camera::{Camera, DepthRange, Fov};
 use crate::capture::{CaptureError, PendingCapture, Visible, visible_list};
+use crate::counters::CaptureEvent;
 use crate::labels::{LabelPlace, place_labels};
 use crate::pose::WorldPose;
 use crate::scene::{Renderer, Scene};
@@ -221,8 +222,13 @@ impl CaptureServer {
     }
 
     /// Once a frame, after the loop's present: collects a finished readback, then starts the next order, drawn from
-    /// `view`. `player`: the loop's own camera, for `Aim::Player` (none on a headless loop).
-    pub fn serve(&mut self, renderer: &mut Renderer, view: &FrameView, player: Option<&Camera>) {
+    /// `view`. `player`: the loop's own camera, for `Aim::Player` (none on a headless loop). Returns what happened to
+    /// orders this call, for the loop's [`crate::present::Presenter::capture_event`] (render.md 13): each order taken
+    /// is `Queued`, then `Drawn` once its pass is recorded and submitted, and `TimedOut` if its deadline passes before
+    /// its shot is answered. These are events, not one end state per order: an order drawn whose readback then misses
+    /// its deadline counts `Drawn` and `TimedOut`, and one whose start fails counts only `Queued`.
+    pub fn serve(&mut self, renderer: &mut Renderer, view: &FrameView, player: Option<&Camera>) -> Vec<CaptureEvent> {
+        let mut events = Vec::new();
         if let Some(f) = &self.in_flight {
             let device = renderer.context().device.clone();
             // A readback that finished is kept even when it is collected after the deadline; only one still pending
@@ -233,8 +239,11 @@ impl CaptureServer {
                 .map(|r| r.map_err(|e| ShotError::Failed(format!("{e:?}"))))
                 .or_else(|| (Instant::now() >= f.job.deadline).then_some(Err(ShotError::TimedOut)));
             match done {
-                None => return,
+                None => return events,
                 Some(r) => {
+                    if matches!(r, Err(ShotError::TimedOut)) {
+                        events.push(CaptureEvent::TimedOut);
+                    }
                     let f = self.in_flight.take().expect("checked");
                     // Labels and the PNG encode run on a thread of their own: on the headset this is the XR frame
                     // thread, whose frame is 8.3 ms at 120 Hz, and a large encode takes several of those.
@@ -268,15 +277,21 @@ impl CaptureServer {
             }
         }
         while let Some(job) = self.queue.next() {
+            events.push(CaptureEvent::Queued);
             if Instant::now() >= job.deadline {
                 job.reply.send(Err(ShotError::TimedOut));
+                events.push(CaptureEvent::TimedOut);
                 continue;
             }
             match self.start(renderer, view, player, job) {
-                Ok(()) => return,
+                Ok(()) => {
+                    events.push(CaptureEvent::Drawn);
+                    return events;
+                }
                 Err(f) => f.0.reply.send(Err(f.1)),
             }
         }
+        events
     }
 
     fn start(
