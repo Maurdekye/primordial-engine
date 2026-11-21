@@ -8,7 +8,9 @@ Run by pe-app as its agent; T3 (selftest.py) passes it as `--agent "python -I sc
 It reads PE_MCP_URL and PE_MCP_TOKEN, as pe-app gives them to its agent, and waits for `--members` players.
   5      step 5's four edits: a red cube on the pit's floor (from a query's output: `"mesh": null` included), the
          balls blue (one `set` over a selector), the cube doubled, the cube removed
-  6      step 6: the lamp's blink script committed (`wait: final`; `unavailable` while a player joins is retried),
+  6      step 6: the lamp's blink script, as the user's agent wrote it, committed (`wait: final`; `unavailable`
+         while a player joins is retried). It writes the engine's Light without declaring it, so since F5 the commit
+         refuses it, naming the fix; the agent applies that fix and commits again. Then the script is
          attached once active, its Light replaced (a plain `add` of the Light the Lamp has must be refused first:
          F6) and its Blink added; then Light.intensity sampled every `--sample-every` s for `--sample-s` s
   limit  the world filled to its shape limit (520) by one bulk `duplicate`, then one more shape, which must be
@@ -19,7 +21,8 @@ time runs out, so T3's timeline (a fault, the repair, the leave) happens while t
 Out (`--out`, else the run folder T3 made, found from PE_CUT_LOG's folder's parent, plus `agent`):
   lamp.jsonl   {"t": <Unix seconds>, "intensity": <float>}, one a sample (T4's lamp and lamp_through_split)
   limit.jsonl  {"shapes": <n>, "ok": <bool>, "error": <text or null>} for 520 and 521 (T4's limit)
-  steps.jsonl  every call and check: {"t", "step", "what", "ok", "code", "message", "ms"}
+  steps.jsonl  every call and check: {"t", "step", "what", "ok", "code", "message", "details", "ms"}; when the
+               lamp doesn't blink, the Lamp, session_info and history_list as "dump: ..." rows
 Exit 0 when every check passed, 1 when one failed, 2 when it can't start. Standard library only.
 """
 
@@ -56,6 +59,12 @@ pe_sdk::system! {
 
 pe_sdk::script!(components: [Blink], systems: [blink]);
 """
+
+# What F5's refusal tells the author to write instead (logic.md appendix A; @coordinator-opus mb8bb57477733): the same
+# script, declaring the engine's Light it writes.
+FIX = "pe_sdk::script!(components: [Blink, Light], systems: [blink]);"
+BLINK_FIXED = BLINK.replace("pe_sdk::script!(components: [Blink], systems: [blink]);", FIX)
+assert BLINK_FIXED != BLINK
 
 # Step 5's cube as the redo's agent created it (row 110): a query's output given back, `"mesh": null` and all.
 CUBE = {
@@ -224,8 +233,18 @@ class Agent:
         lamp = self.one("the lamp", LAMP, ["Light.intensity"])
         if not self.check("the lamp is found by path", lamp and lamp.get("name") == "Lamp", LAMP):
             return False
+        # The user's source as written. Since F5 the commit refuses it, naming the fix (it binds Light without
+        # declaring it); an agent applies the fix and commits again, as this one does (coordinator mb8bb57477733).
         ok, r = self.apply("the blink script", [{"op": "code", "id": "$blink", "source": BLINK}], wait="final",
                            label="Commit lamp blink script", retry_unavailable_s=join_wait_s)
+        said = json.dumps(r)
+        named = not ok and "[Blink, Light]" in said
+        self.check("the recorded source is refused at the commit, naming the fix (F5)", named,
+                   "accepted: a build without F5" if ok else f"{r.get('code')}: {r.get('message')}")
+        if named:
+            ok, r = self.apply("the fixed blink script", [{"op": "code", "id": "$blink", "source": BLINK_FIXED}],
+                               wait="final", label="Commit lamp blink script, declaring Light",
+                               retry_unavailable_s=join_wait_s)
         script = ((r.get("scripts") or {}).get("$blink") or {}).get("id") if ok else None
         if not self.check("the script is committed", script, "" if ok else f"{r.get('code')}: {r.get('message')}"):
             return False
