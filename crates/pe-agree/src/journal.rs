@@ -115,7 +115,8 @@ type Key = (ChainKey, u64, EntryRef);
 #[derive(Clone, Debug)]
 enum Pending {
     Append(Key),
-    Compact(Vec<Key>),
+    /// The keys kept, and the dead bytes when it was asked for.
+    Compact(Vec<Key>, u64),
     Load(Vec<Key>),
 }
 
@@ -286,16 +287,22 @@ impl Journal {
                     s.durable = true;
                 }
             }
-            Some(Pending::Compact(keys)) => {
+            Some(Pending::Compact(keys, dead_then)) => {
+                let mut moved = false;
                 for (k, lsn) in keys.iter().zip(&d.lsns) {
                     if let Some(s) = self.slot_mut(k) {
+                        moved |= s.lsn != Some(*lsn);
                         s.lsn = Some(*lsn);
-                        // Written into the new segment, durably, by the compaction itself.
+                        // Durable where it now is: copied by the compaction, or (a skipped one) synced before it.
                         s.durable = true;
                         s.job = None;
                     }
                 }
-                self.dead = 0;
+                // Entries finalized since it was asked for were in its keep set: they are still dead. A compaction the
+                // writer skipped (no room) freed nothing.
+                if moved {
+                    self.dead = self.dead.saturating_sub(dead_then);
+                }
             }
             Some(Pending::Load(_)) | None => {}
         }
@@ -375,14 +382,16 @@ impl Journal {
     }
 
     /// The author's entries not yet taken, in (chain, seq) order, up to `max`: the caller admits them as its budget
-    /// allows and holds them from then on. Stops at the first cold one, asking for a load of the cold ones after it
-    /// (unless a compaction or a load for them is in flight); they come in a later call.
+    /// allows and holds them from then on. Within a chain it stops at the first cold one, asking for a load of the cold
+    /// ones from there (unless a compaction or a load for them is in flight); they come in a later call.
     pub fn next(&mut self, author: MemberKey, max: usize) -> Vec<SignedEntry> {
         let mut out = Vec::new();
         let mut cold: Vec<Key> = Vec::new();
-        let mut blocked = false;
-        let compacting = self.in_flight.values().any(|p| matches!(p, Pending::Compact(_)));
+        let compacting = self.in_flight.values().any(|p| matches!(p, Pending::Compact(..)));
         'chains: for (ck, seqs) in self.chains.iter_mut().filter(|(ck, _)| ck.author == author) {
+            // Per chain: chains are checked independently (a cut names one head per chain), so a cold entry in an old
+            // chain's tail doesn't hold back a newer chain after a rechain (@world-chunks).
+            let mut blocked = false;
             for (seq, slots) in seqs.iter_mut() {
                 for s in slots.iter_mut() {
                     if out.len() >= max {
@@ -457,7 +466,9 @@ impl Journal {
     fn maybe_compact(&mut self, now_ns: i64) {
         // Not while a load or another compaction is in flight: their Lsns would be stale.
         let busy = self.in_flight.values().any(|p| !matches!(p, Pending::Append(_)));
+        // Nor on a full disk: it couldn't fit, and loads wait while one is in flight.
         if busy
+            || self.full
             || self.dead < self.cfg.compact_min_bytes
             || self.dead < self.live.saturating_mul(self.cfg.compact_ratio)
             || now_ns.saturating_sub(self.last_compact_ns) < self.cfg.compact_every_ns
@@ -484,7 +495,8 @@ impl Journal {
         }
         self.last_compact_ns = now_ns;
         let n = self.next_job;
-        self.job(Job::Compact { n, keep }, Pending::Compact(keys));
+        let dead = self.dead;
+        self.job(Job::Compact { n, keep }, Pending::Compact(keys, dead));
     }
 
     /// Drop one entry (the caller's checks refused it after a restart).

@@ -365,23 +365,40 @@ struct Scan {
     vouched: bool,
 }
 
-/// Read a segment. `Ok(None)`: its checkpoint never finished (a torn header, or no marker after its end), so it
-/// never counted.
-fn scan(bytes: &[u8], n: u64, max: u32) -> Result<Option<Scan>, StoreError> {
-    let Some(h) = bytes.get(..HEADER) else { return Ok(None) };
-    if &h[..8] != MAGIC {
-        return Ok(None);
-    }
-    let hn = le_u64(&h[8..16]).unwrap_or(u64::MAX);
+/// The length of the smallest finished segment: a header, an empty live set's end marker and its commit. A torn
+/// first write of the log's first segment can't be longer; a later checkpoint's always has a predecessor that counts.
+const EMPTY_SEGMENT: usize = HEADER + FRAME + 16 + FRAME + 8;
+
+/// What a segment turned out to be.
+#[derive(Debug)]
+enum Scanned {
+    /// A finished checkpoint, with what was appended after it.
+    Counts(Scan),
+    /// A checkpoint that never finished: its header is intact (with the Lsn its first frame would get), but no commit
+    /// follows its end marker. Safe to remove once a predecessor counts.
+    Unfinished { base: u64 },
+    /// Too short for a header: a torn first write. Safe to remove.
+    Torn,
+    /// A header that fails its check, with no sign that the segment ever finished. Never removed: it may be a
+    /// finished segment whose salt was damaged, which nothing can prove.
+    Unreadable,
+}
+
+/// Read a segment, named `n`.
+fn scan(bytes: &[u8], n: u64, max: u32) -> Result<Scanned, StoreError> {
+    let Some(h) = bytes.get(..HEADER) else { return Ok(Scanned::Torn) };
     let base = le_u64(&h[16..24]).unwrap_or(0);
     let mut salt = [0u8; 16];
     salt.copy_from_slice(&h[24..40]);
-    let seg = Seg { n: hn, salt };
-    if h != header(seg, base).as_slice() {
-        return Ok(None);
-    }
-    if hn != n {
-        return Err(StoreError::Corrupt { segment: n, offset: 8, why: "the header names another segment" });
+    // The name gives the segment number; the salt is taken as written.
+    let seg = Seg { n, salt };
+    if &h[..8] != MAGIC || h != header(seg, base).as_slice() {
+        // A header written whole and then damaged still has its salt, unless the damage hit the salt: a valid commit
+        // marker under it proves the segment had finished.
+        if marker_after(bytes, HEADER - 1, seg, 0) {
+            return Err(StoreError::Corrupt { segment: n, offset: 0, why: "a damaged header on a finished segment" });
+        }
+        return Ok(Scanned::Unreadable);
     }
     let corrupt = |at: usize, why| StoreError::Corrupt { segment: n, offset: at as u64, why };
     let mut at = HEADER;
@@ -425,9 +442,11 @@ fn scan(bytes: &[u8], n: u64, max: u32) -> Result<Option<Scan>, StoreError> {
     }
     if stage < 2 {
         // The checkpoint's own commit marker is its last write, synced before it returns.
-        return Ok(None);
+        return Ok(Scanned::Unfinished { base });
     }
-    Ok(Some(Scan { seg, records, offsets, valid_len: at as u64, file_len: bytes.len() as u64, next_lsn: lsn, vouched }))
+    let scan =
+        Scan { seg, records, offsets, valid_len: at as u64, file_len: bytes.len() as u64, next_lsn: lsn, vouched };
+    Ok(Scanned::Counts(scan))
 }
 
 /// The log. See the module documentation.
@@ -461,6 +480,9 @@ impl<F: Fs> Log<F> {
         let highest = segs.last().copied().unwrap_or(0);
         let mut found = None;
         let mut obsolete = Vec::new();
+        // Unfinished segments above the one that counts: their bases.
+        let mut above: Vec<u64> = Vec::new();
+        let mut longest = 0;
         for &s in segs.iter().rev() {
             if found.is_some() {
                 obsolete.push(s);
@@ -468,9 +490,32 @@ impl<F: Fs> Log<F> {
             }
             let bytes = fs.read(&dir.join(seg_name(s))).map_err(io_err)?;
             match scan(&bytes, s, opts.max_record)? {
-                Some(scan) => found = Some(scan),
-                None => obsolete.push(s),
+                Scanned::Counts(scan) => {
+                    // A checkpoint syncs its predecessor first, so the predecessor of an unfinished checkpoint ends
+                    // at or past its base. An older segment (a delete Windows refused) ends before it: falling back
+                    // to it would bring back old state, a double vote.
+                    if above.iter().any(|b| scan.next_lsn < *b) {
+                        let why = "the segment that counts is older than an unfinished checkpoint above it";
+                        return Err(StoreError::Corrupt { segment: s, offset: 0, why });
+                    }
+                    found = Some(scan);
+                }
+                Scanned::Unfinished { base } => {
+                    above.push(base);
+                    longest = longest.max(bytes.len());
+                    obsolete.push(s);
+                }
+                Scanned::Torn => obsolete.push(s),
+                Scanned::Unreadable => longest = longest.max(bytes.len()),
             }
+        }
+        if found.is_none() && longest > EMPTY_SEGMENT {
+            // Nothing counts, yet a segment holds more than a torn first segment can: a finished one was damaged.
+            return Err(StoreError::Corrupt {
+                segment: highest,
+                offset: 0,
+                why: "no segment counts, but one is longer than a first segment cut short",
+            });
         }
         let mut recovered = Recovered::default();
         let mut log = match found {
@@ -501,7 +546,7 @@ impl<F: Fs> Log<F> {
             None => {
                 // Nothing counted: start with an empty checkpoint, above every name present.
                 let seg = Seg { n: highest + 1, salt: fs.salt() };
-                let (file, len, next_lsn, _) = write_segment(&mut fs, dir, seg, 1, &[])?;
+                let (file, len, next_lsn, _) = write_segment(&mut fs, dir, seg, 1, &[]).map_err(SegmentError::error)?;
                 Log {
                     fs,
                     dir: dir.to_owned(),
@@ -603,7 +648,9 @@ impl<F: Fs> Log<F> {
 
     /// Replace the log's contents with `live`, atomically. Buffered records are synced first, so every Lsn handed
     /// out before the call is durable or the call fails; after it, the log holds `live` (with new Lsns, returned in
-    /// order) and the older segments are gone. On an error the log goes on in the old segment.
+    /// order) and the older segments are gone. On an error before the new segment's commit marker is written, the new
+    /// file is removed and the log goes on in the old segment (after [`StoreError::Full`], a retry is safe). On an
+    /// error after it, the new segment may count, so the log is poisoned: reopen it.
     pub fn checkpoint(&mut self, live: &[(u16, &[u8])]) -> Result<Vec<Lsn>, StoreError> {
         for (kind, payload) in live {
             if *kind >= RESERVED_KINDS {
@@ -618,7 +665,14 @@ impl<F: Fs> Log<F> {
         self.next_segment += 1;
         let base = self.next_lsn;
         // A half-written segment never counts (no commit after its end) and the next open removes it.
-        let (file, len, next_lsn, offsets) = write_segment(&mut self.fs, &self.dir, seg, base, live)?;
+        let (file, len, next_lsn, offsets) = match write_segment(&mut self.fs, &self.dir, seg, base, live) {
+            Ok(r) => r,
+            Err(SegmentError::Before(e)) => return Err(e),
+            Err(SegmentError::After(e)) => {
+                self.poisoned = true;
+                return Err(e);
+            }
+        };
         self.index = offsets.iter().enumerate().map(|(i, o)| (base + i as u64, *o)).collect();
         let old = self.seg.n;
         self.seg = seg;
@@ -713,7 +767,7 @@ fn write_segment<F: Fs>(
     seg: Seg,
     base: u64,
     live: &[(u16, &[u8])],
-) -> Result<(F::File, u64, u64, Vec<u64>), StoreError> {
+) -> Result<(F::File, u64, u64, Vec<u64>), SegmentError> {
     let mut bytes = header(seg, base);
     let mut lsn = base;
     let mut offsets = Vec::with_capacity(live.len());
@@ -727,15 +781,39 @@ fn write_segment<F: Fs>(
     frame(&mut bytes, seg, lsn, KIND_END, &end);
     lsn += 1;
     let path = dir.join(seg_name(seg.n));
-    let mut file = fs.create_new(&path).map_err(io_err)?;
-    fs.append(&mut file, &bytes).map_err(io_err)?;
-    fs.sync(&mut file).map_err(io_err)?;
-    fs.sync_dir(dir).map_err(io_err)?;
+    let mut file = fs.create_new(&path).map_err(|e| SegmentError::Before(io_err(e)))?;
+    let body = fs.append(&mut file, &bytes).and_then(|()| fs.sync(&mut file)).and_then(|()| fs.sync_dir(dir));
+    if let Err(e) = body {
+        // No commit was written, so the segment never counts. Remove it now, so retries on a full disk don't each
+        // leave a file holding the space they need (best effort: the next open removes a leftover too).
+        drop(file);
+        if fs.remove(&path).is_ok() {
+            let _ = fs.sync_dir(dir);
+        }
+        return Err(SegmentError::Before(io_err(e)));
+    }
     let mut commit = Vec::new();
     commit_frame(&mut commit, seg, lsn);
-    fs.append(&mut file, &commit).map_err(io_err)?;
-    fs.sync(&mut file).map_err(io_err)?;
+    // From here the commit may reach the disk whatever the call returns, and then the new segment counts: on an
+    // error only a reopen can tell which segment does.
+    fs.append(&mut file, &commit).map_err(|e| SegmentError::After(io_err(e)))?;
+    fs.sync(&mut file).map_err(|e| SegmentError::After(io_err(e)))?;
     Ok((file, (bytes.len() + commit.len()) as u64, lsn + 1, offsets))
+}
+
+/// Why [`write_segment`] failed: before its commit marker was written (the segment never counts and is removed), or
+/// after (it may count).
+enum SegmentError {
+    Before(StoreError),
+    After(StoreError),
+}
+
+impl SegmentError {
+    fn error(self) -> StoreError {
+        match self {
+            SegmentError::Before(e) | SegmentError::After(e) => e,
+        }
+    }
 }
 
 /// A simulated file system for crash tests: written bytes are volatile until synced, a created or removed name is
@@ -971,7 +1049,8 @@ pub enum Job {
         n: u64,
         live: Vec<(u16, Vec<u8>)>,
     },
-    /// Replace the log with these of its records (see [`Log::compact`]).
+    /// Replace the log with these of its records (see [`Log::compact`]). One that doesn't fit on the disk is
+    /// skipped: its [`Done`] then gives the records' Lsns where they are.
     Compact {
         n: u64,
         keep: Vec<Keep>,
@@ -1065,7 +1144,20 @@ impl Runner {
                         })
                         .collect();
                     match lsns {
-                        Some(lsns) => log.compact(&lsns).map(|new| self.rebased(*n, new)),
+                        // Sync first: a full disk there leaves the batch's appends undurable, an ordinary error.
+                        Some(lsns) => log.sync().and_then(|_| match log.compact(&lsns) {
+                            Ok(new) => {
+                                self.rebased(*n, new);
+                                Ok(())
+                            }
+                            // Compaction is an optimization: one that doesn't fit is skipped, reported with the
+                            // records where they are, so it never blocks the jobs behind it.
+                            Err(StoreError::Full) if !log.poisoned() => {
+                                self.undone.push(Done { n: *n, lsns });
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }),
                         None => Err(StoreError::Refused("compact: an append job this segment doesn't hold")),
                     }
                 }
