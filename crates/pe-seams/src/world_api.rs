@@ -522,6 +522,10 @@ pub struct ObjectView {
     pub components: BTreeMap<String, BTreeMap<String, Json>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<ObjectView>,
+    /// The scripts attached to it that don't run on this machine, with why (session_info's `scripts_not_running`
+    /// for this object): so a reader of the object sees it where it looks (M1 redo F5, @fable-reviewer). Empty, and left out, while every attached script runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scripts_not_running: Vec<ScriptNotRunning>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

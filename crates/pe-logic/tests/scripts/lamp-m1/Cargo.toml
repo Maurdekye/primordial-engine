@@ -1,0 +1,19 @@
+# A test script for pe-logic: the lamp source the agent committed in the M1 recording (2026-11-20 16:47:13Z, its
+# first version, byte for byte; M1 redo F5). Its system writes the engine's Light, which `script!` doesn't list, so
+# the module never binds and never ran. Tests build it to check that this is refused, with the fix in the message, and
+# that the fixed source runs. Its own workspace, so the root workspace never builds it for the host; pe-logic's tests
+# build it for wasm32 through the build service.
+[package]
+name = "script"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+pe-sdk = { path = "../../../../pe-sdk" }

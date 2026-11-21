@@ -369,6 +369,14 @@ macro_rules! system {
 }
 
 /// The script's exports: `pe_abi_version`, `pe_manifest` and `pe_run` over the listed components and systems.
+///
+/// List every component a system uses, the engine's too (logic.md 3.2): a system that writes `Light` needs
+/// `components: [Blink, Light]`, not `[Blink]`. A module that leaves one out builds but never binds, so it would never
+/// run; the author's check (`code_check`, and the commit) refuses it and names the fix (M1 redo F5).
+///
+/// ```ignore
+/// pe_sdk::script!(components: [Blink, Light], systems: [blink]);
+/// ```
 #[macro_export]
 macro_rules! script {
     (components: [$($c:ty),* $(,)?], systems: [$($s:ident),* $(,)?] $(,)?) => {

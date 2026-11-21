@@ -26,8 +26,8 @@ use pe_core::EntryRef;
 use pe_seams::SubmitError;
 use pe_seams::world_api::{
     ApiError, ApplyOpts, At, AtName, Caller, Changes, CodeCheck, ConnectionId, Cursor, Diagnostics, ErrorCode, Filter,
-    Frame, HeldAction, MemberId, Mode, ObjectId, Outcome, ProducerKind, Query, QueryResult, Refusal, RefusalCode,
-    Scope, SessionEvent, Status, Transaction, TxId, Wait,
+    Frame, HeldAction, MemberId, Mode, ObjectId, ObjectView, Outcome, ProducerKind, Query, QueryResult, Refusal,
+    RefusalCode, Scope, SessionEvent, Status, Transaction, TxId, Wait,
 };
 use pe_world::edit::Actor;
 use pe_world::{Draft, WorldSnapshot};
@@ -259,6 +259,24 @@ fn changed_candidates(
     out
 }
 
+/// Marks each object (and inlined child) to which a script that doesn't run here is attached, with session_info's
+/// entry for it (`ObjectView::scripts_not_running`).
+fn mark_not_running(snap: &dyn Snapshot, not_running: &[NotRunning], objects: &mut [ObjectView]) {
+    for o in objects {
+        let attached = snap.attached(o.id);
+        o.scripts_not_running = (not_running.iter())
+            .filter(|n| attached.contains(&n.script))
+            .map(|n| pe_seams::world_api::ScriptNotRunning {
+                script: crate::resolve::asset_text(&n.script),
+                object: Some(o.id),
+                since_frame: n.since.0,
+                why: n.why.clone(),
+            })
+            .collect();
+        mark_not_running(snap, not_running, &mut o.children);
+    }
+}
+
 /// The source's frames as one caller sees them, for the query pieces.
 struct Views<'a> {
     src: &'a dyn WorldSource,
@@ -414,7 +432,11 @@ impl<S: WorldSource + 'static> Api<S> {
         }
         let views = Views { src: &*self.src, me: self.src.head_of(c.member) };
         let (snap, offset) = pick(&views, q.at, q.cursor.as_ref())?;
-        let (res, seen) = run(snap.as_ref(), q, offset)?;
+        let (mut res, seen) = run(snap.as_ref(), q, offset)?;
+        let not_running = self.src.session().scripts_not_running;
+        if !not_running.is_empty() {
+            mark_not_running(snap.as_ref(), &not_running, &mut res.objects);
+        }
         let table = self.table(c.connection);
         let mut table = table.lock().unwrap_or_else(|e| e.into_inner());
         for (id, v) in seen {
@@ -2182,6 +2204,36 @@ mod tests {
             }
         };
         assert_ne!(version(false), version(true));
+    }
+
+    /// M1 redo F5: a script that doesn't run here is marked on every object it is attached to that a query returns,
+    /// with session_info's entry, so a reader of the object sees why (@fable-reviewer); an object whose
+    /// scripts all run carries nothing.
+    #[test]
+    fn a_queried_object_says_which_attached_script_doesn_t_run() {
+        let (a, _, sb) = two_spins();
+        let c = caller(&[Scope::Read]);
+        let one = |name: &str| {
+            let q = Query { select: Some(Selector::Name(name.into())), ..Default::default() };
+            a.query(&c, &q).unwrap().objects.remove(0)
+        };
+        assert!(one("Lamp").scripts_not_running.is_empty());
+        let why = "it won't bind: system spin uses pe.Light, which the script doesn't declare";
+        NOT_RUNNING.with(|n| {
+            n.borrow_mut().push(NotRunning { script: sb, object: None, since: pe_core::Frame(4), why: why.into() })
+        });
+        let (lamp, table) = (one("Lamp"), one("Table"));
+        NOT_RUNNING.with(|n| n.borrow_mut().clear());
+        let want = pe_seams::world_api::ScriptNotRunning {
+            script: crate::resolve::asset_text(&sb),
+            object: Some(lamp.id),
+            since_frame: 4,
+            why: why.into(),
+        };
+        assert_eq!(lamp.scripts_not_running, [want], "B is attached to the lamp");
+        assert!(table.scripts_not_running.is_empty(), "only A, which runs, is on the table");
+        let json = serde_json::to_value(&table).unwrap();
+        assert!(json.get("scripts_not_running").is_none(), "left out when empty: {json}");
     }
 
     #[test]

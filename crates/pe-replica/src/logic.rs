@@ -48,6 +48,10 @@ pub struct ScriptRow {
     pub components: Vec<ComponentId>,
 }
 
+/// A runner's reason for a script whose module it doesn't hold ([`ScriptRunner::why_missing`]): on this machine, the
+/// build service's case (pe-app's attester says why it isn't built).
+pub const MODULE_NOT_HELD: &str = "its module isn't held on this machine";
+
 /// The world's checks for an engine row a script wrote (`World::script_row_checker`): an `Err` faults the call.
 pub type RowCheck<'a> = dyn Fn(ComponentId, ObjectId, &[u8]) -> Result<(), String> + 'a;
 
@@ -110,6 +114,18 @@ pub trait ScriptRunner: Send {
         store: &mut SimStore,
         world: &StageWorld<'_>,
     ) -> StageOutcome;
+    /// Why it didn't run `asset` at its last stage, in a sentence (no module with the row's hash, or the bind's
+    /// refusal), if it reported it [`StageOutcome::missing`] there: this machine's, never world state, for pe-app's
+    /// console and pe-api's `scripts_not_running` (F5: the M1 lamp's bind refusal was dropped, so nothing said why it
+    /// never ran). The default gives no reason.
+    fn why_missing(&self, _asset: &AssetId) -> Option<String> {
+        None
+    }
+    /// Each script's last fault on this runner, in a sentence (the system, the frame, the fault), where the world keeps
+    /// only its frame and code (logic.md 3.6). The default has none.
+    fn faults(&self) -> std::collections::BTreeMap<AssetId, String> {
+        std::collections::BTreeMap::new()
+    }
 }
 
 /// S5's number for a script event's kind (`EffectKind::Script`): the first 8 bytes, little-endian, of

@@ -998,6 +998,10 @@ ruling 3). The calls, and what the replica does behind each:
   with, and a test checks it against what that runner reports (app.md 6; pe-app net.rs `build_id`,
   @item:primordial-engine/pe-app-s-hello-compares-the-script-runner-s-iden). **Not built:** the fault bundle's
   record, O18 (11); nothing calls `runner_identity()` or `module(&hash)` yet [V: no caller outside pe-replica].
+- **`script_notes()`** (S2 v1.10; M1 redo F5) is what the runner says about the scripts of the last live step, never world
+  state: each active script it didn't run, with why (its module isn't held here, or the bind's refusal), and each
+  script's last fault with its system and fault (the world keeps only its frame and code, logic.md 3.6). pe-app logs
+  each change and gives it to pe-api's `scripts_not_running` (api.md 5.1). Empty by default.
 - **The group selector:** `GroupSel::Domain` or `Objects`. Every import acts as `Domain` until history-free physics
   exists (6.3).
 - **Unchanged since the proposal:**

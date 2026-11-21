@@ -125,6 +125,28 @@ impl ModuleInbox {
         Described::of(module, &held.manifest, v)
     }
 
+    /// Whether `script` (loaded with this inbox's engine and settings) binds as version `v` will once the world has
+    /// registered its commit: against an isolated registry of the world's engine components, the version's own
+    /// components under V's ids and its tag (logic.md 3.2, 6.2; @astra-deliberator). The world's
+    /// registry today can't be used, since it lacks the new version's tag and components, and bind refuses those. For
+    /// the author's check (pe-app's `Builder`, so `code_check` and a commit), so a module that would never run is
+    /// refused, with the reason, before it is committed (F5). Attesters don't run it: in M1 binding isn't part of what
+    /// is attested (@fable-reviewer). Calls the module (its manifest), so the calling thread needs
+    /// [`ModuleInbox::thread_stack`].
+    pub fn trial_bind(&self, script: &Script, v: &Hash) -> Result<(), String> {
+        let (_, held) = Held::of(script.clone()).map_err(|e| e.to_string())?;
+        let own = own_components(&held.manifest, v)?;
+        let tag = tag_desc(v);
+        let mut registry = pe_world::components::engine_registry();
+        for c in own.iter().chain([&tag]) {
+            registry.register(c.clone()).map_err(|e| format!("component {}: {e}", c.name()))?;
+        }
+        let ids: Vec<ComponentId> = own.iter().map(|c| c.id()).collect();
+        Loaded::bind(*v, held.script, held.manifest, &ids, tag.id(), &engine_table(), &registry)
+            .map(|_| ())
+            .map_err(|e| e.0)
+    }
+
     /// The engine this inbox's runner compiles with: a module loaded with it can go to [`ModuleInbox::load_script`].
     pub fn engine(&self) -> &wasmtime::Engine {
         &self.engine
@@ -176,6 +198,13 @@ fn own_components(manifest: &Manifest, v: &Hash) -> Result<Vec<ComponentDesc>, S
     .collect()
 }
 
+/// 3.2's table of the engine components a script may name, as pe-logic's bind takes it.
+fn engine_table() -> Vec<EngineComponent<'static>> {
+    (ENGINE_COMPONENTS.iter())
+        .map(|e| EngineComponent { name: e.name, id: e.id, scripts_may_write: e.scripts_may_write })
+        .collect()
+}
+
 /// What a row binds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Binding {
@@ -203,6 +232,12 @@ pub struct LogicRunner {
     bound: BTreeMap<AssetId, Binding>,
     /// Rows whose module would not bind for a reason of its own, not tried again until another module comes.
     refused: BTreeMap<AssetId, Binding>,
+    /// Why each row of the last stage did not run here (`rebind`'s reason): this machine's, for
+    /// [`ScriptRunner::why_missing`].
+    why: BTreeMap<AssetId, String>,
+    /// Each script's last fault here, in a sentence, for [`ScriptRunner::faults`]: the world keeps only its frame and
+    /// code (3.6).
+    faults: BTreeMap<AssetId, String>,
 }
 
 impl LogicRunner {
@@ -218,6 +253,8 @@ impl LogicRunner {
             logic: Logic::new(run),
             bound: BTreeMap::new(),
             refused: BTreeMap::new(),
+            why: BTreeMap::new(),
+            faults: BTreeMap::new(),
         })
     }
 
@@ -261,7 +298,7 @@ impl LogicRunner {
     /// `row`'s module bound under its ids, or why not. `Err((reason, of_the_module))`: `of_the_module` is true when
     /// the reason is the module's own, so the same module, version and ids would fail again whatever the world holds.
     fn bind(&self, row: &ScriptRow, registry: &Registry) -> Result<Loaded, (String, bool)> {
-        let held = self.held.get(&row.module).ok_or_else(|| ("the module is not held".to_string(), false))?;
+        let held = self.held.get(&row.module).ok_or_else(|| (super::MODULE_NOT_HELD.to_string(), false))?;
         let tag = tag_desc(&row.version).id();
         let mut own = Vec::new();
         for want in own_components(&held.manifest, &row.version).map_err(|e| (e, true))? {
@@ -279,11 +316,7 @@ impl LogicRunner {
         }
         let script = held.script.clone();
         debug_assert_eq!(script.module_hash(), row.module, "a held module is keyed by its metered bytes' hash");
-        let engine: Vec<EngineComponent<'_>> = ENGINE_COMPONENTS
-            .iter()
-            .map(|e| EngineComponent { name: e.name, id: e.id, scripts_may_write: e.scripts_may_write })
-            .collect();
-        Loaded::bind(Hash(row.asset), script, held.manifest.clone(), &own, tag, &engine, registry)
+        Loaded::bind(Hash(row.asset), script, held.manifest.clone(), &own, tag, &engine_table(), registry)
             .map_err(|e| (e.0, true))
     }
 
@@ -295,6 +328,7 @@ impl LogicRunner {
             self.bound.remove(&a);
             self.logic.remove(Hash(a));
         }
+        self.why.retain(|a, _| scripts.iter().any(|r| r.asset == *a));
         let mut missing = Vec::new();
         for row in scripts {
             let want = Binding::of(row);
@@ -312,11 +346,13 @@ impl LogicRunner {
                 Ok(loaded) => {
                     self.logic.insert(loaded);
                     self.bound.insert(row.asset, want);
+                    self.why.remove(&row.asset);
                 }
-                Err((_, of_the_module)) => {
+                Err((why, of_the_module)) => {
                     if of_the_module {
                         self.refused.insert(row.asset, want);
                     }
+                    self.why.insert(row.asset, why);
                     missing.push(row.asset);
                 }
             }
@@ -348,6 +384,14 @@ impl ScriptRunner for LogicRunner {
         self.held.get(module).map(|h| h.metered.clone())
     }
 
+    fn why_missing(&self, asset: &AssetId) -> Option<String> {
+        self.why.get(asset).cloned()
+    }
+
+    fn faults(&self) -> BTreeMap<AssetId, String> {
+        self.faults.clone()
+    }
+
     fn run_stage(
         &mut self,
         stage: Stage,
@@ -373,6 +417,8 @@ impl ScriptRunner for LogicRunner {
         let r = self.logic.run_stage(store, &mut ctx);
         let mut out = StageOutcome { missing, fp_resets: r.fp_resets, ..StageOutcome::default() };
         for f in &r.faults {
+            let at = format!("system {} faulted at frame {}: {:?}", f.system, f.frame.0, f.fault);
+            self.faults.insert(f.script.0, at);
             match f.fault.code() {
                 Some(code) => out.report.faults.push((f.script.0, code)),
                 None => out.host_faults += 1,

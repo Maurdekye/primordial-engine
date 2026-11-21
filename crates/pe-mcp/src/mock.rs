@@ -43,6 +43,7 @@ fn obj(n: u8, name: &str, parent: Option<u8>, types: &[&str]) -> ObjectView {
         types: types.iter().map(|s| s.to_string()).collect(),
         components: BTreeMap::new(),
         children: vec![],
+        scripts_not_running: vec![],
     }
 }
 

@@ -51,6 +51,8 @@ serde_json.workspace = true
 pe-seams = { path = "../pe-seams", features = ["world-api", "test-util"] }
 # The damage hook the split test injects a divergence through (sim.rs); never in the shipped binary (resolver 3).
 pe-replica = { path = "../pe-replica", features = ["logic", "test-util"] }
+# A world with an active script, for the script watch's tests (src/scripts.rs).
+pe-world = { path = "../pe-world", features = ["test-util"] }
 bytes.workspace = true
 # The agent demo script (src/agent_demo.rs) and the M1 demo test (tests/demo.rs): an MCP client over pe-mcp's
 # server, as pe-mcp's own tests use it. The test also needs tokio's timers and its process pipes.

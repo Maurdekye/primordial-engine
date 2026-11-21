@@ -1391,35 +1391,51 @@ Each gets a raw log under `crates/pe-logic/bench/` or the workstream's evidence 
 - Native declarative components ("drives", file 11, 3.5) are outside this spec: data the store evaluates natively,
   with no build. Who owns them is for the architect.
 
-## Appendix A. The M1 lamp script, as it would read against pe-sdk v0 [I, a sketch]
+## Appendix A. The M1 lamp script, against pe-sdk v0 [V: built and bound by a test]
 
-A sketch to fix the shape, not the final macro syntax. Everything is `macro_rules!`, so a player needs no host
-linker (5.2a). The `Light` component is the engine's; `Blink` is declared by the script.
+The lamp as an agent writes it: a `Blink` component the script declares, and a system that switches the engine's
+`Light` on and off. pe-logic's test `lamp_m1::the_spec_s_lamp_builds_and_binds` builds this block as it stands here
+and binds it as a world would, so the example can't drift from the real macros (@fable-reviewer).
 
 ```rust
 #![no_std]
 #![forbid(unsafe_code)]
-use pe_sdk::prelude::*;
+use pe_sdk::component::LinearRgb;
+use pe_sdk::engine::Light;
 
 pe_sdk::component! {
-    /// Saved in the world, visible in the inspector and to MCP. Ids derive from the version's content hash (6.1).
-    pub struct Blink { period: f32, phase: f32, near: f32 }
+    /// How the lamp blinks: a full on/off cycle every `period` seconds, shifted by `phase`. Saved in the world,
+    /// visible to MCP; its id derives from the version's content hash (6.1).
+    pub struct Blink { period: f32, phase: f32 }
 }
 
 pe_sdk::system! {
-    /// Runs once per frame, before the physics, over every object bound to this script that has both.
-    fn pulse(stage = pre_physics, me: (read Blink, write Light), near: query_near(Ball, 2.0)) {
+    /// Runs once per frame, before the physics, over every object the script is attached to that has both.
+    fn blink(stage: PrePhysics, read: [blink: Blink], write: [light: Light]) |ctx, me| {
         let t = ctx.time_s() + me.blink.phase;
-        let on = (t / me.blink.period).fract() < 0.5;
-        // Offsets from the lamp, in its own space (Offset<Own>); no absolute position is ever handed over.
-        let ball_near = near.iter().any(|b| b.offset.within(me.blink.near));
-        me.light.color = if ball_near { RED } else if on { WARM } else { OFF };
+        let on = t % me.blink.period < me.blink.period * 0.5;
+        me.light.color = LinearRgb::new([1.0, 0.8, 0.6]);
+        me.light.intensity = if on { 1.0 } else { 0.0 };
     }
 }
 
-pe_sdk::script!(components: [Blink], systems: [pulse]);
+// Every component a system uses is listed here, the engine's `Light` too.
+pe_sdk::script!(components: [Blink, Light], systems: [blink]);
 ```
 
-What the agent's edit in the M1 demo changes: the body of `pulse` (the `ball_near` line is the edit, "pulse red
-when a ball is near"). The schema is unchanged, so the commit keeps `Blink`'s id and rows (6.1), and nothing
-migrates.
+**Every component a system uses is listed in `script!`, the engine's too** (3.2). A script that writes `Light`
+but lists only `components: [Blink]` builds, and never binds, so it never runs. That is the M1 recording's lamp (M1
+redo F5, pe-logic `tests/scripts/lamp-m1`): it built on both machines and the lamp never changed. Since F5 the
+author's check refuses it before the commit (`code_check`'s diagnostic, kind `manifest`), naming each use and the
+fix as the author types it: "system blink uses pe.Light, which the script doesn't declare, so it would never run:
+... Write `pe_sdk::script!(components: [Blink, Light], systems: [blink]);` (Light is pe_sdk::engine::Light)".
+Attesters don't make that check: in M1 binding isn't part of what is attested.
+
+**What a machine says about a script** (M1 redo F5): pe-app logs each change of an active script's state on this
+machine (`scripts: script <id> runs on this machine (active from frame F)`; on stderr, that it doesn't run and why,
+or that it faulted, with the system and the fault), and pe-api lists each script that doesn't run here, or faulted,
+in session_info's `scripts_not_running` and on each object it is attached to in a query (`scripts_not_running` on
+the object).
+
+What the agent's edit in the M1 demo changes: the body of `blink`, for example its colour. The schema is unchanged,
+so the commit keeps `Blink`'s id and rows (6.1), and nothing migrates.

@@ -67,6 +67,48 @@ pub type Validate<'a> = &'a dyn Fn(ComponentId, ObjectId, &[u8]) -> Result<(), S
 
 /// Same size and fields (name, kind, offset, count, colour space) as the engine's description: the SDK's copy of an
 /// engine component must be byte-for-byte the engine's, and mean its floats the same way.
+/// The components `manifest`'s systems use (bind or read) that its components don't list, as the refusal the author
+/// reads, or `None` if every one is listed. A script lists every component its systems use, the engine's too (3.2):
+/// the M1 recording's lamp wrote `pe.Light` without listing it, so it never bound and never ran, and nothing said so
+/// (F5). The message names each use and the fix as the author types it, `script!`'s whole line with the missing names
+/// added (@fable-reviewer, @astra-deliberator).
+pub fn undeclared(manifest: &Manifest) -> Option<String> {
+    let listed = |n: &str| manifest.components.iter().any(|c| c.name == n);
+    let mut missing: Vec<(&str, &str)> = Vec::new();
+    for s in &manifest.systems {
+        let uses = s.bound.iter().map(|(n, _)| n.as_str()).chain(s.reads_other.iter().map(String::as_str));
+        for n in uses {
+            if !listed(n) && !missing.iter().any(|&(_, m)| m == n) {
+                missing.push((&s.name, n));
+            }
+        }
+    }
+    if missing.is_empty() {
+        return None;
+    }
+    // The names as `script!` takes them: an engine component by its pe-sdk type, `pe.Light` as `Light`.
+    let typed = |n: &str| n.strip_prefix(manifest::ENGINE_PREFIX).unwrap_or(n).to_string();
+    let uses: Vec<String> = missing.iter().map(|(s, n)| format!("system {s} uses {n}")).collect();
+    let mut components: Vec<String> = manifest.components.iter().map(|c| typed(&c.name)).collect();
+    components.extend(missing.iter().map(|&(_, n)| typed(n)));
+    let systems: Vec<&str> = manifest.systems.iter().map(|s| s.name.as_str()).collect();
+    let engine: Vec<String> = (missing.iter())
+        .filter(|(_, n)| n.starts_with(manifest::ENGINE_PREFIX))
+        .map(|&(_, n)| format!("{0} is pe_sdk::engine::{0}", typed(n)))
+        .collect();
+    let mut message = format!(
+        "{}, which the script doesn't declare, so it would never run: a script lists every component its systems use, \
+         the engine's too. Write `pe_sdk::script!(components: [{}], systems: [{}]);`",
+        uses.join(", "),
+        components.join(", "),
+        systems.join(", ")
+    );
+    if !engine.is_empty() {
+        message.push_str(&format!(" ({})", engine.join("; ")));
+    }
+    Some(message)
+}
+
 fn same_layout(engine: &ComponentDesc, declared: &ComponentDesc) -> bool {
     let key = |f: &FieldDesc| (f.name.clone(), f.kind, f.offset, f.count, f.color);
     engine.size() == declared.size() && engine.fields().iter().map(key).eq(declared.fields().iter().map(key))
@@ -233,6 +275,9 @@ impl Loaded {
         if own_ids.len() != own {
             return Err(BindError(format!("{} ids for {own} components", own_ids.len())));
         }
+        if let Some(message) = undeclared(&manifest) {
+            return Err(BindError(message));
+        }
         // One id per manifest component: the script's own in order, the engine's from the table.
         let mut next_own = own_ids.iter();
         let mut ids = Vec::with_capacity(manifest.components.len());
@@ -269,10 +314,10 @@ impl Loaded {
                 return Err(BindError(format!("component {} is not registered as declared", c.name)));
             }
         }
-        let resolve = |name: &str| {
+        let resolve = |system: &str, name: &str| {
             let k = manifest.components.iter().position(|c| c.name == name);
             k.map(|k| (ids[k], manifest.components[k].size as usize))
-                .ok_or_else(|| BindError(format!("component {name} is not one the script declares")))
+                .ok_or_else(|| BindError(format!("system {system}: component {name} is not one the script declares")))
         };
         let cap = manifest.batch_cap as usize;
         // The script's columns: every component a system binds, in the manifest's order.
@@ -290,7 +335,7 @@ impl Loaded {
         for (index, s) in manifest.systems.iter().enumerate() {
             let mut bound = Vec::new();
             for (name, access) in &s.bound {
-                let (id, size) = resolve(name)?;
+                let (id, size) = resolve(&s.name, name)?;
                 if bound.iter().any(|b: &Bound| b.id == id) {
                     return Err(BindError(format!("system {}: {name} is bound twice", s.name)));
                 }
@@ -303,7 +348,7 @@ impl Loaded {
             if bound.is_empty() {
                 return Err(BindError(format!("system {} binds no component", s.name)));
             }
-            let reads_other = s.reads_other.iter().map(|n| resolve(n)).collect::<Result<Vec<_>, _>>()?;
+            let reads_other = s.reads_other.iter().map(|n| resolve(&s.name, n)).collect::<Result<Vec<_>, _>>()?;
             let columns = bound.iter().map(|b| column_of(b.id)).collect();
             plans.push(Plan {
                 index: index as u32,

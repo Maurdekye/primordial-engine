@@ -462,6 +462,7 @@ impl Builder<'_> {
             types,
             components,
             children,
+            scripts_not_running: vec![],
         }))
     }
 }

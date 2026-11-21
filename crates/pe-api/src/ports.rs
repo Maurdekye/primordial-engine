@@ -50,6 +50,10 @@ pub trait Snapshot: Send + Sync {
     fn has(&self, info: &ObjInfo, name: &str) -> bool {
         info.types.iter().any(|x| x == name || x.split(['#', '@']).next() == Some(name))
     }
+    /// The scripts attached to `id`: those whose active version's tag it carries. None by default.
+    fn attached(&self, _id: ObjectId) -> Vec<pe_world::script::AssetId> {
+        Vec::new()
+    }
     /// Distance in metres between two objects' world positions, or from the caller's own head for `"me"`
     /// (`near`, api.md 5.2). None when either is unknown.
     fn distance(&self, a: ObjectId, b: &ObjRef) -> Option<f64>;
