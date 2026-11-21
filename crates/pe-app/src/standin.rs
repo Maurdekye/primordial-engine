@@ -215,7 +215,7 @@ impl Replica for EmptyReplica {
         if caught_up && stepped > 0 {
             self.view = view_at(&*self.clock, self.frame);
         }
-        Advance { rolled_back_to: None, resimulated: 0, stepped, caught_up }
+        Advance { stepped, caught_up, ..Advance::default() }
     }
 
     fn outcome(&self, _: &EntryRef) -> Option<(Frame, Outcome)> {

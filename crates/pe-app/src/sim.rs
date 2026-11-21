@@ -21,9 +21,9 @@ use pe_render::present::FrameSlot;
 use pe_replica::{DriveReport, Driver};
 use pe_seams::world_api::TxId;
 use pe_seams::{
-    AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, Hand, HandFeed, Health,
-    HostTime, Lane, MemberKey, NetEvent, ObjectId, Outcome, Pos, Replica, SelfTest, SimRate, SubmitError, Transport,
-    ViewFlags, VoidReason,
+    Advance, AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, Hand,
+    HandFeed, Health, HostTime, Lane, MemberKey, NetEvent, ObjectId, Outcome, Pos, Replica, SelfTest, SimRate,
+    SubmitError, Transport, ViewFlags, VoidReason,
 };
 
 use crate::clock::HostClock;
@@ -264,6 +264,8 @@ pub struct SimStats {
     pub phases: PhaseTimes,
     /// The local player's grasps, left hand then right (app.md 3.1 step 2).
     pub hands: [HandStats; 2],
+    /// Rollbacks whose cause step 5 noted ([`Sim::note_rollback`]): one line each in the cut log (1.11).
+    pub rollback_lines: u64,
     /// The deepest rollback of the run, in frames: the most any published view's `counters.deepest_rollback` read
     /// (the plan's "measured and reported": the deepest rollback).
     pub deepest_rollback: u64,
@@ -995,6 +997,64 @@ impl Sim {
         self
     }
 
+    /// A rollback's cause, as far as this tick shows it (1.11; @coordinator-opus): the keyframe restored
+    /// (`to`), how far the replica had stepped past it, the two causes S2 v1.11 reports (the frame whose entries
+    /// changed, and the commit frame of my own code commit whose prediction ended), the entries agreement now holds at
+    /// the changed frame, and the voids this tick reported (@design-reviewer's M1 on 6408fdbe). It goes to the cut log
+    /// ([`crate::cutlog`]) for the self-test checker; a member alone also says it on the console, since nothing from
+    /// another machine should ever roll it back.
+    fn note_rollback(
+        &mut self,
+        advance: &Advance,
+        stepped: Frame,
+        present: Frame,
+        now: HostTime,
+        events: &[AgreeEvent],
+    ) {
+        let Some(to) = advance.rolled_back_to else { return };
+        let short = |m: &MemberKey| m.0[..4].iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let me = self.local_member();
+        let at: Vec<String> = (advance.changed_from.and_then(|f| self.agree.entries_at(f)).unwrap_or(&[]).iter())
+            .map(|e| {
+                let mine = if Some(e.entry.author) == me { "*" } else { "" };
+                format!("{mine}{}:{:?}:{}", short(&e.entry.author), e.entry.class, e.entry.seq)
+            })
+            .collect();
+        let voided: Vec<String> = (events.iter())
+            .filter_map(|e| match e {
+                AgreeEvent::Voided { author, reason, .. } => Some(format!("{}:{reason:?}", short(author))),
+                _ => None,
+            })
+            .collect();
+        let line = crate::cutlog::RollbackLine {
+            to: to.0,
+            depth: stepped.0.saturating_sub(to.0),
+            present: present.0,
+            changed: advance.changed_from.map(|f| f.0),
+            replay: advance.replay_from.map(|f| f.0),
+            at,
+            voided,
+        };
+        self.stats.rollback_lines += 1;
+        if let Some(log) = &mut self.cut_log {
+            log.rollback(now, &line);
+        }
+        if self.agree.members().len() <= 1 {
+            let frame = |f: Option<u64>| f.map_or_else(|| "-".to_string(), |f| f.to_string());
+            self.notices.push(format!(
+                "rollback: alone, stepped again from frame {}, {} frames back (present {}); entries changed at {} [{}], \
+                 my commit's prediction ended at {}, voided this tick [{}]",
+                line.to,
+                line.depth,
+                line.present,
+                frame(line.changed),
+                line.at.join(", "),
+                frame(line.replay),
+                line.voided.join(", ")
+            ));
+        }
+    }
+
     fn set_status(&self, text: Option<String>) {
         if let Some(s) = &self.status {
             s.set(text);
@@ -1448,6 +1508,7 @@ impl Sim {
         {
             self.notices.push(format!("FAULT: the test fault fires at the end of frame {} (--arm-fault)", at.0));
         }
+        let stepped_before = self.replica.frame();
         let report = if self.importing() { DriveReport::default() } else { self.drive(ps) };
         // `PE_CUT_LOG` (crate::cutlog): each finalize result with the root its cut is final with. The driver
         // finalizes only `final_cut()`, so a result is always for it. The poll flushes within a second even when no
@@ -1470,6 +1531,7 @@ impl Sim {
         let events = self.agree.events();
         self.stats.events += events.len() as u64;
         self.track_split(&events);
+        self.note_rollback(&report.advance, stepped_before, p, now, &events);
         self.stats.recasts = self.agree.stats().recasts;
         self.stats.phases.events_ns += lap(&mut mark);
         if let Some(d) = &mut self.diverge {
@@ -3727,8 +3789,18 @@ pub(crate) mod tests {
         split_final: Option<pe_seams::Hash>,
         /// In a [`FaultCase::hold`] run, who holds the held ball at the end, as this member's world says.
         held: Option<(MemberKey, ObjectId)>,
-        /// Its cut log (`PE_CUT_LOG`, [`crate::cutlog`]), read back.
+        /// Its cut log (`PE_CUT_LOG`, [`crate::cutlog`]), read back: the cuts, and the rollbacks' lines (1.11).
         cuts: CutLines,
+        rollbacks: RollbackLines,
+    }
+
+    /// A member's rollback lines, read back; its `Debug` gives the count.
+    struct RollbackLines(Vec<crate::cutlog::RollbackLine>);
+
+    impl std::fmt::Debug for RollbackLines {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} rollback lines", self.0.len())
+        }
     }
 
     /// A member's cut log, read back; its `Debug` counts the lines by result instead of printing each.
@@ -3894,6 +3966,7 @@ pub(crate) mod tests {
                 // flushes its cut log.
                 drop(s);
                 let cuts = CutLines(crate::cutlog::parse(&cut_log.text()));
+                let rollbacks = RollbackLines(crate::cutlog::parse_rollbacks(&cut_log.text()));
                 let dir = base.join(format!("member{i}"));
                 let mut bundles: Vec<(u8, String)> = (std::fs::read_dir(&dir).into_iter().flatten().flatten())
                     .map(|e| std::fs::read(e.path()).expect("a bundle"))
@@ -3918,6 +3991,7 @@ pub(crate) mod tests {
                     split_final,
                     held,
                     cuts,
+                    rollbacks,
                 }
             })
             .collect();
@@ -3959,6 +4033,39 @@ pub(crate) mod tests {
         assert!(both.len() >= 50, "{} cuts in both logs", both.len());
         for (l, r) in both {
             assert_eq!(&l.root, r, "cut {} at frame {}: the two machines logged different roots", l.height, l.frame);
+        }
+    }
+
+    /// The rollback-cause line (1.11; @coordinator-opus; @design-reviewer's M1 on 6408fdbe): two members
+    /// 30 ms apart each way, the fault never firing. Each rolls back for the other's late entries and writes one line
+    /// per rollback in its cut log. Each line names the changed frame, at or above the keyframe restored, and the
+    /// other member's entries there. Keyframes are 4 frames apart at 60 Hz, so many changes fall between two, and
+    /// there `to` alone would point at the wrong frame. No code commit runs, so no line names a prediction's end.
+    #[test]
+    fn each_rollback_s_line_names_the_entries_it_stepped_again_for() {
+        let fault = crate::fault::Fault::new(Frame(1_000_000));
+        let (sides, _) = fault_run_over(&fault, None, 30_000_000);
+        for (i, s) in sides.iter().enumerate() {
+            let rb = &s.rollbacks.0;
+            let between = rb.iter().filter(|r| r.changed.is_some_and(|f| f > r.to)).count();
+            println!(
+                "member {i}: {} rollbacks, {} lines, {between} changed above the keyframe; first {:?}",
+                s.stats.phases.rollbacks,
+                rb.len(),
+                rb.first()
+            );
+            assert!(!rb.is_empty(), "member {i} rolled back over the slow link");
+            assert_eq!((rb.len() as u64, s.stats.rollback_lines), (s.stats.phases.rollbacks, s.stats.phases.rollbacks));
+            assert!(rb.iter().all(|r| r.depth >= 1 && r.to < r.present + 60), "member {i}: {rb:?}");
+            // Every line has its cause: a change at or above the keyframe, and no prediction.
+            let bad: Vec<_> = rb.iter().filter(|r| r.replay.is_some() || r.changed.is_none_or(|f| f < r.to)).collect();
+            assert!(bad.is_empty(), "member {i}: {bad:?}");
+            assert!(between > 0, "member {i}: some change fell between two keyframes");
+            // What changed there: the other member's entry at the changed frame, or a void.
+            let explained =
+                |r: &&crate::cutlog::RollbackLine| r.at.iter().any(|e| !e.starts_with('*')) || !r.voided.is_empty();
+            let unexplained: Vec<_> = rb.iter().filter(|r| !explained(r)).collect();
+            assert!(unexplained.is_empty(), "member {i}: {} of {}: {unexplained:?}", unexplained.len(), rb.len());
         }
     }
 

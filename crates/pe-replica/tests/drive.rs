@@ -124,7 +124,7 @@ impl Replica for Rep {
         note(&self.log, format!("replica.advance {}", present.0));
         let stepped = present.0.saturating_sub(self.present);
         self.present = self.present.max(present.0);
-        Advance { rolled_back_to: None, resimulated: 0, stepped, caught_up: true }
+        Advance { stepped, caught_up: true, ..Advance::default() }
     }
     fn outcome(&self, _: &EntryRef) -> Option<(Frame, Outcome)> {
         None
