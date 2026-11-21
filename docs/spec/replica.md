@@ -345,7 +345,9 @@ m3527e3dedbb8; G2) [V `crates/pe-replica/src/replica.rs`, `note_checks`, `judge_
   step of the interaction's frame f, which is what the author saw as it acted. It is kept across rollbacks: taking it
   again at each re-simulation would always compare equal.
 - **The latest:** the body's digest after the newest step of f, live or the cut-exact re-step a finalize re-bases on
-  (`rebase_on_floor`).
+  (`rebase_on_floor`), or, for a frame the author's own preview ran (8.2, C4), the finalize's re-step that makes it
+  final (`canonical_records`), so the old code's history is what the check is judged by. Test [V]:
+  `under_a_prediction_the_author_s_check_compares_with_the_old_code_s_history`.
 - **The judgement:** when a final cut above f agrees with this replica's root, the history below it is final and the
   two are compared. A difference is a correction that hit a body the author had just acted on, expected when a late,
   earlier-stamped action reached the body first. It is counted (`ViewCounters::interactions_corrected`, for the
@@ -608,9 +610,10 @@ c9e2829a. The kept grid frames: @coordinator-opus mac3bdbe8133e]
     transfer the take_root serialized (below). It is not the ring's: the ring thins it past its young window.
   - Where the live history took no root at the cut's frame, or neither snapshot source is there, the root is
     re-stepped as in 5.3.
-- **Not under a vote hold at or below the cut** (`held_at_or_below`). The live history runs my own predicted code
-  commit from c + 1 (logic.md 6.2a's option (i); 8.2), and a re-step never does. So a live root there is not the
-  cut's root, and the re-step decides, as before. Test: `a_vote_hold_below_the_cut_keeps_the_live_root_out`.
+- **Not under my prediction at or below the cut** (`preview_at_or_below`). The live history runs my own predicted
+  code commit from its first preview frame (logic.md 6.2a's option (i); 8.2), and a re-step never does. So a live
+  root there is not the cut's root, and the re-step decides, from a state that never ran the preview (8.2, C4). Test:
+  `a_vote_under_a_prediction_starts_before_it_and_never_takes_the_preview`.
 - **The transfer is serialized once.** `physics_global` is the check hash of the canonical transfer (5.1), so every
   take_root serializes it. take_root now keeps those bytes and their hash (`Taken`), and a computed root's snapshot
   takes them instead of serializing and hashing the same state again. That saves about 4 ms a root at 500 balls.
@@ -801,10 +804,12 @@ that reaches the present with no replay under way, never during a re-simulation,
   and version: activated (with the objects its re-key moved) or voided (with why, the objects that blocked a re-key,
   and every counted build failure). A record published later with the same key supersedes the earlier one, and
   `activations_retracted` lists keys a later step no longer produced. While the author predicts its own commit (8.2),
-  its view carries the predicted activation at the commit's frame; when the prediction ends, the replay from that
-  frame supersedes the record with the rule's, or retracts it. Meanwhile the vote holds keep the final frame below the
-  prediction, so pe-api never tells it as final. pe-api's change log reads these records to tell an author what
-  became of their change.
+  its view carries the predicted activation at the commit's frame. Finality goes on meanwhile (C4), and pe-api's
+  change log tells a record once the final frame passes it, so each finalize that makes preview frames final swaps
+  their records (outcomes, events, activations) for the old code's, from its own re-step: the predicted activation is
+  retracted in the view that passes the commit's frame, and no preview outcome is told as final. When the prediction
+  ends, the replay gives the rule's records from there on. pe-api's change log reads these records to tell an author
+  what became of their change.
 - **Counters,** cumulative over the replica's life: `corrections` (advances that re-simulated), the deepest rollback,
   the frames re-simulated, and the floating-point guard's resets from both callers (3, step 1).
 - **`sim_time`** is the shared clock's host time of the view's frame (`ReplicaConfig::clock`), so every reader shares
@@ -911,8 +916,9 @@ harness, without scripts [V `crates/pe-replica/src/mock.rs`].
   final_frame)`, the read-only snapshots behind `world_snapshot` and `agreed_snapshot` (8).
 - **For scripts** (8.2): `scripted()`, whether the world has module rows; `set_local(member)`, the local member, whose
   commits the world model predicts; `take_replay_from()`, the frame to step again from when a prediction ended;
-  `vote_holds()`; and `set_scratch(bool)`, set while the replica steps off its live history, so nothing about the
-  prediction changes there.
+  `predicted_from()`, the first frame the live history ran the preview in (C4); `set_canonical(bool)`, set before each
+  live frame's end, true in a rung-1 replay below its cut, where no prediction activates; and `set_scratch(bool)`, set
+  while the replica steps off its live history, so nothing about the prediction changes there.
 
 ### 8.2 Scripts in the replica
 
@@ -941,9 +947,32 @@ are logic.md 6.2 and 6.2a. As built [V `crates/pe-replica/src/logic.rs`, `logic/
   At n = 2 both members hold the module at the activation frame, since each attests only after loading it.
 - **The author predicts its own commit** (logic.md 6.2a's option (i); @coordinator-opus m303e80fdcd44): from the
   frame c of an edit of the local member's that leaves a version pending, its new code runs from c + 1 in every step
-  and replay of c while the prediction stands, and the machine holds its votes from c + 1 (`vote_holds`). Another
-  member's attestation or build failure of the version, a `Leave`, or reaching the deadline ends it; the replica then
-  steps again from c under the rule, at once. A step off the live history never predicts. One prediction at a time.
+  and replay of c while the prediction stands. Another member's attestation or build failure of the version, a
+  `Leave`, or reaching the deadline ends it; the replica then steps again from c under the rule, at once. A step off
+  the live history never predicts. One prediction at a time.
+- **Its votes never take the preview** (C4, @item:primordial-engine/f3-c4-pe-replica-the-author-votes-on-the-canonic;
+  @coordinator-opus m9b16b12100c3 and m4e8cc98964c0, on @fable-reviewer's and @astra-deliberator's view). The author
+  votes and finalizes on the old code's state the cut's entries select, with no vote hold, so a slow attester never
+  holds cuts:
+  - **Where a root's re-step starts** (`start_for`): while the base is below the preview's first frame p, a ring
+    keyframe below p (saved before the activation) or a vote root re-stepped that way; once the floor or an import is
+    at or past p, the base's held, certified root, or a vote root above it. Never a live root or a keyframe the
+    preview made.
+  - **(c), the live preview's keyframe at the floor:** when a cut goes final with the live history matching its
+    entries, the ring keeps the live keyframe there, so an ordinary rollback onto the floor keeps the preview exact.
+    The floor's held root stays canonical, and it is what votes, exports and the agreed snapshot read.
+  - **(b), once, as the fallback:** after a real rebase onto a state without the preview (a voided late entry, an
+    import, a rung-1 replay), the same version is activated again at the end of the first live frame stepped, if it
+    is still pending, live and short of a quorum, with no second record. A rung-1 replay below its cut is canonical
+    (`set_canonical`): nothing activates there.
+  - **The view's records below the final frame are the old code's** (7): each finalize swaps the preview frames it
+    makes final for its own re-step's records.
+  - **At the prediction's end** the base's held root is its keyframe again, and the replay rolls back onto it, so the
+    preview's keyframes and live roots are dropped.
+  - **At n = 1** nothing is predicted: the commit is its own attestation (logic.md 6.2a).
+  - Tests [V]: `under_a_long_build_the_author_votes_the_old_code_on_time_and_keeps_its_preview`,
+    `a_rebase_under_a_prediction_activates_it_again_once`,
+    `at_one_member_a_commit_is_its_own_attestation_and_nothing_is_predicted`.
 - **Events** become S5 effects whose keys are stable across replays (7).
 - **Not built** (after M1, @item:primordial-engine/pe-replica-build-asymmetry-at-3-players-vote-hol): vote holds for a
   version whose module this machine lacks at its activation frame. At n = 2 none is needed; at n ≥ 3 a member whose

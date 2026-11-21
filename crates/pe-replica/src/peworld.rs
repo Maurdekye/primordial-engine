@@ -87,7 +87,9 @@ pub struct PeWorld {
 /// The author's prediction of its own code commit (logic.md 6.2a's option (i); @coordinator-opus m303e80fdcd44).
 /// - **Start:** an edit of the local member's that commits a version and leaves it pending without a quorum, at its
 ///   frame c. It runs from c + 1, by `World::activate_for_prediction` right after `World::end_frame(c)`, in every step
-///   and replay of frame c while the prediction stands; this machine holds its votes from c + 1 (S2's `vote_holds`).
+///   and replay of frame c while the prediction stands. No root this machine votes or finalizes with ever runs it: a
+///   re-step starts from a state that never ran it (`WorldModel::predicted_from`, C4), so it votes on time, with no
+///   hold, and a slow attester never holds cuts.
 /// - **End:** another member's `AttestBuild` or `BuildFailed` of the version, whatever its outcome, a `Leave`
 ///   (any of them can decide the commit under the rule: the shared void rule runs before D), or reaching D. The
 ///   replica then steps again from c under the rule, at once ([`WorldModel::take_replay_from`]): the old code up to
@@ -104,8 +106,13 @@ struct Predict {
     ended: BTreeSet<(AssetId, Version)>,
     /// Where the replica steps again from, once taken.
     replay_from: Option<Frame>,
+    /// The first frame the ended prediction's preview ran from, until its replay is taken (`predicted_from`).
+    ended_from: Option<Frame>,
     /// The replica is stepping off its live history: nothing here changes, and nothing is predicted.
     scratch: bool,
+    /// The live frame being stepped is canonical, a rung-1 replay's below its cut: no prediction activates in it,
+    /// though its entries are watched as anywhere live (C4).
+    canonical: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,6 +124,8 @@ struct Prediction {
     v: Hash,
     c: Frame,
     deadline: Frame,
+    /// The first live frame whose start ran the preview: c + 1, or r + 1 after it was activated again at r (C4).
+    from: Frame,
 }
 
 impl PeWorld {
@@ -235,7 +244,8 @@ impl PeWorld {
             let pending = self.world.pending().get(&asset);
             let live = pending.filter(|p| p.version == version && p.void.is_none() && !p.attested_by_quorum());
             if let Some(p) = live.filter(|_| !self.predict.ended.contains(&(asset, version))) {
-                self.predict.now = Some(Prediction { asset, version, v: p.v(), c: frame, deadline: p.deadline });
+                let (v, deadline, from) = (p.v(), p.deadline, frame.next());
+                self.predict.now = Some(Prediction { asset, version, v, c: frame, deadline, from });
                 return;
             }
         }
@@ -246,7 +256,15 @@ impl PeWorld {
         if let Some(p) = self.predict.now.take() {
             self.predict.ended.insert((p.asset, p.version));
             self.predict.replay_from = Some(self.predict.replay_from.map_or(p.c, |f| f.min(p.c)));
+            self.predict.ended_from = Some(self.predict.ended_from.map_or(p.from, |f| f.min(p.from)));
         }
+    }
+
+    /// Whether this state lacks the standing prediction's preview: its exact version is still pending here, live and
+    /// short of a quorum, so nothing activated it in this history (C4's fallback).
+    fn unpreviewed(&self, p: &Prediction) -> bool {
+        let pending = self.world.pending().get(&p.asset);
+        pending.is_some_and(|q| q.version == p.version && q.void.is_none() && !q.attested_by_quorum())
     }
 }
 
@@ -326,9 +344,25 @@ impl WorldModel for PeWorld {
         let end = self.world.end_frame(frame);
         let mut acts = activations(frame, &end);
         if let Some(p) = self.predict.now.filter(|_| !self.predict.scratch) {
-            if frame == p.c {
+            // At c the preview starts. Past it, the fallback (C4, @coordinator-opus m9b16b12100c3): a rebase onto a
+            // state without it (a voided late entry, an import, a rung-1 replay) activates the same version again,
+            // once per such history, with no second report, since the first at c stands.
+            let again = frame > p.c && frame < p.deadline && self.unpreviewed(&p);
+            if self.predict.canonical {
+                // A canonical frame never runs the preview; past D the prediction ends as anywhere.
+                if frame > p.c && frame >= p.deadline {
+                    self.end_prediction();
+                }
+            } else if frame == p.c || again {
                 match self.world.activate_for_prediction(p.asset, frame) {
-                    Some(Ok(report)) => acts.push(activated(p.asset, p.version, frame, report.as_ref())),
+                    Some(Ok(report)) => {
+                        if frame == p.c {
+                            acts.push(activated(p.asset, p.version, frame, report.as_ref()));
+                        }
+                        if let Some(now) = self.predict.now.as_mut() {
+                            now.from = frame.next();
+                        }
+                    }
                     _ => {
                         self.predict.now = None;
                         self.predict.ended.insert((p.asset, p.version));
@@ -349,12 +383,20 @@ impl WorldModel for PeWorld {
     }
 
     fn take_replay_from(&mut self) -> Option<Frame> {
+        self.predict.ended_from = None;
         self.predict.replay_from.take()
     }
 
-    fn vote_holds(&self) -> Vec<Frame> {
-        let c = self.predict.now.map(|p| p.c).or(self.predict.replay_from);
-        c.map(|c| vec![c.next()]).unwrap_or_default()
+    fn predicted_from(&self) -> Option<Frame> {
+        let now = self.predict.now.map(|p| p.from);
+        match (now, self.predict.ended_from) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn set_canonical(&mut self, canonical: bool) {
+        self.predict.canonical = canonical;
     }
 
     fn set_scratch(&mut self, scratch: bool) {

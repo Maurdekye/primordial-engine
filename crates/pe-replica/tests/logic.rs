@@ -913,7 +913,7 @@ fn the_author_predicts_its_commit_and_steps_again_from_c_when_it_is_decided() {
     let (_, mut s) = predicted_entries(attest);
     let mut author = replica_for(world, Some(keys().key(0)));
     author.advance(Frame(11), &mut s);
-    assert_eq!(author.vote_holds(), [Frame(6)]);
+    assert_eq!((author.predicted_from(), author.vote_holds()), (Some(Frame(6)), vec![]));
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(6), "predicted");
     assert!((ball_x(&author) - 0.05).abs() < 1e-4, "frames 6 to 10: {}", ball_x(&author));
     let key = ActivationKey { asset: asset(), version: Version { entry: commit_of(&s).id(), op: 1 } };
@@ -926,7 +926,7 @@ fn the_author_predicts_its_commit_and_steps_again_from_c_when_it_is_decided() {
         (author.view().activations.clone(), author.view().activations_retracted.clone()),
         (vec![agreed], vec![])
     );
-    assert!(author.vote_holds().is_empty());
+    assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
     assert_eq!(roots(&author, 24), roots(&plain, 24));
@@ -948,7 +948,7 @@ fn a_prediction_voided_before_d_steps_again_with_the_old_code_throughout() {
     author.advance(Frame(11), &mut s);
     assert_eq!(keys_of(&author.view()), (6..11).map(ping).collect::<Vec<_>>(), "predicted pings");
     author.advance(Frame(24), &mut s);
-    assert!(author.vote_holds().is_empty());
+    assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     let p = &author.world().world().pending()[&asset()];
     assert_eq!(p.void, Some((Frame(12), pe_world::VoidKind::QuorumUnreachable)));
     assert!(ball_x(&author).abs() < 1e-9, "the old code throughout: {}", ball_x(&author));
@@ -1000,22 +1000,21 @@ fn a_re_step_for_a_cut_s_root_never_predicts() {
     let mut author = replica_for(world, Some(keys.key(0)));
     author.advance(Frame(12), &mut s);
     assert!(matches!(author.outcome(&mine.id()), Some((_, Outcome::Refused { .. }))), "refused live");
-    assert!(author.vote_holds().is_empty());
+    assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     let cut = cut_at(std::slice::from_ref(&mine), 1, 8);
     let want = plain.root_at_cut(&cut, &mut s).expect("the plain replica's root");
     assert_eq!(author.root_at_cut(&cut, &mut s).expect("the author's root"), want);
-    assert!(author.vote_holds().is_empty(), "the re-step started no prediction");
+    assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]), "the re-step started no prediction");
     assert_eq!(author.world().world().pending()[&asset()].author, keys.key(1), "the live state is as it was");
 }
 
-/// A vote hold at or below a cut keeps the live root out of it (replica.md 5.4). A predicts its own commit at 5, so
-/// its live history runs the new code from 6, which no cut's root does, and A holds its votes from 6. A vote at 8
-/// while the keyframe there is young restores it, as before, and holds that state's root. At 48 the ring has thinned
-/// the keyframes at 4 and 8, and the cut at 8 goes final (as at n >= 3, without A's vote) with a plain replica's root:
-/// A re-steps from 0, where nothing is predicted, and agrees, rather than take its live root, which the vote's held
-/// snapshot would have given it. The plain replica, with no hold, takes its live root both times.
+/// Under A's prediction a vote never takes the preview (C4; replica.md 5.4). A predicts its own commit at 5, so its
+/// live history runs the new code from 6, which no cut's root does. A votes with no hold: its vote at 8, while the
+/// keyframe there (the preview's) is young, re-steps from the keyframe at 4, saved before the activation, and is the
+/// plain replica's root. At 48 the ring has thinned the keyframes at 4 and 8, and the cut at 8 goes final with that
+/// root: A re-steps from 0 and agrees, and never took its live root. The plain replica takes its live root both times.
 #[test]
-fn a_vote_hold_below_the_cut_keeps_the_live_root_out() {
+fn a_vote_under_a_prediction_starts_before_it_and_never_takes_the_preview() {
     let keys = keys();
     let mut a = EntryBuilder::new(&keys, 0);
     let mut world = floor_and_ball();
@@ -1030,21 +1029,27 @@ fn a_vote_hold_below_the_cut_keeps_the_live_root_out() {
     let mut author = replica_for(world, Some(keys.key(0)));
     plain.advance(Frame(12), &mut s);
     author.advance(Frame(12), &mut s);
-    assert_eq!((plain.vote_holds(), author.vote_holds()), (vec![], vec![Frame(6)]));
+    assert_eq!((plain.predicted_from(), author.predicted_from(), author.vote_holds()), (None, Some(Frame(6)), vec![]));
     let want = plain.root_at_cut(&cut, &mut s).expect("the plain replica's root");
     assert_eq!((plain.live_root(Frame(8)), plain.scratch().reused), (Some(want), 1), "no hold: the live root");
     let predicted = author.live_root(Frame(8)).expect("the author's live root at 8");
     assert_ne!(predicted, want, "the author's live history runs the predicted code from 6");
-    assert_eq!(author.root_at_cut(&cut, &mut s).expect("the author's vote"), predicted, "the keyframe at 8 restored");
+    let frames = author.scratch().frames;
+    assert_eq!(author.root_at_cut(&cut, &mut s).expect("the author's vote"), want, "the old code's state at 8");
+    assert_eq!(author.scratch().frames - frames, 4, "from the keyframe at 4, before the preview");
 
     plain.advance(Frame(48), &mut s);
     author.advance(Frame(48), &mut s);
-    assert_eq!(author.vote_holds(), [Frame(6)], "still predicting");
+    assert_eq!((author.predicted_from(), author.vote_holds()), (Some(Frame(6)), vec![]), "still predicting");
     let fin = FinalCut { cut, root: want, voters: vec![] };
     let frames = author.scratch().frames;
     assert!(matches!(author.finalize(&fin, &mut s), Finalized::Agreed), "re-stepped without the prediction");
     assert_eq!(author.scratch().frames - frames, 8, "from the keyframe at 0");
-    assert_eq!(author.scratch().reused, 0, "under the hold, neither the vote nor the finalize took the live root");
+    assert_eq!(
+        author.scratch().reused,
+        0,
+        "under the prediction, neither the vote nor the finalize took the live root"
+    );
     assert!(matches!(plain.finalize(&fin, &mut s), Finalized::Agreed));
     assert_eq!(plain.scratch().reused, 2, "the vote's snapshot, with the live root");
     assert_eq!((author.faults(), plain.faults()), (0, 0));
@@ -1082,17 +1087,17 @@ fn rollbacks_while_a_prediction_stands_keep_it_and_the_roots_agree() {
     s.add(push3);
     let adv = author.advance(Frame(10), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 3), "to c or below: {adv:?}");
-    assert_eq!(author.vote_holds(), [Frame(6)]);
+    assert_eq!((author.predicted_from(), author.vote_holds()), (Some(Frame(6)), vec![]));
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(6), "predicted again at c");
     s.add(push8);
     let adv = author.advance(Frame(11), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 > 5 && f.0 <= 8), "after c: {adv:?}");
-    assert_eq!(author.vote_holds(), [Frame(6)]);
+    assert_eq!((author.predicted_from(), author.vote_holds()), (Some(Frame(6)), vec![]));
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(6), "still predicted");
     assert!((ball_x(&author) - 0.05).abs() < 1e-4, "frames 6 to 10: {}", ball_x(&author));
     s.add(attest);
     author.advance(Frame(24), &mut s);
-    assert!(author.vote_holds().is_empty());
+    assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
     assert_eq!(roots(&author, 24), roots(&plain, 24));
@@ -1117,10 +1122,10 @@ fn a_prediction_that_reaches_d_steps_again_with_the_old_code_throughout() {
 
     let mut author = replica_for(world, Some(keys.key(0)));
     author.advance(deadline, &mut s);
-    assert_eq!(author.vote_holds(), [Frame(6)], "predicting until D");
+    assert_eq!((author.predicted_from(), author.vote_holds()), (Some(Frame(6)), vec![]), "predicting until D");
     let adv = author.advance(Frame(end), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 5), "stepped again from c or below: {adv:?}");
-    assert!(author.vote_holds().is_empty());
+    assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     let p = &author.world().world().pending()[&asset()];
     assert_eq!(p.void, Some((deadline, pe_world::VoidKind::Unattested)));
     let key = ActivationKey { asset: asset(), version: p.version };
@@ -1147,10 +1152,10 @@ fn a_build_failure_ends_the_prediction_and_the_commit_voids() {
     let (_, mut s) = predicted_entries(failed);
     let mut author = replica_for(world, Some(keys().key(0)));
     author.advance(Frame(11), &mut s);
-    assert_eq!(author.vote_holds(), [Frame(6)]);
+    assert_eq!((author.predicted_from(), author.vote_holds()), (Some(Frame(6)), vec![]));
     let adv = author.advance(Frame(24), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 5), "stepped again from c or below: {adv:?}");
-    assert!(author.vote_holds().is_empty());
+    assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     let p = &author.world().world().pending()[&asset()];
     assert_eq!(p.void, Some((Frame(12), pe_world::VoidKind::QuorumUnreachable)));
     assert_eq!(p.failures(), [(keys().key(1), pe_seams::BuildFailure::Compile)]);
@@ -1191,15 +1196,15 @@ fn a_late_leave_before_c_does_not_end_the_prediction() {
     }
     let mut author = replica_for(world, Some(keys.key(0)));
     author.advance(Frame(10), &mut s);
-    assert_eq!(author.vote_holds(), [Frame(6)]);
+    assert_eq!((author.predicted_from(), author.vote_holds()), (Some(Frame(6)), vec![]));
     s.add(leave);
     let adv = author.advance(Frame(10), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 3), "past the leave: {adv:?}");
-    assert_eq!(author.vote_holds(), [Frame(6)], "still predicting");
+    assert_eq!((author.predicted_from(), author.vote_holds()), (Some(Frame(6)), vec![]), "still predicting");
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(6), "predicted again at c");
     s.add(attest);
     author.advance(Frame(24), &mut s);
-    assert!(author.vote_holds().is_empty());
+    assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
     assert_eq!(roots(&author, 24), roots(&plain, 24));
@@ -1246,7 +1251,7 @@ fn a_prediction_ended_without_a_decision_retracts_its_record() {
     let key = ActivationKey { asset: asset(), version: Version { entry: commit_of(&s).id(), op: 1 } };
     assert_eq!(author.view().activations.iter().map(|a| a.key).collect::<Vec<_>>(), [key]);
     author.advance(Frame(24), &mut s);
-    assert!(author.vote_holds().is_empty());
+    assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     assert!(author.view().activations.is_empty(), "{:?}", author.view().activations);
     assert_eq!(author.view().activations_retracted, [key]);
     let p = &author.world().world().pending()[&asset()];
@@ -1810,4 +1815,257 @@ mod lamp {
             assert_eq!(out.missing, vec![asset(), [8; 32]]);
         });
     }
+}
+
+// ---- C4: the author votes on the old code's state, never on its preview (@coordinator-opus m9b16b12100c3) ---------
+
+/// B's push on the ball, stamped `at`: an input, so it doesn't touch the mover's x.
+fn push_at(b: &mut EntryBuilder, at: u64) -> SignedEntry {
+    let input = pe_world::Input::Push { object: oid(BALL), impulse: [0.0, 0.2, 0.0], at: None };
+    b.next(Class::Input, Frame(at), Bytes::from(input.encode()))
+}
+
+/// A long build: B attests A's commit at 100, long after A made it at 5. A votes at every cut on time, with no hold,
+/// and each vote is a plain replica's root, the old code's state, never A's preview: the first from the keyframe at 4,
+/// saved before the activation, and each later one from the floor's held root, one cut interval. Each cut goes final
+/// as it is voted, so the floor passes c, and A's preview keeps its accumulated movement, a rollback onto the floor
+/// included (C4's (c)): the ball is where 0.01 a frame from 6 puts it. B's attestation then decides the commit, with
+/// the one jump back to the old code's state, and A's roots are the plain replica's.
+#[test]
+fn under_a_long_build_the_author_votes_the_old_code_on_time_and_keeps_its_preview() {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    let mine = [commit(&mut a, 5), edit(&mut a, 6, tag_ball())];
+    let late = push_at(&mut b, 49);
+    let attest = edit(&mut b, 100, vec![Op::AttestBuild { script: asset(), version: v1(), module: MODULE }]);
+    let (mut s, mut ps) = (Source::default(), Source::default());
+    for e in &mine {
+        s.add(e.clone());
+        ps.add(e.clone());
+    }
+    let mut plain = replica_for(world.clone(), None);
+    let mut author = replica_for(world, Some(keys.key(0)));
+    let mut heads = mine.to_vec();
+    for f in (8..=96).step_by(K as usize) {
+        if f == 56 {
+            // B's push, stamped just past the floor at 48, reaches both late: A rolls back onto the floor's keyframe.
+            s.add(late.clone());
+            ps.add(late.clone());
+            heads.push(late.clone());
+        }
+        let adv = author.advance(Frame(f + 4), &mut s);
+        plain.advance(Frame(f + 4), &mut ps);
+        if f == 56 {
+            assert_eq!(adv.rolled_back_to, Some(Frame(48)), "onto the floor's keyframe");
+        }
+        let x = ball_x(&author);
+        assert!((x - 0.01 * (f + 4 - 6) as f64).abs() < 1e-4, "A's preview at {}: {x}", f + 4);
+        if f == 16 {
+            // The cut at 8 went final: below it A's records are the old code's, never the preview's, so pe-api tells
+            // the tag at 6 refused and never tells the predicted activation at 5.
+            let tag = author.outcome(&mine[1].id()).map(|o| o.1);
+            assert!(matches!(tag, Some(Outcome::Refused { .. })), "the tag at 6 under the old code: {tag:?}");
+            let key = ActivationKey { asset: asset(), version: Version { entry: mine[0].id(), op: 1 } };
+            assert!(author.view().activations_retracted.contains(&key), "the predicted activation at 5 retracted");
+        }
+        let cut = cut_at(&heads, f / K, f);
+        let want = plain.root_at_cut(&cut, &mut ps).expect("the plain replica's root");
+        let frames = author.scratch().frames;
+        assert_eq!(author.root_at_cut(&cut, &mut s), Ok(want), "A's vote at {f}: the old code's state");
+        let cost = if f == 8 { 4 } else { K };
+        assert_eq!(author.scratch().frames - frames, cost, "A's vote at {f}: frames re-stepped");
+        assert_ne!(author.live_root(Frame(f)), Some(want), "A's live history at {f} runs the preview");
+        let fin = FinalCut { cut, root: want, voters: vec![] };
+        assert_eq!(author.finalize(&fin, &mut s), Finalized::Agreed, "the cut at {f}");
+        assert_eq!(plain.finalize(&fin, &mut ps), Finalized::Agreed);
+    }
+    assert_eq!((author.floor_frame(), author.predicted_from()), (Frame(96), Some(Frame(6))), "the floor passed c");
+    assert_eq!((author.vote_holds(), author.scratch().reused), (vec![], 0), "no hold, and no live root taken");
+    s.add(attest.clone());
+    ps.add(attest);
+    let preview = ball_x(&author);
+    author.advance(Frame(120), &mut s);
+    plain.advance(Frame(120), &mut ps);
+    assert_eq!(author.predicted_from(), None, "decided");
+    println!("MEASURED the jump at the prediction's end: the ball's x {preview:.4} -> {:.4}", ball_x(&author));
+    assert!((ball_x(&author) - ball_x(&plain)).abs() < 1e-9);
+    assert_eq!(roots(&author, 120), roots(&plain, 120));
+    assert_eq!((author.faults(), plain.faults()), (0, 0));
+}
+
+/// A real rebase onto the floor under A's prediction (C4's fallback): B's edit at 50, which A stepped live, is voided
+/// as the cut at 56 goes final without it, so A's live history goes back to the floor's cut-exact snapshot, which never
+/// ran the preview. The commit is still pending and eligible there, so A activates the same version again at the end of
+/// the floor's frame, once, with no second record. The preview runs on from 57: A's tag at 60 now applies in A's live
+/// history, and the mover moves the ball from 60. Its accumulated movement before the rebase is lost (the jump). A's
+/// votes stay the plain replica's.
+#[test]
+fn a_rebase_under_a_prediction_activates_it_again_once() {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    let mine = [commit(&mut a, 5), edit(&mut a, 6, tag_ball()), edit(&mut a, 60, tag_ball())];
+    let late = edit(&mut b, 50, vec![]);
+    let (mut s, mut ps) = (Source::default(), Source::default());
+    for e in &mine {
+        s.add(e.clone());
+        ps.add(e.clone());
+    }
+    let mut plain = replica_for(world.clone(), None);
+    let mut author = replica_for(world, Some(keys.key(0)));
+    for f in [8, 16, 24, 32, 40, 48] {
+        author.advance(Frame(f + 4), &mut s);
+        plain.advance(Frame(f + 4), &mut ps);
+        let cut = cut_at(&mine, f / K, f);
+        let want = plain.root_at_cut(&cut, &mut ps).expect("the plain replica's root");
+        assert_eq!(author.root_at_cut(&cut, &mut s), Ok(want), "A's vote at {f}");
+        let fin = FinalCut { cut, root: want, voters: vec![] };
+        assert_eq!(author.finalize(&fin, &mut s), Finalized::Agreed);
+        assert_eq!(plain.finalize(&fin, &mut ps), Finalized::Agreed);
+    }
+    s.add(late.clone());
+    author.advance(Frame(58), &mut s);
+    assert!((ball_x(&author) - 0.52).abs() < 1e-4, "the preview from 6 to 57: {}", ball_x(&author));
+    let records = author.view().activations.len();
+    // S3 voids B's edit as the cut at 56 goes final without it, and reports the change.
+    s.entries.retain(|_, es| {
+        es.retain(|e| e.id() != late.id());
+        !es.is_empty()
+    });
+    s.changed = Some(Frame(50));
+    plain.advance(Frame(58), &mut ps);
+    let cut = cut_at(&mine, 7, 56);
+    let want = plain.root_at_cut(&cut, &mut ps).expect("the plain replica's root");
+    let fin = FinalCut { cut, root: want, voters: vec![] };
+    assert_eq!(author.finalize(&fin, &mut s), Finalized::Agreed, "my root is the old code's state");
+    assert_eq!(plain.finalize(&fin, &mut ps), Finalized::Agreed);
+    author.advance(Frame(70), &mut s);
+    plain.advance(Frame(70), &mut ps);
+    assert_eq!(author.predicted_from(), Some(Frame(57)), "activated again at the end of 56");
+    println!("MEASURED the rebase's jump: the ball's x 0.5200 -> {:.4} at 70", ball_x(&author));
+    assert!((ball_x(&author) - 0.10).abs() < 1e-4, "the mover from 60, on the tag at 60: {}", ball_x(&author));
+    assert!(ball_x(&plain).abs() < 1e-9, "the old code moves nothing");
+    assert_eq!(author.view().activations.len(), records, "no second record of the activation");
+    let cut = cut_at(&mine, 8, 64);
+    let want = plain.root_at_cut(&cut, &mut ps).expect("the plain replica's root");
+    assert_eq!(author.root_at_cut(&cut, &mut s), Ok(want), "A's vote at 64 is still the old code's state");
+    assert_eq!((author.faults(), plain.faults()), (0, 0));
+}
+
+/// At n = 1 there is nothing to preview (@astra-deliberator, via @fable-reviewer m0da20bfd688a): A's commit is its
+/// own attestation (logic.md 6.2a), so it activates at its frame's end by the rule, on A as on a plain replica, and
+/// nothing predicts, holds or jumps.
+#[test]
+fn at_one_member_a_commit_is_its_own_attestation_and_nothing_is_predicted() {
+    let keys = keys();
+    let mut a = EntryBuilder::new(&keys, 0);
+    let world = floor_and_ball();
+    let mine = [commit(&mut a, 5), edit(&mut a, 6, tag_ball())];
+    let mut s = Source::default();
+    for e in &mine {
+        s.add(e.clone());
+    }
+    let mut plain = replica_for(world.clone(), None);
+    let mut author = replica_for(world, Some(keys.key(0)));
+    for f in [8, 12, 24] {
+        author.advance(Frame(f), &mut s);
+        plain.advance(Frame(f), &mut s);
+        assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]), "at {f}");
+        assert!((ball_x(&author) - ball_x(&plain)).abs() < 1e-9, "at {f}");
+    }
+    assert!(ball_x(&author) > 0.1, "the mover ran from 6 under the rule: {}", ball_x(&author));
+    assert_eq!(roots(&author, 24), roots(&plain, 24));
+}
+
+/// C4's cost (@coordinator-opus m9b16b12100c3: "measure the author's tick time while it predicts"): the M1 ball pit of
+/// `PE_C4_BALLS` (200) balls at 60 Hz, a cut every K frames, while A's commit at 5 stays pending for `PE_C4_FRAMES`
+/// (600) frames. Per cut, the advance, the vote and the finalize: on A, the live preview plus each root's re-step from
+/// a state that never ran it; on a plain replica, whose live history matches every cut, so its roots are live ones.
+/// Prints MEASURED lines, and asserts only that both give the same roots.
+#[test]
+#[ignore = "a measurement, in release: PE_C4_BALLS (200), PE_C4_FRAMES (600)"]
+fn measure_the_author_s_cost_while_it_predicts() {
+    let balls: usize = std::env::var("PE_C4_BALLS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+    let to: u64 = std::env::var("PE_C4_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(600);
+    let keys = keys();
+    let mut a = EntryBuilder::new(&keys, 0);
+    let mut world = pe_world::preset::ball_pit_with(7, BlobStore::default(), Pos::ORIGIN, balls);
+    world.set_member(keys.key(0), perm::EDIT);
+    world.set_member(keys.key(1), perm::EDIT);
+    let ball = pe_world::preset::find(&world, "Ball 0").expect("a ball");
+    let tag_row = Row { component: tag(), instance: 0, bytes: vec![] };
+    let mine = [commit(&mut a, 5), edit(&mut a, 6, vec![Op::SetRow { id: Target::Existing(ball), row: tag_row }])];
+    let (mut s, mut ps) = (Source::default(), Source::default());
+    for e in &mine {
+        s.add(e.clone());
+        ps.add(e.clone());
+    }
+    let mut plain = replica_for(world.clone(), None);
+    let mut author = replica_for(world, Some(keys.key(0)));
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
+    let (mut on_author, mut on_plain, mut cuts) = (0.0, 0.0, 0u32);
+    println!("cut frame | author ms | plain ms");
+    for f in (8..=to).step_by(K as usize) {
+        let cut = cut_at(&mine, f / K, f);
+        let t = std::time::Instant::now();
+        plain.advance(Frame(f + 4), &mut ps);
+        let want = plain.root_at_cut(&cut, &mut ps).expect("the plain replica's root");
+        plain.finalize(&FinalCut { cut: cut.clone(), root: want, voters: vec![] }, &mut ps);
+        let p = ms(t);
+        let t = std::time::Instant::now();
+        author.advance(Frame(f + 4), &mut s);
+        let mine_root = author.root_at_cut(&cut, &mut s);
+        author.finalize(&FinalCut { cut, root: want, voters: vec![] }, &mut s);
+        let x = ms(t);
+        assert_eq!(mine_root, Ok(want), "the roots at {f}");
+        println!("{f:9} | {x:9.3} | {p:8.3}");
+        (on_author, on_plain, cuts) = (on_author + x, on_plain + p, cuts + 1);
+    }
+    assert_eq!(author.predicted_from(), Some(Frame(6)), "still predicting");
+    let (x, p) = (on_author / f64::from(cuts), on_plain / f64::from(cuts));
+    println!(
+        "MEASURED C4, {balls} balls, {cuts} cuts while predicting: the author {x:.3} ms a cut, a plain replica \
+         {p:.3} ms a cut ({:.2}x); a cut is {K} frames",
+        x / p
+    );
+}
+
+/// G2's check under A's prediction (C4 with replica.md 3.4): A pushes the ball at 20 while its preview moves it, so
+/// A's first step of 20 left the ball where the preview put it. Once the cut at 24 is final, the check compares that
+/// with the old code's history, which finalize's own re-step took, and counts a correction: A saw a state the final
+/// history doesn't have (@world-model m44dc20facd52). A plain replica checks nothing of A's.
+#[test]
+fn under_a_prediction_the_author_s_check_compares_with_the_old_code_s_history() {
+    let keys = keys();
+    let mut a = EntryBuilder::new(&keys, 0);
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    let push = pe_world::Input::Push { object: oid(BALL), impulse: [0.0, 0.2, 0.0], at: None };
+    let mine =
+        [commit(&mut a, 5), edit(&mut a, 6, tag_ball()), a.next(Class::Input, Frame(20), Bytes::from(push.encode()))];
+    let (mut s, mut ps) = (Source::default(), Source::default());
+    for e in &mine {
+        s.add(e.clone());
+        ps.add(e.clone());
+    }
+    let mut plain = replica_for(world.clone(), None);
+    let mut author = replica_for(world, Some(keys.key(0)));
+    for f in [8, 16, 24, 32] {
+        author.advance(Frame(f + 4), &mut s);
+        plain.advance(Frame(f + 4), &mut ps);
+        let cut = cut_at(&mine, f / K, f);
+        let want = plain.root_at_cut(&cut, &mut ps).expect("the plain replica's root");
+        assert_eq!(author.root_at_cut(&cut, &mut s), Ok(want), "A's vote at {f}");
+        let fin = FinalCut { cut, root: want, voters: vec![] };
+        assert_eq!(author.finalize(&fin, &mut s), Finalized::Agreed);
+        assert_eq!(plain.finalize(&fin, &mut ps), Finalized::Agreed);
+    }
+    assert_eq!(author.predicted_from(), Some(Frame(6)), "still predicting");
+    let checks = author.interaction_checks();
+    assert_eq!((checks.judged, checks.corrected), (1, 1), "the push at 20, judged against the old code: {checks:?}");
+    assert_eq!(checks.recent.iter().map(|c| c.frame).collect::<Vec<_>>(), [Frame(20)]);
+    assert_eq!(plain.interaction_checks().judged, 0, "not the plain replica's interaction");
 }
