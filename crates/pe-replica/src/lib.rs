@@ -25,5 +25,5 @@ pub mod world;
 pub use drive::{DriveReport, Driver};
 pub use logic::{ScriptRunner, event_kind};
 pub use peworld::PeWorld;
-pub use replica::{ReplicaConfig, ReplicaImpl};
+pub use replica::{CorrectedInteraction, InteractionChecks, ReplicaConfig, ReplicaImpl};
 pub use world::{Phase, WorldModel, apply_order};
