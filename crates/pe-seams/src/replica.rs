@@ -797,7 +797,9 @@ pub trait Replica: Send {
 pub struct ScriptNotes {
     /// Active scripts its last live step didn't run, with why.
     pub not_run: std::collections::BTreeMap<[u8; 32], String>,
-    /// Each script's last fault on this machine: its system, frame and fault.
+    /// Each script the world marks faulted, with its fault on this machine: its system, frame and fault. From any
+    /// step, rollback re-steps included, and dropped once the world no longer marks it (a rollback undid it, or the
+    /// script left).
     pub faults: std::collections::BTreeMap<[u8; 32], String>,
 }
 

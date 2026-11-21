@@ -65,8 +65,6 @@ pub struct EngineComponent<'a> {
 /// object and the bytes; `Err` names the refused field or the reason, and faults the call.
 pub type Validate<'a> = &'a dyn Fn(ComponentId, ObjectId, &[u8]) -> Result<(), String>;
 
-/// Same size and fields (name, kind, offset, count, colour space) as the engine's description: the SDK's copy of an
-/// engine component must be byte-for-byte the engine's, and mean its floats the same way.
 /// The components `manifest`'s systems use (bind or read) that its components don't list, as the refusal the author
 /// reads, or `None` if every one is listed. A script lists every component its systems use, the engine's too (3.2):
 /// the M1 recording's lamp wrote `pe.Light` without listing it, so it never bound and never ran, and nothing said so
@@ -109,6 +107,8 @@ pub fn undeclared(manifest: &Manifest) -> Option<String> {
     Some(message)
 }
 
+/// Same size and fields (name, kind, offset, count, colour space) as the engine's description: the SDK's copy of an
+/// engine component must be byte-for-byte the engine's, and mean its floats the same way.
 fn same_layout(engine: &ComponentDesc, declared: &ComponentDesc) -> bool {
     let key = |f: &FieldDesc| (f.name.clone(), f.kind, f.offset, f.count, f.color);
     engine.size() == declared.size() && engine.fields().iter().map(key).eq(declared.fields().iter().map(key))

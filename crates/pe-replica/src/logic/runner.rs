@@ -236,7 +236,8 @@ pub struct LogicRunner {
     /// [`ScriptRunner::why_missing`].
     why: BTreeMap<AssetId, String>,
     /// Each script's last fault here, in a sentence, for [`ScriptRunner::faults`]: the world keeps only its frame and
-    /// code (3.6).
+    /// code (3.6). Only scripts the world marks faulted: a fault a rollback undid, or a script that left, is dropped
+    /// at the next stage (@shader-reviewer's Low on F5), so the text is the fault the world's frame names.
     faults: BTreeMap<AssetId, String>,
 }
 
@@ -416,6 +417,7 @@ impl ScriptRunner for LogicRunner {
         ctx.validate = Some(world.check);
         let r = self.logic.run_stage(store, &mut ctx);
         let mut out = StageOutcome { missing, fp_resets: r.fp_resets, ..StageOutcome::default() };
+        self.faults.retain(|a, _| world.faulted.contains(a));
         for f in &r.faults {
             let at = format!("system {} faulted at frame {}: {:?}", f.system, f.frame.0, f.fault);
             self.faults.insert(f.script.0, at);

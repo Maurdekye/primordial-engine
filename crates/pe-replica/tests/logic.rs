@@ -1591,6 +1591,11 @@ mod lamp {
             let row = r.world().world().modules()[&asset()].clone();
             assert!(row.faulted.is_some_and(|(f, _)| f == Frame(1)), "its first frame: {:?}", row.faulted);
             assert_eq!(r.script_counts().host_faults, 0);
+            // The runner's sentence for it names the frame the world marks (F5), and stays while the world marks it.
+            let notes = r.script_notes();
+            let what = notes.faults.get(&asset()).expect("the runner's note");
+            assert!(what.contains("faulted at frame 1:"), "{what}");
+            assert_eq!(notes.faults.len(), 1, "{:?}", notes.faults);
             let view = r.view();
             let kind = EffectKind::Script(event_kind(&asset(), "spawned"));
             let key = EffectKey { frame: Frame(1), cause: EffectCause::Logic, object: oid(SPAWNER), kind, ordinal: 0 };

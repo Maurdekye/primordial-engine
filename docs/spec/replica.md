@@ -6,7 +6,7 @@ notes on the hello were brought up to date when the hello's runner comparison la
 numbers are v0.2's, because code on main cites them; what changed is the text under them. A design that is not built
 is marked **Not built**.
 
-The seams are pe-seams's: S2 (the replica) through v1.8 and S5 (the frame view) through v1.8, with their rulings in
+The seams are pe-seams's: S2 (the replica) through v1.11 and S5 (the frame view) through v1.10, with their rulings in
 `crates/pe-seams/RULINGS.md`. Where this file and a seam's doc comment differ, the seam is right, and this file is to
 fix.
 
