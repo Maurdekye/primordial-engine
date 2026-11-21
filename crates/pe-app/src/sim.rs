@@ -1426,7 +1426,9 @@ impl Sim {
         }
         self.stats.phases.inputs_ns += lap(&mut mark);
         // 3. Agreement's time. Its messages go to the network's outbox; a full queue is pe-net's local fault, never
-        // a stall (transport.md 7). A world alone has nowhere to send them.
+        // a stall (transport.md 7). A world alone has nowhere to send them. First the replica's stepped frame, which
+        // agreement reports to its peers and leads by (F3 S2): a slow replica's votes then come for cuts it can root.
+        self.agree.stepped(self.replica.frame());
         let out = self.agree.tick(now, &*self.clock);
         match &mut self.net {
             Some(net) => {

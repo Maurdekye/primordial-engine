@@ -38,6 +38,10 @@ pub enum Wire {
     /// The answer: the proposals of the reconfiguring cut E that ended `epoch` and its certified suffix, oldest first,
     /// and the top's certificate ([`crate::epoch::chain_of`]). Checked against `epoch`'s members before it counts.
     EpochCert { epoch: u64, proposals: Vec<Proposal>, top: Qc },
+    /// Unsigned, once a cut interval (F3 S2): the frame the sender's replica has stepped to, and the linked chain heads
+    /// it holds beyond its final cut. The link authenticates the sender; a member that lies can only slow the cuts it
+    /// could already stall by not voting.
+    Progress { stepped: Frame, heads: Vec<ChainHead> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +59,7 @@ const T_EPOCH: u8 = 9;
 const T_EPOCH_FINAL: u8 = 10;
 const T_FETCH_EPOCH_CERT: u8 = 11;
 const T_EPOCH_CERT: u8 = 12;
+const T_PROGRESS: u8 = 13;
 
 struct W(Vec<u8>);
 
@@ -419,6 +424,14 @@ pub fn encode(m: &Wire) -> Vec<u8> {
             w.u8(T_FETCH_EPOCH_CERT);
             w.u64(*epoch);
         }
+        Wire::Progress { stepped, heads } => {
+            w.u8(T_PROGRESS);
+            w.u64(stepped.0);
+            w.u32(heads.len() as u32);
+            for h in heads {
+                w.head(h);
+            }
+        }
         Wire::EpochCert { epoch, proposals, top } => {
             w.u8(T_EPOCH_CERT);
             w.u64(*epoch);
@@ -499,6 +512,15 @@ pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
         T_FETCH_BLOCK => Wire::Core(Msg::Fetch(BlockId(r.hash()?))),
         T_EPOCH_FINAL => Wire::EpochFinal { epoch: r.u64()? },
         T_FETCH_EPOCH_CERT => Wire::FetchEpochCert { epoch: r.u64()? },
+        T_PROGRESS => {
+            let stepped = Frame(r.u64()?);
+            let n = r.count(MAX_HEADS)?;
+            let mut heads = Vec::with_capacity(n);
+            for _ in 0..n {
+                heads.push(r.head()?);
+            }
+            Wire::Progress { stepped, heads }
+        }
         T_EPOCH_CERT => {
             let epoch = r.u64()?;
             let n = r.count(crate::epoch::MAX_CERT_BLOCKS)?;
@@ -636,6 +658,15 @@ mod tests {
             Wire::Core(Msg::Fetch(BlockId(h(b"f")))),
             Wire::Epoch(3, Msg::Fetch(BlockId(h(b"g")))),
             Wire::EpochFinal { epoch: 4 },
+            Wire::Progress {
+                stepped: Frame(1234),
+                heads: vec![ChainHead {
+                    chain: ChainId(h(b"c")),
+                    author: MemberKey([5; 32]),
+                    seq: 9,
+                    entry: EntryRef(h(b"e")),
+                }],
+            },
             Wire::FetchEntries(vec![EntryRef(h(b"1")), EntryRef(h(b"2"))]),
             Wire::Entries(Vec::new()),
             Wire::FetchRange { author: MemberKey([3; 32]), chain: ChainId(h(b"c")), from_seq: 7, count: 12 },

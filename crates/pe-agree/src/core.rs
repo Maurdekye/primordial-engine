@@ -315,6 +315,8 @@ pub enum Mutation {
     NoAbstention,
     /// The outage rule's leader side off: name a cut's frame whatever backlog other members claim.
     NoBacklogCap,
+    /// F3 S2's leader side off: name a cut's frame whatever the members report having stepped.
+    NoProgressCap,
 }
 
 /// The stored block, with what came with it.

@@ -415,6 +415,9 @@ impl Sim {
                 self.every_ms[i] = 0;
             }
         }
+        // The replica's stepped frame, as pe-app reports it (F3 S2): `behind` frames below the present.
+        let stepped = Frame(clock.frame_at(now).unwrap().0.saturating_sub(self.behind[i]));
+        Agreement::stepped(&mut self.nodes[i], stepped);
         let out = self.nodes[i].tick(now, &clock);
         self.deliver_out(i, out);
         if self.vote_once {
@@ -761,36 +764,41 @@ fn no_signature_check_holds_a_forged_entry() {
 #[test]
 fn a_leader_naming_its_present_voids_honest_entries_in_flight() {
     // The regression case behind cut_lag_s (coordinator): with no lag, entries still in flight when a
-    // cut passes their stamp are late. With the default (adaptive) lag, the same run voids nothing.
-    let no_lag = |c: &mut NodeConfig| {
-        c.cut_lag_s = 0.0;
-        c.cut_lag_floor_s = 0.0;
-        c.cut_lag_cap_s = 0.0;
-        c.cut_lag_margin_s = 0.0;
-        // A grid of one frame: rounding down to a coarser grid is itself a lag of up to the interval.
-        c.cut_interval_s = 0.0;
-    };
-    let mut s = Sim::with(4, 1, no_lag);
-    s.run(4_000);
-    s.assert_same_final_log();
-    assert!(!s.voids(0).is_empty(), "with no lag, in-flight honest entries should be late");
+    // cut passes their stamp are late. With the default (adaptive) lag, the same run voids nothing. The no-lag half
+    // also needs F3 S2's progress cap off: the q-th member's stepped frame reaches the leader a link delay late, which
+    // is itself a lag.
+    #[cfg(feature = "mutants")]
+    {
+        let mut s = Sim::with(4, 1, no_lag_no_progress_cap);
+        s.run(4_000);
+        s.assert_same_final_log();
+        assert!(!s.voids(0).is_empty(), "with no lag, in-flight honest entries should be late");
+    }
     let mut s = Sim::new(4, 1);
     s.run(4_000);
     assert!(s.voids(0).is_empty(), "{:?}", s.voids(0));
 }
 
+/// No cut lag and no progress cap (F3 S2): the leader names its present, so entries in flight when a cut passes their
+/// stamp are late.
+#[cfg(feature = "mutants")]
+fn no_lag_no_progress_cap(c: &mut NodeConfig) {
+    c.cut_lag_s = 0.0;
+    c.cut_lag_floor_s = 0.0;
+    c.cut_lag_cap_s = 0.0;
+    c.cut_lag_margin_s = 0.0;
+    // A grid of one frame: rounding down to a coarser grid is itself a lag of up to the interval.
+    c.cut_interval_s = 0.0;
+    c.mutation = Some(crate::core::Mutation::NoProgressCap);
+}
+
+#[cfg(feature = "mutants")]
 #[test]
 fn void_reason_answers_each_final_void() {
     // S2's `void_reason` (S2 v1.6; P15 in the harness reads it): every entry a final cut voided answers with the
-    // reason the Voided event gave, on every member, and an effective entry answers None.
-    let no_lag = |c: &mut NodeConfig| {
-        c.cut_lag_s = 0.0;
-        c.cut_lag_floor_s = 0.0;
-        c.cut_lag_cap_s = 0.0;
-        c.cut_lag_margin_s = 0.0;
-        c.cut_interval_s = 0.0;
-    };
-    let mut s = Sim::with(4, 1, no_lag);
+    // reason the Voided event gave, on every member, and an effective entry answers None. It needs voids, so it runs
+    // with no lag and no progress cap (F3 S2).
+    let mut s = Sim::with(4, 1, no_lag_no_progress_cap);
     s.run(4_000);
     for i in 0..4 {
         let voids = s.voids(i);
@@ -2088,9 +2096,10 @@ fn at_four_members_the_outage_rule_without_its_cap_voids_the_backlog() {
     // The control: without the leader's cap, an omitted backlog can be voided. Which seeds bite depends on races
     // after the return; the sim is deterministic per seed (BTreeMaps throughout, @design-reviewer; it
     // used to bite on HashMap order). Measured [V, main dd765d0a + the BTreeMaps]: 4 voids on seed 86, 8 on 94, 8 on
-    // 99, none on the other 17 of 81-100. If a timing change stops these three biting, pick again with
-    // `outage_control_seed_sweep` rather than guessing.
-    let v = outage_control(crate::core::Mutation::NoBacklogCap, [86, 94, 99]);
+    // 99, none on the other 17 of 81-100. F3 S2's `Progress` (acks and the progress cap) moved the races: re-picked
+    // [V, sweep on agree/s2-progress]: 92 voids on seed 90, 192 on 95, 232 on 97; 10 of 81-100 bite, 4-232 each. If a
+    // timing change stops these three biting, pick again with `outage_control_seed_sweep` rather than guessing.
+    let v = outage_control(crate::core::Mutation::NoBacklogCap, [90, 95, 97]);
     eprintln!("n = 4 NoBacklogCap: Late voids per seed {v:?}");
     assert!(v.iter().map(|(_, n)| n).sum::<usize>() > 0, "the control didn't bite: without the cap nothing was voided");
 }
@@ -2893,6 +2902,28 @@ fn a_stalled_uplink_still_paces_on_a_slow_link() {
     }
 }
 
+/// The no-lead stand-still run (B -> A +1.2 s, no lead) for `seed`, with `f` applied to each node's configuration: the
+/// longest the final frame stood still after 5 s, and A's paced and near-cap frames.
+fn no_lead_stand_still(seed: u64, f: impl Fn(&mut NodeConfig)) -> (i64, usize, usize) {
+    let mut s = Sim::with(2, seed, f);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.slow_link = Some((1, 0, 1_200, 0));
+    let (mut last, mut since, mut worst) = (Frame(0), 5_000, 0);
+    for t in (100..=30_000).step_by(100) {
+        s.run(t);
+        let f = s.final_frame(0);
+        if t > 5_000 {
+            if f > last {
+                since = t;
+            } else {
+                worst = worst.max(t - since);
+            }
+        }
+        last = f;
+    }
+    (worst, s.paced_frames[0], s.near_cap_frames[0])
+}
+
 #[test]
 fn a_no_lead_stand_still_never_feeds_itself_through_the_pending_cap() {
     // @coordinator-opus. Past the lead's clamp (B -> A +1.2 s, no lead) finality stands still for seconds
@@ -2900,30 +2931,32 @@ fn a_no_lead_stand_still_never_feeds_itself_through_the_pending_cap() {
     // per-author pending cap (1,020 at 60 Hz) about 8.5 s in; B deferred them, couldn't hold A's cuts and couldn't vote,
     // so the stand-still fed itself: 21.5 s on 4 of these 12 seeds [V], against at most 8.4 s while the old rule
     // happened to pace A. A now also paces near the cap: the stand-still stays within the paced bound, and A is paced
-    // there only (never by its backlog on this flowing link).
-    let mut near = 0;
+    // there only (never by its backlog on this flowing link). F3 S2's progress cap keeps A's cuts behind B's stepped
+    // frame as A last heard it, so A no longer comes near the cap here; the guard's bite is checked with the cap off.
     for seed in 301..=312u64 {
-        let mut s = slow_return_run(seed, 1_200, 0, None);
-        let (mut last, mut since, mut worst) = (Frame(0), 5_000, 0);
-        for t in (100..=30_000).step_by(100) {
-            s.run(t);
-            let f = s.final_frame(0);
-            if t > 5_000 {
-                if f > last {
-                    since = t;
-                } else {
-                    worst = worst.max(t - since);
-                }
-            }
-            last = f;
-        }
+        let (worst, paced, near) = no_lead_stand_still(seed, |_| {});
         eprintln!(
-            "seed {seed}: final stood still at most {worst} ms; A paced on {} frames, {} of them near the cap",
-            s.paced_frames[0], s.near_cap_frames[0]
+            "seed {seed}: final stood still at most {worst} ms; A paced on {paced} frames, {near} of them near the cap"
         );
         assert!(worst <= 8_500, "seed {seed}: the final frame stood still {worst} ms");
-        assert_eq!(s.paced_frames[0], s.near_cap_frames[0], "seed {seed}: A paced by its backlog on a flowing link");
-        near += s.near_cap_frames[0];
+        assert_eq!(paced, near, "seed {seed}: A paced by its backlog on a flowing link");
+    }
+}
+
+#[cfg(feature = "mutants")]
+#[test]
+fn without_the_progress_cap_a_no_lead_stand_still_reaches_the_pending_cap_and_stays_bounded() {
+    // The run above with F3 S2's progress cap off, as before S2: A comes near B's pending cap, and the near-cap pacing
+    // keeps the stand-still within its bound.
+    let mut near = 0;
+    for seed in 301..=312u64 {
+        let (worst, paced, n) = no_lead_stand_still(seed, |c| c.mutation = Some(crate::core::Mutation::NoProgressCap));
+        eprintln!(
+            "NoProgressCap seed {seed}: final stood still at most {worst} ms; A paced on {paced} frames, {n} near the cap"
+        );
+        assert!(worst <= 8_500, "seed {seed}: the final frame stood still {worst} ms");
+        assert_eq!(paced, n, "seed {seed}: A paced by its backlog on a flowing link");
+        near += n;
     }
     assert!(near > 0, "A never came near the pending cap: the test doesn't bite");
 }
@@ -3329,6 +3362,44 @@ fn a_forged_epoch_certificate_is_refused_and_the_genuine_one_taken() {
     assert_eq!(give(&mut s, cert(proposals, top)), Ok(()));
     s.run_to_epoch(1, 1, 10_000);
     assert_eq!(s.nodes[1].members(), s.sorted(&[0, 1]));
+}
+
+/// F3 S2 (@item:primordial-engine/f3-s2-pe-agree-cuts-follow-what-voters-hold-and-h): at n = 2 a member whose replica
+/// steps 8 s or 15 s behind used to stall finality for good. The leader named cuts near the present, the slow member
+/// could root each only once it had stepped there, and every view timed out first. With `Progress`, the leader names
+/// no frame beyond the q-th stepped frame, so finality goes on at the slow member's pace.
+#[test]
+fn at_n_2_finality_follows_a_member_stepping_behind() {
+    for behind in [480, 900] {
+        let mut s = Sim::new(2, 51);
+        s.per_frame = vec![Some((2, 0)); 2];
+        s.behind[1] = behind;
+        s.run(30_000);
+        let present = 30 * 60;
+        for i in 0..2 {
+            let f = s.final_frame(i).0;
+            println!("behind {behind}: member {i} final {f} (present {present})");
+            assert!(f + behind + 120 >= present, "member {i} final {f}, the slow member steps at {}", present - behind);
+        }
+        s.assert_same_final_log();
+    }
+}
+
+/// F3 S2: at n = 4 one member stepping 8 s behind doesn't slow the others' finality. The q-th stepped frame (q = 3) is
+/// a healthy member's.
+#[test]
+fn at_n_4_one_member_stepping_behind_leaves_the_others_final_lag_unchanged() {
+    let run = |behind: u64| {
+        let mut s = Sim::new(4, 52);
+        s.per_frame = vec![Some((2, 0)); 4];
+        s.behind[3] = behind;
+        s.run(20_000);
+        s.assert_same_final_log();
+        (0..3).map(|i| s.final_frame(i).0).min().unwrap()
+    };
+    let (healthy, one_slow) = (run(0), run(480));
+    println!("the others' lowest final frame: {healthy} all healthy, {one_slow} with one member 480 frames behind");
+    assert!(one_slow + 30 >= healthy, "{one_slow} against {healthy}");
 }
 
 /// M1 redo F4 (@item:primordial-engine/m1-redo-f4-pe-agree-s-cost-per-received-entry-gr): a member whose replica steps

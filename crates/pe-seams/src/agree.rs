@@ -496,6 +496,14 @@ pub trait Agreement: EntrySource + Send {
     fn backlogged(&self) -> bool {
         false
     }
+
+    /// The driver's replica has stepped every frame below `frame` (its next frame to step), so it can root a cut at
+    /// `frame` or below. Called once per tick; a source may ignore it. pe-agree reports it to its peers in `Progress`
+    /// and, as leader, names no cut beyond what a quorum has stepped (F3 S2). A driver that never calls it is taken to
+    /// keep up with the present.
+    fn stepped(&mut self, frame: Frame) {
+        let _ = frame;
+    }
 }
 
 #[cfg(test)]

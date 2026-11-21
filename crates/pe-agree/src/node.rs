@@ -209,7 +209,8 @@ impl NodeConfig {
         // v7: membership by epochs (Admit): the governance fold's NotAuthorized and NoChange voids, epochs that admit.
         // v8: no new setting, but a member that missed its epoch's end fetches the epoch certificate (Wire::FetchEpochCert,
         // Wire::EpochCert), a wire change.
-        let mut h = Hasher::new("pe.agree.consensus.v8");
+        // v9: no new setting, but members send `Progress` (Wire::Progress, F3 S2), a wire change.
+        let mut h = Hasher::new("pe.agree.consensus.v9");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
@@ -350,6 +351,13 @@ pub struct Node {
     /// `AlreadyVotedThisView`), above the final height: cast again on a pinned re-proposal of the cut (L4'), whose
     /// driver votes each cut once (agreement.md 3).
     pinned_roots: BTreeMap<CutRef, (Hash, SelfTest)>,
+    /// The frame the driver's replica has stepped to (S3's `stepped`); none if the driver never says, which counts as
+    /// keeping up with the present (F3 S2).
+    stepped: Option<Frame>,
+    /// Each other member's highest stepped frame, from its `Progress`.
+    progress: BTreeMap<MemberKey, Frame>,
+    /// When this member last sent its own `Progress` (ns).
+    progress_sent: Option<i64>,
     /// Votes cast again on a pinned re-proposal.
     recasts: u64,
     /// Per author: the rate budget's tokens (thousandths of an entry) and when they were last topped up, and how many
@@ -718,6 +726,9 @@ impl Node {
             void_reasons: BTreeMap::new(),
             holds: BTreeMap::new(),
             pinned_roots: BTreeMap::new(),
+            stepped: None,
+            progress: BTreeMap::new(),
+            progress_sent: None,
             recasts: 0,
             budget: BTreeMap::new(),
             pending_by_author: BTreeMap::new(),
@@ -2111,6 +2122,71 @@ impl Node {
         out
     }
 
+    /// This member's stepped frame as `Progress` reports it: the driver's, or the present if the driver never says.
+    fn own_stepped(&self) -> Option<Frame> {
+        self.stepped.or(self.present)
+    }
+
+    /// Send this member's `Progress` once a cut interval (F3 S2): its stepped frame and its linked heads beyond its
+    /// final cut, to every other member of its epoch.
+    fn send_progress(&mut self) {
+        let now = self.now.0;
+        if self.progress_sent.is_some_and(|t| now.saturating_sub(t) < self.cfg.timing.cadence_ns) {
+            return;
+        }
+        let Some(stepped) = self.own_stepped() else { return };
+        self.progress_sent = Some(now);
+        let heads = self.heads_beyond_final();
+        self.send_all(Lane::Protocol, &Wire::Progress { stepped, heads }, &[]);
+    }
+
+    /// A member's `Progress`: keep its stepped frame, and take its head on this member's own chain as an
+    /// acknowledgement, as a vote's are (the backlog's acks, F3 S2). A stepped frame never moves back.
+    fn take_progress(&mut self, from: MemberKey, stepped: Frame, heads: Vec<pe_seams::ChainHead>, at: HostTime) {
+        if from == self.me || !self.cfg.members.contains(&from) {
+            return;
+        }
+        let mine = self.my_head.map(|(k, _, _)| k);
+        for h in &heads {
+            if Some(ChainKey { author: h.author, chain: h.chain }) == mine {
+                let a = self.acked.entry(from).or_default();
+                if h.seq > *a {
+                    *a = h.seq;
+                    self.sample_ack_delay(from, h.seq, at.0);
+                }
+            }
+        }
+        let s = self.progress.entry(from).or_insert(stepped);
+        *s = (*s).max(stepped);
+    }
+
+    /// The progress cap (F3 S2): the highest frame a cut may name so that a quorum can root and vote it without
+    /// waiting, the q-th highest stepped frame among the members (this one included). The q-th member, not the slowest:
+    /// a healthy quorum never waits on its slowest member. None until q members have reported (this one counts).
+    ///
+    /// The cap is on the frame only. A second clause, below the stamp of each chain's first entry fewer than q members
+    /// report holding, stalled a slow link: B's `Progress` reaches A a one-way delay late, so A's cuts fell below the
+    /// B-led parent and A's views timed out (9.1 s stand-still on B -> A +1.2 s [V]). A voter that lacks an entry a cut
+    /// names fetches it, as before; a solicited fetch is exempt from the pending cap.
+    fn progress_cap(&self) -> Option<Frame> {
+        if self.core.mutated(Mutation::NoProgressCap) {
+            return None;
+        }
+        let q = self.core.quorum();
+        let mut stepped: Vec<Frame> = self
+            .progress
+            .iter()
+            .filter(|(m, _)| self.cfg.members.contains(m) && **m != self.me)
+            .map(|(_, s)| *s)
+            .collect();
+        stepped.push(self.own_stepped()?);
+        if q == 0 || stepped.len() < q {
+            return None;
+        }
+        stepped.sort_unstable_by(|a, b| b.cmp(a));
+        Some(stepped[q - 1])
+    }
+
     /// The outage rule's leader side (agreement.md 3, @fable-reviewer's form in coordinator): the
     /// highest frame a cut may name, the lowest last-held stamp among other members' chains whose claimed head is
     /// ahead of what this member holds, so their backlog isn't void as late when it arrives. Each such chain is waited
@@ -2518,6 +2594,10 @@ impl Agreement for Node {
         Node::backlogged(self)
     }
 
+    fn stepped(&mut self, frame: Frame) {
+        self.stepped = Some(self.stepped.map_or(frame, |s| s.max(frame)));
+    }
+
     /// S3 v1.11: pe-app's inviter reads these, so the defaults (0, `None`) would leave every join unstarted.
     fn epoch(&self) -> u64 {
         Node::epoch(self)
@@ -2670,6 +2750,10 @@ impl Agreement for Node {
                 Ok(())
             }
             Wire::EpochCert { epoch, proposals, top } => self.take_epoch_cert(from, epoch, proposals, top, at),
+            Wire::Progress { stepped, heads } => {
+                self.take_progress(from, stepped, heads, at);
+                Ok(())
+            }
             Wire::FetchEntries(ids) => {
                 let es: Vec<SignedEntry> = ids
                     .iter()
@@ -2733,7 +2817,11 @@ impl Agreement for Node {
         self.report_lateness();
         self.core.tick(now, self.signer.as_ref());
         let lag = self.cut_lag_frames();
-        let cap = self.backlog_cap();
+        let cap = match (self.backlog_cap(), self.progress_cap()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        self.send_progress();
         self.tick_old_epoch();
         self.greet_former();
         self.replay_later();
@@ -2756,7 +2844,8 @@ impl Agreement for Node {
             }
         } else if let (Some(lead), Some(present)) = (lead, self.present) {
             // On the grid: the latest grid frame at or below the present less the lag, and at or below the backlog
-            // cap (the outage rule). A cap at or below the parent's frame proposes nothing yet.
+            // cap (the outage rule) and the progress cap (F3 S2). A cap at or below the parent's frame proposes nothing
+            // yet.
             let k = self.cfg.cut_every(self.rate_hz);
             let below = cap.map_or(present.0.saturating_sub(lag), |c| c.0.min(present.0.saturating_sub(lag)));
             let frame = Frame(below / k * k);
