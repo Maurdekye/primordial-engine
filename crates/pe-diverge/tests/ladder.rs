@@ -1217,6 +1217,49 @@ fn a_joiner_imports_e_whole_and_nothing_counts_as_a_divergence() {
     assert!(net.imported_only_truth(VICTIM, 0));
 }
 
+/// F3 (@item:primordial-engine/a-member-that-can-t-simulate-in-real-time-freeze, design v2 S4): a member that fell a
+/// minute behind resyncs at a final cut the others certified, as a join: from the cut's other voters, verified against
+/// its certified root, counted as a resync and as nothing else.
+#[test]
+fn a_resync_at_a_final_cut_imports_it_whole_and_counts_only_as_a_resync() {
+    let (mut net, e) = joining_net(40);
+    let now = net.now();
+    let v = &mut net.peers[VICTIM];
+    v.d.resync(&e, &mut v.r, now);
+    assert_eq!(v.d.join_state(), Some(&Join::Joining { cut: e.cut.at }));
+    net.run(30);
+    let v = &net.peers[VICTIM];
+    assert_eq!(v.d.join_state(), Some(&Join::Joined { cut: e.cut.at }));
+    let c = v.d.counters().clone();
+    assert_eq!((c.resyncs, c.resync_failures, c.joins, c.join_failures), (1, 0, 0, 0), "{c:?}");
+    assert_eq!(c.cured_by_rung, [0; 5], "a resync is no cure: {c:?}");
+    assert_eq!((c.damaged, c.rung_failures, c.bundles_written, c.root_splits), (0, 0, 0, 0), "{c:?}");
+    assert!(v.events.is_empty(), "a resync emits no trace event: {:?}", v.events);
+    assert_eq!(v.d.verified_cut(), Some((e.cut.at, e.root)), "Cv is the resync's cut");
+    assert!(net.converged());
+    assert!(net.imported_only_truth(VICTIM, 0));
+}
+
+/// A resync no source serves fails as a resync, never toward the stop, and a later join counts as a join.
+#[test]
+fn a_resync_whose_sources_are_all_silent_fails_as_a_resync() {
+    let (mut net, e) = joining_net(10);
+    for i in 0..3 {
+        if i != VICTIM {
+            net.peers[i].silent = true;
+        }
+    }
+    let now = net.now();
+    let v = &mut net.peers[VICTIM];
+    v.d.resync(&e, &mut v.r, now);
+    net.run(26 * 60);
+    let v = &net.peers[VICTIM];
+    assert!(matches!(v.d.join_state(), Some(Join::Failed { cut, .. }) if *cut == e.cut.at), "{:?}", v.d.join_state());
+    let c = v.d.counters();
+    assert_eq!((c.resyncs, c.resync_failures, c.join_failures, c.rung_failures), (0, 1, 0, 0), "{c:?}");
+    assert!(v.events.iter().all(|e| !matches!(e, DivergeEvent::RungFailed { .. })), "{:?}", v.events);
+}
+
 #[test]
 fn a_join_whose_sources_are_all_silent_fails_and_is_never_counted_toward_the_stop() {
     let (mut net, e) = joining_net(10);
@@ -1341,6 +1384,129 @@ fn a_join_whose_sources_are_silent_for_two_seconds_still_joins() {
     assert_eq!(v.d.join_state(), Some(&Join::Joined { cut: e.cut.at }), "{:?}", v.d.counters());
     assert_eq!(v.d.counters().join_failures, 0);
     assert!(net.converged());
+}
+
+/// F3's branch at n = 2 (divergence.md 4.7): the session moves to a fresh line while this machine repairs a root
+/// split. The repair, the episode and Cv end with a note, never a failure, and the old line's later splits and final
+/// cuts are stale.
+#[test]
+fn a_line_switch_mid_repair_ends_it_with_a_note_not_a_failure() {
+    let mut net = Net::new(2, 40, &[]);
+    net.reemit = true;
+    net.run(20);
+    net.peers[1].r.faulty = Some(5);
+    net.peers[1].self_test_fails = true;
+    // The step-1 replay runs a while, so the switch lands while it is under way.
+    net.peers[1].r.pending_frames = 30;
+    for _ in 0..100 {
+        net.step();
+        if net.peers[1].d.is_repairing() {
+            break;
+        }
+    }
+    assert!(net.peers[1].d.is_repairing(), "a repair is under way");
+    let old = net.peers[1].d.line().expect("the line is known from the first final cut");
+    let new = LineId(Hash([7; 32]));
+    assert_ne!(old, new);
+    let p = &mut net.peers[1];
+    p.d.switch_line(new);
+    assert!(!p.d.is_repairing() && p.d.verified_cut().is_none() && p.d.open_since().is_none());
+    assert_eq!(p.d.line(), Some(new));
+    let notes = p.d.notes();
+    assert!(notes.iter().any(|n| n.starts_with("line switch") && n.contains("ended")), "{notes:?}");
+    assert_eq!(p.d.counters().line_switches, 1);
+    p.d.switch_line(new);
+    assert_eq!(p.d.counters().line_switches, 1, "a switch to the same line changes nothing");
+    let stale = p.d.counters().stale_replies;
+    // The others stay on the old line: its splits and final cuts keep coming, and are stale here.
+    net.run(40);
+    let p = &net.peers[1];
+    let failed: Vec<_> = p.events.iter().filter(|e| matches!(e, DivergeEvent::RungFailed { .. })).collect();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert!(p.d.counters().stale_replies > stale, "{:?}", p.d.counters());
+    assert!(!p.d.is_repairing() && p.d.verified_cut().is_none());
+    // An old-line `CutFinal` the driver hands over directly moves nothing (@design-reviewer's L1 on fc24bc9c).
+    let p = &mut net.peers[1];
+    let before = p.d.final_seen();
+    p.d.on_cut_final(CutRef { line: old, height: 1 << 40, frame: Frame(1 << 40) });
+    assert_eq!(p.d.final_seen(), before);
+}
+
+/// A donor keeps the snapshot it serves (divergence.md 4.5a; @design-reviewer's M1 on fc24bc9c): a root under an open
+/// serve is named to the replica (`set_served`) and stays servable past `T_keep` while the peer keeps asking, so a
+/// fetch slower than `T_keep` isn't told `NotHeld` partway. It is let go once the peer stops asking for `t_join_peer`.
+#[test]
+fn a_donor_keeps_serving_a_root_past_t_keep_while_its_peer_asks() {
+    let mut net = Net::new(3, 40, &[]);
+    net.run(20);
+    let (cut, root) = net.peers[0].d.verified_cut().expect("a verified cut");
+    let asker = net.peers[2].key;
+    let ask = |net: &mut Net| -> Vec<Msg> {
+        let now = net.now();
+        let p = &mut net.peers[0];
+        let m = Msg::RecordRequest { cut, root, keys: vec![obj(3)] }.encode().unwrap().to_vec();
+        let _ = p.d.receive(asker, &m, &mut p.r, &mut p.src, now, &common::Clock);
+        p.d.tick(now, &common::Clock, &mut p.r, &mut p.src).iter().filter_map(|o| Msg::decode(&o.bytes).ok()).collect()
+    };
+    let served = |r: &Vec<Msg>| r.iter().any(|m| matches!(m, Msg::RecordReply { cut: c, .. } if *c == cut));
+    assert!(served(&ask(&mut net)));
+    assert_eq!(net.peers[0].r.served.last(), Some(&vec![root]), "named to the replica at once");
+    // Four seconds of final cuts later (T_keep is 1.5 s), asked every second: still served, still named.
+    for _ in 0..4 {
+        net.run(60);
+        let r = ask(&mut net);
+        assert!(served(&r), "{r:?}");
+    }
+    assert_eq!(net.peers[0].r.served.last(), Some(&vec![root]));
+    // Unasked for longer than t_join_peer (5 s): let go, and no longer servable.
+    net.run(6 * 60);
+    assert_eq!(net.peers[0].r.served.last(), Some(&vec![]), "{:?}", net.peers[0].r.served);
+    let r = ask(&mut net);
+    assert!(r.iter().any(|m| matches!(m, Msg::NotHeld { cut: c, .. } if *c == cut)), "{r:?}");
+}
+
+/// A peer holds at most two open serves, its newest (@design-reviewer's L1 on fe61d5f1): asking for each new final
+/// cut pins no more than two snapshots.
+#[test]
+fn a_peer_pins_at_most_two_served_roots_the_newest() {
+    let mut net = Net::new(3, 40, &[]);
+    net.run(20);
+    let asker = net.peers[2].key;
+    let mut asked = Vec::new();
+    for _ in 0..4 {
+        let (cut, root) = net.peers[0].d.verified_cut().expect("a verified cut");
+        let now = net.now();
+        let p = &mut net.peers[0];
+        let m = Msg::RecordRequest { cut, root, keys: vec![obj(3)] }.encode().unwrap().to_vec();
+        let _ = p.d.receive(asker, &m, &mut p.r, &mut p.src, now, &common::Clock);
+        asked.push(root);
+        net.run(16);
+    }
+    assert_eq!(asked.iter().collect::<std::collections::BTreeSet<_>>().len(), 4, "four different roots");
+    let mut newest = asked[2..].to_vec();
+    newest.sort();
+    assert_eq!(net.peers[0].r.served.last(), Some(&newest), "{:?}", net.peers[0].r.served);
+}
+
+/// Serving is keyed by line (divergence.md 4.7): a request naming a root at a cut of another line is `NotHeld`,
+/// even though the root is servable on its own line.
+#[test]
+fn a_request_naming_another_line_is_not_held() {
+    let mut net = Net::new(2, 40, &[]);
+    net.run(20);
+    let (cut, root) = net.peers[0].d.verified_cut().expect("a verified cut");
+    let other = CutRef { line: LineId(Hash([7; 32])), ..cut };
+    let (asker, now) = (net.peers[1].key, net.now());
+    let p = &mut net.peers[0];
+    let ask = |m: Msg| m.encode().unwrap().to_vec();
+    for c in [other, cut] {
+        let _ =
+            p.d.receive(asker, &ask(Msg::PhysicsRequest { cut: c, root }), &mut p.r, &mut p.src, now, &common::Clock);
+    }
+    let replies: Vec<Msg> =
+        p.d.tick(now, &common::Clock, &mut p.r, &mut p.src).iter().filter_map(|o| Msg::decode(&o.bytes).ok()).collect();
+    assert!(replies.iter().any(|m| matches!(m, Msg::NotHeld { cut: c, .. } if *c == other)), "{replies:?}");
+    assert!(replies.iter().any(|m| matches!(m, Msg::PhysicsReply { cut: c, .. } if *c == cut)), "{replies:?}");
 }
 
 /// @engine-architect's F1 race (e): the replica came to hold the reference's root at the split cut without a cure

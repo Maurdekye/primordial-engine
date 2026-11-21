@@ -18,8 +18,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use pe_seams::{
     ChainHead, Cut, CutImport, CutRef, DivergeEvent, DomainId, EntrySource, Fault, FaultKind, FinalCut, Finalized,
-    Frame, FrameClock, GroupSel, Hash, HostTime, ImportError, Lane, LeafKey, MemberKey, Nibbles, Node, Outgoing,
-    PeerId, PhysicsImage, Record, Replica, RootError, Rung, SelfTest, Tree, TreePath, frames_ceil,
+    Frame, FrameClock, GroupSel, Hash, HostTime, ImportError, Lane, LeafKey, LineId, MemberKey, Nibbles, Node,
+    Outgoing, PeerId, PhysicsImage, Record, Replica, RootError, Rung, SelfTest, Tree, TreePath, frames_ceil,
 };
 
 use crate::bundle::FaultBundle;
@@ -336,6 +336,9 @@ struct Stuck {
     probe_at: Option<HostTime>,
 }
 
+/// The open serves one peer may hold (divergence.md 4.2's fetch time): the newest, and the one it may still be finishing.
+const SERVES_PER_PEER: usize = 2;
+
 pub struct Diverge {
     cfg: Config,
     me: MemberKey,
@@ -367,6 +370,11 @@ pub struct Diverge {
     /// The join from a final cut, if one was asked ([`Diverge::join`]), and when it gives up (`t_join`).
     join: Option<Join>,
     join_deadline: Option<HostTime>,
+    /// The join under way is a member's resync ([`Diverge::resync`]), counted as `resyncs` / `resync_failures`.
+    resyncing: bool,
+    /// The line this machine's session is on: set by the first final cut, and moved only by [`Diverge::switch_line`].
+    /// A final cut or split of another line is stale.
+    line: Option<LineId>,
     /// Roots I serve: the agreed roots of recent final cuts, and my root at a cut in a root split.
     servable: BTreeMap<Hash, CutRef>,
     buckets: BTreeMap<MemberKey, Bucket>,
@@ -374,6 +382,12 @@ pub struct Diverge {
     ask_buckets: BTreeMap<MemberKey, Bucket>,
     /// When each peer was last served each root's physics image.
     physics_served: BTreeMap<(MemberKey, Hash), HostTime>,
+    /// Roots this machine is serving a peer, with when it first and last served that peer that root (divergence.md
+    /// 4.5a): named to the replica ([`Replica::set_served`]) so their snapshot outlives `T_keep` while a fetch runs,
+    /// for at most `t_join` from the first serve and `t_join_peer` from the last.
+    serving: BTreeMap<(MemberKey, Hash), (HostTime, HostTime)>,
+    /// What [`Replica::set_served`] was last told.
+    served_named: Vec<Hash>,
     counters: Counters,
     events: Vec<DivergeEvent>,
     /// Plain information for the log that is no seam event (`notes`).
@@ -409,10 +423,14 @@ impl Diverge {
             stuck: None,
             join: None,
             join_deadline: None,
+            resyncing: false,
+            line: None,
             servable: BTreeMap::new(),
             buckets: BTreeMap::new(),
             ask_buckets: BTreeMap::new(),
             physics_served: BTreeMap::new(),
+            serving: BTreeMap::new(),
+            served_named: Vec::new(),
             counters: Counters::default(),
             events: Vec::new(),
             notes: Vec::new(),
@@ -462,14 +480,107 @@ impl Diverge {
     /// `on_final`. [`Diverge::is_repairing`] is true until the import ends (not while a `NotReady` finalize waits), so
     /// read [`Diverge::join_state`]; the replica publishes no view, so no health shows the join.
     pub fn join(&mut self, e: &FinalCut, inviter: MemberKey, replica: &mut dyn Replica, now: HostTime) {
+        self.resyncing = false;
+        self.start_join(e, Some(inviter), replica, now);
+    }
+
+    /// A member that could not keep real time resyncs at a final cut `e` the others certified without it
+    /// (divergence.md 4.6; @item:primordial-engine/a-member-that-can-t-simulate-in-real-time-freeze): exactly a join
+    /// at `e` ([`Diverge::join`]), from `e`'s voters, verified against `e`'s certified root, and imported above this
+    /// member's stepped frame. Anything the ladder had open is dropped first: the member is frozen, `e` is certified
+    /// past what it reached, and what it was repairing toward is behind `e` or will be proposed again. It is no
+    /// divergence and counts only `resyncs` / `resync_failures`; [`Diverge::join_state`] says when it is done, and
+    /// until then the embedding runs no driver, as for a join. At `n = 2` no such `e` exists while this member is
+    /// slow (its own vote is needed for every cut), so the embedding never calls this there.
+    pub fn resync(&mut self, e: &FinalCut, replica: &mut dyn Replica, now: HostTime) {
+        self.repair = None;
+        self.replay = None;
+        self.episode = None;
+        self.reask = None;
+        self.evidence = None;
+        self.evidence_failed = None;
+        self.stuck = None;
+        self.resyncing = true;
+        self.start_join(e, None, replica, now);
+    }
+
+    fn start_join(&mut self, e: &FinalCut, first: Option<MemberKey>, replica: &mut dyn Replica, now: HostTime) {
         self.join = Some(Join::Joining { cut: e.cut.at });
         self.join_deadline = Some(now.plus(self.cfg.t_join));
         // The joiner holds nothing verified: Cv starts at E, once finalize agrees there.
         self.cv = None;
         self.pending = None;
-        let mut sources = vec![inviter];
-        sources.extend(e.voters.iter().map(|v| v.0).filter(|v| *v != inviter));
+        let me = self.me;
+        let mut sources: Vec<MemberKey> = first.into_iter().collect();
+        sources.extend(e.voters.iter().map(|v| v.0).filter(|v| Some(*v) != first && *v != me));
         self.start_rung2(e.cut.clone(), Some(e.clone()), e.root, sources, None, replica, now);
+    }
+
+    /// F3's branch at `n = 2` (divergence.md 4.7): the session moved to the fresh line `to`. Everything under way on
+    /// the old line ends with a note, never a failure: a replay, a repair or join, a root split's episode, a re-ask,
+    /// replay evidence and a kept final cut. Cv goes too, since it is a cut of the old line and rung 1 replays only from
+    /// a verified cut of the current line, so the next final cut on `to` is compared as a first one. Roots servable at
+    /// cuts of the old line are dropped: serving is keyed by line, and a request naming another line's cut is
+    /// `NotHeld`. A member that rejoins on `to` calls [`Diverge::resync`] next.
+    pub fn switch_line(&mut self, to: LineId) {
+        if self.line == Some(to) {
+            return;
+        }
+        let from = self.line;
+        let mut ended = Vec::new();
+        if let Some((at, _, rung)) = self.busy() {
+            ended.push(format!("rung {rung} at {at:?}"));
+        }
+        if let Some(ep) = &self.episode {
+            ended.push(format!("the root split at {:?}", ep.cut.at));
+        }
+        if let Some(Join::Joining { cut }) = &self.join {
+            ended.push(format!("the join at {cut:?}"));
+        }
+        self.replay = None;
+        self.repair = None;
+        self.episode = None;
+        self.reask = None;
+        self.evidence = None;
+        self.evidence_failed = None;
+        self.pending = None;
+        self.stuck = None;
+        self.cv = None;
+        self.cv_cut = None;
+        self.final_seen = None;
+        if matches!(self.join, Some(Join::Joining { .. })) {
+            self.join = None;
+            self.join_deadline = None;
+        }
+        self.resyncing = false;
+        self.servable.retain(|_, c| c.line == to);
+        self.physics_served.clear();
+        self.serving.retain(|(_, r), _| self.servable.contains_key(r));
+        self.line = Some(to);
+        self.counters.line_switches += 1;
+        let what = if ended.is_empty() { "nothing was under way".to_string() } else { ended.join(", ") + " ended" };
+        self.notes.push(format!("line switch from {from:?} to {to:?}: {what} (no failure)"));
+    }
+
+    /// The line this machine's session is on, once known.
+    pub fn line(&self) -> Option<LineId> {
+        self.line
+    }
+
+    /// The newest final cut agreement reported on this line ([`Diverge::on_cut_final`]).
+    pub fn final_seen(&self) -> Option<CutRef> {
+        self.final_seen
+    }
+
+    /// Whether `cut` is of another line than the session's: stale after a [`Diverge::switch_line`].
+    fn other_line(&mut self, cut: &CutRef) -> bool {
+        match self.line {
+            None => {
+                self.line = Some(cut.line);
+                false
+            }
+            Some(l) => l != cut.line,
+        }
     }
 
     pub fn is_repairing(&self) -> bool {
@@ -523,6 +634,11 @@ impl Diverge {
     /// passes every one as it arrives: a root split's pick waits until `EntrySource::final_cut` names the newest one
     /// (divergence.md 5, step 3).
     pub fn on_cut_final(&mut self, cut: CutRef) {
+        // Another line's cut, drained after a switch, says nothing about this line's finality (4.7; @design-reviewer's
+        // L1 on fc24bc9c): it would hold `try_pick`'s wait for the newest final cut for ever. The line isn't set here.
+        if self.line.is_some_and(|l| l != cut.line) {
+            return;
+        }
         if self.final_seen.is_none_or(|f| (cut.frame, cut.height) > (f.frame, f.height)) {
             self.final_seen = Some(cut);
         }
@@ -538,6 +654,10 @@ impl Diverge {
         now: HostTime,
         clock: &dyn FrameClock,
     ) {
+        if self.other_line(&fc.cut.at) {
+            self.counters.stale_replies += 1;
+            return;
+        }
         self.on_cut_final(fc.cut.at);
         self.note_servable(fc.root, fc.cut.at, clock);
         if self.cv.is_some_and(|(cv, _)| fc.cut.at.frame <= cv.frame) {
@@ -650,6 +770,11 @@ impl Diverge {
         now: HostTime,
         clock: &dyn FrameClock,
     ) {
+        if self.other_line(&cut.at) {
+            // A split of the line this session left (4.7): nothing to repair there.
+            self.counters.stale_replies += 1;
+            return;
+        }
         if self.episode.as_ref().is_none_or(|e| e.cut.at != cut.at) {
             // Step 1: replay from Cv (which moves neither Cv nor the floor, S2 v1), vote again with the root it gives,
             // and run the self-test, once per episode: its verdict is final for the split (S3 v1.3). Transient faults
@@ -775,6 +900,7 @@ impl Diverge {
         replica: &mut dyn Replica,
         source: &mut dyn EntrySource,
     ) -> Vec<Outgoing> {
+        self.name_served(replica, now);
         // Work the replica runs over several ticks (`Pending`, S2 v1.1) is asked again with the same input.
         if self.replay.is_some() {
             self.poll_replay(replica, source, now, clock);
@@ -821,6 +947,36 @@ impl Diverge {
 
     /// A message on the repair lane.
     pub fn receive(
+        &mut self,
+        from: PeerId,
+        bytes: &[u8],
+        replica: &mut dyn Replica,
+        source: &mut dyn EntrySource,
+        now: HostTime,
+        clock: &dyn FrameClock,
+    ) -> Result<(), Fault> {
+        let r = self.receive_one(from, bytes, replica, source, now, clock);
+        // A serve that started here is named to the replica at once, before its next finalize could release it.
+        self.name_served(replica, now);
+        r
+    }
+
+    /// Names the roots under an open serve to the replica (S2 v1.9 `set_served`, level-triggered), after dropping
+    /// serves past their bounds: `t_join_peer` since the peer last asked, `t_join` since it first did. Told again only
+    /// when the list changes.
+    fn name_served(&mut self, replica: &mut dyn Replica, now: HostTime) {
+        let (idle, whole) = (self.cfg.t_join_peer, self.cfg.t_join);
+        self.serving.retain(|_, (first, last)| now <= last.plus(idle) && now <= first.plus(whole));
+        let mut roots: Vec<Hash> = self.serving.keys().map(|k| k.1).collect();
+        roots.sort();
+        roots.dedup();
+        if roots != self.served_named {
+            replica.set_served(&roots);
+            self.served_named = roots;
+        }
+    }
+
+    fn receive_one(
         &mut self,
         from: PeerId,
         bytes: &[u8],
@@ -952,8 +1108,15 @@ impl Diverge {
         self.servable.insert(root, cut);
         let keep = frames_ceil(self.cfg.t_keep, clock.rate_hz());
         let newest = self.servable.values().map(|c| c.frame.0).max().unwrap_or(0);
+        // A root under an open serve stays servable past `T_keep` (its snapshot is held by `set_served`), so a fetch
+        // that outlasts it isn't told `NotHeld` partway (@design-reviewer's M1 on fc24bc9c).
+        let serving: BTreeSet<Hash> = self.serving.keys().map(|k| k.1).collect();
         while self.servable.len() > 2 {
-            let Some((&oldest, c)) = self.servable.iter().min_by_key(|(_, c)| c.frame.0) else { break };
+            let Some((&oldest, c)) =
+                self.servable.iter().filter(|(r, _)| !serving.contains(*r)).min_by_key(|(_, c)| c.frame.0)
+            else {
+                break;
+            };
             if newest.saturating_sub(c.frame.0) <= keep {
                 break;
             }
@@ -967,7 +1130,9 @@ impl Diverge {
     /// above zero (the plan's "a flooding member's excess is refused"). Otherwise the answer is sent here: `NotHeld`
     /// for a root not served, `Busy` with the wait for a peer over its budget. A refusal is counted.
     fn may_serve(&mut self, peer: MemberKey, cut: CutRef, root: Hash, now: HostTime) -> bool {
-        let answer = if !self.servable.contains_key(&root) {
+        // Keyed by line (4.7): a root is served only at a cut of the line it was agreed on.
+        let held = self.servable.get(&root).is_some_and(|c| c.line == cut.line);
+        let answer = if !held {
             match self.replaying_retry_us(&root) {
                 Some(us) => Serve::Busy(us),
                 None => Serve::NotHeld,
@@ -982,7 +1147,22 @@ impl Diverge {
             }
         };
         match answer {
-            Serve::Yes => return true,
+            Serve::Yes => {
+                self.serving.entry((peer, root)).and_modify(|t| t.1 = now).or_insert((now, now));
+                // At most `SERVES_PER_PEER` open serves per peer, its newest (@design-reviewer's L1 on fe61d5f1): a
+                // fetch only moves to a newer cut, so an honest peer loses nothing, and a flooding one can't pin a
+                // snapshot per final cut for `t_join`.
+                loop {
+                    let mine: Vec<Hash> = self.serving.keys().filter(|k| k.0 == peer).map(|k| k.1).collect();
+                    if mine.len() <= SERVES_PER_PEER {
+                        break;
+                    }
+                    let frame = |r: &Hash| self.servable.get(r).map_or(0, |c| c.frame.0);
+                    let Some(oldest) = mine.into_iter().min_by_key(frame) else { break };
+                    self.serving.remove(&(peer, oldest));
+                }
+                return true;
+            }
             Serve::NotHeld => self.send(peer, Msg::NotHeld { cut, root }),
             Serve::Busy(retry_after_us) => self.send(peer, Msg::Busy { cut, root, retry_after_us }),
         }
@@ -1731,7 +1911,11 @@ impl Diverge {
 
     /// A join's import matched E's root and finalize agreed there.
     fn joined(&mut self, cut: CutRef) {
-        self.counters.joins += 1;
+        if std::mem::take(&mut self.resyncing) {
+            self.counters.resyncs += 1;
+        } else {
+            self.counters.joins += 1;
+        }
         self.join = Some(Join::Joined { cut });
     }
 
@@ -1793,7 +1977,11 @@ impl Diverge {
     /// source rotation.
     fn fail(&mut self, rung: u8, cut: CutRef, why: &str) -> bool {
         if rung == 2 && self.joining() {
-            self.counters.join_failures += 1;
+            if std::mem::take(&mut self.resyncing) {
+                self.counters.resync_failures += 1;
+            } else {
+                self.counters.join_failures += 1;
+            }
             self.join = Some(Join::Failed { cut, why: why.to_string() });
             return true;
         }

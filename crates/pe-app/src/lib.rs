@@ -39,6 +39,7 @@ pub mod replay;
 pub mod scripted;
 pub mod shown;
 pub mod sim;
+pub mod slow;
 #[cfg(test)]
 mod sources;
 pub mod stamp;

@@ -52,6 +52,8 @@ pub struct Counters {
     pub bad_messages: u64,
     /// Well-formed replies nobody was waiting for (late, or from a source already given up): ignored.
     pub stale_replies: u64,
+    /// Moves of the session to a fresh line (F3's branch at n = 2, [`crate::Diverge::switch_line`]).
+    pub line_switches: u64,
     /// Root splits whose target this machine already held without a cure (an import that finished after its repair
     /// was dropped): the target was voted again ([`crate::Action::Revote`]) instead of repaired to.
     pub revotes_held: u64,
@@ -62,4 +64,8 @@ pub struct Counters {
     /// Joins from a final cut whose import matched its certified root, and joins that failed ([`crate::Join`]).
     pub joins: u64,
     pub join_failures: u64,
+    /// Resyncs of a member that could not keep real time, at a final cut the others certified ([`crate::Diverge::resync`]),
+    /// and resyncs that failed.
+    pub resyncs: u64,
+    pub resync_failures: u64,
 }
