@@ -520,7 +520,7 @@ mod tests {
             assert_eq!(f.code, *code, "{reason:?}: {}", f.message);
             assert!(!f.message.starts_with("The world refused this change ("), "{reason:?} reached the wildcard");
             assert!(!f.message.contains("  "), "{reason:?}: a run of spaces in {:?}", f.message);
-            assert!(f.message.ends_with('.') || f.message.ends_with("first."), "{reason:?}: {:?}", f.message);
+            assert!(f.message.ends_with('.'), "{reason:?}: {:?}", f.message);
         }
     }
 

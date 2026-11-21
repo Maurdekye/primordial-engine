@@ -224,7 +224,9 @@ impl CaptureServer {
     /// Once a frame, after the loop's present: collects a finished readback, then starts the next order, drawn from
     /// `view`. `player`: the loop's own camera, for `Aim::Player` (none on a headless loop). Returns what happened to
     /// orders this call, for the loop's [`crate::present::Presenter::capture_event`] (render.md 13): each order taken
-    /// is `Queued`, then `Drawn` once its pass is recorded and submitted, or `TimedOut` if its deadline passes first.
+    /// is `Queued`, then `Drawn` once its pass is recorded and submitted, and `TimedOut` if its deadline passes before
+    /// its shot is answered. These are events, not one end state per order: an order drawn whose readback then misses
+    /// its deadline counts `Drawn` and `TimedOut`, and one whose start fails counts only `Queued`.
     pub fn serve(&mut self, renderer: &mut Renderer, view: &FrameView, player: Option<&Camera>) -> Vec<CaptureEvent> {
         let mut events = Vec::new();
         if let Some(f) = &self.in_flight {
