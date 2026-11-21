@@ -207,13 +207,13 @@ fn moves_user(
     ops.iter().position(|op| target(op).is_some_and(&is_user))
 }
 
+/// How long an accepted change's answer waits for pe-app to publish its frame (`Api::published`): a tick or two.
+const PUBLISH_WAIT: Duration = Duration::from_millis(250);
+
 /// The existing objects an applied entry may have changed (api.md 5.3.2's `changed`, 4.2): each op's own object, the
 /// parent a create or copy adds to, and a moved, deleted or undeleted object's old and new parents. Objects the entry
 /// created are left out: `created` names them, and no connection can have read them before. The caller keeps only the
 /// candidates whose version is the entry's, so a candidate the entry didn't change in the end is dropped there.
-/// How long an accepted change's answer waits for pe-app to publish its frame (`Api::published`): a tick or two.
-const PUBLISH_WAIT: Duration = Duration::from_millis(250);
-
 fn changed_candidates(
     ops: &[pe_world::edit::Op],
     created: &[pe_core::ObjectId],

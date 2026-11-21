@@ -1,7 +1,8 @@
-//! By default (`HostOpts::inherit_stdin` off, as pe-app launches its `--agent`) the harness pe-mcp launches gets no
-//! standard input: pe-app reads its own console there (B's reply code, `quit`), and on Windows a child that shared that stdin could hang at start-up. While pe-app's console thread waits in a
-//! read on an inherited pipe, every other operation on the same file object waits behind it, and Python's start-up
-//! asks the handle its type. The self-test's step agent (T2) hung so in about half its runs under heavy.sh.
+//! By default (`HostOpts::inherit_stdin` off, as pe-app launches its `--agent`) the harness pe-mcp launches gets
+//! no standard input: pe-app reads its own console there (B's reply code, `quit`), and on Windows a child that
+//! shared that stdin could hang at start-up. While pe-app's console thread waits in a read on an inherited pipe,
+//! every other operation on the same file object waits behind it, and Python's start-up asks the handle its type.
+//! The self-test's step agent (T2) hung so in about half its runs under heavy.sh.
 //!
 //! The test runs this binary three ways: the test itself; a host, whose stdin is a pipe the test holds open and never
 //! writes, which launches the agent through `host::start`; and the agent, which reads its stdin to the end. With
