@@ -297,11 +297,18 @@ pub trait WorldModel: Send {
     fn take_replay_from(&mut self) -> Option<Frame> {
         None
     }
-    /// The frames from which this machine may not vote while it predicts (S2 v1.7's `vote_holds`): `c + 1` while a
-    /// prediction stands or its replay is pending. The default holds none.
-    fn vote_holds(&self) -> Vec<Frame> {
-        Vec::new()
+    /// The first frame the live history ran a prediction in, `c + 1`, while it stands or its replay is pending: no
+    /// keyframe or live root at or past it is a cut's, so a vote's or finalize's re-step starts from a state that
+    /// never ran it (C4, F3's preview slice; @coordinator-opus m2ee16f55894c), and this machine votes on the old code's
+    /// state the cut's entries select, never on its preview. The default never predicts.
+    fn predicted_from(&self) -> Option<Frame> {
+        None
     }
+    /// Whether the live frame about to end is canonical: a rung-1 replay's below its cut, whose root there is the
+    /// cut's entries' alone. No prediction activates in such a frame, though its entries are watched as in any live
+    /// frame, so a prediction still starts and ends there (C4). Set before each live frame's end. The default never
+    /// predicts.
+    fn set_canonical(&mut self, _canonical: bool) {}
     /// Whether the replica is stepping off its live history (`root_at_cut`'s re-step from a first difference): the
     /// model's machine state must not change there, so no prediction starts or runs in such a step. The default has
     /// no such state.
