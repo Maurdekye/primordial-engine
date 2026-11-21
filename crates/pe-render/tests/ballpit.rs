@@ -28,7 +28,10 @@
 //! - **Notices aren't checked here:** present.rs's and notices.rs's tests cover them over a batch and a gap.
 //!
 //! The quick test runs 1 seed × 5 delays in release (2 in a debug build). The full grid, 20 seeds × 5 delays, is
-//! `--ignored`; run it in release. Effects played and stopped at gaps are printed (`eff`, `effSt`); a played effect
+//! `--ignored`; run it in release. Each runs twice: the members over the lockstep mock, and over pe-agree
+//! (`pe_harness::ballpit::run_agree`; G7, the pull-ahead plan). Measured 2026-11-21 in release on the PC, one test
+//! thread: 97.6 s for the lockstep grid, 101.6 s for pe-agree's; the tables match at 10 and 25 ms and differ a little
+//! from 50 ms, where the two agreements order cuts differently, and both meet the target in every cell. Effects played and stopped at gaps are printed (`eff`, `effSt`); a played effect
 //! final before a stall plays on after it (display_layer.rs's gap tests).
 
 use std::collections::BTreeMap;
@@ -253,10 +256,21 @@ fn display_run(
     out
 }
 
+/// The agreement under the members: the lockstep mock, or pe-agree (G7, the pull-ahead plan).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Agree {
+    Lockstep,
+    PeAgree,
+}
+
 /// One (seed, delay) cell: the run once, then each member's display run in each mode.
-fn cell(seed: u64, delay_ms: u64, modes: &[Mode]) -> Vec<Vec<MemberResult>> {
+fn cell(seed: u64, delay_ms: u64, modes: &[Mode], agree: Agree) -> Vec<Vec<MemberResult>> {
     let cfg = BallPit::new(seed, delay_ms * MS, MEMBERS, BALLS, END, EVERY);
-    let run = ballpit::run(&cfg).expect("the ball-pit run builds");
+    let run = match agree {
+        Agree::Lockstep => ballpit::run(&cfg),
+        Agree::PeAgree => ballpit::run_agree(&cfg),
+    }
+    .expect("the ball-pit run builds");
     let vs = run.violations();
     assert!(vs.is_empty(), "seed {seed}, {delay_ms} ms: the run broke a property: {vs:#?}");
     let keys = ballpit::keys(MEMBERS).sorted_keys();
@@ -385,13 +399,13 @@ fn header(title: &str) {
 
 /// Runs `seeds` × `DELAYS_MS`, each cell once, displayed in every mode; prints a table per mode; returns the rows
 /// per mode and delay.
-fn grid(seeds: std::ops::Range<u64>, delays: &[u64]) -> Vec<(Mode, Vec<(u64, Row)>)> {
+fn grid(seeds: std::ops::Range<u64>, delays: &[u64], agree: Agree) -> Vec<(Mode, Vec<(u64, Row)>)> {
     let modes = modes();
     let mut rows: Vec<(Mode, Vec<(u64, Row)>)> = modes.iter().map(|&m| (m, Vec::new())).collect();
     for &delay in delays {
         let mut row: Vec<Row> = modes.iter().map(|_| Row::default()).collect();
         for seed in seeds.clone() {
-            for (k, members) in cell(seed, delay, &modes).iter().enumerate() {
+            for (k, members) in cell(seed, delay, &modes, agree).iter().enumerate() {
                 for m in members {
                     row[k].add(m);
                 }
@@ -403,7 +417,7 @@ fn grid(seeds: std::ops::Range<u64>, delays: &[u64]) -> Vec<(Mode, Vec<(u64, Row
     }
     let n = seeds.end - seeds.start;
     for (mode, rows) in &rows {
-        header(&format!("{}, {n} seed(s) (measured; per delay, summed over seeds and members)", mode.name));
+        header(&format!("{}, {n} seed(s), {agree:?} (measured; per delay, summed over seeds and members)", mode.name));
         for (delay, r) in rows {
             r.print(&format!("{delay} ms"));
         }
@@ -436,7 +450,13 @@ fn accept(rows: &[(Mode, Vec<(u64, Row)>)]) {
 /// The quick form, on the gate: one seed at every delay.
 #[test]
 fn the_presenter_meets_the_users_target_on_the_ball_pit() {
-    accept(&grid(1..2, QUICK_DELAYS_MS));
+    accept(&grid(1..2, QUICK_DELAYS_MS, Agree::Lockstep));
+}
+
+/// The quick form over pe-agree.
+#[test]
+fn the_presenter_meets_the_users_target_on_the_ball_pit_over_pe_agree() {
+    accept(&grid(1..2, QUICK_DELAYS_MS, Agree::PeAgree));
 }
 
 /// The plan's form: 20 seeds × 5 delays. Run in release: `cargo test -p pe-render --release --test ballpit -- --ignored
@@ -444,5 +464,12 @@ fn the_presenter_meets_the_users_target_on_the_ball_pit() {
 #[test]
 #[ignore]
 fn the_presenter_meets_the_users_target_over_20_seeds_and_5_delays() {
-    accept(&grid(1..21, &DELAYS_MS));
+    accept(&grid(1..21, &DELAYS_MS, Agree::Lockstep));
+}
+
+/// The plan's form over pe-agree.
+#[test]
+#[ignore]
+fn the_presenter_meets_the_users_target_over_20_seeds_and_5_delays_over_pe_agree() {
+    accept(&grid(1..21, &DELAYS_MS, Agree::PeAgree));
 }
