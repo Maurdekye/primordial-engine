@@ -1029,7 +1029,10 @@ measurements: the build-asymmetry draft, section 3 (@iter-bench and @engine-arch
   (`Refused`) if any file it lists lies outside the unpacked `src/` (or pe-sdk's `src/` for pe-sdk) or any
   `env-dep` line appears. rustc records every file a crate read (`include!`, `include_str!`, `include_bytes!`,
   `#[path]` modules) and every variable it asked for, set or not [V `build-asym/depinfo.log`]. It refuses what a
-  script tried to read, not what it got, so it refuses on every machine.
+  script tried to read, not what it got, so it refuses on every machine. The files are the script's and those of
+  the pe-sdk unit this build linked, as cargo's `compiler-artifact` records name it, never every `pe_sdk-*.d` in
+  the target: a target shared by builds against other pe-sdk copies (each deployed pe-app has its own) holds theirs
+  too, which this build never read (@api-eng m285cfd7268d9). If cargo names no pe-sdk unit, the build is refused.
 - **The job count pinned** (4 [I]): the bytes do not depend on it, peak memory does (item 5).
 - **Deterministic compile limits:** `-F long_running_const_eval`, so a const-eval loop is the same compile error
   everywhere; a raised `#![recursion_limit]` or `#![type_length_limit]` is refused [I].
