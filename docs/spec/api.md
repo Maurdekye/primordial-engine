@@ -490,11 +490,11 @@ One envelope for every refusal, in `apply`'s outcome, in `watch`, and in a dry r
 | `stale_version` | The object's version is not the one named; or a `duplicate`'s source subtree changed size since the base (pe-world's own size check, `OWN_CHECK`) | `read`, `now`, `field`, `winner` with the winning value. A copy's size check names no winner: the message says the subtree copied changed, so read it again |
 | `not_found` | An id, path or `$ref` names nothing | The deleting change as `winner`, when known |
 | `ambiguous` | A path matches several objects | `matches` (at most 10) |
-| `invalid` | A value of the wrong type or out of range; an unknown component or field; a read-only field; a cycle; a `duplicate` of a subtree an earlier op of the same change adds to, moves or deletes from | `field`, `rule` (from the schema), `given` |
+| `invalid` | A value of the wrong type or out of range; an unknown component or field; a read-only field; a cycle; a `duplicate` of a subtree an earlier op of the same change adds to, moves or deletes from; a push past the world's speed-change cap | `field`, `rule` (from the schema), `given`; for a push, `limit_mm_per_s` |
 | `in_change` | An op names a `$ref` this transaction does not create | `ref` |
 | `too_many` | A selector matched more than `max` | `count`, `max` |
-| `not_permitted` | The world's permissions | `permission`, `role` |
-| `protected` | V1: a protected object, for anyone but its owner (10.4) | `owner`, `action` |
+| `not_permitted` | The world's permissions; a grab past the most objects one member may hold (`max_claims`), or out of reach | `permission`, `role`; for a grab, `limit` |
+| `protected` | V1: a protected object, for anyone but its owner (10.4); a script change whose re-key would lose data on objects its author may not edit (world-model.md 7.9) | `owner`, `action`; for a re-key, `objects` (the first 16) and `more` |
 | `held` | A held object (or an object under it) may not be deleted, nor its `Transform`, `Body`, `Shape` or parent edited, while a player holds it; other edits, such as a colour, pass (world-model.md 7.2) | `held_by` |
 | `too_large` | Past the size limits (9.3), or past the world's shape limit | `limit`; for the shape limit also `count`, the shapes the change would leave |
 | `rate_limited` | Past the principal's rate (9.3) | `retry_after_ms` |
@@ -507,6 +507,10 @@ One envelope for every refusal, in `apply`'s outcome, in `watch`, and in a dry r
   (Re-apply, Show).
 - `refused` is a property of the transaction, not of the call, but pe-mcp returns a refused `apply` with
   `isError: true` (6.3), so an agent cannot miss it.
+- **Every code is tested** (G8 of the pull-ahead plan): each pe-world refusal reason maps through an arm of its own,
+  never the wildcard (pe-api `every_world_refusal_reason_has_its_own_mapping`), and every refusal and error code
+  reaches an MCP client as `isError: true` with this envelope (pe-mcp `tests/refusals.rs`, whose exhaustive lists
+  fail to build when S6 gains a code).
 
 #### 5.3.4 Dry runs
 
@@ -649,8 +653,9 @@ Tool names use underscores: the Anthropic API accepts only `[a-zA-Z0-9_-]` in to
 
 - **A failed call** (the arguments or the call itself) uses the envelope of 6.1, with `isError: true`. Codes:
   `invalid_argument` (with `field`), `forbidden`, `cursor_expired`, `snapshot_gone` (a frame no longer retained),
-  `capture_unavailable` (no renderer or no adapter), `timeout`, `session_ended`, `internal`. Unknown tools and
-  malformed requests are JSON-RPC errors (kept).
+  `capture_unavailable` (no renderer or no adapter), `rate_limited`, `timeout`, `session_ended`, `unavailable` (a
+  service this call needs isn't here or can't serve now: no build service, a player joining, 7), `internal`. Unknown
+  tools and malformed requests are JSON-RPC errors (kept).
 - **A refused transaction** (5.3.3) is also returned with `isError: true`, its envelope as the structured content:
   `code` and `message` at the top, the rest in `details`. Clients then show it as a failure, which it is for the
   agent; pe-api's types still keep the two apart.
