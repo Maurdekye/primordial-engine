@@ -300,17 +300,30 @@ which fixes the origin's role deliberately.
   that of the bytes after the reference; otherwise it is refused as `Invalid`, with nothing changed. The
   transaction then applies as any edit, except that its new object ids, row tags (7.6) and new asset ids (7.9)
   derive from the original's line, chain and seq (the author is the same), so they are the ids the original made,
-  and a later re-issued edit that names them by id finds them. Its versions name the re-issued entry, the one that
-  applies. An applied re-issue takes its original out of the record, so each is re-issued once; a refused one
-  changes nothing and its original stays sealed.
+  and a later re-issued edit that names them by id finds them. Its versions (7.6, and a tombstone's `by`) name the
+  original entry too (@diverge-eng's M1), so a later re-issued edit's `Version` and `ObjectVersion` preconditions,
+  read on the parent line, hold on the new one
+  [V `a_re_issued_edit_s_preconditions_read_on_the_parent_line_hold`; control: naming the applying entry gives
+  `Stale`]. A version on the new line may therefore name an entry of the
+  parent line's history, which a reader looking an entry up by version finds there. An applied re-issue takes its
+  original out of the record, so each is re-issued once; a refused one changes nothing and its original stays
+  sealed.
   - **A second branch** nests: a re-issued edit that is itself re-issued keeps its inner reference in the bytes
     the new record seals, and its ids derive from the innermost original. The inner references are bound by the
-    sealed hash and were checked when they first applied; they are not checked again (at most 64 deep, else
-    `Malformed`).
-  - **Other readers** decode an edit with `branch::decode_edit(entry)`, which gives the transaction and the
-    coordinates its ids derive from, for a plain edit and a re-issued one alike. pe-replica's prediction uses it;
-    pe-api's and pe-app's own decoders read a re-issued payload as malformed and skip it, which is harmless until
-    they need to show one (an item for @api-eng and @engine-architect when the branch is built end to end).
+    sealed hash and were checked when they first applied; they are not checked again (at most
+    `MAX_REISSUE_DEPTH` = 8 deep, else `Malformed`). The record is single-generation (@diverge-eng's L2): a later
+    branch replaces it, so an original of the first branch still sealed then can never be re-issued. Under design v5
+    that can't happen, since B's re-issues apply before its promotion, and only then can a second branch occur; the
+    caller (L5) founds a second branch only after the first's re-issues are done.
+  - **Room for the prefixes** (@diverge-eng's L1): an edit's encoded bytes are at most `edit::MAX_EDIT_BYTES` =
+    `MAX_PAYLOAD - 8 · 105` (longer is `Malformed`), so any edit can be re-issued across 8 branches within the
+    entry's cap [V `an_edit_leaves_room_to_be_re_issued_across_every_branch`].
+  - **Other readers** decode an edit with `branch::decode_edit(signed entry)`, which gives the transaction and its
+    `Origin`: the coordinates its ids derive from and the entry its versions name, for a plain edit and a re-issued
+    one alike. pe-app reconciles a re-issue with its original by `Origin.entry` (S5, @diverge-eng). pe-replica's
+    prediction uses it; pe-api's and pe-app's own decoders read a re-issued payload as malformed and skip it, which is
+    harmless until they need to show one (an item for @api-eng and @engine-architect when the branch is built end to
+    end).
   - Only edits are re-issued with a reference. Input and protocol entries create no ids, so re-sending them needs no
     pe-world rule.
 - **Where a joiner stands** (`World::join_spawn`; @engine-architect m5193e4c7a3d8): a member admitted by an `Admit`

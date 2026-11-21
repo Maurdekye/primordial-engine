@@ -221,7 +221,7 @@ impl PeWorld {
             return;
         }
         // A re-issued edit's new ids derive from its original's coordinates (world-model.md 2.3, F3 L3).
-        let Some((tx, o)) = pe_world::branch::decode_edit(&entry.entry) else { return };
+        let Some((tx, o)) = pe_world::branch::decode_edit(entry) else { return };
         for (i, op) in tx.ops.iter().enumerate() {
             let Op::CommitScript { script, .. } = op else { continue };
             // The asset it commits to: an existing one, or a new one's id derived from the entry's origin, its
@@ -230,7 +230,8 @@ impl PeWorld {
                 AssetTarget::Existing(a) => a,
                 AssetTarget::New(k) => pe_world::script::asset_created(o.line, entry.entry.author, o.chain, o.seq, k),
             };
-            let version = Version { entry: entry.id(), op: i as u32 };
+            // Its version names its origin's entry, the original when re-issued, as pe-world writes it (2.4).
+            let version = Version { entry: o.entry, op: i as u32 };
             let pending = self.world.pending().get(&asset);
             let live = pending.filter(|p| p.version == version && p.void.is_none() && !p.attested_by_quorum());
             if let Some(p) = live.filter(|_| !self.predict.ended.contains(&(asset, version))) {
@@ -255,7 +256,7 @@ fn decides(entry: &SignedEntry, p: &Prediction, local: Option<MemberKey>) -> boo
     if entry.entry.class != Class::Edit || local == Some(entry.entry.author) {
         return false;
     }
-    let Some((tx, _)) = pe_world::branch::decode_edit(&entry.entry) else { return false };
+    let Some((tx, _)) = pe_world::branch::decode_edit(entry) else { return false };
     tx.ops.iter().any(|op| match op {
         Op::AttestBuild { script, version, .. } | Op::BuildFailed { script, version, .. } => {
             *script == p.asset && *version == p.v
