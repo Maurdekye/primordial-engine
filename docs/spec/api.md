@@ -762,6 +762,13 @@ pub enum BuildRefused {
 
 - **Given at `Api::new`** as `Option<Arc<dyn Builds>>`; with none, `code_check` and the `code` op answer
   `unavailable`. pe-app starts the build service before it creates the ports.
+- **While a player joins** (app.md 4, "A world with scripts: an M1 limit"): from the joiner's ready until the new
+  epoch's first final cut, or the join's end if it fails, a live script commit (a `code` op's, or a revert's) is
+  `unavailable` ("a player is joining") before anything is built or submitted. pe-app says so in
+  `SessionFacts::joining`, and its drain settles a script commit queued before the window as
+  `Receipt::Unavailable`, which the caller gets as `unavailable` too. `code_check` and dry runs still answer, and
+  other changes go ahead. The re-send
+  backstop never re-sends a script commit (9.4), so none reaches the window that way (@world-model m75d96eb79372).
 - **One build at a time per machine**, on the build service's thread: the replica's builds of others' pending
   commits first (they have a deadline D), then API builds, first in, first out within each. A queued API build
   whose deadline has passed leaves the queue unbuilt; one that has started finishes into the cache, so a retry

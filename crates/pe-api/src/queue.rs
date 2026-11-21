@@ -50,6 +50,9 @@ pub enum Receipt {
     Submitted { change: TxId, frame: Frame, chain: ChainId, seq: u64 },
     /// Not submitted: agreement's reason (S3 `submit`).
     Refused(SubmitError),
+    /// Not submitted, for a reason of this machine's (pe-app's), and nothing was sent: a script commit while a player
+    /// joins (app.md 4). The caller gets `unavailable` with this text.
+    Unavailable(String),
 }
 
 /// The queue is full; try again after this long.
@@ -211,7 +214,7 @@ impl EditQueue {
                     log.carried(origin, carrier, *frame, op_back);
                     return;
                 }
-                (Receipt::Refused(_), Some(Tag::Resend { origin, .. })) => {
+                (Receipt::Refused(_) | Receipt::Unavailable(_), Some(Tag::Resend { origin, .. })) => {
                     log.resend_refused(origin);
                     return;
                 }
@@ -224,7 +227,7 @@ impl EditQueue {
                 (Receipt::Submitted { change, frame, chain, seq }, Some(Tag::FollowUp | Tag::Machine) | None) => {
                     log.track(*change, *chain, *seq, *frame, None);
                 }
-                (Receipt::Refused(_), _) => {}
+                (Receipt::Refused(_) | Receipt::Unavailable(_), _) => {}
             }
         }
         let now = Instant::now();

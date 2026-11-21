@@ -1079,6 +1079,14 @@ pub fn spawn_attester(
                     }
                     false
                 }
+                // Only a script commit is held back during a join, never a machine entry; answered as a refusal.
+                Some(Receipt::Unavailable(why)) => {
+                    crate::err!("pe-app: a machine entry of script {} was not submitted: {why}", short(post.asset()));
+                    if let Post::Attest(a) = post {
+                        attester.posted(a.asset, a.version, now);
+                    }
+                    false
+                }
                 None => true,
             });
         }

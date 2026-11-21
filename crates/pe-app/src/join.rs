@@ -239,6 +239,13 @@ impl Inviter {
         self.join.as_ref().is_some_and(|j| j.step >= Step::Admitted && !j.failed)
     }
 
+    /// Whether a join this machine admits is past the joiner's ready and not yet over (failed after its `Admit`
+    /// included, since the joiner may still come in): pe-api then answers a script commit `unavailable` (app.md 4, "A
+    /// world with scripts: an M1 limit").
+    pub fn holds_script_commits(&self) -> bool {
+        self.join.as_ref().is_some_and(|j| j.step >= Step::Ready)
+    }
+
     /// Whether the session is still in the epoch the invite pins, with the members it pins: only then can a joiner's
     /// check of the welcome's members pass, and pe-agree's start verify against the pinned epoch.
     fn pin_holds(&self, members: &[MemberKey], epoch: u64) -> bool {
@@ -609,6 +616,7 @@ mod tests {
     fn the_inviter_writes_the_admit_once_b_is_ready_and_holds_its_leave_meanwhile() {
         let mut inv = ready();
         assert!(!inv.holds_leave(), "nothing admitted yet");
+        assert!(inv.holds_script_commits(), "B is ready: a script commit now would race the Admit (app.md 4)");
         let entry = inv.take_entry(false, &[A], T0).expect("the Admit");
         assert_eq!(Admit::decode(&entry), Some(Some(Admit::new(B, Role::Joiner.perms()))));
         assert_eq!(inv.take_entry(false, &[A], T0), None, "taken once");
@@ -620,6 +628,7 @@ mod tests {
         inv.on_link_down(B, &[A], T0);
         assert_eq!(inv.join(), Some((B, Step::Admitted, true)));
         assert!(!inv.holds_leave());
+        assert!(inv.holds_script_commits(), "B may still join after all: script commits wait for the join's end");
         assert_eq!(inv.take_notices(), vec![join_failed(B)]);
     }
 
@@ -645,6 +654,12 @@ mod tests {
         inv.tick(&at, Some(e), &start, T0);
         assert_eq!(inv.join(), Some((B, Step::Started, false)));
         assert_eq!(inv.take_acts(), vec![Act::Send(B, AppMsg::JoinStart(vec![7; 10]))]);
+        // Script commits wait past E, until the new epoch's first final cut ends the join (app.md 4).
+        assert!(inv.holds_script_commits(), "E is final, the join isn't over");
+        let after = AgreeAt { members: vec![B, A], epoch: 1, final_height: 4, final_cut: None };
+        inv.tick(&after, None, &start, T0);
+        assert_eq!(inv.join(), None);
+        assert!(!inv.holds_script_commits(), "B is in: script commits go ahead");
     }
 
     /// M1's limit (@coordinator-opus m403742096968): a world with scripts refuses the join, saying so to both
@@ -666,7 +681,7 @@ mod tests {
         assert!(refused(&acts), "B is told why: {acts:?}");
         assert!(acts.contains(&Act::ClockMembers(Vec::new())), "B is no clock member any more: {acts:?}");
         assert_eq!(inv.take_notices(), vec![couldnt_join(B, SCRIPTS)]);
-        assert_eq!((inv.join(), inv.holds_leave()), (None, false));
+        assert_eq!((inv.join(), inv.holds_leave(), inv.holds_script_commits()), (None, false, false));
     }
 
     /// Only B's reply to this invite starts a join, one at a time, and nobody else's hello is taken meanwhile.
