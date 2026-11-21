@@ -102,7 +102,7 @@ fn kind_schema(k: FieldKind) -> Json {
         FieldKind::EntryRef => json!({ "type": "string", "description": "an entry id (\"e:…\")" }),
         FieldKind::Hash => json!({ "type": "string", "pattern": "^[0-9a-f]{64}$" }),
         FieldKind::BlobRef | FieldKind::SimBlobRef => {
-            json!({ "type": "string", "description": "a blob; not yet settable through the API" })
+            json!({ "type": ["string", "null"], "description": "a blob (an asset's content); set only to null, for none" })
         }
         FieldKind::Pos => json!({
             "type": "object",
