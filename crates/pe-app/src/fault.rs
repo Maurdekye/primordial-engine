@@ -295,8 +295,11 @@ impl WorldModel for FaultWorld {
     fn take_replay_from(&mut self) -> Option<Frame> {
         self.inner.take_replay_from()
     }
-    fn vote_holds(&self) -> Vec<Frame> {
-        self.inner.vote_holds()
+    fn predicted_from(&self) -> Option<Frame> {
+        self.inner.predicted_from()
+    }
+    fn set_canonical(&mut self, canonical: bool) {
+        self.inner.set_canonical(canonical)
     }
     fn set_scratch(&mut self, scratch: bool) {
         self.inner.set_scratch(scratch)

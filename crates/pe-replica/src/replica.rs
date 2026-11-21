@@ -24,9 +24,9 @@
 //!
 //! **A cut the live history matches** (replica.md 5.4). When every frame from the base to the cut stepped exactly the
 //! cut's entries, the live step already took my root at the cut's frame, from the same state: a vote and `finalize`
-//! take it from there, with no restore, re-step or hash, unless a vote hold lies at or below the cut (the live history
-//! then runs my own predicted code commit, which a re-step never does). Its snapshot is the one already held for that
-//! root, or the ring's keyframe at the cut's frame with the transfer the live take_root serialized. Each take_root
+//! take it from there, with no restore, re-step or hash, unless my own predicted code commit ran at or below the cut
+//! (the live history then runs its preview, which a re-step never does; C4). Its snapshot is the one already held for
+//! that root, or the ring's keyframe at the cut's frame with the transfer the live take_root serialized. Each take_root
 //! keeps the physics transfer it serializes for the check hash, so a snapshot of the same state never serializes or
 //! hashes it again. `ReplicaConfig::reuse_live` off restores the old paths, for tests that compare the two.
 //!
@@ -114,9 +114,9 @@ pub struct ReplicaConfig {
     /// publishes a time off that base (@design-reviewer's Low on pe-app slice 2, via @engine-architect).
     pub clock: Arc<dyn FrameClock>,
     /// The local member, whose hands the frame view marks `OWN_HAND` (S5), so the display draws them at the device's
-    /// late-latched poses, and whose own code commits the world model predicts (logic.md 6.2a's option (i)). Such a
-    /// replica must vote through a driver that places its vote holds ([`crate::Driver`]), or it would vote predicted
-    /// roots. `None` for a replica with no local player (tests, a headless host).
+    /// late-latched poses, and whose own code commits the world model predicts (logic.md 6.2a's option (i)). Its votes
+    /// and finalize never take the preview: they re-step from a state that never ran it, with no vote hold (C4). `None`
+    /// for a replica with no local player (tests, a headless host).
     pub local: Option<MemberKey>,
     /// Whether a root at a cut the live history matches is taken from the live history, and a snapshot's physics
     /// transfer from the take_root that serialized it (5.4). Off, every root is re-stepped from a keyframe and every
@@ -576,6 +576,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
         &self.served
     }
 
+    /// The first frame my live history ran my own predicted code commit from (logic.md 6.2a's option (i); C4), while
+    /// it stands or its replay is pending: [`WorldModel::predicted_from`].
+    pub fn predicted_from(&self) -> Option<Frame> {
+        self.world.predicted_from()
+    }
+
     /// How many of the live history's grid frames keep their transfer and keyframe for a matched cut (5.4): those from
     /// the floor up, at most 16 (`LIVE_KEPT`).
     pub fn live_kept(&self) -> usize {
@@ -712,6 +718,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.logic(f, Stage::LogicPostPhysics, live, &mut events);
         self.faults += u64::from(self.world.maintain_transforms());
         self.note_checks(f, mine, live);
+        // A rung-1 replay below its cut steps exactly the cut's entries, for my root there: no preview (C4).
+        if live {
+            self.world.set_canonical(self.replay.as_ref().is_some_and(|r| f < r.cut.at.frame));
+        }
         let acts = self.world.end_frame(f);
         let next = Frame(f.0 + 1);
         self.frame = next;
@@ -1110,15 +1120,21 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// (@chunks-reviewer's L2 on 3aa8180d).
     fn resume_from(&self, from: Frame, at: Frame, walk: &Walk) -> Start {
         let ring = self.ring.at_or_before(from).map_or(Frame(0), |(k, _)| k);
+        self.resume_above(ring, at, walk).unwrap_or(Start::Ring(from))
+    }
+
+    /// The newest of my vote roots held at a grid frame in (`above`, `at`] whose state is exactly the cut's entries
+    /// from the base, by its mark (5.3).
+    fn resume_above(&self, above: Frame, at: Frame, walk: &Walk) -> Option<Start> {
         let grid = |f: Frame| f.0.is_multiple_of(self.config.cut_every);
         let same = |c: &CutRef, root: &Hash| {
             let mark = walk.digests.get(&c.frame).map(|&history| Mark { lineage: self.lineage, history });
             self.held_here(root).is_some_and(|h| h.frame == c.frame && h.mark.is_some() && h.mark == mark)
         };
         (self.voted.iter())
-            .filter(|(c, root)| c.frame > ring && c.frame <= at && grid(c.frame) && same(c, root))
+            .filter(|(c, root)| c.frame > above && c.frame <= at && grid(c.frame) && same(c, root))
             .max_by_key(|(c, _)| c.frame)
-            .map_or(Start::Ring(from), |(_, &root)| Start::Held(root))
+            .map(|(_, &root)| Start::Held(root))
     }
 
     /// My root at the cut, computed (no cache) and held. A vote's re-step (`resume`) may start from a root I hold at
@@ -1170,10 +1186,15 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 .collect();
             let walk = self.walk(cut, source, &marks);
             let from = walk.difference.unwrap_or(at);
-            (from, self.resume_from(from, at, &walk), walk.digests.get(&at).copied())
+            (from, self.start_for(from, at, Some(&walk)), walk.digests.get(&at).copied())
         } else {
             let from = self.first_difference(cut, source).unwrap_or(at);
-            (from, Start::Ring(from), None)
+            (from, self.start_for(from, at, None), None)
+        };
+        // The base's certified root is always held (`release`); without it no canonical start is left (C4).
+        let Some(start) = start else {
+            self.faults += 1;
+            return Err(RootError::Damaged);
         };
         // The live history stepped exactly the cut's entries to its frame: my root is the live one there (5.4).
         if from == at
@@ -1182,7 +1203,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             return Ok(root);
         }
         let (root, mut held) = self.state_at_cut(cut, start, source)?;
-        if from == at && !self.held_at_or_below(at) {
+        if from == at && !self.preview_at_or_below(at) {
             // The live history stepped exactly the cut's entries, through the same frame function.
             debug_assert!(self.live.get(&at).is_none_or(|&live| live == root), "the live root at {at:?} is the cut's");
         }
@@ -1198,19 +1219,52 @@ impl<W: WorldModel> ReplicaImpl<W> {
         Ok(root)
     }
 
-    /// Whether a vote hold lies at or below `at`: the live history then runs my own predicted code commit from the
-    /// hold's frame, which a re-step never does (logic.md 6.2a's option (i)), so no live root there is a cut's.
-    fn held_at_or_below(&self, at: Frame) -> bool {
-        self.world.vote_holds().iter().any(|&h| h <= at)
+    /// Whether the live history ran my own predicted code commit at or below `at` (logic.md 6.2a's option (i)), from
+    /// [`WorldModel::predicted_from`]: a re-step never does, so no live root or keyframe from there on is a cut's (C4).
+    fn preview_at_or_below(&self, at: Frame) -> bool {
+        self.world.predicted_from().is_some_and(|p| p <= at)
+    }
+
+    /// Where a vote's or finalize's re-step for a cut at `at` starts, given `from`, the first frame whose live entries
+    /// are not exactly the cut's, and with `walk` for a vote, which may resume from a root held at an earlier cut
+    /// (5.3). Under my own predicted code commit at or below `at` (logic.md 6.2a's option (i)), only from a state that
+    /// never ran it, so my root at the cut is the old code's state its entries select, never my preview (C4,
+    /// @coordinator-opus):
+    /// - **The base below the preview's first frame `p`:** a ring keyframe below `p`, saved before the activation at
+    ///   the end of `p - 1` (or the floor's, which was then my root at a final cut), or a vote root above it.
+    /// - **The base at or past `p`:** the ring's keyframe there is the live preview's (`move_floor`), so the base's
+    ///   held, certified root (the floor's, or my last import's), or a vote root above it. Every vote root is such a
+    ///   re-step's, or the live history's from before any prediction (`reuse_live_root` takes none under one).
+    ///
+    /// `None` if the base's root is not held, which `release` never allows.
+    fn start_for(&self, from: Frame, at: Frame, walk: Option<&Walk>) -> Option<Start> {
+        let resume = |from: Frame| Some(walk.map_or(Start::Ring(from), |w| self.resume_from(from, at, w)));
+        let Some(p) = self.world.predicted_from().filter(|&p| p <= at) else { return resume(from) };
+        let base = self.base_frame();
+        if base < p {
+            return resume(from.min(Frame(p.0 - 1)));
+        }
+        let above = walk.and_then(|w| self.resume_above(base, at, w));
+        above.or_else(|| self.base_root().filter(|r| self.held_here(r).is_some()).map(Start::Held))
+    }
+
+    /// My root at [`Self::base_frame`]: my last import's when it is newer than the floor, else the floor's.
+    fn base_root(&self) -> Option<Hash> {
+        let floor = self.floor.as_ref().map(|f| (f.cut.at.frame, f.root));
+        match (self.imported, floor) {
+            (Some((cut, root)), Some((f, _))) if cut.frame > f => Some(root),
+            (Some((_, root)), None) => Some(root),
+            (_, floor) => floor.map(|(_, root)| root),
+        }
     }
 
     /// My root at a cut whose entries the live history stepped exactly, to the cut's frame `at` (5.4): the root the
     /// live step took there, with no restore, re-step or hash. Its snapshot is the one already held for that root, or
     /// the keyframe the live history took at `at` right after that take_root, kept with the transfer the take_root
-    /// serialized. `None`, for the caller to re-step, with `reuse_live` off, under a vote hold at or below `at`, where
-    /// the live history took no root at `at`, or where neither snapshot source is there (past [`LIVE_KEPT`]).
+    /// serialized. `None`, for the caller to re-step, with `reuse_live` off, under my prediction at or below `at`,
+    /// where the live history took no root at `at`, or where neither snapshot source is there (past [`LIVE_KEPT`]).
     fn reuse_live_root(&mut self, at: Frame, history: Option<Hash>) -> Option<Hash> {
-        if !self.config.reuse_live || self.held_at_or_below(at) {
+        if !self.config.reuse_live || self.preview_at_or_below(at) {
             return None;
         }
         let root = *self.live.get(&at)?;
@@ -1358,10 +1412,21 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// The floor moves to the cut: its snapshot becomes the pinned keyframe there, and the history below it goes. A
     /// snapshot held from before my last import never enters the ring: its image is the old physics world's.
-    fn move_floor(&mut self, cut: &Cut, root: Hash) {
+    ///
+    /// Under my own predicted code commit at or below the cut's frame, when the live history stepped exactly the
+    /// cut's entries (`live_exact`), the ring keeps the live history's keyframe there instead: the preview's, so an
+    /// ordinary rollback onto the floor keeps the preview exact (C4's (c), @coordinator-opus). A root's
+    /// re-step then starts from the floor's held, certified root ([`Self::start_for`]), and the prediction's end puts
+    /// that snapshot back as the keyframe (`advance`). Otherwise, as for a rebase onto the floor, the keyframe is the
+    /// floor's snapshot, and a live re-step from it runs no preview until the world model activates it again.
+    fn move_floor(&mut self, cut: &Cut, root: Hash, live_exact: bool) {
         let at = cut.at.frame;
         self.lineage += 1;
-        if let Some(key) = self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone() }) {
+        let preview = live_exact && self.world.predicted_from().is_some_and(|p| p <= at);
+        let live = || self.ring.get(at).cloned().or_else(|| self.live_transfers.get(&at).and_then(|t| t.key.clone()));
+        let key = preview.then(live).flatten();
+        let key = key.or_else(|| self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone() }));
+        if let Some(key) = key {
             self.ring.insert(at, key);
         }
         self.floor = Some(Floor { cut: cut.clone(), root });
@@ -1373,6 +1438,62 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.stepped.retain(|f, _| *f >= at);
         let oldest = self.finals.front().map_or(at, |f| f.0.frame);
         self.outcomes.retain(|_, (f, _)| *f >= oldest);
+    }
+
+    /// A prediction whose preview ran from `p` ended, and the floor or my last import is at or past `p`: its keyframe
+    /// is the live preview's (C4's (c), [`Self::move_floor`]). It becomes the base's held, certified root again, and
+    /// the live root and kept transfer there are the base's, so the replay that follows starts from the old code's
+    /// state the cuts selected. Whether it changed anything (the replay must then roll back even to the base itself).
+    fn unpreview_base(&mut self, p: Frame) -> bool {
+        let base = self.base_frame();
+        if base < p {
+            return false;
+        }
+        let Some(root) = self.base_root() else { return false };
+        let Some(key) = self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone() }) else {
+            return false;
+        };
+        self.ring.insert(base, key);
+        self.live.insert(base, root);
+        self.live_transfers.remove(&base);
+        true
+    }
+
+    /// Under my own predicted code commit, the cut at `at` went final with the live history matching its entries, but
+    /// the live records of `[g, at)` are the preview's. `finalize`'s re-step just stepped those frames from a state
+    /// that never ran it, with exactly the cut's entries, so its records replace them, and the next view carries them
+    /// as a replay's: the outcomes, the events and the activation records, the preview's activation at `c` retracted,
+    /// and the digests my interaction checks are judged by (3.4). pe-api tells an entry's outcome and an activation
+    /// once the final frame passes it (api.md 7), so it tells the old code's, never the preview's (C4). The live state
+    /// is unchanged, and keeps the preview above `at`.
+    fn canonical_records(&mut self, g: Frame, at: Frame) {
+        self.outcomes.retain(|_, (f, _)| *f < g || *f >= at);
+        let scratch = std::mem::take(&mut self.scratch_records);
+        for (id, (r, seen)) in scratch.into_iter().filter(|(_, (r, _))| (g..at).contains(&r.frame)) {
+            self.outcomes.insert(id, (r.frame, r.outcome.clone()));
+            self.note(r, seen);
+        }
+        // The checks of my own interactions there are judged against the old code's history too (3.4, G2).
+        self.checks_from_scratch(g, at);
+        let mut events = std::mem::take(&mut self.scratch_events);
+        let mut acts = std::mem::take(&mut self.scratch_acts);
+        for f in (g.0..at.0).map(Frame) {
+            self.note_events(f, events.remove(&f).unwrap_or_default(), true);
+            self.note_acts(f, acts.remove(&f).unwrap_or_default());
+        }
+    }
+
+    /// The checked bodies' digests that a re-step off the live history took in `[g, at)` become their checks' latest
+    /// (3.4): that re-step stepped exactly the final cut's entries there, so its digests are the final history's.
+    fn checks_from_scratch(&mut self, g: Frame, at: Frame) {
+        let digests = std::mem::take(&mut self.scratch_checks);
+        for (f, bodies) in digests.range(g..at) {
+            for (o, d) in bodies {
+                if let Some(c) = self.checks.get_mut(f).and_then(|c| c.get_mut(o)) {
+                    c.latest = *d;
+                }
+            }
+        }
     }
 
     /// The floor just moved over live frames that stepped other entries than the cut's, from `g` on: a late entry the
@@ -1394,14 +1515,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.note(r, seen);
         }
         // And the checked bodies' digests there (3.4): the re-step's are the cut-exact history's.
-        let digests = std::mem::take(&mut self.scratch_checks);
-        for (f, bodies) in digests.range(g..at) {
-            for (o, d) in bodies {
-                if let Some(c) = self.checks.get_mut(f).and_then(|c| c.get_mut(o)) {
-                    c.latest = *d;
-                }
-            }
-        }
+        self.checks_from_scratch(g, at);
         // Their effects too: the next view compares them with what it carried there, as a replay's (Low 3).
         let mut events = std::mem::take(&mut self.scratch_events);
         let mut acts = std::mem::take(&mut self.scratch_acts);
@@ -1684,10 +1798,14 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         }
         self.run(present, &*source, &mut budget, &mut out);
         // The local member's prediction of its own code commit ended (logic.md 6.2a's option (i)): step again from its
-        // commit frame under the rule, in this advance (`WorldModel::take_replay_from`).
+        // commit frame under the rule, in this advance (`WorldModel::take_replay_from`). The preview's keyframes, live
+        // roots and transfers go with the history it replaces (C4): asked before the replay is taken, while the model
+        // still names the preview's first frame.
+        let preview = self.world.predicted_from();
         if let Some(c) = self.world.take_replay_from() {
             let to = c.max(self.rollback_floor());
-            if let Some(k) = (to < self.frame).then(|| self.roll_back(to)).flatten() {
+            let forced = preview.is_some_and(|p| self.unpreview_base(p));
+            if let Some(k) = (to < self.frame || forced).then(|| self.roll_back(to)).flatten() {
                 out.rolled_back_to = Some(out.rolled_back_to.map_or(k, |r| r.min(k)));
                 self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0 - k.0);
             }
@@ -1759,6 +1877,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // Whether the live history below the cut's frame stepped exactly the cut's entries, asked before the floor
         // moves past those frames.
         let differs = self.first_difference(&cut.cut, &*source);
+        // Under my own prediction, the frames this cut makes final from `g`, whose live records are the preview's (C4);
+        // asked before the floor moves. Not at my import's cut, whose root no re-step made.
+        let re_stepped = self.imported.is_none_or(|i| i.0 != at);
+        let preview = self.world.predicted_from().filter(|&p| p <= at.frame && re_stepped && differs.is_none());
+        let g = preview.map(|p| Frame(p.0 - 1).max(self.floor_frame()));
         self.voted.retain(|c, _| c.height > at.height);
         self.split_cuts.retain(|c| c.height > at.height);
         self.finals.retain(|f| f.0 != at);
@@ -1773,7 +1896,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             self.repairing_since.get_or_insert(at.frame);
             Finalized::Diverged { mine }
         };
-        self.move_floor(&cut.cut, mine);
+        self.move_floor(&cut.cut, mine, differs.is_none());
         if self.imported.is_some_and(|i| i.0.frame <= at.frame) {
             self.imported = None;
         }
@@ -1782,6 +1905,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // `final_frame` (my last agreed cut) passes the cut's frame at the next publication: first, a `Dropped` record
         // for each entry I stepped below it that the cut's order leaves out, while S3 still keeps those frames.
         if matches!(verdict, Finalized::Agreed) {
+            if let Some(g) = g {
+                self.canonical_records(g, at.frame);
+            }
             self.settle(&cut.cut, at.frame, &*source, None);
         }
         let cv = self.cv.as_ref().map_or(Frame(0), |c| c.0.at.frame);
@@ -1822,6 +1948,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // Check `Cv` from its records and from the restored physics itself, keeping the live state until it passes.
         let live = (self.world.save(), self.physics.save_image().map_err(|_| RootError::Damaged)?);
         let held = &self.held[&cv_root];
+        let (held_world, held_image) = (held.world.clone(), held.image.clone());
         let sound = self.world.tree(&held.world).verify().is_ok() && {
             self.world.restore(&held.world);
             self.physics.restore_image(&held.image).is_ok()
@@ -1837,6 +1964,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         // ring held after `Cv` belongs to the history being replaced, the floor's keyframe included.
         self.frame = cv_frame;
         self.ring.rewind_to(cv_frame);
+        // `Cv`'s keyframe is its held snapshot, the state just restored: under my own prediction it could be the live
+        // preview's (C4's (c), `move_floor`), which a replay with exactly the cut's entries never starts from.
+        let key = Key { world: held_world, image: held_image };
+        self.ring.insert(cv_frame, key);
         self.forget_after(cv_frame);
         self.voted.clear();
         self.lineage += 1;
@@ -2027,11 +2158,6 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     fn agreed_snapshot(&self) -> Option<(Frame, Arc<dyn std::any::Any + Send + Sync>)> {
         let (frame, saved) = self.agreed_state()?;
         W::snapshot_of(saved, frame).map(|s| (frame, s))
-    }
-
-    /// The world model's holds: the local member's prediction of its own code commit (logic.md 6.2a's option (i)).
-    fn vote_holds(&self) -> Vec<Frame> {
-        self.world.vote_holds()
     }
 
     /// Its runner's identity (crate::logic), or `None` without one.
