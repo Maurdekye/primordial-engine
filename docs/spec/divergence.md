@@ -183,12 +183,12 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
      answers `Busy` `N_busy` times in a row is rotated, so a source can't hold a repair with it. A source naming waits so long
      that `N_busy` of them outlast `W_fg` is left another way: the repair is overtaken at `W_fg` first, and the next
      starts at the next source. Leaving for `Busy` is counted apart from source faults (`busy_rotations`).
-   - **Fetch time:** a repair overtaken past `W_fg` restarts at the newest cut, and a source serves a root for
-     `T_keep`. So a fetch has to finish within the shorter of the two, which is 1.5 s. At the default budget that is
-     about 6 MB of nodes and records with their proofs, around 3,000 objects at about 2 KB each, proof included [I].
-     M1's ball pit is well inside it. A larger world needs a source to keep a root while a peer fetches it, which
-     takes an S2 call to hold a root past `T_keep` (`Replica::hold`) and proofs built by the requester from the
-     nodes it already checked. Both are M2 (@coordinator-opus m589748ac46a9); M1 states the limit.
+   - **Fetch time:** a repair overtaken past `W_fg` restarts at the newest cut, so a rung-2 fetch has to finish
+     within `W_fg`. A source keeps a root it is serving past `T_keep` (F3, S2 v1.9 `Replica::set_served`): a root a
+     peer has asked for stays servable, and is named to the replica so its snapshot isn't released, while that peer
+     asks again within `T_join_peer`, for at most `T_join` from its first request. A join's or a resync's fetch can
+     so outlast `T_keep`. Proofs built by the requester from the nodes it already checked are M2 (@coordinator-opus
+     m589748ac46a9).
    - **With no root of mine at `C`** (S2 v1.2 `Finalized::Damaged` or `RootError::Damaged`: a frame from my floor up
      to `C` is no longer kept, which only S3's time cap does, for a member more than `T_diverge` plus `T_keep` behind):
      nothing is diffed. Every leaf and the physics image are fetched, nothing is named absent, and the replica
@@ -387,6 +387,62 @@ a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named abs
 - **Script modules** (@item:primordial-engine/ws-diverge-script-modules-in-rung-2-repair-fault): once that item
   lands, a join also waits until `Replica::vote_holds()` names nothing at or below `E`, with 4.2's `T_module`
   deadline, so a joiner never steps a world whose modules it lacks.
+
+### 4.6 A resync of a member that can't keep real time (M1, F3)
+
+@item:primordial-engine/a-member-that-can-t-simulate-in-real-time-freeze; the user's rulings m871d2760d93a,
+ma1d41bb0dffe and m61032c20959f; the design and its rulings are in the item (v2, @coordinator-opus m2ab29bb49a44).
+
+- **Lag and slow.** A member's lag is the session clock's present frame less the frame it has stepped. It is slow
+  while the lag is over 2 s, a local hint, never a vote. Its slow timer runs while it is slow, and resets once the
+  lag has stayed under 1 s for 5 s. The slow member's status line shows how far behind it is, the whole time it is
+  behind by 0.5 s or more (pe-app).
+- **After 60 s slow, nobody freezes** (the user's mb91de37952c5, "players should never have their actions
+  interrupted", and ma8e471033ddc; @coordinator-opus m1c0234dec52f). At the first moment it is then more than 2 s
+  behind, the member is told once per slow stint and keeps playing. At `n = 2` its status says the session confirms
+  at its pace; at `n >= 3` the others confirm without it. Its automatic catch-up, a snapshot plus its changes merged
+  as one package (9.2/9.3), is F3's package work (diverge-eng's package delta). **The resync below is the
+  snapshot fetch it will use; pe-app doesn't start it yet.** As built in pe-diverge, a resync is at the newest final cut `E`, which the
+  others certified without it: `Diverge::resync`, exactly a join at `E` (4.5). The whole state is fetched from `E`'s
+  other voters, checked against `E`'s certified root (4.4 holds: nothing unverified is imported), and imported
+  above its stepped frame. It then re-simulates to the present from its log, and steps and votes again. Its own
+  entries stamped below `E`'s frame are void as late by the ordinary rule; it stamps above it afterwards. Anything
+  the ladder had open is dropped first. It is no divergence: no evidence, bundle, episode or event, and only
+  `resyncs` / `resync_failures` count it.
+- **Not at `n = 2` this way.** There every cut needs the slow member's own vote, so no `E` newer than its stepped
+  frame exists. The way back at `n = 2` is a fresh line under the other member (4.7; @fable-reviewer's and
+  @astra-deliberator's option (F), the user's ruling m223ba2facae9).
+
+### 4.7 A line switch: the `n = 2` branch (F3, design v5 L4)
+
+The design is approved v5 (@coordinator-opus ma9490ab52d57; @fable-reviewer with @astra-deliberator m90f66fc2eff4).
+pe-agree's `Branch` is @world-chunks's (agreement.md 9), and pe-world's ids are @world-model's. pe-diverge's part is
+`Diverge::switch_line(to)`, which the embedding calls when its session moves to the fresh line `to`. That is on the
+brancher once its `Branch` entry is published, and on the rejoiner before it resyncs (4.6) at a final cut of `to`.
+
+- **Nothing on the old line survives the switch, and nothing fails.** These end with one note ("line switch ...
+  ended"), and no `RungFailed`:
+  - a replay, repair or join under way;
+  - a root split's episode and a re-ask;
+  - replay evidence and a kept final cut.
+  Cv goes too: it is a cut of the old line, and rung 1 replays only from a verified cut of the current line. So the
+  next final cut on `to` is compared as a first one. The counter is `line_switches`.
+- **Old-line traffic is stale.** The session's line is the first final cut's, and it moves only by a switch. A final
+  cut or root split of another line is counted in `stale_replies` and ignored. At `n = 2` the old line may go on
+  under other members after the fork (agreement.md 8: a reconfiguration takes effect where its proof arrives).
+  That history stays under that line, and this machine no longer repairs toward it.
+- **Serving is keyed by line.** A root is served only at a cut of the line it was agreed on. A request naming a cut
+  of another line is `NotHeld`. At the switch, roots servable at old-line cuts are dropped, and with them their
+  physics re-serve windows. The world root hashes the line id (pe-world `config_bytes` [V, @vdw-physics
+  m9d7f806dfe37]), so the same state never has one root on two lines anyway.
+- **A donor error is not found here.** A rejoiner imports the brancher's state at a final cut of `to`, which the
+  brancher alone certified (q = 1), and steps forward from it. If the brancher's state was wrong, the rejoiner's own
+  roots follow it, so no split ever shows the error. Only a cold replay from an older trusted anchor finds it: the
+  session's genesis, or a cut both certified on the old line, run off the frame loop (v5 L4, L6). Corruption in
+  transit is still refused at the import by the root check (4.4).
+- **A non-voter** (v5: the rejoiner plays before it is promoted to voter) still compares every final cut's root with
+  its own, as every member does (3.1). A mismatch is a divergence like any other: the ladder runs, and its notice and
+  bundle are written.
 
 ## 5. Who is right: root splits
 
@@ -1390,7 +1446,8 @@ pub trait Replica {
 
   pe-diverge reads the first two for bundles (6) and the third to finish a rung-2 repair (4.2). @vdw-physics's
   runner fills them in `ReplicaImpl`.
-- Roots of the final cuts of the last `T_keep` are kept, and served to peers: enough for repair. A machine serves
+- Roots of the final cuts of the last `T_keep` are kept, and served to peers: enough for repair. A root a peer is
+  fetching is kept longer, named through `set_served` (4.2's fetch time). A machine serves
   only roots it matched at a final cut, and, during a root-split episode, its own root at the split's cut, which is
   not final (section 5). The requester checks every byte against the reference's root either way.
 - **Merge bases are kept separately.** A member keeps its `Cv` root, and the log since, for as long as it may be a

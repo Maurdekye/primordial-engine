@@ -237,9 +237,17 @@ pub struct SimStats {
     /// The local player's hand inputs agreement took, and those it refused (step 2).
     pub inputs: u64,
     pub inputs_refused: u64,
-    /// Frames whose hand inputs step 2 held back because agreement reported this member backlogged after a stall
-    /// (S3 v1.5, [`Agreement::backlogged`]).
+    /// Frames whose hand inputs step 2 held back. Always 0 since F3's S1 (hands are never held); kept so logs from
+    /// before it compare.
     pub hands_paced: u64,
+    /// Frames whose pose-only hand entries step 2 left out while agreement reported this member backlogged (S3 v1.5,
+    /// [`Agreement::backlogged`]): thinned to [`HAND_FLOOR_HZ`], never below; a grip's change always goes (F3 S1).
+    pub hands_floor_thinned: u64,
+    /// A member that can't keep real time (divergence.md 4.6, [`crate::slow`]): resyncs started, the time spent
+    /// slow, and the largest lag behind the clock, in ms.
+    pub resyncs_started: u64,
+    pub slow_ms: u64,
+    pub lag_max_ms: u64,
     /// Edits step 2 took from pe-api's queue that agreement took, and those it refused (app.md 3.1).
     pub edits: u64,
     pub edits_refused: u64,
@@ -453,6 +461,8 @@ pub struct Sim {
     input_frame: Option<Frame>,
     /// The stamp of the last frame's inputs: a frame whose stamp equals it thins its poses (app.md 3.2).
     input_stamp: Option<Frame>,
+    /// The last frame whose pose-only hand entries went out unthinned: the floor's clock while backlogged (F3 S1).
+    pose_frame: Option<Frame>,
     /// Stamp-ahead (app.md 3.2, [`crate::stamp`]): the lead this member's own entries are stamped ahead by, fed each
     /// tick from the other members' lateness reports (S3 v1.8). `None` stamps them at the present.
     lead: Option<crate::stamp::StampLead>,
@@ -484,10 +494,6 @@ pub struct Sim {
     leave_wait: Option<Duration>,
     /// The members whose link is down (S4's `LinkDown`, until a `LinkUp`).
     down: std::collections::BTreeSet<MemberKey>,
-    /// The members of this epoch whose link dropped with their signed `Leave` in hand, before it was final: they left
-    /// unconfirmed (the console said so), until their link comes back. A member whose every other member is here is
-    /// left alone, and step 2 doesn't pace its hands (M1 redo F2).
-    stranded: std::collections::BTreeSet<MemberKey>,
     /// What the console should say (app.md 4), drained by [`Sim::take_notices`].
     notices: Vec<String>,
     /// `--inject-fault-at`'s fault ([`crate::fault`]): this process's armed one, which its replica injects. The loop
@@ -509,6 +515,12 @@ pub struct Sim {
     catching_up: bool,
     /// The tick trace, when `PE_TICK_TRACE` names a file ([`Sim::with_tick_trace`], [`crate::trace`]).
     trace: Option<crate::trace::TickTrace>,
+    /// How far behind the clock this member is, and when it must freeze and resync (divergence.md 4.6).
+    slow: crate::slow::SlowWatch,
+    /// A resync's import is under way ([`Sim::resyncing`]): frozen, nothing steps, nothing is appended.
+    resyncing: bool,
+    /// Slow past the freeze at `n = 2`, where no resync is possible: told once per slow stint.
+    cant_resync: bool,
     /// The cut log, when `PE_CUT_LOG` names a file ([`Sim::with_cut_log`], [`crate::cutlog`]).
     cut_log: Option<crate::cutlog::CutLog>,
 }
@@ -610,6 +622,12 @@ pub trait NetHook: Send {
 /// The most messages step 1 takes from the network in one tick, so a flood cannot stall the tick: the rest wait
 /// in the transport's bounded queue for the next one.
 pub const MAX_IN_PER_TICK: usize = 1024;
+
+/// The floor of a hand's canonical pose rate while agreement reports this member backlogged (F3 S1, S5 Part 1;
+/// @coordinator-opus m424eb2b482f5): thinned to this and no further, so the other players never see this player's
+/// hands degrade however long finality trails. A target to benchmark (T-S5 judges grabs and throws at it), not a
+/// measured value.
+pub const HAND_FLOOR_HZ: u64 = 30;
 
 /// The host time of `t`, a present in fractional frames (stamp-ahead's pose clock): between its frame's start and the
 /// next's, in proportion.
@@ -725,6 +743,7 @@ impl Sim {
             local: None,
             input_frame: None,
             input_stamp: None,
+            pose_frame: None,
             lead,
             motion,
             shown: None,
@@ -739,7 +758,6 @@ impl Sim {
             view_time: ViewTime::default(),
             leave_wait: None,
             down: std::collections::BTreeSet::new(),
-            stranded: std::collections::BTreeSet::new(),
             notices: Vec::new(),
             fault: crate::fault::armed(),
             replay: None,
@@ -749,6 +767,9 @@ impl Sim {
             status: None,
             catching_up: false,
             trace: None,
+            slow: crate::slow::SlowWatch::default(),
+            resyncing: false,
+            cant_resync: false,
             cut_log: None,
         }
     }
@@ -901,21 +922,11 @@ impl Sim {
         let notice = if !self.agree.members().contains(&peer) {
             crate::leave::left(peer)
         } else if self.holds_leave_of(peer, present) {
-            self.stranded.insert(peer);
             crate::leave::stranded(peer)
         } else {
             crate::leave::dropped(peer)
         };
         self.notices.push(notice);
-    }
-
-    /// Whether every other member of this member's epoch left unconfirmed ([`Sim::stranded`]): nobody is left to
-    /// acknowledge its entries, so agreement's backlog would hold its hands for the rest of the session, though the
-    /// console said it can keep playing. Its entries won't be shared anyway (M1 redo F2).
-    fn left_alone(&self) -> bool {
-        let me = self.local_member();
-        let mut others = self.agree.members().into_iter().filter(|m| Some(*m) != me).peekable();
-        others.peek().is_some() && others.all(|m| self.stranded.contains(&m) && self.down.contains(&m))
     }
 
     /// Stamp-ahead's lead (app.md 3.2), M1's settings by default: `None` stamps this member's entries at the present,
@@ -1062,6 +1073,13 @@ impl Sim {
         }
     }
 
+    /// Tests only: freeze and resync after `secs` slow instead of a minute ([`crate::slow::FREEZE_AFTER_S`]).
+    #[cfg(test)]
+    pub(crate) fn with_freeze_after(mut self, secs: f64) -> Sim {
+        self.slow.freeze_after_s = Some(secs);
+        self
+    }
+
     /// Records every tick in `trace` ([`crate::trace`]): off unless the binary was given `PE_TICK_TRACE`.
     pub fn with_tick_trace(mut self, trace: crate::trace::TickTrace) -> Sim {
         self.trace = Some(trace);
@@ -1089,7 +1107,89 @@ impl Sim {
     /// Whether the replica holds no state of its own yet: a join's import is under way, or failed (the joiner quits,
     /// and its empty replica is never driven).
     fn importing(&self) -> bool {
-        self.joining.is_some() || self.join_failed.is_some()
+        self.joining.is_some() || self.join_failed.is_some() || self.resyncing
+    }
+
+    /// Whether a resync's import is under way (divergence.md 4.6): the member is frozen.
+    pub fn resyncing(&self) -> bool {
+        self.resyncing
+    }
+
+    /// After step 4: how far behind the clock this member is (divergence.md 4.6). The status line says so while it is
+    /// behind by half a second or more; slow for a minute, it freezes and resyncs at the newest final cut, which at
+    /// `n` >= 3 the others certified without it. At `n = 2` every cut needs this member's own vote, so no newer
+    /// final cut exists: it says so and keeps trying to catch up.
+    fn watch_lag(&mut self, p: Frame, now: HostTime) {
+        use crate::slow::Verdict;
+        let rate = f64::from(self.clock.rate_hz().max(1));
+        let lag_s = (p.0 + 1).saturating_sub(self.replica.frame().0) as f64 / rate;
+        let verdict = self.slow.observe(now, lag_s);
+        self.stats.lag_max_ms = (self.slow.lag_max_s * 1000.0) as u64;
+        self.stats.slow_ms = self.slow.slow_ns / 1_000_000;
+        if !self.slow.slow() {
+            self.cant_resync = false;
+        }
+        match verdict {
+            Verdict::Run { behind_s } if !self.catching_up => {
+                let text = behind_s.map(|b| {
+                    if self.cant_resync && self.agree.members().len() <= 2 {
+                        crate::slow::cant_resync_status(b)
+                    } else {
+                        crate::slow::behind_status(b)
+                    }
+                });
+                self.set_status(text);
+            }
+            Verdict::Run { .. } => {}
+            Verdict::Freeze { behind_s } => self.start_resync(behind_s, now),
+        }
+    }
+
+    /// A minute slow (F3): nobody freezes, at any `n` (the user's rulings mb91de37952c5, "players should never have
+    /// their actions interrupted", and ma8e471033ddc; @coordinator-opus m1c0234dec52f). The member keeps playing and
+    /// is told once per slow stint. At `n = 2` every cut needs its vote, so its status says the session confirms late;
+    /// at `n >= 3` the others confirm without it. The automatic catch-up that doesn't pause it (a snapshot plus a merged
+    /// package) is F3's package work; `Diverge::resync` is its fetch, not started here yet.
+    fn start_resync(&mut self, behind_s: f64, now: HostTime) {
+        self.slow.resync_ended(now);
+        if self.cant_resync {
+            return;
+        }
+        self.cant_resync = true;
+        let members = self.agree.members().len();
+        self.notices.push(if members <= 2 {
+            format!(
+                "slow: this machine has been {behind_s:.0} s behind real time for a minute. Alone or with two players \
+                 every confirmation needs its own vote, so the session confirms at its pace; it keeps playing and \
+                 catching up"
+            )
+        } else {
+            format!(
+                "slow: this machine has been {behind_s:.0} s behind real time for a minute. It keeps playing and \
+                 catching up; the others confirm without its vote"
+            )
+        });
+    }
+
+    /// After step 5: a resync's import ended. Imported, the member steps on from the cut and catches up; failed, it
+    /// runs on, and if it is still slow it resyncs again a minute later.
+    fn check_resync(&mut self, now: HostTime) {
+        if !self.resyncing {
+            return;
+        }
+        let state = self.diverge.as_ref().and_then(|d| d.d.join_state().cloned());
+        let line = match state {
+            Some(pe_diverge::Join::Joined { cut }) => {
+                format!("resync: imported the world at frame {}; catching up to the present", cut.frame.0)
+            }
+            Some(pe_diverge::Join::Failed { why, .. }) => {
+                format!("resync: failed ({why}); trying again if still behind")
+            }
+            _ => return,
+        };
+        self.resyncing = false;
+        self.slow.resync_ended(now);
+        self.notices.push(line);
     }
 
     /// Why the join failed, if it did: the joiner quits.
@@ -1286,7 +1386,6 @@ impl Sim {
         for (peer, up) in links {
             if up {
                 self.down.remove(&peer);
-                self.stranded.remove(&peer);
             } else {
                 self.link_down(peer, p);
             }
@@ -1296,10 +1395,10 @@ impl Sim {
         // Before the first view the hands' objects are not known yet, so nothing goes in. Once per frame: a wake (step
         // 7) ticks again within a frame, and that tick takes in messages and re-simulates but adds no second set of
         // inputs for the frame, which would count against the rate budget.
-        // While agreement reports this member backlogged after a stall (S3 v1.5), the frame's hand inputs are held
-        // back: they would only be void as late, and they would lengthen the flush. A member left alone by unconfirmed
-        // leaves isn't held back ([`Sim::left_alone`]). Edits never come through here, so
-        // nothing holds them back.
+        // Hands are never held (F3 S1; the user's m041345d72bab: a hand freeze of any length is unacceptable). While
+        // agreement reports this member backlogged (S3 v1.5), its pose-only hand entries are thinned to
+        // [`HAND_FLOOR_HZ`] and no further, and a grip's change always goes, with its pose. Local hands keep applying
+        // every frame. Edits never come through here, so nothing thins them.
         // The frame's edit goes first, before its hand entries, so that a dry run made while pe-api's queue was empty
         // names the seq the edit gets (app.md 3.1). One a frame, never paced: an edit is never void as late for
         // being held back, and the queue's wake (step 7) brings its frame's tick.
@@ -1308,7 +1407,8 @@ impl Sim {
         // once a frame: while either moves, the lead sheds at most one frame in 11. The pose clock then says which
         // moment the frame's poses carry, so a shed is spread over the stamps up to the next. A member that is leaving
         // sends no more hands, so it reads none.
-        let fresh = self.leaving == Leaving::Staying && self.input_frame.is_none_or(|f| ps > f);
+        // A member frozen for a resync makes no hand entries (divergence.md 4.6).
+        let fresh = self.leaving == Leaving::Staying && !self.resyncing && self.input_frame.is_none_or(|f| ps > f);
         if let (true, Some(_), Some(l), Some(view)) = (fresh, &self.lead, &self.local, &self.published) {
             // A frame's view is the state at its end (the replica's frame after the step), so the hands go in at the
             // end of the frame they are stamped for: the simulated hand is then where the real one is at that moment.
@@ -1423,18 +1523,23 @@ impl Sim {
                 api.ports.queue.settle(ticket, receipt);
             }
         }
-        // Not once every other member left unconfirmed (M1 redo F2): nobody would ever acknowledge them.
-        let paced = fresh && self.agree.backlogged() && !self.left_alone();
+        let floor_gap = (u64::from(self.clock.rate_hz()) / HAND_FLOOR_HZ).max(1);
+        let floor_thin =
+            fresh && self.agree.backlogged() && self.pose_frame.is_some_and(|f| ps.0 < f.0.saturating_add(floor_gap));
         if let (true, Some(l), Some(view)) = (fresh, &mut self.local, &self.published) {
-            if paced {
-                self.stats.hands_paced += 1;
-            } else {
+            {
                 // At the end of the stamped frame, as the speed test above reads them.
                 let at = pose_time
                     .map_or_else(|| self.clock.host_time_of(Frame(ps.0 + 1)), |t| host_time_at(&*self.clock, t + 1.0));
                 let domain = self.replica.domain();
                 // While the lead sheds, a frame's stamp can stand still: its poses would only replace the last frame's.
-                let thin = self.input_stamp == Some(stamp);
+                // While backlogged, only every `floor_gap`-th frame's poses go (F3 S1).
+                let thin = self.input_stamp == Some(stamp) || floor_thin;
+                if floor_thin {
+                    self.stats.hands_floor_thinned += 1;
+                } else if self.input_stamp != Some(stamp) {
+                    self.pose_frame = Some(ps);
+                }
                 let sent = local::submit_hands(
                     &mut l.chain,
                     &mut l.grasp,
@@ -1512,6 +1617,9 @@ impl Sim {
         }
         let stepped_before = self.replica.frame();
         let report = if self.importing() { DriveReport::default() } else { self.drive(ps) };
+        if !self.importing() {
+            self.watch_lag(p, now);
+        }
         // `PE_CUT_LOG` (crate::cutlog): each finalize result with the root its cut is final with. The driver
         // finalizes only `final_cut()`, so a result is always for it. The poll flushes within a second even when no
         // cut follows.
@@ -1560,6 +1668,7 @@ impl Sim {
             }
         }
         self.check_join();
+        self.check_resync(now);
         // `--check-replay` (crate::replay): a replay the console asked for.
         if self.replay.is_some()
             && crate::replay::take_request()
@@ -1705,6 +1814,7 @@ impl Sim {
         self.count_hold(report.advance.caught_up);
         if self.catching_up && self.joining.is_none() && report.advance.caught_up {
             self.catching_up = false;
+            self.slow.caught_up(self.clock.host_time_of(p));
             self.set_status(None);
         }
         report
@@ -2428,10 +2538,11 @@ pub(crate) mod tests {
         assert_eq!((out.frame, out.objects.len(), out.final_frame), (v.frame, v.objects.len(), v.final_frame));
     }
 
-    /// While agreement reports this member backlogged (S3 v1.5), step 2 makes no hand inputs, and it makes them again
-    /// once the backlog clears (@world-chunks's stall fix; @coordinator-opus m96aa537db102).
+    /// While agreement reports this member backlogged (S3 v1.5), step 2 never holds its hands (F3 S1; the user's
+    /// m041345d72bab): their pose-only entries are thinned to [`HAND_FLOOR_HZ`], one frame's in `rate / 30`, and every
+    /// frame's go again once the backlog clears. Red on main 74314c81: no hand inputs while backlogged, `hands_paced` 3.
     #[test]
-    fn hand_inputs_wait_while_agreement_reports_a_backlog() {
+    fn hand_inputs_are_thinned_to_the_floor_never_held_while_agreement_reports_a_backlog() {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let me = crate::world::DEV_MEMBER;
         let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
@@ -2444,14 +2555,28 @@ pub(crate) mod tests {
             Arc::new(StillHands([0.0, 1.0, -0.4])),
         );
         s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        let before = s.stats().inputs;
         backlog.store(true, Ordering::Relaxed);
-        for f in 2..=4 {
+        let gap = (u64::from(RATE.hz()) / HAND_FLOOR_HZ).max(1);
+        let frames = 4 * gap;
+        for f in 2..2 + frames {
             s.tick(clock.host_time_of(Frame(f))).expect("ticked");
         }
-        assert_eq!((s.stats().inputs, s.stats().hands_paced), (0, 3), "no hand inputs while backlogged");
+        let (inputs, thinned) = (s.stats().inputs - before, s.stats().hands_floor_thinned);
+        assert_eq!(s.stats().hands_paced, 0, "never held");
+        // Both hands, on one frame in `gap`: the floor, and no fewer.
+        assert!(
+            inputs >= 2 * (frames / gap) && inputs <= 2 * (frames / gap + 1),
+            "{inputs} inputs over {frames} frames"
+        );
+        assert!(thinned >= frames - frames / gap - 1, "{thinned} frames thinned");
         backlog.store(false, Ordering::Relaxed);
-        s.tick(clock.host_time_of(Frame(5))).expect("ticked");
-        assert_eq!((s.stats().inputs, s.stats().hands_paced), (2, 3), "both hands again once it clears");
+        let (inputs, thinned) = (s.stats().inputs, s.stats().hands_floor_thinned);
+        for f in 2 + frames..2 + frames + 3 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        assert_eq!(s.stats().inputs - inputs, 6, "both hands every frame once it clears");
+        assert_eq!(s.stats().hands_floor_thinned, thinned);
     }
 
     /// Both hands tracked and closed up to frame `.1`, then lost and open: pe-xr's release of a lost hand that held.
@@ -3552,6 +3677,10 @@ pub(crate) mod tests {
         inner: ReplicaImpl<crate::fault::FaultWorld>,
         at: Option<Frame>,
         damaged: Arc<std::sync::atomic::AtomicU64>,
+        /// From this frame on, the replica steps at half the clock's rate: a machine at half speed (F3, divergence.md
+        /// 4.6). `half_base` is (its frame, the present) when the half rate started, moved up after an import jumps it.
+        half_from: Option<Frame>,
+        half_base: Option<(Frame, Frame)>,
     }
 
     impl Replica for Damaged {
@@ -3565,6 +3694,17 @@ pub(crate) mod tests {
             self.inner.set_budget(simulated)
         }
         fn advance(&mut self, present: Frame, source: &mut dyn pe_seams::EntrySource) -> pe_seams::Advance {
+            let mut present = present;
+            if self.half_from.is_some_and(|h| present >= h) {
+                let mine = self.inner.frame();
+                let (bf, bp) = *self.half_base.get_or_insert((mine, present));
+                let allowed = Frame(bf.0 + present.0.saturating_sub(bp.0) / 2);
+                if mine > allowed {
+                    // A resync's import jumped the replica ahead: the half rate starts again from there.
+                    self.half_base = Some((mine, present));
+                }
+                present = present.min(allowed.max(mine));
+            }
             let a = self.inner.advance(present, source);
             if self.at.is_some_and(|at| self.inner.frame() >= at) {
                 self.at = None;
@@ -3636,6 +3776,161 @@ pub(crate) mod tests {
         }
     }
 
+    /// `n` members on one hub, each with pe-diverge and a 3 s freeze delay; the last one at half speed from frame 60,
+    /// with `status` as its status line (F3's T2 and its n = 2 variant).
+    #[allow(clippy::type_complexity)]
+    fn half_speed_session(
+        n: usize,
+        clock: &Arc<dyn FrameClock>,
+        hub: &Hub,
+        status: &Arc<pe_render::notices::StatusLine>,
+    ) -> Vec<(Sim, Arc<FrameSlot>, Vec<String>)> {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::test_util::TestKeys;
+        let keys = TestKeys::new(11, n as u32);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let at = [[-0.5, 1.0, -0.4], [0.5, 1.1, -0.3], [0.0, 1.0, 0.5]];
+        let mut sims = Vec::new();
+        for (i, feed) in at.iter().take(n).enumerate() {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), pe_seams::Pos::ORIGIN, 8);
+            let inner =
+                crate::world::ball_pit_replica(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let damaged = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let half_from = (i == n - 1).then_some(Frame(60));
+            let replica = Box::new(Damaged { inner, at: None, damaged, half_from, half_base: None });
+            let slot = Arc::new(FrameSlot::new());
+            let mut sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))
+                .with_transport(Box::new(Port::new(me, hub.clone())), None)
+                .with_diverge(pe_diverge::Config::default(), None)
+                .expect("pe-diverge")
+                .with_freeze_after(3.0);
+            if i == n - 1 {
+                sim = sim.with_status(status.clone());
+            }
+            sims.push((sim, slot, Vec::new()));
+        }
+        sims
+    }
+
+    /// F3 at n = 2 (@engine-architect's L2 on fc24bc9c; F3 S5, the user's ruling "2"): member 1 at half speed. Every
+    /// cut needs its vote, so it can't resync; past the freeze delay (3 s here) it doesn't freeze. It says so once,
+    /// its status says the session confirms late at its pace, and member 0's hands are never held.
+    #[test]
+    fn at_n_2_a_member_at_half_speed_never_freezes_and_says_the_session_confirms_late() {
+        const FRAMES: u64 = 900;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let hub = Hub::default();
+        let status = Arc::new(pe_render::notices::StatusLine::default());
+        let mut sims = half_speed_session(2, &clock, &hub, &status);
+        let (mut shown_late, mut shown_behind) = (0u64, 0u64);
+        for f in 1..=FRAMES {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            for (s, _, notices) in sims.iter_mut() {
+                s.tick(now).expect("ticked");
+                notices.extend(s.take_notices());
+                assert!(!s.resyncing(), "nobody freezes at n = 2");
+            }
+            match status.get() {
+                Some(t) if t.contains("confirming") => shown_late += 1,
+                Some(t) if t.starts_with("Behind by") => shown_behind += 1,
+                _ => {}
+            }
+        }
+        let (slow, fast) = (&sims[1], &sims[0]);
+        println!(
+            "late {shown_late} behind {shown_behind}; slow {:?}; notices {:?}; fast inputs {}",
+            slow.0.stats(),
+            slow.2,
+            fast.0.stats().inputs
+        );
+        assert_eq!(slow.0.stats().resyncs_started, 0, "no resync at n = 2");
+        assert!(slow.0.stats().lag_max_ms >= 2000, "it fell behind: {:?}", slow.0.stats());
+        assert_eq!(slow.2.iter().filter(|n| n.starts_with("slow:")).count(), 1, "told once: {:?}", slow.2);
+        assert!(shown_behind > 0 && shown_late > 0, "behind first, then confirming late: {shown_behind} {shown_late}");
+        // Never held (@engine-architect's nit on fe61d5f1: `hands_paced` is 0 since S1, so count what went in): both
+        // hands at the floor at least, every frame from the first.
+        let fs = fast.0.stats();
+        let gap = (u64::from(RATE.hz()) / HAND_FLOOR_HZ).max(1);
+        assert!(
+            fs.inputs + fs.inputs_refused >= 2 * (FRAMES / gap) - 4,
+            "the other member's hands went in at the floor: {} + {}",
+            fs.inputs,
+            fs.inputs_refused
+        );
+        for (i, (s, _, _)) in sims.iter().enumerate() {
+            let d = s.diverge_counters().expect("pe-diverge");
+            assert_eq!((d.root_splits, d.diverged), (0, 0), "member {i}: {d:?}");
+        }
+    }
+
+    /// F3 (@item:primordial-engine/a-member-that-can-t-simulate-in-real-time-freeze; divergence.md 4.6): three members,
+    /// member 2 at half speed from frame 60. It falls behind and says so on its status line. Past the freeze delay (3 s
+    /// here, a minute in play) it never freezes (the user's mb91de37952c5; @coordinator-opus m1c0234dec52f): it is
+    /// told once, keeps playing and stepping, and starts no resync. The other two finalize throughout without it, and
+    /// nobody's roots ever split.
+    #[test]
+    fn a_member_at_half_speed_among_three_never_freezes_and_the_others_finalize_without_it() {
+        const FRAMES: u64 = 1500;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let hub = Hub::default();
+        let status = Arc::new(pe_render::notices::StatusLine::default());
+        let mut sims = half_speed_session(3, &clock, &hub, &status);
+        let (mut shown_behind, mut shown_late, mut frozen_ticks) = (0u64, 0u64, 0u64);
+        let mut final_gap_max = [0u64; 2];
+        for f in 1..=FRAMES {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            for (i, (s, slot, notices)) in sims.iter_mut().enumerate() {
+                s.tick(now).expect("ticked");
+                notices.extend(s.take_notices());
+                if i == 2 {
+                    frozen_ticks += u64::from(s.resyncing());
+                } else if f > 120 {
+                    let fin = slot.newest().and_then(|v| v.final_frame).map_or(0, |fr| fr.0);
+                    final_gap_max[i] = final_gap_max[i].max(f.saturating_sub(fin));
+                }
+            }
+            match status.get() {
+                Some(t) if t.contains("confirming") => shown_late += 1,
+                Some(t) if t.starts_with("Behind by") => shown_behind += 1,
+                _ => {}
+            }
+        }
+        for (i, (s, slot, notices)) in sims.iter().enumerate() {
+            let v = slot.newest().expect("published");
+            println!(
+                "member {i}: final {:?} at frame {:?}; diverge {:?}; {:?}; notices {notices:?}",
+                v.final_frame,
+                v.frame,
+                s.diverge_counters(),
+                s.stats()
+            );
+        }
+        let slow = &sims[2].0;
+        assert_eq!(frozen_ticks, 0, "it never froze");
+        assert_eq!(slow.stats().resyncs_started, 0, "and started no resync");
+        assert!(slow.stats().lag_max_ms >= 2000, "it fell behind: {:?}", slow.stats());
+        assert!(
+            shown_behind > 0 && shown_late == 0,
+            "behind, never 'confirming late' at n = 3: {shown_behind} {shown_late}"
+        );
+        let notices = &sims[2].2;
+        assert_eq!(notices.iter().filter(|n| n.starts_with("slow:")).count(), 1, "told once: {notices:?}");
+        for (i, (s, _, _)) in sims.iter().enumerate() {
+            let d = s.diverge_counters().expect("pe-diverge");
+            assert_eq!((d.root_splits, d.diverged, d.rung_failures), (0, 0, 0), "member {i}: {d:?}");
+        }
+        // The other two finalize throughout: within 2 s of the present after the start.
+        assert!(final_gap_max.iter().all(|g| *g <= 2 * u64::from(RATE.hz())), "{final_gap_max:?}");
+    }
+
     /// What [`split_run`] saw on one member.
     #[derive(Debug)]
     struct SplitSide {
@@ -3677,7 +3972,13 @@ pub(crate) mod tests {
                 crate::world::ball_pit_replica(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
             let damaged = Arc::new(std::sync::atomic::AtomicU64::new(0));
             counts.push(damaged.clone());
-            let replica = Box::new(Damaged { inner, at: (i == 1).then_some(Frame(121)), damaged });
+            let replica = Box::new(Damaged {
+                inner,
+                at: (i == 1).then_some(Frame(121)),
+                damaged,
+                half_from: None,
+                half_base: None,
+            });
             let slot = Arc::new(FrameSlot::new());
             let mut sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
                 .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))
@@ -5263,11 +5564,86 @@ pub(crate) mod tests {
         }
     }
 
+    /// F3 S1 (@engine-architect's M1 on fc24bc9c): at n = 2, B stalls for 20 s, past the receivers' pending cap for A's
+    /// entries (about 15 s of A's hands at the floor), then runs again. A's hands go in at the floor throughout, never
+    /// held, and once B is back, finality resumes on equal roots within a few seconds: the stand-still doesn't feed
+    /// itself. B, behind for the freeze delay (3 s here), says so, and at n = 2 it doesn't freeze (F3 S5, ruling "2"):
+    /// the notice comes once, the status says the session confirms late, and it comes down once B has caught up.
+    #[test]
+    fn a_member_stalled_past_the_pending_cap_comes_back_and_finality_resumes() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let hub = Hub::default();
+        let mut pair = agreeing_pair(&clock, &hub);
+        let status = Arc::new(pe_render::notices::StatusLine::default());
+        for i in 0..2 {
+            let (s, slot, me, events) = pair.remove(i);
+            let mut s = s.with_diverge(pe_diverge::Config::default(), None).expect("pe-diverge").with_freeze_after(3.0);
+            if i == 1 {
+                s = s.with_status(status.clone());
+            }
+            pair.insert(i, (s, slot, me, events));
+        }
+        let hz = u64::from(RATE.hz());
+        let mut f = 0;
+        for _ in 0..2 * hz {
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0, 1], f);
+        }
+        let (inputs, refused) = (pair[0].0.stats().inputs, pair[0].0.stats().inputs_refused);
+        let stall = 20 * hz;
+        for _ in 0..stall {
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0], f);
+        }
+        let a = pair[0].0.stats();
+        let (inputs, refused) = (a.inputs - inputs, a.inputs_refused - refused);
+        let gap = (hz / HAND_FLOOR_HZ).max(1);
+        println!(
+            "stall of {stall} frames: A sent {inputs} hand inputs ({refused} refused), {} paced, {} thinned; A \
+             backlogged: {}",
+            a.hands_paced,
+            a.hands_floor_thinned,
+            pair[0].0.agree.backlogged()
+        );
+        assert_eq!(a.hands_paced, 0, "A's hands are never held");
+        assert!(inputs + refused >= 2 * (stall / gap) - 4, "A's hands went in at the floor: {inputs} + {refused}");
+        let (mut resumed, mut shown_late, mut longest_tick) = (None, 0u64, 0u64);
+        let back = f;
+        for _ in 0..30 * hz {
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0, 1], f);
+            let fin = pair[0].1.newest().and_then(|v| v.final_frame).map_or(0, |x| x.0);
+            if resumed.is_none() && fin + hz >= f {
+                resumed = Some(f - back);
+            }
+            if status.get().is_some_and(|t| t.contains("confirming")) {
+                shown_late += 1;
+            }
+            longest_tick = longest_tick.max(pair[0].0.stats().phases.longest_tick_ns);
+        }
+        let notices = pair[1].0.take_notices();
+        println!(
+            "finality back within 1 s of the present {resumed:?} frames after B came back; A's longest tick {} ms; B \
+             showed 'confirming late' on {shown_late} frames; notices {notices:?}",
+            longest_tick / 1_000_000
+        );
+        assert!(resumed.is_some_and(|r| r <= 10 * hz), "finality resumes within 10 s of B's return: {resumed:?}");
+        for (i, (s, _, _, _)) in pair.iter().enumerate() {
+            let d = s.diverge_counters().expect("pe-diverge");
+            assert_eq!((d.root_splits, d.diverged), (0, 0), "member {i}: {d:?}");
+        }
+        assert!(
+            notices.iter().filter(|n| n.starts_with("slow:")).count() <= 1,
+            "one notice per slow stint: {notices:?}"
+        );
+        assert!(!status.get().is_some_and(|t| t.contains("confirming")), "the status came down once B caught up");
+    }
+
     /// M1 redo F2 (@item:primordial-engine/m1-redo-f2-an-unconfirmed-leave-kept-a-s-hands-h): B signs its `Leave`
     /// and its link drops before A confirms E. B stays in A's epoch, so A finalizes nothing more, and pe-agree's backlog
     /// pacing counts B as a member that never acknowledges A's entries. A was told it can keep playing, so its hands
-    /// keep going in: a member whose every other member left unconfirmed isn't paced. A member whose peer only dropped
-    /// (no `Leave` in hand) is still paced, since the peer may come back. A link that comes back ends it either way.
+    /// keep going in. Since F3's S1 no member's hands are ever held, whether B left unconfirmed or only dropped (it may
+    /// come back): while backlogged they are thinned to [`HAND_FLOOR_HZ`], never below.
     #[test]
     fn a_member_left_alone_by_an_unconfirmed_leave_keeps_its_hands() {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
@@ -5293,17 +5669,14 @@ pub(crate) mod tests {
             }
             assert_eq!(pair[0].0.other_members(), vec![b], "E isn't final at A: B is still in its epoch");
             let (inputs, paced) = (pair[0].0.stats().inputs - inputs, pair[0].0.stats().hands_paced - paced);
-            let refused = pair[0].0.stats().inputs_refused;
+            let (refused, thinned) = (pair[0].0.stats().inputs_refused, pair[0].0.stats().hands_floor_thinned);
             println!(
-                "with a Leave in hand {leaves}: {inputs} hand inputs ({refused} refused), {paced} frames paced in 600"
+                "with a Leave in hand {leaves}: {inputs} hand inputs ({refused} refused), {paced} frames paced, {thinned} thinned in 600"
             );
-            if leaves {
-                assert_eq!(paced, 0, "A isn't paced once B left unconfirmed");
-                assert!(inputs >= 2 * 590, "A's hands keep going in: {inputs}");
-                assert_eq!(refused, 0, "and agreement takes them");
-            } else {
-                assert!(paced > 0, "a dropped peer may come back: A is still paced");
-            }
+            let gap = (u64::from(RATE.hz()) / HAND_FLOOR_HZ).max(1);
+            assert_eq!(paced, 0, "A's hands are never held (F3 S1)");
+            assert!(inputs >= 2 * (590 / gap), "A's hands keep going in, at the floor or better: {inputs}");
+            assert_eq!(refused, 0, "and agreement takes them");
         }
     }
 

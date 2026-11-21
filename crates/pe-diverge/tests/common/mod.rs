@@ -393,6 +393,8 @@ pub struct Mock {
     /// With `forget_after_replay`: `root_at_cut` at a forgotten cut answers `Pending` this many times first (S2 v1.1).
     pub root_pending: u32,
     unheld: BTreeSet<u64>,
+    /// Every list `set_served` was given (S2 v1.9), in order.
+    pub served: Vec<Vec<Hash>>,
 }
 
 impl Mock {
@@ -420,6 +422,7 @@ impl Mock {
             forget_after_replay: false,
             root_pending: 0,
             unheld: BTreeSet::new(),
+            served: Vec::new(),
             refuse: None,
             named: (1..=objects).filter(|k| k % 4 == 1).map(spread).collect(),
             blobs: BTreeMap::new(),
@@ -558,6 +561,9 @@ impl Replica for Mock {
         Frame(self.now + 1)
     }
     fn set_budget(&mut self, _simulated: Duration) {}
+    fn set_served(&mut self, roots: &[Hash]) {
+        self.served.push(roots.to_vec());
+    }
     fn advance(&mut self, present: Frame, _source: &mut dyn EntrySource) -> Advance {
         let mut stepped = 0;
         while self.now + 1 < present.0 {
