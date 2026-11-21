@@ -29,6 +29,30 @@
 //!   revoted the reference's root: it shows once, `agreed`, after a gap in `t`. The split itself is in `--log`
 //!   (pe-diverge's `RootSplitStarted` and `RootSplitEnded`).
 //!
+//! **Rollbacks** (1.11; @coordinator-opus m8ea941b0a9ae) go in the same file, one line each, so the self-test checker
+//! reads them beside the cuts:
+//!
+//! ```text
+//! rollback t=<s> to=<frame> depth=<n> present=<frame> changed=<frame>|- replay=<frame>|- at=[<author 8 hex>:<class>:<seq>,...] voided=[<author 8 hex>:<reason>,...]
+//! ```
+//!
+//! - `to` is the keyframe the replica restored (S2's `Advance::rolled_back_to`), `depth` how many frames it had
+//!   stepped past it, and `present` the clock's frame.
+//! - The two causes, each `-` when it took no part (S2 v1.11; @design-reviewer's M1 on 6408fdbe):
+//!   - `changed` is the frame whose entries agreement reported changed: a late entry, a void or a reorder. It is at or
+//!     above `to`, since keyframes are a few frames apart (4 at 60 Hz, replica.md 4.1), except for a report below the
+//!     replica's floor, which is stepped again from the floor.
+//!   - `replay` is the commit frame of this machine's own code commit, whose prediction ended (logic.md 6.2a; n >= 2).
+//!     It needs no late entry or void.
+//! - `at` lists the entries agreement now holds at `changed` (`*` marks this machine's own), empty when `changed` is
+//!   `-`. `voided` lists the voids agreement reported in the same tick. Together they say what the replica re-stepped
+//!   for: a late entry at `changed`, a void, or the end of a prediction.
+//! - A finalize's rebase onto the floor (replica.md 6.1) re-steps the live history without a rollback, so it writes no
+//!   line. At n = 1 that happens at the last member's leave, which agreement voids (`LastMember`) after the live
+//!   history stepped it (1.11's probe).
+//!
+//! [`parse_rollbacks`] reads the lines back.
+//!
 //! The log flushes at least once a second of host time while the simulation runs, since [`CutLog::poll`] runs every
 //! tick, even when no cut follows a line (as in a split), and when it is dropped. A write error is dropped: the log
 //! never stops the simulation.
@@ -121,6 +145,28 @@ impl CutLog {
         }
     }
 
+    /// One rollback at `now` (1.11), as the module's doc gives its line.
+    pub fn rollback(&mut self, now: HostTime, r: &RollbackLine) {
+        let t = now.0.saturating_sub(self.opened.0) as f64 / 1e9;
+        let frame = |f: Option<u64>| f.map_or_else(|| "-".to_string(), |f| f.to_string());
+        let wrote = writeln!(
+            self.out,
+            "rollback t={t:.3} to={} depth={} present={} changed={} replay={} at=[{}] voided=[{}]",
+            r.to,
+            r.depth,
+            r.present,
+            frame(r.changed),
+            frame(r.replay),
+            r.at.join(","),
+            r.voided.join(",")
+        );
+        if wrote.is_ok() {
+            self.lines += 1;
+            self.unflushed = true;
+            self.poll(now);
+        }
+    }
+
     /// Writes out what is buffered.
     pub fn flush(&mut self) {
         self.unflushed = false;
@@ -164,6 +210,55 @@ pub fn parse(text: &str) -> Vec<CutLine> {
                 root: field("root")?,
                 result: field("result")?,
                 mine: field("mine"),
+            })
+        })
+        .collect()
+}
+
+/// One `rollback` line (1.11), as [`CutLog::rollback`] writes it and [`parse_rollbacks`] reads it back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RollbackLine {
+    /// The keyframe restored.
+    pub to: u64,
+    /// How many frames the replica had stepped past `to`.
+    pub depth: u64,
+    pub present: u64,
+    /// The frame whose entries changed, if a change took part.
+    pub changed: Option<u64>,
+    /// The commit frame of this machine's own code commit whose prediction ended, if that took part.
+    pub replay: Option<u64>,
+    /// The entries at `changed`, `<author 8 hex>:<class>:<seq>`, a `*` before this machine's own.
+    pub at: Vec<String>,
+    /// `<author 8 hex>:<reason>`.
+    pub voided: Vec<String>,
+}
+
+/// The `rollback` lines of a log's text; other lines are skipped.
+pub fn parse_rollbacks(text: &str) -> Vec<RollbackLine> {
+    let list = |l: &str, k: &str| -> Option<Vec<String>> {
+        let inside = l.split(&format!(" {k}=[")).nth(1)?.split(']').next()?;
+        Some(inside.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
+    };
+    text.lines()
+        .filter(|l| l.starts_with("rollback "))
+        .filter_map(|l| {
+            let raw = |k: &str| l.split_whitespace().find_map(|w| w.strip_prefix(k).and_then(|v| v.strip_prefix('=')));
+            let field = |k: &str| raw(k)?.parse().ok();
+            // `-`, or a frame.
+            let cause = |k: &str| -> Option<Option<u64>> {
+                match raw(k)? {
+                    "-" => Some(None),
+                    v => v.parse().ok().map(Some),
+                }
+            };
+            Some(RollbackLine {
+                to: field("to")?,
+                depth: field("depth")?,
+                present: field("present")?,
+                changed: cause("changed")?,
+                replay: cause("replay")?,
+                at: list(l, "at")?,
+                voided: list(l, "voided")?,
             })
         })
         .collect()
@@ -264,6 +359,44 @@ mod tests {
         log.record(ms(3600), &cut(6, 36), &root, &Finalized::Agreed);
         drop(log);
         assert_eq!(parse(&buf.text()).len(), 6, "dropped: flushed");
+    }
+
+    #[test]
+    fn a_rollback_writes_its_line_beside_the_cuts() {
+        let buf = Shared::default();
+        let mut log = CutLog::to_writer(Box::new(buf.clone()), HostTime(0)).expect("a log");
+        log.record(HostTime(1_000_000_000), &cut(1, 6), &Hash([1; 32]), &Finalized::Agreed);
+        let strings = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A late entry at 42, restored from the keyframe at 40.
+        let late = RollbackLine {
+            to: 40,
+            depth: 3,
+            present: 44,
+            changed: Some(42),
+            replay: None,
+            at: strings(&["0a0b0c0d:Input:7", "*01020304:Input:9"]),
+            voided: strings(&["0a0b0c0d:Late"]),
+        };
+        // The end of this machine's own prediction, from its commit at 48: no entry changed.
+        let replay =
+            RollbackLine { to: 48, depth: 4, present: 52, changed: None, replay: Some(48), at: vec![], voided: vec![] };
+        log.rollback(HostTime(1_500_000_000), &late);
+        log.rollback(HostTime(2_000_000_000), &replay);
+        drop(log);
+        let text = buf.text();
+        assert!(
+            text.contains(
+                "rollback t=1.500 to=40 depth=3 present=44 changed=42 replay=- \
+                 at=[0a0b0c0d:Input:7,*01020304:Input:9] voided=[0a0b0c0d:Late]"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("rollback t=2.000 to=48 depth=4 present=52 changed=- replay=48 at=[] voided=[]"),
+            "{text}"
+        );
+        assert_eq!(parse(&text).len(), 1, "cut lines unchanged");
+        assert_eq!(parse_rollbacks(&text), vec![late, replay]);
     }
 
     #[test]

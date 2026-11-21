@@ -273,8 +273,19 @@ pub trait EntrySource {
 /// What one [`Replica::advance`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Advance {
-    /// The frame it rolled back to, if entries had changed below the present.
+    /// The frame it rolled back to, if entries had changed below the present: the newest keyframe at or before the frame
+    /// it steps again from, so the frame restored, not the frame that changed ([`Advance::changed_from`] and
+    /// [`Advance::replay_from`] say why). With both causes in one advance, the lower of the two.
     pub rolled_back_to: Option<Frame>,
+    /// The frame whose entries the source reported changed ([`EntrySource::take_changed_from`]: a late entry, a void
+    /// or a reorder), when stepping again from it rolled the replica back (S2 v1.11; pe-app's rollback-cause line,
+    /// 1.11). It is at or above `rolled_back_to`, except for a report below the replica's rollback floor, which is
+    /// stepped again from the floor (replica.md 4.2).
+    pub changed_from: Option<Frame>,
+    /// The commit frame of the local member's own code-commit prediction that ended in this advance (logic.md 6.2a's
+    /// option (i); replica.md 8.2), when stepping again from it rolled the replica back (S2 v1.11). No entry changed
+    /// for it, so `changed_from` may be `None` with `rolled_back_to` set.
+    pub replay_from: Option<Frame>,
     /// Frames simulated again below the previous present.
     pub resimulated: u64,
     /// New frames stepped.

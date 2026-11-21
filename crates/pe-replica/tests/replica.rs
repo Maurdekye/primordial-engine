@@ -182,6 +182,8 @@ fn late_entries_roll_back_to_the_same_roots() {
     // The newest keyframe the ring kept at or before frame 9, then everything from it to the old present again.
     let k = adv.rolled_back_to.expect("rolled back").0;
     assert!(k <= 9, "rolled back to {k}");
+    // S2 v1.11: the frame that changed, beside the keyframe restored; no prediction ended.
+    assert_eq!((adv.changed_from, adv.replay_from), (Some(Frame(9)), None), "{adv:?}");
     assert_eq!((adv.resimulated, adv.stepped), (40 - k, 24));
     assert!(adv.caught_up);
     assert_eq!(roots(&b, 64), roots(&a, 64));
