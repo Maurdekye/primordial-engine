@@ -420,12 +420,11 @@ a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named abs
      self-test is the only real evidence of which machine is wrong.
      **M1's self-test** (pe-physics `self_test_digest`; @coordinator-opus) steps a fixed scene a fixed
      number of frames and takes its whole-state check hash. pe-app takes the digest at start-up and again for each
-     split, each on a thread in the simulation's floating-point mode, which the digest depends on (app.md 3, step 5):
-     `Passed` if they are equal, `Failed`
-     otherwise or if either run fails. A vote never claims a test that did not run. The scene is a fresh world, so it
-     sees how the machine computes now (CPU, floating-point mode, code), never a fault in the session's state, which
-     the pick decides. The start-up digest is the value R-G1's hello will carry: once it does, it is taken before the
-     hello.
+     split, each after pe-physics resets the thread's floating-point mode to the default, the mode every simulated
+     frame runs in (app.md 3, step 5): `Passed` if they are equal, `Failed` otherwise or if either run fails. A vote
+     never claims a test that did not run. The scene is a fresh world, so it sees how the machine computes now (CPU
+     and code), never a fault in the session's state, which the pick decides; a mode that wasn't the default is
+     reported beside the result. The start-up digest is the value the hello carries (G1), taken before the hello.
   3. A **reference member** is chosen (@coordinator-opus's L4' rulings, on
      @fable-reviewer's rule):
      - **The latch:** a member any of whose verdicts for this split shows `Failed` is out for the rest of the

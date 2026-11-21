@@ -437,12 +437,26 @@ impl Endpoint {
         if addrs.iter().any(|a| a.ip().is_unspecified()) {
             return Err(NetError::Core("an unspecified address can't be advertised: name one".into()));
         }
+        // G1 (app.md 3 step 5): the start-up physics self-test, the value pe-diverge compares a split's digest
+        // against, so pe-net's guard refuses a peer whose physics computes differently. One that couldn't run vouches
+        // for nothing (diverge.rs's `verdict`): random bytes, which no machine's hello matches.
+        let st = crate::diverge::startup_self_test();
+        let selftest = match &st.digest {
+            Ok(d) => d.digest.0,
+            Err(e) => {
+                crate::err!(
+                    "pe-app: the physics self-test couldn't run ({e}); every join will be refused at the hello"
+                );
+                let mut r = [0u8; 32];
+                pe_net_crypto::random::os().fill(&mut r).map_err(|_| NetError::Core("no randomness".into()))?;
+                r
+            }
+        };
         let hello = Hello {
             protocol: PROTOCOL,
             build: build_id().to_vec(),
-            // TODO(pe-diverge): the physics self-test's digest and time, once the worker runs it (app.md 1).
-            selftest: [0; 32],
-            selftest_unix_s: 0,
+            selftest,
+            selftest_unix_s: st.unix_s,
             line: pre_genesis_line(),
             token: Vec::new(),
             addrs: addrs.clone(),
@@ -1235,6 +1249,24 @@ mod tests {
     #[test]
     fn the_build_id_fits_the_hello() {
         assert!(build_id().len() <= pe_net::lifecycle::MAX_BUILD, "{} bytes", build_id().len());
+    }
+
+    /// G1 (app.md 3 step 5): the hello carries this process's start-up physics self-test digest and its time, the
+    /// value pe-diverge compares a split's digest against, so pe-net's guard refuses a peer whose physics computes
+    /// differently.
+    #[test]
+    fn the_hello_carries_the_start_up_physics_self_test_digest() {
+        let mut seen = None;
+        let bound = Endpoint::bind_with([23; 32], loopback(), Vec::new(), true, crate::clock::shared(), None, |c| {
+            seen = Some((c.hello.selftest, c.hello.selftest_unix_s))
+        });
+        drop(bound.expect("bound"));
+        let (digest, unix_s) = seen.expect("the hello was built");
+        let st = crate::diverge::startup_self_test();
+        assert_eq!(digest, st.digest.as_ref().expect("the self-test runs").digest.0, "the start-up digest");
+        assert_ne!(digest, [0; 32]);
+        assert_eq!(unix_s, st.unix_s);
+        assert!(unix_s > 1_700_000_000, "a Unix time: {unix_s}");
     }
 
     /// A build id over the hello's bound is refused by `bind` with a typed error, never sent to time out.
