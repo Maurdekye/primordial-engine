@@ -2,7 +2,10 @@
 //! only on its archive and the build identity. Each test is a probe of `scripts/iter_bench_build_asym.py` or
 //! `iter_bench_toolchain_min.py` made permanent (@fable-reviewer).
 
-use pe_logic::build::{BuildError, Toolchain, build, build_archive, check_dep_info, engine_sdk, pack, toolchain_env};
+use pe_logic::build::{
+    BuildError, Toolchain, build, build_archive, build_archive_reporting, check_dep_info, engine_sdk, pack,
+    toolchain_env,
+};
 use std::path::{Path, PathBuf};
 
 fn tc() -> Toolchain {
@@ -228,5 +231,45 @@ fn only_macos_gets_the_toolchain_s_library_folder_and_it_holds_llvm() {
         assert!(llvm, "no libLLVM in {}", lib.display());
     } else {
         assert_eq!(env, None);
+    }
+}
+
+/// A target shared with builds against another pe-sdk copy (every deployed pe-app has its own; @api-eng) holds that copy's `pe_sdk-*.d`, which this build never read: the check passes over it. The pe-sdk
+/// this build linked is still checked: an outside read added to its dep-info is refused.
+#[test]
+fn another_pe_sdk_copy_s_dep_info_in_the_target_is_not_this_build_s() {
+    let root = scratch("sdk-copies");
+    let archive = pack(&lamp_dir()).unwrap();
+    let (work, target) = (root.join("w"), root.join("t"));
+    let built = build_archive_reporting(&tc(), &archive, &engine_sdk(), &work, &target, true)
+        .unwrap_or_else(|e| panic!("first: {e}"));
+    let deps = target.join("wasm32-unknown-unknown/release/deps");
+    assert!(!built.sdk_dep_info.is_empty(), "no pe-sdk dep-info reported");
+    for d in &built.sdk_dep_info {
+        let n = d.file_name().unwrap().to_string_lossy();
+        assert!(n.starts_with("pe_sdk-") && n.ends_with(".d") && d.is_file(), "{}", d.display());
+        assert_eq!(std::fs::canonicalize(d.parent().unwrap()).unwrap(), std::fs::canonicalize(&deps).unwrap());
+    }
+    // Another copy's, as a build against S:\m1run\pe-sdk left it.
+    let other = root.join("other-sdk/src/lib.rs");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    std::fs::write(&other, "pub fn x() {}\n").unwrap();
+    let o = other.display().to_string().replace(' ', r"\ ");
+    let stale = deps.join("pe_sdk-00000000deadbeef.d");
+    std::fs::write(&stale, format!("{}: {o}\n\n{o}:\n", deps.join("libpe_sdk-00000000deadbeef.rlib").display()))
+        .unwrap();
+    let again = build_archive_reporting(&tc(), &archive, &engine_sdk(), &work, &target, true)
+        .unwrap_or_else(|e| panic!("with another copy's dep-info present: {e}"));
+    assert_eq!(again.wasm, built.wasm);
+    assert_eq!(again.sdk_dep_info, built.sdk_dep_info, "the fresh build reports the same pe-sdk unit");
+    // This build's own pe-sdk dep-info, with an outside read: refused.
+    let own = &built.sdk_dep_info[0];
+    let kept = std::fs::read_to_string(own).unwrap();
+    std::fs::write(own, format!("{kept}\n{o}:\n")).unwrap();
+    let refused = build_archive_reporting(&tc(), &archive, &engine_sdk(), &work, &target, true);
+    std::fs::write(own, kept).unwrap();
+    match refused {
+        Err(BuildError::Refused(e)) => assert!(e.contains("outside the script's src and pe-sdk's"), "{e}"),
+        other => panic!("{other:?}"),
     }
 }
