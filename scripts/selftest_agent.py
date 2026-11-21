@@ -276,6 +276,18 @@ class Agent:
             time.sleep(max(0.0, every - (time.time() - t)))
         return n, levels, flips
 
+    def dump(self):
+        """What a reader needs when the lamp doesn't blink: the Lamp whole, the session and the latest changes."""
+        for what, name, args in [("the lamp, whole", "world_query", {"where": {"id": self.lamp}}),
+                                 ("the session", "session_info", {}),
+                                 ("the latest changes", "history_list", {"limit": 8})]:
+            try:
+                ok, r = self.m.tool(name, args)
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                ok, r = False, {"message": repr(e)}
+            self.write("steps", {"t": round(time.time(), 3), "step": self.step, "what": "dump: " + what, "ok": ok,
+                                 "code": None, "message": None, "details": r, "ms": 0})
+
     # ---- the shape limit ------------------------------------------------------------------------------------------
 
     def limit(self):
@@ -356,8 +368,9 @@ def main():
             lamp_on = ag.step6(a.join_timeout_s)
             if lamp_on:
                 n, levels, flips = ag.sample(a.sample_s, a.sample_every)
-                ag.check("the lamp blinks", len(levels) >= 2 and flips >= 4,
-                         f"{n} samples, levels {sorted(levels)[:4]}, {flips} changes")
+                if not ag.check("the lamp blinks", len(levels) >= 2 and flips >= 4,
+                                f"{n} samples, levels {sorted(levels)[:4]}, {flips} changes"):
+                    ag.dump()
         elif s == "limit":
             ag.limit()
         else:
