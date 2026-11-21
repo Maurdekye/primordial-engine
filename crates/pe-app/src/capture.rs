@@ -68,12 +68,19 @@ const POLL: Duration = Duration::from_millis(2);
 pub struct HeadlessCaptures {
     queue: Arc<CaptureQueue>,
     stop: Arc<AtomicBool>,
+    /// What the server reported of each order (`CaptureServer::serve`), in order; no presenter counts them here.
+    events: Arc<std::sync::Mutex<Vec<pe_render::counters::CaptureEvent>>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl HeadlessCaptures {
     pub fn stop(mut self) {
         self.halt();
+    }
+
+    /// The server's events so far, in order.
+    pub fn events(&self) -> Vec<pe_render::counters::CaptureEvent> {
+        self.events.lock().expect("the events").clone()
     }
 
     fn halt(&mut self) {
@@ -100,7 +107,8 @@ pub fn spawn_headless(
     choice: AdapterChoice,
 ) -> std::io::Result<HeadlessCaptures> {
     let stop = Arc::new(AtomicBool::new(false));
-    let (q, s) = (queue.clone(), stop.clone());
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (q, s, ev) = (queue.clone(), stop.clone(), events.clone());
     let thread = thread::Builder::new().name("capture".into()).spawn(move || {
         let mut drawing: Option<(Renderer, CaptureServer)> = None;
         while !s.load(Ordering::SeqCst) {
@@ -124,11 +132,12 @@ pub fn spawn_headless(
                 continue;
             };
             let (renderer, server) = drawing.as_mut().expect("opened above");
-            server.serve(renderer, &view, None);
+            let served = server.serve(renderer, &view, None);
+            ev.lock().expect("the events").extend(served);
             thread::sleep(POLL);
         }
     })?;
-    Ok(HeadlessCaptures { queue, stop, thread: Some(thread) })
+    Ok(HeadlessCaptures { queue, stop, events, thread: Some(thread) })
 }
 
 #[cfg(test)]
@@ -233,6 +242,9 @@ mod tests {
         let e =
             api.capture(&agent(), &CaptureRequest::default(), Instant::now() + Duration::from_secs(10)).unwrap_err();
         assert_eq!(e.code, ErrorCode::CaptureUnavailable, "{e:?}");
+        // What a loop's presenter would count (pull-ahead 1.3): both orders taken, the first drawn.
+        use pe_render::counters::CaptureEvent::{Drawn, Queued};
+        assert_eq!(headless.events(), [Queued, Drawn, Queued]);
         headless.stop();
     }
 }

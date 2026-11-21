@@ -46,6 +46,8 @@ pub struct VrSink {
     extent: Option<[u32; 2]>,
     /// `view_capture`'s server (api.md 8), with the left eye's camera as the player's. Served after the frame ends.
     captures: Option<AfterFrame>,
+    /// The headset's missed frames around each capture, logged a second after it (pull-ahead 1.3).
+    misses: CaptureMisses,
     /// X8's Present (render.md 7, VR's default): the presenter gets this host's now as the display time, so the world
     /// is drawn at the engine's present; the eye cameras and the hands keep the runtime's predicted display time.
     present: bool,
@@ -88,6 +90,7 @@ impl VrSink {
             effects,
             extent,
             captures: None,
+            misses: CaptureMisses::default(),
             present,
             lead_ms: Histogram::default(),
             shown: None,
@@ -131,6 +134,60 @@ impl AfterFrame {
     fn ended(&mut self, drawn: bool) -> Option<(Arc<FrameView>, Camera)> {
         let last = self.drawn.take();
         if drawn { last } else { None }
+    }
+}
+
+/// The headset's missed frames around each capture (pull-ahead 1.3; render.md 11), counted as pe-xr counts them: a
+/// predicted display time more than 1.5 periods after the one before. A second after a capture is drawn it gives one
+/// line: the frames missed in the second before the capture and in the second after.
+#[derive(Debug, Default)]
+struct CaptureMisses {
+    /// The newest predicted display time, and the frames missed so far.
+    last: Option<HostTime>,
+    missed: u64,
+    /// (display time, missed so far) over the last second, oldest first.
+    recent: std::collections::VecDeque<(HostTime, u64)>,
+    /// Captures whose second after hasn't passed: when, the view frame drawn, and the missed count a second before
+    /// and at the capture.
+    open: Vec<(HostTime, u64, u64, u64)>,
+}
+
+impl CaptureMisses {
+    const SECOND_NS: i64 = 1_000_000_000;
+
+    /// A display frame at `at`, `period_ns` apart: the lines of captures whose second after has now passed.
+    fn frame(&mut self, at: HostTime, period_ns: i64) -> Vec<String> {
+        if let Some(prev) = self.last
+            && (at.0 - prev.0) as f64 > 1.5 * period_ns as f64
+        {
+            self.missed += 1;
+        }
+        self.last = Some(at);
+        self.recent.push_back((at, self.missed));
+        while self.recent.front().is_some_and(|(t, _)| at.0 - t.0 > Self::SECOND_NS) {
+            self.recent.pop_front();
+        }
+        let missed = self.missed;
+        let mut due = Vec::new();
+        self.open.retain(|&(t, frame, before, at_capture)| {
+            if at.0 - t.0 < Self::SECOND_NS {
+                return true;
+            }
+            due.push(format!(
+                "capture at view frame {frame}: the headset missed {} frames in the second before, {} in the second after",
+                at_capture - before,
+                missed - at_capture
+            ));
+            false
+        });
+        due
+    }
+
+    /// A capture was drawn from view frame `frame`, after the newest display frame.
+    fn drawn(&mut self, frame: u64) {
+        let Some(at) = self.last else { return };
+        let before = self.recent.front().map_or(self.missed, |&(_, m)| m);
+        self.open.push((at, frame, before, self.missed));
     }
 }
 
@@ -186,6 +243,9 @@ impl FrameSink for VrSink {
             return false;
         };
         let cameras = binding::eye_cameras(&view.local_rig, frame.eyes);
+        for line in self.misses.frame(frame.timing.predicted_display_time, frame.timing.predicted_display_period_ns) {
+            crate::out!("{line}");
+        }
         let now = crate::clock::now();
         self.lead_ms.record(frame.timing.predicted_display_time.secs_since(now) * 1e3);
         if let Some(lead) = &self.shown {
@@ -214,7 +274,13 @@ impl FrameSink for VrSink {
         if let Some(c) = self.captures.as_mut()
             && let Some((view, player)) = c.ended(drawn)
         {
-            c.server.serve(&mut self.renderer, &view, Some(&player));
+            let at = crate::clock::now();
+            for e in c.server.serve(&mut self.renderer, &view, Some(&player)) {
+                self.presenter.capture_event(at, e);
+                if e == pe_render::counters::CaptureEvent::Drawn {
+                    self.misses.drawn(view.frame.0);
+                }
+            }
         }
     }
 
@@ -750,6 +816,47 @@ mod tests {
         c.drew(view(3), eye(3.0));
         assert!(c.ended(false).is_none(), "a frame that went out undrawn serves nothing");
         assert!(c.ended(true).is_none(), "and its view is not kept for a later frame");
+    }
+
+    /// Pull-ahead 1.3: a capture's line counts the frames the headset missed in the second before it and the second
+    /// after, as pe-xr counts them (a display time more than 1.5 periods after the last), and comes once that second
+    /// has passed.
+    #[test]
+    fn a_capture_s_line_counts_the_missed_frames_around_it() {
+        const P: i64 = 1_000_000_000 / 72;
+        let mut m = CaptureMisses::default();
+        let mut t = 0i64;
+        let mut tick = |m: &mut CaptureMisses, periods: i64| {
+            t += periods * P;
+            m.frame(HostTime(t), P)
+        };
+        // Half a second at 72 Hz with two missed frames (a gap of 2 and one of 3 periods), then the capture.
+        for i in 0..36 {
+            assert!(
+                tick(
+                    &mut m,
+                    if i == 10 {
+                        2
+                    } else if i == 20 {
+                        3
+                    } else {
+                        1
+                    }
+                )
+                .is_empty()
+            );
+        }
+        m.drawn(41);
+        // The capture costs one frame, then the second after runs clean: one line, once, when it has passed.
+        assert!(tick(&mut m, 2).is_empty());
+        let mut lines = vec![];
+        for _ in 0..80 {
+            lines.extend(tick(&mut m, 1));
+        }
+        assert_eq!(
+            lines,
+            ["capture at view frame 41: the headset missed 2 frames in the second before, 1 in the second after"]
+        );
     }
 
     #[test]
