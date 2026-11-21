@@ -207,6 +207,48 @@ fn moves_user(
     ops.iter().position(|op| target(op).is_some_and(&is_user))
 }
 
+/// The existing objects an applied entry may have changed (api.md 5.3.2's `changed`, 4.2): each op's own object, the
+/// parent a create or copy adds to, and a moved, deleted or undeleted object's old and new parents. Objects the entry
+/// created are left out: `created` names them, and no connection can have read them before. The caller keeps only the
+/// candidates whose version is the entry's, so a candidate the entry didn't change in the end is dropped there.
+fn changed_candidates(
+    ops: &[pe_world::edit::Op],
+    created: &[pe_core::ObjectId],
+    base: &WorldSnapshot,
+) -> std::collections::BTreeSet<pe_core::ObjectId> {
+    use pe_world::edit::{Op, Target};
+    let new: std::collections::BTreeSet<_> = created.iter().copied().collect();
+    let target = |t: &Target| match t {
+        Target::Existing(o) => Some(*o),
+        Target::New(k) => created.get(*k as usize).copied(),
+        Target::Root => None,
+    };
+    let parent_of = |o: pe_core::ObjectId| base.info(o).and_then(|i| i.parent);
+    let mut out = std::collections::BTreeSet::new();
+    for op in ops {
+        match op {
+            Op::Create { parent, .. } | Op::Copy { parent, .. } => out.extend(target(parent)),
+            Op::Delete { id } => {
+                out.extend(target(id));
+                out.extend(target(id).and_then(parent_of));
+            }
+            Op::SetRow { id, .. } | Op::SetField { id, .. } | Op::RemoveRow { id, .. } => out.extend(target(id)),
+            Op::Reparent { id, parent, .. } => {
+                out.extend(target(id));
+                out.extend(target(id).and_then(parent_of));
+                out.extend(target(parent));
+            }
+            Op::Undelete { id } => {
+                out.insert(*id);
+                out.extend(parent_of(*id));
+            }
+            _ => {}
+        }
+    }
+    out.retain(|o| !new.contains(o));
+    out
+}
+
 /// The source's frames as one caller sees them, for the query pieces.
 struct Views<'a> {
     src: &'a dyn WorldSource,
@@ -535,6 +577,32 @@ impl<S: WorldSource + 'static> Api<S> {
                                 );
                             }
                         }
+                        // Every existing object it changed, with the version it left: those whose version is this
+                        // entry's, read now or, if a later change has moved one on, at the change's own frame.
+                        if let Some(entry) = fate.step.as_ref().map(|s| s.entry) {
+                            for id in changed_candidates(&e.tx.ops, created, snap) {
+                                let left = [Some(&now), then.as_ref()]
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|s| s.info(id))
+                                    .find(|i| i.version.entry == entry);
+                                if let Some(info) = left {
+                                    o.changed.push(pe_seams::world_api::IdVersion {
+                                        id: id.into(),
+                                        version: crate::world::version_text(&info.version),
+                                    });
+                                }
+                            }
+                        }
+                        // The caller's own change updates its table (api.md 4.2), so its next op on the same object
+                        // isn't refused for it.
+                        let at = o.frame.unwrap_or(o.final_frame);
+                        let table = self.table(c.connection);
+                        let mut table = table.lock().unwrap_or_else(|e| e.into_inner());
+                        for iv in o.created.values().chain(&o.changed) {
+                            table.saw(iv.id, iv.version.clone(), at);
+                        }
+                        drop(table);
                         // The script it committed: the asset whose pending commit (or row, once active) is this
                         // entry's, so a re-sent entry's derived id is found as well (api.md 7, 9.4).
                         let commit = e.tx.ops.iter().find_map(|o| match o {
@@ -972,7 +1040,7 @@ impl<S: WorldSource + 'static> Api<S> {
             }
         }
         for o in &out.mine {
-            for iv in o.created.values().filter(|iv| !iv.version.0.is_empty()) {
+            for iv in o.created.values().chain(&o.changed).filter(|iv| !iv.version.0.is_empty()) {
                 table.saw(iv.id, iv.version.clone(), o.frame.unwrap_or(o.final_frame));
             }
         }
@@ -1393,19 +1461,35 @@ mod tests {
         pe_core::ObjectId::from_u128(n)
     }
 
-    /// One published frame: a Table and a Lamp under it; Alice may edit.
-    #[derive(Clone)]
-    struct Src(Arc<WorldSnapshot>);
+    /// One published frame: a Table and a Lamp under it; Alice may edit. A stand-in simulation thread may publish
+    /// a new one.
+    struct Src(Mutex<Arc<WorldSnapshot>>);
+
+    impl Clone for Src {
+        fn clone(&self) -> Self {
+            Src(Mutex::new(self.snap()))
+        }
+    }
+
+    impl Src {
+        fn snap(&self) -> Arc<WorldSnapshot> {
+            self.0.lock().unwrap().clone()
+        }
+        fn publish(&self, s: Arc<WorldSnapshot>) {
+            *self.0.lock().unwrap() = s;
+        }
+    }
 
     impl WorldSource for Src {
         fn latest(&self) -> Arc<WorldSnapshot> {
-            self.0.clone()
+            self.snap()
         }
         fn final_(&self) -> Arc<WorldSnapshot> {
-            self.0.clone()
+            self.snap()
         }
         fn at(&self, frame: Frame) -> Option<Arc<WorldSnapshot>> {
-            (frame == self.0.frame().0).then(|| self.0.clone())
+            let s = self.snap();
+            (frame == s.frame().0).then_some(s)
         }
         fn head_of(&self, _: MemberId) -> Option<ObjectId> {
             HEAD.with(|h| h.get()).map(|n| id(n).into())
@@ -1604,12 +1688,26 @@ mod tests {
 
     /// [`api`], with `more` run on its world before the snapshot.
     fn api_with(more: impl FnOnce(&mut World)) -> Api<Src> {
+        let mut w = table_and_lamp(None);
+        more(&mut w);
+        w.set_frame(CoreFrame(4));
+        Api::new(
+            Src(Mutex::new(w.snapshot(CoreFrame(4)))),
+            Arc::new(EditQueue::new(2, || {})),
+            Arc::new(ChangeLog::new()),
+        )
+    }
+
+    /// The test's world: a Table with a Lamp on it, each created by its own entry ([10; 32] and [20; 32]), unless
+    /// `lamp` gives the Lamp's version; Alice an admin, Bob a guest.
+    fn table_and_lamp(lamp: Option<pe_seams::Version>) -> World {
         let mut w = World::new(1, BlobStore::default());
         w.set_member(ALICE, perm::EDIT | perm::ADMIN);
         w.set_member(BOB, perm::EDIT);
         for (n, name, parent) in [(10u128, "Table", None), (20, "Lamp", Some(10))] {
             let text = w.blobs().put(name.as_bytes());
             let v = pe_seams::Version { entry: EntryRef(Hash([n as u8; 32])), op: 0 };
+            let v = if n == 20 { lamp.unwrap_or(v) } else { v };
             w.create(id(n), parent.map(id), ALICE, v).unwrap();
             let t = match parent {
                 None => Transform::at(Pos::ORIGIN.checked_add(Offset([1.0, 0.0, 0.0])).unwrap()),
@@ -1618,9 +1716,7 @@ mod tests {
             w.insert(id(n), t).unwrap();
             w.insert(id(n), Name { text }).unwrap();
         }
-        more(&mut w);
-        w.set_frame(CoreFrame(4));
-        Api::new(Src(w.snapshot(CoreFrame(4))), Arc::new(EditQueue::new(2, || {})), Arc::new(ChangeLog::new()))
+        w
     }
 
     /// A renderer that records each order and answers a fixed shot.
@@ -2441,6 +2537,65 @@ mod tests {
 
     fn applied(created: Vec<pe_core::ObjectId>) -> pe_seams::Outcome {
         pe_seams::Outcome::Applied { created, overwrote: vec![], notes: vec![], inverse: None }
+    }
+
+    /// api.md 4.2 and 5.3.2: an accepted change reports the objects it changed with the versions it left, and those
+    /// enter the caller's table, so the caller's next op on the same object, without a fresh read, isn't refused as
+    /// stale for the caller's own change (the self-test's step 6: attach a script to the Lamp, then replace its Light).
+    #[test]
+    fn a_callers_own_change_updates_its_table_and_reports_what_it_changed() {
+        let a = Arc::new(api());
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let lamp = Query { select: Some(Selector::Name("Lamp".into())), ..Default::default() };
+        let read = a.query(&c, &lamp).unwrap().objects[0].version.clone();
+        let entry = EntryRef(Hash([3; 32]));
+        let left = pe_seams::Version { entry, op: 0 };
+        // The simulation thread steps it at frame 5 and publishes the Lamp at the version the entry left; the Table
+        // is a candidate nowhere, and stays at its own version.
+        let sim = {
+            let a = a.clone();
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    if let Some((t, _)) = a.queue.drain(4).into_iter().next() {
+                        let mut w = table_and_lamp(Some(left));
+                        w.set_frame(CoreFrame(5));
+                        a.src.publish(w.snapshot(CoreFrame(5)));
+                        let chain = pe_core::ChainId(Hash([1; 32]));
+                        a.queue.settle(t, Receipt::Submitted { change: entry.into(), frame: 5, chain, seq: 1 });
+                        a.log.record(&[stepped(entry, ALICE, 5, applied(vec![]))], Some(4));
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                panic!("nothing was submitted");
+            })
+        };
+        let turn = |deg: i32| {
+            tx(json!([{"op": "set", "id": "/Table/Lamp", "field": "Transform.rotation_deg",
+                                         "value": [0, deg, 0]}]))
+        };
+        let o = a.apply(&c, turn(90), &ApplyOpts::default()).unwrap();
+        sim.join().unwrap();
+        assert_eq!((o.status, o.change), (Status::Accepted, Some(entry.into())), "{:?}", o.refusal);
+        let v = crate::world::version_text(&left);
+        assert_ne!(v, read);
+        assert_eq!(
+            o.changed,
+            vec![pe_seams::world_api::IdVersion { id: id(20).into(), version: v.clone() }],
+            "the Lamp, not the Table"
+        );
+        assert_eq!(a.table(c.connection).lock().unwrap().get(&id(20).into()), Some(&v));
+        // The next op on the Lamp, without a fresh read: checked against the version the caller's change left.
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        let o = a.apply(&c, turn(180), &dry).unwrap();
+        assert_eq!(o.status, Status::Accepted, "{:?}", o.refusal);
+        // Another connection that read the Lamp before the change is still refused.
+        let mut other = caller(&[Scope::Read, Scope::Edit]);
+        other.connection = ConnectionId(99);
+        a.table(other.connection).lock().unwrap().saw(id(20).into(), read, 4);
+        let f = a.apply(&other, turn(180), &dry).unwrap().refusal.map(|f| f.code);
+        assert_eq!(f, Some(RefusalCode::StaleVersion));
     }
 
     /// A stale refusal names its winner: the change, its member, producer and label, from the change log and the
