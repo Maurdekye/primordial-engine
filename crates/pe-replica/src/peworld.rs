@@ -185,16 +185,14 @@ impl PeWorld {
     /// by it, at the entry's frame (`World::admit`), so every replica holds the joiner from the same frame, and the
     /// world at the reconfiguring cut E, which E's certificate covers, holds it for the joiner's import. Who may admit
     /// is S3's governance fold: an `Admit` S3 voids (`NotAuthorized`, `NoChange`) and this replica stepped before its
-    /// void was known is dropped like any voided entry. Refused here, as S3 voids them: a malformed payload, and a key
-    /// that is a member already, which `World::admit` alone wouldn't catch, since a hand's id includes its frame.
+    /// void was known is dropped like any voided entry. Refused here, as S3 voids it: a malformed payload. A key that
+    /// is a member of the world already is a returning member (F3's n = 2 branch: B on the new line, which S3's epoch
+    /// doesn't hold yet): `World::admit` keeps its hands and permissions and spawns nothing. In a session's own line S3
+    /// voids such an `Admit` (`NoChange`), so stepping it before the void is known changes nothing.
     /// The hands need no effects: the frame's hand sync builds their bodies from the world's hands, as for a `Leave`.
     fn admit(&mut self, frame: Frame, entry: &SignedEntry, admit: Option<pe_seams::Admit>) -> (Outcome, Effects) {
         let refused = |reason| (Outcome::Refused { op: None, reason }, Effects::default());
         let Some(admit) = admit else { return refused(Reason::Malformed) };
-        let snapshot = self.world.snapshot(frame);
-        if snapshot.perms(admit.key).is_some() {
-            return refused(Reason::Invalid { field: None });
-        }
         // Where it stands: the lowest slot of the genesis row no hand takes, read from the world as it stands when this
         // `Admit` applies (pe-world's `World::join_spawn`, world-model.md 2.4).
         let spawn = self.world.join_spawn();
