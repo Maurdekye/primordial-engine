@@ -467,7 +467,10 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+/// Unknown fields are refused, not ignored, as in ops (api.md 4.2): `{"select": …}` for `where` would otherwise read
+/// the root's children without a word.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Query {
     #[serde(default)]
     pub at: At,

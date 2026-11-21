@@ -142,7 +142,8 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
   - Future, when someone needs it: an opt-in `parent_version` on `create`, `reparent` and `duplicate`.
 - **Unknown fields are refused, not ignored.** An op carrying a field its type doesn't take (say `if_version` on a
   `create`) is refused as `invalid_argument`, so nothing an agent writes is silently dropped. Every JSON surface
-  that takes a transaction does this check (in M1, the MCP tools).
+  that takes a transaction does this check (in M1, the MCP tools). A query's unknown field is refused the same way
+  (`select` for `where` would otherwise read the root's children).
 
 ### 4.3 Ids, names and references
 
