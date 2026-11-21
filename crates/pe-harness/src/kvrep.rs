@@ -249,6 +249,7 @@ impl Replica for KvSeamReplica {
         {
             let back = c.max(self.floor);
             adv.rolled_back_to = Some(Frame(back));
+            adv.changed_from = changed.map(Frame);
             adv.resimulated = self.resimulate_from(back, source);
         }
         let mut outcomes = std::mem::take(&mut self.outcomes);

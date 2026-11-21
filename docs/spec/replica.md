@@ -811,7 +811,7 @@ A player's own hands are drawn from tracking (WS-render, WS-xr). The view still 
 
 ## 8. The S2 seam, as pe-seams fixed it
 
-pe-seams's `Replica` trait (`crates/pe-seams/src/replica.rs`) is S2, through v1.9. `ReplicaImpl` implements it over
+pe-seams's `Replica` trait (`crates/pe-seams/src/replica.rs`) is S2, through v1.11. `ReplicaImpl` implements it over
 a `WorldModel` (8.1) and pe-physics [V `crates/pe-replica/src/replica.rs`], and pe-replica owns the driver (pe-seams
 ruling 3). The calls, and what the replica does behind each:
 - **`Driver::drive(replica, agree, present, self_test) -> DriveReport`** is the S2/S3 glue of each simulation tick,
@@ -828,7 +828,10 @@ ruling 3). The calls, and what the replica does behind each:
 - **`set_budget(simulated)`** bounds each call's stepping (S2 v1.1; 4.2).
 - **`advance(present, source) -> Advance`** steps to `present`: it rolls back first if the source reports a change
   (4.2), and again if the author's prediction ended (8.2). It reports the frames stepped and re-simulated, the
-  rollback, and whether it caught up, and it publishes the view when it did (7).
+  rollback, and whether it caught up, and it publishes the view when it did (7). The rollback is the keyframe
+  restored (`rolled_back_to`), with its causes since S2 v1.11: the frame the source reported changed
+  (`changed_from`) and the commit frame of the prediction that ended (`replay_from`), for pe-app's rollback-cause
+  line (app.md 4; 1.11).
 - **`outcome(&entry)`** is the outcome my live history gave the entry, and its frame; `None` for one not applied yet,
   in a frame an abandoned replay never reached, or above the floor and below my last import's cut.
 - **`root_at_cut(&Cut, source)`** is my root at the cut's frame with exactly the cut's entries in effect (5.3), held

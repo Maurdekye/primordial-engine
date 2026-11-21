@@ -652,6 +652,22 @@ with @fable-reviewer's refinements, and):
      - Two machines' logs match by `line`, `height` and `frame`, not by `t`: the self-test checker reads both, and
        at every cut both logged the roots must be equal and `agreed`; it counts the heights only one logged as
        skipped.
+     - **Rollbacks** go in the same file (1.11; @coordinator-opus), so the self-test checker reads
+       them beside the cuts: `rollback t=<s> to=<frame> depth=<n> present=<frame> changed=<frame>|- replay=<frame>|-
+       at=[<author 8 hex>:<class>:<seq>,...] voided=[<author 8 hex>:<reason>,...]`.
+       - `to` is the keyframe the replica restored, and `depth` how far it had stepped past it.
+       - The two causes S2 v1.11 reports (@design-reviewer's M1 on 6408fdbe), each `-` when it took no part.
+         `changed` is the frame whose entries agreement reported changed: a late entry, a void or a reorder. It is at
+         or above `to`, since keyframes are a few frames apart (replica.md 4.1), except for a report below the floor.
+         `replay` is the commit frame of this machine's own code commit, whose prediction ended (n >= 2).
+       - `at` is the entries agreement now holds at `changed` (`*` marks this machine's own), and `voided` the voids
+         of the same tick. A late entry at `changed`, a void, or a prediction's end says what the replica re-stepped
+         for.
+       - A member alone also says each rollback on the console, since nothing from another machine should roll it
+         back.
+       - **No line:** a finalize's rebase onto the floor (replica.md 6.1) re-steps the live history without a
+         rollback. At n = 1 that happens at the last member's leave: agreement voids it (`LastMember`) after the live
+         history stepped it [V, 1.11's probe]. The process exits about 20 ms later, so nobody sees it.
      - The log flushes at least once a second of host time while the simulation runs, even when no cut follows a
        line (as in a split), and at exit. Off, a tick pays one branch.
    - **The end line's lags** (G9): `simulation: SimStats {..}` ends with `deepest_rollback`, the most frames any
