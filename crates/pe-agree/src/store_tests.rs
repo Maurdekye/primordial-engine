@@ -521,7 +521,7 @@ fn the_writer_thread_commits_in_order() {
     let mut high = None;
     while high != Some(2) {
         match w.wait(std::time::Duration::from_secs(10)) {
-            Some(Report::Durable(n)) => {
+            Some(Report::Durable { through: n, .. }) => {
                 assert!(high.is_none_or(|h| n > h));
                 high = Some(n);
             }
@@ -547,4 +547,98 @@ fn names_that_are_not_segments_are_ignored() {
     }
     let (_, r) = open(fs);
     assert_eq!(state(&r), vec![(1, b"x".to_vec())]);
+}
+
+#[test]
+fn records_read_back_by_lsn() {
+    let (mut log, _) = open(SimFs::new());
+    let a = log.append(1, b"alpha").unwrap();
+    let b = log.append(2, &[3; 1000]).unwrap();
+    // Not written yet: left out.
+    assert!(log.read(&[a]).unwrap().is_empty());
+    log.sync().unwrap();
+    let got = log.read(&[b, a, Lsn(999)]).unwrap();
+    assert_eq!(got.iter().map(|r| (r.lsn, r.kind)).collect::<Vec<_>>(), vec![(b, 2), (a, 1)]);
+    assert_eq!(got[0].payload, vec![3; 1000]);
+    // After a reopen, from the recovered index; after a checkpoint, only the new Lsns.
+    let (mut log, _) = open(log.into_fs());
+    assert_eq!(log.read(&[a]).unwrap().len(), 1);
+    let new = log.checkpoint(&[(5, b"x")]).unwrap();
+    assert!(log.read(&[a, b]).unwrap().is_empty());
+    assert_eq!(log.read(&new).unwrap()[0].payload, b"x".to_vec());
+}
+
+#[test]
+fn compaction_by_lsn_and_by_job() {
+    let (log, _) = open(SimFs::new());
+    let mut log = log;
+    let mut r = Runner::new(0);
+    let ran = r.run(
+        &mut log,
+        &[
+            Job::Append { n: 0, kind: 1, bytes: b"drop".to_vec() },
+            Job::Append { n: 1, kind: 1, bytes: b"keep by lsn".to_vec() },
+        ],
+    );
+    assert!(ran.error.is_none());
+    let keep_lsn = ran.done[1].lsns[0];
+    // In one batch: an append whose Lsn the caller can't know yet, then a compaction that keeps it by job.
+    let ran = r.run(
+        &mut log,
+        &[
+            Job::Append { n: 2, kind: 1, bytes: b"keep by job".to_vec() },
+            Job::Compact { n: 3, keep: vec![Keep::Lsn(keep_lsn), Keep::Job(2)] },
+            Job::Load { n: 4, lsns: vec![] },
+        ],
+    );
+    assert!(ran.error.is_none(), "{:?}", ran.error);
+    assert_eq!(ran.durable, Some(4));
+    let compact = ran.done.iter().find(|d| d.n == 3).unwrap();
+    assert_eq!(compact.lsns.len(), 2);
+    let (_, rec) = open(log.into_fs());
+    assert_eq!(state(&rec), vec![(1, b"keep by lsn".to_vec()), (1, b"keep by job".to_vec())]);
+    assert_eq!(rec.records.iter().map(|r| r.lsn).collect::<Vec<_>>(), compact.lsns);
+}
+
+#[test]
+fn a_compaction_naming_an_unknown_job_is_refused() {
+    let (mut log, _) = open(SimFs::new());
+    let mut r = Runner::new(0);
+    let ran = r.run(&mut log, &[Job::Compact { n: 0, keep: vec![Keep::Job(7)] }]);
+    assert!(matches!(ran.error, Some(StoreError::Refused(_))));
+}
+
+#[test]
+fn the_runner_reports_jobs_whose_sync_failed_once_a_later_one_succeeds() {
+    let (log, _) = open(SimFs::new());
+    let mut fs = log.into_fs();
+    let used: u64 = fs.names().iter().map(|p| fs.clone().read(p).map_or(0, |b| b.len() as u64)).sum();
+    fs.capacity = Some(used + 20);
+    let (mut log, _) = open(fs);
+    let mut r = Runner::new(0);
+    let ran = r.run(&mut log, &[Job::Append { n: 0, kind: 1, bytes: vec![1; 50] }]);
+    assert!(matches!(ran.error, Some(StoreError::Full)));
+    assert!(ran.done.is_empty() && ran.durable.is_none());
+    assert_eq!(r.next, 1, "taken: it stays buffered");
+    log.fs_mut().capacity = None;
+    let ran = r.run(&mut log, &[Job::Append { n: 1, kind: 1, bytes: vec![2; 5] }]);
+    assert!(ran.error.is_none());
+    assert_eq!(ran.done.iter().map(|d| d.n).collect::<Vec<_>>(), vec![0, 1], "job 0 is reported with job 1");
+    assert_eq!(ran.durable, Some(1));
+}
+
+#[test]
+fn the_writer_answers_loads() {
+    let (log, _) = open(SimFs::new());
+    let w = Writer::spawn(log, 0, std::time::Duration::from_millis(5));
+    w.submit(vec![Job::Append { n: 0, kind: 3, bytes: b"x".to_vec() }]);
+    let lsn = match w.wait(std::time::Duration::from_secs(10)) {
+        Some(Report::Durable { through: 0, done }) => done[0].lsns[0],
+        other => panic!("{other:?}"),
+    };
+    w.submit(vec![Job::Load { n: 1, lsns: vec![lsn] }]);
+    match w.wait(std::time::Duration::from_secs(10)) {
+        Some(Report::Loaded { n: 1, records }) => assert_eq!(records[0].payload, b"x".to_vec()),
+        other => panic!("{other:?}"),
+    }
 }

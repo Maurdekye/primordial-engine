@@ -142,6 +142,8 @@ pub trait Fs {
     /// The names of the files in `dir`.
     fn list(&mut self, dir: &Path) -> io::Result<Vec<String>>;
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
+    /// `len` bytes of the file from `offset` (fewer at its end).
+    fn read_at(&mut self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>>;
     /// Create a new, empty file; an existing one is an error.
     fn create_new(&mut self, path: &Path) -> io::Result<Self::File>;
     /// Open an existing file to append to.
@@ -184,6 +186,15 @@ impl Fs for StdFs {
 
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
         std::fs::read(path)
+    }
+
+    fn read_at(&mut self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        use std::io::{Read, Seek};
+        let mut f = std::fs::File::open(path)?;
+        f.seek(io::SeekFrom::Start(offset))?;
+        let mut out = Vec::with_capacity(len);
+        f.take(len as u64).read_to_end(&mut out)?;
+        Ok(out)
     }
 
     fn create_new(&mut self, path: &Path) -> io::Result<std::fs::File> {
@@ -337,6 +348,8 @@ struct Scan {
     seg: Seg,
     /// The checkpoint's live records and the appended ones after it.
     records: Vec<Record>,
+    /// Each record's offset in the file.
+    offsets: Vec<u64>,
     /// Through the last valid frame.
     valid_len: u64,
     file_len: u64,
@@ -368,6 +381,7 @@ fn scan(bytes: &[u8], n: u64, max: u32) -> Result<Option<Scan>, StoreError> {
     let mut at = HEADER;
     let mut lsn = base;
     let mut records = Vec::new();
+    let mut offsets = Vec::new();
     // 0: in the live set; 1: after its end marker, before the checkpoint's commit; 2: finished.
     let mut stage = 0;
     let mut vouched = false;
@@ -391,6 +405,7 @@ fn scan(bytes: &[u8], n: u64, max: u32) -> Result<Option<Scan>, StoreError> {
             }
             (0, k) | (2, k) if k < RESERVED_KINDS => {
                 records.push(Record { lsn: Lsn(lsn), kind: k, payload: payload.to_vec() });
+                offsets.push(at as u64);
                 vouched = false;
             }
             _ => return Err(corrupt(at, "a marker out of place")),
@@ -406,7 +421,7 @@ fn scan(bytes: &[u8], n: u64, max: u32) -> Result<Option<Scan>, StoreError> {
         // The checkpoint's own commit marker is its last write, synced before it returns.
         return Ok(None);
     }
-    Ok(Some(Scan { seg, records, valid_len: at as u64, file_len: bytes.len() as u64, next_lsn: lsn, vouched }))
+    Ok(Some(Scan { seg, records, offsets, valid_len: at as u64, file_len: bytes.len() as u64, next_lsn: lsn, vouched }))
 }
 
 /// The log. See the module documentation.
@@ -422,6 +437,8 @@ pub struct Log<F: Fs> {
     written: u64,
     /// Frames buffered by `append`, not yet written.
     pending: Vec<u8>,
+    /// Each record's offset in the current segment, by Lsn (markers aren't records).
+    index: BTreeMap<u64, u64>,
     /// Whether the next batch must begin with a commit marker (something synced is unvouched).
     owe_commit: bool,
     next_lsn: u64,
@@ -457,6 +474,7 @@ impl<F: Fs> Log<F> {
                     fs.truncate(&mut file, scan.valid_len).map_err(io_err)?;
                     recovered.torn_bytes = scan.file_len - scan.valid_len;
                 }
+                let index = scan.records.iter().zip(&scan.offsets).map(|(r, o)| (r.lsn.0, *o)).collect();
                 recovered.records = scan.records;
                 Log {
                     fs,
@@ -467,6 +485,7 @@ impl<F: Fs> Log<F> {
                     file,
                     written: scan.valid_len,
                     pending: Vec::new(),
+                    index,
                     owe_commit: !scan.vouched,
                     next_lsn: scan.next_lsn,
                     durable: Lsn(scan.next_lsn - 1),
@@ -476,7 +495,7 @@ impl<F: Fs> Log<F> {
             None => {
                 // Nothing counted: start with an empty checkpoint, above every name present.
                 let seg = Seg { n: highest + 1, salt: fs.salt() };
-                let (file, len, next_lsn) = write_segment(&mut fs, dir, seg, 1, &[])?;
+                let (file, len, next_lsn, _) = write_segment(&mut fs, dir, seg, 1, &[])?;
                 Log {
                     fs,
                     dir: dir.to_owned(),
@@ -486,6 +505,7 @@ impl<F: Fs> Log<F> {
                     file,
                     written: len,
                     pending: Vec::new(),
+                    index: BTreeMap::new(),
                     owe_commit: false,
                     next_lsn,
                     durable: Lsn(next_lsn - 1),
@@ -536,6 +556,7 @@ impl<F: Fs> Log<F> {
             self.owe_commit = false;
         }
         let lsn = self.next_lsn;
+        self.index.insert(lsn, self.written + self.pending.len() as u64);
         frame(&mut self.pending, self.seg, lsn, kind, payload);
         self.next_lsn += 1;
         Ok(Lsn(lsn))
@@ -591,7 +612,8 @@ impl<F: Fs> Log<F> {
         self.next_segment += 1;
         let base = self.next_lsn;
         // A half-written segment never counts (no commit after its end) and the next open removes it.
-        let (file, len, next_lsn) = write_segment(&mut self.fs, &self.dir, seg, base, live)?;
+        let (file, len, next_lsn, offsets) = write_segment(&mut self.fs, &self.dir, seg, base, live)?;
+        self.index = offsets.iter().enumerate().map(|(i, o)| (base + i as u64, *o)).collect();
         let old = self.seg.n;
         self.seg = seg;
         // The old segment's handle closes here, before its delete (Windows refuses to delete an open file).
@@ -602,6 +624,48 @@ impl<F: Fs> Log<F> {
         self.durable = Lsn(next_lsn - 1);
         self.remove_segments(&[old]);
         Ok((0..live.len() as u64).map(|i| Lsn(base + i)).collect())
+    }
+
+    /// Read records of the current segment back by Lsn, in the order asked. An Lsn not in it (an earlier
+    /// segment's, a marker's, or one not yet written) is skipped, so the caller compares what it got.
+    pub fn read(&mut self, lsns: &[Lsn]) -> Result<Vec<Record>, StoreError> {
+        if self.poisoned {
+            return Err(StoreError::Poisoned);
+        }
+        let path = self.dir.join(seg_name(self.seg.n));
+        let mut out = Vec::with_capacity(lsns.len());
+        for l in lsns {
+            let Some(&at) = self.index.get(&l.0) else { continue };
+            if at >= self.written {
+                continue;
+            }
+            let head = self.fs.read_at(&path, at, FRAME).map_err(io_err)?;
+            let len = head.get(..4).and_then(|b| b.try_into().ok()).map_or(0, u32::from_le_bytes) as usize;
+            let bytes = self.fs.read_at(&path, at, FRAME + len).map_err(io_err)?;
+            match parse_frame(&bytes, 0, self.seg, l.0, self.opts.max_record) {
+                Some((kind, payload, _)) if kind < RESERVED_KINDS => {
+                    out.push(Record { lsn: *l, kind, payload: payload.to_vec() })
+                }
+                _ => {
+                    let why = "a record read back fails its check";
+                    return Err(StoreError::Corrupt { segment: self.seg.n, offset: at, why });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// A checkpoint whose live set is these records of the current segment, read back from disk: compaction
+    /// without holding the bodies in memory. Returns their new Lsns, in order. Buffered records are synced first, so
+    /// every Lsn handed out so far can be kept.
+    pub fn compact(&mut self, keep: &[Lsn]) -> Result<Vec<Lsn>, StoreError> {
+        self.sync()?;
+        let recs = self.read(keep)?;
+        if recs.len() != keep.len() {
+            return Err(StoreError::Refused("compact: an Lsn that isn't a record of the current segment"));
+        }
+        let live: Vec<(u16, &[u8])> = recs.iter().map(|r| (r.kind, r.payload.as_slice())).collect();
+        self.checkpoint(&live)
     }
 
     /// The Lsn through which the log is durable.
@@ -635,17 +699,20 @@ impl<F: Fs> Log<F> {
 }
 
 /// Write a whole segment (header, live records, end marker), sync it and its folder entry, then its commit marker,
-/// synced: the segment counts from that second sync. Returns the file, its length and the next Lsn.
+/// synced: the segment counts from that second sync. Returns the file, its length, the next Lsn and each live
+/// record's offset.
 fn write_segment<F: Fs>(
     fs: &mut F,
     dir: &Path,
     seg: Seg,
     base: u64,
     live: &[(u16, &[u8])],
-) -> Result<(F::File, u64, u64), StoreError> {
+) -> Result<(F::File, u64, u64, Vec<u64>), StoreError> {
     let mut bytes = header(seg, base);
     let mut lsn = base;
+    let mut offsets = Vec::with_capacity(live.len());
     for (kind, payload) in live {
+        offsets.push(bytes.len() as u64);
         frame(&mut bytes, seg, lsn, *kind, payload);
         lsn += 1;
     }
@@ -662,7 +729,7 @@ fn write_segment<F: Fs>(
     commit_frame(&mut commit, seg, lsn);
     fs.append(&mut file, &commit).map_err(io_err)?;
     fs.sync(&mut file).map_err(io_err)?;
-    Ok((file, (bytes.len() + commit.len()) as u64, lsn + 1))
+    Ok((file, (bytes.len() + commit.len()) as u64, lsn + 1, offsets))
 }
 
 /// A simulated file system for crash tests: written bytes are volatile until synced, a created or removed name is
@@ -790,6 +857,12 @@ impl Fs for SimFs {
         Ok(b)
     }
 
+    fn read_at(&mut self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        let all = self.read(path)?;
+        let from = (offset as usize).min(all.len());
+        Ok(all[from..(from + len).min(all.len())].to_vec())
+    }
+
     fn create_new(&mut self, path: &Path) -> io::Result<SimHandle> {
         self.step()?;
         if self.live(path).is_ok() {
@@ -883,53 +956,152 @@ impl Fs for SimFs {
     }
 }
 
-/// One numbered request from a node, in the order it was emitted. Numbers count up from 0 without gaps.
+/// One numbered request from a node, in the order it was emitted. Numbers count up from 0 without gaps, per log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Job {
     Append { n: u64, kind: u16, bytes: Vec<u8> },
     /// Replace the log with this live set (see [`Log::checkpoint`]).
     Checkpoint { n: u64, live: Vec<(u16, Vec<u8>)> },
+    /// Replace the log with these of its records (see [`Log::compact`]).
+    Compact { n: u64, keep: Vec<Keep> },
+    /// Read these records back ([`Report::Loaded`]). An Lsn that isn't a written record of the current segment is
+    /// left out of the answer.
+    Load { n: u64, lsns: Vec<Lsn> },
+}
+
+/// A record to keep in a [`Job::Compact`]: by its Lsn, or by the number of the append job that wrote it (when the
+/// caller hasn't learnt its Lsn yet: the job may be in the same batch).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keep {
+    Lsn(Lsn),
+    Job(u64),
 }
 
 impl Job {
     pub fn n(&self) -> u64 {
         match self {
-            Job::Append { n, .. } | Job::Checkpoint { n, .. } => *n,
+            Job::Append { n, .. } | Job::Checkpoint { n, .. } | Job::Compact { n, .. } | Job::Load { n, .. } => *n,
         }
     }
 }
 
-/// Run jobs in order and sync once. `next` is the number the first job must carry; it advances past each job run.
-/// Returns the highest job number now durable (`None` if `jobs` is empty and nothing was pending).
-///
-/// On an error, the jobs before the failing one may have been appended but none is durable unless a later call
-/// succeeds; `next` is left at the first job not taken, so the caller can resubmit from there after a
-/// [`StoreError::Full`]. Any other error poisons or refuses: the caller reopens.
-pub fn persist<F: Fs>(log: &mut Log<F>, next: &mut u64, jobs: &[Job]) -> Result<Option<u64>, StoreError> {
-    for j in jobs {
-        if j.n() != *next {
-            return Err(StoreError::Refused("a job out of order"));
-        }
-        match j {
-            Job::Append { kind, bytes, .. } => {
-                log.append(*kind, bytes)?;
-            }
-            Job::Checkpoint { live, .. } => {
-                let live: Vec<(u16, &[u8])> = live.iter().map(|(k, b)| (*k, b.as_slice())).collect();
-                log.checkpoint(&live)?;
-            }
-        }
-        *next += 1;
+/// A job that is durable, with the Lsns it gave: an append's one, a checkpoint's or compaction's live set in order,
+/// none for a load.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Done {
+    pub n: u64,
+    pub lsns: Vec<Lsn>,
+}
+
+/// What one [`Runner::run`] did.
+#[derive(Debug, Default)]
+pub struct Ran {
+    /// The highest job number now durable, if this run made any durable.
+    pub durable: Option<u64>,
+    /// The jobs that became durable, in order (including ones taken by earlier runs that failed at their sync).
+    pub done: Vec<Done>,
+    /// Loads answered, in order.
+    pub loaded: Vec<(u64, Vec<Record>)>,
+    /// What stopped the run, if anything. After [`StoreError::Full`] (and the log not poisoned) the jobs taken stay
+    /// buffered and a later run retries them; jobs not taken (from [`Runner::next`] on) must be submitted again.
+    pub error: Option<StoreError>,
+}
+
+/// Runs jobs against a log, in order, one fsync per run. It remembers the jobs taken but not yet durable, and each
+/// append's Lsn since the last checkpoint (for [`Keep::Job`]).
+#[derive(Debug, Default)]
+pub struct Runner {
+    /// The number the next job must carry.
+    pub next: u64,
+    /// Taken, not yet durable.
+    undone: Vec<Done>,
+    /// Append job -> its Lsn, in the current segment.
+    appended: BTreeMap<u64, Lsn>,
+}
+
+impl Runner {
+    pub fn new(next: u64) -> Runner {
+        Runner { next, ..Runner::default() }
     }
-    log.sync()?;
-    Ok(next.checked_sub(1))
+
+    /// Run jobs in order, then sync once.
+    pub fn run<F: Fs>(&mut self, log: &mut Log<F>, jobs: &[Job]) -> Ran {
+        let mut ran = Ran::default();
+        for j in jobs {
+            if j.n() != self.next {
+                ran.error = Some(StoreError::Refused("a job out of order"));
+                return ran;
+            }
+            let r = match j {
+                Job::Append { n, kind, bytes } => log.append(*kind, bytes).map(|l| {
+                    self.appended.insert(*n, l);
+                    self.undone.push(Done { n: *n, lsns: vec![l] });
+                }),
+                Job::Checkpoint { n, live } => {
+                    let live: Vec<(u16, &[u8])> = live.iter().map(|(k, b)| (*k, b.as_slice())).collect();
+                    log.checkpoint(&live).map(|lsns| self.rebased(*n, lsns))
+                }
+                Job::Compact { n, keep } => {
+                    let lsns: Option<Vec<Lsn>> = keep
+                        .iter()
+                        .map(|k| match k {
+                            Keep::Lsn(l) => Some(*l),
+                            Keep::Job(j) => self.appended.get(j).copied(),
+                        })
+                        .collect();
+                    match lsns {
+                        Some(lsns) => log.compact(&lsns).map(|new| self.rebased(*n, new)),
+                        None => Err(StoreError::Refused("compact: an append job this segment doesn't hold")),
+                    }
+                }
+                Job::Load { n, lsns } => log.read(lsns).map(|recs| ran.loaded.push((*n, recs))),
+            };
+            if let Err(e) = r {
+                ran.error = Some(e);
+                return ran;
+            }
+            if let Job::Load { n, .. } = j {
+                // A load makes nothing durable, but its number is passed in order like any other.
+                self.undone.push(Done { n: *n, lsns: Vec::new() });
+            }
+            self.next += 1;
+        }
+        match log.sync() {
+            Ok(_) => {
+                ran.done = std::mem::take(&mut self.undone);
+                ran.durable = ran.done.last().map(|d| d.n);
+            }
+            Err(e) => ran.error = Some(e),
+        }
+        ran
+    }
+
+    /// A checkpoint or compaction made everything before it durable and started a new segment.
+    fn rebased(&mut self, n: u64, lsns: Vec<Lsn>) {
+        self.appended.clear();
+        self.undone.push(Done { n, lsns });
+    }
+}
+
+/// Run jobs inline and sync once: [`Runner::run`] for a caller that keeps only the next job number. Returns the
+/// highest job number now durable.
+pub fn persist<F: Fs>(log: &mut Log<F>, next: &mut u64, jobs: &[Job]) -> Result<Option<u64>, StoreError> {
+    let mut r = Runner::new(*next);
+    let ran = r.run(log, jobs);
+    *next = r.next;
+    match ran.error {
+        Some(e) => Err(e),
+        None => Ok(ran.durable.or(next.checked_sub(1))),
+    }
 }
 
 /// What the [`Writer`] thread reports.
 #[derive(Debug)]
 pub enum Report {
-    /// Every job through this number is durable.
-    Durable(u64),
+    /// Every job through `through` is durable; `done` lists those not reported before, with their Lsns.
+    Durable { through: u64, done: Vec<Done> },
+    /// A load's records.
+    Loaded { n: u64, records: Vec<Record> },
     /// The disk is full. Jobs from `from` on aren't durable yet; the writer retries as more arrive and every `retry`.
     Full { from: u64 },
     /// The log failed and the writer stopped: reopen it (recovery), then start a new writer.
@@ -946,7 +1118,7 @@ pub struct Writer {
 
 impl Writer {
     /// Take over `log`; the first job submitted must be number `next`.
-    pub fn spawn<F>(mut log: Log<F>, mut next: u64, retry: std::time::Duration) -> Writer
+    pub fn spawn<F>(mut log: Log<F>, next: u64, retry: std::time::Duration) -> Writer
     where
         F: Fs + Send + 'static,
         F::File: Send,
@@ -956,11 +1128,12 @@ impl Writer {
         let thread = std::thread::Builder::new()
             .name("pe-agree-store".into())
             .spawn(move || {
+                let mut runner = Runner::new(next);
                 let mut waiting: Vec<Job> = Vec::new();
                 // The first job not yet reported durable.
                 let mut undone = next;
                 loop {
-                    let first = if waiting.is_empty() {
+                    let first = if waiting.is_empty() && undone == runner.next {
                         jobs.recv().map_err(|_| ())
                     } else {
                         match jobs.recv_timeout(retry) {
@@ -974,22 +1147,22 @@ impl Writer {
                     while let Ok(more) = jobs.try_recv() {
                         waiting.extend(more);
                     }
-                    let from = next;
-                    match persist(&mut log, &mut next, &waiting) {
-                        Ok(Some(n)) => {
-                            waiting.clear();
-                            if n >= undone {
-                                undone = n + 1;
-                                let _ = reports.send(Report::Durable(n));
-                            }
-                        }
-                        Ok(None) => waiting.clear(),
-                        Err(StoreError::Full) if !log.poisoned() => {
-                            // Jobs taken (appends only buffer) stay buffered in the log; the rest wait here.
-                            waiting.drain(..(next - from) as usize);
+                    let from = runner.next;
+                    let ran = runner.run(&mut log, &waiting);
+                    waiting.drain(..(runner.next - from) as usize);
+                    for (n, records) in ran.loaded {
+                        let _ = reports.send(Report::Loaded { n, records });
+                    }
+                    if let Some(through) = ran.durable {
+                        undone = through + 1;
+                        let _ = reports.send(Report::Durable { through, done: ran.done });
+                    }
+                    match ran.error {
+                        None => {}
+                        Some(StoreError::Full) if !log.poisoned() => {
                             let _ = reports.send(Report::Full { from: undone });
                         }
-                        Err(e) => {
+                        Some(e) => {
                             let _ = reports.send(Report::Failed(e));
                             return;
                         }
