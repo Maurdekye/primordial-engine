@@ -635,6 +635,34 @@ with @fable-reviewer's refinements m2226c5aab7da, and m5bb3ed6ddcd5):
      started, where a thread woken late shows (@design-reviewer's L1 on 108458b9); either one over the threshold
      also writes a `long` line. Off, a tick pays one branch. Windows counts thread time in clock ticks (about
      15.6 ms), so CPU time is coarse for short ticks.
+   - **The cut log** (`PE_CUT_LOG=<file>`, `crate::cutlog`; the pull-ahead plan's 1.2, for the M1 acceptance "the
+     demo's script, with both machines' roots logged at every cut"). Off unless the variable names a file, and then
+     the simulation thread writes a new one, never overwriting. A `#` line gives the Unix time it opened, then each
+     result of finalizing a final cut writes one line:
+     `cut t=<s> line=<16 hex> height=<n> frame=<n> root=<64 hex> result=agreed|diverged|damaged [mine=<64 hex>]`.
+     - `t` counts host seconds since the log opened, as `--log`'s lines do, so a line's Unix time is the `#` line's
+       plus `t`. `line` is the cut's line id's first 8 bytes, and `root` is the root the cut is final with.
+     - `result` is this machine's own: `agreed` when its root there is `root`, `diverged` with its own root as
+       `mine`, or `damaged` when it holds none. A result of `NotReady` writes nothing, since the driver asks again;
+       otherwise the driver finalizes each final cut once, so a cut has at most one line.
+     - The log holds the cuts this machine's driver finalized, not every final cut (@design-reviewer's L1 on
+       2218971f): each tick the driver finalizes only the newest final cut, so a cut that went final in the same tick
+       as a newer one, or while an older one was still `NotReady`, gets no line. That happens most while a machine
+       catches up, after a stall or a slow stretch, and two machines then skip different heights. A height missing
+       from one log means it wasn't judged there, not a gap in agreement.
+     - `diverged` and `damaged` need a cut final at a root this machine didn't vote (n >= 3), or its root there
+       changing after its vote. At n = 2 every final cut needs both votes, so a split's cut goes final only after
+       the repair has revoted the reference's root: it shows once, `agreed`, after a gap in `t`. The split itself is
+       in `--log` (pe-diverge's `RootSplitStarted` and `RootSplitEnded`).
+     - Two machines' logs match by `line`, `height` and `frame`, not by `t`: the self-test checker reads both, and
+       at every cut both logged the roots must be equal and `agreed`; it counts the heights only one logged as
+       skipped.
+     - The log flushes at least once a second of host time while the simulation runs, even when no cut follows a
+       line (as in a split), and at exit. Off, a tick pays one branch.
+   - **The end line's lags** (G9): `simulation: SimStats {..}` ends with `deepest_rollback`, the most frames any
+     published view rolled back, and `final_lag`, `FinalLag { ticks, mean, p99, max }`. That is how far the final
+     cut's frame trails the present at the end of each tick once a cut is final (not while a joiner imports), in
+     frames: about how long an action taken then takes to become final.
    - When the wait ends, the console says "left the session.", or, if the bound passed first, "Left before
      <player> confirmed it. <player> can keep playing, but their changes won't be shared from now on."
 3. **The remaining member** keeps its link to the leaver after the epoch switch until the leaver disconnects or 30 s
@@ -864,6 +892,14 @@ final on either, though both keep simulating their predictions.
     second, which A's replica had stepped, and makes the first effective; the replay still reaches every final cut's
     root. The control puts the void entry back into the kept log, and the replay differs at exactly that cut. A late
     entry can't test this: it is stamped below its deciding cut's parent, whose frames the log took before it came.
+- **The cut log** (`PE_CUT_LOG`, section 4; the pull-ahead plan's 1.2): two members over sim.rs's hub, each writing
+  its own. [V] In 300 frames each logged 46 cuts, one line per cut finalized, all `agreed`, with the same root at
+  every cut. The end line's finality lag read mean 16.5 and 16.0 frames, p99 and max 19, and member 0's deepest
+  rollback was 4 frames. Through F1's fault run at n = 2, both logs carry the split cut (height 20, frame 126) once,
+  `agreed`, at member 0's live root, with no `diverged` or `damaged` line [V]. The control removes the hook, and the
+  log stays empty. cutlog.rs's unit tests cover the three line forms (`agreed`, `diverged` with `mine`, `damaged`),
+  the poll's flush within a second with no cut after a line, `t` counted from the opening, and the refusal of an
+  existing file.
 - **The two-process session** of section 6, on Windows and Linux.
 
 ## 8. Open points

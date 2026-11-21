@@ -262,6 +262,78 @@ pub struct SimStats {
     pub phases: PhaseTimes,
     /// The local player's grasps, left hand then right (app.md 3.1 step 2).
     pub hands: [HandStats; 2],
+    /// The deepest rollback of the run, in frames: the most any published view's `counters.deepest_rollback` read
+    /// (the plan's "measured and reported": the deepest rollback).
+    pub deepest_rollback: u64,
+    /// The finality lag at the end of each tick once a cut is final: the clock's present frame minus the final cut's
+    /// frame.
+    /// About how long an action taken now takes to become final (the plan's "how long before an action is final").
+    pub final_lag: FinalLag,
+}
+
+/// A distribution of the finality lag, in frames ([`SimStats::final_lag`]): exact below [`FinalLag::EXACT`] frames,
+/// one bucket above. Its `Debug` prints the summary the end line needs, not the buckets.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct FinalLag {
+    n: u64,
+    sum: u64,
+    max: u64,
+    counts: Vec<u64>,
+}
+
+impl FinalLag {
+    /// Lags counted one by one; anything larger shares the top bucket.
+    pub const EXACT: u64 = 1024;
+
+    pub fn record(&mut self, lag: u64) {
+        if self.counts.is_empty() {
+            self.counts = vec![0; Self::EXACT as usize + 1];
+        }
+        self.n += 1;
+        self.sum = self.sum.saturating_add(lag);
+        self.max = self.max.max(lag);
+        self.counts[lag.min(Self::EXACT) as usize] += 1;
+    }
+
+    /// Ticks sampled.
+    pub fn samples(&self) -> u64 {
+        self.n
+    }
+
+    pub fn mean(&self) -> f64 {
+        if self.n == 0 { 0.0 } else { self.sum as f64 / self.n as f64 }
+    }
+
+    pub fn max(&self) -> u64 {
+        self.max
+    }
+
+    /// The smallest lag at or below which a fraction `q` of the samples lie; [`FinalLag::EXACT`] stands for any lag at
+    /// or above it. 0 with no samples.
+    pub fn quantile(&self, q: f64) -> u64 {
+        let need = (q.clamp(0.0, 1.0) * self.n as f64).ceil() as u64;
+        let mut seen = 0;
+        for (lag, c) in self.counts.iter().enumerate() {
+            seen += c;
+            if seen >= need.max(1) {
+                return lag as u64;
+            }
+        }
+        0
+    }
+}
+
+impl std::fmt::Debug for FinalLag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "FinalLag {{ ticks: {}, mean: {:.1}, p99: {}, max: {} }}",
+            self.n,
+            self.mean(),
+            self.quantile(0.99),
+            self.max
+        )
+    }
 }
 
 /// One hand's grasps (app.md 3.1 step 2; @coordinator-opus's ruling on the pick): its `engaged` edges as sent, the
@@ -429,6 +501,8 @@ pub struct Sim {
     catching_up: bool,
     /// The tick trace, when `PE_TICK_TRACE` names a file ([`Sim::with_tick_trace`], [`crate::trace`]).
     trace: Option<crate::trace::TickTrace>,
+    /// The cut log, when `PE_CUT_LOG` names a file ([`Sim::with_cut_log`], [`crate::cutlog`]).
+    cut_log: Option<crate::cutlog::CutLog>,
 }
 
 /// pe-api's ports and the loop's own state for them (app.md 3.1).
@@ -647,6 +721,7 @@ impl Sim {
             status: None,
             catching_up: false,
             trace: None,
+            cut_log: None,
         }
     }
 
@@ -904,6 +979,13 @@ impl Sim {
     /// Records every tick in `trace` ([`crate::trace`]): off unless the binary was given `PE_TICK_TRACE`.
     pub fn with_tick_trace(mut self, trace: crate::trace::TickTrace) -> Sim {
         self.trace = Some(trace);
+        self
+    }
+
+    /// Writes each final cut's root and this machine's result there to `log` ([`crate::cutlog`]): off unless the binary
+    /// was given `PE_CUT_LOG`.
+    pub fn with_cut_log(mut self, log: crate::cutlog::CutLog) -> Sim {
+        self.cut_log = Some(log);
         self
     }
 
@@ -1321,6 +1403,17 @@ impl Sim {
             self.notices.push(format!("FAULT: the test fault fires at the end of frame {} (--arm-fault)", at.0));
         }
         let report = if self.importing() { DriveReport::default() } else { self.drive(ps) };
+        // `PE_CUT_LOG` (crate::cutlog): each finalize result with the root its cut is final with. The driver
+        // finalizes only `final_cut()`, so a result is always for it. The poll flushes within a second even when no
+        // cut follows.
+        if let Some(log) = &mut self.cut_log {
+            if let Some(fc) = self.agree.final_cut() {
+                for (cut, f) in report.finalized.iter().filter(|(c, _)| *c == fc.cut.at) {
+                    log.record(now, cut, &fc.root, f);
+                }
+            }
+            log.poll(now);
+        }
         self.stats.phases.drive_ns += lap(&mut mark);
         if let Some(line) = self.fault.as_ref().and_then(|f| f.take_announcement()) {
             self.notices.push(line);
@@ -1396,6 +1489,8 @@ impl Sim {
         let view = self.replica.view();
         let health = self.health_of(&view);
         let same_view = self.source_view.as_ref().is_some_and(|v| Arc::ptr_eq(v, &view));
+        // Its rollbacks since the view before it: the run's deepest (G9).
+        self.stats.deepest_rollback = self.stats.deepest_rollback.max(view.counters.deepest_rollback);
         // A joiner's empty replica has nothing to show until its import ends (app.md 4).
         if !self.importing() && (!same_view || self.published.as_ref().is_some_and(|v| v.health != health)) {
             let mut out = if same_view {
@@ -1423,6 +1518,13 @@ impl Sim {
             self.stats.published += 1;
         }
         self.stats.phases.publish_ns += lap(&mut mark);
+        // How far finality trails the present at the end of this tick (G9): about how long an action taken now takes
+        // to become final. Not while a joiner imports: it has no history to finalize yet.
+        if !self.importing()
+            && let Some(fc) = self.agree.final_cut()
+        {
+            self.stats.final_lag.record(p.0.saturating_sub(fc.cut.at.frame.0));
+        }
         let tick = phases::since(tick_start);
         self.stats.phases.tick_ns += tick;
         self.stats.phases.longest_tick_ns = self.stats.phases.longest_tick_ns.max(tick);
@@ -3069,6 +3171,96 @@ pub(crate) mod tests {
         }
     }
 
+    /// The cut log (`PE_CUT_LOG`, [`crate::cutlog`]; the pull-ahead plan's 1.2): two members over the hub, each with
+    /// its own log. Each logs every cut it finalizes once, with the root the cut is final with and `agreed`, and both
+    /// logs name the same root at every cut both reached. The run also reports its finality lag and deepest rollback
+    /// (G9).
+    #[test]
+    fn both_members_log_the_same_root_at_every_final_cut() {
+        use crate::cutlog::{CutLog, parse, test_util::Shared};
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::Pos;
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        const FRAMES: u64 = 300;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let hub = Hub::default();
+        let at = [[-0.5, 1.0, -0.4], [0.5, 1.1, -0.3]];
+        let mut sims = Vec::new();
+        let mut logs = Vec::new();
+        for (i, feed) in at.iter().enumerate() {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let config = NodeConfig::new(line, members.clone(), genesis);
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+            let replica =
+                crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let buf = Shared::default();
+            let log = CutLog::to_writer(Box::new(buf.clone()), HostTime(0)).expect("a cut log");
+            logs.push(buf);
+            let sim = Sim::new(Box::new(node), replica, clock.clone(), Arc::new(FrameSlot::new()), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))
+                .with_transport(Box::new(Port::new(me, hub.clone())), None)
+                .with_cut_log(log);
+            sims.push(sim);
+        }
+        for f in 1..=FRAMES {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            for s in &mut sims {
+                s.tick(now).expect("ticked");
+            }
+        }
+        let stats: Vec<SimStats> = sims.iter().map(|s| s.stats().clone()).collect();
+        // Dropping each simulation drops its log, which flushes it.
+        drop(sims);
+        let cuts: Vec<_> = logs.iter().map(|b| parse(&b.text())).collect();
+        for (i, (c, st)) in cuts.iter().zip(&stats).enumerate() {
+            println!(
+                "member {i}: {} cut lines, finalized {}, final lag {:?}, deepest rollback {}",
+                c.len(),
+                st.finalized,
+                st.final_lag,
+                st.deepest_rollback
+            );
+            // `finalized` also counts the driver's `NotReady` results, which write no line.
+            assert!(c.len() >= 30 && c.len() as u64 <= st.finalized, "member {i}: {} lines, {st:?}", c.len());
+            assert!(c.iter().all(|l| l.result == "agreed" && l.mine.is_none()), "member {i}: {c:?}");
+            assert!(c.windows(2).all(|w| w[0].height < w[1].height), "member {i}: each cut once, in order");
+            // Final within a second of the present, as the network test above.
+            assert!(st.final_lag.samples() > 0 && st.final_lag.max() <= 60, "member {i}: {:?}", st.final_lag);
+        }
+        let key = |l: &crate::cutlog::CutLine| (l.line.clone(), l.height, l.frame);
+        let theirs: BTreeMap<_, _> = cuts[1].iter().map(|l| (key(l), l.root.clone())).collect();
+        let both: Vec<_> = cuts[0].iter().filter_map(|l| theirs.get(&key(l)).map(|r| (l, r))).collect();
+        // Each finalizes at its own tick, so the newest cut or two may be on one side only.
+        let lens: Vec<usize> = cuts.iter().map(Vec::len).collect();
+        assert!(both.len() + 2 >= lens[0].max(lens[1]), "{} cuts in both logs, of {lens:?}", both.len());
+        for (l, r) in both {
+            assert_eq!(&l.root, r, "cut {} at frame {}: the two machines logged different roots", l.height, l.frame);
+        }
+    }
+
+    /// [`FinalLag`]'s summary: exact below 1024 frames, one bucket above, and the `Debug` the end line prints.
+    #[test]
+    fn the_final_lag_summarizes_its_samples() {
+        let mut l = FinalLag::default();
+        assert_eq!((l.samples(), l.mean(), l.quantile(0.99), l.max()), (0, 0.0, 0, 0));
+        for lag in 1..=100 {
+            l.record(lag);
+        }
+        assert_eq!((l.samples(), l.max()), (100, 100));
+        assert!((l.mean() - 50.5).abs() < 1e-9);
+        assert_eq!((l.quantile(0.5), l.quantile(0.99), l.quantile(1.0)), (50, 99, 100));
+        l.record(5000);
+        assert_eq!((l.max(), l.quantile(1.0)), (5000, FinalLag::EXACT));
+        assert_eq!(format!("{l:?}"), "FinalLag { ticks: 101, mean: 99.5, p99: 100, max: 5000 }");
+    }
+
     /// A replica that damages the pit's balls once: after the first `advance` that reaches `at` or later, every
     /// moving ball's velocity gains 1 cm/s along x in the live physics world (pe-replica's test-only `damage_body`), as
     /// a machine's whose physics computed wrongly for a moment. Its saved states before that are untouched, so a
@@ -3320,6 +3512,19 @@ pub(crate) mod tests {
         split_final: Option<pe_seams::Hash>,
         /// In a [`FaultCase::hold`] run, who holds the held ball at the end, as this member's world says.
         held: Option<(MemberKey, ObjectId)>,
+        /// Its cut log (`PE_CUT_LOG`, [`crate::cutlog`]), read back.
+        cuts: CutLines,
+    }
+
+    /// A member's cut log, read back; its `Debug` counts the lines by result instead of printing each.
+    struct CutLines(Vec<crate::cutlog::CutLine>);
+
+    impl std::fmt::Debug for CutLines {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let n = |r: &str| self.0.iter().filter(|l| l.result == r).count();
+            let (agreed, diverged, damaged) = (n("agreed"), n("diverged"), n("damaged"));
+            write!(f, "{} lines ({agreed} agreed, {diverged} diverged, {damaged} damaged)", self.0.len())
+        }
     }
 
     /// How [`fault_run_with`]'s two members are linked, and what member 0's hands do.
@@ -3376,10 +3581,11 @@ pub(crate) mod tests {
         }
         let puppet = Puppet::default();
         let at = [[-0.5, 1.0, -0.4], [0.5, 1.1, -0.3]];
-        // A folder of this run's own: the fault tests run in parallel in one process.
+        // A folder of this run's own, beside the test executable: the fault tests run in parallel in one process.
         static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let run = RUNS.fetch_add(1, Ordering::SeqCst);
-        let base = std::env::temp_dir().join(format!("pe-app-fault-run-{}-{run}", std::process::id()));
+        let exe = std::env::current_exe().expect("the test executable");
+        let base = exe.parent().expect("its folder").join(format!("pe-app-fault-run-{}-{run}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let mut sims = Vec::new();
         for (i, feed) in at.iter().enumerate() {
@@ -3402,16 +3608,19 @@ pub(crate) mod tests {
                 Arc::new(StillHands(*feed))
             };
             let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let cut_log = crate::cutlog::test_util::Shared::default();
+            let log = crate::cutlog::CutLog::to_writer(Box::new(cut_log.clone()), HostTime(0)).expect("a cut log");
             let mut sim = Sim::new(Box::new(node), Box::new(replica), clock.clone(), slot.clone(), Budget::new(RATE))
                 .with_local(me, keys.nonce(i, 0), hands)
                 .with_transport(Box::new(Port::new(me, hub.clone())), None)
                 .with_event_log(events.clone())
+                .with_cut_log(log)
                 .with_diverge(pe_diverge::Config::default(), Some(base.join(format!("member{i}"))))
                 .expect("pe-diverge");
             if let Some(f) = mine {
                 sim = sim.with_fault(f);
             }
-            sims.push((sim, slot, Vec::new(), 0f32, events));
+            sims.push((sim, slot, Vec::new(), 0f32, events, cut_log));
         }
         let mut held: Option<(ObjectId, [f32; 3])> = None;
         for f in 1..=FRAMES {
@@ -3420,7 +3629,7 @@ pub(crate) mod tests {
             if typed == Some(f) {
                 println!("typed: {}", crate::fault::on_command(Some(fault)).expect("`fault` goes in"));
             }
-            for (s, slot, notices, radius_max, _) in &mut sims {
+            for (s, slot, notices, radius_max, _, _) in &mut sims {
                 s.tick(now).expect("ticked");
                 notices.extend(s.take_notices());
                 let drawn = fault.ball().zip(slot.newest()).and_then(|(b, v)| ball_radius(&v, b));
@@ -3443,7 +3652,7 @@ pub(crate) mod tests {
             }
         }
         let sides: Vec<FaultSide> = (sims.into_iter().enumerate())
-            .map(|(i, (s, slot, notices, radius_max, events))| {
+            .map(|(i, (s, slot, notices, radius_max, events, cut_log))| {
                 let view = slot.newest().expect("published");
                 let (stats, health) = (s.stats().clone(), s.health());
                 let cured = s.diverge_counters().map_or([0; 5], |c| c.cured_by_rung);
@@ -3466,8 +3675,10 @@ pub(crate) mod tests {
                     AgreeEvent::CutFinal { cut, root, .. } if Some(*cut) == split => Some(*root),
                     _ => None,
                 });
-                // Dropping the simulation closes its I/O thread, which first writes every queued bundle.
+                // Dropping the simulation closes its I/O thread, which first writes every queued bundle, and
+                // flushes its cut log.
                 drop(s);
+                let cuts = CutLines(crate::cutlog::parse(&cut_log.text()));
                 let dir = base.join(format!("member{i}"));
                 let mut bundles: Vec<(u8, String)> = (std::fs::read_dir(&dir).into_iter().flatten().flatten())
                     .map(|e| std::fs::read(e.path()).expect("a bundle"))
@@ -3491,6 +3702,7 @@ pub(crate) mod tests {
                     split_votes,
                     split_final,
                     held,
+                    cuts,
                 }
             })
             .collect();
@@ -3500,6 +3712,39 @@ pub(crate) mod tests {
         }
         println!("fault: {fault:?}");
         (sides, FRAMES)
+    }
+
+    /// The cut logs through a split and its repair (`PE_CUT_LOG`, the pull-ahead plan's 1.2), at n = 2. The driver
+    /// finalizes each final cut once, and here every final cut needs both members' votes. So the split's cut goes
+    /// final only after member 1's repair has revoted member 0's root: each log carries it once, `agreed`, at member
+    /// 0's live root, and no line says `diverged` or `damaged` (those need a cut final without this machine's vote).
+    /// Both logs name the same root at every cut both reached, and finality goes on after the repair.
+    #[test]
+    fn both_cut_logs_carry_the_split_cut_once_agreed_at_the_reference_s_root() {
+        let fault = crate::fault::Fault::new(Frame(121));
+        let (sides, _) = fault_run(&fault, None);
+        let split = sides[1].split.expect("member 1 saw the root split");
+        let reference = *sides[0].split_votes.first().expect("member 0 voted at the split");
+        for (i, s) in sides.iter().enumerate() {
+            let lines = &s.cuts.0;
+            let other: Vec<_> = lines.iter().filter(|l| l.result != "agreed").collect();
+            assert!(other.is_empty(), "member {i}: {other:?}");
+            assert!(lines.windows(2).all(|w| w[0].height < w[1].height), "member {i}: each cut once, in order");
+            let at: Vec<_> = lines.iter().filter(|l| l.height == split.height).collect();
+            println!("member {i}: the split cut's lines {at:?}");
+            assert_eq!(at.len(), 1, "member {i}: {at:?}");
+            assert_eq!(at[0].frame, split.frame.0, "member {i}: {at:?}");
+            assert_eq!(at[0].root, reference.to_string(), "member {i}: final at member 0's live root");
+            let last = lines.last().map(|l| l.height);
+            assert!(last.is_some_and(|h| h > split.height + 10), "member {i}: finality went on? last {last:?}");
+        }
+        let key = |l: &crate::cutlog::CutLine| (l.line.clone(), l.height, l.frame);
+        let theirs: BTreeMap<_, _> = sides[1].cuts.0.iter().map(|l| (key(l), l.root.clone())).collect();
+        let both: Vec<_> = sides[0].cuts.0.iter().filter_map(|l| theirs.get(&key(l)).map(|r| (l, r))).collect();
+        assert!(both.len() >= 50, "{} cuts in both logs", both.len());
+        for (l, r) in both {
+            assert_eq!(&l.root, r, "cut {} at frame {}: the two machines logged different roots", l.height, l.frame);
+        }
     }
 
     /// @item:primordial-engine/pe-app-inject-fault-at-a-runtime-flag-that-alter (M1 demo step 7; @coordinator-opus

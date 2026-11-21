@@ -494,6 +494,19 @@ fn main() {
         }
         None => sim,
     };
+    // `PE_CUT_LOG=<file>`: a line per final cut, its root and this machine's result there (crate::cutlog). Off by
+    // default.
+    let sim = match pe_app::cutlog::CutLog::from_env(host()) {
+        Some(Ok((log, path))) => {
+            pe_app::out!("cut log: writing {path} (PE_CUT_LOG)");
+            sim.with_cut_log(log)
+        }
+        Some(Err(e)) => {
+            pe_app::err!("cut log: couldn't open PE_CUT_LOG's file ({e}); running without it");
+            sim
+        }
+        None => sim,
+    };
     let display_delay = sim.display_delay();
     // pe-api's ports (app.md 3.1) whenever the replica is pe-world's and this machine has a member: the build thread
     // submits its attestations through their edit queue (@engine-architect m668e8458cf86). The MCP thread only when a
