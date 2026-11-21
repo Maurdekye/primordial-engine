@@ -215,6 +215,8 @@ impl WorldApi for MockWorld {
             count: q.count_only.then_some(all.len() as u64),
             objects: if q.count_only { vec![] } else { page },
             more,
+            cut: None,
+            summary: None,
         })
     }
 
