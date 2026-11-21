@@ -21,7 +21,7 @@ use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 
 use pe_diverge::{Action, Config, Counters, Diverge, FaultBundle};
-use pe_physics::CheckHash;
+use pe_physics::SelfTestDigest;
 use pe_seams::agree::Fault;
 use pe_seams::{
     AgreeEvent, Agreement, Cut, CutRef, Finalized, FrameClock, HostTime, MemberKey, Outgoing, Replica, SelfTest,
@@ -78,11 +78,25 @@ fn cpu_features() -> String {
 
 /// The self-test's verdict for `split`: `Passed` when the digest now equals start-up's, `Failed` otherwise, and
 /// `Failed` when either run could not complete, since nothing then vouches for this machine's physics.
-pub fn verdict(startup: &Result<CheckHash, String>, now: &Result<CheckHash, String>, split: CutRef) -> SelfTest {
+pub fn verdict(
+    startup: &Result<SelfTestDigest, String>,
+    now: &Result<SelfTestDigest, String>,
+    split: CutRef,
+) -> SelfTest {
     match (startup, now) {
-        (Ok(a), Ok(b)) if a == b => SelfTest::Passed { split },
+        (Ok(a), Ok(b)) if a.digest == b.digest => SelfTest::Passed { split },
         _ => SelfTest::Failed { split },
     }
+}
+
+/// The console's line for a self-test that found the thread's floating-point mode other than the default, and reset it
+/// first (pe-physics `SelfTestDigest::mode_reset`; @coordinator-opus): the digest is still the default
+/// mode's, but something on this thread changed the mode.
+fn mode_notice(which: &str) -> String {
+    format!(
+        "divergence: the floating-point mode was not the default when the {which} self-test ran; it was reset for it, \
+         so the digest is the default mode's (a library on the simulation thread changed the mode)"
+    )
 }
 
 /// The console's line for a self-test that the injected fault fails ([`crate::fault`]): it names the injection and
@@ -96,8 +110,8 @@ fn injected_notice(cut: CutRef, f: &InjectedFault, real_failed: bool) -> String 
     )
 }
 
-/// pe-physics's self-test digest, with its error as text.
-pub fn self_test_digest() -> Result<CheckHash, String> {
+/// pe-physics's self-test, in the default floating-point mode, with its error as text.
+pub fn self_test_digest() -> Result<SelfTestDigest, String> {
     pe_physics::self_test_digest().map_err(|e| format!("{e:?}"))
 }
 
@@ -105,7 +119,7 @@ pub fn self_test_digest() -> Result<CheckHash, String> {
 pub(crate) struct DivergeLoop {
     pub(crate) d: Diverge,
     /// The self-test digest taken at start-up: at the first step, on the simulation thread.
-    startup: Option<Result<CheckHash, String>>,
+    startup: Option<Result<SelfTestDigest, String>>,
     /// The cuts agreement asked a root for, above the final cut.
     cuts: BTreeMap<CutRef, Cut>,
     /// The bundles' `build` line ([`build_line`]), computed for the first bundle written.
@@ -122,13 +136,13 @@ impl DivergeLoop {
     }
 
     /// The start-up digest, taken now if not yet.
-    fn startup(&mut self) -> &Result<CheckHash, String> {
+    fn startup(&mut self) -> &Result<SelfTestDigest, String> {
         self.startup.get_or_insert_with(self_test_digest)
     }
 
     /// Replaces the start-up digest: a test's way to make the next self-test differ.
     #[cfg(test)]
-    pub(crate) fn set_startup_digest(&mut self, digest: Result<CheckHash, String>) {
+    pub(crate) fn set_startup_digest(&mut self, digest: Result<SelfTestDigest, String>) {
         self.startup = Some(digest);
     }
 
@@ -177,7 +191,11 @@ impl DivergeLoop {
     ) -> Vec<Outgoing> {
         // `--inject-fault-at`'s fault, once it has fired here: every self-test from then on reports `Failed`.
         let injected = injected.filter(|f| f.fired());
-        self.startup();
+        let first = self.startup.is_none();
+        if self.startup().as_ref().is_ok_and(|d| d.mode_reset) && first {
+            stats.self_test_mode_resets += 1;
+            notices.push(mode_notice("start-up"));
+        }
         // `NotReady` is the driver's: it asks `finalize` again on the next tick.
         let results: Vec<(CutRef, Finalized)> =
             finalized.iter().filter(|(_, f)| !matches!(f, Finalized::NotReady)).cloned().collect();
@@ -238,6 +256,10 @@ impl DivergeLoop {
                 },
                 Action::RunSelfTest { cut } => {
                     let now = self_test_digest();
+                    if now.as_ref().is_ok_and(|d| d.mode_reset) {
+                        stats.self_test_mode_resets += 1;
+                        notices.push(mode_notice(&format!("split at {cut:?}'s")));
+                    }
                     let real = verdict(self.startup(), &now, cut);
                     stats.self_tests += 1;
                     let failed = matches!(real, SelfTest::Failed { .. });
@@ -337,7 +359,7 @@ mod tests {
         let now = self_test_digest();
         assert_eq!(verdict(&now, &self_test_digest(), split()), SelfTest::Passed { split: split() });
         // pe-physics's own test shows a perturbed scene gives another digest; here, any other digest fails.
-        let other = Ok(CheckHash([0x5a; 32]));
+        let other = Ok(SelfTestDigest { digest: pe_physics::CheckHash([0x5a; 32]), mode_reset: false });
         assert_ne!(other, now);
         assert_eq!(verdict(&other, &now, split()), SelfTest::Failed { split: split() });
         assert_eq!(verdict(&Err("no".into()), &now, split()), SelfTest::Failed { split: split() });
