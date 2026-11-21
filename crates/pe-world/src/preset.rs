@@ -139,6 +139,10 @@ pub fn m1_session(s: &Session, blobs: BlobStore) -> Result<World, crate::WorldEr
     w.set_agree_settings(&s.agree);
     let mut members = s.members.clone();
     members.sort_by_key(|m| m.0);
+    // A key listed twice: `admit` would take the second as a returning member, so it is refused here.
+    if let Some(w2) = members.windows(2).find(|w2| w2[0].0 == w2[1].0) {
+        return Err(crate::WorldError::Duplicate(ObjectId::hand(s.line, w2[1].0, 0, Frame(0))));
+    }
     for (i, &(m, perms)) in members.iter().enumerate() {
         w.admit(s.line, m, perms, Frame(0), slot_feet(s.origin, i))?;
     }
@@ -315,6 +319,12 @@ impl World {
     ///
     /// Not yet: the avatar root that parents the hands (3.5), whose id derivation is open. A rejoin at a later frame
     /// makes two new hands (the ids include the frame), once [`World::leave`] has removed the old ones.
+    ///
+    /// **A returning member** (F3's n = 2 branch, world-model.md 8; @diverge-eng's design v5, L3): a key that is
+    /// already a member of this world keeps its permissions, its hands and what they hold. Only a hand side it lacks
+    /// is created, with this admission's id; one with both hands changes nothing, and the hands it had are returned.
+    /// A branch removes no member, so B's admission on the new line finds B's rows from the old one. pe-agree's
+    /// epoch, not the world, decides whether a key votes.
     pub fn admit(
         &mut self,
         line: LineId,
@@ -323,9 +333,20 @@ impl World {
         frame: Frame,
         spawn: Pos,
     ) -> Result<[ObjectId; 2], crate::WorldError> {
-        let ids = [0u8, 1].map(|side| ObjectId::hand(line, member, side, frame));
-        for id in ids {
-            if self.store.exists(id) {
+        let returning = self.members.get(&member).copied();
+        let mut had: [Option<ObjectId>; 2] = [None, None];
+        if returning.is_some() {
+            for (id, h) in self.store.iter::<Hand>() {
+                if h.owner == member
+                    && let Some(slot) = had.get_mut(h.side as usize)
+                {
+                    *slot = Some(slot.map_or(id, |s: ObjectId| s.min(id)));
+                }
+            }
+        }
+        let ids = [0u8, 1].map(|side| had[side as usize].unwrap_or_else(|| ObjectId::hand(line, member, side, frame)));
+        for (side, id) in ids.into_iter().enumerate() {
+            if had[side].is_none() && self.store.exists(id) {
                 return Err(crate::WorldError::Duplicate(id));
             }
         }
@@ -337,14 +358,20 @@ impl World {
         let places = [place(0)?, place(1)?];
         // Everything that can refuse was checked above, so the writes below cannot fail; they go to a copy anyway,
         // swapped in only when all succeed, so an `Err` never leaves a member with one hand (@chunks-reviewer's Low 1).
+        if had.iter().all(Option::is_some) {
+            return Ok(ids);
+        }
         let mut w = self.clone();
         for (side, (id, at)) in ids.into_iter().zip(places).enumerate() {
+            if had[side].is_some() {
+                continue;
+            }
             w.create(id, None, MemberKey::LOGIC, crate::GENESIS)?;
             w.insert(id, Transform::at(at))?;
             w.insert(id, Hand { owner: member, side: side as u32, ..Hand::default() })?;
             w.insert(id, SimSize { metres: 1.0 })?;
         }
-        w.set_member(member, perms);
+        w.set_member(member, returning.unwrap_or(perms));
         *self = w;
         Ok(ids)
     }
