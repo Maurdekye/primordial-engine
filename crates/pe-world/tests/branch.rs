@@ -6,8 +6,10 @@ use pe_core::{EntryRef, Frame, Hash, LineId, ObjectId, Offset, Pos};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{Class, CutImport, CutRef, DomainId, LeafKey, Outcome, PhysicsImage, Reason, SignedEntry, Tree};
 use pe_sim::{Component, Transform};
-use pe_world::branch::{BranchError, Reissue, Sealed, Tail, decode_edit, payload_hash, reissue_payload};
-use pe_world::edit::{Actor, Op, Row, Target, Transaction};
+use pe_world::branch::{
+    BranchError, MAX_REISSUE_DEPTH, REISSUE_PREFIX, Reissue, Sealed, Tail, decode_edit, payload_hash, reissue_payload,
+};
+use pe_world::edit::{Actor, MAX_EDIT_BYTES, Op, Precondition, Row, Target, Transaction};
 use pe_world::tree::table;
 use pe_world::{BlobStore, World, perm};
 
@@ -70,6 +72,8 @@ struct Fx {
     a: [SignedEntry; 3],
     x: ObjectId,
     y: ObjectId,
+    /// A's L-chain builder, at seq 3.
+    ab: EntryBuilder,
 }
 
 fn fx() -> Fx {
@@ -94,7 +98,7 @@ fn fx() -> Fx {
         ]),
     );
     assert_eq!(created(&w.apply_edit(Frame(3), &a3).0).len(), 1);
-    Fx { keys, base, full: w, a: [a1, a2, a3], x, y }
+    Fx { keys, base, full: w, a: [a1, a2, a3], x, y, ab: a }
 }
 
 /// `f.base` continued on L' = line(2), from the record `Branch` gives: A's chain at head 1, and B's (empty).
@@ -137,9 +141,9 @@ fn a_re_issued_tail_makes_the_ids_and_state_its_original_made() {
     let id = created(&w.apply_edit(Frame(4), &plain).0)[0];
     assert_eq!(id, ObjectId::created(line(2), f.keys.key(0), plain.entry.chain, plain.entry.seq, 0));
     // The decoder others use gives the original's coordinates for the re-issue, and the entry's for the plain one.
-    let (_, o) = decode_edit(&e2.entry).unwrap();
+    let (_, o) = decode_edit(&e2).unwrap();
     assert_eq!((o.line, o.chain, o.seq), (line(1), f.a[1].entry.chain, 2));
-    let (_, o) = decode_edit(&plain.entry).unwrap();
+    let (_, o) = decode_edit(&plain).unwrap();
     assert_eq!((o.line, o.chain, o.seq), (line(2), plain.entry.chain, plain.entry.seq));
 }
 
@@ -212,7 +216,7 @@ fn a_second_branch_re_issues_a_re_issued_edit_with_the_first_ids() {
     let rr3 = reissue(&mut a3, &r3);
     assert_eq!(created(&w2.apply_edit(Frame(3), &rr3).0), z, "ids derive from the innermost original, on L");
     assert_eq!(transforms(&w2), transforms(&f.full));
-    let (_, o) = decode_edit(&rr3.entry).unwrap();
+    let (_, o) = decode_edit(&rr3).unwrap();
     assert_eq!((o.line, o.chain, o.seq), (line(1), f.a[2].entry.chain, 3));
     // The first branch's record is replaced: L's originals can no longer be re-issued on L''.
     assert!(!w2.is_sealed(f.a[1].entry.chain, 2));
@@ -261,4 +265,52 @@ fn a_joiner_imports_the_branch_record_and_re_issues_check_alike() {
     assert_eq!(got.branch_parent(), Some(line(1)));
     let mut a2 = EntryBuilder::on_line(&f.keys, 0, line(2));
     assert_eq!(created(&got.apply_edit(Frame(2), &reissue(&mut a2, &f.a[1])).0), vec![f.y]);
+}
+
+#[test]
+fn a_re_issued_edit_s_preconditions_read_on_the_parent_line_hold() {
+    // @diverge-eng's M1: A's seq-4 edit read X's row and Y's object version as a3 left them on L. Re-issued on L',
+    // those versions must be the ones the re-issued a3 wrote, or the edit is refused `Stale`.
+    let mut f = fx();
+    let read = f.full.snapshot(Frame(3));
+    let (row_v, obj_v) = (read.row_version_of(f.x, Transform::ID), read.info(f.y).unwrap().version);
+    assert_eq!(row_v.entry, f.a[2].id(), "a3 wrote X's transform");
+    let mut t4 = tx(vec![Op::SetRow { id: Target::Existing(f.x), row: row(at(40.0)) }]);
+    t4.preconditions = vec![
+        Precondition::Version { id: f.x, component: Transform::ID, instance: 0, is: row_v },
+        Precondition::ObjectVersion { id: f.y, is: obj_v },
+    ];
+    let a4 = edit(&mut f.ab, &t4);
+    let mut full = f.full.clone();
+    assert!(matches!(full.apply_edit(Frame(4), &a4).0, Outcome::Applied { .. }), "the preconditions hold on L");
+    let mut w = f.base.clone();
+    w.switch_line(line(2));
+    let tails = [Tail { chain: f.a[0].entry.chain, member: f.keys.key(0), head: 1 }];
+    w.begin_branch(line(1), &tails, &[sealed(&f.a[1]), sealed(&f.a[2]), sealed(&a4)]).unwrap();
+    let mut a2 = EntryBuilder::on_line(&f.keys, 0, line(2));
+    for e in [&f.a[1], &f.a[2]] {
+        assert!(matches!(w.apply_edit(Frame(3), &reissue(&mut a2, e)).0, Outcome::Applied { .. }));
+    }
+    let o = w.apply_edit(Frame(4), &reissue(&mut a2, &a4)).0;
+    assert!(matches!(o, Outcome::Applied { .. }), "the re-issued a4's preconditions hold on L': {o:?}");
+    assert_eq!(transforms(&w), transforms(&full));
+    let (got, want) = (w.snapshot(Frame(4)), full.snapshot(Frame(4)));
+    for id in [f.x, f.y] {
+        assert_eq!(got.info(id).unwrap().version, want.info(id).unwrap().version, "versions name the originals");
+        assert_eq!(got.row_version_of(id, Transform::ID), want.row_version_of(id, Transform::ID));
+    }
+}
+
+#[test]
+fn an_edit_leaves_room_to_be_re_issued_across_every_branch() {
+    // @diverge-eng's L1: an edit's encoded bytes stop short of the entry's cap by the deepest re-issue's prefixes.
+    assert_eq!(MAX_EDIT_BYTES + MAX_REISSUE_DEPTH * REISSUE_PREFIX, pe_seams::MAX_PAYLOAD);
+    let big = Row { component: Transform::ID, instance: 0, bytes: vec![0; pe_world::edit::MAX_ROW_BYTES] };
+    let mut t = tx(vec![Op::SetRow { id: Target::Existing(ObjectId::from_u128(5)), row: big }]);
+    assert!(t.encode().len() <= MAX_EDIT_BYTES && Transaction::decode(&t.encode()).is_some());
+    let v = pe_seams::Version { entry: EntryRef(Hash([3; 32])), op: 0 };
+    let p = Precondition::Version { id: ObjectId::from_u128(5), component: Transform::ID, instance: 0, is: v };
+    t.preconditions = vec![p; 64];
+    assert!(t.encode().len() > MAX_EDIT_BYTES);
+    assert_eq!(Transaction::decode(&t.encode()), None, "past the edit cap, it does not decode");
 }

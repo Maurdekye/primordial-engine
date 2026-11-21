@@ -18,8 +18,13 @@ pub const REISSUE: u8 = 0xF0;
 /// The bytes of one reference after [`REISSUE`]: line, chain, seq, entry.
 const REF_LEN: usize = 32 + 32 + 8 + 32;
 
-/// The deepest nesting a payload may have; past it, the payload is malformed.
-pub const MAX_REISSUE_DEPTH: usize = 64;
+/// The bytes one re-issue adds in front of its original: [`REISSUE`] and the reference.
+pub const REISSUE_PREFIX: usize = 1 + REF_LEN;
+
+/// The deepest nesting a payload may have (one per branch the edit is carried across); past it, the payload is
+/// malformed. [`crate::edit::MAX_EDIT_BYTES`] keeps this much room under `MAX_PAYLOAD`, so any edit can be re-issued
+/// this many times (@diverge-eng's L1).
+pub const MAX_REISSUE_DEPTH: usize = 8;
 
 /// A re-issued edit's reference to its original: the entry at `seq` of `chain` on the parent `line`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,7 +73,7 @@ pub fn payload_hash(payload: &[u8]) -> Hash {
 
 /// The payload that re-issues `original` (the original entry's payload bytes, unchanged) under reference `r`.
 pub fn reissue_payload(original: &[u8], r: &Reissue) -> Vec<u8> {
-    let mut b = Vec::with_capacity(1 + REF_LEN + original.len());
+    let mut b = Vec::with_capacity(REISSUE_PREFIX + original.len());
     b.push(REISSUE);
     b.extend_from_slice(&r.line.0.0);
     b.extend_from_slice(&r.chain.0.0);
@@ -81,7 +86,7 @@ pub fn reissue_payload(original: &[u8], r: &Reissue) -> Vec<u8> {
 /// The outermost reference of a re-issued payload, and the bytes it re-issues. `None` if `payload` is not a
 /// re-issue, or is too short to hold a reference (then it is malformed as a transaction too).
 pub fn split_reissue(payload: &[u8]) -> Option<(Reissue, &[u8])> {
-    if payload.first() != Some(&REISSUE) || payload.len() < 1 + REF_LEN {
+    if payload.first() != Some(&REISSUE) || payload.len() < REISSUE_PREFIX {
         return None;
     }
     let h = |at: usize| Hash(payload[at..at + 32].try_into().unwrap());
@@ -91,29 +96,32 @@ pub fn split_reissue(payload: &[u8]) -> Option<(Reissue, &[u8])> {
         seq: u64::from_le_bytes(payload[65..73].try_into().unwrap()),
         entry: EntryRef(h(73)),
     };
-    Some((r, &payload[1 + REF_LEN..]))
+    Some((r, &payload[REISSUE_PREFIX..]))
 }
 
-/// Where an edit's new ids, row tags and new asset ids derive from (2.1, 7.6, 7.9): the entry's own line, chain and
-/// seq, or, for a re-issued edit, its innermost original's. The author is always the entry's.
+/// Where an edit's new ids, row tags and new asset ids derive from (2.1, 7.6, 7.9), and the entry its versions name
+/// (7.6): the entry's own line, chain, seq and id, or, for a re-issued edit, its innermost original's. The author is
+/// always the entry's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Origin {
     pub line: LineId,
     pub chain: ChainId,
     pub seq: u64,
+    pub entry: EntryRef,
 }
 
 /// An edit entry's transaction and the origin its ids derive from, for a re-issued edit as for any other. `None` for
 /// a payload that does not decode (7.6 step 1: `Malformed`). It checks no reference: [`crate::World::apply_edit`]
 /// checks the outermost against the branch record, and the sealed hash binds the inner ones.
-pub fn decode_edit(entry: &pe_seams::Entry) -> Option<(Transaction, Origin)> {
-    let mut origin = Origin { line: entry.line, chain: entry.chain, seq: entry.seq };
+pub fn decode_edit(signed: &pe_seams::SignedEntry) -> Option<(Transaction, Origin)> {
+    let entry = &signed.entry;
+    let mut origin = Origin { line: entry.line, chain: entry.chain, seq: entry.seq, entry: signed.id() };
     let mut bytes: &[u8] = &entry.payload;
     for _ in 0..=MAX_REISSUE_DEPTH {
         match split_reissue(bytes) {
             None => return Transaction::decode(bytes).map(|tx| (tx, origin)),
             Some((r, inner)) => {
-                origin = Origin { line: r.line, chain: r.chain, seq: r.seq };
+                origin = Origin { line: r.line, chain: r.chain, seq: r.seq, entry: r.entry };
                 bytes = inner;
             }
         }
