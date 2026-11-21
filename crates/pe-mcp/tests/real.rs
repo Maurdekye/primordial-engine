@@ -67,6 +67,7 @@ impl WorldSource for Src {
             tick_hz: 60,
             agents_move_user: false,
             scripts_not_running: vec![],
+            joining: false,
         }
     }
 }

@@ -46,6 +46,12 @@ use crate::versions::VersionTable;
 use crate::watch::{Describe, mine};
 use crate::world::WorldView;
 
+/// Why a live script commit is `unavailable` while a player joins (app.md 4), from pe-api's check or pe-app's drain.
+pub const JOINING: &str = concat!(
+    "A player is joining, so script commits wait until they're in (usually a few seconds). ",
+    "Nothing was built or submitted; apply again then."
+);
+
 /// What pe-app gives the API: its published pe-world frames and, per member, what `"me"` and a draft need.
 pub trait WorldSource: Send + Sync {
     fn latest(&self) -> Arc<WorldSnapshot>;
@@ -88,6 +94,11 @@ pub struct SessionFacts {
     /// Scripts this machine can't run (api.md 5.1; S6 v1.9). pe-app logs each too, so a skipped script is never
     /// silent.
     pub scripts_not_running: Vec<NotRunning>,
+    /// A join this machine admitted is in flight: from the joiner's ready (its `Admit` about to be written) until
+    /// the new epoch's first final cut, or the join's end if it fails. A live script commit is then `unavailable`
+    /// (app.md 4, "A world with scripts: an M1 limit"): the joiner's import carries no script archive, so it could
+    /// neither build nor attest a script still pending at the reconfiguring cut.
+    pub joining: bool,
 }
 
 /// A script this machine can't run, as pe-app knows it (S6 v1.9's `ScriptNotRunning`).
@@ -367,6 +378,9 @@ impl<S: WorldSource + 'static> Api<S> {
         let built = match r.ops.iter().position(|o| matches!(o, crate::resolve::ROp::Code { .. })) {
             None => None,
             Some(i) => {
+                if opts.mode == Mode::Live {
+                    self.no_join_in_flight()?;
+                }
                 let crate::resolve::ROp::Code { source, .. } = &r.ops[i] else { unreachable!() };
                 let op = r.op_of.get(i).copied().unwrap_or(i as u32);
                 match self.build_for_commit(source, op)? {
@@ -436,6 +450,10 @@ impl<S: WorldSource + 'static> Api<S> {
         };
         if let Some((code, message, next)) = blocked {
             return Ok(refused_outcome(snap, refusal_of(code, message, next)));
+        }
+        // A script commit, an `apply`'s or a revert's, waits out a join (app.md 4).
+        if opts.mode == Mode::Live && e.tx.ops.iter().any(|o| matches!(o, pe_world::edit::Op::CommitScript { .. })) {
+            self.no_join_in_flight()?;
         }
         let draft = self.src.draft_for(c.member);
         let mut checked = dry_run(snap, r, &e, &draft);
@@ -578,6 +596,8 @@ impl<S: WorldSource + 'static> Api<S> {
             }
             // Agreement's reasons (engine-architect): not this member's next entry is pe-app's bug; a
             // malformed entry is an encoding bug, invalid; too late means this machine is far behind, retryable.
+            // A script commit the simulation thread held back while a player joins (app.md 4): nothing was sent.
+            Some(Receipt::Unavailable(why)) => return Err(ApiError::new(ErrorCode::Unavailable, why)),
             Some(Receipt::Refused(SubmitError::NotNext)) => {
                 return Err(ApiError::new(ErrorCode::Internal, "The change wasn't this machine's next entry."));
             }
@@ -1170,6 +1190,15 @@ impl<S: WorldSource + 'static> Api<S> {
         }
     }
 
+    /// A live script commit's check while a player joins (app.md 4; [`SessionFacts::joining`]): `unavailable` before
+    /// anything is built or submitted. `code_check` and dry runs change nothing, so they still answer.
+    fn no_join_in_flight(&self) -> Result<(), ApiError> {
+        if self.src.session().joining {
+            return Err(ApiError::new(ErrorCode::Unavailable, JOINING));
+        }
+        Ok(())
+    }
+
     /// The author's build of a `code` op's source (api.md 7): a failure or a margin refuses the op as `compile`
     /// with its diagnostics, and nothing is submitted; no service, or a wait past the deadline, fails the call.
     fn build_for_commit(
@@ -1398,6 +1427,7 @@ mod tests {
                 tick_hz: 60,
                 agents_move_user: MOVE_OK.with(|c| c.get()),
                 scripts_not_running: NOT_RUNNING.with(|c| c.borrow().clone()),
+                joining: JOINING.with(|c| c.get()),
             }
         }
     }
@@ -1411,6 +1441,8 @@ mod tests {
         static HEAD: std::cell::Cell<Option<u128>> = const { std::cell::Cell::new(None) };
         /// The owning user's "agents may move me" setting.
         static MOVE_OK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Whether a join the test's machine admitted is in flight.
+        static JOINING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         /// The scripts the test's machine can't run.
         static NOT_RUNNING: std::cell::RefCell<Vec<NotRunning>> = Default::default();
     }
@@ -2162,6 +2194,31 @@ mod tests {
         let f = o.refusal.unwrap();
         assert_eq!((o.status, f.code, f.op), (Status::Refused, RefusalCode::Compile, Some(0)));
         assert_eq!(f.details.unwrap()["diagnostics"][0]["line"], 1);
+    }
+
+    /// app.md 4: while a join this machine admitted is in flight, a live script commit is `unavailable` before any
+    /// build; a dry run and code_check still answer, other changes go ahead, and once the join ends the commit does.
+    #[test]
+    fn a_script_commit_waits_out_a_join() {
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let b = Arc::new(Passes(Default::default()));
+        let a = api().with_builds(b.clone());
+        let code = || tx(json!([{"op": "code", "id": "$spin", "source": "pub fn spin() {}"}]));
+        let live = ApplyOpts { wait: Wait::None, ..Default::default() };
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        JOINING.with(|x| x.set(true));
+        let e = a.apply(&c, code(), &live).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Unavailable, "{e:?}");
+        assert!(e.message.contains("joining"), "{}", e.message);
+        assert_eq!(b.0.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing built");
+        assert!(a.queue.is_empty(), "nothing submitted");
+        assert_eq!(a.apply(&c, code(), &dry).unwrap().status, Status::Accepted);
+        let check = CodeCheck { source: "pub fn f() {}".into() };
+        assert!(a.code_check(&c, &check, Instant::now() + Duration::from_secs(5)).is_ok());
+        let cup = tx(json!([{"op": "create", "parent": "/Table", "name": "Cup"}]));
+        assert_eq!(a.apply(&c, cup, &live).unwrap().status, Status::Queued, "only scripts wait");
+        JOINING.with(|x| x.set(false));
+        assert_eq!(a.apply(&c, code(), &live).unwrap().status, Status::Queued);
     }
 
     #[test]

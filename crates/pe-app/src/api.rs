@@ -129,6 +129,8 @@ struct Inner {
     edits: EditIndex,
     here: BTreeSet<MemberKey>,
     caught_up: bool,
+    /// A join this machine admits holds script commits back (app.md 4).
+    joining: bool,
     /// The scripts this machine can't run, as the attester last found them (`Attester::not_running`).
     scripts_not_running: Vec<(AssetId, Frame, String)>,
 }
@@ -149,6 +151,7 @@ impl ApiShared {
             // Until the first advance says otherwise, so pe-api refuses live changes with `not_ready` meanwhile
             // (@api-eng's Low on slice 1).
             caught_up: false,
+            joining: false,
             scripts_not_running: Vec::new(),
         };
         ApiShared { facts, keep_frames, inner: Mutex::new(inner), fresh: Condvar::new() }
@@ -208,6 +211,11 @@ impl ApiShared {
 
     pub fn caught_up(&self, caught_up: bool) {
         self.lock().caught_up = caught_up;
+    }
+
+    /// Whether a join this machine admits holds script commits back: pe-api answers them `unavailable` (app.md 4).
+    pub fn joining(&self, joining: bool) {
+        self.lock().joining = joining;
     }
 
     /// The scripts this machine can't run, for session_info (S6's `scripts_not_running`): the attester's thread
@@ -325,6 +333,7 @@ impl WorldSource for ApiWorld {
             caught_up: g.caught_up,
             tick_hz: self.0.facts.rate.hz(),
             agents_move_user: false,
+            joining: g.joining,
             scripts_not_running: (g.scripts_not_running.iter())
                 .map(|(script, since, why)| NotRunning {
                     script: *script,
