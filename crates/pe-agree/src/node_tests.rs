@@ -160,6 +160,11 @@ struct Sim {
     absent: Vec<bool>,
     /// The configuration every member started from (a joiner's template).
     base: NodeConfig,
+    /// Time each `receive` took (off unless set): (receiver, its present less its final frame, lane, ns).
+    receive_cost: Option<Vec<(usize, u64, Lane, u64)>>,
+    /// Per member: its replica steps this many frames behind its present, so it roots (and votes) a cut only once its
+    /// present is that far past the cut's frame (a member that can't simulate in real time; default path only).
+    behind: Vec<u64>,
 }
 
 impl Sim {
@@ -238,6 +243,8 @@ impl Sim {
             edits: vec![Vec::new(); n as usize],
             absent: (0..n).map(|i| i >= present).collect(),
             base: cfg,
+            receive_cost: None,
+            behind: vec![0; n as usize],
             seq: 0,
             now: 0,
             rng: Rng(seed),
@@ -418,7 +425,11 @@ impl Sim {
             self.events[i].extend(ev);
             return;
         }
+        let stepped = clock.frame_at(now).unwrap().0.saturating_sub(self.behind[i]);
         for cut in self.nodes[i].wants_roots() {
+            if cut.at.frame.0 > stepped {
+                continue;
+            }
             let from = self.nodes[i].final_cut().map_or(Frame(0), |c| c.cut.at.frame);
             let answer = (from.0..cut.at.frame.0)
                 .map(|f| {
@@ -532,7 +543,14 @@ impl Sim {
                     continue;
                 }
                 let fk = self.keys.key(from);
+                let started = std::time::Instant::now();
                 let r = self.nodes[to].receive(fk, lane, &bytes, HostTime(k.0));
+                if let Some(log) = self.receive_cost.as_mut() {
+                    let ns = started.elapsed().as_nanos() as u64;
+                    let present = self.clock.frame_at(HostTime(k.0)).map_or(0, |f| f.0);
+                    let fin = self.nodes[to].final_cut().map_or(0, |c| c.cut.at.frame.0);
+                    log.push((to, present.saturating_sub(fin), lane, ns));
+                }
                 if self.flooder.is_some() && r.is_err() {
                     self.refused += 1;
                 } else {
@@ -3311,4 +3329,58 @@ fn a_forged_epoch_certificate_is_refused_and_the_genuine_one_taken() {
     assert_eq!(give(&mut s, cert(proposals, top)), Ok(()));
     s.run_to_epoch(1, 1, 10_000);
     assert_eq!(s.nodes[1].members(), s.sorted(&[0, 1]));
+}
+
+/// M1 redo F4 (@item:primordial-engine/m1-redo-f4-pe-agree-s-cost-per-received-entry-gr): a member whose replica steps
+/// 240 frames behind votes each cut late, so its finality lag grows while cuts are named near the present. Each
+/// message it receives used to check the votable proposal afresh, walking every entry from the final cut, so its cost
+/// per message grew with the lag (1.4 ms at 600 frames in release, against 14 us). A settled check is now kept per
+/// proposal: the fresh checks are a small fraction of the messages, and the final log is unchanged.
+#[test]
+fn a_member_stepping_behind_checks_each_proposal_once_not_per_message() {
+    let mut s = Sim::new(2, 51);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.behind[1] = 240;
+    s.receive_cost = Some(Vec::new());
+    s.run(30_000);
+    let received = s.receive_cost.take().unwrap().iter().filter(|(to, ..)| *to == 1).count() as u64;
+    let checks = s.nodes[1].candidate_checks();
+    println!("member 1: {checks} fresh checks for {received} messages; final {:?}", s.final_frame(1));
+    assert!(checks * 4 < received, "{checks} fresh checks for {received} messages");
+    assert!(s.final_frame(1).0 > 300, "the slow member still finalizes: {:?}", s.final_frame(1));
+    s.assert_same_final_log();
+}
+
+/// M1 redo F4 (@item:primordial-engine/m1-redo-f4-pe-agree-s-cost-per-received-entry-gr), a measurement: n = 2, two
+/// hands a frame each, and member 1's replica `d` frames behind its present (a member that can't simulate in real
+/// time: it votes each cut late, so the finality lag grows while cuts are still named near the present). Prints each member's mean `receive` time on the Action lane by its finality lag, in
+/// 60-frame buckets. Run with `--ignored --nocapture`, release.
+#[test]
+#[ignore]
+fn receive_cost_by_finality_lag() {
+    for d in [0, 60, 240, 480] {
+        let mut s = Sim::new(2, 51);
+        s.per_frame = vec![Some((2, 0)); 2];
+        s.behind[1] = d;
+        s.receive_cost = Some(Vec::new());
+        s.run(30_000);
+        let log = s.receive_cost.take().unwrap();
+        let mut buckets: BTreeMap<(usize, u64), (u64, u64)> = BTreeMap::new();
+        for (to, lag, lane, ns) in log {
+            if lane == Lane::Action {
+                let b = buckets.entry((to, lag / 60)).or_default();
+                b.0 += 1;
+                b.1 += ns;
+            }
+        }
+        for ((to, sec), (n, ns)) in buckets {
+            println!(
+                "behind {d:>4} frames  member {to}  lag {:>4}-{:<4} frames  {n:>6} msgs  mean {:>8} ns",
+                sec * 60,
+                sec * 60 + 59,
+                ns / n.max(1)
+            );
+        }
+        println!("behind {d} frames: final frames {:?} {:?}", s.final_frame(0), s.final_frame(1));
+    }
 }

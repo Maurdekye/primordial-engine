@@ -282,6 +282,11 @@ pub struct Node {
     final_heads: Cut,
     final_block: BlockId,
     root_cache: std::cell::RefCell<Option<RootCache>>,
+    /// The last settled check of the votable proposal ([`Node::checked_candidate`]): (epoch, final block, proposal,
+    /// check). Only an `Ok` or a reject that held entries can't undo is kept (M1 redo F4).
+    check_cache: std::cell::RefCell<Option<(u64, BlockId, BlockId, Check)>>,
+    /// How many times the votable proposal was checked afresh (a diagnostic, for F4's test).
+    candidate_checks: std::cell::Cell<u64>,
     /// Per author: checked entries over its budget, admitted as it refills.
     deferred: BTreeMap<MemberKey, Deferred>,
     /// Per (sender, author): how many more entries this member will check (tokens in thousandths), and when.
@@ -681,6 +686,8 @@ impl Node {
             final_heads: cfg.genesis.clone(),
             final_block,
             root_cache: std::cell::RefCell::new(None),
+            check_cache: std::cell::RefCell::new(None),
+            candidate_checks: std::cell::Cell::new(0),
             inserted: 0,
             deferred: BTreeMap::new(),
             verify_budget: BTreeMap::new(),
@@ -745,6 +752,11 @@ impl Node {
     /// How many votes this member cast again on a pinned re-proposal of a split cut.
     pub fn recasts(&self) -> u64 {
         self.recasts
+    }
+
+    /// How many times this member checked the votable proposal afresh, walking from the final cut to its cut.
+    pub fn candidate_checks(&self) -> u64 {
+        self.candidate_checks.get()
     }
 
     /// Cast this member's newest root again when the current view re-proposes a split cut it was asked to vote on (the
@@ -2018,8 +2030,32 @@ impl Node {
     }
 
     /// The proposal the core allows a vote for, with the node's check of its cut (before the outage rule).
+    ///
+    /// The check walks every entry from the final cut to the cut, and it runs for each message received (the outage
+    /// rule and the pinned re-cast ask for it). So a member that votes late, because its replica steps behind, would
+    /// pay for its whole finality lag on every message (M1 redo F4). A settled answer is kept while the epoch, the
+    /// final block and the proposal stay the same: arriving entries can't change an `Ok`, nor a reject other than
+    /// `FrameInFuture`, which the present can lift. `Missing` and `None` are checked again each time. A kept `Ok`
+    /// assumes the present never moves back past the frame tolerance: pe-net's clock is steered gradually, and the cut
+    /// was checked once at an honest present (@chunks-reviewer's note on 02bdd909).
     fn checked_candidate(&self) -> Option<(&core::Proposal, Check)> {
         let p = self.core.votable()?;
+        let key = (self.core.epoch(), self.final_block, p.block.id());
+        if let Some((e, f, id, c)) = self.check_cache.borrow().as_ref()
+            && (*e, *f, *id) == key
+        {
+            return Some((p, c.clone()));
+        }
+        let (p, c) = self.check_candidate(p)?;
+        if matches!(c, Check::Ok) || matches!(&c, Check::Reject(r) if *r != cuts::Reject::FrameInFuture) {
+            *self.check_cache.borrow_mut() = Some((key.0, key.1, key.2, c.clone()));
+        }
+        Some((p, c))
+    }
+
+    /// [`Node::checked_candidate`]'s check of the votable proposal `p`, done afresh.
+    fn check_candidate<'a>(&self, p: &'a core::Proposal) -> Option<(&'a core::Proposal, Check)> {
+        self.candidate_checks.set(self.candidate_checks.get() + 1);
         let parent = self.core.block(&p.block.parent)?;
         let present = self.present?;
         if self.core.mutated(Mutation::AcceptProposalUnchecked) {
@@ -2036,7 +2072,7 @@ impl Node {
             Err(missing) if !missing.is_empty() => return Some((p, Check::Missing(missing))),
             _ => {}
         }
-        let mut c = if p.block.cut.at.frame.0 % self.cfg.cut_every(self.rate_hz) != 0 {
+        let mut c = if !p.block.cut.at.frame.0.is_multiple_of(self.cfg.cut_every(self.rate_hz)) {
             Check::Reject(cuts::Reject::OffGrid)
         } else {
             cuts::check(&self.log, &parent.cut, &p.block.cut, present, self.tolerance_frames(), &self.cfg.members)
