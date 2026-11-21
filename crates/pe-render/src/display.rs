@@ -16,6 +16,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use glam::{DQuat, DVec3};
@@ -44,6 +45,28 @@ pub enum OwnHands {
     LateLatched,
     /// Where simulated (the other setting).
     Simulated,
+}
+
+/// Where the own hands are drawn, switchable while the presenter runs (the pull-ahead plan's 1.10: pe-app's console
+/// `draw latched|simulated`, for the headset test's hand-feel comparison). Another thread sets it; the presenter reads
+/// it once a frame ([`crate::present::Presenter::set_own_hands_switch`]).
+#[derive(Debug, Default)]
+pub struct OwnHandsSwitch(AtomicU8);
+
+impl OwnHandsSwitch {
+    pub fn new(own: OwnHands) -> OwnHandsSwitch {
+        let s = OwnHandsSwitch::default();
+        s.set(own);
+        s
+    }
+
+    pub fn set(&self, own: OwnHands) {
+        self.0.store(u8::from(own == OwnHands::Simulated), Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> OwnHands {
+        if self.0.load(Ordering::Relaxed) == 1 { OwnHands::Simulated } else { OwnHands::LateLatched }
+    }
 }
 
 /// The controls of render.md 8 ("controls that bite"): each switches off one protection, so a test can show the
@@ -371,6 +394,12 @@ impl DisplayLayer {
 
     pub fn settings(&self) -> &DisplaySettings {
         &self.settings
+    }
+
+    /// Where the own hands are drawn from the next frame on ([`OwnHandsSwitch`]). Every frame reads the setting, so a
+    /// switch needs nothing else: a held object follows its hand to wherever the hand is now drawn.
+    pub fn set_own_hands(&mut self, own: OwnHands) {
+        self.settings.own_hands = own;
     }
 
     pub fn counters(&self) -> DisplayCounters {

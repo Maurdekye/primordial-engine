@@ -29,6 +29,7 @@ pub mod cutlog;
 pub mod diverge;
 pub mod fault;
 pub mod genesis;
+pub mod handfeel;
 pub mod join;
 pub mod leave;
 pub mod local;

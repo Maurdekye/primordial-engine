@@ -247,6 +247,10 @@ pub struct SimStats {
     pub resyncs_started: u64,
     pub slow_ms: u64,
     pub lag_max_ms: u64,
+    /// `HandMode` entries step 2 sent for the console's `hand-mode` ([`crate::handfeel`]), and those agreement
+    /// refused.
+    pub hand_modes: u64,
+    pub hand_modes_refused: u64,
     /// Edits step 2 took from pe-api's queue that agreement took, and those it refused (app.md 3.1).
     pub edits: u64,
     pub edits_refused: u64,
@@ -510,6 +514,12 @@ pub struct Sim {
     /// The window's status line ([`Sim::with_status`]): "Joining: catching up…" from a join's start until the
     /// replica first reaches the present.
     status: Option<Arc<pe_render::notices::StatusLine>>,
+    /// The status this simulation put up ([`Sim::set_status`]): it takes the line over the hand-feel pair.
+    status_own: Option<String>,
+    /// The console's hand-feel switch ([`Sim::with_hand_feel`], [`crate::handfeel`]), and the pair's version last
+    /// shown.
+    hand_feel: Option<Arc<crate::handfeel::HandFeel>>,
+    hand_feel_shown: u64,
     /// The status line shows the join's catch-up.
     catching_up: bool,
     /// The tick trace, when `PE_TICK_TRACE` names a file ([`Sim::with_tick_trace`], [`crate::trace`]).
@@ -764,6 +774,9 @@ impl Sim {
             join_failed: None,
             on_join_failed: None,
             status: None,
+            status_own: None,
+            hand_feel: None,
+            hand_feel_shown: 0,
             catching_up: false,
             trace: None,
             slow: crate::slow::SlowWatch::default(),
@@ -1066,9 +1079,24 @@ impl Sim {
         }
     }
 
-    fn set_status(&self, text: Option<String>) {
+    /// Sends the console's `hand-mode` for this member's hands, and shows the `hand-mode` and `draw` pair on the status
+    /// line once either was given (the pull-ahead plan's 1.10, [`crate::handfeel`]).
+    pub fn with_hand_feel(mut self, feel: Arc<crate::handfeel::HandFeel>) -> Sim {
+        self.hand_feel = Some(feel);
+        self
+    }
+
+    /// Puts this simulation's own status up, or takes it down with `None`. Below it, the line shows the hand-feel
+    /// pair once a command gave one.
+    fn set_status(&mut self, text: Option<String>) {
+        self.status_own = text;
+        self.show_status();
+    }
+
+    fn show_status(&mut self) {
         if let Some(s) = &self.status {
-            s.set(text);
+            self.hand_feel_shown = self.hand_feel.as_ref().map_or(0, |f| f.version());
+            s.set(self.status_own.clone().or_else(|| self.hand_feel.as_ref().and_then(|f| f.status())));
         }
     }
 
@@ -1584,6 +1612,25 @@ impl Sim {
             }
             self.input_frame = Some(ps);
             self.input_stamp = Some(stamp);
+        }
+        // The console's `hand-mode` (the pull-ahead plan's 1.10, crate::handfeel): the mode asked for, for both of this
+        // member's hands, at the frame's stamp. It waits while no hand of this member is in the view yet, and goes
+        // again, to both hands, at the next tick if agreement refused either (`TooLate` on a member behind, or
+        // `BelowOwnStamp`): sending the mode again to a hand that has it changes nothing (@design-reviewer's L1). A
+        // member that is leaving sends none.
+        if let (false, Some(feel), Some(l), Some(view)) = (leaving, &self.hand_feel, &mut self.local, &self.published)
+            && let Some(mode) = feel.take_pending()
+        {
+            let sent =
+                local::submit_hand_mode(&mut l.chain, view, mode, stamp, self.replica.domain(), &mut *self.agree);
+            if sent.took == 0 || sent.refused > 0 {
+                feel.put_back(mode);
+            }
+            self.stats.hand_modes += u64::from(sent.took);
+            self.stats.hand_modes_refused += u64::from(sent.refused);
+        }
+        if self.hand_feel.as_ref().is_some_and(|f| f.version() != self.hand_feel_shown) {
+            self.show_status();
         }
         if let (Some(l), Some(api)) = (&self.local, &self.api) {
             let (chain, last) = l.chain.head();
@@ -2574,6 +2621,102 @@ pub(crate) mod tests {
         }
         assert_eq!(s.stats().inputs - inputs, 6, "both hands every frame once it clears");
         assert_eq!(s.stats().hands_floor_thinned, thinned);
+    }
+
+    /// The console's `hand-mode` (the pull-ahead plan's 1.10, [`crate::handfeel`]): a member alone sends `HandMode` for
+    /// both its hands at the next frame, and the world then has both in that mode; `closed` sets them back. Once a
+    /// command was given, the status line shows the pair.
+    #[test]
+    fn the_console_s_hand_mode_reaches_both_hands_in_the_world() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
+        let slot = Arc::new(FrameSlot::new());
+        let feel = Arc::new(crate::handfeel::HandFeel::default());
+        let status = Arc::new(pe_render::notices::StatusLine::default());
+        let agree = Box::new(SoloAgreement::new(LineId::origin()));
+        let mut s = Sim::new(agree, replica, clock.clone(), slot.clone(), Budget::new(RATE))
+            .with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])))
+            .with_status(status.clone())
+            .with_hand_feel(feel.clone());
+        // Each of this member's hands' `Hand.mode`, as the world has it now.
+        let modes = |s: &Sim| -> Vec<u64> {
+            let world = crate::api::snapshot_of(&*s.replica).expect("a world");
+            let view = slot.newest().expect("published");
+            (view.objects.iter().filter(|o| o.hand_of.is_some_and(|(m, _)| m == me)))
+                .map(|o| match world.fields(o.id, "Hand").expect("a hand row").into_iter().find(|(n, _)| n == "mode") {
+                    Some((_, pe_world::Value::U(m))) => m,
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        };
+        let mut f = 0;
+        let mut run = |s: &mut Sim, n: u64| {
+            for _ in 0..n {
+                f += 1;
+                s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+            }
+        };
+        run(&mut s, 3);
+        assert_eq!(modes(&s), vec![0, 0], "closed hand, the default");
+        assert_eq!(status.get(), None, "no pair before a command");
+        assert!(feel.command("hand-mode reach").expect("ours").is_ok());
+        run(&mut s, 3);
+        assert_eq!(s.stats().hand_modes, 2, "one for each hand");
+        assert_eq!(modes(&s), vec![1, 1], "always within reach");
+        assert_eq!(status.get().as_deref(), Some("Hands: always within reach · drawn at the tracked pose"));
+        assert!(feel.command("hand-mode closed").expect("ours").is_ok());
+        run(&mut s, 3);
+        assert_eq!((s.stats().hand_modes, s.stats().hand_modes_refused), (4, 0));
+        assert_eq!(modes(&s), vec![0, 0], "back to closed hand");
+        assert_eq!(status.get().as_deref(), Some("Hands: closed hand · drawn at the tracked pose"));
+    }
+
+    /// Hands that are never tracked: step 2 sends no pose for them, so a test sees only the other entries.
+    struct UntrackedHands;
+
+    impl pe_seams::HandFeed for UntrackedHands {
+        fn hand_at(&self, _: pe_seams::Hand, _: HostTime) -> Option<pe_seams::HandInput> {
+            None
+        }
+    }
+
+    /// A refused `HandMode` isn't lost (@design-reviewer's L1 on 9057acd0): agreement refuses the first one, the left
+    /// hand's, and the next tick sends the mode to both hands again, so both end in it.
+    #[test]
+    fn a_refused_hand_mode_goes_again_at_the_next_tick() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
+        let slot = Arc::new(FrameSlot::new());
+        let feel = Arc::new(crate::handfeel::HandFeel::default());
+        let agree = SoloAgreement::new(LineId::origin());
+        let refuse = agree.refuse_inputs.clone();
+        let mut s = Sim::new(Box::new(agree), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+            .with_local(me, [7; 32], Arc::new(UntrackedHands))
+            .with_hand_feel(feel.clone());
+        for f in 1..=3 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        refuse.store(1, Ordering::Relaxed);
+        assert!(feel.command("hand-mode reach").expect("ours").is_ok());
+        s.tick(clock.host_time_of(Frame(4))).expect("ticked");
+        assert_eq!((s.stats().hand_modes, s.stats().hand_modes_refused), (1, 1), "the left refused, the right taken");
+        assert_eq!(feel.take_pending(), Some(pe_world::components::hand_mode::WITHIN_REACH), "put back");
+        feel.put_back(pe_world::components::hand_mode::WITHIN_REACH);
+        for f in 5..=6 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        assert_eq!((s.stats().hand_modes, s.stats().hand_modes_refused), (3, 1), "both again, once");
+        assert_eq!(feel.take_pending(), None, "nothing left to send");
+        let world = crate::api::snapshot_of(&*s.replica).expect("a world");
+        let view = slot.newest().expect("published");
+        let hands: Vec<_> = view.objects.iter().filter(|o| o.hand_of.is_some_and(|(m, _)| m == me)).collect();
+        assert_eq!(hands.len(), 2);
+        for o in hands {
+            let mode = world.fields(o.id, "Hand").expect("a hand row").into_iter().find(|(n, _)| n == "mode");
+            assert!(matches!(mode, Some((_, pe_world::Value::U(1)))), "{:?}: {mode:?}", o.hand_of);
+        }
     }
 
     /// Both hands tracked and closed up to frame `.1`, then lost and open: pe-xr's release of a lost hand that held.

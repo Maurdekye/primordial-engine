@@ -289,6 +289,36 @@ pub fn submit_hands(
     out
 }
 
+/// What [`submit_hand_mode`] sent: `HandMode` entries agreement took, and those it refused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModesSent {
+    pub took: u32,
+    pub refused: u32,
+}
+
+/// Sends `HandMode { hand, mode }` at stamp `p` for each of this member's hands in `view` (the pull-ahead plan's 1.10,
+/// [`crate::handfeel`]); pe-world takes it from the hand's owner only. A hand not in the view yet gets nothing.
+pub fn submit_hand_mode(
+    chain: &mut Chain,
+    view: &FrameView,
+    mode: u8,
+    p: Frame,
+    domain: DomainId,
+    agree: &mut dyn Agreement,
+) -> ModesSent {
+    let mut out = ModesSent::default();
+    for side in [Hand::Left, Hand::Right] {
+        let Some(hand) = view.objects.iter().find(|o| o.hand_of == Some((chain.me(), side))).map(|o| o.id) else {
+            continue;
+        };
+        match send_input(chain, agree, domain, p, &Input::HandMode { hand, mode }) {
+            Some(_) => out.took += 1,
+            None => out.refused += 1,
+        }
+    }
+    out
+}
+
 /// Submits `input` at stamp `p` on this member's chain: its entry's id if agreement took it.
 fn send_input(
     chain: &mut Chain,

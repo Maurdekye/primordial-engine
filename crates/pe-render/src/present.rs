@@ -28,8 +28,8 @@ use pe_seams::{AgreeEvent, FrameView, HostTime};
 
 use crate::LocalPresentation;
 use crate::camera::Camera;
-use crate::counters::{CaptureEvent, RenderCounters};
-use crate::display::{DisplayFrame, DisplayLayer, DisplaySettings, FrameInput, OwnHands};
+use crate::counters::{CaptureEvent, RenderCounters, RunReport};
+use crate::display::{DisplayFrame, DisplayLayer, DisplaySettings, FrameInput, OwnHands, OwnHandsSwitch};
 use crate::effects::{EffectCommand, EffectGate, EffectSettings};
 use crate::notices::{Line, Notices, StatusLine};
 use crate::pacing::Quality;
@@ -131,6 +131,10 @@ pub struct Presenter {
     counters: RenderCounters,
     notices: Option<Notices>,
     status: Option<Arc<StatusLine>>,
+    /// Where the own hands are drawn, as another thread switches it ([`Presenter::set_own_hands_switch`]).
+    own_hands: Option<Arc<OwnHandsSwitch>>,
+    /// At the last switch: the mode it ended, and the run's counters until then ([`Presenter::take_own_hands_window`]).
+    own_hands_ended: Option<(OwnHands, RunReport)>,
 }
 
 impl Presenter {
@@ -152,6 +156,8 @@ impl Presenter {
             counters: RenderCounters::new(),
             notices: None,
             status: None,
+            own_hands: None,
+            own_hands_ended: None,
         }
     }
 
@@ -186,6 +192,18 @@ impl Presenter {
     /// Show `status`'s line, while it holds one, in every frame from here on.
     pub fn set_status(&mut self, status: Arc<StatusLine>) {
         self.status = Some(status);
+    }
+
+    /// Draw the own hands where `switch` says, read at every frame from here on (1.10's `draw latched|simulated`).
+    pub fn set_own_hands_switch(&mut self, switch: Arc<OwnHandsSwitch>) {
+        self.own_hands = Some(switch);
+    }
+
+    /// Once after each switch of where the own hands are drawn: the mode it ended, and the run's counters until then.
+    /// The run's counters mix the modes, so a reader takes each mode's window as the difference between these
+    /// (@ballpit-viz's L1 on 9057acd0).
+    pub fn take_own_hands_window(&mut self) -> Option<(OwnHands, RunReport)> {
+        self.own_hands_ended.take()
     }
 
     pub fn notices_mut(&mut self) -> Option<&mut Notices> {
@@ -249,6 +267,12 @@ impl Presenter {
         cameras: &[Camera],
     ) -> PresentedFrame {
         let now = local.display_time;
+        if let Some(own) = self.own_hands.as_ref().map(|s| s.get())
+            && own != self.display.settings().own_hands
+        {
+            self.own_hands_ended = Some((self.display.settings().own_hands, self.counters.run()));
+            self.display.set_own_hands(own);
+        }
         let volumes: Vec<_> = cameras.iter().map(Camera::volume).collect();
         let mut effects = Vec::new();
         if gap {
@@ -348,6 +372,30 @@ mod tests {
         assert_eq!(p.frame(&view(3), &local, &[]).status.as_deref(), Some("Joining: catching up…"));
         status.set(None);
         assert_eq!(p.frame(&view(4), &local, &[]).status, None, "taken down");
+    }
+
+    /// 1.10's `draw latched|simulated`: a switch another thread sets reaches the display layer at the next frame, and
+    /// back again; without a switch the setting stays as built.
+    #[test]
+    fn the_own_hands_switch_reaches_the_display_layer_at_the_next_frame() {
+        let mut p = Presenter::new(DisplaySettings::default(), EffectSettings::default(), Environment::default(), 60);
+        let local = LocalPresentation { display_time: HostTime(0), hands: [None, None] };
+        p.frame(&view(1), &local, &[]);
+        assert_eq!(p.display().settings().own_hands, OwnHands::LateLatched, "the default, with no switch");
+        let switch = Arc::new(OwnHandsSwitch::new(OwnHands::LateLatched));
+        p.set_own_hands_switch(switch.clone());
+        switch.set(OwnHands::Simulated);
+        assert_eq!(p.display().settings().own_hands, OwnHands::LateLatched, "not before a frame");
+        p.frame(&view(2), &local, &[]);
+        assert_eq!(p.display().settings().own_hands, OwnHands::Simulated);
+        let (ended, run) = p.take_own_hands_window().expect("a window at the switch");
+        assert_eq!(ended, OwnHands::LateLatched, "the mode the switch ended");
+        assert_eq!(run.display.display_frames, 1, "the run until the switch: frame 1 only");
+        assert!(p.take_own_hands_window().is_none(), "taken once");
+        switch.set(OwnHands::LateLatched);
+        p.frame(&view(3), &local, &[]);
+        assert_eq!(p.display().settings().own_hands, OwnHands::LateLatched, "and back");
+        assert_eq!(p.take_own_hands_window().map(|w| w.0), Some(OwnHands::Simulated));
     }
 
     /// Notices: each new view's `changes` feed them once, and every presented frame carries the lines.

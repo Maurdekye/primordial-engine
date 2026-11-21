@@ -789,8 +789,8 @@ injects a fault on B. Two runtime flags arm it, and they exclude each other. Nei
 shipped build meets the feature policy.
 - `--arm-fault`, which the demo uses: typing `fault` and Enter in B's console fires it at the next frame B steps,
   `F`, and the console names `F`. Without the flag, `fault` is refused on any machine. Every machine's console reads
-  commands: `quit`, `hands`, `fault`, `replay`, and on A also a joiner's reply code (debug builds also take `panic`, the
-  panic path's test).
+  commands: `quit`, `hands`, `fault`, `replay`, `hand-mode` and `draw` (below), and on A also a joiner's reply code
+  (debug builds also take `panic`, the panic path's test).
 - `--inject-fault-at <F>`: it fires at session frame `F`, fixed at start. B's console prints the frame it joined at;
   the world runs at 60 Hz.
 
@@ -812,6 +812,27 @@ B's console says what it will do when a flag arms it, and says it again when the
   before the cure (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t).
 - At n = 2 none of these bundles can be replayed: a split's repair captures no replay evidence (divergence.md 6;
   @item:primordial-engine/replay-evidence-for-a-root-split-s-rung-2-repair). The demo shows them instead.
+
+**The hand-feel switch** (the pull-ahead plan's 1.10, `crate::handfeel`; @coordinator-opus). The
+headset test compares two hand feels in one session, switched by console commands that the operator types on the
+user's word. The defaults are unchanged.
+- `hand-mode closed|reach` sets how both of this member's hands take part in physics: pe-world's `HandMode` input,
+  "closed hand" (D18b: physical only while the hand is closed, the default) or "always within reach". The next
+  tick's step 2 sends it for both hands at that frame's stamp, and it waits while no hand of this member is in the
+  view. If agreement refuses either entry (`TooLate` on a member behind, `BelowOwnStamp`), the next tick sends it to
+  both hands again; a hand already in the mode doesn't change. Only a hand's owner may send it, so each machine
+  switches its own player's hands. `SimStats` counts the entries (`hand_modes`, `hand_modes_refused`).
+- `draw latched|simulated` sets where pe-render draws the own hands (xr.md 5.6): at the late-latched tracked pose,
+  the default, or where the simulation has them. The presenter reads the switch every frame
+  (`pe_render::display::OwnHandsSwitch`), on the desktop and in VR. The run's display counters mix the two modes, so
+  in VR each switch logs the counters until then with the mode it ended ("display (vr): the own hands were drawn
+  ... until now; the run so far: ..."); each mode's window is the difference between those lines and the end report.
+  The desktop prints only its end report.
+- Once either command has been given, the status line shows the pair, for example "Hands: always within reach ·
+  drawn where simulated". A status of the simulation's own (a join's catch-up) takes the line while it's up, and the
+  pair comes back after it.
+- It is `hand-mode`, not `hands`: the scripted hands (T1) own `hands <routine|file|stop>`. A VR control for the user
+  to switch alone waits until the headset test is planned (the ruling's option (b)).
 
 **Finality at n = 2.** The quorum of two members is both (q = 2): a cut is final only when both have voted for it.
 So finality follows the slower machine, and while either machine stalls or its link is down, nothing new becomes
@@ -923,6 +944,12 @@ final on either, though both keep simulating their predictions.
     second, which A's replica had stepped, and makes the first effective; the replay still reaches every final cut's
     root. The control puts the void entry back into the kept log, and the replay differs at exactly that cut. A late
     entry can't test this: it is stamped below its deciding cut's parent, whose frames the log took before it came.
+- **The hand-feel switch** (section 6; the pull-ahead plan's 1.10). [V] A member alone over the stand-in: after
+  `hand-mode reach`, the next frame sends one `HandMode` for each hand and the world has both hands' `Hand.mode`
+  within reach; `hand-mode closed` sets them back, and the status line shows each pair. The control doesn't send the
+  queued mode, and the world keeps the default. pe-render's presenter takes a `draw` switch at the next frame, and
+  back. handfeel.rs's unit tests cover the commands, a refused command queuing nothing, and a mode put back while no
+  hand is in the view.
 - **The cut log** (`PE_CUT_LOG`, section 4; the pull-ahead plan's 1.2): two members over sim.rs's hub, each writing
   its own. [V] In 300 frames each logged 46 cuts, one line per cut finalized, all `agreed`, with the same root at
   every cut. The end line's finality lag read mean 16.5 and 16.0 frames, p99 and max 19, and member 0's deepest

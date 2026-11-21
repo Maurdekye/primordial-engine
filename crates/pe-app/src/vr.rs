@@ -195,6 +195,11 @@ impl FrameSink for VrSink {
         let Some(presented) = self.presenter.frame_batch(&batch, &local, &cameras) else {
             return false;
         };
+        // The console's `draw` switched where the own hands are drawn (1.10): the run's counters until now belong to the
+        // mode it ended, so they go to the log, and the end report's are then the whole run (@ballpit-viz's L1).
+        if let Some((ended, run)) = self.presenter.take_own_hands_window() {
+            crate::out!("display (vr): the own hands were drawn {ended:?} until now; the run so far: {run:?}");
+        }
         for c in &presented.effects {
             self.effects.command(c);
         }

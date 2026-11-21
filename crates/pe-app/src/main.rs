@@ -219,6 +219,8 @@ fn presenter(rate: SimRate, drawn_time: DrawnTime, status: &Arc<StatusLine>) -> 
     let display = DisplaySettings { drawn_time, ..DisplaySettings::default() };
     let mut p = Presenter::new(display, EffectSettings::default(), Environment::default(), rate.hz());
     p.set_status(status.clone());
+    // The console's `draw latched|simulated` (pe_app::handfeel).
+    p.set_own_hands_switch(pe_app::handfeel::console().draw.clone());
     p
 }
 
@@ -268,10 +270,18 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
                 }
                 continue;
             }
+            // `hand-mode closed|reach` and `draw latched|simulated` (the headset test's hand feel, pe_app::handfeel).
+            if let Some(said) = pe_app::handfeel::console().command(line) {
+                match said {
+                    Ok(said) => pe_app::out!("{said}"),
+                    Err(e) => pe_app::err!("pe-app: {e}"),
+                }
+                continue;
+            }
             let Some(replies) = &replies else {
                 pe_app::err!(
-                    "pe-app: `{line}` isn't a command here: `quit`, `fault` (with --arm-fault) or `replay` \
-                     (--check-replay)"
+                    "pe-app: `{line}` isn't a command here: `quit`, `hands <routine|file|stop>`, `fault` (with \
+                     --arm-fault), `replay` (--check-replay), `hand-mode closed|reach` or `draw latched|simulated`"
                 );
                 continue;
             };
@@ -506,7 +516,7 @@ fn main() {
     let sim = sim.with_shown(display_lead.clone());
     // The window's status line (render.md 8.1): a joiner's "Joining: catching up…".
     let status = Arc::new(StatusLine::default());
-    let sim = sim.with_status(status.clone());
+    let sim = sim.with_status(status.clone()).with_hand_feel(pe_app::handfeel::console());
     // `PE_TICK_TRACE=<file>`: a line a second and one per long tick, for a stall's phase (crate::trace). Off by default.
     let sim = match pe_app::trace::TickTrace::from_env(rate.hz()) {
         Some(Ok((trace, path))) => {
