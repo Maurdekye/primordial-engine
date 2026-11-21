@@ -256,3 +256,30 @@ fn a_record_that_is_not_an_entry_is_counted() {
     let (j, back, bad) = Journal::recover(JournalConfig::default(), 0, &rec);
     assert_eq!((back.len(), bad, j.stats().entries), (0, 1, 0));
 }
+
+#[test]
+fn a_cold_entry_holds_back_only_its_own_chain() {
+    // An author's old chain and a new one (a rechain; here, a second line gives a second chain id).
+    let keys = TestKeys::new(15, 2);
+    let old = entries(&keys, 0, 10, 100);
+    let mut b = EntryBuilder::on_line(&keys, 0, pe_seams::LineId(pe_seams::Hash::of("l", b"second")));
+    let new: Vec<SignedEntry> = (0..3).map(|i| b.next(Class::Input, Frame(i + 1), Bytes::from(vec![9; 100]))).collect();
+    assert_eq!(ck(&old[0]).author, ck(&new[0]).author);
+    assert_ne!(ck(&old[0]), ck(&new[0]));
+    let size = old[0].encode().len();
+    let mut r = Rig::new(JournalConfig { hot_per_author: size * 4, ..JournalConfig::default() });
+    for e in &old {
+        r.j.offer(e);
+    }
+    r.flush();
+    for e in &new {
+        r.j.offer(e);
+    }
+    let got = r.j.next(keys.key(0), 100);
+    let new_got = got.iter().filter(|e| ck(e) == ck(&new[0])).count();
+    assert_eq!(new_got, 3, "the new chain's hot entries come at once");
+    // The old chain stopped at its first cold entry, in seq order.
+    let old_got: Vec<u64> = got.iter().filter(|e| ck(e) == ck(&old[0])).map(|e| e.entry.seq).collect();
+    assert!(old_got.windows(2).all(|w| w[1] == w[0] + 1) && old_got.first().is_none_or(|s| *s == 1));
+    assert!(old_got.len() < 10);
+}

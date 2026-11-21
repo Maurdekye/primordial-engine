@@ -642,3 +642,221 @@ fn the_writer_answers_loads() {
         other => panic!("{other:?}"),
     }
 }
+
+// Regressions from @chunks-reviewer's review of 00e4db5e (m4dbcdae7a648; probes in its rv-store/review.rs).
+
+/// SimFs, but the `fail_at`-th sync from now (1-based) fails, leaving its bytes volatile.
+struct FailSync {
+    fs: SimFs,
+    syncs: usize,
+    fail_at: Option<usize>,
+}
+
+impl Fs for FailSync {
+    type File = SimHandle;
+    fn create_dir_all(&mut self, d: &Path) -> std::io::Result<()> {
+        self.fs.create_dir_all(d)
+    }
+    fn list(&mut self, d: &Path) -> std::io::Result<Vec<String>> {
+        self.fs.list(d)
+    }
+    fn read(&mut self, p: &Path) -> std::io::Result<Vec<u8>> {
+        self.fs.read(p)
+    }
+    fn read_at(&mut self, p: &Path, o: u64, l: usize) -> std::io::Result<Vec<u8>> {
+        self.fs.read_at(p, o, l)
+    }
+    fn create_new(&mut self, p: &Path) -> std::io::Result<SimHandle> {
+        self.fs.create_new(p)
+    }
+    fn open_append(&mut self, p: &Path) -> std::io::Result<SimHandle> {
+        self.fs.open_append(p)
+    }
+    fn append(&mut self, f: &mut SimHandle, b: &[u8]) -> std::io::Result<()> {
+        self.fs.append(f, b)
+    }
+    fn sync(&mut self, f: &mut SimHandle) -> std::io::Result<()> {
+        self.syncs += 1;
+        if self.fail_at == Some(self.syncs) {
+            return Err(std::io::Error::other("fsync failed"));
+        }
+        self.fs.sync(f)
+    }
+    fn truncate(&mut self, f: &mut SimHandle, l: u64) -> std::io::Result<()> {
+        self.fs.truncate(f, l)
+    }
+    fn remove(&mut self, p: &Path) -> std::io::Result<()> {
+        self.fs.remove(p)
+    }
+    fn sync_dir(&mut self, d: &Path) -> std::io::Result<()> {
+        self.fs.sync_dir(d)
+    }
+    fn salt(&mut self) -> [u8; 16] {
+        self.fs.salt()
+    }
+}
+
+fn three_batches() -> SimFs {
+    let (mut log, _) = open(SimFs::new());
+    for (k, b) in [(1, &b"vote state"[..]), (2, b"more vote state"), (3, b"third")] {
+        log.append(k, b).unwrap();
+        log.sync().unwrap();
+    }
+    log.into_fs()
+}
+
+fn used(fs: &SimFs) -> u64 {
+    let mut fs = fs.clone();
+    fs.names().iter().map(|p| fs.read(p).map_or(0, |b| b.len() as u64)).sum()
+}
+
+#[test]
+fn damage_to_a_header_is_corrupt_and_kept() {
+    // Every header field but the salt: the magic, the segment number, the base, the header's own check.
+    for at in [0, 10, 20, 45] {
+        let mut fs = three_batches();
+        flip(&mut fs, at);
+        match Log::open(fs.clone(), &dir(), Options::default()) {
+            Err(StoreError::Corrupt { .. }) => {}
+            other => panic!("byte {at}: expected Corrupt, got {:?}", other.map(|x| state(&x.1))),
+        }
+        assert_eq!(fs.names().len(), 1, "the evidence stays");
+    }
+}
+
+#[test]
+fn damage_to_a_salt_with_nothing_older_is_still_refused() {
+    // The salt can't be proved damaged, but nothing counts while a segment is longer than a torn first one.
+    let mut fs = three_batches();
+    flip(&mut fs, 30);
+    assert!(matches!(Log::open(fs, &dir(), Options::default()), Err(StoreError::Corrupt { .. })));
+}
+
+#[test]
+fn damage_to_a_checkpoint_commit_with_no_predecessor_is_corrupt() {
+    let (mut log, _) = open(SimFs::new());
+    log.append(1, b"old").unwrap();
+    log.sync().unwrap();
+    log.checkpoint(&[(4, b"live vote state")]).unwrap();
+    let mut fs = log.into_fs();
+    let p = seg_path(&fs);
+    let b = fs.bytes_mut(&p).unwrap();
+    let n = b.len();
+    b[n - 1] ^= 1;
+    assert!(matches!(Log::open(fs.clone(), &dir(), Options::default()), Err(StoreError::Corrupt { .. })));
+    assert_eq!(fs.names().len(), 1, "the evidence stays");
+}
+
+#[test]
+fn a_stale_segment_is_never_fallen_back_to() {
+    // Two checkpoints whose old segments couldn't be deleted (Windows), the middle one removed later, then damage
+    // to the newest one's commit. Falling back to the oldest would bring back old vote state: a double vote.
+    let (mut log, _) = open(SimFs::new());
+    log.append(1, b"oldest").unwrap();
+    log.sync().unwrap();
+    log.fs_mut().refuse_remove = true;
+    log.checkpoint(&[(2, b"middle")]).unwrap();
+    log.append(3, b"after middle").unwrap();
+    log.sync().unwrap();
+    log.checkpoint(&[(4, b"newest")]).unwrap();
+    let mut fs = log.into_fs();
+    fs.refuse_remove = false;
+    let names = fs.names();
+    assert_eq!(names.len(), 3);
+    fs.remove(&names[1]).unwrap();
+    fs.sync_dir(&dir()).unwrap();
+    let newest = fs.names()[1].clone();
+    let b = fs.bytes_mut(&newest).unwrap();
+    let n = b.len();
+    b[n - 1] ^= 1;
+    assert!(matches!(Log::open(fs, &dir(), Options::default()), Err(StoreError::Corrupt { .. })));
+}
+
+#[test]
+fn the_real_predecessor_of_an_unfinished_checkpoint_still_counts() {
+    // The control for the stale-segment rule: a checkpoint whose commit never reached the disk falls back to the
+    // segment it replaced, which ends exactly at its base.
+    let (log, _) = open(SimFs::new());
+    let fs = log.into_fs();
+    let (mut log, _) = Log::open(FailSync { fs, syncs: 0, fail_at: None }, &dir(), Options::default()).unwrap();
+    log.append(1, b"kept").unwrap();
+    log.sync().unwrap();
+    log.fs_mut().syncs = 0;
+    log.fs_mut().fail_at = Some(2);
+    assert!(log.checkpoint(&[(2, b"new")]).is_err());
+    // The commit's bytes stayed volatile, and the crash drops them: only the old segment counts.
+    let crashed = log.into_fs().fs.crash(|_, _| (0, None));
+    let (_, r) = open(crashed);
+    assert_eq!(state(&r), vec![(1, b"kept".to_vec())]);
+}
+
+#[test]
+fn a_failed_commit_fsync_in_a_checkpoint_poisons() {
+    let (log, _) = open(SimFs::new());
+    let fs = log.into_fs();
+    let (mut log, _) = Log::open(FailSync { fs, syncs: 0, fail_at: None }, &dir(), Options::default()).unwrap();
+    log.append(1, b"before").unwrap();
+    log.sync().unwrap();
+    // The checkpoint's own sync has nothing pending; write_segment syncs the body (1), then the commit (2).
+    log.fs_mut().syncs = 0;
+    log.fs_mut().fail_at = Some(2);
+    assert!(log.checkpoint(&[(2, b"live")]).is_err());
+    assert!(log.poisoned());
+    assert!(matches!(log.append(3, b"never acked"), Err(StoreError::Poisoned)));
+    // A reopen decides: the commit reached the file, so the new segment counts.
+    let (_, r) = open(log.into_fs().fs);
+    assert_eq!(state(&r), vec![(2, b"live".to_vec())]);
+}
+
+#[test]
+fn a_failed_body_fsync_in_a_checkpoint_goes_on_in_the_old_segment() {
+    let (log, _) = open(SimFs::new());
+    let fs = log.into_fs();
+    let (mut log, _) = Log::open(FailSync { fs, syncs: 0, fail_at: None }, &dir(), Options::default()).unwrap();
+    log.append(1, b"before").unwrap();
+    log.sync().unwrap();
+    log.fs_mut().syncs = 0;
+    log.fs_mut().fail_at = Some(1);
+    assert!(log.checkpoint(&[(2, b"live")]).is_err());
+    assert!(!log.poisoned());
+    assert_eq!(log.fs().fs.names().len(), 1, "the half-written segment was removed");
+    log.append(3, b"acked").unwrap();
+    log.sync().unwrap();
+    let (_, r) = open(log.into_fs().fs);
+    assert_eq!(state(&r), vec![(1, b"before".to_vec()), (3, b"acked".to_vec())]);
+}
+
+#[test]
+fn checkpoint_retries_on_a_full_disk_leave_no_files() {
+    let (mut log, _) = open(SimFs::new());
+    log.append(1, &[1; 200]).unwrap();
+    log.sync().unwrap();
+    let u = used(log.fs());
+    log.fs_mut().capacity = Some(u + 150);
+    for _ in 0..5 {
+        assert!(matches!(log.checkpoint(&[(2, &[2; 200])]), Err(StoreError::Full)));
+        assert!(!log.poisoned());
+        assert_eq!(log.fs().names().len(), 1, "no leftover file");
+    }
+    // The freed space is still free: an append that fits goes through.
+    log.append(3, &[3; 40]).unwrap();
+    log.sync().unwrap();
+}
+
+#[test]
+fn a_compaction_that_does_not_fit_is_skipped() {
+    let (mut log, _) = open(SimFs::new());
+    let mut r = Runner::new(0);
+    let ran = r.run(&mut log, &[Job::Append { n: 0, kind: 1, bytes: vec![1; 200] }]);
+    let lsn = ran.done[0].lsns[0];
+    let u = used(log.fs());
+    log.fs_mut().capacity = Some(u + 100);
+    let ran = r.run(
+        &mut log,
+        &[Job::Compact { n: 1, keep: vec![Keep::Lsn(lsn)] }, Job::Append { n: 2, kind: 1, bytes: vec![2; 10] }],
+    );
+    assert!(ran.error.is_none(), "{:?}", ran.error);
+    assert_eq!(ran.done.iter().map(|d| d.n).collect::<Vec<_>>(), vec![1, 2], "the jobs behind it ran");
+    assert_eq!(ran.done[0].lsns, vec![lsn], "skipped: the record stays where it was");
+    assert_eq!(log.fs().names().len(), 1);
+}
