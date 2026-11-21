@@ -19,7 +19,8 @@
 //! **Kept state** (the user's ruling that every limit is a duration): the floor (the newest final cut), my last
 //! agreed cut `Cv` if older, and the roots of the final cuts within `T_keep` (1.5 s by default, at least the last 2
 //! cuts), which are served to peers for repair (divergence.md 11.1, 14); also my root at a cut I diverged at, until
-//! a later `finalize` agrees, and my current root at each cut not yet final that I voted on. Merge bases are kept
+//! a later `finalize` agrees, my current root at each cut not yet final that I voted on, and each root a donor is
+//! serving to a resync or a join, for as long as it names it ([`Replica::set_served`], S2 v1.9). Merge bases are kept
 //! apart (M2).
 //!
 //! **Only `finalize` moves `Cv` and the floor** (v1, after @design-reviewer's High on pe-diverge ff37b4fd). Repairs
@@ -679,12 +680,29 @@ pub trait Replica: Send {
     fn replay_to(&mut self, cut: &Cut, source: &mut dyn EntrySource) -> Result<Hash, RootError>;
 
     /// A root this replica holds, for pe-world's tree calls: the floor, `Cv`, the final cuts within `T_keep`, my own
-    /// root at a cut I diverged at until a later `finalize` agrees, and my current root at each cut not yet final
-    /// that I voted on, until that cut is final or superseded (a root split's reference serves it, divergence.md 5).
+    /// root at a cut I diverged at until a later `finalize` agrees, my current root at each cut not yet final
+    /// that I voted on, until that cut is final or superseded (a root split's reference serves it, divergence.md 5),
+    /// and each root [`Replica::set_served`] names (S2 v1.9).
     fn tree(&self, root: &Hash) -> Option<Box<dyn Tree + '_>>;
 
     /// The canonical physics transfer of a held root: rung 2's and a joiner's donor side.
     fn physics_image(&self, root: &Hash) -> Option<PhysicsImage>;
+
+    /// The roots this member is serving to a resync or a join, as a donor (S2 v1.9; F3, a slow member's resync from
+    /// the newest final cut, @diverge-eng's slow-member design v2 S4). A whole-state fetch can outlast `T_keep`, past
+    /// which the replica would release a final cut's snapshot, so each root named stays held, with its tree and its
+    /// physics image, until a later call leaves it out.
+    /// - **Level-triggered:** each call replaces the last one's list. pe-diverge passes every root it is serving, once
+    ///   a tick, so a fetch that ends, fails or is abandoned holds nothing on, and an empty list holds nothing.
+    /// - **It only keeps what is held:** name a root while [`Replica::tree`] still answers for it. A root the replica
+    ///   no longer holds is ignored, and is never held again.
+    /// - **It changes what is kept, never a result:** no root, vote or live state depends on it. The replica applies
+    ///   it when it next releases held state (after a vote or a `finalize`), so a root left out is released then.
+    /// - **The caller bounds it:** each root costs its snapshot (about 1.2 MB at 200 balls, 3.8 MB at 500) for as long
+    ///   as it is named.
+    ///
+    /// Ignored by default, by a replica that keeps nothing of its own.
+    fn set_served(&mut self, _roots: &[Hash]) {}
 
     /// Rung 2's and a joiner's receiver: replace the group's state at the cut by the imported parts, each checked
     /// against the target root before anything is applied, then re-simulate on to the present. Returns my root at
