@@ -146,13 +146,15 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    - Repair-lane messages: to the outbox;
    - `Revote { cut, root }`: to `Agreement::vote`, with the current self-test verdict;
    - `RunSelfTest`: run inline while it takes under a frame on M1's machines (pe-physics's self-test: 3.0 ms in
-     release on the M1 PC; @engine-architect times reneglade), otherwise on the worker, which sets the simulation's
-     floating-point mode first. The verdict is `Passed` when the digest equals the start-up one, else `Failed`
-     (divergence.md 5, step 2); it is the `self_test` that later votes and `drive` calls carry. Every digest is taken
-     on a thread in the simulation's floating-point mode, which the digest depends on. Until R-G1 is wired, the
-     start-up digest is taken at pe-diverge's first step, on this thread; once the hello carries it, it is taken
-     before the hello (the endpoint dials or admits), on such a thread, and that one value is both the hello's and
-     the start-up digest (@design-reviewer's Low 1 on d8f37aa2);
+     release on the M1 PC; @engine-architect times reneglade), otherwise on the worker. The verdict is `Passed` when
+     the digest equals the start-up one, else `Failed` (divergence.md 5, step 2); it is the `self_test` that later
+     votes and `drive` calls carry. pe-physics takes every digest after resetting the calling thread's floating-point
+     mode to the default, as the replica does before every frame, and reports a mode that wasn't
+     (`SelfTestDigest::mode_reset`: counted in `self_test_mode_resets` and said on the console; @coordinator-opus
+     mee7cf585bfb6), so any thread may take it. The start-up digest is taken once per process, before the hello (when
+     the endpoint binds, or at pe-diverge's first step without one), and that one value is both the hello's
+     `selftest` and the start-up digest (G1, `crate::diverge::startup_self_test`; @design-reviewer's Low 1 on
+     d8f37aa2). A self-test that can't run gives the hello random bytes, so every join is refused at the hello;
    - `WriteBundle`: to the I/O thread's queue (`BUNDLE_QUEUE`, 8). A full queue drops the bundle and counts it
      (`bundles_dropped`), never blocks. The `pe-io` thread writes it under its name in `<identity file>.bundles`,
      beside the identity file, so two instances on one PC never write one name twice.

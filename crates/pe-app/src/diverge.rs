@@ -115,6 +115,25 @@ pub fn self_test_digest() -> Result<SelfTestDigest, String> {
     pe_physics::self_test_digest().map_err(|e| format!("{e:?}"))
 }
 
+/// This process's start-up physics self-test (G1; app.md 3 step 5): taken once, on first use, before the hello names
+/// it (net.rs), and that one value is both the hello's digest and pe-diverge's start-up digest. pe-physics resets the
+/// calling thread's floating-point mode first, so any thread may take it.
+#[derive(Clone, Debug)]
+pub struct StartupSelfTest {
+    pub digest: Result<SelfTestDigest, String>,
+    /// When it was taken, in Unix seconds: the hello's `selftest_unix_s`.
+    pub unix_s: u64,
+}
+
+/// The process's [`StartupSelfTest`], taken at the first call.
+pub fn startup_self_test() -> &'static StartupSelfTest {
+    static TAKEN: std::sync::OnceLock<StartupSelfTest> = std::sync::OnceLock::new();
+    TAKEN.get_or_init(|| {
+        let unix_s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        StartupSelfTest { digest: self_test_digest(), unix_s }
+    })
+}
+
 /// pe-diverge's state on the simulation thread, with the I/O thread it writes bundles through.
 pub(crate) struct DivergeLoop {
     pub(crate) d: Diverge,
@@ -137,7 +156,7 @@ impl DivergeLoop {
 
     /// The start-up digest, taken now if not yet.
     fn startup(&mut self) -> &Result<SelfTestDigest, String> {
-        self.startup.get_or_insert_with(self_test_digest)
+        self.startup.get_or_insert_with(|| startup_self_test().digest.clone())
     }
 
     /// Replaces the start-up digest: a test's way to make the next self-test differ.
