@@ -269,6 +269,18 @@ which fixes the origin's role deliberately.
   instead is open until 9.2 gives the join an id (@design-reviewer's Low). A rejoin at a later frame gets two new hands (the ids
   include the admission frame, as 8 intends), once a leave has removed the old ones. The avatar root that should
   parent the hands (3.5) is not built yet; its id derivation is open.
+- **A returning member** (F3's n = 2 branch; @diverge-eng's design v5, L3;
+  @item:primordial-engine/f3-l3-pe-world-rules-for-the-n-2-branch-re-issue)
+  [V `a_branch_keeps_every_object_and_a_returning_member_keeps_its_hands`]: an admission of a key that is already a
+  member keeps its permissions (the admission's are ignored), its hands and what they hold, and creates only a hand
+  side it lacks. A member with both hands is admitted with no change at all, and its existing hands are returned. A
+  branch removes no member, hand, claim or permission, so B admitted on the new line finds its rows from the old one.
+  Within one line S3 voids an `Admit` of a key already in the epoch (`NoChange`), so a replica that steps one before
+  the void is known changes nothing. Whether a member votes is pe-agree's epoch, never a world rule. `m1_session`
+  refuses a key listed twice itself (`WorldError::Duplicate`).
+- **The line switch** (`World::switch_line`, trusted; F3 L3): at a branch's frame the replica continues the world on
+  the new line. Only the config record's line id changes, so the root moves through it (6.6, config item 2) and every
+  object keeps the id it was made with on the old line.
 - **Where a joiner stands** (`World::join_spawn`; @engine-architect m5193e4c7a3d8): a member admitted by an `Admit`
   entry at frame F stands at the feet of the lowest slot along genesis's row (slot i at `origin + (0.6 i, 0, 1.5)`,
   as `m1_session` admits) that no current member's hand takes. A hand takes a slot when it is horizontally (x, z)
