@@ -214,9 +214,11 @@ final.
   - a transaction applies all or nothing, and a dry run changes nothing;
   - a stale precondition is refused, with a reason that names the winner;
   - every refusal is reported over MCP.
-- **Carried state is a check, not an overwrite** (B4; the user). After re-simulation, an
-  interaction's carried state is compared with the simulated one. It replaces it only when they differ for a reason
-  other than an entry not yet held. Two players pushing one ball within one network delay both take effect.
+- **Interaction state is a check, not an overwrite** (B4; the user; built as the author's local check,
+  @coordinator-opus, replica.md 3.4). Once an interaction's frame is final, the author compares the
+  touched body with what its first step of that frame gave. Nothing ever replaces the simulated state: a difference
+  is counted, and a real fault is repaired by the root and the ladder. Two players pushing one ball within one
+  network delay both take effect.
 - **The logic edit:**
   - the same module bytes give the same fuel and trap points on all four hosted platforms;
   - a machine never loads a module it did not compile itself, and no module runs on wasmi;
