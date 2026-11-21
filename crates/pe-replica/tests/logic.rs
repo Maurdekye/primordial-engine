@@ -921,6 +921,8 @@ fn the_author_predicts_its_commit_and_steps_again_from_c_when_it_is_decided() {
     assert_eq!(author.view().activations, [predicted], "the prediction's record");
     let adv = author.advance(Frame(24), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 5), "stepped again from c or below: {adv:?}");
+    // S2 v1.11: the prediction's end is the cause, at its commit frame, and no entry changed.
+    assert_eq!((adv.changed_from, adv.replay_from), (None, Some(Frame(5))), "{adv:?}");
     let agreed = Activation { key, frame: Frame(12), outcome: ActivationOutcome::Activated { rekeyed: vec![] } };
     assert_eq!(
         (author.view().activations.clone(), author.view().activations_retracted.clone()),

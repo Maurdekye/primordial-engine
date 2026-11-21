@@ -564,7 +564,7 @@ impl Replica for Mock {
             self.advance_one();
             stepped += 1;
         }
-        Advance { rolled_back_to: None, resimulated: 0, stepped, caught_up: true }
+        Advance { stepped, caught_up: true, ..Advance::default() }
     }
     fn outcome(&self, _entry: &EntryRef) -> Option<(Frame, Outcome)> {
         None

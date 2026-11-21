@@ -1679,6 +1679,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             let to = f.max(self.rollback_floor());
             if let Some(k) = (to < self.frame).then(|| self.roll_back(to)).flatten() {
                 out.rolled_back_to = Some(k);
+                out.changed_from = Some(f);
                 self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0 - k.0);
             }
         }
@@ -1689,6 +1690,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             let to = c.max(self.rollback_floor());
             if let Some(k) = (to < self.frame).then(|| self.roll_back(to)).flatten() {
                 out.rolled_back_to = Some(out.rolled_back_to.map_or(k, |r| r.min(k)));
+                out.replay_from = Some(c);
                 self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0 - k.0);
             }
             self.run(present, &*source, &mut budget, &mut out);
