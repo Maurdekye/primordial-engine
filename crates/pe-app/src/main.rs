@@ -6,7 +6,7 @@
 //! `pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] [--advertise <addr>]...
 //! [--identity <path>]`. `--vr` turns VR on, as the configuration will (pe-xr's headset guard): VR opens first, and
 //! pe-app goes to the desktop when VR does not open or when its session ends. `--headless` opens neither a window nor
-//! VR: the world runs, with no hands, until `--seconds` passes or the console asks to quit (tests, and machines with
+//! VR: the world runs, with no hands but scripted ones (`--hands`, scripted.rs), until `--seconds` passes or the console asks to quit (tests, and machines with
 //! no display). `--seconds` ends the run after `n` seconds, in any mode; without it the window runs until it is
 //! closed.
 //!
@@ -46,6 +46,7 @@ use pe_app::console::{EXIT_INTERRUPTED, Quit, REQUEST_QUIT_LIMIT, Shutdown};
 use pe_app::join::T_JOIN;
 use pe_app::local::{SwitchedHands, chain_nonce};
 use pe_app::net::{self, Endpoint, OpenParams, WakeLater};
+use pe_app::scripted::ScriptedHands;
 use pe_app::sim::{self, Budget, Sim};
 use pe_app::standin::SoloAgreement;
 use pe_app::vr::{self, XrWait};
@@ -124,6 +125,8 @@ struct Options {
     inject_fault_at: Option<Frame>,
     /// `--arm-fault`: the console's typed `fault` injects that test fault at the next frame.
     arm_fault: bool,
+    /// `--hands <routine|file>`: scripted hands from the start (scripted.rs).
+    hands: Option<String>,
     /// `--check-replay`: the opener keeps its final log, and the console's `replay` replays it (pe-app's `replay`).
     check_replay: bool,
     /// `--log`: a file that gets every line the console does, prefixed with the time (pe-app's `log`).
@@ -139,6 +142,7 @@ fn options() -> Options {
     let mut o = Options {
         vr: false,
         headless: false,
+        hands: None,
         run_for: None,
         shared: None,
         listen: "0.0.0.0:4433".parse().unwrap_or_else(|_| usage()),
@@ -181,6 +185,7 @@ fn options() -> Options {
                     ms.and_then(|ms| Duration::try_from_secs_f64(ms / 1e3).ok()).unwrap_or_else(|| usage());
             }
             "--arm-fault" => o.arm_fault = true,
+            "--hands" => o.hands = Some(args.next().filter(|h| !h.is_empty()).unwrap_or_else(|| usage())),
             "--check-replay" => o.check_replay = true,
             "--log" => o.log = Some(args.next().filter(|p| !p.is_empty()).unwrap_or_else(|| usage()).into()),
             "--inject-fault-at" => {
@@ -242,6 +247,17 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
                     pe_app::replay::request();
                 } else {
                     pe_app::err!("pe-app: `replay` is refused: this machine wasn't started with --check-replay");
+                }
+                continue;
+            }
+            if line == "hands" || line.starts_with("hands ") {
+                match pe_app::scripted::installed() {
+                    Some(h) => {
+                        if let Err(e) = h.on_command(&line["hands".len()..]) {
+                            pe_app::err!("pe-app: {e}");
+                        }
+                    }
+                    None => pe_app::err!("pe-app: `hands` isn't ready yet"),
                 }
                 continue;
             }
@@ -458,7 +474,16 @@ fn main() {
     // lookahead, not one period.
     ring.set_lookahead_ns(2 * 1_000_000_000 / i64::from(rate.hz()) + pe_app::shown::PUBLISH_MARGIN_NS);
     let desktop_hand = Arc::new(DesktopHandFeed::default());
-    let hands = Arc::new(SwitchedHands::new(ring.clone(), desktop_hand.clone()));
+    // Scripted hands (scripted.rs) over the desktop hand: `--hands` or the console's `hands` plays a script.
+    let scripted = Arc::new(ScriptedHands::new(slot.clone(), desktop_hand.clone()));
+    if let Some(what) = &options.hands {
+        match pe_app::scripted::load(what) {
+            Ok(script) => scripted.start(script),
+            Err(e) => fail(&format!("--hands: {e}")),
+        }
+    }
+    pe_app::scripted::install(scripted.clone());
+    let hands = Arc::new(SwitchedHands::new(ring.clone(), scripted));
     // B (app.md 3): the display lead the VR sink measures under Shown, for the simulation's shown present.
     let display_lead = Arc::new(pe_app::shown::DisplayLead::default());
     let wake = WakeLater::default();
@@ -798,7 +823,7 @@ fn usage() -> ! {
     fail(
         "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] \
          [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms>|a:<ms>|b:<ms>] [--display-delay <ms>] [--mcp-pipe] \
-         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--log <file>] \
+         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--hands <routine|file>] [--log <file>] \
          [--agent-name <name>] [--agent <command> <args>...]",
     )
 }

@@ -670,6 +670,19 @@ with @fable-reviewer's refinements, and):
 touches with the desktop hand: `Hand::Right` from pe-render's `DesktopHandFeed`, read through `HandFeed` like pe-xr's
 hands. Moving the rig itself, an input entry, is after M1: the demo does not need it.
 
+**Scripted hands** (scripted.rs; the pull-ahead plan's T1, @item:primordial-engine/self-test-tooling-scripted-hands-in-pe-app-t1-th)
+let a self-test touch the balls with nobody at the machine, in a window or headless. `--hands <routine|file>` plays a
+script from the start, and typing `hands <routine|file>` into the console plays one at that moment (`hands stop`
+gives the hands back). While a script is set, its hands replace the desktop hand, through the same `HandFeed`; they
+never replace VR's ring while an XR session runs. A script is one step per line for either hand (`rest`, `move`,
+`reach top|first|pile`, `lift`, `swing`, `wait`, `close`, `open`, `drop`), with rig-frame points and seconds; a
+`reach` picks its ball from the newest view when it starts and follows it. The routines: `idle`, `sweep` (through
+the pile, side to side), `grab` (the top ball, lifted 0.6 m, held 2 s, let go), `throw` (the top ball, thrown
+forward and up at about 4.5 m/s) and `share` (the lowest-id ball, so two members playing it at once take hold of the
+same ball). Each step logs its start, and a `reach` logs the ball it chose. The script's hands go through step 2 like
+any other: its edges send the grab and the release, and a fast opening a throw. [V, sim.rs's
+`the_scripted_routines_grab_lift_and_throw_a_ball`: each routine closes, grabs and opens once; `throw` throws once.]
+
 The demo is the plan's M1 sequence (docs/refound-plan.md section 1, M1), as one script per machine: A opens the ball
 pit and prints an invite; B joins on the desktop; both see and touch the balls; an agent on A edits the lamp script
 through MCP; B's lamp changes at the agreed frame. The script drives pe-app through its configuration and MCP only,
@@ -724,7 +737,7 @@ injects a fault on B. Two runtime flags arm it, and they exclude each other. Nei
 shipped build meets the feature policy.
 - `--arm-fault`, which the demo uses: typing `fault` and Enter in B's console fires it at the next frame B steps,
   `F`, and the console names `F`. Without the flag, `fault` is refused on any machine. Every machine's console reads
-  commands: `quit`, `fault`, `replay`, and on A also a joiner's reply code (debug builds also take `panic`, the
+  commands: `quit`, `hands`, `fault`, `replay`, and on A also a joiner's reply code (debug builds also take `panic`, the
   panic path's test).
 - `--inject-fault-at <F>`: it fires at session frame `F`, fixed at start. B's console prints the frame it joined at;
   the world runs at 60 Hz.
