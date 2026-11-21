@@ -404,16 +404,22 @@ mod tests {
         assert!(longs[0].contains("loop_ms=5.0 late_ms=30.0") && longs[0].contains("final_lag=10"), "{}", longs[0]);
     }
 
-    /// The thread's CPU time moves while it works.
+    /// The thread's CPU time moves while it works. It works until the reading moves, for up to 10 s of wall time, not
+    /// for a fixed 60 ms: at idle priority on a loaded machine, 60 ms of wall time can give the thread less than one of
+    /// Windows' 15.6 ms CPU-time ticks, and both readings were 0 (@vdw-physics's flake).
     #[test]
     fn the_thread_s_cpu_time_grows_with_work() {
         let start = thread_cpu_ns();
         let mut x = 0u64;
         let t = std::time::Instant::now();
-        while t.elapsed() < std::time::Duration::from_millis(60) {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let mut now = start;
+        while now <= start && t.elapsed() < std::time::Duration::from_secs(10) {
+            for _ in 0..100_000 {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+            }
+            now = thread_cpu_ns();
         }
         std::hint::black_box(x);
-        assert!(thread_cpu_ns() > start, "{} then {}", start, thread_cpu_ns());
+        assert!(now > start, "{start} then {now} after {:?} of work", t.elapsed());
     }
 }

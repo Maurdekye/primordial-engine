@@ -25,6 +25,7 @@ pub mod builds;
 pub mod capture;
 pub mod clock;
 pub mod console;
+pub mod cutlog;
 pub mod diverge;
 pub mod fault;
 pub mod genesis;
