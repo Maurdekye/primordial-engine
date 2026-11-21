@@ -1141,6 +1141,10 @@ impl NetHook for MemberHook {
         self.inviter.as_ref().is_some_and(Inviter::holds_leave)
     }
 
+    fn holds_script_commits(&self) -> bool {
+        self.inviter.as_ref().is_some_and(Inviter::holds_script_commits)
+    }
+
     fn entry_written(&mut self, written: Result<(), SubmitError>, now: HostTime, agree: &dyn Agreement) {
         let members = agree.members();
         if let Some(i) = &mut self.inviter {

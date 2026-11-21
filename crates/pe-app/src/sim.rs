@@ -473,6 +473,9 @@ pub struct Sim {
     api: Option<ApiLoop>,
     /// The graceful quit (app.md 4, [`crate::leave`]).
     leaving: Leaving,
+    /// The stamp of this member's newest script commit step 2 submitted: until the replica has stepped it, the
+    /// `Admit`'s check counts it as scripts the world holds (app.md 4; @engine-architect's M1 on 1.6).
+    script_stamp: Option<Frame>,
     /// The smoothed view time the quit's bound follows, from S3's proposals.
     view_time: ViewTime,
     /// The quit's bound, if set locally ([`Sim::with_leave_wait`]); otherwise it follows the view time.
@@ -545,6 +548,20 @@ impl WorldFacts for ReplicaFacts<'_> {
     }
 }
 
+/// The `Admit`'s facts: the replica's, and whether this member's own script commit is stamped ahead of what the
+/// replica has stepped, so the check that the world holds no scripts can't miss it (app.md 4).
+struct AdmitFacts<'a>(ReplicaFacts<'a>, bool);
+
+impl WorldFacts for AdmitFacts<'_> {
+    fn holds_scripts(&self) -> bool {
+        self.1 || self.0.holds_scripts()
+    }
+
+    fn verified_cut(&self) -> Option<CutRef> {
+        self.0.verified_cut()
+    }
+}
+
 pub trait NetHook: Send {
     /// Each of the transport's events, after step 1 counts it. `world` answers the join's M1 limit.
     fn on_event(&mut self, event: &NetEvent, agree: &mut dyn Agreement, world: &dyn WorldFacts);
@@ -570,6 +587,11 @@ pub trait NetHook: Send {
     /// Whether this member's `Leave` must wait: the inviter never writes it while a join it admitted is in flight
     /// (app.md 4, "A quit during a join"). The quit's bound still holds.
     fn holds_leave(&self) -> bool {
+        false
+    }
+    /// Whether a join this member admits holds script commits back ([`crate::join::Inviter::holds_script_commits`]): pe-api
+    /// refuses them `unavailable` meanwhile (app.md 4).
+    fn holds_script_commits(&self) -> bool {
         false
     }
     /// What became of the entry [`NetHook::take_entry`] handed over: agreement took it into this member's chain, or
@@ -711,6 +733,7 @@ impl Sim {
             event_log: None,
             api: None,
             leaving: Leaving::Staying,
+            script_stamp: None,
             view_time: ViewTime::default(),
             leave_wait: None,
             down: std::collections::BTreeSet::new(),
@@ -1268,12 +1291,24 @@ impl Sim {
             }
         }
         let leaving = self.leaving != Leaving::Staying;
+        // A join this member admits holds script commits back from the joiner's ready (app.md 4). Read after step 1,
+        // which may have just made the joiner ready, so pe-api's check and this frame's drain below agree with the
+        // `Admit` written next.
+        let holds_commits = self.net_hook.as_ref().is_some_and(|h| h.holds_script_commits());
+        if let Some(api) = &self.api {
+            api.ports.shared.joining(holds_commits);
+        }
         // The network hook's entry (the inviter's `Admit`, app.md 4), first after a `Leave` would be and never with
-        // one: at the frame's stamp, a class Protocol entry of this member's chain.
+        // one: at the frame's stamp, a class Protocol entry of this member's chain. Its check that the world holds no
+        // scripts also counts this member's own script commit stamped ahead and not yet stepped.
+        let unstepped_script = self.script_stamp.is_some_and(|f| f >= self.replica.frame());
         if !leaving
             && let (Some(hook), Some(l)) = (&mut self.net_hook, &mut self.local)
-            && let Some(payload) =
-                hook.take_entry(&ReplicaFacts(&*self.replica, self.diverge.as_ref()), &*self.agree, now)
+            && let Some(payload) = hook.take_entry(
+                &AdmitFacts(ReplicaFacts(&*self.replica, self.diverge.as_ref()), unstepped_script),
+                &*self.agree,
+                now,
+            )
         {
             let entry = l.chain.entry(self.replica.domain(), stamp, Class::Protocol, payload);
             let written = self.agree.submit(entry).map(|signed| l.chain.took(&signed));
@@ -1293,6 +1328,13 @@ impl Sim {
         {
             api.edit_frame = Some(p);
             for (ticket, mut sub) in api.ports.queue.drain(1) {
+                let script = sub.tx.ops.iter().any(|o| matches!(o, pe_world::edit::Op::CommitScript { .. }));
+                // pe-api checks the window too, but a commit it checked before the joiner's ready can reach this
+                // drain after it: held back here, nothing sent (app.md 4).
+                if script && holds_commits {
+                    api.ports.queue.settle(ticket, Receipt::Unavailable(pe_api::api::JOINING.into()));
+                    continue;
+                }
                 // A code commit's `activate_at` is the frame its entry is stamped at, which only this machine knows:
                 // the present plus the lead. pe-api leaves it at 0, and pe-world refuses a commit whose `activate_at`
                 // is not its stamp (api.md 7.1, world-model.md 7.9).
@@ -1304,6 +1346,9 @@ impl Sim {
                     Ok(signed) => {
                         l.chain.took(&signed);
                         self.stats.edits += 1;
+                        if script {
+                            self.script_stamp = Some(stamp);
+                        }
                         // Indexed now, not only when a view's record names it, so `edit()` answers for this machine's
                         // own change at once (@api-eng's Low on slice 1).
                         api.ports.shared.index_edit(signed.id(), Arc::new(sub.tx), bytes);
@@ -2091,6 +2136,127 @@ pub(crate) mod tests {
             _ => None,
         });
         (frame, activate_at)
+    }
+
+    /// A hook that stands for an inviter (app.md 4): it holds script commits back while `hold` is set, and records
+    /// what the `Admit`'s check would see each tick, writing no `Admit`.
+    struct ScriptWindow {
+        hold: Arc<std::sync::atomic::AtomicBool>,
+        seen: Arc<std::sync::Mutex<Vec<bool>>>,
+    }
+
+    impl NetHook for ScriptWindow {
+        fn on_event(&mut self, _: &NetEvent, _: &mut dyn Agreement, _: &dyn WorldFacts) {}
+        fn take_entry(&mut self, world: &dyn WorldFacts, _: &dyn Agreement, _: HostTime) -> Option<Vec<u8>> {
+            self.seen.lock().expect("seen").push(world.holds_scripts());
+            None
+        }
+        fn holds_script_commits(&self) -> bool {
+            self.hold.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A pit with pe-api's ports and a [`ScriptWindow`] hook, stamping ahead by `lead`; and a script commit's tx.
+    fn script_window(
+        lead: Option<u64>,
+    ) -> (Sim, crate::api::Ports, Arc<dyn FrameClock>, ScriptWindow, pe_world::edit::Transaction) {
+        use crate::api::{Facts, Ports};
+        use crate::stamp::{LeadConfig, StampLead};
+        use pe_seams::Hash;
+        use pe_world::edit::{Actor, AssetTarget, Op, Transaction};
+        use pe_world::script::{pack_source, tag_desc};
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
+        let genesis = crate::api::snapshot_of(&*replica).expect("a pe-world replica");
+        let facts = Facts { world_name: "Pit".into(), line: LineId::origin(), rate: RATE, me: Some(me) };
+        let ports = Ports::new(genesis, facts, || {});
+        let (s, _slot) = with_replica(replica, clock.clone(), Budget::new(RATE));
+        let s = s.with_stamp_lead(lead.map(|n| StampLead::fixed(LeadConfig::m1(RATE), n)));
+        let hook = ScriptWindow { hold: Default::default(), seen: Default::default() };
+        let mine = ScriptWindow { hold: hook.hold.clone(), seen: hook.seen.clone() };
+        let s = s
+            .with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])))
+            .with_api(ports.clone())
+            .with_transport(Box::new(Port::new(me, Hub::default())), Some(Box::new(hook)));
+        let archive: bytes::Bytes = pack_source(&[(
+            "src/lib.rs",
+            b"// a script
+"
+            .as_slice(),
+        )])
+        .expect("one")
+        .into();
+        let v = Hash(pe_world::BlobRef::of(&archive).hash);
+        let ops = vec![
+            Op::Register { components: vec![tag_desc(&v)] },
+            Op::commit_script(AssetTarget::New(0), None, archive, Hash([1; 32]), Hash([2; 32]), Hash([3; 32]), 0),
+        ];
+        let tx = Transaction {
+            inline: vec![],
+            actor: Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops,
+            blobs: vec![],
+        };
+        (s, ports, clock, mine, tx)
+    }
+
+    /// app.md 4, path 1 of @engine-architect's M1 on 1.6: a script commit pe-api queued before the joiner's ready
+    /// reaches step 2's drain in the ready tick. The drain holds it back as `Unavailable`, sending nothing, while other
+    /// edits go ahead; pe-api's flag is set in the same tick; once the window closes the commit is submitted.
+    #[test]
+    fn a_script_commit_drained_while_a_join_holds_commits_is_held_back() {
+        use crate::api::ApiWorld;
+        use pe_api::api::WorldSource;
+        use pe_api::queue::Submission;
+        use pe_world::edit::{Op, Target};
+        let (mut s, ports, clock, w, tx) = script_window(None);
+        let world = ApiWorld(ports.shared.clone());
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        assert!(!world.session().joining);
+        let commit = ports.queue.submit(Submission { tx: tx.clone(), base: 1 }).expect("room");
+        w.hold.store(true, Ordering::SeqCst);
+        s.tick(clock.host_time_of(Frame(2))).expect("ticked");
+        assert!(world.session().joining, "set in the tick the window opened");
+        assert_eq!(
+            ports.queue.receipt(commit, Instant::now()),
+            Some(Receipt::Unavailable(pe_api::api::JOINING.into()))
+        );
+        assert_eq!(s.stats().edits, 0, "nothing sent");
+        let mut create = tx.clone();
+        create.ops = vec![Op::Create { new: 0, parent: Target::Root, index: None, rows: vec![] }];
+        let other = ports.queue.submit(Submission { tx: create, base: 2 }).expect("room");
+        s.tick(clock.host_time_of(Frame(3))).expect("ticked");
+        assert!(
+            matches!(ports.queue.receipt(other, Instant::now()), Some(Receipt::Submitted { .. })),
+            "only scripts wait"
+        );
+        w.hold.store(false, Ordering::SeqCst);
+        let again = ports.queue.submit(Submission { tx, base: 3 }).expect("room");
+        s.tick(clock.host_time_of(Frame(4))).expect("ticked");
+        assert!(!world.session().joining);
+        assert!(matches!(ports.queue.receipt(again, Instant::now()), Some(Receipt::Submitted { .. })));
+    }
+
+    /// app.md 4, path 2 of the same M1: a script commit drained before the joiner's ready, stamped ahead by a lead and
+    /// not yet stepped, is counted by the `Admit`'s check that the world holds no scripts, which then refuses the join.
+    #[test]
+    fn the_admit_s_check_counts_a_script_commit_stamped_ahead_and_not_yet_stepped() {
+        use pe_api::queue::Submission;
+        let (mut s, ports, clock, w, tx) = script_window(Some(5));
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        let commit = ports.queue.submit(Submission { tx, base: 1 }).expect("room");
+        s.tick(clock.host_time_of(Frame(2))).expect("ticked");
+        let Some(Receipt::Submitted { frame, .. }) = ports.queue.receipt(commit, Instant::now()) else {
+            panic!("not submitted");
+        };
+        assert_eq!(frame, 7, "stamped ahead of the present");
+        s.tick(clock.host_time_of(Frame(3))).expect("ticked");
+        let seen = w.seen.lock().expect("seen").clone();
+        assert_eq!(seen.first(), Some(&false), "an empty world at first: {seen:?}");
+        assert_eq!(seen.last(), Some(&true), "stamped at 7, unstepped at 3, and counted: {seen:?}");
     }
 
     /// At the present, the commit's `activate_at` is the frame the receipt names.
