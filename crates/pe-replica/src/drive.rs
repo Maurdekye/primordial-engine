@@ -8,7 +8,10 @@
 //! 1. **advances** the replica to `present` (every frame below it is simulated, with the entries held so far);
 //! 2. **holds:** reconciles the replica's [`Replica::vote_holds`] with S3's `hold_votes_from` and
 //!    `release_votes_from` (S2 v1.7), so S3 holds exactly the frames the replica lists now. It is level-triggered: a
-//!    partial advance, a rollback that removed a commit, or a rebuilt replica never leaves a hold behind;
+//!    partial advance, a rollback that removed a commit, or a rebuilt replica never leaves a hold behind. No replica
+//!    lists a hold today: since F3's C4 the author of a code commit votes on the old code's state instead
+//!    (replica.md 5.4). The reconciliation stays for a version whose module a machine lacks at n >= 3 (runner.rs,
+//!    replica.md 8.2), which is not built yet (@design-reviewer's nit on C4);
 //! 3. **votes:** each cut S3 wants a root for gets `root_at_cut`, then `vote` with the caller's self-test verdict.
 //!    A cut is voted on once; a revote after a repair is pe-diverge's, through the caller. A cut at or past a hold
 //!    waits, unasked, until the hold is released;

@@ -220,7 +220,8 @@ the live history and once for a re-step off it); it never steps such a world as 
     takes the frame or it is a cut frame (4.1). A step off the live history (a root at a cut computed by re-stepping)
     records nothing (4.2, 5.3).
 
-The frame view is published once an advance has reached the present, with no replay under way, and never during a
+The frame view is published at the end of an advance that stepped, at the newest frame the live history has completed,
+whether or not that is the present (S2 v1.10; F3's S5). It is never published while a replay is under way or during a
 re-simulation (7).
 
 ### 3.1 No input aborts a replica
@@ -768,8 +769,11 @@ the floor's cut-exact snapshot at once, with the cut-exact outcomes below the fl
 ## 7. The frame view: what the replica puts in S5
 
 pe-seams fixes the view's shape (`crates/pe-seams/src/view.rs`, S5 through v1.10). The replica fills it after an advance
-that reaches the present with no replay under way, never during a re-simulation, and publishes it as an
-`Arc<FrameView>` that nothing changes afterwards [V `crates/pe-replica/src/replica.rs`, `publish`]:
+that stepped and stands at the newest frame its live history has completed (`reached`), with no replay under way. That
+need not be the present (S2 v1.10; F3's S5, "the fastest machine sets the pace"): a replica that trails wall time still
+shows its world, a view per call. A re-simulation publishes nothing until it is back at `reached`, so no view goes
+back in time, and the first view there marks what it corrected (below). The replica publishes the view as an
+`Arc<FrameView>` that nothing changes afterwards [V `crates/pe-replica/src/replica.rs`, `advance`, `publish`]:
 - **Objects** come from the world model (`WorldModel::view_objects`): for pe-world, every object with a `Shape`, a
   `Light` or a `Hand`, at its world transform, with its shape in its own units (the view's scale scales it), its
   appearance, light, hand owner and holder [V `peworld.rs`]. An object with no world transform is not drawn, and a hand
@@ -861,7 +865,8 @@ ruling 3). The calls, and what the replica does behind each:
   stays held until a later call leaves it out (4.1). pe-app's `phases::Timed` forwards it, and a test checks that it
   does.
 - **`import_at_cut(group, import, source)`** is rung 2's and a joiner's import (6.2).
-- **`view()`** is the last published frame view (7).
+- **`view()`** is the last published frame view (7). Since S2 v1.10 it is at the newest frame the live history
+  completed, whether or not that is the present; before, a replica published only once it reached the present.
 - **`world_snapshot()` and `agreed_snapshot()`** (S2 v1.7) are the world model's read-only snapshots of the live state
   and of the state at `Cv`, with its frame. pe-app hands them to pe-api once per published view: the first answers
   pe-api's live reads, the second its `final_()`, so it never lags the final frame and never shows a prediction

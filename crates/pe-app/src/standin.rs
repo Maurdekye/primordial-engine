@@ -157,8 +157,9 @@ impl Agreement for SoloAgreement {
     }
 }
 
-/// The replica of an empty world: it steps frames within its budget and publishes a view with no objects once it
-/// reaches the present. It holds no state to hash, so it has no roots: every cut is `NotKept`.
+/// The replica of an empty world: it steps frames within its budget and publishes a view with no objects at the newest
+/// frame it stepped, the present or not (S2 v1.10). It holds no state to hash, so it has no roots: every cut is
+/// `NotKept`.
 pub struct EmptyReplica {
     clock: Arc<dyn FrameClock>,
     rate: SimRate,
@@ -212,7 +213,7 @@ impl Replica for EmptyReplica {
         let stepped = to.saturating_sub(self.frame.0);
         self.frame = Frame(self.frame.0.max(to));
         let caught_up = self.frame >= present;
-        if caught_up && stepped > 0 {
+        if stepped > 0 {
             self.view = view_at(&*self.clock, self.frame);
         }
         Advance { stepped, caught_up, ..Advance::default() }
