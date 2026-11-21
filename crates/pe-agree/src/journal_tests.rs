@@ -283,3 +283,58 @@ fn a_cold_entry_holds_back_only_its_own_chain() {
     assert!(old_got.windows(2).all(|w| w[1] == w[0] + 1) && old_got.first().is_none_or(|s| *s == 1));
     assert!(old_got.len() < 10);
 }
+
+#[test]
+fn no_compaction_while_the_disk_is_full() {
+    let keys = TestKeys::new(16, 2);
+    let es = entries(&keys, 0, 30, 100);
+    let size = es[0].encode().len() as u64;
+    let cfg = JournalConfig { compact_min_bytes: size * 2, compact_every_ns: 0, ..JournalConfig::default() };
+    let mut r = Rig::new(cfg);
+    for e in &es[..29] {
+        r.j.offer(e);
+    }
+    r.flush();
+    let used: u64 = {
+        let mut fs = r.log.fs().clone();
+        fs.names().iter().map(|p| fs.read(p).map_or(0, |b| b.len() as u64)).sum()
+    };
+    r.log.fs_mut().capacity = Some(used + 10);
+    r.j.offer(&es[29]);
+    r.flush();
+    assert!(r.j.paused());
+    r.j.finalize([(ck(&es[0]), 20)], 1);
+    let jobs = r.j.take_jobs();
+    assert!(!jobs.iter().any(|j| matches!(j, Job::Compact { .. })), "no compaction asked for on a full disk");
+    assert!(r.j.stats().dead_bytes > 0);
+    // Put the jobs back through the runner as the writer would, then free the disk: the next finalize compacts.
+    let ran = r.runner.run(&mut r.log, &jobs);
+    assert!(matches!(ran.error, Some(StoreError::Full) | None));
+    r.log.fs_mut().capacity = None;
+    r.flush();
+    assert!(!r.j.paused());
+    r.j.finalize([(ck(&es[0]), 21)], 2);
+    assert!(r.j.take_jobs().iter().any(|j| matches!(j, Job::Compact { .. })), "compacts once there's room");
+}
+
+#[test]
+fn entries_finalized_during_a_compaction_stay_dead() {
+    let keys = TestKeys::new(17, 2);
+    let es = entries(&keys, 0, 40, 100);
+    let size = es[0].encode().len() as u64;
+    let cfg = JournalConfig { compact_min_bytes: size * 5, compact_every_ns: 0, ..JournalConfig::default() };
+    let mut r = Rig::new(cfg);
+    for e in &es {
+        r.j.offer(e);
+    }
+    r.flush();
+    r.j.finalize([(ck(&es[0]), 30)], 1);
+    let d1 = r.j.stats().dead_bytes;
+    assert!(r.j.stats().in_flight >= 1, "the compaction is queued");
+    // Finalized after it was asked for: still in its keep set, so still dead in the new segment.
+    r.j.finalize([(ck(&es[0]), 35)], 2);
+    let d2 = r.j.stats().dead_bytes;
+    assert!(d2 > d1);
+    r.flush();
+    assert_eq!(r.j.stats().dead_bytes, d2 - d1);
+}
