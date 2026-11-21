@@ -1402,3 +1402,75 @@ fn a_root_split_s_cut_keeps_its_snapshot_while_the_stall_thins_the_rest() {
     assert!(a.tree(&roots[&40]).is_some() && a.physics_image(&roots[&40]).is_some(), "the split's cut is served");
     assert!(a.tree(&roots[&56]).is_none(), "a cut off the alignment is thinned");
 }
+
+/// Finalize the cut at `f` with my live root there, which is the cut's when every entry is in: the verdict and the
+/// root.
+fn finalize_live(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, f: u64) -> (Finalized, Hash) {
+    let root = r.live_root(Frame(f)).expect("live");
+    (r.finalize(&FinalCut { cut: cut(&scene(), f / K, f), root, voters: vec![] }, s), root)
+}
+
+/// A donor serving a resync or a join from a final cut (S2 v1.9; F3, @diverge-eng's slow-member design v2 S4) keeps
+/// that cut's snapshot while it names the root, though finality goes on past `T_keep` (90 frames at 60 Hz) and releases
+/// the other finals of that time. The snapshot still answers with the cut's own tree and transfer. Left out, the root
+/// goes at the next finalize (a call only records the list) and is never held again. Serving changes no result: a twin
+/// that serves nothing gives the same verdicts and roots, and holds exactly one snapshot fewer.
+#[test]
+fn a_served_final_root_stays_held_past_t_keep_until_it_is_left_out() {
+    let (mut a, mut s) = reference(200);
+    let (mut b, mut bs) = reference(200);
+    let (_, r16) = finalize_live(&mut a, &mut s, 16);
+    assert_eq!(finalize_live(&mut b, &mut bs, 16).1, r16);
+    let image = a.physics_image(&r16).expect("the floor's image");
+    a.set_served(&[r16]);
+    assert_eq!(a.served(), [r16]);
+    let mut roots = BTreeMap::new();
+    for f in (24..=168).step_by(K as usize) {
+        let (verdict, root) = finalize_live(&mut a, &mut s, f);
+        assert_eq!((verdict, root), finalize_live(&mut b, &mut bs, f), "the cut at {f}");
+        roots.insert(f, root);
+    }
+    assert!(a.tree(&roots[&24]).is_none(), "the final at 24, not served, is released");
+    assert!(b.tree(&r16).is_none(), "the twin released the final at 16");
+    assert_eq!(a.tree(&r16).map(|t| (t.root(), t.frame())), Some((r16, Frame(16))), "the served cut's own tree");
+    assert_eq!(a.physics_image(&r16), Some(image), "and its own transfer");
+    assert_eq!(a.held_count(), b.held_count() + 1, "one snapshot more: the served root's");
+    a.set_served(&[]);
+    assert!(a.tree(&r16).is_some(), "only recorded: kept until the next release");
+    assert_eq!(finalize_live(&mut a, &mut s, 176), finalize_live(&mut b, &mut bs, 176));
+    assert!(a.tree(&r16).is_none() && a.physics_image(&r16).is_none(), "left out, it is released");
+    assert_eq!(a.held_count(), b.held_count());
+    a.set_served(&[r16]);
+    assert_eq!(finalize_live(&mut a, &mut s, 184), finalize_live(&mut b, &mut bs, 184));
+    assert!(a.tree(&r16).is_none(), "a root no longer held is never held again");
+}
+
+/// In a finality stall, each vote thins the snapshots of my roots at cuts not final yet (4.1), but a served one stays,
+/// and goes at the first vote after a call leaves it out. Every vote's root is the full re-step's, the same as a twin's
+/// that serves nothing.
+#[test]
+fn a_served_root_at_a_cut_not_final_keeps_its_snapshot_through_a_stall() {
+    let (clean, _) = reference(128);
+    let (mut a, mut s, _) = with_push_at_10(128);
+    let (mut b, mut bs, _) = with_push_at_10(128);
+    let all = scene();
+    let mut roots = BTreeMap::new();
+    for (h, f) in (16..=112).step_by(K as usize).enumerate() {
+        let c = cut(&all, h as u64 + 2, f);
+        let (_, root) = vote(&mut a, &mut s, &c);
+        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        assert_eq!(vote(&mut b, &mut bs, &c).1, root, "the twin's root at {f}");
+        if f == 24 {
+            a.set_served(&[root]);
+        }
+        roots.insert(f, root);
+    }
+    let r24 = roots[&24];
+    assert!(b.tree(&r24).is_none(), "the twin's stall thinned the snapshot at 24");
+    assert!(a.tree(&r24).is_some() && a.physics_image(&r24).is_some(), "the served one is held");
+    assert!(a.tree(&roots[&56]).is_none(), "a cut off the alignment, not served, is thinned");
+    a.set_served(&[]);
+    let c120 = cut(&all, 15, 120);
+    assert_eq!(vote(&mut a, &mut s, &c120).1, vote(&mut b, &mut bs, &c120).1);
+    assert!(a.tree(&r24).is_none(), "left out, it goes at the next vote");
+}
