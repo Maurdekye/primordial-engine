@@ -9,12 +9,14 @@
 //! - [`codec`]: the wire messages.
 //! - [`epoch`]: a joiner's start, the epoch certificate.
 //! - [`cuts`]: building a cut as the leader and checking a proposed one before voting.
+//! - [`store`]: the durable storage seam, an append-only record log with fsync and crash recovery.
 
 pub mod codec;
 pub mod core;
 pub mod cuts;
 pub mod epoch;
 pub mod node;
+pub mod store;
 
 pub use node::{LEAVE, Node, NodeConfig, RateBudget, is_leave};
 
@@ -22,3 +24,5 @@ pub use node::{LEAVE, Node, NodeConfig, RateBudget, is_leave};
 mod core_tests;
 #[cfg(test)]
 mod node_tests;
+#[cfg(test)]
+mod store_tests;
