@@ -322,6 +322,10 @@ def main():
     ap.add_argument("--hold-s", type=float, default=0, help="keep sampling the lamp after the steps, up to this")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
+    out = out_dir(a.out)
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "started.txt"), "a", encoding="utf-8") as f:
+        f.write(f"{time.time():.3f} pid {os.getpid()} {sys.executable}\n")
     url, token = os.environ.get("PE_MCP_URL"), os.environ.get("PE_MCP_TOKEN")
     if not url or not token:
         print("step agent: PE_MCP_URL and PE_MCP_TOKEN are needed (run it as pe-app's --agent)", flush=True)
@@ -339,7 +343,7 @@ def main():
             if time.time() - t0 > 120:
                 return 2
             time.sleep(2)
-    ag = Agent(m, out_dir(a.out))
+    ag = Agent(m, out)
     ag.say("writing to", ag.out)
     if not ag.wait_for(a.members, a.join_timeout_s):
         return 1
