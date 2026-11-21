@@ -671,6 +671,45 @@ fn an_author_s_check_counts_a_late_earlier_push_as_a_correction() {
     assert_eq!(late.recent.iter().copied().collect::<Vec<_>>(), [want]);
 }
 
+/// The author's check across a finalize that re-bases on the floor (3.4; @vdw-physics's Medium on d378a2b4). A steps
+/// B's push at 10 live, before its own at 12; S3 then voids B's push as the cut at 16 goes final. The live history
+/// below the cut is no longer the cut's, so finalize re-steps it and re-bases, and A's check takes its latest from that
+/// cut-exact re-step: the ball, which A first stepped with B's push, ends 12 without it. One correction, and the roots
+/// from 16 on are those of a run that never had B's push.
+#[test]
+fn an_author_s_check_takes_the_cut_exact_re_step_when_finalize_re_bases() {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mine = input(&mut a, 12, &Input::Push { object: oid(BALL), impulse: [1.5, 0.0, 0.0], at: None });
+    let voided = input(&mut b, 10, &Input::Push { object: oid(BALL), impulse: [0.0, 0.0, 1.5], at: None });
+    let world = || {
+        let mut w = with_hand_and_ball();
+        w.set_member(keys.key(1), perm::EDIT);
+        w
+    };
+    let (reference, _) = reference_of(world(), std::slice::from_ref(&mine), 32);
+    let mut r = replica_for(world(), 0);
+    let mut s = Source::default();
+    s.add(mine.clone());
+    s.add(voided.clone());
+    r.advance(Frame(24), &mut s);
+    assert!(matches!(r.outcome(&voided.id()).map(|o| o.1), Some(Outcome::Applied { .. })), "stepped live");
+    // S3 voids B's push as the cut at 16 goes final, and reports the change.
+    s.entries.get_mut(&Frame(10)).expect("its frame").retain(|e| e.id() != voided.id());
+    s.changed = Some(Frame(10));
+    let cut = cut_at(std::slice::from_ref(&mine), 2, 16);
+    let root = reference.live_root(Frame(16)).expect("the reference's root at 16");
+    assert_eq!(r.finalize(&FinalCut { cut, root, voters: vec![] }, &mut s), Finalized::Agreed);
+    let checks = r.interaction_checks().clone();
+    assert_eq!((checks.judged, checks.corrected, checks.unjudged), (1, 1, 0), "{checks:?}");
+    let want = CorrectedInteraction { frame: Frame(12), object: oid(BALL) };
+    assert_eq!(checks.recent.iter().copied().collect::<Vec<_>>(), [want]);
+    r.advance(Frame(32), &mut s);
+    let above = |r: &ReplicaImpl<PeWorld>| roots(r, 32).into_iter().filter(|(f, _)| *f >= 16).collect::<Vec<_>>();
+    assert_eq!(above(&r), above(&reference));
+    assert_eq!(r.faults(), 0, "S3's report inside [10, 16) is excused");
+}
+
 /// What the author checks (3.4): a grab begin and a throw, each once, and a push; neither a renewal of its own hold
 /// nor a hand input, and nothing on another member's replica, where these are not the local member's.
 #[test]
