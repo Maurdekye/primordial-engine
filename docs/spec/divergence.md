@@ -235,7 +235,10 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
   the window is answered `Busy` for the rest of it, which the requester waits out, never `NotHeld`. Before, an image
   slower than `T_peer` failed the rung, and every retry inside the window was refused as `NotHeld`: at `n = 2`, with
   one source, the rung failed at every attempt [V, the M1 redo's F1: 420 failures, 398 of them refusals and 22 images
-  that came after their 250 ms wait; @engine-architect m6961a21d214a].
+  that came after their 250 ms wait; @engine-architect m6961a21d214a]. The cost: a source that stops answering
+  after it served the nodes and records now holds the repair up to `T_join_peer` per attempt, not `T_peer`. At
+  `n = 2` there is no other source, so nothing is lost; at `n > 2` it slows the switch to another source, though
+  only after this one answered the earlier phases, so it was alive (@design-reviewer's note on F1, m572d63caf352).
 - **While the replica imports, every part is in hand.** A late answer from the source then (an earlier attempt's
   `NotHeld` or `Busy`, crossing the image it already sent) is stale, never a source fault: before, it dropped the
   repair while the replica finished the import anyway [I, @engine-architect m4af1b4841b52, race (d)].
