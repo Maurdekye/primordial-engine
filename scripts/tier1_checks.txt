@@ -60,6 +60,20 @@ check test
   run   cargo test {crates} --locked
   expect ^test result: ok\.
 
+check convergence-grid
+  why   the user's convergence target on M1's ball pit (answer 8: no correction larger than a hand's
+  why   width without a cue), over 20 seeds x 5 link delays, with the members on pe-agree (G7, the pull-ahead
+  why   plan; coordinator: the pe-agree grid only, the lockstep grid stays --ignored). About 6.5 min a
+  why   trigger in an integrator's fresh target: 321 s to build pe-render's tests in release, cold, at 3 jobs, then
+  why   56-102 s of tests (measured 2026-11-21; 40 s to rebuild in a warm target). So it triggers only on the crates
+  why   that decide what members agree on and draw (coordinator; 66 of main's 177 first-parent commits
+  why   from 11-14 to 11-21). The rest it reads (pe-world, pe-physics, box3d-fork, ...) are covered by the weekly run
+  why   in .github/workflows/gate.yml, "the convergence grid (weekly)"
+  when  crates/pe-render/** crates/pe-harness/** crates/pe-agree/** crates/pe-replica/** crates/pe-seams/**
+  when  Cargo.lock rust-toolchain rust-toolchain.toml
+  run   cargo test -p pe-render --release --locked --test ballpit -- --ignored --exact --test-threads 1 the_presenter_meets_the_users_target_over_20_seeds_and_5_delays_over_pe_agree
+  expect ^test result: ok\. 1 passed;
+
 check model-fast
   why   the agreement model's fast profile (models/cuts/README.md, about 2 minutes); its bounded n = 4 checks are
   why   for milestones. Refound plan 4.6; coordinator

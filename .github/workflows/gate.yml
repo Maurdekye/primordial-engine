@@ -8,7 +8,8 @@
 #   tests compare goldens, traces and snapshot images with the committed records, so a pass on a platform means
 #   its results are bit-identical with them. A final job then requires the RESULT lines the tests printed to be
 #   the same on all four (scripts/tier2_digests.py; coordinator). Nightly, the agreement model's
-#   fast profile, its bounded n = 4 Byzantine checks and its backoff checks run as well.
+#   fast profile, its bounded n = 4 Byzantine checks and its backoff checks run as well. Weekly (the Sunday nightly
+#   run), the convergence grid runs on every change, not only on those that trigger tier 1's convergence-grid.
 # A red run blocks the next landing until it is fixed or explained (decision C7; scripts/gate.sh reads it through
 # scripts/ci_status.py), and WS-ci triages it. The tier-2 jobs write their failures as error annotations, which
 # GitHub's public API serves without a login.
@@ -134,6 +135,58 @@ jobs:
         run: >-
           python3 -I scripts/tier2_digests.py --annotate tier2/tier2-windows-x64 tier2/tier2-linux-x64
           tier2/tier2-linux-arm64 tier2/tier2-macos-arm64
+
+  # Whether tonight is the grid's night: Sunday's nightly run, or the workflow started by hand. On other nights the
+  # grid job then shows as skipped, not passed (@design-reviewer's L1 on 95a674f2). A second cron line would also run
+  # the gate and the whole of tier 2 again, since they run on every schedule.
+  grid-day:
+    name: tier 2, the convergence grid's night
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.when.outputs.run }}
+    steps:
+      - name: Sunday, or started by hand
+        id: when
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = workflow_dispatch ] || [ "$(date -u +%u)" = 7 ]; then
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "not Sunday: the weekly grid is skipped tonight"
+          fi
+
+  grid:
+    name: tier 2, the convergence grid (weekly)
+    needs: grid-day
+    if: ${{ needs.grid-day.outputs.run == 'yes' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The user's convergence target (answer 8) on M1's ball pit over pe-agree, 20 seeds x 5 delays
+      # (pe-render tests/ballpit.rs; G7). Tier 1 runs it only when pe-render, pe-harness, pe-agree, pe-replica,
+      # pe-seams, Cargo.lock or the toolchain change (about 6.5 min a trigger); this run catches a change elsewhere
+      # (pe-world, pe-physics, box3d-fork, ...) that moves the balls' paths within a week (coordinator). It runs on Sundays' nightly run (grid-day), and whenever the workflow is started by hand.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rust-toolchain.toml pins it)
+        run: |
+          rustup toolchain install 2> /dev/null || rustup show
+          rustc --version --verbose && cargo --version
+      - name: The grid over pe-agree
+        run: |
+          cargo test -p pe-render --release --locked --test ballpit -- --ignored --exact --test-threads 1 the_presenter_meets_the_users_target_over_20_seeds_and_5_delays_over_pe_agree 2>&1 | tee grid.log
+          grep -E "^test result: ok\. 1 passed;" grid.log
+      - name: Name the failure
+        if: ${{ failure() }}
+        run: |
+          lines=$(grep -E "panicked at|^error|FAILED" grid.log 2> /dev/null | head -20 | sed 's/%/%25/g' | awk '{ printf "%s%%0A", $0 }')
+          echo "::error title=tier 2 grid::the convergence grid failed%0A$lines"
 
   model:
     name: tier 2, the agreement model (nightly)
