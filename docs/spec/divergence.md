@@ -230,6 +230,18 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
   (@shader-reviewer, re-review L2).
 - **A second descent** (after `RootMismatch`) keeps the physics image, which already passed the replica's check: a
   source serves one image per peer and root (@shader-reviewer, re-review L3).
+- **The physics image waits as long as its source's re-serve window.** A source serves one peer a root's image again
+  only after `T_join_peer` (4.5), so a repair waits `T_join_peer` for the image, not `T_peer`, and a re-ask inside
+  the window is answered `Busy` for the rest of it, which the requester waits out, never `NotHeld`. Before, an image
+  slower than `T_peer` failed the rung, and every retry inside the window was refused as `NotHeld`: at `n = 2`, with
+  one source, the rung failed at every attempt [V, the M1 redo's F1: 420 failures, 398 of them refusals and 22 images
+  that came after their 250 ms wait; @engine-architect].
+- **While the replica imports, every part is in hand.** A late answer from the source then (an earlier attempt's
+  `NotHeld` or `Busy`, crossing the image it already sent) is stale, never a source fault: before, it dropped the
+  repair while the replica finished the import anyway [I, @engine-architect, race (d)].
+- **A split whose target this machine already holds** (an import that finished outside any repair) starts no repair:
+  if its vote at the split cut still names another root, it votes the target again, once per episode, so the split
+  can end (counter `revotes_held`; race (e)). Before, `try_pick` returned and nothing revoted.
 - **Tables as well as objects:** governance, claims and the other world-model tables go through `export` and
   `import` the same way as objects.
 - **Script modules** [C, with @fable-reviewer's conditions]: an import can bring rows that name modules

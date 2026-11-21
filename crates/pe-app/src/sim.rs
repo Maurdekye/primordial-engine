@@ -2914,6 +2914,9 @@ pub(crate) mod tests {
         /// Jittered one-way delays by (from, to), in place of `delay`: each message's is drawn uniformly from the
         /// range, inclusive, by a fixed sequence, so a run repeats.
         jitter: ByLink<(i64, i64)>,
+        /// Extra delay by (from, to) for a repair-lane physics image (pe-diverge's `PhysicsReply`), on top of the
+        /// link's: an image slower than the rest of the repair lane, as a large one from a busy source is (F1).
+        image_late: ByLink<i64>,
         /// Messages sent, for the jitter's sequence.
         sent: Arc<std::sync::atomic::AtomicU64>,
     }
@@ -2943,6 +2946,13 @@ pub(crate) mod tests {
                     lo + (z % (hi - lo + 1) as u64) as i64
                 }
                 None => self.hub.delay.lock().expect("the delays").get(&(self.me, to)).copied().unwrap_or(0),
+            };
+            let late = self.hub.image_late.lock().expect("the image delays").get(&(self.me, to)).copied();
+            let image =
+                |b: &[u8]| matches!(pe_diverge::msg::Msg::decode(b), Ok(pe_diverge::msg::Msg::PhysicsReply { .. }));
+            let d = match late {
+                Some(late) if matches!(lane, Lane::Repair) && image(&bytes) => d + late,
+                _ => d,
             };
             let at = HostTime(self.hub.now.load(Ordering::SeqCst) + d);
             let r = Received { from: self.me, lane, bytes, at };
@@ -3279,7 +3289,10 @@ pub(crate) mod tests {
     /// What [`fault_run`] saw on one member.
     #[derive(Debug)]
     struct FaultSide {
+        me: MemberKey,
         stats: SimStats,
+        /// pe-diverge's counters at the end (`stats.diverge` is filled only for the end line).
+        diverge: pe_diverge::Counters,
         final_frame: Option<Frame>,
         health: Health,
         /// pe-diverge's cures by rung, rung 1 first.
@@ -3293,6 +3306,25 @@ pub(crate) mod tests {
         notices: Vec<String>,
         /// Each bundle it wrote: its rung and its `build` line.
         bundles: Vec<(u8, String)>,
+        /// The first root split's cut, and this member's own votes there (S3's `Voted`, in order: its live vote, then
+        /// pe-diverge's revote with its step-1 replay's root), and the root that cut was final with, if it was.
+        split: Option<CutRef>,
+        split_votes: Vec<pe_seams::Hash>,
+        split_final: Option<pe_seams::Hash>,
+        /// In a [`FaultCase::hold`] run, who holds the held ball at the end, as this member's world says.
+        held: Option<(MemberKey, ObjectId)>,
+    }
+
+    /// How [`fault_run_with`]'s two members are linked, and what member 0's hands do.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct FaultCase {
+        /// Each message between the two members this late, both ways, in host nanoseconds.
+        delay_ns: i64,
+        /// Member 0's physics images to member 1 this much later again ([`Hub::image_late`]).
+        image_late_ns: i64,
+        /// Member 0's left hand closes on the highest ball at frame 93 and lifts it 5 mm a frame from frame 104 to
+        /// 160, through the split (the fault fires at 121), its step-1 replay and the repair; it holds it to the end.
+        hold: bool,
     }
 
     /// The fault's ball's radius in `view`, if it is drawn as a sphere.
@@ -3314,6 +3346,11 @@ pub(crate) mod tests {
 
     /// [`fault_run`] with each message between the two members `delay_ns` late, both ways.
     fn fault_run_over(fault: &Arc<crate::fault::Fault>, typed: Option<u64>, delay_ns: i64) -> (Vec<FaultSide>, u64) {
+        fault_run_with(fault, typed, FaultCase { delay_ns, ..FaultCase::default() })
+    }
+
+    /// [`fault_run`] as `case` says.
+    fn fault_run_with(fault: &Arc<crate::fault::Fault>, typed: Option<u64>, case: FaultCase) -> (Vec<FaultSide>, u64) {
         use pe_agree::{Node, NodeConfig};
         use pe_seams::test_util::TestKeys;
         const FRAMES: u64 = 720;
@@ -3322,11 +3359,15 @@ pub(crate) mod tests {
         let members = keys.sorted_keys();
         let line = pe_world::preset::m1_line();
         let hub = Hub::default();
-        if delay_ns > 0 {
+        if case.delay_ns > 0 {
             let mut d = hub.delay.lock().expect("the delays");
-            d.insert((members[0], members[1]), delay_ns);
-            d.insert((members[1], members[0]), delay_ns);
+            d.insert((members[0], members[1]), case.delay_ns);
+            d.insert((members[1], members[0]), case.delay_ns);
         }
+        if case.image_late_ns > 0 {
+            hub.image_late.lock().expect("the image delays").insert((keys.key(0), keys.key(1)), case.image_late_ns);
+        }
+        let puppet = Puppet::default();
         let at = [[-0.5, 1.0, -0.4], [0.5, 1.1, -0.3]];
         // A folder of this run's own: the fault tests run in parallel in one process.
         static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -3345,35 +3386,79 @@ pub(crate) mod tests {
                 crate::world::ball_pit_replica_with(world, &members, me, RATE, clock.clone(), runner(), mine.clone())
                     .expect("a replica");
             let slot = Arc::new(FrameSlot::new());
+            let hands: Arc<dyn pe_seams::HandFeed> = if case.hold && i == 0 {
+                // Both hands tracked and open where `StillHands` would put them, until the left takes the ball.
+                puppet.set_hand(0, [feed[0] - 0.2, feed[1], feed[2]], false);
+                puppet.set_hand(1, [feed[0] + 0.2, feed[1], feed[2]], false);
+                Arc::new(puppet.clone())
+            } else {
+                Arc::new(StillHands(*feed))
+            };
+            let events = Arc::new(std::sync::Mutex::new(Vec::new()));
             let mut sim = Sim::new(Box::new(node), Box::new(replica), clock.clone(), slot.clone(), Budget::new(RATE))
-                .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))
+                .with_local(me, keys.nonce(i, 0), hands)
                 .with_transport(Box::new(Port::new(me, hub.clone())), None)
+                .with_event_log(events.clone())
                 .with_diverge(pe_diverge::Config::default(), Some(base.join(format!("member{i}"))))
                 .expect("pe-diverge");
             if let Some(f) = mine {
                 sim = sim.with_fault(f);
             }
-            sims.push((sim, slot, Vec::new(), 0f32));
+            sims.push((sim, slot, Vec::new(), 0f32, events));
         }
+        let mut held: Option<(ObjectId, [f32; 3])> = None;
         for f in 1..=FRAMES {
             let now = clock.host_time_of(Frame(f));
             hub.now.store(now.0, Ordering::SeqCst);
             if typed == Some(f) {
                 println!("typed: {}", crate::fault::on_command(Some(fault)).expect("`fault` goes in"));
             }
-            for (s, slot, notices, radius_max) in &mut sims {
+            for (s, slot, notices, radius_max, _) in &mut sims {
                 s.tick(now).expect("ticked");
                 notices.extend(s.take_notices());
                 let drawn = fault.ball().zip(slot.newest()).and_then(|(b, v)| ball_radius(&v, b));
                 *radius_max = radius_max.max(drawn.unwrap_or(0.0));
             }
+            // The hold, as the grab test's: to the ball open, closed three frames later, lifted after ten more.
+            match (case.hold, f, held) {
+                (true, 90, _) => {
+                    let v = sims[0].1.newest().expect("published");
+                    let ball = top_ball(&v);
+                    let at = rig_at(&v, ball);
+                    puppet.set_hand(0, at, false);
+                    held = Some((ball, at));
+                }
+                (true, 93, Some((_, at))) => puppet.set_hand(0, at, true),
+                (true, 104..=160, Some((_, at))) => {
+                    puppet.set_hand(0, [at[0], at[1] + 0.005 * (f - 103) as f32, at[2]], true);
+                }
+                _ => {}
+            }
         }
         let sides: Vec<FaultSide> = (sims.into_iter().enumerate())
-            .map(|(i, (s, slot, notices, radius_max))| {
+            .map(|(i, (s, slot, notices, radius_max, events))| {
                 let view = slot.newest().expect("published");
                 let (stats, health) = (s.stats().clone(), s.health());
                 let cured = s.diverge_counters().map_or([0; 5], |c| c.cured_by_rung);
                 let episodes = s.diverge_counters().map_or(0, |c| c.root_splits);
+                let diverge = s.diverge_counters().cloned().unwrap_or_default();
+                let claim = |ball| crate::api::snapshot_of(&*s.replica).expect("a world").claim(ball);
+                let held = held.and_then(|(ball, _)| claim(ball)).map(|c| (c.member, c.hand));
+                let events = events.lock().expect("the events").clone();
+                let split = events.iter().find_map(|e| match e {
+                    AgreeEvent::RootSplit { cut, .. } => Some(*cut),
+                    _ => None,
+                });
+                let split_votes = (events.iter())
+                    .filter_map(|e| match e {
+                        AgreeEvent::Voted { cut, root, .. } if Some(*cut) == split => Some(*root),
+                        _ => None,
+                    })
+                    .collect();
+                let split_final = events.iter().find_map(|e| match e {
+                    AgreeEvent::CutFinal { cut, root, .. } if Some(*cut) == split => Some(*root),
+                    _ => None,
+                });
                 // Dropping the simulation closes its I/O thread, which first writes every queued bundle.
                 drop(s);
                 let dir = base.join(format!("member{i}"));
@@ -3384,7 +3469,9 @@ pub(crate) mod tests {
                     .collect();
                 bundles.sort();
                 FaultSide {
+                    me: keys.key(i),
                     stats,
+                    diverge,
                     final_frame: view.final_frame,
                     health,
                     cured,
@@ -3393,6 +3480,10 @@ pub(crate) mod tests {
                     radius_last: fault.ball().and_then(|b| ball_radius(&view, b)),
                     notices,
                     bundles,
+                    split,
+                    split_votes,
+                    split_final,
+                    held,
                 }
             })
             .collect();
@@ -3689,6 +3780,72 @@ pub(crate) mod tests {
             assert_eq!(s.episodes, 1, "member {i}: one split episode: {s:?}");
         }
         a_fault_was_found_and_rung_2_restored_the_ball(&sides, &fault, frames);
+    }
+
+    /// @item:primordial-engine/m1-redo-f1-a-s-replay-didn-t-reproduce-its-live-r (the M1 redo's step 7, 2026-11-20): at
+    /// n = 2 the reference's physics image reaches member 1 400 ms after the rest of the repair lane, as a large image
+    /// from a busy reference did in the redo. Rung 2 still cures the split in one episode, and the reference's live
+    /// vote at the split cut is the root the cut is final with: its step-1 replay reproduced it.
+    ///
+    /// Before F1's fix the split never ended [V, red on 74314c81]. Member 1 gave up on the image after `t_peer`
+    /// (250 ms) and asked again, and member 0 answered every new ask within `t_join_peer` (5 s) of a served image
+    /// `NotHeld`, as flooding, which fails the rung on its only source. In this run [I, from its counters and the
+    /// ball drawn at its own size again] the late image from the first ask reached the second one and was imported,
+    /// and the `NotHeld` that followed still failed the rung. Member 1 held the reference's state but never voted
+    /// it, so the cut stayed split.
+    #[test]
+    fn a_physics_image_slower_than_t_peer_still_heals_the_split() {
+        let fault = crate::fault::Fault::new(Frame(121));
+        let case = FaultCase { image_late_ns: 400_000_000, ..FaultCase::default() };
+        let (sides, frames) = fault_run_with(&fault, None, case);
+        the_split_healed_to_the_references_live_root(&sides);
+        a_fault_was_found_and_rung_2_restored_the_ball(&sides, &fault, frames);
+    }
+
+    /// The same with member 0's hand holding a ball through the split, its step-1 replay and the repair, lifting it
+    /// as it goes: the redo's A held objects in its hands, which the dry runs never did. The ball is the highest, so
+    /// it is also the one the fault doubles on member 1. Rung 2 cures it, the reference's replay of the held ball's
+    /// frames gives its live root, and both members agree that hand still holds the ball. Before F1's fix it failed as
+    /// the redo did [V, red on 74314c81]: 40 rung failures, 38 of them member 0's `NotHeld`.
+    #[test]
+    fn a_split_with_a_held_ball_heals_to_the_references_live_root() {
+        let fault = crate::fault::Fault::new(Frame(121));
+        let case = FaultCase { image_late_ns: 400_000_000, hold: true, ..FaultCase::default() };
+        let (sides, frames) = fault_run_with(&fault, None, case);
+        the_split_healed_to_the_references_live_root(&sides);
+        a_fault_was_found_and_rung_2_restored_the_ball(&sides, &fault, frames);
+        let held = (sides[0].held, sides[1].held);
+        assert!(held.0.is_some_and(|(m, _)| m == sides[0].me) && held.0 == held.1, "held: {held:?}");
+        assert_eq!(
+            sides[0].stats.hands[0].grabs_applied, 1,
+            "member 0's left hand took it: {:?}",
+            sides[0].stats.hands
+        );
+    }
+
+    /// Both members saw one split, at one cut, and that cut became final with member 0's first vote there, so member
+    /// 0's step-1 replay (its revote) gave the root it had voted live.
+    fn the_split_healed_to_the_references_live_root(sides: &[FaultSide]) {
+        let (a, b) = (&sides[0], &sides[1]);
+        for (i, s) in sides.iter().enumerate() {
+            let d = &s.diverge;
+            println!(
+                "member {i}: rung_failures {} source_faults {} stale_replies {} serve_refused {} repair_bytes {}",
+                d.rung_failures, d.source_faults, d.stale_replies, d.serve_refused, d.repair_bytes
+            );
+        }
+        for (i, s) in sides.iter().enumerate() {
+            assert_eq!(s.episodes, 1, "member {i}: one split episode: {s:?}");
+        }
+        assert!(a.split.is_some() && a.split == b.split, "one split cut: {:?} {:?}", a.split, b.split);
+        let live = a.split_votes.first().copied();
+        assert!(live.is_some(), "member 0 voted at the split cut: {:?}", a.split_votes);
+        assert!(
+            a.split_votes.iter().all(|r| Some(*r) == live),
+            "member 0's revote is its live root: {:?}",
+            a.split_votes
+        );
+        assert_eq!((a.split_final, b.split_final), (live, live), "the split cut is final with member 0's live root");
     }
 
     /// What both fault tests assert of a run.

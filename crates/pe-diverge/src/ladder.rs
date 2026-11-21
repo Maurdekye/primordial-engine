@@ -209,6 +209,8 @@ struct Episode {
     picked: bool,
     /// The split persisted past step 1: its bundle is written once.
     reported: bool,
+    /// The target revoted without a cure, because the replica already held it (`try_pick`): once per target.
+    revoted: Option<Hash>,
 }
 
 /// A byte bucket, held in byte-nanoseconds so that no part of a byte earned is lost (4.2, step 2).
@@ -661,6 +663,7 @@ impl Diverge {
                 reference: None,
                 picked: false,
                 reported: false,
+                revoted: None,
             });
             self.counters.root_splits += 1;
             self.count_split_report(true);
@@ -743,6 +746,19 @@ impl Diverge {
         }
         let Some(reference) = reference else { return };
         let Some((target, holders)) = roots.iter().find(|(_, v)| v.iter().any(|x| x.0 == reference)) else { return };
+        if mine == Some(*target) && reference != self.me && self.repair.is_none() {
+            // The replica already holds the target here (an import that finished after its repair was dropped), but
+            // my standing still names another root: vote the target again, once per episode, so the split can end
+            // (@engine-architect, F1 race (e)).
+            let my_vote = roots.iter().find(|r| r.1.iter().any(|x| x.0 == self.me)).map(|r| r.0);
+            let ep = self.episode.as_mut().expect("checked above");
+            if my_vote != Some(*target) && ep.revoted != Some(*target) {
+                ep.revoted = Some(*target);
+                self.counters.revotes_held += 1;
+                self.actions.push(Action::Revote { cut: cut.at, root: *target });
+            }
+            return;
+        }
         if reference == self.me || self.repair.is_some() || mine == Some(*target) {
             return;
         }
@@ -784,9 +800,15 @@ impl Diverge {
             self.repair = None;
             self.fail(2, cut, "no source served the join before its deadline");
         }
-        let wait = if self.joining() { self.cfg.t_join_peer } else { self.cfg.t_peer };
-        let waiting_on_peer =
-            |r: &Repair| !r.due && !matches!(r.phase, Phase::Importing { .. }) && now > r.sent_at.plus(wait);
+        // A physics image is waited for as long as its source's re-serve window (`t_join_peer`): a requester that
+        // gave up sooner would ask again inside the window, so any image slower than `t_peer` would lock the rung at
+        // n = 2 (F1 of the M1 redo; 4.1).
+        let joining = self.joining();
+        let (t_peer, t_join_peer) = (self.cfg.t_peer, self.cfg.t_join_peer);
+        let waiting_on_peer = |r: &Repair| {
+            let wait = if joining || matches!(r.phase, Phase::Physics) { t_join_peer } else { t_peer };
+            !r.due && !matches!(r.phase, Phase::Importing { .. }) && now > r.sent_at.plus(wait)
+        };
         if self.repair.as_ref().is_some_and(waiting_on_peer) {
             self.source_fault(replica, source, now, clock);
         }
@@ -870,12 +892,18 @@ impl Diverge {
                 if !self.may_serve(from, cut, root, now) {
                     return Ok(());
                 }
-                // One image per peer and root, and again only after `t_join_peer`: a requester that asks sooner is
-                // flooding. A join that timed out a slow image and asked again past that is served (4.5).
+                // One image per peer and root, and again only after `t_join_peer`. A requester that asks sooner
+                // is told `Busy` for the rest of that window, not `NotHeld`: at n = 2 this is a repair's only source,
+                // and a `NotHeld` would fail the rung at every attempt (F1 of the M1 redo). A join or repair that
+                // timed out a slow image and asked again past the window is served (4.1, 4.5).
                 let again = self.cfg.t_join_peer;
-                if self.physics_served.get(&(from, root)).is_some_and(|t| now < t.plus(again)) {
+                if let Some(t) = self.physics_served.get(&(from, root)).copied()
+                    && now < t.plus(again)
+                {
                     self.counters.serve_refused += 1;
-                    self.send(from, Msg::NotHeld { cut, root });
+                    let left = u64::try_from(t.plus(again).0.saturating_sub(now.0)).unwrap_or(0);
+                    let retry_after_us = left.div_ceil(1000).max(1);
+                    self.send(from, Msg::Busy { cut, root, retry_after_us });
                     return Ok(());
                 }
                 match replica.physics_image(&root) {
@@ -891,7 +919,10 @@ impl Diverge {
                 let (cut, root) = reply.head();
                 let expected =
                     self.repair.as_ref().is_some_and(|r| r.sources[r.src] == from && r.at() == cut && r.target == root);
-                if !expected {
+                // While the replica imports, every part is in hand: a late `NotHeld`, `Busy` or reply from the source
+                // (an earlier attempt's, crossing the image it already sent) is stale, not a fault (@engine-architect,
+                // F1 race (d)).
+                if !expected || matches!(self.repair.as_ref().map(|r| &r.phase), Some(Phase::Importing { .. })) {
                     self.counters.stale_replies += 1;
                     return Ok(());
                 }
@@ -1405,7 +1436,9 @@ impl Diverge {
             self.next_source(replica, source, now, clock);
             return;
         }
-        let wait = Duration::from_micros(retry_after_us).min(wait_max);
+        // A physics `Busy` names the rest of the source's re-serve window (`t_join_peer`): it is waited out.
+        let cap = if matches!(rep.phase, Phase::Physics) { wait_max.max(self.cfg.t_join_peer) } else { wait_max };
+        let wait = Duration::from_micros(retry_after_us).min(cap);
         rep.retry_at = now.plus(wait);
         rep.due = true;
     }

@@ -363,6 +363,8 @@ pub struct Mock {
     pub below_floor: u32,
     /// A computational fault: this object steps differently here.
     pub faulty: Option<u128>,
+    /// A computational fault in physics: this machine steps the physics blob differently, so a repair needs the image.
+    pub faulty_physics: bool,
     /// Bound bodies: importing one needs the physics image.
     pub bound: BTreeSet<u128>,
     /// Every record imported, with the frame it was imported at; and every import asked for.
@@ -403,6 +405,7 @@ impl Mock {
             floor: 0,
             below_floor: 0,
             faulty: None,
+            faulty_physics: false,
             bound: (1..=objects).filter(|k| k % 10 == 0).map(spread).collect(),
             imported: Vec::new(),
             imports: Vec::new(),
@@ -441,7 +444,7 @@ impl Mock {
             let extra = u64::from(self.faulty.map(spread) == Some(*id));
             *c = Cell::obj(*id, rec(val(&c.bytes).wrapping_add((*id as u64 % 7) + 1 + extra), wake(&c.bytes)));
         }
-        n.phys.bytes = (val(&n.phys.bytes) + 3).to_le_bytes().to_vec();
+        n.phys.bytes = (val(&n.phys.bytes) + 3 + u64::from(self.faulty_physics)).to_le_bytes().to_vec();
         n.phys.cache = phys_hash(&n.phys.bytes);
         n
     }
@@ -468,6 +471,12 @@ impl Mock {
         change(&mut st);
         self.put(st);
         self.restep_from(at);
+    }
+
+    /// Take another machine's state at `at` (as an import finished outside any repair would), and step on from it.
+    pub fn adopt(&mut self, other: &Mock, at: u64) {
+        let st = other.states[&at].clone();
+        self.edit(at, |s| *s = st);
     }
 
     /// Damage one object's record at `at`. With `rehash`, its cached hash follows (a fault in live state hashed as
@@ -870,6 +879,9 @@ pub struct Peer {
     pub verdict_delay: u64,
     /// `RootSplit` emissions this peer misses before it sees one (it was in another view).
     pub skip_splits: u32,
+    /// This peer's `PhysicsReply` messages reach their requester this many frames late (a large image, a slow link
+    /// or a saturated requester: the M1 redo's F1).
+    pub physics_delay: u64,
 }
 
 pub struct Net {
@@ -883,9 +895,13 @@ pub struct Net {
     pub reemit: bool,
     pub height: u64,
     pub line: LineId,
-    pending_split: Option<Cut>,
+    pub pending_split: Option<Cut>,
     /// The voters' roots at the pending split's cut, for its re-emissions.
-    pending_groups: BTreeMap<Hash, Vec<MemberKey>>,
+    pub pending_groups: BTreeMap<Hash, Vec<MemberKey>>,
+    /// Messages held back by a sender's `physics_delay`: (frame due, from, to, bytes).
+    delayed: Vec<(u64, MemberKey, MemberKey, Vec<u8>)>,
+    /// When each delayed `PhysicsReply` was sent and delivered, in frames, with its image's bytes.
+    pub physics_log: Vec<(u64, u64, usize)>,
 }
 
 pub fn key(i: usize) -> MemberKey {
@@ -913,6 +929,7 @@ impl Net {
                 verdict: None,
                 verdict_delay: 0,
                 skip_splits: 0,
+                physics_delay: 0,
             })
             .collect();
         Net {
@@ -923,6 +940,8 @@ impl Net {
             height: 0,
             line: LineId::origin(),
             pending_split: None,
+            delayed: Vec::new(),
+            physics_log: Vec::new(),
             pending_groups: BTreeMap::new(),
         }
     }
@@ -1055,14 +1074,25 @@ impl Net {
 
     fn deliver(&mut self) {
         let now = self.now();
+        let frame = self.peers[0].r.now;
+        // Held-back messages due now go first, in the order they were sent.
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.delayed).into_iter().partition(|d| d.0 <= frame);
+        self.delayed = later;
+        let mut held: Vec<(MemberKey, MemberKey, Vec<u8>)> = due.into_iter().map(|(_, f, t, b)| (f, t, b)).collect();
         for _ in 0..64 {
-            let mut batch = Vec::new();
+            let mut batch = std::mem::take(&mut held);
             for p in self.peers.iter_mut() {
                 for o in p.d.tick(now, &Clock, &mut p.r, &mut p.src) {
-                    if let Ok(m) = Msg::decode(&o.bytes) {
+                    let m = Msg::decode(&o.bytes);
+                    if let (Ok(Msg::PhysicsReply { image, .. }), true) = (&m, p.physics_delay > 0) {
+                        self.physics_log.push((frame, frame + p.physics_delay, image.bytes.len()));
+                        self.delayed.push((frame + p.physics_delay, p.key, o.to, o.bytes.to_vec()));
+                    } else {
+                        batch.push((p.key, o.to, o.bytes.to_vec()));
+                    }
+                    if let Ok(m) = m {
                         p.sent.push(m);
                     }
-                    batch.push((p.key, o));
                 }
                 p.events.extend(p.d.events());
                 p.actions.extend(p.d.actions());
@@ -1070,13 +1100,13 @@ impl Net {
             if batch.is_empty() {
                 break;
             }
-            for (from, o) in batch {
+            for (from, to, b) in batch {
                 let fi = self.index(&from);
                 if self.peers[fi].silent {
                     continue;
                 }
-                let bytes = lie(self.peers[fi].lie, &o.bytes);
-                let ti = self.index(&o.to);
+                let bytes = lie(self.peers[fi].lie, &b);
+                let ti = self.index(&to);
                 let p = &mut self.peers[ti];
                 let _ = p.d.receive(from, &bytes, &mut p.r, &mut p.src, now, &Clock);
             }

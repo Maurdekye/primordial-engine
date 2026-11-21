@@ -7,7 +7,7 @@ use pe_diverge::msg::{self, Msg};
 use pe_diverge::{Action, Config, CvState, FaultBundle, Join};
 use pe_seams::{
     CutRef, DivergeEvent, FinalCut, Frame, Hash, ImportError, LeafKey, LineId, MemberKey, ObjectId, Replica, Rung,
-    SignedEntry, SimRate,
+    SelfTest, SignedEntry, SimRate,
 };
 use std::time::Duration;
 
@@ -686,6 +686,107 @@ fn the_reference_is_busy_not_absent_while_it_replays_and_holds_its_root_again() 
     }
 }
 
+/// F1 of the M1 redo (@item:primordial-engine/m1-redo-f1-a-s-replay-didn-t-reproduce-its-live-r): at n = 2 the
+/// reference's physics image reaches the repairing member later than `t_peer`. The requester waits for it as long as
+/// the source's re-serve window (`t_join_peer`), and a re-ask inside the window is told `Busy` for the rest of it, not
+/// `NotHeld`, so the rung on its only source cures instead of failing at every attempt.
+#[test]
+fn a_physics_image_slower_than_t_peer_still_cures_at_n_2() {
+    // 0.5 s and 2 s late at 60 Hz: past `t_peer` (250 ms), within `t_join_peer` (5 s).
+    for delay in [30, 120] {
+        let mut net = Net::new(2, 40, &[]);
+        net.reemit = true;
+        net.run(20);
+        net.peers[0].physics_delay = delay;
+        net.peers[1].r.faulty = Some(5);
+        net.peers[1].r.faulty_physics = true;
+        net.peers[1].self_test_fails = true;
+        net.peers[1].verdict_delay = 24;
+        net.run(60 + 2 * delay);
+        for (sent, arrived, bytes) in &net.physics_log {
+            eprintln!(
+                "delay {delay}: image of {bytes} B served at frame {sent}, arrived at {arrived} ({} ms later)",
+                (arrived - sent) * 1000 / 60
+            );
+        }
+        let failed: Vec<_> =
+            net.peers.iter().flat_map(|p| &p.events).filter(|e| matches!(e, DivergeEvent::RungFailed { .. })).collect();
+        assert!(failed.is_empty(), "delay {delay}: {failed:?}");
+        let c = net.peers[1].d.counters().clone();
+        assert!(c.cured_by_rung[1] >= 1 && (c.source_faults, c.rung_failures) == (0, 0), "delay {delay}: {c:?}");
+        let a = net.peers[0].d.counters();
+        assert_eq!(a.serve_refused, 0, "delay {delay}: the reference refused nothing");
+        // The fault lasts, so it splits again after each cure; each episode fetches one image, never a second.
+        let images = net.physics_log.len() as u64;
+        assert!(images >= 1 && images <= c.cured_by_rung[1] + 1, "delay {delay}: {images} images, {c:?}");
+    }
+}
+
+/// The same, when a re-ask comes inside the re-serve window (the image was lost, so the requester's wait ran out
+/// first): the source answers `Busy` for the rest of the window, and serves the image again past it.
+#[test]
+fn a_physics_re_ask_inside_the_re_serve_window_waits_instead_of_failing() {
+    let mut net = Net::new(2, 40, &[]);
+    net.reemit = true;
+    net.run(20);
+    // Past the requester's wait (`t_join_peer`, 5 s = 300 frames): the first image is as good as lost.
+    net.peers[0].physics_delay = 330;
+    net.peers[1].r.faulty = Some(5);
+    net.peers[1].r.faulty_physics = true;
+    net.peers[1].self_test_fails = true;
+    net.peers[1].verdict_delay = 24;
+    net.run(200);
+    net.peers[0].physics_delay = 0;
+    net.run(600);
+    let c = net.peers[1].d.counters().clone();
+    assert!(c.cured_by_rung[1] >= 1, "{c:?}");
+    assert!(!net.physics_log.is_empty(), "the repair fetched the image");
+    let not_held = net.peers[0].sent.iter().filter(|m| matches!(m, Msg::NotHeld { .. })).count();
+    assert_eq!(not_held, 0, "a re-ask inside the window is Busy, never NotHeld");
+}
+
+/// @engine-architect's F1 race (d): an earlier attempt's `NotHeld` (or `Busy`) reaches the requester after the image
+/// it is importing. Every part is in hand, so the late answer is stale, not a source fault, and the import cures.
+#[test]
+fn a_late_not_held_during_the_import_is_stale_not_a_fault() {
+    let mut net = Net::new(2, 40, &[]);
+    net.reemit = true;
+    net.run(20);
+    net.peers[1].r.faulty = Some(5);
+    net.peers[1].r.faulty_physics = true;
+    net.peers[1].self_test_fails = true;
+    net.peers[1].verdict_delay = 24;
+    // The import answers `Pending` for a while, so the late answer lands inside it.
+    net.peers[1].r.pending_frames = 6;
+    let mut injected = None;
+    for _ in 0..200 {
+        net.step();
+        if !net.peers[1].r.imports.is_empty() {
+            let asked = net.peers[1].sent.iter().rev().find_map(|m| match m {
+                Msg::PhysicsRequest { cut, root } => Some((*cut, *root)),
+                _ => None,
+            });
+            injected = asked;
+            break;
+        }
+    }
+    let (cut, root) = injected.expect("the repair fetched the image and began its import");
+    let (source, now) = (net.peers[0].key, net.now());
+    let late = |m: Msg| m.encode().unwrap().to_vec();
+    let p = &mut net.peers[1];
+    let stale = p.d.counters().stale_replies;
+    for m in [Msg::NotHeld { cut, root }, Msg::Busy { cut, root, retry_after_us: 1_000 }] {
+        let _ = p.d.receive(source, &late(m), &mut p.r, &mut p.src, now, &common::Clock);
+    }
+    assert_eq!(p.d.counters().stale_replies, stale + 2);
+    net.run(60);
+    let failed: Vec<_> =
+        net.peers.iter().flat_map(|p| &p.events).filter(|e| matches!(e, DivergeEvent::RungFailed { .. })).collect();
+    assert!(failed.is_empty(), "{failed:?}");
+    let c = net.peers[1].d.counters().clone();
+    assert!(c.cured_by_rung[1] >= 1 && (c.source_faults, c.rung_failures) == (0, 0), "{c:?}");
+}
+
 /// At n = 2 a split ends its view at once and the height is proposed again (agreement.md L4'), while the member
 /// still repairing votes its old root there. The repair the re-proposal overtakes is no failure: a note says so, and
 /// the work goes on at the new cut (@coordinator-opus). Once pe-agree pins a split's cut this is rarer, but a newer cut can still overtake.
@@ -1240,4 +1341,52 @@ fn a_join_whose_sources_are_silent_for_two_seconds_still_joins() {
     assert_eq!(v.d.join_state(), Some(&Join::Joined { cut: e.cut.at }), "{:?}", v.d.counters());
     assert_eq!(v.d.counters().join_failures, 0);
     assert!(net.converged());
+}
+
+/// @engine-architect's F1 race (e): the replica came to hold the reference's root at the split cut without a cure
+/// (an import that finished after its repair was dropped), while this member's vote there still names its old root.
+/// No repair starts; the target is voted again, once per episode, so the split can end. (The mock net recomputes
+/// standings from live roots, so the stale vote is given to `on_root_split` directly.)
+#[test]
+fn a_split_whose_target_is_already_held_is_revoted_not_repaired() {
+    let mut net = Net::new(2, 40, &[]);
+    net.run(20);
+    net.peers[1].r.faulty = Some(5);
+    net.peers[1].self_test_fails = true;
+    // Neither member sees the other's verdict, so the net never lets them pick.
+    net.peers[0].verdict_delay = 10_000;
+    net.peers[1].verdict_delay = 10_000;
+    for _ in 0..60 {
+        net.step();
+        if net.pending_split.is_some() {
+            break;
+        }
+    }
+    let cut = net.pending_split.clone().expect("the fault split the roots");
+    let at = cut.at.frame.0;
+    let (k0, k1) = (net.peers[0].key, net.peers[1].key);
+    let old = net.pending_groups.iter().find(|(_, v)| v.contains(&k1)).map(|(h, _)| *h).expect("member 1 voted");
+    // Member 1's replica comes to hold member 0's state at the cut, outside any repair.
+    net.peers[1].r.faulty = None;
+    let a = std::mem::replace(&mut net.peers[0].r, common::Mock::new(0, &[]));
+    net.peers[1].r.adopt(&a, at);
+    let target = a.root_of(at);
+    net.peers[0].r = a;
+    assert_ne!(old, target);
+    let roots = vec![
+        (target, vec![(k0, SelfTest::Passed { split: cut.at })]),
+        (old, vec![(k1, SelfTest::Failed { split: cut.at })]),
+    ];
+    let now = net.now();
+    let p = &mut net.peers[1];
+    let _ = p.d.actions();
+    for _ in 0..3 {
+        p.d.on_root_split(&cut, &roots, &mut p.r, &mut p.src, now, &common::Clock);
+    }
+    let revotes =
+        p.d.actions().into_iter().filter(|x| matches!(x, Action::Revote { root, .. } if *root == target)).count();
+    assert_eq!(revotes, 1, "the held target is voted again, once");
+    let c = p.d.counters().clone();
+    assert_eq!((c.revotes_held, c.cured_by_rung[1], c.source_faults), (1, 0, 0), "{c:?}");
+    assert_eq!(p.d.split_reference(), Some(k0));
 }
