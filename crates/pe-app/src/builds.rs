@@ -630,7 +630,8 @@ fn components_differ(cached: bool) -> Failed {
     let mut detail = "the module's components differ from the commit's".to_string();
     if cached {
         detail.push_str(
-            " (the module came from this machine's build cache: nothing was built for this check, so a bug bundle's              deps/ are the last build's, maybe another version's)",
+            " (the module came from this machine's build cache: nothing was built for this check, so a bug bundle's \
+             deps/ are the last build's, maybe another version's)",
         );
     }
     Failed { reason: FailReason::Refused, module: None, attempts: 1, detail }
