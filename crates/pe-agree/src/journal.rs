@@ -86,8 +86,8 @@ pub enum Offer {
 
 #[derive(Clone, Debug)]
 enum Body {
-    /// In memory, not yet taken by the caller.
-    Hot(SignedEntry),
+    /// In memory, not yet taken by the caller. Boxed: most slots are cold or taken.
+    Hot(Box<SignedEntry>),
     /// On disk only.
     Cold,
     /// Being loaded by this job.
@@ -192,7 +192,14 @@ impl Journal {
             if slots.iter().any(|s| s.id == id) {
                 continue;
             }
-            slots.push(Slot { id, size, lsn: Some(r.lsn), job: None, durable: true, body: Body::Hot(e.clone()) });
+            slots.push(Slot {
+                id,
+                size,
+                lsn: Some(r.lsn),
+                job: None,
+                durable: true,
+                body: Body::Hot(Box::new(e.clone())),
+            });
             *j.hot_by_author.entry(key.author).or_default() += size as usize;
             j.hot_total += size as usize;
             *j.by_author.entry(key.author).or_default() += size;
@@ -236,7 +243,7 @@ impl Journal {
             lsn: None,
             job: Some(n),
             durable: false,
-            body: Body::Hot(e.clone()),
+            body: Body::Hot(Box::new(e.clone())),
         });
         *self.hot_by_author.entry(key.author).or_default() += size as usize;
         self.hot_total += size as usize;
@@ -309,7 +316,7 @@ impl Journal {
                 .filter(|e| e.id() == k.2);
             match e {
                 Some(e) => {
-                    slot.body = Body::Hot(e);
+                    slot.body = Body::Hot(Box::new(e));
                     let size = slot.size as usize;
                     *self.hot_by_author.entry(k.0.author).or_default() += size;
                     self.hot_total += size;
@@ -348,7 +355,7 @@ impl Journal {
                 }
             }
         }
-        cands.sort_by(|a, b| b.0.cmp(&a.0));
+        cands.sort_by_key(|c| std::cmp::Reverse(c.0));
         for (_, k, size) in cands {
             let over = match author {
                 Some(a) => self.hot_by_author.get(&a).copied().unwrap_or(0) > to,
@@ -384,7 +391,7 @@ impl Journal {
                     match &s.body {
                         Body::Taken => {}
                         Body::Hot(e) if !blocked => {
-                            out.push(e.clone());
+                            out.push((**e).clone());
                             let size = s.size as usize;
                             s.body = Body::Taken;
                             if let Some(h) = self.hot_by_author.get_mut(&author) {

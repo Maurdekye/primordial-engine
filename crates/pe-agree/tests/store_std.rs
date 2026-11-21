@@ -50,7 +50,9 @@ fn a_segment_held_open_elsewhere_is_left_and_removed_later() {
     let mut o = std::fs::OpenOptions::new();
     o.read(true);
     #[cfg(windows)]
-    std::os::windows::fs::OpenOptionsExt::share_mode(&mut o, 3 /* FILE_SHARE_READ | FILE_SHARE_WRITE: the log still appends to it */);
+    std::os::windows::fs::OpenOptionsExt::share_mode(
+        &mut o, 3, /* FILE_SHARE_READ | FILE_SHARE_WRITE: the log still appends to it */
+    );
     let held = o.open(&old[0]).unwrap();
     log.checkpoint(&[(2, b"new")]).unwrap();
     log.append(3, b"more").unwrap();
