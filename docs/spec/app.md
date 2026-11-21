@@ -466,12 +466,19 @@ therefore writes the `Admit` only once B has shown it can start (@design-reviewe
   the scripts and split from A at each cut where they act [I]. Both checks are built [V: crate::join's
   `a_world_with_scripts_refuses_the_join_at_the_hello_and_at_the_admit`, a red for each]; the refusal's detail
   reaches B, and A's console says "<player> couldn't join: this world has scripts; joining it comes after M1."
-  From the `Admit` until the new epoch's first final cut, A's pe-api is to answer a script commit `Unavailable` ("a
-  player is joining") [not built: a follow-up after the join lands, @coordinator-opus]. The risk is a
-  commit stamped between the `Admit` and E, which E's state would hold pending without its archive; one stamped
-  after E reaches B as an ordinary entry. A commit made before the `Admit` goes ahead, and the second check then
-  refuses the join. Carrying the archives and building them before stepping
-  past E come after M1 (@item:primordial-engine/build-asymmetry-after-m1-a-member-that-can-t-bui,
+  From B's ready (the `Admit` about to be written) until the new epoch's first final cut, or the join's end if it
+  fails after its `Admit`, A's pe-api answers a live script commit `unavailable` ("a player is joining") before it
+  builds or submits anything; `code_check` and dry runs still answer (api.md 7) [V: pe-api's
+  `a_script_commit_waits_out_a_join`, crate::join's `Inviter::holds_script_commits`]. pe-api's flag is set in step 2,
+  after step 1 may have made B ready, and step 2's drain holds back a script commit pe-api checked before that, so
+  none is stamped with or after the `Admit` [V: `a_script_commit_drained_while_a_join_holds_commits_is_held_back`].
+  The risk is a commit stamped between the `Admit` and E, which E's state would hold pending without its archive;
+  one stamped after E reaches B as an ordinary entry. A commit made before B's ready goes ahead, and the `Admit`'s
+  check then refuses the join: it counts A's own script commit stamped ahead and not yet stepped [V:
+  `the_admit_s_check_counts_a_script_commit_stamped_ahead_and_not_yet_stepped`; @engine-architect's M1 on 1.6]. At
+  n = 1 → 2 only A can commit; another member's commit in flight, at n > 2, is not counted. Carrying the archives
+  and building them before stepping past E come after M1
+  (@item:primordial-engine/build-asymmetry-after-m1-a-member-that-can-t-bui,
   @item:primordial-engine/blob-transport-the-bytes-of-names-and-meshes-ano).
 - **The `Admit`'s world side** (S2): every replica applies an effective `Admit` at its entry's frame with
   `World::admit`: B's member row, its role and its hands, placed by @world-model's spawn rule [pending; provisional:
