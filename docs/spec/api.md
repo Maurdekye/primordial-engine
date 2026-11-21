@@ -607,7 +607,11 @@ From `crates/pe-mcp` at 757219f, about 930 lines (file 06; [V] by reading `src/`
 - the error envelope: a tool error is a tool result with `isError: true` and `{code, message, field?, details?}` as
   its structured content and as its text (`model.rs`);
 - the launch model: `pe-mcp serve -- CMD` issues a fresh token, starts the harness with the token in its environment
-  only, and revokes every token when it exits; `pe-mcp bridge` relays stdio to the pipe.
+  only, and revokes every token when it exits; `pe-mcp bridge` relays stdio to the pipe. The harness inherits
+  standard output and error. It inherits standard input only under `pe-mcp serve`, where it speaks MCP over that
+  stdio. pe-app's `--agent` gets none, because pe-app reads its own console there (B's reply code, `quit`). On
+  Windows, a child that shared a pipe pe-app was reading could hang at start-up (the self-test agent did, in about
+  half its runs).
 
 Dropped: the backends, the engine thread, the simulator view, the test-bench tools (`world_step`, `scenario_*`),
 the `interact` scope, and the server text that called a live peer a simulator (file 06, M6). pe-mcp runs no engine
