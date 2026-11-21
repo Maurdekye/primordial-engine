@@ -25,6 +25,11 @@ pub struct HostOpts {
     pub ttl: Duration,
     /// The harness command line; empty for none.
     pub cmd: Vec<String>,
+    /// Whether the harness shares this process's standard input. Off by default: an application that reads its own
+    /// console there (pe-app: B's reply code, `quit`) must not share it, and on Windows a child sharing a pipe the
+    /// application waits on can hang at start-up (tests/launch.rs). pe-mcp's `serve` turns it on: there the harness
+    /// speaks MCP over the stdio it inherits.
+    pub inherit_stdin: bool,
 }
 
 impl HostOpts {
@@ -38,6 +43,7 @@ impl HostOpts {
             grant,
             ttl: Duration::from_secs(3600),
             cmd: vec![],
+            inherit_stdin: false,
         }
     }
 }
@@ -93,7 +99,11 @@ pub async fn start(api: Api, o: &HostOpts) -> io::Result<Hosted> {
     let store = Arc::new(TokenStore::new());
     let mut cmd = o.cmd.first().map(|c| {
         let mut c = tokio::process::Command::new(c);
+        // Output is inherited; input only where asked (`inherit_stdin`).
         c.args(&o.cmd[1..]).kill_on_drop(true);
+        if !o.inherit_stdin {
+            c.stdin(std::process::Stdio::null());
+        }
         c
     });
     let pipe = if o.pipe {
