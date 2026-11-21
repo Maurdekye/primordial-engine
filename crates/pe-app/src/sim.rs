@@ -2378,6 +2378,56 @@ pub(crate) mod tests {
         assert_eq!(s.stats().hands[0], HandStats::default(), "the left hand did nothing");
     }
 
+    /// The scripted hands (scripted.rs, the pull-ahead's T1) through the simulation: `grab` takes the top ball, lifts
+    /// it and lets it go from a still hand, and `throw` sends it off fast; each closes once, grabs once and opens once.
+    /// Scripted hands carry their velocity, as VR's do, so each open goes out as a `Throw` (world-model.md 8.1): the
+    /// ball leaves at the hand's speed, about 0 from `grab`'s still hand.
+    #[test]
+    fn the_scripted_routines_grab_lift_and_throw_a_ball() {
+        struct NoDesktop;
+        impl pe_seams::HandFeed for NoDesktop {
+            fn hand_at(&self, _: pe_seams::Hand, _: HostTime) -> Option<pe_seams::HandInput> {
+                None
+            }
+        }
+        for routine in ["grab", "throw"] {
+            let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+            let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+            let hands = Arc::new(crate::scripted::ScriptedHands::new(slot.clone(), Arc::new(NoDesktop)));
+            let me = crate::world::DEV_MEMBER;
+            let mut s = s.with_local(me, [7; 32], hands.clone());
+            let mut f = 0;
+            run_frames(&mut s, &clock, &mut f, 120);
+            let ball = top_ball(&slot.newest().expect("published"));
+            hands.start(crate::scripted::load(routine).expect("a routine"));
+            // The routine's close comes 1.2 s in: watch the ball's top speed once it's let go.
+            let hz = u64::from(RATE.hz());
+            let (mut held, mut released_at) = (false, None::<f32>);
+            for _ in 0..(7 * hz) {
+                run_frames(&mut s, &clock, &mut f, 1);
+                let v = slot.newest().expect("published");
+                let b = v.objects.iter().find(|o| o.id == ball).expect("the ball");
+                held |= b.held_by.is_some();
+                if held && b.held_by.is_none() && released_at.is_none() {
+                    // Across the floor: by the first view without the hold, gravity has already pulled for a frame or more.
+                    let [vx, _, vz] = b.linear_velocity;
+                    released_at = Some((vx * vx + vz * vz).sqrt());
+                }
+            }
+            let h = &s.stats().hands[1];
+            assert!(held, "{routine}: the top ball was held");
+            assert_eq!((h.closes, h.opens, h.grabs, h.grabs_applied), (1, 1, 1, 1), "{routine}: {h:?}");
+            assert!(h.grabs_refused.is_empty(), "{routine}: {h:?}");
+            assert_eq!((h.releases, h.throws), (1, 1), "{routine}: one open, carrying the hand's velocity: {h:?}");
+            let speed = released_at.expect("the ball was let go");
+            match routine {
+                "grab" => assert!(speed < 0.3, "grab: the ball left a still hand at {speed} m/s across"),
+                _ => assert!(speed > 2.5, "throw: the ball left at {speed} m/s across"),
+            }
+            assert_eq!(s.stats().hands[0], HandStats::default(), "{routine}: the left hand did nothing");
+        }
+    }
+
     /// D4's hand-off (render.md 8; @item:primordial-engine/letting-go-in-vr-the-ball-flies-at-once-with-no-g): the
     /// publication whose steps apply this member's own `Release` marks the ball `RELEASED_LOCAL`, and it is the one in
     /// which the ball stops being held. No earlier publication marks anything; later ones mark only the ball, until
