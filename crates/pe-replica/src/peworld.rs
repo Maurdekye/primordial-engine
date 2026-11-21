@@ -62,7 +62,7 @@ use pe_seams::{
 use pe_sim::transform::rotate;
 use pe_sim::{Component, ComponentId, SimStore, Transform, WorldTransform};
 use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
-use pe_world::edit::{AssetTarget, Op, Transaction};
+use pe_world::edit::{AssetTarget, Op};
 use pe_world::script::AssetId;
 use pe_world::{Footprint, FrameEnd, RekeyReport, VoidKind, World, input_phase};
 
@@ -220,14 +220,14 @@ impl PeWorld {
         if !applied || entry.entry.class != Class::Edit || self.predict.local != Some(entry.entry.author) {
             return;
         }
-        let Some(tx) = Transaction::decode(&entry.entry.payload) else { return };
+        // A re-issued edit's new ids derive from its original's coordinates (world-model.md 2.3, F3 L3).
+        let Some((tx, o)) = pe_world::branch::decode_edit(&entry.entry) else { return };
         for (i, op) in tx.ops.iter().enumerate() {
             let Op::CommitScript { script, .. } = op else { continue };
             // The asset it commits to: an existing one, or a new one's id derived from the entry (world-model.md 7.9).
-            let e = &entry.entry;
             let asset = match *script {
                 AssetTarget::Existing(a) => a,
-                AssetTarget::New(k) => pe_world::script::asset_created(e.line, e.author, e.chain, e.seq, k),
+                AssetTarget::New(k) => pe_world::script::asset_created(o.line, entry.entry.author, o.chain, o.seq, k),
             };
             let version = Version { entry: entry.id(), op: i as u32 };
             let pending = self.world.pending().get(&asset);
@@ -254,7 +254,7 @@ fn decides(entry: &SignedEntry, p: &Prediction, local: Option<MemberKey>) -> boo
     if entry.entry.class != Class::Edit || local == Some(entry.entry.author) {
         return false;
     }
-    let Some(tx) = Transaction::decode(&entry.entry.payload) else { return false };
+    let Some((tx, _)) = pe_world::branch::decode_edit(&entry.entry) else { return false };
     tx.ops.iter().any(|op| match op {
         Op::AttestBuild { script, version, .. } | Op::BuildFailed { script, version, .. } => {
             *script == p.asset && *version == p.v
