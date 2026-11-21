@@ -3,10 +3,17 @@
 //!
 //! A machine takes the digest at start-up and again whenever a root split asks for a verdict. A different digest
 //! means its physics computes differently now than it did at start-up, so its verdict for the split is `Failed`. The
-//! scene is a fresh world, so it sees how this machine computes now (the CPU, the thread's floating-point mode, the
-//! code and its static data), never a fault in the session's own state. Nor can equal digests clear a fault that is
-//! the same on both runs. Nothing at two members can; the split's pick decides those. The start-up digest is also
-//! what R-G1's hello will carry, so two machines whose physics differ refuse to join (pe-app net.rs).
+//! scene is a fresh world, so it sees how this machine computes now (the CPU, the code and its static data), never a
+//! fault in the session's own state. Nor can equal digests clear a fault that is the same on both runs. Nothing at two
+//! members can; the split's pick decides those. The start-up digest is also what R-G1's hello will carry, so two
+//! machines whose physics differ refuse to join (pe-app net.rs).
+//!
+//! **The floating-point mode is reset first** (@coordinator-opus mee7cf585bfb6, after @fable-reviewer
+//! m14fda3aed4d2). The replica resets the simulation thread to the default mode before every frame
+//! (`pe_core::fpenv::check_and_reset`), so every simulated frame computes in it, whatever a library set on that thread
+//! between frames. The self-test does the same before it runs, on whichever thread calls it, so its digest is what the
+//! session's frames compute, never what a thread's leftover mode would. A mode that was not the default is reported
+//! beside the digest ([`SelfTestDigest::mode_reset`]), as the frames count theirs.
 //!
 //! The scene never depends on a world's settings or tick rate: every machine runs the same one, so digests compare
 //! across machines too.
@@ -76,9 +83,24 @@ pub(crate) fn self_test_run(pw: &mut PhysicsWorld) -> Result<CheckHash, PhysicsE
     pw.check_hash()
 }
 
-/// The self-test's digest: [`self_test_run`] on a fresh [`self_test_scene`].
-pub fn self_test_digest() -> Result<CheckHash, PhysicsError> {
-    self_test_run(&mut self_test_scene()?)
+/// The self-test's result: its digest, taken in the default floating-point mode, and whether the calling thread's mode
+/// was something else when it ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfTestDigest {
+    /// The scene's whole-state check hash after [`SELF_TEST_FRAMES`] frames.
+    pub digest: CheckHash,
+    /// The calling thread's floating-point mode was not the default (round to nearest, no flush-to-zero or
+    /// denormals-are-zero, every exception masked), so the self-test reset it before running: a library on this thread
+    /// changed it. Reported, never hidden, as the frames count `fp_resets`.
+    pub mode_reset: bool,
+}
+
+/// The self-test: [`self_test_run`] on a fresh [`self_test_scene`], in the default floating-point mode. The calling
+/// thread's mode is reset to the default first, as the replica does before every frame, and stays so after.
+pub fn self_test_digest() -> Result<SelfTestDigest, PhysicsError> {
+    let mode_reset = !pe_core::fpenv::check_and_reset();
+    let digest = self_test_run(&mut self_test_scene()?)?;
+    Ok(SelfTestDigest { digest, mode_reset })
 }
 
 fn body(n: usize) -> ObjectId {
@@ -100,7 +122,75 @@ mod tests {
     fn a_perturbed_scene_gives_another_digest() {
         let mut pw = self_test_scene().unwrap();
         pw.push(body(0), Push::Impulse([0.0, 0.001, 0.0])).unwrap();
-        assert_ne!(self_test_run(&mut pw).unwrap(), self_test_digest().unwrap());
+        assert_ne!(self_test_run(&mut pw).unwrap(), self_test_digest().unwrap().digest);
+    }
+
+    /// The thread's floating-point control register: MXCSR on x86-64, FPCR on aarch64.
+    #[cfg(target_arch = "x86_64")]
+    fn control() -> u64 {
+        let mut csr: u32 = 0;
+        // SAFETY: stmxcsr writes 4 bytes to a valid, aligned u32.
+        unsafe { core::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack, preserves_flags)) };
+        u64::from(csr)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_control(v: u64) {
+        let csr = v as u32;
+        // SAFETY: ldmxcsr reads 4 bytes from a valid u32; every value written here keeps exceptions masked.
+        unsafe { core::arch::asm!("ldmxcsr [{}]", in(reg) &csr, options(nostack, preserves_flags, readonly)) };
+    }
+
+    /// Round toward zero, and flush-to-zero with denormals-are-zero: MXCSR's RC = 11 and its FTZ and DAZ bits.
+    #[cfg(target_arch = "x86_64")]
+    const NOT_DEFAULT: u64 = 0x1F80 | 0x6000 | (1 << 15) | (1 << 6);
+
+    #[cfg(target_arch = "aarch64")]
+    fn control() -> u64 {
+        let v: u64;
+        // SAFETY: reading FPCR has no side effects.
+        unsafe { core::arch::asm!("mrs {}, fpcr", out(reg) v, options(nomem, nostack, preserves_flags)) };
+        v
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn set_control(v: u64) {
+        // SAFETY: writing FPCR changes only this thread's floating-point modes; no trap bit is set here.
+        unsafe { core::arch::asm!("msr fpcr, {}", in(reg) v, options(nomem, nostack, preserves_flags)) };
+    }
+
+    /// Round toward zero (RMode = 11) and flush-to-zero (FZ): FPCR's bits 22-23 and 24.
+    #[cfg(target_arch = "aarch64")]
+    const NOT_DEFAULT: u64 = (0b11 << 22) | (1 << 24);
+
+    /// A thread left in another floating-point mode, by a library say, still gives the default mode's digest: the
+    /// self-test resets the mode first, reports that it had to, and leaves the thread in the default mode.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[test]
+    fn a_thread_in_another_floating_point_mode_gives_the_default_mode_s_digest_and_says_so() {
+        let reference = self_test_digest().unwrap();
+        assert!(!reference.mode_reset, "the test thread starts in the default mode");
+        let default = control();
+        set_control(NOT_DEFAULT);
+        let got = self_test_digest();
+        let after = control();
+        set_control(default);
+        assert_eq!(got.unwrap(), SelfTestDigest { digest: reference.digest, mode_reset: true });
+        assert_eq!(after, default, "left in the default mode");
+    }
+
+    /// The mode does matter on this scene [V on x86-64, the probe on abe1c3fd]: run in it without the reset, the scene
+    /// gives another digest, which a `Failed` verdict would read.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn without_the_reset_rounding_toward_zero_gives_another_digest() {
+        let reference = self_test_digest().unwrap().digest;
+        let default = control();
+        let mut pw = self_test_scene().unwrap();
+        set_control(NOT_DEFAULT);
+        let got = self_test_run(&mut pw);
+        set_control(default);
+        assert_ne!(got.unwrap(), reference);
     }
 
     /// It is cheap enough to run on the simulation thread in M1 (divergence.md 5; app.md 1): reported, not asserted,

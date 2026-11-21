@@ -212,6 +212,9 @@ pub struct SimStats {
     pub revotes_refused: u64,
     pub self_tests: u64,
     pub self_tests_failed: u64,
+    /// Self-tests, the start-up one included, that found this thread's floating-point mode other than the default and
+    /// reset it first (pe-physics `SelfTestDigest::mode_reset`): their digests are still the default mode's.
+    pub self_test_mode_resets: u64,
     /// Self-tests reported `Failed` because `--inject-fault-at`'s fault fired here ([`crate::fault`]), whatever their
     /// digest: those with a different digest also count in `self_tests_failed`.
     pub self_tests_injected: u64,
