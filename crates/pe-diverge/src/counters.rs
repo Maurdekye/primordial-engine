@@ -52,6 +52,9 @@ pub struct Counters {
     pub bad_messages: u64,
     /// Well-formed replies nobody was waiting for (late, or from a source already given up): ignored.
     pub stale_replies: u64,
+    /// Root splits whose target this machine already held without a cure (an import that finished after its repair
+    /// was dropped): the target was voted again ([`crate::Action::Revote`]) instead of repaired to.
+    pub revotes_held: u64,
     /// Requests refused: an unknown root, a peer over its budget, or a second physics image of one root.
     pub serve_refused: u64,
     /// Messages not sent because they broke a codec limit (nothing is truncated).
