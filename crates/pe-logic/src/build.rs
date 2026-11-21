@@ -188,6 +188,38 @@ fn tool_notes(m: &serde_json::Value) -> String {
 pub struct Built {
     pub wasm: Vec<u8>,
     pub warnings: Vec<RustcMessage>,
+    /// The dep-info files of the pe-sdk this build linked, from cargo's `compiler-artifact` records (fresh ones
+    /// too): what [`check_reads`] checks besides the script's own. A shared target can hold other pe-sdk copies'
+    /// dep-info, which this build never read (@api-eng: every deployed pe-app has its own copy).
+    pub sdk_dep_info: Vec<PathBuf>,
+}
+
+/// The dep-info file of each `pe_sdk` unit cargo reports in its JSON output: a `compiler-artifact` record names the
+/// unit's outputs, `deps/libpe_sdk-<hash>.rlib` (and `.rmeta`), and rustc writes its dep-info beside them as
+/// `deps/pe_sdk-<hash>.d`.
+pub fn sdk_dep_info(stdout: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v.get("reason").and_then(|r| r.as_str()) != Some("compiler-artifact") {
+            continue;
+        }
+        let name = v.get("target").and_then(|t| t.get("name")).and_then(|n| n.as_str()).unwrap_or_default();
+        if name.replace('-', "_") != "pe_sdk" {
+            continue;
+        }
+        for f in v.get("filenames").and_then(|f| f.as_array()).into_iter().flatten().filter_map(|f| f.as_str()) {
+            let f = Path::new(f);
+            let stem = f.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+            if let (Some(dir), Some(unit)) = (f.parent(), stem.strip_prefix("lib")) {
+                let d = dir.join(format!("{unit}.d"));
+                if !out.contains(&d) {
+                    out.push(d);
+                }
+            }
+        }
+    }
+    out
 }
 
 impl std::error::Error for BuildError {}
@@ -558,7 +590,7 @@ pub fn build_archive_reporting(
     let manifest = TEMPLATE.replace("{SDK}", &sdk_path);
     std::fs::write(dir.join("Cargo.toml"), manifest).map_err(io)?;
     let built = build_reporting(tc, &dir, sdk, target_dir, offline)?;
-    check_reads(&dir, sdk, target_dir, "script")?;
+    check_reads(&dir, sdk, target_dir, "script", &built.sdk_dep_info)?;
     Ok(built)
 }
 
@@ -568,17 +600,24 @@ pub fn build_archive_reporting(
 /// asked for, set or not [V `spikes/out/iter-bench/build-asym/depinfo.log`]. Without build scripts and proc macros
 /// (4.1) nothing else can read on rustc's behalf [I]. It refuses what the script tried to read, not what it got, so
 /// it refuses on every machine alike: a file present on one machine and missing on another is refused here on the
-/// first, and on the second is rustc's `couldn't read`, which [`BuildError::reason`] also calls `Refused`. `name` is the script crate's (`script` for an archive).
-pub fn check_reads(crate_dir: &Path, sdk: &Path, target_dir: &Path, name: &str) -> Result<(), BuildError> {
+/// first, and on the second is rustc's `couldn't read`, which [`BuildError::reason`] also calls `Refused`. `name` is
+/// the script crate's (`script` for an archive). `sdk_dep_info` is the pe-sdk dep-info of this build, as
+/// [`Built::sdk_dep_info`] gives it: only those, never every `pe_sdk-*.d` the target holds, since a shared target can
+/// hold another pe-sdk copy's, which this build never read (@api-eng). None is refused: the check would
+/// then cover the script's half only.
+pub fn check_reads(
+    crate_dir: &Path,
+    sdk: &Path,
+    target_dir: &Path,
+    name: &str,
+    sdk_dep_info: &[PathBuf],
+) -> Result<(), BuildError> {
     let deps = target_dir.join("wasm32-unknown-unknown").join("release").join("deps");
-    let mut files = vec![(deps.join(format!("{name}.d")), crate_dir.to_path_buf())];
-    let entries = std::fs::read_dir(&deps).map_err(|e| BuildError::Refused(format!("no dep-info: {e}")))?;
-    for e in entries.flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        if n.starts_with("pe_sdk-") && n.ends_with(".d") {
-            files.push((e.path(), sdk.to_path_buf()));
-        }
+    if sdk_dep_info.is_empty() {
+        return Err(BuildError::Refused("cargo reported no pe-sdk unit, so its reads can't be checked".into()));
     }
+    let mut files = vec![(deps.join(format!("{name}.d")), crate_dir.to_path_buf())];
+    files.extend(sdk_dep_info.iter().map(|d| (d.clone(), sdk.to_path_buf())));
     let allowed = [canonical(&crate_dir.join("src")), canonical(&sdk.join("src"))];
     for (file, base) in files {
         let text = std::fs::read_to_string(&file)
@@ -760,12 +799,13 @@ pub fn build_reporting(
     let path = target_dir.join("wasm32-unknown-unknown").join("release").join(format!("{name}.wasm"));
     let wasm = std::fs::read(&path).map_err(|_| BuildError::NoModule(path))?;
     let own = name.replace('-', "_");
-    let warnings = parse_json(&String::from_utf8_lossy(&out.stdout))
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let warnings = parse_json(&stdout)
         .into_iter()
         .filter(|(t, m, _)| t.replace('-', "_") == own && m.level == "warning" && !m.spans.is_empty())
         .map(|(_, m, _)| m)
         .collect();
-    Ok(Built { wasm, warnings })
+    Ok(Built { wasm, warnings, sdk_dep_info: sdk_dep_info(&stdout) })
 }
 
 #[cfg(test)]
