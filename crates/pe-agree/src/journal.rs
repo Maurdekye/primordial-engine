@@ -288,7 +288,9 @@ impl Journal {
                 }
             }
             Some(Pending::Compact(keys, dead_then)) => {
-                let mut moved = false;
+                // An empty keep set leaves nothing to move, but the compaction did drop every dead record: without
+                // this, `dead` never falls and an empty checkpoint follows every `compact_every_ns`.
+                let mut moved = keys.is_empty();
                 for (k, lsn) in keys.iter().zip(&d.lsns) {
                     if let Some(s) = self.slot_mut(k) {
                         moved |= s.lsn != Some(*lsn);
