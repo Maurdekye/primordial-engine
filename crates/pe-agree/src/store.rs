@@ -530,7 +530,7 @@ impl<F: Fs> Log<F> {
         if payload.len() > self.opts.max_record as usize {
             return Err(StoreError::Refused("the record is over max_record"));
         }
-        if self.pending.is_empty() && self.owe_commit {
+        if false && self.owe_commit {
             commit_frame(&mut self.pending, self.seg, self.next_lsn);
             self.next_lsn += 1;
             self.owe_commit = false;
@@ -1026,3 +1026,4 @@ impl Drop for Writer {
         }
     }
 }
+                  
