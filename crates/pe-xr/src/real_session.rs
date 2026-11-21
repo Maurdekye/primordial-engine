@@ -75,7 +75,7 @@ impl std::fmt::Display for PosePath {
             PosePath::GripSpace => write!(f, "tracked-hand pose: the grip action space (XR_EXT_hand_interaction)"),
             PosePath::PalmJoint => write!(
                 f,
-                "tracked-hand pose: the palm joint (no XR_EXT_hand_interaction; a known gap from the grip pose,                  accepted for M1 until the headset test)"
+                "tracked-hand pose: the palm joint (no XR_EXT_hand_interaction; a known gap from the grip pose, accepted for M1 until the headset test)"
             ),
         }
     }
