@@ -315,7 +315,9 @@ which fixes the origin's role deliberately.
     caller (L5) founds a second branch only after the first's re-issues are done.
   - **Room for the prefixes** (@diverge-eng's L1): an edit's encoded bytes are at most `edit::MAX_EDIT_BYTES` =
     `MAX_PAYLOAD - 8 · 105` (longer is `Malformed`), so any edit can be re-issued across 8 branches within the
-    entry's cap [V `an_edit_leaves_room_to_be_re_issued_across_every_branch`].
+    entry's cap [V `an_edit_leaves_room_to_be_re_issued_across_every_branch`]. The cap is checked where an edit
+    decodes, which pe-api's dry run does before it signs, so an author through pe-api hears of it before submitting
+    (@diverge-eng's nit). No recorded edit is that large, so no line replays differently under it.
   - **Other readers** decode an edit with `branch::decode_edit(signed entry)`, which gives the transaction and its
     `Origin`: the coordinates its ids derive from and the entry its versions name, for a plain edit and a re-issued
     one alike. pe-app reconciles a re-issue with its original by `Origin.entry` (S5, @diverge-eng). pe-replica's
