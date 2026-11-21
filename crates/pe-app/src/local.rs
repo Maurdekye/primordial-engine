@@ -360,7 +360,7 @@ fn mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 }
 
 /// `v` rotated by the unit quaternion `q`.
-fn rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+pub(crate) fn rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
     let r = mul(mul(q, [v[0], v[1], v[2], 0.0]), [-q[0], -q[1], -q[2], q[3]]);
     [r[0], r[1], r[2]]
 }

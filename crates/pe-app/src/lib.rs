@@ -36,6 +36,7 @@ pub mod log;
 pub mod net;
 pub mod phases;
 pub mod replay;
+pub mod scripted;
 pub mod shown;
 pub mod sim;
 #[cfg(test)]
