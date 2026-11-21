@@ -626,7 +626,7 @@ fn active_tag(snap: &WorldSnapshot, script: &Script, op: u32) -> Result<(pe_sim:
             return Err(refused_at(
                 op,
                 RefusalCode::NotReady,
-                "Nothing was submitted. A new script can't be attached in the same change: commit it without `attach`,                  then attach it once its `mine` item says `activated`."
+                "Nothing was submitted. A new script can't be attached in the same change: commit it without `attach`, then attach it once its `mine` item says `activated`."
                     .into(),
             ));
         }
@@ -637,7 +637,7 @@ fn active_tag(snap: &WorldSnapshot, script: &Script, op: u32) -> Result<(pe_sim:
             Some(p) if p.void.is_none() => refused_at(
                 op,
                 RefusalCode::NotReady,
-                "Nothing was submitted. The script's first version isn't active yet: attach it once its `mine` item                  says `activated`."
+                "Nothing was submitted. The script's first version isn't active yet: attach it once its `mine` item says `activated`."
                     .into(),
             ),
             Some(_) => refused_at(

@@ -35,6 +35,8 @@ fn parse(args: &[String]) -> Result<HostOpts, String> {
         confirm: false,
     };
     let mut o = HostOpts::new(grant);
+    // The harness speaks MCP over the stdio it inherits (`serve-mock --pipe -- pe-mcp bridge`).
+    o.inherit_stdin = true;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();

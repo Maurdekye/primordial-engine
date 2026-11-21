@@ -563,7 +563,10 @@ impl DesktopView {
         g.window.pre_present_notify();
         g.renderer.context().queue.present(tex);
         if let Some(c) = self.captures.as_mut() {
-            c.serve(&mut g.renderer, &view, Some(&camera));
+            let at = (self.cfg.clock)();
+            for e in c.serve(&mut g.renderer, &view, Some(&camera)) {
+                self.cfg.presenter.capture_event(at, e);
+            }
         }
         self.report.frames += 1;
         self.report.cpu_record_ms.push(stats.cpu_record_ms);

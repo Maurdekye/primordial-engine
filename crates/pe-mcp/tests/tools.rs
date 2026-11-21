@@ -235,6 +235,15 @@ async fn an_unknown_op_field_is_refused() {
     assert!(e["message"].as_str().unwrap().contains("if_version"), "{e}");
 }
 
+// So is an unknown query field: the self-test's agent once wrote `select` for `where`, and read the root's children
+// (coordinator).
+#[tokio::test]
+async fn an_unknown_query_field_is_refused() {
+    let (_w, c) = client().await;
+    let e = err(&c, "world_query", json!({"select": {"name": "Lamp"}}), "invalid_argument").await;
+    assert!(e["message"].as_str().unwrap().contains("select"), "{e}");
+}
+
 #[tokio::test]
 async fn world_held_needs_edit_and_a_known_handle() {
     // api.md 9.4: a handle with none of the caller's changes is invalid_argument; a read-only token can't act.
