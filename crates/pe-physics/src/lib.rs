@@ -42,7 +42,7 @@ pub use digest::BodyDigest;
 pub use error::PhysicsError;
 pub use image::{CheckHash, Transfer, WorldImage};
 pub use pe_core::ids::ObjectId;
-pub use selftest::{SELF_TEST_DT, SELF_TEST_FRAMES, self_test_digest};
+pub use selftest::{SELF_TEST_DT, SELF_TEST_FRAMES, SelfTestDigest, self_test_digest};
 pub use world::{GrabSpring, HoldReach, JointDesc, JointKey, JointKind, PhysicsWorld, Pose, Push, WriteBack};
 
 /// Sends Box3D's warnings (the narrow phase's complex-mesh warning) to `sink` instead of standard error: pe-app's
