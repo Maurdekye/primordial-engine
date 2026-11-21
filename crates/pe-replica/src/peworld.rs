@@ -62,7 +62,7 @@ use pe_seams::{
 use pe_sim::transform::rotate;
 use pe_sim::{Component, ComponentId, SimStore, Transform, WorldTransform};
 use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
-use pe_world::edit::{AssetTarget, Op, Transaction};
+use pe_world::edit::{AssetTarget, Op};
 use pe_world::script::AssetId;
 use pe_world::{Footprint, FrameEnd, RekeyReport, VoidKind, World, input_phase};
 
@@ -194,16 +194,14 @@ impl PeWorld {
     /// by it, at the entry's frame (`World::admit`), so every replica holds the joiner from the same frame, and the
     /// world at the reconfiguring cut E, which E's certificate covers, holds it for the joiner's import. Who may admit
     /// is S3's governance fold: an `Admit` S3 voids (`NotAuthorized`, `NoChange`) and this replica stepped before its
-    /// void was known is dropped like any voided entry. Refused here, as S3 voids them: a malformed payload, and a key
-    /// that is a member already, which `World::admit` alone wouldn't catch, since a hand's id includes its frame.
+    /// void was known is dropped like any voided entry. Refused here, as S3 voids it: a malformed payload. A key that
+    /// is a member of the world already is a returning member (F3's n = 2 branch: B on the new line, which S3's epoch
+    /// doesn't hold yet): `World::admit` keeps its hands and permissions and spawns nothing. In a session's own line S3
+    /// voids such an `Admit` (`NoChange`), so stepping it before the void is known changes nothing.
     /// The hands need no effects: the frame's hand sync builds their bodies from the world's hands, as for a `Leave`.
     fn admit(&mut self, frame: Frame, entry: &SignedEntry, admit: Option<pe_seams::Admit>) -> (Outcome, Effects) {
         let refused = |reason| (Outcome::Refused { op: None, reason }, Effects::default());
         let Some(admit) = admit else { return refused(Reason::Malformed) };
-        let snapshot = self.world.snapshot(frame);
-        if snapshot.perms(admit.key).is_some() {
-            return refused(Reason::Invalid { field: None });
-        }
         // Where it stands: the lowest slot of the genesis row no hand takes, read from the world as it stands when this
         // `Admit` applies (pe-world's `World::join_spawn`, world-model.md 2.4).
         let spawn = self.world.join_spawn();
@@ -231,16 +229,18 @@ impl PeWorld {
         if !applied || entry.entry.class != Class::Edit || self.predict.local != Some(entry.entry.author) {
             return;
         }
-        let Some(tx) = Transaction::decode(&entry.entry.payload) else { return };
+        // A re-issued edit's new ids derive from its original's coordinates (world-model.md 2.3, F3 L3).
+        let Some((tx, o)) = pe_world::branch::decode_edit(entry) else { return };
         for (i, op) in tx.ops.iter().enumerate() {
             let Op::CommitScript { script, .. } = op else { continue };
-            // The asset it commits to: an existing one, or a new one's id derived from the entry (world-model.md 7.9).
-            let e = &entry.entry;
+            // The asset it commits to: an existing one, or a new one's id derived from the entry's origin, its
+            // original's coordinates when re-issued (world-model.md 7.9, 2.4).
             let asset = match *script {
                 AssetTarget::Existing(a) => a,
-                AssetTarget::New(k) => pe_world::script::asset_created(e.line, e.author, e.chain, e.seq, k),
+                AssetTarget::New(k) => pe_world::script::asset_created(o.line, entry.entry.author, o.chain, o.seq, k),
             };
-            let version = Version { entry: entry.id(), op: i as u32 };
+            // Its version names its origin's entry, the original when re-issued, as pe-world writes it (2.4).
+            let version = Version { entry: o.entry, op: i as u32 };
             let pending = self.world.pending().get(&asset);
             let live = pending.filter(|p| p.version == version && p.void.is_none() && !p.attested_by_quorum());
             if let Some(p) = live.filter(|_| !self.predict.ended.contains(&(asset, version))) {
@@ -274,7 +274,7 @@ fn decides(entry: &SignedEntry, p: &Prediction, local: Option<MemberKey>) -> boo
     if entry.entry.class != Class::Edit || local == Some(entry.entry.author) {
         return false;
     }
-    let Some(tx) = Transaction::decode(&entry.entry.payload) else { return false };
+    let Some((tx, _)) = pe_world::branch::decode_edit(entry) else { return false };
     tx.ops.iter().any(|op| match op {
         Op::AttestBuild { script, version, .. } | Op::BuildFailed { script, version, .. } => {
             *script == p.asset && *version == p.v

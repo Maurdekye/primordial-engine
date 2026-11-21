@@ -312,9 +312,27 @@ impl World {
         if e.class != Class::Edit {
             return Err((None, Reason::Malformed));
         }
-        let tx = Transaction::decode(&e.payload).ok_or((None, Reason::Malformed))?;
-        let src = Source { entry: entry.id(), author: e.author, line: e.line, chain: e.chain, seq: e.seq };
-        self.apply_tx(frame, &src, &tx)
+        let (tx, origin) = crate::branch::decode_edit(entry).ok_or((None, Reason::Malformed))?;
+        // A re-issued edit (F3's n = 2 branch, [`crate::branch`]): its outermost reference must name a sealed original
+        // of the branch this world continues from, by the same author, with exactly the bytes it re-issues. Its ids,
+        // row tags and new asset ids derive from its innermost original's line, chain and seq, so they are the ids
+        // the original made, and its versions name that original (@diverge-eng's M1), so a later re-issued edit's
+        // `Version` and `ObjectVersion` preconditions, read on the parent line, hold.
+        let reissue = crate::branch::split_reissue(&e.payload);
+        if let Some((r, inner)) = &reissue
+            && !self.branch.admits(e.author, r, inner)
+        {
+            return Err((None, invalid()));
+        }
+        let src =
+            Source { entry: origin.entry, author: e.author, line: origin.line, chain: origin.chain, seq: origin.seq };
+        let applied = self.apply_tx(frame, &src, &tx)?;
+        // Each original is re-issued once: an applied re-issue takes it out of the record. A refused one changes
+        // nothing, so the original may be re-issued again.
+        if let Some((r, _)) = reissue {
+            Arc::make_mut(&mut self.branch).sealed.remove(&(r.chain, r.seq));
+        }
+        Ok(applied)
     }
 
     /// The one edit path after decoding, for a signed entry and a draft alike.

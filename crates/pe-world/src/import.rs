@@ -11,7 +11,7 @@ use pe_sim::{ComponentDesc, ComponentId, FieldKind, RowVersion, WorldTransform};
 use crate::components::ids;
 use crate::input::{HandPose, InputSettings, Pack};
 use crate::script::AssetId;
-use crate::tree::{schema_hash, table, table_hash, table_record};
+use crate::tree::{schema_hash, table, table_hash};
 use crate::world::{Claim, Tombstone, World};
 
 /// A reader over a record's bytes; every read is checked, so a short or malformed record is an error, never a panic.
@@ -321,7 +321,8 @@ impl World {
     ///   without the physics image;
     /// - `RateMismatch` if the checked config record names a rate other than this world's (M1 runs one rate);
     /// - `PhysicsCheck` if the image's `global` is not the target's `physics_global`;
-    /// - `RootMismatch` for a registry, lines or modules table other than this world's (M1 imports none of them).
+    /// - `RootMismatch` for a registry or modules table other than this world's (M1 imports neither). The lines
+    ///   table, the branch record, imports like any other table.
     ///
     /// `import.absent` is not proven here: removing a leaf has no record to check. The caller's comparison of the
     /// patched root with the target root is what covers it (pe-replica restores the live state on a mismatch), so that
@@ -493,20 +494,17 @@ impl World {
             table::TOMBSTONES => self.tombstones = Arc::default(),
             table::HAND_PACKS => Arc::make_mut(&mut self.inputs).packs.clear(),
             table::PUSH_WINDOWS => Arc::make_mut(&mut self.inputs).pushes.clear(),
+            table::LINES => self.branch = Arc::default(),
             _ => {}
         }
     }
 
-    /// Replaces table `t` from its record. `None` if the record does not decode; `Some(Err)` for the lines table,
-    /// which M1 cannot import unless it equals this world's. The registry is applied by `import` itself.
+    /// Replaces table `t` from its record. `None` if the record does not decode, or is not a branch record a world
+    /// could hold (the lines table, [`crate::branch`]). The registry is applied by `import` itself.
     fn import_table(&mut self, t: u8, bytes: &[u8]) -> Option<Result<(), ImportError>> {
         let entries = table_entries(bytes)?;
         match t {
-            table::LINES => {
-                if bytes != table_record(&self.table_entries(t)).as_slice() {
-                    return Some(Err(ImportError::RootMismatch { got: Hash::ZERO }));
-                }
-            }
+            table::LINES => self.branch = Arc::new(crate::branch::BranchTable::from_entries(&entries)?),
             table::MODULES => {
                 let (mut m, mut p) = (BTreeMap::new(), BTreeMap::new());
                 for (k, v) in entries {

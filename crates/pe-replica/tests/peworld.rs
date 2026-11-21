@@ -805,11 +805,13 @@ fn an_admit_admits_its_key_with_its_role_and_two_hands() {
     assert!(matches!(pw.apply(Frame(5), &next).0, Outcome::Applied { .. }));
     assert_eq!(hands_of(&pw, second), slot(second, Frame(5), 0.6), "the next free slot, not the members' count");
 
+    // A member admitted again is a returning one (F3 L3): it applies and changes nothing. A malformed one is refused.
     let again = b.next(Class::Protocol, Frame(6), pe_seams::Admit::new(joiner, perm::EDIT).encode());
+    let before = pw.world().root_hash(DomainId(0));
+    assert!(matches!(pw.apply(Frame(6), &again).0, Outcome::Applied { .. }));
+    assert_eq!(pw.world().root_hash(DomainId(0)), before, "a returning member changes nothing");
     let malformed = b.next(Class::Protocol, Frame(6), Bytes::from([pe_seams::ADMIT, &[1]].concat()));
-    for e in [&again, &malformed] {
-        assert!(matches!(pw.apply(Frame(6), e).0, Outcome::Refused { .. }));
-    }
+    assert!(matches!(pw.apply(Frame(6), &malformed).0, Outcome::Refused { .. }));
     assert_eq!(pw.world().snapshot(Frame(6)).perms(joiner), Some(role), "the first role stands");
     assert_eq!(hands(&pw).len(), 2, "no more hands");
 }
