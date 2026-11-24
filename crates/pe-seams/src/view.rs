@@ -542,14 +542,17 @@ pub struct FrameView {
     /// sounds). Each frame's come from its latest step: a frame stepped twice before a view carries only the later
     /// step's, since no view showed the first and the world no longer has it. A frame re-stepped after a view showed
     /// it carries its hits again, `resimulated`, in a later view. The reader matches those with the ones it had (the
-    /// same pair at about the same time) and plays only what is new. A rung-2 import drops the unpublished hits of
-    /// the frames below its cut, which the importer never steps again. Equal frames give equal hits on every replica.
+    /// same pair at about the same time) and plays only what is new. It also drops a new hit whose `sim_time` is more
+    /// than a short horizon (about 100-200 ms) behind this view's, so a correction never sounds late: a deep
+    /// re-simulation, such as an outage's, carries hits from seconds back (@design-reviewer's L1). A rung-2 import
+    /// drops the unpublished hits of the frames below its cut, which the importer never steps again. Equal frames
+    /// give equal hits on every replica.
     pub hits: Vec<Hit>,
     /// The lowest frame stepped since the last publication (S5 v1.11), or `None` if none was. Every frame from it up
     /// to `frame` was stepped since then, and `hits` lists exactly the hits of their latest steps, so a frame in
-    /// that range that `hits` doesn't name had none. After a rollback it is below the last view's frame: a reader
-    /// that keeps hits by frame drops what it had for this range before it takes `hits`, so a hit the re-step no
-    /// longer has is gone from its record too.
+    /// that range that `hits` doesn't name had none. After a rollback it is below the last view's frame. A reader
+    /// that keeps hits by frame matches `hits` against its record for this range, plays only those it lacks, then
+    /// replaces the record for the range with `hits`, so a hit the re-step no longer has is gone from it too.
     pub hits_from: Option<Frame>,
 }
 
