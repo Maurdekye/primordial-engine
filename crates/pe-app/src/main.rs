@@ -122,8 +122,9 @@ struct Options {
     /// not cover, so the world is drawn that long before the moment shown. 0 by default.
     display_delay: Duration,
     /// `--preset ball-pit|plane`: the world an `--open` session starts (genesis.rs `PRESET`, `PLANE`); the ball pit
-    /// with 500 balls by default.
-    preset: pe_world::preset::Preset,
+    /// with 500 balls when not given. Only the opener's choice counts: a joiner builds the world its imported record
+    /// names, and says so if it was given one (@engine-architect).
+    preset: Option<pe_world::preset::Preset>,
     /// `--inject-fault-at`: the frame at which this machine injects a deliberate test fault (pe-app's `fault`).
     inject_fault_at: Option<Frame>,
     /// `--arm-fault`: the console's typed `fault` injects that test fault at the next frame.
@@ -157,7 +158,7 @@ fn options() -> Options {
         agent_name: None,
         drawn_time: None,
         display_delay: Duration::ZERO,
-        preset: pe_world::preset::Preset::BallPit { balls: 500 },
+        preset: None,
         inject_fault_at: None,
         arm_fault: false,
         check_replay: false,
@@ -189,11 +190,11 @@ fn options() -> Options {
                     ms.and_then(|ms| Duration::try_from_secs_f64(ms / 1e3).ok()).unwrap_or_else(|| usage());
             }
             "--preset" => {
-                o.preset = match args.next().as_deref() {
+                o.preset = Some(match args.next().as_deref() {
                     Some("ball-pit") => pe_world::preset::Preset::BallPit { balls: 500 },
                     Some("plane") => pe_world::preset::Preset::Plane,
                     _ => usage(),
-                }
+                })
             }
             "--arm-fault" => o.arm_fault = true,
             "--hands" => o.hands = Some(args.next().filter(|h| !h.is_empty()).unwrap_or_else(|| usage())),
@@ -344,8 +345,13 @@ fn shared_sim(
         Shared::Open => {
             // B's delay is the session's: the opener's option, in the genesis record (app.md 3).
             let display_delay_ms = u32::try_from(o.display_delay.as_millis()).unwrap_or(u32::MAX);
-            let p =
-                OpenParams { seed: WORLD_SEED, preset: o.preset, rate, epoch_lead: Duration::ZERO, display_delay_ms };
+            let p = OpenParams {
+                seed: WORLD_SEED,
+                preset: o.preset.unwrap_or(pe_world::preset::Preset::BallPit { balls: 500 }),
+                rate,
+                epoch_lead: Duration::ZERO,
+                display_delay_ms,
+            };
             let opened = ep
                 .open_alone(&p, INVITE_VALID, T_JOIN, runner)
                 .unwrap_or_else(|e| fail(&format!("the session did not start: {e}")));
@@ -371,6 +377,9 @@ fn shared_sim(
             }
         }
         Shared::Join(invite) => {
+            if o.preset.is_some() {
+                pe_app::out!("--preset is ignored when joining: the world is the one the opener's record names");
+            }
             pe_app::out!("reply code for the opener: {}", ep.reply(invite).encode());
             ep.dial(invite).unwrap_or_else(|e| fail(&e.to_string()));
             let cj = ep

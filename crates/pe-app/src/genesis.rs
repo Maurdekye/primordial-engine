@@ -819,6 +819,33 @@ mod tests {
     /// A opens alone (app.md 4, "Joining from a cut"): the record names A only, with its role, and A's world, replica
     /// and pe-agree configuration hold A alone. pe-agree's governance table is the world's member table: the same
     /// bits. A joiner's check takes the record; the interim's, which wants two members, refuses it.
+    /// The friend test's plane (`--preset plane`): the record names `plane` v1 with no balls, B rebuilds the same
+    /// world from it (the joiner's own flag never reaches `join_at_cut`), and a record naming the plane with balls, or
+    /// another version, is an unknown preset.
+    #[test]
+    fn a_plane_record_rebuilds_the_plane_and_a_plane_with_balls_is_refused() {
+        let p = Params { preset: preset::Preset::Plane, ..params() };
+        let (g, mut a, _) = Genesis::ball_pit(&p, clock(), runner()).expect("A's genesis");
+        assert_eq!((g.preset.name.as_str(), g.preset.version, g.preset.balls), (PLANE, PLANE_VERSION, 0));
+        let got = Genesis::decode(&g.encode()).expect("a record");
+        assert_eq!(got.preset(), Ok(preset::Preset::Plane));
+        got.check(B, A, BUILD).expect("B's check");
+        let (mut b, _) = got.build(B, clock(), runner()).expect("B's genesis");
+        let mut source = crate::standin::SoloAgreement::new(g.line());
+        let ra = a.root_at_cut(&g.genesis_cut(), &mut source).expect("A's root");
+        let rb = b.root_at_cut(&g.genesis_cut(), &mut source).expect("B's root");
+        assert_eq!((ra, rb), (g.replica_root, g.replica_root));
+        let world = got.world().expect("the plane");
+        assert!(preset::find(&world, preset::plane_names::TEMPLATES).is_some());
+        let pit = Genesis::ball_pit(&params(), clock(), runner()).expect("the pit").0;
+        assert_ne!(pit.root, g.root);
+        for bad in [|r: &mut Genesis| r.preset.balls = 8, |r: &mut Genesis| r.preset.version += 1] {
+            let mut r = got.clone();
+            bad(&mut r);
+            assert!(matches!(r.preset(), Err(GenesisError::Preset { .. })), "{:?}", r.preset);
+        }
+    }
+
     #[test]
     fn a_world_opened_alone_names_the_opener_only() {
         let alone = Params { joiner: None, ..params() };

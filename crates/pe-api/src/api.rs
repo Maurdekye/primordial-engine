@@ -2552,6 +2552,38 @@ mod tests {
         pe_seams::Outcome::Applied { created, overwrote: vec![], notes: vec![], inverse: None }
     }
 
+    /// The friend test's plane (pe-world `preset::plane_on`): each of its templates spawns under `/Spawned` with one
+    /// `create` (which needs a `name`), the box stack's five bodies included; `world_schema` lists the four (@xr-eng's
+    /// spawn buttons).
+    #[test]
+    fn the_plane_s_templates_spawn_under_spawned_with_one_create_each() {
+        use pe_world::preset::plane_names as n;
+        let line = pe_core::LineId(Hash([7; 32]));
+        let mut w = pe_world::preset::plane_on(line, 5, BlobStore::default(), Pos::ORIGIN);
+        w.set_member(ALICE, perm::EDIT | perm::ADMIN);
+        w.set_frame(CoreFrame(4));
+        let a = Api::new(
+            Src(Mutex::new(w.snapshot(CoreFrame(4)))),
+            Arc::new(EditQueue::new(2, || {})),
+            Arc::new(ChangeLog::new()),
+        );
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        let pe_seams::world_api::Schema::List { templates, .. } = a.schema(&c, &Default::default()).unwrap() else {
+            panic!("a list")
+        };
+        let names: Vec<String> = templates.iter().map(|t| t.name.clone()).collect();
+        assert_eq!(names, [n::BOX, n::SPHERE, n::CAPSULE, n::STACK]);
+        for (template, objects) in [(n::BOX, 1), (n::SPHERE, 1), (n::CAPSULE, 1), (n::STACK, 1 + n::STACK_BOXES)] {
+            let spawn =
+                tx(json!([{"op": "create", "template": template, "name": template, "parent": "/Spawned", "as": "$s",
+                "components": {"Transform": {"position": {"offset": [0.5, 1.0, -0.5], "relative_to": "parent"}}}}]));
+            let o = a.apply(&c, spawn, &dry).unwrap();
+            assert_eq!((o.status, o.count), (Status::Accepted, objects as u64), "{template}: {:?}", o.refusal);
+            assert!(o.created.contains_key("$s"), "{template}");
+        }
+    }
+
     /// api.md 4.2 and 5.3.2: an accepted change reports the objects it changed with the versions it left, and those
     /// enter the caller's table, so the caller's next op on the same object, without a fresh read, isn't refused as
     /// stale for the caller's own change (the self-test's step 6: attach a script to the Lamp, then replace its Light).

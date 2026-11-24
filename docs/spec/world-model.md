@@ -372,19 +372,37 @@ which fixes the origin's role deliberately.
   pe-agree to void such a `Leave` or the app to close the session, once a session can admit non-admins
   (@design-reviewer's Low). The root after an admit and its leave equals the root before the admit, apart from what
   the member made and changed.
-- **An interim session's world** (@engine-architect's `pe_app::genesis`; @coordinator-opus) is `preset::m1_session(&Session, blobs)`: the pit of `ball_pit_on` on the session's line, at the
-  session's rate, with its gravity and pe-agree's settings record (config item 4; in M1 that is pe-agree's 32-byte
-  `NodeConfig::consensus_hash`), and every member admitted at frame 0 through `World::admit` in key order, each with
-  the permission bits its role in the genesis record gives (opener and joiner both `ADMIN | EDIT | AGENT`, by the
-  user's session default [U]; @coordinator-opus, built in @engine-architect's join branch;
-  until it lands, this interim genesis gives the joiner `EDIT | AGENT`),
-  standing 0.6 m apart just outside the pit's near wall. A key listed twice is refused (`WorldError::Duplicate`). So
-  the root covers each member's bits, and the record and the world cannot disagree on anything the root covers; the
-  rest (the cut interval, the epoch, the nonce) is bound through the line (2.4, @design-reviewer's nit). The second
-  machine rebuilds the world from the record and compares roots, then the replica's frame-0 root, before it starts. A
-  test pins the frame-0 root and runs on Windows and Linux [V engine-architect, `crates/pe-world/tests/preset.rs`].
+- **An interim session's world** (@engine-architect's `pe_app::genesis`; @coordinator-opus) is `preset::m1_session(&Session, blobs)`: the preset's world on the session's line (`Session.preset`:
+  `Preset::BallPit { balls }`, the pit of `ball_pit_on`, or `Preset::Plane`, below), at the session's rate, with its
+  gravity and pe-agree's settings record (config item 4; in M1 that is pe-agree's 32-byte `NodeConfig::consensus_hash`),
+  and every member admitted at frame 0 through `World::admit` in key order, each with the permission bits its role in
+  the genesis record gives (opener and joiner both `ADMIN | EDIT | AGENT`, by the user's session default [U]; @coordinator-opus, built in @engine-architect's join branch; until it lands, this
+  interim genesis gives the joiner `EDIT | AGENT`), standing 0.6 m apart just outside the pit's near wall. A key listed
+  twice is refused (`WorldError::Duplicate`). So the root covers each member's bits, and the record and the world cannot
+  disagree on anything the root covers; the rest (the cut interval, the epoch, the nonce) is bound through the line
+  (2.4, @design-reviewer's nit). The second machine rebuilds the world from the record and compares roots, then the
+  replica's frame-0 root, before it starts. A test pins the frame-0 root and runs on Windows and Linux [V
+  engine-architect, `crates/pe-world/tests/preset.rs`].
+- **The plane** (the friend-test prototype,
+  @item:primordial-engine/friend-test-flat-plane-genesis-preset-with-templ; @coordinator-opus,
+  interface with @xr-eng). `preset::plane_on(line, seed, blobs,
+  origin)` builds, like the pit, one genesis transaction by world logic with the M1 marker, its ids on a chain from
+  `pe.m1.plane.chain` and the seed. Its roots (`preset::plane_names`):
+  - `Plane`, at `origin`, holding `Floor` (a static box 20 m square and 1 m thick, its top at `origin`) and `Lamp`
+    (a point light 3 m up).
+  - `Spawned`, at `origin` and empty: spawned objects go under it, and "clear" deletes its children.
+  - `Templates`, a template folder (7.1) parked 50 m below the floor, holding `Box` (a 0.2 m cube), `Sphere`
+    (radius 0.1 m), `Capsule` (radius 0.07 m, segment 0.2 m) and `Box stack` (a plain parent over `Box 1` ..
+    `Box 5`, 0.15 m cubes stacked bottom up with 2 mm gaps). Each is a dynamic, grabbable, sleep-capable body at
+    300 kg/m³.
+
+  A spawn is pe-api's `create` with `template`, under `/Spawned` (api.md 5.3.1), so a `Copy` (7.1). The stack comes
+  over whole, and `components` apply to the copy's root. The templates take 8 of the 520 shapes (7.1), the floor 1.
+  Members are admitted at the pit's spots. pe-app's genesis record names the plane `"plane"` v1, its ball count 0,
+  beside `"m1-ball-pit"` v1, and pe-app opens a session on it with `--preset plane`. Its root is deterministic and
+  differs from the pit's [V `crates/pe-world/tests/plane.rs`].
 - **No dependence on the preset's ids.** Tests, the harness and API examples find the pit's objects by name
-  (`preset::names`, `preset::find`), never by id.
+  (`preset::names`, `preset::plane_names`, `preset::find`), never by id.
 - **Determinism:** the same arguments give the same state root, and admitting the same member at the same frame
   gives the same root again [V `crates/pe-world/tests/preset.rs`].
 
@@ -1336,7 +1354,26 @@ pub enum Precondition {
   contiguous range `new .. new + n` of the transaction's `New` indices. Two ops whose ranges overlap (a `Create` and
   a `Copy`, or two `Copy`s) refuse the transaction at validation with `NewIndexOverlap`, never as "id exists"
   (@design-reviewer's r2 Low 1). Templates are world data: ordinary objects under
-  a `Templates` root that the schema lists (the ball-pit's box, ball and lamp), and creating from one is a `Copy`.
+  a `Templates` root that the schema lists (the plane's box, sphere, capsule and box stack, 2.4), and creating from
+  one is a `Copy`.
+- **Template folders are inert** (`pe_world::templates`; @coordinator-opus, option (a) with
+  @fable-reviewer's conditions).
+  - A **template folder** is any root whose `Name` is exactly `Templates`, also when there are several. pe-api then
+    finds no template by name, but each folder stays inert.
+  - Every object of a folder's subtree is **inert**. It isn't physical (`World::physical`), so it has no body or
+    `BodyState`, no collisions and no gravity. A `Grab` or `Push` of it is refused `OutOfReach`, and
+    `World::pick_grab` never picks it. A copy out of a folder is live, and starts at rest.
+  - **One predicate.** pe-world's rule and pe-api's template lookup and schema call one function,
+    `templates::is_folder_name` (`is_folder_name_ref` on the name's blob reference, so no bytes are needed).
+  - **Inertness changes by edit.** Renaming a root to or from `Templates`, or moving an object into or out of a
+    folder, makes its subtree's bodies inert or live. The entry's footprint covers them: a reparent's subtree as
+    before, and a renamed root in `Footprint::regrouped`, whose subtree pe-replica treats as touched. Bodies made
+    inert lose their `BodyState` at the next cut, so they come back at rest. An edit that would make a held object
+    inert or live is refused `Held`, as an edit of a held object's parent is (7.2). Renaming away and back agrees on
+    two replicas, one hearing of it late, and the bodies come back at rest [V `crates/pe-replica/tests/plane.rs`,
+    `crates/pe-world/tests/plane.rs`].
+  - **The name rule is interim.** Its intended successor is an explicit marker (a component or flag) read by the
+    same predicate, so only that function changes.
   "Double the cube" is a `Copy` too. A copy is copy-on-write in storage (file 04 A1: new ids over the same records)
   [I; an optimisation, invisible in the hash].
 - Field writes name a field by its index in the description, and give its bytes. WorldApi turns names into indices
