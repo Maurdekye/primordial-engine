@@ -221,7 +221,6 @@ pub struct Hit {
 ///   otherwise.
 /// * A restore that fails after it has started writing poisons the world: every call that
 ///   reads or changes the simulation is refused until a good image is restored.
-
 pub struct PhysicsWorld {
     pub(crate) world: World,
     pub(crate) config: PhysicsConfig,

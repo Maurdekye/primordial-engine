@@ -8,9 +8,11 @@ use box3d_rust::determinism::{
     create_falling_ragdolls, create_mesh_drop, create_query_spawn, create_wave_pile, update_falling_ragdolls,
     update_mesh_drop, update_query_spawn, update_wave_pile,
 };
+use box3d_rust::body::body_get_shapes;
 use box3d_rust::math_functions::POS_ZERO;
+use box3d_rust::shape::shape_enable_hit_events;
 use common::*;
-use pe_physics::{PhysicsConfig, PhysicsWorld};
+use pe_physics::{ObjectId, PhysicsConfig, PhysicsWorld};
 
 /// Worker counts every record is checked at (results must not depend on them, D2).
 const WORKERS: [i32; 3] = [1, 3, 8];
@@ -142,8 +144,21 @@ fn trace_matches_record() {
     }
 }
 
+/// The spike built its shapes without hit events. pe-physics turns them on for every shape, a rule of the physics
+/// version (@coordinator-opus), which sets one flag in each shape's bytes and each of its contacts'
+/// and changes nothing else, so the spike's image record is compared with the flags cleared through the raw world.
+fn as_the_spike_built(pw: &mut PhysicsWorld) {
+    let objects: Vec<ObjectId> = pw.objects().collect();
+    for object in objects {
+        let body = pw.body_id(object).unwrap();
+        for shape in body_get_shapes(pw.raw(), body, 64) {
+            shape_enable_hit_events(pw.raw_mut(), shape, false);
+        }
+    }
+}
+
 /// The world-image bytes every 50 frames (FNV-64 and length), equal to the committed record:
-/// pe-physics builds exactly the spike's world.
+/// pe-physics builds exactly the spike's world, but for the hit-event flags ([`as_the_spike_built`]).
 #[test]
 fn images_match_record() {
     for (config, mode) in modes() {
@@ -151,6 +166,7 @@ fn images_match_record() {
         for workers in WORKERS {
             let inputs = scripted_inputs();
             let mut g = Game::pile(config.with_workers(workers));
+            as_the_spike_built(&mut g.pw);
             let mut got = String::new();
             while g.frame <= 600 {
                 if g.frame.is_multiple_of(50) {
