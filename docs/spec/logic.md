@@ -23,6 +23,7 @@ Inputs: `docs/refound-plan.md` (b610464), review files 03, 11 (3.2, 3.5), 13 (Pa
 | User, Q3 and Q3a | A code change takes effect at one agreed frame; the owner runs it at once; others keep the old code until their own compile ends, then rewind and replay | 6 |
 | User, Q3b | A divergence over 2 s ends in a world-line merge with the main line; nobody waits | 6.4 (M2, with WS-diverge) |
 | User, QR (b), Q8 | A per-player script runs on its player's machine only | 7 (M2) |
+| User, 2026-11-24 | A script is shared or local as a whole, flagged automatically; local files, devices and addresses are off by default, with reading and publishing granted separately; per-frame drawing never feeds the simulation | 7.1-7.3 (design, not built) |
 | User, file 17 answers | `Pos` cannot become numbers except as `pos - ORIGIN`; saved offsets name their reference; no warning or test, the types enforce it | 8 |
 | User, U1 | M1 contains a small logic edit authored by an agent | 10 |
 | Coordinator | Cranelift from the first build, with metering injected into the module, never wasmi | 5 |
@@ -110,7 +111,8 @@ Per module:
   `BlobRef` field has no SDK kind yet) (@design-reviewer)
   [V `tests/run.rs`, `binding_checks_the_engine_table_and_the_layout`, `the_sdk_engine_components_are_the_engine_layouts`];
 - per system:
-  - `name`, `stage` (3.5) and `mode`: `shared` (default) or `per_player` (section 7, M2);
+  - `name`, `stage` (3.5) and `mode`: `shared` (default) or `per_player` (section 7, M2). Under the local rule
+    (7.1) the mode is the whole script's, set by the build rather than declared [I];
   - `bound`: the components every bound object must have, each `read` or `write`;
   - `reads_other`: components it may read on objects other than the bound one, through queries (3.4);
   - `emits`: the event types it may emit, each `once_for_world` or `once_per_player` (file 11, 3.5);
@@ -1081,10 +1083,18 @@ Exact replay from the first commit's frame needs both modules. v0 builds commits
 proves too slow, the alternative (build only the newest, recover through the merge) goes to the architect with
 numbers [I].
 
-## 7. Per-player scripts (QR (b), M2)
+## 7. Local scripts and draw systems (QR (b), M2; the user's rulings of 2026-11-24)
 
-- A system declared `per_player` runs on its player's machine only, over that machine's predicted state, and may
-  read that player's private components.
+Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v10: 2.2,
+2.4, 3, 4, 5, 6 and 8), with the user's rulings, verbatim on
+@item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe. They are design only: nothing is built,
+and building needs its own go after the friend test. Which values are shared, private or published is
+world-model.md 3.7; how a picture is drawn is render.md's.
+
+**A local script, as designed before 2026-11-24 for per-player systems, still behaves so:**
+
+- It runs on its player's machine only, over that machine's predicted state, and may read that player's private
+  components. Which scripts are local is now 7.1's rule, for the whole script.
 - What it does to the shared world leaves the machine as that player's signed **input** entries
   (`ScriptEffect`), each naming the versions of the shared things it read; one whose versions are stale when it is
   ordered is refused (file 11, 3.5: no ghost effects from shared state).
@@ -1094,7 +1104,120 @@ numbers [I].
 - Its instance is reset per frame like any other, but it is never rolled back with the world: its outputs are
   inputs, and inputs are not undone [I].
 
-M1 has no per-player script. The manifest carries `mode` from v0, so no ABI change is needed later.
+### 7.1 The local rule (ruled)
+
+1. **A script is shared or local as a whole.** It becomes local automatically, at build time, if any function in it
+   uses `local_user` or any local-draw functionality. The mode is not declared per system.
+2. **Every local thing is reachable only that way:** tracking, display time, per-player values and, with the
+   player's grant (7.2), devices, files and local web addresses. A shared script reads the shared value.
+   - Tracking the engine supplies needs no grant: any shared script may read a player's head, hand or camera pose
+     in the shared record and place things in their head or hand space (ruled, against the recommendation). A
+     draw rule reading this frame's pose makes its script local.
+   - Whether the clock needs its own grant is open (12).
+3. **Everything a local script controls is explicitly desynced:** its own state and the objects it runs on, which
+   carry the per-player mark.
+4. **Those objects still affect the shared world,** as detected and sent input (the effects above).
+5. **A commit that turns a shared script local says so** and asks the author to confirm.
+
+- **How point 4 fits R7 (7.3).** A desynced object has two sides on its player's machine: a body on the fixed
+  step, and a picture per frame. A physical contact with the shared world always comes from the body. Other
+  effects, such as a button press or an uploaded file, need no body: they cross through an authorized input
+  producer on the fixed step. None comes from draw code, and motion that exists only in draw code has no body,
+  so it can hit nothing.
+- **Whole-script is a choice of convenience:** a flag per part would be as safe (@astra-deliberator). An author who wants shared logic and local drawing on one object writes two scripts.
+
+### 7.2 Local access (ruled)
+
+- **Files, devices and local web addresses are off by default.**
+- **Reading and publishing are separate grants,** each given by the player per script and per file, address or
+  destination. Running as local code grants neither.
+- **The prompt says that published data is visible to everyone and stored permanently.**
+- [I] An outgoing call, such as a post to a web server, is made only by local code; from shared code every
+  machine would make it.
+- [I] A granted local service performs a file or web operation once, without blocking. Local code on the step
+  samples the finished result, and replay never performs the operation again.
+
+### 7.3 Draw systems (design, not built)
+
+Some things must move every rendered frame, not every step: view-locked UI, attached objects, motion along a
+curve. A **draw system** is script code run per display frame that returns *presentation overrides*
+(world-model.md 3.7): what the picture uses this frame, never a field's own value.
+
+**The invariant:** for a fixed authenticated input log, every simulation result is the same whether draw rules
+run, fail, are slow or are absent. A person reacting to what they see is not a violation; the invariant is about
+paths inside the engine.
+
+**The restrictions on script code** (file 21, section 3; render.md holds R3, R4, R9 and R11):
+- **R1, no write path.** A draw rule has no function that writes a row, issues a command, makes an entry or an
+  input, sends a message or writes a file. Its interface returns overrides only: structural, not a permission
+  check.
+- **R2, no read path back.** No step system, local simulated field, input producer, physics query, grab or reach
+  test, pe-api read, save, hash, replay or merge reads an override or draw-local state.
+- **R5, never waited for.** No step, cut, activation, build attestation (6.2a), headless replay, frame-view
+  publication or input sampling waits for a draw rule, its build or its assets.
+- **R6, budget and fallback.** Each script's draw systems have a fuel budget per display frame, and each viewer
+  has totals for script work, host work, draw calls, GPU work and memory. Fuel stops a running system; a deadline
+  alone can't. On an overrun, a trap or a module not yet built, that script's overrides for the frame are dropped
+  and its objects are drawn by the engine's default. After repeated overruns the system is paused and its author
+  told. A trap discards everything the call produced. A draw fault is local, never a script fault in 3.6's sense.
+- **R7, commands and inputs are produced elsewhere.** A draw rule can't author a command or an input, or supply a
+  command's target or pose. An *input producer* (the localization design's, on the simulation's side) turns
+  tracking or a local simulated object's contact into that player's input; a click on personal UI selects a
+  registered command whose payload the input producer computes. A preview may show that pose but never supplies
+  it.
+- **R8, nothing leaves the machine.** Draw log output is dropped except on the author's own machine (3.4).
+- **R10, separate build, separate instance.** Draw code is built and run apart from step code, and its build and
+  faults are not part of what members attest for a script version. A machine without it draws the default.
+- **R12, local diagnostics only.** Draw counters, timings and faults live in a local namespace of the inspector.
+
+**Four kinds of draw rule** (file 21, section 4):
+
+| Kind | Who evaluates | Reads | Same on every machine? |
+|---|---|---|---|
+| **Attached** (built in) | the engine, at the last moment | the attachment, the player's head or hand | the owner sees their own tracking; others see the simulated hand |
+| **Path in time** (`state_at`) | the engine calls one script function | the object's own synchronized rows for the step interval containing `t`, and `t` | yes at every step; between steps each machine at its own instant |
+| **Free draw system** (`draw`) | script, once per display frame | the inputs below | not guaranteed; closest when it declares no local inputs |
+| **Personal** | script or engine, per frame | the world, local tracking, local state | no: one machine only |
+
+- **Path in time** is one function `state_at(rows, t)`, the user's spline or ellipse case. The
+  simulation calls it at whole steps, pure, deterministic and metered like a step system, and stores the pose and
+  velocity it returns, which is shared. It may bind only synchronized inputs. Drawing calls the same function at
+  the draw time with the parameters and script version in force for that step interval, so a spline edited at
+  frame k is drawn by its old shape before k and its new one from k, also after a rollback. Path time is
+  simulation time. A path that drives a solid sets only a target for physics: where a collision or a joint moves
+  the object off the path, the solved pose is the truth and is what is drawn.
+- **Inputs a draw system may read:** the world as handed to the renderer (its declared rows from the frame views,
+  the predicted world); the draw time `t` in simulation time with a fraction, the display period and the step
+  rate; other objects through the read-only host functions of 3.4, capped; shared randomness keyed by frame,
+  object and stream, and local randomness declared as a local input; and declared local inputs: the viewer's
+  head, hands and view, which player is local, the camera, draw-local state, local settings, local simulated
+  fields. Never another machine's anything, the clock other than through `t`, files or the network.
+- **Outputs:** placement (position, rotation, scale) in a named space: world, another object's drawn pose, or the
+  local player's head, hand or view, whose last-moment pose the engine applies afterwards; looks (visibility,
+  colour, emission, material and shader values, texture offsets, text, light brightness); bone poses and blend
+  shapes; extras capped per object and frame (lines, trails, markers, sprites, particles); sound and haptic levels
+  into the engine's one-way, clamped local sinks, which expire if the system faults; and bounded draw-local
+  state, never saved or sent, reset at any handoff, version change or rollback. Never a field's own value,
+  anything physics reads, a collider, a hierarchy change, a command, an input or a camera pose.
+- **No easing by the engine:** it draws what a draw rule returns. A system that wants easing keeps draw-local
+  state ("jumps and fast reactivity").
+
+**API shape (a sketch).** The manifest lists systems by kind: `step` (today's), `state_at`, `draw`. Input
+producers are a separate kind on the simulation's side, in the localization design. A `draw` system declares the
+components it reads, its draw-local components, its local inputs (or none), the fields it overrides and a budget
+class. It takes a batch of rows as step systems do and returns a batch of overrides, tagged with the frame views
+it was computed from and dropped if they are no longer current. Its reads never load a chunk or take a lock the
+simulation uses. Draw instances need neither bit-exact floats nor exact fuel, so they may run with cheaper
+settings than step instances (5.1).
+
+**Tests that would prove the boundary** (file 21, section 11): one recorded input log gives identical roots and
+entries with no renderer, at 72 Hz and 144 Hz, and with draw systems that overrun or trap; a shared script plus a
+separate local draw script that fails to build: the shared one still activates, attests and replays headless; a
+`state_at` parameter edit at frame k is drawn by the old path before k and the new from k, also after a rollback
+across k.
+
+M1 has no per-player script and no draw system. The manifest carries `mode` from v0, so no ABI change is needed
+for local scripts; draw and `state_at` systems are new kinds.
 
 ## 8. Positions for script authors (file 17, section 7)
 
@@ -1208,6 +1331,12 @@ Each gets a raw log under `crates/pe-logic/bench/` or the workstream's evidence 
   measured in M2 [I].
 - Whether `pe_manifest` moves to a custom section.
 - The fuel cost table and budgets per stage.
+- **Draw systems and local scripts (7.1-7.3), open from file 21's section 12:** whether `state_at` returns a
+  velocity or the engine derives one deterministically; the budgets and the caps on extras and draw-local state;
+  where draw systems run so the headset's frame loop never blocks (the render thread within its budget, or a worker
+  a frame ahead); the exact rule for a contact sent from a predicted world that the agreed state refutes; whether
+  reading the clock needs its own grant; a hash function for scripts, which commit and reveal would need (3.4 has
+  none).
 - Native declarative components ("drives", file 11, 3.5) are outside this spec: data the store evaluates natively,
   with no build. Who owns them is for the architect.
 
