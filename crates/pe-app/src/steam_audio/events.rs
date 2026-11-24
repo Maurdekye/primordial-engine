@@ -35,11 +35,16 @@ struct PresentedHit {
 
 #[derive(Default)]
 struct HitGate {
-    recent: BTreeMap<[ObjectId; 2], Vec<HostTime>>,
+    recent: BTreeMap<[ObjectId; 2], PlayedPair>,
+}
+
+struct PlayedPair {
+    times: Vec<HostTime>,
+    last_queued: Instant,
 }
 
 impl HitGate {
-    fn take(&mut self, hit: PresentedHit, now: HostTime, received: Instant) -> Option<Impact> {
+    fn eligible(&self, hit: PresentedHit, now: HostTime, received: Instant) -> bool {
         let age = now.0.saturating_sub(hit.when.0).max(0) as u64;
         if !hit.approach_mps.is_finite()
             || hit.approach_mps < MIN_APPROACH_SPEED_MPS
@@ -47,30 +52,34 @@ impl HitGate {
             || hit.strength <= 0.0
             || (hit.resimulated && age > MAX_REPLAY_AGE_NS)
         {
-            return None;
+            return false;
         }
-        let mut pair = hit.bodies;
-        pair.sort_unstable();
-        let entries = self.recent.entry(pair).or_default();
-        if entries.iter().any(|when| when.0.abs_diff(hit.when.0) <= MATCH_NS) {
-            return None;
-        }
-        entries.push(hit.when);
-        Some(Impact {
-            at: hit.at,
-            material: hit.material,
-            size_m: hit.size_m,
-            strength: hit.strength,
-            submitted: received,
+        self.recent.get(&pair_key(hit.bodies)).is_none_or(|played| {
+            received.saturating_duration_since(played.last_queued) >= Duration::from_nanos(MATCH_NS)
+                && played.times.iter().all(|when| when.0.abs_diff(hit.when.0) > MATCH_NS)
         })
     }
 
+    fn record(&mut self, hit: PresentedHit, received: Instant) {
+        let played = self
+            .recent
+            .entry(pair_key(hit.bodies))
+            .or_insert_with(|| PlayedPair { times: Vec::new(), last_queued: received });
+        played.last_queued = received;
+        played.times.push(hit.when);
+    }
+
     fn prune(&mut self, now: HostTime) {
-        self.recent.retain(|_, times| {
-            times.retain(|at| now.0.saturating_sub(at.0) <= (MAX_REPLAY_AGE_NS + MATCH_NS) as i64);
-            !times.is_empty()
+        self.recent.retain(|_, played| {
+            played.times.retain(|at| now.0.saturating_sub(at.0) <= (MAX_REPLAY_AGE_NS + MATCH_NS) as i64);
+            !played.times.is_empty()
         });
     }
+}
+
+fn pair_key(mut bodies: [ObjectId; 2]) -> [ObjectId; 2] {
+    bodies.sort_unstable();
+    bodies
 }
 
 pub(super) struct Publisher {
@@ -90,7 +99,7 @@ impl Publisher {
         let mut hits = Vec::with_capacity(MAX_HITS_PER_DISPLAY);
         let mut last_fixture = None;
         let mut last_material = Material::Wood;
-        Box::new(move |display, view, cameras| {
+        Box::new(move |display, view, _new, cameras| {
             let Some(listener) = center(cameras) else { return };
             if let Ok(mut state) = self.listener.try_lock() {
                 *state = Some(listener);
@@ -119,19 +128,29 @@ impl Publisher {
         hits.sort_unstable_by(|a, b| priority(*b, listener).total_cmp(&priority(*a, listener)));
         self.report.hits_received.fetch_add(count as u64, super::RELAXED);
         let mut accepted = 0;
+        let mut dropped = 0;
         for hit in hits {
-            if accepted == MAX_HITS_PER_DISPLAY {
+            if accepted + dropped == MAX_HITS_PER_DISPLAY {
                 break;
             }
-            if let Some(impact) = gate.take(*hit, now, received) {
+            if gate.eligible(*hit, now, received) {
+                let impact = Impact {
+                    at: hit.at,
+                    material: hit.material,
+                    size_m: hit.size_m,
+                    strength: hit.strength,
+                    submitted: received,
+                };
                 if self.impacts.try_send(impact).is_ok() {
+                    gate.record(*hit, received);
                     accepted += 1;
                 } else {
-                    self.report.queue_drops.fetch_add(1, super::RELAXED);
+                    dropped += 1;
                 }
             }
         }
         self.report.hits_queued.fetch_add(accepted as u64, super::RELAXED);
+        self.report.queue_drops.fetch_add(dropped as u64, super::RELAXED);
     }
 }
 
@@ -181,7 +200,7 @@ fn fixture_hit(
         },
         |(object, _, shape, _)| (object.id, object.pose.pos, shape),
     );
-    let (size_m, fallback) = shape_profile(shape);
+    let size_m = shape_size(shape);
     hits.push(PresentedHit {
         bodies: [id, ObjectId::NONE],
         when: now,
@@ -189,16 +208,55 @@ fn fixture_hit(
         approach_mps: 1.5,
         strength: 2.0,
         size_m,
-        material: if source.is_some() { fallback } else { material },
+        material,
         resimulated: false,
     });
 }
 
-fn shape_profile(shape: Option<Shape>) -> (f32, Material) {
+fn shape_size(shape: Option<Shape>) -> f32 {
     match shape {
-        Some(Shape::Box { half_extents }) => (2.0 * half_extents.into_iter().fold(0.0, f32::max), Material::Wood),
-        Some(Shape::Sphere { radius }) => (2.0 * radius, Material::Metal),
-        Some(Shape::Capsule { radius, half_height }) => (2.0 * (radius + half_height), Material::Metal),
-        _ => (0.3, Material::Wood),
+        Some(Shape::Box { half_extents }) => 2.0 * half_extents.into_iter().fold(0.0, f32::max),
+        Some(Shape::Sphere { radius }) => 2.0 * radius,
+        Some(Shape::Capsule { radius, half_height }) => 2.0 * (radius + half_height),
+        _ => 0.3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_matches_the_pair_in_either_order_and_drops_stale_hits() {
+        let started = Instant::now();
+        let when = HostTime::from_millis(1_000);
+        let hit = PresentedHit {
+            bodies: [ObjectId::from_u128(7), ObjectId::from_u128(11)],
+            when,
+            at: Pos::ORIGIN,
+            approach_mps: 1.0,
+            strength: 1.0,
+            size_m: 0.3,
+            material: Material::Wood,
+            resimulated: false,
+        };
+        let mut gate = HitGate::default();
+        assert!(gate.eligible(hit, when, started));
+        gate.record(hit, started);
+
+        let replay = PresentedHit {
+            bodies: [hit.bodies[1], hit.bodies[0]],
+            when: HostTime::from_millis(1_015),
+            resimulated: true,
+            ..hit
+        };
+        let later = started + Duration::from_millis(90);
+        assert!(!gate.eligible(replay, HostTime::from_millis(1_090), later));
+        let unmatched = PresentedHit { bodies: [hit.bodies[0], ObjectId::from_u128(13)], ..replay };
+        assert!(gate.eligible(unmatched, HostTime::from_millis(1_090), later));
+        assert!(!gate.eligible(unmatched, HostTime::from_millis(1_200), later));
+        let next = PresentedHit { when: HostTime::from_millis(1_088), ..hit };
+        assert!(!gate.eligible(next, next.when, started + Duration::from_millis(29)));
+        assert!(gate.eligible(next, next.when, later));
     }
 }

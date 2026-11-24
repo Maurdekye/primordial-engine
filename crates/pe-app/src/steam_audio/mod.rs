@@ -97,13 +97,14 @@ impl AudioTrial {
         let range = device
             .supported_output_configs()?
             .filter(|range| {
-                range.sample_format() == cpal::SampleFormat::F32
+                matches!(range.sample_format(), cpal::SampleFormat::F32 | cpal::SampleFormat::I16)
                     && range.min_sample_rate() <= RATE
                     && range.max_sample_rate() >= RATE
                     && range.channels() >= 2
             })
-            .min_by_key(|range| range.channels())
-            .ok_or("output device has no 48 kHz float configuration with two or more channels")?;
+            .min_by_key(|range| (range.channels(), range.sample_format() != cpal::SampleFormat::F32))
+            .ok_or("output device has no 48 kHz float or signed 16-bit configuration with two or more channels")?;
+        let format = range.sample_format();
         let mut config = range.with_sample_rate(RATE).config();
         let channels = usize::from(config.channels);
         // The adapter handles endpoint callback sizes independently of the fixed DSP block.
@@ -118,7 +119,7 @@ impl AudioTrial {
             report: Arc::default(),
         };
         let counters = publish.report.clone();
-        let mut callback = Callback {
+        let callback = Callback {
             mix,
             onsets: Vec::with_capacity(MAX_VOICES),
             clock: None,
@@ -133,23 +134,17 @@ impl AudioTrial {
             channels,
             audible,
         };
-        let stream = device.build_output_stream::<f32, _, _>(
-            config.clone(),
-            move |buffer, info| callback.fill(buffer, info),
-            move |error| {
-                counters.errors.fetch_add(1, RELAXED);
-                if error.kind() == cpal::ErrorKind::Xrun {
-                    counters.xruns.fetch_add(1, RELAXED);
-                }
-            },
-            None,
-        )?;
+        let stream = match format {
+            cpal::SampleFormat::F32 => output_stream::<f32>(&device, config.clone(), callback, counters)?,
+            cpal::SampleFormat::I16 => output_stream::<i16>(&device, config.clone(), callback, counters)?,
+            _ => unreachable!("filtered above"),
+        };
         stream.play()?;
         emit(
             log,
             &format!(
                 "steam audio: sdk=4.8.1 sha256={PHONON_SHA256} host={:?} endpoint={description:?} \
-                 output={config:?} rate={RATE} block={BLOCK} direct={DIRECT} bed_order=1 hrtf=nearest \
+                 output={config:?} format={format:?} rate={RATE} block={BLOCK} direct={DIRECT} bed_order=1 hrtf=nearest \
                  voice_cap={MAX_VOICES} fixture={fixture:?} audible={audible}",
                 host.id()
             ),
@@ -175,11 +170,11 @@ impl Drop for AudioTrial {
             &mut self.log,
             &format!(
                 "steam audio: seconds={:.3} callbacks={} frames_min={} frames_max={} late_gaps={} callback_overruns={} \
-                 errors={} reported_xruns={} pre_mute_peak={:.6} invalid_samples={} \
+                 errors={} reported_xruns={} pre_mute_peak={:.6} invalid_samples={} limited_samples={} \
                  hits_received={received} hits_queued={queued} queue_drops={full} gate_or_cap_drops={} \
                  voice_rejects={} voices_stolen={} peak_voices={} onset_samples_dropped={}",
                 report.seconds,
-                m.jitter.summary().count + u64::from(m.frames_max > 0),
+                m.callbacks,
                 if m.frames_max > 0 { m.frames_min } else { 0 },
                 m.frames_max,
                 m.late,
@@ -188,6 +183,7 @@ impl Drop for AudioTrial {
                 counters.xruns.load(RELAXED),
                 m.peak,
                 m.invalid_samples,
+                m.limited_samples,
                 received.saturating_sub(queued + full),
                 report.rejected,
                 report.stolen,
@@ -224,12 +220,14 @@ struct Metrics {
     callback: Histogram,
     onset: Histogram,
     backend: Histogram,
+    callbacks: u64,
     frames_min: usize,
     frames_max: usize,
     late: u64,
     overruns: u64,
     peak: f32,
     invalid_samples: u64,
+    limited_samples: u64,
     onset_samples_dropped: u64,
 }
 
@@ -258,9 +256,9 @@ struct Callback {
 }
 
 impl Callback {
-    fn fill(&mut self, output: &mut [f32], info: &cpal::OutputCallbackInfo) {
+    fn fill<T: cpal::Sample + cpal::FromSample<f32>>(&mut self, output: &mut [T], info: &cpal::OutputCallbackInfo) {
         let start = Instant::now();
-        output.fill(0.0);
+        output.fill(T::EQUILIBRIUM);
         if let Ok(listener) = self.listener.try_lock() {
             self.listener_pose = *listener;
         }
@@ -275,6 +273,7 @@ impl Callback {
         let recording = start.duration_since(*self.clock.get_or_insert(start)) >= WARMUP;
         let stats = self.metrics.as_mut().expect("callback still owns its metrics");
         if recording {
+            stats.callbacks += 1;
             if stats.frames_max == 0 {
                 stats.frames_min = frames;
             }
@@ -313,10 +312,11 @@ impl Callback {
                     stats.invalid_samples += u64::from(!finite);
                     if finite {
                         stats.peak = stats.peak.max(value.abs());
+                        stats.limited_samples += u64::from(value.abs() > 0.42);
                     }
                 }
                 if self.audible && finite {
-                    frame[channel] = value.clamp(-0.42, 0.42);
+                    frame[channel] = T::from_sample(value.clamp(-0.42, 0.42));
                 }
             }
             self.cursor += 1;
@@ -357,6 +357,25 @@ fn output_device(host: &cpal::Host) -> Result<cpal::Device, Box<dyn Error>> {
         return Err(format!("no output device matches {name:?}").into());
     }
     host.default_output_device().ok_or_else(|| "no default audio output device".into())
+}
+
+fn output_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    mut callback: Callback,
+    counters: Arc<StreamCounters>,
+) -> Result<cpal::Stream, cpal::Error> {
+    device.build_output_stream::<T, _, _>(
+        config,
+        move |buffer, info| callback.fill(buffer, info),
+        move |error| {
+            counters.errors.fetch_add(1, RELAXED);
+            if error.kind() == cpal::ErrorKind::Xrun {
+                counters.xruns.fetch_add(1, RELAXED);
+            }
+        },
+        None,
+    )
 }
 
 fn verified_library(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
