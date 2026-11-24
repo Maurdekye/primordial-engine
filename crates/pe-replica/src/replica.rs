@@ -3,7 +3,8 @@
 //!
 //! **The live history** runs from the floor (the newest cut I finalized, or frame 0) to `frame`, the next frame to
 //! step. Nothing below the floor changes again, except that rung 1 rebuilds the history from `Cv`. `reached` is the
-//! newest frame the live history has been at: after a rollback, the frames up to it are re-simulated.
+//! newest frame the live history has been at: after a rollback, the frames up to it are re-simulated, and the next
+//! view waits until they are (S2 v1.10).
 //!
 //! **Roots.** At every cut-grid frame (multiples of the cut interval in frames) the replica writes the physics rows and
 //! takes the root, live or re-simulated. It keeps those roots from the floor to the present, with the ids of the
@@ -824,8 +825,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// since the last view, in frame order and each frame's in asset order, carried again whenever the frame is
     /// stepped again. A record supersedes the one with its key a view carried before, whatever its frame. With them,
     /// the keys views carried for those frames that no frame of this view produces any more, and those an import's
-    /// history replaced (`activations_retracted`). The frames stepped while a catch-up holds the view back all reach
-    /// its next publication (@api-eng).
+    /// history replaced (`activations_retracted`). The frames stepped while a re-simulation or a replay holds the view
+    /// back all reach its next publication (@api-eng).
     fn frame_activations(&mut self) -> (Vec<Activation>, Vec<ActivationKey>) {
         let (mut records, mut gone) = (Vec::new(), std::mem::take(&mut self.acts_retract));
         for f in std::mem::take(&mut self.acts_stepped) {
@@ -1818,7 +1819,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.counters.frames_resimulated += out.resimulated;
         self.counters.corrections += u32::from(out.resimulated > 0);
         out.caught_up = self.frame >= present && self.replay.is_none();
-        if out.caught_up && (out.stepped > 0 || out.resimulated > 0) {
+        // A view at the newest frame the live history completed, whether or not it is the present (S2 v1.10; F3's
+        // S5, "the fastest machine sets the pace"), so a replica that trails wall time still shows its world. Never
+        // during a re-simulation: one that rolled back publishes again once it is back at `reached`, so no view goes
+        // back in time. Nor while a replay (rung 1's, or an import's catch-up) is under way.
+        if self.replay.is_none() && self.frame >= self.reached && (out.stepped > 0 || out.resimulated > 0) {
             self.publish();
         }
         out

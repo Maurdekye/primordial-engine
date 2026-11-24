@@ -175,18 +175,18 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    first. Before frame 0 the wait is at least one frame period, since `host_time_of` means nothing while the clock
    converges; the network thread wakes the simulation thread when it converges.
 
-**Bounded work per tick.** A deep rollback, or a repair's replay of up to `W_fg` (2 s, 120-240 frames), done in one
-tick would stall the simulation for hundreds of milliseconds, and with it agreement's votes and messages for every
-other member. So the replica re-simulates at most a budget of frames per call, expressed as simulated time (a local
-setting, deterministic for the harness; pe-app may adjust it from the measured step cost), and resumes on the next
-call. Until it has reached the present again it publishes no new frame view, so the display keeps drawing, and
-extrapolating, the last one, while agreement keeps ticking and voting. The budget is never below two frames of
-simulated time at the world's rate, because real time adds a frame per tick and a budget of one frame never catches
-up (S2's floor; @design-reviewer's Low on 549f4ca4). Nor is it below what reaching the present asks of the call,
-as the last call measured it (the keep-up floor; @coordinator-opus, which replaced's
-advance plus one): the frames the frame clock's present advanced since the previous tick plus what the last call
-left short, plus one, and at least the whole of what the last call needed, rollback included (S2's `frame()` is the
-re-simulation frontier, so what a call leaves short counts what is left of a re-simulation).
+**Bounded work per tick.** A deep rollback, or a repair's replay of up to `W_fg` (2 s, 120-240 frames), done in one tick
+would stall the simulation for hundreds of milliseconds, and with it agreement's votes and messages for every other
+member. So the replica re-simulates at most a budget of frames per call, expressed as simulated time (a local setting,
+deterministic for the harness; pe-app may adjust it from the measured step cost), and resumes on the next call. While it
+is behind, its frame view is the newest frame it completed (S2 v1.10; F3's S5, "the fastest machine sets the pace"), one
+view per tick, and a re-simulation publishes none until it is back at that frame. Between views the display keeps
+drawing, and extrapolating within its cap, the last one, while agreement keeps ticking and voting. The budget is never
+below two frames of simulated time at the world's rate, because real time adds a frame per tick and a budget of one
+frame never catches up (S2's floor; @design-reviewer's Low on 549f4ca4). Nor is it below what reaching the present asks
+of the call, as the last call measured it (the keep-up floor; @coordinator-opus, which replaced's advance plus one): the frames the frame clock's present advanced since the previous tick plus what the
+last call left short, plus one, and at least the whole of what the last call needed, rollback included (S2's `frame()`
+is the re-simulation frontier, so what a call leaves short counts what is left of a re-simulation).
 - **The advance** covers ticks dearer than a frame period. A tick also takes messages in, signs the hand inputs and
   runs agreement, and when that alone outlasts a frame period, ticks run back to back and real time gains several
   frames on each: sized from stepping alone, the budget then let a replica fall further behind every tick though its

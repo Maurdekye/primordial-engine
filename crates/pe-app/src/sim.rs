@@ -173,7 +173,8 @@ pub struct SimStats {
     pub before_frame_0: u64,
     /// Frame views published. A tick that left the replica's view as it was publishes nothing.
     pub published: u64,
-    /// Times the replica fell behind the present (`Advance::caught_up` false). The view holds until it catches up.
+    /// Times the replica fell behind the present (`Advance::caught_up` false). Meanwhile the view is the newest frame
+    /// it completed (S2 v1.10).
     pub holds: u64,
     /// The longest hold, in ticks.
     pub longest_hold: u64,
@@ -1745,11 +1746,12 @@ impl Sim {
             log.lock().expect("the event log").extend(events);
         }
         self.stats.phases.events_ns += lap(&mut mark);
-        // 6. The replica's newest view. While it catches up the view holds, so nothing new goes out. It carries the
-        // composed health, so pe-render's "resyncing" line and session_info read one value (@design-reviewer's Low):
-        // while a root split is open, a copy of the view with it. When only the health changed (a split opened or
-        // closed while the replica's view held), the copy is a publication with nothing new since the last
-        // ([`health_only`]): readers that take each publication's records in order see none twice.
+        // 6. The replica's newest view, at the newest frame it completed (S2 v1.10). While it re-simulates the view
+        // holds, so nothing new goes out. It carries the composed health, so pe-render's "resyncing" line and
+        // session_info read one value (@design-reviewer's Low): while a root split is open, a copy of the view with
+        // it. When only the health changed (a split opened or closed while the replica's view held), the copy is a
+        // publication with nothing new since the last ([`health_only`]): readers that take each publication's records
+        // in order see none twice.
         let view = self.replica.view();
         let health = self.health_of(&view);
         let same_view = self.source_view.as_ref().is_some_and(|v| Arc::ptr_eq(v, &view));
@@ -5518,7 +5520,8 @@ pub(crate) mod tests {
     }
 
     /// app.md 7, no stall: a backlog of `W_fg` (2 s) at the floor budget. Every tick still ticks agreement and the
-    /// driver, the view holds while the replica catches up, and it catches up within `W_fg` plus two ticks.
+    /// driver, the view moves on to the newest frame the replica completed at every tick while it catches up (S2
+    /// v1.10, F3's S5), and it catches up within `W_fg` plus two ticks.
     #[test]
     fn a_backlog_of_w_fg_at_the_floor_catches_up_within_w_fg() {
         catches_up(sim);
@@ -5538,14 +5541,16 @@ pub(crate) mod tests {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let (mut s, slot) = make(clock.clone(), Budget::with_share(RATE, 0.0));
         let w_fg = RATE.frames(Duration::from_secs(2));
-        let mut ticks = 0u64;
+        let (mut ticks, mut completed) = (0u64, 0u64);
         loop {
             let (_, report) = s.tick(clock.host_time_of(Frame(w_fg + ticks))).expect("ticked");
             ticks += 1;
+            completed += report.advance.stepped;
             if report.advance.caught_up {
                 break;
             }
-            assert_eq!(slot.newest().map(|v| v.frame), Some(Frame(0)), "the view holds at tick {ticks}");
+            // Behind the present, the view is the newest frame the replica completed (S2 v1.10), never frame 0.
+            assert_eq!(slot.newest().map(|v| v.frame), Some(Frame(completed)), "the view moves on at tick {ticks}");
             assert!(ticks <= w_fg + 2, "still behind after {ticks} ticks");
         }
         assert!(ticks <= w_fg + 2, "{ticks} ticks");

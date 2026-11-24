@@ -881,8 +881,9 @@ Rules, agreed with @ballpit-viz (WS-render writes them into pe-render's spec):
   dry runs; `final` is not kept but asked for (below). A handler holds its snapshot only for the call.
 - The snapshot is S2's `Replica::world_snapshot`, pe-world's `WorldSnapshot` at the replica's frame, which pe-app
   downcasts once per published view (S2 v1.7; @coordinator-opus). pe-app takes it only when it
-  publishes a new view (`Arc::ptr_eq` on `view()` says it is new), and S2 publishes a view only once the replica has
-  reached the present, never mid-catch-up, so every kept snapshot is of the tip. The frame view stays render-only.
+  publishes a new view (`Arc::ptr_eq` on `view()` says it is new), and S2 publishes a view only at the newest frame
+  the replica has completed, never during a re-simulation or a replay, so every kept snapshot is of the tip. While the
+  replica trails the present, the tip is behind it (S2 v1.10; F3's S5). The frame view stays render-only.
 - `final` is S2's `Replica::agreed_snapshot()`: pe-world's snapshot of the state at the replica's last agreed cut,
   exactly at the final frame, never lagging it, and never a state a repair replaced (S2 v1.7; @coordinator-opus, replacing the 2026-11-13 decision D2 (a)). Before the first agreed cut it is the frame-0 snapshot.
   Its frame is in the result, as for every read.

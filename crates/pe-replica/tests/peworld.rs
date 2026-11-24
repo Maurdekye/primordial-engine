@@ -382,6 +382,70 @@ fn a_replay_that_moves_a_ball_marks_it_corrected() {
     assert_eq!(corrected(&r), Vec::<ObjectId>::new(), "a correction is marked once");
 }
 
+/// F3's S5 (S2 v1.10, "the fastest machine sets the pace"): a replica the budget keeps behind the present publishes the
+/// newest frame it completed at every call, not only once it catches up. Each such view draws what a replica that kept
+/// up drew at that frame.
+#[test]
+fn a_replica_behind_the_present_shows_each_frame_it_completed() {
+    let entries = scene();
+    let mut s = Source::default();
+    entries.iter().cloned().for_each(|e| s.add(e));
+    let mut slow = replica();
+    slow.set_budget(Duration::from_millis(1)); // raised to two frames a call
+    for call in 1..=12u64 {
+        // Wall time gains three frames a call, so the replica falls a frame further behind at each.
+        let adv = slow.advance(Frame(3 * call), &mut s);
+        assert_eq!((adv.stepped, adv.caught_up), (2, false), "call {call}");
+        let shown = slow.view();
+        assert_eq!(shown.frame, Frame(2 * call), "the newest frame it completed, at call {call}");
+        let mut kept_up = replica();
+        let mut ks = Source::default();
+        entries.iter().cloned().for_each(|e| ks.add(e));
+        assert!(kept_up.advance(Frame(2 * call), &mut ks).caught_up);
+        assert_eq!(shown.objects, kept_up.view().objects, "the world at frame {}", 2 * call);
+        assert_eq!(shown.sim_time, kept_up.view().sim_time);
+    }
+}
+
+/// A rollback publishes nothing until the re-simulation is back at the newest frame the replica had completed (S2
+/// v1.10), so no view goes back in time. The first view there marks the ball the late one landed on `CORRECTED`, though
+/// the replica is still behind the present, and the next call shows the next frames it completed, unmarked.
+#[test]
+fn a_rollback_publishes_nothing_until_it_is_back_at_its_newest_frame() {
+    let mut entries = scene();
+    let late = entries.pop().expect("two entries");
+    let mut s = Source::default();
+    entries.into_iter().for_each(|e| s.add(e));
+    let mut r = replica();
+    r.advance(Frame(64), &mut s);
+    let shown = r.view();
+    assert_eq!(shown.frame, Frame(64));
+    let first = shown.objects.iter().map(|o| o.id).find(|&id| id != oid(1)).expect("the first ball");
+    let corrected = |v: &pe_seams::FrameView| -> Vec<ObjectId> {
+        v.objects.iter().filter(|o| o.flags.contains(pe_seams::ViewFlags::CORRECTED)).map(|o| o.id).collect()
+    };
+    r.set_budget(Duration::from_millis(1)); // raised to two frames a call
+    s.add(late);
+    let mut present = 65;
+    let adv = r.advance(Frame(present), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|k| k <= Frame(5)), "{adv:?}");
+    while r.frame() < Frame(64) {
+        assert!(Arc::ptr_eq(&r.view(), &shown), "a view below 64, at {:?}", r.frame());
+        present += 1;
+        r.advance(Frame(present), &mut s);
+    }
+    let back = r.view();
+    assert!(!Arc::ptr_eq(&back, &shown), "no view back at {:?}, behind the present {present}", r.frame());
+    assert_eq!(back.frame, r.frame());
+    assert_eq!(corrected(&back), [first], "only the first ball, which the late one landed on");
+    present += 1;
+    let adv = r.advance(Frame(present), &mut s);
+    assert_eq!((adv.stepped, adv.caught_up), (2, false));
+    let next = r.view();
+    assert_eq!(next.frame, Frame(back.frame.0 + 2));
+    assert_eq!(corrected(&next), Vec::<ObjectId>::new(), "a correction is marked once");
+}
+
 /// A measurement, in release (replica.md 5.3; was O13): what each vote's root costs in a finality stall's shape over
 /// the M1 ball pit (200 balls), against the cut's distance from the pinned first difference. Every 30 frames one
 /// member pushes four balls, so the pit keeps moving; the other member's push at frame 10, which no cut covers,

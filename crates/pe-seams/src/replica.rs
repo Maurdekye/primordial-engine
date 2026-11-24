@@ -291,7 +291,7 @@ pub struct Advance {
     /// New frames stepped.
     pub stepped: u64,
     /// Whether it reached `present` within its budget ([`Replica::set_budget`]). When false it resumes on the next
-    /// call, and [`Replica::view`] keeps the last view published at the present.
+    /// call, and [`Replica::view`] is the newest frame it completed, short of the present (v1.10).
     pub caught_up: bool,
 }
 
@@ -629,8 +629,10 @@ pub enum ImportError {
 /// repair's replay of up to `W_fg`, would otherwise stall the simulation thread, and agreement with it, for hundreds
 /// of milliseconds. So the replica re-simulates at most its budget per call ([`Replica::set_budget`], simulated time,
 /// so the harness stays deterministic) and resumes on the next call. While a replay or an import is pending, `advance`
-/// continues it first. Until the replica reaches the present again, [`Replica::view`] keeps the last view it published
-/// there, so the display draws (and extrapolates) that one. The results never depend on how the work was split.
+/// continues it first. [`Replica::view`] follows the newest frame the live history completed, the present or not
+/// (v1.10; F3's S5, "the fastest machine sets the pace"). A re-simulation or a replay publishes nothing until it is
+/// back there, so meanwhile the display draws (and extrapolates, within its cap) the last view. The results never
+/// depend on how the work was split.
 pub trait Replica: Send {
     fn domain(&self) -> DomainId;
 
@@ -729,8 +731,10 @@ pub trait Replica: Send {
         source: &mut dyn EntrySource,
     ) -> Result<Hash, ImportError>;
 
-    /// The newest published frame view (S5): published once per frame, after the replica reached the present, never
-    /// during a re-simulation or while catching up within the budget. The same `Arc` until the view changes: pe-app
+    /// The newest published frame view (S5): published at most once per call, at the newest frame the live history
+    /// has completed, whether or not that is the present (v1.10; F3's S5: a replica that trails wall time still shows
+    /// its world). Never during a re-simulation or a replay, so no view goes back in time, and a replica that rolled
+    /// back publishes again once it is back at its newest frame. The same `Arc` until the view changes: pe-app
     /// hands a view to the renderer only when `Arc::ptr_eq` says it is new, so a replica that rebuilds the `Arc` on
     /// every call costs a hand-over per tick.
     fn view(&self) -> Arc<FrameView>;
