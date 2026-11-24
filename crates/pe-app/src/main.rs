@@ -72,6 +72,9 @@ use pe_xr::guard::Guard;
 use pe_xr::loader::SystemDiscovery;
 use pe_xr::ring::{DEFAULT_WINDOW_NS, HandRing};
 
+#[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
+mod steam_audio;
+
 /// The simulation thread's least stack (app.md 1). It gets more when the script runner needs it: the replica steps
 /// scripts on it, and wasmtime checks its stack limit against the stack it entered on (`LogicRunner::thread_stack`,
 /// from the same pe-logic `Settings` the runner runs guests with).
@@ -243,12 +246,23 @@ fn drawn_time(arg: &str) -> Option<DrawnTime> {
 }
 
 /// A presenter drawing by `drawn_time`, showing the simulation's status line (a join's catch-up).
-fn presenter(rate: SimRate, drawn_time: DrawnTime, status: &Arc<StatusLine>) -> Presenter {
+fn presenter(
+    rate: SimRate,
+    drawn_time: DrawnTime,
+    status: &Arc<StatusLine>,
+    #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))] audio: Option<
+        &steam_audio::PublishAudio,
+    >,
+) -> Presenter {
     let display = DisplaySettings { drawn_time, ..DisplaySettings::default() };
     let mut p = Presenter::new(display, EffectSettings::default(), Environment::default(), rate.hz());
     p.set_status(status.clone());
     // The console's `draw latched|simulated` (pe_app::handfeel).
     p.set_own_hands_switch(pe_app::handfeel::console().draw.clone());
+    #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
+    if let Some(audio) = audio {
+        audio.attach(&mut p);
+    }
     p
 }
 
@@ -558,6 +572,10 @@ fn main() {
     let rate = SimRate::DEFAULT;
     let host = clock::shared();
     let slot = Arc::new(FrameSlot::new());
+    #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
+    let audio_trial = steam_audio::AudioTrial::from_env();
+    #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
+    let audio = audio_trial.as_ref().map(steam_audio::AudioTrial::publisher);
     // The script runner (pe-replica's `logic`): pe-app owns it, and the simulation thread gets the stack it needs.
     // Its settings are the ones the hello's build id names (net.rs `runner_settings`), so peers compare this runner.
     let (settings, run) = pe_app::net::runner_settings();
@@ -703,6 +721,8 @@ fn main() {
     // The quit (app.md 4), run once: by the main thread at the end of the run, or by the console's request.
     let quit_captures = captures.clone();
     let shutdown: Shutdown = Box::new(move || {
+        #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
+        drop(audio_trial);
         close_captures(&quit_captures);
         stop_mcp(mcp);
         stop_builds(attester);
@@ -714,6 +734,15 @@ fn main() {
         // main thread runs the quit itself, as in VR. The desktop hand has no window to feed it, so no hands move.
         console.poll();
         pe_app::out!("headless: running until --seconds passes, Ctrl+C or a typed `quit`");
+        #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
+        if let Some(publish) = &audio {
+            let presenter = presenter(rate, options.drawn_time.unwrap_or_default(), &status, Some(publish));
+            steam_audio::headless::run(presenter, &slot, &console, run_for);
+            console.quitting();
+            shutdown();
+            console.finished();
+            return;
+        }
         wait_headless(run_for.map(|d| started + d), &console);
         console.quitting();
         shutdown();
@@ -736,7 +765,17 @@ fn main() {
             ring,
             slot.clone(),
             vr::Drawing {
-                presenter: presenter(rate, drawn_time, &status),
+                presenter: presenter(
+                    rate,
+                    drawn_time,
+                    &status,
+                    #[cfg(all(
+                        feature = "steam-audio-trial",
+                        target_arch = "x86_64",
+                        any(windows, target_os = "linux")
+                    ))]
+                    audio.as_ref(),
+                ),
                 render: RenderSettings::default(),
                 effects,
                 captures: captures.clone(),
@@ -789,7 +828,13 @@ fn main() {
         present_mode: pe_render::wgpu::PresentMode::Fifo,
         vertical_fov: 1.0,
         clock: host,
-        presenter: presenter(rate, options.drawn_time.unwrap_or_default(), &status),
+        presenter: presenter(
+            rate,
+            options.drawn_time.unwrap_or_default(),
+            &status,
+            #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
+            audio.as_ref(),
+        ),
         render: RenderSettings::default(),
         hand: DesktopHandSettings::default(),
         eye: RigPose { position: [0.0, 1.4, 0.0], orientation: [0.0, 0.0, 0.0, 1.0] },
