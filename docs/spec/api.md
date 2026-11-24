@@ -142,7 +142,8 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
   acting for them, bypasses the shared avenue, so it is published: that player's signed input in the record, sent
   once. The field stays shared, and every machine holds the same value afterwards (world-model.md 3.7). Every
   `apply` is already its member's signed entry, so this changes no operation [I]. What is new:
-  - **any permitted writer** is the default, and the last in the agreed order wins (the plain-write rule above);
+  - **any permitted writer** is the default: who may write is the world's permissions, and writes that pass meet
+    the conflict rules above, a plain write's last in the agreed order winning;
   - **the engine's special feeds** (a player's pose, their voice source) are fixed to their player, and no edit
     writes them;
   - **a field may be restricted to named players.** A write by anyone else is refused, [I] as `not_permitted`
