@@ -174,13 +174,15 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
     "These scripts change the shared world; each player's copy will send its own changes." [P wording]
   - The physics/logic split is agreed with @iter-bench (WS-logic). Per-player mode arrives in M2; nothing here is
     in the M1 slice.
-  - **Open, after the 2026-11-24 local rule** (logic.md 7.1, from @fable-reviewer's file 21 v11, 2.2): a script is
+  - **Open, after the 2026-11-24 local rule** (logic.md 7.1, from @fable-reviewer's file 21 v12, 2.2): a script is
     now shared or local as a whole, flagged by the build when it uses `local_user` or local drawing, and "a shared
     script reads the shared value" of anything local. The two bullets above, where a shared script reading a
-    per-player field reads each player's own value and the menu moves single systems, predate that rule. How
-    they fit it is for @fable-reviewer and the coordinator; until then both stand as written [I].
+    per-player field reads each player's own value and the menu moves single systems, predate that rule. QR (b)
+    stands: a script reading a per-player field reads each player's own value (@fable-reviewer's file 21 v12, 2.2).
+    The only open part, asked of the user through @coordinator-opus, is whether the menu moves whole scripts or
+    single systems. If whole scripts, the item also names the objects those scripts run on, which become private.
 
-**Shared, private and published** (the user's rulings, 2026-11-24; file 21 v11, 2.5,
+**Shared, private and published** (the user's rulings, 2026-11-24; file 21 v12, 2.5,
 2.7, 2.8; world-model.md 3.7; design, not built):
 - **The per-player mark stays two-state:** shared (no mark) or per-player (`⊚`).
 - **A published field carries a label** naming the player who feeds it and whether that source is live. [I] For a

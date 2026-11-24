@@ -337,7 +337,7 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
 ### 7.1 Per-frame drawing never feeds the simulation (design, not built)
 
 The user's rulings of 2026-11-24, from @fable-reviewer's file 21
-(`fable-reviewer/review/21-draw-systems.md` v11: sections 3, 7, 8 and 9), verbatim on
+(`fable-reviewer/review/21-draw-systems.md` v12: sections 3, 7, 8 and 9), verbatim on
 @item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe. Nothing here is built, and building
 needs its own go after the friend test. Draw systems, the script side, are logic.md 7.3; the kinds of value,
 world-model.md 3.7. File 21's restrictions are named DR1 to DR12 here and in logic.md, apart from this file's

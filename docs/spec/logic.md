@@ -1085,7 +1085,7 @@ numbers [I].
 
 ## 7. Local scripts and draw systems (QR (b), M2; the user's rulings of 2026-11-24)
 
-Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v11: 2.2,
+Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v12: 2.2,
 2.4, 3, 4, 5, 6 and 8), with the user's rulings, verbatim on
 @item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe. They are design only: nothing is built,
 and building needs its own go after the friend test. Which values are shared, private or published is
@@ -1109,7 +1109,14 @@ world-model.md 3.7; how a picture is drawn is render.md's.
 1. **A script is shared or local as a whole.** It becomes local automatically, at build time, if any function in it
    uses `local_user` or any local-draw functionality. The mode is not declared per system.
 2. **Every local thing is reachable only that way:** tracking, display time, per-player values and, with the
-   player's grant (7.2), devices, files and local web addresses. A shared script reads the shared value.
+   player's grant (7.2), devices, files and local web addresses. No shared script ever sees a per-player value.
+   - **Touching a per-player field makes the code that touches it local** (QR (b), 2026-11-07, which
+     stands): it reads the executing player's own value, runs per player, and its shared effects go out as that
+     player's input, "in the same way how a player holding a local paddle hitting a ball with it would cause the
+     ball to go flying for everyone". Open until the user rules: whether this is a third trigger
+     of the whole-script flag, so the whole script moves, or only the systems that touch the field move, as
+     designed on 2026-11-07 (12; @fable-reviewer's file 21 v12, 2.2). The inspector names the scripts it moves
+     before the click (inspector.md 4.2), which is point 5's "says so".
    - Tracking the engine supplies needs no grant: any shared script may read a player's head, hand or camera pose
      in the shared record and place things in their head or hand space (ruled, against the recommendation). A
      draw rule reading this frame's pose makes its script local.
@@ -1332,6 +1339,8 @@ Each gets a raw log under `crates/pe-logic/bench/` or the workstream's evidence 
   measured in M2 [I].
 - Whether `pe_manifest` moves to a custom section.
 - The fuel cost table and budgets per stage.
+- **Per-player fields and the local flag (7.1, point 2), asked of the user through @coordinator-opus:** whether
+  touching a per-player field is a third trigger of the whole-script flag, or moves only the systems that touch it.
 - **Draw systems and local scripts (7.1-7.3), open from file 21's section 12:** whether `state_at` returns a
   velocity or the engine derives one deterministically; the budgets and the caps on extras and draw-local state;
   where draw systems run so the headset's frame loop never blocks (the render thread within its budget, or a worker
