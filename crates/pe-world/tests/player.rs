@@ -168,7 +168,11 @@ fn a_move_pack_is_read_frame_by_frame_then_held_then_the_stick_stops() {
         w.end_frame(Frame(f));
         sticks.push(player(&w, body).stick);
     }
-    assert_eq!(sticks, [[20, 5], [20, 5], [20, 5], [0, 0], [0, 0]], "frames 2-6: the second sample, held twice, then none");
+    assert_eq!(
+        sticks,
+        [[20, 5], [20, 5], [20, 5], [0, 0], [0, 0]],
+        "frames 2-6: the second sample, held twice, then none"
+    );
     assert_eq!(player(&w, body).heading, 7, "the heading stays after the pack runs out");
 }
 
@@ -196,9 +200,8 @@ fn what_the_step_used_last_frame_rolls_forward_for_the_room_scale_step() {
     let mut w = plane();
     let mut b = EntryBuilder::new(&keys, 0);
     let body = w.body_of(keys.key(0)).unwrap();
-    let mv = |head, heading| {
-        Input::Move { body, samples: vec![MoveSample { heading, ..sample([0, 0], 0, head) }], hold: 9 }
-    };
+    let mv =
+        |head, heading| Input::Move { body, samples: vec![MoveSample { heading, ..sample([0, 0], 0, head) }], hold: 9 };
     assert!(applied(&input(&mut w, 1, &mut b, &mv([0.0, 1.6, 0.0], 100)).0));
     let p = player(&w, body);
     assert_eq!((p.prev_head, p.prev_heading), ([0.0, 1.6, 0.0], 100), "no room-scale step at the start");

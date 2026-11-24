@@ -174,7 +174,8 @@ impl World {
             return Err(Reason::Invalid { field: None });
         }
         let old = self.own_body(author, body)?;
-        let row = Player { stamp: now.0, span: samples.len() as u32 + u32::from(hold), ..with_sample(old, &samples[0]) };
+        let row =
+            Player { stamp: now.0, span: samples.len() as u32 + u32::from(hold), ..with_sample(old, &samples[0]) };
         self.store.insert(body, row).map_err(|_| Reason::Invalid { field: None })?;
         let t = Arc::make_mut(&mut self.inputs);
         if samples.len() > 1 {

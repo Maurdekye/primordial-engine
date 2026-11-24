@@ -455,9 +455,7 @@ impl World {
             Input::Push { object, impulse, at } => self.push(frame, e.author, object, impulse, at, &mut fp),
             Input::HandMode { hand, mode } => self.set_hand_mode(e.author, hand, mode, &mut notes),
             Input::Move { body, samples, hold } => self.move_input(frame, e.author, body, samples, hold, &mut fp),
-            Input::BodyHand { hand, poses, hold } => {
-                self.body_hand_input(frame, e.author, hand, poses, hold, &mut fp)
-            }
+            Input::BodyHand { hand, poses, hold } => self.body_hand_input(frame, e.author, hand, poses, hold, &mut fp),
         };
         match r {
             Ok(()) => (Outcome::Applied { created: Vec::new(), overwrote: Vec::new(), notes, inverse: None }, fp),
