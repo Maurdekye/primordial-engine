@@ -707,11 +707,11 @@ fn body_row(world: &World, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable>
     let origin = WorldTransform { pos: Pos::ORIGIN, rot: IDENTITY_ROTATION, scale: at.scale };
     let mut shapes = Vec::new();
     if let Some(shape) = own {
-        shapes.push(part(shape, &origin)?);
+        shapes.push(part(id, shape, &origin)?);
     }
     for (child, shape) in children {
         let placed = in_body(store, &origin, id, child).ok_or(Unbuildable::Pose)?;
-        shapes.push(part(shape, &placed)?);
+        shapes.push(part(child, shape, &placed)?);
     }
     Ok(Some(BodyRow {
         kind,
@@ -765,9 +765,9 @@ fn in_body(store: &SimStore, origin: &WorldTransform, body: ObjectId, child: Obj
     Some(placed)
 }
 
-/// One shape at `placed`, its place in its body's frame and its world scale. The body's own shape sits at the
-/// body's origin, unturned.
-fn part(shape: &Shape, placed: &WorldTransform) -> Result<ShapePart, Unbuildable> {
+/// One shape, `object`'s, at `placed`, its place in its body's frame and its world scale. The body's own shape sits at
+/// the body's origin, unturned.
+fn part(object: ObjectId, shape: &Shape, placed: &WorldTransform) -> Result<ShapePart, Unbuildable> {
     let center = (placed.pos - Pos::ORIGIN).0.map(|c| c as f32);
     let rotation = placed.rot;
     let scale = placed.scale.map(f32::abs);
@@ -790,7 +790,7 @@ fn part(shape: &Shape, placed: &WorldTransform) -> Result<ShapePart, Unbuildable
         }
         _ => return Err(Unbuildable::Shape),
     };
-    Ok(ShapePart { shape: row, density: shape.density })
+    Ok(ShapePart { shape: row, density: shape.density, object })
 }
 
 // ---- effects --------------------------------------------------------------------------------------------------------

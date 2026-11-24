@@ -59,6 +59,7 @@ fn view(frame: u64, sim_time: HostTime, mut objects: Vec<ViewObject>) -> Arc<Fra
         changes: vec![],
         activations: Vec::new(),
         activations_retracted: Vec::new(),
+        hits: Vec::new(),
     })
 }
 

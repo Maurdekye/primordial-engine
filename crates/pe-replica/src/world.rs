@@ -118,6 +118,9 @@ pub struct ShapePart {
     pub shape: ShapeRow,
     /// Kg per cubic metre (replica.md 2.1: mass becomes density).
     pub density: f32,
+    /// The object whose `Shape` this is: the body itself, or one of its compound children. A collision hit names it
+    /// (S5 v1.11's `Hit::part_a`); the physics never reads it.
+    pub object: ObjectId,
 }
 
 /// The physics view of one physical object: its `Body`, its shapes (its own `Shape`, then its compound children's in

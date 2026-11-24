@@ -167,12 +167,12 @@ fn at(p: [f64; 3]) -> Option<Pos> {
     Pos::ORIGIN.checked_add(Offset(p)).ok()
 }
 
-fn body(kind: BodyKind, shape: ShapeRow, pos: Pos) -> BodyRow {
+fn body(id: ObjectId, kind: BodyKind, shape: ShapeRow, pos: Pos) -> BodyRow {
     BodyRow {
         kind,
         pos,
         rotation: [0.0, 0.0, 0.0, 1.0],
-        shapes: vec![ShapePart { shape, density: 1000.0 }],
+        shapes: vec![ShapePart { shape, density: 1000.0, object: id }],
         friction: 0.6,
         restitution: 0.0,
         rolling_resistance: 0.0,
@@ -316,7 +316,7 @@ impl MockWorld {
                         return Err((i, Reason::Exists(id)));
                     }
                     let pos = at(pos).ok_or((i, Reason::OutOfRange))?;
-                    self.bodies.insert(id, body(kind, shape, pos));
+                    self.bodies.insert(id, body(id, kind, shape, pos));
                     changed.insert(id, Change::Created);
                     created.push(id);
                 }
@@ -496,7 +496,7 @@ impl WorldModel for MockWorld {
         for (i, record) in import.records.iter().enumerate() {
             match record.key {
                 LeafKey::Object(id) => {
-                    let (b, phys) = decode_object(&record.bytes).ok_or(ImportError::BadProof(i))?;
+                    let (b, phys) = decode_object(id, &record.bytes).ok_or(ImportError::BadProof(i))?;
                     if import.physics.is_none() {
                         return Err(ImportError::NeedsPhysicsImage(id));
                     }
@@ -579,7 +579,7 @@ fn encode_object(b: &BodyRow, phys: Option<&BodyStateRow>) -> Vec<u8> {
     out
 }
 
-fn decode_object(bytes: &[u8]) -> Option<(BodyRow, Option<BodyStateRow>)> {
+fn decode_object(id: ObjectId, bytes: &[u8]) -> Option<(BodyRow, Option<BodyStateRow>)> {
     let mut r = Reader(bytes);
     let flag = |r: &mut Reader| match r.u8()? {
         0 => Some(false),
@@ -606,7 +606,7 @@ fn decode_object(bytes: &[u8]) -> Option<(BodyRow, Option<BodyStateRow>)> {
             },
             _ => return None,
         };
-        shapes.push(ShapePart { shape, density: r.f32()? });
+        shapes.push(ShapePart { shape, density: r.f32()?, object: id });
     }
     let row = BodyRow {
         kind,

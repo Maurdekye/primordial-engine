@@ -783,6 +783,7 @@ impl Replica for Mock {
             changes: Vec::new(),
             activations: Vec::new(),
             activations_retracted: Vec::new(),
+            hits: Vec::new(),
         })
     }
 }

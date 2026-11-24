@@ -1,7 +1,7 @@
 //! ReplicaImpl over the mock world and the real pe-physics: the properties of replica.md 4.3 that need no hands or
 //! logic yet, the budget, roots at cuts, finalize and rung 1.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,9 +11,9 @@ use pe_replica::world::{BodyKind, ShapeRow};
 use pe_replica::{Phase, ReplicaConfig, ReplicaImpl, WorldModel, apply_order};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
-    ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameView,
-    GroupSel, Hash, Health, ImportError, LeafKey, LineId, ObjectId, Offset, Outcome, Pos, Replica, RootError,
-    SignedEntry, SimRate, StepRecord, VoidReason,
+    ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameClock,
+    FrameView, GroupSel, Hash, Health, Hit, ImportError, LeafKey, LineId, ObjectId, Offset, Outcome, Pos, Replica,
+    RootError, SignedEntry, SimRate, StepRecord, VoidReason,
 };
 
 /// Agreement's stand-in: entries by frame, in a fixed order (chain, then seq), whatever order they arrive in.
@@ -1474,4 +1474,124 @@ fn a_served_root_at_a_cut_not_final_keeps_its_snapshot_through_a_stall() {
     let c120 = cut(&all, 15, 120);
     assert_eq!(vote(&mut a, &mut s, &c120).1, vote(&mut b, &mut bs, &c120).1);
     assert!(a.tree(&r24).is_none(), "left out, it goes at the next vote");
+}
+
+// ---- collision hits (S5 v1.11) ---------------------------------------------------------------------------------------
+
+/// The hits of `views`, by frame: a later view's hits for a frame replace an earlier view's (a re-step's), with the
+/// re-simulation flag set aside.
+fn latest_hits(views: &[Vec<Hit>]) -> BTreeMap<Frame, Vec<Hit>> {
+    let mut by_frame = BTreeMap::new();
+    for hits in views {
+        let mut this: BTreeMap<Frame, Vec<Hit>> = BTreeMap::new();
+        for h in hits {
+            this.entry(h.frame).or_default().push(Hit { resimulated: false, ..*h });
+        }
+        by_frame.extend(this);
+    }
+    by_frame
+}
+
+/// Advances `r` to each of `presents` in turn, and the hits of each view it published.
+fn views_over(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, presents: impl Iterator<Item = u64>) -> Vec<Vec<Hit>> {
+    let mut views = Vec::new();
+    for n in presents {
+        let shown = r.view();
+        r.advance(Frame(n), s);
+        let v = r.view();
+        if !Arc::ptr_eq(&v, &shown) {
+            assert!(v.hits.windows(2).all(|w| w[0].frame <= w[1].frame), "in frame order: {:?}", v.hits);
+            views.push(v.hits.clone());
+        }
+    }
+    views
+}
+
+/// S5 v1.11: each collision hit reaches the view after the step that made it, once, with its frame's time, where the
+/// bodies met and the objects that touched. Ball 10 (radius 0.25, from 1 m) lands on the ground first, at about
+/// 3.8 m/s; the other balls land after it.
+#[test]
+fn each_hit_reaches_the_view_after_the_step_that_made_it_once() {
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    let mut r = replica();
+    let mut all = Vec::new();
+    for n in 1..=64u64 {
+        r.advance(Frame(n), &mut s);
+        let v = r.view();
+        assert_eq!(v.frame, Frame(n));
+        // Only frame n - 1 was stepped since the last view, for the first time.
+        assert!(v.hits.iter().all(|h| h.frame == Frame(n - 1) && !h.resimulated), "{:?}", v.hits);
+        all.extend(v.hits.iter().copied());
+    }
+    let first = all.first().copied().expect("a hit");
+    assert_eq!(BTreeSet::from([first.a, first.b]), BTreeSet::from([id(1), id(10)]), "{first:?}");
+    assert_eq!((first.part_a, first.part_b), (first.a, first.b), "a body of one shape is its own part");
+    assert!((1.0f32..5.0).contains(&first.speed), "{first:?}");
+    assert!((first.at - Pos::ORIGIN).0[1].abs() < 0.05, "on the ground's top: {first:?}");
+    assert!((first.normal[1].abs() - 1.0).abs() < 1e-3, "an upright normal: {first:?}");
+    assert_eq!(first.sim_time, MockClock::new(SimRate::DEFAULT).host_time_of(first.frame));
+    let bodies: BTreeSet<ObjectId> = all.iter().flat_map(|h| [h.a, h.b]).collect();
+    assert!(bodies.contains(&id(11)) && bodies.contains(&id(12)), "the other balls land too: {all:?}");
+}
+
+/// S5 v1.11 across a rollback: the frames stepped again after views showed them carry their hits again in the next
+/// view, flagged `resimulated`, and a late entry that changes nothing (a spawn of a ball that exists, refused) gives
+/// them exactly as before. The frame stepped for the first time in that advance is not flagged.
+#[test]
+fn a_rollback_carries_the_re_stepped_frames_hits_again_flagged() {
+    let mut s = Source::default();
+    scene().into_iter().for_each(|e| s.add(e));
+    let mut r = replica();
+    let first: Vec<Hit> = views_over(&mut r, &mut s, 1..=40).concat();
+    let keys = TestKeys::new(7, 3);
+    s.add(EntryBuilder::new(&keys, 2).next(Class::Edit, Frame(5), Bytes::from(encode(&[ball(10, 5.0, 5.0)]))));
+    let adv = r.advance(Frame(41), &mut s);
+    let k = adv.rolled_back_to.expect("rolled back").0;
+    assert!(k <= 5, "{adv:?}");
+    let v = r.view();
+    let (again, new): (Vec<Hit>, Vec<Hit>) = v.hits.iter().partition(|h| h.frame.0 < 40);
+    assert!(again.iter().all(|h| h.resimulated) && new.iter().all(|h| !h.resimulated), "{:?}", v.hits);
+    let expected: Vec<Hit> = first.iter().filter(|h| h.frame.0 >= k).map(|h| Hit { resimulated: true, ..*h }).collect();
+    assert!(!expected.is_empty(), "the balls land after frame {k}");
+    assert_eq!(again, expected);
+}
+
+/// S5 v1.11: equal frames give equal hits on every replica. One had every entry from the start; one got the push at
+/// 9 and everything after it late, at 40, and rolled back; and one got them late too, at 30, but steps two frames an
+/// advance, so it shows no view until it catches up, and the frames it stepped twice meanwhile reach that view once,
+/// as their latest step had them.
+#[test]
+fn equal_frames_give_equal_hits_on_every_replica() {
+    let (mut a, mut sa) = (replica(), Source::default());
+    scene().into_iter().for_each(|e| sa.add(e));
+    let reference = latest_hits(&views_over(&mut a, &mut sa, 1..=64));
+    assert!(reference.len() >= 3, "{reference:?}");
+
+    let (mut b, mut sb) = (replica(), Source::default());
+    let mut early = scene();
+    let late = early.split_off(3);
+    early.into_iter().for_each(|e| sb.add(e));
+    let mut views = views_over(&mut b, &mut sb, 1..=40);
+    late.into_iter().for_each(|e| sb.add(e));
+    views.extend(views_over(&mut b, &mut sb, 41..=64));
+    assert_eq!(latest_hits(&views), reference);
+
+    let (mut c, mut sc) = (replica(), Source::default());
+    c.set_budget(Duration::from_millis(1)); // two frames an advance
+    let mut early = scene();
+    let late = early.split_off(3);
+    early.into_iter().for_each(|e| sc.add(e));
+    let mut views = views_over(&mut c, &mut sc, std::iter::repeat_n(40, 15)); // to frame 30, no view
+    assert!(views.is_empty() && c.view().frame == Frame(0), "behind: no view yet");
+    late.into_iter().for_each(|e| sc.add(e)); // from frame 9: frames 9 to 29 are stepped again, ball 10 landing
+    views.extend(views_over(&mut c, &mut sc, std::iter::repeat_n(40, 30)));
+    views.extend(views_over(&mut c, &mut sc, 41..=64));
+    let caught_up = &views[0];
+    let frames: Vec<Frame> = caught_up.iter().map(|h| h.frame).collect();
+    assert!(
+        frames.iter().any(|f| (9..30).contains(&f.0)),
+        "the first view has hits of frames stepped twice: {frames:?}"
+    );
+    assert_eq!(latest_hits(&views), reference, "each frame's hits once, as its latest step had them");
 }

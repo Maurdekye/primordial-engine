@@ -772,6 +772,7 @@ mod tests {
             changes,
             activations: Vec::new(),
             activations_retracted: Vec::new(),
+            hits: Vec::new(),
         }
     }
 
