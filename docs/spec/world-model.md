@@ -849,11 +849,17 @@ what is absolutely necessary, and keep asmmuch as possible shared or private."
   HTTP feed does, through a published input channel the world has agreed to. The world chooses whether to accept
   outside sources; it never holds, builds or runs the code.
 - **One mark for every outside source.** It doesn't say whether the source is a websocket, HTTP or engine code.
-- **The engine offers no messaging service;** authors build their own (against fable's recommendation).
+  The label naming the feeding player, and whether that source is live, stays beside it.
+- **The engine offers no messaging service;** authors build their own (against fable's recommendation). [I] An
+  author should know that a relayed connection's encryption protects each link only, not a message from the
+  relay.
 - [I] **The contract is public:** the input's format and the rule that validates it. The local-access grants
   (logic.md 7) and the writer rules above apply. Others can verify who sent an input and that it passes
-  validation, never what computed it. Fair hidden moves need commit and reveal, and a reveal is sent only once its
-  step is final.
+  validation, never what computed it. Fair hidden moves need commit and reveal: publish only the digest
+  `H(round, player, choice, secret_nonce)`, with a fresh secret random number, then reveal the choice and the
+  number, and shared code checks the digest. Withholding a reveal can't be prevented; a forfeit is the game's own
+  rule. A reveal is sent only once its step is final, and a retry may resend the same signed reveal, whose effect
+  happens once. Across a leave the owner keeps their private saved data and the keys of outstanding reveals.
 - [I] **Nothing of a source enters the world:** no module, private rows or debug output in commits, joins, saves,
   the inspector, captures or telemetry. A private field is only as secret as its storage, which is open (12).
 

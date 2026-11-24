@@ -1085,7 +1085,7 @@ numbers [I].
 
 ## 7. Local scripts and draw systems (QR (b), M2; the user's rulings of 2026-11-24)
 
-Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v10: 2.2,
+Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v11: 2.2,
 2.4, 3, 4, 5, 6 and 8), with the user's rulings, verbatim on
 @item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe. They are design only: nothing is built,
 and building needs its own go after the friend test. Which values are shared, private or published is
