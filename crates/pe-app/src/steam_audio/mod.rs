@@ -21,7 +21,7 @@ use pe_render::present::Presenter;
 use sha2::{Digest, Sha256};
 
 use self::events::{Listener, Publisher};
-use self::mix::{BLOCK, DIRECT, Impact, MAX_VOICES, Mixer, RATE};
+use self::mix::{BLOCK, DEFAULT_VOICE_CAP, DIRECT, Impact, MAX_VOICES, Mixer, RATE};
 
 const RELAXED: Ordering = Ordering::Relaxed;
 const WARMUP: Duration = Duration::from_secs(2);
@@ -90,6 +90,7 @@ impl AudioTrial {
         if synthetic_count > MAX_VOICES {
             return Err("PE_STEAM_AUDIO_FIXTURE must be between 0 and 512".into());
         }
+        let voice_cap = DEFAULT_VOICE_CAP.max(synthetic_count);
         let audible = std::env::var_os("PE_STEAM_AUDIO_AUDIBLE").is_some_and(|s| s == "1");
         let host = cpal::default_host();
         let device = output_device(&host)?;
@@ -109,7 +110,7 @@ impl AudioTrial {
         let channels = usize::from(config.channels);
         // The adapter handles endpoint callback sizes independently of the fixed DSP block.
         config.buffer_size = cpal::BufferSize::Default;
-        let mix = Mixer::new(&path, synthetic_count)?;
+        let mix = Mixer::new(&path, voice_cap, synthetic_count)?;
         let (send_impact, recv_impact) = mpsc::sync_channel(MAX_VOICES);
         let (send_metrics, metrics) = mpsc::sync_channel(1);
         let publish = PublishAudio {
@@ -145,7 +146,7 @@ impl AudioTrial {
             &format!(
                 "steam audio: sdk=4.8.1 sha256={PHONON_SHA256} host={:?} endpoint={description:?} \
                  output={config:?} format={format:?} rate={RATE} block={BLOCK} direct={DIRECT} bed_order=1 hrtf=nearest \
-                 voice_cap={MAX_VOICES} fixture={fixture:?} audible={audible}",
+                 voice_cap={voice_cap} fixture={fixture:?} audible={audible}",
                 host.id()
             ),
         );

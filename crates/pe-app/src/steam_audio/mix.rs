@@ -13,6 +13,7 @@ use super::phonon::{Orientation, Spatializer, Vec3};
 pub(super) const RATE: u32 = 48_000;
 pub(super) const BLOCK: usize = 128;
 pub(super) const DIRECT: usize = 8;
+pub(super) const DEFAULT_VOICE_CAP: usize = 128;
 pub(super) const MAX_VOICES: usize = 512;
 const BED_CHANNELS: usize = 4;
 const MAX_DISTANCE: f32 = 80.0;
@@ -55,6 +56,7 @@ struct Source {
 
 pub(super) struct Mixer {
     sdk: Spatializer,
+    voice_cap: usize,
     voices: Vec<Voice>,
     sources: Vec<Source>,
     synthetic: Vec<Pos>,
@@ -75,11 +77,12 @@ pub(super) struct Mixer {
 }
 
 impl Mixer {
-    pub fn new(path: &Path, synthetic_count: usize) -> Result<Self, String> {
+    pub fn new(path: &Path, voice_cap: usize, synthetic_count: usize) -> Result<Self, String> {
         Ok(Self {
-            sdk: Spatializer::open(path, RATE, BLOCK, DIRECT, MAX_VOICES - DIRECT, 1)?,
-            voices: Vec::with_capacity(MAX_VOICES),
-            sources: Vec::with_capacity(MAX_VOICES),
+            sdk: Spatializer::open(path, RATE, BLOCK, DIRECT, voice_cap - DIRECT, 1)?,
+            voice_cap,
+            voices: Vec::with_capacity(voice_cap),
+            sources: Vec::with_capacity(voice_cap),
             synthetic: Vec::with_capacity(synthetic_count),
             direct: [None; DIRECT],
             next_id: 1,
@@ -91,7 +94,7 @@ impl Mixer {
             encoded: [0.0; BLOCK * BED_CHANNELS],
             bed: [0.0; BLOCK * BED_CHANNELS],
             stereo: [0.0; BLOCK * 2],
-            onsets: Vec::with_capacity(MAX_VOICES),
+            onsets: Vec::with_capacity(voice_cap),
             stolen: 0,
             rejected: 0,
             peak_voices: 0,
@@ -119,7 +122,7 @@ impl Mixer {
         }
         let voice = Voice { id: self.next_id, impact, gain, pitch, sample: 0.0, pending_onset: true };
         self.next_id += 1;
-        if self.voices.len() < MAX_VOICES {
+        if self.voices.len() < self.voice_cap {
             self.voices.push(voice);
             return;
         }
