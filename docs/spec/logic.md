@@ -112,7 +112,8 @@ Per module:
   [V `tests/run.rs`, `binding_checks_the_engine_table_and_the_layout`, `the_sdk_engine_components_are_the_engine_layouts`];
 - per system:
   - `name`, `stage` (3.5) and `mode`: `shared` (default) or `per_player` (section 7, M2). Under the local rule
-    (7.1) the mode is the whole script's, set by the build rather than declared [I];
+    (7.1) the mode is set by the build rather than declared, for the whole script [I]; whether a per-player field
+    moves the whole script or only the systems touching it is open (7.1, point 2);
   - `bound`: the components every bound object must have, each `read` or `write`;
   - `reads_other`: components it may read on objects other than the bound one, through queries (3.4);
   - `emits`: the event types it may emit, each `once_for_world` or `once_per_player` (file 11, 3.5);
@@ -1109,7 +1110,8 @@ world-model.md 3.7; how a picture is drawn is render.md's.
 1. **A script is shared or local as a whole.** It becomes local automatically, at build time, if any function in it
    uses `local_user` or any local-draw functionality. The mode is not declared per system.
 2. **Every local thing is reachable only that way:** tracking, display time, per-player values and, with the
-   player's grant (7.2), devices, files and local web addresses. No shared script ever sees a per-player value.
+   player's grant (7.2), the clock, devices, files and local web addresses. No shared script ever sees a
+   per-player value.
    - **Touching a per-player field makes the code that touches it local** (QR (b), 2026-11-07, which
      stands): it reads the executing player's own value, runs per player, and its shared effects go out as that
      player's input, "in the same way how a player holding a local paddle hitting a ball with it would cause the
@@ -1118,8 +1120,8 @@ world-model.md 3.7; how a picture is drawn is render.md's.
      designed on 2026-11-07 (12; @fable-reviewer's file 21 v12, 2.2). The inspector names the scripts it moves
      before the click (inspector.md 4.2), which is point 5's "says so".
    - Tracking the engine supplies needs no grant: any shared script may read a player's head, hand or camera pose
-     in the shared record and place things in their head or hand space (ruled, against the recommendation). A
-     draw rule reading this frame's pose makes its script local.
+     and place things in their head or hand space (ruled, against the recommendation). [I] A shared script reads
+     the pose in the shared record; a draw rule reading this frame's pose makes its script local.
    - Whether the clock needs its own grant is open (12).
 3. **Everything a local script controls is explicitly desynced:** its own state and the objects it runs on, which
    carry the per-player mark.
@@ -1192,7 +1194,8 @@ holds DR3, DR4, DR9 and DR11):
   velocity it returns, which is shared. It may bind only synchronized inputs. Drawing calls the same function at
   the draw time with the parameters and script version in force for that step interval, so a spline edited at
   frame k is drawn by its old shape before k and its new one from k, also after a rollback. Path time is
-  simulation time. A path that drives a solid sets only a target for physics: where a collision or a joint moves
+  simulation time. Past the newest simulated frame the function is evaluated a bounded way ahead, as a
+  prediction. A path that drives a solid sets only a target for physics: where a collision or a joint moves
   the object off the path, the solved pose is the truth and is what is drawn.
 - **Inputs a draw system may read:** the world as handed to the renderer (its declared rows from the frame views,
   the predicted world); the draw time `t` in simulation time with a fraction, the display period and the step
@@ -1201,10 +1204,13 @@ holds DR3, DR4, DR9 and DR11):
   head, hands and view, which player is local, the camera, draw-local state, local settings, local simulated
   fields. Never another machine's anything, the clock other than through `t`, files or the network.
 - **Outputs:** placement (position, rotation, scale) in a named space: world, another object's drawn pose, or the
-  local player's head, hand or view, whose last-moment pose the engine applies afterwards; looks (visibility,
+  local player's head, hand or view, whose last-moment pose the engine applies afterwards (objects placed relative
+  to each other are resolved in a fixed order, and a cycle falls back to the simulated pose); looks (visibility,
   colour, emission, material and shader values, texture offsets, text, light brightness); bone poses and blend
   shapes; extras capped per object and frame (lines, trails, markers, sprites, particles); sound and haptic levels
-  into the engine's one-way, clamped local sinks, which expire if the system faults; and bounded draw-local
+  into the engine's one-way, rate-limited, clamped local sinks, which expire if the system faults (effects the
+  simulation emits, and cues the engine must give, keep their own keys and can't be suppressed or repeated by a
+  draw rule); and bounded draw-local
   state, never saved or sent, reset at any handoff, version change or rollback. Never a field's own value,
   anything physics reads, a collider, a hierarchy change, a command, an input or a camera pose.
 - **No easing by the engine:** it draws what a draw rule returns. A system that wants easing keeps draw-local
@@ -1218,7 +1224,8 @@ it was computed from and dropped if they are no longer current. Its reads never 
 simulation uses. Draw instances need neither bit-exact floats nor exact fuel, so they may run with cheaper
 settings than step instances (5.1).
 
-**Tests that would prove the boundary** (file 21, section 11): one recorded input log gives identical roots and
+**Tests that would prove the boundary** (file 21, section 11; the pointing test, of DR3, is in render.md 7.1): one
+recorded input log gives identical roots and
 entries with no renderer, at 72 Hz and 144 Hz, and with draw systems that overrun or trap; a shared script plus a
 separate local draw script that fails to build: the shared one still activates, attests and replays headless; a
 `state_at` parameter edit at frame k is drawn by the old path before k and the new from k, also after a rollback

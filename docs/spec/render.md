@@ -341,7 +341,7 @@ The user's rulings of 2026-11-24, from @fable-reviewer's file 21
 @item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe. Nothing here is built, and building
 needs its own go after the friend test. Draw systems, the script side, are logic.md 7.3; the kinds of value,
 world-model.md 3.7. File 21's restrictions are named DR1 to DR12 here and in logic.md, apart from this file's
-open points R1 to R11 (section 15).
+open points R1 to R12 (section 15).
 
 - **The rule, reworded (decision 11, adopted):** engine state updates on a fixed timestep, and
   anything drawn per rendered frame never feeds the simulation. The invariant: for a fixed input log, every
@@ -373,6 +373,9 @@ parent and late-latched spaces are resolved; the held-object rule is checked las
 where it applies no later transform moves the object; then the frame is drawn. Both eyes share one result. A
 script's overrides that overran, trapped or aren't built are dropped for the frame, and its objects are drawn by
 the default: the simulated pose at `t_draw`, a built-in attachment still applying.
+
+**The test of DR3** (file 21, 11): the same raw mouse input gives the same desktop hand input, whatever a draw
+system does to the visual, displaced arbitrarily.
 
 **Handoffs** (file 21, 7). A handoff is an ordinary action at one simulation step; the drawing never decides it.
 - **Attach or grab:** from the action's step the object is attached; the owner's machine draws it from tracking
