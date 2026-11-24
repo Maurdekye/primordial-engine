@@ -2551,6 +2551,62 @@ renewal; a disconnected holder's claim expiring and freeing the subtree, with a 
 the tray's holder renewing while someone takes the cup; the push budget and `push_budget = 0`; a push with `at`
 outside the bound.
 
+### 8.2 Player bodies and the Move input (friend-test locomotion, L2)
+
+The friend test's first-person locomotion (the user; engine-architect/friend-test-replan.md section 6,
+piece L2, @item:primordial-engine/locomotion-l2-pe-world-a-player-body-per-member-t). pe-world holds the body and
+its input; pe-physics moves it (L1's `move_player`, @vdw-physics); pe-replica's drive calls one per body per frame
+(@engine-architect). All [I] until the friend test runs.
+
+- **Only presets that ask for bodies get them.** The plane registers the engine component `Player` (id 12) at
+  genesis, through `SimStore::register_engine`; the ball pit never does, so its registry, its members (two root
+  hands) and its roots are M1's. The registry table carries `Player` to a joiner like any description (6.6).
+- **The body** is `ObjectId::body(line, member, 0, frame)`, made by world logic in `World::admit` with the hands: a
+  root whose `Transform` is at the feet (the spawn slot's feet, on the floor), with a `Player` row and a `SimSize`.
+  It is 3.5's avatar root: the hands are its children, at the same offsets from the feet as M1's root hands. It has
+  no `Shape` or `Body` row: pe-physics builds the player's capsule from its own tuning when it sees a `Player` row
+  (`add_player`), and players pass through each other there. The body never turns, so its frame is the world's axes
+  at its feet. No edit writes a `Player` row (like `Hand`, 7.6). A returning member keeps its body.
+- **`Player`** holds the owner and the newest Move sample: the stick (i8 steps of 1/127 after the dead zone), the
+  stick's yaw, the cumulative heading (a wrapping u32, 2^32 one turn, positive turning left, 0 facing -Z), the press
+  count `jumps`, the head's rig-frame pose and whether it is tracked. Three fields are derived by pe-world, from rows
+  alone, so every machine has them and rollback restores them:
+  - `jump`, 1 only on the frame `jumps` rose: the mover's one-shot jump. The first sample a body gets adopts the count
+    without a jump, so a held or re-sent sample never jumps twice;
+  - `prev_head` and `prev_heading`, what the step used last frame, rolled forward by `end_frame`: the mover's
+    room-scale step is the difference, rotated by the heading;
+  - `moved` and `prev_feet`, how far the feet moved over the last frame (`prev_feet` is `pos - ORIGIN`, 4.2).
+- **`Input::Move { body, samples, hold }`** (tag 6): the owner's samples, packed and held like a hand pack (8.1),
+  1-16 samples. Sample `j` is what the step reads at `stamp + j`; the last is held `hold` more frames, and after that
+  the stick is zero (the body stops, the heading and head stay). Any other member's is refused `NotYourHand`
+  [I: pe-seams has no reason of its own for a body]. A sample is refused `Invalid` for a stick axis of -128, a head
+  more than 50 m from the rig's origin on an axis, or a non-unit head rotation. `MoveSample::quantise_stick` is the
+  senders' quantiser: the stick's length clamped to 1, each axis rounded to 1/127, symmetric (@xr-eng). The samples are raw values, never a velocity (the trinket seam).
+- **`Input::BodyHand { hand, poses, hold }`** (tag 7): `Hand`'s pack for a hand whose parent is the author's body,
+  each pose an `Offset` and rotation in the body's frame, at most 4 m from the feet on an axis. The sender computes it
+  from the heading and head pose it put in that frame's Move (the two must agree, or the hand and the body it hangs
+  from disagree by a frame's turn); receivers only read the result, so no trig runs on the step side. A world-frame
+  `Hand` input still works on a body's hand (converted to the body's frame), and each kind of input ends the other's
+  pending pack. Both are in phase 0 with `Hand` (8.1): `input_phase` now names tags 0, 6 and 7. A world without bodies
+  has no such entries, so its frames apply as before.
+- **The frame, as pe-replica's drive runs it** (@engine-architect, L3): each body's `Player` row into L1's
+  `MoverInput` (`walk_axes` in pe-physics turns heading plus stick yaw into world axes with the fork's trig), then
+  `move_player` in id order, then the hand targets from the returned pose times each hand's local transform, then the
+  step. The body's pose is written back to its `Transform` like any bound body's. `World::players()` gives the rows
+  in id order; `World::body_of(member)` the body.
+- **Reach** (7.2, @engine-architect): a grab by a body's hand is judged before this frame's step moves
+  the body, so its reach adds the body's `moved`, about |v|·dt (7 cm at 4 m/s). A known looseness that a later
+  reorder of the input phase around the mover could remove. Every other reach path (`pick_grab`, a push's `at`)
+  measures through `world_transform`, which composes the body.
+- **Leave** (2.4): after the hands, the leaver's body goes, with its Move pack; anything still under it becomes a
+  root keeping its world pose. `LeaveReport::bodies` names it. A rejoin makes a new body (the id includes the frame).
+- **In the root** (6.2): pending `BodyHand` and `Move` packs sit in the hand-packs table under 17-byte keys (the id
+  and the tag byte 1 or 2), in key order, and in the older state hash only when there are any. A world without
+  bodies has exactly the tables, and the root, it had.
+- **Not yet:** platform carry (ruled out for the first mover); the course to platform on (L7); pe-api's
+  body in `view_objects` and an agent's reach from the body (L5, @api-eng); the view's rig (`local_rig` = body + R(heading)
+  · (-head offset), pe-app, L3).
+
 ## 9. The seams, my side
 
 Proposals to @engine-architect for pe-seams v0. Names follow the plan's appendix A where it has them.
