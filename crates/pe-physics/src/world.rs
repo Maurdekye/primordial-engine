@@ -52,6 +52,12 @@ pub(crate) fn pos(v: [f64; 3]) -> Pos {
     Pos { x: v[0] as _, y: v[1] as _, z: v[2] as _ }
 }
 
+/// [`pos`] the other way. The cast is the identity in the fork's default double-precision mode.
+#[allow(clippy::unnecessary_cast)]
+pub(crate) fn from_pos(p: Pos) -> [f64; 3] {
+    [p.x as f64, p.y as f64, p.z as f64]
+}
+
 /// A pose's position bounded and its rotation exactly as given, which must be unit length as
 /// Box3D judges it (`is_normalized_quat`): the exact setters never renormalize.
 fn exact_rotation(pose: &Pose) -> Result<Quat, PhysicsError> {
@@ -184,19 +190,6 @@ pub(crate) struct JointEntry {
     pub(crate) kind: JointKind,
 }
 
-/// A Box3D world whose bodies belong to sim objects.
-///
-/// * Bodies are created and destroyed only through this type, keyed by [`ObjectId`]. The
-///   binding table is sorted by id, so every iteration over it is in the same order on every
-///   peer.
-/// * [`PhysicsWorld::raw`] exposes the Box3D world read-only. `raw_mut` (feature `raw`, for test
-///   scenes and tools only) can break every invariant here: bodies created through it are not
-///   bound, and settings or callbacks changed through it are not carried by images.
-/// * Length units are process-wide in Box3D (`set_length_units_per_meter`), so every world in a
-///   process shares them; the engine uses metres, and refuses to create or step a world
-///   otherwise.
-/// * A restore that fails after it has started writing poisons the world: every call that
-///   reads or changes the simulation is refused until a good image is restored.
 /// A hard contact in the latest step, for impact sounds and never for play: Box3D's contact hit event, two shapes that
 /// approached along their normal at the world's hit threshold (1 m/s) or faster and took a normal impulse
 /// ([`PhysicsWorld::hits`]).
@@ -214,6 +207,20 @@ pub struct Hit {
     /// How fast they approached along the normal, m/s.
     pub speed: f32,
 }
+
+/// A Box3D world whose bodies belong to sim objects.
+///
+/// * Bodies are created and destroyed only through this type, keyed by [`ObjectId`]. The
+///   binding table is sorted by id, so every iteration over it is in the same order on every
+///   peer.
+/// * [`PhysicsWorld::raw`] exposes the Box3D world read-only. `raw_mut` (feature `raw`, for test
+///   scenes and tools only) can break every invariant here: bodies created through it are not
+///   bound, and settings or callbacks changed through it are not carried by images.
+/// * Length units are process-wide in Box3D (`set_length_units_per_meter`), so every world in a
+///   process shares them; the engine uses metres, and refuses to create or step a world
+///   otherwise.
+/// * A restore that fails after it has started writing poisons the world: every call that
+///   reads or changes the simulation is refused until a good image is restored.
 
 pub struct PhysicsWorld {
     pub(crate) world: World,
@@ -968,7 +975,7 @@ impl PhysicsWorld {
                 b,
                 shape_a,
                 shape_b,
-                point: [e.point.x as f64, e.point.y as f64, e.point.z as f64],
+                point: from_pos(e.point),
                 normal: [e.normal.x, e.normal.y, e.normal.z],
                 speed: e.approach_speed,
             });
