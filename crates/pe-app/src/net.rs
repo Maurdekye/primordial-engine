@@ -25,7 +25,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
@@ -406,9 +406,56 @@ fn await_rate(frames: &Arc<dyn FrameClock>, rate: SimRate) -> Result<(), NetErro
     Ok(())
 }
 
+/// Destinations whose routes tell which of this machine's addresses another machine can reach, in the order an
+/// invite lists them: a tailnet's (Tailscale's resolver, routed only while Tailscale is up), then the default
+/// route's, which is the LAN or public address. A probe only asks the OS for a route: no packet is sent.
+const ROUTE_PROBES_V4: [Ipv4Addr; 2] = [Ipv4Addr::new(100, 100, 100, 100), Ipv4Addr::new(1, 1, 1, 1)];
+const ROUTE_PROBES_V6: [Ipv6Addr; 2] = [
+    Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0x53),
+    Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111),
+];
+
+/// This machine's addresses another machine may reach, for an endpoint bound to every interface (app.md 4, "The
+/// commands"): for each probe, the local address the OS would send from, kept if [`advertisable`], without repeats.
+/// It covers a tailnet and a LAN (the transport is open). It can't see past a router: a forwarded
+/// port needs `--advertise <public address>:<port>`. Behind a full-tunnel VPN (or a Tailscale exit node) both
+/// probes give the tunnel's address, so the LAN address isn't named. Empty when no route exists (offline). `v6`:
+/// the socket's family.
+pub fn route_addresses(v6: bool) -> Vec<IpAddr> {
+    let probes: Vec<IpAddr> = if v6 {
+        ROUTE_PROBES_V6.iter().map(|&a| IpAddr::V6(a)).collect()
+    } else {
+        ROUTE_PROBES_V4.iter().map(|&a| IpAddr::V4(a)).collect()
+    };
+    let any: SocketAddr = if v6 { (Ipv6Addr::UNSPECIFIED, 0).into() } else { (Ipv4Addr::UNSPECIFIED, 0).into() };
+    let mut out = Vec::new();
+    for dest in probes {
+        // `connect` on UDP only picks the route and the source address; nothing goes on the wire.
+        let ip = UdpSocket::bind(any).and_then(|s| s.connect((dest, 9)).and_then(|_| s.local_addr())).map(|a| a.ip());
+        if let Ok(ip) = ip
+            && advertisable(ip)
+            && !out.contains(&ip)
+        {
+            out.push(ip);
+        }
+    }
+    out
+}
+
+/// Whether another machine could reach `ip`: not unspecified, loopback, link-local or multicast.
+pub fn advertisable(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(a) => !(a.is_unspecified() || a.is_loopback() || a.is_link_local() || a.is_multicast()),
+        IpAddr::V6(a) => {
+            !(a.is_unspecified() || a.is_loopback() || a.is_multicast() || (a.segments()[0] & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
 impl Endpoint {
     /// Bind `listen` and start pe-net's thread with this machine's identity. `advertise` are the addresses the invite
-    /// or reply names; empty means the socket's own address (which must then be a specific one, not 0.0.0.0).
+    /// or reply names. Empty means the socket's own address when it is a specific one, and this machine's
+    /// [`route_addresses`] when it is bound to every interface (0.0.0.0 or [::]).
     /// `member`: A, which admits, or B, which waits to be welcomed (transport.md 6.4).
     pub fn bind(
         seed: [u8; 32],
@@ -433,7 +480,20 @@ impl Endpoint {
     ) -> Result<Endpoint, NetError> {
         let socket = UdpSocket::bind(listen)?;
         let local = socket.local_addr()?;
-        let addrs = if advertise.is_empty() { vec![socket.local_addr()?] } else { advertise };
+        let addrs = if !advertise.is_empty() {
+            advertise
+        } else if local.ip().is_unspecified() {
+            let found: Vec<SocketAddr> =
+                route_addresses(local.is_ipv6()).into_iter().map(|ip| SocketAddr::new(ip, local.port())).collect();
+            if found.is_empty() {
+                return Err(NetError::Core(
+                    "no address of this machine reaches another network: name one with --advertise".into(),
+                ));
+            }
+            found
+        } else {
+            vec![local]
+        };
         if addrs.iter().any(|a| a.ip().is_unspecified()) {
             return Err(NetError::Core("an unspecified address can't be advertised: name one".into()));
         }
@@ -1245,6 +1305,50 @@ mod tests {
     fn runner() -> Box<dyn ScriptRunner> {
         let (settings, run) = runner_settings();
         Box::new(pe_replica::logic::LogicRunner::new(settings, run).expect("a runner"))
+    }
+
+    #[test]
+    fn only_addresses_another_machine_can_reach_are_advertised() {
+        // A tailnet address (built from its octets: the publication check refuses CGNAT addresses written out).
+        assert!(advertisable(IpAddr::V4(Ipv4Addr::new(100, 101, 102, 103))));
+        for ok in ["192.168.1.20", "203.0.113.7", "fd7a:115c:a1e0::1", "2001:db8::5"] {
+            assert!(advertisable(ok.parse().unwrap()), "{ok}");
+        }
+        for bad in ["0.0.0.0", "127.0.0.1", "169.254.3.4", "224.0.0.1", "::", "::1", "fe80::1", "ff02::1"] {
+            assert!(!advertisable(bad.parse().unwrap()), "{bad}");
+        }
+    }
+
+    /// The route probes (S2): what they find depends on this machine's links, so the test checks what holds on any:
+    /// every address is advertisable, of the socket's family, and listed once.
+    #[test]
+    fn route_addresses_are_advertisable_of_the_family_and_distinct() {
+        for v6 in [false, true] {
+            let found = route_addresses(v6);
+            assert!(found.iter().all(|ip| advertisable(*ip) && ip.is_ipv6() == v6), "{found:?}");
+            let mut d = found.clone();
+            d.dedup();
+            assert_eq!(d.len(), found.len());
+        }
+    }
+
+    /// Bound to every interface with no `--advertise`, an endpoint names the route addresses at its port, or, with
+    /// no route at all, refuses with a message that names the flag. It never names 0.0.0.0.
+    #[test]
+    fn an_endpoint_on_every_interface_advertises_its_route_addresses() {
+        let found = route_addresses(false);
+        match Endpoint::bind([7; 32], "0.0.0.0:0".parse().unwrap(), Vec::new(), true, crate::clock::shared(), None) {
+            Ok(ep) => {
+                let port = ep.local_addr().port();
+                let named: Vec<SocketAddr> = ep.addrs.clone();
+                assert_eq!(named, found.iter().map(|ip| SocketAddr::new(*ip, port)).collect::<Vec<_>>());
+                assert!(!named.is_empty());
+            }
+            Err(e) => {
+                assert!(found.is_empty(), "refused with routes present: {e}");
+                assert!(e.to_string().contains("--advertise"), "{e}");
+            }
+        }
     }
 
     struct StillHands([f32; 3]);
