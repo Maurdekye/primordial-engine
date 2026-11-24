@@ -766,7 +766,17 @@ impl World {
             ReachFrom::Hand => (self.store.world_transform(hand).ok_or_else(invalid)?.pos, s.reach_mm + s.slack_mm),
             ReachFrom::Target(t) => (t, s.reach_mm),
         };
-        let reach = f64::from(reach_mm) / 1000.0;
+        // A body's hand (8.2): plus how far the body moved over the last step, since the grab is judged before this
+        // frame's step moves it (|v|·dt, @engine-architect).
+        let carried = match from {
+            ReachFrom::Hand => self
+                .store
+                .parent(hand)
+                .and_then(|b| self.store.get::<crate::components::Player>(b))
+                .map_or(0.0, |p| f64::from(p.moved)),
+            ReachFrom::Target(_) => 0.0,
+        };
+        let reach = f64::from(reach_mm) / 1000.0 + carried;
         let within = self.bounds(object).iter().any(|&(c, r)| c.dist2(&target) <= (reach + r) * (reach + r));
         if within { Ok(()) } else { Err(Reason::OutOfReach) }
     }

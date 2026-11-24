@@ -319,3 +319,35 @@ fn pending_body_packs_are_in_the_root_and_reach_a_joiner_through_an_import() {
     assert_eq!(got.root_hash(D), w.root_hash(D));
     assert_eq!(player(&got, body).stick, [1, 2]);
 }
+
+#[test]
+fn a_moving_body_s_hand_reaches_as_far_further_as_the_body_moved_last_step() {
+    let keys = keys();
+    let grab_after = |step: f64| {
+        let mut w = plane();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let body = w.body_of(keys.key(0)).unwrap();
+        let left = hands_of(&w, keys.key(0))[0];
+        let feet = w.snapshot(w.frame()).offset_in(body, None).unwrap().0;
+        let moved = Pos::ORIGIN.checked_add(Offset([feet[0] + step, feet[1], feet[2]])).unwrap();
+        w.write_poses(&[(body, moved, [0.0, 0.0, 0.0, 1.0])]);
+        w.end_frame(Frame(1));
+        assert!((f64::from(player(&w, body).moved) - step).abs() < 1e-6);
+        // A grabbable ball, r 0.05, 0.40 m from the hand: its surface 0.35 m away, past reach plus slack (0.15 m).
+        let hand = w.snapshot(w.frame()).offset_in(left, None).unwrap().0;
+        let ball = ObjectId::from_u128(0xba11);
+        w.create(ball, None, keys.key(0), pe_world::GENESIS).unwrap();
+        let at = Pos::ORIGIN.checked_add(Offset([hand[0] + 0.40, hand[1], hand[2]])).unwrap();
+        w.insert(ball, pe_sim::Transform::at(at)).unwrap();
+        w.insert(ball, pe_world::components::Body { grabbable: 1, ..Default::default() }).unwrap();
+        let shape = pe_world::components::Shape {
+            kind: pe_world::components::shape_kind::SPHERE,
+            size: [0.05, 0.0, 0.0],
+            ..Default::default()
+        };
+        w.insert(ball, shape).unwrap();
+        input(&mut w, 2, &mut b, &Input::Grab { object: ball, hand: Some(left) }).0
+    };
+    assert_eq!(reason(&grab_after(0.0)), Reason::OutOfReach, "a body at rest: reach plus slack only");
+    assert!(applied(&grab_after(0.3)), "0.3 m moved: 0.45 m");
+}

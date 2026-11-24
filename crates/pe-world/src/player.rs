@@ -288,6 +288,12 @@ impl World {
         let mut done = Vec::new();
         for (body, old) in rows {
             let mut row = Player { prev_head: old.head_pos, prev_heading: old.heading, jump: 0, ..old };
+            if let Some(t) = self.store.world_transform(body) {
+                let feet = (t.pos - pe_core::Pos::ORIGIN).0;
+                let d: f64 = feet.iter().zip(old.prev_feet).map(|(a, b)| (a - b) * (a - b)).sum::<f64>().sqrt();
+                row.moved = d as f32;
+                row.prev_feet = feet;
+            }
             if old.span > 0 {
                 let k = g.0.saturating_sub(old.stamp);
                 match self.inputs.moves.get(&body) {

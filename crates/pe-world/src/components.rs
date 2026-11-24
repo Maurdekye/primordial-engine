@@ -415,7 +415,12 @@ pub struct Player {
     pub head_rot: [f32; 4],
     /// The head position the step used last frame, in the rig frame.
     pub prev_head: [f32; 3],
-    pub _pad: [u32; 2],
+    /// How far the feet moved over the last frame's step, in metres: the extra reach slack a grab by this body's
+    /// hands gets, since it is judged before the step moves the body (8.2's known looseness, |v|·dt).
+    pub moved: f32,
+    pub _pad: u32,
+    /// Where the feet were at the end of the last frame, as an offset from the world origin (`pos - ORIGIN`, 4.2).
+    pub prev_feet: [f64; 3],
 }
 
 impl Component for Player {
@@ -436,7 +441,9 @@ impl Component for Player {
             "head_pos": head_pos, F32, 3, "m";
             "head_rot": head_rot, F32, 4;
             "prev_head": prev_head, F32, 3, "m";
-            "_pad": _pad, U32, 2;
+            "moved": moved, F32, 1, "m";
+            "_pad": _pad, U32, 1;
+            "prev_feet": prev_feet, F64, 3, "m";
         ]
     }
 }

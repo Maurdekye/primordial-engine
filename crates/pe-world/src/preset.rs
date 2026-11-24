@@ -553,7 +553,7 @@ impl World {
         {
             w.create(b, None, MemberKey::LOGIC, crate::GENESIS)?;
             w.insert(b, Transform::at(spawn))?;
-            w.insert(b, Player { owner: member, ..Player::default() })?;
+            w.insert(b, Player { owner: member, prev_feet: (spawn - Pos::ORIGIN).0, ..Player::default() })?;
             w.insert(b, SimSize { metres: 1.0 })?;
         }
         for (side, (id, at)) in ids.into_iter().zip(places).enumerate() {
