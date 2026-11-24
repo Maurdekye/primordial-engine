@@ -174,6 +174,23 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
     "These scripts change the shared world; each player's copy will send its own changes." [P wording]
   - The physics/logic split is agreed with @iter-bench (WS-logic). Per-player mode arrives in M2; nothing here is
     in the M1 slice.
+  - **Open, after the 2026-11-24 local rule** (logic.md 7.1, from @fable-reviewer's file 21 v10, 2.2): a script is
+    now shared or local as a whole, flagged by the build when it uses `local_user` or local drawing, and "a shared
+    script reads the shared value" of anything local. The two bullets above, where a shared script reading a
+    per-player field reads each player's own value and the menu moves single systems, predate that rule. How
+    they fit it is for @fable-reviewer and the coordinator; until then both stand as written [I].
+
+**Shared, private and published** (the user's rulings, 2026-11-24; file 21 v10, 2.5,
+2.7, 2.8; world-model.md 3.7; design, not built):
+- **The per-player mark stays two-state:** shared (no mark) or per-player (`⊚`).
+- **A published field carries a label** naming the player who feeds it and whether that source is live. [I] For a
+  field several players may write, the label says who wrote last; only a feed has a current source and a live mark.
+- **One mark for every outside source** (a websocket, HTTP, engine-managed secret code): a value fed by a source the
+  player manages says only that it comes from outside, never which kind.
+- **A write from the inspector is a published write:** the player's signed input, subject to the field's writer
+  rules (api.md 4.2). The field stays shared.
+- **Draw diagnostics** (counters, timings and faults of draw systems, logic.md 7.3, DR12) live in a local namespace
+  of the inspector and never enter shared counters.
 
 ### 4.3 Protection
 
