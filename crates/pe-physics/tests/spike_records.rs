@@ -4,11 +4,11 @@
 
 mod common;
 
+use box3d_rust::body::body_get_shapes;
 use box3d_rust::determinism::{
     create_falling_ragdolls, create_mesh_drop, create_query_spawn, create_wave_pile, update_falling_ragdolls,
     update_mesh_drop, update_query_spawn, update_wave_pile,
 };
-use box3d_rust::body::body_get_shapes;
 use box3d_rust::math_functions::POS_ZERO;
 use box3d_rust::shape::shape_enable_hit_events;
 use common::*;
