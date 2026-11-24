@@ -429,6 +429,7 @@ fn health_only(view: &FrameView, health: Health) -> FrameView {
         activations: Vec::new(),
         activations_retracted: Vec::new(),
         hits: Vec::new(),
+        hits_from: None,
         counters: pe_seams::ViewCounters::default(),
         ..view.clone()
     };

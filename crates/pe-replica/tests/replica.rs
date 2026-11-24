@@ -1478,22 +1478,31 @@ fn a_served_root_at_a_cut_not_final_keeps_its_snapshot_through_a_stall() {
 
 // ---- collision hits (S5 v1.11) ---------------------------------------------------------------------------------------
 
-/// The hits of `views`, by frame: a later view's hits for a frame replace an earlier view's (a re-step's), with the
-/// re-simulation flag set aside.
-fn latest_hits(views: &[Vec<Hit>]) -> BTreeMap<Frame, Vec<Hit>> {
-    let mut by_frame = BTreeMap::new();
-    for hits in views {
-        let mut this: BTreeMap<Frame, Vec<Hit>> = BTreeMap::new();
-        for h in hits {
-            this.entry(h.frame).or_default().push(Hit { resimulated: false, ..*h });
+/// One published view's hits: the frames they cover (`hits_from` to the view's frame) and the hits.
+struct ViewHits {
+    from: Option<Frame>,
+    frame: Frame,
+    hits: Vec<Hit>,
+}
+
+/// The hits of `views`, by frame, as a reader that keeps them by frame has them: each view's range is dropped first
+/// (a re-step's frames, with or without hits now), then its hits taken, with the re-simulation flag set aside.
+fn latest_hits(views: &[ViewHits]) -> BTreeMap<Frame, Vec<Hit>> {
+    let mut by_frame: BTreeMap<Frame, Vec<Hit>> = BTreeMap::new();
+    for v in views {
+        if let Some(from) = v.from {
+            by_frame.retain(|f, _| *f < from || *f >= v.frame);
         }
-        by_frame.extend(this);
+        for h in &v.hits {
+            assert!(v.from.is_some_and(|from| (from.0..v.frame.0).contains(&h.frame.0)), "within its range: {h:?}");
+            by_frame.entry(h.frame).or_default().push(Hit { resimulated: false, ..*h });
+        }
     }
     by_frame
 }
 
 /// Advances `r` to each of `presents` in turn, and the hits of each view it published.
-fn views_over(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, presents: impl Iterator<Item = u64>) -> Vec<Vec<Hit>> {
+fn views_over(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, presents: impl Iterator<Item = u64>) -> Vec<ViewHits> {
     let mut views = Vec::new();
     for n in presents {
         let shown = r.view();
@@ -1501,7 +1510,7 @@ fn views_over(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, presents: impl Ite
         let v = r.view();
         if !Arc::ptr_eq(&v, &shown) {
             assert!(v.hits.windows(2).all(|w| w[0].frame <= w[1].frame), "in frame order: {:?}", v.hits);
-            views.push(v.hits.clone());
+            views.push(ViewHits { from: v.hits_from, frame: v.frame, hits: v.hits.clone() });
         }
     }
     views
@@ -1521,6 +1530,7 @@ fn each_hit_reaches_the_view_after_the_step_that_made_it_once() {
         let v = r.view();
         assert_eq!(v.frame, Frame(n));
         // Only frame n - 1 was stepped since the last view, for the first time.
+        assert_eq!(v.hits_from, Some(Frame(n - 1)));
         assert!(v.hits.iter().all(|h| h.frame == Frame(n - 1) && !h.resimulated), "{:?}", v.hits);
         all.extend(v.hits.iter().copied());
     }
@@ -1543,13 +1553,14 @@ fn a_rollback_carries_the_re_stepped_frames_hits_again_flagged() {
     let mut s = Source::default();
     scene().into_iter().for_each(|e| s.add(e));
     let mut r = replica();
-    let first: Vec<Hit> = views_over(&mut r, &mut s, 1..=40).concat();
+    let first: Vec<Hit> = views_over(&mut r, &mut s, 1..=40).into_iter().flat_map(|v| v.hits).collect();
     let keys = TestKeys::new(7, 3);
     s.add(EntryBuilder::new(&keys, 2).next(Class::Edit, Frame(5), Bytes::from(encode(&[ball(10, 5.0, 5.0)]))));
     let adv = r.advance(Frame(41), &mut s);
     let k = adv.rolled_back_to.expect("rolled back").0;
     assert!(k <= 5, "{adv:?}");
     let v = r.view();
+    assert_eq!(v.hits_from, Some(Frame(k)), "the view covers every frame stepped again");
     let (again, new): (Vec<Hit>, Vec<Hit>) = v.hits.iter().partition(|h| h.frame.0 < 40);
     assert!(again.iter().all(|h| h.resimulated) && new.iter().all(|h| !h.resimulated), "{:?}", v.hits);
     let expected: Vec<Hit> = first.iter().filter(|h| h.frame.0 >= k).map(|h| Hit { resimulated: true, ..*h }).collect();
@@ -1560,7 +1571,9 @@ fn a_rollback_carries_the_re_stepped_frames_hits_again_flagged() {
 /// S5 v1.11: equal frames give equal hits on every replica. One had every entry from the start; one got the push at
 /// 9 and everything after it late, at 40, and rolled back; and one got them late too, at 30, but steps two frames an
 /// advance, so it shows no view until it catches up, and the frames it stepped twice meanwhile reach that view once,
-/// as their latest step had them.
+/// as their latest step had them. The late replica's first pass has a hit its re-step no longer has (balls 10 and 11
+/// at frame 34, before the push moved them): the view after the rollback covers that frame (`hits_from`), so a reader
+/// drops it.
 #[test]
 fn equal_frames_give_equal_hits_on_every_replica() {
     let (mut a, mut sa) = (replica(), Source::default());
@@ -1573,6 +1586,8 @@ fn equal_frames_give_equal_hits_on_every_replica() {
     let late = early.split_off(3);
     early.into_iter().for_each(|e| sb.add(e));
     let mut views = views_over(&mut b, &mut sb, 1..=40);
+    let before = latest_hits(&views);
+    assert!(before.iter().any(|(f, h)| reference.get(f) != Some(h)), "without the late entries a frame's differ");
     late.into_iter().for_each(|e| sb.add(e));
     views.extend(views_over(&mut b, &mut sb, 41..=64));
     assert_eq!(latest_hits(&views), reference);
@@ -1588,7 +1603,7 @@ fn equal_frames_give_equal_hits_on_every_replica() {
     views.extend(views_over(&mut c, &mut sc, std::iter::repeat_n(40, 30)));
     views.extend(views_over(&mut c, &mut sc, 41..=64));
     let caught_up = &views[0];
-    let frames: Vec<Frame> = caught_up.iter().map(|h| h.frame).collect();
+    let frames: Vec<Frame> = caught_up.hits.iter().map(|h| h.frame).collect();
     assert!(
         frames.iter().any(|f| (9..30).contains(&f.0)),
         "the first view has hits of frames stepped twice: {frames:?}"

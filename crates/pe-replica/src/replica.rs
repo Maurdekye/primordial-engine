@@ -372,6 +372,8 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// Each frame's collision hits from its latest live step, until a view at a later frame publishes them (S5 v1.11):
     /// a re-step of the frame replaces them, and a frame whose latest step had none has no entry.
     hits: BTreeMap<Frame, Vec<Hit>>,
+    /// The lowest frame live-stepped since the last publication: the next view's `hits_from` (S5 v1.11).
+    hits_low: Option<Frame>,
     /// The collision hits of the frames `root_at_cut`'s scratch re-stepped, for a rebase on that history.
     scratch_hits: BTreeMap<Frame, Vec<Hit>>,
     script_counts: ScriptCounts,
@@ -518,6 +520,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             acts_retract: Vec::new(),
             scratch_acts: BTreeMap::new(),
             hits: BTreeMap::new(),
+            hits_low: None,
             scratch_hits: BTreeMap::new(),
             script_counts: ScriptCounts::default(),
         };
@@ -862,6 +865,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// Keeps frame `f`'s collision hits from its live step for the next view, in place of an earlier step's (S5
     /// v1.11): a view carries each frame's hits as its latest step had them.
     fn note_hits(&mut self, f: Frame, hits: Vec<Hit>) {
+        self.hits_low = Some(self.hits_low.map_or(f, |low| low.min(f)));
         if hits.is_empty() {
             self.hits.remove(&f);
         } else {
@@ -1711,6 +1715,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
         // its re-step replaces its hits, which wait for that.
         let later = self.hits.split_off(&self.frame);
         view.hits = std::mem::replace(&mut self.hits, later).into_values().flatten().collect();
+        // The range those cover. A frame left waiting is the next view's to cover again, from its re-step.
+        view.hits_from = self.hits_low.filter(|&low| low < self.frame);
+        self.hits_low = self.hits.keys().next().copied();
         view.counters = self.counters;
         self.view = Arc::new(view);
     }
@@ -1740,6 +1747,7 @@ fn empty_view(domain: DomainId) -> FrameView {
         activations: Vec::new(),
         activations_retracted: Vec::new(),
         hits: Vec::new(),
+        hits_from: None,
     }
 }
 
@@ -2214,7 +2222,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.acts = self.acts.split_off(&c);
         self.acts_stepped = self.acts_stepped.split_off(&c);
         // The unpublished hits there were the replaced history's: the importer never steps those frames again.
+        // Nor does a later view cover them: only the frames it steps from here on, which set the mark again.
         self.hits = self.hits.split_off(&c);
+        self.hits_low = self.hits.keys().next().copied();
         // Below the cut no history of mine is left to judge my checks by (3.4).
         let kept = self.checks.split_off(&c);
         let gone = std::mem::replace(&mut self.checks, kept);

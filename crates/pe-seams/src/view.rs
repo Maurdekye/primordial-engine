@@ -545,6 +545,12 @@ pub struct FrameView {
     /// same pair at about the same time) and plays only what is new. A rung-2 import drops the unpublished hits of
     /// the frames below its cut, which the importer never steps again. Equal frames give equal hits on every replica.
     pub hits: Vec<Hit>,
+    /// The lowest frame stepped since the last publication (S5 v1.11), or `None` if none was. Every frame from it up
+    /// to `frame` was stepped since then, and `hits` lists exactly the hits of their latest steps, so a frame in
+    /// that range that `hits` doesn't name had none. After a rollback it is below the last view's frame: a reader
+    /// that keeps hits by frame drops what it had for this range before it takes `hits`, so a hit the re-step no
+    /// longer has is gone from its record too.
+    pub hits_from: Option<Frame>,
 }
 
 impl FrameView {

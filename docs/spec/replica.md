@@ -823,7 +823,10 @@ back in time, and the first view there marks what it corrected (below). The repl
   carries only the later step's hits: no view showed the first, and the world no longer has it. A frame re-stepped
   after a view showed it carries its hits again in a later view, with `resimulated`, which is set as for effects
   (the step re-simulated its frame). Readers match those with the hits they had, by pair and time, and play only
-  what is new (pe-app; fable's rule 1). Each hit has its frame and that frame's host time, the two bodies, each side's
+  what is new (pe-app; fable's rule 1). A view also names the lowest frame stepped since the last one
+  (`hits_from`): every frame from it to the view's was stepped since, and the view lists exactly their latest steps'
+  hits. So a re-step that no longer has a hit drops it from a reader that keeps hits by frame, which first drops the
+  range and then takes the list. Each hit has its frame and that frame's host time, the two bodies, each side's
   part, the object whose `Shape` touched (the body's own, or a compound child's, by the physics' place for the shape
   in the body's row, `ShapePart::object`; a hand is its own part), the world point, the normal from `a` to `b` and the
   approach speed. The part's appearance in the same view is that side's material. A history off the live steps that
