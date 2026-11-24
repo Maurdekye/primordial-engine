@@ -69,10 +69,11 @@ impl HitGate {
         played.times.push(hit.when);
     }
 
-    fn prune(&mut self, now: HostTime) {
+    fn prune(&mut self, now: HostTime, received: Instant) {
         self.recent.retain(|_, played| {
             played.times.retain(|at| now.0.saturating_sub(at.0) <= (MAX_REPLAY_AGE_NS + MATCH_NS) as i64);
             !played.times.is_empty()
+                || received.saturating_duration_since(played.last_queued) < Duration::from_nanos(MATCH_NS)
         });
     }
 }
@@ -109,7 +110,7 @@ impl Publisher {
             }
             let now = pe_app::clock::now();
             let received = Instant::now();
-            gate.prune(now);
+            gate.prune(now, received);
             hits.clear();
             if last_fixture.is_none_or(|last| received.duration_since(last) >= Duration::from_millis(450)) {
                 fixture_hit(display, view, listener, now, last_material, &mut hits);
@@ -181,26 +182,26 @@ fn fixture_hit(
         .filter_map(|object| {
             let meta = view.object(object.id)?;
             let distance = offset_vec(object.pose.pos - listener.pos).length();
-            (distance > 0.25 && (meta.shape.is_some() || meta.hand_of.is_some())).then_some((
+            let (size_m, kind) = shape_profile(meta.shape);
+            (distance > 0.25 && kind == material && (meta.shape.is_some() || meta.hand_of.is_some())).then_some((
                 object,
                 distance,
-                meta.shape,
+                size_m,
                 meta.hand_of.is_some(),
             ))
         })
         .min_by(|a, b| b.3.cmp(&a.3).then(a.1.total_cmp(&b.1)));
-    let (id, at, shape) = source.map_or_else(
+    let (id, at, size_m) = source.map_or_else(
         || {
             let side = match material {
                 Material::Wood => -1.0,
                 Material::Metal => 1.0,
             };
             let offset = listener.rot * DVec3::new(side, 0.0, -1.5);
-            (ObjectId::from_u128(1), listener.moved(offset).pos, None)
+            (ObjectId::from_u128(1), listener.moved(offset).pos, 0.3)
         },
-        |(object, _, shape, _)| (object.id, object.pose.pos, shape),
+        |(object, _, size_m, _)| (object.id, object.pose.pos, size_m),
     );
-    let size_m = shape_size(shape);
     hits.push(PresentedHit {
         bodies: [id, ObjectId::NONE],
         when: now,
@@ -213,12 +214,12 @@ fn fixture_hit(
     });
 }
 
-fn shape_size(shape: Option<Shape>) -> f32 {
+fn shape_profile(shape: Option<Shape>) -> (f32, Material) {
     match shape {
-        Some(Shape::Box { half_extents }) => 2.0 * half_extents.into_iter().fold(0.0, f32::max),
-        Some(Shape::Sphere { radius }) => 2.0 * radius,
-        Some(Shape::Capsule { radius, half_height }) => 2.0 * (radius + half_height),
-        _ => 0.3,
+        Some(Shape::Box { half_extents }) => (2.0 * half_extents.into_iter().fold(0.0, f32::max), Material::Wood),
+        Some(Shape::Sphere { radius }) => (2.0 * radius, Material::Metal),
+        Some(Shape::Capsule { radius, half_height }) => (2.0 * (radius + half_height), Material::Metal),
+        _ => (0.3, Material::Wood),
     }
 }
 

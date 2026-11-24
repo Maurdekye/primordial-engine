@@ -735,13 +735,16 @@ fn main() {
         console.poll();
         pe_app::out!("headless: running until --seconds passes, Ctrl+C or a typed `quit`");
         #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
-        if let Some(publish) = &audio {
-            let presenter = presenter(rate, options.drawn_time.unwrap_or_default(), &status, Some(publish));
-            steam_audio::headless::run(presenter, &slot, &console, run_for);
-            console.quitting();
-            shutdown();
-            console.finished();
-            return;
+        {
+            let render = steam_audio::headless::render_requested();
+            if audio.is_some() || render {
+                let presenter = presenter(rate, options.drawn_time.unwrap_or_default(), &status, audio.as_ref());
+                steam_audio::headless::run(presenter, &slot, &console, run_for, render);
+                console.quitting();
+                shutdown();
+                console.finished();
+                return;
+            }
         }
         wait_headless(run_for.map(|d| started + d), &console);
         console.quitting();

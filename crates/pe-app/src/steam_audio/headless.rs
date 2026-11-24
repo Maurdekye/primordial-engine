@@ -18,8 +18,11 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const PERIOD: Duration = Duration::from_nanos(16_666_667);
 const EYE: RigPose = RigPose { position: [0.0, 1.4, 1.5], orientation: [0.0, 0.0, 0.0, 1.0] };
 
-pub(crate) fn run(mut presenter: Presenter, slot: &FrameSlot, quit: &Quit, run_for: Option<Duration>) {
-    let render = std::env::var_os("PE_STEAM_AUDIO_RENDER").is_some_and(|s| s == "1");
+pub(crate) fn render_requested() -> bool {
+    std::env::var_os("PE_STEAM_AUDIO_RENDER").is_some_and(|s| s == "1")
+}
+
+pub(crate) fn run(mut presenter: Presenter, slot: &FrameSlot, quit: &Quit, run_for: Option<Duration>, render: bool) {
     let mut offscreen = if render {
         match Offscreen::new() {
             Ok(target) => Some(target),

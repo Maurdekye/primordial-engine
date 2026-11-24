@@ -18,7 +18,7 @@ const BED_CHANNELS: usize = 4;
 const MAX_DISTANCE: f32 = 80.0;
 const TONE_PERIOD: usize = 2048;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) enum Material {
     Wood,
     Metal,
