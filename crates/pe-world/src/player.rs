@@ -144,9 +144,7 @@ impl World {
 
     /// `member`'s player body, if the preset gave it one (8.2).
     pub fn body_of(&self, member: MemberKey) -> Option<ObjectId> {
-        if self.store.registry().get(crate::components::ids::PLAYER).is_none() {
-            return None;
-        }
+        self.store.registry().get(crate::components::ids::PLAYER)?;
         self.store.iter::<Player>().filter(|(_, p)| p.owner == member).map(|(b, _)| b).min()
     }
 
