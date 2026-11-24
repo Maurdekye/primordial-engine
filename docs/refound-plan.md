@@ -444,10 +444,11 @@ final.
 ### M4. Regions, under the Open World Orchestrator's loading rule
 
 The user's instruction is to treat the simulation distance as the Open World Orchestrator does.
-File 16 maps it onto this engine:
-- **Layers.** Layers by object size, each twice the one below, are the loading index.
-- **Chunks.** Each player loads a box of whole chunks per layer, about 125 at most.
-- **The player's scale** selects which layers count.
+File 16 maps it onto this engine. Its scale bands are called levels (the user; file 16 says layers,
+a name that now belongs to file 22's feature, section 5.3):
+- **Levels.** Levels by object size, each twice the one below, are the loading index.
+- **Chunks.** Each player loads a box of whole chunks per level, about 125 at most.
+- **The player's scale** selects which levels count.
 - **Per machine.** Each machine holds its own set.
 - **Freezing.** Chunks nobody is near freeze. Their state lives in the world record and in peer caches (Q4); a non-admin's cache lasts only for the session (file 18).
 - **Missed time** (file 16, 6.7). When a player returns to a frozen place, the time
@@ -458,7 +459,7 @@ File 16 maps it onto this engine:
   it froze (section 10.5). A write aimed at a frozen place is kept and applied in its catch-up, under two separate
   limits (the user's answer, section 10.7, point 10).
 - **Notice of arrivals.** An arrival comes as an entry in the log of a chunk already loaded, never from a scan.
-- **The unit of agreement.** Agreement and simulation run per group of things in contact, across layers, not per
+- **The unit of agreement.** Agreement and simulation run per group of things in contact, across levels, not per
   cell (file 16, C4). The domain id that every entry carries from M1 names that group.
 - **Physics origins** (D58, design.md 25.12, settled by the user; carried here at @astra-deliberator's find). Each simulated group runs its physics around an agreed local origin, with Box3D in double
   precision: the fork's default feature, whose positions are `f64` [V, box3d-fork Cargo.toml; math_functions/types.rs
@@ -478,17 +479,17 @@ File 16 maps it onto this engine:
 sections 6.1-6.6):
 - **The distance (C1 = c):** the OWO's ratio is the default, about 64-80 m for person-sized things, and each world
   may change it.
-- **The player's scale (C2 = yes):** it selects a window of layers, 4 below to 30 above. It does not stretch the
+- **The player's scale (C2 = yes):** it selects a window of levels, 4 below to 30 above. It does not stretch the
   reach of ordinary objects; this replaces the literal-ratio reading of.
-- **Every object has a nonzero simulation size** (file 16, 6.5). This replaces the layer floor:
-  - it is one length, always greater than zero, and it decides the object's layer;
+- **Every object has a nonzero simulation size** (file 16, 6.5). This replaces the level floor:
+  - it is one length, always greater than zero, and it decides the object's level;
   - it has no effect on collision or on how the object looks;
   - every object is created with a default size: 1 m times the maker's scale;
   - it is never below the object's real extent, and it may be set larger, up to the world's maximum;
   - a saved object's size is recorded relative to the player who saved it, and it spawns at the same size relative
     to the player who spawns it;
   - the size follows the object when it is scaled;
-  - parts take the layer of the whole assembly.
+  - parts take the level of the whole assembly.
 - **Simulating and watching are a spectrum, not two states** (file 16, 6.6, which replaces the switch
   of 6.2 and 6.4): "You simulate everything you have loaded. Things you have not loaded can still act on it, and
   those actions are sent to you."
@@ -497,8 +498,8 @@ sections 6.1-6.6):
   - **Consumers:** a machine that lacks the source applies the entry at its frame, like a late remote input. A machine
     that holds both ends ignores it.
   - **What counts as an influence** (file 16, 6.4): contact, a script elsewhere writing, a script
-    reading elsewhere, a joint across layers. Links are recorded at run time by the machines that hold both ends.
-  - **Recognition:** each linked group carries its lowest layer in the shared state, so a machine knows entries are
+    reading elsewhere, a joint across levels. Links are recorded at run time by the machines that hold both ends.
+  - **Recognition:** each linked group carries its lowest level in the shared state, so a machine knows entries are
     owed to it.
   - **The check:** the holders' agreed state at each cut. A machine whose own result differs takes the agreed state.
   - **State instead of entries:** the holders send the object's state when that is smaller than the entries. It is
@@ -546,7 +547,7 @@ holders' result (the coordinator's ruling, 19:36Z).
 
 **First, the evidence** (file 11, section 6):
 - a two-dimensional protocol simulator with real player movement, run at the default ratio and at 1 km;
-- a measurement, with a person's hands, of two things of nearly equal size in adjacent layers;
+- a measurement, with a person's hands, of two things of nearly equal size in adjacent levels;
 - the replayed-impulse measurement above.
 
 **Demo:**
@@ -578,7 +579,7 @@ holders' result (the coordinator's ruling, 19:36Z).
   - a machine that holds both ends ignores it;
   - every root stays equal, and switching between entries and state changes nothing in the result.
 - **Sizes:** every object has a nonzero simulation size, an object created without one gets the default, the size
-  follows scaling, and parts take the layer of the whole.
+  follows scaling, and parts take the level of the whole.
 - **Missed time:** a frozen place re-simulated on return gives the same state on every machine, within the world's
   limit, without stalling a frame.
 - **Agents' range:**
@@ -725,7 +726,7 @@ Only a path's owner edits it.
 | WS-seams | @engine-architect | `crates/pe-seams`; the root `Cargo.toml`; `docs/spec/00-overview.md`; the index of `docs/decisions/`; `docs/requirements.md` | Seams v0 (M0); a review of every seam change | New seam versions |
 | WS-archive | @engine-architect | Its one landing in M0 (section 2.4) | The archive | Deletes `archive/` at M3 |
 | WS-ci | @provenance-eng | `scripts/gate.sh`, `scripts/audit_native.py`, the secret scan, `.github/workflows/` | The gate (M0) | The tier-2 jobs each milestone adds; triage of red tier-2 runs (C7) |
-| WS-model | @world-chunks | `models/cuts/` | Model v0 (M0); v1 with join and leave (M1) | v2: the merge against finality (M2, before merge v1); v3: quorum loss, the one-minute bound, membership re-founded per line, split groups (M3); per-group agreement across layers (M4) |
+| WS-model | @world-chunks | `models/cuts/` | Model v0 (M0); v1 with join and leave (M1) | v2: the merge against finality (M2, before merge v1); v3: quorum loss, the one-minute bound, membership re-founded per line, split groups (M3); per-group agreement across levels (M4) |
 | WS-agree | @world-chunks, after WS-model v0 | `crates/pe-log`, `crates/pe-agree`, `docs/spec/agreement.md` | Cuts at fixed membership; admitting by entry; leave; join from a cut; holding votes until a build is ready | Quorum loss with unconfirmed play, the one-minute bound and its line ids; the protocol side of member relays (M3). It calls the merge; it does not own it |
 | WS-world | @world-model | `crates/pe-world`, `crates/pe-sim`, `crates/pe-core`, `docs/spec/world-model.md` | The object tree, components and blobs; the hash tree over everything that matters (fields, governance, claims, logic state, module versions); edit entries with their three conflict rules; governance validity, until WS-gov exists; 128-bit ids; the coordinate format; every object's simulation size | `Pos`, the typed offsets and `ORIGIN` (M2); the world record, keeping every entry from creation (M3); saves (M5) |
 | WS-state | @vdw-physics | `crates/pe-replica`, `crates/pe-physics`, `crates/box3d-fork`, `docs/spec/replica.md` | The rollback loop over world-model bodies, with per-group save, restore and step; replay from the last agreed cut (repair rung 1) | Incremental images, background re-simulation, the worker pool, skipping unchanged systems and islands (M2); the replayed-impulse measurement (before M4); a history-free physics state (later) |
@@ -1029,7 +1030,7 @@ in the headset is the user's to judge, at the checkpoints.
 | 2. One quorum mechanism replaces unanimous confirmation, the view change and Part B, keeping the user's rulings (Q2) | pe-agree (agreed cuts); `models/cuts` | The model in M0, the code in M1, complete in M3 | Section 4.4 |
 | 3. Code activation (Q3): the owner runs a change at once, and every other machine rewinds and replays when its own compile finishes. Objects keep running the old code, then jump (Q3a). A divergence over 2 s becomes a world-line merge with main (Q3b). No machine runs another's build (Q3c) | pe-logic: activation inside the window in M1 (the coordinator's ruling, 20:22Z), with M1's edit measured to compile in under 2 s on the second PC (20:26Z); the merge function of pe-diverge for longer divergences, a three-way merge at main's final frontier (the coordinator's reading) | M1 (inside the window), M2 (the merge) | M1's logic tests; merge v1's tests |
 | Standalone, compiler-less headsets: excluded from the prototype; any later support comes through our own deterministic cross-platform compiler, not follow-by-state; own-PC builds are moot | Not built (section 6) | — | — |
-| 4. Regions (Q4): only what is near the player simulates; a frozen area's state lives in the world record and peer caches; missed time is re-simulated on return, up to one minute after freezing, a world setting, on a metered thread; sizes default to 1 m times the maker's scale, never below the real extent, settable larger; the simulation distance follows the Open World Orchestrator. The OWO's ratio is the default, changeable per world (C1); the player's scale selects a window of layers (C2); every object has a nonzero simulation size; simulating and watching are a spectrum, with influences from unloaded things sent as entries, any influence counting, script logic included | pe-regions, as in M4: layers as the loading index, per-machine chunk sets, frozen chunks, arrival entries instead of scans, agreement per group in contact, and influence entries for whatever acts from outside a machine's loaded set. The domain id is in every entry from M1. The size's default and limits are parameters (section 6) | M4; the format from M1 | M4's tests |
+| 4. Regions (Q4): only what is near the player simulates; a frozen area's state lives in the world record and peer caches; missed time is re-simulated on return, up to one minute after freezing, a world setting, on a metered thread; sizes default to 1 m times the maker's scale, never below the real extent, settable larger; the simulation distance follows the Open World Orchestrator. The OWO's ratio is the default, changeable per world (C1); the player's scale selects a window of levels (C2); every object has a nonzero simulation size; simulating and watching are a spectrum, with influences from unloaded things sent as entries, any influence counting, script logic included | pe-regions, as in M4: levels as the loading index, per-machine chunk sets, frozen chunks, arrival entries instead of scans, agreement per group in contact, and influence entries for whatever acts from outside a machine's loaded set. The domain id is in every entry from M1. The size's default and limits are parameters (section 6) | M4; the format from M1 | M4's tests |
 | 5. The removal quorum stays 2/3, strictly, with no kick exception (Q5) | pe-agree: t = floor((n − 1) / 3), q = floor((n + t) / 2) + 1 (section 4.4). Below quorum, play continues unconfirmed and reconvenes by merge (the 18:58Z instruction), so nobody is frozen | M3 | probe-twosilent5-kick |
 | Unconfirmed play below quorum lasts one minute at worst, then the session diverges into git-style branches. The full change record is kept from creation, and diverged worlds may be re-merged later by choice (19:09Z), with an admin of each consenting after a preview; the exact merge by default, a fast merge optional | pe-agree and pe-diverge (the bound, membership re-founded per line, line ids); WS-world (the world record); M5 (re-merging later) | M3; re-merging in M5 | The one-minute and record tests (M3) |
 | A delete against an add-on on two branches is decided by the order of events: delete first, the add-on is orphaned; delete second, everything is destroyed | pe-diverge's merge: the ordinary replay in event order | M2-M3 | A merge scenario for each order |
@@ -1096,6 +1097,7 @@ All of the user's earlier requirements still apply. These are the ones the rewri
 | Agents may perform any action at any speed and distance, moving at once and grabbing arbitrarily large objects, as long as those objects are within their owning user's simulation range; chunkloaders that force regions to stay loaded need the owning user's approval | WS-world and WS-api: the range check, which binds every member's inputs and edits, admins' included, but not governance acts (@coordinator-opus); WS-regions: chunkloaders | M4; before it the whole world is in range | M4's demo and acceptance |
 | Agent powers are a per-member right the admins grant; admins cap claims, the push budget and chunkloaders per member; holds and locks win over an agent's grab | WS-world (world-model.md 8.1, "Agent powers"); pe-api reports the refusals | A pe-world slice after the inputs; M3's demo | M3's acceptance |
 | The user's spare laptop may serve as M1's second PC | M1's two-machine run, desktop only (U4) | M1 | By hand, with the coordinator's go |
+| The cross-scale design's scale bands are called "levels", and "layers" now names a separate feature. The feature, placed late post-MVP: a player with permission leaves the default layer for a new one whose objects interact only with each other, and any object can be switched on or off per player | The rename: M4 above and world-model.md 3.5. The feature: file 22 (`fable-reviewer/review/22-layers-and-per-player-activation.md`), design only | Late post-MVP; building needs its own go | Not planned |
 
 ## 6. Open with the user, and excluded
 
@@ -1173,7 +1175,7 @@ goes, and why.
 | A merge, or an activation after a slow compile, may need a long replay that blocks a frame | Replays run on a second copy in the background and are swapped in (file 14, 4.2) | M1-M2 |
 | Rollback cost at high simulation rates in VR: a full keyframe costs about as much as a step (file 02), and re-simulation grows with the square of the rate (replica.md 13: 2.9x at 120 Hz against 60 Hz at 100 ms of delay) | M1 measures the ball pit at 60 and 120 Hz; incremental images follow in M2 | M1-M2 |
 | Builds that differ across machines break activation after each machine's own compile (file 03: identical output shown only for six small modules on two x86-64 machines) | Tier 2 compares module bytes from the same source on all four platforms; a mismatch is a fault the hash tree catches, repaired by rungs 1-2 | M1 |
-| Two objects of nearly equal size in adjacent layers (files 11 and 16) | M4's measurement with a person's hands, before the build | M4 |
+| Two objects of nearly equal size in adjacent levels (files 11 and 16) | M4's measurement with a person's hands, before the build | M4 |
 | Twelve agents behind `heavy.sh`'s two slots | Iterate with `cargo check -p`; tier 1 covers only the crates a landing touches; branch builds and the platform matrix on hosted runners. The coordinator sets the slots | Throughout |
 | Agents in Session 0 have no desktop, for windows or the headset | Place WS-render and WS-xr in a signed-in session; headless tests render offscreen | M0-M1 |
 | The model's state space at five members with splits and merges | Small bounds, symmetry reduction, a time-bounded fast profile, and a deep profile run nightly | M0-M3 |
@@ -1896,6 +1898,7 @@ File 14 (section 2) lists the ways the world line diverges. Each row gets a scen
 ## Appendix C. Sources
 
 - Review: `<notes>` files 00-18, and `appendix/evidence/` (the probes and their logs).
+- Later files of the review: `fable-reviewer/review/`, files 19-22.
 - @design-reviewer's read of b610464: `design-reviewer/read-refound-plan-b610464.md`.
 - The user's rulings and the coordinator's: `<notes>`, cited by message id above.
 - Docket: the 25 live items listed in section 7, read on 2026-11-10.

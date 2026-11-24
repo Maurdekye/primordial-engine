@@ -571,7 +571,7 @@ which fixes the origin's role deliberately.
   | `Shape`, `Body` | no | pe-replica binds bodies from edits' footprints in M1; a later slice may report them as effects |
   | `BodyState` | no | physics state, written only by the step |
   | `Hand` | no | each member's own, through inputs (8.1) |
-  | `SimSize` | no | it chooses the object's region layer (3.5, M4); writes come with that work |
+  | `SimSize` | no | it chooses the object's region level (3.5, M4); writes come with that work |
   | `Protection` | no | rewriting `owner` would be an ownership change through logic (@iter-bench's question) |
   | another script's components or tag | no | a script writes only its own components and the engine ones marked here |
 
@@ -698,7 +698,8 @@ purely for simulation distance, with no bearing on collision, and it gets a reas
 accepted the details below (via @coordinator-opus; file 16, 6.5):
 
 - **Every `World` object has a `SimSize` row,** in metres: positive and finite. It never affects physics, drawing or
-  collision; WS-regions reads it to choose the object's layer (M4).
+  collision; WS-regions reads it to choose the object's level (M4). Levels are the cross-scale design's size bands;
+  file 16 calls them layers, a name that now belongs to the late post-MVP feature of file 22 (refound plan 5.3).
 - **The default at creation** is 1 m times the scale of the member who made it: the world scale of that member's
   avatar root, a `World` object, at the edit's frame. So the default is a function of hashed state, the same on
   every machine (@chunks-reviewer's N4). An agent's edit takes the scale of the member it acts for. Objects made by
