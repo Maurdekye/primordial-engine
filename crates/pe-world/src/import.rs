@@ -492,7 +492,12 @@ impl World {
             table::CLAIMS => self.claims = Arc::default(),
             table::COOLDOWNS => Arc::make_mut(&mut self.inputs).cooldowns.clear(),
             table::TOMBSTONES => self.tombstones = Arc::default(),
-            table::HAND_PACKS => Arc::make_mut(&mut self.inputs).packs.clear(),
+            table::HAND_PACKS => {
+                let t = Arc::make_mut(&mut self.inputs);
+                t.packs.clear();
+                t.body_packs.clear();
+                t.moves.clear();
+            }
             table::PUSH_WINDOWS => Arc::make_mut(&mut self.inputs).pushes.clear(),
             table::LINES => self.branch = Arc::default(),
             _ => {}
@@ -562,7 +567,23 @@ impl World {
             }
             table::HAND_PACKS => {
                 let mut m = BTreeMap::new();
+                let mut bodies = BTreeMap::new();
+                let mut moves = BTreeMap::new();
                 for (k, v) in entries {
+                    // A player body's pack (8.2): the id then a tag byte.
+                    if k.len() == 17 {
+                        let id = key_id(&k[..16])?;
+                        match k[16] {
+                            crate::player::KEY_BODY_HAND => {
+                                bodies.insert(id, crate::player::decode_body_pack(v)?);
+                            }
+                            crate::player::KEY_MOVE => {
+                                moves.insert(id, crate::player::decode_move_pack(v)?);
+                            }
+                            _ => return None,
+                        }
+                        continue;
+                    }
                     let mut r = Rd(v);
                     let stamp = Frame(r.u64()?);
                     let hold = r.u8()?;
@@ -582,7 +603,10 @@ impl World {
                     r.end()?;
                     m.insert(key_id(k)?, Pack { stamp, poses, hold });
                 }
-                Arc::make_mut(&mut self.inputs).packs = m;
+                let t = Arc::make_mut(&mut self.inputs);
+                t.packs = m;
+                t.body_packs = bodies;
+                t.moves = moves;
             }
             table::PUSH_WINDOWS => {
                 let mut m = BTreeMap::new();

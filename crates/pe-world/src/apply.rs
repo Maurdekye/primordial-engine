@@ -40,6 +40,8 @@ pub struct Footprint {
     pub pushes: Vec<Push>,
     /// Hands whose target and `Hand` row an input wrote (8.1).
     pub hands: Vec<ObjectId>,
+    /// Player bodies whose `Player` row a `Move` input wrote (8.2).
+    pub players: Vec<ObjectId>,
     /// Throws an input applied (8.1's throw), with their author: each ended its author's claim, in op order.
     pub throws: Vec<Thrown>,
     /// Objects an input's `Grab` began holding: a new claim, not a renewal of the author's own (8.1). With pushes and
@@ -1205,6 +1207,7 @@ impl World {
     pub fn end_frame(&mut self, frame: Frame) -> FrameEnd {
         let end = self.end_scripts(frame);
         self.end_frame_inputs(frame);
+        self.end_frame_players(frame);
         if self.tombstones.values().any(|t| t.expires <= frame) {
             Arc::make_mut(&mut self.tombstones).retain(|_, t| t.expires > frame);
         }

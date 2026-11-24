@@ -15,6 +15,7 @@ use pe_seams::{Class, Note, Outcome, Reason, SignedEntry};
 use crate::apply::{Footprint, Push, Thrown};
 use crate::components::{Body, Hand, Shape, shape_kind};
 use crate::edit::{R, W};
+use crate::player::{BodyHandPose, MIN_BODY_POSE_BYTES, MIN_SAMPLE_BYTES, MoveSample, Pending};
 use crate::world::{Claim, World};
 
 /// The most poses one hand input may carry (8.1).
@@ -49,6 +50,11 @@ pub enum Input {
     /// Sets the author's own `hand`'s mode ([`hand_mode`](crate::components::hand_mode)); the mode it already has
     /// changes nothing and notes `NoEffect`.
     HandMode { hand: ObjectId, mode: u8 },
+    /// Frames `stamp ..= stamp + samples.len() - 1 + hold` of the author's own player `body` (8.2): sample `j` is what
+    /// the step reads at frame `stamp + j`; the last is then held `hold` more frames, and after that the stick is zero.
+    Move { body: ObjectId, samples: Vec<MoveSample>, hold: u8 },
+    /// As `Hand`, for a hand whose parent is the author's player body: each pose is in the body's frame (8.2).
+    BodyHand { hand: ObjectId, poses: Vec<BodyHandPose>, hold: u8 },
 }
 
 const TAG_HAND: u8 = 0;
@@ -57,6 +63,8 @@ const TAG_GRAB: u8 = 2;
 const TAG_RELEASE: u8 = 3;
 const TAG_HAND_MODE: u8 = 4;
 const TAG_THROW: u8 = 5;
+const TAG_MOVE: u8 = 6;
+const TAG_BODY_HAND: u8 = 7;
 
 /// The fewest bytes one encoded pose takes: a `Pos` (three one-byte varints and three `f64`), a rotation, a grip and
 /// a flag.
@@ -64,6 +72,9 @@ const MIN_POSE_BYTES: usize = 3 * (1 + 8) + 16 + 4 + 1;
 
 impl W {
     fn f32(&mut self, v: f32) {
+        self.raw(&v.to_le_bytes());
+    }
+    fn f64(&mut self, v: f64) {
         self.raw(&v.to_le_bytes());
     }
     fn pos(&mut self, p: &Pos) {
@@ -74,6 +85,16 @@ impl W {
 impl R<'_> {
     fn f32(&mut self) -> Option<f32> {
         Some(f32::from_le_bytes(self.arr()?))
+    }
+    fn f64(&mut self) -> Option<f64> {
+        Some(f64::from_le_bytes(self.arr()?))
+    }
+    fn f32s<const N: usize>(&mut self) -> Option<[f32; N]> {
+        let mut v = [0.0; N];
+        for x in v.iter_mut() {
+            *x = self.f32()?;
+        }
+        Some(v)
     }
     fn pos(&mut self) -> Option<Pos> {
         let (p, n) = Pos::decode(self.b).ok()?;
@@ -123,6 +144,39 @@ impl R<'_> {
                     return None;
                 }
                 Input::HandMode { hand, mode }
+            }
+            TAG_MOVE => {
+                let body = self.id()?;
+                let n = self.count(MIN_SAMPLE_BYTES, crate::player::MAX_SAMPLES)?;
+                if n == 0 {
+                    return None;
+                }
+                let mut samples = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let stick = [self.u8()? as i8, self.u8()? as i8];
+                    let (stick_yaw, heading, jumps) = (self.u32()?, self.u32()?, self.u32()?);
+                    let head_pos = self.f32s::<3>()?;
+                    let head_rot = self.f32s::<4>()?;
+                    let tracked = self.flag()?;
+                    samples.push(MoveSample { stick, stick_yaw, heading, jumps, head_pos, head_rot, tracked });
+                }
+                Input::Move { body, samples, hold: self.u8()? }
+            }
+            TAG_BODY_HAND => {
+                let hand = self.id()?;
+                let n = self.count(MIN_BODY_POSE_BYTES, MAX_POSES)?;
+                if n == 0 {
+                    return None;
+                }
+                let mut poses = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let offset = pe_core::Offset([self.f64()?, self.f64()?, self.f64()?]);
+                    let rot = self.f32s::<4>()?;
+                    let grip = self.f32()?;
+                    let engaged = self.flag()?;
+                    poses.push(BodyHandPose { offset, rot, grip, engaged });
+                }
+                Input::BodyHand { hand, poses, hold: self.u8()? }
             }
             _ => return None,
         })
@@ -189,6 +243,39 @@ impl Input {
                 w.id(*hand);
                 w.u8(*mode);
             }
+            Input::Move { body, samples, hold } => {
+                w.u8(TAG_MOVE);
+                w.id(*body);
+                w.len(samples.len());
+                for s in samples {
+                    w.u8(s.stick[0] as u8);
+                    w.u8(s.stick[1] as u8);
+                    w.u32(s.stick_yaw);
+                    w.u32(s.heading);
+                    w.u32(s.jumps);
+                    for v in s.head_pos.iter().chain(&s.head_rot) {
+                        w.f32(*v);
+                    }
+                    w.u8(u8::from(s.tracked));
+                }
+                w.u8(*hold);
+            }
+            Input::BodyHand { hand, poses, hold } => {
+                w.u8(TAG_BODY_HAND);
+                w.id(*hand);
+                w.len(poses.len());
+                for p in poses {
+                    for v in p.offset.0 {
+                        w.f64(v);
+                    }
+                    for r in p.rot {
+                        w.f32(r);
+                    }
+                    w.f32(p.grip);
+                    w.u8(u8::from(p.engaged));
+                }
+                w.u8(*hold);
+            }
         }
         w.0
     }
@@ -202,14 +289,16 @@ impl Input {
     }
 }
 
-/// Where an entry goes in its frame (8.1, "Order within a frame"): 0 for a hand input, 1 for everything else. A
+/// Where an entry goes in its frame (8.1, "Order within a frame"): 0 for a hand input (`Hand`, `BodyHand`) or a
+/// `Move` (8.2), 1 for everything else. A
 /// frame applies its entries stably sorted by this, so all hand inputs stamped `f` apply before `f`'s grabs,
 /// releases, pushes and edits (8.1, "The apply order of a frame"). Read from the class and the payload's first byte
 /// alone, never world state, so it is total and costs no decode. Exactly two phases; changing this is a world-format
 /// version change.
 pub fn input_phase(entry: &SignedEntry) -> u8 {
     let e = &entry.entry;
-    u8::from(!(e.class == Class::Input && e.payload.first() == Some(&TAG_HAND)))
+    let first = matches!(e.payload.first(), Some(&(TAG_HAND | TAG_MOVE | TAG_BODY_HAND)));
+    u8::from(!(e.class == Class::Input && first))
 }
 
 // ---- settings -----------------------------------------------------------------------------------------------------
@@ -287,6 +376,10 @@ pub(crate) struct InputTables {
     pub(crate) cooldowns: BTreeMap<(MemberKey, ObjectId), Frame>,
     pub(crate) packs: BTreeMap<ObjectId, Pack>,
     pub(crate) pushes: BTreeMap<MemberKey, VecDeque<(Frame, f64)>>,
+    /// Pending `BodyHand` packs, by hand (8.2): empty in a world without player bodies.
+    pub(crate) body_packs: BTreeMap<ObjectId, Pending<BodyHandPose>>,
+    /// Pending `Move` packs of more than one sample, by body (8.2).
+    pub(crate) moves: BTreeMap<ObjectId, Pending<MoveSample>>,
 }
 
 fn invalid() -> Reason {
@@ -361,6 +454,10 @@ impl World {
             }
             Input::Push { object, impulse, at } => self.push(frame, e.author, object, impulse, at, &mut fp),
             Input::HandMode { hand, mode } => self.set_hand_mode(e.author, hand, mode, &mut notes),
+            Input::Move { body, samples, hold } => self.move_input(frame, e.author, body, samples, hold, &mut fp),
+            Input::BodyHand { hand, poses, hold } => {
+                self.body_hand_input(frame, e.author, hand, poses, hold, &mut fp)
+            }
         };
         match r {
             Ok(()) => (Outcome::Applied { created: Vec::new(), overwrote: Vec::new(), notes, inverse: None }, fp),
@@ -369,7 +466,7 @@ impl World {
     }
 
     /// `Unknown`, or `Deleted` if a tombstone names the object.
-    fn absent(&self, id: ObjectId) -> Reason {
+    pub(crate) fn absent(&self, id: ObjectId) -> Reason {
         match self.tombstones.get(&id) {
             Some(t) => Reason::Deleted { object: id, by: t.by },
             None => Reason::Unknown(id),
@@ -378,7 +475,7 @@ impl World {
 
     /// The author's own hand's row: `Unknown` or `Deleted` without the object, `NotYourHand` without a `Hand` row
     /// owned by `author`.
-    fn own_hand(&self, author: MemberKey, hand: ObjectId) -> Result<Hand, Reason> {
+    pub(crate) fn own_hand(&self, author: MemberKey, hand: ObjectId) -> Result<Hand, Reason> {
         if !self.store.exists(hand) {
             return Err(self.absent(hand));
         }
@@ -428,7 +525,19 @@ impl World {
             return Err(Reason::OutOfRange);
         }
         // Implicit renewal (8.1): the newest pose engaged renews every claim this hand holds.
-        if poses[poses.len() - 1].engaged && self.claims.values().any(|c| c.hand == hand && c.member == author) {
+        if poses[poses.len() - 1].engaged {
+            self.renew_claims_of(author, hand, now);
+        }
+        let t = Arc::make_mut(&mut self.inputs);
+        t.body_packs.remove(&hand);
+        t.packs.insert(hand, Pack { stamp: now, poses, hold });
+        fp.hands.push(hand);
+        Ok(())
+    }
+
+    /// Implicit renewal (8.1): every claim `author` holds with `hand` lasts at least until `now`'s claim length.
+    pub(crate) fn renew_claims_of(&mut self, author: MemberKey, hand: ObjectId, now: Frame) {
+        if self.claims.values().any(|c| c.hand == hand && c.member == author) {
             let until = self.claim_until(now);
             for c in Arc::make_mut(&mut self.claims).values_mut() {
                 if c.hand == hand && c.member == author {
@@ -436,9 +545,6 @@ impl World {
                 }
             }
         }
-        Arc::make_mut(&mut self.inputs).packs.insert(hand, Pack { stamp: now, poses, hold });
-        fp.hands.push(hand);
-        Ok(())
     }
 
     /// The mode of `hand` (8.1), if it is a hand. pe-replica reads it each frame when it places hand bodies.

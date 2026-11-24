@@ -7,7 +7,7 @@ use std::sync::Arc;
 use pe_core::{EntryRef, MemberKey, ObjectId};
 use pe_seams::Version;
 
-use crate::components::{Hand, ids};
+use crate::components::{Hand, Player, ids};
 use crate::world::{Tombstone, World, WorldError};
 
 /// What [`World::leave`] did, each list in id (or asset) order.
@@ -18,8 +18,10 @@ pub struct LeaveReport {
     /// Objects whose claim by the leaver ended. Nothing else about them changes: an object keeps its velocity.
     pub released: Vec<ObjectId>,
     /// Children of a hand, moved to the hand's parent (a root, for M1's root hands), keeping their world pose and
-    /// the hand's child order.
+    /// the hand's child order; and children of the leaver's player body, moved to the roots.
     pub moved: Vec<ObjectId>,
+    /// The leaver's player bodies (8.2), removed outright after its hands, with their Move packs.
+    pub bodies: Vec<ObjectId>,
 }
 
 impl World {
@@ -28,6 +30,8 @@ impl World {
     /// permission bits; every step below is infallible, so pe-replica treats any other `Err` as a bug. In order:
     /// 1. each hand the member owns: its children move to the hand's parent, keeping world pose and order, then the
     ///    hand is removed outright, with its hand pack; a deleted hand of the member's leaves no tombstone behind;
+    ///    then its player body, if the preset gave it one (8.2): its children become roots keeping their world pose,
+    ///    and the body is removed outright with its Move pack;
     /// 2. every claim by the member ends, as a release does (7.2: no cooldown);
     /// 3. the member's input rows go: its cooldowns and its push window, so a later readmission starts clean;
     /// 4. its permission bits are dropped;
@@ -74,8 +78,30 @@ impl World {
             }
             let gone = w.store.destroy(h);
             debug_assert!(gone.is_ok(), "the hand is live: {gone:?}");
-            Arc::make_mut(&mut w.inputs).packs.remove(&h);
+            let t = Arc::make_mut(&mut w.inputs);
+            t.packs.remove(&h);
+            t.body_packs.remove(&h);
         }
+        // Then its player body (8.2): anything still under it (a hand's child moved up, or an object an edit put
+        // there) becomes a root keeping its world pose, and the body goes with its Move pack.
+        let bodies: Vec<ObjectId> = if w.store.registry().get(ids::PLAYER).is_some() {
+            w.store.iter::<Player>().filter(|(_, p)| p.owner == member).map(|(b, _)| b).collect()
+        } else {
+            Vec::new()
+        };
+        for &b in &bodies {
+            let kids: Vec<ObjectId> = w.store.children(b).collect();
+            for c in kids {
+                let moved = w.store.set_parent_keep_world(c, None, None).or_else(|_| w.store.set_parent(c, None, None));
+                debug_assert!(moved.is_ok(), "a body's child always becomes a root: {moved:?}");
+                w.touch(c, v, true);
+                report.moved.push(c);
+            }
+            let gone = w.store.destroy(b);
+            debug_assert!(gone.is_ok(), "the body is live: {gone:?}");
+            Arc::make_mut(&mut w.inputs).moves.remove(&b);
+        }
+        report.bodies = bodies;
         // A hand of the member's that an edit deleted lies in a tombstone: drop it, so no `Undelete` brings back a
         // hand owned by a non-member (@chunks-reviewer's L2).
         let ghost = |t: &Tombstone| {

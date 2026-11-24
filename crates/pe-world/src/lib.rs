@@ -19,6 +19,7 @@ mod import;
 pub mod inline;
 pub mod input;
 mod leave;
+pub mod player;
 pub mod preset;
 mod read;
 mod replica;
@@ -34,6 +35,7 @@ pub use apply::{ActivationResult, Blocked, Draft, Footprint, FrameEnd, Push, Thr
 pub use components::BlobRef;
 pub use input::{HandPose, Input, InputSettings, input_phase};
 pub use leave::LeaveReport;
+pub use player::{BodyHandPose, MoveSample, PlayerRow};
 pub use pe_seams::Version;
 pub use read::{ObjectInfo, Value, WorldSnapshot};
 pub use replica::{GRAVITY, Settings};

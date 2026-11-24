@@ -392,6 +392,22 @@ impl World {
                     }
                     e.push((id_be(*hand).to_vec(), v));
                 }
+                // Player bodies' packs (8.2), under 17-byte keys: none in a world without bodies, so its table is
+                // the one it always had. Then the whole table in key order.
+                if !self.inputs.body_packs.is_empty() || !self.inputs.moves.is_empty() {
+                    let key = |id: ObjectId, tag: u8| {
+                        let mut k = id_be(id).to_vec();
+                        k.push(tag);
+                        k
+                    };
+                    for (hand, p) in self.inputs.body_packs.iter() {
+                        e.push((key(*hand, crate::player::KEY_BODY_HAND), crate::player::encode_body_pack(p)));
+                    }
+                    for (body, p) in self.inputs.moves.iter() {
+                        e.push((key(*body, crate::player::KEY_MOVE), crate::player::encode_move_pack(p)));
+                    }
+                    e.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                }
             }
             table::PUSH_WINDOWS => {
                 for (m, q) in self.inputs.pushes.iter() {

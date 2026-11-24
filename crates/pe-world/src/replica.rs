@@ -250,5 +250,16 @@ impl World {
                 h.write_u64(f.0).write_u64(n.to_bits());
             }
         }
+        // Player bodies' packs (8.2): only when there are any, so a world without bodies keeps its hash.
+        if !t.body_packs.is_empty() || !t.moves.is_empty() {
+            h.write_u64(t.body_packs.len() as u64);
+            for (hand, p) in t.body_packs.iter() {
+                h.write_u128(hand.to_u128()).write(&crate::player::encode_body_pack(p));
+            }
+            h.write_u64(t.moves.len() as u64);
+            for (body, p) in t.moves.iter() {
+                h.write_u128(body.to_u128()).write(&crate::player::encode_move_pack(p));
+            }
+        }
     }
 }
