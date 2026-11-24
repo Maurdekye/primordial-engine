@@ -121,6 +121,11 @@ pub trait Backend {
     fn begin_frame(&mut self) -> Result<(), XrError>;
     /// Locate one hand at a host time: a tracked hand's joints or a controller's grip, as a reading.
     fn read_hand(&mut self, hand: Hand, at: HostTime) -> Reading;
+    /// One hand's pointer actions at a host time (spec 5.7): the aim pose, the select value and the menu button.
+    /// Read after [`Self::read_hand`] at the same time. Default: nothing (a backend without pointers).
+    fn read_pointer(&mut self, _hand: Hand, _at: HostTime) -> crate::pointer::PointerReading {
+        crate::pointer::PointerReading::default()
+    }
     /// Each hand's current interaction profile (left, right), for the diagnostic log: "none" while the runtime
     /// has none. `None` where the backend can't tell.
     fn interaction_profiles(&self) -> Option<[String; 2]> {

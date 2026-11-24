@@ -26,6 +26,7 @@ pub mod hands;
 pub mod loader;
 pub mod math;
 pub mod open;
+pub mod pointer;
 pub mod real;
 pub mod real_session;
 pub mod ring;

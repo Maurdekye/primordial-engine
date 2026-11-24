@@ -20,6 +20,7 @@ use crate::backend::{Backend, EyePose, Fov, FrameTiming, ImageIndex, Layers, Loc
 use pe_render::HandJoints;
 
 use crate::hands::Reading;
+use crate::pointer::PointerReading;
 use crate::seam::{Hand, HandSource, HostTime, RigPose};
 
 /// One call pe-xr made, for order checks.
@@ -58,6 +59,7 @@ pub enum Op {
 
 type HandScript = Box<dyn FnMut(Hand, HostTime) -> Reading>;
 type JointScript = Box<dyn Fn(Hand, HostTime) -> Option<HandJoints>>;
+type PointerScript = Box<dyn FnMut(Hand, HostTime) -> PointerReading>;
 
 pub struct FakeRuntime {
     pub calls: Vec<Call>,
@@ -78,6 +80,8 @@ pub struct FakeRuntime {
     hand_script: HandScript,
     /// The joints for a reading at a time (`hand_joints`); none by default.
     joint_script: JointScript,
+    /// The pointer actions for a hand at a time (`read_pointer`); none by default.
+    pointer_script: PointerScript,
     /// Extra time to add to the next frame's display time, to fake a missed frame.
     pub skip_next_ns: i64,
     /// Set by a test's renderer while it holds wrappers of the swapchain images: destroying the swapchain then is a
@@ -131,6 +135,7 @@ impl FakeRuntime {
                 curl: None,
             }),
             joint_script: Box::new(|_, _| None),
+            pointer_script: Box::new(|_, _| PointerReading::default()),
             skip_next_ns: 0,
             images_held: Arc::new(AtomicBool::new(false)),
             frames: 0,
@@ -182,6 +187,12 @@ impl FakeRuntime {
     /// The joints a tracked reading comes with (the real backend keeps those it located with the reading).
     pub fn joints(mut self, f: impl Fn(Hand, HostTime) -> Option<HandJoints> + 'static) -> Self {
         self.joint_script = Box::new(f);
+        self
+    }
+
+    /// The pointer actions (aim pose, select, menu button) a hand reads at a time.
+    pub fn pointers(mut self, f: impl FnMut(Hand, HostTime) -> PointerReading + 'static) -> Self {
+        self.pointer_script = Box::new(f);
         self
     }
 
@@ -380,6 +391,14 @@ impl Backend for FakeRuntime {
 
     fn hand_joints(&self, hand: Hand, at: HostTime) -> Option<HandJoints> {
         (self.joint_script)(hand, at)
+    }
+
+    fn read_pointer(&mut self, hand: Hand, at: HostTime) -> PointerReading {
+        self.need_session("an action read");
+        if !self.synced_this_frame {
+            self.violate("a pointer read before xrSyncActions this frame");
+        }
+        (self.pointer_script)(hand, at)
     }
 
     fn acquire_image(&mut self) -> Result<ImageIndex, XrError> {

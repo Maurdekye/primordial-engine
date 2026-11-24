@@ -20,8 +20,10 @@ pub mod joint {
     pub const THUMB_METACARPAL: usize = 2;
     pub const THUMB_TIP: usize = 5;
     pub const INDEX_METACARPAL: usize = 6;
+    pub const INDEX_PROXIMAL: usize = 7;
     pub const INDEX_TIP: usize = 10;
     pub const MIDDLE_METACARPAL: usize = 11;
+    pub const MIDDLE_PROXIMAL: usize = 12;
     pub const RING_METACARPAL: usize = 16;
     pub const LITTLE_METACARPAL: usize = 21;
     pub const COUNT: usize = 26;
@@ -240,6 +242,11 @@ impl HandState {
             last_at: None,
             forced_releases: 0,
         }
+    }
+
+    /// The grasp is closed: the hand holds, or is closing on, something.
+    pub fn closed(&self) -> bool {
+        self.grasp.closed()
     }
 
     pub fn discontinuity(&self) -> u32 {

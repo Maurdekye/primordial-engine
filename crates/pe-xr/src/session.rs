@@ -22,6 +22,7 @@ use pe_render::HandJoints;
 use crate::backend::{Backend, DepthInfo, EyePose, FrameTiming, ImageIndex, Layers, SessionState, XrError, XrEvent};
 use crate::diag::{self, Diag};
 use crate::hands::{GraspConfig, HandState};
+use crate::pointer::{Pointer, PointerState};
 use crate::ring::HandRing;
 use crate::seam::{Hand, HostTime, RigPose};
 
@@ -42,6 +43,13 @@ pub struct FrameRequest<'a> {
     pub hands: [Option<RigPose>; 2],
     /// A tracked hand's joints at the same display time, for drawing the hand (spec 6); `None` for a controller.
     pub hand_joints: [Option<HandJoints>; 2],
+    /// Each hand's pointer at the display time, for the menus (spec 5.7): `None` while the hand can't point. Its
+    /// `clicks` count the presses since the last drawn frame.
+    pub pointers: [Option<Pointer>; 2],
+    /// The menu was toggled (the menu button, or a held palm-up pinch) since the last drawn frame. Several toggles
+    /// in that time, from both hands or both paths at once, count as one (@design-reviewer's nit on S1), so they
+    /// can't cancel out.
+    pub menu_toggled: bool,
 }
 
 pub trait FrameSink {
@@ -141,6 +149,11 @@ pub struct XrSession<B: Backend> {
     /// Whether the session (and its swapchain) has been destroyed, after the sink released the images.
     destroyed: bool,
     hands: [HandState; 2],
+    /// The pointers (spec 5.7): each hand's state, its pointer at the last focused frame's display time, and the
+    /// menu toggles not yet handed to a drawn frame.
+    pointers: [PointerState; 2],
+    pointer_now: [Option<Pointer>; 2],
+    menu_toggled: bool,
     ring: Arc<HandRing>,
     last_display_time: Option<HostTime>,
     /// The last frame that ran without an error (or when the session began running). The session ends for errors
@@ -174,6 +187,9 @@ impl<B: Backend> XrSession<B> {
             ended: None,
             destroyed: false,
             hands: [HandState::new(Hand::Left, grasp), HandState::new(Hand::Right, grasp)],
+            pointers: Default::default(),
+            pointer_now: [None, None],
+            menu_toggled: false,
             ring,
             last_display_time: None,
             last_good: None,
@@ -238,6 +254,8 @@ impl<B: Backend> XrSession<B> {
         for h in Hand::BOTH {
             self.hands[h.index()].focus_lost();
             self.ring.set_absent(h);
+            self.pointers[h.index()].reset();
+            self.pointer_now[h.index()] = None;
         }
     }
 
@@ -467,6 +485,14 @@ impl<B: Backend> XrSession<B> {
                 {
                     diag::emit(&line);
                 }
+                // The pointer at the display time, every focused frame, so no press is lost to a frame that isn't
+                // drawn (spec 5.7). The joints are those of the `shown` reading just made at that time.
+                let reading = self.backend.read_pointer(h, shown_at);
+                let joints = self.backend.hand_joints(h, shown_at);
+                let holding = self.hands[h.index()].closed();
+                let step = self.pointers[h.index()].step(h, shown_at, reading, joints.as_ref(), holding);
+                self.pointer_now[h.index()] = step.pointer;
+                self.menu_toggled |= step.menu_toggled;
             }
         }
 
@@ -489,8 +515,23 @@ impl<B: Backend> XrSession<B> {
                     diag::emit(&line);
                 }
                 let depth_image = self.backend.depth_image();
-                let drawn =
-                    sink.render(&FrameRequest { timing, eyes: &located.eyes, image, depth_image, hands, hand_joints });
+                let pointers = if focused { self.pointer_now } else { [None, None] };
+                let menu_toggled = self.menu_toggled;
+                let drawn = sink.render(&FrameRequest {
+                    timing,
+                    eyes: &located.eyes,
+                    image,
+                    depth_image,
+                    hands,
+                    hand_joints,
+                    pointers,
+                    menu_toggled,
+                });
+                // Handed over: the sink saw these clicks and toggles.
+                self.menu_toggled = false;
+                for p in &mut self.pointers {
+                    p.delivered();
+                }
                 if drawn {
                     let depth = sink.depth().filter(|_| depth_image.is_some());
                     layers = Layers::Projection { extent: sink.extent(), depth };

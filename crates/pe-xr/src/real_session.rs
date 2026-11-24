@@ -12,17 +12,27 @@ use pe_render::{HandJoint, HandJoints};
 
 use crate::backend::{Backend, EyePose, Fov, FrameTiming, ImageIndex, Layers, Located, SessionState, XrError, XrEvent};
 use crate::hands::{GraspConfig, Joint, Reading, grip_from_joints, joint};
+use crate::pointer::PointerReading;
 use crate::real::{GraphicsPath, XrInstance};
 use crate::seam::{Hand, HandSource, HostTime, RigPose};
 
 const VIEW: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 
-/// The suggested bindings (spec 5.4): (interaction profile, grip pose path, squeeze value path) per hand.
-const PROFILES: &[(&str, &str)] = &[
-    ("/interaction_profiles/oculus/touch_controller", "squeeze/value"),
-    ("/interaction_profiles/valve/index_controller", "squeeze/value"),
-    // The simple controller has no squeeze; its select button stands in for the grasp (0 or 1).
-    ("/interaction_profiles/khr/simple_controller", "select/click"),
+/// The suggested bindings (spec 5.4, 5.7): (interaction profile, squeeze value path, select value path, menu
+/// button paths as (hand, path)) per hand. The grip and aim poses are bound on every profile.
+#[allow(clippy::type_complexity)]
+const PROFILES: &[(&str, &str, &str, &[(&str, &str)])] = &[
+    // The Touch controller's right menu button is the system button, reserved for the runtime.
+    ("/interaction_profiles/oculus/touch_controller", "squeeze/value", "trigger/value", &[("left", "menu/click")]),
+    // The Index controller's system buttons are the runtime's; its left B button is the menu (@design-reviewer's L1).
+    ("/interaction_profiles/valve/index_controller", "squeeze/value", "trigger/value", &[("left", "b/click")]),
+    // The simple controller has no squeeze; its select button stands in for the grasp (0 or 1), and selects too.
+    (
+        "/interaction_profiles/khr/simple_controller",
+        "select/click",
+        "select/click",
+        &[("left", "menu/click"), ("right", "menu/click")],
+    ),
 ];
 const HAND_INTERACTION: &str = "/interaction_profiles/ext/hand_interaction_ext";
 
@@ -131,6 +141,11 @@ struct Live<G: xr::Graphics> {
     set: xr::ActionSet,
     squeeze: xr::Action<f32>,
     _grip: xr::Action<xr::Posef>,
+    /// The pointer actions (spec 5.7): the aim pose's spaces, the select value and the menu button.
+    aim_spaces: [xr::Space; 2],
+    _aim: xr::Action<xr::Posef>,
+    select: xr::Action<f32>,
+    menu: xr::Action<bool>,
     hand_paths: [xr::Path; 2],
     hand_interaction: bool,
     size: SwapchainSize,
@@ -200,13 +215,22 @@ impl<G: xr::Graphics> RealBackend<G> {
         let grip = set.create_action::<xr::Posef>("grip", "Hand grip", &[left, right]).map_err(ce("grip action"))?;
         let squeeze =
             set.create_action::<f32>("squeeze", "Hand squeeze", &[left, right]).map_err(ce("squeeze action"))?;
+        let aim = set.create_action::<xr::Posef>("aim", "Pointer aim", &[left, right]).map_err(ce("aim action"))?;
+        let select =
+            set.create_action::<f32>("select", "Pointer select", &[left, right]).map_err(ce("select action"))?;
+        let menu = set.create_action::<bool>("menu", "Menu", &[left, right]).map_err(ce("menu action"))?;
         let path = |s: String| instance.string_to_path(&s).map_err(ce("path"));
         let mut binding_warnings = Vec::new();
-        for (profile, squeeze_input) in PROFILES {
+        for (profile, squeeze_input, select_input, menus) in PROFILES {
             let mut b = Vec::new();
             for side in ["left", "right"] {
                 b.push(xr::Binding::new(&grip, path(format!("/user/hand/{side}/input/grip/pose"))?));
                 b.push(xr::Binding::new(&squeeze, path(format!("/user/hand/{side}/input/{squeeze_input}"))?));
+                b.push(xr::Binding::new(&aim, path(format!("/user/hand/{side}/input/aim/pose"))?));
+                b.push(xr::Binding::new(&select, path(format!("/user/hand/{side}/input/{select_input}"))?));
+            }
+            for (side, input) in menus.iter() {
+                b.push(xr::Binding::new(&menu, path(format!("/user/hand/{side}/input/{input}"))?));
             }
             // A runtime may refuse a profile it does not know; the others still apply, and the refusal is kept.
             if let Err(e) = instance.suggest_interaction_profile_bindings(path(profile.to_string())?, &b) {
@@ -219,6 +243,8 @@ impl<G: xr::Graphics> RealBackend<G> {
             for side in ["left", "right"] {
                 b.push(xr::Binding::new(&grip, path(format!("/user/hand/{side}/input/grip/pose"))?));
                 b.push(xr::Binding::new(&squeeze, path(format!("/user/hand/{side}/input/grasp_ext/value"))?));
+                b.push(xr::Binding::new(&aim, path(format!("/user/hand/{side}/input/aim/pose"))?));
+                b.push(xr::Binding::new(&select, path(format!("/user/hand/{side}/input/pinch_ext/value"))?));
             }
             if let Err(e) = instance.suggest_interaction_profile_bindings(path(HAND_INTERACTION.to_string())?, &b) {
                 binding_warnings.push(format!("{HAND_INTERACTION}: {e}"));
@@ -229,6 +255,10 @@ impl<G: xr::Graphics> RealBackend<G> {
         let grip_spaces = [
             grip.create_space(&session, left, xr::Posef::IDENTITY).map_err(ce("grip space"))?,
             grip.create_space(&session, right, xr::Posef::IDENTITY).map_err(ce("grip space"))?,
+        ];
+        let aim_spaces = [
+            aim.create_space(&session, left, xr::Posef::IDENTITY).map_err(ce("aim space"))?,
+            aim.create_space(&session, right, xr::Posef::IDENTITY).map_err(ce("aim space"))?,
         ];
 
         // STAGE, else LOCAL_FLOOR, else LOCAL (spec 3.2).
@@ -355,6 +385,10 @@ impl<G: xr::Graphics> RealBackend<G> {
                 set,
                 squeeze,
                 _grip: grip,
+                aim_spaces,
+                _aim: aim,
+                select,
+                menu,
                 hand_paths: [left, right],
                 hand_interaction,
                 size,
@@ -641,6 +675,18 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             grip: self.squeeze_value(hand),
             curl: None,
         }
+    }
+
+    fn read_pointer(&mut self, hand: Hand, at: HostTime) -> PointerReading {
+        let Some(live) = self.live.as_ref() else { return PointerReading::default() };
+        let path = live.hand_paths[hand.index()];
+        let select = live.select.state(&live.session, path).ok().filter(|s| s.is_active).map(|s| s.current_state);
+        let menu = live.menu.state(&live.session, path).ok().filter(|s| s.is_active).map(|s| s.current_state);
+        let aim = self.xr_time(at).ok().and_then(|t| {
+            let loc = live.aim_spaces[hand.index()].locate(&live.space, t).ok()?;
+            pose_valid(loc.location_flags).then(|| rig_pose(&loc.pose))
+        });
+        PointerReading { aim, select, menu }
     }
 
     fn interaction_profiles(&self) -> Option<[String; 2]> {

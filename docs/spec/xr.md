@@ -446,6 +446,31 @@ where to draw them.
   they are never blended toward a corrected simulated state. It does not mean "drawn pose equals simulated pose",
   which late-latching breaks on purpose.
 
+### 5.7 Pointers, for the menus
+
+The friend-test prototype's menus (@item:primordial-engine/friend-test-prototype-launch-into-vr-basic-menu-s) need
+each hand to aim and select. Pointers are local UI: never sent, never in a hand entry, never simulated
+(crate::pointer).
+- **The aim:** the `aim` pose action, bound to `input/aim/pose` on the Touch, Index and simple controller profiles
+  and on `XR_EXT_hand_interaction`'s profile. The ray starts at the pose and points along its -Z. A tracked hand
+  without an active aim action is aimed from its joints: from the index knuckle, along the line from the wrist to
+  the middle knuckle.
+- **The select:** the `select` value action, bound to the trigger (Touch, Index), `select/click` (simple) and
+  `pinch_ext/value` (hand interaction). A tracked hand without it pinches from its joints: fully pressed at 1.5 cm
+  from thumb tip to index tip, not at all from 3.5 cm. It presses at 0.7 and releases below 0.35.
+- **The menu toggle** (@coordinator-opus): the `menu` button action, the baseline that must work.
+  It is bound to the left Touch controller's menu button (the right one is the runtime's system button), the left
+  Index controller's B button (its system buttons are the runtime's) and both simple controllers' menu buttons.
+  For tracked hands, pe-app's wrist button (on the back of the wrist, clicked with the other hand's pointer) and
+  the desktop's toggle key are pe-app's (@coordinator-opus).
+  - **Built but off:** a palm-up pinch held 0.4 s (the palm's normal within about 45 degrees of up; never while
+    that hand's grasp is closed; never a click). On a Quest the OS claims a palm-facing pinch for its own menu
+    (@design-reviewer's M1 on S1), so `PointerState::with_palm_menu` turns it on only for tests.
+- **Delivery:** the pointers are read every focused frame at the display time, after the hands. Each drawn frame
+  gets both hands' pointers (`FrameRequest::pointers`), with the presses (`clicks`) and menu toggles
+  (`menu_toggled`, any number of toggles counting as one) since the last drawn frame, so a press made in a frame that isn't drawn is never lost. Focus loss
+  clears them.
+
 ## 6. Time
 
 ### 6.1 One clock
