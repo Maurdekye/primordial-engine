@@ -749,3 +749,53 @@ fn a_display_time_that_steps_back_keeps_the_samples_in_order_and_loses_no_edge()
     assert!(newest.closed, "frames 4 and 5 were published after frame 3's sample, with the close: {newest:?}");
     no_violations(&s);
 }
+
+/// The pointers reach the drawn frame (spec 5.7): a press made in a frame that isn't drawn is handed to the next
+/// drawn one, as is a menu toggle, and each is handed over once.
+#[test]
+fn pointer_clicks_and_menu_toggles_reach_the_next_drawn_frame_once() {
+    use crate::pointer::{AimSource, PointerReading};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// Each hand's (clicks, pressed), and whether the menu was toggled, per drawn frame.
+    type Drawn = ([Option<(u32, bool)>; 2], bool);
+    #[derive(Default)]
+    struct Seen(Vec<Drawn>);
+    impl FrameSink for Seen {
+        fn render(&mut self, f: &FrameRequest<'_>) -> bool {
+            self.0.push((f.pointers.map(|p| p.map(|p| (p.clicks, p.pressed))), f.menu_toggled));
+            assert!(f.pointers.iter().flatten().all(|p| p.source == AimSource::Action));
+            true
+        }
+        fn release_swapchain(&mut self) {}
+    }
+
+    // Frame by frame (1-based): the right trigger pressed in frames 2-3, released in 4, pressed again in 5; the
+    // left menu button pressed in frame 3 only. Frames 2 and 3 aren't drawn.
+    let frame = Rc::new(Cell::new(0u64));
+    let f2 = frame.clone();
+    let mut rt = FakeRuntime::new().started().pointers(move |hand, _| {
+        let n = f2.get();
+        let aim = Some(RigPose { position: [0.0, 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] });
+        match hand {
+            Hand::Right => {
+                PointerReading { aim, select: Some(if matches!(n, 2 | 3 | 5) { 1.0 } else { 0.0 }), menu: None }
+            }
+            Hand::Left => PointerReading { aim, select: Some(0.0), menu: Some(n == 3) },
+        }
+    });
+    rt.not_rendered = vec![2, 3];
+    let (mut s, _) = session(rt);
+    let mut k = Seen::default();
+    for n in 1..=6 {
+        frame.set(n);
+        assert_eq!(s.step(&mut k), Step::Frame);
+    }
+    no_violations(&s);
+    // Drawn frames: 1, 4, 5, 6.
+    let right: Vec<_> = k.0.iter().map(|(p, _)| p[1].expect("the right hand points")).collect();
+    assert_eq!(right, vec![(0, false), (1, false), (1, true), (0, false)], "frame 4 carries frame 2's press");
+    let toggles: Vec<bool> = k.0.iter().map(|(_, t)| *t).collect();
+    assert_eq!(toggles, vec![false, true, false, false], "frame 3's menu press, handed to frame 4");
+}

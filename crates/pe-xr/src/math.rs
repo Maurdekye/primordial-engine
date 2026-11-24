@@ -26,6 +26,16 @@ pub fn len(a: Vec3) -> f32 {
     dot(a, a).sqrt()
 }
 
+pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+/// `a` scaled to unit length, or `None` if it is (nearly) zero.
+pub fn normalize(a: Vec3) -> Option<Vec3> {
+    let l = len(a);
+    (l >= 1e-6).then(|| scale(a, 1.0 / l))
+}
+
 pub fn lerp3(a: Vec3, b: Vec3, t: f32) -> Vec3 {
     add(a, scale(sub(b, a), t))
 }

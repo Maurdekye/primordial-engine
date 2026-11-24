@@ -881,6 +881,8 @@ mod tests {
             depth_image: None,
             hands: [None, Some(right)],
             hand_joints: [None, Some(joints)],
+            pointers: [None, None],
+            menu_toggled: false,
         };
         let local = local_presentation(&frame, None);
         assert_eq!(local.display_time, HostTime(7_000_000));
