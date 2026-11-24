@@ -167,6 +167,9 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
     value is shared with everyone as their input." [P wording] It applies on click, with no confirmation:
     publication is automatic and not the player's concern [R:, 2026-11-07 16:10Z], and the change
     can be reverted from history like any other [P].
+  - **Effects can still happen once per player:** a shared script runs once for each player where it reads the
+    field, so its effects on shared state repeat per player unless the script declares them "once for the world".
+    When a script reading the field writes shared state, the menu item says so in a line of information [P].
   - The physics/logic split is agreed with @iter-bench (WS-logic). Per-player mode arrives in M2; nothing here is
     in the M1 slice.
 

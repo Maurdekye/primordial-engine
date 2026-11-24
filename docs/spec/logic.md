@@ -22,7 +22,7 @@ Inputs: `docs/refound-plan.md` (b610464), review files 03, 11 (3.2, 3.5), 13 (Pa
 | User, D11 and Q3c | Every machine compiles every script itself; no machine runs another's build | 4, 6 |
 | User, Q3 and Q3a | A code change takes effect at one agreed frame; the owner runs it at once; others keep the old code until their own compile ends, then rewind and replay | 6 |
 | User, Q3b | A divergence over 2 s ends in a world-line merge with the main line; nobody waits | 6.4 (M2, with WS-diverge) |
-| User, QR (b), Q8 | A per-player script runs on its player's machine only | 7 (M2) |
+| User, QR (b), Q8; | A per-player field is its player's input, and a shared script reading it stays shared; a local script runs on its player's machine only | 7.1 (M2) |
 | User, 2026-11-24 | A script is shared or local as a whole, flagged automatically; local files, devices and addresses are off by default, with reading and publishing granted separately; per-frame drawing never feeds the simulation | 7.1-7.3 (design, not built) |
 | User, file 17 answers | `Pos` cannot become numbers except as `pos - ORIGIN`; saved offsets name their reference; no warning or test, the types enforce it | 8 |
 | User, U1 | M1 contains a small logic edit authored by an agent | 10 |
@@ -1110,7 +1110,8 @@ world-model.md 3.7; how a picture is drawn is render.md's.
 1. **A script is shared or local as a whole.** It becomes local automatically, at build time, if any function in it
    uses `local_user` or any local-draw functionality. The mode is not declared per system.
 2. **Every local thing is reachable only that way:** tracking, display time, per-player values and, with the
-   player's grant (7.2), the clock, devices, files and local web addresses.
+   player's grant (7.2), the clock, devices, files and local web addresses. The one exception: a per-player
+   field read by a shared script is not reached that way; it arrives as its player's input (below).
    - **Per-player fields** (ruled, settled by @coordinator-opus), verbatim:
      "the per-player field acts like that player's input and the script remains shared, i thought we decided that".
      - **A shared script may read a per-player field, and it stays shared.** Reading one is not a trigger of the
@@ -1122,7 +1123,8 @@ world-model.md 3.7; how a picture is drawn is render.md's.
      - **This is QR (b)**: the script reads each player's own value, and a local cause has a
        shared effect for everyone, "in the same way how a player holding a local paddle hitting a ball with it
        would cause the ball to go flying for everyone".
-     - **Every machine runs the script,** on the fixed step and under rollback, from the published values. Where
+     - [I, @fable-reviewer's file 21 v13, 2.2, adopted by @coordinator-opus; not the user's words]
+       **Every machine runs the script,** on the fixed step and under rollback, from the published values. Where
        it reads a per-player field it runs once for each player with that player's value, on every machine alike.
        Its effects are computed by everyone and are not sent. There is no player-local instance: this replaces
        the 2026-11-07 record's reading of QR (b) (`user-design-decisions.md` 398), with the same visible result
