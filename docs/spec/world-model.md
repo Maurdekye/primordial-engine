@@ -773,7 +773,7 @@ as a colour (api.md 4.4: hex or an explicit space, never a bare array).
 ### 3.7 Shared, private and published values (design, not built)
 
 The user's rulings of 2026-11-24, from @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md`
-v10, sections 2.1, 2.3, 2.7 and 2.8; the rulings verbatim on
+v11, sections 2.1, 2.3, 2.7 and 2.8; the rulings verbatim on
 @item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe). They extend the 2026-11-07
 localization rulings (`<notes>` 362-374). Nothing here is built; building needs its own
 go after the friend test. The local rule that decides which code is local, and draw systems themselves, are
