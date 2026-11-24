@@ -43,6 +43,8 @@ pub mod ids {
     pub const HAND: ComponentId = ComponentId(9);
     pub const SIM_SIZE: ComponentId = ComponentId(10);
     pub const PROTECTION: ComponentId = ComponentId(11);
+    /// Registered only in worlds whose preset gives members a body ([`register_player`]).
+    pub const PLAYER: ComponentId = ComponentId(12);
 }
 
 /// `"name": field, Kind, count;` or, with a unit (world-model.md 3.6), `"name": field, Kind, count, "unit";`.
@@ -377,6 +379,72 @@ impl Component for Protection {
     fn fields() -> Vec<FieldDesc> {
         fields![Protection; "owner": owner, MemberKey, 1;]
     }
+}
+
+/// A member's player body (world-model.md 8.2): world logic makes it at admission in a preset with bodies, then
+/// only its owner's `Move` inputs change this row, and physics moves the object. The object's `Transform` is at the
+/// feet; the hands are its children. The row holds the newest Move sample the step reads, and what the step used
+/// last frame, so the mover can take the room-scale step as a difference. pe-physics builds the player's shapes
+/// from its own tuning, not from a `Shape` row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+#[repr(C)]
+pub struct Player {
+    pub owner: MemberKey,
+    /// The frame the newest Move is stamped at, and how many frames its pack covers (samples plus `hold`); 0 before
+    /// any Move.
+    pub stamp: u64,
+    pub span: u32,
+    /// The cumulative heading the player asked for, a wrapping angle (2^32 is one turn, positive turning left, 0
+    /// facing -Z): the local side integrates it, and the step only reads it.
+    pub heading: u32,
+    /// The yaw the stick is relative to, in the rig frame, in the same units (the head's, for head-relative
+    /// movement).
+    pub stick_yaw: u32,
+    /// Jump presses so far, wrapping.
+    pub jumps: u32,
+    /// The heading the step used last frame, for the room-scale step.
+    pub prev_heading: u32,
+    /// The movement stick after its dead zone, x right and y forward, in steps of 1/127; zero at rest and once the
+    /// newest pack has run out.
+    pub stick: [i8; 2],
+    pub tracked: u8,
+    /// 1 on the frame `jumps` rose (a press this frame), else 0: the mover's one-shot jump.
+    pub jump: u8,
+    /// The head's pose in the rig frame (metres; a unit quaternion `[x, y, z, w]`).
+    pub head_pos: [f32; 3],
+    pub head_rot: [f32; 4],
+    /// The head position the step used last frame, in the rig frame.
+    pub prev_head: [f32; 3],
+    pub _pad: [u32; 2],
+}
+
+impl Component for Player {
+    const ID: ComponentId = ids::PLAYER;
+    const NAME: &'static str = "Player";
+    fn fields() -> Vec<FieldDesc> {
+        fields![Player;
+            "owner": owner, MemberKey, 1;
+            "stamp": stamp, U64, 1;
+            "span": span, U32, 1;
+            "heading": heading, U32, 1;
+            "stick_yaw": stick_yaw, U32, 1;
+            "jumps": jumps, U32, 1;
+            "prev_heading": prev_heading, U32, 1;
+            "stick": stick, I8, 2;
+            "tracked": tracked, Bool, 1;
+            "jump": jump, U8, 1;
+            "head_pos": head_pos, F32, 3, "m";
+            "head_rot": head_rot, F32, 4;
+            "prev_head": prev_head, F32, 3, "m";
+            "_pad": _pad, U32, 2;
+        ]
+    }
+}
+
+/// Registers [`Player`] in `store`'s registry: a preset with player bodies calls it at genesis. A world that never
+/// does keeps the engine registry, and the root, it always had.
+pub fn register_player(store: &mut pe_sim::SimStore) {
+    store.register_engine(Player::desc()).expect("the engine's Player description");
 }
 
 /// The registry of a line's first branch from the origin: pe-sim's `Node` and `Transform`, and every component above

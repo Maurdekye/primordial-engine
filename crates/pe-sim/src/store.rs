@@ -105,6 +105,19 @@ impl SimStore {
         Ok(())
     }
 
+    /// As [`register`](Self::register), for an engine component under a reserved id: world logic's own components
+    /// that only some worlds carry (pe-world's `Player`, registered by a preset with player bodies), so a world without
+    /// them keeps the registry, and the root, it always had. For engine crates only.
+    pub fn register_engine(&mut self, desc: ComponentDesc) -> Result<(), Error> {
+        if self.registry.get(desc.id()) == Some(&desc) {
+            return Ok(());
+        }
+        let mut r = (*self.registry).clone();
+        r.register_engine(desc)?;
+        self.registry = Arc::new(r);
+        Ok(())
+    }
+
     pub fn frame(&self) -> Frame {
         self.frame
     }

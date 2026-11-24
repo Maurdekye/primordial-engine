@@ -101,6 +101,14 @@ impl ObjectId {
         h.write_hash(&line.0).write(&member.0).write_u8(side).write_u64(admission.0);
         ObjectId::from_hash(h.finish())
     }
+
+    /// A member's player body (world-model.md 8.2), created by world logic at admission in a preset with bodies:
+    /// `part` 0 is the body itself, the avatar root at the feet that parents the hands; 1 is its drawn shape.
+    pub fn body(line: LineId, member: MemberKey, part: u8, admission: Frame) -> ObjectId {
+        let mut h = Hasher::new("pe.body");
+        h.write_hash(&line.0).write(&member.0).write_u8(part).write_u64(admission.0);
+        ObjectId::from_hash(h.finish())
+    }
 }
 
 /// A member's 32-byte public key (2.2). The all-zero key is world logic ([`MemberKey::LOGIC`]) and is never a
@@ -196,6 +204,9 @@ mod tests {
         assert_ne!(ObjectId::spawned(line, a, Frame(3), 0), ObjectId::spawned(line, a, Frame(3), 1));
         assert_ne!(ObjectId::hand(line, key, 0, Frame(9)), ObjectId::hand(line, key, 1, Frame(9)));
         assert_ne!(ObjectId::hand(line, key, 0, Frame(9)), ObjectId::hand(line, key, 0, Frame(10)));
+        assert_ne!(ObjectId::body(line, key, 0, Frame(9)), ObjectId::body(line, key, 1, Frame(9)));
+        assert_ne!(ObjectId::body(line, key, 0, Frame(9)), ObjectId::body(line, key, 0, Frame(10)));
+        assert_ne!(ObjectId::body(line, key, 0, Frame(9)), ObjectId::hand(line, key, 0, Frame(9)));
         assert!(!a.is_none());
     }
 }
