@@ -7,7 +7,7 @@ use pe_render::camera::{Camera, DepthRange, Fov};
 use pe_render::counters::Histogram;
 use pe_render::gpu::{AdapterChoice, GpuContext};
 use pe_render::present::{FrameSlot, Presenter};
-use pe_render::scene::{EyeView, RenderSettings, Renderer, Scene};
+use pe_render::scene::{EyeView, RenderSettings, Renderer};
 use pe_render::wgpu;
 use pe_seams::RigPose;
 

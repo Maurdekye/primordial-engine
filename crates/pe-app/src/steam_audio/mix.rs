@@ -103,7 +103,7 @@ impl Mixer {
             let angle = i as f64 * 2.399_963_23;
             let radius = 1.5 + i as f64 * 0.035;
             let offset = Offset([radius * angle.sin(), 0.25 * (angle * 2.0).sin(), -radius * angle.cos()]);
-            if let Some(at) = origin.checked_add(offset) {
+            if let Ok(at) = origin.checked_add(offset) {
                 self.synthetic.push(at);
             }
         }
