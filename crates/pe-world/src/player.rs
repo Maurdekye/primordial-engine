@@ -133,13 +133,21 @@ pub struct PlayerRow {
 impl World {
     /// Every player body with its row, in id order: what the mover reads each frame.
     pub fn players(&self) -> Vec<PlayerRow> {
-        if !self.store.registry().get(crate::components::ids::PLAYER).is_some() {
+        if self.store.registry().get(crate::components::ids::PLAYER).is_none() {
             return Vec::new();
         }
         let mut v: Vec<PlayerRow> =
             self.store.iter::<Player>().map(|(body, p)| PlayerRow { body, owner: p.owner, player: *p }).collect();
         v.sort_unstable_by_key(|p| p.body);
         v
+    }
+
+    /// `member`'s player body, if the preset gave it one (8.2).
+    pub fn body_of(&self, member: MemberKey) -> Option<ObjectId> {
+        if self.store.registry().get(crate::components::ids::PLAYER).is_none() {
+            return None;
+        }
+        self.store.iter::<Player>().filter(|(_, p)| p.owner == member).map(|(b, _)| b).min()
     }
 
     /// The author's own body's row: `Unknown` or `Deleted` without the object, `NotYourHand` without a `Player` row
@@ -275,7 +283,7 @@ impl World {
                 }
             }
         }
-        if !self.store.registry().get(crate::components::ids::PLAYER).is_some() {
+        if self.store.registry().get(crate::components::ids::PLAYER).is_none() {
             return;
         }
         let rows: Vec<(ObjectId, Player)> = self.store.iter::<Player>().map(|(b, p)| (b, *p)).collect();

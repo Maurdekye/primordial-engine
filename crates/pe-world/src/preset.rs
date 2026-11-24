@@ -16,7 +16,7 @@ use pe_sim::{Component, Transform};
 
 use crate::apply::Draft;
 use crate::components::{
-    Appearance, BlobRef, Body, Hand, Light, Name, Shape, SimSize, body_kind, light_kind, shape_kind,
+    Appearance, BlobRef, Body, Hand, Light, Name, Player, Shape, SimSize, body_kind, light_kind, shape_kind,
 };
 use crate::edit::{Actor, Op, Row, Target, Transaction};
 use crate::world::{BlobStore, World, perm};
@@ -228,6 +228,8 @@ pub fn plane_on(line: LineId, seed: u64, blobs: BlobStore, origin: Pos) -> World
     w.set_origin(origin);
     w.m1_marker = Some(m1_line());
     w.line = line;
+    // The plane gives each member a player body (8.2).
+    crate::components::register_player(&mut w.store);
     let tx = plane_transaction(&blobs, origin);
     w.set_member(MemberKey::LOGIC, perm::EDIT);
     let (outcome, mut w) = w.dry_run_draft_state(Frame(0), &draft_in("pe.m1.plane.chain", line, seed), &tx);
@@ -483,8 +485,13 @@ impl World {
     /// Every replica calls it at the same frame (it is not an edit, since no edit writes a `Hand` row, 7.6). Returns
     /// the hands, left then right.
     ///
-    /// Not yet: the avatar root that parents the hands (3.5), whose id derivation is open. A rejoin at a later frame
-    /// makes two new hands (the ids include the frame), once [`World::leave`] has removed the old ones.
+    /// **A player body** (8.2), in a world whose preset registered [`Player`] (the plane): the member also gets a body,
+    /// `ObjectId::body(line, member, 0, frame)`, a root with its feet at `spawn`, owned by its key: the avatar root
+    /// (3.5). Its hands are its children, at the same offsets from the feet. A world without `Player` (the ball pit)
+    /// makes root hands as before, so its roots do not change.
+    ///
+    /// A rejoin at a later frame makes new hands (and a new body; the ids include the frame), once [`World::leave`]
+    /// has removed the old ones.
     ///
     /// **A returning member** (F3's n = 2 branch, world-model.md 8; @diverge-eng's design v5, L3): a key that is
     /// already a member of this world keeps its permissions, its hands and what they hold. Only a hand side it lacks
@@ -500,6 +507,19 @@ impl World {
         spawn: Pos,
     ) -> Result<[ObjectId; 2], crate::WorldError> {
         let returning = self.members.get(&member).copied();
+        let bodies = self.store.registry().get(crate::components::ids::PLAYER).is_some();
+        let had_body = if bodies && returning.is_some() {
+            self.store.iter::<Player>().filter(|(_, p)| p.owner == member).map(|(b, _)| b).min()
+        } else {
+            None
+        };
+        let body = bodies.then(|| had_body.unwrap_or_else(|| ObjectId::body(line, member, 0, frame)));
+        if let Some(b) = body
+            && had_body.is_none()
+            && self.store.exists(b)
+        {
+            return Err(crate::WorldError::Duplicate(b));
+        }
         let mut had: [Option<ObjectId>; 2] = [None, None];
         if returning.is_some() {
             for (id, h) in self.store.iter::<Hand>() {
@@ -524,16 +544,27 @@ impl World {
         let places = [place(0)?, place(1)?];
         // Everything that can refuse was checked above, so the writes below cannot fail; they go to a copy anyway,
         // swapped in only when all succeed, so an `Err` never leaves a member with one hand (@chunks-reviewer's Low 1).
-        if had.iter().all(Option::is_some) {
+        if had.iter().all(Option::is_some) && body.is_none_or(|_| had_body.is_some()) {
             return Ok(ids);
         }
         let mut w = self.clone();
+        if let Some(b) = body
+            && had_body.is_none()
+        {
+            w.create(b, None, MemberKey::LOGIC, crate::GENESIS)?;
+            w.insert(b, Transform::at(spawn))?;
+            w.insert(b, Player { owner: member, ..Player::default() })?;
+            w.insert(b, SimSize { metres: 1.0 })?;
+        }
         for (side, (id, at)) in ids.into_iter().zip(places).enumerate() {
             if had[side].is_some() {
                 continue;
             }
-            w.create(id, None, MemberKey::LOGIC, crate::GENESIS)?;
-            w.insert(id, Transform::at(at))?;
+            w.create(id, body, MemberKey::LOGIC, crate::GENESIS)?;
+            match body {
+                Some(_) => w.insert(id, Transform { pos: HAND_OFFSETS[side], ..Transform::IDENTITY })?,
+                None => w.insert(id, Transform::at(at))?,
+            }
             w.insert(id, Hand { owner: member, side: side as u32, ..Hand::default() })?;
             w.insert(id, SimSize { metres: 1.0 })?;
         }
