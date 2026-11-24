@@ -118,6 +118,10 @@ pub struct PresentedFrame {
     pub status: Option<String>,
 }
 
+/// Local trial observer of the finished display poses and the active view's camera(s).
+#[cfg(feature = "audio-trial")]
+pub type AudioObserver = Box<dyn FnMut(&DisplayFrame, &FrameView, &[Camera]) + Send>;
+
 /// The display layer and the effect gate, on the render thread. Survives a lost GPU context.
 pub struct Presenter {
     display: DisplayLayer,
@@ -135,6 +139,8 @@ pub struct Presenter {
     own_hands: Option<Arc<OwnHandsSwitch>>,
     /// At the last switch: the mode it ended, and the run's counters until then ([`Presenter::take_own_hands_window`]).
     own_hands_ended: Option<(OwnHands, RunReport)>,
+    #[cfg(feature = "audio-trial")]
+    audio_observer: Option<AudioObserver>,
 }
 
 impl Presenter {
@@ -158,11 +164,18 @@ impl Presenter {
             status: None,
             own_hands: None,
             own_hands_ended: None,
+            #[cfg(feature = "audio-trial")]
+            audio_observer: None,
         }
     }
 
     pub fn display(&self) -> &DisplayLayer {
         &self.display
+    }
+
+    #[cfg(feature = "audio-trial")]
+    pub fn set_audio_observer(&mut self, observer: AudioObserver) {
+        self.audio_observer = Some(observer);
     }
 
     pub fn display_mut(&mut self) -> &mut DisplayLayer {
@@ -288,6 +301,10 @@ impl Presenter {
             self.display.take(v, now, &volumes);
         }
         let display = self.display.frame(FrameInput { view: newest, display_time: now, volumes: &volumes, local });
+        #[cfg(feature = "audio-trial")]
+        if let Some(observe) = &mut self.audio_observer {
+            observe(&display, newest, cameras);
+        }
         let taken = self.display.take_counters();
         self.counters.display_frame(now, &taken, &display, now);
         // `take` also releases what is due; between arrivals, only the waits run. The gate runs on the drawn time, so
