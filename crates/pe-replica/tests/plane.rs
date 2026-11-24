@@ -267,6 +267,9 @@ fn two_members_mixed_shapes_agree_whatever_the_arrival_order_and_equal_a_replay(
     live.advance(Frame(TO), &mut s);
     let want = roots(&live, TO);
     assert_eq!(want.len() as u64, TO / K + 1);
+    // For the cross-machine check (Windows against Linux, `--nocapture`): the same line on both, or they diverge.
+    let (f, root) = want.last().expect("a root");
+    println!("MIXED-SHAPE ROOT frame {f} {root}");
     assert_eq!(live.faults(), 0);
     let w = live.world().world();
     // Everything spawned is in play under Spawned: 1 + 1 + 1 + 3 x 5 + 1 bodies, plus the floor.
