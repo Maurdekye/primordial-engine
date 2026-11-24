@@ -285,7 +285,7 @@ fn plane_transaction(blobs: &BlobStore, origin: Pos) -> Transaction {
     let folder = create(&mut ops, Target::Root, vec![row(Transform::at(parked)), name(blobs, &mut used, n::TEMPLATES)]);
     let under = Target::New(folder);
     let (b, r, c) = (f64::from(BOX_HALF), f64::from(SPHERE_R), f64::from(CAPSULE_R + CAPSULE_HALF));
-    let singles: [(&str, [f64; 3], [f32; 3], u32, [f32; 3]); 3] = [
+    let singles = [
         (n::BOX, [-1.5, b, 0.0], [0.85, 0.2, 0.15], shape_kind::BOX, [BOX_HALF; 3]),
         (n::SPHERE, [-0.5, r, 0.0], [0.2, 0.45, 0.9], shape_kind::SPHERE, [SPHERE_R, 0.0, 0.0]),
         (n::CAPSULE, [0.5, c, 0.0], [0.2, 0.7, 0.3], shape_kind::CAPSULE, [CAPSULE_R, CAPSULE_HALF, 0.0]),
