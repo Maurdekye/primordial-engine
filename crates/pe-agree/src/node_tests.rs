@@ -114,6 +114,9 @@ struct Sim {
     refused: usize,
     /// A member that keeps making hand entries whatever its backlog (its transport flushes everything after a stall).
     unpaced: Option<usize>,
+    /// A member paced as pe-app's F3 S1 does: while backlogged, its hands go on one frame in `rate / 30`
+    /// (`HAND_FLOOR_HZ`), never stop.
+    floored: Option<usize>,
     /// Per member: each cut handed out for roots, with what `entries_for_cut` answered for every frame from the
     /// member's final frame up to the cut's (the pipelined-void property, coordinator).
     rooted: Vec<Vec<Rooted>>,
@@ -219,6 +222,7 @@ impl Sim {
             stall_all: None,
             stall_every: None,
             flooder: None,
+            floored: None,
             refused: 0,
             unpaced: None,
             rooted: vec![Vec::new(); n as usize],
@@ -386,7 +390,10 @@ impl Sim {
                 if self.nodes[i].unfinal_own() > self.nodes[i].burst() {
                     self.old_rule_frames[i] += 1;
                 }
-                let hands = if over && self.flooder != Some(i) && self.unpaced != Some(i) { 0 } else { hands };
+                let floor_gap = (clock.0 as u64 / 30).max(1);
+                let on_floor = self.floored == Some(i) && present.0.is_multiple_of(floor_gap);
+                let hands =
+                    if over && self.flooder != Some(i) && self.unpaced != Some(i) && !on_floor { 0 } else { hands };
                 let stamp = Frame(present.0 + self.stamp_lead[i]);
                 for k in 0..hands + edits {
                     let class = if k < hands { Class::Input } else { Class::Edit };
@@ -1729,6 +1736,250 @@ fn an_unpaced_author_flushing_a_stall_is_delayed_never_lost() {
     let (_, refused, recovered) = stall_run_with(10_000, 3_000 + 10_000 + 14_000, 31, false);
     eprintln!("unpaced 10 s: refused {refused:?}, final again {recovered:?} s after");
     assert!(recovered.is_some_and(|n| n <= 11), "unpaced 10 s: not final again within 11 s");
+}
+
+#[test]
+fn a_full_queue_excuses_an_author_within_its_rate_by_its_stamps_and_refuses_one_over_it() {
+    // F3 K2 (@coordinator-opus): an overflow while the author is within its rate is a stall, dropped with
+    // no fault (the range refetch brings it back). The rate is read from the entries' stamps, not their arrival: a
+    // flush after an outage arrives at once whatever the rate it was made at. Member 1's entries are stamped two a frame
+    // at 60 Hz (120/s against 255/s) and member 2 packs as many into about 1 s of stamps; both arrive in one instant,
+    // 60 s in.
+    use crate::codec::{Wire, encode};
+    let (keys, mut node, _) = lone_node(8);
+    let clock = Clock(60);
+    let budget = NodeConfig::new(LineId::origin(), keys.sorted_keys(), genesis_cut()).rate_budget(60);
+    let (burst, cap) = (budget.burst as usize, budget.pending);
+    let total = burst + cap + 100;
+    let at = HostTime(60 * SEC);
+    let _ = node.tick(at, &clock);
+    let refused = |node: &mut Node| {
+        node.events()
+            .iter()
+            .filter(|e| matches!(e, AgreeEvent::Refused { kind: pe_seams::FaultKind::RateExceeded, .. }))
+            .count()
+    };
+    let mut within = EntryBuilder::new(&keys, 1);
+    for i in 0..total as u64 {
+        let e = within.next(Class::Input, Frame(i / 2), Bytes::from_static(b"x"));
+        assert!(node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), at).is_ok());
+    }
+    assert_eq!(node.held_entries(), burst);
+    assert_eq!(node.deferred_entries(), cap);
+    assert_eq!(node.stall_drops(), 100);
+    assert_eq!(refused(&mut node), 0, "an author within its rate was refused");
+    let mut packed = EntryBuilder::new(&keys, 2);
+    for i in 0..total as u64 {
+        let e = packed.next(Class::Input, Frame(3_000 + i / 20), Bytes::from_static(b"x"));
+        let _ = node.receive(keys.key(2), Lane::Action, &encode(&Wire::Entries(vec![e])), at);
+    }
+    assert_eq!(node.stall_drops(), 100, "an author over its rate was excused");
+    assert_eq!(refused(&mut node), 100);
+}
+
+#[test]
+#[ignore = "about 2 min in release (10 in debug): run with --release --include-ignored"]
+fn a_stall_of_25_s_drops_an_honest_authors_overflow_without_blame() {
+    // F3 K2 (@coordinator-opus). The 10 s blackout failed on a loaded machine (@integrator-2's
+    // f5-929efbc0 log): its finality trailed about 24 s, and it refused 224 of the other's entries as RateExceeded.
+    // pe-app keeps making hand entries past the pending cap (F3 S1: hands are never held), so a receiver whose
+    // finality stands still long enough holds the cap and a full queue of an honest author's entries. n = 2 at 60 Hz,
+    // two hands a frame, member 0 never paced; everything member 1 sends is held for 25 s from 3 s (its votes too),
+    // while member 0's entries keep reaching it: they pass 2,040 beyond its final cut (cap plus queue). Member 1 drops
+    // the overflow with no fault, and finality resumes once its messages flow.
+    // [V, release, seed 61] Before: 2,060 blame events (member 1 refused the overflow as RateExceeded). Now: none, and
+    // 994 stall drops. In both, 2,584 of member 0's entries (stamps from 14.8 s on; 2,503 with K8 too) end void as
+    // Late: the overflow's entries come back by range only after the cuts have passed their stamps. That is not this
+    // fix's; it is the same with or without it (a known prototype limit, @coordinator-opus).
+    let mut s = Sim::new(2, 61);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.unpaced = Some(0);
+    s.run(3_000);
+    s.holding = Some(1);
+    s.run(28_000);
+    let drops = s.nodes[1].stall_drops();
+    s.release();
+    s.run(48_000);
+    for i in 0..2 {
+        for e in &s.events[i] {
+            assert!(!matches!(e, AgreeEvent::Refused { .. } | AgreeEvent::Fault(_)), "member {i}: {e:?}");
+        }
+    }
+    s.assert_same_final_log();
+    let low = (0..2).map(|i| s.final_frame(i)).min().unwrap();
+    let late = s.voids(1).iter().filter(|v| v.1 == VoidReason::Late).count();
+    eprintln!("member 1: {drops} stall drops in the stall; final {low:?}; {late} entries void as late");
+    assert!(drops > 0, "member 1's queue never overflowed: the test doesn't bite");
+    assert!(low.0 > 45 * 60, "finality didn't resume: {low:?}");
+}
+
+#[test]
+fn an_outage_allowance_is_the_silence_at_the_authors_rate_and_no_more() {
+    // F3 K8 (@coordinator-opus): an outage's backlog is admitted outside the token budget, bounded by
+    // the silence this member measured itself, at the author's rate, never by the author's claim. Member 1 is heard at
+    // 0 s, then nothing until 2 s, when it sends 2,000 entries stamped before then at once: the burst passes on
+    // tokens (refilled over the silence), 2 s x 255/s less that burst = 383 more on the allowance, the queue takes its cap, and the rest (packed into fewer
+    // stamps than the rate allows) is refused as before. Then entries stamped after the mark get no allowance.
+    use crate::codec::{Wire, encode};
+    let (keys, mut node, _) = lone_node(8);
+    let clock = Clock(60);
+    let budget = NodeConfig::new(LineId::origin(), keys.sorted_keys(), genesis_cut()).rate_budget(60);
+    let (burst, cap) = (budget.burst as usize, budget.pending);
+    let allowance = (2.0 * budget.per_s - budget.burst as f64).ceil() as usize;
+    let _ = node.tick(HostTime(0), &clock);
+    let mut b = EntryBuilder::new(&keys, 1);
+    let first = b.next(Class::Input, Frame(0), Bytes::from_static(b"x"));
+    assert!(node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![first])), HostTime(0)).is_ok());
+    let at = HostTime(2 * SEC);
+    let _ = node.tick(at, &clock);
+    for i in 0..2_000u64 {
+        let e = b.next(Class::Input, Frame(i / 20), Bytes::from_static(b"x"));
+        let _ = node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), at);
+    }
+    assert_eq!(node.outage_admitted() as usize, allowance);
+    assert_eq!(node.held_entries(), 1 + burst + allowance);
+    assert_eq!(node.deferred_entries(), cap);
+    assert_eq!(node.stall_drops(), 0, "a flood packed into few stamps was excused");
+    // The allowance is spent; and stamps after the mark never had one.
+    let later = HostTime(2 * SEC + 100 * MS);
+    let _ = node.tick(later, &clock);
+    let held = node.held_entries();
+    let e = b.next(Class::Input, Frame(130), Bytes::from_static(b"x"));
+    let _ = node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), later);
+    assert_eq!(node.outage_admitted() as usize, allowance);
+    assert!(node.held_entries() <= held + 1);
+}
+
+#[test]
+fn going_quiet_again_and_again_buys_no_more_than_the_rate() {
+    // F3 K8's abuse bound (@coordinator-opus, for @design-reviewer): member 1 goes quiet for 0.5 s, then
+    // floods 300 entries stamped before then, six times over. The tokens refill by the burst over each silence, and
+    // the allowance is the silence at the rate less that burst, so in all it gets no more than the rate over the time
+    // plus one burst (and a rounding entry per silence).
+    use crate::codec::{Wire, encode};
+    let (keys, mut node, _) = lone_node(8);
+    let clock = Clock(60);
+    let budget = NodeConfig::new(LineId::origin(), keys.sorted_keys(), genesis_cut()).rate_budget(60);
+    let mut b = EntryBuilder::new(&keys, 1);
+    let mut stamp = 0u64;
+    let cycles = 6i64;
+    for c in 0..=cycles {
+        let at = HostTime(c * 500 * MS);
+        let _ = node.tick(at, &clock);
+        let present = clock.frame_at(at).unwrap().0;
+        for _ in 0..300 {
+            let e = b.next(Class::Input, Frame(stamp.min(present.saturating_sub(1))), Bytes::from_static(b"x"));
+            stamp += 1;
+            let _ = node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), at);
+        }
+    }
+    let elapsed_s = cycles as f64 * 0.5;
+    let bound = (budget.per_s * elapsed_s) as usize + budget.burst as usize + cycles as usize;
+    eprintln!("held {} of member 1's, bound {bound}; {} on the allowance", node.held_entries(), node.outage_admitted());
+    assert!(node.held_entries() < budget.pending, "the pending cap is what held it");
+    assert!(node.held_entries() <= bound, "held {} past the rate's {bound}", node.held_entries());
+}
+
+#[test]
+fn an_author_sending_through_a_relay_while_silent_on_the_link_gets_no_allowance() {
+    // @design-reviewer's Medium on K8: at n = 3, author A (member 1) is silent on its link to this
+    // member R for 2 s but sends at 200/s through B (member 2), which relays; R charges them to A's tokens. Then A
+    // floods R directly with entries stamped during the "silence". The silence is the shorter of the link's and A's
+    // budget's, so A gets no allowance: in all, no more than the rate over the time plus one burst.
+    use crate::codec::{Wire, encode};
+    let (keys, mut node, _) = lone_node(8);
+    let clock = Clock(60);
+    let budget = NodeConfig::new(LineId::origin(), keys.sorted_keys(), genesis_cut()).rate_budget(60);
+    let _ = node.tick(HostTime(0), &clock);
+    let mut a = EntryBuilder::new(&keys, 1);
+    let direct = a.next(Class::Input, Frame(0), Bytes::from_static(b"x"));
+    assert!(node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![direct])), HostTime(0)).is_ok());
+    for i in 1..400i64 {
+        let at = HostTime(i * 5 * MS);
+        let _ = node.tick(at, &clock);
+        let e = a.next(Class::Input, clock.frame_at(at).unwrap(), Bytes::from_static(b"x"));
+        let _ = node.receive(keys.key(2), Lane::Action, &encode(&Wire::Entries(vec![e])), at);
+    }
+    let at = HostTime(2 * SEC);
+    let _ = node.tick(at, &clock);
+    let present = clock.frame_at(at).unwrap();
+    for _ in 0..1_000 {
+        let e = a.next(Class::Input, Frame(present.0 - 1), Bytes::from_static(b"x"));
+        let _ = node.receive(keys.key(1), Lane::Action, &encode(&Wire::Entries(vec![e])), at);
+    }
+    let bound = (budget.per_s * 2.0) as usize + budget.burst as usize + 2;
+    eprintln!("held {} of A's, bound {bound}; {} on the allowance", node.held_entries(), node.outage_admitted());
+    assert_eq!(node.outage_admitted(), 0, "a relayed author got an outage allowance");
+    assert!(node.held_entries() <= bound, "held {} past the rate's {bound}", node.held_entries());
+}
+
+/// n = 2 at 60 Hz, two hands a frame each; member 0 paced as pe-app's S1 (`floored`). Everything both send is held
+/// for `dark_ms` from 3 s and flushed at its end, as pe-net's reliable streams do when a dark path returns. Returns the
+/// sim and how long after the flush member 1 still had member 0's entries waiting for their budget (ms, sampled every
+/// 10 ms up to 3 s).
+fn outage_flush_run(dark_ms: i64, seed: u64) -> (Sim, i64) {
+    let mut s = Sim::new(2, seed);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.floored = Some(0);
+    s.run(3_000);
+    let end = 3_000 + dark_ms;
+    s.stall_all = Some((3_000, end));
+    s.run(end);
+    let mut waited = 0;
+    for t in (end + 10..=end + 3_000).step_by(10) {
+        s.run(t);
+        if s.nodes[1].deferred_entries() > 0 {
+            waited = t - end;
+        }
+    }
+    (s, waited)
+}
+
+#[test]
+fn a_ten_second_outages_backlog_is_admitted_at_once_not_at_the_token_rate() {
+    // F3 K8 (@coordinator-opus). At the token rate a 10 s outage's flush waited about 2-3 s in the queue
+    // (127 burst, then 255/s), and each tick's batch rolled the receiver's replica back by the outage's length:
+    // 6.2-6.6 s without a view at 500 balls (@engine-architect). Now the backlog takes the outage
+    // allowance and is held as it arrives. Within the pending cap at S1's floor (about 700 entries against 1,020), so
+    // the K2 path doesn't come into it. [V, release, seed 71] Without the allowance: entries waited 2,780 ms after the
+    // flush. With it: 551 admitted on the allowance, 30 ms.
+    let (s, waited) = outage_flush_run(10_000, 71);
+    let admitted = s.nodes[1].outage_admitted();
+    eprintln!("10 s outage: member 1 admitted {admitted} on the allowance; entries waited {waited} ms after the flush");
+    assert!(admitted > 300, "the allowance didn't carry the backlog: {admitted}");
+    assert!(waited <= 100, "member 0's backlog waited {waited} ms for its budget");
+    for i in 0..2 {
+        for e in &s.events[i] {
+            assert!(!matches!(e, AgreeEvent::Refused { .. } | AgreeEvent::Fault(_)), "member {i}: {e:?}");
+        }
+    }
+    s.assert_same_final_log();
+}
+
+#[test]
+fn a_25_second_outage_at_the_hand_floor_voids_nothing_and_blames_no_one() {
+    // @coordinator-opus's check: does K8 shrink K2's known limit (a long stall voids the overflow as
+    // Late) for outages under the 30 s close? An outage alone at S1's floor stays under the cap plus the queue
+    // (about 60 entries a second against 2,040 at 60 Hz, so about 33 s), so it voids nothing; what reached the limit
+    // was the stall going on after the link returned while the receiver worked through a token-paced flush.
+    // [V, release, seed 72] Without the allowance: 77 stall drops (the queue overflowed), entries still waiting 3 s
+    // after the flush, none void. With it: 1,020 admitted on the allowance (its cap, the pending cap), no stall drops,
+    // the rest waited 2,150 ms, none void. This sim has no replica, so it can't show the receiver falling behind
+    // re-simulating a token-paced flush (@engine-architect's k8-inproc does).
+    let (s, waited) = outage_flush_run(25_000, 72);
+    let late = s.voids(1).iter().filter(|v| v.1 == VoidReason::Late && s.submitted[0].contains(&v.0)).count();
+    eprintln!(
+        "25 s outage: member 1 admitted {} on the allowance, {} stall drops; waited {waited} ms; {late} of member 0's entries void as late",
+        s.nodes[1].outage_admitted(),
+        s.nodes[1].stall_drops()
+    );
+    for i in 0..2 {
+        for e in &s.events[i] {
+            assert!(!matches!(e, AgreeEvent::Refused { .. } | AgreeEvent::Fault(_)), "member {i}: {e:?}");
+        }
+    }
+    assert_eq!(late, 0, "member 0's entries voided as late");
+    s.assert_same_final_log();
 }
 
 // @design-reviewer's review of the stall fix.

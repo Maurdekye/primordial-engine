@@ -289,6 +289,11 @@ pub struct Node {
     candidate_checks: std::cell::Cell<u64>,
     /// Per author: checked entries over its budget, admitted as it refills.
     deferred: BTreeMap<MemberKey, Deferred>,
+    /// Entries dropped from a full queue with no fault, their author within its rate by their stamps (a stall; see
+    /// [`Node::defer`]). A diagnostic.
+    stall_drops: u64,
+    /// Entries admitted on an outage allowance rather than a token (F3 K8). A diagnostic.
+    outage_admitted: u64,
     /// Per (sender, author): how many more entries this member will check (tokens in thousandths), and when.
     verify_budget: BTreeMap<(PeerId, MemberKey), (u64, HostTime)>,
     /// Entries dropped unchecked over a sender's verify budget.
@@ -375,6 +380,12 @@ pub struct Node {
     /// fresh claim; it was sampled with its whole outage age). Stamps rise, so once the backlog has drained no entry
     /// falls below the mark.
     outage_mark: BTreeMap<MemberKey, Frame>,
+    /// Per author, its outage allowance (F3 K8, @coordinator-opus): how many more of its entries stamped
+    /// below its outage mark this member admits without a token. Set at the mark from this member's own measure of the
+    /// silence, never the author's claim: the silence's length at the author's rate (`per_s`) less the burst (which
+    /// the tokens refill over it), at most the pending cap. So a member that goes quiet and then floods gets no more
+    /// than it could have sent at its rate meanwhile, however often it does it.
+    outage_allow: BTreeMap<MemberKey, u64>,
     /// The other members' latest reports on this member's own chains: per reporter, the (epoch, view) of the vote or
     /// timeout that carried it (views restart in each epoch), the chain, frames and seq.
     reported: BTreeMap<MemberKey, ((u64, u64), ChainKey, i64, u64)>,
@@ -690,6 +701,8 @@ impl Node {
             candidate_checks: std::cell::Cell::new(0),
             inserted: 0,
             deferred: BTreeMap::new(),
+            stall_drops: 0,
+            outage_admitted: 0,
             verify_budget: BTreeMap::new(),
             dropped_unchecked: 0,
             by_seq: BTreeMap::new(),
@@ -728,6 +741,7 @@ impl Node {
             reported: BTreeMap::new(),
             heard: BTreeMap::new(),
             outage_mark: BTreeMap::new(),
+            outage_allow: BTreeMap::new(),
             abstained: AbstainBook::default(),
             cap_wait: BTreeMap::new(),
             old_epoch: None,
@@ -869,7 +883,7 @@ impl Node {
         let queued = !solicited && self.deferred.get(&author).is_some_and(|q| !q.entries.is_empty());
         if author != self.me
             && !self.by_ref.contains_key(&id)
-            && (queued || !self.within_budget(author, solicited, links, at))
+            && (queued || !self.within_budget(author, solicited, links, e.entry.stamp, at))
         {
             // Over the budget: delay it, never lose it (coordinator). It waits, checked, in the author's
             // queue, and is admitted (and relayed) in chain order as the budget refills; only an overflow is refused.
@@ -878,12 +892,15 @@ impl Node {
         self.insert_checked(e, from, at)
     }
 
-    /// Queue a checked entry over its author's budget; refuse it only if the author's queue is full.
+    /// Queue a checked entry over its author's budget; refuse it only if the author's queue is full and its stamps say
+    /// it made its entries faster than its rate.
     fn defer(&mut self, e: SignedEntry, from: PeerId) -> Result<bool, Fault> {
         let id = e.id();
         let author = e.entry.author;
-        let cap = self.cfg.rate_budget(self.rate_hz).pending;
+        let budget = self.cfg.rate_budget(self.rate_hz);
+        let cap = budget.pending;
         let size = entry_bytes(&e);
+        let (present, rate_hz, final_frame) = (self.present, self.rate_hz.max(1), self.final_frame());
         let q = self.deferred.entry(author).or_default();
         let k = (e.entry.chain, e.entry.seq, id);
         if q.entries.contains_key(&k) {
@@ -899,6 +916,25 @@ impl Node {
             }
         }
         if q.entries.len() >= cap || q.bytes + size > self.cfg.defer_bytes {
+            // A stall, not a flood (F3 K2, @coordinator-opus): while finality stands still, an honest
+            // author's entries pile up beyond the final cut until the pending cap and then this queue are full, however
+            // slowly it made them. If the stamps from the queue's first entry up to this one (capped at this member's
+            // present, so stamps ahead of it add nothing) hold no more entries than the author's rate and burst allow,
+            // it made them within its rate: drop this one with no fault, and the range refetch brings it back once
+            // finality moves. An author that packs more entries into its stamps than the rate allows is still refused,
+            // RateExceeded. Without a present (no tick yet) nothing is excused.
+            // No earlier than the final cut: an honest stall's waiting entries are stamped after it, and a flooder that
+            // back-dates one entry must not stretch the span (@design-reviewer's Low).
+            let first = q.entries.values().map(|(q, _)| q.entry.stamp).min().unwrap_or(e.entry.stamp).max(final_frame);
+            let n = q.entries.len() + 1;
+            let within_rate = present.is_some_and(|p| {
+                let span_s = e.entry.stamp.min(p).0.saturating_sub(first.0) as f64 / rate_hz as f64;
+                n as f64 <= budget.per_s * span_s + budget.burst as f64
+            });
+            if within_rate {
+                self.stall_drops += 1;
+                return Ok(false);
+            }
             self.events.push(AgreeEvent::Refused { entry: id, author, kind: FaultKind::RateExceeded });
             let detail = "over the author's budget and its queue".into();
             return Err(self.fault(from, Some(author), FaultKind::RateExceeded, detail));
@@ -922,7 +958,7 @@ impl Node {
                 };
                 let held = self.by_ref.contains_key(&k.2);
                 let links = self.fills_hole(&ChainKey { author: a, chain: k.0 }, k.1);
-                if !held && !self.within_budget(a, false, links, at) {
+                if !held && !self.within_budget(a, false, links, e.entry.stamp, at) {
                     break;
                 }
                 if let Some(q) = self.deferred.get_mut(&a) {
@@ -1268,7 +1304,9 @@ impl Node {
     /// Whether the author's budget admits one more entry; takes it if so.
     /// `links`: the entry fills a hole (see [`Node::fills_hole`]). It is exempt from the pending cap, since it is what
     /// lets the author's pending entries become final, but not from the tokens.
-    fn within_budget(&mut self, author: MemberKey, solicited: bool, links: bool, at: HostTime) -> bool {
+    /// `stamp`: the entry's. One stamped below the author's outage mark takes its outage allowance when the tokens are
+    /// out (F3 K8), never past the pending cap.
+    fn within_budget(&mut self, author: MemberKey, solicited: bool, links: bool, stamp: Frame, at: HostTime) -> bool {
         if self.core.mutated(Mutation::RateLimitRemoved) {
             return true;
         }
@@ -1280,8 +1318,18 @@ impl Node {
         let dt = at.0.saturating_sub(last.0).max(0) as u128;
         let tokens = (tokens as u128 + rate * dt / 1_000_000_000).min(cap as u128) as u64;
         let pending = self.pending_by_author.get(&author).copied().unwrap_or(0);
-        if !solicited && (tokens < 1000 || (pending >= budget.pending && !links)) {
+        let capped = pending >= budget.pending && !links;
+        if !solicited && (tokens < 1000 || capped) {
             self.budget.insert(author, (tokens, at.max(last)));
+            let backlog = self.outage_mark.get(&author).is_some_and(|m| stamp < *m);
+            if !capped
+                && backlog
+                && let Some(n) = self.outage_allow.get_mut(&author).filter(|n| **n > 0)
+            {
+                *n -= 1;
+                self.outage_admitted += 1;
+                return true;
+            }
             return false;
         }
         self.budget.insert(author, (tokens.saturating_sub(1000), at.max(last)));
@@ -2386,6 +2434,16 @@ impl Node {
         self.claim_from_vote(voter, key, seq);
     }
 
+    /// Entries dropped from a full queue with no fault, as a stall's (see [`Node::defer`]; a diagnostic).
+    pub fn stall_drops(&self) -> u64 {
+        self.stall_drops
+    }
+
+    /// Entries admitted on an outage allowance rather than a token (F3 K8; a diagnostic).
+    pub fn outage_admitted(&self) -> u64 {
+        self.outage_admitted
+    }
+
     pub fn deferred_entries(&self) -> usize {
         self.deferred.values().map(|q| q.entries.len()).sum()
     }
@@ -2572,14 +2630,24 @@ impl Agreement for Node {
             Ok(w) => w,
             Err(_) => return Err(self.fault(from, None, FaultKind::Malformed, "undecodable message".into())),
         };
-        // After silence from this peer, its entries stamped before now are an outage's backlog.
-        if self
-            .heard
-            .insert(from, at)
-            .is_some_and(|t| at.0.saturating_sub(t.0) > outage_silence_ns(self.cfg.outage_silence_s))
+        // After silence from this peer, its entries stamped before now are an outage's backlog. They are admitted
+        // without a token up to the silence's length at the author's rate (F3 K8): a flush taken at the token rate
+        // spread over seconds, and each tick's batch rolled the replica back by the outage's length (6.2-6.6 s
+        // without a view after a 10 s blackout at 500 balls, @engine-architect).
+        let silence = self.heard.insert(from, at).map(|t| at.0.saturating_sub(t.0));
+        if let Some(ns) = silence.filter(|ns| *ns > outage_silence_ns(self.cfg.outage_silence_s))
             && let Some(p) = self.present
         {
             self.outage_mark.insert(from, p);
+            let b = self.cfg.rate_budget(self.rate_hz);
+            // The silence is also the author's budget's: at n >= 3 an author silent on this link but sending through a
+            // relay spent its tokens meanwhile (@design-reviewer's Medium). An author with no entry
+            // checked against its budget yet gets none (@world-chunks).
+            let ns = self.budget.get(&from).map_or(0, |(_, last)| ns.min(at.0.saturating_sub(last.0)));
+            // Less the burst: the tokens refill by up to that much over the silence, so the two together admit no
+            // more than the silence at the author's rate, however often it goes quiet.
+            let allow = (ns as f64 / 1e9 * b.per_s - b.burst as f64).max(0.0).ceil().min(b.pending as f64) as u64;
+            self.outage_allow.insert(from, allow);
         }
         // A core message counts only in its own epoch (agreement.md 8): the current one, or the previous one while its
         // core is kept to finish E's suffix. Any other epoch's is dropped, without a fault: honest members lag.

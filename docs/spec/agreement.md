@@ -69,8 +69,52 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
       queue, in chain order, capped at the pending cap in entries and `defer_bytes` in bytes. It is admitted as the
       budget refills, and relayed only then. While an author has entries waiting, a new one waits behind them. A full
       queue makes room by dropping its latest entry, with no fault (the refetch brings it back); only an entry later
-      than all of them is refused, `RateExceeded`, the one fault the budget reports. Waiting entries are never named
-      in a vote's heads, since only held entries are.
+      than all of them is refused, `RateExceeded`, the one fault the budget reports, and only if the author made its
+      entries faster than its rate. Waiting entries are never named in a vote's heads, since only held entries are.
+    - **A full queue in a stall is no fault** (F3 K2, @coordinator-opus). While finality stands still, an
+      honest author's entries pile up beyond the final cut until the pending cap and then the queue are full, however
+      slowly it made them: pe-app never holds hands (F3 S1), so a receiver whose finality trails about 17 s at 60 Hz
+      gets there. The rate is read from the stamps, not from arrival, since a flush after an outage arrives at once
+      whatever rate it was made at. If the queue's entries and the new one hold no more entries than `per_s` times
+      the span of their stamps (from the queue's earliest, but no earlier than the final cut's frame, up to the new one's, capped at this
+      member's present) plus
+      the burst, the new entry is dropped with no fault and no `Refused` event (`Node::stall_drops()` counts it), and
+      the range refetch brings it back. An author that packs more entries into its stamps than its rate allows, or
+      stamps them ahead of the present, is refused as before. Before the first tick (no present) nothing is excused.
+      [V, pe-agree sim, n = 2, 60 Hz, two hands a frame, member 1's messages held 25 s] Before: 2,060 blame events.
+      After: none, 994 stall drops. Not changed by it [V, the same run, with and without]: 2,584 (2,503 with K8 too) of the
+      author's entries end void as `Late`, because the overflow's entries come back by range only after the cuts have
+      passed their stamps.
+    - **An outage's backlog is admitted outside the token budget** (F3 K8, @coordinator-opus). At the
+      token rate a 10 s outage's flush waited about 2.8 s in the queue, and each tick's batch rolled the receiver's
+      replica back by the outage's length: both machines went 6.2-6.6 s without a view at 500 balls
+      (@engine-architect). Now, on the first arrival from a peer after silence longer than
+      `outage_silence_s` (the outage mark, section 3), the member also sets that author's outage allowance: the
+      silence's length as it measured it, times the author's `per_s`, less the burst (the tokens refill by up to that
+      much over the silence, so together they never pass the rate, however often an author goes quiet), at most the
+      pending cap. The silence is the shorter of the link's (nothing heard from the peer) and the author's budget's
+      (no entry of its checked against it, relayed ones included): at n >= 3 an author that keeps sending through a
+      relay while silent on this link has had its rate meanwhile, and gets no allowance for it (@design-reviewer's
+      Medium). An author none of whose entries has been checked against its budget yet gets none
+      (@world-chunks). An entry stamped below the mark that finds no token takes the allowance instead
+      (`Node::outage_admitted()` counts it). The pending cap
+      still applies, and past the allowance the normal budget and the stall rule above do. The bound is this member's
+      own measure of the link, never the author's claim: a member that goes quiet and then floods gets no more than it
+      could have sent at its rate meanwhile, stamped before the mark. Local, with no wire or consensus-hash change.
+      [V, pe-agree sim, n = 2, 60 Hz, S1's floor] A 10 s outage's backlog waited 2,780 ms after the flush before,
+      and 30 ms after. A 25 s outage: 77 stall drops and over 3 s before; none and 2,150 ms after (past the pending
+      cap the rest waits for finality). Neither run voided anything.
+    - **Known prototype limit: a long stall voids the overflow** (@coordinator-opus, ruling (a)). Past
+      the pending cap and the queue (about 2,040 of one author's entries beyond the final cut at 60 Hz), the
+      author's further entries come back only after the cuts have passed their stamps, and end void as `Late`. That
+      takes a finality stall of about 17 s at 60 Hz with hands at full rate, or about 26-34 s at 60-90 Hz with F3 S1's
+      30 Hz floor. Old hand poses are harmless to lose. A grip is not: **a grab made during such a stall can be undone**
+      when the final order replaces the prediction. The fix, a leader that caps its cut below an author's entries it
+      saw but dropped (as it does for heads named by votes), waits until after the friend test, after @world-chunks's
+      read. An outage under the 30 s close doesn't reach it alone: at S1's floor about 60 entries a second, it takes
+      about 33 s at 60 Hz and 49 s at 90 Hz to pass the cap plus the queue. The 10 s blackout reached it only because
+      the receiver then fell about 24 s behind working through a token-paced flush, and the allowance removes that
+      [I, until @engine-architect's k8-inproc rerun].
     - **Checks are capped too:** per sender and author, twice the rate, with a burst of twice (pending cap + burst).
       Past it an entry is dropped unchecked, with no fault, so a flood can't burn a peer's CPU on signatures. An entry
       dropped unchecked raises nothing, so its gap shows only once a later checked entry or a vote's heads name a seq
