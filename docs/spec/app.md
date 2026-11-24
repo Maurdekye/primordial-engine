@@ -633,7 +633,9 @@ with @fable-reviewer's refinements, and):
      recording's 2.13 s tick, which the run's totals couldn't place). Off unless the variable names a file, and then
      the simulation thread writes a new one: a `sec` line for each second of the frame clock (its ticks' phases,
      frames stepped and re-stepped, the worst tick, how far the replica and the final cut trail the present, the
-     budget and the frame cost at its end), and a `long` line for each tick over `PE_TICK_TRACE_MS` milliseconds
+     budget and the frame cost at its end, and in that second the hand entries made (`inputs`), the frames step 2
+     thinned while backlogged (`thinned`, F3 S1) and the ticks that published no view (`unpublished`)), and a `long`
+     line for each tick over `PE_TICK_TRACE_MS` milliseconds
      (default 50), with every phase of it. Each line also gives the thread's CPU time beside its wall time, to tell a
      tick that worked from one that waited (descheduled, or blocked on a lock or the disk). Between ticks, `loop_ms`
      is the loop's own work after a tick (the console's lines, the quit's shared state), where a blocked console

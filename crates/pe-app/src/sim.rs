@@ -1808,6 +1808,9 @@ impl Sim {
                 cost_ns: self.budget.cost().map(|c| u64::try_from(c.as_nanos()).unwrap_or(u64::MAX)),
                 backlogged: self.agree.backlogged(),
                 holds: self.stats.holds,
+                inputs: self.stats.inputs,
+                thinned: self.stats.hands_floor_thinned,
+                published: self.stats.published,
             };
             t.record(&before, &self.stats.phases, self.stats.received, at_end);
         }
