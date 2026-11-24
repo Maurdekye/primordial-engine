@@ -445,7 +445,10 @@ therefore writes the `Admit` only once B has shown it can start (@design-reviewe
   in `agree` the genesis record. The welcome's line stays the fixed pre-genesis line both hellos carry: pe-net refuses
   a welcome naming another line than the hellos' (core.rs), and B's hello can't know the session's line, which B
   derives from the record. B isn't a member of agreement yet. Anyone else's join request is refused ("not
-  admitted"), as is a second join while one is in flight.
+  admitted"), as is a second join while one is in flight. B checks A's hello the same way, with pe-net's guards
+  (the protocol, the build, the self-test and the line), so either side's refusal can come first. Either way, B's
+  join ends at once and names the mismatch, never at its timeout (K3,
+  @item:primordial-engine/k3-a-joiner-names-its-own-self-test-refusal-inst).
 - **B shows it can start, then A admits it.** B checks the welcome: the record's build and consensus hash against its
   own, the welcome's rate against the record's and its own, and that the welcome's members, sorted, hash to the
   invite's pin and include the invite's key. It derives the session's line from the record, never from the welcome

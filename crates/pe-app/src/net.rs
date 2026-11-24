@@ -677,9 +677,9 @@ impl Endpoint {
         Ok(Opened { session, invite, replies, genesis })
     }
 
-    /// B: the welcome from `opener`, awaited until `deadline`, and whether the clock was ready by then. A refusal
-    /// names its reason; a close for want of a decision (`T_welcome`, code 8) is not final, since A dials again when
-    /// it takes the reply.
+    /// B: the welcome from `opener`, awaited until `deadline`, and whether the clock was ready by then. A final
+    /// refusal, by either side, ends the wait and names its reason ([`welcome_refusal`]); a close for want of a
+    /// decision (`T_welcome`) is not final, since A dials again when it takes the reply.
     fn await_welcome(&mut self, opener: MemberKey, deadline: Instant) -> Result<(Welcome, bool), NetError> {
         let mut clock_ready = false;
         loop {
@@ -693,8 +693,11 @@ impl Endpoint {
                     Lifecycle::Welcomed { peer, welcome } if peer == opener => got = Some(welcome),
                     // Convergence on the welcome's members only: the clock begins joining at the welcome.
                     Lifecycle::ClockReady if got.is_some() => clock_ready = true,
-                    Lifecycle::Refused { refusal, by_me, .. } if !by_me && refusal.code != CloseCode::Overloaded => {
-                        return Err(NetError::Refused(format!("{:?}: {}", refusal.code, refusal.detail)));
+                    Lifecycle::Refused { peer, ref refusal, by_me } if !by_me || peer == opener => {
+                        match welcome_refusal(refusal, by_me) {
+                            Some(e) => return Err(e),
+                            None => log_lifecycle(&l),
+                        }
                     }
                     other => log_lifecycle(&other),
                 }
@@ -977,6 +980,31 @@ fn not_admitted(peer: MemberKey) -> Refusal {
         "this session takes no join from this key now (M1: one join at a time, from the invite's reply)"
     };
     Refusal { code: CloseCode::NotAdmitted, detail: format!("not admitted: {why}") }
+}
+
+/// What a joiner waiting for the welcome does with a refusal on its connection to the opener: `Some` ends the join
+/// with that error, `None` keeps waiting.
+/// - **The other side's** ends it, except `Overloaded`, a close for want of a decision: A dials again once it takes
+///   the reply.
+/// - **This side's own** ends it only for a mismatch the hello's guards found (transport.md 6.3): the protocol, the
+///   build, the physics self-test or the line. A redial would meet the same mismatch, and before K3 the joiner waited
+///   out its whole timeout (pe-app's is 300 s) with only a log line to say why. Both sides run the same guards, so
+///   which of the two refusals arrives first is a race. This side's other closes, `T_welcome`'s, aren't final.
+fn welcome_refusal(refusal: &Refusal, by_me: bool) -> Option<NetError> {
+    if !by_me {
+        return (refusal.code != CloseCode::Overloaded)
+            .then(|| NetError::Refused(format!("{:?}: {}", refusal.code, refusal.detail)));
+    }
+    let what = match refusal.code {
+        CloseCode::Protocol => "the other machine speaks another version of the network protocol",
+        CloseCode::Build => "the other machine runs another build of pe-app",
+        CloseCode::SelfTest => {
+            "the other machine's physics self-test gave another result, so the two machines wouldn't simulate alike"
+        }
+        CloseCode::Line => "the other machine is in another session",
+        _ => return None,
+    };
+    Some(NetError::Refused(format!("{what} (this machine's check, {:?}: {})", refusal.code, refusal.detail)))
 }
 
 fn log_lifecycle(l: &Lifecycle) {
@@ -1277,6 +1305,57 @@ mod tests {
             c.hello.build = long
         });
         assert!(matches!(r, Err(NetError::Hello(HelloError::TooLong { field: "build id", .. }))), "{:?}", r.err());
+    }
+
+    /// K3 (the friend test): when the joiner's own guard refuses the opener's hello for a final mismatch, the join
+    /// ends at once and names it. A close for want of a decision doesn't end it, from either side. The other side's
+    /// refusals read as before.
+    #[test]
+    fn a_joiner_stops_at_its_own_final_refusal_and_names_it() {
+        let r = |code| Refusal { code, detail: "ours 1, theirs 2".into() };
+        for code in [CloseCode::Protocol, CloseCode::Build, CloseCode::SelfTest, CloseCode::Line] {
+            let e = welcome_refusal(&r(code), true).map(|e| e.to_string());
+            assert!(
+                e.as_deref().is_some_and(|e| e.contains("this machine's check") && e.contains("ours 1, theirs 2")),
+                "{code:?}: {e:?}"
+            );
+        }
+        let st = welcome_refusal(&r(CloseCode::SelfTest), true).map(|e| e.to_string()).unwrap_or_default();
+        assert!(st.contains("physics self-test"), "{st}");
+        for code in [CloseCode::NotAdmitted, CloseCode::Overloaded, CloseCode::Left, CloseCode::Fault, CloseCode::Clock]
+        {
+            assert!(welcome_refusal(&r(code), true).is_none(), "{code:?} by this side isn't final");
+        }
+        assert!(welcome_refusal(&r(CloseCode::Overloaded), false).is_none(), "A dials again once it takes the reply");
+        let theirs = welcome_refusal(&r(CloseCode::SelfTest), false).map(|e| e.to_string());
+        assert_eq!(theirs.as_deref(), Some("refused: SelfTest: ours 1, theirs 2"), "the other side's, as before");
+    }
+
+    /// K3: an opener whose hello carries another physics self-test digest is refused at once, whichever side's guard
+    /// closes first, and the joiner's error says why. Before K3, when the joiner's own guard closed first, it waited
+    /// out the welcome's whole timeout and reported only that.
+    #[test]
+    fn an_opener_with_another_self_test_is_refused_at_once_and_the_joiner_says_why() {
+        use crate::join::T_JOIN;
+        let host = crate::clock::shared();
+        let a = Endpoint::bind_with([21; 32], loopback(), Vec::new(), true, host.clone(), None, |c| {
+            c.hello.selftest = [0xab; 32]
+        })
+        .unwrap();
+        let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
+        let p = OpenParams { epoch_lead: Duration::ZERO, ..params() };
+        let opened = a.open_alone(&p, Duration::from_secs(600), T_JOIN, runner()).expect("A opens alone");
+        b.dial(&opened.invite).unwrap();
+        let (timeout, t0) = (Duration::from_secs(20), Instant::now());
+        let r = b.join_at_cut(&opened.invite, RATE, timeout, T_JOIN);
+        let took = t0.elapsed();
+        let why = match r {
+            Err(NetError::Refused(why)) => why,
+            other => panic!("not refused, after {took:?}: {:?}", other.map(|_| "joined")),
+        };
+        assert!(why.contains("self-test"), "names the self-test: {why}");
+        assert!(took < Duration::from_secs(5), "at once, not at the {timeout:?} timeout: {took:?}");
+        drop(opened);
     }
 
     fn params() -> OpenParams {
