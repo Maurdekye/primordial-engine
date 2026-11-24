@@ -816,9 +816,6 @@ mod tests {
         assert_eq!((mine(&*a, A), mine(&*b, B)), (2, 2), "both members' hands are in both worlds");
     }
 
-    /// A opens alone (app.md 4, "Joining from a cut"): the record names A only, with its role, and A's world, replica
-    /// and pe-agree configuration hold A alone. pe-agree's governance table is the world's member table: the same
-    /// bits. A joiner's check takes the record; the interim's, which wants two members, refuses it.
     /// The friend test's plane (`--preset plane`): the record names `plane` v1 with no balls, B rebuilds the same
     /// world from it (the joiner's own flag never reaches `join_at_cut`), and a record naming the plane with balls, or
     /// another version, is an unknown preset.
@@ -846,6 +843,9 @@ mod tests {
         }
     }
 
+    /// A opens alone (app.md 4, "Joining from a cut"): the record names A only, with its role, and A's world, replica
+    /// and pe-agree configuration hold A alone. pe-agree's governance table is the world's member table: the same
+    /// bits. A joiner's check takes the record; the interim's, which wants two members, refuses it.
     #[test]
     fn a_world_opened_alone_names_the_opener_only() {
         let alone = Params { joiner: None, ..params() };
