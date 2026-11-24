@@ -193,9 +193,9 @@ is the re-simulation frontier, so what a call leaves short counts what is left o
   frames were five times cheaper than real time (a debug build under load: 120 ms a tick besides 2.8 ms a frame).
 - **The last call's need** covers late entries. A member whose entries arrive `L` frames late on every frame (its
   hands move, its link is slow) rolls the replica back about `L` frames on every tick. With only the advance plus
-  one, a budget under `L + 1` never reached the present again: a 300 ms link froze a receiver's view for a whole
+  one, a budget under `L + 1` never reached the present again: a 300 ms link kept a receiver behind for a whole
   30 s run, in the 200-ball pit at about 1 ms a frame, where the share fits 8 (@engine-architect's measurement,
-  <notes>).
+  <notes>). Its view froze then, since views came only at the present before S5.
 
 So a replica whose frames are cheaper than a period gains at least a frame on real time every tick, whatever the
 rest costs, and one re-stepping late entries reaches the present on every tick that the work fits. The keep-up floor

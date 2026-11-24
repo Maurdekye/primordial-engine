@@ -841,7 +841,8 @@ ruling 3). The calls, and what the replica does behind each:
 - **`set_budget(simulated)`** bounds each call's stepping (S2 v1.1; 4.2).
 - **`advance(present, source) -> Advance`** steps to `present`: it rolls back first if the source reports a change
   (4.2), and again if the author's prediction ended (8.2). It reports the frames stepped and re-simulated, the
-  rollback, and whether it caught up, and it publishes the view when it did (7). The rollback is the keyframe
+  rollback, and whether it caught up, and when it stepped forward it publishes the view of the newest frame it
+  completed, caught up or not (7; S2 v1.10). The rollback is the keyframe
   restored (`rolled_back_to`), with its causes since S2 v1.11: the frame the source reported changed
   (`changed_from`) and the commit frame of the prediction that ended (`replay_from`), for pe-app's rollback-cause
   line (app.md 4; 1.11).
