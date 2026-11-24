@@ -49,8 +49,12 @@ fn involves(h: &Hit, object: ObjectId) -> Option<(u32, f32)> {
 fn a_falling_ball_reports_one_hard_landing_then_none_at_rest() {
     let mut pw = scene();
     let steps = run(&mut pw, 120);
-    let landings: Vec<(usize, &Hit)> =
-        steps.iter().enumerate().flat_map(|(f, hits)| hits.iter().map(move |h| (f, h))).filter(|(_, h)| involves(h, id(2)).is_some()).collect();
+    let landings: Vec<(usize, &Hit)> = steps
+        .iter()
+        .enumerate()
+        .flat_map(|(f, hits)| hits.iter().map(move |h| (f, h)))
+        .filter(|(_, h)| involves(h, id(2)).is_some())
+        .collect();
     assert!(!landings.is_empty(), "no hit for the ball");
     let (frame, first) = landings[0];
     // Dropped from 1.9 m above the floor: about sqrt(2 g h) = 6.2 m/s at the floor.
