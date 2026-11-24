@@ -62,6 +62,9 @@ pub struct DesktopConfig {
     /// `view_capture`'s orders (api.md 8), served once a frame after the present, from the frame's view, with this
     /// window's camera as the player's.
     pub captures: Option<Arc<crate::capture_service::CaptureQueue>>,
+    /// The menus (render.md 8.2, `crate::menu`): aimed with the mouse, toggled with Tab. A left press that lands on a
+    /// panel goes to it, not to the hand.
+    pub ui: Option<Box<dyn crate::menu::Ui>>,
 }
 
 /// What a run measured (render.md 13's per-frame numbers, summarized).
@@ -176,6 +179,10 @@ struct Pointer {
     keys: [bool; 8], // W A S D Space C Q E
     /// H, held: the controls show.
     help: bool,
+    /// Tab was pressed since the last frame: the menu toggles.
+    tab: bool,
+    /// Left presses since the last frame.
+    clicks: u32,
 }
 
 /// The desktop controls (render.md 9), two lines at the bottom of the window: shown for [`HELP_S`] seconds of the
@@ -519,11 +526,31 @@ impl DesktopView {
         let (tx, ty) = ((fov.right as f64).tan(), (fov.up as f64).tan());
         let dir = camera.pose.rot * DVec3::new(nx * tx, ny * ty, -1.0).normalize();
         let roll = (self.pointer.keys[7] as i32 - self.pointer.keys[6] as i32) as f64;
+        // The menus first: a press that lands on a panel is theirs, and the hand doesn't see it.
+        let ui_out = self.cfg.ui.as_mut().map(|ui| {
+            ui.frame(&crate::menu::UiInput {
+                now,
+                head: camera.pose,
+                scale: f64::from(view.local_rig.scale),
+                rays: vec![crate::menu::UiRay {
+                    pointer: 2,
+                    origin: camera.pose.pos,
+                    dir,
+                    pressed: self.pointer.left,
+                    clicks: self.pointer.clicks,
+                }],
+                toggled: std::mem::take(&mut self.pointer.tab),
+                wrist: None,
+                draw_rays: false,
+            })
+        });
+        self.pointer.clicks = 0;
+        let ui_took = ui_out.as_ref().is_some_and(|o| o.took[2]);
         let input = PointerInput {
             at: now,
             origin: camera.pose.pos,
             dir,
-            left: self.pointer.left,
+            left: self.pointer.left && !ui_took,
             shift: self.pointer.shift,
             wheel: std::mem::take(&mut self.pointer.wheel),
             roll,
@@ -539,8 +566,14 @@ impl DesktopView {
         }
         let lines =
             window_lines(frame.status.as_deref(), help_alpha(self.help_shown_s, self.pointer.help), &frame.notices);
-        frame.scene.overlay =
-            self.strip.get(&lines, fitted_text_px(&lines, size)).map(|img| window_overlay(&camera, size, img));
+        // The menu first, then the status, help and notices strip, so an open menu never hides a notice (render.md 8.2).
+        if let Some(o) = ui_out {
+            frame.scene.overlays.splice(0..0, o.overlays);
+        }
+        frame
+            .scene
+            .overlays
+            .extend(self.strip.get(&lines, fitted_text_px(&lines, size)).map(|img| window_overlay(&camera, size, img)));
         for c in &frame.effects {
             self.sink.command(c);
         }
@@ -616,7 +649,12 @@ impl DesktopView {
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
                 match button {
-                    MouseButton::Left => self.pointer.left = down,
+                    MouseButton::Left => {
+                        if down && !self.pointer.left {
+                            self.pointer.clicks += 1;
+                        }
+                        self.pointer.left = down;
+                    }
                     MouseButton::Right => {
                         self.pointer.right = down;
                         self.pointer.last_drag = if down { self.pointer.pos } else { None };
@@ -635,6 +673,10 @@ impl DesktopView {
                 let down = event.state == ElementState::Pressed;
                 if event.physical_key == PhysicalKey::Code(KeyCode::KeyH) {
                     self.pointer.help = down;
+                    return false;
+                }
+                if event.physical_key == PhysicalKey::Code(KeyCode::Tab) {
+                    self.pointer.tab |= down && !event.repeat;
                     return false;
                 }
                 let i = match event.physical_key {

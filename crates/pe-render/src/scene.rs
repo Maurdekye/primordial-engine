@@ -92,9 +92,9 @@ pub struct Scene {
     /// Drawn after the overlay, so a notice never covers them: the local player's own hands and what they hold
     /// (render.md 8.1). Lit, shadowed and depth-tested like `items`; never a ghost or an outline.
     pub front: Vec<DrawItem>,
-    /// A flat textured quad drawn after `items` and before `front`, without the depth test: the notices strip
-    /// (render.md 8.1).
-    pub overlay: Option<Overlay>,
+    /// Flat textured quads drawn after `items` and before `front`, without the depth test, in order (a later one over
+    /// an earlier one): the notices strip (render.md 8.1), the menus' panels and pointers (render.md 8.2).
+    pub overlays: Vec<Overlay>,
 }
 
 /// The overlay's pixels: RGBA8, sRGB-encoded colour with straight (not premultiplied) alpha, rows top first.
@@ -417,12 +417,17 @@ struct OverlayUniform {
     model: [[f32; 4]; 4],
 }
 
-/// The overlay's GPU side: the uniform, the sampler and the texture of the image last uploaded.
+/// The overlays' GPU side: the layout and the sampler, and a slot per overlay drawn (the most in one frame so far).
 struct OverlayGpu {
     bgl: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
-    uniform: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    slots: Vec<OverlaySlot>,
+}
+
+/// One overlay's uniform, and the texture of the image it last uploaded (again only when the `Arc` changes).
+struct OverlaySlot {
+    uniform: wgpu::Buffer,
     current: Option<(Arc<OverlayImage>, wgpu::BindGroup)>,
 }
 
@@ -1152,9 +1157,9 @@ impl Renderer {
         );
         // wgpu's clip space is glam's DirectX convention: depth 0..1, +Y up.
         let light_vp = glam::camera::rh::proj::directx::orthographic(-e, e, -e, e, 0.0, 4.0 * e) * light_view;
-        let overlay = self.prepare_overlay(scene.overlay.as_ref(), anchor);
+        let overlays = self.prepare_overlays(&scene.overlays, anchor);
         Prepared {
-            overlay,
+            overlays,
             ranges,
             anchor,
             light_vp,
@@ -1303,34 +1308,48 @@ impl Renderer {
         draws
     }
 
-    /// The overlay, if this frame has one: after the scene's items, before the front items.
+    /// The overlays, if this frame has any: after the scene's items, before the front items, in order.
     fn overlay_draw(&self, rp: &mut wgpu::RenderPass<'_>, p: &Prepared, pl: &Pipelines) -> u32 {
-        let (true, Some((_, bg))) = (p.overlay, self.overlay.current.as_ref()) else { return 0 };
-        rp.set_pipeline(&pl.overlay);
-        rp.set_bind_group(2, bg, &[]);
-        rp.draw(0..6, 0..1);
-        1
+        let mut draws = 0;
+        for slot in &self.overlay.slots[..p.overlays] {
+            let Some((_, bg)) = slot.current.as_ref() else { continue };
+            if draws == 0 {
+                rp.set_pipeline(&pl.overlay);
+            }
+            rp.set_bind_group(2, bg, &[]);
+            rp.draw(0..6, 0..1);
+            draws += 1;
+        }
+        draws
     }
 
-    /// Upload the overlay's model matrix, and its image when the `Arc` changed. False: no overlay this frame.
-    fn prepare_overlay(&mut self, ov: Option<&Overlay>, anchor: Pos) -> bool {
-        let Some(ov) = ov else { return false };
-        let img = &ov.image;
-        if img.width == 0 || img.height == 0 || img.rgba.len() as u64 != img.width as u64 * img.height as u64 * 4 {
-            return false;
+    /// Upload each overlay's model matrix into its slot, and its image when the slot's `Arc` changed. An overlay with
+    /// a malformed image is skipped. The count of slots filled, in order.
+    fn prepare_overlays(&mut self, overlays: &[Overlay], anchor: Pos) -> usize {
+        let mut n = 0;
+        for ov in overlays {
+            let img = &ov.image;
+            if img.width == 0 || img.height == 0 || img.rgba.len() as u64 != img.width as u64 * img.height as u64 * 4 {
+                continue;
+            }
+            if self.overlay.slots.len() == n {
+                let slot = self.overlay.slot(&self.ctx.device);
+                self.overlay.slots.push(slot);
+            }
+            let model = anchored_model(anchor, &ov.pose, [ov.size[0], ov.size[1], 1.0]);
+            self.ctx.queue.write_buffer(
+                &self.overlay.slots[n].uniform,
+                0,
+                bytemuck::bytes_of(&OverlayUniform { model: model.to_cols_array_2d() }),
+            );
+            let fresh = self.overlay.slots[n].current.as_ref().is_some_and(|(cur, _)| Arc::ptr_eq(cur, img));
+            if !fresh {
+                let bg = self.overlay.upload(&self.ctx, &self.overlay.slots[n].uniform, img);
+                self.overlay.slots[n].current = Some((img.clone(), bg));
+            }
+            n += 1;
         }
-        let model = anchored_model(anchor, &ov.pose, [ov.size[0], ov.size[1], 1.0]);
-        self.ctx.queue.write_buffer(
-            &self.overlay.uniform,
-            0,
-            bytemuck::bytes_of(&OverlayUniform { model: model.to_cols_array_2d() }),
-        );
-        let fresh = self.overlay.current.as_ref().is_some_and(|(cur, _)| Arc::ptr_eq(cur, img));
-        if !fresh {
-            let bg = self.overlay.upload(&self.ctx, img);
-            self.overlay.current = Some((img.clone(), bg));
-        }
-        true
+        n
     }
 
     fn depth_copy_pipeline(&mut self, format: wgpu::TextureFormat, multisampled: bool) {
@@ -1468,8 +1487,8 @@ struct PassTarget<'a> {
 struct Prepared {
     /// Pass 0 opaque, 1 ghosts, 2 outlines, 3 the front items (drawn after the overlay).
     ranges: Vec<(u8, MeshKey, std::ops::Range<u32>)>,
-    /// The overlay's uniform and texture are uploaded: draw it.
-    overlay: bool,
+    /// The overlays' uniforms and textures uploaded, in their slots 0.. in order: draw that many.
+    overlays: usize,
     anchor: Pos,
     light_vp: Mat4,
     key_dir: Vec3,
@@ -1551,22 +1570,26 @@ impl OverlayGpu {
             bind_group_layouts: &[Some(globals), Some(shadow), Some(&bgl)],
             immediate_size: 0,
         });
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("overlay"),
-            size: std::mem::size_of::<OverlayUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("overlay"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        OverlayGpu { bgl, layout, uniform, sampler, current: None }
+        OverlayGpu { bgl, layout, sampler, slots: Vec::new() }
     }
 
-    fn upload(&self, ctx: &GpuContext, img: &OverlayImage) -> wgpu::BindGroup {
+    fn slot(&self, device: &wgpu::Device) -> OverlaySlot {
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("overlay"),
+            size: std::mem::size_of::<OverlayUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        OverlaySlot { uniform, current: None }
+    }
+
+    fn upload(&self, ctx: &GpuContext, uniform: &wgpu::Buffer, img: &OverlayImage) -> wgpu::BindGroup {
         let size = wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 };
         let tex = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("overlay"),
@@ -1594,7 +1617,7 @@ impl OverlayGpu {
             label: Some("overlay"),
             layout: &self.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],

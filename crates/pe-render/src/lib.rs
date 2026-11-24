@@ -31,6 +31,7 @@ pub mod effects;
 pub mod gpu;
 pub mod hands;
 pub mod labels;
+pub mod menu;
 pub mod notices;
 pub mod pacing;
 pub mod pose;

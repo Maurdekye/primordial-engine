@@ -97,7 +97,7 @@ fn the_window_strip_covers_the_scene_but_never_the_front_items() {
     let ball_at = at([0.0, ndc_y * tan_half * 0.5, -0.5]);
     let ball = item(2, ball_at, Shape::Sphere { radius: 0.02 }, [0.05, 0.8, 0.05]);
 
-    let mut s = Scene { items: vec![wall()], overlay: Some(overlay.clone()), ..Scene::default() };
+    let mut s = Scene { items: vec![wall()], overlays: vec![overlay.clone()], ..Scene::default() };
     s.front.push(ball.clone());
     let img = r.capture(&s, cam, SIZE).expect("capture").wait(&r.context().device, Duration::from_secs(60)).unwrap();
     let mid = ((y0 + y1) / 2).min(SIZE[1] - 1);
@@ -110,7 +110,7 @@ fn the_window_strip_covers_the_scene_but_never_the_front_items() {
     assert!(centre[1] > 150 && centre[1] > centre[0] + 100, "the front ball is drawn over the strip: {centre:?}");
 
     // Control: the same ball as an ordinary item is under the strip.
-    let mut s2 = Scene { items: vec![wall(), ball], overlay: Some(overlay), ..Scene::default() };
+    let mut s2 = Scene { items: vec![wall(), ball], overlays: vec![overlay], ..Scene::default() };
     s2.front.clear();
     let img2 = r.capture(&s2, cam, SIZE).expect("capture").wait(&r.context().device, Duration::from_secs(60)).unwrap();
     let covered = px(&img2, SIZE[0] / 2, mid);
@@ -146,7 +146,7 @@ fn the_head_locked_strip_shows_in_both_eyes_below_the_centre() {
         (0..2).map(|l| read_layer(r, &color, l, size)).collect::<Vec<_>>()
     };
     let bare = color_of(&mut r, &s);
-    s.overlay = Some(overlay);
+    s.overlays = vec![overlay];
     let with = color_of(&mut r, &s);
     for l in 0..2 {
         let changed: Vec<u32> = (0..size[0] * size[1])
@@ -197,4 +197,37 @@ fn read_layer(r: &Renderer, t: &wgpu::Texture, layer: u32, size: [u32; 2]) -> Ve
         out.extend_from_slice(&data[s..s + (size[0] * 4) as usize]);
     }
     out
+}
+
+/// Several overlays (render.md 8.2, the menus): each is drawn, in order, so where two overlap the later one shows.
+#[test]
+fn several_overlays_draw_in_order() {
+    use pe_render::scene::{Overlay, OverlayImage};
+    let Some(mut r) = renderer(RenderSettings::default()) else { return };
+    let cam = Camera::placed(
+        WorldPose { pos: Pos::ORIGIN, rot: DQuat::IDENTITY },
+        Fov::symmetric(1.0, 16.0 / 9.0),
+        DepthRange::DESKTOP,
+    );
+    let solid = |c: [u8; 3]| Arc::new(OverlayImage { width: 4, height: 4, rgba: [c[0], c[1], c[2], 255].repeat(16) });
+    // 1 m ahead: blue on the left half and the middle, green on the middle and the right half.
+    let quad = |x: f64, c: [u8; 3]| Overlay {
+        image: solid(c),
+        pose: WorldPose { pos: at([x, 0.0, -1.0]), rot: DQuat::IDENTITY },
+        size: [0.4, 0.3],
+    };
+    let shot = |r: &mut Renderer, overlays: Vec<Overlay>| {
+        let s = Scene { items: vec![wall()], overlays, ..Scene::default() };
+        r.capture(&s, cam, SIZE).expect("capture").wait(&r.context().device, Duration::from_secs(60)).unwrap()
+    };
+    let img = shot(&mut r, vec![quad(-0.15, [0, 0, 255]), quad(0.15, [0, 255, 0])]);
+    let (left, mid, right) = (px(&img, 110, 90), px(&img, 160, 90), px(&img, 210, 90));
+    eprintln!("left {left:?}, middle {mid:?}, right {right:?}");
+    assert!(left[2] > 200 && left[1] < 60, "the first overlay, alone on the left: {left:?}");
+    assert!(right[1] > 200 && right[2] < 60, "the second overlay, alone on the right: {right:?}");
+    assert!(mid[1] > 200 && mid[2] < 60, "the second covers the first where they overlap: {mid:?}");
+    // The other order: the first (now green) is under the second (blue).
+    let img = shot(&mut r, vec![quad(0.15, [0, 255, 0]), quad(-0.15, [0, 0, 255])]);
+    let mid = px(&img, 160, 90);
+    assert!(mid[2] > 200 && mid[1] < 60, "order decides: {mid:?}");
 }
