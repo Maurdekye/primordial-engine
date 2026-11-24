@@ -193,6 +193,8 @@ impl Drop for AudioTrial {
         );
         for (name, histogram) in [
             ("dsp_block_us", m.dsp),
+            ("dsp_block_8plus_voices_us", m.busy_dsp),
+            ("active_voices_per_block", m.active_voices),
             ("callback_jitter_us", m.jitter),
             ("callback_work_us", m.callback),
             ("hit_to_carrying_callback_us", m.onset),
@@ -216,6 +218,8 @@ struct StreamCounters {
 #[derive(Default)]
 struct Metrics {
     dsp: Histogram,
+    busy_dsp: Histogram,
+    active_voices: Histogram,
     jitter: Histogram,
     callback: Histogram,
     onset: Histogram,
@@ -298,14 +302,20 @@ impl Callback {
                 }
                 self.mix.render(listener);
                 if recording {
-                    stats.dsp.record(micros(dsp_start.elapsed()));
+                    let dsp_us = micros(dsp_start.elapsed());
+                    let active_voices = self.mix.active_voices();
+                    stats.dsp.record(dsp_us);
+                    stats.active_voices.record(active_voices as f64);
+                    if active_voices >= DIRECT {
+                        stats.busy_dsp.record(dsp_us);
+                    }
                     let room = self.onsets.capacity() - self.onsets.len();
                     stats.onset_samples_dropped += self.mix.onsets.len().saturating_sub(room) as u64;
                     self.onsets.extend(self.mix.onsets.iter().take(room).copied());
                 }
                 self.cursor = 0;
             }
-            for channel in 0..2 {
+            for (channel, out) in frame.iter_mut().take(2).enumerate() {
                 let value = self.mix.stereo[self.cursor + BLOCK * channel];
                 let finite = value.is_finite();
                 if recording {
@@ -316,7 +326,7 @@ impl Callback {
                     }
                 }
                 if self.audible && finite {
-                    frame[channel] = T::from_sample(value.clamp(-0.42, 0.42));
+                    *out = T::from_sample(value.clamp(-0.42, 0.42));
                 }
             }
             self.cursor += 1;

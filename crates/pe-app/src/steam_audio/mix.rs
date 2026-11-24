@@ -141,6 +141,10 @@ impl Mixer {
         }
     }
 
+    pub fn active_voices(&self) -> usize {
+        self.sources.len()
+    }
+
     pub fn render(&mut self, listener: WorldPose) {
         self.stereo.fill(0.0);
         self.bed.fill(0.0);
