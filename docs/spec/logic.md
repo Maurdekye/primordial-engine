@@ -112,8 +112,8 @@ Per module:
   [V `tests/run.rs`, `binding_checks_the_engine_table_and_the_layout`, `the_sdk_engine_components_are_the_engine_layouts`];
 - per system:
   - `name`, `stage` (3.5) and `mode`: `shared` (default) or `per_player` (section 7, M2). Under the local rule
-    (7.1) the mode is set by the build rather than declared, for the whole script [I]; whether a per-player field
-    moves the whole script or only the systems touching it is open (7.1, point 2);
+    (7.1) the mode is set by the build rather than declared, for the whole script [I]. Reading a per-player field
+    doesn't change it (7.1, point 2);
   - `bound`: the components every bound object must have, each `read` or `write`;
   - `reads_other`: components it may read on objects other than the bound one, through queries (3.4);
   - `emits`: the event types it may emit, each `once_for_world` or `once_per_player` (file 11, 3.5);
@@ -1086,7 +1086,7 @@ numbers [I].
 
 ## 7. Local scripts and draw systems (QR (b), M2; the user's rulings of 2026-11-24)
 
-Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v12: 2.2,
+Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v13: 2.2,
 2.4, 3, 4, 5, 6 and 8), with the user's rulings, verbatim on
 @item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe. They are design only: nothing is built,
 and building needs its own go after the friend test. Which values are shared, private or published is
@@ -1110,15 +1110,25 @@ world-model.md 3.7; how a picture is drawn is render.md's.
 1. **A script is shared or local as a whole.** It becomes local automatically, at build time, if any function in it
    uses `local_user` or any local-draw functionality. The mode is not declared per system.
 2. **Every local thing is reachable only that way:** tracking, display time, per-player values and, with the
-   player's grant (7.2), the clock, devices, files and local web addresses. No shared script ever sees a
-   per-player value.
-   - **Touching a per-player field makes the code that touches it local** (QR (b), 2026-11-07, which
-     stands): it reads the executing player's own value, runs per player, and its shared effects go out as that
-     player's input, "in the same way how a player holding a local paddle hitting a ball with it would cause the
-     ball to go flying for everyone". Open until the user rules: whether this is a third trigger
-     of the whole-script flag, so the whole script moves, or only the systems that touch the field move, as
-     designed on 2026-11-07 (12; @fable-reviewer's file 21 v12, 2.2). The inspector names the scripts it moves
-     before the click (inspector.md 4.2), which is point 5's "says so".
+   player's grant (7.2), the clock, devices, files and local web addresses.
+   - **Per-player fields** (ruled, settled by @coordinator-opus), verbatim:
+     "the per-player field acts like that player's input and the script remains shared, i thought we decided that".
+     - **A shared script may read a per-player field, and it stays shared.** Reading one is not a trigger of the
+       local flag, whose triggers are `local_user` and local drawing only.
+     - **The field's value is its player's input.** When shared logic reads it, the value is published
+       automatically as that player's signed input, with no prompt, sampled on use with a
+       bounded-rate refresh (QH2 (c)): a published value of world-model.md 3.7, one per player, each fed by its
+       own player.
+     - **This is QR (b)**: the script reads each player's own value, and a local cause has a
+       shared effect for everyone, "in the same way how a player holding a local paddle hitting a ball with it
+       would cause the ball to go flying for everyone".
+     - **Every machine runs the script,** on the fixed step and under rollback, from the published values. Where
+       it reads a per-player field it runs once for each player with that player's value, on every machine alike.
+       Its effects are computed by everyone and are not sent. There is no player-local instance: this replaces
+       the 2026-11-07 record's reading of QR (b) (`user-design-decisions.md` 398), with the same visible result
+       (@fable-reviewer's file 21 v13, 2.2).
+     - [I] A per-player value that shared logic reads is known to every machine and stays in the record (Q4 (a):
+       per-player values are not secret). One that only private or draw code reads is never published.
    - Tracking the engine supplies needs no grant: any shared script may read a player's head, hand or camera pose
      and place things in their head or hand space (ruled, against the recommendation). [I] A shared script reads
      the pose in the shared record; a draw rule reading this frame's pose makes its script local.
@@ -1346,8 +1356,6 @@ Each gets a raw log under `crates/pe-logic/bench/` or the workstream's evidence 
   measured in M2 [I].
 - Whether `pe_manifest` moves to a custom section.
 - The fuel cost table and budgets per stage.
-- **Per-player fields and the local flag (7.1, point 2), asked of the user through @coordinator-opus:** whether
-  touching a per-player field is a third trigger of the whole-script flag, or moves only the systems that touch it.
 - **Draw systems and local scripts (7.1-7.3), open from file 21's section 12:** whether `state_at` returns a
   velocity or the engine derives one deterministically; the budgets and the caps on extras and draw-local state;
   where draw systems run so the headset's frame loop never blocks (the render thread within its budget, or a worker

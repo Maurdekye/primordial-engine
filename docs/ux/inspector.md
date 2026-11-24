@@ -158,31 +158,19 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
 - **Make per-player** is a field-menu item for builders.
   - **Disabled for fields physics reads**: a body's `Shape`, `Body` and `Transform`. The reason on hover: "Physics
     uses this field, so it must stay the same for everyone." [P; the exact list is the sync model's]
-  - **Allowed for fields logic reads** [R: QR (b)]: a shared script reading a per-player field reads
-    each player's own value, in a player-local instance, and its shared effects go out as that player's input,
-    "like a player holding a local paddle hitting a ball". The hover on such a field says so:
-    "Scripts read each player's own value here; their changes to the shared world are sent as each player's
-    actions." [P wording, with @iter-bench]
-  - **The menu item names the scripts it moves** [V @iter-bench; logic.md 7 at 75ac956]: any
-    system that reads or writes a per-player field runs per player, so making one field per-player can move
-    several systems, in this script and others. The item reads, for example, "Make per-player · Scripts that will
-    run per player: Blink.pulse, Score.count". It applies on click, with no confirmation: publication is
-    automatic and not the player's concern [R:, 2026-11-07 16:10Z], and the change can be reverted
-    from history like any other [P].
-  - **A moved system's shared effects happen once per player** unless the script declares them "once for the
-    world" [V same]. When any listed system writes shared state, the menu item adds a line of information:
-    "These scripts change the shared world; each player's copy will send its own changes." [P wording]
+  - **Allowed for fields logic reads** [R: QR (b)]: "the per-player field acts like
+    that player's input and the script remains shared". A shared script reading a per-player field reads each
+    player's own value, published as that player's input, and stays shared: every machine runs it (logic.md 7.1,
+    point 2). "Like a player holding a local paddle hitting a ball".
+  - **Make per-player moves no script.** The hover on such a field says that scripts reading it use each player's
+    own value, published as their input, for example: "Scripts read each player's own value here; each player's
+    value is shared with everyone as their input." [P wording] It applies on click, with no confirmation:
+    publication is automatic and not the player's concern [R:, 2026-11-07 16:10Z], and the change
+    can be reverted from history like any other [P].
   - The physics/logic split is agreed with @iter-bench (WS-logic). Per-player mode arrives in M2; nothing here is
     in the M1 slice.
-  - **Open, after the 2026-11-24 local rule** (logic.md 7.1, from @fable-reviewer's file 21 v12, 2.2): a script is
-    now shared or local as a whole, flagged by the build when it uses `local_user` or local drawing, and "a shared
-    script reads the shared value" of anything local. The two bullets above, where a shared script reading a
-    per-player field reads each player's own value and the menu moves single systems, predate that rule. QR (b)
-    stands: a script reading a per-player field reads each player's own value (@fable-reviewer's file 21 v12, 2.2).
-    The only open part, asked of the user through @coordinator-opus, is whether the menu moves whole scripts or
-    single systems. If whole scripts, the item also names the objects those scripts run on, which become private.
 
-**Shared, private and published** (the user's rulings, 2026-11-24; file 21 v12, 2.5,
+**Shared, private and published** (the user's rulings, 2026-11-24; file 21 v13, 2.5,
 2.7, 2.8; world-model.md 3.7; design, not built):
 - **The per-player mark stays two-state:** shared (no mark) or per-player (`⊚`).
 - **A published field carries a label** naming the player who feeds it and whether that source is live. [I] For a

@@ -284,8 +284,9 @@ final.
   - It merges back by a three-way merge at main's final frontier, under the witnessed-order rule the user
     confirmed (section 4.4).
   - This completes Q3b.
-- **A per-player script, under QR (b):** a lamp that is red only for A opens a door, and the door's opening is A's
-  signed input.
+- **A per-player field, under QR (b)** ("the per-player field acts like that player's input and the
+  script remains shared"): a lamp that is red only for A opens a door. The lamp's colour is A's input, and the door
+  opens by shared logic that every machine runs (logic.md 7.1).
 - **Native declarative components** (copy, map, smooth, timer, follow, look-at): the agent attaches one with no build
   at all.
 - **Positions for script authors** (file 17, as the user answered it):
@@ -1259,6 +1260,14 @@ The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `<notes
   - The controller is a component of the player's avatar, which the player saves. It holds the locomotion methods and the player's health.
   - Players choose their avatar, and so their controller. A world may restrict them to the default avatar or to its
     own set, and that is all "custom locomotion" means; there is no separate locomotion-module system.
+  - **Equipment may wrap the controller** (the user, "2b 7b": "anything you equip can override any
+    part of your avatar's default functionality"). An equipped trinket wraps the controller and the hands, over a
+    custom controller too, so locomotion is defined by the controller and by what the player equips (file 23,
+    `fable-reviewer/review/23-trinkets-and-tools.md`, 7). A world still has no list of permitted locomotion, only
+    the avatar level. [I, file 23] A world's avatar restriction covers brought trinkets too: where a visitor's own
+    controller wouldn't be admitted, their own trinket isn't either. A trinket the world placed or locked wraps
+    outside the player's own. The override stops at the engine's own controls, the pose and voice feeds, the
+    world's rules, and what the shared rules grant at the ordered step.
 - **Health for players and objects**: a "player and object health system", built in and off by
   default, a template and a common interface for showing health, dealing damage and receiving it, not a fixed system.
 - **Brought code runs**: "just like resonite, any player bringing in custom code can run that code".
@@ -1489,7 +1498,9 @@ From @fable-reviewer's analysis of draft 1 [I, not yet measured], with the user'
 8. **The default avatar and its controller:**
    - a capsule body with head and hands, under the member's avatar root (world-model.md 3.5); display IK fills in the
      limbs;
-   - stock locomotion methods: walking, running, jumping, turning (piece 13) and 6DOF flight;
+   - stock locomotion methods: walking, running, jumping and turning (piece 13). 6DOF flight is not one of them:
+     it is a stock flight trinket, equipped over the controller (the user's answers 1a and 5a;
+     file 23, 8);
    - the collider kept upright;
    - health's interface, off by default;
    - a root-motion input and a pose output in the controller's interface, unused until piece 14 (M5), so animation
@@ -1669,7 +1680,8 @@ option (d), which would add about 2-3 if it's taken up later.
 
 **Demos:**
 - **M2:** an agent writes a hook that makes a spun ball curve, and one that makes a raft float.
-- **M3:** eight players walk, jump and fly with the default controller, through rollback over thin links.
+- **M3:** eight players walk and jump with the default controller, and fly with the stock flight trinket, through
+  rollback over thin links.
 - **M5:** a friend brings an avatar with its own controller into a world that allows it. In a world that allows only
   fallbacks, the same friend appears as their fallback. Two players fight in third person with animated avatars, and
   a swing's bone hitbox lands the same on both machines and in the replay.
