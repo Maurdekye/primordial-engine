@@ -24,6 +24,9 @@ pub struct SoloAgreement {
     /// Tests only: refuse every class Protocol entry, as agreement refuses a `Leave` it can't take yet.
     #[cfg(test)]
     pub(crate) refuse_protocol: Arc<std::sync::atomic::AtomicBool>,
+    /// Tests only: refuse this many of the next class Input entries, as agreement refuses one stamped too late.
+    #[cfg(test)]
+    pub(crate) refuse_inputs: Arc<std::sync::atomic::AtomicU32>,
     /// Tests only: events the next [`Agreement::events`] returns, and the final cut it then reports (a split, and
     /// the cut that ends it, without a second member).
     #[cfg(test)]
@@ -50,6 +53,8 @@ impl SoloAgreement {
             backlog: Arc::default(),
             #[cfg(test)]
             refuse_protocol: Arc::default(),
+            #[cfg(test)]
+            refuse_inputs: Arc::default(),
             #[cfg(test)]
             script: Arc::default(),
             #[cfg(test)]
@@ -100,6 +105,14 @@ impl Agreement for SoloAgreement {
         #[cfg(test)]
         if entry.class == pe_seams::Class::Protocol && self.refuse_protocol.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(SubmitError::TooLate);
+        }
+        #[cfg(test)]
+        if entry.class == pe_seams::Class::Input {
+            let refuse = self.refuse_inputs.load(std::sync::atomic::Ordering::Relaxed);
+            if refuse > 0 {
+                self.refuse_inputs.store(refuse - 1, std::sync::atomic::Ordering::Relaxed);
+                return Err(SubmitError::TooLate);
+            }
         }
         let signed = SignedEntry { entry, sig: Signature([0; 64]) };
         let frame = signed.entry.stamp;
