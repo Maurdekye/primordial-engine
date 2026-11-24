@@ -1264,10 +1264,14 @@ The thread, 2026-11-17 19:01-20:28Z with @fable-reviewer, is verbatim in `<notes
     part of your avatar's default functionality"). An equipped trinket wraps the controller and the hands, over a
     custom controller too, so locomotion is defined by the controller and by what the player equips (file 23,
     `fable-reviewer/review/23-trinkets-and-tools.md`, 7). A world still has no list of permitted locomotion, only
-    the avatar level. [I, file 23] A world's avatar restriction covers brought trinkets too: where a visitor's own
-    controller wouldn't be admitted, their own trinket isn't either. A trinket the world placed or locked wraps
-    outside the player's own. The override stops at the engine's own controls, the pose and voice feeds, the
-    world's rules, and what the shared rules grant at the ordered step.
+    the avatar level. **Avatar and object restriction are one** (the user: "avatar restriction and
+    object restriction go hand in hand. object restriction implies trinket and tool restriction automstically"):
+    trinkets and tools are objects, so whatever restricts the objects a player may bring restricts them, with no
+    separate trinket setting. [I, file 23 v4, 7] The two are one level, set together, at every level, including a
+    world's own set of avatars, not only at the strictest (where "fallbacks only also refuses code on items a
+    player spawns" already says so). A trinket the world placed or locked wraps outside the player's own. The
+    override stops at the engine's own controls, the pose and voice feeds, the world's rules, and what the shared
+    rules grant at the ordered step.
 - **Health for players and objects**: a "player and object health system", built in and off by
   default, a template and a common interface for showing health, dealing damage and receiving it, not a fixed system.
 - **Brought code runs**: "just like resonite, any player bringing in custom code can run that code".
@@ -1496,8 +1500,10 @@ From @fable-reviewer's analysis of draft 1 [I, not yet measured], with the user'
 
    Owners: WS-agree, WS-state, WS-xr.
 8. **The default avatar and its controller:**
-   - a capsule body with head and hands, under the member's avatar root (world-model.md 3.5); display IK fills in the
-     limbs;
+   - a capsule body with head and hands, under the member's avatar root (world-model.md 3.5). The limbs come from
+     deterministic IK, run on the fixed step under rollback from the agreed body, head and hand poses (the user: "objedts attached to elswehre on your body can also be solid, the ik systm can be
+     deterministic"; file 23 v4, 3.1). A second evaluation per display frame, from the newest tracking, draws the
+     wearer's own limbs without lag; others see the agreed one;
    - stock locomotion methods: walking, running, jumping and turning (piece 13). 6DOF flight is not one of them:
      it is a stock flight trinket, equipped over the controller (the user's answers 1a and 5a;
      file 23, 8);
@@ -1569,13 +1575,15 @@ From @fable-reviewer's analysis of draft 1 [I, not yet measured], with the user'
     - **bone hitboxes,** sampled before the step, so the fork sees fixed poses. They are query-only by default:
       queries see them and bodies don't touch them. Solid hitboxes are the author's choice, as colliders moved by
       logic (piece 5). S5 reports what each costs;
-    - **VR:** the stock VR body stays the capsule, head and hands, with display IK filling in the limbs. A custom
-      controller may author hitboxes in VR. Nothing promises that a tracked physical foot hits things; that would
-      need a user ruling;
+    - **VR:** the stock VR body stays the capsule, head and hands, with deterministic IK filling in the limbs (piece
+      8). A custom controller may author hitboxes in VR. **Ruled**: solid trinkets and limbs follow
+      the agreed skeleton, so a solid on a limb is a collider moved each step to its anchor's agreed pose. M5's
+      avatar work grows by the solver: a pure, fixed-iteration solver on pe-core's deterministic math, with a golden
+      test on all four platforms (file 23 v4, 3.1). Unsized [I];
     - **clips** come from glTF animations; VRM carries none. A clip plays on the skeleton it was made for: an
       avatar's or item's own clips on its own skeleton, and the stock clips on the stock skeleton. Stock clips don't
       reach other avatars in the MVP: the user forwent animation import for now (10.7 point 8, option (a)). An
-      imported avatar with no clips of its own shows display IK only. Baking stock clips onto an avatar's humanoid rig
+      imported avatar with no clips of its own shows IK only. Baking stock clips onto an avatar's humanoid rig
       at import, option (d), is deferred, not ruled out; it would add about 2-3 [I].
 
     Needs:
@@ -1777,7 +1785,7 @@ are the user's; the rest are the coordinator's rulings.
 
 **Answered by the user on 2026-11-18, 16:35Z**, option (a) for each:
 - **8. Stock clips don't reach other avatars in the MVP:** "we'll forgo animation import for now". A clip plays on the
-  skeleton it was made for. In practice, an imported avatar with no clips of its own shows display IK only, and can't
+  skeleton it was made for. In practice, an imported avatar with no clips of its own shows IK only, and can't
   use the stock walk, run or attack clips.
   - Deferred, not ruled out: option (d), stock clips baked onto the avatar's mapped humanoid rig once, at import,
     outside the simulation, and shipped as the avatar's own clips, the same bytes for the simulation and the display.

@@ -507,7 +507,7 @@ One envelope for every refusal, in `apply`'s outcome, in `watch`, and in a dry r
 | `invalid` | A value of the wrong type or out of range; an unknown component or field; a read-only field; a cycle; a `duplicate` of a subtree an earlier op of the same change adds to, moves or deletes from; a push past the world's speed-change cap | `field`, `rule` (from the schema), `given`; for a push, `limit_mm_per_s` |
 | `in_change` | An op names a `$ref` this transaction does not create | `ref` |
 | `too_many` | A selector matched more than `max` | `count`, `max` |
-| `not_permitted` | The world's permissions; a grab past the most objects one member may hold (`max_claims`), or out of reach | `permission`, `role`; for a grab, `limit` |
+| `not_permitted` | The world's permissions; a grab past the most objects one member may hold (`max_claims`), or out of reach; a write to a field restricted to other players (4.2, when built) | `permission`, `role`; for a grab, `limit`; for a restricted field, `field` |
 | `protected` | V1: a protected object, for anyone but its owner (10.4); a script change whose re-key would lose data on objects its author may not edit (world-model.md 7.9) | `owner`, `action`; for a re-key, `objects` (the first 16) and `more` |
 | `held` | A held object (or an object under it) may not be deleted, nor its `Transform`, `Body`, `Shape` or parent edited, while a player holds it; other edits, such as a colour, pass (world-model.md 7.2) | `held_by` |
 | `too_large` | Past the size limits (9.3), or past the world's shape limit | `limit`; for the shape limit also `count`, the shapes the change would leave |

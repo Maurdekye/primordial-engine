@@ -349,11 +349,17 @@ open points R1 to R12 (section 15).
 - **Built in:** attachment to a player's head, hand or view at an offset, evaluated at the last moment from
   tracking. UI is personal by default (`Local` objects, world-model.md 3.1).
 - **DR3, pointing and touch never read script output.** Every pick, ray, hover, grab and hit is tested against an
-  **interaction scene** built before draw systems run: the engine's time-resolved simulated poses plus built-in
-  attachments. Shared hits and grabs are then judged on the fixed step, as today. The desktop hand's ray (9,
-  "Hit testing") reads the last drawn poses today; it must move to the interaction scene before any script can
-  change a drawn pose. A click on personal UI is tested against the same scene, which for an attached panel is
-  where it is drawn.
+  **interaction scene** built before draw systems run: the engine's time-resolved simulated poses at `t_draw`, plus
+  the display layer's correction offsets (8, D1-D3), plus built-in attachments. Only script draw output is left out
+  (@coordinator-opus, after @ballpit-viz's second read and @fable-reviewer's check). So pointing matches the picture whenever no script moves it. Two conditions hold with it:
+  - the correction offsets feed only local picking and nothing else, as DR2 bans step-side reads of draw state;
+  - DR3's test holds the correction state fixed (below).
+
+  Shared hits and grabs are then judged on the fixed step, as today. So during a correction's blend, a grab is
+  still judged at the simulated pose: it can be refused, or land up to E_cue (8) from where the picture showed the
+  object. The desktop hand's ray (9, "Hit testing") reads the last drawn poses today, which are this scene while no
+  script draws; it must move to the interaction scene before any script can change a drawn pose. A click on
+  personal UI is tested against the same scene, which for an attached panel is where it is drawn.
 - **DR4, the held-object rule is protected.** No draw rule can override the rule that a blocked held object is
   drawn where it is simulated (replica.md, the 5 cm / 3 cm rule; 8, D4). Beyond it there is **no general limit**
   on how far a picture may be from what is solid (ruled, "No limit, opt-in"): content may turn on "keep the
@@ -374,8 +380,8 @@ where it applies no later transform moves the object; then the frame is drawn. B
 script's overrides that overran, trapped or aren't built are dropped for the frame, and its objects are drawn by
 the default: the simulated pose at `t_draw`, a built-in attachment still applying.
 
-**The test of DR3** (file 21, 11): the same raw mouse input gives the same desktop hand input, whatever a draw
-system does to the visual, displaced arbitrarily.
+**The test of DR3** (file 21, 11): the same raw mouse input and the same correction offsets give the same desktop
+hand input, whatever a draw system does to the visual, displaced arbitrarily.
 
 **Handoffs** (file 21, 7). A handoff is an ordinary action at one simulation step; the drawing never decides it.
 - **Attach or grab:** from the action's step the object is attached; the owner's machine draws it from tracking
@@ -678,8 +684,10 @@ B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the
   depth jumps by more than 20 cm (ray moved onto a far object), so a jump is never read as a throw [I].
 - **Hit testing** uses each drawn object's own shape, scaled (a sphere, a box, a capsule; a mesh by its bounding
   sphere until pe-render reads blobs), on the CPU, against the last drawn poses, not physics queries, so the render
-  thread never asks the simulation [I]. Before draw systems exist, this moves to the interaction scene (7.1, DR3). A ray hits a solid only where it enters it from outside: a solid the camera
-  is inside (the pit's floor box, a wall, a ball the eye flew into) is never a hit at distance 0. [V, the M1 session
+  thread never asks the simulation [I]. Before draw systems exist, this moves to the interaction scene (7.1, DR3):
+  the simulated poses with the display layer's correction offsets, which is what it reads now while no script draws.
+  A ray hits a solid only where it enters it from outside: a solid the camera is inside (the pit's floor box, a
+  wall, a ball the eye flew into) is never a hit at distance 0. [V, the M1 session
   of 2026-11-20: with bounding spheres and hits at 0, the floor's 2.87 m sphere held the eye at every spawn slot and
   pinned the hand 0.2 m in front of the camera; pe-render's tests/desktop_hit.rs checks it in M1's pit.]
 - **On screen** (the same session: the user couldn't tell what the controls were): two lines at the bottom of the
