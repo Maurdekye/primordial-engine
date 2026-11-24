@@ -242,9 +242,17 @@ mod tests {
         let e =
             api.capture(&agent(), &CaptureRequest::default(), Instant::now() + Duration::from_secs(10)).unwrap_err();
         assert_eq!(e.code, ErrorCode::CaptureUnavailable, "{e:?}");
-        // What a loop's presenter would count (pull-ahead 1.3): both orders taken, the first drawn.
+        // What a loop's presenter would count (pull-ahead 1.3): both orders taken, the first drawn. The server answers
+        // a refused order inside `serve` and the headless thread records the events only once `serve` returns, so the
+        // refusal can reach this thread first (tier 2 run 45382142620, windows-x64): wait for the third event.
         use pe_render::counters::CaptureEvent::{Drawn, Queued};
-        assert_eq!(headless.events(), [Queued, Drawn, Queued]);
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut events = headless.events();
+        while events.len() < 3 && Instant::now() < until {
+            thread::sleep(Duration::from_millis(5));
+            events = headless.events();
+        }
+        assert_eq!(events, [Queued, Drawn, Queued]);
         headless.stop();
     }
 }
