@@ -1119,7 +1119,7 @@ world-model.md 3.7; how a picture is drawn is render.md's.
 4. **Those objects still affect the shared world,** as detected and sent input (the effects above).
 5. **A commit that turns a shared script local says so** and asks the author to confirm.
 
-- **How point 4 fits R7 (7.3).** A desynced object has two sides on its player's machine: a body on the fixed
+- **How point 4 fits DR7 (7.3).** A desynced object has two sides on its player's machine: a body on the fixed
   step, and a picture per frame. A physical contact with the shared world always comes from the body. Other
   effects, such as a button press or an uploaded file, need no body: they cross through an authorized input
   producer on the fixed step. None comes from draw code, and motion that exists only in draw code has no body,
@@ -1147,28 +1147,29 @@ curve. A **draw system** is script code run per display frame that returns *pres
 run, fail, are slow or are absent. A person reacting to what they see is not a violation; the invariant is about
 paths inside the engine.
 
-**The restrictions on script code** (file 21, section 3; render.md holds R3, R4, R9 and R11):
-- **R1, no write path.** A draw rule has no function that writes a row, issues a command, makes an entry or an
+**The restrictions on script code** (file 21's R1 to R12, named DR1 to DR12 here and in render.md 7.1, which
+holds DR3, DR4, DR9 and DR11):
+- **DR1, no write path.** A draw rule has no function that writes a row, issues a command, makes an entry or an
   input, sends a message or writes a file. Its interface returns overrides only: structural, not a permission
   check.
-- **R2, no read path back.** No step system, local simulated field, input producer, physics query, grab or reach
+- **DR2, no read path back.** No step system, local simulated field, input producer, physics query, grab or reach
   test, pe-api read, save, hash, replay or merge reads an override or draw-local state.
-- **R5, never waited for.** No step, cut, activation, build attestation (6.2a), headless replay, frame-view
+- **DR5, never waited for.** No step, cut, activation, build attestation (6.2a), headless replay, frame-view
   publication or input sampling waits for a draw rule, its build or its assets.
-- **R6, budget and fallback.** Each script's draw systems have a fuel budget per display frame, and each viewer
+- **DR6, budget and fallback.** Each script's draw systems have a fuel budget per display frame, and each viewer
   has totals for script work, host work, draw calls, GPU work and memory. Fuel stops a running system; a deadline
   alone can't. On an overrun, a trap or a module not yet built, that script's overrides for the frame are dropped
   and its objects are drawn by the engine's default. After repeated overruns the system is paused and its author
   told. A trap discards everything the call produced. A draw fault is local, never a script fault in 3.6's sense.
-- **R7, commands and inputs are produced elsewhere.** A draw rule can't author a command or an input, or supply a
+- **DR7, commands and inputs are produced elsewhere.** A draw rule can't author a command or an input, or supply a
   command's target or pose. An *input producer* (the localization design's, on the simulation's side) turns
   tracking or a local simulated object's contact into that player's input; a click on personal UI selects a
   registered command whose payload the input producer computes. A preview may show that pose but never supplies
   it.
-- **R8, nothing leaves the machine.** Draw log output is dropped except on the author's own machine (3.4).
-- **R10, separate build, separate instance.** Draw code is built and run apart from step code, and its build and
+- **DR8, nothing leaves the machine.** Draw log output is dropped except on the author's own machine (3.4).
+- **DR10, separate build, separate instance.** Draw code is built and run apart from step code, and its build and
   faults are not part of what members attest for a script version. A machine without it draws the default.
-- **R12, local diagnostics only.** Draw counters, timings and faults live in a local namespace of the inspector.
+- **DR12, local diagnostics only.** Draw counters, timings and faults live in a local namespace of the inspector.
 
 **Four kinds of draw rule** (file 21, section 4):
 

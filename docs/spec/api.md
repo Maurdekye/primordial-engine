@@ -137,6 +137,18 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
   object, but not copy it, change its protection, or protect anything inside it. The object being reparented, and a duplicate's source, keep theirs.
   - An orphaned create or reparent says so in its outcome: `orphaned`, with the new root's id and its place.
   - Future, when someone needs it: an opt-in `parent_version` on `create`, `reparent` and `duplicate`.
+- **A player's write is a published write** (the user, 2026-11-24; @fable-reviewer's
+  file 21 v10, 2.7; design, not built). A write a player makes from the inspector, or through any WorldApi caller
+  acting for them, bypasses the shared avenue, so it is published: that player's signed input in the record, sent
+  once. The field stays shared, and every machine holds the same value afterwards (world-model.md 3.7). Every
+  `apply` is already its member's signed entry, so this changes no operation [I]. What is new:
+  - **any permitted writer** is the default, and the last in the agreed order wins (the plain-write rule above);
+  - **the engine's special feeds** (a player's pose, their voice source) are fixed to their player, and no edit
+    writes them;
+  - **a field may be restricted to named players.** A write by anyone else is refused, [I] as `not_permitted`
+    with the field named. Changing the list is its own permission;
+  - **the default stays the version check;** the blind write stays opt-in (`"if_version": "any"`). Where the
+    in-frame order of two writes decides something of value, the version check or a grab decides it, never the tie.
 - **Unknown fields are refused, not ignored.** An op carrying a field its type doesn't take (say `if_version` on a
   `create`) is refused as `invalid_argument`, so nothing an agent writes is silently dropped. Every JSON surface
   that takes a transaction does this check (in M1, the MCP tools). A query's unknown field is refused the same way
@@ -1280,7 +1292,8 @@ process over pe-app's in-process network (`crates/pe-app/src/agent_demo.rs`), an
 
 ## 15. Later
 
-- M2: `in_fork` and `fork_*`; `code_test`; per-player fields in the schema; `shader_validate` and `asset_import` once
+- M2: `in_fork` and `fork_*`; `code_test`; per-player fields in the schema, with each field's class (shared,
+  private, published), its "fed by" declaration and writer list (world-model.md 3.7); `shader_validate` and `asset_import` once
   their owners exist.
 - M3: history from the world record since creation; governance in `session` and the schema.
 - The world-line visualization tool any admin can take out (file 19,

@@ -334,6 +334,59 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
   display frame's `t_draw` must follow from its display time and the frame views by the chosen rule, and the drawn
   pose of an object in steady motion must be continuous, its step bounded by velocity × display period.
 
+### 7.1 Per-frame drawing never feeds the simulation (design, not built)
+
+The user's rulings of 2026-11-24, from @fable-reviewer's file 21
+(`fable-reviewer/review/21-draw-systems.md` v10: sections 3, 7, 8 and 9), verbatim on
+@item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe. Nothing here is built, and building
+needs its own go after the friend test. Draw systems, the script side, are logic.md 7.3; the kinds of value,
+world-model.md 3.7. File 21's restrictions are named DR1 to DR12 here and in logic.md, apart from this file's
+open points R1 to R11 (section 15).
+
+- **The rule, reworded (decision 11, adopted):** engine state updates on a fixed timestep, and
+  anything drawn per rendered frame never feeds the simulation. The invariant: for a fixed input log, every
+  simulation result is the same whether draw rules run, fail, are slow or are absent.
+- **Built in:** attachment to a player's head, hand or view at an offset, evaluated at the last moment from
+  tracking. UI is personal by default (`Local` objects, world-model.md 3.1).
+- **DR3, pointing and touch never read script output.** Every pick, ray, hover, grab and hit is tested against an
+  **interaction scene** built before draw systems run: the engine's time-resolved simulated poses plus built-in
+  attachments. Shared hits and grabs are then judged on the fixed step, as today. The desktop hand's ray (9,
+  "Hit testing") reads the last drawn poses today; it must move to the interaction scene before any script can
+  change a drawn pose. A click on personal UI is tested against the same scene, which for an attached panel is
+  where it is drawn.
+- **DR4, the held-object rule is protected.** No draw rule can override the rule that a blocked held object is
+  drawn where it is simulated (replica.md, the 5 cm / 3 cm rule; 8, D4). Beyond it there is **no general limit**
+  on how far a picture may be from what is solid (ruled, "No limit, opt-in"): content may turn on "keep the
+  picture aligned with the touchable shape" per object. A script can't change what is solid or where.
+- **DR9, the camera is not an output.** No draw rule moves the viewer's head, rig or view.
+- **DR11, the world's own captures stay simulated:** `view_capture` (11), object bounds and visibility lists show
+  simulated values, as today.
+- **The engine's own UI stays reachable.** There is no player control to clear what scripts put in a player's view
+  or hand space (ruled), and any shared script may place things there (ruled). So the
+  layer for the engine's own UI stays reserved: when its menu is open it is drawn above all content, and its
+  invocation, focus and hit-testing take priority over script content [I]. Abuse falls to the trust system and the
+  world's admins.
+
+**Order within a display frame** (file 21, 8): the engine resolves simulated poses to `t_draw` and builds the
+interaction scene; `state_at` systems run; `draw` systems run in the step systems' order (asset id, then index);
+parent and late-latched spaces are resolved; the held-object rule is checked last, on the final placement, and
+where it applies no later transform moves the object; then the frame is drawn. Both eyes share one result. A
+script's overrides that overran, trapped or aren't built are dropped for the frame, and its objects are drawn by
+the default: the simulated pose at `t_draw`, a built-in attachment still applying.
+
+**Handoffs** (file 21, 7). A handoff is an ordinary action at one simulation step; the drawing never decides it.
+- **Attach or grab:** from the action's step the object is attached; the owner's machine draws it from tracking
+  from the first display frame at or after that step.
+- **Detach or release:** from the action's step the simulation gives the object its pose and velocity from its own
+  record of the hand, and the drawing switches to the simulated pose with no blend (8, "When the player lets go").
+  A jump is still possible when the hold was corrected or lost.
+- **Leaving a path in time:** the object continues from the pose and velocity the simulation stored at that step;
+  for a blocked solid, the solved ones.
+- **Placing a personal preview into the world:** the input producer computes the pose and sends the command; the
+  preview is removed in the display frame where the new object first appears.
+- **Draw-local state is dropped** at every handoff, and a rollback may make a draw rule's output jump. That is
+  allowed.
+
 ## 8. The display layer (divergence.md 8, D1-D8)
 
 State: per object id, on the render thread, a **drawn pose** and a **correction offset** (position and rotation)
@@ -595,7 +648,7 @@ B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the
   depth jumps by more than 20 cm (ray moved onto a far object), so a jump is never read as a throw [I].
 - **Hit testing** uses each drawn object's own shape, scaled (a sphere, a box, a capsule; a mesh by its bounding
   sphere until pe-render reads blobs), on the CPU, against the last drawn poses, not physics queries, so the render
-  thread never asks the simulation [I]. A ray hits a solid only where it enters it from outside: a solid the camera
+  thread never asks the simulation [I]. Before draw systems exist, this moves to the interaction scene (7.1, DR3). A ray hits a solid only where it enters it from outside: a solid the camera
   is inside (the pit's floor box, a wall, a ball the eye flew into) is never a hit at distance 0. [V, the M1 session
   of 2026-11-20: with bounding spheres and hits at 0, the floor's 2.87 m sphere held the eye at every spawn slot and
   pinned the hand 0.2 m in front of the camera; pe-render's tests/desktop_hit.rs checks it in M1's pit.]
@@ -800,6 +853,7 @@ For @coordinator-opus unless marked; my proposal first.
 | R9 | Known limits of the M1 scene | Metals read dark (no environment lighting); a mesh blob draws as its bounding stand-in; a box's outline may crack at corners (section 6) |
 | R10 | Notices (8.1): told when final, or at once | **Ruled**: when final. Never a notice for a grab won after the replay; costs the cut lag plus finality (about 0.3-0.6 s [I], measured in the test-6 run) |
 | R11 | Notices (8.1) in the headset | **Ruled**: head-locked for M1, 1 m ahead, 20° down; the lazy-follow panel is a mode switchable in the headset, for the user to compare at the headset test |
+| R12 | Draw systems (7.1), open from file 21's section 12 | Where draw systems run so the frame loop never blocks: on the render thread within its budget, or a worker a frame ahead. The engine menu's drawing, invocation, focus and hit-testing priority over script content, to confirm when built |
 
 ## 16. Size and order
 
