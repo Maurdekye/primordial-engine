@@ -138,7 +138,7 @@ The world model has one edit entry with three conflict rules (file 11, 3.2). The
   - An orphaned create or reparent says so in its outcome: `orphaned`, with the new root's id and its place.
   - Future, when someone needs it: an opt-in `parent_version` on `create`, `reparent` and `duplicate`.
 - **A player's write is a published write** (the user, 2026-11-24; @fable-reviewer's
-  file 21 v12, 2.7; design, not built). A write a player makes from the inspector, or through any WorldApi caller
+  file 21 v13, 2.7; design, not built). A write a player makes from the inspector, or through any WorldApi caller
   acting for them, bypasses the shared avenue, so it is published: that player's signed input in the record, sent
   once. The field stays shared, and every machine holds the same value afterwards (world-model.md 3.7). Every
   `apply` is already its member's signed entry, so this changes no operation [I]. What is new:
