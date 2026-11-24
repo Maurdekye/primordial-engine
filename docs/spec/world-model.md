@@ -35,6 +35,9 @@ ruling, cited by message id. Where this file and a user ruling disagree, the rul
 - **Positions cannot become numbers by accident** (the user). `Pos` has no readable fields. The only
   way to raw numbers is `pos - Pos::ORIGIN`, which gives an `Offset`. The engine obeys the same wall as scripts. The
   chunk index never saturates: an out-of-range result is a refusal, and its encoding already reaches past 64 bits.
+- **Shared, private and published** (3.7, design only): a value is the same for everyone, one per player, or fed
+  by one player as input for everyone to watch. As little as possible is published, and a value drawn per frame
+  never reaches the shared world.
 - **Kept, and evolved:** pe-core and pe-sim. Their existing tests stay green except where a test pins a format this
   file changes on purpose (section 10 lists each).
 
@@ -766,6 +769,93 @@ as a colour (api.md 4.4: hex or an explicit space, never a bare array).
 - **Scripted components** mark a field the same way (main d7933dc1, @iter-bench) [V, read]: a field of pe-sdk's
   `LinearRgb` or `LinearRgba` is marked in the manifest's field byte, pe-logic gives the mark to the component's
   `FieldDesc`, and binding a script to an existing component compares colour spaces with the rest of the fields.
+
+### 3.7 Shared, private and published values (design, not built)
+
+The user's rulings of 2026-11-24, from @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md`
+v10, sections 2.1, 2.3, 2.7 and 2.8; the rulings verbatim on
+@item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe). They extend the 2026-11-07
+localization rulings (`<notes>` 362-374). Nothing here is built; building needs its own
+go after the friend test. The local rule that decides which code is local, and draw systems themselves, are
+logic.md's (section 7); how a drawn picture is made is render.md's.
+
+**Kinds of value** (file 21, 2.1). Every value a world holds is one of three; the third is new:
+
+| Kind of value | Computed | Lasts | May affect the shared world |
+|---|---|---|---|
+| **Synchronized** (the default) | every machine, on the step | saved | it is the shared world |
+| **Unsynchronized, local simulated** (2026-11-07) | one machine, on the step | remembered where marked | only as that player's detected and sent input |
+| **Unsynchronized, per frame** (a *presentation override*) | one machine, per display frame | one frame | never |
+
+- **A presentation override** is the value the picture uses this frame in place of a field's own value. The field
+  keeps its own value, and everything but the picture reads that. An override is never remembered, never a
+  collider and never a source of input; it is not a row, so it is outside every root (5.2). It reuses the
+  framework's per-player mark and its two ways of choosing a mode (a component on the field, or a script's schema).
+- **`Local` objects (3.1)** are where personal UI lives, and UI is personal by default (the user).
+
+**The three classes** (file 21, 2.3; direction of record; the user's names):
+
+| Class | Computed | Who holds the same value |
+|---|---|---|
+| **Shared** (class 1, the default) | every machine, from the shared record | everyone |
+| **Private** (class 2, explicitly desynced) | each machine, for its own player | nobody: each player has their own |
+| **Published** (class 3) | one player's machine, then sent once as that player's input | everyone, once it is in the record |
+
+The governing principle, verbatim: "we want to minimize the amount of published content to only
+what is absolutely necessary, and keep asmmuch as possible shared or private."
+- **Storage stays two ways:** one value for everyone, or one per player. Input is the only
+  crossing between them. A published value is stored the same for everyone, and its only writer is a player's
+  input: Q10's "local data sent as input becomes shared". Tracked hands, files, device readings, local web calls
+  and locally computed data all cross this way, and there is no second path.
+- **The class belongs to a field or an input channel,** not to an object. One controller can hold a private pose,
+  a published grip and a shared score; the object shows a summary.
+- **Publish the cause, not the result.** A small cause (a pose, a button, a parameter) is published and every
+  machine simulates the consequence as shared state. A result is published only when its cause can't be shared: a
+  file's contents, a device reading, a private computation.
+- **Watching has two strengths** (Q5): *seen only* is a lossy stream, not saved or replayed, which shared code
+  can't read; *reacted to* is a value in the record, signed, ordered, saved and replayed.
+- **Continuous samples merge to one per step; events don't.** A press and a release inside one step are two
+  ordered events, each with an identity and recorded once.
+- **Replay uses the record:** it never rereads a file, repeats a web request or publishes again.
+- **A file is named by hash and length** (3.4), which doesn't make it available. If shared logic uses the bytes,
+  they are pinned for replay and joiners, and the reference takes effect at an agreed step; a machine that
+  downloads late catches up while the others go on.
+- **A published value is a signed claim the world still validates:** type, range, size, rate and the player's
+  permissions. It can fill only a field declared as fed by a player. Rate and size budgets are judged from the
+  record, never from arrival time, so every machine drops the same inputs.
+- **Owning a published pose gives no authority over a collision's outcome.** A published body drives shared
+  contacts at its recorded poses, and shared physics decides the result, as it already does for hand inputs (8.1).
+- **A late joiner** imports the last recorded value with the rest of the state, and nothing of the source's
+  private state. When the source leaves, the field keeps its last value and its "live" flag goes off (Q1 (a)).
+
+**Who may write a published value** (file 21, 2.7; the user):
+- **Any permitted writer by default,** as often as they like; each write is recorded once and the last in the
+  agreed order wins. That is rule 3 (7.4), and every machine checks permissions again at the ordered frame.
+- **The engine's special feeds** (a player's pose, their voice source) accept only the player they are attached
+  to and can't be handed over.
+- **A field can be restricted to named players.** [I] Changing the list is a separate permission from writing the
+  value, and each sample is tied to the list it was made under, so a late sample can't write after the list
+  changes. An author's continuous feed is a field restricted to one player.
+- **A write from the inspector is a published write:** that player's signed input in the record. The field stays
+  shared. A write made by shared code is not published; every machine computes it.
+- **Two writes in one step** follow the agreed in-frame order (agreement.md). [I] Where the order decides
+  something of value, use rule 2's precondition (7.3) or a hold (7.2); "first wins" is the hold rule only.
+- [I] **A private script that writes a shared field each step** would send one input per step from every player,
+  and the copies would fight. It should publish the cause instead.
+
+**Outside sources and secret code** (file 21, 2.8; the user):
+- **There is no secret class.** Hidden values are private fields. Hidden logic isn't world content at all.
+- **Secret code is an outside source:** it runs in its owner's own engine and reaches a world as a websocket or an
+  HTTP feed does, through a published input channel the world has agreed to. The world chooses whether to accept
+  outside sources; it never holds, builds or runs the code.
+- **One mark for every outside source.** It doesn't say whether the source is a websocket, HTTP or engine code.
+- **The engine offers no messaging service;** authors build their own (against fable's recommendation).
+- [I] **The contract is public:** the input's format and the rule that validates it. The local-access grants
+  (logic.md 7) and the writer rules above apply. Others can verify who sent an input and that it passes
+  validation, never what computed it. Fair hidden moves need commit and reveal, and a reveal is sent only once its
+  step is final.
+- [I] **Nothing of a source enters the world:** no module, private rows or debug output in commits, joins, saves,
+  the inspector, captures or telemetry. A private field is only as secret as its storage, which is open (12).
 
 ## 4. Coordinates: `Pos`, `Offset` and the wall
 
@@ -2648,3 +2738,11 @@ For the reviewers and the coordinator. None needs the user, as far as I can see 
     `/Table` with an `ObjectVersion` precondition is refused whenever anyone adds a child to it. If that proves
     common, the parent's own rows and its child list could carry separate versions. Measure before changing it.
     A row `Version` precondition already avoids it.
+13. **Shared, private and published values (3.7), open from file 21's section 12:**
+    - the default sizes and rates for published values, and the shape of the "fed by" declaration;
+    - where per-player values the world remembers (Q11) are stored. They must stay on the owner's machine for a
+      private field to be secret;
+    - the exact rule for a contact a player sent from a predicted world that the agreed state then refutes (the
+      ball was never there). Contacts are checked on the step against the agreed state;
+    - a private script's writes reach the world as its player's input in the 2026-11-07 design. Today edits reach
+      it only through the API, and no script-side path has been checked in code.
