@@ -1809,6 +1809,7 @@ impl Sim {
                 backlogged: self.agree.backlogged(),
                 holds: self.stats.holds,
                 inputs: self.stats.inputs,
+                refused: self.stats.inputs_refused,
                 thinned: self.stats.hands_floor_thinned,
                 published: self.stats.published,
             };

@@ -5,9 +5,10 @@
 //!
 //! The file starts with a `#` line, then has two kinds of line, each a word and `key=value` pairs, times in ms:
 //! - `sec`: one per second of the frame clock, for that second's ticks: sums, the worst tick, and the state at its end.
-//!   Its `inputs`, `thinned` and `unpublished` count, in that second, the hand entries this member made, the frames
-//!   whose pose-only entries step 2 thinned while backlogged (F3 S1), and the ticks that published no view. A member
-//!   whose hands are held makes no inputs, so the self-test checker's no_hold reads `inputs`. A stretch of
+//!   Its `inputs`, `refused`, `thinned` and `unpublished` count, in that second, the hand entries agreement took
+//!   from this member, those it refused, the frames whose pose-only entries step 2 thinned while backlogged (F3 S1),
+//!   and the ticks that published no view. A member whose hands are held makes no inputs, nor does an untracked
+//!   hand, so the self-test checker's no_hold reads `inputs` (with `refused` beside it). A stretch of
 //!   `unpublished` is a stretch with no new view (the friend test's K8). `holds` is the run's total so far;
 //!   [`crate::sim::SimStats`] has the meaning of each.
 //! - `long`: one per tick longer than `PE_TICK_TRACE_MS` (default 50), with its every phase. `cpu_ms` against
@@ -60,10 +61,11 @@ pub struct Tick {
     pub cost_ns: Option<u64>,
     pub backlogged: bool,
     pub holds: u64,
-    /// The run's totals at the tick's end: the hand entries this member made, the frames step 2 thinned (F3 S1), and
-    /// the views published (`SimStats::inputs`, `hands_floor_thinned`, `published`). The trace writes each second's
-    /// increase.
+    /// The run's totals at the tick's end: the hand entries agreement took from this member and those it refused,
+    /// the frames step 2 thinned (F3 S1), and the views published (`SimStats::inputs`, `inputs_refused`,
+    /// `hands_floor_thinned`, `published`). The trace writes each second's increase.
     pub inputs: u64,
+    pub refused: u64,
     pub thinned: u64,
     pub published: u64,
 }
@@ -80,6 +82,7 @@ struct Second {
     backlogged: u64,
     received: u64,
     inputs: u64,
+    refused: u64,
     thinned: u64,
     unpublished: u64,
     phases: PhaseTimes,
@@ -161,9 +164,11 @@ impl TickTrace {
         }
         self.second = Some(sec);
         let lag = (t.ps.0 + 1).saturating_sub(t.frame.0);
-        let (inputs, thinned, published) = self.last.as_ref().map_or((0, 0, 0), |l| (l.inputs, l.thinned, l.published));
+        let (inputs, refused, thinned, published) =
+            self.last.as_ref().map_or((0, 0, 0, 0), |l| (l.inputs, l.refused, l.thinned, l.published));
         let s = &mut self.sums;
         s.inputs += t.inputs.saturating_sub(inputs);
+        s.refused += t.refused.saturating_sub(refused);
         s.thinned += t.thinned.saturating_sub(thinned);
         s.unpublished += u64::from(t.published == published);
         s.ticks += 1;
@@ -214,7 +219,7 @@ impl TickTrace {
         write!(
             self.out,
             "sec s={sec} ticks={} tick_ms={} tick_max_ms={} cpu_ms={} loop_max_ms={} late_max_ms={} lag_max={} final_lag={} budget={} \
-             cost_ms={} backlogged={} holds={} received={} inputs={} thinned={} unpublished={}",
+             cost_ms={} backlogged={} holds={} received={} inputs={} refused={} thinned={} unpublished={}",
             s.ticks,
             ms(s.tick_ns),
             ms(s.tick_max_ns),
@@ -229,6 +234,7 @@ impl TickTrace {
             t.holds,
             s.received,
             s.inputs,
+            s.refused,
             s.thinned,
             s.unpublished,
         )?;
@@ -386,6 +392,7 @@ mod tests {
             backlogged: false,
             holds: 0,
             inputs: 2 * (p + 1),
+            refused: 0,
             thinned: 0,
             published: p + 1,
         }
@@ -414,7 +421,8 @@ mod tests {
                 }
                 _ => published += 1,
             }
-            let at = Tick { inputs, thinned, published, ..tick(f, 1, f as i64 * 1000 / 60) };
+            let refused = u64::from(f >= 150);
+            let at = Tick { inputs, refused, thinned, published, ..tick(f, 1, f as i64 * 1000 / 60) };
             t.record(&Before::take(&phases, 0), &phases, 0, at);
         }
         drop(t);
@@ -422,9 +430,10 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let secs: Vec<&str> = text.lines().filter(|l| l.starts_with("sec ")).collect();
         assert_eq!(secs.len(), 3, "{text}");
-        assert!(secs[0].contains("inputs=120 thinned=0 unpublished=0"), "{}", secs[0]);
-        assert!(secs[1].contains("inputs=110 thinned=10 unpublished=20"), "{}", secs[1]);
-        assert!(secs[2].contains("inputs=0 thinned=0 unpublished=0"), "{}", secs[2]);
+        assert!(secs[0].contains("inputs=120 refused=0 thinned=0 unpublished=0"), "{}", secs[0]);
+        assert!(secs[1].contains("inputs=110 refused=0 thinned=10 unpublished=20"), "{}", secs[1]);
+        // One refused entry, at frame 150: the running total goes from 0 to 1 there.
+        assert!(secs[2].contains("inputs=0 refused=1 thinned=0 unpublished=0"), "{}", secs[2]);
     }
 
     /// A `sec` line per frame-clock second, and a `long` line for each tick over the threshold with its phases and
