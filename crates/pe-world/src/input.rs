@@ -510,6 +510,10 @@ impl World {
         if !self.store.has::<Body>(object) {
             return Err(invalid());
         }
+        // A template is never in play, so never in reach (`crate::templates`).
+        if self.inert(object) {
+            return Err(Reason::OutOfReach);
+        }
         if let Some(&until) = self.inputs.cooldowns.get(&(author, object))
             && until > now
         {
@@ -614,6 +618,9 @@ impl World {
         }
         if !self.store.has::<Body>(object) {
             return Err(invalid());
+        }
+        if self.inert(object) {
+            return Err(Reason::OutOfReach);
         }
         if let Some(c) = self.claims.get(&object)
             && c.member != author

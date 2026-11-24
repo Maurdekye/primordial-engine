@@ -60,9 +60,12 @@ use crate::fault::FaultWorld;
 pub const FORMAT: u16 = 2;
 /// The largest delay a record may carry, ms: a second, far past any headset's lead [I].
 pub const MAX_DISPLAY_DELAY_MS: u32 = 1_000;
-/// The one preset a record names in M1, and its version: a change to what `preset::m1_session` builds bumps it.
+/// The presets a record may name, and their versions: a change to what `preset::m1_session` builds for one bumps it.
+/// M1's ball pit, and the friend test's flat plane (pe-world `preset::plane_on`), whose record carries no balls.
 pub const PRESET: &str = "m1-ball-pit";
 pub const PRESET_VERSION: u32 = 1;
+pub const PLANE: &str = "plane";
+pub const PLANE_VERSION: u32 = 1;
 /// Bounds a record keeps: `decode` refuses bytes past them, and `ball_pit` refuses values past them, so a record A
 /// sends is one B can read.
 const MAX_BUILD: usize = 256;
@@ -145,7 +148,8 @@ pub struct Params {
     pub display_delay_ms: u32,
     pub gravity: [f32; 3],
     pub seed: u64,
-    pub balls: u32,
+    /// The world: the ball pit with its ball count, or the plane.
+    pub preset: preset::Preset,
     pub origin: Pos,
     pub epoch_ns: i64,
 }
@@ -264,12 +268,21 @@ impl Genesis {
             cut_interval_ms,
             display_delay_ms: params.display_delay_ms,
             gravity: params.gravity,
-            preset: Preset {
-                name: PRESET.into(),
-                version: PRESET_VERSION,
-                seed: params.seed,
-                balls: params.balls,
-                origin: params.origin,
+            preset: match params.preset {
+                preset::Preset::BallPit { balls } => Preset {
+                    name: PRESET.into(),
+                    version: PRESET_VERSION,
+                    seed: params.seed,
+                    balls: u32::try_from(balls).unwrap_or(u32::MAX),
+                    origin: params.origin,
+                },
+                preset::Preset::Plane => Preset {
+                    name: PLANE.into(),
+                    version: PLANE_VERSION,
+                    seed: params.seed,
+                    balls: 0,
+                    origin: params.origin,
+                },
             },
             epoch_ns: params.epoch_ns,
             root: Hash([0; 32]),
@@ -326,10 +339,19 @@ impl Genesis {
         if self.build != build {
             return Err(GenesisError::Build { record: self.build.clone(), mine: build.to_vec() });
         }
-        if self.preset.name != PRESET || self.preset.version != PRESET_VERSION {
-            return Err(GenesisError::Preset { name: self.preset.name.clone(), version: self.preset.version });
-        }
+        self.preset()?;
         Ok(())
+    }
+
+    /// The world the record's preset names: the ball pit (`m1-ball-pit` v1) or the plane (`plane` v1, with no balls).
+    /// Any other name, version, or a plane with balls, is an unknown preset.
+    pub fn preset(&self) -> Result<preset::Preset, GenesisError> {
+        let p = &self.preset;
+        match (p.name.as_str(), p.version) {
+            (PRESET, PRESET_VERSION) => Ok(preset::Preset::BallPit { balls: p.balls as usize }),
+            (PLANE, PLANE_VERSION) if p.balls == 0 => Ok(preset::Preset::Plane),
+            _ => Err(GenesisError::Preset { name: p.name.clone(), version: p.version }),
+        }
     }
 
     /// The record's pe-agree settings are this machine's.
@@ -581,13 +603,10 @@ impl Genesis {
 
     /// The frame-0 world the record describes, on its line.
     fn world(&self) -> Result<World, GenesisError> {
-        if self.preset.name != PRESET || self.preset.version != PRESET_VERSION {
-            return Err(GenesisError::Preset { name: self.preset.name.clone(), version: self.preset.version });
-        }
         let session = Session {
             seed: self.preset.seed,
             origin: self.preset.origin,
-            balls: self.preset.balls as usize,
+            preset: self.preset()?,
             line: self.line(),
             rate: self.rate,
             gravity: self.gravity,
@@ -759,7 +778,7 @@ mod tests {
             display_delay_ms: 0,
             gravity: pe_world::GRAVITY,
             seed: 11,
-            balls: 24,
+            preset: preset::Preset::BallPit { balls: 24 },
             origin: Pos::ORIGIN,
             epoch_ns: 2_000_000_000,
         }

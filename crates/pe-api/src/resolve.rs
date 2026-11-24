@@ -503,8 +503,10 @@ fn template_named(snap: &dyn Snapshot, i: usize, t: &str, b: &Budget) -> Result<
     if !b.charge(roots.len()) {
         return Err(too_much_examined(i));
     }
-    let folders: Vec<ObjectId> =
-        roots.into_iter().filter(|r| snap.info(*r).is_some_and(|o| o.name == "Templates")).collect();
+    let folders: Vec<ObjectId> = roots
+        .into_iter()
+        .filter(|r| snap.info(*r).is_some_and(|o| pe_world::templates::is_folder_name(&o.name)))
+        .collect();
     if folders.len() > 1 {
         return Err(refusal(
             RefusalCode::Ambiguous,

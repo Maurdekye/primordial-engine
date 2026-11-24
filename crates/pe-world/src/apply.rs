@@ -45,6 +45,9 @@ pub struct Footprint {
     /// Objects an input's `Grab` began holding: a new claim, not a renewal of the author's own (8.1). With pushes and
     /// throws, what the author's own check after an interaction watches (replica.md 3.4).
     pub grabs: Vec<ObjectId>,
+    /// Roots whose `Name` the edit wrote or removed and whose subtree it so made inert or live (a template folder's
+    /// name, [`crate::templates`]), in id order: every body under each is affected, as under a reparent.
+    pub regrouped: Vec<ObjectId>,
     /// What a script commit's re-key did (7.9): the objects, the row count and the fields zeroed or dropped. Always
     /// `None` for an entry since logic.md 6.2a: the re-key happens at activation, and [`World::end_frame`] reports it.
     pub rekey: Option<RekeyReport>,
@@ -417,6 +420,26 @@ impl World {
             let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
             return Err((None, Reason::TooManyShapes { limit: n(MAX_SHAPES), count: n(count) }));
         }
+        // Templates (`crate::templates`): an edit that makes a held object inert or live is refused, as an edit of a
+        // held object's parent is (7.2); the first such claim in object order names the holder.
+        for (&held, c) in self.claims.iter() {
+            if work.store.exists(held) && self.inert(held) != work.inert(held) {
+                return Err((None, Reason::Held { by: c.member }));
+            }
+        }
+        // A root renamed to or from a template folder's name: its subtree's bodies are affected (a reparent's are
+        // already, through its subtree).
+        let mut regrouped: Vec<ObjectId> = cx
+            .fp
+            .rows
+            .iter()
+            .filter(|&&(id, c)| c == ids::NAME && work.store.exists(id) && work.store.parent(id).is_none())
+            .map(|&(id, _)| id)
+            .filter(|&id| self.is_template_folder(id) != work.is_template_folder(id))
+            .collect();
+        regrouped.sort();
+        regrouped.dedup();
+        cx.fp.regrouped = regrouped;
         *self = work;
         // An applied edit's inline blobs go into the machine's store, on every machine that applies it (3.4). A
         // refused one stores nothing.

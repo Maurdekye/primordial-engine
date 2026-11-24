@@ -121,6 +121,9 @@ struct Options {
     /// B's delay setting (the user's, app.md 3): how much of the display lead the shown present does
     /// not cover, so the world is drawn that long before the moment shown. 0 by default.
     display_delay: Duration,
+    /// `--preset ball-pit|plane`: the world an `--open` session starts (genesis.rs `PRESET`, `PLANE`); the ball pit
+    /// with 500 balls by default.
+    preset: pe_world::preset::Preset,
     /// `--inject-fault-at`: the frame at which this machine injects a deliberate test fault (pe-app's `fault`).
     inject_fault_at: Option<Frame>,
     /// `--arm-fault`: the console's typed `fault` injects that test fault at the next frame.
@@ -154,6 +157,7 @@ fn options() -> Options {
         agent_name: None,
         drawn_time: None,
         display_delay: Duration::ZERO,
+        preset: pe_world::preset::Preset::BallPit { balls: 500 },
         inject_fault_at: None,
         arm_fault: false,
         check_replay: false,
@@ -183,6 +187,13 @@ fn options() -> Options {
                 let ms = args.next().and_then(|n| n.parse::<f64>().ok()).filter(|ms| *ms >= 0.0);
                 o.display_delay =
                     ms.and_then(|ms| Duration::try_from_secs_f64(ms / 1e3).ok()).unwrap_or_else(|| usage());
+            }
+            "--preset" => {
+                o.preset = match args.next().as_deref() {
+                    Some("ball-pit") => pe_world::preset::Preset::BallPit { balls: 500 },
+                    Some("plane") => pe_world::preset::Preset::Plane,
+                    _ => usage(),
+                }
             }
             "--arm-fault" => o.arm_fault = true,
             "--hands" => o.hands = Some(args.next().filter(|h| !h.is_empty()).unwrap_or_else(|| usage())),
@@ -333,7 +344,8 @@ fn shared_sim(
         Shared::Open => {
             // B's delay is the session's: the opener's option, in the genesis record (app.md 3).
             let display_delay_ms = u32::try_from(o.display_delay.as_millis()).unwrap_or(u32::MAX);
-            let p = OpenParams { seed: WORLD_SEED, balls: 500, rate, epoch_lead: Duration::ZERO, display_delay_ms };
+            let p =
+                OpenParams { seed: WORLD_SEED, preset: o.preset, rate, epoch_lead: Duration::ZERO, display_delay_ms };
             let opened = ep
                 .open_alone(&p, INVITE_VALID, T_JOIN, runner)
                 .unwrap_or_else(|e| fail(&format!("the session did not start: {e}")));
@@ -845,7 +857,7 @@ fn finish<S: Debug, E>(stats: Result<S, E>) {
 fn usage() -> ! {
     fail(
         "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] \
-         [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms>|a:<ms>|b:<ms>] [--display-delay <ms>] [--mcp-pipe] \
+         [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms>|a:<ms>|b:<ms>] [--display-delay <ms>] [--preset ball-pit|plane] [--mcp-pipe] \
          [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--hands <routine|file>] [--log <file>] \
          [--agent-name <name>] [--agent <command> <args>...]",
     )

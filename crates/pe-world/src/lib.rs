@@ -24,6 +24,7 @@ mod read;
 mod replica;
 pub mod script;
 mod source;
+pub mod templates;
 #[cfg(feature = "test-util")]
 pub mod test_util;
 pub mod tree;

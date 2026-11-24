@@ -7,7 +7,8 @@ use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{Class, Outcome};
 use pe_world::components::{Body, Hand, Shape, SimSize, body_kind, shape_kind};
 use pe_world::preset::{
-    BALLS, MAX_BALLS, Session, ball_pit, ball_pit_on, ball_pit_with, find, genesis_line, m1_line, m1_session, names,
+    BALLS, MAX_BALLS, Preset, Session, ball_pit, ball_pit_on, ball_pit_with, find, genesis_line, m1_line, m1_session,
+    names,
 };
 use pe_world::{BlobStore, HandPose, Input, World, WorldError, perm};
 
@@ -175,7 +176,7 @@ fn a_session_s_frame_0_root_is_the_same_on_every_machine() {
     let session = Session {
         seed: 7,
         origin: Pos::ORIGIN,
-        balls: BALLS,
+        preset: Preset::BallPit { balls: BALLS },
         line: pe_core::LineId(pe_core::Hash([9; 32])),
         rate: pe_seams::SimRate::DEFAULT,
         gravity: pe_world::GRAVITY,

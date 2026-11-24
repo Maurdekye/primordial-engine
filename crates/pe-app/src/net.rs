@@ -343,8 +343,8 @@ pub struct Endpoint {
 #[derive(Clone, Debug)]
 pub struct OpenParams {
     pub seed: u64,
-    /// The ball pit's ball count (500 in M1's demo).
-    pub balls: u32,
+    /// The world: the ball pit with its ball count (500 in M1's demo), or the friend test's plane.
+    pub preset: pe_world::preset::Preset,
     pub rate: SimRate,
     pub epoch_lead: Duration,
     /// B's delay for the whole session, in whole milliseconds (genesis.rs `display_delay_ms`; app.md 3).
@@ -605,7 +605,7 @@ impl Endpoint {
             display_delay_ms: p.display_delay_ms,
             gravity: pe_world::GRAVITY,
             seed: p.seed,
-            balls: p.balls,
+            preset: p.preset,
             origin: pe_seams::Pos::ORIGIN,
             epoch_ns,
         };
@@ -652,7 +652,7 @@ impl Endpoint {
             display_delay_ms: p.display_delay_ms,
             gravity: pe_world::GRAVITY,
             seed: p.seed,
-            balls: p.balls,
+            preset: p.preset,
             origin: pe_seams::Pos::ORIGIN,
             epoch_ns,
         };
@@ -1280,7 +1280,13 @@ mod tests {
     }
 
     fn params() -> OpenParams {
-        OpenParams { seed: 3, balls: 8, rate: RATE, epoch_lead: Duration::from_millis(1500), display_delay_ms: 0 }
+        OpenParams {
+            seed: 3,
+            preset: pe_world::preset::Preset::BallPit { balls: 8 },
+            rate: RATE,
+            epoch_lead: Duration::from_millis(1500),
+            display_delay_ms: 0,
+        }
     }
 
     /// One machine of [`joined_pair`]: its simulation, frame slot, member and clock.
@@ -1432,7 +1438,7 @@ mod tests {
             display_delay_ms: 0,
             gravity: pe_world::GRAVITY,
             seed: 3,
-            balls: 8,
+            preset: pe_world::preset::Preset::BallPit { balls: 8 },
             origin: pe_seams::Pos::ORIGIN,
             epoch_ns: 123,
         };
@@ -1499,7 +1505,7 @@ mod tests {
             display_delay_ms: 0,
             gravity: pe_world::GRAVITY,
             seed: 3,
-            balls: 8,
+            preset: pe_world::preset::Preset::BallPit { balls: 8 },
             origin: pe_seams::Pos::ORIGIN,
             epoch_ns: 123,
         };
@@ -1602,7 +1608,11 @@ mod tests {
         let host = crate::clock::shared();
         let a = Endpoint::bind([21; 32], loopback(), Vec::new(), true, host.clone(), None).unwrap();
         let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
-        let p = OpenParams { epoch_lead: Duration::ZERO, balls, ..params() };
+        let p = OpenParams {
+            epoch_lead: Duration::ZERO,
+            preset: pe_world::preset::Preset::BallPit { balls: balls as usize },
+            ..params()
+        };
         let Opened { session: s, invite, replies, .. } =
             a.open_alone(&p, Duration::from_secs(600), t_join, runner()).expect("A opens alone");
         let (me_a, me_b) = (s.me, b.me());
@@ -1703,7 +1713,7 @@ mod tests {
     )]
     fn a_joiner_joins_at_the_cut_that_admits_it_and_both_finalize() {
         use crate::join::{T_JOIN, joined};
-        let balls = std::env::var("PE_JOIN_BALLS").ok().and_then(|b| b.parse().ok()).unwrap_or(params().balls);
+        let balls = std::env::var("PE_JOIN_BALLS").ok().and_then(|b| b.parse().ok()).unwrap_or(8);
         let CutPair { host, mut sim, mut notices, cj, me_a, me_b } = cut_pair(T_JOIN, balls);
         let e = cj.e.at;
         let (mut sim_b, slot_b, status_b) = joining_sim(cj, me_a, &host);
@@ -1755,7 +1765,7 @@ mod tests {
     fn a_join_held_past_t_join_fails_and_joins_after_all_once_the_cut_is_final() {
         use crate::join::{join_failed, joined_after_all};
         const SHORT: Duration = Duration::from_millis(1500);
-        let CutPair { host, mut sim, mut notices, cj, me_a, me_b } = cut_pair(SHORT, params().balls);
+        let CutPair { host, mut sim, mut notices, cj, me_a, me_b } = cut_pair(SHORT, 8);
         let e = cj.e.at;
         // B holds off: its node exists, but nothing imports E or votes.
         let failed = run_until(&mut sim, &host, &mut notices, SHORT * 3, |_| false);

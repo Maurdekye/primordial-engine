@@ -105,14 +105,23 @@ pub fn ball_pit_on(line: LineId, seed: u64, blobs: BlobStore, origin: Pos, balls
     w
 }
 
-/// What M1's session genesis is built from ([`m1_session`]): the ball pit's arguments, and the settings and members a
-/// session's genesis record carries (pe-app's `genesis`).
+/// Which world a session's genesis builds (world-model.md 2.4): the ball pit, or the friend test's flat plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Preset {
+    /// [`ball_pit_on`] with this many balls.
+    BallPit { balls: usize },
+    /// [`plane_on`].
+    Plane,
+}
+
+/// What M1's session genesis is built from ([`m1_session`]): the preset and its arguments, and the settings and
+/// members a session's genesis record carries (pe-app's `genesis`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Session {
     pub seed: u64,
-    /// The pit's floor top and the domain's physics origin, as for [`ball_pit_with`].
+    /// The floor's top and the domain's physics origin, as for [`ball_pit_with`] and [`plane_on`].
     pub origin: Pos,
-    pub balls: usize,
+    pub preset: Preset,
     /// The session's line: [`genesis_line`] of its genesis record without the root, never [`m1_line`].
     pub line: LineId,
     pub rate: SimRate,
@@ -126,14 +135,17 @@ pub struct Session {
     pub members: Vec<(MemberKey, u32)>,
 }
 
-/// M1's session genesis with every member at frame 0: the interim until a join from a cut exists (@coordinator-opus). The ball pit of [`ball_pit_on`] on the session's line ([`genesis_line`]), at its rate, with its
-/// gravity and pe-agree's settings record. Each member is admitted at frame 0 with its permission bits through
-/// [`World::admit`] (the function a join entry calls), in key order, standing 0.6 m apart just outside the pit's near
-/// wall. Deterministic: the same `Session` gives the same world and the same root on every machine, which is what a
+/// M1's session genesis with every member at frame 0: the interim until a join from a cut exists (@coordinator-opus). The preset's world ([`ball_pit_on`] or [`plane_on`]) on the session's line ([`genesis_line`]), at
+/// its rate, with its gravity and pe-agree's settings record. Each member is admitted at frame 0 with its permission
+/// bits through [`World::admit`] (the function a join entry calls), in key order, standing 0.6 m apart along the
+/// genesis row (just outside the pit's near wall; on the plane, the same spots). Deterministic: the same `Session` gives the same world and the same root on every machine, which is what a
 /// second machine checks against its record before it starts. A key listed twice is refused (`WorldError::Duplicate`,
 /// from its second admission).
 pub fn m1_session(s: &Session, blobs: BlobStore) -> Result<World, crate::WorldError> {
-    let mut w = ball_pit_on(s.line, s.seed, blobs, s.origin, s.balls);
+    let mut w = match s.preset {
+        Preset::BallPit { balls } => ball_pit_on(s.line, s.seed, blobs, s.origin, balls),
+        Preset::Plane => plane_on(s.line, s.seed, blobs, s.origin),
+    };
     w.set_rate(s.rate);
     w.set_gravity(s.gravity);
     w.set_agree_settings(&s.agree);
@@ -149,11 +161,165 @@ pub fn m1_session(s: &Session, blobs: BlobStore) -> Result<World, crate::WorldEr
     Ok(w)
 }
 
-/// The coordinates the preset's ids derive from (2.1): world logic on `line`, with a chain from the seed.
+/// The coordinates the ball pit's ids derive from (2.1): world logic on `line`, with a chain from the seed.
 fn draft(line: LineId, seed: u64) -> Draft {
-    let mut h = Hasher::new("pe.m1.ball-pit.chain");
+    draft_in("pe.m1.ball-pit.chain", line, seed)
+}
+
+fn draft_in(context: &str, line: LineId, seed: u64) -> Draft {
+    let mut h = Hasher::new(context);
     h.write_u64(seed);
     Draft { author: MemberKey::LOGIC, line, chain: ChainId(h.finish()), seq: 0 }
+}
+
+// ---- the plane ----------------------------------------------------------------------------------------------------
+
+/// The names the plane preset gives its objects (world-model.md 2.4, "The plane"): pe-app's spawn buttons and the
+/// self-tests find them by these. `Templates` is a template folder ([`crate::templates::FOLDER`]).
+pub mod plane_names {
+    pub const ROOT: &str = "Plane";
+    pub const FLOOR: &str = "Floor";
+    pub const LAMP: &str = "Lamp";
+    /// The empty root spawned objects go under.
+    pub const SPAWNED: &str = "Spawned";
+    pub const TEMPLATES: &str = crate::templates::FOLDER;
+    /// The templates, in their folder's order.
+    pub const BOX: &str = "Box";
+    pub const SPHERE: &str = "Sphere";
+    pub const CAPSULE: &str = "Capsule";
+    /// A plain parent over [`STACK_BOXES`] box bodies, `Box 1` at the bottom.
+    pub const STACK: &str = "Box stack";
+    pub const STACK_BOX_PREFIX: &str = "Box ";
+    pub const STACK_BOXES: usize = 5;
+}
+
+/// The plane's floor: a static box this many metres on a side, 1 m thick, its top at the origin.
+pub const PLANE_SIDE: f64 = 20.0;
+/// How far below the floor's top the template folder is parked, in metres: out of sight, though it is inert anyway.
+pub const TEMPLATES_DEPTH: f64 = 50.0;
+/// The templates' density, kg/m³: a 0.2 m box is 2.4 kg, light enough to throw and heavy enough to stack.
+pub const TEMPLATE_DENSITY: f32 = 300.0;
+/// The template box's half extent, in metres.
+pub const BOX_HALF: f32 = 0.1;
+/// The template sphere's radius, in metres.
+pub const SPHERE_R: f32 = 0.1;
+/// The template capsule's radius and the half length of its segment, in metres.
+pub const CAPSULE_R: f32 = 0.07;
+pub const CAPSULE_HALF: f32 = 0.1;
+/// A stack box's half extent, in metres.
+pub const STACK_HALF: f32 = 0.075;
+/// The gap under each box of the stack as it is copied, in metres, so none starts in contact with the next.
+const STACK_GAP: f64 = 0.002;
+
+/// The friend test's flat plane at frame 0 on line `line` (world-model.md 2.4, "The plane"; the friend-test
+/// prototype): a root `Plane` holding a static floor [`PLANE_SIDE`] m square with its top at `origin`, and a lamp; an
+/// empty root `Spawned`; and a template folder `Templates` [`TEMPLATES_DEPTH`] m below, holding a box, a sphere, a
+/// capsule and a stack of boxes, each a ready dynamic, grabbable body. Spawning is a copy of a template under
+/// `Spawned` (pe-api's `create` with `template`); the folder itself is inert ([`crate::templates`]). One genesis
+/// transaction by world logic, as for [`ball_pit_on`], with the M1 marker. Deterministic: the same arguments give the
+/// same world and root on every machine. `seed` only seeds the ids' chain.
+///
+/// # Panics
+/// As [`ball_pit_on`]: if the preset's transaction is refused (a bug here; a test applies it), if `origin` is so near
+/// the edge of the position range that the plane does not fit, or if `line` is the origin.
+pub fn plane_on(line: LineId, seed: u64, blobs: BlobStore, origin: Pos) -> World {
+    assert_ne!(line, LineId::origin(), "an M1 world is never on the origin's line");
+    let mut w = World::new(seed, blobs.clone());
+    w.set_origin(origin);
+    w.m1_marker = Some(m1_line());
+    w.line = line;
+    let tx = plane_transaction(&blobs, origin);
+    w.set_member(MemberKey::LOGIC, perm::EDIT);
+    let (outcome, mut w) = w.dry_run_draft_state(Frame(0), &draft_in("pe.m1.plane.chain", line, seed), &tx);
+    assert!(matches!(outcome, Outcome::Applied { .. }), "the plane transaction was refused: {outcome:?}");
+    w.set_member(MemberKey::LOGIC, 0);
+    w
+}
+
+fn dynamic_body() -> Row {
+    row(Body {
+        kind: body_kind::DYNAMIC,
+        friction: 0.6,
+        linear_damping: 0.1,
+        angular_damping: 0.3,
+        rolling_resistance: 0.05,
+        gravity_scale: 1.0,
+        may_sleep: 1,
+        grabbable: 1,
+        ..Body::default()
+    })
+}
+
+fn template_shape(kind: u32, size: [f32; 3]) -> Row {
+    row(Shape { kind, density: TEMPLATE_DENSITY, size, ..Shape::default() })
+}
+
+/// The plane's one transaction: `Plane`, its floor and lamp; `Spawned`; `Templates` and its templates. New index 0
+/// is `Plane`; the rest follow in op order.
+fn plane_transaction(blobs: &BlobStore, origin: Pos) -> Transaction {
+    use plane_names as n;
+    let mut used = Vec::new();
+    let mut ops = Vec::new();
+    let mut next = 0u32;
+    let mut create = |ops: &mut Vec<Op>, parent: Target, rows: Vec<Row>| {
+        let new = next;
+        next += 1;
+        ops.push(Op::Create { new, parent, index: None, rows });
+        new
+    };
+    let plane = create(&mut ops, Target::Root, vec![row(Transform::at(origin)), name(blobs, &mut used, n::ROOT)]);
+    let half = (PLANE_SIDE / 2.0) as f32;
+    let mut rows = vec![row(Transform::local([0.0, -0.5, 0.0])), name(blobs, &mut used, n::FLOOR)];
+    rows.push(colour([0.42, 0.44, 0.46]));
+    rows.extend(static_box([half, 0.5, half]));
+    create(&mut ops, Target::New(plane), rows);
+    let lamp =
+        Light { kind: light_kind::POINT, intensity: 80.0, range: 16.0, color: [1.0, 0.95, 0.85], ..Light::default() };
+    create(
+        &mut ops,
+        Target::New(plane),
+        vec![row(Transform::local([0.0, 3.0, 0.0])), name(blobs, &mut used, n::LAMP), row(lamp)],
+    );
+    create(&mut ops, Target::Root, vec![row(Transform::at(origin)), name(blobs, &mut used, n::SPAWNED)]);
+    let parked = origin.checked_add(Offset([0.0, -TEMPLATES_DEPTH, 0.0])).expect("the template folder fits");
+    let folder = create(&mut ops, Target::Root, vec![row(Transform::at(parked)), name(blobs, &mut used, n::TEMPLATES)]);
+    let under = Target::New(folder);
+    let (b, r, c) = (f64::from(BOX_HALF), f64::from(SPHERE_R), f64::from(CAPSULE_R + CAPSULE_HALF));
+    let singles: [(&str, [f64; 3], [f32; 3], u32, [f32; 3]); 3] = [
+        (n::BOX, [-1.5, b, 0.0], [0.85, 0.2, 0.15], shape_kind::BOX, [BOX_HALF; 3]),
+        (n::SPHERE, [-0.5, r, 0.0], [0.2, 0.45, 0.9], shape_kind::SPHERE, [SPHERE_R, 0.0, 0.0]),
+        (n::CAPSULE, [0.5, c, 0.0], [0.2, 0.7, 0.3], shape_kind::CAPSULE, [CAPSULE_R, CAPSULE_HALF, 0.0]),
+    ];
+    for (label, at, rgb, kind, size) in singles {
+        let rows = vec![
+            row(Transform::local(at)),
+            name(blobs, &mut used, label),
+            colour(rgb),
+            dynamic_body(),
+            template_shape(kind, size),
+        ];
+        create(&mut ops, under, rows);
+    }
+    let stack = create(&mut ops, under, vec![row(Transform::local([1.5, 0.0, 0.0])), name(blobs, &mut used, n::STACK)]);
+    let side = 2.0 * f64::from(STACK_HALF) + STACK_GAP;
+    for k in 0..n::STACK_BOXES {
+        let rows = vec![
+            row(Transform::local([0.0, f64::from(STACK_HALF) + STACK_GAP + k as f64 * side, 0.0])),
+            name(blobs, &mut used, &format!("{}{}", n::STACK_BOX_PREFIX, k + 1)),
+            colour([0.95, 0.6, 0.15]),
+            dynamic_body(),
+            template_shape(shape_kind::BOX, [STACK_HALF; 3]),
+        ];
+        create(&mut ops, Target::New(stack), rows);
+    }
+    Transaction {
+        inline: vec![],
+        actor: Actor::Person,
+        label: Some("M1 plane (disposable genesis)".into()),
+        preconditions: Vec::new(),
+        ops,
+        blobs: used,
+    }
 }
 
 fn row<T: Component>(v: T) -> Row {

@@ -4604,7 +4604,7 @@ pub(crate) mod tests {
             display_delay_ms: 0,
             gravity: pe_world::GRAVITY,
             seed: 5,
-            balls: 8,
+            preset: pe_world::preset::Preset::BallPit { balls: 8 },
             origin: pe_seams::Pos::ORIGIN,
             epoch_ns: 0,
         };

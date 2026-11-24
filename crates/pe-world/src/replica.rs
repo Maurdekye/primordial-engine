@@ -30,9 +30,10 @@ impl World {
     }
 
     /// Every physical object, in id order: one with a `Body` and at least one shape, its own or a compound child's
-    /// (a descendant reached without passing another `Body`).
+    /// (a descendant reached without passing another `Body`), that is not inert (under a template folder,
+    /// [`crate::templates`]).
     pub fn physical(&self) -> Vec<ObjectId> {
-        self.store.iter::<Body>().map(|(id, _)| id).filter(|&id| self.has_shape(id)).collect()
+        self.store.iter::<Body>().map(|(id, _)| id).filter(|&id| self.has_shape(id) && !self.inert(id)).collect()
     }
 
     fn has_shape(&self, body: ObjectId) -> bool {

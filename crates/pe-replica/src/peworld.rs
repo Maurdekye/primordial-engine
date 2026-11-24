@@ -687,6 +687,10 @@ fn body_row(world: &World, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable>
     let Some(body) = store.get::<Body>(id) else {
         return Ok(None);
     };
+    // A template is never physical (pe-world `templates`).
+    if world.inert(id) {
+        return Ok(None);
+    }
     let own = store.get::<Shape>(id);
     let children: Vec<(ObjectId, &Shape)> =
         compound_children(world, id).into_iter().filter_map(|c| Some((c, store.get::<Shape>(c)?))).collect();
@@ -806,6 +810,12 @@ fn effects(before: &World, after: &World, footprint: &Footprint) -> Effects {
     for &(id, _) in &footprint.reparented {
         touched.insert(id);
         moved.push(id);
+    }
+    // A root renamed to or from a template folder: every body under it became inert or live.
+    for &top in &footprint.regrouped {
+        for world in [before, after] {
+            touched.extend(subtree(world, top));
+        }
     }
     // A hand input writes its hand's `Transform`.
     for &id in &footprint.hands {

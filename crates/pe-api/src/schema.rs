@@ -169,7 +169,11 @@ fn brief(names: &Names, d: &ComponentDesc) -> Brief {
 
 /// The world's templates: the direct children of the one root named `Templates` (none if there are two).
 fn templates(snap: &WorldSnapshot) -> Vec<(pe_core::ObjectId, String)> {
-    let folders: Vec<_> = snap.roots().into_iter().filter(|r| snap.name(*r).as_deref() == Some("Templates")).collect();
+    let folders: Vec<_> = snap
+        .roots()
+        .into_iter()
+        .filter(|r| snap.name(*r).is_some_and(|n| pe_world::templates::is_folder_name(&n)))
+        .collect();
     let [folder] = folders[..] else { return vec![] };
     snap.children(folder).into_iter().filter_map(|c| Some((c, snap.name(c)?))).collect()
 }
