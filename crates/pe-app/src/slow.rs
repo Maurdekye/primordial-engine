@@ -1,7 +1,9 @@
 //! A member that can't keep real time (divergence.md 4.6, F3:
-//! @item:primordial-engine/a-member-that-can-t-simulate-in-real-time-freeze). Its lag is the session clock's present
-//! frame less the frame its replica has stepped. Past [`SLOW_S`] it is slow, a local hint and never a vote. Its slow
-//! timer runs while it is slow and resets once the lag has stayed under [`CALM_S`] for [`CALM_FOR_S`]. Past
+//! @item:primordial-engine/a-member-that-can-t-simulate-in-real-time-freeze). Its lag is the age of the world it shows:
+//! the session clock's present frame less the newest frame its live history has completed, the published view's (S5).
+//! A rollback's re-simulation isn't counted, and a replay's is, since it publishes no view until it ends
+//! (@coordinator-opus, after K4's R3'). Past [`SLOW_S`] it is slow, a local hint and never a vote. Its
+//! slow timer runs while it is slow and resets once the lag has stayed under [`CALM_S`] for [`CALM_FOR_S`]. Past
 //! [`FREEZE_AFTER_S`] of it, at the first moment it is then behind by more than [`SLOW_S`], the watch says so once
 //! ([`Verdict::Freeze`], kept for F3's package work's automatic catch-up). pe-app freezes nobody: it tells the member
 //! and it keeps playing (the user's). If it is still slow, it says so again after another

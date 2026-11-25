@@ -10,7 +10,9 @@
 //!   and the ticks that published no view. A member whose hands are held makes no inputs, nor does an untracked
 //!   hand, so the self-test checker's no_hold reads `inputs` (with `refused` beside it). A stretch of
 //!   `unpublished` is a stretch with no new view (the friend test's K8). `holds` is the run's total so far;
-//!   [`crate::sim::SimStats`] has the meaning of each.
+//!   [`crate::sim::SimStats`] has the meaning of each. Its `lag_max`, and a `long` line's `lag`, is where the replica
+//!   is stepping, the present less its frame: it counts a rollback's re-simulation, which the slow watch's lag, the
+//!   shown world's age, doesn't ([`crate::slow`]).
 //! - `long`: one per tick longer than `PE_TICK_TRACE_MS` (default 50), with its every phase. `cpu_ms` against
 //!   `tick_ms` says whether the thread ran or waited: descheduled, or blocked on the console, a lock or the disk.
 //!   Windows counts thread time in clock ticks (about 15.6 ms), so `cpu_ms` is coarse below that.

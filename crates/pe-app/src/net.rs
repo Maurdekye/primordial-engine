@@ -2342,10 +2342,11 @@ mod tests {
                 }
             }
         }
-        // The allowance is the time each machine spent more than 2 s behind real time (`slow_ms`), not its largest lag:
-        // every machine's lag reaches the outage's own length when the backlog lands (12.5 s and more), so `lag_max_ms`
-        // would put both bounds at the clamp in every run (K4's A/B; @fable-reviewer).
-        let bounds = lead_bounds(&sims, "blackout", |st| st.slow_ms);
+        // The allowance is the time each machine's replica spent stepping more than 2 s behind real time
+        // (`stepping_slow_ms`, the measure K4's A/B fitted, which counts the backlog's re-simulation), not its largest
+        // lag: every machine's stepping lag reaches the outage's own length when the backlog lands (12.5 s and more),
+        // so `stepping_lag_max_ms` would put both bounds at the clamp in every run (@fable-reviewer).
+        let bounds = lead_bounds(&sims, "blackout", |st| st.stepping_slow_ms);
         for (i, (sim, me)) in sims.iter().enumerate() {
             let them = sims[1 - i].1;
             let log = logs[i].lock().unwrap();
@@ -2382,10 +2383,12 @@ mod tests {
             let st = sim.stats();
             assert!(
                 st.largest_lead <= bounds[i],
-                "machine {i}'s stamp-ahead lead rose to {} frames over the blackout, past its bound {} (slow_ms {}, \
-                 lag_max_ms {}, lead now {})",
+                "machine {i}'s stamp-ahead lead rose to {} frames over the blackout, past its bound {} (stepping \
+                 slow_ms {}, lag_max_ms {}; shown slow_ms {}, lag_max_ms {}; lead now {})",
                 st.largest_lead,
                 bounds[i],
+                st.stepping_slow_ms,
+                st.stepping_lag_max_ms,
                 st.slow_ms,
                 st.lag_max_ms,
                 st.lead
@@ -2558,6 +2561,11 @@ mod tests {
         // leads 0-2; one loaded run reached 17 with neither printed (@fable-reviewer: the slow_ms form, or
         // the lag above the dropout's own, `12 + max(0, lag_max_ms - 900) * 60 / 1000`, picked from the pairs).
         let bounds = vec![12u64; sims.len()];
+        // Both machines' lines first, so one machine's failure never hides the other's numbers. `lag_max_ms` and
+        // `slow_ms` are the slow watch's, the shown world's age, as SimStats and the end line name them (divergence.md
+        // 4.6); `stepping` is where the replica stepped, which the runs before 8852ad06 printed under the bare names
+        // (@design-reviewer's L1 on 8852ad06).
+        let mut lates = Vec::new();
         for (i, (sim, me)) in sims.iter().enumerate() {
             let them = sims[1 - i].1;
             let late = logs[i]
@@ -2569,22 +2577,31 @@ mod tests {
             let st = sim.stats();
             println!(
                 "machine {i} ({}): largest lead {} frames (bound {}), lead now {}, longest drain {} frames; lag_max_ms \
-                 {}, slow_ms {}; voided the other's as late {late}",
+                 {}, slow_ms {}; stepping lag_max_ms {}, slow_ms {}; voided the other's as late {late}",
                 short(me),
                 st.largest_lead,
                 bounds[i],
                 st.lead,
                 st.longest_drain,
                 st.lag_max_ms,
-                st.slow_ms
+                st.slow_ms,
+                st.stepping_lag_max_ms,
+                st.stepping_slow_ms
             );
+            lates.push(late);
+        }
+        for (i, ((sim, _), late)) in sims.iter().zip(lates).enumerate() {
+            let st = sim.stats();
             assert!(
                 st.largest_lead <= bounds[i],
-                "machine {i}'s stamp-ahead lead rose to {} frames, past its bound {} (lag_max_ms {}, slow_ms {})",
+                "machine {i}'s stamp-ahead lead rose to {} frames, past its bound {} (lag_max_ms {}, slow_ms {}; \
+                 stepping lag_max_ms {}, slow_ms {})",
                 st.largest_lead,
                 bounds[i],
                 st.lag_max_ms,
-                st.slow_ms
+                st.slow_ms,
+                st.stepping_lag_max_ms,
+                st.stepping_slow_ms
             );
             assert_eq!(late, 0, "machine {i} voided {late} of the other's entries as late");
         }
