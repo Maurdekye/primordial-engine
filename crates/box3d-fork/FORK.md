@@ -41,6 +41,7 @@ Every change is marked in the source with a `Primordial Engine fork` comment.
 | `src/stage_timer.rs` (new), `Cargo.toml` | Feature `stage-profile`: fills `world::Profile` with stage timings (off by default) |
 | `src/world/step.rs` | Stage timers |
 | `src/parallel_tests.rs` (new) | D2: determinism scenes identical at 1/2/3/4/8 workers and with the worker count changed mid-run |
+| `src/solver/solve.rs` | D2: every worker's hit-event bit set is sized and cleared at each solve, as C does for each task context; only worker 0's was, so with hit events on and several workers a helper's first hit bit panicked. `parallel_tests.rs`: hit events identical at every worker count |
 | `src/lib.rs`, `src/contact/mesh_cache.rs` | `set_warning_sink`: the narrow phase's complex-mesh warning goes to a sink an application sets (pe-app's `--log` writes it to its log as well as the console), else to standard error as upstream. Not part of the simulation |
 
 ### Release validators: measured effect

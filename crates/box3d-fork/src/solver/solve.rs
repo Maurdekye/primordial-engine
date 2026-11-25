@@ -504,12 +504,17 @@ pub fn solve(world: &mut World, context: &StepContext) {
     let contact_id_capacity = world.contact_id_pool.id_capacity();
     let joint_id_capacity = world.joint_id_pool.id_capacity();
     {
-        let task_context = &mut world.task_contexts[0];
-        task_context
-            .hit_event_bit_set
-            .set_bit_count_and_clear(contact_id_capacity as u32);
-        task_context.has_hit_events = false;
-        task_context
+        // Primordial Engine fork (D2): every worker flags hit events in its own task context during the store stage,
+        // so every worker's bit set is sized and cleared, as C does for each task context. Only worker 0's was, so
+        // with hit events on and several workers a helper's first hit bit panicked, and a helper's bits were never
+        // cleared between steps.
+        for task_context in &mut world.task_contexts {
+            task_context
+                .hit_event_bit_set
+                .set_bit_count_and_clear(contact_id_capacity as u32);
+            task_context.has_hit_events = false;
+        }
+        world.task_contexts[0]
             .joint_state_bit_set
             .set_bit_count_and_clear(joint_id_capacity as u32);
     }
