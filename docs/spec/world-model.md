@@ -469,7 +469,7 @@ which fixes the origin's role deliberately.
     - **its mass** is its density times the volume it encloses, with that solid's centre of mass and inertia, found
       by the divergence theorem over the mesh **as the fork builds it**: one signed tetrahedron per built triangle, in
       the fork's triangle order (its BVH order, the same on every machine), from the centre of the built mesh's
-      bounding box, summed in `f64` and rounded to `f32` once (a sum from the shape's origin in `f32` loses
+      bounding box (of the scaled positions), summed in `f64` and rounded to `f32` once (a sum from the shape's origin in `f32` loses
       precision for a mesh far from it), with the body's world scale applied first. It is computed in the fork's
       `compute_shape_mass`, in Box3D's own composition and shape order (a FORK.md deviation), once per mesh, and
       scaled at build, never in the step; a body without a mesh keeps a bit-identical mass (@coordinator-opus, Q4). The built mesh is judged, not the blob, because it is the surface the physics
@@ -478,12 +478,14 @@ which fixes the origin's role deliberately.
         a triangle about 0.7 mm on a side, or a sliver 1 m long and 0.5 µm high) [V `box3d-fork/src/mesh/bvh.rs`,
         `collect_primitives`]. A dropped triangle is a hole in the collision surface too, so it is out of both the
         closedness test and the sum; a triangle with two equal vertex positions is one of them. The drop is judged in
-        the blob's own units, before any scale. So (a) a `Scale` edit never changes which triangles are dropped, and
-        never makes a body unbuildable; (b) a mesh authored tiny and scaled up loses triangles that are large in the
+        the blob's own units, before any scale. So (a) a `Scale` edit never changes which triangles are dropped or
+        whether the mesh is closed (a mirroring scale reads its winding back); only the volume floor is judged after
+        scale, so shrinking a small mesh below 10⁻⁹ m³, or a zero scale axis, leaves it without mass (@vdw-physics);
+        (b) a mesh authored tiny and scaled up loses triangles that are large in the
         world, an author-facing limit that the import warning (below) names;
       - **the weld:** Box3D can weld vertices that lie within a tolerance of each other before the drop
         (`MeshDef::weld_vertices`, `weld_tolerance`) [V `box3d-fork/src/mesh/create.rs`]. pe-physics builds meshes
-        with welding off, the `MeshDef` default [I, @vdw-physics's mesh build states it], so the test reads the blob's
+        with welding off, the `MeshDef` default (@vdw-physics, stated at the call), so the test reads the blob's
         positions bit for bit. Were welding turned on, the test would read the welded positions, and its tolerance
         would be stated here;
       - only a **closed** mesh encloses a volume. Closed means every edge of the built mesh is in exactly two
@@ -500,8 +502,10 @@ which fixes the origin's role deliberately.
       2.1's other unbuildable bodies): Box3D would give it an inverse mass of 0, so it would answer no force [V
       `box3d-fork/src/body/mass.rs`], and a refusal shows the missing mass instead. The inspector and the import path
       say why and what to do: close the mesh, or add a primitive or a hull with a density. When dropped triangles
-      are what opened the mesh, the refusal says so with their count: "N triangles under the minimum area were left
-      out; the mesh is open without them" (the fork's `degenerate_count`). At import, pe-world neither welds nor
+      are what opened the mesh (the blob's triangles, less those with two equal positions, are closed and the built
+      mesh is not), the refusal says so with their count, the blob's triangles less the built mesh's, whatever the
+      cause: "N of the mesh's triangles are under the minimum area and were left out; without them the mesh is
+      open". Otherwise it is the ordinary open-mesh refusal. At import, pe-world neither welds nor
       repairs a mesh: where a mesh blob is imported, a cheap warning runs the same test as the build (how many
       triangles are dropped, and whether the mesh is still closed without them); mesh repair belongs in the import
       tool, later. A golden test pins one blob with a sliver: its mass and its open or closed verdict are bit-equal
