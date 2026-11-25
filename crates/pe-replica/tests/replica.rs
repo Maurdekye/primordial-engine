@@ -1597,16 +1597,25 @@ fn equal_frames_give_equal_hits_on_every_replica() {
     let mut early = scene();
     let late = early.split_off(3);
     early.into_iter().for_each(|e| sc.add(e));
-    let mut views = views_over(&mut c, &mut sc, std::iter::repeat_n(40, 15)); // to frame 30, no view
-    assert!(views.is_empty() && c.view().frame == Frame(0), "behind: no view yet");
+    // Behind the present it still shows its world, a view an advance (S2 v1.10, F3's S5 views), two frames each.
+    let mut views = views_over(&mut c, &mut sc, std::iter::repeat_n(40, 15)); // to frame 30
+    assert_eq!((views.len(), c.view().frame), (15, Frame(30)), "behind: a view an advance");
     late.into_iter().for_each(|e| sc.add(e)); // from frame 9: frames 9 to 29 are stepped again, ball 10 landing
+    let resumed = views.len();
     views.extend(views_over(&mut c, &mut sc, std::iter::repeat_n(40, 30)));
     views.extend(views_over(&mut c, &mut sc, 41..=64));
-    let caught_up = &views[0];
-    let frames: Vec<Frame> = caught_up.hits.iter().map(|h| h.frame).collect();
+    // A re-simulation publishes nothing until it is back where it was, so the next view covers the frames stepped
+    // twice, with their latest steps' hits.
+    let back = &views[resumed];
+    assert!(
+        back.from.is_some_and(|f| f <= Frame(9)),
+        "the first view back covers the re-stepped frames: {:?}",
+        back.from
+    );
+    let frames: Vec<Frame> = back.hits.iter().map(|h| h.frame).collect();
     assert!(
         frames.iter().any(|f| (9..30).contains(&f.0)),
-        "the first view has hits of frames stepped twice: {frames:?}"
+        "the first view back has hits of frames stepped twice: {frames:?}"
     );
     assert_eq!(latest_hits(&views), reference, "each frame's hits once, as its latest step had them");
 }
