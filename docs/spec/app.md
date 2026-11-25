@@ -844,9 +844,23 @@ run stays alone, and `--alone` keeps any run alone; `--alone` excludes `--open` 
 same machine finds UDP 4433 taken and stops at once, saying so and naming `--listen`.
 
 `--listen` is the UDP address to bind (default `0.0.0.0:4433`). `--advertise`, which may be repeated, is the address
-the invite or the reply names. With the default listen address it is required, since `0.0.0.0` names no machine;
-between the user's machines over Tailscale it is the machine's Tailscale address. `--seconds <n>` ends a run after
-`n` seconds. Without `--open` or `--join`, a headless run (or one with `--alone`) runs the world alone.
+the invite or the reply names. Without it, a socket bound to a specific address names that address. A socket bound to
+every interface (the default `0.0.0.0`, or `[::]`) names this machine's reachable addresses, found by asking the OS
+which local address routes to two probes, with no packet sent (`net::route_addresses`, friend-test S2,
+@item:primordial-engine/friend-test-prototype-launch-into-vr-basic-menu-s):
+- Tailscale's fixed resolver address (`net::ROUTE_PROBES_V4` and `_V6`), routed through the tailnet while Tailscale
+  is up;
+- a public address (1.1.1.1, or 2606:4700:4700::1111), routed by the default route, which gives the LAN or public
+  address.
+
+The tailnet's address is listed first; repeats, loopback and link-local addresses are dropped. pe-net dials an
+invite's addresses 250 ms apart, so a machine on the same tailnet or LAN reaches the first one that works. None of
+this depends on Tailscale: on another link the default route's address is the one listed, and `--advertise` names
+any other. The probes can't see past a router, so a forwarded port needs `--advertise <public address>:<port>`.
+Behind a full-tunnel VPN or a Tailscale exit node, both probes give the tunnel's address, so the LAN address isn't
+named. Other VPNs aren't probed and need `--advertise` too. With no route at all (offline), the start fails and asks
+for `--advertise`. `--seconds <n>` ends a run after `n` seconds. Without `--open` or `--join`, a headless run (or one
+with `--alone`) runs the world alone.
 
 **Step 7's fault** (fault.rs; @coordinator-opus). The plan's step 7
 injects a fault on B. Two runtime flags arm it, and they exclude each other. Neither is a cargo feature, so the

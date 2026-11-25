@@ -15,8 +15,8 @@
 //! share one world (app.md 4, "Joining from a cut"; `pe_app::net`): `--open` opens the world alone at once and prints
 //! an invite, and each line on standard input (or the menu's Paste reply) is a joiner's reply code; `--join <invite>` prints this machine's reply code for the
 //! opener, joins at the cut that admits it and imports the world's state there. `--listen` is the UDP address to bind
-//! (default 0.0.0.0:4433), `--advertise` an address the invite or reply names (default: the bound one, which must
-//! then be specific), and `--identity` this machine's identity file (default: `identity.seed` in the per-user data
+//! (default 0.0.0.0:4433), `--advertise` an address the invite or reply names (default: the bound one when it is
+//! specific; bound to every interface, this machine's tailnet and default-route addresses, `pe_app::net::route_addresses`), and `--identity` this machine's identity file (default: `identity.seed` in the per-user data
 //! folder, `%LOCALAPPDATA%\Primordial Engine` on Windows; made on first use).
 //!
 //! `--drawn-time present:<ms> | a:<ms> | b:<ms>` overrides X8, the drawn time (render.md 7), for tests: Present with
