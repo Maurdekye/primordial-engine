@@ -481,9 +481,23 @@ which fixes the origin's role deliberately.
         closedness test and the sum; a triangle with two equal vertex positions is one of them. The drop is judged in
         the blob's own units, before any scale. So (a) a `Scale` edit never changes which triangles are dropped or
         whether the mesh is closed (a mirroring scale reads its winding back); only the volume floor is judged after
-        scale, so shrinking a small mesh below 10⁻⁹ m³, or a zero scale axis, leaves it without mass (@vdw-physics);
-        (b) a mesh authored tiny and scaled up loses triangles that are large in the world, an author-facing limit
-        that the import warning (below) names;
+        scale, so shrinking a small mesh below 10⁻⁹ m³ leaves it without mass (@vdw-physics); (b) a mesh authored
+        tiny and scaled up loses triangles that are large in the world, an author-facing limit that the import
+        warning (below) names;
+      - **the scale floor:** any axis of a mesh's or a hull's world scale (parent scales included) under 0.01 in
+        magnitude is refused, `InvalidValue`, and the body isn't built; the reason names the axis and the 0.01
+        floor, and says to rescale the mesh at import (@coordinator-opus, after @vdw-physics and
+        @fable-reviewer). Box3D would otherwise raise such an axis to 0.01, keeping its sign (−0 to
+        +0.01) [V `box3d-fork/src/math_functions/vector.rs`, `safe_scale`], so a mesh scaled flat would collide and
+        weigh as a solid 1% thick where it is drawn flat. It is a floor on scale, not on size: a 10 m mesh scaled to
+        1 cm is refused, while a 1 cm box builds. Lowering or removing the floor in the fork is a later, measured
+        change;
+      - **a `Scale` edit re-sums the mass:** the sum runs on scaled positions, so each change of a mesh body's world
+        scale is one more pass over its triangles, linear in them, at the rebuild, never in the step. A scale
+        animation on a large dynamic mesh pays that once per change [I, @vdw-physics confirms];
+      - **holding:** a held mesh is checked against walls by a capsule around its scaled vertices, as a hull is
+        (replica.md 3.3, `static_in_way`). So a held object made only of meshes never passes through a wall, but
+        the capsule is coarser than the mesh: a held hoop can't be passed over a static post;
       - **the weld:** Box3D can weld vertices that lie within a tolerance of each other before the drop
         (`MeshDef::weld_vertices`, `weld_tolerance`) [V `box3d-fork/src/mesh/create.rs`]. pe-physics builds meshes
         with welding off, the `MeshDef` default (@vdw-physics, stated at the call), so the test reads the blob's
@@ -516,7 +530,8 @@ which fixes the origin's role deliberately.
       bowl as a solid dome) and the bounding box's (cruder still). This rule can
       be loosened later without changing any built world (an open mesh would go from unbuildable to buildable), where
       starting from the hull's mass and switching later would change masses in existing worlds (@fable-reviewer);
-  - a hull is a convex `SimBlobRef`, on any body, its mass Box3D's.
+  - a hull is a convex `SimBlobRef`, on any body, its mass Box3D's. The mesh's scale floor (above) holds for it
+    too.
   - **The blob formats** (@coordinator-opus, Q2, after @vdw-physics's proposal and @fable-reviewer's
     points). `Shape.mesh` names a mesh or a hull blob by `Shape.kind`; both travel inside their entry (3.4, carried
     blobs). Common to both: little-endian; coordinates are `f32` metres in the shape's local frame, before the
