@@ -49,6 +49,13 @@ machine's VR setup (GPU driver, Vulkan, the OpenXR runtime found, WiVRn, network
 `~/pe-friend-test/logs/<time>/`. Nothing is sent anywhere by the program itself, other than to the other player's
 machine during the session.
 
+## Known limits
+
+- **After a long network drop** (several seconds), the other player can take up to about twice the drop's length
+  to come back.
+- **The world freezes for several seconds after a long drop:** about 4 s on real machines with few objects, longer
+  with many.
+
 ## If something goes wrong
 
 - **"No OpenXR runtime" or the program opens without VR:** WiVRn isn't running or isn't registered as the active

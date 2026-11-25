@@ -35,6 +35,13 @@ The left controller's menu button opens and closes the menu. Quit is in the menu
 Other ways: `-Window` (the desktop window, no VR), `-Headless` (no window, a check), `-Join '<invite>'` (join
 someone else's session). Any other pe-app option passes through.
 
+## Known limits
+
+- **After a long network drop** (several seconds), the other player can take up to about twice the drop's length
+  to come back.
+- **The world freezes for several seconds after a long drop:** about 4 s on real machines with few objects, longer
+  with many.
+
 ## The logs
 
 Each run writes `%LOCALAPPDATA%\Primordial Engine\friend-test\logs\<time>\`: this machine's VR setup
