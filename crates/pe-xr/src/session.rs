@@ -22,6 +22,7 @@ use pe_render::HandJoints;
 use crate::backend::{Backend, DepthInfo, EyePose, FrameTiming, ImageIndex, Layers, SessionState, XrError, XrEvent};
 use crate::diag::{self, Diag};
 use crate::hands::{GraspConfig, HandState};
+use crate::locomotion::{MoveRing, MoveState};
 use crate::pointer::{Pointer, PointerState};
 use crate::ring::HandRing;
 use crate::seam::{Hand, HostTime, RigPose};
@@ -155,6 +156,11 @@ pub struct XrSession<B: Backend> {
     pointer_now: [Option<Pointer>; 2],
     menu_toggled: bool,
     ring: Arc<HandRing>,
+    /// Locomotion (spec 5.8): the state across frames, and the ring the simulation reads, if pe-app gave one.
+    locomotion: MoveState,
+    moves: Option<Arc<MoveRing>>,
+    /// Whether the first focused frame's locomotion actions were logged (a runtime that left them unbound shows here).
+    moves_logged: bool,
     last_display_time: Option<HostTime>,
     /// The last frame that ran without an error (or when the session began running). The session ends for errors
     /// only when no frame has succeeded for [`FRAME_ERROR_LIMIT`] since it.
@@ -191,6 +197,9 @@ impl<B: Backend> XrSession<B> {
             pointer_now: [None, None],
             menu_toggled: false,
             ring,
+            locomotion: MoveState::default(),
+            moves: None,
+            moves_logged: false,
             last_display_time: None,
             last_good: None,
             last_error_at: None,
@@ -250,6 +259,17 @@ impl<B: Backend> XrSession<B> {
         self.end(EndReason::Exited);
     }
 
+    /// The ring the frame loop writes locomotion samples to (spec 5.8; pe-app's move feed while VR runs).
+    pub fn with_moves(mut self, moves: Arc<MoveRing>) -> Self {
+        self.moves = Some(moves);
+        self
+    }
+
+    /// As [`Self::with_moves`], on a session already made (pe-app's opened VR).
+    pub fn set_moves(&mut self, moves: Arc<MoveRing>) {
+        self.moves = Some(moves);
+    }
+
     fn hands_absent(&mut self) {
         for h in Hand::BOTH {
             self.hands[h.index()].focus_lost();
@@ -257,6 +277,7 @@ impl<B: Backend> XrSession<B> {
             self.pointers[h.index()].reset();
             self.pointer_now[h.index()] = None;
         }
+        self.locomotion.focus_lost();
     }
 
     /// Mark the session ended. It is destroyed by [`Self::teardown`], which [`Self::step`] calls before returning
@@ -264,6 +285,10 @@ impl<B: Backend> XrSession<B> {
     fn end(&mut self, why: EndReason) {
         if self.ended.is_none() {
             self.hands_absent();
+            // No session, no headset locomotion: the simulation reads none until the next one.
+            if let Some(m) = &self.moves {
+                m.clear();
+            }
             self.running = false;
             self.ended = Some(why);
         }
@@ -494,6 +519,24 @@ impl<B: Backend> XrSession<B> {
                 self.pointer_now[h.index()] = step.pointer;
                 self.menu_toggled |= step.menu_toggled;
             }
+        }
+        // Locomotion (spec 5.8), every frame at its display time: while focused from the actions, otherwise a
+        // standstill, so the simulation never holds a walk the player can't stop.
+        if let Some(moves) = &self.moves {
+            let at = timing.predicted_display_time;
+            let reading = if focused { self.backend.read_move(at) } else { Default::default() };
+            if focused && !self.moves_logged && diag::enabled() {
+                self.moves_logged = true;
+                let on = |b: bool| if b { "active" } else { "not active" };
+                diag::emit(&format!(
+                    "locomotion at the first focused frame: move {}, turn {}, jump {}, head {}",
+                    on(reading.stick.is_some()),
+                    on(reading.turn.is_some()),
+                    on(reading.jump.is_some()),
+                    if reading.head.is_some() { "located" } else { "not located" }
+                ));
+            }
+            moves.push(self.locomotion.step(at, &reading, focused));
         }
 
         // Steps 4 to 7, only when the runtime wants a frame and the session is shown.

@@ -24,6 +24,7 @@ pub mod fake;
 pub mod guard;
 pub mod hands;
 pub mod loader;
+pub mod locomotion;
 pub mod math;
 pub mod open;
 pub mod pointer;

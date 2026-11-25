@@ -35,6 +35,12 @@ const PROFILES: &[(&str, &str, &str, &[(&str, &str)])] = &[
     ),
 ];
 const HAND_INTERACTION: &str = "/interaction_profiles/ext/hand_interaction_ext";
+/// Locomotion's bindings (spec 5.8): (profile, the left move stick, the right turn axis, the right jump button). Only
+/// Touch (WiVRn's Quest 3) and Index; the simple controller and tracked hands have none (the user's ruling).
+const LOCOMOTION: &[(&str, &str, &str, &str)] = &[
+    ("/interaction_profiles/oculus/touch_controller", "thumbstick", "thumbstick/x", "a/click"),
+    ("/interaction_profiles/valve/index_controller", "thumbstick", "thumbstick/x", "a/click"),
+];
 
 fn xr_err(e: xr::sys::Result) -> XrError {
     match e {
@@ -146,6 +152,11 @@ struct Live<G: xr::Graphics> {
     _aim: xr::Action<xr::Posef>,
     select: xr::Action<f32>,
     menu: xr::Action<bool>,
+    /// Locomotion (spec 5.8): the left stick, the right stick's x, the right A button, and the head's space.
+    walk: xr::Action<xr::Vector2f>,
+    turn: xr::Action<f32>,
+    jump: xr::Action<bool>,
+    view_space: xr::Space,
     hand_paths: [xr::Path; 2],
     hand_interaction: bool,
     size: SwapchainSize,
@@ -219,6 +230,9 @@ impl<G: xr::Graphics> RealBackend<G> {
         let select =
             set.create_action::<f32>("select", "Pointer select", &[left, right]).map_err(ce("select action"))?;
         let menu = set.create_action::<bool>("menu", "Menu", &[left, right]).map_err(ce("menu action"))?;
+        let walk = set.create_action::<xr::Vector2f>("move", "Move", &[left]).map_err(ce("move action"))?;
+        let turn = set.create_action::<f32>("turn", "Turn", &[right]).map_err(ce("turn action"))?;
+        let jump = set.create_action::<bool>("jump", "Jump", &[right]).map_err(ce("jump action"))?;
         let path = |s: String| instance.string_to_path(&s).map_err(ce("path"));
         let mut binding_warnings = Vec::new();
         for (profile, squeeze_input, select_input, menus) in PROFILES {
@@ -231,6 +245,12 @@ impl<G: xr::Graphics> RealBackend<G> {
             }
             for (side, input) in menus.iter() {
                 b.push(xr::Binding::new(&menu, path(format!("/user/hand/{side}/input/{input}"))?));
+            }
+            // One suggestion per profile replaces any earlier one, so locomotion goes in the same call.
+            if let Some((_, stick, axis, button)) = LOCOMOTION.iter().find(|l| l.0 == *profile) {
+                b.push(xr::Binding::new(&walk, path(format!("/user/hand/left/input/{stick}"))?));
+                b.push(xr::Binding::new(&turn, path(format!("/user/hand/right/input/{axis}"))?));
+                b.push(xr::Binding::new(&jump, path(format!("/user/hand/right/input/{button}"))?));
             }
             // A runtime may refuse a profile it does not know; the others still apply, and the refusal is kept.
             if let Err(e) = instance.suggest_interaction_profile_bindings(path(profile.to_string())?, &b) {
@@ -268,6 +288,10 @@ impl<G: xr::Graphics> RealBackend<G> {
             .find(|k| offered.contains(k))
             .unwrap_or(xr::ReferenceSpaceType::LOCAL);
         let space = session.create_reference_space(kind, xr::Posef::IDENTITY).map_err(ce("reference space"))?;
+        // The head, located in `space` for locomotion's head pose and yaw (spec 5.8).
+        let view_space = session
+            .create_reference_space(xr::ReferenceSpaceType::VIEW, xr::Posef::IDENTITY)
+            .map_err(ce("view space"))?;
         let reference_space = match kind {
             xr::ReferenceSpaceType::STAGE => "STAGE",
             xr::ReferenceSpaceType::LOCAL_FLOOR => "LOCAL_FLOOR",
@@ -389,6 +413,10 @@ impl<G: xr::Graphics> RealBackend<G> {
                 _aim: aim,
                 select,
                 menu,
+                walk,
+                turn,
+                jump,
+                view_space,
                 hand_paths: [left, right],
                 hand_interaction,
                 size,
@@ -687,6 +715,24 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             pose_valid(loc.location_flags).then(|| rig_pose(&loc.pose))
         });
         PointerReading { aim, select, menu }
+    }
+
+    fn read_move(&mut self, at: HostTime) -> crate::locomotion::MoveReading {
+        let Some(live) = self.live.as_ref() else { return Default::default() };
+        let [left, right] = live.hand_paths;
+        let stick = live
+            .walk
+            .state(&live.session, left)
+            .ok()
+            .filter(|s| s.is_active)
+            .map(|s| [s.current_state.x, s.current_state.y]);
+        let turn = live.turn.state(&live.session, right).ok().filter(|s| s.is_active).map(|s| s.current_state);
+        let jump = live.jump.state(&live.session, right).ok().filter(|s| s.is_active).map(|s| s.current_state);
+        let head = self.xr_time(at).ok().and_then(|t| {
+            let loc = live.view_space.locate(&live.space, t).ok()?;
+            pose_valid(loc.location_flags).then(|| rig_pose(&loc.pose))
+        });
+        crate::locomotion::MoveReading { stick, turn, jump, head }
     }
 
     fn interaction_profiles(&self) -> Option<[String; 2]> {

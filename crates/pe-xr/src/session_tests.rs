@@ -799,3 +799,43 @@ fn pointer_clicks_and_menu_toggles_reach_the_next_drawn_frame_once() {
     let toggles: Vec<bool> = k.0.iter().map(|(_, t)| *t).collect();
     assert_eq!(toggles, vec![false, true, false, false], "frame 3's menu press, handed to frame 4");
 }
+
+#[test]
+fn locomotion_walks_while_focused_stands_still_without_focus_and_ends_with_the_session() {
+    use crate::locomotion::{MoveReading, MoveRing};
+    use pe_seams::view::MoveFeed;
+    let head = RigPose { position: [0.0, 1.6, 0.0], orientation: [0.0, 0.0, 0.0, 1.0] };
+    // A is up at the first read, then held.
+    let mut reads = 0;
+    let rt = FakeRuntime::new().started().moves(move |_| {
+        reads += 1;
+        MoveReading { stick: Some([0.0, 1.0]), turn: Some(1.0), jump: Some(reads > 1), head: Some(head) }
+    });
+    let (s, _) = session(rt);
+    let moves = Arc::new(MoveRing::default());
+    let mut s = s.with_moves(moves.clone());
+    let mut k = sink();
+    run(&mut s, &mut k, 4);
+    let at = shown_time(&s);
+    let m = moves.move_at(at).expect("a sample at the display time");
+    assert_eq!((m.stick, m.jumps, m.tracked), ([0.0, 1.0], 1, true), "full forward; A held is one jump");
+    assert!(m.heading > u32::MAX / 2, "turning right: the heading wrapped below zero ({})", m.heading);
+    let heading = m.heading;
+
+    s.backend_mut().push(XrEvent::StateChanged(SessionState::Visible));
+    run(&mut s, &mut k, 2);
+    let still = moves.move_at(shown_time(&s)).unwrap();
+    assert_eq!((still.stick, still.jumps), ([0.0, 0.0], 1), "no focus: a standstill, no new jump");
+    assert_eq!(still.heading, heading, "and no turn");
+
+    s.backend_mut().push(XrEvent::StateChanged(SessionState::Focused));
+    run(&mut s, &mut k, 1);
+    assert_eq!(moves.move_at(shown_time(&s)).unwrap().jumps, 1, "A still held as focus came back: adopted, no jump");
+
+    s.backend_mut().push(XrEvent::StateChanged(SessionState::Stopping));
+    run(&mut s, &mut k, 3);
+    no_violations(&s);
+    s.abandon();
+    run(&mut s, &mut k, 1);
+    assert_eq!(moves.move_at(HostTime(i64::MAX)), None, "no session, no headset locomotion");
+}
