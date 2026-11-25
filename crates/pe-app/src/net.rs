@@ -1937,7 +1937,19 @@ mod tests {
         println!("B: {:?}; B's console {notices_b:?}; B's pe-diverge {:?}", sim_b.stats(), sim_b.diverge_counters());
         assert_eq!(sim_b.join_failed(), None, "B's import failed");
         assert!(!sim_b.joining(), "B's import didn't end: {notices_b:?}");
-        assert_eq!(status_b.get(), None, "B reached the present, and its window's status line is down");
+        // B's status line comes down once B has stayed under SHOW_S for HIDE_AFTER_S (slow.rs). Its catch-up resets it,
+        // but under load a late tick after that can put it up again for as long, so at the moment B reaches the present
+        // it can still read "Behind by 0.0 s" (@integrator-1's bounce of f5c23e14; 1 of 6 runs on main 1ac7e7df). So
+        // wait for it, for at most HIDE_AFTER_S and a second (@coordinator-opus).
+        let hide = Duration::from_secs_f64(crate::slow::HIDE_AFTER_S + 1.0);
+        let down = run_both(&host, [(&mut sim, &mut notices), (&mut sim_b, &mut notices_b)], hide, |_, _, _| {
+            status_b.get().is_none()
+        });
+        assert!(
+            down,
+            "B reached the present, and its window's status line didn't come down within {hide:?}: {:?}",
+            status_b.get()
+        );
         assert!(notices.contains(&joined(me_b)), "A's console says B joined: {notices:?}");
         let finals = (sim.final_cut(), sim_b.final_cut());
         assert!(both_past(&sim, &sim_b, e), "both finalize the same cut past E: {finals:?}");
