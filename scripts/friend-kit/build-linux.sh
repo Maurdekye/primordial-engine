@@ -45,16 +45,20 @@ ldd --version | sed -n 1p
 # not an exit (an all-comment file killed both builders silently at d4f1313f).
 features=${PE_KIT_FEATURES-$({ sed -e 's/#.*//' scripts/friend-kit/features.txt 2>/dev/null || true; } | xargs)}
 if [[ $features =~ (^|[[:space:],])(pe-app/)?steam-audio-trial($|[[:space:],]) ]]; then
-  # A trial kit without the library would run silent with nothing said at build time.
-  [[ " ${PE_KIT_EXTRA:-} " =~ (^|[[:space:]/])libphonon\.so[[:space:]] ]] || {
-    echo "build-linux: the steam-audio-trial kit needs Valve's libphonon.so in PE_KIT_EXTRA" >&2; exit 2; }
+  # A trial kit without the library would run silent with nothing said at build time, and Apache-2.0 4(a) wants the
+  # licence and notices beside it (docs/steam-audio-trial.md; @design-reviewer's L1).
+  for need in libphonon.so LICENSE.md THIRDPARTY.md; do
+    have=
+    for f in ${PE_KIT_EXTRA:-}; do [ "$(basename "$f")" != "$need" ] || have=1; done
+    [ -n "$have" ] || { echo "build-linux: the steam-audio-trial kit needs Valve's $need in PE_KIT_EXTRA" >&2; exit 2; }
+  done
   python3 -B -I scripts/audit_steam_audio_trial.py
 fi
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
 CARGO_TARGET_DIR=$base/target nice -n 19 cargo build --release --locked -p pe-app -j "$jobs" "${feat[@]}"
 
-short=${sha:0:12}${features:+-${features//[ ,]/-}}
+short=${sha:0:12}${features:+-${features//[ ,\/]/-}}
 out=$base/out/pe-friend-kit-$short
 rm -rf "$out"
 mkdir -p "$out"

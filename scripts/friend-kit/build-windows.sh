@@ -27,16 +27,20 @@ unset CARGO
 # The kits' features: scripts/friend-kit/features.txt at this commit (as build-linux.sh), unless PE_KIT_FEATURES is set.
 features=${PE_KIT_FEATURES-$({ sed -e 's/#.*//' scripts/friend-kit/features.txt 2>/dev/null || true; } | xargs)}
 if [[ $features =~ (^|[[:space:],])(pe-app/)?steam-audio-trial($|[[:space:],]) ]]; then
-  # A trial kit without the library would run silent with nothing said at build time.
-  [[ " ${PE_KIT_EXTRA:-} " =~ (^|[[:space:]/])phonon\.dll[[:space:]] ]] || {
-    echo "build-windows: the steam-audio-trial kit needs Valve's phonon.dll in PE_KIT_EXTRA" >&2; exit 2; }
+  # A trial kit without the library would run silent with nothing said at build time, and Apache-2.0 4(a) wants the
+  # licence and notices beside it (docs/steam-audio-trial.md; @design-reviewer's L1).
+  for need in phonon.dll LICENSE.md THIRDPARTY.md; do
+    have=
+    for f in ${PE_KIT_EXTRA:-}; do [ "$(basename "$f")" != "$need" ] || have=1; done
+    [ -n "$have" ] || { echo "build-windows: the steam-audio-trial kit needs Valve's $need in PE_KIT_EXTRA" >&2; exit 2; }
+  done
   python -B -I scripts/audit_steam_audio_trial.py
 fi
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
 cargo build --release --locked -p pe-app "${feat[@]}"
 target=$(cargo metadata --format-version 1 --no-deps | python -c "import json,sys; print(json.load(sys.stdin)['target_directory'])")
-short=${sha:0:12}${features:+-${features//[ ,]/-}}
+short=${sha:0:12}${features:+-${features//[ ,\/]/-}}
 out=$drop/pe-friend-win-$short
 rm -rf "$out"
 mkdir -p "$out"
