@@ -24,6 +24,8 @@
 //!   it the session can't confirm changes until that cut is final.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
@@ -179,7 +181,9 @@ pub struct Inviter {
     line: LineId,
     invite: Invite,
     replies: Receiver<Reply>,
-    t_join: Duration,
+    /// How long a join step may take before the join fails, ns. Shared ([`Inviter::t_join_handle`]), so a test can run
+    /// its setup under the product's `T_join` and shorten it once its cut is final.
+    t_join: Arc<AtomicU64>,
     join: Option<Join>,
     /// Join requests not decided yet, from keys that may be the next reply's, with when each came.
     held: BTreeMap<MemberKey, HostTime>,
@@ -191,6 +195,12 @@ pub struct Inviter {
 }
 
 impl Inviter {
+    /// The join timeout, shared: a test shortens it after its setup (net.rs's held-join test). The inviter reads it at
+    /// each check, so a change applies to the step in flight.
+    pub fn t_join_handle(&self) -> Arc<AtomicU64> {
+        self.t_join.clone()
+    }
+
     /// The inviter of `invite`, made in the session on `line`, taking replies from `replies`.
     pub fn new(me: MemberKey, line: LineId, invite: Invite, replies: Receiver<Reply>, t_join: Duration) -> Inviter {
         Inviter {
@@ -198,7 +208,7 @@ impl Inviter {
             line,
             invite,
             replies,
-            t_join,
+            t_join: Arc::new(AtomicU64::new(u64::try_from(t_join.as_nanos()).unwrap_or(u64::MAX))),
             join: None,
             held: BTreeMap::new(),
             entry: None,
@@ -472,9 +482,10 @@ impl Inviter {
             self.join = None;
             return;
         }
-        let t_join = i64::try_from(self.t_join.as_nanos()).unwrap_or(i64::MAX);
+        let ns = self.t_join.load(Ordering::Relaxed);
+        let t_join = i64::try_from(ns).unwrap_or(i64::MAX);
         if !j.failed && now.0.saturating_sub(j.since.0) > t_join {
-            let why = format!("the join took no step for {} s", self.t_join.as_secs());
+            let why = format!("the join took no step for {} s", Duration::from_nanos(ns).as_secs());
             self.fail(&why, members, now);
         }
     }

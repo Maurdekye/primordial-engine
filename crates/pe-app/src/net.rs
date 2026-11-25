@@ -1780,6 +1780,8 @@ mod tests {
         cj: CutJoin,
         me_a: MemberKey,
         me_b: MemberKey,
+        /// A's join timeout, ns: a test shortens it once E is final (the held join).
+        t_join: Arc<std::sync::atomic::AtomicU64>,
     }
 
     /// Joining from a cut up to B's agreement (app.md 4). A opens alone, with `t_join` per step, and finalizes by
@@ -1800,6 +1802,7 @@ mod tests {
         let Opened { session: s, invite, replies, .. } =
             a.open_alone(&p, Duration::from_secs(600), t_join, runner()).expect("A opens alone");
         let (me_a, me_b) = (s.me, b.me());
+        let t_join_handle = s.hook.inviter.as_ref().expect("A's inviter").t_join_handle();
         let line = s.node.config().line;
         assert_eq!(invite.pin, Some(Pin { epoch: 0, members: members_hash(line, 0, &[me_a]).0 }), "epoch 0, A alone");
         assert_eq!((s.members.clone(), s.linked.clone()), (vec![me_a], Vec::new()));
@@ -1834,7 +1837,7 @@ mod tests {
         let hands = v.objects.iter().filter(|o| o.hand_of.is_some_and(|h| h.0 == me_b)).count();
         assert_eq!(hands, 2, "A's world holds B's hands: the Admit's world side");
         assert_eq!((sim.stats().hook_entries, sim.stats().hook_entries_refused), (1, 0), "one Admit, written");
-        CutPair { host, sim, notices, cj, me_a, me_b }
+        CutPair { host, sim, notices, cj, me_a, me_b, t_join: t_join_handle }
     }
 
     /// B's simulation over its empty replica, its import of E from A under way (pe-diverge's join), and its window's
@@ -1898,7 +1901,7 @@ mod tests {
     fn a_joiner_joins_at_the_cut_that_admits_it_and_both_finalize() {
         use crate::join::{T_JOIN, joined};
         let balls = std::env::var("PE_JOIN_BALLS").ok().and_then(|b| b.parse().ok()).unwrap_or(8);
-        let CutPair { host, mut sim, mut notices, cj, me_a, me_b } = cut_pair(T_JOIN, balls);
+        let CutPair { host, mut sim, mut notices, cj, me_a, me_b, .. } = cut_pair(T_JOIN, balls);
         let e = cj.e.at;
         let (mut sim_b, slot_b, status_b) = joining_sim(cj, me_a, &host);
         assert_eq!(status_b.get(), Some(crate::join::catching_up_status()), "B's window says it is catching up");
@@ -2022,9 +2025,13 @@ mod tests {
         ignore = "release only, as a two-machine run (@coordinator-opus): run with --release"
     )]
     fn a_join_held_past_t_join_fails_and_joins_after_all_once_the_cut_is_final() {
-        use crate::join::{join_failed, joined_after_all};
+        use crate::join::{T_JOIN, join_failed, joined_after_all};
         const SHORT: Duration = Duration::from_millis(1500);
-        let CutPair { host, mut sim, mut notices, cj, me_a, me_b } = cut_pair(SHORT, 8);
+        // The setup's steps (B's hello, the welcome, the ready) under the product's T_join: under a loaded parallel run
+        // B's hello can take longer than SHORT, and A would fail the join before the Admit (two-pe-app-join-tests
+        // item). SHORT only once E is final, for the step this test holds back.
+        let CutPair { host, mut sim, mut notices, cj, me_a, me_b, t_join } = cut_pair(T_JOIN, 8);
+        t_join.store(u64::try_from(SHORT.as_nanos()).unwrap(), std::sync::atomic::Ordering::Relaxed);
         let e = cj.e.at;
         // B holds off: its node exists, but nothing imports E or votes.
         let failed = run_until(&mut sim, &host, &mut notices, SHORT * 3, |_| false);
