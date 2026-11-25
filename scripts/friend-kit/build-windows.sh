@@ -19,6 +19,9 @@ left=$(git status --porcelain --ignored -- crates Cargo.lock Cargo.toml)
 unset CARGO
 # The kits' features: scripts/friend-kit/features.txt at this commit (as build-linux.sh), unless PE_KIT_FEATURES is set.
 features=${PE_KIT_FEATURES-$({ sed -e 's/#.*//' scripts/friend-kit/features.txt 2>/dev/null || true; } | xargs)}
+if [[ $features =~ (^|[[:space:],])(pe-app/)?steam-audio-trial($|[[:space:],]) ]]; then
+  python -B -I scripts/audit_steam_audio_trial.py
+fi
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
 cargo build --release --locked -p pe-app "${feat[@]}"

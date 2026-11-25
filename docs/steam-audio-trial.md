@@ -1,0 +1,38 @@
+# Steam Audio friend-test trial
+
+[I] The trial uses eight nearest binaural sources, a shared first-order Ambisonics bed, and 128-frame DSP blocks at 48 kHz. Measure the rendered workload and the user's streamed headset session before deciding on permanent adoption.
+
+[V] The opt-in `steam-audio-trial` feature is for Windows x64 and Linux x64. Build both peer kits from the same commit. The runtime verifies the SHA-256 of Valve's unmodified v4.8.1 library before loading it. Keep the library and its redistribution notices in the generated kit outside Git. [Valve release](https://github.com/ValveSoftware/steam-audio/releases/tag/v4.8.1) · [Apache license](https://github.com/ValveSoftware/steam-audio/blob/v4.8.1/LICENSE.md)
+
+| Artifact | SHA-256 |
+| --- | --- |
+| [V] SDK ZIP | `4a0aa5ec1176f38f0b0993a37c2259d9e86f27e22d5e24f83ec4c3cb9a1d5449` |
+| [V] `steamaudio/lib/windows-x64/phonon.dll` | `ca3dbc01dbc24492717011e80f6a51404ca143ae344ca660971d2c983f1e058d` |
+| [V] `steamaudio/lib/linux-x64/libphonon.so` | `faf7c4d69e0f104366f6553cda38d3f946f761f7db223baf12663f6fbf2387da` |
+
+- [V] `PE_STEAM_AUDIO_LIB` enables the trial and points to the matching library. `PE_STEAM_AUDIO_LOG` gives the metrics file path. A menu relaunch gives that path a new `-r<stamp>` suffix. `PE_STEAM_AUDIO_DEVICE` selects an exact CPAL device name when the default is unsuitable. The app runs silently when the library fails verification or the endpoint cannot open.
+- [V] The stream writes silence until explicitly launched with `PE_STEAM_AUDIO_AUDIBLE=1`. A silent fixture smoke uses `PE_STEAM_AUDIO_FIXTURE=32` and `pe-app --headless --seconds 8`. The fixture alternates wood and metal hits and tops up the mix with synthetic sources. An explicit fixture count above the default voice cap raises the cap for that run, up to 512 for stress tests. Only `--headless` uses `PE_STEAM_AUDIO_RENDER=1` to draw to a GPU texture without a window or pixel readback.
+- [V] Linux output uses CPAL's ALSA backend. Build with the system ALSA development package available (`libasound2-dev` on Ubuntu or `alsa-lib-devel` on Fedora) and run with a 48 kHz system output route. `alsa-sys` links system libasound with checked-in Rust bindings. The enabled-graph audit uses the trial-only ALSA allowance. Both friend-kit builders run the audit and stop on failure when the feature is selected.
+- [I] A production loader needs to ensure the bytes checked by the SHA-256 verifier are the same bytes opened by the native loader. The trial verifies the file before loading its path and assumes the kit directory is trusted.
+
+## Impact material and voice limits
+
+| Presented shape | Trial timbre |
+| --- | --- |
+| [V] Box | Wood knock |
+| [V] Sphere or capsule | Metal impact |
+| [V] Mesh or missing shape | Wood knock |
+
+[V] Each hit uses the touching part with the smaller world-space diameter from its agreed shape and scale. Object ID breaks ties. Hands take the other side's timbre. The plane's player root adds no physics collider. Unknown parts fall back to wood. This table stands in for an explicit physics material field.
+
+[V] Procedural impacts use a short damped tone for wood and longer, inharmonic resonances for metal. Size scales pitch. Approach speed and distance set gain. The trial ranks hits by estimated playback level before admission, caps admission at 64 per presented display frame and per DSP block, and caps active voices at 128 by default. Eight voices use direct binaural processing. A challenger needs about a 10% distance advantage to displace an incumbent. The rest share a bed whose encoder slots stay with source IDs across blocks. A newly assigned encoder resets its history. A promotion or demotion still changes paths at a block boundary.
+
+[V] The output bus halves the mixed signal and rolls peaks above 0.30 toward a 0.42 safety ceiling. `pre_mute_peak` measures the output after that stage, and `limited_samples` counts samples entering the soft limiter. The optional `crowded_impact_mix` release test uses the pinned SDK at `PE_STEAM_AUDIO_LIB` and mixes 128 co-located impacts without opening an audio device.
+
+[V] On Windows x64 this stress test peaked at 2.210190 before gain and 0.420000 after limiting. The limiter engaged for 1,239 channel samples. The same raw sample stream would have crossed the old ±0.42 hard-clamp threshold on 1,767 channel samples. [I] This verifies the crowded mix and output level. Audible quality still needs the friend test.
+
+[V] S5 v1.11 supplies the hits for every completed physics frame in a view's stepped range. The trial pairs each replay hit with at most one prior hit in that range by unordered body pair and a 45 ms simulation-time window, then replaces the range. An empty replay retracts its old hits, and a publication gap clears the matching history. The onset waits until the display reaches the impact's simulation time and expires after 180 ms of drawn time. A replay updates a still-pending onset. Queued hits have a 45 ms wall-clock cooldown per pair. Started voices decay naturally.
+
+[I] The friend-test default is based on a muted Windows audio-only fixture at 32, 64, 128 and 256 voices, with other jobs active. In the 20-second 128-voice observation, DSP p99 was 0.873 ms against a 2.667 ms block and callback work had zero overruns, with four late callback gaps. It was the highest tested count below half the block duration with zero callback overruns. Recheck behavior with real impacts and streaming during the friend test.
+
+[I] Fixture results cover synthesis, spatial DSP, the callback and the presenter tap. Unset `PE_STEAM_AUDIO_FIXTURE` for the actual S5 collision feed. In the headset trial, record near and distant single collisions and a grouped drop. Save each peer's Steam Audio metrics, app log, and OpenXR runtime and stream settings. Compare DSP and callback timing, active/dropped voices, stream errors and reported xruns alongside direction, loudness, latency and glitches reported by each listener. The log gives crowded blocks (8+ voices) their own DSP distribution so quiet intervals do not dilute it. The hit latency metric ends at the first carrying callback. Headset playback time and physical underruns require independent evidence.

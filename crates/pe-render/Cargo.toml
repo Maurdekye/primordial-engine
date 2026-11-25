@@ -6,6 +6,9 @@ license.workspace = true
 publish.workspace = true
 description = "Rendering: the window, the scene renderer drawing from frame views (S5), the display layer, the desktop hand, offscreen capture, the GPU context pe-xr uses"
 
+[features]
+audio-trial = []
+
 # WS-render, @ballpit-viz owns this crate and its manifest (docs/spec/render.md 2 lists the dependencies and the
 # native boundaries).
 [dependencies]

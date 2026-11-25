@@ -1,0 +1,1 @@
+allow alsa-sys 0.4.0 links-native without=use-bindgen in=. -- Linux x64 friend-test Steam Audio output: pkg-config links the system libasound dynamically; no native source compiled (alsa-sys 0.4.0 build.rs, default bindings)

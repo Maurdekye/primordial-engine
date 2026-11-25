@@ -6,6 +6,15 @@ license.workspace = true
 publish.workspace = true
 description = "The application: threads, wiring, invites, configuration, the demo script"
 
+[features]
+steam-audio-trial = ["pe-render/audio-trial", "dep:cpal", "dep:glam", "dep:libloading", "dep:sha2"]
+
+[target.'cfg(all(any(windows, target_os = "linux"), target_arch = "x86_64"))'.dependencies]
+cpal = { version = "=0.18.2", optional = true }
+glam = { version = "0.33", optional = true }
+libloading = { version = "=0.8.9", optional = true }
+sha2 = { version = "0.10", optional = true }
+
 # WS-app, @engine-architect owns this crate and its manifest (docs/spec/app.md 5 lists what it needs from each crate).
 [dependencies]
 # The menu's copy and paste (friend-test S3, ruling (b)): the system clipboard, text only; Wayland

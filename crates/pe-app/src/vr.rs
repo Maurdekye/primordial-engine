@@ -64,6 +64,8 @@ pub struct VrSink {
     ui: Option<Box<dyn pe_render::menu::Ui>>,
     /// The local player's move feed (locomotion L4c): its newest heading and head turn the drawn rig at once.
     moves: Option<Arc<dyn pe_seams::MoveFeed>>,
+    #[cfg(feature = "steam-audio-trial")]
+    audio_trial_render_ms: Option<(Histogram, Histogram)>,
 }
 
 /// What a VR run reports at its end (@coordinator-opus): the presenter's counters for
@@ -103,6 +105,8 @@ impl VrSink {
             report,
             ui: None,
             moves: None,
+            #[cfg(feature = "steam-audio-trial")]
+            audio_trial_render_ms: pe_xr::diag::enabled().then(Default::default),
         }
     }
 
@@ -217,6 +221,10 @@ impl Drop for VrSink {
         if let Ok(mut slot) = self.report.lock() {
             *slot = Some(r);
         }
+        #[cfg(feature = "steam-audio-trial")]
+        if let Some((cpu, gpu)) = &self.audio_trial_render_ms {
+            crate::out!("steam audio: XR render cpu_ms={:?} gpu_ms={:?}", cpu.summary(), gpu.summary());
+        }
     }
 }
 
@@ -320,7 +328,14 @@ impl FrameSink for VrSink {
         let Some(target) = self.targets.stereo(frame.image, frame.depth_image, self.extent) else {
             return false;
         };
-        self.renderer.render_stereo(&presented.scene, cameras, &target);
+        let _stats = self.renderer.render_stereo(&presented.scene, cameras, &target);
+        #[cfg(feature = "steam-audio-trial")]
+        if let Some((cpu, gpu)) = &mut self.audio_trial_render_ms {
+            cpu.record(_stats.cpu_record_ms);
+            if let Some(ms) = _stats.gpu_ms {
+                gpu.record(ms);
+            }
+        }
         if let Some(c) = self.captures.as_mut() {
             c.drew(view, cameras[0]);
         }
