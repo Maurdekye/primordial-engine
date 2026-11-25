@@ -2569,7 +2569,9 @@ its input; pe-physics moves it (L1's `move_player`, @vdw-physics); pe-replica's 
 - **Its drawn shape** (@engine-architect) is the body's one other child,
   `ObjectId::body(line, member, 1, frame)`: a `Transform` 0.85 m above the feet, a capsule `Shape` (r 0.25 m,
   half-height 0.6 m) and an `Appearance`, with no `Body`, so it is never physical. It is what the view draws of
-  another player. `add_player` takes the physical capsule from `PLAYER` tuning, never from this child. The body never turns, so its frame is the world's axes
+  another player. `add_player` takes the physical capsule from `PLAYER` tuning, never from this child. The body root
+  never carries a `Body` row: if it did, the drawn capsule would become its compound collider and count in `bounds()`
+  for reach (@chunks-reviewer). The body never turns, so its frame is the world's axes
   at its feet. A returning member keeps its body.
 - **A body is placed like a hand** (7.5, 7.6; @chunks-reviewer's I1 and M1): no edit writes or removes a `Player`
   row, and none writes a body's `Transform`, `Body` or `Shape`, reparents, deletes, copies or tags it, the owner's

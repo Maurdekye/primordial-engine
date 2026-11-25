@@ -111,6 +111,7 @@ fn the_plane_gives_each_member_a_body_at_its_feet_with_its_hands_as_children() {
         assert_eq!(offset(&w, shape, body), [0.0, 0.85, 0.0]);
         assert!(w.store().get::<pe_world::components::Appearance>(shape).is_some());
         assert!(w.store().get::<pe_world::components::Body>(shape).is_none());
+        assert!(w.store().get::<pe_world::components::Body>(body).is_none(), "the root never carries Body");
         assert!(!w.physical().contains(&shape) && !w.physical().contains(&body));
     }
     // The pit has no bodies: root hands, no Player in its registry, so its roots are M1's.
