@@ -60,10 +60,14 @@ impl HitHistory {
                 continue;
             }
             let matching = if resimulated {
-                previous.get(&hit.bodies).and_then(|old| {
-                    old.iter()
-                        .filter(|old| old.hit.when.0.abs_diff(hit.when.0) <= MATCH_NS)
-                        .min_by_key(|old| old.hit.when.0.abs_diff(hit.when.0))
+                previous.get_mut(&hit.bodies).and_then(|old| {
+                    let (index, _) = old
+                        .iter()
+                        .enumerate()
+                        .map(|(index, old)| (index, old.hit.when.0.abs_diff(hit.when.0)))
+                        .filter(|(_, distance)| *distance <= MATCH_NS)
+                        .min_by_key(|(_, distance)| *distance)?;
+                    Some(old.remove(index))
                 })
             } else {
                 None
@@ -81,7 +85,7 @@ impl HitHistory {
         self.frames.retain(|_, frame_hits| {
             frame_hits.retain_mut(|entry| {
                 let age = now.0.saturating_sub(entry.hit.when.0);
-                if std::mem::take(&mut entry.pending) && age <= MAX_REPLAY_AGE_NS as i64 {
+                if age >= 0 && std::mem::take(&mut entry.pending) && age <= MAX_REPLAY_AGE_NS as i64 {
                     hits.push(entry.hit);
                 }
                 age <= (MAX_REPLAY_AGE_NS + MATCH_NS) as i64
@@ -115,7 +119,7 @@ impl Publisher {
         let mut hits = Vec::with_capacity(MAX_HITS_PER_DISPLAY);
         let mut last_fixture = None;
         let mut last_material = Material::Wood;
-        Box::new(move |display, view, new, cameras| {
+        Box::new(move |display, view, new, gap, cameras| {
             let Some(listener) = center(cameras) else { return };
             if let Ok(mut state) = self.listener.try_lock() {
                 *state = Some(listener);
@@ -138,6 +142,8 @@ impl Publisher {
                     history.frames.clear();
                     last_queued.clear();
                     domain = Some(view.domain);
+                } else if gap {
+                    history.frames.clear();
                 }
                 let mut count = 0;
                 for update in new.iter().filter(|update| update.domain == view.domain) {
@@ -146,12 +152,12 @@ impl Publisher {
                         history.replace(
                             from,
                             update.frame,
-                            view.sim_time,
+                            display.t_draw,
                             update.hits.iter().map(|hit| (hit.frame, hit.resimulated, physical_hit(update, hit))),
                         );
                     }
                 }
-                history.take_pending(view.sim_time, &mut hits);
+                history.take_pending(display.t_draw, &mut hits);
                 count
             };
             self.report.hits_received.fetch_add(count as u64, super::RELAXED);
@@ -351,5 +357,33 @@ mod tests {
         );
         history.take_pending(now, &mut pending);
         assert_eq!(pending.iter().map(|hit| hit.when).collect::<Vec<_>>(), [corrected.when]);
+    }
+
+    #[test]
+    fn waits_for_drawn_time_and_consumes_each_old_match_once() {
+        let mut history = HitHistory::default();
+        let mut pending = Vec::new();
+        let time = HostTime::from_millis(1_000);
+        history.replace(
+            Frame(60),
+            Frame(61),
+            HostTime::from_millis(990),
+            [(Frame(60), false, hit(7, 11, 1000))].into_iter(),
+        );
+        history.take_pending(HostTime::from_millis(999), &mut pending);
+        assert!(pending.is_empty());
+        history.take_pending(time, &mut pending);
+        assert_eq!(pending.iter().map(|hit| hit.when).collect::<Vec<_>>(), [time]);
+        pending.clear();
+
+        let second = hit(11, 7, 1015);
+        history.replace(
+            Frame(60),
+            Frame(62),
+            second.when,
+            [(Frame(60), true, hit(7, 11, 1000)), (Frame(61), true, second)].into_iter(),
+        );
+        history.take_pending(second.when, &mut pending);
+        assert_eq!(pending.iter().map(|hit| hit.when).collect::<Vec<_>>(), [second.when]);
     }
 }

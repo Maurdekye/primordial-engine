@@ -119,9 +119,9 @@ pub struct PresentedFrame {
 }
 
 /// Local trial observer of the finished display poses, newest publication,
-/// publications just taken for this display frame, and the active camera(s).
+/// publications just taken for this display frame, whether earlier ones were lost, and the active camera(s).
 #[cfg(feature = "audio-trial")]
-pub type AudioObserver = Box<dyn FnMut(&DisplayFrame, &FrameView, &[Arc<FrameView>], &[Camera]) + Send>;
+pub type AudioObserver = Box<dyn FnMut(&DisplayFrame, &FrameView, &[Arc<FrameView>], bool, &[Camera]) + Send>;
 
 /// The display layer and the effect gate, on the render thread. Survives a lost GPU context.
 pub struct Presenter {
@@ -304,7 +304,7 @@ impl Presenter {
         let display = self.display.frame(FrameInput { view: newest, display_time: now, volumes: &volumes, local });
         #[cfg(feature = "audio-trial")]
         if let Some(observe) = &mut self.audio_observer {
-            observe(&display, newest, new, cameras);
+            observe(&display, newest, new, gap, cameras);
         }
         let taken = self.display.take_counters();
         self.counters.display_frame(now, &taken, &display, now);
