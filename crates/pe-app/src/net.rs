@@ -2330,6 +2330,10 @@ mod tests {
                 }
             }
         }
+        // The allowance is the time each machine spent more than 2 s behind real time (`slow_ms`), not its largest lag:
+        // every machine's lag reaches the outage's own length when the backlog lands (12.5 s and more), so `lag_max_ms`
+        // would put both bounds at the clamp in every run (K4's A/B; @fable-reviewer).
+        let bounds = lead_bounds(&sims, "blackout", |st| st.slow_ms);
         for (i, (sim, me)) in sims.iter().enumerate() {
             let them = sims[1 - i].1;
             let log = logs[i].lock().unwrap();
@@ -2359,10 +2363,21 @@ mod tests {
             assert_eq!(sim.stats().refused, 0, "machine {i} refused messages");
             assert_eq!(late, 0, "machine {i} voided {late} of the other's entries as late (pe-agree's outage rule)");
             // pe-agree's outage mark keeps the outage's backlog out of the lateness reports, so stamp-ahead's lead
-            // stays at or near 0 through the return (2 and 4 frames measured): before it, both leads rose to the 3 s
-            // clamp, 180 frames, and took 90 s to drain (@design-reviewer's Medium on a6b1035a; @coordinator-opus). A loaded machine's loopback ticks run late, so the bound allows 0.2 s.
-            let lead = sim.stats().largest_lead;
-            assert!(lead <= 12, "machine {i}'s stamp-ahead lead rose to {lead} frames over the blackout");
+            // stays at or near 0 through the return on an unloaded machine (2 and 4 frames measured): before it, both
+            // leads rose to the 3 s clamp, 180 frames, and took 90 s to drain (@design-reviewer's Medium on a6b1035a;
+            // @coordinator-opus). A machine that fell behind may stamp ahead by the time it was behind
+            // (`lead_bound`).
+            let st = sim.stats();
+            assert!(
+                st.largest_lead <= bounds[i],
+                "machine {i}'s stamp-ahead lead rose to {} frames over the blackout, past its bound {} (slow_ms {}, \
+                 lag_max_ms {}, lead now {})",
+                st.largest_lead,
+                bounds[i],
+                st.slow_ms,
+                st.lag_max_ms,
+                st.lead
+            );
         }
         assert!(
             resumed,
@@ -2456,6 +2471,37 @@ mod tests {
         false
     }
 
+    /// The most a machine's stamp-ahead lead may rise over an outage in these real-time loopback tests, in frames: 12
+    /// (0.2 s) plus a frame for each 1/60 s of `allowance_ms`, and always under the 3 s clamp (180 frames at 60 Hz).
+    /// Under load a machine catches up slowly after the return, and what it makes while it is behind reaches the other
+    /// late, so stamp-ahead raises its lead, as it should for a slow member. The bug the bound also catches, the
+    /// outage's backlog read as lateness, put both leads at the clamp on an unloaded machine. The mechanism itself is
+    /// pe-agree's, tested deterministically with a scripted clock and no load:
+    /// `an_outages_backlog_is_never_sampled_as_lateness` (10 s dark) and
+    /// `a_half_second_dropout_is_not_sampled_as_lateness`. Each test's allowance is a fit to measured runs, not a
+    /// derivation: a failure past it may first mean the fit doesn't hold at that load, then a regression (K4's A/B of
+    /// b476a3d2 and main, 20 runs; @coordinator-opus's ruling, after @fable-reviewer).
+    fn lead_bound(allowance_ms: u64) -> u64 {
+        (12 + allowance_ms * 60 / 1000).min(179)
+    }
+
+    /// Each machine's lead bound from `allowance` (its stats in, ms out), and a line saying so when both machines'
+    /// bounds are the clamp: the lead check then guards only the clamp (@coordinator-opus).
+    fn lead_bounds(
+        sims: &[(Sim, MemberKey)],
+        what: &str,
+        allowance: impl Fn(&crate::sim::SimStats) -> u64,
+    ) -> Vec<u64> {
+        let bounds: Vec<u64> = sims.iter().map(|(sim, _)| lead_bound(allowance(sim.stats()))).collect();
+        if bounds.iter().all(|&b| b >= 179) {
+            println!(
+                "NOTE: both machines fell behind over the {what} (lead bounds {bounds:?} frames): the stamp-ahead lead \
+                 check guards only the 3 s clamp in this run"
+            );
+        }
+        bounds
+    }
+
     #[test]
     #[ignore = "about 10 s in release (debug simulates too slowly to finalize in time): run with --release --include-ignored"]
     fn a_half_second_dropout_leaves_both_stamp_leads_at_or_near_0() {
@@ -2495,6 +2541,11 @@ mod tests {
         // Past the 3 s window: a lead the dropout's reports called for would have risen by now.
         run(&mut sims, &mut |_| false, Duration::from_secs(4));
         println!("after the path came back: finality resumed {resumed} ({resumed_after:?})");
+        // The bound stays 12 (0.2 s) until loaded runs show which allowance fits, so every message prints each machine's
+        // lag and slow time: 10 runs on a lightly loaded PC (K4, 2026-11-25) all had slow_ms 0, lag_max_ms 0-1250 and
+        // leads 0-2; one loaded run reached 17 with neither printed (@fable-reviewer: the slow_ms form, or
+        // the lag above the dropout's own, `12 + max(0, lag_max_ms - 900) * 60 / 1000`, picked from the pairs).
+        let bounds = vec![12u64; sims.len()];
         for (i, (sim, me)) in sims.iter().enumerate() {
             let them = sims[1 - i].1;
             let late = logs[i]
@@ -2505,15 +2556,24 @@ mod tests {
                 .count();
             let st = sim.stats();
             println!(
-                "machine {i} ({}): largest lead {} frames, lead now {}, longest drain {} frames; voided the other's as \
-                 late {late}",
+                "machine {i} ({}): largest lead {} frames (bound {}), lead now {}, longest drain {} frames; lag_max_ms \
+                 {}, slow_ms {}; voided the other's as late {late}",
                 short(me),
                 st.largest_lead,
+                bounds[i],
                 st.lead,
-                st.longest_drain
+                st.longest_drain,
+                st.lag_max_ms,
+                st.slow_ms
             );
-            // A loaded machine's loopback ticks run late, so the bound allows 0.2 s, as the 10 s blackout's does.
-            assert!(st.largest_lead <= 12, "machine {i}'s stamp-ahead lead rose to {} frames", st.largest_lead);
+            assert!(
+                st.largest_lead <= bounds[i],
+                "machine {i}'s stamp-ahead lead rose to {} frames, past its bound {} (lag_max_ms {}, slow_ms {})",
+                st.largest_lead,
+                bounds[i],
+                st.lag_max_ms,
+                st.slow_ms
+            );
             assert_eq!(late, 0, "machine {i} voided {late} of the other's entries as late");
         }
         assert!(resumed, "finality did not resume within {resume_within:?} of the path's return");
