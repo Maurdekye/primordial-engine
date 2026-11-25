@@ -399,7 +399,8 @@ impl PhysicsWorld {
         def.linear_damping = desc.linear_damping;
         def.angular_damping = desc.angular_damping;
         def.gravity_scale = desc.gravity_scale;
-        def.is_bullet = desc.bullet;
+        // The fork's swept bodies (box3d-fork D3), never Box3D's own `is_bullet` (world-model.md 3.2).
+        def.swept = desc.bullet;
         def.enable_sleep = desc.enable_sleep;
         let body = create_body(&mut self.world, &def);
 
@@ -880,6 +881,7 @@ impl PhysicsWorld {
         for &(id, _, frame) in &moved {
             joint_set_local_frame_a(&mut self.world, id, frame);
         }
+        self.world.swept_iteration_budget = self.config.swept_budget;
         self.world.step(dt, self.config.sub_steps);
         for &(id, home, _) in &moved {
             joint_set_local_frame_a(&mut self.world, id, home);

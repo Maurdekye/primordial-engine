@@ -13,10 +13,13 @@ mod integrate;
 mod mesh_lanes;
 mod solve;
 mod stages;
+// Primordial Engine fork (D3)
+pub(crate) mod swept;
 
 use crate::math_functions::PI;
 
 pub use solve::solve;
+pub use swept::{SweptCounters, SWEPT_ITERATION_BUDGET};
 
 /// Soft constraint coefficients. (b3Softness)
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

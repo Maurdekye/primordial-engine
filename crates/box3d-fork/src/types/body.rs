@@ -79,6 +79,9 @@ pub struct BodyDef {
     pub is_awake: bool,
     /// Treat this body as a high speed object for continuous collision.
     pub is_bullet: bool,
+    /// Primordial Engine fork (D3): sweep this body in every sub-step against everything it collides with, moving or
+    /// not, so no contact is skipped however fast either moves (`solver/swept.rs`). Off by default.
+    pub swept: bool,
     /// Used to disable a body. A disabled body does not move or collide.
     pub is_enabled: bool,
     /// Allow this body to bypass rotational speed limits.
@@ -108,6 +111,7 @@ pub fn default_body_def() -> BodyDef {
         enable_sleep: true,
         is_awake: true,
         is_bullet: false,
+        swept: false,
         is_enabled: true,
         allow_fast_rotation: false,
         enable_contact_recycling: true,

@@ -123,6 +123,9 @@ pub mod recording;
 pub mod recycle_scale;
 #[cfg(test)]
 mod recycle_scale_tests;
+// Primordial Engine fork (D3): swept bodies.
+#[cfg(test)]
+mod swept_tests;
 pub mod sensor;
 pub mod shape;
 pub(crate) mod simd_scalar;

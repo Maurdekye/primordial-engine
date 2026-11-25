@@ -34,8 +34,10 @@ pub const SELF_TEST_DT: f32 = 1.0 / 60.0;
 const SIDE: usize = 4;
 const LAYERS: usize = 2;
 
-/// The scene before its first step: a static ground, a small pile of mixed dynamic bodies, and a small sphere on open
-/// ground that [`self_test_run`] drops fast enough for a time of impact, created in a fixed order.
+/// The scene before its first step: a static ground, a small pile of mixed dynamic bodies, a small sphere on open
+/// ground that [`self_test_run`] drops fast enough for a time of impact, and a bullet fired into the pile, created in a
+/// fixed order. The bullet puts the sweep (box3d-fork D3) in the digest, so two builds whose sweeps differ, or their
+/// budgets (`SWEPT_BUDGET`), tell each other apart (@coordinator-opus, Q3).
 pub(crate) fn self_test_scene() -> Result<PhysicsWorld, PhysicsError> {
     let mut pw = PhysicsWorld::new(PhysicsConfig::engine())?;
     let ground = BodyDesc::new(BodyKind::Static, [0.0, -1.0, 0.0])
@@ -61,11 +63,18 @@ pub(crate) fn self_test_scene() -> Result<PhysicsWorld, PhysicsError> {
     let drop = BodyDesc::new(BodyKind::Dynamic, [6.0, 3.0, 6.0])
         .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.25 }).with_density(1.0));
     pw.add_body(body(DROP), &drop)?;
+    let mut bullet = BodyDesc::new(BodyKind::Dynamic, [-8.0, 0.4, 0.3])
+        .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.05 }).with_density(50.0))
+        .with_velocity([80.0, 0.0, 0.0], [0.0; 3]);
+    bullet.bullet = true;
+    pw.add_body(body(BULLET), &bullet)?;
     Ok(pw)
 }
 
 /// The fast sphere's body: the one after the pile.
 const DROP: usize = SIDE * SIDE * LAYERS;
+/// The bullet's body: the one after the fast sphere.
+const BULLET: usize = DROP + 1;
 
 /// Steps `pw` [`SELF_TEST_FRAMES`] frames, with two fixed impulses so the pile moves and collides and one that drops
 /// the sphere at about 40 m/s, and returns its whole-state check hash.
@@ -144,6 +153,13 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     const NOT_DEFAULT: u64 = 0x1F80 | 0x6000 | (1 << 15) | (1 << 6);
 
+    /// The mode in a control register's value: on x86-64, MXCSR without its sticky exception flags (bits 0-5), which
+    /// any arithmetic may set (@design-reviewer's nit on the G1 reset test).
+    #[cfg(target_arch = "x86_64")]
+    fn mode(v: u64) -> u64 {
+        v & !0x3F
+    }
+
     #[cfg(target_arch = "aarch64")]
     fn control() -> u64 {
         let v: u64;
@@ -162,6 +178,12 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     const NOT_DEFAULT: u64 = (0b11 << 22) | (1 << 24);
 
+    /// The mode in a control register's value: FPCR holds no exception flags (FPSR does), so all of it.
+    #[cfg(target_arch = "aarch64")]
+    fn mode(v: u64) -> u64 {
+        v
+    }
+
     /// A thread left in another floating-point mode, by a library say, still gives the default mode's digest: the
     /// self-test resets the mode first, reports that it had to, and leaves the thread in the default mode.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -175,7 +197,7 @@ mod tests {
         let after = control();
         set_control(default);
         assert_eq!(got.unwrap(), SelfTestDigest { digest: reference.digest, mode_reset: true });
-        assert_eq!(after, default, "left in the default mode");
+        assert_eq!(mode(after), mode(default), "left in the default mode");
     }
 
     /// The mode does matter on this scene [V on x86-64, the probe on abe1c3fd]: run in it without the reset, the scene

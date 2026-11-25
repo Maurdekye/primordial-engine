@@ -116,7 +116,9 @@ impl RecBuffer {
         self.append_locks(v.motion_locks);
         self.append_bool(v.enable_sleep);
         self.append_bool(v.is_awake);
-        self.append_bool(v.is_bullet);
+        // Primordial Engine fork (D3): `swept` rides in bit 1 of the bullet byte, so a definition without it writes
+        // the upstream bytes.
+        self.append_u8(u8::from(v.is_bullet) | (u8::from(v.swept) << 1));
         self.append_bool(v.is_enabled);
         self.append_bool(v.allow_fast_rotation);
         self.append_bool(v.enable_contact_recycling);
@@ -393,7 +395,10 @@ impl<'a> SnapReader<'a> {
         d.motion_locks = self.locks();
         d.enable_sleep = self.bool();
         d.is_awake = self.bool();
-        d.is_bullet = self.bool();
+        // Primordial Engine fork (D3): bit 1 is `swept`.
+        let bullet = self.u8();
+        d.is_bullet = (bullet & 1) != 0;
+        d.swept = (bullet & 2) != 0;
         d.is_enabled = self.bool();
         d.allow_fast_rotation = self.bool();
         d.enable_contact_recycling = self.bool();

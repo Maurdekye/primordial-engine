@@ -348,6 +348,8 @@ pub fn create_body(world: &mut World, def: &crate::types::BodyDef) -> BodyId {
     } else {
         0
     };
+    // Primordial Engine fork (D3)
+    body_sim.flags |= if def.swept { body_flags::SWEPT } else { 0 };
     let sim_flags = body_sim.flags;
 
     let local_index = {
@@ -403,6 +405,11 @@ pub fn create_body(world: &mut World, def: &crate::types::BodyDef) -> BodyId {
     // dynamic and kinematic bodies that are enabled need an island
     if set_id >= AWAKE_SET {
         create_island_for_body(world, set_id, body_id);
+    }
+
+    // Primordial Engine fork (D3)
+    if def.swept {
+        crate::solver::swept::list_swept_body(world, body_id, true);
     }
 
     world.validate_solver_sets();
@@ -470,6 +477,11 @@ pub fn destroy_body(world: &mut World, body_id: BodyId) {
     }
 
     remove_body_from_island(world, body_index);
+
+    // Primordial Engine fork (D3)
+    if (world.bodies[body_index as usize].flags & body_flags::SWEPT) != 0 {
+        crate::solver::swept::list_swept_body(world, body_index, false);
+    }
 
     let (set_index, local_index) = {
         let body = &world.bodies[body_index as usize];
