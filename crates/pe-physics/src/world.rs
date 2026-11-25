@@ -231,6 +231,8 @@ pub struct PhysicsWorld {
     pub(crate) joints: BTreeMap<JointKey, JointEntry>,
     /// The static body grabs with no `a` attach to (created on first use).
     pub(crate) anchor: Option<BodyId>,
+    /// The players' states ([`PhysicsWorld::move_player`]), by object; each is also a bound body.
+    pub(crate) players: BTreeMap<ObjectId, crate::player::PlayerState>,
     pub(crate) images: crate::image::ImageRegistry,
     pub(crate) poisoned: bool,
 }
@@ -313,6 +315,7 @@ impl PhysicsWorld {
             objects: BTreeMap::new(),
             joints: BTreeMap::new(),
             anchor: None,
+            players: BTreeMap::new(),
             images: crate::image::ImageRegistry::default(),
             poisoned: false,
         })
@@ -434,6 +437,7 @@ impl PhysicsWorld {
         self.usable()?;
         let body = self.bodies.remove(&id).ok_or(PhysicsError::NotBound(id))?;
         self.objects.remove(&body.index1);
+        self.players.remove(&id);
         destroy_body(&mut self.world, body);
         // Box3D destroyed the attached joints; forget their keys.
         let world = &self.world;
@@ -459,7 +463,7 @@ impl PhysicsWorld {
     }
 
     /// Like `body`, for reads: also refused while poisoned.
-    fn live_body(&self, id: ObjectId) -> Result<BodyId, PhysicsError> {
+    pub(crate) fn live_body(&self, id: ObjectId) -> Result<BodyId, PhysicsError> {
         if self.poisoned {
             return Err(PhysicsError::Poisoned);
         }
@@ -957,11 +961,10 @@ impl PhysicsWorld {
         Ok([p.x, p.y, p.z])
     }
 
-    /// Box3D's state hash: every body's transform and velocities (the C reference's hash,
-    /// which the spikes' traces record). Refused while poisoned.
     /// The hard contacts of the latest step ([`Hit`]), in Box3D's order (contact id), so the same on every machine for
     /// the same step. Empty before the first step and after an image is restored, until the next step. Reading them
-    /// changes nothing.
+    /// changes nothing. Read them right after the step: the events name shapes, so a body removed since then drops
+    /// its hits (@design-reviewer's nit on ef7f9b7c).
     pub fn hits(&self) -> Vec<Hit> {
         let events = &self.world.contact_hit_events;
         let mut out = Vec::with_capacity(events.len());
@@ -992,6 +995,8 @@ impl PhysicsWorld {
         Some((object, (shapes.len() - 1 - at) as u32))
     }
 
+    /// Box3D's state hash: every body's transform and velocities (the C reference's hash,
+    /// which the spikes' traces record). Refused while poisoned.
     pub fn box3d_hash(&self) -> Result<u64, PhysicsError> {
         self.usable()?;
         Ok(hash_world_state(&self.world))
@@ -1016,6 +1021,14 @@ impl PhysicsWorld {
             h.write_u32(joint.id.index1 as u32);
             h.write_u32(joint.id.generation as u32);
             h.write_u32(joint.kind as u32);
+        }
+        h.write_u64(self.players.len() as u64);
+        let mut bytes = Vec::with_capacity(crate::player::PlayerState::BYTES);
+        for (id, state) in &self.players {
+            h.write(&id.to_u128().to_le_bytes());
+            bytes.clear();
+            state.put(&mut bytes);
+            h.write(&bytes);
         }
         Ok(h.finish())
     }
