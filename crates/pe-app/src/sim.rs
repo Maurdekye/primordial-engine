@@ -280,7 +280,8 @@ pub struct SimStats {
     /// a tracked hand with no entry that aren't a hold (friend-test K4; the trace's `out_of_reach=`).
     pub hands_out_of_reach: u64,
     /// The deliberate slowdown (`--slow-frame`, crate::slowframe) at the latest tick, ms a frame (0 when stopped or not
-    /// armed), and the simulated frames that waited it out so far: a run slowed on purpose says so in its end line.
+    /// armed), and the simulated frames that waited it out so far, on every thread that simulates (a `replay` run with
+    /// the slowdown on adds its own): a run slowed on purpose says so in its end line.
     pub slow_frame_ms: u32,
     pub slowed_frames: u64,
     /// Frames stamp-ahead's speed test found a hand moving, so the lead shed at most one frame in 11 (app.md 3.2).

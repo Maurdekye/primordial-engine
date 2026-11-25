@@ -10,13 +10,19 @@
 //!   simulation, K4's R5'), so the machine simulates about 0.76 s a second and falls behind steadily.
 //! - **The console's `slow <ms>`** changes it mid-run, `slow 0` stops it, and without the flag it is refused, as `fault`
 //!   is without `--arm-fault`: R3' stops the slowness to check that confirmation comes back.
-//! - **Wall time only:** the wait reads real time and touches nothing simulated or agreed, so a run with it gives the
-//!   same roots as one without (`a_slowed_replica_steps_to_the_same_roots`). On a scripted test clock it costs wall
-//!   time but no simulated lag, so it can't drive the slow-member path in an in-process test.
+//! - **Wall time only:** the wait reads real time and changes no state for the entries a replica is given, so a replica
+//!   with it steps to the same roots as one without (`a_slowed_replica_steps_to_the_same_roots`). In a session it
+//!   changes what real slowness changes, and that is its purpose: this machine's entries are stamped and arrive late,
+//!   its lead rises, its votes and confirmations come late and it may resync, and the roots agree as they would with a
+//!   really slow machine (@design-reviewer's L1 on dca6d577). On a scripted test clock it costs wall time but no
+//!   simulated lag, so it can't drive the slow-member path in an in-process test.
 //! - **Visible while on:** a start-up line, a line at each change, the status line ("Slowed on purpose"), and the end
-//!   line's `slow_frame_ms` and `slowed_frames`, so a recorded run is never taken for a really slow machine.
+//!   line's `slow_frame_ms` and `slowed_frames`, so a recorded run is never taken for a really slow machine. Nothing
+//!   reaches the other members, whose logs show a really slow peer: a run's record pairs them with this machine's
+//!   start-up and end lines.
 //! - **Only simulating waits:** the simulation thread, and the `replay` check's thread while it replays. Rendering,
-//!   the network and the console don't, where a really slow machine would be late at those too.
+//!   the transport thread and the console don't, where a really slow machine would be late at those too; what the
+//!   simulation thread drafts (hands, spawns, votes) goes out late, as a slow machine's does.
 //! - **What it leaves alone:** the start-up physics self-test steps its own world in pe-physics, not a replica, so
 //!   start-up isn't slowed and the hello's digest is the same. `--check-replay` may run with it: the replay's replica
 //!   waits too (every replica pe-app makes is a [`crate::fault::FaultWorld`]), which slows the replay and changes no
@@ -52,7 +58,7 @@ impl SlowFrame {
         self.ms.load(Ordering::Relaxed)
     }
 
-    /// Frames that waited so far.
+    /// Frames that waited so far, on every thread that simulates: a `replay` run with the slowdown on adds its own.
     pub fn frames(&self) -> u64 {
         self.frames.load(Ordering::Relaxed)
     }
@@ -94,8 +100,9 @@ pub fn arm(ms: u32) -> Result<String, String> {
     ARMED.set(s).map_err(|_| "a slowdown is armed already".to_string())?;
     Ok(format!(
         "SLOWDOWN ARMED (--slow-frame {ms}): a deliberate test slowdown, not a slow machine. Every frame this machine \
-         simulates, re-simulated ones too, waits {ms} ms of real time on the simulation thread; nothing simulated or \
-         sent changes. `slow <ms>` changes it, `slow 0` stops it."
+         simulates, re-simulated ones too, waits {ms} ms of real time on the simulation thread. The session sees what \
+         a really slow machine shows (its entries stamped, sent and confirmed late); no state changes for the entries \
+         it is given. `slow <ms>` changes it, `slow 0` stops it."
     ))
 }
 

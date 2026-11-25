@@ -955,14 +955,18 @@ sets it.
   its end, at most 1,000. A really slow machine pays for each frame it simulates, so its catch-up costs as much as its
   present; a wait per tick would make catch-up cheap.
 - The console's `slow <ms>` changes it and `slow 0` stops it. Without the flag, `slow` is refused.
-- Wall time only: nothing simulated, agreed or sent changes, so the roots are the same with it as without it
-  (`slowframe::tests`). On a scripted test clock it costs wall time but no simulated lag, so it can't drive the
-  slow-member path in an in-process test.
+- Wall time only: it changes no state for the entries a replica is given, so a replica's roots are the same with it
+  as without it (`slowframe::tests`). In a session it changes what real slowness changes, which is its purpose: the
+  machine's entries are stamped and arrive late, its lead rises, its confirmations come late and it may resync, and the
+  roots agree as they would with a really slow machine. On a scripted test clock it costs wall time but no simulated
+  lag, so it can't drive the slow-member path in an in-process test.
 - It shows while it is on: a start-up line, a line at each `slow`, the status line ("Slowed on purpose: …", ahead of
-  any other status), and the end line's `slow_frame_ms` and `slowed_frames`. A run with it is recorded as "run with
-  injected slowness".
+  any other status), and the end line's `slow_frame_ms` and `slowed_frames` (which count a `replay` thread's frames
+  too). Nothing reaches the other members, whose logs show a really slow peer, so a run's record pairs their logs with
+  this machine's start-up and end lines. A run with it is recorded as "run with injected slowness".
 - Only simulating waits: the simulation thread, and the `replay` check's thread while it replays. Rendering, the
-  network and the console aren't slowed, where a really slow machine's would be. The start-up physics self-test steps
+  transport thread and the console aren't slowed, where a really slow machine's would be; what the simulation thread
+  drafts (hands, spawns, votes) goes out late, as a slow machine's does. The start-up physics self-test steps
   pe-physics directly, so start-up isn't slowed and the hello's digest is the same. `--check-replay` may run with it.
 
 **The hand-feel switch** (the pull-ahead plan's 1.10, `crate::handfeel`; @coordinator-opus). The
