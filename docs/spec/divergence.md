@@ -469,13 +469,15 @@ a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named abs
 
 @item:primordial-engine/a-member-that-can-t-simulate-in-real-time-freeze; the user's rulings; the design and its rulings are in the item (v2, @coordinator-opus).
 
-- **Lag and slow.** A member's lag is the age of the world it shows: the session clock's present frame less the
-  newest frame its live history has completed (S5's published view). A rollback's re-simulation doesn't count, since
-  the shown world stays at that frame meanwhile (@coordinator-opus, after K4's R3': a 124-frame rollback re-stepped within 4
-  ticks read as 2 s behind under the earlier measure, the frame the replica had stepped). It is slow
-  while the lag is over 2 s, a local hint, never a vote. Its slow timer runs while it is slow, and resets once the
-  lag has stayed under 1 s for 5 s. The slow member's status line shows how far behind it is, the whole time it is
-  behind by 0.5 s or more (pe-app).
+- **Lag and slow.** A member's lag is the age of the world it shows: the session clock's present frame less the newest
+  frame its live history has completed (S5's published view). A rollback's re-simulation doesn't count, since the
+  shown world stays at that frame meanwhile (@coordinator-opus, after K4's R3': a 124-frame rollback
+  re-stepped within 4 ticks read as 2 s behind under the earlier measure, the frame the replica had stepped). A replay
+  does count (rung 1's, or an import's below the newest frame): it publishes no view until it ends, so the shown world
+  ages meanwhile, and a long repair can show "Behind by" on a machine that keeps real time (@design-reviewer's N1 on
+  8852ad06). It is slow while the lag is over 2 s, a local hint, never a vote. Its slow timer runs while it is slow,
+  and resets once the lag has stayed under 1 s for 5 s. The slow member's status line shows how far behind it is, the
+  whole time it is behind by 0.5 s or more (pe-app).
 - **After 60 s slow, nobody freezes** (the user's, "players should never have their actions
   interrupted", and; @coordinator-opus). At the first moment it is then more than 2 s
   behind, the member is told once per slow stint and keeps playing. At `n = 2` its status says the session confirms

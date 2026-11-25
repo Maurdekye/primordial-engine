@@ -3038,8 +3038,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// The status line in the log (@coordinator-opus, after K4's R3'): a line when it shows, none while only a number in it
-    /// changes, one when it turns to another message, and `status: hidden` when it comes down.
+    /// The status line in the log (@coordinator-opus, after K4's R3'): a line when it shows, none while
+    /// only a number in it changes, one when it turns to another message, and `status: hidden` when it comes down.
     #[test]
     fn the_status_line_is_logged_as_it_shows_changes_message_and_comes_down() {
         assert_eq!(status_kind("Behind by 12.5 s — confirming 12 s late"), "Behind by # s — confirming # s late");
@@ -3073,10 +3073,10 @@ pub(crate) mod tests {
     }
 
     /// The slow watch's lag is the age of the world this member shows, not where its replica is stepping
-    /// (@coordinator-opus, after K4's R3': a 124-frame rollback re-stepped within 4 ticks read as 2 s behind). A rollback 200
-    /// frames deep, re-stepped 60 frames a call, leaves the replica more than 2 s behind the present at a tick's end,
-    /// but the shown world is never more than a few frames old: the member is never slow, and its status line never
-    /// says "Behind by". Members that really trail real time still are (the half-speed tests).
+    /// (@coordinator-opus, after K4's R3': a 124-frame rollback re-stepped within 4 ticks read as 2 s
+    /// behind). A rollback 200 frames deep, re-stepped 60 frames a call, leaves the replica more than 2 s behind the
+    /// present at a tick's end, but the shown world is never more than a few frames old: the member is never slow, and
+    /// its status line never says "Behind by". Members that really trail real time still are (the half-speed tests).
     #[test]
     fn a_rollback_re_stepped_over_a_few_ticks_is_not_behind_real_time() {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));

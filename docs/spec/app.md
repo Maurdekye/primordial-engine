@@ -647,7 +647,8 @@ with @fable-reviewer's refinements, and):
      on Ctrl+C, before its handler runs, so the leave and the end lines are lost [V, the dry run]. The window's
      status line is logged too, as it changes message: `status: shown: <text>` when it shows or turns to another
      message (a number changing in it, such as how far behind, is the same message) and `status: hidden` when it
-     comes down, so a headless run's log carries what the window would show (@coordinator-opus, after K4's R3').
+     comes down, so a headless run's log carries what the window would show (@coordinator-opus,
+     after K4's R3').
    - **The tick trace** (`PE_TICK_TRACE=<file>`, `crate::trace`; @coordinator-opus, after the M1
      recording's 2.13 s tick, which the run's totals couldn't place). Off unless the variable names a file, and then
      the simulation thread writes a new one: a `sec` line for each second of the frame clock (its ticks' phases,
