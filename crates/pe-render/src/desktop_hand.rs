@@ -112,9 +112,11 @@ impl Target {
     }
 
     /// The target for a view object drawn at `pose`: `None` for one with nothing to draw, the local player's own
-    /// hands and what they hold (the hand hits what is drawn, never itself).
+    /// hands and what they hold, and the own body the camera is in (the hand hits what is drawn, never itself).
     pub fn of_object(o: &ViewObject, pose: WorldPose) -> Option<Target> {
-        let own = o.flags.contains(ViewFlags::OWN_HAND) || o.flags.contains(ViewFlags::HELD_LOCAL);
+        let own = o.flags.contains(ViewFlags::OWN_HAND)
+            || o.flags.contains(ViewFlags::HELD_LOCAL)
+            || o.flags.contains(ViewFlags::OWN_BODY);
         let shape = o.shape.as_ref().filter(|_| !own)?;
         Some(Target::of_shape(pose, shape, o.scale, o.radius as f64))
     }

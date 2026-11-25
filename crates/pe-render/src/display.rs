@@ -20,10 +20,12 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use glam::{DQuat, DVec3};
-use pe_seams::{EffectKind, Frame, FrameView, Hand, HostTime, ObjectId, Pos, RigTransform, ViewFlags, ViewObject};
+use pe_seams::{
+    EffectKind, Frame, FrameView, Hand, HostTime, MemberKey, ObjectId, Pos, RigTransform, ViewFlags, ViewObject,
+};
 
 use crate::camera::ViewVolume;
-use crate::drawn_time::{DrawnTime, extrapolate, resolve};
+use crate::drawn_time::{DrawnTime, extrapolate, resolve, resolve_head};
 use crate::pose::{WorldPose, angle_of, offset_vec, rig_to_world};
 use crate::{DisplayHand, LocalPresentation};
 
@@ -147,6 +149,13 @@ pub struct DrawnObject {
     /// The target pose (the simulated pose at `t_draw`), for counters and tests.
     pub target: WorldPose,
     pub cue: Option<Cue>,
+}
+
+/// Another player's head as drawn this display frame (locomotion L4b): the view's head for `member` at `t_draw`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawnHead {
+    pub member: MemberKey,
+    pub pose: WorldPose,
 }
 
 /// The display layer's counters (render.md 13; divergence.md 7). Cumulative; the caller reads and resets.
@@ -338,6 +347,8 @@ pub struct DisplayFrame {
     pub view_age: f64,
     /// Sorted by id.
     pub objects: Vec<DrawnObject>,
+    /// The other players' heads, in the newest view's member order; never the local player's own.
+    pub heads: Vec<DrawnHead>,
 }
 
 impl DisplayLayer {
@@ -583,8 +594,15 @@ impl DisplayLayer {
             }
             objects.push(DrawnObject { id: o.id, pose, target, cue });
         }
+        let rule = self.rule();
+        let heads = newest
+            .heads
+            .iter()
+            .filter(|h| !h.own)
+            .filter_map(|h| Some(DrawnHead { member: h.member, pose: resolve_head(&rule, &hist, h.member, t_draw)? }))
+            .collect();
         self.measure(now);
-        DisplayFrame { t_draw, span, view_age: now.secs_since(newest.sim_time), objects }
+        DisplayFrame { t_draw, span, view_age: now.secs_since(newest.sim_time), objects, heads }
     }
 
     /// A new frame view: D2's change of prediction for every object, at this display frame's `t_draw`.

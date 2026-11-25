@@ -25,6 +25,7 @@ pub mod capture;
 pub mod capture_service;
 pub mod counters;
 pub mod desktop_hand;
+pub mod desktop_move;
 pub mod display;
 pub mod drawn_time;
 pub mod effects;

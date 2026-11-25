@@ -115,6 +115,38 @@ pub struct Overlay {
     pub size: [f32; 2],
 }
 
+/// Another player's head (locomotion L4b): a sphere of this radius at the view's head pose, m [I, tuning].
+pub const HEAD_RADIUS: f32 = 0.11;
+/// The head's look: a warm light grey, so it reads apart from the default grey of the world's objects [I, tuning].
+pub const HEAD_APPEARANCE: Appearance = Appearance {
+    base_color: [0.82, 0.74, 0.66, 1.0],
+    emissive: [0.0; 3],
+    roughness: 0.7,
+    metalness: 0.0,
+    material: None,
+};
+
+/// A head's draw item: id [`ObjectId::NONE`], as the hand markers, so no highlight, label or visible-list entry lands
+/// on it (it names no object).
+fn head_item(pose: WorldPose) -> DrawItem {
+    DrawItem {
+        id: ObjectId::NONE,
+        pose,
+        scale: [1.0; 3],
+        shape: Shape::Sphere { radius: HEAD_RADIUS },
+        appearance: HEAD_APPEARANCE,
+        radius: HEAD_RADIUS,
+        outline: None,
+        ghost: None,
+    }
+}
+
+/// The local player's own body: never drawn, in VR or on the desktop, since the camera is in it (first person;
+/// locomotion L4b). Other players' bodies are ordinary objects.
+fn own_body(o: &pe_seams::ViewObject) -> bool {
+    o.flags.contains(ViewFlags::OWN_BODY)
+}
+
 /// The cue's outline colour: a soft white, so it reads on any base colour without flashing.
 const CUE_COLOR: [f32; 3] = [0.95, 0.95, 1.0];
 /// A capture's highlight (`view_capture`'s `highlight`): a saturated amber, unlike the cue's soft white, linear RGBA.
@@ -135,7 +167,7 @@ impl Scene {
     /// The view at its simulated poses, the display layer bypassed: what the world holds (render.md 11).
     pub fn simulated(view: &FrameView) -> Scene {
         let mut s = Scene::default();
-        for o in &view.objects {
+        for o in view.objects.iter().filter(|o| !own_body(o)) {
             let pose = WorldPose::of(o);
             if let Some(l) = o.light {
                 s.lights.push(LightItem { pose, light: l });
@@ -153,6 +185,9 @@ impl Scene {
                 });
             }
         }
+        for h in view.heads.iter().filter(|h| !h.own) {
+            s.items.push(head_item(WorldPose { pos: h.pos, rot: crate::pose::quat(h.rotation) }));
+        }
         s
     }
 
@@ -160,7 +195,7 @@ impl Scene {
     pub fn displayed(view: &FrameView, frame: &DisplayFrame) -> Scene {
         let mut s = Scene::default();
         for d in &frame.objects {
-            let Some(o) = view.object(d.id) else { continue };
+            let Some(o) = view.object(d.id).filter(|o| !own_body(o)) else { continue };
             if let Some(l) = o.light {
                 s.lights.push(LightItem { pose: d.pose, light: l });
             }
@@ -182,6 +217,7 @@ impl Scene {
                 s.items.push(item);
             }
         }
+        s.items.extend(frame.heads.iter().map(|h| head_item(h.pose)));
         s
     }
 }

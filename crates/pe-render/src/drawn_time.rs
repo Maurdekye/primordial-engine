@@ -19,9 +19,9 @@
 use core::time::Duration;
 
 use glam::DQuat;
-use pe_seams::{FrameView, HostTime, ObjectId, ViewObject};
+use pe_seams::{FrameView, HostTime, MemberKey, ObjectId, ViewObject};
 
-use crate::pose::{WorldPose, offset_vec, vec};
+use crate::pose::{WorldPose, offset_vec, quat, vec};
 
 /// The drawn-time rule (X8).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -156,6 +156,68 @@ pub fn resolve(
             let s = (t_draw.secs_since(va.sim_time) / whole).clamp(0.0, 1.0);
             let d = offset_vec(b.pos - a.pos) * s;
             Resolved { pose: Some(a.moved(d).with_rot(a.rot.slerp(b.rot, s).normalize())), span: 0.0 }
+        }
+    }
+}
+
+/// The fastest a head is carried on by its measured velocity, m/s: about the fastest walk plus a jump's take-off [I].
+pub const HEAD_SPEED_CAP: f64 = 8.0;
+
+/// A player's head at `t_draw` under `rule` (locomotion L4b), keyed by member, as [`resolve`] does for an object. A
+/// head carries no velocity in the view, so where `resolve` moves an object by its velocities (the extrapolating rules,
+/// and Shown past the newest view), the head moves by the velocity its last two views measure, over the same span: its
+/// body's capsule moves by the simulated velocity, and the two stay together while the player walks. `None` if the
+/// newest view has no head for `member`. The measured speed is capped at [`HEAD_SPEED_CAP`]: a head can jump between
+/// two views without walking there (a correction, a room-scale step, a spawn, a catch-up), and that jump is not a
+/// speed to carry it on at (@design-reviewer's L1 on b331ffcd).
+pub fn resolve_head(
+    rule: &DrawnTime,
+    history: &[&FrameView],
+    member: MemberKey,
+    t_draw: HostTime,
+) -> Option<WorldPose> {
+    let head = |v: &FrameView| {
+        v.heads.iter().find(|h| h.member == member).map(|h| WorldPose { pos: h.pos, rot: quat(h.rotation) })
+    };
+    let newest = *history.last()?;
+    let n = head(newest)?;
+    // The measured velocity: from the view before the newest, if it has this head.
+    let moved = |span: f64| {
+        let prev = history.len().checked_sub(2).map(|i| history[i]);
+        let Some((p, pv)) = prev.and_then(|pv| head(pv).map(|p| (p, pv))) else { return n };
+        let dt = newest.sim_time.secs_since(pv.sim_time);
+        if dt <= 0.0 || span == 0.0 {
+            return n;
+        }
+        let v = offset_vec(n.pos - p.pos) / dt;
+        n.moved(v.clamp_length_max(HEAD_SPEED_CAP) * span)
+    };
+    match *rule {
+        DrawnTime::Extrapolate { l_max } | DrawnTime::Present { l_max } => {
+            let cap = l_max.as_secs_f64();
+            Some(moved(t_draw.secs_since(newest.sim_time).clamp(-cap, cap)))
+        }
+        DrawnTime::InterpolateLate { .. } | DrawnTime::Shown { .. } => {
+            let Some(k) = history.iter().rposition(|v| v.sim_time <= t_draw) else {
+                return history.iter().find_map(|v| head(v));
+            };
+            if k + 1 == history.len() {
+                return Some(match *rule {
+                    DrawnTime::Shown { l_max, .. } => {
+                        moved(t_draw.secs_since(newest.sim_time).clamp(0.0, l_max.as_secs_f64()))
+                    }
+                    _ => n,
+                });
+            }
+            let (va, vb) = (history[k], history[k + 1]);
+            let Some(b) = head(vb) else { return Some(n) };
+            let Some(a) = head(va) else { return Some(b) };
+            let whole = vb.sim_time.secs_since(va.sim_time);
+            if whole <= 0.0 {
+                return Some(b);
+            }
+            let s = (t_draw.secs_since(va.sim_time) / whole).clamp(0.0, 1.0);
+            Some(a.moved(offset_vec(b.pos - a.pos) * s).with_rot(a.rot.slerp(b.rot, s).normalize()))
         }
     }
 }

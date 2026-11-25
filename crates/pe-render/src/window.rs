@@ -7,15 +7,17 @@
 //! - **Pacing:** the period is the monitor's reported refresh rate, else the measured present interval; the display
 //!   time is the next present (now plus one period). The quality ladder runs on durations.
 //! - **Minimized or occluded:** nothing is drawn; the simulation keeps running.
-//! - **Camera (M1 fly controls):** right-drag turns the eye, WASD moves it (Space and C for up and down), both in the
-//!   rig frame. Moving the rig itself is the simulation's, through an input entry, after M1 (render.md 9).
+//! - **Camera:** right-drag looks. In a world with a body for the player (friend-test locomotion, L4b), W A S D,
+//!   Space and the look's yaw go to the simulation through [`DesktopConfig::moves`] (`crate::desktop_move`), and the
+//!   eye is the body's head on the view's rig: the simulation walks and turns the body. In a world without one (the
+//!   ball pit), the M1 fly controls stay: WASD moves the eye in the rig frame, Space and C up and down.
 //! - **The render scale** is not applied on the desktop yet: the desktop ladder only records it. MSAA is applied.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use glam::{DQuat, DVec3};
-use pe_seams::{FrameView, HostTime, RigPose};
+use pe_seams::{FrameView, HostTime, RigPose, ViewFlags};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -25,6 +27,7 @@ use winit::window::{Window, WindowId};
 use crate::camera::{Camera, DepthRange, Fov};
 use crate::counters::RunReport;
 use crate::desktop_hand::{DesktopHand, DesktopHandFeed, DesktopHandSettings, PointerInput, Target};
+use crate::desktop_move::{DesktopMove, DesktopMoveFeed, DesktopMoveSettings, MoveKeys};
 use crate::effects::EffectCommand;
 use crate::gpu::{BackendOverride, ContextError, GpuContext, desktop_order};
 use crate::labels::text_width;
@@ -65,6 +68,10 @@ pub struct DesktopConfig {
     /// The menus (render.md 8.2, `crate::menu`): aimed with the mouse, toggled with Tab. A left press that lands on a
     /// panel goes to it, not to the hand.
     pub ui: Option<Box<dyn crate::menu::Ui>>,
+    /// The desktop's locomotion (L4b): sampled once a display frame from W A S D, Space and the look, for the
+    /// simulation's move feed. `None`: nothing reads it (the demos).
+    pub moves: Option<Arc<DesktopMoveFeed>>,
+    pub walk: DesktopMoveSettings,
 }
 
 /// What a run measured (render.md 13's per-frame numbers, summarized).
@@ -183,6 +190,8 @@ struct Pointer {
     tab: bool,
     /// Left presses since the last frame.
     clicks: u32,
+    /// The look's drag since the last frame, pixels: the walker's turn and pitch.
+    look: [f64; 2],
 }
 
 /// The desktop controls (render.md 9), two lines at the bottom of the window: shown for [`HELP_S`] seconds of the
@@ -191,14 +200,19 @@ pub const HELP_LINES: [&str; 2] = [
     "Point: mouse  ·  Grab: hold the left button, let go to throw  ·  While holding, nearer / farther: wheel  ·  Push: Shift",
     "Look: right-drag  ·  Move: W A S D, Space up, C down  ·  Roll: Q / E  ·  Hold H to show these again",
 ];
+/// The controls' second line in a world with a body for the player (L4b): the keys walk it.
+pub const HELP_WALK: &str =
+    "Look: right-drag  ·  Walk: W A S D  ·  Jump: Space  ·  Roll: Q / E  ·  Hold H to show these again";
 pub const HELP_S: f64 = 30.0;
 /// The controls' fade at the end of [`HELP_S`], seconds.
 const HELP_FADE_S: f64 = 1.0;
 
-/// The lines the window shows over the scene, top first: the status line, the controls, then the notices.
-pub fn window_lines(status: Option<&str>, help_alpha: f32, notices: &[Line]) -> Vec<Line> {
+/// The lines the window shows over the scene, top first: the status line, the controls (walking ones when `walk`),
+/// then the notices.
+pub fn window_lines(status: Option<&str>, help_alpha: f32, walk: bool, notices: &[Line]) -> Vec<Line> {
     let status = status.map(|t| Line { text: t.to_string(), alpha: 1.0 });
-    let help = (help_alpha > 0.0).then(|| HELP_LINES.map(|t| Line { text: t.to_string(), alpha: help_alpha }));
+    let lines = if walk { [HELP_LINES[0], HELP_WALK] } else { HELP_LINES };
+    let help = (help_alpha > 0.0).then(|| lines.map(|t| Line { text: t.to_string(), alpha: help_alpha }));
     status.into_iter().chain(help.into_iter().flatten()).chain(notices.iter().cloned()).collect()
 }
 
@@ -238,6 +252,7 @@ pub struct DesktopView {
     yaw: f64,
     pitch: f64,
     eye_pos: DVec3,
+    walker: DesktopMove,
     /// `Occluded(true)` from the window system.
     occluded: bool,
     /// A zero-sized window (minimized), kept apart from `occluded` (review L5).
@@ -376,6 +391,7 @@ impl DesktopView {
         Ok(DesktopView {
             pacer: Pacer::new(PacerSettings::default(), &DESKTOP_LADDER),
             hand: DesktopHand::new(cfg.hand),
+            walker: DesktopMove::new(cfg.walk),
             cfg,
             slot,
             feed,
@@ -513,11 +529,30 @@ impl DesktopView {
         self.pacer.update_period(mhz.map_or(PeriodSource::Measured, PeriodSource::Monitor));
         let display_time = self.pacer.desktop_display_time(now);
 
-        // The eye, and the camera through it.
-        self.move_eye(dt);
+        // The walker's sample for the simulation, every frame. With a body for the player in the view, the eye is
+        // its head on the rig, which the simulation walks and turns; without one, the fly controls move the eye.
+        // While flying, the walker stands still: the look, Space (up) and WASD are the fly controls', so no heading
+        // or jump accumulates to carry over when a body appears (@xr-eng's L1, @design-reviewer's note on b331ffcd).
+        let walking = view.objects.iter().any(|o| o.flags.contains(ViewFlags::OWN_BODY));
+        let (k, look) = (self.pointer.keys, std::mem::take(&mut self.pointer.look));
+        let keys = MoveKeys { forward: k[0], left: k[1], back: k[2], right: k[3], jump: k[4], look };
+        let walk = self.walker.sample(now, &if walking { keys } else { MoveKeys::default() });
+        if let Some(moves) = &self.cfg.moves {
+            moves.push(walk);
+        }
+        let eye = if walking {
+            walk.head
+        } else {
+            self.move_eye(dt);
+            self.eye_pose()
+        };
+        // The rig the eye, the hand and the menus stand on (render.md 7; locomotion L4c): the views' rigs at this
+        // frame's drawn time, turned about the head by the walker's heading lead over the view's, so a walk doesn't
+        // judder and a turn shows at once. frame_batch draws the own hands through the same rig.
+        let rig = self.cfg.presenter.drawn_rig(&batch, display_time, Some(&walk)).unwrap_or(view.local_rig);
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         let fov = Fov::symmetric(self.cfg.vertical_fov, aspect);
-        let camera = Camera::of_eye(&view.local_rig, &self.eye_pose(), fov, DepthRange::DESKTOP);
+        let camera = Camera::of_eye(&rig, &eye, fov, DepthRange::DESKTOP);
 
         // The desktop hand: the ray from the camera through the cursor.
         let (nx, ny) = self.pointer.pos.map_or((0.0, 0.0), |[x, y]| {
@@ -531,7 +566,7 @@ impl DesktopView {
             ui.frame(&crate::menu::UiInput {
                 now,
                 head: camera.pose,
-                scale: f64::from(view.local_rig.scale),
+                scale: f64::from(rig.scale),
                 rays: vec![crate::menu::UiRay {
                     pointer: 2,
                     origin: camera.pose.pos,
@@ -555,7 +590,7 @@ impl DesktopView {
             wheel: std::mem::take(&mut self.pointer.wheel),
             roll,
         };
-        let (_, hand) = self.hand.update(&input, &self.targets, &view.local_rig);
+        let (_, hand) = self.hand.update(&input, &self.targets, &rig);
         self.feed.push(hand);
         let local =
             LocalPresentation { display_time, hands: [None, Some(DisplayHand { pose: hand.pose, joints: None })] };
@@ -564,8 +599,12 @@ impl DesktopView {
         if frame.status.is_none() {
             self.help_shown_s += dt;
         }
-        let lines =
-            window_lines(frame.status.as_deref(), help_alpha(self.help_shown_s, self.pointer.help), &frame.notices);
+        let lines = window_lines(
+            frame.status.as_deref(),
+            help_alpha(self.help_shown_s, self.pointer.help),
+            walking,
+            &frame.notices,
+        );
         // The menu first, then the status, help and notices strip, so an open menu never hides a notice (render.md 8.2).
         if let Some(o) = ui_out {
             frame.scene.overlays.splice(0..0, o.overlays);
@@ -620,12 +659,37 @@ impl DesktopView {
         }
     }
 
+    /// The window stops drawing or loses the keys (minimized, occluded, unfocused): every key, the look and the mouse's
+    /// grab are let go,
+    /// and the walker's feed gets a standstill, since `draw`, which samples it, may not run again for a while.
+    fn stand_still(&mut self) {
+        self.pointer.keys = [false; 8];
+        self.pointer.look = [0.0; 2];
+        // The button's release may never arrive while unfocused: a held grab lets go (@design-reviewer, bf02b942).
+        self.pointer.left = false;
+        self.pointer.shift = false;
+        let at = (self.cfg.clock)();
+        let still = self.walker.standstill(at);
+        if let Some(moves) = &self.cfg.moves {
+            moves.push(still);
+        }
+    }
+
     /// One window event. Returns true when the window should close (closed, or `run_for` passed).
     pub fn window_event(&mut self, event: &WindowEvent) -> bool {
         match *event {
             WindowEvent::CloseRequested => return true,
-            WindowEvent::Occluded(o) => self.occluded = o,
+            WindowEvent::Occluded(o) => {
+                self.occluded = o;
+                if o {
+                    self.stand_still();
+                }
+            }
+            WindowEvent::Focused(false) => self.stand_still(),
             WindowEvent::Resized(s) => {
+                if s.width == 0 || s.height == 0 {
+                    self.stand_still();
+                }
                 if let Some(g) = self.gfx.as_mut() {
                     self.minimized = s.width == 0 || s.height == 0;
                     if !self.minimized {
@@ -642,6 +706,8 @@ impl DesktopView {
                 {
                     self.yaw -= (p[0] - l[0]) * 0.005;
                     self.pitch = (self.pitch - (p[1] - l[1]) * 0.005).clamp(-1.5, 1.5);
+                    self.pointer.look[0] += p[0] - l[0];
+                    self.pointer.look[1] += p[1] - l[1];
                 }
                 self.pointer.last_drag = self.pointer.right.then_some(p);
                 self.pointer.pos = Some(p);
@@ -778,10 +844,11 @@ mod tests {
     fn the_window_shows_the_status_then_the_controls_then_the_notices() {
         let notice = [Line { text: "Out of reach.".into(), alpha: 0.5 }];
         let texts = |l: Vec<Line>| l.into_iter().map(|l| l.text).collect::<Vec<_>>();
-        let all = window_lines(Some("Joining: catching up…"), 1.0, &notice);
+        let all = window_lines(Some("Joining: catching up…"), 1.0, false, &notice);
         assert_eq!(texts(all), ["Joining: catching up…", HELP_LINES[0], HELP_LINES[1], "Out of reach."]);
-        assert_eq!(texts(window_lines(None, 0.0, &notice)), ["Out of reach."], "the controls gone");
-        assert!(window_lines(None, 0.0, &[]).is_empty());
+        assert_eq!(texts(window_lines(None, 1.0, true, &[])), [HELP_LINES[0], HELP_WALK], "walking: the walk keys");
+        assert_eq!(texts(window_lines(None, 0.0, false, &notice)), ["Out of reach."], "the controls gone");
+        assert!(window_lines(None, 0.0, true, &[]).is_empty());
     }
 
     #[test]
@@ -795,7 +862,8 @@ mod tests {
 
     #[test]
     fn the_controls_fit_a_narrow_window() {
-        let lines = window_lines(None, 1.0, &[]);
+        let mut lines = window_lines(None, 1.0, false, &[]);
+        lines.extend(window_lines(None, 1.0, true, &[]));
         let wide = [3840, 1080];
         assert_eq!(fitted_text_px(&lines, wide), window_text_px(1080), "room to spare: the usual size");
         assert_eq!(fitted_text_px(&lines, [1280, 720]), window_text_px(720), "pe-app's window: the usual size");

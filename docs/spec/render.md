@@ -348,8 +348,7 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
   turn shows at once and pivots on the head, and the lead is zero once the simulation has stepped that heading.
   Walking keeps the simulation's lag (about a tick plus the display delay, the plan's stick-to-photon budget [I],
   measured in L6). Without bodies the views' rig is the identity and nothing turns it. The VR sink takes the rig
-  this way; the desktop window does once @ballpit-viz's L4b (the window's walking) calls `drawn_rig` with its move
-  feed, and until then draws through the newest view's rig.
+  this way, and so does the desktop window, with its walker's sample for the frame (section 9).
 
 ### 7.1 Per-frame drawing never feeds the simulation (design, not built)
 
@@ -683,6 +682,19 @@ the buttons do and where the panels sit (app.md 4.1).
   decided when it begins, on a panel or not, and kept until its release, so a held grab can sweep across a panel. Everything here runs per drawn
   frame from the frame's own poses, never from the simulation's step (the user's ruling).
 
+### 8.3 Players' bodies and heads (friend-test locomotion, L4b)
+
+A player's body is objects with `body_of` set: its root and its drawn capsule. Another player's are ordinary objects,
+drawn, corrected and hit like any other. The local player's own carry `OWN_BODY` and are never drawn, in VR or on
+the desktop, nor hit by the desktop ray, since the camera is in them; `Scene::simulated` (captures) hides them too.
+
+A head is in `FrameView::heads`, one per body. pe-render draws a sphere (0.11 m [I]) for each head that isn't `own`,
+at the head's pose resolved to the drawn time by member (`drawn_time::resolve_head`): interpolated between the views
+around the drawn time; where objects move on by their velocity (Extrapolate, Present, and Shown past the newest
+view), the head moves by the velocity its last two views measure, over the same span, so it stays on its capsule
+while the player walks. That speed is capped at 8 m/s [I], since a head can jump between views without walking there
+(a correction, a room-scale step, a spawn). A head names no object (id `NONE`, as the hand markers), so no highlight or label lands on it.
+
 ## 9. The desktop hand
 
 B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the same").
@@ -697,7 +709,17 @@ B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the
   over, at about 1 m/s, and moving the cursor then sweeps it through what it touches. The hand is a physical body in
   the simulation, as tracked hands are; only Shift or a grab puts it into contact.
 - **Orientation:** the hand faces along the ray. Q and E roll it (for the "rotation" a hand entry carries).
-- **Camera:** right-drag orbits and WASD moves the rig, as fly controls in M1. The UI lab revisits them.
+- **Camera and walking (friend-test locomotion, L4b):** right-drag looks. In a world with a body for the local player
+  (an `OWN_BODY` object in the view), W A S D, Space and the look go to the simulation: once a display frame
+  `desktop_move` samples a `MoveInput` (the stick from W A S D, diagonals no faster, `stick_yaw` 0; the look's yaw
+  into the wrapping heading; its pitch into the head, which stays over the feet at the eye height, 1.6 m [I]; each
+  Space press one jump) into a `MoveFeed` pe-app's `SwitchedMove` reads while no XR session runs. The eye is that head
+  on the rig, which the simulation walks and turns (@engine-architect, answer 3). The camera, the hand
+  and the menus stand on `Presenter::drawn_rig` (section 7, L4c), so the look's turn shows at once. While flying, and
+  whenever the window stops drawing or loses focus (minimized, occluded, unfocused), the walker stands still: keys let
+  go, no stick, no new jump, the same heading, so a held key never walks the body on unseen and nothing carries over
+  when a body appears. In a world without one (M1's pit), the M1 fly controls stay: WASD moves the eye in the rig
+  frame, Space and C up and down. The on-screen controls name the keys of the mode in use.
 - **Output:** `HandInput { source: Desktop, ... }` in the rig frame, pushed to a ring that implements `HandFeed`
   (xr.md 8.1), so the simulation reads desktop and tracked hands the same way. `discontinuity` is bumped when the hit
   depth jumps by more than 20 cm (ray moved onto a far object), so a jump is never read as a throw [I].

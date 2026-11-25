@@ -379,7 +379,7 @@ mod tests {
     }
 
     fn frame(t_draw: HostTime, view_age: f64) -> DisplayFrame {
-        DisplayFrame { t_draw, span: 0.0, view_age, objects: Vec::new() }
+        DisplayFrame { t_draw, span: 0.0, view_age, objects: Vec::new(), heads: Vec::new() }
     }
 
     #[test]

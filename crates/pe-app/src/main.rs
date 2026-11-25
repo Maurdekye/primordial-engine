@@ -45,7 +45,7 @@ use pe_app::builds;
 use pe_app::clock::{self, LocalClock};
 use pe_app::console::{EXIT_INTERRUPTED, Quit, REQUEST_QUIT_LIMIT, Shutdown};
 use pe_app::join::T_JOIN;
-use pe_app::local::{SwitchedHands, chain_nonce};
+use pe_app::local::{SwitchedHands, SwitchedMove, chain_nonce};
 use pe_app::net::{self, Endpoint, OpenParams, WakeLater};
 use pe_app::scripted::ScriptedHands;
 use pe_app::sim::{self, Budget, Sim};
@@ -56,6 +56,7 @@ use pe_mcp::auth::Grant;
 use pe_mcp::host::HostOpts;
 use pe_net_crypto::identity::{Invite, Reply};
 use pe_render::desktop_hand::{DesktopHandFeed, DesktopHandSettings};
+use pe_render::desktop_move::DesktopMoveFeed;
 use pe_render::display::DisplaySettings;
 use pe_render::drawn_time::DrawnTime;
 use pe_render::effects::{EffectCommand, EffectSettings};
@@ -70,6 +71,7 @@ use pe_seams::world_api::{MemberId, Producer, ProducerKind};
 use pe_seams::{Frame, FrameClock, LineId, MemberKey, RigPose, SimRate};
 use pe_xr::guard::Guard;
 use pe_xr::loader::SystemDiscovery;
+use pe_xr::locomotion::MoveRing;
 use pe_xr::ring::{DEFAULT_WINDOW_NS, HandRing};
 
 /// The simulation thread's least stack (app.md 1). It gets more when the script runner needs it: the replica steps
@@ -589,6 +591,11 @@ fn main() {
     }
     pe_app::scripted::install(scripted.clone());
     let hands = Arc::new(SwitchedHands::new(ring.clone(), scripted));
+    // The local player's locomotion (friend-test L4b), switched with the hands: the desktop's keys and look, and
+    // pe-xr's move ring (L4a) while an XR session runs, written each focused display frame.
+    let desktop_moves = Arc::new(DesktopMoveFeed::default());
+    let vr_moves = Arc::new(MoveRing::default());
+    let moves = Arc::new(SwitchedMove::new(vr_moves.clone(), desktop_moves.clone()));
     // B (app.md 3): the display lead the VR sink measures under Shown, for the simulation's shown present.
     let display_lead = Arc::new(pe_app::shown::DisplayLead::default());
     let wake = WakeLater::default();
@@ -616,7 +623,7 @@ fn main() {
     let sim = sim.with_shown(display_lead.clone());
     // The window's status line (render.md 8.1): a joiner's "Joining: catching up…".
     let status = Arc::new(StatusLine::default());
-    let sim = sim.with_status(status.clone()).with_hand_feel(pe_app::handfeel::console());
+    let sim = sim.with_status(status.clone()).with_hand_feel(pe_app::handfeel::console()).with_moves(moves.clone());
     // `PE_TICK_TRACE=<file>`: a line a second and one per long tick, for a stall's phase (crate::trace). Off by default.
     let sim = match pe_app::trace::TickTrace::from_env(rate.hz()) {
         Some(Ok((trace, path))) => {
@@ -725,6 +732,7 @@ fn main() {
     if vr {
         console.poll();
         hands.use_vr(true);
+        moves.use_vr(true);
         let guard = Guard::from_env(true);
         let effects = Box::new(LogEffects);
         let report = vr::ReportSlot::default();
@@ -734,6 +742,7 @@ fn main() {
             &SystemDiscovery,
             &guard,
             ring,
+            vr_moves.clone(),
             slot.clone(),
             vr::Drawing {
                 presenter: presenter(rate, drawn_time, &status),
@@ -748,7 +757,8 @@ fn main() {
                 }),
                 // The move feed the drawn rig turns with (locomotion L4c): pe-xr's MoveRing once L4a/L4b wire it, the
                 // same Arc the simulation samples.
-                moves: None,
+                // L4c: the sink's drawn rig reads the same ring the simulation does.
+                moves: Some(vr_moves.clone()),
             },
         ) {
             Ok(xr) => {
@@ -778,6 +788,8 @@ fn main() {
             Err(why) => pe_app::err!("pe-app: {why}; the desktop instead"),
         }
         hands.use_vr(false);
+        moves.use_vr(false);
+        vr_moves.clear();
     }
 
     // A request during VR, or before the window: quit now. Otherwise a request runs the quit on its own thread.
@@ -805,6 +817,8 @@ fn main() {
             let host = pe_app::menu::AppHost::new(s.files, s.replies, console.clone());
             Box::new(pe_app::menu::Menu::new(s.role, Box::new(host))) as Box<dyn pe_render::menu::Ui>
         }),
+        moves: Some(desktop_moves),
+        walk: Default::default(),
     };
     // The window, its surface and its GPU context are made on this thread, one context at a time (app.md 4): the XR
     // thread has dropped its own context before `wait` answers.

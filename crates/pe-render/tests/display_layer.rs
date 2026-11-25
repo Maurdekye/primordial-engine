@@ -1271,3 +1271,97 @@ fn a_first_contact_in_a_batch_of_two_views_is_measured_once() {
     layer.frame(FrameInput { view: &v, display_time: t, volumes: &vols, local: &local(t) });
     assert_eq!(layer.counters().own_contacts, 1, "{:?}", layer.counters());
 }
+
+/// Locomotion L4b: a player's body capsule, owned by `member`; the local player's own carries `OWN_BODY`.
+fn body(id: u128, member: MemberKey, x: f64, vx: f32, own: bool) -> ViewObject {
+    let mut o = ball(id, at(x, 0.85, -2.0), [vx, 0.0, 0.0]);
+    o.shape = Some(Shape::Capsule { radius: 0.25, half_height: 0.6 });
+    o.radius = 0.85;
+    o.body_of = Some(member);
+    if own {
+        o.flags = o.flags.with(ViewFlags::OWN_BODY);
+    }
+    o
+}
+
+/// Frame `f` at 60 Hz with two players walking along x at 6 m/s (0.1 m a frame): `them`'s head and capsule, and the
+/// local player's own (`me`, hidden).
+fn walkers(f: u64, me: MemberKey, them: MemberKey) -> Arc<FrameView> {
+    let x = 0.1 * f as f64;
+    let mut v =
+        (*view(f, frame_time(f, 60), vec![body(1, them, x, 6.0, false), body(2, me, x + 3.0, 6.0, true)])).clone();
+    let head = |member, body: u128, x: f64, own| pe_seams::HeadView {
+        member,
+        body: ObjectId::from_u128(body),
+        pos: at(x, 1.6, -2.0),
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        own,
+    };
+    v.heads = vec![head(them, 1, x, false), head(me, 2, x + 3.0, true)];
+    Arc::new(v)
+}
+
+#[test]
+fn other_players_heads_are_drawn_at_the_drawn_time_and_the_own_body_never() {
+    use pe_render::desktop_hand::Target;
+    use pe_render::scene::{HEAD_RADIUS, Scene};
+    let (me, them) = (MemberKey([7; 32]), MemberKey([9; 32]));
+    let vols = volumes();
+    let half = NS / 120;
+    let draw = |settings: DisplaySettings, newest: u64, display_time: HostTime| {
+        let mut layer = DisplayLayer::new(settings);
+        for f in 1..newest {
+            layer.take(&walkers(f, me, them), display_time, &vols);
+        }
+        let v = walkers(newest, me, them);
+        let local = LocalPresentation { display_time, hands: [None, None] };
+        let out = layer.frame(FrameInput { view: &v, display_time, volumes: &vols, local: &local });
+        (v, out)
+    };
+
+    // Interpolating, halfway between frames 8 and 9: the head is drawn between its two views, keyed by its member.
+    let b =
+        DisplaySettings { drawn_time: DrawnTime::InterpolateLate { d_render: Duration::ZERO }, ..Default::default() };
+    let (v, out) = draw(b, 9, HostTime(frame_time(8, 60).0 + half));
+    assert_eq!(out.heads.len(), 1, "only the other player's head: {:?}", out.heads);
+    assert_eq!(out.heads[0].member, them);
+    assert!(dist(out.heads[0].pose.pos, at(0.85, 1.6, -2.0)) < 1e-6, "{:?}", out.heads[0].pose.pos);
+    let scene = Scene::displayed(&v, &out);
+    let capsules: Vec<_> = scene.items.iter().filter(|i| matches!(i.shape, Shape::Capsule { .. })).collect();
+    assert_eq!(capsules.len(), 1, "the other player's capsule, never the own body's");
+    assert_eq!(capsules[0].id, ObjectId::from_u128(1));
+    let heads: Vec<_> = scene.items.iter().filter(|i| i.shape == Shape::Sphere { radius: HEAD_RADIUS }).collect();
+    assert_eq!(heads.len(), 1);
+    assert_eq!((heads[0].id, heads[0].pose.pos), (ObjectId::NONE, out.heads[0].pose.pos));
+    assert!(scene.front.iter().all(|i| i.id != ObjectId::from_u128(2)));
+
+    // Shown, past the newest view: the capsule moves on by its velocity, and the head by the velocity its last two
+    // views measure, so the two stay together while the player walks.
+    let shown = DisplaySettings { drawn_time: DrawnTime::shown(Duration::ZERO, 60), ..Default::default() };
+    let (_, out) = draw(shown, 5, HostTime(frame_time(5, 60).0 + 10_000_000));
+    let capsule = out.objects.iter().find(|d| d.id == ObjectId::from_u128(1)).expect("drawn");
+    assert!(dist(capsule.pose.pos, at(0.56, 0.85, -2.0)) < 1e-4, "{:?}", capsule.pose.pos);
+    assert!(dist(out.heads[0].pose.pos, at(0.56, 1.6, -2.0)) < 1e-4, "{:?}", out.heads[0].pose.pos);
+
+    // The simulated scene (captures) hides the own body and head too, and the desktop ray never hits the own body.
+    let v = walkers(4, me, them);
+    let sim = Scene::simulated(&v);
+    assert!(sim.items.iter().all(|i| i.id != ObjectId::from_u128(2)));
+    let heads: Vec<_> = sim.items.iter().filter(|i| i.shape == Shape::Sphere { radius: HEAD_RADIUS }).collect();
+    assert_eq!(heads.len(), 1);
+    assert!(dist(heads[0].pose.pos, at(0.4, 1.6, -2.0)) < 1e-9);
+    // A head that jumps 1 m between two views (a correction, a spawn) is not carried on at that jump's speed: past the
+    // newest view it moves at most HEAD_SPEED_CAP x the span (@design-reviewer's L1 on b331ffcd).
+    let present = Duration::from_millis(33);
+    let rule = DrawnTime::Present { l_max: present };
+    let (a, mut b) = ((*walkers(4, me, them)).clone(), (*walkers(5, me, them)).clone());
+    b.heads[0].pos = at(1.4, 1.6, -2.0);
+    let t = HostTime(b.sim_time.0 + 33_000_000);
+    let h = pe_render::drawn_time::resolve_head(&rule, &[&a, &b], them, t).expect("a head");
+    let past = dist(h.pos, b.heads[0].pos);
+    assert!(past <= pe_render::drawn_time::HEAD_SPEED_CAP * 0.033 + 1e-9, "{past}");
+    assert!(past > 0.2, "still carried on, at the cap: {past}");
+    let pose = |o: &ViewObject| WorldPose::of(o);
+    assert!(Target::of_object(&v.objects[1], pose(&v.objects[1])).is_none(), "the own body");
+    assert!(Target::of_object(&v.objects[0], pose(&v.objects[0])).is_some(), "another player's body");
+}

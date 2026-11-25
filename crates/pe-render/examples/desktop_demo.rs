@@ -141,6 +141,8 @@ fn main() {
         // An optional second argument: write the window's own frame at 5 s to this PNG.
         captures: None,
         ui: None,
+        moves: None,
+        walk: Default::default(),
         snapshot: std::env::args().nth(2).map(|p| (Duration::from_secs(5), p.into())),
     };
     let r = run_desktop(cfg, slot, Arc::new(DesktopHandFeed::default()), Box::new(Print)).expect("desktop");

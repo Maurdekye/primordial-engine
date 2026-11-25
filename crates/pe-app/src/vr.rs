@@ -25,6 +25,7 @@ use pe_xr::binding::{self, XrTargets};
 use pe_xr::guard::Guard;
 use pe_xr::hands::GraspConfig;
 use pe_xr::loader::Discovery;
+use pe_xr::locomotion::MoveRing;
 use pe_xr::open::{self, NotOpened};
 use pe_xr::ring::HandRing;
 use pe_xr::session::{EndReason, FrameRequest, FrameSink, Step, XrSession};
@@ -564,14 +565,16 @@ pub struct Drawing {
     pub moves: Option<Arc<dyn pe_seams::MoveFeed>>,
 }
 
+/// `moves` is the headset's locomotion ring (L4a), the one pe-app's `SwitchedMove` reads while VR runs (L4b).
 pub fn start(
     discovery: &dyn Discovery,
     guard: &Guard,
     ring: Arc<HandRing>,
+    moves: Arc<MoveRing>,
     slot: Arc<FrameSlot>,
     drawing: Drawing,
 ) -> Result<XrThread, NotStarted> {
-    let Drawing { presenter, render, effects, captures, report, shown, ui, moves } = drawing;
+    let Drawing { presenter, render, effects, captures, report, shown, ui, moves: drawn_moves } = drawing;
     let parts =
         open::open_vulkan(discovery, guard, GraspConfig::default(), ring).map_err(NotStarted::NotOpened)?.into_parts();
     // Moved out one by one, so on any unwind from here they drop in reverse, in OpenXR's order: the session, then the
@@ -579,7 +582,8 @@ pub fn start(
     // while it builds still leaves `gpu` to go last (@xr-eng's Low on slice 4).
     let gpu = parts.gpu;
     let targets = parts.targets;
-    let session = parts.session;
+    let mut session = parts.session;
+    session.set_moves(moves);
     let renderer = Renderer::new(shared(&gpu), render);
     // The whole image until the render scale comes (@xr-eng's L2, with the 90 Hz pacing work).
     let mut sink = VrSink::new(slot, presenter, renderer, targets, effects, None, report);
@@ -592,7 +596,7 @@ pub fn start(
     if let Some(ui) = ui {
         sink = sink.with_ui(ui);
     }
-    if let Some(m) = moves {
+    if let Some(m) = drawn_moves {
         sink = sink.with_moves(m);
     }
     spawn_xr(session, sink).map_err(NotStarted::Thread)
@@ -855,7 +859,7 @@ mod tests {
             ui: None,
             moves: None,
         };
-        match start(&NoRuntime, &Guard::CLOSED, ring(), slot, drawing) {
+        match start(&NoRuntime, &Guard::CLOSED, ring(), Arc::new(MoveRing::default()), slot, drawing) {
             Err(NotStarted::NotOpened(NotOpened::Runtime(_))) => {}
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("VR started without a runtime"),
