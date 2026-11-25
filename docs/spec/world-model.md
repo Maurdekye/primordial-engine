@@ -467,17 +467,30 @@ which fixes the origin's role deliberately.
       [I, @fable-reviewer]); the usual answer for a concave object that rests on meshes is splitting it into hulls
       at import;
     - **its mass** is its density times the volume it encloses, with that solid's centre of mass and inertia, found
-      by the divergence theorem: one signed tetrahedron per triangle, in the blob's triangle order, from the centre of
-      the mesh's bounding box, summed in `f64` and rounded to `f32` once (a sum from the shape's origin in `f32` loses
+      by the divergence theorem over the mesh **as the fork builds it**: one signed tetrahedron per built triangle, in
+      the fork's triangle order (its BVH order, the same on every machine), from the centre of the built mesh's
+      bounding box, summed in `f64` and rounded to `f32` once (a sum from the shape's origin in `f32` loses
       precision for a mesh far from it), with the body's world scale applied first. It is computed in the fork's
       `compute_shape_mass`, in Box3D's own composition and shape order (a FORK.md deviation), once per mesh, and
-      scaled at build, never in the step; a body without a mesh keeps a bit-identical mass (@coordinator-opus, Q4). Only a **closed** mesh encloses a volume:
-      - closed means every edge is in exactly two triangles, once each way, edges compared by their vertices'
-        **positions**, bit for bit with −0 read as +0, not by index: exporters split vertices at seams and hard
-        edges, and a closed mesh would otherwise read as open. A triangle with two equal vertex positions encloses
-        nothing and is left out of both the test and the sum. Two closed solids that share an edge or a face read
-        as open, since that edge is in four triangles (@fable-reviewer), and the inspector names that
-        reason;
+      scaled at build, never in the step; a body without a mesh keeps a bit-identical mass (@coordinator-opus, Q4). The built mesh is judged, not the blob, because it is the surface the physics
+      simulates (@coordinator-opus, after @vdw-physics and @fable-reviewer):
+      - **the drop:** Box3D's `create_mesh` leaves out every triangle with an area under 0.01·slop² (2.5×10⁻⁷ m²,
+        a triangle about 0.7 mm on a side, or a sliver 1 m long and 0.5 µm high) [V `box3d-fork/src/mesh/bvh.rs`,
+        `collect_primitives`]. A dropped triangle is a hole in the collision surface too, so it is out of both the
+        closedness test and the sum; a triangle with two equal vertex positions is one of them. The drop is judged in
+        the blob's own units, before any scale. So (a) a `Scale` edit never changes which triangles are dropped, and
+        never makes a body unbuildable; (b) a mesh authored tiny and scaled up loses triangles that are large in the
+        world, an author-facing limit that the import warning (below) names;
+      - **the weld:** Box3D can weld vertices that lie within a tolerance of each other before the drop
+        (`MeshDef::weld_vertices`, `weld_tolerance`) [V `box3d-fork/src/mesh/create.rs`]. pe-physics builds meshes
+        with welding off, the `MeshDef` default [I, @vdw-physics's mesh build states it], so the test reads the blob's
+        positions bit for bit. Were welding turned on, the test would read the welded positions, and its tolerance
+        would be stated here;
+      - only a **closed** mesh encloses a volume. Closed means every edge of the built mesh is in exactly two
+        triangles, once each way, edges compared by their vertices' **positions**, bit for bit with −0 read as +0,
+        not by index: exporters split vertices at seams and hard edges, and a closed mesh would otherwise read as
+        open. Two closed solids that share an edge or a face read as open, since that edge is in four triangles
+        (@fable-reviewer), and the inspector names that reason;
       - a scale with an odd number of negative axes mirrors the mesh and so reverses its winding; the sum reads it
         reversed back, so a mirrored closed mesh keeps its positive volume;
       - the volume must be at least 10⁻⁹ m³ (a 1 mm cube) [I, a floor to tune]. Below it, or negative (wound
@@ -486,10 +499,16 @@ which fixes the origin's role deliberately.
       A dynamic body whose shapes together have no mass can't be built (`Unbuildable::Mass`, a fault like replica.md
       2.1's other unbuildable bodies): Box3D would give it an inverse mass of 0, so it would answer no force [V
       `box3d-fork/src/body/mass.rs`], and a refusal shows the missing mass instead. The inspector and the import path
-      say why and what to do: close the mesh, or add a primitive or a hull with a density. A static or kinematic body
-      takes no mass, so any mesh suits it, open or closed. The mass is computed when the body is built or rebuilt,
-      once per mesh, linear in its triangles. Considered and set aside: the convex hull's mass (any mesh has one, but
-      a concave one weighs as if filled, a bowl as a solid dome) and the bounding box's (cruder still). This rule can
+      say why and what to do: close the mesh, or add a primitive or a hull with a density. When dropped triangles
+      are what opened the mesh, the refusal says so with their count: "N triangles under the minimum area were left
+      out; the mesh is open without them" (the fork's `degenerate_count`). At import, pe-world neither welds nor
+      repairs a mesh: where a mesh blob is imported, a cheap warning runs the same test as the build (how many
+      triangles are dropped, and whether the mesh is still closed without them); mesh repair belongs in the import
+      tool, later. A golden test pins one blob with a sliver: its mass and its open or closed verdict are bit-equal
+      on every tier-2 platform (@fable-reviewer). A static or kinematic body takes no mass, so any mesh suits it,
+      open or closed. The mass is computed when the body is built or rebuilt, once per mesh, linear in its triangles.
+      Considered and set aside: the convex hull's mass (any mesh has one, but a concave one weighs as if filled, a
+      bowl as a solid dome) and the bounding box's (cruder still). This rule can
       be loosened later without changing any built world (an open mesh would go from unbuildable to buildable), where
       starting from the hull's mass and switching later would change masses in existing worlds (@fable-reviewer);
   - a hull is a convex `SimBlobRef`, on any body, its mass Box3D's.
