@@ -1074,6 +1074,11 @@ body object, the `Player` row and the Move input) is walked over the world once 
   floor below it. The ride holds the feet on it, rising at most 4 m/s onto steps and dropping at most
   6 m/s down to ground at most 0.3 m below. Steps lower than the ride pass beneath the capsule. A fall lands on the
   ground, never in it.
+  - Known limit [I, @design-reviewer's L3 on 7a04f3a7]: since the probe skips steep hits, walkable ground under a
+    steep face within the probe's reach (ride + radius - probe radius + snap + this frame's fall, about 0.65 m
+    standing) holds the player. So on the lowest ~0.65 m of a steep piece placed on a walkable one, a player is
+    grounded and can climb that band by jumping. At a ramp's foot that is harmless. If L7's course meets it, take a
+    walkable hit only when no steep hit lies above it within the probe's radius of the feet.
 - **Solid and light:** static and kinematic bodies, and dynamic bodies of at least 40 kg (each body's own mass, read
   when the move runs; world data), are walls and ground. Lighter dynamic bodies are neither, so a player wades
   through them and sinks through a light plank or stack (a known limit). Each light body inside the push volume (the
