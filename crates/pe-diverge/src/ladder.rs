@@ -35,7 +35,9 @@ pub struct Config {
     pub t_keep: Duration,
     /// The deepest replay run in the foreground: a repair older than this restarts at the newest cut (4.2).
     pub w_fg: Duration,
-    /// Wait for a repair source before trying the next.
+    /// Wait for a repair source before trying the next (a node reply's; record replies and the physics image wait
+    /// `t_join_peer`). It must outlast a round trip on an internet path with jitter: 250 ms timed out every request at
+    /// about 240 ms of RTT (K4 R4'; coordinator).
     pub t_peer: Duration,
     /// A join's wait for its source (divergence.md 4.5): a whole-state reply, the physics image among them, can be
     /// megabytes, and arrives only whole. Also the least time before a donor serves one peer the same image again.
@@ -77,7 +79,7 @@ impl Default for Config {
         Config {
             t_keep: Duration::from_millis(1500),
             w_fg: Duration::from_secs(2),
-            t_peer: Duration::from_millis(250),
+            t_peer: Duration::from_secs(1),
             t_join_peer: Duration::from_secs(5),
             t_join: Duration::from_secs(25),
             n_descend: 3,
@@ -221,6 +223,11 @@ struct Bucket {
 }
 
 const NS: i128 = 1_000_000_000;
+
+/// The wait a reference names in its `Busy` while it replays toward a split cut's root, or asks its root there again
+/// (`replaying_retry_us`): its replay ends within a few ticks, so the requester asks again soon. It was
+/// `t_peer`, which is now 1 s.
+const REPLAYING_RETRY: Duration = Duration::from_millis(250);
 
 impl Bucket {
     fn full(burst: u64, now: HostTime) -> Bucket {
@@ -928,11 +935,13 @@ impl Diverge {
         }
         // A physics image is waited for as long as its source's re-serve window (`t_join_peer`): a requester that
         // gave up sooner would ask again inside the window, so any image slower than `t_peer` would lock the rung at
-        // n = 2 (F1 of the M1 redo; 4.1).
+        // n = 2 (F1 of the M1 redo; 4.1). Record replies wait as long: up to `reply_budget` of records and their
+        // blobs, which pe-net delivers only whole (a 960 KiB simulation blob alone is 8 s at 1 Mbit/s; coordinator).
         let joining = self.joining();
         let (t_peer, t_join_peer) = (self.cfg.t_peer, self.cfg.t_join_peer);
         let waiting_on_peer = |r: &Repair| {
-            let wait = if joining || matches!(r.phase, Phase::Physics) { t_join_peer } else { t_peer };
+            let long = joining || matches!(r.phase, Phase::Physics | Phase::Records { .. });
+            let wait = if long { t_join_peer } else { t_peer };
             !r.due && !matches!(r.phase, Phase::Importing { .. }) && now > r.sent_at.plus(wait)
         };
         if self.repair.as_ref().is_some_and(waiting_on_peer) {
@@ -1184,15 +1193,15 @@ impl Diverge {
     /// While a root split's step-1 replay runs, my root at the split cut is not held (the replay drops the history
     /// after `Cv` and reaches the cut again only when it ends), but a rung 2 toward me may already ask for it, the
     /// root I voted there. Likewise after the replay, while `root_at_cut` is still `Pending` (`reask`). It is `Busy`
-    /// for `t_peer`, not `NotHeld`, which at n = 2 would fail the rung on its only source (5, step 1; @design-reviewer's
-    /// L1 and L2 on a49dd778).
+    /// for [`REPLAYING_RETRY`], not `NotHeld`, which at n = 2 would fail the rung on its only source (5, step 1;
+    /// @design-reviewer's L1 and L2 on a49dd778).
     fn replaying_retry_us(&self, root: &Hash) -> Option<u64> {
         let ep = self.episode.as_ref()?;
         let replaying = self.replay.as_ref().is_some_and(|r| r.final_cut.is_none() && r.cut.at == ep.cut.at)
             && ep.roots.iter().any(|(h, v)| h == root && v.iter().any(|x| x.0 == self.me));
         let asking =
             self.reask.as_ref().is_some_and(|c| c.at == ep.cut.at) && self.servable.get(root) == Some(&ep.cut.at);
-        (replaying || asking).then(|| u64::try_from(self.cfg.t_peer.as_micros()).unwrap_or(u64::MAX))
+        (replaying || asking).then(|| u64::try_from(REPLAYING_RETRY.as_micros()).unwrap_or(u64::MAX))
     }
 
     /// Send a reply that serves a request, and take its bytes from the peer's bucket.

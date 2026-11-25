@@ -463,7 +463,8 @@ fn a_silent_source_times_out_and_the_next_one_cures() {
     let mut net = Net::new(3, 40, &[]);
     net.peers[0].silent = true;
     damage_cv(&mut net, &[5]);
-    net.run(60);
+    // `t_peer` is 1 s (60 frames): two of them.
+    net.run(120);
     let c = net.peers[VICTIM].d.counters().clone();
     assert!(c.source_faults >= 1, "{c:?}");
     assert_eq!(c.cured_by_rung[1], 1, "{c:?}");
@@ -1555,4 +1556,50 @@ fn a_split_whose_target_is_already_held_is_revoted_not_repaired() {
     let c = p.d.counters().clone();
     assert_eq!((c.revotes_held, c.cured_by_rung[1], c.source_faults), (1, 0, 0), "{c:?}");
     assert_eq!(p.d.split_reference(), Some(k0));
+}
+
+/// @item:primordial-engine/pe-diverge-repair-fails-under-internet-like-late (@engine-architect's K4 R4'): at n = 2,
+/// over a link with an internet-like delay each way, the faulty member's rung 2 toward the reference must cure the
+/// split within a few round trips, not fail at every attempt until the lag ends.
+#[test]
+fn a_root_split_at_n_2_cures_by_rung_2_over_a_link_with_internet_like_delay() {
+    // One way: 3 frames (50 ms) and 7 frames (117 ms) at 60 Hz, so a round trip of 100 ms and 233 ms.
+    for delay in [3, 7] {
+        let mut net = Net::new(2, 40, &[]);
+        net.reemit = true;
+        for p in &mut net.peers {
+            p.link_delay = delay;
+        }
+        net.run(20);
+        net.peers[1].r.faulty = Some(5);
+        net.peers[1].self_test_fails = true;
+        net.run(120);
+        let failed: Vec<_> =
+            net.peers.iter().flat_map(|p| &p.events).filter(|e| matches!(e, DivergeEvent::RungFailed { .. })).collect();
+        let c = net.peers[1].d.counters().clone();
+        assert!(failed.is_empty(), "delay {delay}: {} failures, first {:?}; {c:?}", failed.len(), failed.first());
+        assert!(c.root_splits >= 1 && c.cured_by_rung[1] >= 1, "delay {delay}: {c:?}");
+        assert_eq!((c.source_faults, c.rung_failures), (0, 0), "delay {delay}: {c:?}");
+    }
+}
+
+/// The same at a 300 ms round trip (150 ms each way, 9 frames at 60 Hz): longer than `t_peer` was (250 ms), which
+/// timed out every request before its reply came (K4 R4' with 40-120 ms of jitter: 80 stale replies).
+#[test]
+fn a_root_split_at_n_2_cures_by_rung_2_over_a_300_ms_round_trip() {
+    let mut net = Net::new(2, 40, &[]);
+    net.reemit = true;
+    for p in &mut net.peers {
+        p.link_delay = 9;
+    }
+    net.run(20);
+    net.peers[1].r.faulty = Some(5);
+    net.peers[1].self_test_fails = true;
+    net.run(180);
+    let failed: Vec<_> =
+        net.peers.iter().flat_map(|p| &p.events).filter(|e| matches!(e, DivergeEvent::RungFailed { .. })).collect();
+    let c = net.peers[1].d.counters().clone();
+    assert!(failed.is_empty(), "{} failures, first {:?}; {c:?}", failed.len(), failed.first());
+    assert!(c.root_splits >= 1 && c.cured_by_rung[1] >= 1, "{c:?}");
+    assert_eq!((c.source_faults, c.rung_failures, c.stale_replies), (0, 0, 0), "{c:?}");
 }

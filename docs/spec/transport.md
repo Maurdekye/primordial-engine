@@ -1,6 +1,6 @@
 # pe-net: the transport
 
-Status: draft 1.12, 2026-11-18, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.13, 2026-11-25, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
 budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.6 records
@@ -13,7 +13,9 @@ the one finding so far: varints must be minimal (3.6). Draft 1.9 refuses a hello
 (6.3, @iter-bench's finding). Draft 1.10 holds a stream message at the peer's stream limit until it has credit,
 where it was dropped (3.5, @engine-architect's finding). Draft 1.12 follows pe-app's join from a cut (app.md
 draft 7): the joiner's clock converges on the welcome's member list, which the invite pins, not on the start
-cut's (5.4, 6.4). Draft 1.11 fixes what the first two-machine run found: only
+cut's (5.4, 6.4). Draft 1.13 (by @diverge-eng, coordinator) takes Repair out from under the
+delay guard, which now holds Bulk and rides only (3.5, 4.3, 9, 10): K4 R4' found the guard holding every repair
+at n = 2 for up to `W_base` after the link's delay rose. Draft 1.11 fixes what the first two-machine run found: only
 a ready clock answers a sample (5.2), a clock counts its own offset only once it runs (5.3), and a stopping
 endpoint closes its connections (6.5). Draft 1.2 records the user's ruling on the firewall default (2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
@@ -261,7 +263,7 @@ R18's failure again [@design-reviewer's High].
   trip. A ride only ever takes space that would otherwise go unused [@shader-lang, found building lanes.rs; V]:
   - **piggyback only:** it rides in a datagram that goes out anyway, for a new message, a retransmission, a
     pose or a due acknowledgement, after all of those. pe-net never sends a datagram for rides alone;
-  - **only on a link with room:** rides are optional bytes, like Repair and Bulk, and stop when the link shows
+  - **only on a link with room:** rides are optional bytes, like Bulk, and stop when the link shows
     it is full (4.2's ride gate: the delay guard and a budget check). Every byte then goes to new data and
     retransmissions.
 
@@ -304,10 +306,10 @@ R18's failure again [@design-reviewer's High].
     sender's message waits, it is never dropped [V `pe-net/tests/core.rs`, 200 Repair and 200 Bulk messages each
     way: before 1.10, one side received 62 of the 200 Repair messages]. pe-net's own records (the hello, welcome, up and lifecycle records)
     wait in the connection's queue, highest priority first, and at most one lane message waits there with them;
-    the rest stay in their lanes' queues, where the lane order and the delay guard (4.3) still apply. That one
-    message takes the first credit that frees, even if it is Bulk and a Protocol message waits in its lane: an
-    inversion of one message at most. Repair and Bulk streams the delay guard holds mid-write keep at most half
-    of `N_streams_in`, so Protocol and Action messages on streams always have the other half (both sides run one
+    the rest stay in their lanes' queues, where the lane order and the delay guard (4.3, Bulk only) still apply.
+    That one message takes the first credit that frees, even if it is Bulk and a Protocol message waits in its
+    lane: an inversion of one message at most. Repair and Bulk streams not yet fully handed to quinn (the delay
+    guard holds Bulk mid-write) keep at most half of `N_streams_in`, so Protocol and Action messages on streams always have the other half (both sides run one
     build, so the peer's limit is the sender's own) [@design-reviewer's Lows on 9e71ac4c]. The peer's
     credit arrives in a packet, and each packet reruns the send path. pe-net gives the caller no signal of how
     much waits [I: a queue-depth signal is out of scope (coordinator)];
@@ -397,14 +399,27 @@ statistics. The harness reports nothing else to it.
 - **Jitter:** on Wi-Fi, `srtt - base_rtt` often swings past `D_guard`, so the guard turns rides off where they
   help most. 9.7 measures the share of time rides are on, with a jitter cell; no rule change yet [I].
 
-### 4.3 The delay guard for the low lanes
+### 4.3 The delay guard for Bulk and rides
 
 - **The problem:** a loss-based controller fills a deep router buffer before it backs off, which would add
   queueing delay to actions and poses.
-- **The guard:** Repair and Bulk send only while `srtt - base_rtt` is under `D_guard`, so the low lanes yield
-  before the queue grows. Redundant rides follow the same guard, with a band (4.2). This is LEDBAT's idea, applied to the low lanes only [I].
+- **The guard:** Bulk sends only while `srtt - base_rtt` is under `D_guard`, so it yields before the queue grows.
+  Redundant rides follow the same guard, with a band (4.2). This is LEDBAT's idea, applied to Bulk and rides
+  only [I].
+- **Repair is not under the guard** (coordinator, @fable-reviewer). It sends whenever
+  its share of the stream credit allows (3.5), below datagram traffic and above Bulk. Under the guard, a delay
+  that rose mid-session held it until `base_rtt`'s window rolled over: a Repair message sent just after a link
+  slowed from 10 to 45 ms one way arrived 30.6 s later [V `pe-net/tests/core.rs`
+  `a_repair_message_arrives_about_one_delay_after_the_link_slows`, red before 1.13]. At `n = 2` that failed every
+  rung-2 attempt for as long [V, @engine-architect's K4 R4': 73 and 82 failures, splits of 26 and 37 s at 40 ms
+  each way and 40-120 ms with jitter], and Wi-Fi-like jitter swings `srtt - base_rtt` past `D_guard` on and off
+  (4.2). The cost: a large repair or join import (the join's state goes on Repair too) can add queueing delay to
+  actions while it streams; pe-diverge's serving budget per peer (`B_serve`, `R_serve`, divergence.md 4.2) bounds
+  its rate. Nothing outside tests sends Bulk yet, so for now the guard holds no app traffic. A guard rebuilt for
+  `n > 2` (a short-window RTT minimum, a rise counted only with low-lane bytes in flight, small messages always
+  passing) is a backlogged follow-up.
 - **`base_rtt`** is pe-net's own minimum of the RTT samples over the last `W_base`. Without a window, a route
-  change that raises the base delay would block Repair and Bulk for good [@design-reviewer's Low 3].
+  change that raises the base delay would block Bulk for good [@design-reviewer's Low 3].
 - **Measured in M1:** Cubic with the guard against quinn's BBR, on delay cells and on loss-only (AQM) cells
   (section 9).
 
@@ -843,8 +858,11 @@ Gated, unless marked:
    - under a budget too small for everything, Protocol is never delayed by the lower lanes.
 2. **The budget:**
    - a thin link to one peer doesn't slow traffic to the others;
-   - Repair and Bulk yield under the delay guard;
-   - during a bulk transfer, action latency stays within `min_rtt + D_guard + 10 ms` at p99 (a harness cell).
+   - Bulk yields under the delay guard, and Repair does not: a Repair message sent just after the link's delay
+     rises arrives within about one one-way delay [V `pe-net/tests/core.rs`];
+   - during a Bulk transfer, action latency stays within `min_rtt + D_guard + 10 ms` at p99 (a harness cell). A
+     Repair transfer has no such bound since 1.13 (4.3); its cell measures the action latency it adds, as a
+     figure, not a pass mark.
 3. **The clock:**
    - convergence before frame 0 within `T_ready`, to within `E_ready`;
    - the steering rate never exceeds `S_max`;
@@ -933,7 +951,7 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | `L_msg` | 1 MiB | Largest Protocol or Action message (an edit with a small simulation blob) |
 | `L_bulk` | 64 MiB | Largest Bulk message |
 | `N_streams_in` | 64 | Incoming streams open at once per peer |
-| `D_guard` | 25 ms | Queueing delay above `base_rtt` at which Repair, Bulk and rides pause (rides resume below half) |
+| `D_guard` | 25 ms | Queueing delay above `base_rtt` at which Bulk and rides pause (rides resume below half); not Repair (4.3) |
 | `T_saturated` | 1 s | Oldest unacknowledged Action message before `LinkSaturated` |
 | `T_sample` / `T_sample_fast` | 1 s / 0.2 s | Clock sample interval, steady / converging |
 | `W_clock` / `B_clock` | 30 s / 2 s | Clock sample window / bucket |
