@@ -653,7 +653,7 @@ pub fn renamed(p: &str, stamp: u64) -> String {
 }
 
 /// If the menu asked, start pe-app again now: called as this run ends, after VR has shut down and the port is
-/// closed (Fable's condition 3). The trace and cut log files the environment names are renamed as `--log`'s is.
+/// closed (Fable's condition 3). The environment's per-process log paths are renamed as `--log`'s is.
 pub fn relaunch_if_asked() {
     let Some(args) = RELAUNCH.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -666,7 +666,12 @@ pub fn relaunch_if_asked() {
     };
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(&args).env(RELAUNCHED, "1");
-    for var in ["PE_CUT_LOG", "PE_TICK_TRACE"] {
+    for var in [
+        "PE_CUT_LOG",
+        "PE_TICK_TRACE",
+        #[cfg(feature = "steam-audio-trial")]
+        "PE_STEAM_AUDIO_LOG",
+    ] {
         if let Some(p) = std::env::var_os(var).filter(|p| !p.is_empty()) {
             cmd.env(var, renamed(&p.to_string_lossy(), stamp));
         }
