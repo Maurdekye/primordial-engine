@@ -334,6 +334,23 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
   display frame's `t_draw` must follow from its display time and the frame views by the chosen rule, and the drawn
   pose of an object in steady motion must be continuous, its step bounded by velocity × display period.
 
+- **The local rig at the drawn time** (locomotion L4c; `crates/pe-render/src/rig.rs` [V]). In a world with player
+  bodies the views' `local_rig` moves with the player's body, so a display frame takes the rig resolved at its own
+  drawn time, as it does the objects (`Presenter::drawn_rig`, called before the cameras; `frame_batch` then draws the
+  own hands and their joints through the same rig): between the two views around `t_draw`, or, past the newest,
+  moved on for at most the rule's `l_max` by the motion of the point under the own head over the last two views,
+  with the newest view's rotation. The point under the head, not the rig's origin: in a smooth turn the origin swings
+  round the head while the head stays still (@design-reviewer's M2 on L4c). A change of that velocity between view
+  pairs past `SNAP_DV` (8 m/s), or a speed past `RIG_SPEED_CAP` (40 m/s, past a fall), is a correction and snaps (the
+  user's 1a: no glide setting); it is never carried on. Another domain, a frame below the newest kept
+  and a gap between batches start the track over. While the newest view has the local player's own body, the rig is
+  then turned about the head by the local move feed's heading lead over the view's (`rig::pivot`, at most 45°), so a
+  turn shows at once and pivots on the head, and the lead is zero once the simulation has stepped that heading.
+  Walking keeps the simulation's lag (about a tick plus the display delay, the plan's stick-to-photon budget [I],
+  measured in L6). Without bodies the views' rig is the identity and nothing turns it. The VR sink takes the rig
+  this way; the desktop window does once @ballpit-viz's L4b (the window's walking) calls `drawn_rig` with its move
+  feed, and until then draws through the newest view's rig.
+
 ### 7.1 Per-frame drawing never feeds the simulation (design, not built)
 
 The user's rulings of 2026-11-24, from @fable-reviewer's file 21

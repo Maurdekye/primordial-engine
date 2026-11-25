@@ -45,6 +45,7 @@ fn object(id: u128, p: [f64; 3], v: [f32; 3], shape: Shape, color: [f32; 4], rad
         light: None,
         radius,
         hand_of: None,
+        body_of: None,
         held_by: None,
         flags: ViewFlags::default(),
         version: None,
@@ -117,6 +118,7 @@ fn main() {
                 activations_retracted: Vec::new(),
                 hits: Vec::new(),
                 hits_from: None,
+                heads: Vec::new(),
             }));
             let next = HostTime(((f + 1) as i128 * 1_000_000_000 / hz as i128) as i64);
             let wait = next.0 - c2().0;

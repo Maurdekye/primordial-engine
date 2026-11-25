@@ -125,6 +125,7 @@ impl KvSeamReplica {
             activations_retracted: Vec::new(),
             hits: Vec::new(),
             hits_from: None,
+            heads: Vec::new(),
         }
     }
 

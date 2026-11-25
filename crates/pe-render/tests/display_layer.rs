@@ -37,6 +37,7 @@ fn ball(id: u128, p: Pos, v: [f32; 3]) -> ViewObject {
         light: None,
         radius: 0.05,
         hand_of: None,
+        body_of: None,
         held_by: None,
         flags: ViewFlags::default(),
         version: None,
@@ -61,6 +62,7 @@ fn view(frame: u64, sim_time: HostTime, mut objects: Vec<ViewObject>) -> Arc<Fra
         activations_retracted: Vec::new(),
         hits: Vec::new(),
         hits_from: None,
+        heads: Vec::new(),
     })
 }
 

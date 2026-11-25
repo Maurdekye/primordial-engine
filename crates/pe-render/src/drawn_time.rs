@@ -65,6 +65,15 @@ impl DrawnTime {
         DrawnTime::Shown { delay, l_max: Duration::from_nanos(2_000_000_000 / u64::from(sim_hz.max(1))) }
     }
 
+    /// How far past the newest view a rule moves what it draws, at most: its `l_max`, or none under (b), which only
+    /// interpolates.
+    pub fn l_max(&self) -> std::time::Duration {
+        match *self {
+            DrawnTime::Extrapolate { l_max } | DrawnTime::Present { l_max } | DrawnTime::Shown { l_max, .. } => l_max,
+            DrawnTime::InterpolateLate { .. } => std::time::Duration::ZERO,
+        }
+    }
+
     /// The drawn time for a display frame shown at `display_time` (under Present, the host's now).
     pub fn t_draw(&self, display_time: HostTime) -> HostTime {
         match *self {

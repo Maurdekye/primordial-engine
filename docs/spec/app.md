@@ -95,6 +95,19 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    (its link dropped with its signed `Leave` in hand, E not final here; section 4) isn't paced: nobody is left to
    acknowledge its entries, and it was told it can keep playing (M1 redo F2). A link that comes back ends that.
 
+   **A player's body** (locomotion L3; world-model.md 8.2; the plan's piece L3). In a world whose preset gives
+   members a body (the plane), the view's own head names this member's body (S5 v1.12's `HeadView`). Step 2 then
+   reads the move feed (`MoveFeed::move_at`) first, at the same moment as the hands, and sends the frame's `Move`
+   (one quantised sample: `local::move_sample`) at the hands' stamp, held `MOVE_HOLD_S` (0.1 s, and at least the
+   backlog's thinning gap) so a thinned or late frame doesn't stop the body. A frame the hands thin (a stamp standing
+   still, or the backlog's floor) sends no Move unless a jump was pressed since the last one sent: the heading and
+   the press count are cumulative, so the next Move heals the rest. The hands then go as `BodyHand`, in the body's
+   frame: their rig-frame pose less the head's offset over the floor, turned by that Move's heading (or the last sent),
+   with pe-replica's `players::turned`, the turn the view's rig uses, so the hand pe-world places and the hand the
+   display draws from tracking agree. A grab's pick still measures from the world pose through the view's rig. A
+   throw adds the body's velocity (the view's `OWN_BODY` object's). SimStats counts `moves_sent`, `moves_refused`
+   and `moves_thinned`. In a world without bodies nothing changes: no Move, and world-frame `Hand` entries.
+
    **A hand's grasp** (world-model.md 7.2, 8.1; @coordinator-opus and its ruling on the defaults,
    after @fable-reviewer). A hand entry whose `engaged` differs from the one last sent for that hand is the grasp's
    edge; the raw sample's changes are not.

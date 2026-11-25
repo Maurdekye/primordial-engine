@@ -168,13 +168,13 @@ pub fn joint_items(hand: Hand, joints: &HandJoints, rig: &RigTransform) -> Vec<D
 /// Draw each own hand that has tracked joints as its joints, in place of its `OWN_HAND` object's own shape (the
 /// simulation's 9 cm sphere). Only while the own hands are late-latched, since the joints are; a hand without
 /// joints, and every held object, stay as drawn. `scene` is the display layer's (`Scene::displayed`) for `view`.
-pub fn draw_tracked_joints(scene: &mut Scene, view: &FrameView, local: &LocalPresentation) {
+pub fn draw_tracked_joints(scene: &mut Scene, view: &FrameView, local: &LocalPresentation, rig: &RigTransform) {
     let mut joints = Vec::new();
     scene.front.retain(|item| {
         let Some(o) = view.object(item.id) else { return true };
         let (true, Some((_, hand))) = (o.flags.contains(ViewFlags::OWN_HAND), o.hand_of) else { return true };
         let Some(j) = local.hands[hand.index()].and_then(|h| h.joints) else { return true };
-        joints.extend(joint_items(hand, &j, &view.local_rig));
+        joints.extend(joint_items(hand, &j, rig));
         false
     });
     scene.front.extend(joints);

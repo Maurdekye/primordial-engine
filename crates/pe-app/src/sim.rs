@@ -242,6 +242,11 @@ pub struct SimStats {
     /// feed. The Move entry (locomotion L3) is made from the sample.
     pub moves_sampled: u64,
     pub moves_absent: u64,
+    /// The local player's `Move` entries (locomotion L3): those agreement took, those it refused, and the frames a
+    /// backlog or a standing stamp thinned one with no jump pressed since the last sent.
+    pub moves_sent: u64,
+    pub moves_refused: u64,
+    pub moves_thinned: u64,
     /// Frames whose hand inputs step 2 held back. Always 0 since F3's S1 (hands are never held); kept so logs from
     /// before it compare.
     pub hands_paced: u64,
@@ -435,6 +440,7 @@ fn health_only(view: &FrameView, health: Health) -> FrameView {
         activations_retracted: Vec::new(),
         hits: Vec::new(),
         hits_from: None,
+        heads: Vec::new(),
         counters: pe_seams::ViewCounters::default(),
         ..view.clone()
     };
@@ -457,6 +463,9 @@ pub struct Sim {
     /// pe-diverge (step 5, [`Sim::with_diverge`]): detection and repair. `None` runs none, so a root split stays open.
     diverge: Option<crate::diverge::DivergeLoop>,
     published: Option<Arc<FrameView>>,
+    /// The time and local rig of the view published before `published` (locomotion L3): a throw adds the rig's motion
+    /// at the hand between the two.
+    rig_before: Option<(HostTime, pe_seams::RigTransform)>,
     /// The open root splits: the frames of the cuts S3 reported `RootSplit` for, above the final cut's frame. While
     /// any is open, the health this machine reports is `Repairing` from the first ([`Sim::health_of`]; divergence.md
     /// 7). A set, not the earliest alone: a revote can settle an early split before a later one (@engine-architect).
@@ -649,6 +658,16 @@ pub const MAX_IN_PER_TICK: usize = 1024;
 /// measured value.
 pub const HAND_FLOOR_HZ: u64 = 30;
 
+/// How long a `Move`'s sample is held past its frame, s (locomotion L3): a thinned or late frame then doesn't stop the
+/// body, and a lost link stops it within this [I, to tune in L6].
+pub const MOVE_HOLD_S: f64 = 0.1;
+
+/// A `Move`'s `hold` at `rate_hz`: [`MOVE_HOLD_S`] of frames, and at least the backlog's thinning gap.
+fn move_hold(rate_hz: u32, floor_gap: u64) -> u8 {
+    let frames = (MOVE_HOLD_S * f64::from(rate_hz)).ceil() as u64;
+    frames.max(floor_gap).min(u64::from(u8::MAX)) as u8
+}
+
 /// The host time of `t`, a present in fractional frames (stamp-ahead's pose clock): between its frame's start and the
 /// next's, in proportion.
 fn host_time_at(clock: &dyn FrameClock, t: f64) -> HostTime {
@@ -671,6 +690,9 @@ struct Local {
     /// records have applied it. Each publication marks the objects of applied ones `RELEASED_LOCAL` (render.md 8, D4's
     /// hand-off), so a view the display loses in a gap doesn't lose the mark (@design-reviewer's L1 on bb23fc58).
     released: BTreeMap<EntryRef, (ObjectId, Frame, bool)>,
+    /// The last `Move` sample agreement took (locomotion L3): its heading and head are the frame a later hand pose goes
+    /// in while no newer sample is sent, and its press count tells a thinned frame whether it must still go.
+    moved: Option<pe_world::MoveSample>,
 }
 
 /// How long past its stamp a `Release`'s mark lasts at most ([`Local::let_go`]): far longer than a gap in the views
@@ -756,6 +778,7 @@ impl Sim {
             self_test: SelfTest::NotRun,
             diverge: None,
             published: None,
+            rig_before: None,
             splits: std::collections::BTreeSet::new(),
             source_view: None,
             hold: None,
@@ -1329,6 +1352,7 @@ impl Sim {
             grasp: local::Grasp::default(),
             grabs: BTreeMap::new(),
             released: BTreeMap::new(),
+            moved: None,
         });
         self
     }
@@ -1592,6 +1616,42 @@ impl Sim {
                 } else if self.input_stamp != Some(stamp) {
                     self.pose_frame = Some(ps);
                 }
+                // The player's locomotion at the same moment as the hands (L4b), kept for the frame's Move entry, and
+                // read first: a hand's body-frame pose uses this frame's heading and head (locomotion L3).
+                if let Some(moves) = &self.moves {
+                    match moves.move_at(at) {
+                        Some(m) => {
+                            self.stats.moves_sampled += 1;
+                            self.last_move = Some((stamp, m));
+                        }
+                        None => self.stats.moves_absent += 1,
+                    }
+                }
+                // With a body (S5 v1.12's own head names it), the frame's Move goes first, at the hands' stamp. A thinned
+                // frame sends none unless a jump was pressed since the last sent: the heading and the press count are
+                // cumulative, so the next Move heals what a thinned one would have carried.
+                let body = view.heads.iter().find(|h| h.own).map(|h| h.body);
+                if let (Some(body), Some((st, m))) = (body, self.last_move)
+                    && st == stamp
+                {
+                    let sample = local::move_sample(&m);
+                    if thin && l.moved.is_some_and(|last| last.jumps == sample.jumps) {
+                        self.stats.moves_thinned += 1;
+                    } else {
+                        let hold = move_hold(self.clock.rate_hz(), floor_gap);
+                        match local::submit_move(&mut l.chain, &mut *self.agree, domain, stamp, body, sample, hold) {
+                            Some(_) => {
+                                self.stats.moves_sent += 1;
+                                l.moved = Some(sample);
+                            }
+                            None => self.stats.moves_refused += 1,
+                        }
+                    }
+                }
+                let frame = body.map(|body| {
+                    let (heading, head) = l.moved.map_or((0, [0.0; 3]), |m| (m.heading, m.head_pos));
+                    local::BodyFrame { body, heading, head }
+                });
                 let sent = local::submit_hands(
                     &mut l.chain,
                     &mut l.grasp,
@@ -1604,6 +1664,8 @@ impl Sim {
                     domain,
                     &mut *self.agree,
                     thin,
+                    frame.as_ref(),
+                    self.rig_before,
                 );
                 self.stats.inputs += u64::from(sent.took);
                 self.stats.inputs_refused += u64::from(sent.refused);
@@ -1634,16 +1696,6 @@ impl Sim {
                 }
                 for (id, object) in sent.released {
                     l.released.insert(id, (object, stamp, false));
-                }
-                // The player's locomotion at the same moment as the hands (L4b), kept for the frame's Move entry.
-                if let Some(moves) = &self.moves {
-                    match moves.move_at(at) {
-                        Some(m) => {
-                            self.stats.moves_sampled += 1;
-                            self.last_move = Some((stamp, m));
-                        }
-                        None => self.stats.moves_absent += 1,
-                    }
                 }
             }
             self.input_frame = Some(ps);
@@ -1814,6 +1866,9 @@ impl Sim {
                 }
             }
             self.slot.publish(out.clone());
+            if let Some(p) = self.published.as_ref().filter(|p| p.frame < out.frame) {
+                self.rig_before = Some((p.sim_time, p.local_rig));
+            }
             self.published = Some(out);
             self.source_view = Some(view);
             self.stats.published += 1;
@@ -2721,6 +2776,72 @@ pub(crate) mod tests {
         let (stamp, last) = s.last_move().expect("a sample");
         assert_eq!((last.heading, last.sampled_at), (5000, m[4]), "the newest the feed gave");
         assert!(stamp.0 >= 1 && stamp.0 <= 8, "keyed by its frame's stamp: {stamp:?}");
+    }
+
+    /// Locomotion L3 on the plane, a member alone: with a body and a move feed, each frame sends one `Move` beside the
+    /// hands, stamped with them, and the hands go in the body's frame from the same sample. The body walks where the
+    /// stick points turned by the heading, the view's rig follows the body with the tracked head over the feet, and
+    /// each own hand is at its body-frame place (the rig-frame pose less the head's offset over the floor, turned).
+    #[test]
+    fn a_body_s_move_goes_with_its_hands_and_walks_it() {
+        struct Walk;
+        impl pe_seams::MoveFeed for Walk {
+            fn move_at(&self, at: HostTime) -> Option<MoveInput> {
+                Some(MoveInput {
+                    sampled_at: at,
+                    stick: [0.0, 1.0],
+                    stick_yaw: 0.0,
+                    heading: 1 << 30, // a quarter turn left: forward is -X
+                    jumps: 3,
+                    head: pe_seams::RigPose { position: [0.2, 1.6, -0.1], orientation: [0.0, 0.0, 0.0, 1.0] },
+                    tracked: true,
+                })
+            }
+        }
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let mut world =
+            pe_world::preset::plane_on(pe_world::preset::m1_line(), 7, pe_world::BlobStore::default(), Pos::ORIGIN);
+        let spawn = world.join_spawn();
+        let all = pe_world::perm::ADMIN | pe_world::perm::EDIT | pe_world::perm::AGENT;
+        world.admit(pe_world::preset::m1_line(), me, all, Frame(0), spawn).expect("admitted");
+        let body = world.body_of(me).expect("the plane gives me a body");
+        let mut config = crate::genesis::replica_config(&crate::genesis::settings(), RATE, clock.clone());
+        config.local = Some(me);
+        let pw = crate::fault::FaultWorld::new(pe_replica::PeWorld::new(world, pe_seams::DomainId(0)), None);
+        let replica = pe_replica::ReplicaImpl::new(pw, config).expect("a replica").with_runner(runner());
+        let slot = Arc::new(FrameSlot::new());
+        let hands = Arc::new(StillHands([0.0, 1.2, -0.4]));
+        let agree = Box::new(SoloAgreement::new(LineId::origin()));
+        let mut s = Sim::new(agree, Box::new(replica), clock.clone(), slot.clone(), Budget::new(RATE))
+            .with_local(me, [7; 32], hands)
+            .with_moves(Arc::new(Walk));
+        for f in 1..=90 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        let st = s.stats().clone();
+        assert!(st.moves_sent >= 80 && st.moves_refused == 0, "a Move a frame: {st:?}");
+        assert!(st.inputs >= 2 * 80 && st.inputs_refused == 0, "and the two hands beside it: {st:?}");
+        let v = slot.newest().expect("a view");
+        let w = s.world().expect("the world");
+        let feet = w.world_transform(body).expect("placed").pos;
+        let walked = (feet - spawn).0;
+        assert!(walked[0] < -2.0 && walked[2].abs() < 0.05, "toward -X after the quarter turn: {walked:?}");
+        // The rig: the head's rig-frame pose lands over the feet.
+        let head = [0.2f64, 1.6, -0.1];
+        let turned = |p: [f64; 3]| pe_seams::Offset(pe_replica::players::turned(1 << 30, p));
+        let at = |p: [f64; 3]| v.local_rig.pos.checked_add(turned(p)).unwrap();
+        let over = (at(head) - feet).0;
+        assert!(over[0].abs() < 1e-4 && over[2].abs() < 1e-4 && (over[1] - 1.6).abs() < 1e-4, "{over:?}");
+        // Each own hand is at its body-frame place: tracked at (+-0.2, 1.2, -0.4) in the rig frame.
+        for o in v.objects.iter().filter(|o| o.hand_of.is_some_and(|h| h.0 == me)) {
+            let x = if o.hand_of.unwrap().1 == pe_seams::Hand::Left { -0.2 } else { 0.2 };
+            let want = at([x, 1.2, -0.4]);
+            let gap = (o.pos - want).0;
+            assert!(gap.iter().all(|c| c.abs() < 1e-3), "{:?} hand off its place by {gap:?}", o.hand_of);
+        }
+        assert!(v.heads.iter().any(|h| h.own && h.body == body), "my head names my body: {:?}", v.heads);
+        assert_eq!((st.deepest_rollback, v.counters.frames_resimulated), (0, 0), "alone, nothing corrects my body");
     }
 
     /// The console's `hand-mode` (the pull-ahead plan's 1.10, [`crate::handfeel`]): a member alone sends `HandMode` for

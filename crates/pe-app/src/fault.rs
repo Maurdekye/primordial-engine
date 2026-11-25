@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use pe_replica::world::{
-    BodyKind, BodyRow, BodyStateRow, ClaimRow, Effects, HandRow, LogicFx, PhysicsSettings, Unbuildable,
+    BodyKind, BodyRow, BodyStateRow, ClaimRow, Effects, HandRow, LogicFx, PhysicsSettings, PlayerRow, Unbuildable,
 };
 use pe_replica::{PeWorld, Phase, ScriptRunner, WorldModel};
 use pe_seams::{
@@ -315,6 +315,9 @@ impl WorldModel for FaultWorld {
     }
     fn claims(&self) -> Vec<ClaimRow> {
         self.inner.claims()
+    }
+    fn players(&self) -> Vec<PlayerRow> {
+        self.inner.players()
     }
     fn settings(&self) -> PhysicsSettings {
         self.inner.settings()

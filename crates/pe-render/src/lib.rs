@@ -36,6 +36,7 @@ pub mod notices;
 pub mod pacing;
 pub mod pose;
 pub mod present;
+pub mod rig;
 pub mod scene;
 pub mod window;
 

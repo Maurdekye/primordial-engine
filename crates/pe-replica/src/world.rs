@@ -183,6 +183,31 @@ pub struct HandRow {
     pub strength: f32,
 }
 
+/// A player body's row (world-model.md 8.2; the friend test's locomotion, L3): what the drive turns into the body's
+/// move each frame ([`crate::players`]), and what the view's rig and heads come from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerRow {
+    /// The body: a root at the player's feet, its hands its children. It has no `Body` row: its pe-physics player is
+    /// the replica's own, as a hand's body is.
+    pub body: ObjectId,
+    pub owner: MemberKey,
+    /// The body's world position, its feet.
+    pub feet: Pos,
+    /// The newest Move sample as the step reads it: the stick after its dead zone in steps of 1/127, the yaw it is
+    /// relative to in the rig frame and the cumulative heading (wrapping angles, 2^32 one turn, positive turning
+    /// left, 0 facing -Z).
+    pub stick: [i8; 2],
+    pub stick_yaw: u32,
+    pub heading: u32,
+    /// A jump press in this frame: the row's one-shot.
+    pub jump: bool,
+    /// The head's pose in the rig frame, and the head position the step used in the frame before.
+    pub head_pos: [f32; 3],
+    pub head_rot: [f32; 4],
+    pub prev_head: [f32; 3],
+    pub tracked: bool,
+}
+
 /// A claim (world-model.md 7.2): `hand` holds `object` since frame `since`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClaimRow {
@@ -328,6 +353,11 @@ pub trait WorldModel: Send {
     fn hands(&self) -> Vec<HandRow>;
     /// The claims, in the held objects' id order.
     fn claims(&self) -> Vec<ClaimRow>;
+    /// Every player body with its row, in id order (world-model.md 8.2): the replica walks each with the mover once a
+    /// frame, before the hands ([`crate::players`]). A model without bodies, the default, has none.
+    fn players(&self) -> Vec<PlayerRow> {
+        Vec::new()
+    }
     fn settings(&self) -> PhysicsSettings;
 
     // what the frame view draws (S5)
@@ -356,6 +386,7 @@ pub trait WorldModel: Send {
                     light: None,
                     radius: crate::replica::bounding_radius(&row.shapes),
                     hand_of: None,
+                    body_of: None,
                     held_by: None,
                     flags: ViewFlags::default(),
                     version: None,

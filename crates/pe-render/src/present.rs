@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
-use pe_seams::{AgreeEvent, FrameView, HostTime};
+use pe_seams::{AgreeEvent, FrameView, HostTime, MoveInput, RigTransform};
 
 use crate::LocalPresentation;
 use crate::camera::Camera;
@@ -33,6 +33,7 @@ use crate::display::{DisplayFrame, DisplayLayer, DisplaySettings, FrameInput, Ow
 use crate::effects::{EffectCommand, EffectGate, EffectSettings};
 use crate::notices::{Line, Notices, StatusLine};
 use crate::pacing::Quality;
+use crate::rig::RigTrack;
 use crate::scene::{Environment, FrameStats, Scene};
 
 /// How much simulated time the slot keeps for a reader that hasn't taken: about 250 ms of publications at the
@@ -135,6 +136,10 @@ pub struct Presenter {
     own_hands: Option<Arc<OwnHandsSwitch>>,
     /// At the last switch: the mode it ended, and the run's counters until then ([`Presenter::take_own_hands_window`]).
     own_hands_ended: Option<(OwnHands, RunReport)>,
+    /// The local rig of the views taken, and the one [`Presenter::drawn_rig`] resolved for the frame about to be drawn
+    /// (crate::rig; locomotion L4c).
+    rig: RigTrack,
+    drawn: Option<RigTransform>,
 }
 
 impl Presenter {
@@ -158,7 +163,42 @@ impl Presenter {
             status: None,
             own_hands: None,
             own_hands_ended: None,
+            rig: RigTrack::default(),
+            drawn: None,
         }
+    }
+
+    /// The local rig for the display frame about to be drawn over `batch` at `display_time` (render.md 7; crate::rig;
+    /// locomotion L4c): the views' rigs resolved at the rule's drawn time, between views or moved on past the newest,
+    /// then turned about the head by `local`'s heading lead while the newest view has the local player's own body. Call
+    /// it before building the frame's cameras, with the same batch and display time as [`Presenter::frame_batch`],
+    /// which then draws the own hands and their joints through it too. `local` is the move feed's newest sample, or
+    /// `None` without one. `None` before any view.
+    pub fn drawn_rig(
+        &mut self,
+        batch: &Batch,
+        display_time: HostTime,
+        local: Option<&MoveInput>,
+    ) -> Option<RigTransform> {
+        // A gap (views lost between batches, render.md 3) starts the track over (@design-reviewer's L2 on L4c).
+        if !batch.views.is_empty() && self.next.is_some_and(|n| n != batch.first) {
+            self.rig.clear();
+        }
+        for v in &batch.views {
+            self.rig.push(v);
+        }
+        if let Some(l) = batch.views.last().or(self.last.as_ref()) {
+            self.rig.push(l);
+        }
+        let rule = self.display.settings().drawn_time;
+        let rig = self.rig.resolve(rule.t_draw(display_time), rule.l_max())?;
+        let own = batch.views.last().or(self.last.as_ref()).is_some_and(|v| v.heads.iter().any(|h| h.own));
+        let rig = match local {
+            Some(m) if own => crate::rig::pivot(&rig, m),
+            _ => rig,
+        };
+        self.drawn = Some(rig);
+        Some(rig)
     }
 
     pub fn display(&self) -> &DisplayLayer {
@@ -287,6 +327,10 @@ impl Presenter {
         for v in new.iter().take(new.len().saturating_sub(1)) {
             self.display.take(v, now, &volumes);
         }
+        // The own hands and their joints are drawn through this frame's drawn rig, when the caller resolved one
+        // ([`Presenter::drawn_rig`]); else through the newest view's.
+        let rig = self.drawn.take();
+        self.display.set_drawn_rig(rig);
         let display = self.display.frame(FrameInput { view: newest, display_time: now, volumes: &volumes, local });
         let taken = self.display.take_counters();
         self.counters.display_frame(now, &taken, &display, now);
@@ -305,7 +349,7 @@ impl Presenter {
         let notices = self.notices.as_mut().map(|n| n.lines(now)).unwrap_or_default();
         let mut scene = Scene::displayed(newest, &display);
         if self.display.settings().own_hands == OwnHands::LateLatched {
-            crate::hands::draw_tracked_joints(&mut scene, newest, local);
+            crate::hands::draw_tracked_joints(&mut scene, newest, local, &rig.unwrap_or(newest.local_rig));
         }
         scene.environment = self.environment;
         let status = self.status.as_ref().and_then(|s| s.get());
@@ -335,6 +379,7 @@ mod tests {
             activations_retracted: Vec::new(),
             hits: Vec::new(),
             hits_from: None,
+            heads: Vec::new(),
         })
     }
 

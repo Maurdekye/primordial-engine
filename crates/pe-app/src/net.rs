@@ -1787,15 +1787,16 @@ mod tests {
     /// pin and says it is ready, A writes the `Admit`, E becomes final at A, and B starts agreement at E from A's start
     /// record, with E's certified root A's.
     fn cut_pair(t_join: Duration, balls: u32) -> CutPair {
+        cut_pair_on(t_join, pe_world::preset::Preset::BallPit { balls: balls as usize })
+    }
+
+    /// [`cut_pair`] on any preset.
+    fn cut_pair_on(t_join: Duration, preset: pe_world::preset::Preset) -> CutPair {
         use crate::join::{T_JOIN, joining};
         let host = crate::clock::shared();
         let a = Endpoint::bind([21; 32], loopback(), Vec::new(), true, host.clone(), None).unwrap();
         let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
-        let p = OpenParams {
-            epoch_lead: Duration::ZERO,
-            preset: pe_world::preset::Preset::BallPit { balls: balls as usize },
-            ..params()
-        };
+        let p = OpenParams { epoch_lead: Duration::ZERO, preset, ..params() };
         let Opened { session: s, invite, replies, .. } =
             a.open_alone(&p, Duration::from_secs(600), t_join, runner()).expect("A opens alone");
         let (me_a, me_b) = (s.me, b.me());
@@ -1934,6 +1935,81 @@ mod tests {
         let (on_a, on_b) = (names(&sim), names(&sim_b));
         assert!(on_b.contains(pe_world::preset::names::LAMP), "B's world names the Lamp: {} names", on_b.len());
         assert_eq!(on_a, on_b, "every name A's world shows, B's shows");
+    }
+
+    /// Locomotion L3 over real UDP on loopback, on the plane: B joins from a cut, then A walks 1.5 s and jumps once.
+    /// Every Move is a frame's entry in A's chain, so both machines step the same walk: every cut either compares
+    /// matches, both finalize past the walk with equal roots, and each machine's view has A's head well forward of
+    /// where it stood.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "release only, as a two-machine run (@coordinator-opus): run with --release"
+    )]
+    fn two_machines_on_the_plane_agree_on_a_walking_jumping_player() {
+        use crate::join::{T_JOIN, joined};
+        use std::sync::Mutex;
+        /// A stick pushed forward for 1.5 s from `start`, one press at 2 s, at rest before and after.
+        struct Walk(Mutex<Option<HostTime>>);
+        impl pe_seams::MoveFeed for Walk {
+            fn move_at(&self, at: HostTime) -> Option<pe_seams::MoveInput> {
+                let t = self.0.lock().unwrap().map(|s| at.secs_since(s));
+                let walking = t.is_some_and(|t| (0.0..1.5).contains(&t));
+                Some(pe_seams::MoveInput {
+                    sampled_at: at,
+                    stick: [0.0, if walking { 1.0 } else { 0.0 }],
+                    stick_yaw: 0.0,
+                    heading: 0,
+                    jumps: u32::from(t.is_some_and(|t| t >= 2.0)),
+                    head: pe_seams::RigPose { position: [0.0, 1.6, 0.0], orientation: [0.0, 0.0, 0.0, 1.0] },
+                    tracked: true,
+                })
+            }
+        }
+        let CutPair { host, sim, mut notices, cj, me_a, me_b } = cut_pair_on(T_JOIN, pe_world::preset::Preset::Plane);
+        let e = cj.e.at;
+        let walk = Arc::new(Walk(Mutex::new(None)));
+        let mut sim = sim.with_moves(walk.clone());
+        let (mut sim_b, slot_b, _) = joining_sim(cj, me_a, &host);
+        let mut notices_b = Vec::new();
+        let joined_ok = run_both(
+            &host,
+            [(&mut sim, &mut notices), (&mut sim_b, &mut notices_b)],
+            Duration::from_secs(40),
+            |a, b, la| la.contains(&joined(me_b)) && both_past(a, b, e),
+        );
+        assert!(joined_ok, "B joined: A's console {notices:?}; B's {notices_b:?}");
+        let head = |v: &pe_seams::FrameView| {
+            v.heads.iter().find(|h| h.member == me_a).map(|h| (h.pos - pe_seams::Pos::ORIGIN).0)
+        };
+        let start = head(&sim.published().expect("A's view")).expect("A's head in A's view");
+        *walk.0.lock().unwrap() = Some(host());
+        // The walk and the jump take 3 s; both then finalize a second past that.
+        let rate = u64::from(RATE.hz());
+        let until = sim.final_cut().expect("final").at.frame.0 + 4 * rate;
+        let done = run_both(
+            &host,
+            [(&mut sim, &mut notices), (&mut sim_b, &mut notices_b)],
+            Duration::from_secs(40),
+            |a, b, _| a.final_cut().is_some_and(|c| c.at.frame.0 >= until) && both_past(a, b, e),
+        );
+        println!("A: {:?}; B: {:?}", sim.stats(), sim_b.stats());
+        assert!(done, "both finalize past the walk: A {:?}, B {:?}", sim.final_cut(), sim_b.final_cut());
+        let st = sim.stats();
+        assert!(st.moves_sent > rate && st.moves_refused == 0, "A sent a Move a frame: {st:?}");
+        for (who, s) in [("A", &sim), ("B", &sim_b)] {
+            let c = s.diverge_counters().expect("pe-diverge");
+            assert!(c.cuts_compared > 0 && c.cuts_matched == c.cuts_compared && c.diverged == 0, "{who}: {c:?}");
+        }
+        assert_eq!(sim.final_root(), sim_b.final_root(), "equal roots at the same final cut");
+        let on_a = head(&sim.published().expect("A's view")).expect("A's head");
+        let on_b = head(&slot_b.newest().expect("B's view")).expect("A's head on B");
+        for (who, h) in [("A", on_a), ("B", on_b)] {
+            assert!(
+                start[2] - h[2] > 3.0 && (h[0] - start[0]).abs() < 0.05,
+                "{who} sees A walked forward: {h:?} from {start:?}"
+            );
+        }
     }
 
     /// A join that takes no step for `T_join` fails at A, and takes the line back once the cut is final after all

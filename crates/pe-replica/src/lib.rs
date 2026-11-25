@@ -9,6 +9,8 @@
 //! - [`ring`]: the keyframes (replica.md 4.1).
 //! - [`replica`]: the replica itself, [`ReplicaImpl`], over a [`WorldModel`] and pe-physics; [`bodies`] is its
 //!   physics glue.
+//! - [`players`]: player bodies (world-model.md 8.2), each walked by pe-physics's mover once a frame before the
+//!   hands, and the view's rig and heads drawn from them.
 //! - [`mock`]: a small world model for tests and the harness.
 //! - [`peworld`]: pe-world's `World` as the replica's [`WorldModel`], [`PeWorld`].
 
@@ -18,6 +20,7 @@ pub mod hands;
 pub mod logic;
 pub mod mock;
 pub mod peworld;
+pub mod players;
 pub mod replica;
 pub mod ring;
 pub mod world;

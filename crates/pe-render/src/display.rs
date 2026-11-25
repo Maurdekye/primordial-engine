@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use glam::{DQuat, DVec3};
-use pe_seams::{EffectKind, Frame, FrameView, Hand, HostTime, ObjectId, Pos, ViewFlags, ViewObject};
+use pe_seams::{EffectKind, Frame, FrameView, Hand, HostTime, ObjectId, Pos, RigTransform, ViewFlags, ViewObject};
 
 use crate::camera::ViewVolume;
 use crate::drawn_time::{DrawnTime, extrapolate, resolve};
@@ -306,6 +306,9 @@ pub struct DisplayLayer {
     /// Their median, clamped ([`DisplayLayer::display_period`]): computed once a display frame in `measure`, since
     /// every resolve reads it (@shader-reviewer's Low on 197fc122).
     period: Duration,
+    /// The local rig at this display frame's drawn time (crate::rig, locomotion L4c), when the caller resolved one:
+    /// the own hands are drawn through it. Else the newest view's.
+    drawn_rig: Option<RigTransform>,
 }
 
 /// How many display intervals the measured period is the median of: a median of 15 shrugs off a first frame and up
@@ -351,6 +354,7 @@ impl DisplayLayer {
             last_display: None,
             periods: VecDeque::new(),
             period: Duration::from_nanos(PERIOD_MAX_NS.unsigned_abs()),
+            drawn_rig: None,
         }
     }
 
@@ -400,6 +404,12 @@ impl DisplayLayer {
     /// switch needs nothing else: a held object follows its hand to wherever the hand is now drawn.
     pub fn set_own_hands(&mut self, own: OwnHands) {
         self.settings.own_hands = own;
+    }
+
+    /// The local rig the next frame draws the own hands through (crate::rig; locomotion L4c), or `None` for the newest
+    /// view's.
+    pub fn set_drawn_rig(&mut self, rig: Option<RigTransform>) {
+        self.drawn_rig = rig;
     }
 
     pub fn counters(&self) -> DisplayCounters {
@@ -492,7 +502,8 @@ impl DisplayLayer {
             }
             let own = is_own(o) && !self.settings.controls.correct_own;
             let pose = if is_own(o) && o.hand_of.is_some() {
-                let p = own_hand_pose(&self.settings, o, &newest, input.local).unwrap_or(target);
+                let rig = self.drawn_rig.unwrap_or(newest.local_rig);
+                let p = own_hand_pose(&self.settings, o, &rig, input.local).unwrap_or(target);
                 hand_drawn.insert(o.id, p);
                 hand_target.insert(o.id, target);
                 if own { p } else { apply(p, st.offset(now)) }
@@ -905,7 +916,7 @@ fn is_own(o: &ViewObject) -> bool {
 fn own_hand_pose(
     s: &DisplaySettings,
     o: &ViewObject,
-    view: &FrameView,
+    rig: &RigTransform,
     local: &LocalPresentation,
 ) -> Option<WorldPose> {
     if s.own_hands != OwnHands::LateLatched || !o.flags.contains(ViewFlags::OWN_HAND) {
@@ -917,5 +928,5 @@ fn own_hand_pose(
         Hand::Right => 1,
     }]
     .as_ref()?;
-    Some(rig_to_world(&view.local_rig, &h.pose))
+    Some(rig_to_world(rig, &h.pose))
 }

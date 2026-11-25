@@ -746,6 +746,9 @@ fn main() {
                     let host = pe_app::menu::AppHost::new(s.files, s.replies, console.clone());
                     Box::new(pe_app::menu::Menu::new(s.role, Box::new(host))) as Box<dyn pe_render::menu::Ui>
                 }),
+                // The move feed the drawn rig turns with (locomotion L4c): pe-xr's MoveRing once L4a/L4b wire it, the
+                // same Arc the simulation samples.
+                moves: None,
             },
         ) {
             Ok(xr) => {

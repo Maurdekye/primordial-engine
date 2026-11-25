@@ -124,7 +124,10 @@ pub trait MoveFeed: Send + Sync {
 
 // ---- the view ------------------------------------------------------------------------------------------------------
 
-/// The local player's rig in the world: an exact position, a rotation and a uniform scale (the player's scale).
+/// The local player's rig in the world: an exact position, a rotation and a uniform scale (the player's scale). The
+/// tracking space's origin: a tracked pose `p` in the rig frame is at `pos + rotation * (scale * p)` in the world. In a
+/// world whose preset gives members a player body (S5 v1.12; world-model.md 8.2), the rig follows the local member's
+/// body: at its feet, less the head's offset over the floor turned by the heading ([`FrameView::local_rig`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RigTransform {
     pub pos: Pos,
@@ -200,6 +203,10 @@ impl ViewFlags {
     /// break-away; S5 v1.9). It is drawn where it is simulated, still never corrected. Set by pe-replica, which knows
     /// each grab's place, at publication.
     pub const HELD_AWAY: ViewFlags = ViewFlags(16);
+    /// The local player's own body, or a drawn part of it (S5 v1.12, the friend test's locomotion): the first-person
+    /// view hides it, in VR and on the desktop, as the player's own head is never drawn either. Set by pe-replica on
+    /// every object whose [`ViewObject::body_of`] is the local member.
+    pub const OWN_BODY: ViewFlags = ViewFlags(32);
 
     pub fn contains(self, f: ViewFlags) -> bool {
         self.0 & f.0 == f.0
@@ -248,6 +255,11 @@ pub struct ViewObject {
     pub radius: f32,
     /// For a hand: its member, and which hand.
     pub hand_of: Option<(MemberKey, Hand)>,
+    /// For a player's body (S5 v1.12; world-model.md 8.2): its member. Set on the body's root and on each of its
+    /// children that is not a hand, such as its drawn capsule: what pe-render draws as that player's body, or hides as
+    /// [`ViewFlags::OWN_BODY`]. Such an object's velocities are the body's, from its player in the physics, so it
+    /// extrapolates with the body. `None` on everything else, and in a world without bodies.
+    pub body_of: Option<MemberKey>,
     pub held_by: Option<Holder>,
     pub flags: ViewFlags,
     /// The object's edit version, so a UI can show "changed by the agent"; `None` for an object no edit has written
@@ -527,6 +539,21 @@ pub enum Health {
     Repairing { since: Frame },
 }
 
+/// A player's head in the view (S5 v1.12; the friend test's locomotion): where its body's rig puts the head pose the
+/// player's newest Move carried.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeadView {
+    pub member: MemberKey,
+    /// The player's body object: its Move entries' target, and the root its drawn parts' `body_of` belongs to.
+    pub body: ObjectId,
+    /// The head's world pose at the view's frame: the player's rig (its body's feet, heading and head offset over the
+    /// floor) composed with the head's rig-frame pose.
+    pub pos: Pos,
+    pub rotation: [f32; 4],
+    /// The local member's head: drawn by no one, as the camera is there.
+    pub own: bool,
+}
+
 /// The frame view.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameView {
@@ -542,6 +569,11 @@ pub struct FrameView {
     pub final_frame: Option<Frame>,
     /// Whether my root agrees with the quorum's, or a repair is under way (S5 v1.5).
     pub health: Health,
+    /// The local player's rig at `frame`. In a world whose preset gives members a body (S5 v1.12), it follows the
+    /// local member's body: `pos` is the body's feet less the head's offset over the floor turned by the heading,
+    /// `rotation` the heading's turn about +Y, so the tracked head stands over the feet. Before the body exists, and in
+    /// a world without bodies, it is the identity at the origin. The rig is the simulated one, at the view's frame:
+    /// pe-render resolves it to each drawn frame's time between views (render.md 7), as it does the objects.
     pub local_rig: RigTransform,
     /// Sorted by id.
     pub objects: Vec<ViewObject>,
@@ -584,6 +616,9 @@ pub struct FrameView {
     /// that keeps hits by frame matches `hits` against its record for this range, plays only those it lacks, then
     /// replaces the record for the range with `hits`, so a hit the re-step no longer has is gone from it too.
     pub hits_from: Option<Frame>,
+    /// Every player body's head at `frame` (S5 v1.12; the friend test's locomotion), one per body in member order;
+    /// empty in a world without bodies. pe-render draws the heads not marked `own`.
+    pub heads: Vec<HeadView>,
 }
 
 impl FrameView {
