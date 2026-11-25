@@ -87,13 +87,27 @@ pub(crate) fn ball_pit_replica(
 
 /// [`ball_pit_replica`] with `fault` injected, whatever this process armed: a test gives one member a fault.
 pub(crate) fn ball_pit_replica_with(
-    mut world: World,
+    world: World,
     members: &[MemberKey],
     me: MemberKey,
     rate: SimRate,
     clock: Arc<dyn FrameClock>,
     runner: Box<dyn ScriptRunner>,
     fault: Option<Arc<Fault>>,
+) -> Result<ReplicaImpl<FaultWorld>, String> {
+    ball_pit_replica_over(world, members, me, rate, clock, runner, |w| FaultWorld::new(w, fault))
+}
+
+/// [`ball_pit_replica_with`] over the model `wrap` makes of the world: a test slows one replica
+/// ([`FaultWorld::with_slow`]).
+pub(crate) fn ball_pit_replica_over(
+    mut world: World,
+    members: &[MemberKey],
+    me: MemberKey,
+    rate: SimRate,
+    clock: Arc<dyn FrameClock>,
+    runner: Box<dyn ScriptRunner>,
+    wrap: impl FnOnce(PeWorld) -> FaultWorld,
 ) -> Result<ReplicaImpl<FaultWorld>, String> {
     if world.rate() != rate {
         return Err(format!("the ball pit runs at {:?}, the frame clock at {rate:?}", world.rate()));
@@ -111,7 +125,6 @@ pub(crate) fn ball_pit_replica_with(
     }
     let mut config = crate::genesis::replica_config(&crate::genesis::settings(), rate, clock);
     config.local = Some(me);
-    let replica = ReplicaImpl::new(FaultWorld::new(PeWorld::new(world, DomainId(0)), fault), config)
-        .map_err(|e| format!("{e:?}"))?;
+    let replica = ReplicaImpl::new(wrap(PeWorld::new(world, DomainId(0))), config).map_err(|e| format!("{e:?}"))?;
     Ok(replica.with_runner(runner))
 }

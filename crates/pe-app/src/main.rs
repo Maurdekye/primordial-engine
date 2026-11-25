@@ -148,6 +148,9 @@ struct Options {
     inject_fault_at: Option<Frame>,
     /// `--arm-fault`: the console's typed `fault` injects that test fault at the next frame.
     arm_fault: bool,
+    /// `--slow-frame <ms>`: every simulated frame waits that long, and the console's `slow <ms>` changes it
+    /// (pe_app::slowframe; K4's R3').
+    slow_frame: Option<u32>,
     /// `--hands <routine|file>`: scripted hands from the start (scripted.rs).
     hands: Option<String>,
     /// `--check-replay`: the opener keeps its final log, and the console's `replay` replays it (pe-app's `replay`).
@@ -181,6 +184,7 @@ fn options() -> Options {
         preset: None,
         inject_fault_at: None,
         arm_fault: false,
+        slow_frame: None,
         check_replay: false,
         log: None,
     };
@@ -218,6 +222,7 @@ fn options() -> Options {
                 })
             }
             "--arm-fault" => o.arm_fault = true,
+            "--slow-frame" => o.slow_frame = Some(args.next().and_then(|a| a.parse().ok()).unwrap_or_else(|| usage())),
             "--hands" => o.hands = Some(args.next().filter(|h| !h.is_empty()).unwrap_or_else(|| usage())),
             "--check-replay" => o.check_replay = true,
             "--log" => o.log = Some(args.next().filter(|p| !p.is_empty()).unwrap_or_else(|| usage()).into()),
@@ -324,6 +329,13 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
                 }
                 continue;
             }
+            if let Some(arg) = line.strip_prefix("slow").filter(|a| a.is_empty() || a.starts_with(' ')) {
+                match pe_app::slowframe::on_command(pe_app::slowframe::armed().as_deref(), arg) {
+                    Ok(said) => pe_app::out!("{said}"),
+                    Err(e) => pe_app::err!("pe-app: {e}"),
+                }
+                continue;
+            }
             // `hand-mode closed|reach` and `draw latched|simulated` (the headset test's hand feel, pe_app::handfeel).
             if let Some(said) = pe_app::handfeel::console().command(line) {
                 match said {
@@ -335,7 +347,8 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
             let Some(replies) = &replies else {
                 pe_app::err!(
                     "pe-app: `{line}` isn't a command here: `quit`, `hands <routine|file|stop>`, `spawn \
-                     box|sphere|capsule|stack [count]|clear`, `fault` (with --arm-fault), `replay` (--check-replay), \
+                     box|sphere|capsule|stack [count]|clear`, `fault` (with --arm-fault), `slow <ms>` (with --slow-frame), \
+                     `replay` (--check-replay), \
                      `hand-mode closed|reach` or `draw latched|simulated`"
                 );
                 continue;
@@ -562,6 +575,14 @@ fn main() {
             Err(e) => fail(&e),
         }
     }
+    // A deliberate slowdown on this machine only (K4's R3'), armed before any replica is made, as the fault is. It changes
+    // no state, so `--check-replay` may run with it (the replay waits too).
+    if let Some(ms) = options.slow_frame {
+        match pe_app::slowframe::arm(ms) {
+            Ok(line) => pe_app::out!("{line}"),
+            Err(e) => fail(&e),
+        }
+    }
     let networked = options.shared.is_some();
     let (vr, headless, run_for) = (options.vr, options.headless, options.run_for);
     if vr && headless {
@@ -642,6 +663,8 @@ fn main() {
     // The window's status line (render.md 8.1): a joiner's "Joining: catching up…".
     let status = Arc::new(StatusLine::default());
     let sim = sim.with_status(status.clone()).with_hand_feel(pe_app::handfeel::console()).with_moves(moves.clone());
+    // `--slow-frame` (pe_app::slowframe): the status line and the end line say so while the replica waits.
+    let sim = sim.with_slow_frame(pe_app::slowframe::armed());
     // `PE_TICK_TRACE=<file>`: a line a second and one per long tick, for a stall's phase (crate::trace). Off by default.
     let sim = match pe_app::trace::TickTrace::from_env(rate.hz()) {
         Some(Ok((trace, path))) => {
@@ -1029,7 +1052,7 @@ fn usage() -> ! {
     fail(
         "usage: pe-app [--vr | --headless] [--seconds <n>] [--open | --join <invite>] [--listen <addr>] \
          [--alone] [--advertise <addr>]... [--identity <path>] [--drawn-time present:<ms>|a:<ms>|b:<ms>] [--display-delay <ms>] [--preset ball-pit|plane] [--mcp-pipe] \
-         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--check-replay] [--hands <routine|file>] [--log <file>] \
+         [--mcp-http] [--arm-fault | --inject-fault-at <frame>] [--slow-frame <ms>] [--check-replay] [--hands <routine|file>] [--log <file>] \
          [--agent-name <name>] [--agent <command> <args>...]",
     )
 }

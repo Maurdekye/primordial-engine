@@ -279,6 +279,10 @@ pub struct SimStats {
     /// Hand poses not sent because the hand was past its body's reach (`local::body_pose`, 4 m on an axis): seconds of
     /// a tracked hand with no entry that aren't a hold (friend-test K4; the trace's `out_of_reach=`).
     pub hands_out_of_reach: u64,
+    /// The deliberate slowdown (`--slow-frame`, crate::slowframe) at the latest tick, ms a frame (0 when stopped or not
+    /// armed), and the simulated frames that waited it out so far: a run slowed on purpose says so in its end line.
+    pub slow_frame_ms: u32,
+    pub slowed_frames: u64,
     /// Frames stamp-ahead's speed test found a hand moving, so the lead shed at most one frame in 11 (app.md 3.2).
     pub moving_frames: u64,
     /// B's shown present (app.md 3, [`crate::shown`]): how far ahead of the present it ran at the latest tick, and the
@@ -540,6 +544,10 @@ pub struct Sim {
     /// shown.
     hand_feel: Option<Arc<crate::handfeel::HandFeel>>,
     hand_feel_shown: u64,
+    /// This process's deliberate slowdown, if `--slow-frame` armed one ([`Sim::with_slow_frame`]), and its wait last
+    /// shown on the status line, ms a frame (0 for none).
+    slow_frame: Option<Arc<crate::slowframe::SlowFrame>>,
+    slow_frame_shown: u32,
     /// The local player's locomotion ([`Sim::with_moves`]), and its newest sample with the stamp it was read for.
     moves: Option<Arc<dyn MoveFeed>>,
     last_move: Option<(Frame, MoveInput)>,
@@ -814,6 +822,8 @@ impl Sim {
             status_own: None,
             hand_feel: None,
             hand_feel_shown: 0,
+            slow_frame: None,
+            slow_frame_shown: 0,
             moves: None,
             last_move: None,
             catching_up: false,
@@ -1060,6 +1070,14 @@ impl Sim {
         self
     }
 
+    /// The deliberate slowdown its replica waits by (`--slow-frame`, [`crate::slowframe::armed`]): the status line
+    /// says so while it is on, and [`SimStats`] carries its wait and the frames that paid it. The replica waits by
+    /// it whether or not this is given ([`crate::fault::FaultWorld`]); this only tells.
+    pub fn with_slow_frame(mut self, slow: Option<Arc<crate::slowframe::SlowFrame>>) -> Sim {
+        self.slow_frame = slow;
+        self
+    }
+
     /// A rollback's cause, as far as this tick shows it (1.11; @coordinator-opus): the keyframe restored
     /// (`to`), how far the replica had stepped past it, the two causes S2 v1.11 reports (the frame whose entries
     /// changed, and the commit frame of my own code commit whose prediction ended), the entries agreement now holds at
@@ -1148,7 +1166,15 @@ impl Sim {
     fn show_status(&mut self) {
         if let Some(s) = &self.status {
             self.hand_feel_shown = self.hand_feel.as_ref().map_or(0, |f| f.version());
-            s.set(self.status_own.clone().or_else(|| self.hand_feel.as_ref().and_then(|f| f.status())));
+            let line = self.status_own.clone().or_else(|| self.hand_feel.as_ref().and_then(|f| f.status()));
+            // A deliberate slowdown is always on the line while it is on (crate::slowframe), so a recorded run is
+            // never taken for a really slow machine.
+            self.slow_frame_shown = self.slow_frame.as_ref().map_or(0, |s| s.ms());
+            let slowed = crate::slowframe::status(self.slow_frame_shown);
+            s.set(match (slowed, line) {
+                (Some(slowed), Some(line)) => Some(format!("{slowed} · {line}")),
+                (slowed, line) => slowed.or(line),
+            });
         }
     }
 
@@ -1205,6 +1231,10 @@ impl Sim {
         let verdict = self.slow.observe(now, lag_s);
         self.stats.lag_max_ms = (self.slow.lag_max_s * 1000.0) as u64;
         self.stats.slow_ms = self.slow.slow_ns / 1_000_000;
+        if let Some(s) = &self.slow_frame {
+            self.stats.slow_frame_ms = s.ms();
+            self.stats.slowed_frames = s.frames();
+        }
         if !self.slow.slow() {
             self.cant_resync = false;
         }
@@ -1722,6 +1752,10 @@ impl Sim {
             self.stats.hand_modes_refused += u64::from(sent.refused);
         }
         if self.hand_feel.as_ref().is_some_and(|f| f.version() != self.hand_feel_shown) {
+            self.show_status();
+        }
+        // The console's `slow <ms>` changed the deliberate slowdown: the line says so at once, even while joining.
+        if self.slow_frame.as_ref().is_some_and(|s| s.ms() != self.slow_frame_shown) {
             self.show_status();
         }
         if let (Some(l), Some(api)) = (&self.local, &self.api) {
@@ -2896,6 +2930,54 @@ pub(crate) mod tests {
         assert_eq!((s.stats().hand_modes, s.stats().hand_modes_refused), (4, 0));
         assert_eq!(modes(&s), vec![0, 0], "back to closed hand");
         assert_eq!(status.get().as_deref(), Some("Hands: closed hand · drawn at the tracked pose"));
+    }
+
+    /// `--slow-frame` ([`crate::slowframe`]) is on the status line while it is on, ahead of any other status, and in
+    /// [`SimStats`] (the end line): its wait and the frames that paid it. `slow 0` takes it down at the next tick.
+    #[test]
+    fn a_slowdown_is_on_the_status_line_and_in_the_stats_while_it_is_on() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let slow = crate::slowframe::SlowFrame::new(1).expect("1 ms");
+        let world = pe_world::preset::ball_pit(7, pe_world::BlobStore::default(), pe_seams::Pos::ORIGIN);
+        let replica = crate::world::ball_pit_replica_over(world, &[me], me, RATE, clock.clone(), runner(), |w| {
+            crate::fault::FaultWorld::new(w, None).with_slow(Some(slow.clone()))
+        })
+        .expect("pit");
+        let feel = Arc::new(crate::handfeel::HandFeel::default());
+        let status = Arc::new(pe_render::notices::StatusLine::default());
+        let agree = Box::new(SoloAgreement::new(LineId::origin()));
+        let mut s = Sim::new(agree, Box::new(replica), clock.clone(), Arc::new(FrameSlot::new()), Budget::new(RATE))
+            .with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])))
+            .with_status(status.clone())
+            .with_hand_feel(feel.clone())
+            .with_slow_frame(Some(slow.clone()));
+        let mut f = 0;
+        let mut run = |s: &mut Sim, n: u64| {
+            for _ in 0..n {
+                f += 1;
+                s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+            }
+        };
+        run(&mut s, 3);
+        let on = "Slowed on purpose: 1 ms a simulated frame (--slow-frame)";
+        assert_eq!(status.get().as_deref(), Some(on), "on the line from the first ticks");
+        let st = s.stats();
+        assert_eq!(st.slow_frame_ms, 1);
+        assert!(st.slowed_frames > 0 && st.slowed_frames <= slow.frames(), "{} of {}", st.slowed_frames, slow.frames());
+        assert!(feel.command("hand-mode reach").expect("ours").is_ok());
+        run(&mut s, 3);
+        assert_eq!(status.get(), Some(format!("{on} · Hands: always within reach · drawn at the tracked pose")));
+        assert!(crate::slowframe::on_command(Some(&slow), "0").is_ok());
+        let waited = slow.frames();
+        run(&mut s, 3);
+        assert_eq!(
+            status.get().as_deref(),
+            Some("Hands: always within reach · drawn at the tracked pose"),
+            "taken down"
+        );
+        let st = s.stats();
+        assert_eq!((st.slow_frame_ms, st.slowed_frames, slow.frames()), (0, waited, waited), "stopped: no frame waits");
     }
 
     /// Hands that are never tracked: step 2 sends no pose for them, so a test sees only the other entries.
