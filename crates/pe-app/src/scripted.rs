@@ -98,9 +98,10 @@ pub const HAND_SIZED: f32 = 0.5;
 /// How far from the rig a `reach` looks, in metres: the whole pit or the plane around a player, never the plane's
 /// templates, parked 50 m below its floor.
 pub const REACH_SPAN: f64 = 10.0;
-/// With the member's own body in the view: how far from the rig's origin across the floor a target may be, in metres.
-/// A routine moves a hand at most 1.4 m past its target (`throw`'s swing), so a hand that reached one this far stays
-/// within [`BODY_RANGE`].
+/// With the member's own body in the view: how far from the rig's origin across the floor a target may be, in metres:
+/// the spawn row (2.5 m ahead, spread across) and a little more. A routine moves a hand up to 1.4 m past its target
+/// (`throw`'s swing), so from a target past 2.5 m ahead the swing is stopped at [`BODY_RANGE`]'s edge, which is no
+/// hold; the throw still carries the swing's reported velocity (@ballpit-viz's review of ce8f9b2f).
 pub const BODY_REACH: f64 = 3.0;
 /// With the member's own body in the view: how far a hand goes from the rig's origin, across the floor and up or down,
 /// in metres. Inside pe-world's 4 m (`player::MAX_HAND_OFFSET`) on every axis, at any heading.
@@ -456,7 +457,10 @@ fn own_body(v: &FrameView) -> bool {
     v.heads.iter().any(|h| h.own)
 }
 
-/// A rig-frame point kept within [`BODY_RANGE`] of the rig's origin across the floor and up or down.
+/// A rig-frame point kept within [`BODY_RANGE`] of the rig's origin across the floor and up or down. pe-app measures a
+/// body-frame hand from the head's spot on the floor (`local::body_pose`), and for scripted hands the head stands over
+/// the rig's origin (headless, or the desktop walker's [0, 1.6, 0]); they never run in VR, where it can stand away.
+/// A turn about +Y keeps the distance across the floor, so both turned axes stay under 4 m at any heading.
 fn in_range(at: [f32; 3]) -> [f32; 3] {
     let [x, y, z] = at;
     let across = (x * x + z * z).sqrt();
