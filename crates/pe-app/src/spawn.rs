@@ -6,7 +6,10 @@
 //! - **Off the render thread:** the menu and the console only queue a job. A worker thread applies it and leaves a
 //!   one-line status for the spawn panel and the console.
 //! - **Where:** a button press gives the point in front of the head; the console's `spawn` uses a fixed point in
-//!   front of the origin. A stack goes on the floor; the rest are dropped from where they appear.
+//!   front of the origin. A stack goes on the floor; the rest are dropped from where they appear. The console's
+//!   `spawn <kind> <count>` (a self-test's way to fill the world: K4's R5', the shape limit) queues that many, each
+//!   its own job, on a grid of their own ([`grid_at`]), so a hundred never land inside each other as the console's
+//!   row of five, which repeats every 20, would put them.
 //! - **Only on the plane:** the worker looks for `/Spawned` until it finds it, every [`LOOK_AGAIN`], and again before
 //!   a job while it hasn't. A joiner's world is empty until the cut's state arrives, so a miss is never final
 //!   (@engine-architect's M1 on S4). Until it is found (and in the ball pit, always) the panel isn't shown, and a job
@@ -75,11 +78,28 @@ pub const SPAWNED: &str = "/Spawned";
 /// Deletes per transaction while clearing, and the most rounds a clear takes.
 const CLEAR_BATCH: usize = 32;
 const CLEAR_ROUNDS: usize = 16;
+/// The longest the worker waits out pe-api's change rate for one change (api.md 9.3: 20 a second, a burst of 40) before
+/// it gives up and says so: a counted spawn queues a hundred at once, and a clear of 500 is 16 changes (K4's R5', where
+/// 43 of 102 stacks were refused `rate_limited`). A quick second press of a button can meet the same limit.
+pub const RATE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+/// The longest one wait, whatever `retry_after_ms` says.
+const RATE_WAIT_MAX: std::time::Duration = std::time::Duration::from_secs(1);
 /// The in-process caller's connection: far from pe-mcp's, which count up from 1.
 const CONNECTION: ConnectionId = ConnectionId(u64::MAX - 7);
 /// Where the console's `spawn` puts a thing: 1 m in front of the origin, 0.8 m up (a stack on the floor), each one
 /// 0.3 m to the right of the last, five to a row.
 const CONSOLE_AT: [f64; 3] = [-0.6, 0.8, -1.0];
+
+/// Where the console's counted `spawn <kind> <count>` starts its grid: 3 m in front of the origin, past the single
+/// spawns' rows, 0.8 m up (a stack on the floor), [`GRID_ACROSS`] to a row [`GRID_STEP`] apart, each row
+/// [`GRID_STEP`] further ahead. A stack's boxes are 0.15 m across, so one that falls reaches its neighbours. Wide
+/// enough that all [`COUNT_MAX`] places are on the plane's 20 m floor: 18 rows, out to 8.1 m ahead (@xr-eng's L1).
+pub const GRID_AT: [f64; 3] = [-4.35, 0.8, -3.0];
+pub const GRID_STEP: f64 = 0.3;
+pub const GRID_ACROSS: u32 = 30;
+/// The most one counted `spawn` queues: the world's shape limit (pe-world `MAX_SHAPES`, world-model.md 7.1), past
+/// which every spawn is refused anyway.
+pub const COUNT_MAX: u32 = 520;
 
 /// The jobs' queue and their last status.
 pub struct Spawner {
@@ -97,6 +117,8 @@ struct State {
     pending: usize,
     /// Console spawns so far, for their row.
     console: u32,
+    /// Counted console spawns so far, for their grid; back to 0 at a Clear.
+    grid: u32,
 }
 
 static INSTALLED: OnceLock<Arc<Spawner>> = OnceLock::new();
@@ -157,23 +179,77 @@ impl Spawner {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).status.clone()
     }
 
-    /// The console's `spawn box|sphere|capsule|stack|clear` (@engine-architect); `args` follows the word.
+    /// The console's `spawn box|sphere|capsule|stack|clear` (@engine-architect), or `spawn <kind>
+    /// <count>` for that many on the grid; `args` follows the word.
     pub fn on_command(&self, args: &str) -> Result<String, String> {
         let what = args.trim();
-        let job = if what == "clear" {
-            Job::Clear
-        } else {
-            let k =
-                Kind::parse(what).ok_or_else(|| format!("`spawn {what}`: say box, sphere, capsule, stack or clear"))?;
-            let n = {
-                let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                st.console += 1;
-                st.console - 1
-            };
-            Job::Spawn(k, console_at(k, n))
+        let (jobs, said) = match parse_command(what)? {
+            Command::Clear => {
+                self.state.lock().unwrap_or_else(|e| e.into_inner()).grid = 0;
+                (vec![Job::Clear], format!("spawn {what}: queued"))
+            }
+            Command::One(k) => {
+                let n = {
+                    let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    st.console += 1;
+                    st.console - 1
+                };
+                (vec![Job::Spawn(k, console_at(k, n))], format!("spawn {what}: queued"))
+            }
+            Command::Many(k, count) => {
+                let first = {
+                    let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    st.grid += count;
+                    st.grid - count
+                };
+                let jobs = (first..first + count).map(|n| Job::Spawn(k, grid_at(k, n))).collect();
+                (jobs, format!("spawn {what}: queued {count} on the grid"))
+            }
         };
-        if self.ask(job) { Ok(format!("spawn {what}: queued")) } else { Err(self.status().unwrap_or_default()) }
+        for job in jobs {
+            if !self.ask(job) {
+                return Err(self.status().unwrap_or_default());
+            }
+        }
+        Ok(said)
     }
+}
+
+/// What the console's `spawn` was asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Clear,
+    /// One, in the console's row.
+    One(Kind),
+    /// That many, 1 to [`COUNT_MAX`], on the grid.
+    Many(Kind, u32),
+}
+
+/// The console's `spawn` arguments: `clear`, a kind, or a kind and a count.
+pub fn parse_command(what: &str) -> Result<Command, String> {
+    let words: Vec<&str> = what.split_whitespace().collect();
+    let kind =
+        |w: &str| Kind::parse(w).ok_or_else(|| format!("`spawn {what}`: say box, sphere, capsule, stack or clear"));
+    match words[..] {
+        ["clear"] => Ok(Command::Clear),
+        [w] => Ok(Command::One(kind(w)?)),
+        [w, n] => {
+            let k = kind(w)?;
+            match n.parse::<u32>() {
+                Ok(c) if (1..=COUNT_MAX).contains(&c) => Ok(Command::Many(k, c)),
+                _ => Err(format!("`spawn {what}`: a count is a whole number from 1 to {COUNT_MAX}")),
+            }
+        }
+        _ => Err(format!("`spawn {what}`: say box, sphere, capsule, stack [count] or clear")),
+    }
+}
+
+/// The counted spawn's `n`-th place: [`GRID_ACROSS`] to a row from [`GRID_AT`], [`GRID_STEP`] apart, rows going
+/// away from the origin; a stack on the floor.
+pub fn grid_at(k: Kind, n: u32) -> [f64; 3] {
+    let x = GRID_AT[0] + GRID_STEP * f64::from(n % GRID_ACROSS);
+    let z = GRID_AT[2] - GRID_STEP * f64::from(n / GRID_ACROSS);
+    [x, if k == Kind::Stack { FLOOR_GAP } else { GRID_AT[1] }, z]
 }
 
 /// The console's `n`-th spawn's place: a row of five in front of the origin, a stack on the floor.
@@ -284,7 +360,7 @@ fn work(api: &dyn WorldApi, c: &Caller, rx: &Receiver<Job>, state: &Mutex<State>
             "This world has no Spawned folder: spawning needs the plane (--preset plane)".to_string()
         } else {
             match &job {
-                Job::Spawn(k, at) => said(k.template(), api.apply(c, spawn_tx(*k, *at), &ApplyOpts::default())),
+                Job::Spawn(k, at) => said(k.template(), paced(api, c, &spawn_tx(*k, *at), &ApplyOpts::default())),
                 Job::Clear => clear(api, c),
             }
         };
@@ -336,12 +412,12 @@ fn clear_with(api: &dyn WorldApi, c: &Caller, opts: &ApplyOpts, rounds: usize) -
             break;
         }
         for batch in ids.chunks(CLEAR_BATCH) {
-            let r = api.apply(c, clear_tx(batch), opts);
+            let r = paced(api, c, &clear_tx(batch), opts);
             if accepted(&r) {
                 removed += batch.len();
             } else if is_held(&r) {
                 for id in batch {
-                    let one = api.apply(c, clear_tx(std::slice::from_ref(id)), opts);
+                    let one = paced(api, c, &clear_tx(std::slice::from_ref(id)), opts);
                     if accepted(&one) {
                         removed += 1;
                     } else if is_held(&one) {
@@ -359,6 +435,26 @@ fn clear_with(api: &dyn WorldApi, c: &Caller, opts: &ApplyOpts, rounds: usize) -
         (0, 0) => "Nothing to clear".into(),
         (n, 0) => format!("Cleared {n}"),
         (n, k) => format!("Cleared {n}, {k} held"),
+    }
+}
+
+/// `api.apply`, asked again after each `rate_limited` answer once its `retry_after_ms` (at most [`RATE_WAIT_MAX`]) has
+/// passed, for up to [`RATE_PATIENCE`]; any other answer, or the last `rate_limited`, is returned as it came.
+fn paced(
+    api: &dyn WorldApi,
+    c: &Caller,
+    tx: &Transaction,
+    opts: &ApplyOpts,
+) -> Result<Outcome, pe_seams::world_api::ApiError> {
+    let give_up = std::time::Instant::now() + RATE_PATIENCE;
+    loop {
+        match api.apply(c, tx.clone(), opts) {
+            Err(e) if e.code == pe_seams::world_api::ErrorCode::RateLimited && std::time::Instant::now() < give_up => {
+                let ms = e.details.as_ref().and_then(|d| d["retry_after_ms"].as_u64()).unwrap_or(50);
+                std::thread::sleep(std::time::Duration::from_millis(ms.max(1)).min(RATE_WAIT_MAX));
+            }
+            r => return r,
+        }
     }
 }
 
@@ -563,5 +659,62 @@ mod tests {
         assert_eq!(console_at(Kind::Box, 0), [-0.6, 0.8, -1.0]);
         assert_eq!(console_at(Kind::Stack, 6)[1], FLOOR_GAP);
         assert!((console_at(Kind::Box, 6)[2] + 1.4).abs() < 1e-9, "the second row");
+    }
+
+    /// `spawn <kind> <count>` (K4's R5', the shape limit): that many on a grid of their own, every place its own, past
+    /// the single spawns' rows; a count from 1 to the world's shape limit.
+    #[test]
+    fn a_counted_spawn_fills_a_grid_of_its_own() {
+        assert_eq!(parse_command("clear"), Ok(Command::Clear));
+        assert_eq!(parse_command("stack"), Ok(Command::One(Kind::Stack)));
+        assert_eq!(parse_command("stack 102"), Ok(Command::Many(Kind::Stack, 102)));
+        assert_eq!(parse_command("box  520"), Ok(Command::Many(Kind::Box, COUNT_MAX)));
+        for bad in ["stack 0", "stack 521", "stack x", "stack -3", "clear 3", "stack 2 3", "ball 4", ""] {
+            assert!(parse_command(bad).is_err(), "`{bad}` refused");
+        }
+        assert_eq!(grid_at(Kind::Box, 0), GRID_AT);
+        assert_eq!(grid_at(Kind::Stack, 0)[1], FLOOR_GAP);
+        // 102 stacks (510 boxes, the plane's room under 520 shapes): every place apart from the others, and from the
+        // single spawns' rows (z -1.0 to -2.2).
+        let at: Vec<[f64; 3]> = (0..102).map(|n| grid_at(Kind::Stack, n)).collect();
+        for (i, a) in at.iter().enumerate() {
+            assert!(a[2] <= -3.0 + 1e-9, "past the rows: {a:?}");
+            for b in &at[i + 1..] {
+                let d = ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+                assert!(d >= GRID_STEP - 1e-9, "{a:?} and {b:?} {d} m apart");
+            }
+        }
+        assert!((grid_at(Kind::Box, GRID_ACROSS)[2] - (GRID_AT[2] - GRID_STEP)).abs() < 1e-9, "the second row");
+        // Every place a count allows is on the plane's floor, a metre in from its edge, carried over or not
+        // (@xr-eng's L1: 10 to a row went off the floor past 240).
+        let edge = pe_world::preset::PLANE_SIDE / 2.0 - 1.0;
+        for n in 0..COUNT_MAX {
+            let [x, _, z] = grid_at(Kind::Box, n);
+            assert!(x.abs() <= edge && z.abs() <= edge, "place {n} at {x}, {z}: off the floor");
+        }
+        // The grid's last place is on the plane: the world takes a stack there.
+        let me = MemberKey([1; 32]);
+        let (api, c) = (plane_api(me, true), person(me));
+        let dry = ApplyOpts { mode: pe_seams::world_api::Mode::DryRun, ..Default::default() };
+        let o = api.apply(&c, spawn_tx(Kind::Stack, at[101]), &dry).expect("an answer");
+        assert_eq!(o.status, Status::Accepted, "{:?}", o.refusal);
+    }
+
+    /// pe-api takes 20 changes a second with a burst of 40 (api.md 9.3), dry runs too: 60 spawns asked back to back,
+    /// as a counted spawn's jobs come, are each taken once the rate allows, never refused `rate_limited` (K4's R5',
+    /// where 43 of 102 were).
+    #[test]
+    fn spawns_asked_faster_than_the_change_rate_wait_their_turn() {
+        let me = MemberKey([1; 32]);
+        let (api, c) = (plane_api(me, true), person(me));
+        let dry = ApplyOpts { mode: pe_seams::world_api::Mode::DryRun, ..Default::default() };
+        let tx = spawn_tx(Kind::Box, grid_at(Kind::Box, 0));
+        for i in 0..60 {
+            let o = paced(&*api, &c, &tx, &dry).unwrap_or_else(|e| panic!("spawn {i}: {e:?}"));
+            assert_eq!(o.status, Status::Accepted, "spawn {i}: {:?}", o.refusal);
+        }
+        // The fixture does limit: with the bucket spent, asking at once is refused.
+        let limited = |r: &Result<Outcome, pe_seams::world_api::ApiError>| matches!(r, Err(e) if e.code == pe_seams::world_api::ErrorCode::RateLimited);
+        assert!((0..10).any(|_| limited(&api.apply(&c, tx.clone(), &dry))), "asked at once, past the burst");
     }
 }

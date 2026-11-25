@@ -335,7 +335,7 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
             let Some(replies) = &replies else {
                 pe_app::err!(
                     "pe-app: `{line}` isn't a command here: `quit`, `hands <routine|file|stop>`, `spawn \
-                     box|sphere|capsule|stack|clear`, `fault` (with --arm-fault), `replay` (--check-replay), \
+                     box|sphere|capsule|stack [count]|clear`, `fault` (with --arm-fault), `replay` (--check-replay), \
                      `hand-mode closed|reach` or `draw latched|simulated`"
                 );
                 continue;

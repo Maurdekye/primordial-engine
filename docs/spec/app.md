@@ -785,7 +785,12 @@ On the plane (`--preset plane`; @item:primordial-engine/friend-test-flat-plane-g
 panel sits to the right of the menu's, turned 20 degrees toward the head, and is placed with it (crate::spawn).
 
 - **Buttons:** Box, Sphere, Capsule, Box stack and Clear, with the last result below them ("Box: spawned", "Cleared
-  2", "Box: refused (…)"). The console has the same: `spawn box|sphere|capsule|stack|clear` (@engine-architect).
+  2", "Box: refused (…)"). The console has the same: `spawn box|sphere|capsule|stack|clear` (@engine-architect). For a self-test that fills the world (K4's R5', the shape limit), `spawn <kind> <count>` queues
+  that many, each its own spawn, on a grid of their own: from 3 m in front of the origin, 30 to a row 0.3 m apart,
+  each row 0.3 m further ahead, past the single spawns' rows (which repeat every 20), so all 520 fit on the floor;
+  a count is 1 to 520, and a Clear starts the grid over. pe-api takes 20 changes a second with a burst of 40
+  (section 9.3 of api.md), so the worker waits out a `rate_limited` answer and asks again, for up to 5 s a change,
+  for every spawn and clear batch, buttons included.
 - **What a press does** (@world-model's interface): one pe-api `apply`, as this machine's member with a
   hand producer, the edit an agent or the inspector would make. A spawn is one `create` from the template under
   `/Spawned`, named as the template, its root placed relative to `world_origin`. Clear queries `/Spawned`'s children
