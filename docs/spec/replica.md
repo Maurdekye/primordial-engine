@@ -1166,6 +1166,15 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
   searches allowed, every swept body is searched again and the earlier boxes stop counting [V test: a heavy bullet
   knocks a light ball into another bullet's path back from a wall]. In M1's pit with a hundred bullets this searches
   5 more times in 600 frames than a box around them all did, and changes no state [V scratch/covered/digest-*.log].
+  A shape a search found but turned away, because the two bodies' paths didn't meet then, is looked at again when
+  either body gets a new piece (an impulse or a separation): every one found on the changed body, and every one the
+  changed body's own searches turned away whose other body has changed since [V tests: a ball knocked into a
+  bullet's path, and one knocked toward a bullet's line and met on its way back from a wall; @design-reviewer's M1
+  on a6ee56d2]. A separation counts as a deflection here: its motion along the normal can leave every box searched
+  [I, from the geometry; all 4 separations in the swept tests stayed inside one, V]. In M1's pit with a hundred
+  bullets, about 108 body pairs a frame are looked at again. With no limit on the budget, the state stays
+  bit-identical and takes 7 more queries in 600 frames. At 1024, one more sub-step runs out: 3 of 2400, with 481
+  holds against 299 [V scratch/covered/*-digest2.log].
 - **The touching rule.** A pair that starts a piece within Box3D's time-of-impact distance (resting, sliding, or just
   answered) is swept on its cores: each shape moved inward by a share of its inner size, min(half, max(a quarter,
   0.7 slop)). A sphere's or capsule's radius shrinks. A box's core is rounded: an inner box half the rest further in,
@@ -1209,14 +1218,18 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
   scatters the pile, which then sleeps: 424 bodies awake on average against 850), 3.3 ms with ten (at most 209
   queries a step, no hold), and 21.5 ms with a hundred (at most 3725 queries a step; two sub-steps ran out, 299
   holds). With no limit the hundred take 17.3 ms. A bullet fired away from the pit leaves every ball bit-identical
-  to a world without it [V scratch/ccd/far1.log; test `a_far_swept_body_leaves_the_others_bit_identical`].
+  to a world without it [V scratch/ccd/far1.log; test `a_far_swept_body_leaves_the_others_bit_identical`]. Since
+  turned-away candidates are looked at again, the hundred at 1024 spend at most 3515 queries a step, and three
+  sub-steps run out (481 holds). The times weren't measured again: the machine was too loaded (the no-bullet control
+  moved 35% between two runs) [V scratch/covered/*-digest2.log].
 - **Sleeping bodies stay put for the step.** An impact's impulse goes into the moving body at once, and into a pending
   velocity that later impacts in the step see. The pending velocity is applied once, when the island wakes at the
   step's end. A body pressing into a sleeper is held for the rest of the step.
 - **Hit events:** a sweep's impact is reported among the step's contact hit events, with a null contact id, when one
   of its shapes asks for them. pe-physics asks for them on every shape (`PhysicsWorld::hits`).
 - **Counters** (`World::swept_counters`, not hashed): pairs, slow and culled pieces, queries, impulses, touching and
-  embedded pieces, holds, exhausted sub-steps, deferred impulses, searches run again.
+  embedded pieces, holds, exhausted sub-steps, deferred impulses, searches run again, and turned-away body pairs
+  looked at again.
 - **Deterministic:** serial, in fixed orders (body ids, shape ids, pairs, the earliest time then the pair), with the
   fork's own arithmetic. The same state at 1, 2, 4 and 8 workers and after a snapshot restore [V tests]. The flag is a
   body flag in the snapshot, and nothing else crosses a step.

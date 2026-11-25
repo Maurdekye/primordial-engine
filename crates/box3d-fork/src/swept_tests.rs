@@ -854,3 +854,51 @@ fn a_bullet_deflected_after_the_reach_grew_finds_a_body_the_smaller_reach_missed
     // S and B weigh the same, so the elastic hit swaps their velocities.
     assert!(vb.x < 0.0, "B never met S: moving {vb:?}");
 }
+
+/// A swept ball C knocks an unswept ball n down from (`x`, 0.1) at about t = 0.33 and stops: all three balls weigh
+/// the same, and C's 40 m/s goes to n. C starts 5 cm above n, beyond the contact solver's reach, so the sweep makes
+/// that impact (a slop deep). n then crosses the line of a spinning bullet A at about t = 0.93. A sets off at
+/// 120 m/s along +x from the origin. A's first search found n beside its path and turned it away: n was at rest,
+/// 9 cm off A's line. Returns A and n.
+fn knocked_into_a_bullet(world: &mut World, x: f32) -> (BodyId, BodyId) {
+    let a = elastic_ball(world, pos(0.0, 0.0, 0.0), 0.01, 1.0, v3(120.0, 0.0, 0.0));
+    body_set_angular_velocity(world, a, v3(0.0, 0.0, 40.0));
+    let mut def = default_body_def();
+    def.type_ = BodyType::Dynamic;
+    def.position = pos(x, 0.1, 0.0);
+    let n = create_body(world, &def);
+    let mut shape = default_shape_def();
+    shape.density = 1.0;
+    shape.base_material.restitution = 1.0;
+    shape.base_material.friction = 0.0;
+    create_sphere_shape(world, n, &shape, &Sphere { center: VEC3_ZERO, radius: 0.01 });
+    elastic_ball(world, pos(x, 0.1 + 0.01 + 0.01 + 0.05, 0.0), 0.01, 1.0, v3(0.0, -40.0, 0.0));
+    (a, n)
+}
+
+/// One 1/240 s step: a ball knocked into a bullet's path is met (at about t = 0.9, as A nears x = 0.465), though the
+/// bullet's search turned it away and the bullet is never deflected before they meet. The ball's new piece brings
+/// the pair back.
+#[test]
+fn a_ball_knocked_into_a_bullet_s_path_is_met() {
+    let mut world = World::new(&no_gravity());
+    let (a, n) = knocked_into_a_bullet(&mut world, 0.465);
+    world.step(DT / SUB_STEPS as f32, 1);
+    let (va, vn) = (body_get_linear_velocity(&world, a), body_get_linear_velocity(&world, n));
+    // The ball comes down across the bullet's line as the bullet arrives: the hit turns the bullet downward.
+    assert!(va.y < -10.0, "the bullet passed the ball: the bullet moving {va:?}, the ball {vn:?}");
+}
+
+/// One 1/240 s step: a ball knocked toward a bullet's line is met on the bullet's way back from a wall (it turns at
+/// about t = 0.51 and meets the ball at about t = 0.9, back near x = 0.045). When the ball was knocked, the paths
+/// still didn't meet; the bullet's path back lies inside the box of its first search, so it isn't searched again.
+/// Its new piece brings the pair back, because the ball's piece changed after the search turned it away.
+#[test]
+fn a_ball_knocked_toward_a_bullet_s_line_is_met_on_its_way_back() {
+    let mut world = World::new(&no_gravity());
+    let (a, n) = knocked_into_a_bullet(&mut world, 0.045);
+    wall(&mut world, 0.26, 0.1);
+    world.step(DT / SUB_STEPS as f32, 1);
+    let (va, vn) = (body_get_linear_velocity(&world, a), body_get_linear_velocity(&world, n));
+    assert!(va.y < -10.0, "the bullet passed the ball: the bullet moving {va:?}, the ball {vn:?}");
+}
