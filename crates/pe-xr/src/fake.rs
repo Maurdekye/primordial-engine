@@ -61,6 +61,7 @@ type HandScript = Box<dyn FnMut(Hand, HostTime) -> Reading>;
 type JointScript = Box<dyn Fn(Hand, HostTime) -> Option<HandJoints>>;
 type PointerScript = Box<dyn FnMut(Hand, HostTime) -> PointerReading>;
 type MoveScript = Box<dyn FnMut(HostTime) -> crate::locomotion::MoveReading>;
+type HeadScript = Box<dyn FnMut(HostTime) -> Option<RigPose>>;
 
 pub struct FakeRuntime {
     pub calls: Vec<Call>,
@@ -85,6 +86,7 @@ pub struct FakeRuntime {
     pointer_script: PointerScript,
     /// The locomotion actions and the head at a time (`read_move`); none by default.
     move_script: MoveScript,
+    head_script: HeadScript,
     /// Extra time to add to the next frame's display time, to fake a missed frame.
     pub skip_next_ns: i64,
     /// Set by a test's renderer while it holds wrappers of the swapchain images: destroying the swapchain then is a
@@ -140,6 +142,7 @@ impl FakeRuntime {
             joint_script: Box::new(|_, _| None),
             pointer_script: Box::new(|_, _| PointerReading::default()),
             move_script: Box::new(|_| crate::locomotion::MoveReading::default()),
+            head_script: Box::new(|_| None),
             skip_next_ns: 0,
             images_held: Arc::new(AtomicBool::new(false)),
             frames: 0,
@@ -203,6 +206,12 @@ impl FakeRuntime {
     /// The locomotion actions (sticks, jump) and the head the session reads at a time.
     pub fn moves(mut self, f: impl FnMut(HostTime) -> crate::locomotion::MoveReading + 'static) -> Self {
         self.move_script = Box::new(f);
+        self
+    }
+
+    /// The head's raw pose at a time (the VIEW space located, no action sync), for a recentre's correction.
+    pub fn heads(mut self, f: impl FnMut(HostTime) -> Option<RigPose> + 'static) -> Self {
+        self.head_script = Box::new(f);
         self
     }
 
@@ -417,6 +426,11 @@ impl Backend for FakeRuntime {
             self.violate("a locomotion read before xrSyncActions this frame");
         }
         (self.move_script)(at)
+    }
+
+    fn head(&mut self, at: HostTime) -> Option<RigPose> {
+        self.need_session("a head locate");
+        (self.head_script)(at)
     }
 
     fn acquire_image(&mut self) -> Result<ImageIndex, XrError> {

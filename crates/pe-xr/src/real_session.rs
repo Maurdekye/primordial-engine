@@ -139,6 +139,8 @@ struct Live<G: xr::Graphics> {
     trackers: Option<[xr::HandTracker; 2]>,
     grip_spaces: [xr::Space; 2],
     space: xr::Space,
+    /// `space`'s type: only its changes move pe-xr's poses (spec 3.2).
+    space_kind: xr::ReferenceSpaceType,
     depth: Option<DepthChain<G>>,
     swapchain: xr::Swapchain<G>,
     stream: xr::FrameStream<G>,
@@ -401,6 +403,7 @@ impl<G: xr::Graphics> RealBackend<G> {
                 trackers,
                 grip_spaces,
                 space,
+                space_kind: kind,
                 depth,
                 swapchain,
                 stream,
@@ -608,7 +611,16 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             let mapped = match ev {
                 xr::Event::SessionStateChanged(s) => state(s.state()).map(XrEvent::StateChanged),
                 xr::Event::InstanceLossPending(_) => Some(XrEvent::InstanceLossPending),
-                xr::Event::ReferenceSpaceChangePending(_) => Some(XrEvent::ReferenceSpaceChangePending),
+                // Only a change of pe-xr's own space moves its poses (spec 3.2); a recentre of LOCAL leaves STAGE.
+                xr::Event::ReferenceSpaceChangePending(e)
+                    if self.live.as_ref().is_some_and(|l| l.space_kind == e.reference_space_type()) =>
+                {
+                    Some(XrEvent::ReferenceSpaceChangePending(crate::space::SpaceChange {
+                        // Not convertible: due at once.
+                        change_time: self.xr.to_host(e.change_time()).unwrap_or(HostTime(0)),
+                        previous: e.pose_valid().then(|| rig_pose(&e.pose_in_previous_space())),
+                    }))
+                }
                 xr::Event::InteractionProfileChanged(_) => Some(XrEvent::InteractionProfileChanged),
                 xr::Event::EventsLost(l) => Some(XrEvent::EventsLost(l.lost_event_count())),
                 // The rest: nothing pe-xr acts on; read the next.
@@ -733,6 +745,13 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
             pose_valid(loc.location_flags).then(|| rig_pose(&loc.pose))
         });
         crate::locomotion::MoveReading { stick, turn, jump, head }
+    }
+
+    fn head(&mut self, at: HostTime) -> Option<RigPose> {
+        let t = self.xr_time(at).ok()?;
+        let live = self.live.as_ref()?;
+        let loc = live.view_space.locate(&live.space, t).ok()?;
+        pose_valid(loc.location_flags).then(|| rig_pose(&loc.pose))
     }
 
     fn interaction_profiles(&self) -> Option<[String; 2]> {

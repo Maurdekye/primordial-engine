@@ -120,6 +120,12 @@ impl MoveState {
         }
     }
 
+    /// A recentre's yaw (spec 3.2), radians positive turning left: the heading takes it, in the same frame's sample as
+    /// the corrected head and hands (@coordinator-opus, condition 1).
+    pub fn turn_by(&mut self, radians: f64) {
+        self.heading = (self.heading + radians / std::f64::consts::TAU * TURN).rem_euclid(TURN);
+    }
+
     /// Focus or the session went away: the next press counts again, and the turn's time restarts. The heading and the
     /// jump count carry on, so the simulation never sees them go back.
     pub fn focus_lost(&mut self) {

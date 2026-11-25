@@ -172,8 +172,29 @@ FOCUSED, STOPPING, LOSS_PENDING and EXITING. What each state means for the engin
   an exact `WorldPos`, a rotation, and a scale, since the player's scale is unbounded. The simulation
   side applies that transform. So the precision rules for large worlds (file 17, the user's 19:23Z ruling) never
   reach pe-xr, and moving the player (locomotion, teleport, scaling) is an ordinary world change, not an XR concern.
-- **Recentring** (`XrEventDataReferenceSpaceChangePending`) moves the tracking space under the player. pe-xr bumps a
-  discontinuity counter in every hand sample (section 5.1), so a jump is never taken as a throw.
+- **Recentring** (`XrEventDataReferenceSpaceChangePending`: a recentre, a re-localisation or a chaperone edit) moves
+  the tracking space under the player, so every pose the runtime locates jumps although the player didn't move. pe-xr
+  undoes it at the source (crate::space; @item:primordial-engine/locomotion-l4a-1-pe-xr-a-vr-recentre-moves-the-r):
+  - **Which changes:** only those of pe-xr's own space's type (a recentre of LOCAL leaves STAGE where it was).
+  - **The correction** `C`, a rigid transform of the rig frame, applies to every pose pe-xr hands on: the eyes for
+    drawing, the head (5.8), the hands and their velocities (5.1), the pointers (5.7) and the joints (5.6). The
+    layer's views stay the runtime's own, since the compositor needs them in its space: only the drawn world moves.
+  - **At each change,** from the first frame whose display time is at or past its change time, with `J` the jump (a
+    pose in the new space is `J ∘ p` in the old one): `C ← RotAbout(q, -ψ) ∘ C ∘ J`, `ψ` the jump's yaw and `q` the
+    corrected head; the locomotion `heading` takes `ψ` in that frame's sample, with the corrected head and hands.
+    The simulation turns the rig about the head, so the head's world pose stays put and the body turns to line up
+    under it (@coordinator-opus, on @fable-reviewer's): the same event also comes from
+    re-localisation and chaperone edits, where turning the view would happen with no button pressed [I]. `C`
+    stays a translation. One switch (`RECENTRE_YAW`) keeps the yaw in `C` instead, so nothing turns.
+  - **`J`** is the event's `poseInPreviousSpace` when `poseValid`. Otherwise it is measured from the head, located
+    every frame (no action sync needed): the last head before the change time against the first one after, so the
+    head's world pose stays continuous. Both must be within 0.5 s of the change time [I], or the change is
+    unmeasurable: a head already in the new space (an event polled late) or one from long ago (the player walked)
+    measures nothing (@chunks-reviewer's L1). Recentres are about gravity: `J` keeps only its yaw.
+  - **Each reading takes the correction of its own locate time:** a hand read at `now`, before the change time,
+    keeps the old one (@chunks-reviewer's L2).
+  - **Unmeasurable** (no valid pose and no head on one side): the jump goes through, and pe-xr bumps the
+    discontinuity counter in every hand sample (section 5.1), so it is never taken as a throw.
 
 ### 3.3 Desktop mode, VR mode, and the switch
 
@@ -338,8 +359,8 @@ Every display frame, while input is focused, pe-xr samples both hands and publis
   them; the joints, as pe-xr reads them, do not).
 - `grip`: 0 to 1, how closed the hand is (section 5.3).
 - `closed`: the grasp state, decided on the author's machine with hysteresis (section 5.3).
-- `discontinuity`: a counter, bumped when the pose jumps for a reason other than motion: a recentre, tracking
-  reacquired after a loss, or a change of source.
+- `discontinuity`: a counter, bumped when the pose jumps for a reason other than motion: a recentre pe-xr couldn't
+  measure (section 3.2), tracking reacquired after a loss, or a change of source.
 
 A sample is published every frame, moving or still. A held hand keeps sending even when it is still (design.md 6.10,
 review SH-1; D52's coast must never run past a held hand). Dropping unchanged samples is never pe-xr's to do.
@@ -500,7 +521,7 @@ samples, and the rig follows the body (L2, L3).
   - `heading`: the wrapping heading. The turn stick, past its own dead zone, turns it at 120 degrees a second at full
     tilt [I], integrated over each display frame's time (at most 0.1 s, so a stall never spins the player). Stick
     right turns right. Smooth only: no snap turn, no vignette, no comfort options (the user's ruling, via
-    @coordinator-opus).
+    @coordinator-opus). A recentre adds its yaw (section 3.2).
   - `jumps`: the A button's press edges, counted and wrapping. A button already held at the first frame, or as
     focus returns, is adopted rather than counted (Quest's overlay selects with A; @chunks-reviewer's L1).
   - `head` and `tracked`: the head's rig-frame pose when located, else the last located one with `tracked` false.
@@ -743,7 +764,8 @@ pe-xr reports, per second and as distributions over a run:
 - the display rate the runtime gave, and session state changes;
 - frames skipped for an invalid head pose, frames closed after an error short of a loss, degraded runs, and lost
   events;
-- the hand sample's age at each read: its maximum and p99.9 (section 6.2).
+- the hand sample's age at each read: its maximum and p99.9 (section 6.2);
+- recentres, and how each was measured: by the runtime's pose, by the head, or not at all (section 3.2).
 
 ## 10. Tests
 
@@ -763,7 +785,8 @@ pe-xr's logic is written against a small backend trait, so almost all of it runs
   five). Every pe-xr limit is checked as a duration at two simulation rates. Each display frame's drawn time follows WS-render's rule (section 7.2), and the simulation's frame count is
   unchanged by the display rate.
 - **Hands:** on scripted and later recorded joint traces, `closed` never chatters; a lost hand that holds is released
-  after the grace period; a recentre bumps `discontinuity`; `hand_at` interpolates between samples, never
+  after the grace period; a recentre keeps the head and hands' world poses and turns the heading by its yaw in the same
+  sample, measured by the event's pose or the head, and bumps `discontinuity` only when it can't be measured; `hand_at` interpolates between samples, never
   extrapolates more than one display period plus the lookahead, and returns the oldest sample for a time older than
   the ring; the ring's poses and times are the display time's while the grasp follows the reading now; a released
   object leaves the hand from its last drawn pose and velocity, never from its simulated pose.

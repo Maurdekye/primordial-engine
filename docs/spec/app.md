@@ -139,6 +139,9 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
      with the hand over the 50 ms before (`THROW_PEAK_WINDOW`), so a window can be tuned with no format change;
      `SimStats::hands` counts them (`throws`).
    - The desktop hand and VR's take this one path. An agent's hand-less grab is not part of it.
+   - **A VR recentre** (xr.md 3.2, locomotion L4a.1): pe-xr keeps the head and hands where they were and gives the
+     recentre's yaw to the heading in the same frame's samples. Others see the body turn to line up under the head;
+     nothing jumps.
    - The end line counts each hand's grasps (`SimStats::hands`): its edges (`closes`, `opens`), the grabs and releases
      sent, and the grabs applied and refused by reason (`Held`, `OutOfReach`, `Cooldown`, ...), as the newest view
      tells them. The tally keeps every grab of the session, as `--check-replay` keeps every cut: small at M1's scale.
