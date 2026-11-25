@@ -22,7 +22,7 @@ Inputs: `docs/refound-plan.md` (b610464), review files 03, 11 (3.2, 3.5), 13 (Pa
 | User, D11 and Q3c | Every machine compiles every script itself; no machine runs another's build | 4, 6 |
 | User, Q3 and Q3a | A code change takes effect at one agreed frame; the owner runs it at once; others keep the old code until their own compile ends, then rewind and replay | 6 |
 | User, Q3b | A divergence over 2 s ends in a world-line merge with the main line; nobody waits | 6.4 (M2, with WS-diverge) |
-| User, QR (b), Q8; | A per-player field is its player's input, and a shared script reading it stays shared; a local script runs on its player's machine only | 7.1 (M2) |
+| User, QR (b), Q8; | A per-player field is its player's input, and a shared script reading it stays shared; its plain read is the latest value, or the field's selector; a local script runs on its player's machine only | 7.1 (M2) |
 | User, 2026-11-24 | A script is shared or local as a whole, flagged automatically; local files, devices and addresses are off by default, with reading and publishing granted separately; per-frame drawing never feeds the simulation | 7.1-7.3 (design, not built) |
 | User, file 17 answers | `Pos` cannot become numbers except as `pos - ORIGIN`; saved offsets name their reference; no warning or test, the types enforce it | 8 |
 | User, U1 | M1 contains a small logic edit authored by an agent | 10 |
@@ -1089,8 +1089,8 @@ numbers [I].
 Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v13: 2.2,
 2.4, 3, 4, 5, 6 and 8), with the user's rulings, verbatim on
 @item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe. They are design only: nothing is built,
-and building needs its own go after the friend test. Which values are shared, private or published is
-world-model.md 3.7; how a picture is drawn is render.md's.
+and building needs its own go after the friend test. Which mode a field has (synchronized, decoupled or
+desynchronized) is world-model.md 3.7; how a picture is drawn is render.md's.
 
 **A local script, as designed before 2026-11-24 for per-player systems, still behaves so:**
 
@@ -1112,25 +1112,49 @@ world-model.md 3.7; how a picture is drawn is render.md's.
 2. **Every local thing is reachable only that way:** tracking, display time, per-player values and, with the
    player's grant (7.2), the clock, devices, files and local web addresses. The one exception: a per-player
    field read by a shared script is not reached that way; it arrives as its player's input (below).
-   - **Per-player fields** (ruled, settled by @coordinator-opus), verbatim:
-     "the per-player field acts like that player's input and the script remains shared, i thought we decided that".
-     - **A shared script may read a per-player field, and it stays shared.** Reading one is not a trigger of the
-       local flag, whose triggers are `local_user` and local drawing only.
-     - **The field's value is its player's input.** When shared logic reads it, the value is published
-       automatically as that player's signed input, with no prompt, sampled on use with a
-       bounded-rate refresh (QH2 (c)): a published value of world-model.md 3.7, one per player, each fed by its
-       own player.
-     - **This is QR (b)**: the script reads each player's own value, and a local cause has a
-       shared effect for everyone, "in the same way how a player holding a local paddle hitting a ball with it
-       would cause the ball to go flying for everyone".
-     - [I, @fable-reviewer's file 21 v13, 2.2, adopted by @coordinator-opus; not the user's words]
-       **Every machine runs the script,** on the fixed step and under rollback, from the published values. Where
-       it reads a per-player field it runs once for each player with that player's value, on every machine alike.
-       Its effects are computed by everyone and are not sent. There is no player-local instance: this replaces
-       the 2026-11-07 record's reading of QR (b) (`user-design-decisions.md` 398), with the same visible result
-       (@fable-reviewer's file 21 v13, 2.2).
-     - [I] A per-player value that shared logic reads is known to every machine and stays in the record (Q4 (a):
-       per-player values are not secret). One that only private or draw code reads is never published.
+   - **Per-player fields read by scripts** (file 21 v14, 2.2). A per-player field is a decoupled or a
+     desynchronized one (world-model.md 3.7).
+     - **A shared script that reads a per-player field stays shared,** and the field acts as player input,
+       verbatim: "the per-player field acts like that player's input and the script remains shared, i thought we
+       decided that". Reading one is not a trigger of the local flag, whose triggers are
+       `local_user` and local drawing only. This is QR (b): a local cause has a shared effect for
+       everyone, "in the same way how a player holding a local paddle hitting a ball with it would cause the ball
+       to go flying for everyone".
+     - **It happens automatically,** verbatim: "scripts do need a default way of reading a field. in the name of
+       keeping scripts already shared staying shared, they should swithc to trsating the field as player input
+       automstically, no prompt or confirmation". Making a field per-player never asks the
+       author to update the scripts that read it.
+     - **The plain read returns the latest value** (ruled "1a"): the last accepted update by any
+       player, in the agreed order, with who set it.
+       - When a field becomes per-player, the latest value is the old shared value.
+       - A refresh, a retry or a read never makes an older value win again.
+       - If the player who set it leaves, the value stays and its source is marked offline (Q1 (a)).
+       - It doesn't see every change: two updates before one step leave the later one. Reacting to every press
+         needs ordered events.
+     - **A selector on the field changes what the plain read returns,** for every script at once: latest (the
+       default); any true, all true, count, sum, average, smallest, largest; or a particular player, such as the
+       wearer, holder or owner. The user's models are Resonite's ValueUserOverride and its two
+       UserOverrideGather components; [I] not checked in decompiled source.
+     - **The same reads can be written in a script:** a named player's value, a gather, each player in turn.
+       [I] "Each player in turn" is an explicit loop over the agreed list of players in a fixed order.
+     - **A shared script runs once:** every machine runs it on the fixed step and under rollback, and its plain
+       read gives the latest value or the selector's result. It doesn't run once for each player, and there is
+       no player-local instance. [I, file 21 v14, 2.2] The 2026-11-07 record of QR (b) (`user-design-decisions.md`
+       398) describes a player-local instance whose effects are sent; under these rulings that is what a local
+       script does (points 3 and 4).
+     - **One field can be read both ways,** verbatim: "one script ought to be able to read a private field and
+       reaxt privately, while another should be able to resd that same field and react shardd as though it's
+       player input". The private read is "my local value". It is a use of `local_user`, so its
+       script is local under point 1.
+     - **A desynchronized field** is never read by a shared script: such a script is refused when it is
+       committed. Only its own player's local scripts read it.
+     - **What is sent** [I, from the committee's QH2 (c) mechanism, sync-joint-decision-FINAL-v11.md 552-563]:
+       nothing while no shared script is wired to the field; nothing while the value doesn't change; a change
+       once; a continuously changing value at a bounded rate, then its final value. An idle but wired reader
+       still receives changes. Replays send nothing. All selectors cost the same except "a particular player",
+       which needs only that player's changes.
+     - [I] A decoupled value that shared logic reads is known to every machine and stays in the record (Q4 (a):
+       per-player values are not secret). One that only local or draw code reads is never published.
    - Tracking the engine supplies needs no grant: any shared script may read a player's head, hand or camera pose
      and place things in their head or hand space (ruled, against the recommendation). [I] A shared script reads
      the pose in the shared record; a draw rule reading this frame's pose makes its script local.

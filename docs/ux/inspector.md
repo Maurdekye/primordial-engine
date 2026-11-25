@@ -159,29 +159,35 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
   - **Disabled for fields physics reads**: a body's `Shape`, `Body` and `Transform`. The reason on hover: "Physics
     uses this field, so it must stay the same for everyone." [P; the exact list is the sync model's]
   - **Allowed for fields logic reads** [R: QR (b)]: "the per-player field acts like
-    that player's input and the script remains shared". A shared script reading a per-player field reads each
-    player's own value, published as that player's input, and stays shared: every machine runs it (logic.md 7.1,
-    point 2). "Like a player holding a local paddle hitting a ball".
-  - **Make per-player moves no script.** The hover on such a field says that scripts reading it use each player's
-    own value, published as their input, for example: "Scripts read each player's own value here; each player's
-    value is shared with everyone as their input." [P wording] It applies on click, with no confirmation:
-    publication is automatic and not the player's concern [R:, 2026-11-07 16:10Z], and the change
-    can be reverted from history like any other [P].
-  - **Effects can still happen once per player:** a shared script runs once for each player where it reads the
-    field, so its effects on shared state repeat per player unless the script declares them "once for the world".
-    When a script reading the field writes shared state, the menu item says so in a line of information [P].
+    that player's input and the script remains shared". A shared script reading a per-player field reads the
+    latest published value, or the field's selector's result, and stays shared: every machine runs it once
+    (logic.md 7.1, point 2). "Like a player holding a local paddle hitting a ball".
+  - **Make per-player makes the field decoupled** (the lock off, its default) **and moves no script.** The hover on
+    such a field says what scripts reading it get, for example: "Scripts here read the latest value any player
+    set; each player's value is shared with everyone as their input." [P wording] It applies on click, with no
+    confirmation [R:, "no prompt or confirmation";, 2026-11-07 16:10Z], and the
+    change can be reverted from history like any other [P].
+  - **The selector and the lock are settings on the field** (world-model.md 3.7; logic.md 7.1). The selector
+    chooses what every shared script's plain read returns: latest (the default), a gather, or a particular player.
+    The lock, "never publish this field directly", makes the field desynchronized; a shared script that reads a
+    locked field is refused when it is committed. [P: where they sit in the field menu]
   - The physics/logic split is agreed with @iter-bench (WS-logic). Per-player mode arrives in M2; nothing here is
     in the M1 slice.
 
-**Shared, private and published** (the user's rulings, 2026-11-24; file 21 v13, 2.5,
-2.7, 2.8; world-model.md 3.7; design, not built):
-- **The per-player mark stays two-state:** shared (no mark) or per-player (`⊚`).
-- **A published field carries a label** naming the player who feeds it and whether that source is live. [I] For a
-  field several players may write, the label says who wrote last; only a feed has a current source and a live mark.
+**Field modes** (the user's rulings, 2026-11-24; file 21 v14, 2.3,
+2.5, 2.7, 2.8; world-model.md 3.7; design, not built):
+- **The per-player mark stays two-state:** none for a synchronized field, `⊚` for a decoupled or a desynchronized
+  one. The hover glosses each mode in the user's words: "synchronized; field is the same for
+  every player. decoupled: field is unique per player, but the value of any particular player can still be known
+  by all players. desynchronized; field is unique per player and totally private from every other player, for
+  performance / secrecy".
+- **A decoupled field being published carries the "fed by" label,** naming the player who feeds it and whether
+  that source is live. [I] For a field several players may write, the label says who wrote last; only a feed has a
+  current source and a live mark.
 - **One mark for every outside source** (a websocket, HTTP, engine-managed secret code): a value fed by a source the
   player manages says only that it comes from outside, never which kind. The feeder's label stays beside it.
 - **A write from the inspector is a published write:** the player's signed input, subject to the field's writer
-  rules (api.md 4.2). The field stays shared.
+  rules (api.md 4.2). The field stays synchronized.
 - **Draw diagnostics** (counters, timings and faults of draw systems, logic.md 7.3, DR12) live in a local namespace
   of the inspector and never enter shared counters.
 
