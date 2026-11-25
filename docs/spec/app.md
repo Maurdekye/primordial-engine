@@ -709,6 +709,60 @@ with @fable-reviewer's refinements, and):
    M3 slice.
 4. Stop the simulation, worker, XR and network threads; flush the I/O thread; release the GPU.
 
+### 4.1 The menu (friend test, S3)
+
+The friend test (@item:primordial-engine/friend-test-xr-eng-s-slices-vr-pointers-menu-and) starts and joins sessions
+from a menu instead of the console (crate::menu, on pe-render's panels, render.md 8.2).
+
+- **Option (D)** (@coordinator-opus): pe-app is always in a session. With no session flag, a run in
+  VR or in a window opens its own (`--open`) and the menu is open from the first frame. **New session** and **Join
+  a session** don't change the running process: they ask for a relaunch and quit. The relaunch starts pe-app again
+  with this run's arguments, the session flags replaced (`--open`, or `--join <invite>`), at the very end of the old
+  run, after the graceful leave, after VR has shut down and the port is closed (Fable's condition 3). `--log`'s file
+  and the files `PE_CUT_LOG` and `PE_TICK_TRACE` name are renamed with `-r<unix seconds>`, so no log is overwritten.
+  Everything from `--agent` on is the agent's command and is copied through unchanged, after the session flags.
+  Leaving a joined session relaunches into one of its own. Started from a terminal, the new process shares the
+  console with the shell once the old one ends, so after a restart use the menu (its Paste reply), or start pe-app
+  again by hand, rather than typing a reply code into the console (@design-reviewer's note on S3).
+- **The panel** (plain, the coordinator's working default): the title, one button per row, then status lines.
+  - The opener: **Invite a friend**, **Paste reply**, **Join a session**, **New session**; its status gives the
+    invite's minutes left, or says it has expired and New session makes another.
+  - A joiner: **Copy my reply code**, **Leave (back to my own session)**; "In someone else's session".
+  - Alone: **New session**, **Join a session**.
+  - Always: **Quit** (the graceful quit, as the console's `quit`) and **Close menu**. A press's result shows as the
+    last line ("Invite copied (52 min left); also saved to ...", "That reply code was refused: ...").
+- **The code exchange**: the opener does everything in VR: Invite a friend copies the invite, Paste
+  reply hands a joiner's reply code to the same admission as the console's. The joiner's exchange is a desktop step:
+  at start its reply code is copied, saved, shown on the console and on the status line, before the headset is
+  needed. Join reads an invite the same way and relaunches only with one that decodes and hasn't expired, and never
+  with the opener's own invite, which would rejoin the session it leaves; otherwise it says why and the session
+  stays (@engine-architect's L1, @api-eng's 2). A relaunched process (`PE_RELAUNCHED=1`) waits up to 5 s for the
+  old one to let go of the UDP port before calling it in use.
+- **Copy and paste** (ruling (b)): the system clipboard through arboard (default features off;
+  Wayland through the data-control protocol, X11 otherwise), and every time also a file, `<what>.txt` in a
+  `friend-test` folder beside the identity file, with a console line giving the text and the path. The menu says
+  "copied; also saved to <path>", or "saved to <path>" when the clipboard failed. The clipboard is held for the whole
+  run, since on Linux the copying process serves it. A paste looks for the code by its prefix (`pe1:` an invite,
+  `pe1r:` a reply code): the first word on the clipboard that starts with it, else in `friend-test/paste.txt`'s lines,
+  newest first. So the file still works while the clipboard holds another program's text, and a code inside a
+  sentence is found (@design-reviewer's L1, @api-eng's 3).
+- **Opening and closing:** a controller's menu button (xr.md 5.7), the wrist button, or the window's Tab key toggles
+  it. Opening places it again ahead of the head along its level forward and a little below, facing the head (times
+  the rig's scale); it stays there until closed, or until the head is more than 1 m from where it was at the
+  placing, when it is placed again (a first frame located before the head was tracked; @design-reviewer's L3).
+  **The wrist button** ("Menu") sits on the back of
+  the left wrist while that hand is tracked, and only the right hand's pointer can click it.
+- **Aiming:** each hand's pointer in VR, the mouse ray in the window. A ray hits the nearest panel from its front;
+  its button hovers, and a click on it presses. A button shows pressed only while a ray on that panel holds its
+  select. While the menu is open, every hand's ray is drawn with a cursor at its end; closed, only a ray on the wrist
+  button is. A pointer whose ray is on a panel gives its select to the menu, so the window's left button doesn't
+  also grab through it. In VR the grasp is a separate signal (xr.md 5.7), so a menu
+  press doesn't grasp, except where the two share an input (see xr.md 5.7, "Drawing").
+- **Per drawn frame, never per tick** (the user's ruling): the panels, rays and cursors are placed each
+  rendered frame from that frame's head and hand poses (in VR, pe-xr's poses at the predicted display time), and the
+  hit test is against the panels as drawn. Only a button's action reaches the simulation, as a session change or a
+  later pe-api call (S4's spawn panel); the simulation never reads the menu.
+
 ## 5. What pe-app needs from each crate
 
 | Crate | Needs |
@@ -782,13 +836,17 @@ final cuts …", or the first final cut whose root differs, or why it couldn't r
 
 **The commands** (the M1 interim, until the configuration of section 4 replaces them):
 - A: `pe-app --vr --open --advertise <A's address>:4433`. It prints an invite, then reads B's reply code on standard
-  input.
+  input, or from the menu's Paste reply (4.1).
 - B: `pe-app --join <invite> --advertise <B's address>:4433`. It prints its reply code for A, then joins.
+
+In VR or in a window, `--open` is the default (option D, 4.1): `pe-app --vr` opens a session of its own. A headless
+run stays alone, and `--alone` keeps any run alone; `--alone` excludes `--open` and `--join`. A second pe-app on the
+same machine finds UDP 4433 taken and stops at once, saying so and naming `--listen`.
 
 `--listen` is the UDP address to bind (default `0.0.0.0:4433`). `--advertise`, which may be repeated, is the address
 the invite or the reply names. With the default listen address it is required, since `0.0.0.0` names no machine;
 between the user's machines over Tailscale it is the machine's Tailscale address. `--seconds <n>` ends a run after
-`n` seconds. Without `--open` or `--join` the world runs alone.
+`n` seconds. Without `--open` or `--join`, a headless run (or one with `--alone`) runs the world alone.
 
 **Step 7's fault** (fault.rs; @coordinator-opus). The plan's step 7
 injects a fault on B. Two runtime flags arm it, and they exclude each other. Neither is a cargo feature, so the

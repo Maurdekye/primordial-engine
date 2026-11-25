@@ -58,6 +58,9 @@ pub struct VrSink {
     shown: Option<Arc<crate::shown::DisplayLead>>,
     /// Where the run's counters go when the sink drops (`VrReport`).
     report: ReportSlot,
+    /// The menu (S3, `crate::menu`): it gets the pointers, the head and the left wrist each drawn frame, and its
+    /// panels and rays are drawn over the scene.
+    ui: Option<Box<dyn pe_render::menu::Ui>>,
 }
 
 /// What a VR run reports at its end (@coordinator-opus): the presenter's counters for
@@ -95,7 +98,14 @@ impl VrSink {
             lead_ms: Histogram::default(),
             shown: None,
             report,
+            ui: None,
         }
+    }
+
+    /// This sink drawing `ui`'s menus, aimed with the hands' pointers (xr.md 5.7).
+    pub fn with_ui(mut self, ui: Box<dyn pe_render::menu::Ui>) -> VrSink {
+        self.ui = Some(ui);
+        self
     }
 
     /// This sink sending each frame's display lead to `lead` (B, app.md 3.3), under Shown only: under any other rule
@@ -224,6 +234,31 @@ impl ViewReader {
     }
 }
 
+/// The menu's input from a headset frame (xr.md 5.7): each hand's pointer as a ray in the world, the head between
+/// the eyes, the left hand's grip pose for the wrist button, and the menu toggle.
+fn ui_input(
+    frame: &FrameRequest<'_>,
+    rig: &pe_seams::RigTransform,
+    cameras: &[pe_render::camera::Camera; 2],
+    now: HostTime,
+) -> pe_render::menu::UiInput {
+    let rays = frame
+        .pointers
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| p.map(|p| pe_render::menu::UiRay::from_rig(i, rig, &p.aim, p.pressed, p.clicks)))
+        .collect();
+    pe_render::menu::UiInput {
+        now,
+        head: pe_render::notices::head_of(cameras),
+        scale: f64::from(rig.scale),
+        rays,
+        toggled: frame.menu_toggled,
+        wrist: frame.hands[0].map(|h| pe_render::pose::rig_to_world(rig, &h)),
+        draw_rays: true,
+    }
+}
+
 /// The local player's part of a display frame: the hands pe-xr located for the runtime's predicted display time, with
 /// a tracked hand's joints for drawing it (xr.md 6, render.md 5), and as its display time `now` under Present (the
 /// engine's present, render.md 7), else that predicted time.
@@ -252,9 +287,14 @@ impl FrameSink for VrSink {
             lead.record(now, frame.timing.predicted_display_time.0.saturating_sub(now.0));
         }
         let local = local_presentation(frame, self.present.then_some(now));
-        let Some(presented) = self.presenter.frame_batch(&batch, &local, &cameras) else {
+        let Some(mut presented) = self.presenter.frame_batch(&batch, &local, &cameras) else {
             return false;
         };
+        if let Some(ui) = self.ui.as_mut() {
+            // Under the notices' strip, which is drawn last so an open menu never hides it (@ballpit-viz's L1).
+            let menu = ui.frame(&ui_input(frame, &view.local_rig, &cameras, now)).overlays;
+            presented.scene.overlays.splice(0..0, menu);
+        }
         // The console's `draw` switched where the own hands are drawn (1.10): the run's counters until now belong to the
         // mode it ended, so they go to the log, and the end report's are then the whole run (@ballpit-viz's L1).
         if let Some((ended, run)) = self.presenter.take_own_hands_window() {
@@ -505,6 +545,8 @@ pub struct Drawing {
     pub report: ReportSlot,
     /// B (app.md 3, [`crate::shown`]): where the sink sends each frame's display lead under Shown.
     pub shown: Option<Arc<crate::shown::DisplayLead>>,
+    /// The menu (S3), when there is one.
+    pub ui: Option<Box<dyn pe_render::menu::Ui>>,
 }
 
 pub fn start(
@@ -514,7 +556,7 @@ pub fn start(
     slot: Arc<FrameSlot>,
     drawing: Drawing,
 ) -> Result<XrThread, NotStarted> {
-    let Drawing { presenter, render, effects, captures, report, shown } = drawing;
+    let Drawing { presenter, render, effects, captures, report, shown, ui } = drawing;
     let parts =
         open::open_vulkan(discovery, guard, GraspConfig::default(), ring).map_err(NotStarted::NotOpened)?.into_parts();
     // Moved out one by one, so on any unwind from here they drop in reverse, in OpenXR's order: the session, then the
@@ -531,6 +573,9 @@ pub fn start(
     }
     if let Some(q) = captures {
         sink = sink.with_captures(q);
+    }
+    if let Some(ui) = ui {
+        sink = sink.with_ui(ui);
     }
     spawn_xr(session, sink).map_err(NotStarted::Thread)
 }
@@ -789,6 +834,7 @@ mod tests {
             captures: None,
             report: ReportSlot::default(),
             shown: None,
+            ui: None,
         };
         match start(&NoRuntime, &Guard::CLOSED, ring(), slot, drawing) {
             Err(NotStarted::NotOpened(NotOpened::Runtime(_))) => {}

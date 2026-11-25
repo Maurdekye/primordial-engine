@@ -466,6 +466,13 @@ each hand to aim and select. Pointers are local UI: never sent, never in a hand 
   - **Built but off:** a palm-up pinch held 0.4 s (the palm's normal within about 45 degrees of up; never while
     that hand's grasp is closed; never a click). On a Quest the OS claims a palm-facing pinch for its own menu
     (@design-reviewer's M1 on S1), so `PointerState::with_palm_menu` turns it on only for tests.
+- **Drawing** (pe-app's menu, app.md 4.1; the user's ruling): the sink places the menu, the rays and
+  the cursors each drawn frame from that frame's head and pointer poses, at the predicted display time, and tests
+  hits against what it draws. Only a button's action reaches the simulation. A press on a panel isn't withheld
+  from the hand: VR relies on the select never being the grasp. That holds on Touch and Index (trigger, squeeze). It
+  doesn't on the simple controller, whose `select/click` is also its squeeze, so a menu click there also grasps
+  what is at the hand; and a tracked hand's pinch may raise its curl [I] (@design-reviewer's L2 on S3). Passing the
+  menu's taken pointers back to the hand sampling is the fix, if the friend test needs it.
 - **Delivery:** the pointers are read every focused frame at the display time, after the hands. Each drawn frame
   gets both hands' pointers (`FrameRequest::pointers`), with the presses (`clicks`) and menu toggles
   (`menu_toggled`, any number of toggles counting as one) since the last drawn frame, so a press made in a frame that isn't drawn is never lost. Focus loss

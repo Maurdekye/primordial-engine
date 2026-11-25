@@ -224,6 +224,8 @@ impl Quit {
                 let run = move || {
                     shutdown();
                     q.finished();
+                    // The menu's restart (option D), once the quit is done.
+                    crate::menu::relaunch_if_asked();
                     std::process::exit(0)
                 };
                 if !closing {

@@ -8,6 +8,9 @@ description = "The application: threads, wiring, invites, configuration, the dem
 
 # WS-app, @engine-architect owns this crate and its manifest (docs/spec/app.md 5 lists what it needs from each crate).
 [dependencies]
+# The menu's copy and paste (friend-test S3, ruling (b)): the system clipboard, text only; Wayland
+# through the data-control protocol (KDE Plasma has it), X11 otherwise. A file is always written too.
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 pe-seams = { path = "../pe-seams", features = ["world-api"] }
 pe-world = { path = "../pe-world" }
 pe-log = { path = "../pe-log" }

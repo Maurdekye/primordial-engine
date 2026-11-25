@@ -631,6 +631,33 @@ as `Scene::overlay`, a textured quad posed in the world: in front of the camera 
 in VR. An OpenXR quad composition layer in view space (drawn by the compositor, sharper, with no second resampling)
 is the alternative for VR; that is @xr-eng's call, after the headset test.
 
+### 8.2 Menus (friend test, S3)
+
+`menu` (pure CPU, tested without a GPU) draws flat panels of buttons and tests rays against them; pe-app owns what
+the buttons do and where the panels sit (app.md 4.1).
+
+- **A panel** (`PanelSpec`: an optional title, buttons, then text lines) is a 480 px wide image at 0.75 mm per pixel
+  (0.36 m, times the rig's scale): a dark translucent box, one full-width button per row, labels centred and cut with
+  an ellipsis when too long. A disabled button is dimmed and can't be pressed. `MenuPanel` rebuilds the image only
+  when its content, its hovered button or its pressed button changes.
+- **Drawing:** each panel, ray and cursor is an `Overlay`, a textured quad posed in the world. `Scene::overlays`
+  holds any number, drawn in order after the scene's items and without the depth test, so a panel is never hidden
+  inside a wall. The menus come first and the notices' strip (section 8.1) last, so an open menu never hides a
+  notice (@ballpit-viz's L1 on S3). A ray is a thin quad from the hand to its hit,
+  turned toward the eye as far as its direction allows; the cursor is a small disc facing the eye.
+- **Hit testing** is in the panel's own plane: the quad lies in its pose's XY plane, facing +Z, and a ray hits only
+  from the front and within the quad (`hit_quad`); `button_at` maps the hit to a button.
+- **Placement helpers:** `place_in_front` (ahead of the head along its level forward, upright, facing it),
+  `place_beside` (a side panel, turned toward the head), and `wrist_place` (the back of the left wrist, from the
+  grip pose: 3.5 cm out along its +Y, 9 cm toward the wrist along its +Z).
+- **The `Ui` seam:** a caller's UI gets `UiInput` each drawn frame (the head or the camera in the world, the rig's
+  scale, every pointer's ray with its held select and clicks since the last frame, a toggle, the left wrist's pose
+  while tracked, and whether to draw rays) and returns its overlays and which pointers' presses it took. pe-app's VR
+  sink fills the rays from `FrameRequest::pointers` (xr.md 5.7); the window from the mouse (pointer 2, its ray not
+  drawn), with Tab as the toggle. A press the UI takes isn't also a grab (section 9). Whether a press is the UI's is
+  decided when it begins, on a panel or not, and kept until its release, so a held grab can sweep across a panel. Everything here runs per drawn
+  frame from the frame's own poses, never from the simulation's step (the user's ruling).
+
 ## 9. The desktop hand
 
 B has no headset (plan M1, demo step 4: "B's desktop hand, a mouse ray, does the same").
