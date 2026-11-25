@@ -1581,8 +1581,8 @@ From @fable-reviewer's analysis of draft 1 [I, not yet measured], with the user'
       8). A custom controller may author hitboxes in VR. **Ruled**: solid objects attached to a limb
       follow the agreed skeleton, so each is a collider moved each step to its anchor's agreed pose. Whether a limb
       itself is solid in the stock VR body is not ruled, though the agreed skeleton now makes it possible. The
-      avatar work grows by the solver (its milestone not placed): a pure, fixed-iteration solver on pe-core's deterministic math, with a golden
-      test on all four platforms (file 23 v4, 3.1). Unsized [I];
+      avatar work grows by the solver (its milestone not placed): a pure, fixed-iteration solver on pe-core's
+      deterministic math, with a golden test on all four platforms (file 23 v4, 3.1). Unsized [I];
     - **clips** come from glTF animations; VRM carries none. A clip plays on the skeleton it was made for: an
       avatar's or item's own clips on its own skeleton, and the stock clips on the stock skeleton. Stock clips don't
       reach other avatars in the MVP: the user forwent animation import for now (10.7 point 8, option (a)). An

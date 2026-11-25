@@ -358,9 +358,10 @@ open points R1 to R12 (section 15).
   Shared hits and grabs are then judged on the fixed step, as today. So during a correction's blend, the picture
   and the simulated pose differ by the current offset, which `visible_error_max` bounds (8). Below `E_cue` nothing
   marks it; above it the object carries the cue, so the player can see a correction is running. A grab in that time
-  is still judged at the simulated pose, and can be refused or land off by that offset. The desktop hand's ray (9, "Hit testing") reads the last drawn poses today, which are this scene while no
-  script draws; it must move to the interaction scene before any script can change a drawn pose. A click on
-  personal UI is tested against the same scene, which for an attached panel is where it is drawn.
+  is still judged at the simulated pose, and can be refused or land off by that offset. The desktop hand's ray
+  (9, "Hit testing") reads the last drawn poses today, which are this scene while no script draws; it must move to
+  the interaction scene before any script can change a drawn pose. A click on personal UI is tested against the
+  same scene, which for an attached panel is where it is drawn.
 - **DR4, the held-object rule is protected.** No draw rule can override the rule that a blocked held object is
   drawn where it is simulated (replica.md, the 5 cm / 3 cm rule; 8, D4). Beyond it there is **no general limit**
   on how far a picture may be from what is solid (ruled, "No limit, opt-in"): content may turn on "keep the
