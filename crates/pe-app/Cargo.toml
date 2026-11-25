@@ -33,6 +33,8 @@ getrandom = "0.4"
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync"] }
 # The Replica trait's `module` returns Bytes, which the phase timer's wrapper passes through (src/phases.rs).
 bytes.workspace = true
+# The spawn buttons' pe-api transactions and queries, written as the API's JSON (src/spawn.rs; S4).
+serde_json.workspace = true
 
 # The two-member test: pe-seams's test keys, and Bytes for its in-process Transport.
 [dev-dependencies]
@@ -44,7 +46,6 @@ bytes.workspace = true
 # server, as pe-mcp's own tests use it. The test also needs tokio's timers and its process pipes.
 rmcp = { version = "=3.8.0", default-features = false, features = ["client", "transport-async-rw"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "io-util", "time", "net"] }
-serde_json.workspace = true
 
 # The host clock reads CLOCK_MONOTONIC there (src/clock.rs); on Windows it reads QPC, which needs no crate.
 [target.'cfg(unix)'.dependencies]

@@ -763,6 +763,34 @@ from a menu instead of the console (crate::menu, on pe-render's panels, render.m
   hit test is against the panels as drawn. Only a button's action reaches the simulation, as a session change or a
   later pe-api call (S4's spawn panel); the simulation never reads the menu.
 
+### 4.2 The spawn panel (friend test, S4)
+
+On the plane (`--preset plane`; @item:primordial-engine/friend-test-flat-plane-genesis-preset-with-templ), a second
+panel sits to the right of the menu's, turned 20 degrees toward the head, and is placed with it (crate::spawn).
+
+- **Buttons:** Box, Sphere, Capsule, Box stack and Clear, with the last result below them ("Box: spawned", "Cleared
+  2", "Box: refused (…)"). The console has the same: `spawn box|sphere|capsule|stack|clear` (@engine-architect).
+- **What a press does** (@world-model's interface): one pe-api `apply`, as this machine's member with a
+  hand producer, the edit an agent or the inspector would make. A spawn is one `create` from the template under
+  `/Spawned`, named as the template, its root placed relative to `world_origin`. Clear queries `/Spawned`'s children
+  and deletes them, 32 to a transaction, until none are left. Clear removes everyone's spawned objects except those
+  another player is holding (@coordinator-opus's ruling (c), on @fable-reviewer's suggestion).
+  pe-world refuses a delete of something another player holds (`held`), so a refused batch is redone one object at
+  a time and the held ones stay ("Cleared 5, 1 held"); this player's own holds end with the delete. Every result is also a console line;
+  while jobs wait, the status says how many are queued.
+- **Where:** a button's spawn appears 0.5 m ahead of the head along its level forward, 0.25 m left of centre (the
+  hand aims at the panel on the right) and 0.2 m below the head, never under 0.3 m above the floor, and falls from
+  there; a stack stands on the floor 0.8 m ahead. A spot within 0.25 m of either hand is skipped for the next one
+  out (further left, further ahead, then right), since a body made overlapping a kinematic hand is pushed out hard
+  (@design-reviewer's L1). The console's go in a
+  row of five in front of the origin, 0.8 m up.
+- **Off the render thread:** the panel only queues a job; a worker thread (`pe-spawn`) applies it with pe-api's
+  default wait (until this machine has applied or refused it), so a press never costs a frame. Only the resulting
+  edit reaches the simulation (the user's ruling).
+- **Only on the plane:** the worker looks for `/Spawned` once at start. Without it (the ball pit) the panel isn't
+  shown, and `spawn` says that spawning needs the plane. [V, headless on the plane: four spawns, `Cleared 2`, then
+  `Nothing to clear`; in the pit, the refusal.]
+
 ## 5. What pe-app needs from each crate
 
 | Crate | Needs |
@@ -867,8 +895,8 @@ injects a fault on B. Two runtime flags arm it, and they exclude each other. Nei
 shipped build meets the feature policy.
 - `--arm-fault`, which the demo uses: typing `fault` and Enter in B's console fires it at the next frame B steps,
   `F`, and the console names `F`. Without the flag, `fault` is refused on any machine. Every machine's console reads
-  commands: `quit`, `hands`, `fault`, `replay`, `hand-mode` and `draw` (below), and on A also a joiner's reply code
-  (debug builds also take `panic`, the panic path's test).
+  commands: `quit`, `hands`, `spawn` (4.2), `fault`, `replay`, `hand-mode` and `draw` (below), and on A also a
+  joiner's reply code (debug builds also take `panic`, the panic path's test).
 - `--inject-fault-at <F>`: it fires at session frame `F`, fixed at start. B's console prints the frame it joined at;
   the world runs at 60 Hz.
 
