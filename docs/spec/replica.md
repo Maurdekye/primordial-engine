@@ -386,9 +386,10 @@ ceil(240 / rate) sub-steps: the user chose the proposal of 13 ("30–120 Hz (rec
   - the step caps contact stiffness at an eighth of the sub-step rate, against the world's 30 Hz (`world/step.rs`,
     `types/world.rs`): below a 240 Hz sub-step rate, contacts are softer;
   - a body turns at most 45 degrees per tick (`solver/integrate.rs`);
-  - collision runs once per tick, before the sub-steps (`world/step.rs`). Continuous collision sweeps a fast body
-    against static shapes only, unless it is a bullet (`solver/continuous.rs`). So between dynamic and kinematic
-    bodies, hands included, a lower rate lets a fast or thin body pass through another (13.2);
+  - collision runs once per tick, before the sub-steps (`world/step.rs`). Box3D's continuous collision sweeps a fast
+    body against static shapes only (`solver/continuous.rs`). So between dynamic and kinematic bodies, hands included,
+    a lower rate lets a fast or thin body pass through another (13.2), unless one of them is a bullet, which is swept
+    against everything in every sub-step (9.2);
   - sleep waits 0.5 s, a duration already (`constants.rs`).
 
 ## 4. Rollback
@@ -1107,6 +1108,77 @@ body object, the `Player` row and the Move input) is walked over the world once 
   2.6 ms, through the balls they shove. With players standing or walking beside the pit, the balls step bit for bit
   as without them (the same digest in every run), so their step times differ only by the machine's noise.
 
+### 9.2 Bullets: the sweep (box3d-fork D3)
+
+world-model.md 3.2 says what a bullet means; this is the solver's side [V `crates/box3d-fork/src/solver/swept.rs`,
+`src/swept_tests.rs`; the method @fable-reviewer's with @astra-deliberator; rulings].
+- **Where:** pe-physics turns `Body.bullet` into the fork's `swept` flag, never Box3D's own `is_bullet`. In each
+  sub-step, on worker 0 between stages:
+  - before `integrate positions`, each swept body's path box over the sub-step, widened by how far any awake body can
+    have moved since the step began, finds its candidate shapes in the static, kinematic and dynamic trees;
+  - after it, the impacts are found and answered on the motion just integrated.
+  A world with no bullet runs none of it, and steps bit-identically to one built without it.
+- **Each pair is swept by conservative advancement.** Each distance query (GJK) gives an upper bound, the witness
+  distance, and a lower bound, the point clouds' gap along a separating direction. The pair advances by the lower bound
+  over a bound on how fast any two of its points can close: the centres' relative speed plus each body's turn rate
+  times its farthest point. When the bounds disagree too much to advance, both bodies are held at that time.
+- **The earliest impact is answered first.** Both bodies move to it and take a two-body impulse at the contact point
+  (spin included), with the pair's mixed restitution (above the world's restitution threshold) and Coulomb friction.
+  Their pairs are swept again from there. A swept body deflected out of the box its search covered is searched again,
+  and every search is, when a body's reach grows past what the searches allowed.
+- **The touching rule.** A pair that starts a piece within Box3D's time-of-impact distance (resting, sliding, or just
+  answered) is swept on its cores: each shape moved inward by a share of its inner size, min(half, max(a quarter,
+  0.7 slop)). A sphere's or capsule's radius shrinks. A box's core is rounded: an inner box half the rest further in,
+  with that as its radius, so its faces sit where they would and GJK can measure how far two cores overlap.
+  - The cores are swept to a quarter slop apart, then after a graze there to touching, then after a graze or hit at
+    touching to two bands below their depth (a band: a quarter slop, or a quarter of the thinner core's half-extent).
+    That depth never passes a floor: nine tenths of the way across the thinner core, and within what GJK can
+    measure. So the shapes never pass.
+  - At the floor, a pair that approaches is answered once. One that doesn't, but could close the rest of the way
+    across the thinner core before the sub-step ends, keeps only each body's motion apart along the contact normal:
+    a translation along the distance's gradient, which never shortens it. So the contact solver's push-out goes
+    ahead. If neither body moves apart, both are held. A pair that can't close that far is left to the contact
+    solver.
+  - Each step of the advancement is the longer of two safe ones: over the pair's closing speed in any direction, and
+    over its closing speed along the contact normal, which a slide along the contact doesn't shorten.
+  - Resting and sliding contact stays the contact solver's: a resting or sliding bullet raises no sweep event and
+    moves exactly as an unflagged body does [V swept tests].
+  - Known limit [V swept tests' trace, 5cf3b36a]: a thin rod (radius 1 cm) tumbling at 50 m/s and 40 rad/s into a
+    1 cm wall takes about 25 hits in one frame. Each hit sets the depth two bands deeper, so it ends about 1 cm in
+    before the release pushes it out over the next frames. It never crosses.
+- **What costs nothing:** a pair that can't close a slop (nor the thinner core's half-extent) over the rest of the
+  sub-step can't pass through anything, so it's left to the contact solver unswept (counted `slow`): a bullet
+  resting, rolling or jostling among slow bodies. A fast partner, a paddle swinging at a resting ball, still makes
+  the pair swept. A pair whose bounding spheres never meet over the piece is proven apart without a query
+  (counted `culled`). Within a piece both centres move linearly, so that test is exact for the spheres.
+- **The budget** is 1024 distance queries per sub-step (pe-physics `SWEPT_BUDGET`, a constant of the build, passed
+  into every step). When it runs out, every body connected through candidate pairs to a pair not yet proven safe is
+  held at the set's last proven-safe time, kinematic bodies included, their velocities kept. Each hold is counted.
+  Pairs are swept one after another, so an overload that lasts holds the same set again each sub-step: at 256, 100
+  bullets in M1's pit ran out in every sub-step and the step slowed to 137 ms [V scratch/ccd/cost3.log].
+- **Cost** [V `examples/bullet_cost.rs`, release, a shared machine, three interleaved runs, 600 frames]: bullets of
+  1 cm and 50 g fired across M1's 850-ball pit at 20 to 200 m/s. The step is 2.2 ms with none, 1.1 ms with one (it
+  scatters the pile, which then sleeps: 424 bodies awake on average against 850), 3.3 ms with ten (at most 209
+  queries a step, no hold), and 21.5 ms with a hundred (at most 3725 queries a step; two sub-steps ran out, 299
+  holds). With no limit the hundred take 17.3 ms. A bullet fired away from the pit leaves every ball bit-identical
+  to a world without it [V scratch/ccd/far1.log; test `a_far_swept_body_leaves_the_others_bit_identical`].
+- **Sleeping bodies stay put for the step.** An impact's impulse goes into the moving body at once, and into a pending
+  velocity that later impacts in the step see. The pending velocity is applied once, when the island wakes at the
+  step's end. A body pressing into a sleeper is held for the rest of the step.
+- **Hit events:** a sweep's impact is reported among the step's contact hit events, with a null contact id, when one
+  of its shapes asks for them. pe-physics asks for them on every shape (`PhysicsWorld::hits`).
+- **Counters** (`World::swept_counters`, not hashed): pairs, slow and culled pieces, queries, impulses, touching and
+  embedded pieces, holds, exhausted sub-steps, deferred impulses, searches run again.
+- **Deterministic:** serial, in fixed orders (body ids, shape ids, pairs, the earliest time then the pair), with the
+  fork's own arithmetic. The same state at 1, 2, 4 and 8 workers and after a snapshot restore [V tests]. The flag is a
+  body flag in the snapshot, and nothing else crosses a step.
+- **Not yet (part 2):** meshes, height fields and compounds are neither swept nor swept against, and a hull that isn't
+  a box takes a rounded core scaled toward its centre instead of its faces moved in.
+- **Known limit** [V swept tests' trace]: a 12 cm box bullet tumbling into a 1 cm wall at 400 m/s and 200 rad/s
+  takes 35 hits in one frame, ends spinning at about 1900 rad/s with its centre still closing, and is held against
+  the wall from then on. It never crosses. Up to 150 m/s, capsules and boxes at every spin tested are free again
+  within ten frames.
+
 ## 10. A measurement owed: replayed contact impulses (file 16, 6.6)
 
 **Status: not done.** pe-physics has no read-out of contact impulses yet (9). The rest of this section is v0.2's
@@ -1272,9 +1344,10 @@ a miss in brackets):
   turns a second at 30 Hz.
 - **So 30 Hz is the lowest rate at which hands and gentle throws work.** It suits large, slow worlds: it costs half
   of 60 Hz per simulated second (13.3), and a quarter under rollback.
-- **Bullets remove this at any rate** (the control row), at the price of sweeping each fast body against dynamic
-  bodies too. Bullets are manual opt-in only, never set by the engine (world-model.md 3.2), so marking a
-  released object as a bullet while it is fast is not an option.
+- **Bullets remove this at any rate** (the control row, measured with Box3D's own bullet; the fork's sweep, 9.2, should
+  hold it too [I, to rerun]), at the price of a sweep in every sub-step against everything a bullet nears. Bullets are manual opt-in
+  only, never set by the engine (world-model.md 3.2), so marking a released object as a bullet while it
+  is fast is not an option.
 
 ### 13.3 The high bound: 120 Hz
 
