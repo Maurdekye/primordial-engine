@@ -1,6 +1,7 @@
 # Divergence and recovery (WS-diverge)
 
-Status: v1.11, 2026-11-25 (v1.11: `T_peer` 1 s and record replies under `T_join_peer`, 4.2; K4 R4').
+Status: v1.12, 2026-11-25 (v1.12: blobs and records past the reply budget are named and pulled, 4.2 step 3;
+v1.11: `T_peer` 1 s and record replies under `T_join_peer`, 4.2; K4 R4').
 v1.10, 2026-11-10. Approved as a design by @design-reviewer, after their review of v0
 (bf94698), @vdw-physics's answer on R-H1 and the coordinator's rulings of 20:40Z. v1.6 records the user's answers
 of about 19:45Z (file 14 section 8). v1.7 adds section 9.6, from the rulings of
@@ -184,8 +185,13 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
      answers `Busy` `N_busy` times in a row is rotated, so a source can't hold a repair with it. A source naming waits so long
      that `N_busy` of them outlast `W_fg` is left another way: the repair is overtaken at `W_fg` first, and the next
      starts at the next source. Leaving for `Busy` is counted apart from source faults (`busy_rotations`).
-   - **Fetch time:** a repair overtaken past `W_fg` restarts at the newest cut, so a rung-2 fetch has to finish
-     within `W_fg`. A source keeps a root it is serving past `T_keep` (F3, S2 v1.9 `Replica::set_served`): a root a
+   - **Fetch time:** a repair overtaken past `W_fg` restarts at the newest cut, so a rung-2 descent has to finish
+     within `W_fg`. Past the descent, a repair fetching records, blobs or pieces is not overtaken while its source
+     keeps serving it, for at most `T_join` from its start, the bound a source keeps a served root for; a silent
+     source still times out at `T_join_peer` (step 3) [C, option (a); V: over a 400 ms round trip a
+     ten-piece record cured at once, and was overtaken 15 times without it]. The cost: such an import can land up to
+     `T_join` behind the newest cut, so the replay after it runs that far in the foreground, a hitch deeper than
+     `W_fg` (step 5; @design-reviewer's N1 on 8e3d7086). A source keeps a root it is serving past `T_keep` (F3, S2 v1.9 `Replica::set_served`): a root a
      peer has asked for stays servable, and is named to the replica so its snapshot isn't released, while that peer
      asks again within `T_join_peer`, for at most `T_join` from its first request. A join's or a resync's fetch can
      so outlast `T_keep`. Proofs built by the requester from the nodes it already checked are M2 (@coordinator-opus).
@@ -206,6 +212,61 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
      references (`BadBlob`), and an import that lacks a small blob this machine does not have
      (`MissingBlob`). Either is the source's fault: it is left, as for a record that fails its proof, and the next
      source is asked [R @world-model].
+   - **Carried simulation blobs** (world-model.md 3.4, main 04a085d0;
+     @item:primordial-engine/simulation-blobs-travel-in-their-entry-mesh-and-h): a `SimBlobRef` field's blob of
+     257 B to 960 KiB (a mesh or a hull) travels in its entry, and `Tree::export_blobs` includes it. A record reply
+     carries it as it carries an inline blob, under the same rules, while it fits; a blob is at most `MAX_BLOB`
+     (960 KiB, pe-world's `MAX_CARRIED_BLOB`). Nothing bounds how many one record references: a script component
+     may declare its own `SimBlobRef` fields, and the tombstones table holds every delete of the last 60 s
+     [R @world-model].
+   - **What doesn't fit is named and pulled** [C, after @fable-reviewer]. Nothing a source didn't name is taken, and the requester sizes every request,
+     so its memory is one batch in flight plus what the import needs:
+     - *Blobs.* A reply carries its records' blobs, once each in ascending order of hash, while the reply stays within
+       `reply_budget` (1 MiB). It names the rest: hash, claimed length (at most `MAX_BLOB`) and the record that
+       references each. One reply's names are at most `MAX_ITEMS`, claiming at most `MAX_NAMED` (256 MiB) in all;
+       the source halves a reply past either, as it does a reply past its budget. After the records, the requester
+       pulls the named blobs (`BlobRequest`, each with the record that names it) in batches of about `reply_budget`
+       by claimed length. Each blob is checked on arrival: one asked for whose bytes hash to its name is kept, and
+       anything else is ignored.
+     - *Records past `reply_budget`* (the tombstones table can reach about 42 MB [I, @world-model]) are
+       named too, with their length and proof, and pulled in numbered pieces of `PIECE` (64 KiB) bytes, piece `i`
+       being bytes `[i PIECE, (i + 1) PIECE)` (`PieceRequest { key, first, count }`, about `reply_budget` of them
+       per request). A piece of the wrong length is the source's fault at once. A piece can't be checked alone,
+       since the leaf hash covers the whole record: the import checks the assembled record against `C`'s root with
+       its proof (`BadProof`, the source's fault). So the claimed length is what the requester buffers, and any
+       claim above `R_max` (256 MiB) is refused by the decoder. pe-world refuses any edit that would take a record
+       past the same `R_max` (world-model.md 6.6), so no honest record is refused.
+     - *The source* serves a blob only to a request naming a record whose rows reference it at that root (it calls
+       `export_blobs` for that record), so it is no fetch-by-hash server. A blob it doesn't find, or a record it no
+       longer holds, is `NotHeld`, handled as any `NotHeld`: the source is left. It keeps its last export for each
+       peer's pulls, so a record pulled in pieces or a record's blobs pulled in batches are exported once; the
+       export goes with the peer's serve (4.5a).
+     - *Waits.* Each reply that brings something asked restarts the wait, which is `T_join_peer` in a repair as in a
+       join. The import starts only once every named blob and every piece is in. Records and pieces a repair holds
+       go with it: a restart, a new source or the repair's end drops them.
+     - *Hashed blobs are kept across attempts* [C, 2]: every blob a repair hashes also goes into a
+       cache, keyed by hash, at most `R_max` bytes in all, dropped on a cure, an agreeing cut or a stop (4.3). A later
+       attempt takes a named blob from it instead of pulling it again, so a repair overtaken while pulling meshes
+       makes progress from attempt to attempt.
+     - *A total for oversize records* [C, 3]: the oversize records one repair holds claim at most
+       `R_max` in all, and so do the blobs it holds and has been named (@design-reviewer's L2 on 8e3d7086), which
+       are checked against rows only at the import. A reply past that is its source's fault, so a lying source can make the requester buffer at
+       most `R_max` of pieces before the import catches them. Assembling one record at a time would bound nothing,
+       since pe-diverge can't check a record (a leaf's hash is pe-world's) and no seam call is wanted.
+     - *A link too slow to resync* is named: after `SLOW_OVERTAKES` (3) overtaken repairs in a row that kept no new
+       blob, `link_too_slow` is counted and noted once. The player's message is pe-app's, later [C, 5].
+     - **Limits** [C, 6; I times]:
+       - Pieces aren't kept across attempts, so an oversize record must come whole within `T_join`: a 42 MB tombstones
+         table needs about 14 Mbit/s.
+       - A join's carried bytes must fit in `T_join`: about 3 MB at 1 Mbit/s.
+       - One record's blobs must fit one reply's names: at most `MAX_ITEMS` (4,096) and `MAX_NAMED` (256 MiB). A
+         record past either can't be served: the source notes the refused reply, and the requester's rung fails
+         at every source (@design-reviewer's L1 on 8e3d7086). No table's rows reference simulation blobs today
+         [I]; an object's script fields could.
+       - Skipping blobs the requester already holds is not done: it needs an S2 call to ask the replica, so a repair
+         pulls them again [C].
+       - A source exports a record's blobs, or an oversize record, once per peer and key, so a tombstones table
+         holding many meshes costs it one copy of them per pulling peer.
 4. **Patch** my state at `C` with the records (S2 `import_at_cut`). Its root must now equal `C`'s. If it does not,
    the patch is incomplete: descend again, fetching every leaf this time, at most `N_descend` times, then fail the
    rung. The replica re-simulates to the present within its budget and answers `Pending` meanwhile; pe-diverge asks
@@ -620,6 +681,8 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `repairs_stuck`, `stuck_skipped` | Times the ladder stopped (4.3); diverged final cuts compared while stopped, with no rung run | pe-diverge |
 | `evidence_skipped` | Divergences whose bundles go without replay evidence (6), once per `Cv`, and each bundle whose `C` is not the cut its evidence was extended to | pe-diverge |
 | `overtaken_in_a_row` | A gauge: repairs toward a final cut overtaken by a newer one, in a row since the last cure or agreeing cut. It tells a world too big to fetch within `W_fg` (4.2) from one unlucky repair | pe-diverge |
+| `blobs_pulled`, `pieces_pulled`, `blobs_reused` | Blobs and record pieces pulled after a record reply named them, and named blobs taken from the cache of an earlier attempt instead (4.2, step 3) | pe-diverge |
+| `link_too_slow` | Runs of three repairs overtaken in a row that kept nothing new: the link is too slow for a rung-2 repair to finish (4.2, step 3) | pe-diverge |
 | `root_splits` | Root-split episodes (distinct split cuts, not `RootSplit` events), and how each ended | pe-diverge |
 | `recasts` | Votes cast again in the pinned views of a split cut (5), at most one a view, not counting pe-diverge's revotes: with `root_splits`, roughly how many views a split episode took | pe-agree, through S3 |
 | `bundles_written` | Bundles written | pe-diverge |
@@ -1483,8 +1546,10 @@ What pe-diverge needs from pe-agree, beyond the sketch:
 - **S1:** a merge entry, as a protocol payload (M2). No "rebased from" link is needed: voided entries go into the
   merge as they are (9.3) [I].
 - **S4:** repair messages travel on the `Repair` lane. pe-diverge's messages: `NodeRequest { root, paths }`,
-  `NodeReply { root, nodes }`, `RecordRequest { root, ids }`, `RecordReply { root, records, blobs }` (wire version
-  2; each blob at most 256 B). Unsigned: every reply is checked by hash.
+  `NodeReply { root, nodes }`, `RecordRequest { root, ids }`, `RecordReply { root, records, large, blobs, named }`,
+  `BlobRequest { root, wants }`, `BlobReply { root, blobs }`, `PieceRequest { root, key, first, count }`,
+  `PieceReply { root, key, first, pieces }` (wire version 3; each blob at most 960 KiB, each piece 64 KiB, each
+  named record at most `R_max`, 4.2 step 3). Unsigned: every reply is checked by hash.
 - **S5:** per object, a `corrected` flag or offset (D2), whether the local player holds it (D4), and effect events
   with stable keys and a retracted list (D6).
 
@@ -1586,6 +1651,8 @@ mid-session never moves a bound that is already running [design-reviewer].
 | `T_join_peer` | A join's wait for its source (4.5), and the least time before a donor serves one peer the same physics image again | 5 s [V: the two-process demo joined with it, @engine-architect] |
 | `T_join` | A join's deadline from its start: until then its sources are asked again in turn (4.5) | 25 s, inside pe-app's 30 s `T_join` step (app.md 4) |
 | `N_descend` | Descents per rung-2 attempt | 3 |
+| `R_max` | Longest record a reply may name for pulling in pieces; a longer claim is refused (4.2, step 3) | 256 MiB, pe-world's `tree::MAX_RECORD_BYTES` (main 9f08c826; a test keeps them equal) [C] |
+| `PIECE` | One piece of a record pulled in pieces | 64 KiB (`R_max` is 4,096 pieces, one request's `MAX_ITEMS`) |
 | `B_serve`, `R_serve` | Serving budget per peer: burst and refill | 8 MiB; 4 MiB/s |
 | `N_busy`, `T_busy` | `Busy` answers in a row before a source is rotated; longest wait one can ask for | 4; 1 s |
 | `T_recur`, `N_recur_max` | Time within which a repeat counts; repeats before the event | 1.5 s; 3 |

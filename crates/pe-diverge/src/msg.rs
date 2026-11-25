@@ -9,16 +9,30 @@ use pe_seams::{
     CutRef, DomainId, Frame, Hash, LeafKey, LineId, Nibbles, Node, ObjectId, PhysicsImage, Record, TreePath,
 };
 
-/// 2: a record reply carries the inline blobs its records' rows reference (inline blobs phase 3b).
-const VERSION: u8 = 2;
+/// 2: a record reply carries the inline blobs its records' rows reference (inline blobs phase 3b). 3: blobs up to
+/// [`MAX_BLOB`]; what does not fit a reply is named in it and pulled: blobs by hash, records over the reply budget in
+/// numbered pieces (divergence.md 4.2, step 3; @coordinator-opus).
+const VERSION: u8 = 3;
 /// Most items in one message.
 pub const MAX_ITEMS: usize = 4096;
 /// Most children of one trie node: one per nibble.
 pub const MAX_CHILDREN: usize = 16;
-/// Largest record.
+/// Largest record a reply carries whole. A source sends whole only records within its reply budget (1 MiB by
+/// default), and names a longer one ([`Large`]) for the requester to pull in pieces.
 pub const MAX_RECORD: usize = 16 << 20;
-/// Largest inline blob: the inline class is 1 to 256 bytes (world-model.md 3.4).
-pub const MAX_INLINE_BLOB: usize = 256;
+/// Longest record a name may claim: `R_max` (divergence.md 4.2). A piece can't be checked until the whole record is
+/// assembled, so the claimed length is what the requester would buffer; pe-world refuses any edit that would take a
+/// record past the same number (world-model.md 6.6, @coordinator-opus).
+pub const R_MAX: usize = 256 << 20;
+/// One piece of a pulled record: piece `i` is the record's bytes `[i * PIECE, (i + 1) * PIECE)`, the last one shorter.
+pub const PIECE: usize = 64 << 10;
+/// Largest blob: an inline blob (1 to 256 bytes) or a carried simulation blob (257 bytes to 960 KiB, a `SimBlobRef`
+/// field's mesh or hull; world-model.md 3.4). pe-world's `inline::MAX_CARRIED_BLOB`, which pe-diverge (sans-IO, over
+/// pe-seams only) doesn't depend on; a test keeps the two equal.
+pub const MAX_BLOB: usize = 960 * 1024;
+/// Most bytes the blobs one record reply names may claim in all. The names are the source's unchecked claim until the
+/// blobs arrive and hash, and the requester pulls what they name.
+pub const MAX_NAMED: usize = R_MAX;
 /// Largest physics image (about 2.5 kB per body before compression [V file 02]: room for 25,000 bodies).
 pub const MAX_IMAGE: usize = 64 << 20;
 
@@ -43,9 +57,40 @@ pub enum Msg {
         cut: CutRef,
         root: Hash,
         records: Vec<Record>,
-        /// The inline-class blobs these records' rows reference, as far as the sender has them (S2 v1.8
-        /// `Tree::export_blobs`). Unchecked here: the importing replica checks each against the rows it imports.
+        /// Records too long to carry: each named with its length and proof, pulled with [`Msg::PieceRequest`].
+        large: Vec<Large>,
+        /// Blobs these records' rows reference, as far as the sender has them (S2 v1.8 `Tree::export_blobs`), and as
+        /// many as fit the reply. Unchecked here: the importing replica checks each against the rows it imports.
         blobs: Vec<Bytes>,
+        /// The rest of those blobs, named, to be pulled with [`Msg::BlobRequest`].
+        named: Vec<Named>,
+    },
+    /// Blobs a record reply named: each with the record that references it, which the source checks.
+    BlobRequest {
+        cut: CutRef,
+        root: Hash,
+        wants: Vec<(LeafKey, Hash)>,
+    },
+    BlobReply {
+        cut: CutRef,
+        root: Hash,
+        blobs: Vec<Bytes>,
+    },
+    /// Pieces `first..first + count` of a record a reply named as [`Large`].
+    PieceRequest {
+        cut: CutRef,
+        root: Hash,
+        key: LeafKey,
+        first: u32,
+        count: u32,
+    },
+    /// Pieces `first..` of a record, in order: each [`PIECE`] long but the record's last.
+    PieceReply {
+        cut: CutRef,
+        root: Hash,
+        key: LeafKey,
+        first: u32,
+        pieces: Vec<Bytes>,
     },
     PhysicsRequest {
         cut: CutRef,
@@ -69,6 +114,36 @@ pub enum Msg {
         root: Hash,
         retry_after_us: u64,
     },
+}
+
+/// A record a reply names instead of carrying: its bytes are pulled in pieces, and checked against the target root,
+/// with this proof, only once assembled (by the importing replica).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Large {
+    pub key: LeafKey,
+    /// The record's length: claimed, at most [`R_MAX`].
+    pub len: usize,
+    pub proof: Vec<Node>,
+}
+
+/// A blob a reply names instead of carrying.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Named {
+    /// The record whose rows reference it.
+    pub key: LeafKey,
+    pub hash: Hash,
+    /// Its length: claimed, at most [`MAX_BLOB`]. The requester sizes its requests by it.
+    pub len: usize,
+}
+
+/// The number of pieces a record of `len` bytes is pulled in.
+pub fn pieces_of(len: usize) -> usize {
+    len.div_ceil(PIECE)
+}
+
+/// The length of piece `i` of a record of `len` bytes (0 past its last).
+pub fn piece_len(len: usize, i: usize) -> usize {
+    len.saturating_sub(i.saturating_mul(PIECE)).min(PIECE)
 }
 
 /// Why a message was not encoded: something in it is over a limit, which the receiver's decoder would refuse.
@@ -97,6 +172,10 @@ impl Msg {
             | Msg::NodeReply { cut, root, .. }
             | Msg::RecordRequest { cut, root, .. }
             | Msg::RecordReply { cut, root, .. }
+            | Msg::BlobRequest { cut, root, .. }
+            | Msg::BlobReply { cut, root, .. }
+            | Msg::PieceRequest { cut, root, .. }
+            | Msg::PieceReply { cut, root, .. }
             | Msg::PhysicsRequest { cut, root }
             | Msg::PhysicsReply { cut, root, .. }
             | Msg::NotHeld { cut, root }
@@ -116,6 +195,10 @@ impl Msg {
             Msg::PhysicsReply { .. } => 5,
             Msg::NotHeld { .. } => 6,
             Msg::Busy { .. } => 7,
+            Msg::BlobRequest { .. } => 8,
+            Msg::BlobReply { .. } => 9,
+            Msg::PieceRequest { .. } => 10,
+            Msg::PieceReply { .. } => 11,
         });
         put_cut(&mut w, &cut);
         w.extend_from_slice(&root.0);
@@ -139,18 +222,57 @@ impl Msg {
                     put_key(&mut w, k);
                 }
             }
-            Msg::RecordReply { records, blobs, .. } => {
+            Msg::RecordReply { records, large, blobs, named, .. } => {
                 put_count(&mut w, records.len())?;
                 for r in records {
                     put_record(&mut w, r)?;
                 }
-                put_count(&mut w, blobs.len())?;
-                for b in blobs {
-                    if b.len() > MAX_INLINE_BLOB {
+                put_count(&mut w, large.len())?;
+                for l in large {
+                    if l.len == 0 || l.len > R_MAX {
                         return Err(EncodeError::TooLong);
                     }
-                    put_bytes(&mut w, b);
+                    put_key(&mut w, &l.key);
+                    w.extend_from_slice(&(l.len as u32).to_le_bytes());
+                    put_count(&mut w, l.proof.len())?;
+                    for n in &l.proof {
+                        put_node(&mut w, n)?;
+                    }
                 }
+                put_blobs(&mut w, blobs, MAX_BLOB)?;
+                put_count(&mut w, named.len())?;
+                if named.iter().map(|n| n.len).sum::<usize>() > MAX_NAMED {
+                    return Err(EncodeError::TooLong);
+                }
+                for n in named {
+                    if n.len == 0 || n.len > MAX_BLOB {
+                        return Err(EncodeError::TooLong);
+                    }
+                    put_key(&mut w, &n.key);
+                    w.extend_from_slice(&n.hash.0);
+                    w.extend_from_slice(&(n.len as u32).to_le_bytes());
+                }
+            }
+            Msg::BlobRequest { wants, .. } => {
+                put_count(&mut w, wants.len())?;
+                for (k, h) in wants {
+                    put_key(&mut w, k);
+                    w.extend_from_slice(&h.0);
+                }
+            }
+            Msg::BlobReply { blobs, .. } => put_blobs(&mut w, blobs, MAX_BLOB)?,
+            Msg::PieceRequest { key, first, count, .. } => {
+                if *count as usize > MAX_ITEMS {
+                    return Err(EncodeError::TooMany);
+                }
+                put_key(&mut w, key);
+                w.extend_from_slice(&first.to_le_bytes());
+                w.extend_from_slice(&count.to_le_bytes());
+            }
+            Msg::PieceReply { key, first, pieces, .. } => {
+                put_key(&mut w, key);
+                w.extend_from_slice(&first.to_le_bytes());
+                put_blobs(&mut w, pieces, PIECE)?;
             }
             Msg::PhysicsReply { image, .. } => {
                 if image.bytes.len() > MAX_IMAGE {
@@ -206,13 +328,52 @@ impl Msg {
                 for _ in 0..n {
                     records.push(r.record()?);
                 }
-                let n = r.count(4)?; // a blob's length
-                let mut blobs = Vec::with_capacity(n);
+                let n = r.count(1 + 4 + 2)?; // key, length, proof count
+                let mut large = Vec::with_capacity(n);
                 for _ in 0..n {
-                    blobs.push(r.bytes(MAX_INLINE_BLOB)?);
+                    let key = r.key()?;
+                    let len = r.u32()?;
+                    if len == 0 || len > R_MAX {
+                        return Err(DecodeError::TooLong);
+                    }
+                    let m = r.count(1)?;
+                    let mut proof = Vec::with_capacity(m);
+                    for _ in 0..m {
+                        proof.push(r.node()?);
+                    }
+                    large.push(Large { key, len, proof });
                 }
-                Msg::RecordReply { cut, root, records, blobs }
+                let blobs = r.blobs(MAX_BLOB)?;
+                let n = r.count(1 + 32 + 4)?; // key, hash, length
+                let mut named = Vec::with_capacity(n);
+                let mut total = 0usize;
+                for _ in 0..n {
+                    let (key, hash, len) = (r.key()?, r.hash()?, r.u32()?);
+                    total += len;
+                    if len == 0 || len > MAX_BLOB || total > MAX_NAMED {
+                        return Err(DecodeError::TooLong);
+                    }
+                    named.push(Named { key, hash, len });
+                }
+                Msg::RecordReply { cut, root, records, large, blobs, named }
             }
+            8 => {
+                let n = r.count(1 + 32)?; // key, hash
+                let mut wants = Vec::with_capacity(n);
+                for _ in 0..n {
+                    wants.push((r.key()?, r.hash()?));
+                }
+                Msg::BlobRequest { cut, root, wants }
+            }
+            9 => Msg::BlobReply { cut, root, blobs: r.blobs(MAX_BLOB)? },
+            10 => {
+                let (key, first, count) = (r.key()?, r.u32()? as u32, r.u32()? as u32);
+                if count as usize > MAX_ITEMS {
+                    return Err(DecodeError::TooMany);
+                }
+                Msg::PieceRequest { cut, root, key, first, count }
+            }
+            11 => Msg::PieceReply { cut, root, key: r.key()?, first: r.u32()? as u32, pieces: r.blobs(PIECE)? },
             4 => Msg::PhysicsRequest { cut, root },
             5 => {
                 let domain = DomainId(r.u64()?);
@@ -233,6 +394,18 @@ impl Msg {
 }
 
 // ---- writing: the ladder never builds more than the limits allow; anything over a limit is refused -------------
+
+/// A count, then each blob with its length, each at most `max` bytes.
+fn put_blobs(w: &mut Vec<u8>, blobs: &[Bytes], max: usize) -> Result<(), EncodeError> {
+    put_count(w, blobs.len())?;
+    for b in blobs {
+        if b.len() > max {
+            return Err(EncodeError::TooLong);
+        }
+        put_bytes(w, b);
+    }
+    Ok(())
+}
 
 fn put_count(w: &mut Vec<u8>, n: usize) -> Result<(), EncodeError> {
     if n > MAX_ITEMS {
@@ -384,10 +557,18 @@ pub fn record_size(r: &Record) -> usize {
     17 + 4 + r.bytes.len() + 2 + r.proof.iter().map(node_size).sum::<usize>()
 }
 
-/// An inline blob's encoded size in a record reply: its length prefix and its bytes.
+/// A blob's (or a piece's) encoded size in a reply: its length prefix and its bytes.
 pub fn blob_size(b: &[u8]) -> usize {
     4 + b.len()
 }
+
+/// The encoded size of a [`Large`] name with this proof.
+pub fn large_size(proof: &[Node]) -> usize {
+    17 + 4 + 2 + proof.iter().map(node_size).sum::<usize>()
+}
+
+/// The encoded size of a [`Named`] blob.
+pub const NAMED_SIZE: usize = 17 + 32 + 4;
 
 // ---- reading: every read checks what is left first -----------------------------------------------------------------
 
@@ -443,6 +624,15 @@ impl<'a> Reader<'a> {
             return Err(DecodeError::Truncated);
         }
         Ok(n)
+    }
+    /// A count, then each blob with its length, each at most `max` bytes.
+    fn blobs(&mut self, max: usize) -> Result<Vec<Bytes>, DecodeError> {
+        let n = self.count(4)?; // a blob's length
+        let mut blobs = Vec::with_capacity(n);
+        for _ in 0..n {
+            blobs.push(self.bytes(max)?);
+        }
+        Ok(blobs)
     }
     pub(crate) fn bytes(&mut self, max: usize) -> Result<Bytes, DecodeError> {
         let n = self.u32()?;
@@ -596,7 +786,33 @@ mod tests {
                     bytes: Bytes::from_static(&[9, 9, 9]),
                     proof: vec![Node::Inner { prefix: nib(&[]), children: vec![(5, Hash([1; 32]))] }],
                 }],
-                blobs: vec![Bytes::from_static(b"a name"), Bytes::from(vec![7; MAX_INLINE_BLOB])],
+                large: vec![Large {
+                    key: LeafKey::Table(4),
+                    len: 5 << 20,
+                    proof: vec![Node::Tables(vec![Hash([2; 32]), Hash([3; 32])])],
+                }],
+                blobs: vec![Bytes::from_static(b"a name"), Bytes::from(vec![7; 300])],
+                named: vec![
+                    Named { key: LeafKey::Object(ObjectId::from_u128(5)), hash: Hash([5; 32]), len: MAX_BLOB },
+                    Named { key: LeafKey::Table(4), hash: Hash([6; 32]), len: 257 },
+                ],
+            },
+            Msg::BlobRequest {
+                cut: cut(),
+                root: Hash([11; 32]),
+                wants: vec![
+                    (LeafKey::Object(ObjectId::from_u128(5)), Hash([5; 32])),
+                    (LeafKey::Table(4), Hash([6; 32])),
+                ],
+            },
+            Msg::BlobReply { cut: cut(), root: Hash([12; 32]), blobs: vec![Bytes::from(vec![1; 257])] },
+            Msg::PieceRequest { cut: cut(), root: Hash([13; 32]), key: LeafKey::Table(4), first: 3, count: 16 },
+            Msg::PieceReply {
+                cut: cut(),
+                root: Hash([14; 32]),
+                key: LeafKey::Table(4),
+                first: 3,
+                pieces: vec![Bytes::from(vec![2; 40]), Bytes::from_static(b"end")],
             },
             Msg::PhysicsRequest { cut: cut(), root: Hash([5; 32]) },
             Msg::PhysicsReply {
@@ -621,6 +837,40 @@ mod tests {
         for m in samples() {
             assert_eq!(Msg::decode(&m.encode().unwrap()), Ok(m));
         }
+        // At the limits: a blob at the carried class's cap, a piece at its length, and a record named at `R_MAX`.
+        let at_cap = [
+            Msg::BlobReply { cut: cut(), root: Hash::ZERO, blobs: vec![Bytes::from(vec![8; MAX_BLOB])] },
+            Msg::PieceReply {
+                cut: cut(),
+                root: Hash::ZERO,
+                key: LeafKey::Config,
+                first: 0,
+                pieces: vec![Bytes::from(vec![3; PIECE])],
+            },
+            Msg::RecordReply {
+                cut: cut(),
+                root: Hash::ZERO,
+                records: vec![],
+                large: vec![Large { key: LeafKey::Config, len: R_MAX, proof: vec![] }],
+                blobs: vec![Bytes::from(vec![8; MAX_BLOB])],
+                named: vec![],
+            },
+        ];
+        for m in at_cap {
+            assert_eq!(Msg::decode(&m.encode().unwrap()), Ok(m));
+        }
+    }
+
+    #[test]
+    fn pieces_cover_a_record_exactly() {
+        assert_eq!((pieces_of(1), piece_len(1, 0), piece_len(1, 1)), (1, 1, 0));
+        assert_eq!((pieces_of(PIECE), piece_len(PIECE, 0)), (1, PIECE));
+        let len = 3 * PIECE + 5;
+        assert_eq!(pieces_of(len), 4);
+        assert_eq!((0..4).map(|i| piece_len(len, i)).sum::<usize>(), len);
+        assert_eq!(piece_len(len, 3), 5);
+        assert_eq!(pieces_of(R_MAX), R_MAX / PIECE);
+        assert!(pieces_of(R_MAX) <= MAX_ITEMS, "a whole record fits one piece request's count");
     }
 
     #[test]
@@ -663,26 +913,110 @@ mod tests {
         assert_eq!(wide.encode(), Err(EncodeError::TooMany));
         let many = Msg::RecordRequest { cut: cut(), root: Hash::ZERO, keys: vec![LeafKey::Table(1); MAX_ITEMS + 1] };
         assert_eq!(many.encode(), Err(EncodeError::TooMany));
-        let long = Msg::RecordReply {
+        let reply = |large: Vec<Large>, blobs: Vec<Bytes>, named: Vec<Named>| Msg::RecordReply {
             cut: cut(),
             root: Hash::ZERO,
             records: vec![],
-            blobs: vec![Bytes::from(vec![0; MAX_INLINE_BLOB + 1])],
+            large,
+            blobs,
+            named,
         };
-        assert_eq!(long.encode(), Err(EncodeError::TooLong));
+        assert_eq!(reply(vec![], vec![Bytes::from(vec![0; MAX_BLOB + 1])], vec![]).encode(), Err(EncodeError::TooLong));
+        let big = Large { key: LeafKey::Config, len: R_MAX + 1, proof: vec![] };
+        assert_eq!(reply(vec![big], vec![], vec![]).encode(), Err(EncodeError::TooLong));
+        let named = |i: u8, len: usize| Named { key: LeafKey::Config, hash: Hash([i; 32]), len };
+        assert_eq!(reply(vec![], vec![], vec![named(1, MAX_BLOB + 1)]).encode(), Err(EncodeError::TooLong));
+        // Each name within the class, but more than `MAX_NAMED` claimed in all.
+        let over: Vec<Named> = (0..=MAX_NAMED / MAX_BLOB)
+            .map(|i| Named { key: LeafKey::Config, hash: Hash::plain(&i.to_le_bytes()), len: MAX_BLOB })
+            .collect();
+        assert_eq!(reply(vec![], vec![], over).encode(), Err(EncodeError::TooLong));
+        let piece = Msg::PieceReply {
+            cut: cut(),
+            root: Hash::ZERO,
+            key: LeafKey::Config,
+            first: 0,
+            pieces: vec![Bytes::from(vec![0; PIECE + 1])],
+        };
+        assert_eq!(piece.encode(), Err(EncodeError::TooLong));
+        let count = MAX_ITEMS as u32 + 1;
+        let wide = Msg::PieceRequest { cut: cut(), root: Hash::ZERO, key: LeafKey::Config, first: 0, count };
+        assert_eq!(wide.encode(), Err(EncodeError::TooMany));
+    }
+
+    /// The decoder refuses what the encoder would: here, claims past the limits written by a sender that skipped
+    /// its own checks.
+    #[test]
+    fn a_claim_past_the_limits_is_refused_by_the_decoder() {
+        let reply = |large: Vec<Large>, named: Vec<Named>| {
+            Msg::RecordReply { cut: cut(), root: Hash::ZERO, records: vec![], large, blobs: vec![], named }
+                .encode()
+                .unwrap()
+                .to_vec()
+        };
+        // A large record of length 1, its length field patched to `R_MAX + 1`: the bytes after the header are
+        // version, tag, cut (48), root (32), records count (2), large count (2), key (Config: 1).
+        let mut b = reply(vec![Large { key: LeafKey::Config, len: 1, proof: vec![] }], vec![]);
+        let at = 2 + 48 + 32 + 2 + 2 + 1;
+        b[at..at + 4].copy_from_slice(&(R_MAX as u32 + 1).to_le_bytes());
+        assert_eq!(Msg::decode(&b), Err(DecodeError::TooLong));
+        // A named blob of length 1, its length (the last four bytes) patched to `MAX_BLOB + 1`.
+        let mut b = reply(vec![], vec![Named { key: LeafKey::Config, hash: Hash::ZERO, len: 1 }]);
+        let at = b.len() - 4;
+        b[at..].copy_from_slice(&(MAX_BLOB as u32 + 1).to_le_bytes());
+        assert_eq!(Msg::decode(&b), Err(DecodeError::TooLong));
+        // A name of length 0 claims nothing to pull.
+        let mut b = reply(vec![], vec![Named { key: LeafKey::Config, hash: Hash::ZERO, len: 1 }]);
+        let at = b.len() - 4;
+        b[at..].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(Msg::decode(&b), Err(DecodeError::TooLong));
+        // A piece longer than `PIECE`.
+        let ok = Msg::PieceReply {
+            cut: cut(),
+            root: Hash::ZERO,
+            key: LeafKey::Config,
+            first: 0,
+            pieces: vec![Bytes::from_static(b"x")],
+        };
+        let mut b = ok.encode().unwrap().to_vec();
+        let at = b.len() - 5;
+        b[at..at + 4].copy_from_slice(&((PIECE as u32) + 1).to_le_bytes());
+        b.truncate(at + 4);
+        b.extend(std::iter::repeat_n(0u8, PIECE + 1));
+        assert_eq!(Msg::decode(&b), Err(DecodeError::TooLong));
     }
 
     #[test]
-    fn a_blob_longer_than_the_inline_class_is_refused_by_the_decoder() {
-        let ok =
-            Msg::RecordReply { cut: cut(), root: Hash::ZERO, records: vec![], blobs: vec![Bytes::from_static(b"x")] };
+    fn a_blob_longer_than_the_carried_class_is_refused_by_the_decoder() {
+        let ok = Msg::RecordReply {
+            cut: cut(),
+            root: Hash::ZERO,
+            records: vec![],
+            large: vec![],
+            blobs: vec![Bytes::from_static(b"x")],
+            named: vec![],
+        };
         let mut b = ok.encode().unwrap().to_vec();
-        // The one blob's length field is the 5 bytes before the end: make it 257 and append the bytes.
-        let at = b.len() - 5;
-        b[at..at + 4].copy_from_slice(&((MAX_INLINE_BLOB as u32) + 1).to_le_bytes());
+        // The one blob's length field is the 7 bytes before the end (then its byte and the names' count): make it
+        // 960 KiB + 1 and append the bytes.
+        let at = b.len() - 7;
+        b[at..at + 4].copy_from_slice(&((MAX_BLOB as u32) + 1).to_le_bytes());
         b.truncate(at + 4);
-        b.extend(std::iter::repeat_n(0u8, MAX_INLINE_BLOB + 1));
+        b.extend(std::iter::repeat_n(0u8, MAX_BLOB + 1));
+        b.extend_from_slice(&0u16.to_le_bytes());
         assert_eq!(Msg::decode(&b), Err(DecodeError::TooLong));
+    }
+
+    #[test]
+    fn the_largest_blob_is_pe_world_s_carried_class() {
+        assert_eq!(MAX_BLOB, pe_world::inline::MAX_CARRIED_BLOB);
+    }
+
+    /// pe-world refuses an edit that would take a record past the same `R_max` (world-model.md 6.6), so no honest
+    /// record is refused here.
+    #[test]
+    fn r_max_is_pe_world_s_record_cap() {
+        assert_eq!(R_MAX, pe_world::tree::MAX_RECORD_BYTES);
     }
 
     #[test]

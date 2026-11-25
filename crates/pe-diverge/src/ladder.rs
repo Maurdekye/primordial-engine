@@ -25,7 +25,10 @@ use pe_seams::{
 use crate::bundle::FaultBundle;
 use crate::counters::Counters;
 use crate::evidence::{CvState, all_keys};
-use crate::msg::{MAX_ITEMS, Msg, blob_size, node_size, path_size, record_size};
+use crate::msg::{
+    Large, MAX_ITEMS, MAX_NAMED, Msg, NAMED_SIZE, Named, PIECE, R_MAX, blob_size, large_size, node_size, path_size,
+    piece_len, pieces_of, record_size,
+};
 use crate::split;
 
 /// The ladder's parameters (divergence.md 14). Every limit is a duration or a count, never a frame count.
@@ -135,12 +138,63 @@ enum Phase {
         asked: BTreeSet<LeafKey>,
         queued: Vec<LeafKey>,
     },
+    /// Pulling what the record replies named but did not carry (4.2, step 3): pieces of the records too long to carry,
+    /// then the blobs, each request sized to about `reply_budget` by the requester. What is in flight.
+    Parts {
+        asked: Pull,
+    },
     Physics,
     /// The import is with the replica, which answered `Pending`: asked again, unchanged, on each tick (S2 v1.1).
     Importing {
         import: Box<CutImport>,
         mine: Vec<Record>,
     },
+}
+
+/// The pull request in flight in [`Phase::Parts`].
+enum Pull {
+    None,
+    Blobs(BTreeSet<Hash>),
+    Pieces { key: LeafKey, idx: BTreeSet<usize> },
+}
+
+/// A record too long to carry, being pulled in pieces. It can't be checked until whole (the leaf hash covers all of
+/// it): the import checks it, with its proof, against the target root.
+struct Pulled {
+    /// The claimed length, at most `R_MAX` (the decoder refuses more).
+    len: usize,
+    proof: Vec<Node>,
+    pieces: Vec<Option<Bytes>>,
+}
+
+impl Pulled {
+    fn missing(&self) -> Option<usize> {
+        self.pieces.iter().position(Option::is_none)
+    }
+    fn whole(&self, key: LeafKey) -> Option<Record> {
+        let mut bytes = Vec::with_capacity(self.len);
+        for p in &self.pieces {
+            bytes.extend_from_slice(p.as_ref()?);
+        }
+        Some(Record { key, bytes: Bytes::from(bytes), proof: self.proof.clone() })
+    }
+}
+
+/// What a record reply brings: the records carried whole, those named as too long, the blobs carried and those named.
+struct RecordParts {
+    records: Vec<Record>,
+    large: Vec<Large>,
+    blobs: Vec<Bytes>,
+    named: Vec<Named>,
+}
+
+/// What a source last exported for one peer's pulls, so a record pulled in pieces, or a record's blobs pulled in
+/// batches, is exported once and not once per request. Dropped with the peer's serve (`name_served`).
+struct Export {
+    root: Hash,
+    key: LeafKey,
+    record: Option<Bytes>,
+    blobs: BTreeMap<Hash, Bytes>,
 }
 
 /// Rung 1, or a root split's step 1: a replay the replica may run over several ticks (`RootError::Pending`, S2 v1.1),
@@ -185,8 +239,16 @@ struct Repair {
     absent: BTreeSet<LeafKey>,
     physics: Option<DomainId>,
     records: Vec<Record>,
-    /// The inline blobs the sources sent with the records, by hash: once each, in the order `CutImport.blobs` takes.
+    /// The blobs (inline and carried) the sources sent with the records or after them, by hash: once each, in the
+    /// order `CutImport.blobs` takes.
     blobs: BTreeMap<Hash, Bytes>,
+    /// Records too long to carry, by key: pulled in pieces, and imported only once whole.
+    large: BTreeMap<LeafKey, Pulled>,
+    /// Blobs the replies named but did not carry, by the record that names each and its hash, with the claimed length;
+    /// and their hashes. All are pulled before the import (@fable-reviewer, 4). Everything held for a
+    /// repair goes with it: a restart, a new source or the repair's end drops it.
+    named: BTreeMap<(LeafKey, Hash), usize>,
+    named_hashes: BTreeSet<Hash>,
     image: Option<PhysicsImage>,
     bytes: u64,
 }
@@ -197,6 +259,9 @@ impl Repair {
     }
     fn first_phase(&self) -> Phase {
         Phase::Nodes { asked: Vec::new(), queued: vec![(TreePath::World, self.target)] }
+    }
+    fn parts_left(&self) -> bool {
+        !self.named.is_empty() || self.large.values().any(|p| p.missing().is_some())
     }
 }
 
@@ -346,6 +411,9 @@ struct Stuck {
 /// The open serves one peer may hold (divergence.md 4.2's fetch time): the newest, and the one it may still be finishing.
 const SERVES_PER_PEER: usize = 2;
 
+/// Repairs overtaken in a row with no new blob kept, before the link is named too slow to resync (4.2, step 3).
+const SLOW_OVERTAKES: u32 = 3;
+
 pub struct Diverge {
     cfg: Config,
     me: MemberKey,
@@ -395,6 +463,15 @@ pub struct Diverge {
     serving: BTreeMap<(MemberKey, Hash), (HostTime, HostTime)>,
     /// What [`Replica::set_served`] was last told.
     served_named: Vec<Hash>,
+    /// Per peer, the last export for its blob pulls (`false`) and its piece pulls (`true`).
+    exports: BTreeMap<(MemberKey, bool), Export>,
+    /// Blobs repairs have hashed, kept across attempts so an overtaken repair's next attempt asks only for the rest
+    /// [C]: at most `R_MAX` bytes, dropped on a cure, an agreeing cut or a stop (4.2, step 3).
+    blob_cache: BTreeMap<Hash, Bytes>,
+    blob_cache_bytes: usize,
+    /// Overtaken repairs in a row that kept no new blob, and the cache's size at the last overtake.
+    slow_in_a_row: u32,
+    slow_mark: usize,
     counters: Counters,
     events: Vec<DivergeEvent>,
     /// Plain information for the log that is no seam event (`notes`).
@@ -438,6 +515,11 @@ impl Diverge {
             physics_served: BTreeMap::new(),
             serving: BTreeMap::new(),
             served_named: Vec::new(),
+            exports: BTreeMap::new(),
+            blob_cache: BTreeMap::new(),
+            blob_cache_bytes: 0,
+            slow_in_a_row: 0,
+            slow_mark: 0,
             counters: Counters::default(),
             events: Vec::new(),
             notes: Vec::new(),
@@ -729,7 +811,14 @@ impl Diverge {
         };
         if let Some((at, is_final, rung)) = self.busy() {
             let lag = fc.cut.at.frame.0.saturating_sub(at.frame.0);
-            if !is_final || lag > frames_ceil(self.cfg.w_fg, clock.rate_hz()) {
+            // A repair past its descent is fetching records, blobs or pieces whose size the descent can't know (a
+            // 960 KiB mesh is 8 s at 1 Mbit/s): it is not overtaken while its source keeps serving it, for at most
+            // `t_join` from its start, the bound a source keeps a served root for (4.2, step 3; 4.5a). A silent
+            // source still times out at `t_join_peer`.
+            let fetching = self.repair.as_ref().is_some_and(|r| {
+                matches!(r.phase, Phase::Records { .. } | Phase::Parts { .. }) && now <= r.started.plus(self.cfg.t_join)
+            });
+            if !is_final || (lag > frames_ceil(self.cfg.w_fg, clock.rate_hz()) && !fetching) {
                 // A split's replay or repair is moot once a cut is final; a repair the data came too late for
                 // restarts at the newest cut (4.2).
                 self.replay = None;
@@ -738,6 +827,7 @@ impl Diverge {
                 if is_final {
                     // The data came too late, again and again for a world too big to fetch within `w_fg` (4.2).
                     self.counters.overtaken_in_a_row += 1;
+                    self.note_slow(at);
                 }
                 self.fail(rung, at, "overtaken by a newer cut");
             } else {
@@ -936,11 +1026,11 @@ impl Diverge {
         // A physics image is waited for as long as its source's re-serve window (`t_join_peer`): a requester that
         // gave up sooner would ask again inside the window, so any image slower than `t_peer` would lock the rung at
         // n = 2 (F1 of the M1 redo; 4.1). Record replies wait as long: up to `reply_budget` of records and their
-        // blobs, which pe-net delivers only whole (a 960 KiB simulation blob alone is 8 s at 1 Mbit/s; coordinator).
+        // blobs, which pe-net delivers only whole (a 960 KiB simulation blob alone is 8 s at 1 Mbit/s; coordinator); and so do pulled blobs and pieces, each reply restarting the wait (@fable-reviewer, 2).
         let joining = self.joining();
         let (t_peer, t_join_peer) = (self.cfg.t_peer, self.cfg.t_join_peer);
         let waiting_on_peer = |r: &Repair| {
-            let long = joining || matches!(r.phase, Phase::Physics | Phase::Records { .. });
+            let long = joining || matches!(r.phase, Phase::Physics | Phase::Records { .. } | Phase::Parts { .. });
             let wait = if long { t_join_peer } else { t_peer };
             !r.due && !matches!(r.phase, Phase::Importing { .. }) && now > r.sent_at.plus(wait)
         };
@@ -976,6 +1066,8 @@ impl Diverge {
     fn name_served(&mut self, replica: &mut dyn Replica, now: HostTime) {
         let (idle, whole) = (self.cfg.t_join_peer, self.cfg.t_join);
         self.serving.retain(|_, (first, last)| now <= last.plus(idle) && now <= first.plus(whole));
+        let serving = &self.serving;
+        self.exports.retain(|k, e| serving.contains_key(&(k.0, e.root)));
         let mut roots: Vec<Hash> = self.serving.keys().map(|k| k.1).collect();
         roots.sort();
         roots.dedup();
@@ -1022,32 +1114,83 @@ impl Diverge {
                 if !self.may_serve(from, cut, root, now) {
                     return Ok(());
                 }
-                // Each reply carries the inline blobs its own records' rows reference (S2 v1.8), so a reply split by
-                // bytes stays whole on its own. The blobs count toward the reply's bytes and toward MAX_ITEMS: a part
-                // whose blobs take it past either is halved again (a single record is sent as it is).
                 let budget = self.cfg.reply_budget;
-                let replies = replica.tree(&root).map(|t| {
-                    let mut out = Vec::new();
-                    let mut todo: Vec<Vec<Record>> = split_by_bytes(t.export(&keys), budget, record_size);
-                    todo.reverse();
-                    while let Some(mut records) = todo.pop() {
-                        let blobs = t.export_blobs(&records.iter().map(|r| r.key).collect::<Vec<_>>());
-                        let bytes = records.iter().map(record_size).sum::<usize>()
-                            + blobs.iter().map(|b| blob_size(b)).sum::<usize>();
-                        if records.len() > 1 && (blobs.len() > MAX_ITEMS || bytes > budget) {
-                            let back = records.split_off(records.len() / 2);
-                            todo.push(back);
-                            todo.push(records);
-                        } else {
-                            out.push((records, blobs));
+                match replica.tree(&root).map(|t| record_replies(&*t, &keys, budget)) {
+                    Some((replies, first_large)) => {
+                        // The requester pulls oversize records in order of key: the first one's bytes, as exported
+                        // here, are what its piece requests are served from [C, 4].
+                        if let Some((key, bytes)) = first_large {
+                            let e = Export { root, key, record: Some(bytes), blobs: BTreeMap::new() };
+                            self.exports.insert((from, true), e);
+                        }
+                        for RecordParts { records, large, blobs, named } in replies {
+                            let keys: Vec<LeafKey> =
+                                records.iter().map(|r| r.key).chain(large.iter().map(|l| l.key)).collect();
+                            let refused = self.counters.encode_refused;
+                            self.serve(from, Msg::RecordReply { cut, root, records, large, blobs, named });
+                            if self.counters.encode_refused > refused {
+                                // One record whose blobs pass `MAX_ITEMS` names or `MAX_NAMED` bytes can't be served
+                                // (4.2, step 3, limits; @design-reviewer's L1 on 8e3d7086): say why, for a field run.
+                                self.notes.push(format!(
+                                    "a record reply at {cut:?} for {keys:?} broke a codec limit and was not sent: one \
+                                     record's blobs pass {MAX_ITEMS} names or {MAX_NAMED} bytes"
+                                ));
+                            }
                         }
                     }
-                    out
+                    None => self.not_held(from, cut, root),
+                }
+            }
+            Msg::BlobRequest { cut, root, wants } => {
+                if !self.may_serve(from, cut, root, now) {
+                    return Ok(());
+                }
+                // Only a blob that the record named with it references at this root: the source is no fetch-by-hash
+                // server (@fable-reviewer, 5). Any other, or one it no longer holds, is `NotHeld` (6).
+                let blobs = match replica.tree(&root) {
+                    None => None,
+                    Some(t) => {
+                        let mut got = Vec::with_capacity(wants.len());
+                        for (k, h) in &wants {
+                            match self.exported(from, root, *k, false, &*t).blobs.get(h) {
+                                Some(b) => got.push(b.clone()),
+                                None => break,
+                            }
+                        }
+                        (got.len() == wants.len()).then_some(got)
+                    }
+                };
+                match blobs {
+                    Some(blobs) => {
+                        for blobs in split_by_bytes(blobs, self.cfg.reply_budget, |b| blob_size(b)) {
+                            self.serve(from, Msg::BlobReply { cut, root, blobs });
+                        }
+                    }
+                    None => self.not_held(from, cut, root),
+                }
+            }
+            Msg::PieceRequest { cut, root, key, first, count } => {
+                if !self.may_serve(from, cut, root, now) {
+                    return Ok(());
+                }
+                let record = match replica.tree(&root) {
+                    None => None,
+                    Some(t) => self.exported(from, root, key, true, &*t).record.clone(),
+                };
+                let pieces = record.and_then(|b| {
+                    let (first, n) = (first as usize, pieces_of(b.len()));
+                    let end = n.min(first.saturating_add(count as usize));
+                    (first < end).then(|| {
+                        (first..end).map(|i| (i, b.slice(i * PIECE..i * PIECE + piece_len(b.len(), i)))).collect()
+                    })
                 });
-                match replies {
-                    Some(replies) => {
-                        for (records, blobs) in replies {
-                            self.serve(from, Msg::RecordReply { cut, root, records, blobs });
+                match pieces {
+                    Some(pieces) => {
+                        for part in split_by_bytes(pieces, self.cfg.reply_budget, |p: &(usize, Bytes)| blob_size(&p.1))
+                        {
+                            let first = part[0].0 as u32;
+                            let pieces = part.into_iter().map(|p| p.1).collect();
+                            self.serve(from, Msg::PieceReply { cut, root, key, first, pieces });
                         }
                     }
                     None => self.not_held(from, cut, root),
@@ -1099,8 +1242,13 @@ impl Diverge {
                 match reply {
                     Msg::Busy { retry_after_us, .. } => self.on_busy(retry_after_us, replica, source, now, clock),
                     Msg::NodeReply { nodes, .. } => self.on_nodes(nodes, replica, source, now, clock),
-                    Msg::RecordReply { records, blobs, .. } => {
-                        self.on_records(records, blobs, replica, source, now, clock)
+                    Msg::RecordReply { records, large, blobs, named, .. } => {
+                        let got = RecordParts { records, large, blobs, named };
+                        self.on_records(got, replica, source, now, clock)
+                    }
+                    Msg::BlobReply { blobs, .. } => self.on_blobs(blobs, replica, source, now, clock),
+                    Msg::PieceReply { key, first, pieces, .. } => {
+                        self.on_pieces((key, first, pieces), replica, source, now, clock)
                     }
                     Msg::PhysicsReply { image, .. } => self.on_physics(image, replica, source, now, clock),
                     _ => self.source_fault(replica, source, now, clock),
@@ -1202,6 +1350,21 @@ impl Diverge {
         let asking =
             self.reask.as_ref().is_some_and(|c| c.at == ep.cut.at) && self.servable.get(root) == Some(&ep.cut.at);
         (replaying || asking).then(|| u64::try_from(REPLAYING_RETRY.as_micros()).unwrap_or(u64::MAX))
+    }
+
+    /// What this root's tree exports for `key`, cached for `peer`'s next pull (`pieces`: its record's bytes; else its
+    /// blobs by hash).
+    fn exported(&mut self, peer: MemberKey, root: Hash, key: LeafKey, pieces: bool, t: &dyn Tree) -> &Export {
+        let fresh = self.exports.get(&(peer, pieces)).is_some_and(|e| e.root == root && e.key == key);
+        if !fresh {
+            let (record, blobs) = if pieces {
+                (t.export(&[key]).into_iter().next().map(|r| r.bytes), BTreeMap::new())
+            } else {
+                (None, t.export_blobs(&[key]).into_iter().map(|b| (Hash::plain(&b), b)).collect())
+            };
+            self.exports.insert((peer, pieces), Export { root, key, record, blobs });
+        }
+        &self.exports[&(peer, pieces)]
     }
 
     /// Send a reply that serves a request, and take its bytes from the peer's bucket.
@@ -1475,6 +1638,9 @@ impl Diverge {
             physics: None,
             records: Vec::new(),
             blobs: BTreeMap::new(),
+            large: BTreeMap::new(),
+            named: BTreeMap::new(),
+            named_hashes: BTreeSet::new(),
             image: None,
             bytes: 0,
         };
@@ -1486,6 +1652,7 @@ impl Diverge {
     /// Send the next request of the current phase to the current source.
     fn ask(&mut self, now: HostTime) {
         let (np, nk) = (self.cfg.node_request_paths, self.cfg.record_request_keys);
+        let budget = self.cfg.reply_budget;
         let (burst, rate) = self.ask_budget();
         let Some(rep) = &mut self.repair else { return };
         if matches!(rep.phase, Phase::Importing { .. }) {
@@ -1514,6 +1681,28 @@ impl Diverge {
                 *asked = keys.iter().copied().collect();
                 Msg::RecordRequest { cut, root, keys }
             }
+            Phase::Parts { asked } => {
+                // Pieces first, a record at a time; then blobs, by the record that names each, in batches of about
+                // `reply_budget` by their claimed lengths (@fable-reviewer, 3).
+                let piece = rep.large.iter().find_map(|(k, p)| p.missing().map(|i| (*k, i, p.pieces.len())));
+                if let Some((key, first, n)) = piece {
+                    let count = (budget / PIECE).clamp(1, MAX_ITEMS).min(n - first);
+                    *asked = Pull::Pieces { key, idx: (first..first + count).collect() };
+                    Msg::PieceRequest { cut, root, key, first: first as u32, count: count as u32 }
+                } else {
+                    let mut wants = Vec::new();
+                    let mut sum = 0usize;
+                    for (&(k, h), &len) in &rep.named {
+                        if !wants.is_empty() && (sum + len > budget || wants.len() >= MAX_ITEMS) {
+                            break;
+                        }
+                        wants.push((k, h));
+                        sum += len;
+                    }
+                    *asked = Pull::Blobs(wants.iter().map(|w| w.1).collect());
+                    Msg::BlobRequest { cut, root, wants }
+                }
+            }
             Phase::Physics => Msg::PhysicsRequest { cut, root },
             Phase::Importing { .. } => unreachable!("returned above"),
         };
@@ -1537,6 +1726,9 @@ impl Diverge {
             rep.physics = None;
             rep.records.clear();
             rep.blobs.clear();
+            rep.large.clear();
+            rep.named.clear();
+            rep.named_hashes.clear();
             rep.busy = 0;
             rep.retry_at = at;
             if !keep_image {
@@ -1617,6 +1809,7 @@ impl Diverge {
                 back.append(queued);
                 *queued = back;
             }
+            Phase::Parts { asked } => *asked = Pull::None,
             Phase::Physics => {}
         }
         rep.busy += 1;
@@ -1707,13 +1900,13 @@ impl Diverge {
 
     fn on_records(
         &mut self,
-        records: Vec<Record>,
-        blobs: Vec<Bytes>,
+        got: RecordParts,
         replica: &mut dyn Replica,
         source: &mut dyn EntrySource,
         now: HostTime,
         clock: &dyn FrameClock,
     ) {
+        let RecordParts { records, large, blobs, named } = got;
         let Some(rep) = &mut self.repair else { return };
         let Phase::Records { asked, queued } = &mut rep.phase else {
             self.counters.stale_replies += 1;
@@ -1721,31 +1914,93 @@ impl Diverge {
         };
         // A reply may be one of several (split by bytes): keep what was asked, wait for the rest. A source that never
         // completes the set times out.
-        let mut answered = false;
+        let mut answered = BTreeSet::new();
         for r in records {
             if asked.remove(&r.key) {
                 rep.bytes += r.bytes.len() as u64;
+                answered.insert(r.key);
                 rep.records.push(r);
-                rep.sent_at = now;
-                rep.busy = 0;
-                answered = true;
+            }
+        }
+        // A record too long to carry is named with its length (at most `R_MAX`, which the decoder checks) and its
+        // proof, and pulled in pieces once every key is answered (4.2, step 3).
+        // In all, the oversize records one repair holds claim at most `R_MAX`: a piece can't be checked until its
+        // record is whole, so this bounds what a lying source can make the requester buffer [C, 3]. So
+        // do the blobs it holds and the ones named to it, which are checked against rows only at the import
+        // (@design-reviewer's L2 on 8e3d7086). A reply past either is its source's fault.
+        let mut over = false;
+        let mut blob_bytes =
+            rep.blobs.values().map(Bytes::len).sum::<usize>() + rep.named.values().copied().sum::<usize>();
+        for l in large {
+            if asked.remove(&l.key) {
+                answered.insert(l.key);
+                let claimed = rep.large.values().map(|p| p.len).sum::<usize>() + l.len;
+                over |= claimed > R_MAX;
+                rep.large.insert(l.key, Pulled { pieces: vec![None; pieces_of(l.len)], len: l.len, proof: l.proof });
             }
         }
         // The blobs of a reply that answered something asked. Unchecked here: the replica refuses one no imported row
-        // references (`BadBlob`), and a source that sent it is left (`try_import`).
-        if answered {
+        // references (`BadBlob`), and a source that sent it is left (`try_import`). The blobs it named, for records it
+        // answered, are pulled before the import.
+        if !answered.is_empty() {
+            rep.sent_at = now;
+            rep.busy = 0;
             for b in blobs {
                 let h = Hash::plain(&b);
                 if !rep.blobs.contains_key(&h) {
+                    if rep.named_hashes.remove(&h) {
+                        let was: usize = rep.named.iter().filter(|(k, _)| k.1 == h).map(|(_, l)| *l).sum();
+                        blob_bytes -= was;
+                        rep.named.retain(|k, _| k.1 != h);
+                    }
+                    blob_bytes += b.len();
                     rep.bytes += b.len() as u64;
+                    cache_blob(&mut self.blob_cache, &mut self.blob_cache_bytes, h, &b);
                     rep.blobs.insert(h, b);
                 }
             }
+            // A named blob an earlier attempt already hashed is taken from the cache, not pulled again.
+            for n in named {
+                if !answered.contains(&n.key) || rep.blobs.contains_key(&n.hash) {
+                    continue;
+                }
+                if let Some(b) = self.blob_cache.get(&n.hash) {
+                    blob_bytes += b.len();
+                    rep.blobs.insert(n.hash, b.clone());
+                    self.counters.blobs_reused += 1;
+                } else if rep.named_hashes.insert(n.hash) {
+                    blob_bytes += n.len;
+                    rep.named.insert((n.key, n.hash), n.len);
+                }
+            }
+            over |= blob_bytes > R_MAX;
+        }
+        if over {
+            self.source_fault(replica, source, now, clock);
+            return;
         }
         if !asked.is_empty() {
             return;
         }
         if !queued.is_empty() {
+            self.ask(now);
+        } else {
+            self.after_records(replica, source, now, clock);
+        }
+    }
+
+    /// Every record asked is in hand or named: pull what was named, then the physics image if it is needed, then
+    /// import.
+    fn after_records(
+        &mut self,
+        replica: &mut dyn Replica,
+        source: &mut dyn EntrySource,
+        now: HostTime,
+        clock: &dyn FrameClock,
+    ) {
+        let Some(rep) = &mut self.repair else { return };
+        if rep.parts_left() {
+            rep.phase = Phase::Parts { asked: Pull::None };
             self.ask(now);
         } else if rep.physics.is_some() && rep.image.is_none() {
             rep.phase = Phase::Physics;
@@ -1753,6 +2008,93 @@ impl Diverge {
         } else {
             self.import(replica, source, now, clock);
         }
+    }
+
+    /// Blobs pulled: each one asked for is checked on its own, by its hash. One not asked for is ignored.
+    fn on_blobs(
+        &mut self,
+        blobs: Vec<Bytes>,
+        replica: &mut dyn Replica,
+        source: &mut dyn EntrySource,
+        now: HostTime,
+        clock: &dyn FrameClock,
+    ) {
+        let Some(rep) = &mut self.repair else { return };
+        let Phase::Parts { asked: Pull::Blobs(want) } = &mut rep.phase else {
+            self.counters.stale_replies += 1;
+            return;
+        };
+        let mut got = 0;
+        for b in blobs {
+            let h = Hash::plain(&b);
+            if want.remove(&h) {
+                rep.named.retain(|k, _| k.1 != h);
+                rep.named_hashes.remove(&h);
+                rep.bytes += b.len() as u64;
+                cache_blob(&mut self.blob_cache, &mut self.blob_cache_bytes, h, &b);
+                rep.blobs.insert(h, b);
+                got += 1;
+            }
+        }
+        if got > 0 {
+            rep.sent_at = now;
+            rep.busy = 0;
+            self.counters.blobs_pulled += got;
+        }
+        if !want.is_empty() {
+            return;
+        }
+        self.after_records(replica, source, now, clock);
+    }
+
+    /// Pieces of a record pulled: kept by index, each the length its index gives. A wrong length is the source's
+    /// fault; the record is checked when whole, by the import.
+    fn on_pieces(
+        &mut self,
+        got: (LeafKey, u32, Vec<Bytes>),
+        replica: &mut dyn Replica,
+        source: &mut dyn EntrySource,
+        now: HostTime,
+        clock: &dyn FrameClock,
+    ) {
+        let (key, first, pieces) = got;
+        let Some(rep) = &mut self.repair else { return };
+        let (Phase::Parts { asked: Pull::Pieces { key: k, idx } }, Some(p)) = (&mut rep.phase, rep.large.get_mut(&key))
+        else {
+            self.counters.stale_replies += 1;
+            return;
+        };
+        if *k != key {
+            self.counters.stale_replies += 1;
+            return;
+        }
+        let (mut got, mut ok) = (0, true);
+        for (j, b) in pieces.into_iter().enumerate() {
+            let i = first as usize + j;
+            if !idx.remove(&i) {
+                continue;
+            }
+            if b.len() != piece_len(p.len, i) {
+                ok = false;
+                break;
+            }
+            rep.bytes += b.len() as u64;
+            p.pieces[i] = Some(b);
+            got += 1;
+        }
+        if got > 0 {
+            rep.sent_at = now;
+            rep.busy = 0;
+            self.counters.pieces_pulled += got;
+        }
+        if !ok {
+            self.source_fault(replica, source, now, clock);
+            return;
+        }
+        if !idx.is_empty() {
+            return;
+        }
+        self.after_records(replica, source, now, clock);
     }
 
     fn on_physics(
@@ -1787,11 +2129,13 @@ impl Diverge {
             Some(t) => t.export(&rep.leaves),
             None => Vec::new(),
         };
+        let mut records = rep.records.clone();
+        records.extend(rep.large.iter().filter_map(|(k, p)| p.whole(*k)));
         let import = CutImport {
             blobs: rep.blobs.values().cloned().collect(),
             cut: rep.cut.clone(),
             target_root: rep.target,
-            records: rep.records.clone(),
+            records,
             absent: rep.absent.iter().copied().collect(),
             physics: rep.image.clone(),
         };
@@ -1919,7 +2263,33 @@ impl Diverge {
     }
 
     /// A join's import matched E's root and finalize agreed there.
+    /// A repair was overtaken: if it kept no new blob, and that happened `SLOW_OVERTAKES` times in a row, the link is
+    /// too slow for the repair to finish within `t_join` [C, 5]. Counted and noted once per run of them.
+    fn note_slow(&mut self, at: CutRef) {
+        if self.blob_cache_bytes > self.slow_mark {
+            self.slow_in_a_row = 0;
+        } else {
+            self.slow_in_a_row += 1;
+        }
+        self.slow_mark = self.blob_cache_bytes;
+        if self.slow_in_a_row == SLOW_OVERTAKES {
+            self.counters.link_too_slow += 1;
+            self.notes.push(format!(
+                "rung 2 at {at:?}: overtaken {SLOW_OVERTAKES} times in a row with nothing new kept: the link is too slow \
+                 to resync"
+            ));
+        }
+    }
+
+    fn drop_blob_cache(&mut self) {
+        self.blob_cache.clear();
+        self.blob_cache_bytes = 0;
+        self.slow_in_a_row = 0;
+        self.slow_mark = 0;
+    }
+
     fn joined(&mut self, cut: CutRef) {
+        self.drop_blob_cache();
         if std::mem::take(&mut self.resyncing) {
             self.counters.resyncs += 1;
         } else {
@@ -2055,6 +2425,7 @@ impl Diverge {
             return;
         };
         self.counters.repairs_stuck += 1;
+        self.drop_blob_cache();
         let named: Vec<String> =
             if all_keys { self.keys_seen.iter().map(FailKey::name).collect() } else { vec![key.name()] };
         self.events.push(DivergeEvent::RepairStuck {
@@ -2082,6 +2453,7 @@ impl Diverge {
     /// A cure, by any rung, or a cut that agreed: the failure counts start again, and a stopped ladder runs (4.3).
     fn reset_stuck(&mut self) {
         self.counters.overtaken_in_a_row = 0;
+        self.drop_blob_cache();
         self.fail_same = None;
         self.fails_any = 0;
         self.keys_seen.clear();
@@ -2127,6 +2499,76 @@ fn differing_of(rep: &Repair) -> Vec<LeafKey> {
 }
 
 /// Split `items` into groups whose encoded size stays within `budget`, at least one item per group.
+/// A record request's replies (4.2, step 3). Records within `budget` are carried whole, split by bytes; a longer one
+/// is named ([`Large`]) with its length and proof, alone in its reply, and pulled in pieces. With each reply go the
+/// blobs its records' rows reference (S2 v1.8): carried while the reply stays within `budget`, named past that, and
+/// pulled. A reply whose names pass `MAX_ITEMS` or `MAX_NAMED` in all is halved again; a single record's go as they
+/// are, and a reply over a codec limit is refused at encode (`encode_refused`).
+fn record_replies(t: &dyn Tree, keys: &[LeafKey], budget: usize) -> (Vec<RecordParts>, Option<(LeafKey, Bytes)>) {
+    let (whole, long): (Vec<Record>, Vec<Record>) = t.export(keys).into_iter().partition(|r| r.bytes.len() <= budget);
+    let mut todo: Vec<Vec<Record>> =
+        if whole.is_empty() && !long.is_empty() { Vec::new() } else { split_by_bytes(whole, budget, record_size) };
+    todo.extend(long.into_iter().map(|r| vec![r]));
+    todo.reverse();
+    let mut out = Vec::new();
+    let mut first_large: Option<(LeafKey, Bytes)> = None;
+    while let Some(mut part) = todo.pop() {
+        let used = part
+            .iter()
+            .map(|r| if r.bytes.len() > budget { large_size(&r.proof) } else { record_size(r) })
+            .sum::<usize>();
+        let (blobs, named) =
+            pack_blobs(t, &part.iter().map(|r| r.key).collect::<Vec<_>>(), budget.saturating_sub(used));
+        let claimed = named.iter().map(|n| n.len).sum::<usize>();
+        if part.len() > 1 && (named.len() > MAX_ITEMS || claimed > MAX_NAMED) {
+            let back = part.split_off(part.len() / 2);
+            todo.push(back);
+            todo.push(part);
+            continue;
+        }
+        let (records, large): (Vec<Record>, Vec<Record>) = part.into_iter().partition(|r| r.bytes.len() <= budget);
+        for r in &large {
+            if first_large.as_ref().is_none_or(|f| r.key < f.0) {
+                first_large = Some((r.key, r.bytes.clone()));
+            }
+        }
+        let large = large.into_iter().map(|r| Large { key: r.key, len: r.bytes.len(), proof: r.proof }).collect();
+        out.push(RecordParts { records, large, blobs, named });
+    }
+    (out, first_large)
+}
+
+/// Keep a hashed blob for a later attempt, while the cache holds at most `R_MAX` bytes.
+fn cache_blob(cache: &mut BTreeMap<Hash, Bytes>, bytes: &mut usize, h: Hash, b: &Bytes) {
+    if *bytes + b.len() <= R_MAX && !cache.contains_key(&h) {
+        *bytes += b.len();
+        cache.insert(h, b.clone());
+    }
+}
+
+/// The blobs these records' rows reference, once each in ascending order of hash: carried while they fit in `room`
+/// bytes of the reply, the rest named with the record that references each.
+fn pack_blobs(t: &dyn Tree, keys: &[LeafKey], mut room: usize) -> (Vec<Bytes>, Vec<Named>) {
+    let mut all: BTreeMap<Hash, (LeafKey, Bytes)> = BTreeMap::new();
+    for k in keys {
+        for b in t.export_blobs(std::slice::from_ref(k)) {
+            all.entry(Hash::plain(&b)).or_insert((*k, b));
+        }
+    }
+    let (mut blobs, mut named) = (Vec::new(), Vec::new());
+    for (hash, (key, b)) in all {
+        let size = blob_size(&b);
+        if size + NAMED_SIZE <= room && blobs.len() < MAX_ITEMS {
+            room -= size;
+            blobs.push(b);
+        } else {
+            room = room.saturating_sub(NAMED_SIZE);
+            named.push(Named { key, hash, len: b.len() });
+        }
+    }
+    (blobs, named)
+}
+
 fn split_by_bytes<T>(items: Vec<T>, budget: usize, size: impl Fn(&T) -> usize) -> Vec<Vec<T>> {
     let mut groups: Vec<Vec<T>> = Vec::new();
     let mut used = 0;

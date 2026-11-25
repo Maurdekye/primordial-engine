@@ -9,6 +9,7 @@ use pe_seams::{
     CutRef, DivergeEvent, FinalCut, Frame, Hash, ImportError, LeafKey, LineId, MemberKey, ObjectId, Replica, Rung,
     SelfTest, SignedEntry, SimRate,
 };
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 const VICTIM: usize = 2;
@@ -527,8 +528,8 @@ fn a_large_answer_is_split_into_several_replies() {
     assert!(net.converged());
 }
 
-/// A reply's inline blobs count toward its bytes (and toward MAX_ITEMS): a part of an answer whose records fit the
-/// budget but whose names take it past is halved again, so every reply of more than one record fits.
+/// A reply's carried blobs count toward its bytes: a blob that would take a reply past the budget is named in it
+/// instead, and pulled, so every reply of more than one record fits (4.2, step 3).
 #[test]
 fn a_join_s_replies_fit_the_budget_with_their_blobs() {
     // Two records fill about 1,700 bytes; one name (200) takes them past.
@@ -555,7 +556,15 @@ fn a_join_s_replies_fit_the_budget_with_their_blobs() {
             with_blobs += usize::from(!blobs.is_empty());
         }
     }
-    assert!(with_blobs >= 2, "the names came in {with_blobs} replies");
+    let pulled: usize = net
+        .peers
+        .iter()
+        .flat_map(|p| p.sent.iter())
+        .map(|m| if let Msg::BlobReply { blobs, .. } = m { blobs.len() } else { 0 })
+        .sum();
+    assert!(with_blobs >= 1, "the names came in {with_blobs} replies");
+    assert!(pulled >= 1, "and some that did not fit were pulled: {pulled}");
+    assert_eq!(v.d.counters().blobs_pulled, pulled as u64);
 }
 
 #[test]
@@ -1602,4 +1611,239 @@ fn a_root_split_at_n_2_cures_by_rung_2_over_a_300_ms_round_trip() {
     assert!(failed.is_empty(), "{} failures, first {:?}; {c:?}", failed.len(), failed.first());
     assert!(c.root_splits >= 1 && c.cured_by_rung[1] >= 1, "{c:?}");
     assert_eq!((c.source_faults, c.rung_failures, c.stale_replies), (0, 0, 0), "{c:?}");
+}
+
+// ---- pulls: blobs and record pieces past the reply budget (divergence.md 4.2, step 3) ------------------------------
+
+/// Blobs past the reply budget are named and pulled (@coordinator-opus): a joiner whose world holds two
+/// 700 KiB blobs, under the default 1 MiB budget, gets one carried and pulls the other, asked with the record that
+/// references it.
+#[test]
+fn a_blob_past_the_reply_budget_is_named_and_pulled() {
+    let (mut net, e) = joining_net_with(40, Config::default());
+    for p in &mut net.peers {
+        p.r.set_blob_len(1, 700 << 10);
+        p.r.set_blob_len(5, 700 << 10);
+    }
+    net.peers[VICTIM].r.blobs.clear();
+    let now = net.now();
+    let v = &mut net.peers[VICTIM];
+    v.d.join(&e, key(0), &mut v.r, now);
+    net.run(30);
+    let v = &net.peers[VICTIM];
+    assert_eq!(v.d.join_state(), Some(&Join::Joined { cut: e.cut.at }));
+    assert_eq!(v.r.blobs.len(), 10, "the joiner holds every blob");
+    let big: Vec<(LeafKey, pe_seams::Hash)> =
+        [1, 5].iter().map(|n| (obj(*n), pe_seams::Hash::plain(&common::blob_for(&v.r.sizes, spread(*n))))).collect();
+    assert!(big.iter().all(|(_, h)| v.r.blobs.contains_key(h)));
+    let wants: Vec<(LeafKey, pe_seams::Hash)> = v
+        .sent
+        .iter()
+        .flat_map(|m| if let Msg::BlobRequest { wants, .. } = m { wants.clone() } else { Vec::new() })
+        .collect();
+    assert_eq!(wants.len(), 1, "one of the two was pulled");
+    assert!(big.contains(&wants[0]), "asked with the record that references it");
+    assert_eq!(v.d.counters().blobs_pulled, 1);
+}
+
+/// The pad that makes object 3's record five pieces long.
+const FIVE_PIECES: usize = 4 * msg::PIECE + 100;
+
+/// A record longer than the reply budget is named with its length and proof, pulled in numbered pieces sized by the
+/// requester to its budget, and checked once whole (@coordinator-opus).
+#[test]
+fn a_record_past_the_reply_budget_is_pulled_in_pieces() {
+    let cfg = Config { reply_budget: 128 << 10, ..Config::default() };
+    let mut net = Net::with_config(3, 40, &[], cfg);
+    for p in &mut net.peers {
+        p.r.pad(3, FIVE_PIECES);
+    }
+    damage_cv(&mut net, &[3]);
+    net.run(40);
+    let v = &net.peers[VICTIM];
+    let c = v.d.counters().clone();
+    assert_eq!(c.cured_by_rung[1], 1, "{c:?}");
+    assert_eq!(c.pieces_pulled, 5, "{c:?}");
+    let asks: Vec<(LeafKey, u32, u32)> = v
+        .sent
+        .iter()
+        .filter_map(|m| {
+            if let Msg::PieceRequest { key, first, count, .. } = m { Some((*key, *first, *count)) } else { None }
+        })
+        .collect();
+    assert_eq!(asks, vec![(obj(3), 0, 2), (obj(3), 2, 2), (obj(3), 4, 1)], "two pieces per 128 KiB request");
+    let named = net.peers.iter().flat_map(|p| p.sent.iter()).any(|m| {
+        matches!(m, Msg::RecordReply { records, large, .. } if records.is_empty() && large.len() == 1 && large[0].key == obj(3))
+    });
+    assert!(named, "the record was named, not carried");
+    assert!(net.converged());
+    assert!(net.imported_only_truth(VICTIM, 0));
+}
+
+/// A piece of the wrong length is its source's fault at once. A piece of the right length but the wrong bytes can't
+/// be caught alone: the import catches it once the record is whole, by its proof (`BadProof`). Either way the next
+/// source cures, and nothing false is imported.
+#[test]
+fn a_bad_piece_is_its_source_s_fault() {
+    for how in [Lie::ShortPiece, Lie::BadPiece] {
+        let cfg = Config { reply_budget: 128 << 10, ..Config::default() };
+        let mut net = Net::with_config(3, 40, &[], cfg);
+        for p in &mut net.peers {
+            p.r.pad(3, FIVE_PIECES);
+        }
+        net.peers[0].lie = how;
+        damage_cv(&mut net, &[3]);
+        net.run(40);
+        let v = &net.peers[VICTIM];
+        let c = v.d.counters().clone();
+        assert_eq!(c.source_faults, 1, "{how:?}: {c:?}");
+        assert_eq!(c.cured_by_rung[1], 1, "{how:?}: {c:?}");
+        assert!(net.imported_only_truth(VICTIM, 1), "{how:?}");
+        assert!(net.converged(), "{how:?}");
+    }
+}
+
+/// A source that no longer holds a blob it named answers its pull `NotHeld`, handled as a record `NotHeld` is: the
+/// source is left, and the next one cures (@fable-reviewer, 6).
+#[test]
+fn a_source_that_no_longer_holds_a_named_blob_is_left_and_the_next_one_cures() {
+    let cfg = Config { reply_budget: 64 << 10, ..Config::default() };
+    let mut net = Net::with_config(3, 40, &[], cfg);
+    for p in &mut net.peers {
+        p.r.set_blob_len(1, 100_000);
+    }
+    let h = pe_seams::Hash::plain(&common::blob_for(&net.peers[0].r.sizes, spread(1)));
+    net.peers[VICTIM].r.blobs.remove(&h);
+    net.peers[0].lie = Lie::NoPulledBlobs;
+    damage_cv(&mut net, &[1]);
+    net.run(40);
+    let v = &net.peers[VICTIM];
+    let c = v.d.counters().clone();
+    assert_eq!(c.source_faults, 1, "{c:?}");
+    assert_eq!(c.cured_by_rung[1], 1, "{c:?}");
+    assert_eq!(c.blobs_pulled, 1, "pulled from the second source: {c:?}");
+    assert!(v.r.blobs.contains_key(&h));
+    assert!(net.converged());
+}
+
+/// The blobs one repair holds or has been named claim at most `R_MAX` in all (@design-reviewer's L2 on 8e3d7086): a
+/// source naming about 249 MiB of blobs in each of several replies is left before any pull, and the next one cures.
+#[test]
+fn a_source_naming_more_than_r_max_of_blobs_is_left_before_any_pull() {
+    let cfg = Config { reply_budget: 200, ..Config::default() };
+    let mut net = Net::with_config(3, 40, &[], cfg);
+    net.peers[0].lie = Lie::HugeNames;
+    damage_cv(&mut net, &[1, 2, 3, 4, 5, 6]);
+    net.run(60);
+    let v = &net.peers[VICTIM];
+    let c = v.d.counters().clone();
+    assert_eq!(c.source_faults, 1, "{c:?}");
+    assert_eq!(c.cured_by_rung[1], 1, "{c:?}");
+    // Only real blobs were pulled (from the second source, under the 200-byte budget): none of the liar's names.
+    let real: BTreeSet<pe_seams::Hash> =
+        v.r.named.iter().map(|id| pe_seams::Hash::plain(&common::blob_for(&v.r.sizes, *id))).collect();
+    for m in &v.sent {
+        if let Msg::BlobRequest { wants, .. } = m {
+            assert!(wants.iter().all(|w| real.contains(&w.1)), "a fake name was pulled");
+        }
+    }
+    assert!(net.converged());
+}
+
+/// A source serves a pulled blob only to a request naming a record whose rows reference it at that root, and answers
+/// any other `NotHeld` (@fable-reviewer, 5): it is no fetch-by-hash server.
+#[test]
+fn a_source_serves_a_blob_only_with_a_record_that_references_it() {
+    let mut net = Net::new(3, 40, &[]);
+    for p in &mut net.peers {
+        p.r.set_blob_len(1, 300_000);
+    }
+    net.run(20);
+    let (cut, root) = net.peers[0].d.verified_cut().unwrap();
+    let now = net.now();
+    let p = &mut net.peers[0];
+    let h = pe_seams::Hash::plain(&common::blob_for(&p.r.sizes, spread(1)));
+    // Object 1 references it; object 2 names no blob; object 5 names another.
+    for (k, served) in [(obj(1), true), (obj(2), false), (obj(5), false)] {
+        let m = Msg::BlobRequest { cut, root, wants: vec![(k, h)] }.encode().unwrap().to_vec();
+        let _ = p.d.receive(key(1), &m, &mut p.r, &mut p.src, now, &common::Clock);
+        let out: Vec<Msg> =
+            p.d.tick(now, &common::Clock, &mut p.r, &mut p.src)
+                .iter()
+                .map(|o| Msg::decode(&o.bytes).unwrap())
+                .collect();
+        let got = matches!(&out[..], [Msg::BlobReply { blobs, .. }] if blobs.len() == 1 && pe_seams::Hash::plain(&blobs[0]) == h);
+        let refused = matches!(&out[..], [Msg::NotHeld { .. }]);
+        assert!(if served { got } else { refused }, "{k:?}: {} messages", out.len());
+    }
+}
+
+/// A pull that outlasts `W_fg` is not overtaken while its source serves it (4.2, step 3): over a 400 ms round trip, a
+/// record of ten pieces pulled one per request takes about 4 s past the descent, and is cured by the first repair.
+#[test]
+fn a_pull_longer_than_w_fg_is_not_overtaken_while_it_is_served() {
+    let cfg = Config { reply_budget: 64 << 10, ..Config::default() };
+    let mut net = Net::with_config(3, 40, &[], cfg);
+    for p in &mut net.peers {
+        p.r.pad(3, 9 * msg::PIECE + 100);
+        p.link_delay = 12;
+    }
+    damage_cv(&mut net, &[3]);
+    net.run(900);
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert_eq!(c.pieces_pulled, 10, "{c:?}");
+    assert_eq!((c.cured_by_rung[1], c.rung_failures), (1, 1), "rung 1, then one rung-2 repair: {c:?}");
+    assert_eq!(c.overtaken_in_a_row, 0, "{c:?}");
+    assert!(net.converged());
+}
+
+/// Five blobs past the budget, pulled one per request over a 400 ms round trip, outlast a 3 s `t_join`: the repair is
+/// overtaken, and the next attempt takes the blobs the first one hashed from the cache, pulls only the rest, and
+/// cures [C, 2].
+#[test]
+fn an_overtaken_repair_keeps_the_blobs_it_hashed() {
+    let cfg = Config { reply_budget: 64 << 10, t_join: Duration::from_secs(3), ..Config::default() };
+    let mut net = Net::with_config(3, 40, &[], cfg);
+    let named = [1, 5, 9, 13, 17];
+    for p in &mut net.peers {
+        for n in named {
+            p.r.set_blob_len(n, 60_000);
+        }
+        p.link_delay = 12;
+    }
+    for n in named {
+        let h = pe_seams::Hash::plain(&common::blob_for(&net.peers[0].r.sizes, spread(n)));
+        net.peers[VICTIM].r.blobs.remove(&h);
+    }
+    damage_cv(&mut net, &named);
+    net.run(1200);
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert_eq!(c.cured_by_rung[1], 1, "{c:?}");
+    assert!(c.rung_failures >= 2, "rung 1, then at least one overtaken repair: {c:?}");
+    assert!(c.blobs_reused >= 1, "{c:?}");
+    assert!(c.blobs_pulled <= 5, "no blob is pulled twice, whatever the attempt: {c:?}");
+    let v = &net.peers[VICTIM];
+    for n in named {
+        assert!(v.r.blobs.contains_key(&pe_seams::Hash::plain(&common::blob_for(&v.r.sizes, spread(n)))));
+    }
+    assert!(net.converged());
+}
+
+/// A record whose pieces can't all come within `t_join` is never repaired: pieces aren't kept across attempts. After
+/// `SLOW_OVERTAKES` overtakes in a row with nothing new kept, the link is counted and noted as too slow to resync
+/// [C, 5].
+#[test]
+fn a_link_too_slow_for_a_repair_is_named() {
+    let cfg = Config { reply_budget: 64 << 10, t_join: Duration::from_secs(3), ..Config::default() };
+    let mut net = Net::with_config(3, 40, &[], cfg);
+    for p in &mut net.peers {
+        p.r.pad(3, 20 * msg::PIECE);
+        p.link_delay = 12;
+    }
+    damage_cv(&mut net, &[3]);
+    net.run(1500);
+    let c = net.peers[VICTIM].d.counters().clone();
+    assert_eq!(c.cured_by_rung[1], 0, "{c:?}");
+    assert!(c.overtaken_in_a_row >= 3, "{c:?}");
+    assert_eq!(c.link_too_slow, 1, "noted once per run of overtakes: {c:?}");
 }
