@@ -86,10 +86,11 @@ const CONSOLE_AT: [f64; 3] = [-0.6, 0.8, -1.0];
 
 /// Where the console's counted `spawn <kind> <count>` starts its grid: 3 m in front of the origin, past the single
 /// spawns' rows, 0.8 m up (a stack on the floor), [`GRID_ACROSS`] to a row [`GRID_STEP`] apart, each row
-/// [`GRID_STEP`] further ahead. A stack's boxes are 0.15 m across, so one that falls reaches its neighbours.
-pub const GRID_AT: [f64; 3] = [-1.35, 0.8, -3.0];
+/// [`GRID_STEP`] further ahead. A stack's boxes are 0.15 m across, so one that falls reaches its neighbours. Wide
+/// enough that all [`COUNT_MAX`] places are on the plane's 20 m floor: 18 rows, out to 8.1 m ahead (@xr-eng's L1).
+pub const GRID_AT: [f64; 3] = [-4.35, 0.8, -3.0];
 pub const GRID_STEP: f64 = 0.3;
-pub const GRID_ACROSS: u32 = 10;
+pub const GRID_ACROSS: u32 = 30;
 /// The most one counted `spawn` queues: the world's shape limit (pe-world `MAX_SHAPES`, world-model.md 7.1), past
 /// which every spawn is refused anyway.
 pub const COUNT_MAX: u32 = 520;
@@ -657,7 +658,14 @@ mod tests {
                 assert!(d >= GRID_STEP - 1e-9, "{a:?} and {b:?} {d} m apart");
             }
         }
-        assert!((grid_at(Kind::Box, 10)[2] - (GRID_AT[2] - GRID_STEP)).abs() < 1e-9, "the second row");
+        assert!((grid_at(Kind::Box, GRID_ACROSS)[2] - (GRID_AT[2] - GRID_STEP)).abs() < 1e-9, "the second row");
+        // Every place a count allows is on the plane's floor, a metre in from its edge, carried over or not
+        // (@xr-eng's L1: 10 to a row went off the floor past 240).
+        let edge = pe_world::preset::PLANE_SIDE / 2.0 - 1.0;
+        for n in 0..COUNT_MAX {
+            let [x, _, z] = grid_at(Kind::Box, n);
+            assert!(x.abs() <= edge && z.abs() <= edge, "place {n} at {x}, {z}: off the floor");
+        }
         // The grid's last place is on the plane: the world takes a stack there.
         let me = MemberKey([1; 32]);
         let (api, c) = (plane_api(me, true), person(me));
