@@ -34,6 +34,7 @@ pub mod ring;
 pub mod seam;
 pub mod session;
 pub mod smoke;
+pub mod space;
 
 #[cfg(test)]
 mod session_tests;

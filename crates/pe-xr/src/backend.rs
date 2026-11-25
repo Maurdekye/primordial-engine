@@ -23,12 +23,12 @@ pub enum SessionState {
 }
 
 /// The events pe-xr acts on (spec 3.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum XrEvent {
     StateChanged(SessionState),
     InstanceLossPending,
     /// A recentre: the tracking space moves under the player.
-    ReferenceSpaceChangePending,
+    ReferenceSpaceChangePending(crate::space::SpaceChange),
     InteractionProfileChanged,
     /// The runtime's event queue overflowed and dropped this many events.
     EventsLost(u32),
@@ -131,6 +131,11 @@ pub trait Backend {
     /// without locomotion).
     fn read_move(&mut self, _at: HostTime) -> crate::locomotion::MoveReading {
         crate::locomotion::MoveReading::default()
+    }
+    /// The head (the VIEW space) in the rig frame at `at`, raw, when its pose is valid: a space locate, so no action
+    /// sync is needed (a recentre's correction reads it every frame, spec 3.2).
+    fn head(&mut self, _at: HostTime) -> Option<RigPose> {
+        None
     }
     /// Each hand's current interaction profile (left, right), for the diagnostic log: "none" while the runtime
     /// has none. `None` where the backend can't tell.

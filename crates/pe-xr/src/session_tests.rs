@@ -203,18 +203,89 @@ fn hands_reach_the_ring_while_focused_and_go_absent_without_focus() {
 }
 
 #[test]
-fn a_recentre_bumps_the_discontinuity_of_both_hands() {
+fn a_recentre_that_cannot_be_measured_bumps_the_discontinuity_of_both_hands() {
+    use crate::space::SpaceChange;
+    // No pose from the runtime and no head located: the jump goes through, so the hands say so (spec 3.3).
     let (mut s, ring) = session(FakeRuntime::new().started());
     let mut k = sink();
     run(&mut s, &mut k, 2);
     let before = ring.hand_at(Hand::Left, shown_time(&s)).unwrap().discontinuity;
-    s.backend_mut().push(XrEvent::ReferenceSpaceChangePending);
+    s.backend_mut()
+        .push(XrEvent::ReferenceSpaceChangePending(SpaceChange { change_time: HostTime(0), previous: None }));
     run(&mut s, &mut k, 1);
     let now = shown_time(&s);
     assert_eq!(ring.hand_at(Hand::Left, now).unwrap().discontinuity, before + 1);
     assert_eq!(ring.hand_at(Hand::Right, now).unwrap().discontinuity, before + 1);
-    assert_eq!(s.counters.recentres, 1);
+    assert_eq!((s.counters.recentres, s.counters.recentre.unmeasured), (1, 1));
     no_violations(&s);
+}
+
+#[test]
+fn a_recentre_keeps_the_hands_continuous_and_turns_the_heading_in_the_same_frame() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use crate::locomotion::{MoveReading, MoveRing};
+    use crate::space::{SpaceChange, compose, rotate, yaw_quat};
+    use pe_seams::view::MoveFeed;
+    // The runtime's jump: 90 degrees left and 2 m aside. A pose in the new space is `jump . p` in the old one.
+    let jump = RigPose { position: [2.0, 0.0, -1.0], orientation: yaw_quat(90f64.to_radians()) };
+    let back = yaw_quat(-90f64.to_radians());
+    let r = rotate(back, jump.position);
+    let to_new = RigPose { position: [-r[0], -r[1], -r[2]], orientation: back };
+    let hand = RigPose { position: [0.2, 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] };
+    let head = RigPose { position: [0.1, 1.6, 0.05], orientation: [0.0, 0.0, 0.0, 1.0] };
+    // By the event's pose, then (poseValid false) by the head across the change time.
+    for previous in [Some(jump), None] {
+        let change = Rc::new(Cell::new(i64::MAX));
+        let located =
+            move |c: &Rc<Cell<i64>>, at: HostTime, p: RigPose| if at.0 >= c.get() { compose(to_new, p) } else { p };
+        let (c1, c2, c3) = (change.clone(), change.clone(), change.clone());
+        let rt = FakeRuntime::new()
+            .started()
+            .hands(move |_, at| Reading {
+                source: HandSource::Controller,
+                at,
+                pose: Some(located(&c1, at, hand)),
+                linear_velocity: None,
+                angular_velocity: None,
+                grip: Some(0.0),
+                curl: None,
+            })
+            .heads(move |at| Some(located(&c2, at, head)))
+            .moves(move |at| MoveReading { head: Some(located(&c3, at, head)), ..Default::default() });
+        let (s, ring) = session(rt);
+        let moves = Arc::new(MoveRing::default());
+        let mut s = s.with_moves(moves.clone());
+        let mut k = sink();
+        run(&mut s, &mut k, 3);
+        let t0 = shown_time(&s);
+        let (h0, m0) = (ring.hand_at(Hand::Right, t0).unwrap(), moves.move_at(t0).unwrap());
+        // From the next frame on, the runtime locates everything in the new space.
+        change.set(t0.0 + 1);
+        s.backend_mut()
+            .push(XrEvent::ReferenceSpaceChangePending(SpaceChange { change_time: HostTime(t0.0 + 1), previous }));
+        run(&mut s, &mut k, 1);
+        let t1 = shown_time(&s);
+        let (h1, m1) = (ring.hand_at(Hand::Right, t1).unwrap(), moves.move_at(t1).unwrap());
+        assert_eq!(h1.discontinuity, h0.discontinuity, "{previous:?}: no jump to report");
+        // The heading took the 90 degrees in the same frame's sample: a quarter turn.
+        let turned = m1.heading.wrapping_sub(m0.heading);
+        assert!(turned.abs_diff(1 << 30) < 1 << 12, "{previous:?}: {turned} (f32 yaw, within 0.0004 degrees)");
+        // The head is where it was in the rig frame; the hand, turned back about it by the heading's quarter turn,
+        // is too: the world pose is unchanged.
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        assert!(close(m1.head.position, m0.head.position), "{previous:?}: {:?} vs {:?}", m1.head, m0.head);
+        let q = m1.head.position;
+        let d = rotate(
+            yaw_quat(90f64.to_radians()),
+            [h1.pose.position[0] - q[0], h1.pose.position[1] - q[1], h1.pose.position[2] - q[2]],
+        );
+        assert!(close([q[0] + d[0], q[1] + d[1], q[2] + d[2]], h0.pose.position), "{previous:?}: {:?}", h1.pose);
+        let by = if previous.is_some() { (1, 0) } else { (0, 1) };
+        assert_eq!((s.counters.recentre.by_pose, s.counters.recentre.by_head), by);
+        no_violations(&s);
+    }
 }
 
 #[test]

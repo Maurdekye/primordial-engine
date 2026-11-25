@@ -26,6 +26,7 @@ use crate::locomotion::{MoveRing, MoveState};
 use crate::pointer::{Pointer, PointerState};
 use crate::ring::HandRing;
 use crate::seam::{Hand, HostTime, RigPose};
+use crate::space::SpaceCorrection;
 
 /// How long frames may keep failing, with errors other than a loss, before the session is ended (spec 3.1).
 pub const FRAME_ERROR_LIMIT: Duration = Duration::from_secs(1);
@@ -126,6 +127,8 @@ pub struct Counters {
     pub missed_frames: u64,
     pub state_changes: u64,
     pub recentres: u64,
+    /// How each recentre was measured (spec 3.2).
+    pub recentre: crate::space::SpaceCounters,
     pub events_lost: u64,
     pub last_display_period_ns: i64,
     /// Per hand (left, right): FOCUSED frames whose reading came from hand tracking, from a controller, or had no
@@ -159,6 +162,8 @@ pub struct XrSession<B: Backend> {
     /// Locomotion (spec 5.8): the state across frames, and the ring the simulation reads, if pe-app gave one.
     locomotion: MoveState,
     moves: Option<Arc<MoveRing>>,
+    /// A recentre's correction, applied to every pose read (spec 3.2).
+    space: SpaceCorrection,
     /// Whether the first focused frame's locomotion actions were logged (a runtime that left them unbound shows here).
     moves_logged: bool,
     last_display_time: Option<HostTime>,
@@ -199,6 +204,7 @@ impl<B: Backend> XrSession<B> {
             ring,
             locomotion: MoveState::default(),
             moves: None,
+            space: SpaceCorrection::default(),
             moves_logged: false,
             last_display_time: None,
             last_good: None,
@@ -390,11 +396,10 @@ impl<B: Backend> XrSession<B> {
                     self.end(EndReason::InstanceLost);
                     Ok(())
                 }
-                XrEvent::ReferenceSpaceChangePending => {
+                XrEvent::ReferenceSpaceChangePending(change) => {
+                    // Corrected from its change time on (spec 3.2), so the hands don't jump.
                     self.counters.recentres += 1;
-                    for h in &mut self.hands {
-                        h.recentre();
-                    }
+                    self.space.on_change(change);
                     Ok(())
                 }
                 XrEvent::InteractionProfileChanged => {
@@ -477,6 +482,20 @@ impl<B: Backend> XrSession<B> {
             self.ring.set_display_period(period);
         }
 
+        // A recentre's correction (spec 3.2): the changes due at this display time apply before any pose is read, and
+        // its yaw goes into this frame's heading, in the same sample as the corrected head and hands.
+        let applied = self.space.frame(timing.predicted_display_time, self.backend.head(timing.predicted_display_time));
+        if applied.yaw != 0.0 {
+            self.locomotion.turn_by(applied.yaw);
+        }
+        if applied.unmeasured {
+            // Not measurable: the jump goes through, so the hands say so.
+            for h in &mut self.hands {
+                h.recentre();
+            }
+        }
+        self.counters.recentre = self.space.counters;
+
         // Step 3: actions and hands, whether or not this frame is drawn.
         let focused = self.state == SessionState::Focused;
         if focused {
@@ -488,10 +507,10 @@ impl<B: Backend> XrSession<B> {
             let now = self.backend.now();
             let shown_at = timing.predicted_display_time;
             for h in Hand::BOTH {
-                let reading = self.backend.read_hand(h, now);
+                let reading = self.space.reading(self.backend.read_hand(h, now));
                 // The same hand where it will be when this frame is shown: the simulation runs at that time, so the
                 // ring's samples carry those poses; the grip and grasp still come from now (spec 6.2).
-                let shown = self.backend.read_hand(h, shown_at);
+                let shown = self.space.reading(self.backend.read_hand(h, shown_at));
                 let source = diag::PoseSource::of(&reading);
                 let frames = &mut self.counters.hand_frames[h.index()];
                 match source {
@@ -512,8 +531,8 @@ impl<B: Backend> XrSession<B> {
                 }
                 // The pointer at the display time, every focused frame, so no press is lost to a frame that isn't
                 // drawn (spec 5.7). The joints are those of the `shown` reading just made at that time.
-                let reading = self.backend.read_pointer(h, shown_at);
-                let joints = self.backend.hand_joints(h, shown_at);
+                let reading = self.space.pointer(self.backend.read_pointer(h, shown_at));
+                let joints = self.space.joints(self.backend.hand_joints(h, shown_at));
                 let holding = self.hands[h.index()].closed();
                 let step = self.pointers[h.index()].step(h, shown_at, reading, joints.as_ref(), holding);
                 self.pointer_now[h.index()] = step.pointer;
@@ -524,7 +543,8 @@ impl<B: Backend> XrSession<B> {
         // standstill, so the simulation never holds a walk the player can't stop.
         if let Some(moves) = &self.moves {
             let at = timing.predicted_display_time;
-            let reading = if focused { self.backend.read_move(at) } else { Default::default() };
+            let reading =
+                if focused { self.space.move_reading(self.backend.read_move(at)) } else { Default::default() };
             if focused && !self.moves_logged && diag::enabled() {
                 self.moves_logged = true;
                 let on = |b: bool| if b { "active" } else { "not active" };
@@ -545,12 +565,17 @@ impl<B: Backend> XrSession<B> {
         if timing.should_render && shown {
             let image = self.backend.acquire_image()?;
             progress.acquired = true;
-            let located = self.backend.locate_views(timing.predicted_display_time)?;
+            let located = self.space.located(self.backend.locate_views(timing.predicted_display_time)?);
             if located.valid {
                 // The own hands at the display time, for drawing only (spec 5.6).
                 let at = timing.predicted_display_time;
-                let hands = if focused { Hand::BOTH.map(|h| self.backend.read_hand(h, at).pose) } else { [None, None] };
-                let hand_joints = Hand::BOTH.map(|h| hands[h.index()].and_then(|_| self.backend.hand_joints(h, at)));
+                let hands = if focused {
+                    Hand::BOTH.map(|h| self.space.reading(self.backend.read_hand(h, at)).pose)
+                } else {
+                    [None, None]
+                };
+                let hand_joints = Hand::BOTH
+                    .map(|h| hands[h.index()].and_then(|_| self.space.joints(self.backend.hand_joints(h, at))));
                 if let Some(line) = self.diag.first_eyes(&located.eyes, timing.predicted_display_period_ns) {
                     diag::emit(&line);
                 }
