@@ -417,7 +417,9 @@ impl World {
         crate::inline::check(work.store.registry(), tx, &tx.inline, !src.author.is_logic()).map_err(|r| (None, r))?;
         // The record ceiling (6.6, R_max; @coordinator-opus): no edit leaves a record past
         // `MAX_RECORD_BYTES`, whether an object's (a row it wrote, or one it created) or the tombstones table's (one
-        // that added tombstones). Other tables grow with members and scripts, each under its own limits.
+        // that grows it, as the shape limit refuses only edits that add shapes: an undelete that shrinks a table
+        // already past it, through a path outside edits, is never refused). Other tables grow with members and
+        // scripts, each under its own limits.
         let limit = crate::tree::record_limit();
         let over = |n: usize| n > limit;
         let mut touched: Vec<ObjectId> =
@@ -425,7 +427,12 @@ impl World {
         touched.sort();
         touched.dedup();
         if touched.iter().any(|&id| crate::tree::record_len(&work.store, id).is_some_and(over))
-            || (!Arc::ptr_eq(&self.tombstones, &work.tombstones) && over(crate::tree::tombstones_record_len(&work)))
+            || (!Arc::ptr_eq(&self.tombstones, &work.tombstones) && {
+                let now = crate::tree::tombstones_record_len(&work);
+                // The table before is summed only when the table after is over: rare, and it keeps an edit that
+                // swaps a small tombstone for a large one (an undelete and a delete) from slipping by on the count.
+                over(now) && now > crate::tree::tombstones_record_len(self)
+            })
         {
             return Err((None, Reason::TooLarge { limit: u32::try_from(limit).unwrap_or(u32::MAX) }));
         }

@@ -217,7 +217,7 @@ pub fn tombstones_record_len(w: &World) -> usize {
     n
 }
 
-/// A `Node` record's bytes (6.6): the five links, creator, the two version entries, the two ops, `born_on`, then 4
+/// A `Node` record's bytes (6.6); keep [`NODE_LEN`] in step: the five links, creator, the two version entries, the two ops, `born_on`, then 4
 /// zero bytes.
 fn node_bytes(out: &mut Vec<u8>, n: &pe_sim::Node) {
     for l in [n.parent, n.first_child, n.last_child, n.prev_sibling, n.next_sibling] {
@@ -252,6 +252,7 @@ fn world_pose_bytes(out: &mut Vec<u8>, w: &Option<WorldTransform>) {
 }
 
 /// An object's record (6.6) in `store`, from its rows alone; `None` if it does not exist.
+/// Keep [`record_len`] in step with this encoding (6.6, R_max).
 fn record_in(store: &pe_sim::SimStore, id: ObjectId) -> Option<Vec<u8>> {
     if !store.exists(id) {
         return None;
@@ -416,6 +417,7 @@ impl World {
                 }
             }
             table::TOMBSTONES => {
+                // Keep `tombstones_record_len` in step with this encoding (6.6, R_max).
                 for (id, t) in self.tombstones.iter() {
                     let mut v = t.by.0.0.to_vec();
                     v.extend_from_slice(&t.frame.0.to_le_bytes());

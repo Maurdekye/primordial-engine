@@ -100,7 +100,7 @@ fn a_delete_that_would_take_the_tombstones_past_the_ceiling_is_refused() {
     assert!(matches!(apply(&mut f, tx(vec![Op::Delete { id: Target::Existing(ids[1]) }])), Outcome::Applied { .. }));
     let o = apply(&mut f, tx(vec![Op::Delete { id: Target::Existing(ids[2]) }]));
     assert!(matches!(o, Outcome::Refused { reason: Reason::TooLarge { .. }, .. }), "{o:?}");
-    // An undelete shrinks the table, so it is never refused by the ceiling.
+    // An undelete shrinks the table, so the ceiling never refuses it: only an edit that grows the table is checked.
     assert!(matches!(apply(&mut f, tx(vec![Op::Undelete { id: ids[0] }])), Outcome::Applied { .. }));
 }
 
