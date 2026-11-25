@@ -137,8 +137,8 @@ impl AudioTrial {
             audible,
         };
         let stream = match format {
-            cpal::SampleFormat::F32 => output_stream::<f32>(&device, config.clone(), callback, counters)?,
-            cpal::SampleFormat::I16 => output_stream::<i16>(&device, config.clone(), callback, counters)?,
+            cpal::SampleFormat::F32 => output_stream::<f32>(&device, config, callback, counters)?,
+            cpal::SampleFormat::I16 => output_stream::<i16>(&device, config, callback, counters)?,
             _ => unreachable!("filtered above"),
         };
         stream.play()?;
